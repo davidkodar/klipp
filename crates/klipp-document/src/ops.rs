@@ -2268,9 +2268,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let col = |c: &Option<String>, what: &str| c.as_deref().map(|c| parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), format!("write {what} as #rrggbb or #rrggbbaa")))).transpose();
             let motion = MotionAsk { enter: enter.clone(), exit: exit.clone(), animate: animate.clone(), animate_secs: *animate_secs, stagger: stagger.clone() };
             let motion = (motion != MotionAsk::default()).then_some(motion);
-            // A wrong name or motion is refused before anything is looked at.
+            // A wrong name is refused before anything is looked at; whether
+            // the motion fits is each title's own length's to say.
             if let Some(m) = &motion {
-                m.fit(10.0).map_err(|e| refuse(i, format!("title motion: {e}"), "correct animate, enter, exit, animate_secs or stagger"))?;
+                m.fit(1.0e6).map_err(|e| refuse(i, format!("title motion: {e}"), "correct animate, enter, exit, animate_secs or stagger"))?;
             }
             if let Some(name) = loop_effect {
                 title_loop(name, [255; 4], None, None, i)?;
@@ -6069,59 +6070,66 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look, secs: f64) -> Result<kli
         if let Some(a) = look.align {
             tb.alignment = a;
         }
-        let fx = fx.get_or_insert_with(Default::default);
-        if let Some(w) = look.outline {
-            let color = look.outline_color.or(fx.outlines.first().map(|o| o.color)).unwrap_or([0, 0, 0, 200]);
-            fx.outlines.clear();
-            if w > 0.0 {
-                fx.outlines.push(TextOutline { color, width: w, enabled: true, width_keyframes: Vec::new() });
+        // A layer's stack is made only when something in it is asked for:
+        // made for a change of place alone, a style that changed nothing
+        // else still differed from the title it was given.
+        let fx_asked = look.outline.is_some() || look.outline_color.is_some() || look.glow.is_some() || look.glow_color.is_some() || look.shadow.is_some()
+            || motion.is_some() || look.loop_effect.is_some() || look.roll_shape.is_some() || look.edge_fade.is_some();
+        if fx_asked {
+            let fx = fx.get_or_insert_with(Default::default);
+            if let Some(w) = look.outline {
+                let color = look.outline_color.or(fx.outlines.first().map(|o| o.color)).unwrap_or([0, 0, 0, 200]);
+                fx.outlines.clear();
+                if w > 0.0 {
+                    fx.outlines.push(TextOutline { color, width: w, enabled: true, width_keyframes: Vec::new() });
+                }
+            } else if let Some(color) = look.outline_color {
+                // A colour alone recolours the outline, or gives it one.
+                if fx.outlines.is_empty() {
+                    fx.outlines.push(TextOutline { color, width: 4.0, enabled: true, width_keyframes: Vec::new() });
+                }
+                fx.outlines.iter_mut().for_each(|o| o.color = color);
             }
-        } else if let Some(color) = look.outline_color {
-            // A colour alone recolours the outline, or gives it one.
-            if fx.outlines.is_empty() {
-                fx.outlines.push(TextOutline { color, width: 4.0, enabled: true, width_keyframes: Vec::new() });
+            if let Some(g) = look.glow {
+                let color = look.glow_color.or(fx.glows.first().map(|g| g.color)).unwrap_or(tb.color);
+                fx.glows.clear();
+                if g > 0.0 {
+                    fx.glows.push(TextGlow { enabled: true, color, radius: 18.0, radius_keyframes: Vec::new(), intensity: g, intensity_keyframes: Vec::new() });
+                }
+            } else if let Some(color) = look.glow_color {
+                if fx.glows.is_empty() {
+                    fx.glows.push(TextGlow { enabled: true, color, radius: 18.0, radius_keyframes: Vec::new(), intensity: 0.6, intensity_keyframes: Vec::new() });
+                }
+                fx.glows.iter_mut().for_each(|g| g.color = color);
             }
-            fx.outlines.iter_mut().for_each(|o| o.color = color);
-        }
-        if let Some(g) = look.glow {
-            let color = look.glow_color.or(fx.glows.first().map(|g| g.color)).unwrap_or(tb.color);
-            fx.glows.clear();
-            if g > 0.0 {
-                fx.glows.push(TextGlow { enabled: true, color, radius: 18.0, radius_keyframes: Vec::new(), intensity: g, intensity_keyframes: Vec::new() });
+            if let Some(shadow) = &look.shadow {
+                fx.shadows = shadow.iter().cloned().collect();
             }
-        } else if let Some(color) = look.glow_color {
-            if fx.glows.is_empty() {
-                fx.glows.push(TextGlow { enabled: true, color, radius: 18.0, radius_keyframes: Vec::new(), intensity: 0.6, intensity_keyframes: Vec::new() });
+            if let Some([top, bottom]) = look.gradient {
+                tb.gradient = Some(TextGradient { top_color: top, bottom_color: bottom, enabled: true });
             }
-            fx.glows.iter_mut().for_each(|g| g.color = color);
-        }
-        if let Some(shadow) = &look.shadow {
-            fx.shadows = shadow.iter().cloned().collect();
-        }
-        if let Some([top, bottom]) = look.gradient {
-            tb.gradient = Some(TextGradient { top_color: top, bottom_color: bottom, enabled: true });
-        }
-        if let Some(g) = look.glitch {
-            tb.glitch_intensity = g;
-        }
-        if let Some(c) = look.chromatic {
-            tb.chromatic_aberration_px = c * 12.0;
-        }
-        if let Some(m) = &motion {
-            fx.motion = *m;
-        }
-        if let Some(name) = &look.loop_effect {
-            // Already checked by name, so a refusal here cannot happen.
-            fx.loops = title_loop(name, tb.color, fx.glows.first().map(|g| g.color), look.roll_shape, 0).ok().flatten().into_iter().collect();
-        } else if let Some(shape) = look.roll_shape {
-            for l in fx.loops.iter_mut() {
-                if let klipp_core::title_motion::TitleLoop::Scroll { shape: s, .. } | klipp_core::title_motion::TitleLoop::Crawl { shape: s, .. } = l {
-                    *s = shape;
+            if let Some(g) = look.glitch {
+                tb.glitch_intensity = g;
+            }
+            if let Some(c) = look.chromatic {
+                tb.chromatic_aberration_px = c * 12.0;
+            }
+            if let Some(m) = &motion {
+                fx.motion = *m;
+            }
+            if let Some(name) = &look.loop_effect {
+                // Already checked by name, so a refusal here cannot happen.
+                fx.loops = title_loop(name, tb.color, fx.glows.first().map(|g| g.color), look.roll_shape, 0).ok().flatten().into_iter().collect();
+            } else if let Some(shape) = look.roll_shape {
+                for l in fx.loops.iter_mut() {
+                    if let klipp_core::title_motion::TitleLoop::Scroll { shape: s, .. } | klipp_core::title_motion::TitleLoop::Crawl { shape: s, .. } = l {
+                        *s = shape;
+                    }
                 }
             }
-        }
-        if let Some(e) = look.edge_fade {
-            fx.edge_fade = e;
+            if let Some(e) = look.edge_fade {
+                fx.edge_fade = e;
+            }
         }
     }
     if let Some(color) = look.full_frame {
@@ -9377,6 +9385,24 @@ mod tests {
         assert!(bad(format!(r##"[{{"op":"style","clip_id":"{}","loop":"spin"}}]"##, id.0)).why.contains("not a loop"));
         assert!(bad(format!(r##"[{{"op":"style","clip_id":"{}","glow":3}}]"##, id.0)).why.contains("out of range"));
         assert!(bad(format!(r##"[{{"op":"style","clip_id":"{}","animate":"cartwheel"}}]"##, id.0)).why.contains("motion"));
+    }
+
+    /// #836 review: a change of place alone leaves a text with no layer
+    /// stack without one, so restyling it to where it is changes nothing;
+    /// and a long motion is judged by the title's length, not a guess.
+    #[test]
+    fn restyle_makes_no_layer_stack_it_was_not_asked_for() {
+        let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Cue".into(), ..Default::default() });
+        td.objects[0].fx = None;
+        let centre = td.objects[0].transform.center;
+        let same_place = Look { x: Some(centre.x), y: Some(centre.y), ..Default::default() };
+        assert_eq!(restyle(&td, &same_place, 3.0).unwrap(), td, "nothing to change, nothing changed");
+        let glow = Look { glow: Some(0.5), ..Default::default() };
+        assert!(restyle(&td, &glow, 3.0).unwrap().objects[0].fx.is_some(), "asked for, it is made");
+        // A delay that fits a long title but not ten seconds.
+        let late = MotionAsk { enter: Some(serde_json::from_str(r#"{"kind":"fade","delay_secs":12.0}"#).unwrap()), ..Default::default() };
+        assert!(late.fit(1.0e6).is_ok(), "the early check does not guess a length");
+        assert!(late.fit(30.0).is_ok() && late.fit(5.0).is_err(), "each title's own length decides");
     }
 
     /// The `k`th caption as the plan's captions step made it.
