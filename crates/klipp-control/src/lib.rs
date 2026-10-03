@@ -738,8 +738,42 @@ mod next_step_tests {
         let done = next_after_ops(&ops, Some(&brief), Trail { graded: true, ..titled }).unwrap();
         assert!(done.ends_with("(klipp_beats), then check."), "{done}");
         // Music already on a track: the cut is to it, not advised again.
-        let scored = next_after_ops(&ops, Some(&brief), Trail { graded: true, music_on_track: true, ..titled }).unwrap();
+        // Music on a track and the cut on its beats: not advised again.
+        let scored = next_after_ops(&ops, Some(&brief), Trail { graded: true, music_on_track: true, cut_to_beat: true, ..titled }).unwrap();
         assert!(!scored.contains("beat") && scored.ends_with("(frame_at across the cut), then check."), "{scored}");
+        // Music placed but the cut not on it yet (the bed laid first, the
+        // selects after): that is exactly when the beat is the next step.
+        let unscored = next_after_ops(&ops, Some(&brief), Trail { graded: true, music_on_track: true, ..titled }).unwrap();
+        assert!(unscored.contains("cut them to the music's beat"), "{unscored}");
+    }
+
+    /// #785: cuts are on the bed's beats when most fall within 0.12 s of
+    /// one, the beats carried to the timeline through where the bed sits.
+    #[test]
+    fn cuts_are_on_the_beat_when_most_land_on_one() {
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 24);
+        let shot = klipp_core::MediaId::new();
+        let song = klipp_core::MediaId::new();
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let v = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        seq.tracks[v].clips = [(0.0, 2.0), (2.0, 4.0), (4.0, 6.0), (6.0, 8.0)]
+            .iter()
+            .map(|&(a, b)| klipp_timeline::Clip::media(shot, tc(a), tc(b), tc(10.0 + a), tc(10.0 + b)))
+            .collect();
+        // The bed starts a quarter second into the timeline and plays its
+        // file from a quarter second in: only a mapping that takes both
+        // into account puts its beats on the cuts.
+        let bed = klipp_timeline::Clip::media(song, tc(0.25), tc(8.25), tc(0.25), tc(8.25));
+        let beats = |offset: f64| klipp_analysis::beats::BeatData { bpm: 120.0, confidence: 0.9, beat_times: (0..16).map(|i| offset + i as f64 * 0.5).collect() };
+        // Beats every half second of the file, so on the cuts at 2, 4 and 6 s: on.
+        assert!(cuts_on_beat(&seq, &bed, &beats(0.0)));
+        // A quarter second off the beat: off.
+        assert!(!cuts_on_beat(&seq, &bed, &beats(0.25)));
+        // A read the detector was unsure of says nothing.
+        assert!(!cuts_on_beat(&seq, &bed, &klipp_analysis::beats::BeatData { confidence: 0.2, ..beats(0.0) }));
+        // Two cuts are too few to call a cut to the music.
+        seq.tracks[v].clips.truncate(3);
+        assert!(!cuts_on_beat(&seq, &bed, &beats(0.0)));
     }
 }
 
@@ -2014,10 +2048,86 @@ struct Trail {
     titled: bool,
     /// A picture clip is graded, alone or in a grade group.
     graded: bool,
-    /// Music is on a track: a clip playing as music, or a library track.
-    /// The cut is then to it already, and the beat is not advised again
-    /// (#785 review).
+    /// Music is on a track: a clip playing as music, or a track from the
+    /// music library.
     music_on_track: bool,
+    /// Most cuts between pictures fall on that music's beats: the cut is
+    /// to it already, and the beat is not advised again (#785). False
+    /// until the music's beats have been read once.
+    cut_to_beat: bool,
+}
+
+/// The music bed: the longest audio clip that plays as music, or comes
+/// from the music library, with its file.
+fn music_bed<'a>(seq: &'a klipp_timeline::Sequence, pool: &klipp_media::MediaPool) -> Option<(&'a klipp_timeline::Clip, std::path::PathBuf)> {
+    seq.tracks
+        .iter()
+        .filter(|t| t.kind == klipp_timeline::TrackKind::Audio)
+        .flat_map(|t| t.clips.iter())
+        .filter_map(|c| {
+            let item = pool.get(&c.media_id()?)?;
+            let music = sound_owner(seq, c).role == klipp_core::ClipRole::Music
+                || klipp_audio_search::library_source(&item.path) == Some(klipp_audio_search::Source::JamendoMusic);
+            music.then(|| (c, item.path.clone()))
+        })
+        .max_by_key(|(c, _)| (c.timeline_out - c.timeline_in).value)
+}
+
+/// Whether most cuts between pictures fall within 0.12 s of one of the
+/// bed's beats (the rule style_cut_summary uses), the bed placed as it is:
+/// its beats are the file's, carried to the timeline through the clip's
+/// source range and speed. Three cuts at least, so two that happen to
+/// land on a beat do not count as a cut to the music.
+fn cuts_on_beat(seq: &klipp_timeline::Sequence, bed: &klipp_timeline::Clip, beats: &klipp_analysis::beats::BeatData) -> bool {
+    if beats.confidence <= 0.3 || beats.beat_times.len() < 2 {
+        return false;
+    }
+    let (s_in, s_out) = (bed.source_in.to_secs_f64(), bed.source_out.to_secs_f64());
+    let speed = bed.speed.abs().max(1e-3);
+    let on_timeline: Vec<f64> = beats
+        .beat_times
+        .iter()
+        .filter(|&&b| b >= s_in && b < s_out)
+        .map(|&b| bed.timeline_in.to_secs_f64() + (b - s_in) / speed)
+        .collect();
+    let mut cuts = Vec::new();
+    for t in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
+        let mut clips: Vec<&klipp_timeline::Clip> = t.clips.iter().filter(|c| is_picture_clip(c)).collect();
+        clips.sort_by_key(|c| c.timeline_in.value);
+        for w in clips.windows(2) {
+            if (w[1].timeline_in.to_secs_f64() - w[0].timeline_out.to_secs_f64()).abs() < 0.02 {
+                cuts.push(w[1].timeline_in.to_secs_f64());
+            }
+        }
+    }
+    if cuts.len() < 3 {
+        return false;
+    }
+    let hits = cuts.iter().filter(|&&c| on_timeline.iter().any(|&b| (b - c).abs() < 0.12)).count();
+    hits * 2 > cuts.len()
+}
+
+/// The bed's beats if they have been read; if not, read in the
+/// background, once per file, for the next apply. Reading takes a decode
+/// of the music, too slow to wait for in a reply.
+fn bed_beats(path: &std::path::Path) -> Option<klipp_analysis::beats::BeatData> {
+    if let Some(b) = klipp_analysis::beats::cached(path) {
+        return Some(b);
+    }
+    static READING: std::sync::OnceLock<Mutex<std::collections::HashSet<std::path::PathBuf>>> = std::sync::OnceLock::new();
+    let reading = READING.get_or_init(Default::default);
+    if reading.lock().map(|mut r| r.insert(path.to_path_buf())).unwrap_or(false) {
+        let path = path.to_path_buf();
+        std::thread::spawn(move || {
+            if let Err(e) = klipp_analysis::beats::read_and_cache(std::path::Path::new("ffmpeg"), &path) {
+                tracing::debug!("beats of {} not read: {e}", path.display());
+            }
+            if let Ok(mut r) = reading.lock() {
+                r.remove(&path);
+            }
+        });
+    }
+    None
 }
 
 impl Trail {
@@ -2030,17 +2140,14 @@ impl Trail {
             })
         });
         let clips = || seq.tracks.iter().flat_map(|t| t.clips.iter().map(move |c| (t, c)));
+        let pool = ctx.media_pool.read().ok();
+        let bed = pool.as_ref().and_then(|p| music_bed(&seq, p));
         Trail {
             pictures_placed,
             titled: clips().any(|(t, c)| t.kind == klipp_timeline::TrackKind::Text && matches!(c.kind, klipp_timeline::ClipKind::Title(_))),
             graded: clips().any(|(_, c)| is_picture_clip(c) && (!c.own_grade().is_identity() || c.grade_group.is_some())),
-            music_on_track: ctx.media_pool.read().is_ok_and(|pool| {
-                clips().any(|(t, c)| {
-                    t.kind == klipp_timeline::TrackKind::Audio
-                        && (sound_owner(&seq, c).role == klipp_core::ClipRole::Music
-                            || c.media_id().and_then(|m| pool.get(&m)).is_some_and(|m| klipp_analysis::is_licensed_audio(&m.path)))
-                })
-            }),
+            music_on_track: bed.is_some(),
+            cut_to_beat: bed.is_some_and(|(clip, path)| bed_beats(&path).is_some_and(|b| cuts_on_beat(&seq, clip, &b))),
         }
     }
 }
@@ -2075,7 +2182,7 @@ fn next_after_ops(ops: &[klipp_document::ops::Op], brief: Option<&klipp_timeline
     let said: &str = if has(&|o| matches!(o, Op::Redact { .. })) {
         "Redacted. Look at a frame inside the stretch (frame_at) to see the box covers what it should — the copy on the track above hides it — then check again."
     } else if selects && uncaptioned && brief.is_some_and(|b| b.music) {
-        let beat = if trail.music_on_track { "" } else { ", cut them to the music's beat (klipp_beats)" };
+        let beat = if trail.music_on_track && trail.cut_to_beat { "" } else { ", cut them to the music's beat (klipp_beats)" };
         return Some(format!("The selects are down. Look at them together (frame_at across the cut){beat}{}", then()));
     } else if selects && uncaptioned {
         return Some(format!("The selects are down. Look at them together (frame_at across the cut) and tighten each cut{}", then()));
