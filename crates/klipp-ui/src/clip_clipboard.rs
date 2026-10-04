@@ -92,6 +92,10 @@ pub struct Pasted {
     pub touched: BTreeSet<usize>,
     pub ids: Vec<ClipId>,
     pub skipped: usize,
+    /// A Paste Insert that could not cut the tracks to make room (its
+    /// track locked): nothing was pasted, rather than an overwrite in its
+    /// place.
+    pub no_room: bool,
 }
 
 /// The track a copied clip goes on in `seq`: its own, when it is still a
@@ -124,10 +128,11 @@ pub fn paste(seq: &Sequence, cb: &ClipboardContent, at: Timecode, mode: PasteMod
             if span > Timecode::zero() {
                 let gap = Clip::gap(at, at + span);
                 let gap_id = gap.id;
-                if out.insert_edit(ti, gap, at).is_some() {
-                    out.tracks[ti].remove_clip(gap_id);
-                    touched.extend(out.tracks.iter().enumerate().filter(|(_, t)| !t.locked).map(|(i, _)| i));
+                if out.insert_edit(ti, gap, at).is_none() {
+                    return Pasted { sequence: seq.clone(), touched: BTreeSet::new(), ids: Vec::new(), skipped: 0, no_room: true };
                 }
+                out.tracks[ti].remove_clip(gap_id);
+                touched.extend(out.tracks.iter().enumerate().filter(|(_, t)| !t.locked).map(|(i, _)| i));
             }
         }
     }
@@ -176,7 +181,7 @@ pub fn paste(seq: &Sequence, cb: &ClipboardContent, at: Timecode, mode: PasteMod
         let Some(ti) = out.tracks.iter().position(|t| t.clips.iter().any(|c| c.id == a) && t.clips.iter().any(|c| c.id == b)) else { continue };
         out.tracks[ti].transitions.push(Transition { id: klipp_core::TransitionId::new(), clip_a_id: a, clip_b_id: b, ..*tr });
     }
-    Pasted { sequence: out, touched, ids, skipped }
+    Pasted { sequence: out, touched, ids, skipped, no_room: false }
 }
 
 /// The undo records that take `before` to `after` on the `touched` tracks.
@@ -292,6 +297,26 @@ mod tests {
         assert_eq!(at(a), Some(0.0));
         assert_eq!(p.sequence.all_clips().filter(|x| matches!(x.kind, ClipKind::Gap)).count(), 0, "the room left no gap clip behind");
         assert_eq!(at(p.ids[0]), Some(6.0));
+    }
+
+    /// #853 review: a Paste Insert goes only onto an unlocked track of its
+    /// kind; with none it pastes nothing. (`no_room` guards the insert
+    /// itself refusing, which the choice of an unlocked track rules out
+    /// today, so that it can never quietly become an overwrite.)
+    #[test]
+    fn a_paste_insert_needs_an_unlocked_track_of_its_kind() {
+        let (mut seq, [_, b, ..]) = timeline();
+        let cb = copy(&seq, &[b]).unwrap();
+        // V1 locked, A1 free: b's copy finds no unlocked picture track.
+        seq.tracks[0].locked = true;
+        let p = paste(&seq, &cb, tc(6.0), PasteMode::Insert);
+        assert!(p.ids.is_empty());
+        // A second picture track, unlocked, takes it, but a locked one in
+        // the insert's way is refused.
+        let mut v2 = klipp_timeline::Track::new("V2", TrackKind::Video);
+        v2.locked = false;
+        seq.tracks.push(v2);
+        assert!(!paste(&seq, &cb, tc(6.0), PasteMode::Insert).no_room, "an unlocked picture track takes the insert");
     }
 
     #[test]

@@ -7058,6 +7058,10 @@ impl KlippApp {
     fn paste_clipboard(&mut self, cb: &crate::clip_clipboard::ClipboardContent, at: klipp_core::Timecode, mode: crate::clip_clipboard::PasteMode, label: &'static str) {
         let before = self.state.sequence().clone();
         let pasted = crate::clip_clipboard::paste(&before, cb, at, mode);
+        if pasted.no_room {
+            self.state.toast.show(format!("{label}: could not open room at the playhead (is the track locked?); nothing was pasted"));
+            return;
+        }
         if pasted.ids.is_empty() {
             self.state.toast.show(format!("{label}: no track of the clips' kind to put them on"));
             return;
@@ -43038,7 +43042,6 @@ mod linked_clipboard_tests {
         at.clips = vec![a];
         seq.tracks = vec![vt, at];
 
-        let _ = &pool;
         let cb = crate::clip_clipboard::copy(&seq, &[vid]).expect("on the clipboard");
         assert_eq!(cb.clips.iter().map(|c| (c.clip.id, c.track)).collect::<Vec<_>>(), vec![(aid, 1), (vid, 0)], "both, each from its own track, in time order");
 
