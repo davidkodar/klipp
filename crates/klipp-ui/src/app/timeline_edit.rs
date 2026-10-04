@@ -203,6 +203,9 @@ impl KlippApp {
                             // Switch to nested sequence
                             self.state.active_sequence_idx = target_idx;
                             self.state.fps = self.state.sequences[target_idx].fps;
+                            // From its start: the parent's scroll left it
+                            // looking empty, scrolled past its end (#910).
+                            self.state.timeline_scroll_x = 0.0;
                             self.state.playhead = klipp_core::RationalTime::from_secs_f64(
                                 0.0, self.state.sequences[target_idx].fps.rate());
                             self.state.selected_clip = None;
@@ -219,6 +222,8 @@ impl KlippApp {
                             self.state.active_sequence_idx = parent_idx;
                             self.state.fps = self.state.sequences[parent_idx].fps;
                             self.state.playhead = parent_playhead;
+                            // The parent's playhead in view again.
+                            self.state.timeline_scroll_x = (parent_playhead.to_secs_f64() as f32 * self.state.timeline_zoom - 80.0).max(0.0);
                             self.state.selected_clip = None;
                             self.state.selected_clips.clear();
                             self.sync_sequence_to_engine();
