@@ -174,6 +174,10 @@ fn is_zero(v: &f32) -> bool {
     *v == 0.0
 }
 
+fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
+}
+
 fn default_shutter_samples() -> u8 {
     8
 }
@@ -1318,6 +1322,8 @@ impl Track {
             track_points: Vec::new(),
             surfaces: Vec::new(),
             surface_pin: None,
+            name: None,
+            colour_label: 0,
             precomp: None,
         });
         clip_id
@@ -1617,6 +1623,8 @@ impl Track {
             // The keys are in file time: each half keeps the track (#684).
             surfaces: clip.surfaces.clone(),
             surface_pin: clip.surface_pin,
+            name: clip.name.clone(),
+            colour_label: clip.colour_label,
             precomp: None,
         };
         let clip_b = Clip {
@@ -1688,6 +1696,8 @@ impl Track {
             track_points: Vec::new(),
             surfaces: clip.surfaces.clone(),
             surface_pin: clip.surface_pin,
+            name: clip.name.clone(),
+            colour_label: clip.colour_label,
             precomp: None,
         };
 
@@ -2250,6 +2260,15 @@ pub struct Clip {
     /// corner pin follows that surface.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface_pin: Option<crate::SurfacePin>,
+    /// The clip's own name on the timeline (#920). `None` shows its
+    /// media's name, as before; see [`Clip::label`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The clip's own colour label (#920), on the media pool's scale:
+    /// 0 none, then red, orange, yellow, green, blue and purple. 0 keeps
+    /// the colour the timeline gives it by track and role.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub colour_label: u8,
     /// A precomposition's scene, resolved for rendering: the inner
     /// sequence with its compounds flattened, its own precompositions
     /// resolved, and every clip re-identified for this instance. Set by
@@ -2257,6 +2276,15 @@ pub struct Clip {
     /// the `sequence_id` and nothing else.
     #[serde(skip)]
     pub precomp: Option<std::sync::Arc<Sequence>>,
+}
+
+/// A clip's own name and colour label (#920), as one value: what a
+/// rename or a recolour changes, and what undo puts back.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClipLabel {
+    pub name: Option<String>,
+    /// On the media pool's colour label scale; 0 is none.
+    pub colour: u8,
 }
 
 impl Clip {
@@ -2283,6 +2311,25 @@ impl Clip {
 
     pub fn duration(&self) -> Timecode {
         self.timeline_out - self.timeline_in
+    }
+
+    /// The clip's own name and colour label together (#920).
+    pub fn own_label(&self) -> ClipLabel {
+        ClipLabel { name: self.name.clone(), colour: self.colour_label }
+    }
+
+    pub fn set_own_label(&mut self, label: &ClipLabel) {
+        self.name = label.name.clone();
+        self.colour_label = label.colour;
+    }
+
+    /// What the clip is called on the timeline (#920): its own name when
+    /// it has one, otherwise `fallback`, its media's name.
+    pub fn label<'a>(&'a self, fallback: &'a str) -> &'a str {
+        match self.name.as_deref() {
+            Some(name) if !name.trim().is_empty() => name,
+            _ => fallback,
+        }
     }
 
     pub fn source_duration(&self) -> Timecode {
@@ -2620,6 +2667,8 @@ impl Clip {
             track_points: Vec::new(),
             surfaces: Vec::new(),
             surface_pin: None,
+            name: None,
+            colour_label: 0,
             precomp: None,
         }
     }
@@ -2731,6 +2780,8 @@ impl Clip {
             track_points: Vec::new(),
             surfaces: Vec::new(),
             surface_pin: None,
+            name: None,
+            colour_label: 0,
             precomp: None,
         }
     }
@@ -2831,6 +2882,8 @@ impl Clip {
             track_points: Vec::new(),
             surfaces: Vec::new(),
             surface_pin: None,
+            name: None,
+            colour_label: 0,
             precomp: None,
         }
     }

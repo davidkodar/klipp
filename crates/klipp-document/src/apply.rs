@@ -145,6 +145,14 @@ impl DocumentView<'_> {
                     }
                 }
             }
+            EditCommand::SetClipLabels { changes, .. } => {
+                let seq = &mut self.sequences[self.active];
+                for (clip_id, old, _) in changes {
+                    if let Some(c) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
+                        c.set_own_label(old);
+                    }
+                }
+            }
             EditCommand::SetSequenceFormat { old, .. } => {
                 let seq = &mut self.sequences[self.active];
                 seq.resolution = old.0;
@@ -807,6 +815,14 @@ impl DocumentView<'_> {
                 for (clip_id, _, new) in changes {
                     if let Some(c) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
                         c.grade_group = *new;
+                    }
+                }
+            }
+            EditCommand::SetClipLabels { changes, .. } => {
+                let seq = &mut self.sequences[self.active];
+                for (clip_id, _, new) in changes {
+                    if let Some(c) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
+                        c.set_own_label(new);
                     }
                 }
             }
@@ -1477,6 +1493,28 @@ mod grade_group_tests {
 
     /// #237: making a group, putting a clip in it, and grading its
     /// post-clip stage under the stage's editing id each undo and redo.
+    #[test]
+    fn a_clips_name_and_colour_undo_and_redo() {
+        let mut seq = Sequence::new_default();
+        let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), Timecode::zero(), Timecode { value: 24, rate: 24 }, Timecode::zero(), Timecode { value: 24, rate: 24 });
+        let clip_id = clip.id;
+        seq.tracks[0].clips.push(clip);
+        let mut sequences = vec![seq];
+        let mut pool = MediaPool::new();
+        let mut fps = sequences[0].fps;
+        let mut view = DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+
+        let named = klipp_timeline::ClipLabel { name: Some("Wide, take 3".into()), colour: 4 };
+        let edit = EditCommand::SetClipLabels { description: "Rename Clip", changes: vec![(clip_id, klipp_timeline::ClipLabel::default(), named.clone())] };
+        let label = |view: &DocumentView| view.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap().own_label();
+        view.apply_forward(&edit);
+        assert_eq!(label(&view), named);
+        assert_eq!(view.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap().label("a.mov"), "Wide, take 3");
+        view.apply_inverse(&edit);
+        assert_eq!(label(&view), klipp_timeline::ClipLabel::default());
+        assert_eq!(view.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap().label("a.mov"), "a.mov", "with no name of its own it shows its media's");
+    }
+
     #[test]
     fn a_grade_group_and_its_grades_undo_and_redo() {
         let mut seq = Sequence::new_default();

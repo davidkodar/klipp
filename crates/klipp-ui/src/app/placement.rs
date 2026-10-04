@@ -522,6 +522,8 @@ impl KlippApp {
                 // A piece of the clip keeps its track (#684).
                 surfaces: clip.surfaces.clone(),
                 surface_pin: clip.surface_pin,
+                name: clip.name.clone(),
+                colour_label: clip.colour_label,
                 precomp: None,
             };
             track.clips.insert(i + 1, right_clip);
@@ -662,6 +664,8 @@ impl KlippApp {
                 // A piece of the clip keeps its track (#684).
                 surfaces: clip.surfaces.clone(),
                 surface_pin: clip.surface_pin,
+                name: clip.name.clone(),
+                colour_label: clip.colour_label,
                 precomp: None,
             };
             track.clips.insert(i + 1, right_clip);

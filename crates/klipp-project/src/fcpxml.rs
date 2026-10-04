@@ -689,6 +689,8 @@ mod tests {
             track_points: Vec::new(),
             surfaces: Vec::new(),
             surface_pin: None,
+            name: None,
+            colour_label: 0,
             precomp: None,
         }
     }

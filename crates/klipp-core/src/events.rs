@@ -2771,6 +2771,13 @@ pub enum AppCommand {
     /// How far back a clip sits for the sequence camera (`Clip::depth`).
     /// Undoable; a drag of the value is one undo step.
     SetClipDepth { clip_id: ClipId, depth: f32 },
+    /// Clips given their own name on the timeline (#920); `None` or a
+    /// blank name gives back their media's. One undo step.
+    RenameClips { clip_ids: Vec<ClipId>, name: Option<String> },
+    /// Clips given their own colour label (#920), on the media pool's
+    /// scale (0 none, then red, orange, yellow, green, blue, purple).
+    /// One undo step.
+    SetClipColourLabels { clip_ids: Vec<ClipId>, label: u8 },
     /// A new grade group named `name`, with `clip_ids` in it (#237). One
     /// undo step.
     CreateGradeGroup { name: String, clip_ids: Vec<ClipId> },

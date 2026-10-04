@@ -285,6 +285,8 @@ impl KlippApp {
                     track_points: Vec::new(),
                     surfaces: Vec::new(),
                     surface_pin: None,
+                    name: None,
+                    colour_label: 0,
                     precomp: None,
                 };
                 let clip_id = clip.id;
@@ -650,6 +652,8 @@ impl KlippApp {
             track_points: Vec::new(),
             surfaces: Vec::new(),
             surface_pin: None,
+            name: None,
+            colour_label: 0,
             precomp: None,
         };
         self.state.sequences[seq_idx].tracks[track_idx]

@@ -1139,6 +1139,17 @@ pub enum Op {
         clip_id: ClipRef,
         depth: f32,
     },
+    /// A clip's own name and colour on the timeline (#920): `name` is
+    /// what the timeline shows in place of its media's (blank gives the
+    /// media's back), `colour` one of none, red, orange, yellow, green,
+    /// blue or purple. Give one or both.
+    Label {
+        clip_id: ClipRef,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        colour: Option<String>,
+    },
     /// Motion blur on everything that moves: `shutter_deg` is how long
     /// the shutter stays open as a share of a frame (180 is the film
     /// look, 360 a full frame, 0 off), `samples` how many instants across
@@ -1157,7 +1168,7 @@ pub const OP_NAMES: &[&str] = &[
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
     "slip", "slide", "pin", "role", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "highlight",
     "ramp", "grade_group", "remove_grade_group", "look", "qualify", "retime", "replace", "track_audio", "clean_audio",
-    "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "motion_blur",
+    "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
 ];
 
 /// A drop shadow behind a title's text, what keeps bright words
@@ -1931,7 +1942,8 @@ fn folded_names(names: impl Iterator<Item = String>) -> String {
 }
 
 fn clip_name(seq: &Sequence, pool: &MediaPool, clip: &Clip) -> String {
-    match &clip.kind {
+    let own = clip.name.as_deref().filter(|n| !n.trim().is_empty()).map(|n| format!("\"{n}\""));
+    own.unwrap_or_else(|| match &clip.kind {
         ClipKind::Media { media_id } => pool.get(media_id).map(|m| short_name(&m.filename)).unwrap_or_else(|| "media".into()),
         ClipKind::Title(td) => format!("title \"{}\"", td.text().lines().next().unwrap_or("").chars().take(24).collect::<String>()),
         ClipKind::Generator(_) => "generator".into(),
@@ -1940,8 +1952,7 @@ fn clip_name(seq: &Sequence, pool: &MediaPool, clip: &Clip) -> String {
         ClipKind::Sequence { .. } => "nested sequence".into(),
         ClipKind::Precomposition { .. } => "precomposition".into(),
         ClipKind::TemplatePrecomposition { .. } => "template precomposition".into(),
-    }
-    .to_string()
+    })
         + &seq.tracks.iter().enumerate().find(|(_, t)| t.clips.iter().any(|c| c.id == clip.id)).map(|(i, _)| format!(" on track {i}")).unwrap_or_default()
 }
 
@@ -2913,6 +2924,36 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             }
             let where_ = if *depth == 0.0 { "on the screen, out of the camera's reach".to_string() } else { format!("at depth {depth:.2}") };
             Ok((format!("{} sits {where_}", clip_name(seq, pool, clip)), EditCommand::SetClipDepth { clip_id: clip.id, old: clip.depth, new: *depth }, vec![clip.id]))
+        }
+        Op::Label { clip_id, name, colour } => {
+            let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            if name.is_none() && colour.is_none() {
+                return Err(refuse(i, "a label with neither name nor colour", "give name, colour or both"));
+            }
+            let old = clip.own_label();
+            let mut new = old.clone();
+            if let Some(name) = name {
+                new.name = Some(name.trim().to_string()).filter(|n| !n.is_empty());
+            }
+            if let Some(colour) = colour {
+                let wanted = colour.trim().to_lowercase();
+                let Some(label) = klipp_media::ColorLabel::ALL.into_iter().find(|l| l.label().to_lowercase() == wanted) else {
+                    return Err(refuse(i, format!("the colour \"{colour}\""), "give none, red, orange, yellow, green, blue or purple"));
+                };
+                new.colour = label.to_u8();
+            }
+            if new == old {
+                return Err(refuse(i, format!("{} is already labelled so", clip_name(seq, pool, clip)), "give another name or colour"));
+            }
+            let before = clip_name(seq, pool, clip);
+            let mut said = Vec::new();
+            if new.name != old.name {
+                said.push(match &new.name { Some(n) => format!("named \"{n}\""), None => "back to its media's name".to_string() });
+            }
+            if new.colour != old.colour {
+                said.push(format!("coloured {}", klipp_media::ColorLabel::from_u8(new.colour).label().to_lowercase()));
+            }
+            Ok((format!("{before} {}", said.join(" and ")), EditCommand::SetClipLabels { description: "Label Clip", changes: vec![(clip.id, old, new)] }, vec![clip.id]))
         }
         Op::Crop { clip_id, left, right, top, bottom } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -9050,6 +9091,32 @@ mod tests {
         assert!(bad(-1.0).why.contains("depth"));
         let plan = resolve(&seq, &pool, &[Op::Depth { clip_id: ClipRef::Id(a), depth: 0.0 }]).unwrap();
         assert!(plan.steps[0].what.contains("on the screen"), "{}", plan.steps[0].what);
+    }
+
+    #[test]
+    fn a_label_names_and_colours_a_clip_as_the_tools_send_it() {
+        let (seq, pool, _media, a, _) = fixture();
+        let ops: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"label","clip_id":"{}","name":" Wide, take 3 ","colour":"Green"}}]"#, a.0)).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        assert!(plan.steps[0].what.contains("named \"Wide, take 3\" and coloured green"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let clip = &view.sequences[0].tracks[0].clips[0];
+        assert_eq!((clip.name.as_deref(), clip.colour_label), (Some("Wide, take 3"), 4));
+        // Described by its own name from then on.
+        let named = view.sequences[0].clone();
+        let again = resolve(&named, &pool, &[Op::Label { clip_id: ClipRef::Id(a), name: Some(String::new()), colour: None }]).unwrap();
+        assert!(again.steps[0].what.starts_with("\"Wide, take 3\"") && again.steps[0].what.contains("back to its media's name"), "{}", again.steps[0].what);
+        view.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(view.sequences[0].tracks[0].clips[0].own_label(), klipp_timeline::ClipLabel::default());
+
+        let bad = |name: Option<&str>, colour: Option<&str>| resolve(&seq, &pool, &[Op::Label { clip_id: ClipRef::Id(a), name: name.map(str::to_string), colour: colour.map(str::to_string) }]).unwrap_err();
+        assert!(bad(None, None).why.contains("neither"));
+        assert!(bad(None, Some("teal")).why.contains("teal"));
+        assert!(bad(Some(""), Some("none")).why.contains("already"));
     }
 
     #[test]

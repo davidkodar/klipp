@@ -31,6 +31,31 @@ impl KlippApp {
         false
     }
 
+    /// Each of `clip_ids` given the name and colour `change` makes of its
+    /// own (#920), as one undo step named `description`. Clips it leaves
+    /// as they were are not in the step, and nothing is pushed when none
+    /// changes.
+    pub(super) fn set_clip_labels(&mut self, clip_ids: &[klipp_core::ClipId], description: &'static str, change: impl Fn(&klipp_timeline::ClipLabel) -> klipp_timeline::ClipLabel) {
+        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let mut changes = Vec::new();
+        for clip in seq.all_clips_mut().filter(|c| clip_ids.contains(&c.id)) {
+            let old = clip.own_label();
+            let new = change(&old);
+            if new != old {
+                clip.set_own_label(&new);
+                changes.push((clip.id, old, new));
+            }
+        }
+        if changes.is_empty() {
+            return;
+        }
+        self.state.active_history_mut().push(crate::history::HistoryEntry {
+            command: crate::history::EditCommand::SetClipLabels { description, changes },
+        });
+        self.sync_sequence_to_engine();
+        self.state.dirty = true;
+    }
+
     fn handle_clip_basic_ops(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
                 // LoadMediaFile, ImportMedia, AppendClip, AppendClipToTrack,
@@ -588,6 +613,16 @@ impl KlippApp {
                     }
                     true
                 }
+                AppCommand::RenameClips { clip_ids, name } => {
+                    let name = name.as_deref().map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
+                    self.set_clip_labels(clip_ids, "Rename Clip", |label| klipp_timeline::ClipLabel { name: name.clone(), ..label.clone() });
+                    true
+                }
+                AppCommand::SetClipColourLabels { clip_ids, label: colour } => {
+                    let colour = if klipp_media::ColorLabel::from_u8(*colour).to_u8() == *colour { *colour } else { 0 };
+                    self.set_clip_labels(clip_ids, "Clip Colour", |label| klipp_timeline::ClipLabel { colour, ..label.clone() });
+                    true
+                }
                 AppCommand::SetClipRole { clip_id, role } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -813,6 +848,8 @@ impl KlippApp {
                             track_points: Vec::new(),
                             surfaces: clip.surfaces.clone(),
                             surface_pin: clip.surface_pin,
+                            name: clip.name.clone(),
+                            colour_label: clip.colour_label,
                             precomp: None,
                         };
                         let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[track_index];

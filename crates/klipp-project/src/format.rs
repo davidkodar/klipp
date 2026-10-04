@@ -144,6 +144,7 @@ pub struct SequenceJson {
 fn default_header_width() -> f32 { 160.0 }
 fn default_lut_opacity() -> f32 { 1.0 }
 fn default_true() -> bool { true }
+fn is_zero_u8(v: &u8) -> bool { *v == 0 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimecodeJson {
@@ -407,6 +408,11 @@ pub struct ClipJson {
     pub surfaces: Vec<klipp_timeline::Surface>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface_pin: Option<klipp_timeline::SurfacePin>,
+    /// The clip's own name and colour label (#920).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub colour_label: u8,
 }
 
 /// Wire-format mirror of [`klipp_timeline::MatteBinding`]. The clip-id is
@@ -1050,6 +1056,8 @@ mod tests {
             track_points: vec![],
             surfaces: Vec::new(),
             surface_pin: None,
+            name: None,
+            colour_label: 0,
         };
 
         let serialised = serde_json::to_string(&clip).expect("serialise clip");
@@ -1120,6 +1128,8 @@ mod tests {
             track_points: vec![],
             surfaces: Vec::new(),
             surface_pin: None,
+            name: None,
+            colour_label: 0,
         };
         let serialised = serde_json::to_string(&clip).expect("serialise");
         assert!(!serialised.contains("audio_effect_keyframes"),
@@ -1293,6 +1303,8 @@ mod tests {
             track_points: vec![],
             surfaces: Vec::new(),
             surface_pin: None,
+            name: None,
+            colour_label: 0,
         }
     }
 
