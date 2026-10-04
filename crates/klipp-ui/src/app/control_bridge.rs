@@ -1,0 +1,334 @@
+//! The control socket's side of the app: commands taken from its inbox, the
+//! document ops and edit plans it asks for, and what the app publishes back
+//! (transport, viewer comparison, window captures, analysis markers) (#826).
+
+use super::*;
+
+impl KlippApp {
+    /// Route queued control-socket commands through `send_commands`, the
+    /// same entry point the UI's own widgets use.
+    ///
+    /// A remote client cannot see or answer a modal, so control commands
+    /// never open one: the frame-rate mismatch prompt is suppressed and the
+    /// append goes ahead without changing the project frame rate — the
+    /// prompt's non-destructive choice. (Before this, an MCP append of a
+    /// clip at another frame rate was reported as accepted, then sat behind
+    /// a dialog on the user's screen and never happened.) One command at a
+    /// time, because the append handler consumes the suppression, and the
+    /// flag is cleared afterwards so it cannot leak into the user's next
+    /// drag-and-drop.
+    pub(super) fn drain_control_inbox(&mut self) {
+        let Some(inbox) = self.control_inbox.as_ref() else { return };
+        let envelopes: Vec<klipp_document::control::ControlEnvelope> = inbox.try_iter().collect();
+        for env in envelopes {
+            let mut refused = None;
+            // Whether the project was already unsaved: the reply names
+            // "edits" as the cause only when this envelope made it so. A
+            // play or a seek over a project unsaved for another reason
+            // (analysis markers arriving) used to relabel it as edits.
+            let was_dirty = self.state.dirty;
+            // A resolved plan: its commands forward, in order, as one
+            // history entry — unless the document moved since it was
+            // resolved, in which case it was made for a document that no
+            // longer exists and nothing of it is applied.
+            if !env.edits.is_empty() {
+                let now = self.state.control_shared.revision();
+                let project_identity = self.state.control_shared.project.lock().ok().map(|p| p.identity);
+                if let Some(want) = env.expected_project_identity {
+                    if project_identity != Some(want) {
+                        refused = Some(format!("the project changed since this plan was made (expected identity {want}, current identity {}); plan again", project_identity.map_or_else(|| "unavailable".into(), |id| id.to_string())));
+                    }
+                }
+                if refused.is_none() {
+                    if let Some(r) = env.expected_revision {
+                        if r != now {
+                            refused = Some(format!("the document is at revision {now}, the plan was made at {r}; plan again"));
+                        }
+                    }
+                }
+                if refused.is_none() {
+                    self.apply_edits_as_one(&env.edits, env.label.as_deref().unwrap_or("Socket Edits"));
+                    // A plan proposed for the person's approval opens
+                    // where they can read it.
+                    if env.edits.iter().any(|e| matches!(e, EditCommand::SetEditPlan { new: Some(p), .. } if !p.approved)) {
+                        self.state.show_edit_plan = true;
+                        self.state.edit_plan_note = None;
+                    }
+                }
+            }
+            let mut sought = None;
+            if refused.is_none() && !env.commands.is_empty() {
+                sought = last_seek(&env.commands);
+                self.suppress_fps_prompt = true;
+                let touches_params = env.commands.iter().any(|c| matches!(c, AppCommand::SetNodeParam { .. }));
+                let cmds = expand_control_commands(env.commands, env.batch);
+                self.send_commands(cmds);
+                self.suppress_fps_prompt = false;
+                // A parameter write reaches the engine through a queue it
+                // drains on its next frame; the socket's reads look at the
+                // engine's sequence. Push the mirror now, so what the client
+                // reads after the acknowledgement is what it wrote.
+                if touches_params {
+                    self.sync_sequence_to_engine();
+                }
+            }
+            if let Some(ack) = env.ack {
+                // The project's state as of this write, for a status read
+                // straight after it: the per-frame mirror had not run yet,
+                // and the project read as saved a moment after an edit.
+                if let Ok(mut project) = self.state.control_shared.project.lock() {
+                    project.path = self.state.project_path.clone();
+                    project.dirty = self.state.dirty;
+                    project.undo = self.state.active_history().undo_label().map(str::to_owned);
+                    project.redo = self.state.active_history().redo_label().map(str::to_owned);
+                    if self.state.dirty && !was_dirty && refused.is_none() {
+                        project.changed_by = Some("edits".into());
+                    }
+                }
+                // The playhead too. A seek goes on to the engine, and the
+                // UI's playhead follows only when the engine reports back,
+                // so a frame read straight after an acknowledged seek held
+                // the position from before it and put the playhead back
+                // there. What this envelope sought is where the user is.
+                self.publish_transport(sought);
+                let _ = ack.send(klipp_document::control::ControlAck { revision: self.state.control_shared.revision(), refused });
+            }
+        }
+    }
+
+    /// Resolve and apply the document ops panels asked for, each request
+    /// one undo step. A refusal says why in a toast; a request of
+    /// independent ops applies the ones that resolve and names the rest.
+    pub(super) fn run_pending_doc_ops(&mut self) {
+        use klipp_document::ops::{self, Anchor, Op, Refusal, RefusalCode};
+        for crate::state::DocOpsRequest { label, ops, independent } in std::mem::take(&mut self.state.pending_doc_ops) {
+            self.transcript_source.sync(self.state.analysis_generation);
+            let seq = &self.state.sequences[self.state.active_sequence_idx];
+            let resolved = if independent {
+                Ok(ops::resolve_each_with(seq, &self.state.media_pool, &ops, &self.transcript_source))
+            } else {
+                ops::resolve_with(seq, &self.state.media_pool, &ops, &self.transcript_source).map(|plan| (plan, Vec::new()))
+            };
+            // A refusal, as the person at the keyboard reads it: where, and
+            // why. The document's hints are written for whoever asked, the
+            // assistant included; the one a person meets from the captions
+            // form is said in the form's own words: tick Replace when it is
+            // not ticked, and when it is, the captions in the way lie
+            // outside the range, so widen it.
+            let said = |r: &Refusal| {
+                let hint = if r.hint.is_empty() { String::new() } else { format!(" \u{2014} {}", r.hint) };
+                match ops.get(r.step) {
+                    Some(Op::Cut { from: Anchor::Secs(a), to: Anchor::Secs(b) }) => format!("{a:.2}-{b:.2} s: {}{hint}", r.why),
+                    Some(Op::Captions { replace: false, .. }) if r.code == Some(RefusalCode::CaptionsOverlap) => "Captions already exist in that range; tick Replace to overwrite them".to_string(),
+                    Some(Op::Captions { replace: true, .. }) if r.code == Some(RefusalCode::CaptionsOverlap) => format!("{}; widen the range to take those in, or choose another track", r.why),
+                    _ => format!("{}{hint}", r.why),
+                }
+            };
+            // A sweep's label counts what was done, not what was asked.
+            let label_for = |n: usize| label.replace("{n}", &n.to_string());
+            match resolved {
+                Ok((plan, refused)) if !plan.steps.is_empty() => {
+                    let label = label_for(plan.steps.len());
+                    let edits: Vec<EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+                    self.apply_edits_as_one(&edits, &label);
+                    let what: Vec<&str> = plan.steps.iter().map(|s| s.what.as_str()).collect();
+                    let mut toast = format!("{label}: {}", what.join("; "));
+                    if !refused.is_empty() {
+                        let why: Vec<String> = refused.iter().map(said).collect();
+                        toast.push_str(&format!("; {} not done: {}", refused.len(), why.join("; ")));
+                    }
+                    self.state.toast.show(toast);
+                }
+                Ok((_, refused)) => {
+                    let why: Vec<String> = refused.iter().map(said).collect();
+                    self.state.toast.show(format!("{}: not done, {}", label_for(ops.len()), why.join("; ")));
+                }
+                Err(r) => self.state.toast.show(format!("{}: not done, {}", label_for(ops.len()), said(&r))),
+            }
+        }
+    }
+
+    /// What the Edit Plan window asked for: approval recorded, the plan
+    /// built after what is down, or the plan discarded — each one undo step.
+    pub(super) fn act_on_edit_plan(&mut self, action: crate::panels::edit_plan::PlanAction) {
+        use crate::panels::edit_plan::PlanAction;
+        let Some(plan) = self.state.sequence().edit_plan.clone() else { return };
+        match action {
+            PlanAction::None => {}
+            PlanAction::Approve => {
+                let mut approved = plan.clone();
+                approved.approved = true;
+                self.apply_edits_as_one(&[EditCommand::SetEditPlan { old: Some(Box::new(plan)), new: Some(Box::new(approved)) }], "Approve Edit Plan");
+                self.state.edit_plan_note = Some("Approved. Build places it after whatever is on the timeline.".into());
+            }
+            PlanAction::Discard => {
+                self.apply_edits_as_one(&[EditCommand::SetEditPlan { old: Some(Box::new(plan)), new: None }], "Discard Edit Plan");
+                self.state.edit_plan_note = None;
+            }
+            PlanAction::Build => {
+                if !plan.approved {
+                    self.state.edit_plan_note = Some("Approve the plan first.".into());
+                    return;
+                }
+                let (edits, summary) = {
+                    let seq = self.state.sequence();
+                    let pool = &self.state.media_pool;
+                    if let Err(e) = klipp_document::edit_plan::validate(&plan, pool, seq.brief.as_ref()) {
+                        self.state.edit_plan_note = Some(format!("The plan no longer builds: {e}"));
+                        return;
+                    }
+                    let ops = klipp_document::edit_plan::to_ops(&plan, seq, pool, seq.brief.as_ref());
+                    match klipp_document::ops::resolve_with(seq, pool, &ops, &klipp_document::ops::NoTranscripts) {
+                        Ok(resolved) => {
+                            let edits: Vec<EditCommand> = resolved.steps.iter().map(|s| s.edit.clone()).collect();
+                            (edits, format!("Built: {} steps, the timeline now runs {:.1} s.", resolved.steps.len(), resolved.duration_secs))
+                        }
+                        Err(r) => {
+                            self.state.edit_plan_note = Some(format!("Step {} could not be built: {}. {}", r.step + 1, r.why, r.hint));
+                            return;
+                        }
+                    }
+                };
+                self.apply_edits_as_one(&edits, "Build Edit Plan");
+                self.state.edit_plan_note = Some(summary);
+            }
+        }
+    }
+
+    /// Share the document revision and the render queue's state with the
+    /// control socket.
+    /// Tell control-socket clients which compare the viewer is showing:
+    /// the frame they read is the whole graded picture, and the person is
+    /// looking at a split of it.
+    pub(super) fn publish_viewer_compare(&self) {
+        let s = &self.state;
+        let still = s.grade_still_compare.then(|| s.active_grade_still.and_then(|i| s.grade_stills.get(i))).flatten();
+        let pct = (s.split_position * 100.0).round();
+        let compare = if let Some(still) = still {
+            Some(format!("grade still split: left {pct}% shows the still \"{}\", right shows the graded frame", still.name))
+        } else if s.before_after_active {
+            Some(format!("before/after split: left {pct}% shows the frame ungraded, right graded"))
+        } else if s.stabilization_compare_active {
+            Some(format!("stabilisation split: left {pct}% unstabilised"))
+        } else if s.split_compare_effect.is_some() {
+            Some(format!("effect split: left {pct}% with the effect toggled"))
+        } else {
+            None
+        };
+        if let Ok(mut shown) = s.control_shared.viewer_compare.lock() {
+            if *shown != compare {
+                *shown = compare;
+            }
+        }
+    }
+
+    pub fn set_control_shared(&mut self, shared: std::sync::Arc<klipp_core::ControlShared>) {
+        self.state.control_shared = std::sync::Arc::clone(&shared);
+        // Histories made before this arrived point at the default counter.
+        for h in self.state.command_histories.values_mut() {
+            h.set_revision_shared(std::sync::Arc::clone(&shared));
+        }
+    }
+
+    /// Analysis that finished since the last frame, put on its media
+    /// items as markers: a cut between shots, a stretch of silence.
+    /// The item's analysis markers are replaced whole, and the editor's
+    /// own are not touched.
+    pub(super) fn apply_analysis_markers(&mut self) {
+        let done = klipp_analysis::service::take_completed();
+        if done.is_empty() {
+            return;
+        }
+        let mut changed = false;
+        for id in done {
+            let Some(item) = self.state.media_pool.get_mut(&id) else { continue };
+            let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
+            if report.is_empty() {
+                continue;
+            }
+            let before = item.markers.clone();
+            item.markers.retain(|m| m.kind != klipp_core::MediaMarkerKind::Analysis);
+            if let Some(shots) = &report.shots {
+                for b in &shots.boundaries {
+                    item.markers.push(klipp_core::MediaMarker { secs: *b, duration_secs: 0.0, name: "cut".into(), kind: klipp_core::MediaMarkerKind::Analysis });
+                }
+            }
+            if let Some(audio) = &report.audio {
+                for sp in audio.silences.iter().filter(|s| s.end_secs - s.start_secs >= 0.8) {
+                    let mut m = klipp_core::MediaMarker::range(klipp_core::MediaMarkerKind::Analysis, sp.start_secs, sp.end_secs);
+                    m.name = "silence".into();
+                    item.markers.push(m);
+                }
+            }
+            item.markers.sort_by(|a, b| a.secs.total_cmp(&b.secs));
+            // The same markers again are no change: a project opened with
+            // its analysis already cached came up with unsaved changes,
+            // and asked to be saved before it could be closed.
+            changed |= item.markers != before;
+            // What the screen showed, each line once, for the pool's
+            // search, its Screen text column and smart-bin rules.
+            let digest = report.screentext.as_ref().map(screen_text_digest).unwrap_or_default();
+            if item.screen_text != digest {
+                item.screen_text = digest;
+                changed = true;
+            }
+            self.state.analysis_generation += 1;
+        }
+        if changed {
+            self.state.dirty = true;
+            // Said to the socket: a project saved a moment ago reads as
+            // unsaved with no edit made, and an agent wondered what it did.
+            if let Ok(mut project) = self.state.control_shared.project.lock() {
+                project.dirty = true;
+                project.changed_by = Some("analysis markers arriving on media items".into());
+            }
+            self.sync_media_pool_to_engine();
+        }
+    }
+
+    /// A whole-window capture: ask egui for the next frame's picture,
+    /// then write it where it was asked for, scaled down to `max_width`.
+    /// The image is the window as drawn: the viewer through its monitor
+    /// LUT and overlays, so not a frame to measure colour from.
+    pub(super) fn serve_window_capture(&mut self, ctx: &egui::Context) {
+        let Some((path, max_width, asked)) = self.state.window_capture.clone() else { return };
+        if !asked {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
+            ctx.request_repaint();
+            self.state.window_capture = Some((path, max_width, true));
+            return;
+        }
+        let shot = ctx.input(|i| {
+            i.raw.events.iter().find_map(|e| match e {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        let Some(image) = shot else {
+            ctx.request_repaint();
+            return;
+        };
+        self.state.window_capture = None;
+        let [w, h] = image.size;
+        let rgba: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
+        let Some(mut img) = image::RgbaImage::from_raw(w as u32, h as u32, rgba) else { return };
+        if let Some(mw) = max_width.filter(|mw| *mw > 0 && (*mw as usize) < w) {
+            let nh = ((h as f64) * mw as f64 / w as f64).round().max(1.0) as u32;
+            img = image::imageops::resize(&img, mw, nh, image::imageops::FilterType::Triangle);
+        }
+        if let Err(e) = img.save(&path) {
+            tracing::warn!("window capture to {}: {e}", path.display());
+        }
+    }
+
+    /// Where the user's playhead is, for the control socket: a frame
+    /// read puts the playhead back here when it is done.
+    pub(super) fn publish_transport(&self, sought: Option<klipp_core::Timecode>) {
+        if let Ok(mut transport) = self.state.control_shared.transport.lock() {
+            *transport = klipp_core::TransportStatus {
+                playhead: Some(sought.unwrap_or(self.state.playhead)),
+                playing: self.state.playback == PlaybackState::Playing,
+            };
+        }
+    }
+}

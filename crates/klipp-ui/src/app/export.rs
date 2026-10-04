@@ -2436,3 +2436,141 @@ mod export_rule_tests {
         assert!(segment_outputs(&segments[..1], Path::new("/out/film"))[0].0.to_string_lossy().ends_with(".mp4"));
     }
 }
+
+impl KlippApp {
+    pub(super) fn poll_render_queue(&mut self) {
+        // #62: propagate the user's parallel-jobs pref into the queue each
+        // frame. Pref is read at job-start time, so live updates just apply
+        // on the next spawn without disturbing in-flight jobs.
+        self.state.render_queue.max_parallel =
+            self.prefs.export.parallel_render_jobs.max(1);
+        let events = self.state.render_queue.poll();
+        // The project as the control socket sees it.
+        if let Ok(mut project) = self.state.control_shared.project.lock() {
+            project.path = self.state.project_path.clone();
+            project.dirty = self.state.dirty;
+            project.undo = self.state.active_history().undo_label().map(str::to_owned);
+            project.redo = self.state.active_history().redo_label().map(str::to_owned);
+        }
+        // And where the user is, so a frame read can put the playhead back.
+        // Not while a seek is on its way: the playhead has not reached it
+        // yet, and this would publish where it was before.
+        if !self.state.awaiting_seek_frame {
+            self.publish_transport(None);
+        }
+        // The queue as the control socket sees it, refreshed every frame
+        // the queue is polled; cheap, the queue is short.
+        if let Ok(mut exports) = self.state.control_shared.exports.lock() {
+            exports.clear();
+            exports.extend(self.state.render_queue.jobs.iter().map(|j| klipp_core::ExportStatus {
+                job_id: j.id.to_string(),
+                path: j.output_path.clone(),
+                status: match j.status {
+                    klipp_export::RenderJobStatus::Queued => "queued",
+                    klipp_export::RenderJobStatus::Rendering => "rendering",
+                    klipp_export::RenderJobStatus::Complete => "complete",
+                    klipp_export::RenderJobStatus::Failed => "failed",
+                    klipp_export::RenderJobStatus::Cancelled => "cancelled",
+                }
+                .to_string(),
+                progress: j.progress,
+                frames_done: j.frames_done,
+                total_frames: j.total_frames,
+                stage: j.render_stage.clone(),
+                error: j.error.clone(),
+                loudness: j.loudness_result.clone(),
+                hardware: j.hw_info.clone(),
+                fps: j.started_at.map(|t| t.elapsed().as_secs_f32()).filter(|s| *s > 2.0 && j.frames_done > 0).map(|s| j.frames_done as f32 / s),
+                eta_secs: j.started_at
+                    .map(|t| t.elapsed().as_secs_f32())
+                    .filter(|s| *s > 2.0 && j.frames_done > 0 && j.status == klipp_export::RenderJobStatus::Rendering)
+                    .map(|s| ((j.total_frames.saturating_sub(j.frames_done)) as f32 * s / j.frames_done as f32) as u64),
+                projected_bytes: j.projected_bytes(),
+            }));
+        }
+        for event in events {
+            match event {
+                klipp_export::RenderQueueEvent::Complete { id, output_path } => {
+                    tracing::info!("Render job {} complete: {}", id, output_path.display());
+                    // #63 Tier-1: open output folder if the pref is enabled.
+                    if self.prefs.export.open_folder_after_export {
+                        if let Some(parent) = output_path.parent() {
+                            if let Err(e) = std::process::Command::new("xdg-open")
+                                .arg(parent)
+                                .spawn()
+                            {
+                                tracing::warn!(
+                                    "open_folder_after_export: xdg-open failed for {}: {}",
+                                    parent.display(),
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    // F-163: run post-export shell command with {file}/{dir}
+                    // substitution. Previously fire-and-forget — spawn()
+                    // returned immediately and any command failure was
+                    // invisible. Now we pipe stdout + stderr, wait for
+                    // the process in a detached thread, and log the exit
+                    // code plus a tail of stderr on non-zero exit so
+                    // users can diagnose a broken hook instead of
+                    // wondering why the file never appeared on their
+                    // rsync target.
+                    // The paths go in environment variables, never into
+                    // the command's text (#820, crate::export_hook).
+                    if let Some(mut hook) = crate::export_hook::command(&self.prefs.export.post_export_command, &output_path) {
+                        let cmd = format!("{} (file {})", self.prefs.export.post_export_command.trim(), output_path.display());
+                        match hook
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .spawn()
+                        {
+                            Ok(child) => {
+                                tracing::info!("post_export_command launched: {cmd}");
+                                // Reap the process off the UI thread so
+                                // a long-running hook doesn't block the
+                                // event loop; the exit code is logged
+                                // when it terminates.
+                                let cmd_for_log = cmd.clone();
+                                std::thread::spawn(move || {
+                                    match child.wait_with_output() {
+                                        Ok(out) if out.status.success() => {
+                                            tracing::info!(
+                                                "post_export_command completed (exit 0): {cmd_for_log}"
+                                            );
+                                        }
+                                        Ok(out) => {
+                                            // Trim stderr to a sane tail — a
+                                            // verbose tool could dump MB of
+                                            // text to the log otherwise.
+                                            let stderr = String::from_utf8_lossy(&out.stderr);
+                                            let tail: String = stderr.lines().rev().take(10)
+                                                .collect::<Vec<_>>().into_iter().rev()
+                                                .collect::<Vec<_>>().join("\n");
+                                            tracing::warn!(
+                                                "post_export_command exited with {} ({cmd_for_log})\n--- stderr tail ---\n{}\n--- end stderr ---",
+                                                out.status, tail,
+                                            );
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "post_export_command wait failed ({cmd_for_log}): {e}"
+                                            );
+                                        }
+                                    }
+                                });
+                            }
+                            Err(e) => tracing::warn!(
+                                "post_export_command failed to launch ({cmd}): {e}"
+                            ),
+                        }
+                    }
+                }
+                klipp_export::RenderQueueEvent::Failed { id, error } => {
+                    tracing::error!("Render job {} failed: {}", id, error);
+                }
+                klipp_export::RenderQueueEvent::Progress { .. } => {}
+            }
+        }
+    }
+}
