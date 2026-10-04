@@ -1685,6 +1685,9 @@ pub enum AppCommand {
     /// No-op + toast when the clipboard is empty.
     PasteColorNodes { clip_id: ClipId },
     RenameNode { clip_id: ClipId, node_id: uuid::Uuid, label: String },
+    /// The LUT file a LUT node applies (#892); `None` takes it off. One
+    /// undo step.
+    SetNodeLut { clip_id: ClipId, node_id: uuid::Uuid, path: Option<std::path::PathBuf> },
     /// Read the picture node `node_id` of `clip_id` receives, at `(nx,
     /// ny)` (0..=1 over the frame) of the parked frame: the qualifier
     /// eyedropper's sample. Answered by `AppEvent::NodeInputSampled`.

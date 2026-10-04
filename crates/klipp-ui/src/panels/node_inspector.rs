@@ -2682,10 +2682,45 @@ impl NodeInspectorPanel {
             }
             NodeKind::Lut3D => {
                 if let Some(path) = &params.lut_path {
-                    ui.label(egui::RichText::new(path.display().to_string()).size(10.0));
+                    let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| path.display().to_string());
+                    ui.label(egui::RichText::new(name).size(11.0)).on_hover_text(path.display().to_string());
                 } else {
                     ui.label(egui::RichText::new("No LUT loaded").size(10.0).color(theme.text_dim));
                 }
+                // Choosing the node's LUT (#892): a file, or one of the
+                // bundled looks; Clear takes it off.
+                ui.horizontal(|ui| {
+                    if ui.button("Browse\u{2026}").on_hover_text("Load a .cube, .3dl or .csp file into this node").clicked() {
+                        crate::file_dialog::spawn(move || {
+                            rfd::FileDialog::new()
+                                .set_title("LUT for this node")
+                                .add_filter("LUT files", &["cube", "3dl", "csp"])
+                                .pick_file()
+                                .map(|path| vec![AppCommand::SetNodeLut { clip_id, node_id, path: Some(path) }])
+                                .unwrap_or_default()
+                        });
+                    }
+                    if let Some(dir) = klipp_core::assets::bundled_luts_dir() {
+                        ui.menu_button("Bundled", |ui| {
+                            egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                                for (category, files) in bundled_luts(dir) {
+                                    ui.menu_button(category, |ui| {
+                                        for path in files {
+                                            let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                                            if ui.selectable_label(params.lut_path.as_ref() == Some(&path), name).clicked() {
+                                                cmds.push(AppCommand::SetNodeLut { clip_id, node_id, path: Some(path) });
+                                                ui.close_menu();
+                                            }
+                                        }
+                                    });
+                                }
+                            });
+                        });
+                    }
+                    if params.lut_path.is_some() && ui.button("Clear").clicked() {
+                        cmds.push(AppCommand::SetNodeLut { clip_id, node_id, path: None });
+                    }
+                });
                 let mut opacity = params.lut_opacity.unwrap_or(1.0);
                 if grade_slider(ui, "Opacity", &mut opacity, 0.0..=1.0, "", cmds, clip_id, theme) {
                     params.lut_opacity = Some(opacity);
@@ -4287,6 +4322,27 @@ fn lut_colorspace_dropdown(
     });
 }
 
+/// The bundled LUT library under `dir` (#892): each category folder, by
+/// its name, with its LUT files, sorted. Folders with none are left out.
+fn bundled_luts(dir: &std::path::Path) -> Vec<(String, Vec<std::path::PathBuf>)> {
+    let is_lut = |p: &std::path::Path| p.extension().is_some_and(|e| e == "cube" || e == "3dl" || e == "csp");
+    let mut out: Vec<(String, Vec<std::path::PathBuf>)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .filter_map(|cat| {
+            let mut files: Vec<_> = std::fs::read_dir(&cat).into_iter().flatten().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| is_lut(p)).collect();
+            files.sort();
+            let name = cat.file_name()?.to_string_lossy().replace('-', " ");
+            (!files.is_empty()).then_some((name, files))
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
 /// Legacy grade_slider for non-Adjustments tabs. Takes `cmds` + `clip_id` so
 /// drag gestures are wrapped in `BeginNodeParamEdit` / `EndNodeParamEdit` and
 /// enter the undo history as a single step.
@@ -4583,6 +4639,32 @@ mod sends_on_change {
         assert!(begins == 1 && matches!(sent.last(), Some(AppCommand::EndNodeParamEdit { .. })), "one undo step: {sent:?}");
         assert!(sent.iter().any(|c| matches!(c, AppCommand::SetNodeParam { param, value, .. } if param == "curves_preserve_luma" && *value == 0.0)), "{sent:?}");
         assert_eq!(rig.params(), &before, "the commands make the change, not the panel");
+    }
+
+    #[test]
+    fn the_lut_node_clears_its_lut_through_a_command() {
+        let mut rig = Rig::new(NodeKind::Lut3D, |p| p.lut_path = Some("/tmp/look.cube".into()));
+        let sent = rig.click("Clear");
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::SetNodeLut { path: None, .. })), "{sent:?}");
+        assert!(rig.params().lut_path.is_some(), "the command takes it off, not the panel");
+    }
+
+    #[test]
+    fn the_bundled_luts_are_listed_by_category() {
+        let dir = std::env::temp_dir().join(format!("klipp_bundled_luts_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (cat, files) in [("film-print", &["b.cube", "a.3dl", "notes.txt"][..]), ("cinematic", &["teal.cube"][..]), ("empty", &[][..])] {
+            std::fs::create_dir_all(dir.join(cat)).unwrap();
+            for f in files {
+                std::fs::write(dir.join(cat).join(f), "").unwrap();
+            }
+        }
+        let listed: Vec<(String, Vec<String>)> = super::bundled_luts(&dir)
+            .into_iter()
+            .map(|(c, fs)| (c, fs.iter().map(|f| f.file_name().unwrap().to_string_lossy().to_string()).collect()))
+            .collect();
+        assert_eq!(listed, vec![("cinematic".to_string(), vec!["teal.cube".to_string()]), ("film print".to_string(), vec!["a.3dl".to_string(), "b.cube".to_string()])]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
