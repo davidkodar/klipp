@@ -404,6 +404,9 @@ pub struct KlippApp {
     /// The multicam angle grid's decoder and tiles, made the first time
     /// the grid is shown.
     multicam_grid: Option<crate::multicam_grid::GridRuntime>,
+    /// An Inspector change on one of several selected clips, being made
+    /// on the others too (#843): how they were when it began.
+    multi_edit: Option<MultiEditSession>,
     /// The interface size last applied, and the screen width it was
     /// worked out for, so it is set once per change rather than every
     /// frame (and never fights a zoom made another way).
@@ -1287,6 +1290,7 @@ impl KlippApp {
             filmstrip_tx,
             filmstrip_cache_loads: std::collections::HashSet::new(),
             multicam_grid: None,
+            multi_edit: None,
             ui_scale_applied: None,
             filmstrip_refining: Default::default(),
             filmstrip_rx,
@@ -5441,43 +5445,51 @@ impl KlippApp {
         // sequence or take the shared RwLock's write lock on the slider path.
         let mut node_param_scrub = false;
         for cmd in cmds {
-            if matches!(&cmd, AppCommand::SetNodeParam { .. }) {
-                node_param_scrub = true;
-            }
-            // Timeline markers are edited outside the document's own
-            // ops, so their handlers record nothing: a marker added,
-            // changed or removed (by hand or by an agent) is one undo step
-            // here, the whole list either side.
-            let markers_before = self.state.sequences.get(self.state.active_sequence_idx).map(|s| s.markers.clone());
-            if self.handle_marker_commands(&cmd, &mut needs_refresh) {
-                if let Some(old) = markers_before {
-                    let new = self.state.sequences[self.state.active_sequence_idx].markers.clone();
-                    if old != new {
-                        self.state.push_history(EditCommand::SetMarkers { old, new });
-                    }
+            // Several clips selected and the Inspector's clip edited: the
+            // others take the change too (#843).
+            let multi = self.multi_edit_pre(&cmd);
+            'dispatch: {
+                if matches!(&cmd, AppCommand::SetNodeParam { .. }) {
+                    node_param_scrub = true;
                 }
-                continue;
+                // Timeline markers are edited outside the document's own
+                // ops, so their handlers record nothing: a marker added,
+                // changed or removed (by hand or by an agent) is one undo step
+                // here, the whole list either side.
+                let markers_before = self.state.sequences.get(self.state.active_sequence_idx).map(|s| s.markers.clone());
+                if self.handle_marker_commands(&cmd, &mut needs_refresh) {
+                    if let Some(old) = markers_before {
+                        let new = self.state.sequences[self.state.active_sequence_idx].markers.clone();
+                        if old != new {
+                            self.state.push_history(EditCommand::SetMarkers { old, new });
+                        }
+                    }
+                    break 'dispatch;
+                }
+                if self.handle_transition_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
+                if self.handle_playback_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
+                if self.handle_export_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
+                if self.handle_browser_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
+                if self.handle_stabilization_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
+                if self.handle_keyframe_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
+                if self.handle_clip_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
+                if self.handle_timeline_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
+                if self.handle_effects_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
+                if self.handle_color_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
+                if self.handle_title_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
+                if self.handle_project_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
+                if self.handle_media_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
+                // Clip operations — handled by handle_clip_commands
+                // Timeline operations — handled by handle_timeline_commands
+                // Track seek commands for filmstrip preview
+                if matches!(&cmd, AppCommand::SeekTo(_) | AppCommand::SeekRelative(_)) {
+                    self.state.awaiting_seek_frame = true;
+                }
+                let _ = self.cmd_tx.send(cmd);
             }
-            if self.handle_transition_commands(&cmd, &mut needs_refresh) { continue; }
-            if self.handle_playback_commands(&cmd, &mut needs_refresh) { continue; }
-            if self.handle_export_commands(&cmd, &mut needs_refresh) { continue; }
-            if self.handle_browser_commands(&cmd, &mut needs_refresh) { continue; }
-            if self.handle_stabilization_commands(&cmd, &mut needs_refresh) { continue; }
-            if self.handle_keyframe_commands(&cmd, &mut needs_refresh) { continue; }
-            if self.handle_clip_commands(&cmd, &mut needs_refresh) { continue; }
-            if self.handle_timeline_commands(&cmd, &mut needs_refresh) { continue; }
-            if self.handle_effects_commands(&cmd, &mut needs_refresh) { continue; }
-            if self.handle_color_commands(&cmd, &mut needs_refresh) { continue; }
-            if self.handle_title_commands(&cmd, &mut needs_refresh) { continue; }
-            if self.handle_project_commands(&cmd, &mut needs_refresh) { continue; }
-            if self.handle_media_commands(&cmd, &mut needs_refresh) { continue; }
-            // Clip operations — handled by handle_clip_commands
-            // Timeline operations — handled by handle_timeline_commands
-            // Track seek commands for filmstrip preview
-            if matches!(&cmd, AppCommand::SeekTo(_) | AppCommand::SeekRelative(_)) {
-                self.state.awaiting_seek_frame = true;
+            if let Some(post) = multi {
+                self.multi_edit_post(post);
             }
-            let _ = self.cmd_tx.send(cmd);
         }
         // Prefer the full-sync path when ANY non-slider command needed refresh
         // (structural changes, keyframe edits, etc.). The slider fast path is
@@ -5504,6 +5516,116 @@ impl KlippApp {
             // we just need to refresh the scope preview on the UI thread.
             self.refresh_scope_preview_fast();
         }
+    }
+
+    /// The other selected clips an Inspector change on `clip` goes to: the
+    /// rest of the selection, when `clip` is the one the Inspector shows
+    /// and one of several selected (#843).
+    fn multi_edit_others(&self, clip: klipp_core::ClipId) -> Vec<klipp_core::ClipId> {
+        if self.state.selected_clip != Some(clip) || !self.state.selected_clips.contains(&clip) {
+            return Vec::new();
+        }
+        self.state.selected_clips.iter().copied().filter(|&c| c != clip).collect()
+    }
+
+    /// The clip the Inspector edits and the `others`, as they are: the
+    /// edited one too, since not every setting's handler records its
+    /// change, and the step has to give all of them back.
+    fn multi_edit_snapshot(&self, clip: klipp_core::ClipId, others: &[klipp_core::ClipId]) -> Vec<klipp_timeline::Clip> {
+        std::iter::once(&clip).chain(others).filter_map(|id| self.state.sequence().all_clips().find(|c| c.id == *id).cloned()).collect()
+    }
+
+    /// Before `cmd` is handled: note the other clips as they are, and open
+    /// the one undo step the change on all of them will be.
+    fn multi_edit_pre(&mut self, cmd: &AppCommand) -> Option<MultiEditPost> {
+        use crate::multi_edit::Phase;
+        let (clip, phase) = crate::multi_edit::classify(cmd)?;
+        let others = self.multi_edit_others(clip);
+        if others.is_empty() {
+            return None;
+        }
+        let in_drag = self.multi_edit.as_ref().is_some_and(|m| m.primary == clip);
+        match phase {
+            Phase::Begin => {
+                self.multi_edit = Some(MultiEditSession { primary: clip, before: self.multi_edit_snapshot(clip, &others) });
+                None
+            }
+            Phase::Update if in_drag => Some(MultiEditPost { cmd: cmd.clone(), others, finish: false }),
+            Phase::Abandon => in_drag.then(|| MultiEditPost { cmd: cmd.clone(), others, finish: true }),
+            Phase::End if !in_drag => None,
+            Phase::Update | Phase::End | Phase::Redo => {
+                if !in_drag {
+                    self.multi_edit = Some(MultiEditSession { primary: clip, before: self.multi_edit_snapshot(clip, &others) });
+                }
+                self.state.active_history_mut().begin_batch();
+                Some(MultiEditPost { cmd: cmd.clone(), others, finish: true })
+            }
+        }
+    }
+
+    /// After `post.cmd` was handled on its clip: the same on the others,
+    /// live while dragging, and on the last step recorded with it as one.
+    fn multi_edit_post(&mut self, post: MultiEditPost) {
+        use crate::multi_edit::Phase;
+        let Some((primary_id, phase)) = crate::multi_edit::classify(&post.cmd) else { return };
+        if phase == Phase::Abandon {
+            // Taken back: the others as they were. The edited clip is its
+            // own handler's to put back (a drag that added an effect takes
+            // it off again, which its snapshot from the drag's start would
+            // undo).
+            if let Some(session) = self.multi_edit.take() {
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                for before in session.before.into_iter().filter(|c| c.id != primary_id) {
+                    if let Some(c) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(before.id)) {
+                        *c = before;
+                    }
+                }
+                self.sync_sequence_to_engine();
+            }
+            return;
+        }
+        if phase == Phase::Redo {
+            for other in &post.others {
+                if let Some(cmd) = crate::multi_edit::retarget(&post.cmd, *other) {
+                    self.send_commands(vec![cmd]);
+                }
+            }
+        } else {
+            let primary = self.state.sequence().all_clips().find(|c| c.id == primary_id).cloned();
+            if let Some(primary) = primary {
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                for other in &post.others {
+                    if let Some(c) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(*other)) {
+                        crate::multi_edit::copy_to(&post.cmd, &primary, c);
+                    }
+                }
+                self.sync_sequence_to_engine();
+            }
+        }
+        if !post.finish {
+            return;
+        }
+        // One undo step: the clip the Inspector edited, recorded by its own
+        // handler, and each other clip whole, before and after.
+        if phase != Phase::Redo {
+            if let Some(session) = self.multi_edit.as_ref() {
+                let edits: Vec<EditCommand> = session
+                    .before
+                    .iter()
+                    .filter_map(|before| {
+                        let now = self.state.sequence().all_clips().find(|c| c.id == before.id)?.clone();
+                        Some(EditCommand::ReplaceClip { description: "Edit Selection", old: Box::new(before.clone()), new: Box::new(now) })
+                    })
+                    .collect();
+                for e in edits {
+                    self.state.push_history(e);
+                }
+            }
+        }
+        self.multi_edit = None;
+        let n = post.others.len() + 1;
+        self.state.active_history_mut().end_batch_as(&format!("Edit {n} Clips"));
+        self.state.dirty = true;
     }
 
     fn create_compound_clip_impl(&mut self, name: String) {
@@ -43238,4 +43360,19 @@ mod empty_texture_tests {
         upload_texture_deferred(&ctx, &mut slot, &mut drops, "t", image(4, 2), egui::TextureOptions::LINEAR);
         assert!(slot.is_some(), "the next real frame shows");
     }
+}
+
+/// An Inspector change being made on several selected clips (#843):
+/// the clip it edits, and how it and the others were before it.
+struct MultiEditSession {
+    primary: klipp_core::ClipId,
+    before: Vec<klipp_timeline::Clip>,
+}
+
+/// What to do after an Inspector command was handled on its own clip.
+struct MultiEditPost {
+    cmd: AppCommand,
+    others: Vec<klipp_core::ClipId>,
+    /// The last step: record it and close the undo step.
+    finish: bool,
 }

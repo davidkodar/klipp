@@ -71,6 +71,7 @@ mod keymap_presets;
 pub mod layout_state;
 pub(crate) mod layout;
 pub mod media_watcher;
+pub mod multi_edit;
 pub mod multicam_grid;
 pub mod panels;
 pub mod parameterized_templates;
