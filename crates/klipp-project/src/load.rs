@@ -130,40 +130,50 @@ fn generation_of(text: &str) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(text).ok()?.get("generation")?.as_str().map(str::to_string)
 }
 
-/// The project.json and manifest.json to open, as text (#840). A save
-/// copies the pair it replaces into `.recovery/` and marks itself
-/// `pending` with its generation until both new files are written; a mark
-/// still there means it stopped:
+/// Whether a project.json and a manifest.json were written by the same
+/// save: the same generation, or both from before generations.
+pub(crate) fn pair_is_whole(project: &str, manifest: &str) -> bool {
+    generation_of(project) == generation_of(manifest)
+}
+
+/// The project.json and manifest.json to open, as text, and whether a
+/// save stopped part way (#840, #927). A save copies the pair it replaces
+/// into `.recovery/` and leaves a `pending` mark until both new files are
+/// written; a mark still there means a save stopped, and the files on disk
+/// say how far it got:
 ///
-/// - both files of the new generation: it finished all but the mark;
-/// - only the manifest new: it stopped between them, and the recovery
-///   copy, the pair from before, is opened;
-/// - neither new: it stopped before its manifest, and the files are the
-///   pair from before already.
+/// - a pair whose two files are from the same save is whole: the save
+///   finished all but the mark, or stopped before its manifest;
+/// - files from different saves: it stopped between them, and the
+///   recovery copy, the pair from before, is opened.
 ///
-/// This holds whatever the backup setting and for a project saved before
-/// generations, since the mark carries the save's own.
-fn pair_to_open(dir: &Path) -> Result<(String, String), String> {
+/// The pair is judged by its files, not by the generation in the mark: a
+/// retried save rewrites the mark before writing anything else, so a mark
+/// that names neither file says nothing about whether they match (#927).
+/// When the recovery copy cannot be used, the pair on disk is returned
+/// with `interrupted` set, and `mend_manifest` mends it from a backup or
+/// refuses it, a project from before generations included.
+fn pair_to_open(dir: &Path) -> Result<(String, String, bool), String> {
     let project = read_to_string_capped(&dir.join("project.json"), MAX_INPUT_FILE_BYTES)
         .map_err(|e| format!("Failed to read project.json: {e}"))?;
     let manifest = read_to_string_capped(&dir.join("media").join("manifest.json"), MAX_INPUT_FILE_BYTES)
         .map_err(|e| format!("Failed to read manifest.json: {e}"))?;
     let recovery = dir.join(crate::save::RECOVERY_DIR);
-    let Ok(pending) = std::fs::read_to_string(recovery.join("pending")) else { return Ok((project, manifest)) };
-    let pending = pending.trim();
-    let new_manifest = generation_of(&manifest).as_deref() == Some(pending);
-    let new_project = generation_of(&project).as_deref() == Some(pending);
-    if new_manifest && !new_project {
-        let kept = (
-            read_to_string_capped(&recovery.join("project.json"), MAX_INPUT_FILE_BYTES),
-            read_to_string_capped(&recovery.join("manifest.json"), MAX_INPUT_FILE_BYTES),
-        );
-        if let (Ok(p), Ok(m)) = kept {
+    if !recovery.join("pending").exists() || pair_is_whole(&project, &manifest) {
+        return Ok((project, manifest, false));
+    }
+    let kept = (
+        read_to_string_capped(&recovery.join("project.json"), MAX_INPUT_FILE_BYTES),
+        read_to_string_capped(&recovery.join("manifest.json"), MAX_INPUT_FILE_BYTES),
+    );
+    if let (Ok(p), Ok(m)) = kept {
+        if pair_is_whole(&p, &m) {
             warn!("the last save stopped between its two files; opening the pair from before it, kept in {}", recovery.display());
-            return Ok((p, m));
+            return Ok((p, m, false));
         }
     }
-    Ok((project, manifest))
+    warn!("the last save stopped between its two files, and its recovery copy in {} is missing or not whole", recovery.display());
+    Ok((project, manifest, true))
 }
 
 /// The media manifest that belongs with the timeline (#821). A save
@@ -174,8 +184,16 @@ fn pair_to_open(dir: &Path) -> Result<(String, String), String> {
 /// from before generations are read as they are; a pair from different
 /// saves with nothing to mend it is refused rather than opened as if it
 /// were whole (#840).
-fn mend_manifest(dir: &Path, project_generation: Option<&str>, manifest: MediaManifestJson) -> Result<MediaManifestJson, String> {
-    let Some(wanted) = project_generation else { return Ok(manifest) };
+fn mend_manifest(dir: &Path, project_generation: Option<&str>, manifest: MediaManifestJson, interrupted: bool) -> Result<MediaManifestJson, String> {
+    let Some(wanted) = project_generation else {
+        // A timeline from before generations beside a media list a stopped
+        // save wrote: no backup can be matched to it, so it is refused
+        // like any other pair from different saves (#927).
+        if interrupted && manifest.generation.is_some() {
+            return Err(unmendable(dir));
+        }
+        return Ok(manifest);
+    };
     if manifest.generation.as_deref().is_none_or(|g| g == wanted) {
         return Ok(manifest);
     }
@@ -195,15 +213,20 @@ fn mend_manifest(dir: &Path, project_generation: Option<&str>, manifest: MediaMa
             return Ok(candidate);
         }
     }
-    Err(format!(
+    Err(unmendable(dir))
+}
+
+/// Why a pair from different saves is not opened, and what to do.
+fn unmendable(dir: &Path) -> String {
+    format!(
         "project.json and media/manifest.json in {} are from different saves, and neither the recovery copy nor a backup matches the timeline. Opening them together would put clips on the wrong media. Restore a matching pair from the .bak files beside them (project.json.bak.N with media/manifest.json.bak.N), or from a copy of the project.",
         dir.display()
-    ))
+    )
 }
 
 pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     // The pair a save left whole, from its recovery copy if it stopped (#840).
-    let (project_str, manifest_str) = pair_to_open(dir)?;
+    let (project_str, manifest_str, interrupted) = pair_to_open(dir)?;
 
     // Two-step deserialization: handle old singular "sequence" vs new plural "sequences"
     let mut value: serde_json::Value = serde_json::from_str(&project_str)
@@ -223,7 +246,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
 
     let manifest: MediaManifestJson = serde_json::from_str(&manifest_str)
         .map_err(|e| format!("Failed to parse manifest.json: {e}"))?;
-    let manifest = mend_manifest(dir, project.generation.as_deref(), manifest)?;
+    let manifest = mend_manifest(dir, project.generation.as_deref(), manifest, interrupted)?;
 
     // Reconstruct media pool — resolve stored paths (relative or absolute) to absolute
     let mut media_pool = MediaPool::new();
