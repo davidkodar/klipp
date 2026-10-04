@@ -207,50 +207,14 @@ impl KlippApp {
             // G (no modifiers) — Connect selected clip to nearest primary clip
             if kb.is_action_pressed("connect_clip", i) {
                 if let Some(clip_id) = self.state.selected_clip {
-                    let clip_track = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                        .position(|t| t.clips.iter().any(|c| c.id == clip_id));
-                    if let Some(ti) = clip_track {
-                        if self.state.sequences[self.state.active_sequence_idx].tracks[ti].magnetic_role != klipp_timeline::TrackRole::Primary {
-                            let clip_in = self.state.sequences[self.state.active_sequence_idx].tracks[ti].clips.iter()
-                                .find(|c| c.id == clip_id)
-                                .map(|c| c.timeline_in);
-                            if let Some(clip_in) = clip_in {
-                                if let Some(primary_idx) = self.state.sequences[self.state.active_sequence_idx].primary_track_index() {
-                                    let best_anchor = self.state.sequences[self.state.active_sequence_idx].tracks[primary_idx].clips.iter()
-                                        .filter(|c| !c.kind.is_gap())
-                                        .min_by_key(|c| (c.timeline_in - clip_in).abs().value.unsigned_abs());
-                                    if let Some(anchor) = best_anchor {
-                                        let anchor_id = anchor.id;
-                                        let result = klipp_timeline::magnetic::MagneticEditor::connect_clip(
-                                            &mut self.state.sequences[self.state.active_sequence_idx],
-                                            clip_id,
-                                            anchor_id,
-                                            klipp_timeline::AnchorAlignment::StartAligned,
-                                        );
-                                        self.state.push_history(crate::history::EditCommand::Magnetic(result.command));
-                                        self.sync_sequence_to_engine();
-                                        self.state.dirty = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    self.connect_to_primary(clip_id);
                 }
             }
 
             // Shift+G (no ctrl) — Disconnect selected clip
             if kb.is_action_pressed("disconnect_clip", i) {
                 if let Some(clip_id) = self.state.selected_clip {
-                    let has_anchor = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                        .flat_map(|t| t.clips.iter())
-                        .any(|c| c.id == clip_id && c.magnetic_anchor.is_some());
-                    if has_anchor {
-                        let result = klipp_timeline::magnetic::MagneticEditor::disconnect_clip(
-                            &mut self.state.sequences[self.state.active_sequence_idx], clip_id);
-                        self.state.push_history(crate::history::EditCommand::Magnetic(result.command));
-                        self.sync_sequence_to_engine();
-                        self.state.dirty = true;
-                    }
+                    self.disconnect_from_primary(clip_id);
                 }
             }
 
@@ -260,40 +224,7 @@ impl KlippApp {
             // panel; the storyline path takes priority when a clip on
             // a connected storyline is selected.
             if kb.is_action_pressed("toggle_audio_skim", i) {
-                let mut handled_storyline = false;
-                if let Some(clip_id) = self.state.selected_clip {
-                    let clip_track = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                        .position(|t| t.clips.iter().any(|c| c.id == clip_id));
-                    if let Some(ti) = clip_track {
-                        if self.state.sequences[self.state.active_sequence_idx].tracks[ti].magnetic_role == klipp_timeline::TrackRole::Connected {
-                            if let Some(primary_idx) = self.state.sequences[self.state.active_sequence_idx].primary_track_index() {
-                                let first_clip_in = self.state.sequences[self.state.active_sequence_idx].tracks[ti].clips.first()
-                                    .map(|c| c.timeline_in);
-                                if let Some(clip_in) = first_clip_in {
-                                    let best_anchor = self.state.sequences[self.state.active_sequence_idx].tracks[primary_idx].clips.iter()
-                                        .filter(|c| !c.kind.is_gap())
-                                        .min_by_key(|c| (c.timeline_in - clip_in).abs().value.unsigned_abs());
-                                    if let Some(anchor) = best_anchor {
-                                        let anchor_id = anchor.id;
-                                        let result = klipp_timeline::magnetic::MagneticEditor::promote_to_storyline(
-                                            &mut self.state.sequences[self.state.active_sequence_idx], ti, anchor_id);
-                                        self.state.push_history(crate::history::EditCommand::Magnetic(result.command));
-                                        self.sync_sequence_to_engine();
-                                        self.state.dirty = true;
-                                        handled_storyline = true;
-                                    }
-                                }
-                            }
-                        } else if self.state.sequences[self.state.active_sequence_idx].tracks[ti].magnetic_role == klipp_timeline::TrackRole::ConnectedStoryline {
-                            let result = klipp_timeline::magnetic::MagneticEditor::break_apart_storyline(
-                                &mut self.state.sequences[self.state.active_sequence_idx], ti);
-                            self.state.push_history(crate::history::EditCommand::Magnetic(result.command));
-                            self.sync_sequence_to_engine();
-                            self.state.dirty = true;
-                            handled_storyline = true;
-                        }
-                    }
-                }
+                let handled_storyline = self.state.selected_clip.is_some_and(|clip_id| self.toggle_storyline(clip_id));
                 // If no storyline action applied, toggle audio skim.
                 // Routed through the AppCommand so the palette entry
                 // and the keybinding share the cleanup path.
@@ -388,6 +319,11 @@ impl KlippApp {
                             self.state.selected_clip = None;
                             self.sync_sequence_to_engine();
                             self.state.dirty = true;
+                        } else {
+                            // Off the magnetic track a removal leaves its
+                            // gap, which is a lift; Shift+Delete did
+                            // nothing there (#911).
+                            cmds.push(AppCommand::RemoveClip { clip_id });
                         }
                     }
                 }
@@ -1245,23 +1181,14 @@ impl KlippApp {
             }
             // Shift+Z — Zoom to selection
             if kb.is_action_pressed("zoom_to_selection", i) {
-                if let Some(clip_id) = self.state.selected_clip {
-                    let clip = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                        .flat_map(|t| t.clips.iter())
-                        .find(|c| c.id == clip_id);
-                    if let Some(clip) = clip {
-                        let start = clip.timeline_in.to_secs_f64() as f32;
-                        let end = clip.timeline_out.to_secs_f64() as f32;
-                        let dur = (end - start).max(0.1);
-                        let content_width = self.state.last_timeline_content_width;
-                        self.state.timeline_zoom = (content_width / dur * 0.9).clamp(0.1, 2000.0);
-                        self.state.timeline_scroll_x = (start * self.state.timeline_zoom - 20.0).max(0.0);
-                    }
-                }
+                cmds.push(AppCommand::ZoomToSelection);
             }
             // + / = — Zoom in (playhead-centred)
+            // `=` is also the zoom_in key, handled below: taking it here too
+            // zoomed twice per press (#911).
             if i.events.iter().any(|e| matches!(e, egui::Event::Text(s) if s == "+" || s == "="))
                 && !i.modifiers.ctrl
+                && !kb.is_action_pressed("zoom_in", i)
             {
                 let playhead_secs = self.state.playhead_smooth_secs as f32;
                 let old_zoom = self.state.timeline_zoom;

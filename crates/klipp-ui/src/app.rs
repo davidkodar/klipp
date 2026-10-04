@@ -70,6 +70,7 @@ mod tracking;
 mod linked_audio;
 mod camera;
 mod locks;
+mod storyline;
 mod subtitles;
 mod render_script;
 mod batch_rename;
