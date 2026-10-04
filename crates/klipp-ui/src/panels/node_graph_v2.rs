@@ -235,6 +235,9 @@ pub struct NodeGraphV2Panel {
     /// Frame currently being renamed via the inline label editor.
     /// `(frame_id, screen_pos, buf)` — None when idle.
     frame_rename_editor: Option<(NodeFrameId, egui::Pos2, String)>,
+    /// A node being renamed (#893): the node, where its editor sits, and
+    /// the name as typed. Opened from its menu or a double-click on it.
+    node_rename_editor: Option<(NodeId, egui::Pos2, String)>,
     /// Frame currently editing its multi-line description in a
     /// floating popup. `(frame_id, screen_pos, buf)` — same shape
     /// as the rename editor; only one of the two can be open at a
@@ -393,6 +396,7 @@ impl Default for NodeGraphV2Panel {
             drag_frame: None,
             frame_menu: None,
             frame_rename_editor: None,
+            node_rename_editor: None,
             frame_description_editor: None,
             drag_sticky: None,
             sticky_menu: None,
@@ -868,6 +872,7 @@ impl NodeGraphV2Panel {
             || self.node_menu.is_some()
             || self.frame_menu.is_some()
             || self.frame_rename_editor.is_some()
+            || self.node_rename_editor.is_some()
             || self.frame_description_editor.is_some()
             || self.wireless_label_editor.is_some()
             || self.sticky_menu.is_some()
@@ -2394,6 +2399,14 @@ impl NodeGraphV2Panel {
                                     node_hit = true;
                                     break;
                                 }
+                                // Any other grade node: a double-click
+                                // names it (#893).
+                                if primary_double_clicked && !matches!(kind, NodeKind::Source | NodeKind::Output) {
+                                    let current = graph.nodes.iter().find(|n| n.id == *node_id).map(|n| n.label.clone()).unwrap_or_default();
+                                    self.node_rename_editor = Some((*node_id, p, current));
+                                    node_hit = true;
+                                    break;
+                                }
                                 if shift {
                                     // Shift-click toggles set membership.
                                     // Adding a node also makes it the
@@ -2802,6 +2815,7 @@ impl NodeGraphV2Panel {
             i.key_pressed(egui::Key::F) && (i.modifiers.ctrl || i.modifiers.command)
         });
         if f_with_mod && !self.frame_rename_editor.is_some()
+            && !self.node_rename_editor.is_some()
             && !self.frame_description_editor.is_some()
             && !self.wireless_label_editor.is_some()
         {
@@ -2932,6 +2946,9 @@ impl NodeGraphV2Panel {
         // input. Triggered from the frame menu's "Rename".
         if self.frame_rename_editor.is_some() {
             self.draw_frame_rename_editor(ui, clip_id, &mut cmds);
+        }
+        if self.node_rename_editor.is_some() {
+            self.draw_node_rename_editor(ui, clip_id, &mut cmds);
         }
         if self.frame_description_editor.is_some() {
             self.draw_frame_description_editor(ui, clip_id, &mut cmds);
@@ -3843,6 +3860,48 @@ impl NodeGraphV2Panel {
         if close { self.frame_menu = None; }
     }
 
+    /// Inline rename popup for a node (#893), from its menu's "Rename…" or
+    /// a double-click on it. Enter or Save names it, one undo step;
+    /// Escape, Cancel or a click away leaves it. A blank name is not
+    /// taken: a node always shows a name.
+    fn draw_node_rename_editor(&mut self, ui: &mut egui::Ui, clip_id: ClipId, cmds: &mut Vec<AppCommand>) {
+        let Some((node_id, pos)) = self.node_rename_editor.as_ref().map(|(n, p, _)| (*n, *p)) else { return };
+        let (mut close, mut save) = (false, false);
+        let area_resp = egui::Area::new(ui.id().with(("ngv2_node_rename", node_id)))
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.label(egui::RichText::new("Node name").small().weak());
+                    if let Some((_, _, buf)) = self.node_rename_editor.as_mut() {
+                        let resp = ui.add(egui::TextEdit::singleline(buf).hint_text("e.g. Skin / Sky / Look").desired_width(180.0));
+                        resp.request_focus();
+                        // Enter saves while the editor is open. Focus is
+                        // asked for every frame, so the field takes it
+                        // back the frame it lets go and `lost_focus`
+                        // never fires.
+                        if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            save = true;
+                        }
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() { save = true; }
+                        if ui.button("Cancel").clicked() { close = true; }
+                    });
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
+                });
+            });
+        if area_resp.response.clicked_elsewhere() { close = true; }
+        if save {
+            let label = self.node_rename_editor.as_ref().map(|(_, _, b)| b.trim().to_string()).unwrap_or_default();
+            if !label.is_empty() {
+                cmds.push(AppCommand::RenameNode { clip_id, node_id, label });
+            }
+            close = true;
+        }
+        if close { self.node_rename_editor = None; }
+    }
+
     /// Inline rename popup for a frame's label. Triggered from the
     /// frame menu's "Rename…" entry.
     fn draw_frame_rename_editor(
@@ -3870,9 +3929,10 @@ impl NodeGraphV2Panel {
                                 .desired_width(180.0),
                         );
                         resp.request_focus();
-                        if resp.lost_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                        {
+                        // Enter saves while the editor is open: focus is
+                        // asked for every frame, so `lost_focus` never
+                        // fires (found with #893's node rename).
+                        if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             save = true;
                         }
                     }
@@ -4085,6 +4145,11 @@ impl NodeGraphV2Panel {
                     // user confusion (Delete / Disconnect still
                     // appear).
                     let is_passthrough_kind = matches!(kind, NodeKind::Reroute);
+                    if !is_structural && ui.button("Rename\u{2026}").clicked() {
+                        let current = graph.nodes.iter().find(|n| n.id == node_id).map(|n| n.label.clone()).unwrap_or_default();
+                        self.node_rename_editor = Some((node_id, pos, current));
+                        close = true;
+                    }
                     if !is_structural && !is_passthrough_kind {
                         let toggle = if enabled { "Bypass" } else { "Enable" };
                         if ui.button(toggle).clicked() {
@@ -4740,4 +4805,62 @@ fn bezier_at_phase(from: egui::Pos2, to: egui::Pos2, phase: f32) -> egui::Pos2 {
         pts[idx].x + (pts[idx + 1].x - pts[idx].x) * frac,
         pts[idx].y + (pts[idx + 1].y - pts[idx].y) * frac,
     )
+}
+
+#[cfg(test)]
+mod rename_tests {
+    //! A grade node is named from the graph (#893): a double-click on it,
+    //! a name typed, Enter.
+    use super::*;
+
+    #[test]
+    fn a_double_click_names_a_node() {
+        let mut graph = NodeGraph::default();
+        let node = graph.ensure_corrector();
+        let label = graph.nodes.iter().find(|n| n.id == node).unwrap().label.clone();
+        let (ctx, mut panel, theme) = (egui::Context::default(), NodeGraphV2Panel::default(), KlippTheme::default());
+        let clip_id = ClipId::new();
+        let (mut selected, mut set, mut path, mut drops) = (None, std::collections::HashSet::new(), Vec::new(), Vec::new());
+        let thumbs = std::collections::HashMap::new();
+        let mut time = 0.0;
+        let mut frame = |events: Vec<egui::Event>, graph: &mut NodeGraph| -> (Vec<(String, egui::Pos2)>, Vec<AppCommand>) {
+            time += 1.0 / 30.0;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 600.0))),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut cmds = Vec::new();
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    cmds = panel.show(ui, &mut selected, &mut set, graph, clip_id, &theme, &thumbs, 0, &mut drops, &mut path, &[], None, None, 0.0, false, 0.0, None);
+                });
+            });
+            let drawn = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect();
+            (drawn, cmds)
+        };
+        let mut drawn = Vec::new();
+        for _ in 0..3 {
+            drawn = frame(Vec::new(), &mut graph).0;
+        }
+        let at = drawn.iter().find(|(t, _)| *t == label).unwrap_or_else(|| panic!("the node's name is drawn: {drawn:?}")).1;
+        let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        for _ in 0..2 {
+            frame(vec![egui::Event::PointerMoved(at), press(true)], &mut graph);
+            frame(vec![press(false)], &mut graph);
+        }
+        let (drawn, _) = frame(Vec::new(), &mut graph);
+        assert!(drawn.iter().any(|(t, _)| t == "Node name"), "the rename editor opens: {drawn:?}");
+        frame(vec![egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND }], &mut graph);
+        frame(vec![egui::Event::Text("Skin".into())], &mut graph);
+        let (_, cmds) = frame(vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }], &mut graph);
+        assert!(
+            cmds.iter().any(|c| matches!(c, AppCommand::RenameNode { node_id, label, .. } if *node_id == node && label == "Skin")),
+            "Enter names it: {cmds:?}"
+        );
+    }
 }

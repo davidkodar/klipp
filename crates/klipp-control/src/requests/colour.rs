@@ -898,6 +898,19 @@ pub(crate) fn respond(
             })
         }
 
+        ControlCommand::RenameNode { clip_id: c, node_id, name } => {
+            let clip = existing_clip_id(ctx, &c)?;
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return Err("give the node a name that is not blank".into());
+            }
+            send(AppCommand::RenameNode {
+                clip_id: clip,
+                node_id: existing_node_id(ctx, clip, &node_id, "node_id")?,
+                label: name,
+            })
+        }
+
         ControlCommand::SetLogFormat { clip_id: c, format } => {
             let log_format = parse_log_format(&format)?;
             send(AppCommand::SetClipLogFormat { clip_id: existing_clip_id(ctx, &c)?, log_format })

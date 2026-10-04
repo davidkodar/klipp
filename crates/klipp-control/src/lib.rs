@@ -610,6 +610,7 @@ fn handle(
             | ControlCommand::ConnectNodes { .. }
             | ControlCommand::SetNodeParam { .. }
             | ControlCommand::ToggleNodeEnabled { .. }
+            | ControlCommand::RenameNode { .. }
             | ControlCommand::SetLogFormat { .. }
             | ControlCommand::Looks { .. }
             | ControlCommand::Look { .. }
