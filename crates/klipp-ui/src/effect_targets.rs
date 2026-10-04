@@ -56,6 +56,14 @@ pub fn targets(seq: &Sequence, primary: Option<ClipId>, selected: &[ClipId], dro
     Targets { skipped: base.len() - clips.len(), clips }
 }
 
+/// Whether a drop on `dropped_on` selects that clip: only when it is
+/// outside the selection. Dropped on a selected clip, the selection
+/// stays, even when that clip could not take the effect (a sound clip
+/// under a picture effect) and the rest of the selection did.
+pub fn drop_reselects(primary: Option<ClipId>, selected: &[ClipId], dropped_on: ClipId) -> bool {
+    primary != Some(dropped_on) && !selected.contains(&dropped_on)
+}
+
 /// The commands for `targets`, `make` giving each clip's, as one undo
 /// step when there is more than one clip.
 pub fn commands(targets: &Targets, mut make: impl FnMut(ClipId) -> Vec<AppCommand>) -> Vec<AppCommand> {
@@ -135,6 +143,17 @@ mod tests {
         assert_eq!(targets(&seq, Some(v(0)), &[v(0), v(1)], Some(v(1)), EffectKind::Picture).clips, vec![v(0), v(1)]);
         // Dropped on a clip outside it: that clip alone.
         assert_eq!(targets(&seq, Some(v(0)), &[v(0), v(1)], Some(v(2)), EffectKind::Picture).clips, vec![v(2)]);
+    }
+
+    /// #850 review: a drop on a selected clip that cannot take the effect
+    /// keeps the selection; a drop outside it selects the clip dropped on.
+    #[test]
+    fn a_drop_keeps_the_selection_it_landed_in() {
+        let (p, s, out) = (ClipId::new(), ClipId::new(), ClipId::new());
+        assert!(!drop_reselects(Some(p), &[p, s], s), "dropped on a selected clip, though it is skipped");
+        assert!(drop_reselects(Some(p), &[p, s], out), "dropped outside: that clip");
+        assert!(!drop_reselects(Some(p), &[], p), "already the one selected");
+        assert!(drop_reselects(Some(p), &[], out));
     }
 
     #[test]
