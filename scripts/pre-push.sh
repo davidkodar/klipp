@@ -480,7 +480,61 @@ _record() {
     fi
     return 0
 }
-trap '_s=$?; _record "$_s"; _leave_queue; exit "$_s"' EXIT
+# The branch put back as it was pushed, if the gate tested it merged with
+# main (below). The merge never commits, so aborting it is all it takes.
+_unmerge() {
+    [ -n "${_merged_from:-}" ] || return 0
+    git merge --abort >/dev/null 2>&1 || git reset --hard --quiet "$_merged_from" >/dev/null 2>&1 || true
+    _merged_from=
+}
+trap '_s=$?; _unmerge; _record "$_s"; _leave_queue; exit "$_s"' EXIT
+
+# What the merge will be, not the branch alone (#866). GitHub squashes a
+# branch onto main as main is when it merges, so a branch based on an older
+# main was tested on code that never ships, and one that could no longer
+# merge cleanly still built and ran everything before anybody found out:
+# three branches went through the gate three times in a night that way.
+# So when the gate's turn comes, main is fetched. A branch that cannot
+# merge onto it is refused here, before anything is built. One that is
+# behind it is tested merged with it (`git merge --no-commit`, so nothing
+# is committed and the push still sends the branch as it is), and put back
+# by the exit trap whatever ends the gate. A branch already on main, a
+# fetch that fails, or a tree that cannot take the merge (KLIPP_ALLOW_DIRTY,
+# untracked files in the way) is tested as it is, as before, and said.
+# Git writes each file it changes as a new file, so this script, running,
+# is never rewritten under itself.
+_merged_from=
+if [ -n "$_queue" ] && [ "${KLIPP_GATE_AS_IS:-}" != "1" ] && git remote get-url origin >/dev/null 2>&1; then
+    _step=merge
+    if timeout 60 git fetch --quiet origin main 9>&- 2>/dev/null && _main_head=$(git rev-parse --verify --quiet origin/main); then
+        if ! git merge-base --is-ancestor "$_main_head" HEAD 2>/dev/null; then
+            # merge-tree says 1 for a conflict; anything else is git failing
+            # to answer (an older git without --write-tree), which must not
+            # refuse every push, so the branch is then tested as it is.
+            _mt_status=0
+            git merge-tree --write-tree HEAD "$_main_head" >/dev/null 2>&1 || _mt_status=$?
+            if [ "$_mt_status" -ne 0 ] && [ "$_mt_status" -ne 1 ]; then
+                printf '  pre-push: git could not say whether %s merges onto main (merge-tree exit %s); testing the branch as it is.\n' "${_branch:-this branch}" "$_mt_status" >&2
+            elif [ "$_mt_status" -eq 1 ]; then
+                printf '\n  pre-push: this branch no longer merges cleanly onto main — push refused.\n' >&2
+                printf '            Nothing was built. Rebase it and push again:\n\n' >&2
+                printf '              git fetch origin && git rebase origin/main\n\n' >&2
+                # The files in conflict: the lines after the tree id, up to the blank line.
+                git merge-tree --name-only --write-tree HEAD "$_main_head" 2>/dev/null | awk 'NR > 1 && /^$/ { exit } NR > 1 { print "              conflict: " $0 }' >&2 || true
+                exit 1
+            elif [ "$KLIPP_ALLOW_DIRTY" != "1" ] && _pushed=$(git rev-parse HEAD) && git merge --no-commit --no-ff --quiet "$_main_head" >/dev/null 2>&1; then
+                _merged_from=$_pushed
+                printf '  pre-push: %s is behind main; testing it merged with main (%s), as the squash merge will be. The branch is put back after.\n' \
+                    "${_branch:-this branch}" "$(git rev-parse --short "$_main_head")"
+            else
+                git merge --abort >/dev/null 2>&1 || true
+                printf '  pre-push: %s is behind main, and the merge could not be laid out here; testing the branch as it is.\n' "${_branch:-this branch}" >&2
+            fi
+        fi
+    else
+        printf '  pre-push: main could not be fetched; testing the branch as it is.\n' >&2
+    fi
+fi
 
 # A worktree's first gate starts from the main checkout's build, not an
 # empty target/. Each push built the whole workspace from nothing, all

@@ -35,7 +35,9 @@ class ScratchGateTests(unittest.TestCase):
         path.chmod(0o755)
 
     def run_gate(self):
-        return subprocess.run(["sh", str(self.root / "scripts/pre-push.sh")], env=self.env, text=True, capture_output=True)
+        # No stdin: the gate reads the pushed refs from it when it is not a
+        # terminal, and an inherited open pipe would keep it waiting.
+        return subprocess.run(["sh", str(self.root / "scripts/pre-push.sh")], env=self.env, text=True, capture_output=True, stdin=subprocess.DEVNULL)
 
     # The gate under test, started in the background so several of them
     # can be queued at once. Its pid is the pid the script sees as $$, and
@@ -46,7 +48,7 @@ class ScratchGateTests(unittest.TestCase):
         self.addCleanup(handle.close)
         gate = subprocess.Popen(["sh", str(self.root / "scripts/pre-push.sh")],
                                 env=dict(self.env, TEST_TAG=tag, **extra),
-                                stdout=subprocess.DEVNULL, stderr=handle)
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=handle)
         self.addCleanup(gate.kill)
         gate.said = lambda: errors.read_text()
         return gate
@@ -176,8 +178,17 @@ class ScratchGateTests(unittest.TestCase):
         self.assertIn("could not check", result.stderr)
 
     def test_without_cargo_deny_the_gate_says_how_to_get_it(self):
-        # Only the system's own tools, so an installed cargo-deny is not found.
-        self.env["PATH"] = f"{self.bin}:/usr/bin:/bin"
+        # The system's own tools without cargo-deny, so one installed by
+        # the distribution in /usr/bin is not found either.
+        tools = self.root / "system-tools"
+        tools.mkdir()
+        linked = {"cargo-deny"}
+        for system in ("/usr/bin", "/bin"):
+            for entry in os.scandir(system):
+                if entry.name not in linked:
+                    linked.add(entry.name)
+                    (tools / entry.name).symlink_to(entry.path)
+        self.env["PATH"] = f"{self.bin}:{tools}"
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("cargo install --locked cargo-deny", result.stderr)
@@ -307,6 +318,119 @@ class ScratchGateTests(unittest.TestCase):
         self.assertIn("1 session(s) are already queued for the gate", result.stderr)
         self.assertFalse((self.root / "cargo-calls").exists())
         self.assertEqual(self.queued_pids(), [str(ahead.pid)])
+
+
+
+class MergeWithMainTests(unittest.TestCase):
+    """The gate tests a branch merged with current main, and refuses one that
+    cannot merge before building anything (#866). Real git, a fake cargo."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2] / "target")
+        self.addCleanup(self.temp.cleanup)
+        top = Path(self.temp.name)
+        self.bin = top / "bin"
+        self.bin.mkdir()
+        self.origin = top / "origin.git"
+        self.root = top / "work"
+        self.other = top / "other"
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith(("KLIPP_", "CARGO_", "GIT_")) and k != "TMPDIR"}
+        self.env.update(PATH=f"{self.bin}:{os.environ['PATH']}", TEST_ROOT=str(top), GIT_AUTHOR_NAME="T", GIT_AUTHOR_EMAIL="t@t",
+                        GIT_COMMITTER_NAME="T", GIT_COMMITTER_EMAIL="t@t", GIT_CONFIG_NOSYSTEM="1", HOME=str(top))
+        # cargo records what the tree it builds holds: the shared file's
+        # text and whether main's new file is there.
+        self.script(self.bin / "cargo", 'if [ "$1" = clippy ]; then printf "%s|%s\\n" "$(tr "\\n" , < shared.txt)" "$( [ -e from-main.txt ] && echo main || echo branch)" >> "$TEST_ROOT/built"; fi\nexit 0')
+        self.script(self.bin / "pgrep", "exit 1")
+        self.script(self.bin / "df", 'printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\nfixture 9000000 1 8000000 1%% /scratch\\n"')
+        self.git(top, "init", "-q", "--bare", "-b", "main", str(self.origin))
+        self.git(top, "clone", "-q", str(self.origin), str(self.root))
+        (self.root / "scripts").mkdir()
+        shutil.copy(Path(__file__).resolve().parents[1] / "pre-push.sh", self.root / "scripts/pre-push.sh")
+        self.script(self.root / "scripts/check-signoff.sh", "exit 0")
+        (self.root / "shared.txt").write_text("one\n")
+        (self.root / ".gitignore").write_text("target/\n")
+        self.commit(self.root, "start")
+        self.git(self.root, "push", "-q", "origin", "HEAD:main")
+        self.git(self.root, "checkout", "-q", "-b", "fix/branch")
+        self.git(top, "clone", "-q", str(self.origin), str(self.other))
+
+    def git(self, cwd, *args):
+        return subprocess.run(["git", *args], cwd=cwd, env=self.env, check=True, capture_output=True, text=True).stdout
+
+    def commit(self, cwd, message):
+        self.git(cwd, "add", "-A")
+        self.git(cwd, "commit", "-q", "-m", message)
+
+    def script(self, path, body):
+        path.write_text("#!/bin/sh\n" + body + "\n")
+        path.chmod(0o755)
+
+    def main_moves_on(self, name="from-main.txt", text="main\n"):
+        (self.other / name).write_text(text)
+        self.commit(self.other, "main moves on")
+        self.git(self.other, "push", "-q", "origin", "HEAD:main")
+
+    def run_gate(self):
+        return subprocess.run(["sh", str(self.root / "scripts/pre-push.sh")], cwd=self.root, env=self.env, text=True, capture_output=True, stdin=subprocess.DEVNULL)
+
+    def built(self):
+        path = Path(self.temp.name) / "built"
+        return path.read_text().splitlines() if path.exists() else []
+
+    def test_a_branch_behind_main_is_tested_merged_with_it_and_put_back(self):
+        (self.root / "shared.txt").write_text("one\nbranch\n")
+        self.commit(self.root, "the branch's change")
+        pushed = self.git(self.root, "rev-parse", "HEAD")
+        self.main_moves_on()
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.built(), ["one,branch,|main"], "built with main's new file and the branch's change")
+        self.assertIn("testing it merged with main", result.stdout)
+        self.assertEqual(self.git(self.root, "rev-parse", "HEAD"), pushed, "the branch as it was pushed")
+        self.assertEqual(self.git(self.root, "status", "--porcelain"), "", "nothing left of the merge")
+        self.assertFalse((self.root / "from-main.txt").exists())
+
+    def test_a_branch_that_cannot_merge_is_refused_before_building(self):
+        (self.root / "shared.txt").write_text("branch\n")
+        self.commit(self.root, "the branch's change")
+        self.main_moves_on("shared.txt", "main\n")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no longer merges cleanly onto main", result.stderr)
+        self.assertIn("conflict: shared.txt", result.stderr)
+        self.assertEqual(self.built(), [], "nothing was built")
+        self.assertEqual(self.git(self.root, "status", "--porcelain"), "")
+
+    def test_a_branch_on_main_and_a_failing_gate_are_left_as_they_are(self):
+        (self.root / "shared.txt").write_text("one\nbranch\n")
+        self.commit(self.root, "the branch's change")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.built(), ["one,branch,|branch"], "on main already: tested as it is")
+        self.assertNotIn("merged with main", result.stdout)
+        # A gate that fails, tested merged: the branch is still put back.
+        self.main_moves_on()
+        self.script(self.bin / "cargo", 'if [ "$1" = clippy ]; then exit 1; fi\nexit 0')
+        pushed = self.git(self.root, "rev-parse", "HEAD")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.git(self.root, "rev-parse", "HEAD"), pushed)
+        self.assertEqual(self.git(self.root, "status", "--porcelain"), "")
+        self.assertFalse((self.root / "from-main.txt").exists())
+
+    def test_a_git_that_cannot_answer_tests_the_branch_as_it_is(self):
+        # An older git without merge-tree --write-tree exits 129: that is
+        # not a conflict, and must not refuse every push.
+        real = shutil.which("git", path=os.environ["PATH"])
+        self.script(self.bin / "git", f'if [ "$1" = merge-tree ]; then exit 129; fi\nexec "{real}" "$@"')
+        (self.root / "shared.txt").write_text("one\nbranch\n")
+        self.commit(self.root, "the branch's change")
+        self.main_moves_on()
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("could not say whether", result.stderr)
+        self.assertEqual(self.built(), ["one,branch,|branch"], "tested as it is")
+
 
 if __name__ == "__main__":
     (Path(__file__).resolve().parents[2] / "target").mkdir(exist_ok=True)
