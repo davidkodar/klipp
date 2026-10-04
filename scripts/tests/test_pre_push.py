@@ -35,7 +35,9 @@ class ScratchGateTests(unittest.TestCase):
         path.chmod(0o755)
 
     def run_gate(self):
-        return subprocess.run(["sh", str(self.root / "scripts/pre-push.sh")], env=self.env, text=True, capture_output=True)
+        # No stdin: the gate reads the pushed refs from it when it is not a
+        # terminal, and an inherited open pipe would keep it waiting.
+        return subprocess.run(["sh", str(self.root / "scripts/pre-push.sh")], env=self.env, text=True, capture_output=True, stdin=subprocess.DEVNULL)
 
     # The gate under test, started in the background so several of them
     # can be queued at once. Its pid is the pid the script sees as $$, and
@@ -46,7 +48,7 @@ class ScratchGateTests(unittest.TestCase):
         self.addCleanup(handle.close)
         gate = subprocess.Popen(["sh", str(self.root / "scripts/pre-push.sh")],
                                 env=dict(self.env, TEST_TAG=tag, **extra),
-                                stdout=subprocess.DEVNULL, stderr=handle)
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=handle)
         self.addCleanup(gate.kill)
         gate.said = lambda: errors.read_text()
         return gate
@@ -176,8 +178,17 @@ class ScratchGateTests(unittest.TestCase):
         self.assertIn("could not check", result.stderr)
 
     def test_without_cargo_deny_the_gate_says_how_to_get_it(self):
-        # Only the system's own tools, so an installed cargo-deny is not found.
-        self.env["PATH"] = f"{self.bin}:/usr/bin:/bin"
+        # The system's own tools without cargo-deny, so one installed by
+        # the distribution in /usr/bin is not found either.
+        tools = self.root / "system-tools"
+        tools.mkdir()
+        linked = {"cargo-deny"}
+        for system in ("/usr/bin", "/bin"):
+            for entry in os.scandir(system):
+                if entry.name not in linked:
+                    linked.add(entry.name)
+                    (tools / entry.name).symlink_to(entry.path)
+        self.env["PATH"] = f"{self.bin}:{tools}"
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("cargo install --locked cargo-deny", result.stderr)
@@ -308,9 +319,6 @@ class ScratchGateTests(unittest.TestCase):
         self.assertFalse((self.root / "cargo-calls").exists())
         self.assertEqual(self.queued_pids(), [str(ahead.pid)])
 
-if __name__ == "__main__":
-    (Path(__file__).resolve().parents[2] / "target").mkdir(exist_ok=True)
-    unittest.main()
 
 
 class MergeWithMainTests(unittest.TestCase):
@@ -409,3 +417,21 @@ class MergeWithMainTests(unittest.TestCase):
         self.assertEqual(self.git(self.root, "rev-parse", "HEAD"), pushed)
         self.assertEqual(self.git(self.root, "status", "--porcelain"), "")
         self.assertFalse((self.root / "from-main.txt").exists())
+
+    def test_a_git_that_cannot_answer_tests_the_branch_as_it_is(self):
+        # An older git without merge-tree --write-tree exits 129: that is
+        # not a conflict, and must not refuse every push.
+        real = shutil.which("git", path=os.environ["PATH"])
+        self.script(self.bin / "git", f'if [ "$1" = merge-tree ]; then exit 129; fi\nexec "{real}" "$@"')
+        (self.root / "shared.txt").write_text("one\nbranch\n")
+        self.commit(self.root, "the branch's change")
+        self.main_moves_on()
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("could not say whether", result.stderr)
+        self.assertEqual(self.built(), ["one,branch,|branch"], "tested as it is")
+
+
+if __name__ == "__main__":
+    (Path(__file__).resolve().parents[2] / "target").mkdir(exist_ok=True)
+    unittest.main()

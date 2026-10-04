@@ -508,16 +508,21 @@ if [ -n "$_queue" ] && [ "${KLIPP_GATE_AS_IS:-}" != "1" ] && git remote get-url 
     _step=merge
     if timeout 60 git fetch --quiet origin main 9>&- 2>/dev/null && _main_head=$(git rev-parse --verify --quiet origin/main); then
         if ! git merge-base --is-ancestor "$_main_head" HEAD 2>/dev/null; then
-            if ! git merge-tree --write-tree HEAD "$_main_head" >/dev/null 2>&1; then
+            # merge-tree says 1 for a conflict; anything else is git failing
+            # to answer (an older git without --write-tree), which must not
+            # refuse every push, so the branch is then tested as it is.
+            _mt_status=0
+            git merge-tree --write-tree HEAD "$_main_head" >/dev/null 2>&1 || _mt_status=$?
+            if [ "$_mt_status" -ne 0 ] && [ "$_mt_status" -ne 1 ]; then
+                printf '  pre-push: git could not say whether %s merges onto main (merge-tree exit %s); testing the branch as it is.\n' "${_branch:-this branch}" "$_mt_status" >&2
+            elif [ "$_mt_status" -eq 1 ]; then
                 printf '\n  pre-push: this branch no longer merges cleanly onto main — push refused.\n' >&2
                 printf '            Nothing was built. Rebase it and push again:\n\n' >&2
                 printf '              git fetch origin && git rebase origin/main\n\n' >&2
                 # The files in conflict: the lines after the tree id, up to the blank line.
                 git merge-tree --name-only --write-tree HEAD "$_main_head" 2>/dev/null | awk 'NR > 1 && /^$/ { exit } NR > 1 { print "              conflict: " $0 }' >&2 || true
                 exit 1
-            fi
-            _pushed=$(git rev-parse HEAD)
-            if [ "$KLIPP_ALLOW_DIRTY" != "1" ] && git merge --no-commit --no-ff --quiet "$_main_head" >/dev/null 2>&1; then
+            elif [ "$KLIPP_ALLOW_DIRTY" != "1" ] && _pushed=$(git rev-parse HEAD) && git merge --no-commit --no-ff --quiet "$_main_head" >/dev/null 2>&1; then
                 _merged_from=$_pushed
                 printf '  pre-push: %s is behind main; testing it merged with main (%s), as the squash merge will be. The branch is put back after.\n' \
                     "${_branch:-this branch}" "$(git rev-parse --short "$_main_head")"
