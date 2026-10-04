@@ -211,6 +211,24 @@ class ScratchGateTests(unittest.TestCase):
         self.assertIn("40 days old — push refused", result.stderr)
         self.assertIn("cargo deny fetch db", result.stderr)
 
+    def test_the_list_is_found_where_deny_toml_keeps_it(self):
+        # The age is read from deny.toml's db-path, not a fixed folder: an
+        # old list there is refused (#949 review).
+        self.with_cargo_deny("advisories ok\n", fetch=1)
+        self.advisory_db(age_days=40)
+        kept = self.env.pop("KLIPP_ADVISORY_DB")
+        (self.root / "deny.toml").write_text(f'[advisories]\ndb-path = "{kept}"\n')
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("40 days old", result.stderr)
+
+    def test_a_missing_list_is_said(self):
+        self.with_cargo_deny("advisories ok\n")
+        self.env["KLIPP_ADVISORY_DB"] = str(self.root / "nowhere")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("age is not known", result.stderr)
+
     def test_skipping_the_audit_is_said_and_recorded(self):
         # The opt-out for a machine that cannot check: the push goes on, and
         # its line in the gate history says it was not checked.
