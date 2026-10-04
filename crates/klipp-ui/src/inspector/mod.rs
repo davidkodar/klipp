@@ -133,6 +133,26 @@ impl NewInspectorPanel {
             cmds.push(AppCommand::ToggleInspectorPanel);
         }
 
+        // ── Several clips selected (#843) ──
+        // A change here is made on every selected clip that has the
+        // setting; the values shown are this clip's, and the line names
+        // the ones that differ across the selection.
+        if let Some((_, primary)) = clip_info {
+            let many = state.selected_clips.len() > 1 && state.selected_clips.contains(&primary.id);
+            if many {
+                let seq = state.sequence();
+                let clips: Vec<&klipp_timeline::Clip> = state.selected_clips.iter().filter_map(|id| seq.all_clips().find(|c| c.id == *id)).collect();
+                let mixed = crate::multi_edit::mixed(&clips);
+                let mut line = format!("Editing {} selected clips: a change is made on each that has the setting.", clips.len());
+                if !mixed.is_empty() {
+                    line.push_str(&format!(" Mixed (this clip's shown): {}.", mixed.join(", ")));
+                }
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new(line).size(11.0).color(theme.text_accent));
+                ui.add_space(2.0);
+            }
+        }
+
         // ── Amber context banner (timeline clip only) ──
         if let Some((track_idx, clip)) = clip_info {
             let track_name = state.sequence().tracks.get(track_idx)
