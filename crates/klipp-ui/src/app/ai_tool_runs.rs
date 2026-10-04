@@ -493,8 +493,9 @@ impl KlippApp {
     }
 }
 
-/// Render marker positions as a DVDStyler / dvdauthor chapter list.
-/// The format is one `HH:MM:SS.mmm` timecode per line — labels are ignored
+/// The AI tools task an engine event names, as the AI tools panel's own
+/// task: the event carries a plain tag so klipp-core need not know the
+/// panel's types.
 pub(super) fn ai_tools_task_from_tag(tag: klipp_core::events::AiToolsTaskTag) -> crate::ai_tools::AiTask {
     use klipp_core::events::AiToolsTaskTag;
     match tag {
