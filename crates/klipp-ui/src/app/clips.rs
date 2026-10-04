@@ -32,13 +32,15 @@ impl KlippApp {
     }
 
     /// Each of `clip_ids` given the name and colour `change` makes of its
-    /// own (#920), as one undo step named `description`. Clips it leaves
-    /// as they were are not in the step, and nothing is pushed when none
-    /// changes.
+    /// own (#920), as one undo step named `description`. A clip's linked
+    /// partner (its picture or its sound) is named with it, so the two
+    /// keep reading as one shot. Clips it leaves as they were are not in
+    /// the step, and nothing is pushed when none changes.
     pub(super) fn set_clip_labels(&mut self, clip_ids: &[klipp_core::ClipId], description: &'static str, change: impl Fn(&klipp_timeline::ClipLabel) -> klipp_timeline::ClipLabel) {
         let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let targets = with_linked_partners(seq, clip_ids);
         let mut changes = Vec::new();
-        for clip in seq.all_clips_mut().filter(|c| clip_ids.contains(&c.id)) {
+        for clip in seq.all_clips_mut().filter(|c| targets.contains(&c.id)) {
             let old = clip.own_label();
             let new = change(&old);
             if new != old {
@@ -49,9 +51,8 @@ impl KlippApp {
         if changes.is_empty() {
             return;
         }
-        self.state.active_history_mut().push(crate::history::HistoryEntry {
-            command: crate::history::EditCommand::SetClipLabels { description, changes },
-        });
+        // Through push_history, so a rename counts toward autosave.
+        self.state.push_history(crate::history::EditCommand::SetClipLabels { description, changes });
         self.sync_sequence_to_engine();
         self.state.dirty = true;
     }
@@ -1696,5 +1697,46 @@ mod linked_clipboard_tests {
         let mut lone = seq.clone();
         lone.tracks[0].clips[0].linked_clip_id = None;
         assert_eq!(crate::clip_clipboard::copy(&lone, &[vid]).unwrap().clips.len(), 1);
+    }
+}
+
+/// `clip_ids` and the clips linked to them, each once: a picture's sound,
+/// or a sound's picture (#920).
+fn with_linked_partners(seq: &klipp_timeline::Sequence, clip_ids: &[klipp_core::ClipId]) -> Vec<klipp_core::ClipId> {
+    let mut out = clip_ids.to_vec();
+    for clip in seq.all_clips() {
+        let partner = match clip.linked_clip_id {
+            Some(other) if clip_ids.contains(&clip.id) => Some(other),
+            Some(other) if clip_ids.contains(&other) => Some(clip.id),
+            _ => None,
+        };
+        if let Some(id) = partner.filter(|id| !out.contains(id)) {
+            out.push(id);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod linked_partner_tests {
+    use super::with_linked_partners;
+
+    #[test]
+    fn a_picture_brings_its_sound_and_a_sound_its_picture() {
+        let tc = |v| klipp_core::RationalTime { value: v, rate: 24 };
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let media = klipp_core::MediaId::new();
+        let mut picture = klipp_timeline::Clip::media(media, tc(0), tc(24), tc(0), tc(24));
+        let mut sound = klipp_timeline::Clip::media(media, tc(0), tc(24), tc(0), tc(24));
+        picture.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(picture.id);
+        let alone = klipp_timeline::Clip::media(media, tc(24), tc(48), tc(0), tc(24));
+        let (p, s, a) = (picture.id, sound.id, alone.id);
+        seq.tracks[0].clips = vec![picture, alone];
+        seq.tracks.last_mut().unwrap().clips = vec![sound];
+        assert_eq!(with_linked_partners(&seq, &[p]), vec![p, s]);
+        assert_eq!(with_linked_partners(&seq, &[s]), vec![s, p]);
+        assert_eq!(with_linked_partners(&seq, &[p, s]), vec![p, s], "each once");
+        assert_eq!(with_linked_partners(&seq, &[a]), vec![a]);
     }
 }

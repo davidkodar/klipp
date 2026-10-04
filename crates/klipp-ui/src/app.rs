@@ -189,6 +189,7 @@ pub struct KlippApp {
     viewer: ViewerPanel,
     title_renderer: klipp_title::TitleRenderer,
     markers: MarkersPanel,
+    edit_list: crate::panels::edit_list::EditListPanel,
     transcript_panel: crate::panels::transcript::TranscriptPanel,
     /// Transcripts read for the Transcript panel and the GUI's document
     /// ops; kept until the analyses change.

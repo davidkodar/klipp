@@ -1081,6 +1081,7 @@ impl ToolbarPanel {
             if ui.add(egui::Button::new(toggle_label(state.show_audio_mixer, "Audio Mixer")).shortcut_text(kb.display_for("toggle_audio_mixer"))).clicked() { state.show_audio_mixer = !state.show_audio_mixer; ui.close_menu(); }
             if ui.button(toggle_label(state.show_history_panel, "History")).clicked() { state.show_history_panel = !state.show_history_panel; ui.close_menu(); }
             if ui.button(toggle_label(state.show_markers_panel, "Markers")).clicked() { state.show_markers_panel = !state.show_markers_panel; ui.close_menu(); }
+            if ui.button(toggle_label(state.show_edit_list, "Edit List")).on_hover_text("Every clip, transition and marker in a table: sort it, filter it by name, click a row to go there.").clicked() { state.show_edit_list = !state.show_edit_list; ui.close_menu(); }
             if ui.add(egui::Button::new(toggle_label(state.show_subtitle_editor, "Subtitle Editor")).shortcut_text(kb.display_for("toggle_subtitle_editor"))).clicked() { state.show_subtitle_editor = !state.show_subtitle_editor; ui.close_menu(); }
             if ui.button(toggle_label(state.show_transcript_panel, "Transcript")).clicked() { state.show_transcript_panel = !state.show_transcript_panel; ui.close_menu(); }
             if ui.add(egui::Button::new(toggle_label(state.show_project_notes, "Project Notes")).shortcut_text(kb.display_for("toggle_project_notes"))).clicked() { state.show_project_notes = !state.show_project_notes; ui.close_menu(); }

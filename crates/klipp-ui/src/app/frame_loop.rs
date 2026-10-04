@@ -1106,6 +1106,12 @@ impl KlippApp {
             all_cmds.extend(cmds);
         }
 
+        // Edit list (#923)
+        if self.state.show_edit_list {
+            let cmds = self.edit_list.show(ctx, &mut self.state);
+            all_cmds.extend(cmds);
+        }
+
         // Subtitle editor panel
         if self.state.show_subtitle_editor {
             let cmds = crate::panels::subtitle_editor::show(ctx, &mut self.state);

@@ -18,6 +18,7 @@ pub mod node_graph_v2;
 pub mod node_inspector;
 pub mod launch_screen;
 pub mod markers;
+pub mod edit_list;
 pub mod new_project_dialog;
 pub mod project_info;
 pub mod project_notes;
