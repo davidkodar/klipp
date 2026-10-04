@@ -2162,9 +2162,19 @@ impl KlippApp {
                     return true;
                 };
                 let what = klipp_timeline::TrackPaste { levels: *levels, picture: *picture, sound: *sound };
-                let changes: Vec<_> = track_ids
-                    .iter()
-                    .filter_map(track)
+                // A locked track is left as it is, as a locked track's clips
+                // are, and said.
+                let (locked, open): (Vec<_>, Vec<_>) = track_ids.iter().filter_map(track).partition(|t| t.locked);
+                if !locked.is_empty() {
+                    let n = locked.len();
+                    self.state.toast.show(if open.is_empty() {
+                        format!("{} is locked; nothing was pasted", locked[0].name)
+                    } else {
+                        format!("{n} locked track{} left as {}", if n == 1 { "" } else { "s" }, if n == 1 { "it was" } else { "they were" })
+                    });
+                }
+                let changes: Vec<_> = open
+                    .into_iter()
                     .map(|t| (t.id, t.settings(), t.pasted(copied, what)))
                     .filter(|(_, old, new)| old != new)
                     .collect();
@@ -2173,10 +2183,15 @@ impl KlippApp {
             AppCommand::AddTrackVideoEffect { track_id, kind } => match klipp_document::ops::named_picture_effect(kind, None) {
                 Ok((fx, _)) => (
                     one(track_id, &|s| {
-                        // One of a kind: a second vignette replaces the first.
+                        // One of a kind: a second vignette replaces the first,
+                        // and is on, as the op leaves it.
                         let at = s.effects.video.iter().position(|e| std::mem::discriminant(e) == std::mem::discriminant(&fx));
                         match at {
-                            Some(k) => s.effects.video[k] = fx.clone(),
+                            Some(k) => {
+                                s.effects.video[k] = fx.clone();
+                                s.effects.video_enabled.resize(s.effects.video.len(), true);
+                                s.effects.video_enabled[k] = true;
+                            }
                             None => s.effects.video.push(fx.clone()),
                         }
                     }),
