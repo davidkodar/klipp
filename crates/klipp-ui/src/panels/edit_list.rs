@@ -145,8 +145,11 @@ pub fn activate(row: &Row, state: &mut AppState) -> Vec<AppCommand> {
             vec![AppCommand::SelectClip(Some(id)), AppCommand::SetPlayhead(row.record.0), AppCommand::CenterTimelineOnClip(id)]
         }
         Target::Transition(track, id) => {
+            // The transition alone is selected, as a click on it does on
+            // the timeline; the clips are let go.
+            state.selected_clips.clear();
             state.selected_transition = Some((track, id));
-            vec![AppCommand::SetPlayhead(row.record.0)]
+            vec![AppCommand::SelectClip(None), AppCommand::SetPlayhead(row.record.0)]
         }
         Target::Marker(id) => vec![AppCommand::JumpToMarker { marker_id: id }],
     }
@@ -407,7 +410,7 @@ mod tests {
         let dissolve = rows.iter().find(|r| r.kind == "Transition").unwrap();
         let cmds = activate(dissolve, &mut state);
         assert!(matches!(state.selected_transition, Some((_, _))), "the transition is selected");
-        assert!(matches!(cmds.as_slice(), [AppCommand::SetPlayhead(t)] if *t == tc(3)), "{cmds:?}");
+        assert!(matches!(cmds.as_slice(), [AppCommand::SelectClip(None), AppCommand::SetPlayhead(t)] if *t == tc(3)), "the clips let go: {cmds:?}");
         let marker = rows.iter().find(|r| r.kind == "Marker").unwrap();
         assert!(matches!(activate(marker, &mut state).as_slice(), [AppCommand::JumpToMarker { .. }]));
     }
