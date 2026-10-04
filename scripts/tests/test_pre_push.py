@@ -346,6 +346,7 @@ class RealGitGate(unittest.TestCase):
         self.git(top, "clone", "-q", str(self.origin), str(self.root))
         (self.root / "scripts").mkdir()
         shutil.copy(Path(__file__).resolve().parents[1] / "pre-push.sh", self.root / "scripts/pre-push.sh")
+        shutil.copy(Path(__file__).resolve().parents[1] / "affected_crates.py", self.root / "scripts/affected_crates.py")
         self.script(self.root / "scripts/check-signoff.sh", "exit 0")
         (self.root / "shared.txt").write_text("one\n")
         (self.root / ".gitignore").write_text("target/\n")
@@ -487,6 +488,71 @@ class GateCheckoutTests(RealGitGate):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.where()[-1], f"{self.root}|one,")
         self.assertIn("could not be used", result.stderr)
+
+
+class TestScopeTests(RealGitGate):
+    """The gate runs the tests of the crates a branch touches and of those
+    built on them, and the whole suite when it must (#873)."""
+
+    def setUp(self):
+        super().setUp()
+        # Crate b is built on crate a. cargo answers metadata for the tree
+        # it runs in and records each test command.
+        for name in ("a", "b"):
+            (self.root / "crates" / name / "src").mkdir(parents=True)
+            (self.root / "crates" / name / "src/lib.rs").write_text("\n")
+        self.commit(self.root, "two crates")
+        self.git(self.root, "push", "-q", "origin", "HEAD:main")
+        meta = ('{"workspace_root":"%s","packages":['
+                '{"name":"a","manifest_path":"%s/crates/a/Cargo.toml","dependencies":[]},'
+                '{"name":"b","manifest_path":"%s/crates/b/Cargo.toml","dependencies":[{"name":"a","path":"%s/crates/a"}]}]}')
+        self.script(self.bin / "cargo", f'case "$1" in\n metadata) printf \'{meta}\' "$PWD" "$PWD" "$PWD" "$PWD";;\n test) echo "$*" >> "$TEST_ROOT/tests";;\nesac\nexit 0')
+        self.full_mark = self.root / ".git/klipp-pre-push.full"
+
+    def tests_run(self):
+        path = Path(self.temp.name) / "tests"
+        lines = path.read_text().splitlines() if path.exists() else []
+        path.unlink(missing_ok=True)
+        return lines
+
+    def change(self, path, text="changed\n"):
+        (self.root / path).write_text(text)
+        self.commit(self.root, f"change {path}")
+
+    def test_the_first_gate_runs_everything_and_the_next_only_what_a_change_reaches(self):
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.tests_run(), ["test --workspace --no-run", "test --workspace"])
+        self.assertIn("has not passed in 12 hours", result.stdout)
+        self.assertTrue(self.full_mark.exists(), "the whole suite's pass is noted")
+        self.change("crates/a/src/lib.rs")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.tests_run(), ["test -p a -p b --no-run", "test -p a -p b"], "a and b, which is built on a")
+        self.change("crates/b/src/lib.rs")
+        self.run_gate()
+        self.assertEqual(self.tests_run(), ["test -p a -p b --no-run", "test -p a -p b"], "the branch's changes: a and b")
+
+    def test_documentation_runs_no_tests_and_a_shared_file_runs_them_all(self):
+        self.full_mark.write_text(str(int(time.time())))
+        self.change("README.md")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.tests_run(), [])
+        self.assertIn("no tests to run", result.stdout)
+        self.change("Cargo.lock")
+        result = self.run_gate()
+        self.assertEqual(self.tests_run(), ["test --workspace --no-run", "test --workspace"])
+        self.assertIn("Cargo.lock is shared", result.stdout)
+
+    def test_a_stale_full_run_or_klipp_gate_full_runs_everything(self):
+        self.full_mark.write_text(str(int(time.time()) - 13 * 3600))
+        self.change("crates/b/src/lib.rs")
+        self.run_gate()
+        self.assertEqual(self.tests_run()[-1], "test --workspace", "no full pass in 12 hours")
+        self.env["KLIPP_GATE_FULL"] = "1"
+        self.run_gate()
+        self.assertEqual(self.tests_run()[-1], "test --workspace", "asked for")
 
 
 if __name__ == "__main__":
