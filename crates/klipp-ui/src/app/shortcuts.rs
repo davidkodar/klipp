@@ -394,7 +394,11 @@ impl KlippApp {
             }
             // Delete/Backspace — remove selected clip OR extract range (plain, no shift)
             else if !keyframe_deleted && kb.is_action_pressed("delete_clip", i) {
-                if let Some(clip_id) = self.state.selected_clip {
+                // A selected transition goes, not the clips around it (#918).
+                if let (Some((track_index, transition_id)), None) = (self.state.selected_transition, self.state.selected_clip) {
+                    cmds.push(AppCommand::RemoveTransition { track_index, transition_id });
+                    self.state.selected_transition = None;
+                } else if let Some(clip_id) = self.state.selected_clip {
                     cmds.push(AppCommand::RemoveClip { clip_id });
                 } else if self.state.selected_clips.is_empty()
                     && self.state.sequence().in_point.is_some()
@@ -686,6 +690,13 @@ impl KlippApp {
                 cmds.extend(self.state.split_at_playhead_commands());
             }
             // Freeze frame at playhead (default 2s duration).
+            // The default transition at the nearest cut (#918).
+            if kb.is_action_pressed("add_default_transition", i) {
+                cmds.push(AppCommand::AddDefaultTransition { audio: false });
+            }
+            if kb.is_action_pressed("add_audio_crossfade", i) {
+                cmds.push(AppCommand::AddDefaultTransition { audio: true });
+            }
             if kb.is_action_pressed("freeze_frame", i) {
                 cmds.push(AppCommand::InsertFreezeFrame { duration_secs: 2.0 });
             }

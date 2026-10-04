@@ -69,6 +69,7 @@ mod grade_edits;
 mod tracking;
 mod linked_audio;
 mod camera;
+mod transition_keys;
 mod locks;
 mod subtitles;
 mod render_script;
