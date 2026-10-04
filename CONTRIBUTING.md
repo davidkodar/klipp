@@ -299,10 +299,19 @@ in `.git/klipp-pre-push.logs/` (the last 50 runs), and the history line
 names its log, so a failure can be read after the push that hit it has
 gone.
 
+When its turn comes, the gate fetches `main`. A branch that no longer
+merges cleanly onto it is refused at once, before anything is built:
+rebase it and push again. A branch that is behind `main` is tested merged
+with it, which is what the squash merge will put on `main`, and then put
+back exactly as it was pushed. (`KLIPP_GATE_AS_IS=1 git push` tests the
+branch alone.) The routine that goes with it: the reviewer reviews while
+the gate runs, and merges as soon as it passes and GitHub shows the PR
+mergeable, so the next branch is tested on a `main` that already has it.
+
 The gate also runs `cargo deny check advisories` when cargo-deny is
-installed, and reports a finding without refusing the push. A new
-advisory is fixed by updating, or recorded in `deny.toml` with the
-reason it cannot reach Klipp.
+installed. An advisory that `deny.toml` does not record refuses the push
+until it is fixed by updating, or recorded there with the reason it
+cannot reach Klipp.
 
 `KLIPP_SKIP_TESTS=1 git push` bypasses the hook for a genuine reason (a
 work-in-progress branch, a mid-bisect push, a machine with no GPU). It
