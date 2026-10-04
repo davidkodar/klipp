@@ -28,9 +28,13 @@ pub fn show(
     let mut x = rect.min.x + 4.0;
     let y = rect.min.y;
 
-    // Render each sequence tab
+    // Render each open sequence tab
+    let open_tabs = open_tab_count(state);
     for i in 0..state.sequences.len() {
         let is_active = i == state.active_sequence_idx;
+        if !is_active && state.closed_sequence_tabs.contains(&state.sequences[i].id) {
+            continue;
+        }
         let name = state.sequences[i].name.clone();
 
         // Measure text width
@@ -91,8 +95,9 @@ pub fn show(
             egui::pos2(tab_rect.max.x - CLOSE_SIZE - 4.0, tab_rect.center().y - CLOSE_SIZE / 2.0),
             egui::vec2(CLOSE_SIZE, CLOSE_SIZE),
         );
-        let close_resp = ui.allocate_rect(close_rect, egui::Sense::click());
-        if close_resp.hovered() || is_active {
+        let can_close = open_tabs > 1;
+        let close_resp = ui.allocate_rect(close_rect, if can_close { egui::Sense::click() } else { egui::Sense::hover() });
+        if can_close && (close_resp.hovered() || is_active) {
             let close_color = if close_resp.hovered() {
                 theme.text_primary
             } else {
@@ -116,9 +121,16 @@ pub fn show(
             cmds.push(AppCommand::SetActiveSequence { sequence_idx: i });
         }
 
-        // Close button click — delete sequence
-        if close_resp.clicked() && state.sequences.len() > 1 {
-            cmds.push(AppCommand::DeleteSequence { sequence_idx: i });
+        // × closes the tab: the sequence stays in the project (#906).
+        // It deleted the sequence, with no question and no undo.
+        let close_resp = close_resp.on_hover_text("Close tab (the sequence stays in the project)");
+        if can_close && close_resp.clicked() {
+            state.closed_sequence_tabs.insert(state.sequences[i].id);
+            if is_active {
+                if let Some(next) = tab_after_closing(state, i) {
+                    cmds.push(AppCommand::SetActiveSequence { sequence_idx: next });
+                }
+            }
         }
 
         // Right-click context menu
@@ -139,12 +151,23 @@ pub fn show(
                 cmds.push(AppCommand::OpenSequenceSettings { sequence_idx: i });
                 ui.close_menu();
             }
+            if ui.add_enabled(can_close, egui::Button::new("Close Tab")).clicked() {
+                state.closed_sequence_tabs.insert(state.sequences[i].id);
+                if is_active {
+                    if let Some(next) = tab_after_closing(state, i) {
+                        cmds.push(AppCommand::SetActiveSequence { sequence_idx: next });
+                    }
+                }
+                ui.close_menu();
+            }
             ui.separator();
             let can_delete = state.sequences.len() > 1;
             if ui.add_enabled(can_delete, egui::Button::new(
-                egui::RichText::new("Delete").color(egui::Color32::from_rgb(200, 60, 60))
+                egui::RichText::new("Delete Sequence…").color(egui::Color32::from_rgb(200, 60, 60))
             )).clicked() {
-                cmds.push(AppCommand::DeleteSequence { sequence_idx: i });
+                // Asked first: a deleted sequence and its undo history
+                // cannot be brought back.
+                state.confirm_delete_sequence = Some(state.sequences[i].id);
                 ui.close_menu();
             }
         });
@@ -170,6 +193,37 @@ pub fn show(
         egui::FontId::proportional(16.0),
         add_color,
     );
+    let add_resp = add_resp.on_hover_text("New sequence");
+
+    // Every sequence in the project, to open one whose tab was closed.
+    let list_rect = egui::Rect::from_min_size(
+        egui::pos2(add_rect.max.x, y),
+        egui::vec2(ADD_BTN_W - 8.0, TAB_HEIGHT),
+    );
+    let list_resp = ui.allocate_rect(list_rect, egui::Sense::click());
+    ui.painter().text(
+        list_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "▾",
+        egui::FontId::proportional(13.0),
+        if list_resp.hovered() { theme.text_primary } else { theme.text_dim },
+    );
+    let list_resp = list_resp.on_hover_text("Open a sequence");
+    let popup_id = ui.make_persistent_id("sequence_list_popup");
+    if list_resp.clicked() {
+        ui.memory_mut(|m| m.toggle_popup(popup_id));
+    }
+    egui::popup_below_widget(ui, popup_id, &list_resp, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+        ui.set_min_width(200.0);
+        for (i, seq) in state.sequences.iter().enumerate() {
+            let open = i == state.active_sequence_idx || !state.closed_sequence_tabs.contains(&seq.id);
+            let label = if open { format!("✓ {}", seq.name) } else { format!("   {}", seq.name) };
+            if ui.selectable_label(i == state.active_sequence_idx, label).clicked() {
+                cmds.push(AppCommand::SetActiveSequence { sequence_idx: i });
+            }
+        }
+    });
+
     if add_resp.clicked() {
         // New sequence: inherit fps from active, but resolution comes from
         // the "New sequence resolution" pref when set (idx > 0). Idx 0 =
@@ -241,3 +295,59 @@ pub fn show(
 }
 
 pub const HEIGHT: f32 = TAB_HEIGHT;
+
+/// How many tabs are open: the active one always, and every other
+/// sequence whose tab was not closed.
+fn open_tab_count(state: &AppState) -> usize {
+    state
+        .sequences
+        .iter()
+        .enumerate()
+        .filter(|(i, s)| *i == state.active_sequence_idx || !state.closed_sequence_tabs.contains(&s.id))
+        .count()
+}
+
+/// The tab to show when the active one at `closing` is closed: the next
+/// open tab to its right, else the nearest to its left.
+fn tab_after_closing(state: &AppState, closing: usize) -> Option<usize> {
+    let open = |i: usize| i != closing && !state.closed_sequence_tabs.contains(&state.sequences[i].id);
+    (closing + 1..state.sequences.len()).find(|&i| open(i)).or_else(|| (0..closing).rev().find(|&i| open(i)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{open_tab_count, tab_after_closing};
+    use crate::state::AppState;
+
+    fn three() -> AppState {
+        let mut state = AppState::default();
+        let first = state.sequences[0].clone();
+        for name in ["B", "C"] {
+            let mut s = first.clone();
+            s.id = klipp_core::SequenceId::new();
+            s.name = name.into();
+            state.sequences.push(s);
+        }
+        state
+    }
+
+    #[test]
+    fn closing_a_tab_keeps_the_sequence_and_moves_to_a_neighbour() {
+        let mut state = three();
+        state.active_sequence_idx = 1;
+        state.closed_sequence_tabs.insert(state.sequences[1].id);
+        assert_eq!(state.sequences.len(), 3, "the sequence stays in the project");
+        assert_eq!(tab_after_closing(&state, 1), Some(2), "the tab to the right");
+        state.closed_sequence_tabs.insert(state.sequences[2].id);
+        assert_eq!(tab_after_closing(&state, 1), Some(0), "else the one to the left");
+    }
+
+    #[test]
+    fn the_active_tab_counts_as_open_even_if_it_was_closed() {
+        let mut state = three();
+        for s in &state.sequences {
+            state.closed_sequence_tabs.insert(s.id);
+        }
+        assert_eq!(open_tab_count(&state), 1, "the last tab cannot be closed");
+    }
+}

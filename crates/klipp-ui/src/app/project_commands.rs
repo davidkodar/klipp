@@ -360,6 +360,11 @@ impl KlippApp {
                 true
             }
             AppCommand::SetActiveSequence { sequence_idx } => {
+                // Switching to a sequence opens its tab again (#906).
+                if let Some(seq) = self.state.sequences.get(*sequence_idx) {
+                    let id = seq.id;
+                    self.state.closed_sequence_tabs.remove(&id);
+                }
                 if *sequence_idx < self.state.sequences.len()
                     && *sequence_idx != self.state.active_sequence_idx
                 {
@@ -504,6 +509,7 @@ impl KlippApp {
                     // never be replayed once its clips and tracks are
                     // gone.
                     self.state.command_histories.remove(&removed_id);
+                    self.state.closed_sequence_tabs.remove(&removed_id);
                     // Drop any compound_clip_stack entries pointing at the
                     // removed sequence and renumber indices that shifted.
                     self.state.compound_clip_stack.retain(|(idx, _)| *idx != *sequence_idx);

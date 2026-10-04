@@ -694,6 +694,41 @@ impl KlippApp {
             }
         }
 
+        // 4a3. Confirm delete sequence (#906): a deleted sequence and its
+        // undo history cannot be brought back, so the tab menu asks.
+        if let Some(seq_id) = self.state.confirm_delete_sequence {
+            let found = self.state.sequences.iter().position(|s| s.id == seq_id);
+            match found {
+                Some(idx) => {
+                    let name = self.state.sequences[idx].name.clone();
+                    let mut open = true;
+                    egui::Window::new("Delete Sequence")
+                        .open(&mut open)
+                        .collapsible(false)
+                        .resizable(false)
+                        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                        .show(ctx, |ui| {
+                            ui.label(format!("Delete the sequence \"{name}\" from the project?"));
+                            ui.label("Its edits and its undo history go with it. This cannot be undone.");
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Delete").clicked() {
+                                    cmds.push(AppCommand::DeleteSequence { sequence_idx: idx });
+                                    self.state.confirm_delete_sequence = None;
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    self.state.confirm_delete_sequence = None;
+                                }
+                            });
+                        });
+                    if !open {
+                        self.state.confirm_delete_sequence = None;
+                    }
+                }
+                None => self.state.confirm_delete_sequence = None,
+            }
+        }
+
         // 4b. Export dialog
         let export_cmds = self.show_export_dialog(ctx);
         cmds.extend(export_cmds);

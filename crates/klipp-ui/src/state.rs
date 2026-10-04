@@ -2222,6 +2222,13 @@ pub struct AppState {
 
     // Phase 7: Dynamic tracks
     pub confirm_remove_track: Option<TrackId>,
+    /// Sequences whose tab was closed with its ×. Closing a tab only
+    /// hides it: the sequence stays in the project, and the tab bar's
+    /// sequence menu opens it again (#906).
+    pub closed_sequence_tabs: std::collections::HashSet<SequenceId>,
+    /// The sequence the tab menu asked to delete, waiting for the
+    /// confirmation dialog.
+    pub confirm_delete_sequence: Option<SequenceId>,
     pub show_markers_panel: bool,
     /// Visibility of the dedicated subtitle editor panel.
     pub show_subtitle_editor: bool,
@@ -4069,6 +4076,8 @@ impl Default for AppState {
             lufs_target: -23.0,
             peak_hold_time_secs: 3.0,
             confirm_remove_track: None,
+            closed_sequence_tabs: Default::default(),
+            confirm_delete_sequence: None,
             show_markers_panel: false,
             show_subtitle_editor: false,
             show_transcript_panel: false,
