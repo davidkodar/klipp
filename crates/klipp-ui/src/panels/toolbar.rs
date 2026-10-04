@@ -759,8 +759,17 @@ impl ToolbarPanel {
                 cmds.push(AppCommand::AddMarker { position: state.playhead, label: String::new(), color: klipp_core::MarkerColor::Blue });
                 ui.close_menu();
             }
-            if ui.add(egui::Button::new("Edit Marker...").shortcut_text(kb.display_for("add_clip_marker"))).clicked() {
-                // Open marker editor for the marker at or nearest playhead
+            // No shortcut of its own: Shift+M, shown here before, adds a
+            // clip marker (#909).
+            if ui.add_enabled(!state.sequence().markers.is_empty(), egui::Button::new("Edit Marker...")).clicked() {
+                // The marker nearest the playhead, opened for editing.
+                let at = state.playhead.to_secs_f64();
+                state.edit_marker_request = state
+                    .sequence()
+                    .markers
+                    .iter()
+                    .min_by(|a, b| (a.position.to_secs_f64() - at).abs().total_cmp(&(b.position.to_secs_f64() - at).abs()))
+                    .map(|m| m.id);
                 state.show_markers_panel = true;
                 ui.close_menu();
             }

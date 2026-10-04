@@ -8,6 +8,7 @@ pub mod time_utils;
 pub mod range_visuals;
 pub mod grid_snap;
 pub mod camera_lane;
+pub mod markers;
 
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -232,6 +233,9 @@ impl NewTimelinePanel {
 
         // ── Ruler interaction: seek, range drag, handle drag ──
         let ruler_resp = ui.interact(ruler_rect, ui.id().with("new_ruler_seek"), egui::Sense::click_and_drag());
+        // Sequence markers, over the ruler so their flags take the clicks
+        // and drags on them (#909).
+        markers::show(ui, ruler_rect, tracks_rect.bottom(), state, pps, scroll_x, &mut cmds);
 
         // Clear snap line each frame
         state.range_snap_line_x = None;

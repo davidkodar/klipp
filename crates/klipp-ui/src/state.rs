@@ -2230,6 +2230,9 @@ pub struct AppState {
     /// confirmation dialog.
     pub confirm_delete_sequence: Option<SequenceId>,
     pub show_markers_panel: bool,
+    /// A marker to open for editing in the Markers panel: a double-click
+    /// on its flag, or Edit Marker… (#909).
+    pub edit_marker_request: Option<klipp_core::MarkerId>,
     /// Visibility of the dedicated subtitle editor panel.
     pub show_subtitle_editor: bool,
     /// Visibility of the Transcript panel.
@@ -4079,6 +4082,7 @@ impl Default for AppState {
             closed_sequence_tabs: Default::default(),
             confirm_delete_sequence: None,
             show_markers_panel: false,
+            edit_marker_request: None,
             show_subtitle_editor: false,
             show_transcript_panel: false,
             transcript_panel_hovered: false,

@@ -86,6 +86,14 @@ impl KlippApp {
                 self.sync_sequence_to_engine();
                 true
             }
+            AppCommand::MoveMarker { marker_id, position } => {
+                if let Some(m) = self.state.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
+                    m.position = *position;
+                }
+                self.state.dirty = true;
+                self.sync_sequence_to_engine();
+                true
+            }
             AppCommand::JumpToMarker { marker_id } => {
                 if let Some(m) = self.state.sequences[self.state.active_sequence_idx].markers.iter().find(|m| m.id == *marker_id) {
                     let pos = m.position;
