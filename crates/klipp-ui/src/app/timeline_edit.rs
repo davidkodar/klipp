@@ -440,37 +440,23 @@ impl KlippApp {
                     self.sync_sequence_to_engine();
                     true
                 }
-                // Next edit point: jump playhead to the nearest clip boundary after current position
+                // Next edit point: the nearest clip boundary, marker, In or Out after the playhead (#921)
                 AppCommand::NextEditPoint => {
                     let ph = self.state.playhead;
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    let mut boundaries: Vec<klipp_core::RationalTime> = seq.tracks.iter()
-                        .flat_map(|t| t.clips.iter())
-                        .filter(|c| !matches!(c.kind, klipp_timeline::ClipKind::Gap))
-                        .flat_map(|c| [c.timeline_in, c.timeline_out])
-                        .filter(|&tc| tc > ph)
-                        .collect();
-                    boundaries.sort();
-                    boundaries.dedup();
-                    if let Some(&next) = boundaries.first() {
+                    let points = crate::navigation::edit_points(seq);
+                    if let Some(next) = crate::navigation::step_to(&points, ph, true) {
                         self.state.playhead = next;
                         let _ = self.cmd_tx.send(AppCommand::SeekTo(next));
                     }
                     true
                 }
-                // Previous edit point: jump playhead to the nearest clip boundary before current position
+                // Previous edit point: the nearest clip boundary, marker, In or Out before the playhead (#921)
                 AppCommand::PrevEditPoint => {
                     let ph = self.state.playhead;
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    let mut boundaries: Vec<klipp_core::RationalTime> = seq.tracks.iter()
-                        .flat_map(|t| t.clips.iter())
-                        .filter(|c| !matches!(c.kind, klipp_timeline::ClipKind::Gap))
-                        .flat_map(|c| [c.timeline_in, c.timeline_out])
-                        .filter(|&tc| tc < ph)
-                        .collect();
-                    boundaries.sort();
-                    boundaries.dedup();
-                    if let Some(&prev) = boundaries.last() {
+                    let points = crate::navigation::edit_points(seq);
+                    if let Some(prev) = crate::navigation::step_to(&points, ph, false) {
                         self.state.playhead = prev;
                         let _ = self.cmd_tx.send(AppCommand::SeekTo(prev));
                     }

@@ -1119,6 +1119,16 @@ pub struct DocOpsRequest {
     pub independent: bool,
 }
 
+/// Play In to Out under way (#921): where it starts and stops, when it
+/// was asked for, and whether playback has started from the In.
+#[derive(Debug, Clone, Copy)]
+pub struct PlayToOut {
+    pub from: klipp_core::Timecode,
+    pub out: klipp_core::Timecode,
+    pub asked: std::time::Instant,
+    pub started: bool,
+}
+
 pub struct AppState {
     pub playback: PlaybackState,
     pub playhead: Timecode,
@@ -1391,6 +1401,12 @@ pub struct AppState {
     pub append_brings_audio: bool,
     /// Default transition duration in frames (synced from prefs).
     pub default_transition_frames: u32,
+    /// Frames Shift+Left and Shift+Right move, 0 for one second (synced
+    /// from prefs, #921).
+    pub shift_step_frames: u32,
+    /// While Play In to Out runs: the Out it stops at, and whether
+    /// playback has started yet (#921).
+    pub play_to_out: Option<PlayToOut>,
     /// Timeline visual prefs (synced from prefs as whole struct).
     pub timeline_prefs: crate::prefs::TimelinePrefs,
     /// Viewer prefs (synced from prefs as whole struct).
@@ -3782,6 +3798,8 @@ impl Default for AppState {
             ripple_enabled: true,
             append_brings_audio: true,
             default_transition_frames: 24,
+            shift_step_frames: 0,
+            play_to_out: None,
             timeline_prefs: Default::default(),
             viewer_prefs: Default::default(),
             snap_threshold_px: 10.0,

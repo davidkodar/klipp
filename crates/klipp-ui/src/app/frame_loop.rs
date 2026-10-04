@@ -263,6 +263,7 @@ impl KlippApp {
         // 1. Drain events from engine
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::DRAIN_EVENTS);
         self.drain_events(ctx);
+        self.stop_at_out();
 
         // Sync scope mode to engine — only when it actually changed.
         // Previously this sent unconditionally every UI frame (~120

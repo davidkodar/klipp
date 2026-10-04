@@ -48,6 +48,11 @@ pub(super) fn apply_default_transition_frames(prefs: &mut crate::prefs::Preferen
     state.default_transition_frames = val;
 }
 
+pub(super) fn apply_shift_step_frames(prefs: &mut crate::prefs::Preferences, state: &mut AppState, val: u32) {
+    prefs.editing.shift_step_frames = val;
+    state.shift_step_frames = val;
+}
+
 pub(super) fn apply_multicam_show_angles(prefs: &mut crate::prefs::Preferences, state: &mut AppState, val: bool) {
     prefs.editing.multicam_show_angles = val;
     state.multicam_show_angles = val;
@@ -117,6 +122,14 @@ mod prefs_apply_tests {
         apply_default_transition_frames(&mut prefs, &mut state, new_val);
         assert_eq!(prefs.editing.default_transition_frames, new_val);
         assert_eq!(state.default_transition_frames, new_val);
+    }
+
+    #[test]
+    fn apply_shift_step_frames_mirrors_to_both() {
+        let (mut prefs, mut state) = fresh();
+        apply_shift_step_frames(&mut prefs, &mut state, 10);
+        assert_eq!(prefs.editing.shift_step_frames, 10);
+        assert_eq!(state.shift_step_frames, 10);
     }
 
     #[test]

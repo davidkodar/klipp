@@ -754,6 +754,7 @@ impl ToolbarPanel {
             ui.separator();
             if ui.add(egui::Button::new("Go to In Point")).clicked() { if let Some(inp) = state.sequence().in_point { cmds.push(AppCommand::SeekTo(inp)); } ui.close_menu(); }
             if ui.add(egui::Button::new("Go to Out Point")).clicked() { if let Some(outp) = state.sequence().out_point { cmds.push(AppCommand::SeekTo(outp)); } ui.close_menu(); }
+            if ui.add(egui::Button::new("Play In to Out").shortcut_text(kb.display_for("play_in_to_out"))).clicked() { cmds.push(AppCommand::PlayInToOut); ui.close_menu(); }
             ui.separator();
             if ui.add(egui::Button::new("Add Marker").shortcut_text(kb.display_for("add_marker"))).clicked() {
                 cmds.push(AppCommand::AddMarker { position: state.playhead, label: String::new(), color: klipp_core::MarkerColor::Blue });
@@ -799,17 +800,15 @@ impl ToolbarPanel {
                 }
             }
             ui.separator();
-            if ui.button("Next Marker").clicked() {
-                let ph = state.playhead;
-                if let Some(next) = state.sequence().markers.iter().filter(|m| m.position > ph).min_by_key(|m| m.position) {
-                    cmds.push(AppCommand::SeekTo(next.position));
+            if ui.add(egui::Button::new("Next Marker").shortcut_text(kb.display_for("next_marker"))).clicked() {
+                if let Some(next) = crate::navigation::marker_from(state.sequence(), state.playhead, true) {
+                    cmds.push(AppCommand::SeekTo(next));
                 }
                 ui.close_menu();
             }
-            if ui.button("Previous Marker").clicked() {
-                let ph = state.playhead;
-                if let Some(prev) = state.sequence().markers.iter().filter(|m| m.position < ph).max_by_key(|m| m.position) {
-                    cmds.push(AppCommand::SeekTo(prev.position));
+            if ui.add(egui::Button::new("Previous Marker").shortcut_text(kb.display_for("prev_marker"))).clicked() {
+                if let Some(prev) = crate::navigation::marker_from(state.sequence(), state.playhead, false) {
+                    cmds.push(AppCommand::SeekTo(prev));
                 }
                 ui.close_menu();
             }

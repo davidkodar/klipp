@@ -74,6 +74,7 @@ pub(crate) mod layout;
 pub mod media_watcher;
 pub mod multi_edit;
 pub mod multicam_grid;
+pub mod navigation;
 pub mod panels;
 pub mod parameterized_templates;
 pub mod templates_tab;

@@ -1177,6 +1177,21 @@ impl PreferencesPanel {
             }
         });
 
+        // How far Shift+Left and Shift+Right move the playhead (#921):
+        // one second, or a number of frames.
+        Self::setting_row(ui, "Shift+arrow step", theme, |ui| {
+            let mut v = prefs.editing.shift_step_frames;
+            let drag = egui::DragValue::new(&mut v)
+                .range(0..=600)
+                .speed(1.0)
+                .custom_formatter(|n, _| if n < 0.5 { "1 second".to_string() } else { format!("{n:.0} fr") });
+            if ui.add(drag).on_hover_text("0 moves one second, whatever the frame rate").changed() {
+                prefs.editing.shift_step_frames = v;
+                *dirty = true;
+                cmds.push(AppCommand::SetShiftStepFrames(v));
+            }
+        });
+
         // ── MULTICAM section ──
         Self::section_header(ui, "MULTICAM", theme);
 
