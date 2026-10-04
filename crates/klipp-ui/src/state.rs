@@ -1426,6 +1426,11 @@ pub struct AppState {
 
     // Phase 4: Clipboard
     pub clipboard: Option<ClipboardContent>,
+    /// Text for the system clipboard, set when clips are copied or cut
+    /// and handed to the window on the next frame. The window layer
+    /// reports Ctrl+V only when that clipboard holds text, so with it
+    /// empty a paste of copied clips did nothing.
+    pub system_clipboard_text: Option<String>,
     /// Attributes clipboard for Paste Attributes (Ctrl+Shift+V).
     pub attributes_clipboard: Option<AttributesClipboard>,
     /// Whether to show the Paste Attributes dialog.
@@ -3783,6 +3788,7 @@ impl Default for AppState {
             fullscreen_viewer: false,
             fullscreen_changed: false,
             clipboard: None,
+            system_clipboard_text: None,
             attributes_clipboard: None,
             show_paste_attributes_dialog: false,
             show_speed_dialog: false,
