@@ -38,6 +38,9 @@ pub fn label(cmd: &AppCommand) -> Option<&'static str> {
         AppCommand::RenameTrack { .. } => "Rename Track",
         AppCommand::SetTrackSyncLock { on: true, .. } => "Sync Lock Track",
         AppCommand::SetTrackSyncLock { .. } => "Sync Unlock Track",
+        AppCommand::SetTrackTargeted { on: true, .. } => "Target Track",
+        AppCommand::SetTrackTargeted { .. } => "Untarget Track",
+        AppCommand::SetTrackSourcePatch { .. } => "Patch Source",
         AppCommand::AddVideoTrack
         | AppCommand::AddAudioTrack
         | AppCommand::AddSubtitleTrack { .. }
@@ -296,6 +299,8 @@ mod tests {
             AppCommand::AddVideoTrack,
             AppCommand::AddAudioTrack,
             AppCommand::SetTrackSyncLock { track_id: klipp_core::TrackId::new(), on: true },
+            AppCommand::SetTrackTargeted { track_id: klipp_core::TrackId::new(), on: false },
+            AppCommand::SetTrackSourcePatch { track_id: klipp_core::TrackId::new(), on: true },
         ] {
             assert!(label(&cmd).is_some(), "{cmd:?}");
         }

@@ -766,6 +766,25 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::SetTrackTargeted { track_id, on } => {
+                if let Some(t) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id) {
+                    t.targeted = *on;
+                    self.state.dirty = true;
+                }
+                true
+            }
+            AppCommand::SetTrackSourcePatch { track_id, on } => {
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                if let Some(i) = seq.tracks.iter().position(|t| t.id == *track_id) {
+                    if *on {
+                        seq.patch_source_to(i);
+                    } else {
+                        seq.tracks[i].source_patch = false;
+                    }
+                    self.state.dirty = true;
+                }
+                true
+            }
             AppCommand::RenameTrack { track_id, ref name } => {
                 if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id) {
                     track.name = name.clone();

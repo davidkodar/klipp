@@ -8,10 +8,13 @@ use klipp_timeline::{ClipKind, Sequence};
 /// aside), every marker, and the sequence's In and Out, in order, each
 /// once.
 pub fn edit_points(seq: &Sequence) -> Vec<Timecode> {
+    // The targeted tracks' cuts only (#915).
     let mut points: Vec<Timecode> = seq
         .tracks
         .iter()
-        .flat_map(|t| t.clips.iter())
+        .enumerate()
+        .filter(|(i, _)| seq.is_targeted(*i))
+        .flat_map(|(_, t)| t.clips.iter())
         .filter(|c| !matches!(c.kind, ClipKind::Gap))
         .flat_map(|c| [c.timeline_in, c.timeline_out])
         .chain(seq.markers.iter().map(|m| m.position))
@@ -143,6 +146,16 @@ mod tests {
     fn edit_points_take_in_clips_markers_and_in_and_out() {
         let points: Vec<i64> = edit_points(&sequence()).iter().map(|p| p.value).collect();
         assert_eq!(points, vec![0, 10, 20, 30, 50, 90, 100, 110, 120]);
+    }
+
+    /// #915: an untargeted track's cuts are passed over; markers, In and
+    /// Out still stop.
+    #[test]
+    fn edit_points_skip_untargeted_tracks() {
+        let mut seq = sequence();
+        seq.tracks[1].targeted = false;
+        let points: Vec<i64> = edit_points(&seq).iter().map(|p| p.value).collect();
+        assert_eq!(points, vec![0, 20, 30, 50, 100, 110, 120]);
     }
 
     #[test]

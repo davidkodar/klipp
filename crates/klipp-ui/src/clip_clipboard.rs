@@ -99,14 +99,19 @@ pub struct Pasted {
 }
 
 /// The track a copied clip goes on in `seq`: its own, when it is still a
-/// track of its kind and unlocked; else the first unlocked track of its
-/// kind; else none.
+/// track of its kind, unlocked and targeted; else the first such track
+/// (#915); with no targeted track of its kind, its own if unlocked, else
+/// the first unlocked track of its kind; else none.
 fn target_track(seq: &Sequence, copied: &CopiedClip) -> Option<usize> {
     let usable = |ti: usize| seq.tracks.get(ti).is_some_and(|t| t.kind == copied.kind && !t.locked);
-    if usable(copied.track) {
+    let targeted = |ti: usize| usable(ti) && seq.is_targeted(ti);
+    if targeted(copied.track) {
         return Some(copied.track);
     }
-    (0..seq.tracks.len()).find(|&ti| usable(ti))
+    (0..seq.tracks.len())
+        .find(|&ti| targeted(ti))
+        .or_else(|| usable(copied.track).then_some(copied.track))
+        .or_else(|| (0..seq.tracks.len()).find(|&ti| usable(ti)))
 }
 
 /// `cb` pasted into `seq` at `at`: new ids, each clip at its own offset
@@ -317,6 +322,20 @@ mod tests {
         v2.locked = false;
         seq.tracks.push(v2);
         assert!(!paste(&seq, &cb, tc(6.0), PasteMode::Insert).no_room, "an unlocked picture track takes the insert");
+    }
+
+    /// #915: a paste goes onto a targeted track, its own when that is one.
+    #[test]
+    fn a_paste_goes_onto_a_targeted_track() {
+        let (mut seq, [_, b, ..]) = timeline();
+        seq.tracks.insert(0, Track::new("V2", TrackKind::Video));
+        let cb = copy(&seq, &[b]).unwrap();
+        let track_of = |p: &Pasted| p.sequence.tracks.iter().position(|t| t.clips.iter().any(|c| c.id == p.ids[0]));
+        assert_eq!(track_of(&paste(&seq, &cb, tc(10.0), PasteMode::Overwrite)), Some(1), "all targeted: its own track");
+        seq.tracks[1].targeted = false;
+        assert_eq!(track_of(&paste(&seq, &cb, tc(10.0), PasteMode::Overwrite)), Some(0), "its own untargeted: the targeted V2");
+        seq.tracks[0].targeted = false;
+        assert_eq!(track_of(&paste(&seq, &cb, tc(10.0), PasteMode::Overwrite)), Some(1), "no picture track targeted: its own again");
     }
 
     #[test]

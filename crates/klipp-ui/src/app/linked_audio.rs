@@ -68,11 +68,9 @@ pub(super) fn attach_linked_audio_to_clip(
         }
     };
 
-    let (track_index, created_track_at) = match seq
-        .tracks
-        .iter()
-        .position(|t| t.kind == klipp_timeline::TrackKind::Audio)
-    {
+    // The audio track the source's sound is patched to (#915), else the
+    // first.
+    let (track_index, created_track_at) = match seq.source_track(klipp_timeline::TrackKind::Audio) {
         Some(i) => (i, None),
         None => {
             let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();

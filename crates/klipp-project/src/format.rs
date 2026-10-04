@@ -144,6 +144,7 @@ pub struct SequenceJson {
 fn default_header_width() -> f32 { 160.0 }
 fn default_lut_opacity() -> f32 { 1.0 }
 fn default_true() -> bool { true }
+fn is_true(b: &bool) -> bool { *b }
 fn is_zero_u8(v: &u8) -> bool { *v == 0 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,6 +190,12 @@ pub struct TrackJson {
     /// Sync lock (#915).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sync_lock: bool,
+    /// Track targeting (#915): on unless turned off.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub targeted: bool,
+    /// Source patching (#915).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub source_patch: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_height: Option<f32>,
     /// Per-track automation lane state. `None` = collapsed, `Some(param)`
@@ -1163,6 +1170,8 @@ mod tests {
                 pan: 0.0,
                 locked: false,
                 sync_lock: false,
+                targeted: true,
+                source_patch: false,
                 custom_height: None,
                 automation_lane_visible: Some(label.to_string()),
                 automation_lane_height: None,
@@ -1208,6 +1217,8 @@ mod tests {
             pan: 0.0,
             locked: false,
             sync_lock: false,
+            targeted: true,
+            source_patch: false,
             custom_height: None,
             automation_lane_visible: None,
             automation_lane_height: None,
@@ -1240,6 +1251,8 @@ mod tests {
             pan: 0.0,
             locked: false,
             sync_lock: false,
+            targeted: true,
+            source_patch: false,
             custom_height: None,
             automation_lane_visible: Some("Volume".to_string()),
             automation_lane_height: Some(180.0),

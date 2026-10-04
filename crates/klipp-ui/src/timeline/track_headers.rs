@@ -163,14 +163,41 @@ pub fn show(
             egui::pos2(badge_x, track_rect.center().y - 6.0),
             egui::vec2(badge_w, 12.0),
         );
-        ui.painter().rect_filled(badge_rect, 2.0, badge_color);
+        // Track targeting (#915): an untargeted track's badge is dimmed,
+        // and clicking the badge turns targeting on or off.
+        let (badge_fill, badge_text) = if track.targeted {
+            (badge_color, egui::Color32::WHITE)
+        } else {
+            (badge_color.gamma_multiply(0.3), egui::Color32::from_white_alpha(110))
+        };
+        ui.painter().rect_filled(badge_rect, 2.0, badge_fill);
         ui.painter().text(
             badge_rect.center(),
             egui::Align2::CENTER_CENTER,
             &layer_label,
             egui::FontId::monospace(10.0),
-            egui::Color32::WHITE,
+            badge_text,
         );
+        // The source is patched here (#915): a bar under the badge.
+        if track.source_patch {
+            let bar = egui::Rect::from_min_size(badge_rect.left_bottom() + egui::vec2(0.0, 1.5), egui::vec2(badge_w, 2.0));
+            ui.painter().rect_filled(bar, 1.0, theme.accent);
+        }
+        let badge_resp = ui
+            .interact(badge_rect, ui.id().with(("track_target", track.id)), egui::Sense::click())
+            .on_hover_text(format!(
+                "{}: {}{}",
+                layer_label,
+                if track.targeted {
+                    "targeted. Edit-point navigation, paste, split at playhead and match frame act on it. Click to untarget"
+                } else {
+                    "not targeted. Click to target"
+                },
+                if track.source_patch { ". Source edits land here" } else { "" },
+            ));
+        if badge_resp.clicked() {
+            cmds.push(AppCommand::SetTrackTargeted { track_id: track.id, on: !track.targeted });
+        }
 
         // Track name (after the badge)
         let name_x = badge_rect.right() + 4.0;
@@ -592,6 +619,33 @@ pub fn show(
             {
                 cmds.push(AppCommand::SetTrackSyncLock { track_id, on: !sync_on });
                 ui.close_menu();
+            }
+            // Track targeting and source patching (#915).
+            let (targeted, patched, kind) = {
+                let t = &state.sequence().tracks[track_idx];
+                (t.targeted, t.source_patch, t.kind)
+            };
+            if ui.button(if targeted { "\u{2714} Target Track" } else { "    Target Track" })
+                .on_hover_text("On: edit-point navigation, paste, split at playhead and match frame act on this track")
+                .clicked()
+            {
+                cmds.push(AppCommand::SetTrackTargeted { track_id, on: !targeted });
+                ui.close_menu();
+            }
+            let what = match kind {
+                klipp_timeline::TrackKind::Video => Some("Picture"),
+                klipp_timeline::TrackKind::Audio => Some("Sound"),
+                _ => None,
+            };
+            if let Some(what) = what {
+                let label = if patched { format!("\u{2714} Source {what} Here") } else { format!("    Source {what} Here") };
+                if ui.button(label)
+                    .on_hover_text(format!("On: insert, overwrite and append lay the source's {} on this track; off, on the first one", what.to_lowercase()))
+                    .clicked()
+                {
+                    cmds.push(AppCommand::SetTrackSourcePatch { track_id, on: !patched });
+                    ui.close_menu();
+                }
             }
             ui.separator();
 

@@ -2462,6 +2462,13 @@ pub enum AppCommand {
     /// A track's sync lock on or off (#915): on, a ripple on another track
     /// moves its clips too.
     SetTrackSyncLock { track_id: TrackId, on: bool },
+    /// A track's targeting on or off (#915): edit-point navigation,
+    /// paste, split at playhead and match frame act on targeted tracks.
+    SetTrackTargeted { track_id: TrackId, on: bool },
+    /// Patch the source's picture or sound to a track (#915), or, off,
+    /// take the patch away so source edits use the first track of the
+    /// kind again.
+    SetTrackSourcePatch { track_id: TrackId, on: bool },
     /// Keep the track's levels and own effects to paste onto others
     /// (Copy Track Attributes, #846).
     CopyTrackAttributes { track_id: TrackId },

@@ -169,14 +169,16 @@ impl KlippApp {
                             }
                         }
 
-                        // Route: audio-only → first audio track, video → first video track
+                        // Route: audio-only to the audio track the source is
+                        // patched to, video to the video one (#915); with no
+                        // patch, the first of the kind.
                         let target_kind = if is_audio_only {
                             klipp_timeline::TrackKind::Audio
                         } else {
                             klipp_timeline::TrackKind::Video
                         };
-                        let track_index = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                            .position(|t| t.kind == target_kind)
+                        let track_index = self.state.sequences[self.state.active_sequence_idx]
+                            .source_track(target_kind)
                             .unwrap_or(0);
                         let appended_id = {
                             let track = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(track_index);
