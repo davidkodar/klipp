@@ -128,6 +128,9 @@ impl DocumentView<'_> {
             EditCommand::SetMarkers { old, .. } => {
                 self.sequences[self.active].markers = old.clone();
             }
+            EditCommand::SetTracks { old, .. } => {
+                self.sequences[self.active].tracks = old.clone();
+            }
             EditCommand::SetTrackContents { track_index, old, .. } => {
                 if let Some(track) = self.sequences[self.active].tracks.get_mut(*track_index) {
                     track.clips = old.clips.clone();
@@ -800,6 +803,9 @@ impl DocumentView<'_> {
             }
             EditCommand::SetMarkers { new, .. } => {
                 self.sequences[self.active].markers = new.clone();
+            }
+            EditCommand::SetTracks { new, .. } => {
+                self.sequences[self.active].tracks = new.clone();
             }
             EditCommand::SetTrackContents { track_index, new, .. } => {
                 if let Some(track) = self.sequences[self.active].tracks.get_mut(*track_index) {

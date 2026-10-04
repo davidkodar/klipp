@@ -68,7 +68,7 @@ impl KlippApp {
                     clip_id,
                     new_timeline_in,
                 } => {
-                    if self.clip_track_is_locked(clip_id) { return true; }
+                    if self.refused_by_lock(clip_id) { return true; }
                     // Snapshot the link/group info and compute the delta before
                     // we start mutating. The linked partner (set up by
                     // ImportMediaLinked for A/V pairs) must follow the primary
@@ -169,8 +169,11 @@ impl KlippApp {
                     true
                 }
                 AppCommand::MoveClipToTrack { clip_id, new_timeline_in, from_track, to_track } => {
-                    if self.clip_track_is_locked(clip_id) { return true; }
-                    if self.state.sequences[self.state.active_sequence_idx].tracks.get(*to_track).is_some_and(|t| t.locked) { return true; }
+                    if self.refused_by_lock(clip_id) { return true; }
+                    if let Some(name) = self.state.sequences[self.state.active_sequence_idx].tracks.get(*to_track).filter(|t| t.locked).map(|t| t.name.clone()) {
+                        self.state.toast.show(format!("{name} is locked"));
+                        return true;
+                    }
                     let from = *from_track;
                     let to = *to_track;
                     let new_in = *new_timeline_in;
@@ -273,7 +276,7 @@ impl KlippApp {
                     new_b_source_in,
                     new_b_timeline_in,
                 } => {
-                    if self.clip_track_is_locked(clip_a_id) || self.clip_track_is_locked(clip_b_id) { return true; }
+                    if self.refused_by_lock(clip_a_id) || self.refused_by_lock(clip_b_id) { return true; }
 
                     // Save old values for undo, then apply
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
@@ -339,7 +342,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SlipClip { clip_id, new_source_in: _, new_source_out: _ } => {
-                    if self.clip_track_is_locked(clip_id) { return true; }
+                    if self.refused_by_lock(clip_id) { return true; }
                     // Slip was already applied during drag.  Undo entry was pushed by the timeline panel.
                     // Just sync the engine.
                     self.sync_sequence_to_engine();
@@ -352,7 +355,7 @@ impl KlippApp {
                     left_clip_id: _, new_left_out: _,
                     right_clip_id: _, new_right_in: _,
                 } => {
-                    if self.clip_track_is_locked(clip_id) { return true; }
+                    if self.refused_by_lock(clip_id) { return true; }
                     // Slide was already applied during drag.  Undo entry was pushed by the timeline panel.
                     // Just sync the engine.
                     self.sync_sequence_to_engine();

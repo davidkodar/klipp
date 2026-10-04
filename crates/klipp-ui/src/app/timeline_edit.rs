@@ -878,8 +878,17 @@ impl KlippApp {
                         self.state.toast.show("Out point must be after In point");
                         return true;
                     }
+                    // Locked tracks are left as they are, and named (#908).
+                    let mut skipped = Vec::new();
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if track.locked {
+                            skipped.push(track.name.clone());
+                            continue;
+                        }
                         Self::lift_range(track, in_pt, out_pt);
+                    }
+                    if !skipped.is_empty() {
+                        self.state.toast.show(format!("Lift left locked tracks as they were: {}", skipped.join(", ")));
                     }
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
@@ -902,7 +911,12 @@ impl KlippApp {
                         return true;
                     }
                     let gap = out_pt - in_pt;
+                    let mut skipped = Vec::new();
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if track.locked {
+                            skipped.push(track.name.clone());
+                            continue;
+                        }
                         Self::lift_range(track, in_pt, out_pt);
                         // Ripple: shift clips at or after out_pt left by gap
                         for clip in &mut track.clips {
@@ -912,13 +926,16 @@ impl KlippApp {
                             }
                         }
                     }
+                    if !skipped.is_empty() {
+                        self.state.toast.show(format!("Extract left locked tracks as they were: {}", skipped.join(", ")));
+                    }
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
                     true
                 }
                 // Magnetic: Ripple trim head to playhead
                 AppCommand::RippleTrimHead { clip_id } => {
-                    if self.clip_track_is_locked(clip_id) { return true; }
+                    if self.refused_by_lock(clip_id) { return true; }
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
                     if let Some((track_idx, clip_idx)) = seq.find_clip(*clip_id) {
                         let clip = &seq.tracks[track_idx].clips[clip_idx];
@@ -942,7 +959,7 @@ impl KlippApp {
                 }
                 // Magnetic: Ripple trim tail to playhead
                 AppCommand::RippleTrimTail { clip_id } => {
-                    if self.clip_track_is_locked(clip_id) { return true; }
+                    if self.refused_by_lock(clip_id) { return true; }
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
                     if let Some((track_idx, clip_idx)) = seq.find_clip(*clip_id) {
                         let clip = &seq.tracks[track_idx].clips[clip_idx];

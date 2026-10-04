@@ -474,11 +474,16 @@ pub fn show(
             ui.menu_button("Add Track Above", |ui| {
                 for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio), ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
                     if ui.button(label).clicked() {
+                        // One undo step (#907).
+                        let before = crate::tracks_undo::before_labelled(state, "Add Track");
                         let seq = &mut state.sequences[state.active_sequence_idx];
                         let name = seq.next_track_name(kind);
                         let new_track = klipp_timeline::Track::new(&name, kind);
                         seq.tracks.insert(track_idx, new_track);
                         seq.renumber_tracks();
+                        if let Some(before) = before {
+                            crate::tracks_undo::record(state, before);
+                        }
                         cmds.push(AppCommand::SequenceUpdated);
                         ui.close_menu();
                     }
@@ -487,12 +492,16 @@ pub fn show(
             ui.menu_button("Add Track Below", |ui| {
                 for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio), ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
                     if ui.button(label).clicked() {
+                        let before = crate::tracks_undo::before_labelled(state, "Add Track");
                         let seq = &mut state.sequences[state.active_sequence_idx];
                         let name = seq.next_track_name(kind);
                         let new_track = klipp_timeline::Track::new(&name, kind);
                         let idx = (track_idx + 1).min(seq.tracks.len());
                         seq.tracks.insert(idx, new_track);
                         seq.renumber_tracks();
+                        if let Some(before) = before {
+                            crate::tracks_undo::record(state, before);
+                        }
                         cmds.push(AppCommand::SequenceUpdated);
                         ui.close_menu();
                     }
@@ -669,6 +678,7 @@ pub fn show(
             ui.separator();
             for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio), ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
                 if ui.button(label).clicked() {
+                    let before = crate::tracks_undo::before_labelled(state, "Add Track");
                     let seq = &mut state.sequences[state.active_sequence_idx];
                     let name = seq.next_track_name(kind);
                     match kind {
@@ -680,6 +690,9 @@ pub fn show(
                             seq.tracks.push(track);
                             seq.renumber_tracks();
                         }
+                    }
+                    if let Some(before) = before {
+                        crate::tracks_undo::record(state, before);
                     }
                     cmds.push(AppCommand::SequenceUpdated);
                     ui.close_menu();

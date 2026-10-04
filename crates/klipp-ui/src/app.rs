@@ -69,6 +69,7 @@ mod grade_edits;
 mod tracking;
 mod linked_audio;
 mod camera;
+mod locks;
 mod subtitles;
 mod render_script;
 mod batch_rename;
