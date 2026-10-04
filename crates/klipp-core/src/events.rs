@@ -1010,6 +1010,11 @@ pub enum AppCommand {
     ImportMediaFolder { directory: PathBuf },
 
     // Loop
+    /// Render `from..to` into the render cache in the background (#924):
+    /// Render In to Out, and Render Selection over the selected clips.
+    RenderRange { from: Timecode, to: Timecode },
+    /// Stop the render under way, keeping what it rendered.
+    CancelRenderRange,
     /// Clear the render cache under `from..to`, every clip there (#924).
     ClearRenderCache { from: Timecode, to: Timecode },
     ToggleLoopPlayback,
@@ -3704,6 +3709,12 @@ pub enum AppEvent {
     // Playback state
     PlaybackStarted,
     PlaybackPaused,
+    /// Render In to Out under way: frames done of the total (#924).
+    RenderRangeProgress { done: usize, total: usize },
+    /// Render In to Out over: frames rendered, frames passed over (edited
+    /// away or undecodable), whether it was stopped, and why it did not
+    /// start when it rendered nothing.
+    RenderRangeFinished { rendered: usize, passed_over: usize, cancelled: bool, note: Option<String> },
     PlaybackStopped,
     PlayheadMoved(Timecode),
     LoopedBack,

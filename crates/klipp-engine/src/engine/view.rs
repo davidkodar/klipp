@@ -1121,13 +1121,21 @@ impl PlaybackEngine {
     /// Render the frame at `frame_number` from the pre-grade cache into the
     /// render cache, without showing it. Only frames the cache can hold.
     pub(super) fn prerender_frame(&mut self, frame_number: i64, pixels: HeldFrame) -> bool {
+        let primary = self.sequence.read().ok().and_then(|s| self.v1_clip_id(&s));
+        self.prerender_frame_as(frame_number, primary, &pixels)
+    }
+
+    /// Render `frame_number` into the render cache with `pixels` as
+    /// `primary`'s picture: the clip the frame shows, named by the caller.
+    /// The idle pre-render names the primary decoder's clip; Render In to
+    /// Out (#924) the clip at the frame, wherever the playhead is.
+    pub(super) fn prerender_frame_as(&mut self, frame_number: i64, primary: Option<ClipId>, pixels: &HeldFrame) -> bool {
         let saved = self.playhead;
         self.playhead = klipp_core::RationalTime { value: frame_number, rate: saved.rate };
         let seq = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             klipp_compose::frame_snapshot(&seq, self.playhead)
         };
-        let primary = self.sequence.read().ok().and_then(|s| self.v1_clip_id(&s));
         // Both sizes a frame is shown at: full, for a parked scrub, and
         // under Half or Quarter the reduced one playback asks for. Full
         // size first, since the scan runs while parked. One render per
@@ -1147,7 +1155,7 @@ impl PlaybackEngine {
             }
             // No per-node thumbnails: this is not the user's frame.
             self.thumb_capture_suspended = true;
-            let (linear, _) = self.render_timeline(&seq, primary.map(|id| (id, &pixels)), w, h, Inspect::default());
+            let (linear, _) = self.render_timeline(&seq, primary.map(|id| (id, pixels)), w, h, Inspect::default());
             self.thumb_capture_suspended = false;
             let bytes = super::linear_rgba_to_u8(&linear);
             self.render_cache_hot.insert(key.clone(), bytes.clone(), w, h);

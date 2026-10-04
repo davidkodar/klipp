@@ -24,6 +24,23 @@ impl KlippApp {
                 AppEvent::PlaybackPaused => {
                     self.state.playback = PlaybackState::Paused;
                 }
+                // Render In to Out (#924).
+                AppEvent::RenderRangeProgress { done, total } => {
+                    self.state.render_range = Some((done, total));
+                }
+                AppEvent::RenderRangeFinished { rendered, passed_over, cancelled, note } => {
+                    self.state.render_range = None;
+                    let frames = |n: usize| if n == 1 { "1 frame".to_string() } else { format!("{n} frames") };
+                    let mut said = match (&note, cancelled) {
+                        (Some(why), _) => format!("Nothing rendered: {why}"),
+                        (None, true) => format!("Render stopped, {} rendered", frames(rendered)),
+                        (None, false) => format!("Rendered {}", frames(rendered)),
+                    };
+                    if passed_over > 0 {
+                        said.push_str(&format!(" ({} passed over: changed or unreadable)", frames(passed_over)));
+                    }
+                    self.state.toast.show(said);
+                }
                 AppEvent::NodeInputSampled { clip_id, node_id, nx, ny, sample } => {
                     match self.state.hue_curve_awaiting {
                         Some((c, n, curve)) if (c, n) == (clip_id, node_id) => {
