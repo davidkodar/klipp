@@ -289,7 +289,9 @@ With `KLIPP_ALLOW_DIRTY=1`, a `CARGO_TARGET_DIR`,
 builds in place as before. The gate checkout shows in
 `git worktree list`: leave it there when tidying merged worktrees,
 since removing it costs the next push a full build. Its build is let go
-once it passes `KLIPP_GATE_MAX_GB` (250), checked once a day.
+once the space it holds of its own (not what it shares with the main
+checkout's build) passes `KLIPP_GATE_MAX_GB` (250), checked once a day
+on btrfs.
 
 The tests that run are those of the crates the branch touches, every
 crate built on them, and every crate whose tests use one of those

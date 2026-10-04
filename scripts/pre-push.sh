@@ -534,16 +534,21 @@ if [ -n "$_queue" ] && [ -z "${CARGO_TARGET_DIR:-}" ] && [ "${KLIPP_GATE_IN_PLAC
         cd "$ROOT"
         printf '  pre-push: building %s in the gate checkout %s; only what changed rebuilds\n' "$(git rev-parse --short HEAD)" "$ROOT"
         # Its build keeps every crate version it has made, so it grows. Once
-        # a day its size is looked at, and past KLIPP_GATE_MAX_GB (250) it
-        # is let go, to start again from the main checkout's below.
+        # a day the space it holds of its own is looked at, and past
+        # KLIPP_GATE_MAX_GB (250) it is let go, to start again from the
+        # main checkout's below. Its own: it began as a copy-on-write copy
+        # of the main checkout's, whose blocks it shares, and du counts
+        # those in full (608 GB for a build holding 79 GB of its own, which
+        # let it go every day). btrfs says what is exclusive; without it
+        # nothing is let go.
         _size_mark="$_common/klipp-pre-push.gate-size"
-        if [ ! -e "$_size_mark" ] || [ -n "$(find "$_size_mark" -mmin +1440 2>/dev/null)" ]; then
+        if command -v btrfs >/dev/null 2>&1 && { [ ! -e "$_size_mark" ] || [ -n "$(find "$_size_mark" -mmin +1440 2>/dev/null)" ]; }; then
             touch "$_size_mark" 2>/dev/null || true
-            _gb=$(du -s --block-size=1G "$ROOT/target" 2>/dev/null | cut -f1)
+            _gb=$(timeout 300 btrfs filesystem du -s --raw "$ROOT/target" 2>/dev/null | awk 'NR == 2 { printf "%d", $2 / 1073741824 }')
             case "$_gb" in ''|*[!0-9]*) _gb=0 ;; esac
             if [ "$_gb" -gt "${KLIPP_GATE_MAX_GB:-250}" ]; then
                 rm -rf "$ROOT/target"
-                printf '  pre-push: the gate checkout'"'"'s build had grown to %s GB; it starts again from the main checkout'"'"'s\n' "$_gb"
+                printf '  pre-push: the gate checkout'"'"'s build held %s GB of its own; it starts again from the main checkout'"'"'s\n' "$_gb"
             fi
         fi
     else
