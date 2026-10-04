@@ -28,11 +28,30 @@ impl KlippApp {
                     secs,
                     remove: false,
                 };
-                match klipp_document::ops::resolve(seq, &self.state.media_pool, std::slice::from_ref(&op)) {
-                    Ok(plan) => {
+                let fps = seq.fps.as_f64();
+                let resolved = klipp_document::ops::resolve(seq, &self.state.media_pool, std::slice::from_ref(&op)).map(|plan| (plan, *duration_frames));
+                // Not enough media for the length asked: the longest that
+                // fits, said so, rather than nothing (#918).
+                let resolved = resolved.or_else(|refusal| {
+                    let fits = |frames: u32| {
+                        let op = klipp_document::ops::Op::Transition {
+                            clip_id: klipp_document::ops::ClipRef::Id(*clip_a_id),
+                            kind: spec.string_key.to_string(),
+                            secs: frames as f64 / fps,
+                            remove: false,
+                        };
+                        klipp_document::ops::resolve(seq, &self.state.media_pool, std::slice::from_ref(&op)).ok().map(|plan| (plan, frames))
+                    };
+                    (2..*duration_frames).rev().find_map(fits).ok_or(refusal)
+                });
+                match resolved {
+                    Ok((plan, frames)) => {
                         let edits: Vec<EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
                         self.apply_edits_as_one(&edits, "Add Transition");
                         crate::browser::library_card::push_recent(&mut self.state.library_recent.transitions, spec.string_key);
+                        if frames < *duration_frames {
+                            self.state.toast.show(format!("Shortened to {frames} frames: that is all the media there is past the cut"));
+                        }
                     }
                     Err(r) => self.state.toast.show(format!("No transition: {}. {}", r.why, capitalise(&r.hint))),
                 }

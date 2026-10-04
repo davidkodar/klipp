@@ -8132,7 +8132,14 @@ impl TimelinePanel {
     ) {
         // Right-click context menu on clips (suppressed when keyframe context menu was opened)
         if track_response.secondary_clicked() && !self.suppress_clip_context_menu {
-            if let Some(pos) = pointer_pos {
+            // A transition first (#918): its own menu, not the clips'.
+            let on_transition = pointer_pos.and_then(|pos| transition_at(state, track_idx, content_rect, track_rect, zoom, scroll, pos));
+            if let Some(tid) = on_transition {
+                state.selected_transition = Some((track_idx, tid));
+                state.selected_clip = None;
+                state.selected_clips.clear();
+                cmds.push(AppCommand::SelectClip(None));
+            } else if let Some(pos) = pointer_pos {
                 let hit_id: Option<klipp_core::ClipId> = {
                     let clips = &state.sequence().tracks[track_idx].clips;
                     self.hit_test_clip_body(clips, content_rect, track_rect, zoom, scroll, track_height, pos)
@@ -8146,6 +8153,10 @@ impl TimelinePanel {
         }
         track_response.context_menu(|ui| {
             ui.set_min_width(160.0);
+            if let (None, Some((ti, tid))) = (state.selected_clip, state.selected_transition.filter(|(t, _)| *t == track_idx)) {
+                transition_menu(ui, state, ti, tid, cmds);
+                return;
+            }
             if let Some(clip_id) = state.selected_clip {
                 // The clip's host track kind drives video-only /
                 // audio-only filtering below. Pro-NLE convention:
@@ -16182,6 +16193,61 @@ pub(crate) fn find_matte_candidate_above(
         }
     }
     None
+}
+
+/// The transition on `track_idx` under `pos`, if any: its span on the
+/// timeline, at least a few pixels wide either side of the cut.
+#[allow(clippy::too_many_arguments)]
+fn transition_at(state: &AppState, track_idx: usize, content_rect: &egui::Rect, track_rect: &egui::Rect, zoom: f32, scroll: f32, pos: egui::Pos2) -> Option<klipp_core::TransitionId> {
+    let track = state.sequence().tracks.get(track_idx)?;
+    track.transitions.iter().find_map(|transition| {
+        let clip_a = track.clips.iter().find(|c| c.id == transition.clip_a_id)?;
+        let boundary_x = content_rect.left() + clip_a.timeline_out.to_secs_f64() as f32 * zoom - scroll;
+        let half = (transition.duration.to_secs_f64() as f32 * zoom * 0.5).max(6.0);
+        let rect = egui::Rect::from_x_y_ranges((boundary_x - half)..=(boundary_x + half), track_rect.y_range());
+        rect.contains(pos).then_some(transition.id)
+    })
+}
+
+/// A transition's right-click menu (#918): its kind, its length, where it
+/// sits on the cut, and taking it off.
+fn transition_menu(ui: &mut egui::Ui, state: &AppState, track_index: usize, transition_id: klipp_core::TransitionId, cmds: &mut Vec<AppCommand>) {
+    let Some(transition) = state.sequence().tracks.get(track_index).and_then(|t| t.transitions.iter().find(|tr| tr.id == transition_id)) else { return };
+    let fps = state.sequence().fps.as_f64();
+    let frames_now = (transition.duration.to_secs_f64() * fps).round() as u32;
+    ui.menu_button("Kind", |ui| {
+        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+            for &(kind_id, label) in klipp_engine::transition::all_transition_kinds() {
+                if ui.button(label).clicked() {
+                    cmds.push(AppCommand::SetTransitionKind { track_index, transition_id, kind_id });
+                    ui.close_menu();
+                }
+            }
+        });
+    });
+    ui.menu_button(format!("Length ({frames_now} frames)"), |ui| {
+        for secs in [0.25, 0.5, 1.0, 1.5, 2.0] {
+            let frames = (secs * fps).round().max(1.0) as u32;
+            if ui.selectable_label(frames == frames_now, format!("{secs} s ({frames} frames)")).clicked() {
+                cmds.push(AppCommand::SetTransitionDuration { track_index, transition_id, duration_frames: frames });
+                ui.close_menu();
+            }
+        }
+    });
+    ui.menu_button("Alignment", |ui| {
+        use klipp_core::TransitionAlignment as A;
+        for (alignment, label) in [(A::Center, "Centred on the cut"), (A::StartAtCut, "Starting at the cut"), (A::EndAtCut, "Ending at the cut")] {
+            if ui.selectable_label(transition.alignment == alignment, label).clicked() {
+                cmds.push(AppCommand::SetTransitionAlignment { track_index, transition_id, alignment });
+                ui.close_menu();
+            }
+        }
+    });
+    ui.separator();
+    if ui.add(egui::Button::new("Remove Transition").shortcut_text("Delete")).clicked() {
+        cmds.push(AppCommand::RemoveTransition { track_index, transition_id });
+        ui.close_menu();
+    }
 }
 
 /// The speed badge a clip shows (#920): its constant speed as a

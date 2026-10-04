@@ -2047,6 +2047,10 @@ pub enum AppCommand {
     AddTransition { track_index: usize, clip_a_id: ClipId, clip_b_id: ClipId, kind_id: u8, duration_frames: u32 },
     RemoveTransition { track_index: usize, transition_id: crate::id::TransitionId },
     SetTransitionDuration { track_index: usize, transition_id: crate::id::TransitionId, duration_frames: u32 },
+    /// The default transition (a cross dissolve, or on sound a crossfade)
+    /// at the cut nearest the playhead (#918): on the selected clip's
+    /// track when it is the right kind, else the nearest on any.
+    AddDefaultTransition { audio: bool },
     SetTransitionKind { track_index: usize, transition_id: crate::id::TransitionId, kind_id: u8 },
     SetTransitionParam { track_index: usize, transition_id: crate::id::TransitionId, user_params: crate::types::TransitionUserParams },
     SetTransitionAlignment { track_index: usize, transition_id: crate::id::TransitionId, alignment: crate::types::TransitionAlignment },
