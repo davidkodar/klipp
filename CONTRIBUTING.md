@@ -279,13 +279,28 @@ filesystem or set `TMPDIR` to a disk-backed directory; `df` cannot detect
 every per-user quota. Worktrees on tmpfs should point `CARGO_TARGET_DIR`
 at a disk-backed build directory too.
 
-The gate builds in a checkout of its own, beside the main one
-(`<repo>-gate`, or `KLIPP_GATE_DIR`), not in the worktree being pushed:
-each run checks the pushed commit out there, git rewrites only the files
-that differ, and cargo rebuilds only the crates they belong to and what
-depends on them. The pushing worktree is not built in or changed. With
-`KLIPP_ALLOW_DIRTY=1`, a `CARGO_TARGET_DIR`, `KLIPP_GATE_IN_PLACE=1`, or
-a gate checkout that cannot be used, it builds in place as before.
+The gate builds in a checkout of its own beside the main one
+(`<repo>-gate`, or `KLIPP_GATE_DIR`), not in the worktree being
+pushed. Each run checks the pushed commit out there; git rewrites only
+the files that differ, and cargo rebuilds only their crates and what
+depends on them. The pushing worktree is not built in or changed.
+With `KLIPP_ALLOW_DIRTY=1`, a `CARGO_TARGET_DIR`,
+`KLIPP_GATE_IN_PLACE=1`, or a gate checkout that cannot be used, it
+builds in place as before. The gate checkout shows in
+`git worktree list`: leave it there when tidying merged worktrees,
+since removing it costs the next push a full build. Its build is let go
+once it passes `KLIPP_GATE_MAX_GB` (250), checked once a day.
+
+The tests that run are those of the crates the branch touches, every
+crate built on them, and every crate whose tests use one of those
+(`scripts/affected_crates.py` decides, from cargo's metadata). A change
+to a file the whole workspace shares (`Cargo.lock`, `assets/`,
+`vendor/`, `scripts/`) or to a path it does not know runs the whole
+suite, and documentation alone runs none. clippy and rustdoc always
+cover the whole workspace. The whole suite also runs when it has not
+passed for `KLIPP_GATE_FULL_HOURS` (12) hours, so whatever a narrower
+run misses is caught the same day; `KLIPP_GATE_FULL=1 git push` asks
+for it.
 
 A build folder's first build (the gate checkout's, or a worktree's built
 in place) does not start from an empty `target/`: it takes a

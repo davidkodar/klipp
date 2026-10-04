@@ -533,6 +533,19 @@ if [ -n "$_queue" ] && [ -z "${CARGO_TARGET_DIR:-}" ] && [ "${KLIPP_GATE_IN_PLAC
         ROOT=$_gate_dir
         cd "$ROOT"
         printf '  pre-push: building %s in the gate checkout %s; only what changed rebuilds\n' "$(git rev-parse --short HEAD)" "$ROOT"
+        # Its build keeps every crate version it has made, so it grows. Once
+        # a day its size is looked at, and past KLIPP_GATE_MAX_GB (250) it
+        # is let go, to start again from the main checkout's below.
+        _size_mark="$_common/klipp-pre-push.gate-size"
+        if [ ! -e "$_size_mark" ] || [ -n "$(find "$_size_mark" -mmin +1440 2>/dev/null)" ]; then
+            touch "$_size_mark" 2>/dev/null || true
+            _gb=$(du -s --block-size=1G "$ROOT/target" 2>/dev/null | cut -f1)
+            case "$_gb" in ''|*[!0-9]*) _gb=0 ;; esac
+            if [ "$_gb" -gt "${KLIPP_GATE_MAX_GB:-250}" ]; then
+                rm -rf "$ROOT/target"
+                printf '  pre-push: the gate checkout'"'"'s build had grown to %s GB; it starts again from the main checkout'"'"'s\n' "$_gb"
+            fi
+        fi
     else
         printf '  pre-push: the gate checkout %s could not be used; building here, as before\n' "$_gate_dir" >&2
     fi
@@ -710,11 +723,79 @@ if ! _logged env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps 9>&-
     exit 1
 fi
 
+# Which crates' tests run (#873). The whole suite ran for every push,
+# whatever it touched: a change to the app's UI ran the colour science's
+# tests too. Now the changed files (this branch against the main it
+# leaves from) pick the crates: those changed, every crate built on them,
+# and every crate whose tests use one of those, decided by
+# scripts/affected_crates.py from cargo's own metadata. A change to a
+# file the whole workspace shares (Cargo.lock, assets/, vendor/, this
+# script), or to a path it does not know, runs everything; documentation
+# alone runs no tests. clippy and rustdoc above always cover the whole
+# workspace. And the whole suite runs anyway when it has not passed in
+# KLIPP_GATE_FULL_HOURS (12) hours, so what a narrower run could miss is
+# caught the same day, with its merge; KLIPP_GATE_FULL=1 asks for it.
+_scope_args="--workspace"
+_scope="full"
+_scope_why="KLIPP_GATE_FULL is set"
+if [ "${KLIPP_GATE_FULL:-}" != "1" ]; then
+    _scope_why="the test scope could not be worked out"
+    _full_mark=${_common:+$_common/klipp-pre-push.full}
+    _last_full=$(cat "$_full_mark" 2>/dev/null || echo 0)
+    case "$_last_full" in ''|*[!0-9]*) _last_full=0 ;; esac
+    _base=$(git rev-parse --verify --quiet origin/main 2>/dev/null || true)
+    if [ -z "$_full_mark" ]; then
+        :
+    elif [ $(( $(date +%s) - _last_full )) -ge $(( ${KLIPP_GATE_FULL_HOURS:-12} * 3600 )) ]; then
+        _scope_why="the whole suite has not passed in ${KLIPP_GATE_FULL_HOURS:-12} hours"
+    elif [ -n "$_base" ] && command -v python3 >/dev/null 2>&1 \
+        && _fork=$(git merge-base "$_base" HEAD 2>/dev/null) \
+        && _meta=$(cargo metadata --no-deps --format-version 1 --offline 2>/dev/null 9>&-) \
+        && _metafile=$(mktemp) && printf '%s' "$_meta" >"$_metafile" \
+        && _changed=$(git diff --name-only "$_fork" HEAD) \
+        && _decision=$(printf '%s\n' "$_changed" | python3 "$ROOT/scripts/affected_crates.py" "$_metafile" 2>/dev/null); then
+        rm -f "$_metafile"
+        case "$_decision" in
+            packages\ *)
+                _scope=packages
+                _scope_args=$(printf '%s' "${_decision#packages }" | sed 's/[^ ][^ ]*/-p &/g')
+                _scope_why="${_decision#packages }" ;;
+            none\ *) _scope=none; _scope_why="${_decision#none }" ;;
+            full\ *) _scope_why="${_decision#full }" ;;
+        esac
+    fi
+    [ -n "${_metafile:-}" ] && rm -f "$_metafile"
+fi
+case "$_scope" in
+    full) printf '  pre-push: running the whole test suite: %s\n' "$_scope_why" ;;
+    packages) printf '  pre-push: running the tests of the crates this touches: %s\n' "$_scope_why" ;;
+    none) printf '  pre-push: no tests to run: %s\n' "$_scope_why" ;;
+esac
+
+# The scripts' own tests (the gate's, the hook installer's, packaging's)
+# when a change touches them: cargo never ran them, and two went stale
+# for days unseen. Without a scope (the whole suite, or one that could
+# not be worked out) they run too, being quick.
+_step=scripts
+if command -v python3 >/dev/null 2>&1 && [ -d "$ROOT/scripts/tests" ] \
+    && { [ "$_scope" = full ] || printf '%s\n' "${_changed:-}" | grep -q '^\(scripts\|packaging\)/'; }; then
+    if ! _logged python3 -m unittest discover -s "$ROOT/scripts/tests" -p 'test_*.py' </dev/null 9>&-; then
+        printf '\n  pre-push: the scripts'"'"' own tests failed — push refused.\n' >&2
+        printf '            python3 -m unittest discover -s scripts/tests -p '"'"'test_*.py'"'"'\n\n' >&2
+        exit 1
+    fi
+fi
+
 # Built first and separately, so a compile error is reported as one
 # rather than as "tests FAILED" — which sends you reading test names
 # for a problem that is not in any of them.
 _step=build
-if ! _logged cargo test --workspace --no-run 9>&-; then
+if [ "$_scope" = none ]; then
+    printf '\n  pre-push: clippy and rustdoc pass; nothing else to run.\n\n'
+    exit 0
+fi
+# shellcheck disable=SC2086 # the crates, one -p each
+if ! _logged cargo test $_scope_args --no-run 9>&-; then
     printf '\n  pre-push: the tests did not BUILD — push refused.\n' >&2
     printf '            Nothing ran. This is a compile or link error, not a\n' >&2
     printf '            failing assertion.\n\n' >&2
@@ -726,8 +807,11 @@ if ! _logged cargo test --workspace --no-run 9>&-; then
 fi
 
 _step=tests
-if _logged cargo test --workspace 9>&-; then
+# shellcheck disable=SC2086 # the crates, one -p each
+if _logged cargo test $_scope_args 9>&-; then
     printf '\n  pre-push: tests pass.\n\n'
+    # When the whole suite last passed, for the next gate's scope.
+    [ "$_scope" = full ] && [ -n "${_common:-}" ] && date +%s >"$_common/klipp-pre-push.full" 2>/dev/null
     exit 0
 fi
 

@@ -63,17 +63,19 @@ class InstallHooksTests(unittest.TestCase):
         again = self.install()
         self.assertIn("nothing to do", again.stdout)
         text = self.hook.read_text()
-        self.assertTrue(text.startswith(LFS_HOOK))
         self.assertEqual(text.count("Klipp test gate"), 1)
+        # Since v6 (#603) git-lfs's lines live beside the hook, run from it.
+        self.assertEqual((self.hook.parent / "pre-push.lfs").read_text(), LFS_HOOK)
 
     def test_an_older_block_is_replaced(self):
         self.hook.write_text(LFS_HOOK + V1_BLOCK)
         result = self.install()
         self.assertIn("replacing an older", result.stdout)
         text = self.hook.read_text()
-        self.assertTrue(text.startswith(LFS_HOOK))
         self.assertEqual(text.count("Klipp test gate"), 1)
-        self.assertIn("klipp-gate-block v5", text)
+        self.assertIn("klipp-gate-block v6", text)
+        # The lines above the old block are git-lfs's, kept beside the hook.
+        self.assertTrue((self.hook.parent / "pre-push.lfs").read_text().startswith(LFS_HOOK))
         self.assertEqual((self.root / ".git/hooks/pre-push.klipp-backup").read_text(), LFS_HOOK + V1_BLOCK)
 
     def test_a_stale_gate_waits_for_the_lock_and_names_itself(self):
