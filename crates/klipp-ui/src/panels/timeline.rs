@@ -3008,7 +3008,7 @@ impl TimelinePanel {
                                 // whole selection takes it (#842), and stays
                                 // selected; dropped elsewhere, that clip.
                                 let targets = crate::effect_targets::targets(state.sequence(), state.selected_clip, &state.selected_clips, Some(clip_id), crate::effect_targets::EffectKind::Picture);
-                                if (!targets.clips.contains(&clip_id) || targets.clips.len() == 1) && state.selected_clip != Some(clip_id) {
+                                if crate::effect_targets::drop_reselects(state.selected_clip, &state.selected_clips, clip_id) {
                                     cmds.push(AppCommand::SelectClip(Some(clip_id)));
                                 }
                                 if is_builtin {
@@ -3115,7 +3115,7 @@ impl TimelinePanel {
                                 // As a picture effect's drop: the selection
                                 // when dropped on it (#842).
                                 let targets = crate::effect_targets::targets(state.sequence(), state.selected_clip, &state.selected_clips, Some(clip_id), crate::effect_targets::EffectKind::Sound);
-                                if (!targets.clips.contains(&clip_id) || targets.clips.len() == 1) && state.selected_clip != Some(clip_id) {
+                                if crate::effect_targets::drop_reselects(state.selected_clip, &state.selected_clips, clip_id) {
                                     cmds.push(AppCommand::SelectClip(Some(clip_id)));
                                 }
                                 cmds.extend(crate::effect_targets::commands(&targets, |clip_id| vec![AppCommand::AddAudioEffect { clip_id, effect_type: type_id.clone() }]));
