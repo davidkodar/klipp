@@ -456,6 +456,108 @@ pub(super) fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &
     }
 }
 
+/// How far an export has been confirmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Confirmed {
+    /// Asked for, nothing confirmed yet.
+    Nothing,
+    /// Media offline was shown and the export asked for anyway.
+    Offline,
+    /// A source about to be written over was shown and accepted too.
+    Overwrite,
+}
+
+/// What comes next for an export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ExportStep {
+    /// Ask about these clips, offline: file name and timeline position.
+    AskOffline(Vec<(String, String)>),
+    /// Ask about writing over this source file.
+    AskOverwrite(String),
+    /// Nothing stands in the way: render.
+    Queue,
+}
+
+/// The rule before a render. Media offline is asked about first, then a
+/// source about to be written over, each until it is confirmed. A
+/// confirmed offline warning does not pass the overwrite check: writing a
+/// render over a file the timeline is decoding destroys both, so only its
+/// own confirmation lets it through.
+pub(super) fn export_step(confirmed: Confirmed, offline: Vec<(String, String)>, written_over: Option<String>) -> ExportStep {
+    if confirmed == Confirmed::Nothing && !offline.is_empty() {
+        return ExportStep::AskOffline(offline);
+    }
+    match written_over {
+        Some(name) if confirmed != Confirmed::Overwrite => ExportStep::AskOverwrite(name),
+        _ => ExportStep::Queue,
+    }
+}
+
+/// The clips of `seq` whose media is offline, by file name and timeline
+/// position, for the warning before a render.
+pub(super) fn offline_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool) -> Vec<(String, String)> {
+    seq.tracks
+        .iter()
+        .flat_map(|t| t.clips.iter())
+        .filter_map(|clip| {
+            let klipp_timeline::ClipKind::Media { media_id } = &clip.kind else { return None };
+            let item = pool.get(media_id)?;
+            item.offline.then(|| (item.filename.clone(), clip.timeline_in.to_timecode_string()))
+        })
+        .collect()
+}
+
+/// The file name of the source `output` would write over, if it is one
+/// of `sources`. Both are canonicalised (`..`, symlinks); a path that does
+/// not resolve (an export into a folder not made yet) is no conflict
+/// rather than a guessed one.
+pub(super) fn source_written_over<'a>(output: &std::path::Path, sources: impl IntoIterator<Item = &'a std::path::Path>) -> Option<String> {
+    let canon_out = output.canonicalize().ok()?;
+    sources.into_iter().find(|source| source.canonicalize().is_ok_and(|c| c == canon_out)).map(|source| {
+        source.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| source.display().to_string())
+    })
+}
+
+/// The first of `stem_1.ext`, `stem_2.ext` … beside `original` that is
+/// free (`taken` says which are not), for Auto-Rename on the source
+/// overwrite warning; `original` itself past 9999, so the warning comes
+/// again rather than anything being written over.
+pub(super) fn next_free_name(original: &std::path::Path, taken: impl Fn(&std::path::Path) -> bool) -> std::path::PathBuf {
+    let parent = original.parent().unwrap_or(std::path::Path::new("."));
+    let stem = original.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "output".into());
+    let ext = original.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+    (1..10000u32)
+        .map(|n| parent.join(if ext.is_empty() { format!("{stem}_{n}") } else { format!("{stem}_{n}.{ext}") }))
+        .find(|candidate| !taken(candidate))
+        .unwrap_or_else(|| original.to_path_buf())
+}
+
+/// Each marker segment's file and the label its job shows, from the path
+/// the dialog chose: `<stem>_<marker label>.<ext>` beside it, or
+/// `<stem>_segment_<n>` for the bookends and unnamed markers; each name
+/// once, and `[n/total]` after it in the queue.
+pub(super) fn segment_outputs(segments: &[(u64, u64, String)], base_path: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
+    let ext = base_path.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_string();
+    let base_dir = base_path.parent().unwrap_or(std::path::Path::new("."));
+    let base_stem = base_path.file_stem().and_then(|s| s.to_str()).unwrap_or("export").to_string();
+    let mut used_names = std::collections::HashSet::new();
+    let total = segments.len();
+    segments
+        .iter()
+        .enumerate()
+        .map(|(i, (_, _, label))| {
+            let name = if label.is_empty() || label == "start" || label == "end" {
+                format!("{base_stem}_segment_{}", i + 1)
+            } else {
+                format!("{base_stem}_{}", sanitise_filename(label))
+            };
+            let output = unique_export_path(base_dir, &name, &ext, &mut used_names);
+            let shown = format!("{} [{}/{total}]", output.file_name().and_then(|n| n.to_str()).unwrap_or("segment"), i + 1);
+            (output, shown)
+        })
+        .collect()
+}
+
 impl KlippApp {
     /// The commands that export the sequence and look after its render
     /// queue and the export presets: `false` for any other.
@@ -485,185 +587,23 @@ impl KlippApp {
                 }
                 true
             }
+            // The sequence exported, once nothing stands in the way: media
+            // offline is asked about first, then a source about to be
+            // written over (see `export_step`). The Force commands are
+            // the answers to those two questions.
             AppCommand::ExportSequence { settings } => {
-                // Pre-export check: scan for offline media in the sequence
-                let offline_clips: Vec<(String, String)> = self.state.sequences[self.state.active_sequence_idx]
-                    .tracks.iter()
-                    .flat_map(|t| t.clips.iter())
-                    .filter_map(|clip| {
-                        if let klipp_timeline::ClipKind::Media { media_id } = &clip.kind {
-                            let item = self.state.media_pool.get(media_id)?;
-                            if item.offline {
-                                let tc = clip.timeline_in.to_timecode_string();
-                                return Some((item.filename.clone(), tc));
-                            }
-                        }
-                        None
-                    })
-                    .collect();
-                if !offline_clips.is_empty() {
-                    self.state.export_offline_warning = Some((offline_clips, Box::new(settings.clone())));
-                    return true;
-                }
-
-                // Pre-export check: would the export target overwrite
-                // a file currently used as source media? Mid-render
-                // overwrite of a still-decoding source corrupts both
-                // the source and the export, and after the fact
-                // invalidates the project's filmstrip cache so every
-                // subsequent project load regenerates filmstrips for
-                // every affected clip. Catch it here, before the
-                // encoder opens, and let the user pick a safe path.
-                if let Some(matched_filename) = self.find_export_overwrite_conflict(&settings.output_path) {
-                    self.state.export_source_overwrite_warning =
-                        Some((matched_filename, Box::new(settings.clone())));
-                    return true;
-                }
-                // Marker multi-export: enqueue one job per segment between markers.
-                if self.export_dialog.range_mode == 3 {
-                    self.enqueue_marker_segments(settings);
-                    self.state.show_render_queue = true;
-                    return true;
-                }
-                // Route through RenderQueue — snapshot reads in/out from sequence directly
-                let use_marked = self.export_dialog.range_mode == 1;
-                let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
-                    &self.state.sequences[self.state.active_sequence_idx],
-                    &self.state.sequences,
-                    &self.state.media_pool,
-                    settings,
-                    self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
-                    use_marked,
-                    self.state.project_working_colorspace,
-                );
-                // Override range for selected-clips mode
-                if self.export_dialog.range_mode == 2 {
-                    if let Ok(ref mut snap) = snapshot {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
-                        snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
-                    }
-                }
-                if let Ok(ref mut snap) = snapshot {
-                    snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
-                }
-                let label = settings.output_path.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "Render".into());
-                match snapshot {
-                    Ok(snap) => {
-                        self.state.render_queue.add_job(settings.output_path.clone(), settings.clone(), label, snap);
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to create render snapshot: {e}");
-                    }
-                }
-                self.state.show_render_queue = true;
+                self.export_or_ask(settings, Confirmed::Nothing);
                 true
             }
             AppCommand::ForceExportSequence { settings } => {
-                // Same as ExportSequence but skips offline check (user confirmed)
                 self.state.export_offline_warning = None;
-                // Source-overwrite guard still runs — bypassing the
-                // offline check doesn't bypass the data-corruption
-                // check. If it triggers, the user gets the second
-                // dialog and has to confirm via
-                // ForceExportSequenceOverwrite.
-                if let Some(matched_filename) =
-                    self.find_export_overwrite_conflict(&settings.output_path)
-                {
-                    self.state.export_source_overwrite_warning =
-                        Some((matched_filename, Box::new(settings.as_ref().clone())));
-                    return true;
-                }
-                if self.export_dialog.range_mode == 3 {
-                    self.enqueue_marker_segments(settings);
-                    self.state.show_render_queue = true;
-                    return true;
-                }
-                let use_marked = self.export_dialog.range_mode == 1;
-                let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
-                    &self.state.sequences[self.state.active_sequence_idx],
-                    &self.state.sequences,
-                    &self.state.media_pool,
-                    settings,
-                    // The confirmation dialogs used to drop the LUT here.
-                    self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
-                    use_marked,
-                    self.state.project_working_colorspace,
-                );
-                if self.export_dialog.range_mode == 2 {
-                    if let Ok(ref mut snap) = snapshot {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
-                        snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
-                    }
-                }
-                if let Ok(ref mut snap) = snapshot {
-                    snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
-                }
-                let label = settings.output_path.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "Render".into());
-                match snapshot {
-                    Ok(snap) => {
-                        self.state.render_queue.add_job(settings.output_path.clone(), settings.as_ref().clone(), label, snap);
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to create render snapshot: {e}");
-                    }
-                }
-                self.state.show_render_queue = true;
+                self.export_or_ask(settings, Confirmed::Offline);
                 true
             }
             AppCommand::ForceExportSequenceOverwrite { settings } => {
-                // User explicitly accepted the source-overwrite
-                // warning. Same body as ForceExportSequence but
-                // skips both the offline check (user already passed
-                // it if it fired) and the source-overwrite check.
                 self.state.export_offline_warning = None;
                 self.state.export_source_overwrite_warning = None;
-                if self.export_dialog.range_mode == 3 {
-                    self.enqueue_marker_segments(settings);
-                    self.state.show_render_queue = true;
-                    return true;
-                }
-                let use_marked = self.export_dialog.range_mode == 1;
-                let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
-                    &self.state.sequences[self.state.active_sequence_idx],
-                    &self.state.sequences,
-                    &self.state.media_pool,
-                    settings,
-                    // The confirmation dialogs used to drop the LUT here.
-                    self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
-                    use_marked,
-                    self.state.project_working_colorspace,
-                );
-                if self.export_dialog.range_mode == 2 {
-                    if let Ok(ref mut snap) = snapshot {
-                        let seq = &self.state.sequences[self.state.active_sequence_idx];
-                        snap.sequence_snapshot.export_range = selected_clips_frame_range(
-                            &self.state.selected_clips, seq, snap.sequence_snapshot.fps);
-                    }
-                }
-                if let Ok(ref mut snap) = snapshot {
-                    snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
-                }
-                let label = settings.output_path.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "Render".into());
-                match snapshot {
-                    Ok(snap) => {
-                        self.state.render_queue.add_job(
-                            settings.output_path.clone(),
-                            settings.as_ref().clone(),
-                            label,
-                            snap,
-                        );
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to create render snapshot: {e}");
-                    }
-                }
-                self.state.show_render_queue = true;
+                self.export_or_ask(settings, Confirmed::Overwrite);
                 true
             }
             AppCommand::CancelExport => {
@@ -833,23 +773,7 @@ impl KlippApp {
         &self,
         output_path: &std::path::Path,
     ) -> Option<String> {
-        let canon_out = output_path.canonicalize().ok()?;
-        for item in self.state.media_pool.all() {
-            if item.is_synthetic() {
-                continue;
-            }
-            if let Ok(canon_item) = item.path.canonicalize() {
-                if canon_item == canon_out {
-                    return Some(
-                        item.path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_else(|| item.path.display().to_string()),
-                    );
-                }
-            }
-        }
-        None
+        source_written_over(output_path, self.state.media_pool.all().filter(|item| !item.is_synthetic()).map(|item| item.path.as_path()))
     }
 
     /// Find next available numeric-suffixed filename (`output_1.mp4`,
@@ -859,30 +783,62 @@ impl KlippApp {
     pub(super) fn auto_rename_export_path(
         original: &std::path::Path,
     ) -> std::path::PathBuf {
-        let parent = original.parent().unwrap_or(std::path::Path::new("."));
-        let stem = original
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "output".into());
-        let ext = original
-            .extension()
-            .map(|e| e.to_string_lossy().to_string())
-            .unwrap_or_default();
-        for n in 1..10000u32 {
-            let name = if ext.is_empty() {
-                format!("{stem}_{n}")
-            } else {
-                format!("{stem}_{n}.{ext}")
-            };
-            let candidate = parent.join(&name);
-            if !candidate.exists() {
-                return candidate;
-            }
+        next_free_name(original, |candidate| candidate.exists())
+    }
+
+    /// Export `settings` as far as `confirmed` allows: ask about media
+    /// offline, or a source about to be written over, when that is the
+    /// next question (see [`export_step`]); otherwise queue the render.
+    pub(super) fn export_or_ask(&mut self, settings: &klipp_core::ExportSettings, confirmed: Confirmed) {
+        let offline = if confirmed == Confirmed::Nothing {
+            offline_clips(&self.state.sequences[self.state.active_sequence_idx], &self.state.media_pool)
+        } else {
+            Vec::new()
+        };
+        let written_over = if confirmed == Confirmed::Overwrite { None } else { self.find_export_overwrite_conflict(&settings.output_path) };
+        match export_step(confirmed, offline, written_over) {
+            ExportStep::AskOffline(clips) => self.state.export_offline_warning = Some((clips, Box::new(settings.clone()))),
+            ExportStep::AskOverwrite(name) => self.state.export_source_overwrite_warning = Some((name, Box::new(settings.clone()))),
+            ExportStep::Queue => self.queue_export(settings),
         }
-        // Ridiculously unlikely. Fall back to original — caller will
-        // get the warning again on the next export, which is the
-        // safest failure mode.
-        original.to_path_buf()
+    }
+
+    /// Put the render of `settings` on the queue for the range the dialog
+    /// chose: the whole sequence, its in and out points, the selected
+    /// clips, or one job per marker segment. The three ways an export is
+    /// confirmed each had a copy of this.
+    pub(super) fn queue_export(&mut self, settings: &klipp_core::ExportSettings) {
+        if self.export_dialog.range_mode == 3 {
+            self.enqueue_marker_segments(settings);
+            self.state.show_render_queue = true;
+            return;
+        }
+        let use_marked = self.export_dialog.range_mode == 1;
+        let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
+            &self.state.sequences[self.state.active_sequence_idx],
+            &self.state.sequences,
+            &self.state.media_pool,
+            settings,
+            // The confirmation dialogs used to drop the LUT here.
+            self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
+            use_marked,
+            self.state.project_working_colorspace,
+        );
+        if let Ok(ref mut snap) = snapshot {
+            if self.export_dialog.range_mode == 2 {
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
+            }
+            snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
+        }
+        let label = settings.output_path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Render".into());
+        match snapshot {
+            Ok(snap) => {
+                self.state.render_queue.add_job(settings.output_path.clone(), settings.clone(), label, snap);
+            }
+            Err(e) => tracing::error!("Failed to create render snapshot: {e}"),
+        }
+        self.state.show_render_queue = true;
     }
 
     /// Marker multi-export: enqueue one render job per segment between
@@ -919,33 +875,8 @@ impl KlippApp {
             return;
         }
 
-        // Derive output dir / extension / stem from the user's chosen path.
-        let base_path = &settings.output_path;
-        let ext = base_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("mp4")
-            .to_string();
-        let base_dir = base_path.parent().unwrap_or(std::path::Path::new("."));
-        let base_stem = base_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("export")
-            .to_string();
-
-        let mut used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let total = segments.len();
         let mut job_count = 0u32;
-
-        for (i, (start_frame, end_frame, label)) in segments.iter().enumerate() {
-            // Synthetic boundary names ("start"/"end") fall back to numeric
-            // segment numbering. Real marker labels get sanitised + appended.
-            let seg_label = if label.is_empty() || label == "start" || label == "end" {
-                format!("{}_segment_{}", base_stem, i + 1)
-            } else {
-                format!("{}_{}", base_stem, sanitise_filename(label))
-            };
-            let output_path = unique_export_path(base_dir, &seg_label, &ext, &mut used_names);
+        for (i, ((start_frame, end_frame, _), (output_path, display_label))) in segments.iter().zip(segment_outputs(&segments, &settings.output_path)).enumerate() {
 
             // Per-job ExportSettings clone with overridden output path.
             let mut job_settings: klipp_core::ExportSettings = settings.clone();
@@ -972,16 +903,6 @@ impl KlippApp {
             };
             snap.sequence_snapshot.export_range = Some((*start_frame, *end_frame));
             snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
-
-            let display_label = format!(
-                "{} [{}/{}]",
-                output_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("segment"),
-                i + 1,
-                total,
-            );
 
             self.state
                 .render_queue
@@ -2436,5 +2357,82 @@ mod true_peak_tests {
         d.loudness_preset = 3;
         d.normalize_loudness = false;
         assert_eq!(dialog_true_peak(&d), None);
+    }
+}
+
+#[cfg(test)]
+mod export_rule_tests {
+    use super::{export_step, next_free_name, offline_clips, segment_outputs, source_written_over, Confirmed, ExportStep};
+    use std::path::{Path, PathBuf};
+
+    fn offline() -> Vec<(String, String)> {
+        vec![("a.mov".into(), "00:00:01:00".into())]
+    }
+
+    /// #826: offline media is asked about first, then a source about to be
+    /// written over; a confirmed offline warning does not pass the
+    /// overwrite check, only the overwrite's own confirmation does.
+    #[test]
+    fn an_export_asks_about_offline_media_then_about_a_source_it_would_destroy() {
+        assert_eq!(export_step(Confirmed::Nothing, Vec::new(), None), ExportStep::Queue);
+        assert_eq!(export_step(Confirmed::Nothing, offline(), Some("b.mov".into())), ExportStep::AskOffline(offline()), "offline first");
+        assert_eq!(export_step(Confirmed::Offline, Vec::new(), Some("b.mov".into())), ExportStep::AskOverwrite("b.mov".into()), "past offline, still asked");
+        assert_eq!(export_step(Confirmed::Nothing, Vec::new(), Some("b.mov".into())), ExportStep::AskOverwrite("b.mov".into()));
+        assert_eq!(export_step(Confirmed::Overwrite, Vec::new(), Some("b.mov".into())), ExportStep::Queue, "accepted");
+        assert_eq!(export_step(Confirmed::Offline, offline(), None), ExportStep::Queue, "offline was confirmed");
+    }
+
+    #[test]
+    fn offline_clips_are_named_with_their_place() {
+        let mut pool = klipp_media::MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/gone.mov".into(), None);
+        item.offline = true;
+        let gone = pool.add(item);
+        let here = pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/here.mov".into(), None));
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks[0].clips = vec![klipp_timeline::Clip::media(gone, tc(2.0), tc(4.0), tc(0.0), tc(2.0)), klipp_timeline::Clip::media(here, tc(4.0), tc(6.0), tc(0.0), tc(2.0))];
+        let named = offline_clips(&seq, &pool);
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0].0, "gone.mov");
+    }
+
+    #[test]
+    fn a_render_over_a_source_is_found_by_where_it_points() {
+        let dir = std::env::temp_dir().join(format!("klipp-export-over-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let source = dir.join("take.mov");
+        std::fs::write(&source, b"x").unwrap();
+        let other = dir.join("other.mov");
+        std::fs::write(&other, b"y").unwrap();
+        let sources = [source.as_path(), other.as_path()];
+        // The same file, reached another way.
+        assert_eq!(source_written_over(&dir.join("sub/../take.mov"), sources), Some("take.mov".into()));
+        assert_eq!(source_written_over(&dir.join("render.mp4"), sources), None, "a new file is no conflict");
+        assert_eq!(source_written_over(&dir.join("nowhere/render.mp4"), sources), None, "nor one in a folder not made yet");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_rename_takes_the_first_free_number() {
+        let taken = [PathBuf::from("/out/film_1.mp4"), PathBuf::from("/out/film_2.mp4")];
+        assert_eq!(next_free_name(Path::new("/out/film.mp4"), |p| taken.iter().any(|t| t == p)), PathBuf::from("/out/film_3.mp4"));
+        assert_eq!(next_free_name(Path::new("/out/film"), |_| false), PathBuf::from("/out/film_1"));
+        assert_eq!(next_free_name(Path::new("/out/film.mp4"), |_| true), PathBuf::from("/out/film.mp4"), "nothing free: the original, so the warning comes again");
+    }
+
+    #[test]
+    fn marker_segments_are_named_by_their_markers_once_each() {
+        let segments = vec![(0, 10, "start".to_string()), (10, 20, "Intro: take 2".to_string()), (20, 30, "Intro: take 2".to_string()), (30, 40, "end".to_string())];
+        let out = segment_outputs(&segments, Path::new("/out/film.mov"));
+        let names: Vec<String> = out.iter().map(|(p, _)| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names[0], "film_segment_1.mov", "a bookend is numbered");
+        assert!(names[1].starts_with("film_Intro") && names[1].ends_with(".mov"), "{names:?}");
+        assert_ne!(names[1], names[2], "the same label twice is two files");
+        assert_eq!(names[3], "film_segment_4.mov");
+        assert!(out.iter().all(|(p, _)| p.parent() == Some(Path::new("/out"))));
+        assert_eq!(out[3].1, "film_segment_4.mov [4/4]");
+        // No extension on the chosen path: mp4.
+        assert!(segment_outputs(&segments[..1], Path::new("/out/film"))[0].0.to_string_lossy().ends_with(".mp4"));
     }
 }
