@@ -149,14 +149,7 @@ pub fn show(
                 klipp_timeline::TrackKind::Text => "T",
                 klipp_timeline::TrackKind::Subtitle => "S",
             };
-            // Extract number from track name (e.g., "Video 3" → "3"); a
-            // renamed track keeps its place among the tracks of its kind.
-            let num = track.name.split_whitespace().last()
-                .and_then(|s| s.parse::<u32>().ok())
-                .unwrap_or_else(|| {
-                    let tracks = &state.sequences[state.active_sequence_idx].tracks;
-                    tracks[..=track_idx].iter().filter(|t| t.kind == track.kind).count() as u32
-                });
+            let num = badge_number(&state.sequences[state.active_sequence_idx].tracks, track_idx);
             if num > 0 { format!("{}{}", prefix, num) } else { prefix.to_string() }
         };
         let badge_color = match track.kind {
@@ -761,6 +754,20 @@ pub fn show(
     cmds
 }
 
+/// The number on a track's badge: the one its name ends in ("Video 3"
+/// → 3), else its place among the tracks of its kind, counted as
+/// `Sequence::renumber_tracks` numbers them (video from the bottom, the
+/// rest from the top), so a renamed track keeps the number it had.
+fn badge_number(tracks: &[klipp_timeline::Track], idx: usize) -> u32 {
+    let track = &tracks[idx];
+    track.name.split_whitespace().last()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or_else(|| {
+            let counted = if track.kind == TrackKind::Video { &tracks[idx..] } else { &tracks[..=idx] };
+            counted.iter().filter(|t| t.kind == track.kind).count() as u32
+        })
+}
+
 /// Where the track being renamed, and the name typed so far, are kept
 /// between frames.
 fn rename_id() -> egui::Id {
@@ -770,4 +777,29 @@ fn rename_id() -> egui::Id {
 /// The rename field's own id, so the menu item can give it focus.
 fn rename_edit_id() -> egui::Id {
     egui::Id::new("track_header_rename_edit")
+}
+
+#[cfg(test)]
+mod badge_tests {
+    use super::badge_number;
+    use klipp_timeline::{Track, TrackKind};
+
+    #[test]
+    fn a_renamed_track_keeps_its_number() {
+        // Top to bottom as drawn: video numbered from the bottom, audio
+        // from the top.
+        let mut tracks = vec![
+            Track::new("Video 2", TrackKind::Video),
+            Track::new("Video 1", TrackKind::Video),
+            Track::new("Audio 1", TrackKind::Audio),
+            Track::new("Audio 2", TrackKind::Audio),
+        ];
+        let before: Vec<u32> = (0..tracks.len()).map(|i| badge_number(&tracks, i)).collect();
+        assert_eq!(before, [2, 1, 1, 2]);
+        for t in &mut tracks {
+            t.name = "Renamed".into();
+        }
+        let after: Vec<u32> = (0..tracks.len()).map(|i| badge_number(&tracks, i)).collect();
+        assert_eq!(after, before);
+    }
 }
