@@ -2394,6 +2394,25 @@ pub enum AppCommand {
     AddTrackBelow { track_index: usize },
     RemoveTrack { track_id: TrackId },
     RenameTrack { track_id: TrackId, name: String },
+    /// Keep the track's levels and own effects to paste onto others
+    /// (Copy Track Attributes, #846).
+    CopyTrackAttributes { track_id: TrackId },
+    /// Paste the copied track attributes onto `track_ids`, the parts
+    /// asked for (levels: volume, pan, opacity; picture: effects and
+    /// grade; sound: the audio chain), as one undo step.
+    PasteTrackAttributes { track_ids: Vec<TrackId>, levels: bool, picture: bool, sound: bool },
+    /// A picture effect by name (as the `effect` op names them) onto a
+    /// track itself, after its clips' own; one of a kind replaces it.
+    AddTrackVideoEffect { track_id: TrackId, kind: String },
+    /// An audio effect (an `effect_type`) at the end of a track's chain.
+    AddTrackAudioEffect { track_id: TrackId, effect_type: String },
+    /// Switch one of a track's own effects on or off: its picture effects,
+    /// or (`audio`) its audio chain, by index.
+    ToggleTrackEffect { track_id: TrackId, audio: bool, index: usize },
+    /// Take one of a track's own effects off, by index.
+    RemoveTrackEffect { track_id: TrackId, audio: bool, index: usize },
+    /// Take all of a track's own effects and its grade off.
+    ClearTrackEffects { track_id: TrackId },
     /// Reset the per-track waveform amplitude zoom back to 1.0 (#50).
     ResetWaveformZoom { track_id: TrackId },
 
