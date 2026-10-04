@@ -363,7 +363,7 @@ impl Default for TrackPoint {
 
 /// Serializable audio effect instance (stored on Clip).
 /// Each instance records the effect type, enabled state, wet/dry mix, and param values.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AudioEffectInstance {
     pub effect_type: String,
     #[serde(default = "default_audio_fx_enabled")]

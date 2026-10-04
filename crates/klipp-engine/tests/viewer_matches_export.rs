@@ -751,6 +751,48 @@ fn a_grade_group_exports_as_the_viewer_shows_it() {
     assert!(d > 20, "only {d} levels: the group's grade is not in the export");
 }
 
+/// The main timeline with a vignette and a darkening grade on V1 itself
+/// (#846), over clips a (with its own grade) and b, which carry none of
+/// it. Both run the flattened sequence with the track's effects baked onto
+/// its clips, as the UI hands the engine and as the export's snapshot
+/// makes it (the snapshot's own test checks that it does). They agree, and
+/// the track's effects are in the picture: at the centre, which only the
+/// grade reaches, and at the corner, which the vignette darkens more.
+#[test]
+fn a_tracks_effects_and_grade_export_as_the_viewer_shows_them() {
+    let _decoders = decoders_at_speed();
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let mut t = timeline();
+    let v1 = t.seq.tracks.iter_mut().find(|t| t.name == "V1").unwrap();
+    v1.effects.video = vec![BuiltinEffect::Vignette { amount: -0.8, size: 0.5, softness: 0.4, roundness: 0.7 }];
+    v1.effects.grade = Some(exposure(-0.8));
+    let mut shown = t.clone();
+    shown.seq = klipp_timeline::flatten::flatten_sequence(&t.seq, std::slice::from_ref(&t.seq));
+    let out = exported(&shown);
+    let viewer = Viewer::start(&shown);
+    let mut worst = 0;
+    for n in [10, 60, 110] {
+        let (v, e) = (viewer.frame_at(n), exported_frame(&out, n));
+        worst = worst.max(compare(&format!("track-effect frame {n:3}"), &v, &e));
+    }
+    eprintln!("track effects, viewer vs export: worst {worst} levels");
+    assert!(worst <= 3, "the export differs from the viewer by {worst} levels");
+    let (_, plain) = main_fixture();
+    let (g, p) = (exported_frame(&out, 10), exported_frame(plain, 10));
+    let d = g.iter().zip(&p).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
+    assert!(d > 20, "only {d} levels: the track's effects are not in the export");
+    // The corner, where the vignette bites, darker than the plain export
+    // by more than the grade alone makes the middle.
+    let darker = |x: u32, y: u32| {
+        let (a, b) = (px(&p, x, y), px(&g, x, y));
+        (0..3).map(|c| b[c] - a[c]).sum::<i32>()
+    };
+    assert!(darker(4, 4) < darker(W / 2, H / 2), "the vignette is not in the export: corner {} vs centre {}", darker(4, 4), darker(W / 2, H / 2));
+}
+
 /// One clip, coded `coded` and turned by `rotation`, over this landscape
 /// sequence's first two seconds. The source is red on its coded left half
 /// and blue on its right.

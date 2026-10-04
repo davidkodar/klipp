@@ -91,6 +91,14 @@ impl DocumentView<'_> {
                 seq.tracks.insert(idx, track.clone());
                 seq.renumber_tracks();
             }
+            EditCommand::SetTrackSettings { changes } => {
+                let seq = &mut self.sequences[self.active];
+                for (id, old, _) in changes {
+                    if let Some(t) = seq.tracks.iter_mut().find(|t| t.id == *id) {
+                        t.set_settings(old);
+                    }
+                }
+            }
             EditCommand::SetBrief { old, .. } => {
                 self.sequences[self.active].brief = old.as_deref().cloned();
             }
@@ -740,6 +748,14 @@ impl DocumentView<'_> {
                 if seq.tracks.get(*index).is_some_and(|t| t.id == track.id) {
                     seq.tracks.remove(*index);
                     seq.renumber_tracks();
+                }
+            }
+            EditCommand::SetTrackSettings { changes } => {
+                let seq = &mut self.sequences[self.active];
+                for (id, _, new) in changes {
+                    if let Some(t) = seq.tracks.iter_mut().find(|t| t.id == *id) {
+                        t.set_settings(new);
+                    }
                 }
             }
             EditCommand::SetBrief { new, .. } => {
@@ -1482,5 +1498,50 @@ mod grade_group_tests {
         assert_eq!(view.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap().grade_group, None);
         view.apply_inverse(&make);
         assert!(view.sequences[0].grade_groups.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod track_settings_tests {
+    use super::*;
+    use klipp_timeline::{Track, TrackKind, TrackPaste};
+
+    /// #846: one track's attributes pasted onto two others is one step:
+    /// both take them, and one undo puts both back. A paste of the levels
+    /// alone leaves the effects where they were.
+    #[test]
+    fn a_paste_onto_two_tracks_is_one_step() {
+        let mut seq = Sequence::new_default();
+        let mut source = Track::new("Dialogue", TrackKind::Audio);
+        source.volume = 0.5;
+        source.effects.audio = vec![klipp_core::AudioEffectInstance { effect_type: "eq".into(), enabled: true, wet_dry: 1.0, params: vec![] }];
+        let mut b = Track::new("A2", TrackKind::Audio);
+        b.effects.audio = vec![klipp_core::AudioEffectInstance { effect_type: "limiter".into(), enabled: true, wet_dry: 1.0, params: vec![] }];
+        let c = Track::new("A3", TrackKind::Audio);
+        seq.tracks = vec![source.clone(), b, c];
+        let before: Vec<_> = seq.tracks.iter().map(Track::settings).collect();
+        let copied = source.settings();
+        let paste = |seq: &Sequence, what: TrackPaste| EditCommand::SetTrackSettings {
+            changes: seq.tracks[1..].iter().map(|t| (t.id, t.settings(), t.pasted(&copied, what))).collect(),
+        };
+        let edit = paste(&seq, TrackPaste::ALL);
+        let levels_only = paste(&seq, TrackPaste { levels: true, picture: false, sound: false });
+
+        let mut sequences = vec![seq];
+        let mut pool = MediaPool::new();
+        let mut fps = sequences[0].fps;
+        let mut view = DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        view.apply_forward(&edit);
+        for t in &view.sequences[0].tracks[1..] {
+            assert_eq!(t.settings(), copied, "{} takes the dialogue track's settings", t.name);
+        }
+        view.apply_inverse(&edit);
+        let now: Vec<_> = view.sequences[0].tracks.iter().map(Track::settings).collect();
+        assert_eq!(now, before, "one undo puts both back");
+
+        view.apply_forward(&levels_only);
+        let b = &view.sequences[0].tracks[1];
+        assert_eq!(b.volume, 0.5, "the level is pasted");
+        assert_eq!(b.effects.audio[0].effect_type, "limiter", "the track's own chain stays");
     }
 }

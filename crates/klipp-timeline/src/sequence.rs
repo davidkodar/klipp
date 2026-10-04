@@ -366,6 +366,10 @@ impl Sequence {
         let groups: HashMap<GradeGroupId, GradeGroup> = self.grade_groups.iter().filter(|g| g.grades()).map(|g| (g.id, g.clone())).collect();
         for track in &mut self.tracks {
             for clip in &mut track.clips {
+                // Already baked (its own grade kept aside): once is all.
+                if clip.own_node_graph.is_some() {
+                    continue;
+                }
                 if let Some(group) = clip.grade_group.and_then(|id| groups.get(&id)) {
                     let wrapped = group.wrap(&clip.node_graph);
                     let own = std::mem::replace(&mut clip.node_graph, wrapped);
@@ -375,18 +379,93 @@ impl Sequence {
         }
     }
 
+    /// Whether a render copy of this sequence differs from it: a grade
+    /// group that grades, or a track with effects of its own.
+    pub fn bakes_for_render(&self) -> bool {
+        self.grade_groups.iter().any(GradeGroup::grades) || self.tracks.iter().any(|t| !t.effects.is_empty())
+    }
+
+    /// This sequence as it renders: its grade groups' grades wrapped
+    /// round their members' (see [`Sequence::bake_grade_groups`]), then
+    /// its tracks' effects put on their clips (see
+    /// [`Sequence::bake_track_effects`]), in that order wherever a render
+    /// copy is made, so the viewer and the export make the same one. A
+    /// copy only when there is something to bake.
+    pub fn baked_for_render(&self) -> std::borrow::Cow<'_, Sequence> {
+        if !self.bakes_for_render() {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut s = self.clone();
+        s.bake_grade_groups();
+        s.bake_track_effects();
+        std::borrow::Cow::Owned(s)
+    }
+
+    /// Each track's effects onto every clip of it (#846), for a render
+    /// copy: a picture's effects followed by its track's, its grade
+    /// (inside its group's, when that is baked first) followed by its
+    /// track's grade, a sound's chain followed by its track's. The clips
+    /// keep what was their own (see [`Clip::own_effects`]), and a clip
+    /// that already carries its track's is left, so baking twice is
+    /// baking once. Gaps and adjustment layers take nothing: neither is a
+    /// picture of the track, and an adjustment layer would put the
+    /// track's effects on everything under it.
+    pub fn bake_track_effects(&mut self) {
+        for track in &mut self.tracks {
+            if track.effects.is_empty() {
+                continue;
+            }
+            let fx = &track.effects;
+            let picture = fx.touches_picture() && matches!(track.kind, TrackKind::Video | TrackKind::Text);
+            for clip in &mut track.clips {
+                if clip.own_effects.is_some() || matches!(clip.kind, ClipKind::Gap | ClipKind::AdjustmentLayer) {
+                    continue;
+                }
+                clip.own_effects = Some(Box::new(OwnEffects {
+                    builtin_effects: clip.builtin_effects.clone(),
+                    builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
+                    audio_effects: clip.audio_effects.clone(),
+                }));
+                if picture {
+                    if !fx.video.is_empty() {
+                        // The clip's flags padded to its own effects first: a
+                        // missing flag is on, and the track's follow theirs.
+                        let n = clip.builtin_effects.len();
+                        clip.builtin_effects_enabled.resize(n, true);
+                        clip.builtin_effects.extend(fx.video.iter().cloned());
+                        clip.builtin_effects_enabled.extend((0..fx.video.len()).map(|k| fx.video_enabled.get(k).copied().unwrap_or(true)));
+                    }
+                    if let Some(grade) = fx.grade.as_ref().filter(|g| !g.is_identity()) {
+                        if clip.own_node_graph.is_none() {
+                            clip.own_node_graph = Some(Box::new(clip.node_graph.clone()));
+                        }
+                        let _ = clip.node_graph.append_keeping_ids(grade);
+                    }
+                }
+                clip.audio_effects.extend(fx.audio.iter().cloned());
+            }
+        }
+    }
+
     /// This sequence as the document has it, from a render copy: each
     /// clip's own grade in place of its grade inside its group's (see
-    /// [`Sequence::bake_grade_groups`]). A copy only when there is
+    /// [`Sequence::bake_grade_groups`]), and its own effects and audio
+    /// chain in place of those with its track's (see
+    /// [`Sequence::bake_track_effects`]). A copy only when there is
     /// something to take back out.
     pub fn with_own_grades(&self) -> std::borrow::Cow<'_, Sequence> {
-        if !self.all_clips().any(|c| c.own_node_graph.is_some()) {
+        if !self.all_clips().any(|c| c.own_node_graph.is_some() || c.own_effects.is_some()) {
             return std::borrow::Cow::Borrowed(self);
         }
         let mut seq = self.clone();
         for clip in seq.all_clips_mut() {
             if let Some(own) = clip.own_node_graph.take() {
                 clip.node_graph = *own;
+            }
+            if let Some(own) = clip.own_effects.take() {
+                clip.builtin_effects = own.builtin_effects;
+                clip.builtin_effects_enabled = own.builtin_effects_enabled;
+                clip.audio_effects = own.audio_effects;
             }
         }
         std::borrow::Cow::Owned(seq)
@@ -1006,6 +1085,120 @@ pub struct Track {
     /// before drag-resize landed still render at the original height.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automation_lane_height: Option<f32>,
+    /// What the track does to everything on it (#846): effects and a grade
+    /// on every picture, an audio chain on every sound, after each clip's
+    /// own. Set once, they hold for clips added later too.
+    #[serde(default, skip_serializing_if = "TrackEffects::is_empty")]
+    pub effects: TrackEffects,
+}
+
+/// A track's own effects (#846), applied to every clip on it after the
+/// clip's own: each clip of a render copy carries them (see
+/// [`Sequence::bake_track_effects`]), so the viewer, playback and export
+/// apply them the one way they apply a clip's.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TrackEffects {
+    /// Effects on every picture of the track, after each clip's own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub video: Vec<klipp_effects::BuiltinEffect>,
+    /// Whether each of `video` is on; a missing entry is on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub video_enabled: Vec<bool>,
+    /// A grade on every picture of the track, after each clip's own grade
+    /// and its grade group's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grade: Option<klipp_nodes::NodeGraph>,
+    /// An audio chain on every sound of the track, after each clip's own
+    /// chain. Each effect carries its own bypass.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio: Vec<AudioEffectInstance>,
+}
+
+impl TrackEffects {
+    /// Whether the track changes nothing.
+    pub fn is_empty(&self) -> bool {
+        self.video.is_empty() && self.grade.as_ref().is_none_or(|g| g.is_identity()) && self.audio.is_empty()
+    }
+
+    /// Whether the track changes anything about a picture.
+    pub fn touches_picture(&self) -> bool {
+        !self.video.is_empty() || self.grade.as_ref().is_some_and(|g| !g.is_identity())
+    }
+}
+
+/// What Copy Track Attributes carries (#846): a track's levels and its
+/// own effects, without its clips, its name or its switches.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TrackSettings {
+    pub opacity: f32,
+    pub volume: f32,
+    pub pan: f32,
+    pub effects: TrackEffects,
+}
+
+/// Which parts of a track's settings a paste takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackPaste {
+    /// Volume, pan and opacity.
+    pub levels: bool,
+    /// Picture effects and the grade.
+    pub picture: bool,
+    /// The audio chain.
+    pub sound: bool,
+}
+
+impl TrackPaste {
+    pub const ALL: Self = Self { levels: true, picture: true, sound: true };
+
+    /// Whether the paste takes anything.
+    pub fn any(self) -> bool {
+        self.levels || self.picture || self.sound
+    }
+}
+
+impl Track {
+    /// The track's levels and own effects, as Copy Track Attributes takes them.
+    pub fn settings(&self) -> TrackSettings {
+        TrackSettings { opacity: self.opacity, volume: self.volume, pan: self.pan, effects: self.effects.clone() }
+    }
+
+    /// Put `settings` on the track whole.
+    pub fn set_settings(&mut self, settings: &TrackSettings) {
+        self.opacity = settings.opacity;
+        self.volume = settings.volume;
+        self.pan = settings.pan;
+        self.effects = settings.effects.clone();
+    }
+
+    /// This track's settings with the parts `what` names taken from
+    /// `from`: what a paste of `from` onto this track makes of it.
+    pub fn pasted(&self, from: &TrackSettings, what: TrackPaste) -> TrackSettings {
+        let mut s = self.settings();
+        if what.levels {
+            s.opacity = from.opacity;
+            s.volume = from.volume;
+            s.pan = from.pan;
+        }
+        if what.picture {
+            s.effects.video = from.effects.video.clone();
+            s.effects.video_enabled = from.effects.video_enabled.clone();
+            s.effects.grade = from.effects.grade.clone();
+        }
+        if what.sound {
+            s.effects.audio = from.effects.audio.clone();
+        }
+        s
+    }
+}
+
+/// What a clip of a render copy had before its track's effects were put
+/// on it (see [`Sequence::bake_track_effects`]): its own effects and
+/// audio chain. Never saved.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OwnEffects {
+    pub builtin_effects: Vec<klipp_effects::BuiltinEffect>,
+    pub builtin_effects_enabled: Vec<bool>,
+    pub audio_effects: Vec<AudioEffectInstance>,
 }
 
 fn default_opacity() -> f32 { 1.0 }
@@ -1039,6 +1232,7 @@ impl Track {
             record_armed: false,
             automation_lane_visible: None,
             automation_lane_height: None,
+            effects: TrackEffects::default(),
         }
     }
 
@@ -1072,6 +1266,7 @@ impl Track {
             group_id: None,
             grade_group: None,
             own_node_graph: None,
+            own_effects: None,
             magnetic_anchor: None,
             gain: 1.0,
             volume: 1.0,
@@ -1367,6 +1562,7 @@ impl Track {
             group_id: clip.group_id,
             grade_group: clip.grade_group,
             own_node_graph: None,
+            own_effects: None,
             magnetic_anchor: clip.magnetic_anchor.clone(),
             gain: clip.gain,
             volume: clip.volume,
@@ -1439,6 +1635,7 @@ impl Track {
             group_id: clip.group_id,
             grade_group: clip.grade_group,
             own_node_graph: None,
+            own_effects: None,
             magnetic_anchor: None, // right half gets no anchor
             gain: clip.gain,
             volume: clip.volume,
@@ -1869,6 +2066,12 @@ pub struct Clip {
     /// be copied into the clip's own grade.
     #[serde(skip)]
     pub own_node_graph: Option<Box<klipp_nodes::NodeGraph>>,
+    /// On a render copy carrying its track's effects (see
+    /// [`Sequence::bake_track_effects`]), this clip's own effects and
+    /// audio chain. Never saved, `None` on the document; `Some` marks the
+    /// clip as carrying them, so they are never put on twice.
+    #[serde(skip)]
+    pub own_effects: Option<Box<OwnEffects>>,
     /// If Some, this clip is connected to an anchor on the primary storyline.
     #[serde(default)]
     pub magnetic_anchor: Option<MagneticAnchor>,
@@ -2365,6 +2568,7 @@ impl Clip {
             group_id: None,
             grade_group: None,
             own_node_graph: None,
+            own_effects: None,
             magnetic_anchor: None,
             gain: 1.0,
             volume: 1.0,
@@ -2475,6 +2679,7 @@ impl Clip {
             group_id: None,
             grade_group: None,
             own_node_graph: None,
+            own_effects: None,
             magnetic_anchor: None,
             gain: 1.0,
             volume: 1.0,
@@ -2574,6 +2779,7 @@ impl Clip {
             group_id: None,
             grade_group: None,
             own_node_graph: None,
+            own_effects: None,
             magnetic_anchor: None,
             gain: 1.0,
             volume: 1.0,

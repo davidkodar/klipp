@@ -163,6 +163,10 @@ pub enum EditCommand {
     /// The track at `index` taken out, clips and all (#497); undo puts it
     /// back where it was. The reverse of `AddTrack`.
     RemoveTrack { index: usize, track: klipp_timeline::Track },
+    /// Tracks' levels and own effects (#846), old and new for each, so a
+    /// track's effects edited, or one track's attributes pasted onto
+    /// several, is one step.
+    SetTrackSettings { changes: Vec<(klipp_core::TrackId, klipp_timeline::TrackSettings, klipp_timeline::TrackSettings)> },
     /// The sequence's brief, replaced whole.
     SetBrief { old: Option<Box<klipp_timeline::Brief>>, new: Option<Box<klipp_timeline::Brief>> },
     /// The sequence's edit plan, replaced whole.
@@ -731,6 +735,7 @@ impl EditCommand {
             EditCommand::RetargetTransition { .. } => "Retarget Transition",
             EditCommand::AddTrack { .. } => "Add Track",
             EditCommand::RemoveTrack { .. } => "Remove Track",
+            EditCommand::SetTrackSettings { .. } => "Track Settings",
             EditCommand::SetBrief { .. } => "Set Brief",
             EditCommand::SetEditPlan { .. } => "Set Edit Plan",
             EditCommand::SetClipRole { .. } => "Set Clip Role",
