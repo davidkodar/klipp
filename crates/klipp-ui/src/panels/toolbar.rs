@@ -518,7 +518,8 @@ impl ToolbarPanel {
                 }
                 ui.close_menu();
             }
-            if ui.add_enabled(has_clip, egui::Button::new("Ripple Delete").shortcut_text(kb.display_for("lift_clip"))).clicked() {
+            // Delete's key, which is what this runs; it showed the lift key.
+            if ui.add_enabled(has_clip, egui::Button::new("Ripple Delete").shortcut_text(kb.display_for("delete_clip"))).clicked() {
                 if let Some(clip_id) = state.selected_clip { cmds.push(AppCommand::RemoveClip { clip_id }); }
                 ui.close_menu();
             }
@@ -647,8 +648,11 @@ impl ToolbarPanel {
         ui.menu_button(egui::RichText::new("Timeline").size(crate::theme::type_scale::CONTROL), |ui| {
             if ui.button("Add Video Track").clicked() { cmds.push(AppCommand::AddVideoTrack); ui.close_menu(); }
             if ui.button("Add Audio Track").clicked() { cmds.push(AppCommand::AddAudioTrack); ui.close_menu(); }
-            if ui.button("Delete Track").clicked() {
-                // Delete the track containing the selected clip, or the last track
+            // The selected clip's track; without one there is nothing to
+            // say which, so the item waits for a selection (#911).
+            let delete_track = ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Delete Track"));
+            let delete_track = delete_track.on_disabled_hover_text("Select a clip on the track to delete it, or right-click the track's header");
+            if delete_track.clicked() {
                 if let Some(clip_id) = state.selected_clip {
                     if let Some(track) = state.sequence().tracks.iter().find(|t| t.clips.iter().any(|c| c.id == clip_id)) {
                         cmds.push(AppCommand::RemoveTrack { track_id: track.id });
@@ -751,7 +755,7 @@ impl ToolbarPanel {
             let snap_check = if state.snap.master { "\u{2714} " } else { "  " };
             if ui.add(egui::Button::new(format!("{snap_check}Snapping")).shortcut_text(kb.display_for("toggle_snap"))).clicked() { cmds.push(AppCommand::SetSnapMaster(!state.snap.master)); ui.close_menu(); }
             if ui.add(egui::Button::new("Fit to Window").shortcut_text(kb.display_for("fit_to_window"))).clicked() { cmds.push(AppCommand::FitTimelineToWindow); ui.close_menu(); }
-            if ui.button("Zoom to Selection").clicked() { cmds.push(AppCommand::FitTimelineToWindow); ui.close_menu(); }
+            if ui.add_enabled(state.selected_clip.is_some() || !state.selected_clips.is_empty(), egui::Button::new("Zoom to Selection").shortcut_text(kb.display_for("zoom_to_selection"))).clicked() { cmds.push(AppCommand::ZoomToSelection); ui.close_menu(); }
             ui.separator();
             if ui.add_enabled(!state.compound_clip_stack.is_empty(), egui::Button::new("Leave Compound Clip").shortcut_text(kb.display_for("leave_compound"))).clicked() {
                 cmds.push(AppCommand::CloseCompoundClip);

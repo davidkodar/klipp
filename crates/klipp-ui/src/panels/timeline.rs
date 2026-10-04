@@ -9014,9 +9014,12 @@ impl TimelinePanel {
                         if cd.magnetic_anchor.is_some() {
                             ui.label("\u{26D3} Connected to Primary");
                             if ui.button("Disconnect (Shift+G)").clicked() {
+                                cmds.push(AppCommand::DisconnectFromPrimary { clip_id });
                                 ui.close_menu();
                             }
                         } else if ui.button("Connect to Primary (G)").clicked() {
+                            // These four items only closed the menu (#911).
+                            cmds.push(AppCommand::ConnectToPrimary { clip_id });
                             ui.close_menu();
                         }
                     }
@@ -9026,11 +9029,13 @@ impl TimelinePanel {
                     if let Some(role) = track_role {
                         if role == klipp_timeline::TrackRole::Connected {
                             if ui.button("Promote to Storyline (Shift+S)").clicked() {
+                                cmds.push(AppCommand::ToggleStoryline { clip_id });
                                 ui.close_menu();
                             }
                         } else if role == klipp_timeline::TrackRole::ConnectedStoryline {
                             ui.label("\u{1F517} Connected Storyline");
                             if ui.button("Break Apart Storyline (Shift+S)").clicked() {
+                                cmds.push(AppCommand::ToggleStoryline { clip_id });
                                 ui.close_menu();
                             }
                         }

@@ -2413,6 +2413,15 @@ pub enum AppCommand {
     /// Move a sequence marker to `position`: a drag of its flag on the
     /// ruler, let go (#909).
     MoveMarker { marker_id: MarkerId, position: Timecode },
+    /// Connect a clip to the primary clip nearest its start (G).
+    ConnectToPrimary { clip_id: ClipId },
+    /// Disconnect a connected clip from its primary clip (Shift+G).
+    DisconnectFromPrimary { clip_id: ClipId },
+    /// Promote the clip's connected track to a storyline, or break a
+    /// storyline apart (Shift+S on a connected clip).
+    ToggleStoryline { clip_id: ClipId },
+    /// Zoom the timeline to the selected clips (Shift+Z).
+    ZoomToSelection,
 
     // Per-clip markers
     AddClipMarker { clip_id: ClipId, time_secs: f64, name: String, color: MarkerColor },

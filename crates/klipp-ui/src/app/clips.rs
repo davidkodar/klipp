@@ -289,6 +289,11 @@ impl KlippApp {
                         .map(|c| (c.source_in, c.timeline_in));
 
                     if let (Some((old_a_src_out, old_a_tl_out)), Some((old_b_src_in, old_b_tl_in))) = (old_a, old_b) {
+                        // The roll and its linked partners, one undo step.
+                        let batching = self.state.active_history_mut().is_batching();
+                        if !batching {
+                            self.state.active_history_mut().begin_batch();
+                        }
                         self.state.push_history(EditCommand::LegacyRollTrimClip {
                                 clip_a_id: *clip_a_id,
                                 clip_b_id: *clip_b_id,
@@ -315,26 +320,38 @@ impl KlippApp {
                             }
                         }
 
-                        // Also roll-trim linked partners
-                        let linked_a = seq.tracks.iter().flat_map(|t| t.clips.iter())
-                            .find(|c| c.id == *clip_a_id).and_then(|c| c.linked_clip_id);
-                        let linked_b = seq.tracks.iter().flat_map(|t| t.clips.iter())
-                            .find(|c| c.id == *clip_b_id).and_then(|c| c.linked_clip_id);
-                        if let Some(la) = linked_a {
-                            for track in &mut seq.tracks {
-                                if let Some(c) = track.find_clip_mut(la) {
-                                    c.source_out = *new_a_source_out;
-                                    c.timeline_out = *new_a_timeline_out;
+                        // Linked partners follow by the same amounts. They were
+                        // given A's and B's own source times, which is wrong
+                        // whenever a partner's source starts elsewhere (sound
+                        // recorded apart and synced, a slipped partner), and
+                        // the undo above never put them back (#911).
+                        let a_tl = *new_a_timeline_out - old_a_tl_out;
+                        let a_src = *new_a_source_out - old_a_src_out;
+                        let b_tl = *new_b_timeline_in - old_b_tl_in;
+                        let b_src = *new_b_source_in - old_b_src_in;
+                        let linked_a = seq.all_clips().find(|c| c.id == *clip_a_id).and_then(|c| c.linked_clip_id);
+                        let linked_b = seq.all_clips().find(|c| c.id == *clip_b_id).and_then(|c| c.linked_clip_id);
+                        let mut partner_edits = Vec::new();
+                        for track in &mut seq.tracks {
+                            for c in track.clips.iter_mut() {
+                                let old = c.clone();
+                                if Some(c.id) == linked_a && c.id != *clip_b_id {
+                                    c.timeline_out += a_tl;
+                                    c.source_out += a_src;
+                                } else if Some(c.id) == linked_b && c.id != *clip_a_id {
+                                    c.timeline_in += b_tl;
+                                    c.source_in += b_src;
+                                } else {
+                                    continue;
                                 }
+                                partner_edits.push(EditCommand::ReplaceClip { description: "Roll", old: Box::new(old), new: Box::new(c.clone()) });
                             }
                         }
-                        if let Some(lb) = linked_b {
-                            for track in &mut seq.tracks {
-                                if let Some(c) = track.find_clip_mut(lb) {
-                                    c.source_in = *new_b_source_in;
-                                    c.timeline_in = *new_b_timeline_in;
-                                }
-                            }
+                        for edit in partner_edits {
+                            self.state.push_history(edit);
+                        }
+                        if !batching {
+                            self.state.active_history_mut().end_batch_as("Roll");
                         }
                     }
 

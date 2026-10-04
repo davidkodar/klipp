@@ -301,6 +301,26 @@ impl KlippApp {
 
     fn handle_timeline_navigation_markers(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
+                // The selected clips, all of them, filling the timeline's
+                // width (#911): the menu item ran Fit to Window, and the key
+                // took only the clip last clicked.
+                AppCommand::ZoomToSelection => {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let span = seq
+                        .all_clips()
+                        .filter(|c| self.state.selected_clip == Some(c.id) || self.state.selected_clips.contains(&c.id))
+                        .fold(None, |span: Option<(f64, f64)>, c| {
+                            let (a, b) = (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64());
+                            Some(span.map_or((a, b), |(lo, hi)| (lo.min(a), hi.max(b))))
+                        });
+                    if let Some((start, end)) = span {
+                        let dur = ((end - start) as f32).max(0.1);
+                        let content_width = self.state.last_timeline_content_width;
+                        self.state.timeline_zoom = (content_width / dur * 0.9).clamp(0.1, 2000.0);
+                        self.state.timeline_scroll_x = (start as f32 * self.state.timeline_zoom - 20.0).max(0.0);
+                    }
+                    true
+                }
                 AppCommand::FitTimelineToWindow => {
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
                     let max_secs = seq.tracks.iter()
