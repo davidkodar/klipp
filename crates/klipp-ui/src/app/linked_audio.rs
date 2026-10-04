@@ -110,6 +110,78 @@ pub(super) fn edit_linked_audio_key(keys: &mut Vec<klipp_core::Keyframe>, time: 
     }
 }
 
+impl KlippApp {
+    /// The recording synced to `media_id`, if any and if it is still in
+    /// the pool.
+    pub(super) fn external_audio_of(&self, media_id: klipp_core::MediaId) -> Option<ExternalAudio> {
+        let sync = self.state.media_pool.get(&media_id)?.synced_audio.as_ref()?;
+        let audio = self.state.media_pool.get(&sync.audio_media_id)?;
+        Some(ExternalAudio { media_id: audio.id, offset_secs: sync.offset_secs, len_secs: audio.duration.to_secs_f64() })
+    }
+
+    /// The media's audio appended to an audio track and linked to the
+    /// video clip that was just appended, as the drag-and-drop import
+    /// does it.
+    ///
+    /// Every append path other than that import was creating the video
+    /// clip alone, which is why a timeline built from the control socket
+    /// — or from the media browser's append — was silent, and why every
+    /// render made from one had no sound. The file's audio was never on
+    /// the timeline to be mixed.
+    ///
+    /// `None` when there is no audio to add: audio-only media (the
+    /// caller has already put it on an audio track), a silent file, or
+    /// no audio track and none could be made. The caller then keeps its
+    /// single-clip history entry.
+    /// The media's audio, appended to an audio track and linked to the
+    /// video clip that was just appended — unless source patching says
+    /// video only.
+    ///
+    /// Positions the audio under its own video clip by delegating to
+    /// `attach_linked_audio_to_clip`, and that is the whole point.
+    /// Appending to the *end of the audio track* instead — which is
+    /// what this did first — is only correct while the two tracks stay
+    /// the same length. Any gap on the audio side and the sound lands
+    /// under the wrong picture: a video-only append leaves such a gap,
+    /// and so does appending a silent file, and the next clip with sound
+    /// then goes in the hole rather than under itself. Found by doing
+    /// exactly that on a real timeline.
+    pub(super) fn append_linked_audio(
+        &mut self,
+        media_id: klipp_core::MediaId,
+        video_clip_id: klipp_core::ClipId,
+    ) -> Option<LinkedAudioAppend> {
+        // Source patching: with the audio target off, an append puts the
+        // picture down and nothing else. See `append_brings_audio`.
+        if !self.state.append_brings_audio {
+            return None;
+        }
+        let item = self.state.media_pool.get(&media_id)?;
+        // A synced recording goes under the clip in place of its own
+        // sound. Otherwise audio-only media is already on an audio
+        // track, put there by the caller, and a silent file has nothing
+        // to add.
+        let external = self.external_audio_of(media_id);
+        if external.is_none() && (!item.has_audio || item.video_codec.is_empty()) {
+            return None;
+        }
+        let seq_idx = self.state.active_sequence_idx;
+        attach_linked_audio_to_clip(&mut self.state.sequences[seq_idx], video_clip_id, external)
+    }
+}
+
+/// What `append_linked_audio_to_sequence` added, in the shapes the two
+/// history entries want it: `LinkedImport` takes the clip and its track,
+/// `SourceLinkedInsert` takes the track's clips either side of the edit.
+pub(super) struct LinkedAudioAppend {
+    pub(super) clip: klipp_timeline::Clip,
+    pub(super) track_index: usize,
+    /// Set when the audio track had to be created for this.
+    pub(super) created_track_at: Option<usize>,
+    pub(super) clips_before: Vec<klipp_timeline::Clip>,
+    pub(super) clips_after: Vec<klipp_timeline::Clip>,
+}
+
 #[cfg(test)]
 mod attach_linked_audio_tests {
     use super::*;

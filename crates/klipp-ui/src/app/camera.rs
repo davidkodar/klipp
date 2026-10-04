@@ -66,6 +66,45 @@ pub(super) fn set_camera_key_tangent(camera: &mut klipp_timeline::Camera, param:
     }
 }
 
+impl KlippApp {
+    /// Set or clear one of the sequence camera's keys, as one undo step.
+    ///
+    /// The whole camera is snapshotted either side, which is what
+    /// `SetSequenceShutter` already does, so this needs no history
+    /// variant of its own and undo restores the keyframe lists along
+    /// with everything else the camera carries. `value` of `None`
+    /// removes the key at that moment.
+    ///
+    /// The dedup is `klipp_core::keyframe`'s, not a second copy: what
+    /// counts as "the same moment" is one decision and it lives there.
+    pub(super) fn key_sequence_camera(&mut self, sequence_idx: usize, param: klipp_core::CameraParam, time_secs: f64, value: Option<f32>) {
+        self.edit_sequence_camera(sequence_idx, |camera| apply_camera_key(camera, param, time_secs, value));
+    }
+
+    /// Change the sequence camera and record the change as one camera
+    /// snapshot — unless a drag on its keys is open, in which case the
+    /// drag's end records the one entry for all of it. Nothing is
+    /// recorded when the edit changed nothing.
+    pub(super) fn edit_sequence_camera(&mut self, sequence_idx: usize, edit: impl FnOnce(&mut klipp_timeline::Camera)) {
+        let Some(seq) = self.state.sequences.get_mut(sequence_idx) else { return };
+        let old = seq.camera.clone();
+        edit(&mut seq.camera);
+        if seq.camera == old {
+            return;
+        }
+        let new = seq.camera.clone();
+        let id = seq.id;
+        let history = self.state.history_for_mut(id);
+        if !history.is_dragging(&camera_drag_key(sequence_idx)) {
+            history.push(crate::history::HistoryEntry {
+                command: crate::history::EditCommand::SetSequenceCamera { old: Box::new(old), new: Box::new(new) },
+            });
+        }
+        self.sync_sequence_to_engine();
+        self.state.dirty = true;
+    }
+}
+
 #[cfg(test)]
 mod sequence_camera_tests {
     use super::*;

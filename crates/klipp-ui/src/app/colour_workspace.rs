@@ -894,3 +894,19 @@ impl KlippApp {
         }
     }
 }
+
+pub(super) struct ColorWsParams {
+    pub(super) show_scopes_bar: bool,
+    pub(super) show_nodes_bar: bool,
+    pub(super) color_tools_bottom: bool,
+    pub(super) toggle_bar_h: f32,
+    pub(super) scopes_h: f32,
+    pub(super) center_left: f32,
+    pub(super) center_w: f32,
+    pub(super) main_top: f32,
+    pub(super) main_bottom: f32,
+    pub(super) flexible_h: f32,
+    pub(super) toggle_bar_rect: egui::Rect,
+    pub(super) nodes_rect: egui::Rect,
+    pub(super) bottom_scope_cursor: Option<crate::state::ScopeCursorData>,
+}

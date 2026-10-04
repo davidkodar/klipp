@@ -1574,3 +1574,75 @@ impl KlippApp {
         }
     }
 }
+
+impl KlippApp {
+    /// Detect Scene Cuts' end (#616): the clip split at `cut_times` (its
+    /// file's seconds) as one undoable edit, its linked sound with it, and
+    /// said how many. With none inside it, or a clip since changed so none
+    /// fall inside, it is left as it is and that is said too.
+    pub(super) fn split_at_scene_cuts(&mut self, clip_id: klipp_core::ClipId, cut_times: &[f64]) {
+        let seq = self.state.sequence();
+        let Some((name, media_fps)) = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id).and_then(|c| c.media_id()).and_then(|m| self.state.media_pool.get(&m)).map(|m| (m.filename.clone(), m.fps.as_f64())) else {
+            self.state.toast.show("Scene cuts found, but the clip is gone".to_string());
+            return;
+        };
+        let ops = klipp_document::ops::scene_cut_ops(seq, clip_id, cut_times, media_fps);
+        if ops.is_empty() {
+            self.state.toast.show(format!("No scene cuts found in {name}; it is unchanged"));
+            return;
+        }
+        match klipp_document::ops::resolve(seq, &self.state.media_pool, &ops) {
+            Ok(plan) => {
+                let edits: Vec<EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+                self.apply_edits_as_one(&edits, "Detect Scene Cuts");
+                let n = ops.len();
+                self.state.toast.show(format!("Split {name} at {n} scene cut{} into {} shots", if n == 1 { "" } else { "s" }, n + 1));
+            }
+            Err(r) => self.state.toast.show(format!("Scene cuts not applied: {}. {}", r.why, capitalise(&r.hint))),
+        }
+    }
+}
+
+/// Which edge `trim_to_playhead_dispatch` should move — Out for Q, In for W.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum TrimToPlayheadDir {
+    /// Q: trim the OUT edge of the clip ending at/before the playhead.
+    Out,
+    /// W: trim the IN edge of the clip starting at/after the playhead.
+    In,
+}
+
+/// Compute the pixel offsets (in the project's working coordinate
+/// space, where 0,0 is the frame centre) that place a 30 %-scaled
+/// PiP clip in the named corner of the frame, with a 4 % margin.
+/// Returns `(pos_x, pos_y)` ready to assign to a clip's transform
+/// keyframes. Unknown corner strings fall through to (0, 0).
+///
+/// **Why resolution-aware**: the original PiP presets used hard-
+/// coded offsets (±600, ±300) tuned for 1080p; on 720p the clip
+/// pushed off-screen and on 4K it landed near the frame centre.
+/// This formula keeps the visual result corner-anchored across
+/// every project resolution.
+///
+/// **Y-sign convention**: Klipp's `transform.position_y` is
+/// negative-up, positive-down (matches the existing `pip_top_right`
+/// using `-300` for top and `pip_bottom_left` using `+300` for
+/// bottom).
+pub(super) fn pip_offsets_for_corner(
+    res: klipp_core::Resolution,
+    corner: &str,
+) -> (f32, f32) {
+    // Clip is 30 % scale; 4 % margin from frame edge:
+    //   offset = frame_dim/2 - clip_dim/2 - margin
+    //          = frame_dim * (0.5 - 0.15 - 0.04)
+    //          = frame_dim * 0.31
+    let offset_x = res.width as f32 * 0.31;
+    let offset_y = res.height as f32 * 0.31;
+    match corner {
+        "pip_top_left"     => (-offset_x, -offset_y),
+        "pip_top_right"    => ( offset_x, -offset_y),
+        "pip_bottom_left"  => (-offset_x,  offset_y),
+        "pip_bottom_right" => ( offset_x,  offset_y),
+        _ => (0.0, 0.0),
+    }
+}

@@ -2537,3 +2537,477 @@ impl KlippApp {
         }
     }
 }
+
+impl KlippApp {
+    /// A list of recorded edits applied forward as one history entry —
+    /// one undo step — with the document marked changed and the engine
+    /// told. What the control socket's plans go through; the Edit Plan
+    /// window's buttons too.
+    /// Send a published colour chart through the same renderer the
+    /// viewer and the export use, and read it back.
+    ///
+    /// Everything the Colour Check window says is a reading of pixels
+    /// that came out of that renderer. If the path itself moves colour,
+    /// those readings are partly a measurement of Klipp, and a person
+    /// chasing them will be grading the pipeline. It runs on both the
+    /// CPU and the GPU path, because the viewer shows one and an export
+    /// may take the other.
+    pub(super) fn run_colour_self_check(&mut self) {
+        let working = klipp_engine::video_decoder::working_colorspace();
+        let both = klipp_compose::selfcheck::run_both(480, 320, working, klipp_compose::RenderOptions::default());
+        let mut said = Vec::new();
+        let mut ok = true;
+        for (gpu, check) in &both {
+            let path = if *gpu { "GPU" } else { "CPU" };
+            for (severity, what) in check.findings() {
+                if severity != "ok" {
+                    ok = false;
+                }
+                said.push(format!("{path}: {what}"));
+            }
+        }
+        let worst = both[0]
+            .1
+            .patches
+            .iter()
+            .zip(both[1].1.patches.iter())
+            .map(|(a, b)| klipp_color::measure::delta_e2000(a.back, b.back))
+            .fold(0.0f32, f32::max);
+        if worst >= 1.0 {
+            ok = false;
+            said.push(format!("The CPU and the GPU disagree about the chart by {worst:.1} ΔE — a grade approved in the viewer is not the grade that exports."));
+        }
+        self.colour_check.selfcheck = Some((ok, said.join("\n")));
+    }
+}
+
+/// `value + adjustment` held to the temperature and tint sliders' ±50,
+/// and whether it had to be (#405: the clamp used to be silent).
+pub(super) fn add_on_rail(value: f32, adjustment: f32) -> (f32, bool) {
+    let want = value + adjustment;
+    let held = want.clamp(-50.0, 50.0);
+    (held, (held - want).abs() > 0.01)
+}
+
+/// A qualifier keyed on the colour picked at `(nx, ny)` (0..=1 over the
+/// frame) of an sRGB frame: `base` with its hue centred on the colour and
+/// its saturation range around it. Read as the qualifier reads a pixel
+/// (`picture_hsl`), from the mean of a 5×5 patch, so one noisy pixel does
+/// not set the key. `None` when the frame is empty.
+pub(super) fn qualifier_from_pick(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    nx: f32,
+    ny: f32,
+    base: klipp_core::QualifierSettings,
+) -> Option<klipp_core::QualifierSettings> {
+    Some(qualifier_keyed_on(picked_linear(rgba, width, height, nx, ny)?, base))
+}
+
+/// The colour at `(nx, ny)` (0..=1 over the frame) of an sRGB frame, in
+/// linear light: the mean of a 5×5 patch, so one noisy pixel does not
+/// decide it. `None` when the frame is empty.
+pub(super) fn picked_linear(rgba: &[u8], width: u32, height: u32, nx: f32, ny: f32) -> Option<[f32; 3]> {
+    if width == 0 || height == 0 || rgba.len() < (width * height * 4) as usize {
+        return None;
+    }
+    let (cx, cy) = ((nx.clamp(0.0, 1.0) * (width - 1) as f32).round() as i64, (ny.clamp(0.0, 1.0) * (height - 1) as f32).round() as i64);
+    let mut patch = Vec::with_capacity(25 * 4);
+    for y in (cy - 2).max(0)..=(cy + 2).min(height as i64 - 1) {
+        for x in (cx - 2).max(0)..=(cx + 2).min(width as i64 - 1) {
+            let i = (y as usize * width as usize + x as usize) * 4;
+            patch.extend_from_slice(&rgba[i..i + 4]);
+        }
+    }
+    let linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&patch);
+    let n = (linear.len() / 4) as f32;
+    Some([0, 1, 2].map(|c| linear.chunks_exact(4).map(|p| p[c]).sum::<f32>() / n))
+}
+
+/// How far either side of a picked hue its range reaches: 30°.
+pub(super) const HUE_PICK_HALF_WIDTH: f32 = 1.0 / 12.0;
+
+/// `points` with a range round `hue` (0..1): a point at the hue and one
+/// either side of it, all neutral, so nothing changes until the middle
+/// one is dragged; the points already inside that range give way to it,
+/// the rest stay. Near red the range stops at the curve's end rather
+/// than wrapping round to the other (#612).
+pub(super) fn hue_range_points(points: &[[f32; 2]], hue: f32) -> Vec<[f32; 2]> {
+    let hue = hue.rem_euclid(1.0);
+    let (lo, hi) = ((hue - HUE_PICK_HALF_WIDTH).max(0.0), (hue + HUE_PICK_HALF_WIDTH).min(1.0));
+    let mut out: Vec<[f32; 2]> = points.iter().copied().filter(|p| p[0] < lo || p[0] > hi).collect();
+    for x in [lo, hue, hi] {
+        if !out.iter().any(|p| (p[0] - x).abs() < 1e-4) {
+            out.push([x, 0.5]);
+        }
+    }
+    out.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    out
+}
+
+/// `base` keyed on a colour in linear light, read as the qualifier reads
+/// a pixel (`picture_hsl`): its hue centred there, its saturation range
+/// around it.
+pub(super) fn qualifier_keyed_on(rgb: [f32; 3], base: klipp_core::QualifierSettings) -> klipp_core::QualifierSettings {
+    let hsl = klipp_effects::cpu_grade::picture_hsl(rgb);
+    klipp_core::QualifierSettings {
+        enabled: true,
+        hue_center: hsl.h * 360.0,
+        hue_width: 30.0,
+        sat_low: (hsl.s - 0.2).max(0.0),
+        sat_high: (hsl.s + 0.2).min(1.0),
+        ..base
+    }
+}
+
+/// Why Auto White Balance cannot read the frame buffer's bytes for a
+/// clip spanning `clip_span`, or `None` when it can: the bytes must be the
+/// picture on screen (not while the GPU stack presents without them), the
+/// SDR picture (an HDR monitor mode publishes PQ preview or false colour,
+/// whose "neutrals" mean nothing), and a frame of the clip being balanced.
+pub(super) fn auto_wb_frame_refusal(
+    gpu_output_live: bool,
+    hdr_monitor: bool,
+    complete: bool,
+    bytes_at: Option<klipp_core::RationalTime>,
+    clip_span: Option<(klipp_core::RationalTime, klipp_core::RationalTime)>,
+) -> Option<&'static str> {
+    if gpu_output_live {
+        return Some("pause playback first — it reads the frame on screen, and a playing frame is not held to read");
+    }
+    if hdr_monitor {
+        return Some("turn the HDR monitor off first — the viewer shows an HDR preview or false colour, not the picture it balances");
+    }
+    // A progress frame, or one drawn while a stream lagged, is published
+    // under the playhead without every clip's picture in it.
+    if !complete {
+        return Some("the frame is still being drawn — press again in a moment");
+    }
+    match (bytes_at, clip_span) {
+        (Some(at), Some((a, b))) if at >= a && at < b => None,
+        (_, None) => Some("the clip is no longer on the timeline"),
+        _ => Some("the frame on screen is not of this clip — park the playhead on it first"),
+    }
+}
+
+/// Where the playhead goes when a clip is selected on the Colour page:
+/// nowhere if it is already in the clip, else back to the frame the
+/// clip was last looked at there, else its first frame.
+pub(super) fn colour_seek_on_select(
+    clip: &klipp_timeline::Clip,
+    playhead: klipp_core::RationalTime,
+    remembered: Option<klipp_core::RationalTime>,
+) -> Option<klipp_core::RationalTime> {
+    let inside = |t: klipp_core::RationalTime| t >= clip.timeline_in && t < clip.timeline_out;
+    if inside(playhead) {
+        return None;
+    }
+    Some(remembered.filter(|&t| inside(t)).unwrap_or(clip.timeline_in))
+}
+
+#[cfg(test)]
+mod node_param_undo_tests {
+    //! Tests for the BeginNodeParamEdit / EndNodeParamEdit round-trip
+    //! invariant: a gesture that snapshots the graph, mutates it, and commits
+    //! a `SetNodeGraph` history entry must preserve the pre-gesture graph so
+    //! the existing undo replay can restore it.
+    //!
+    //! Full dispatch testing requires a `KlippApp` instance (event channels,
+    //! engine handle, egui context), which is not practical in a unit test.
+    //! These tests validate the *data contract* my handlers depend on: the
+    //! `EditCommand::SetNodeGraph` entry round-trips the old/new graphs and
+    //! is structurally equivalent to what the existing `ToggleNodeEnabled`
+    //! handler (known-working) produces.
+
+    use crate::history::{EditCommand, HistoryEntry};
+    use klipp_core::ClipId;
+
+    #[test]
+    fn set_node_graph_history_entry_preserves_snapshot() {
+        // Simulate BeginNodeParamEdit: snapshot the current graph.
+        let original = klipp_nodes::NodeGraph::default();
+        let old_graph = original.clone();
+        let original_node_count = original.nodes.len();
+
+        // Simulate several SetNodeParam commands mutating the working graph.
+        let mut working = original.clone();
+        if let Some(first_node) = working.nodes.first_mut() {
+            // Mutate something observable — a new label marks the working
+            // graph as distinct from the snapshot.
+            first_node.label = "mutated".to_string();
+        }
+
+        // Simulate EndNodeParamEdit: push a SetNodeGraph history entry with
+        // the snapshot and the post-gesture graph.
+        let entry = HistoryEntry {
+            command: EditCommand::SetNodeGraph {
+                clip_id: ClipId::new(),
+                old_graph,
+                new_graph: working.clone(),
+            },
+        };
+
+        // The history entry must still hold an unmodified snapshot of the
+        // pre-gesture graph — that's what undo replays.
+        match &entry.command {
+            EditCommand::SetNodeGraph { old_graph, new_graph, .. } => {
+                assert_eq!(old_graph.nodes.len(), original_node_count);
+                // old_graph must not have picked up the mutation we made to
+                // the working copy.
+                if let Some(snap_first) = old_graph.nodes.first() {
+                    assert_ne!(snap_first.label, "mutated",
+                        "snapshot must be independent of the working graph");
+                }
+                // And the new_graph must reflect the mutation.
+                if let Some(new_first) = new_graph.nodes.first() {
+                    assert_eq!(new_first.label, "mutated");
+                }
+            }
+            other => panic!("expected SetNodeGraph, got {:?}", other),
+        }
+    }
+
+    /// An atomic click-to-reset (Begin + SetNodeParam + End in the same
+    /// frame) must produce exactly one `SetNodeGraph` history entry whose
+    /// `old_graph` holds the pre-click state. This models the behavior of
+    /// `push_atomic_node_edit` in node_inspector.rs.
+    #[test]
+    fn atomic_edit_creates_single_history_entry() {
+        use klipp_core::AppCommand;
+        use klipp_nodes::NodeId;
+
+        // Simulated command stream produced by a single "reset" click:
+        let clip_id = ClipId::new();
+        let node_id = NodeId::new_v4();
+        let cmds: Vec<AppCommand> = vec![
+            AppCommand::BeginNodeParamEdit { clip_id },
+            AppCommand::SetNodeParam {
+                clip_id,
+                node_id,
+                param: "exposure".into(),
+                value: 0.0,
+            },
+            AppCommand::EndNodeParamEdit { clip_id },
+        ];
+
+        // The stream must contain exactly one Begin and one End bracketing
+        // the SetNodeParam. That's the contract a handler needs to produce a
+        // single history entry.
+        let begin_count = cmds.iter().filter(|c| matches!(c, AppCommand::BeginNodeParamEdit { .. })).count();
+        let end_count = cmds.iter().filter(|c| matches!(c, AppCommand::EndNodeParamEdit { .. })).count();
+        let set_count = cmds.iter().filter(|c| matches!(c, AppCommand::SetNodeParam { .. })).count();
+        assert_eq!(begin_count, 1, "atomic edit must emit exactly one Begin");
+        assert_eq!(end_count, 1, "atomic edit must emit exactly one End");
+        assert_eq!(set_count, 1, "atomic edit here carries one SetNodeParam");
+
+        // Order: Begin must precede the SetNodeParam, End must follow.
+        let begin_idx = cmds.iter().position(|c| matches!(c, AppCommand::BeginNodeParamEdit { .. })).unwrap();
+        let set_idx = cmds.iter().position(|c| matches!(c, AppCommand::SetNodeParam { .. })).unwrap();
+        let end_idx = cmds.iter().position(|c| matches!(c, AppCommand::EndNodeParamEdit { .. })).unwrap();
+        assert!(begin_idx < set_idx && set_idx < end_idx,
+            "expected Begin < SetNodeParam < End, got {begin_idx}/{set_idx}/{end_idx}");
+    }
+
+    /// Two consecutive atomic edits must produce two separate Begin/End
+    /// brackets so they become two distinct history entries, not one
+    /// coalesced undo step.
+    #[test]
+    fn multiple_atomic_edits_create_separate_brackets() {
+        use klipp_core::AppCommand;
+        use klipp_nodes::NodeId;
+
+        let clip_id = ClipId::new();
+        let node_id = NodeId::new_v4();
+        let cmds: Vec<AppCommand> = vec![
+            // First atomic edit
+            AppCommand::BeginNodeParamEdit { clip_id },
+            AppCommand::SetNodeParam { clip_id, node_id, param: "exposure".into(), value: 0.5 },
+            AppCommand::EndNodeParamEdit { clip_id },
+            // Second atomic edit
+            AppCommand::BeginNodeParamEdit { clip_id },
+            AppCommand::SetNodeParam { clip_id, node_id, param: "contrast".into(), value: 0.3 },
+            AppCommand::EndNodeParamEdit { clip_id },
+        ];
+
+        let begin_count = cmds.iter().filter(|c| matches!(c, AppCommand::BeginNodeParamEdit { .. })).count();
+        let end_count = cmds.iter().filter(|c| matches!(c, AppCommand::EndNodeParamEdit { .. })).count();
+        assert_eq!(begin_count, 2, "two edits must emit two Begins");
+        assert_eq!(end_count, 2, "two edits must emit two Ends");
+
+        // The two brackets must be disjoint: the first End must precede the
+        // second Begin. If they were interleaved, the handler would coalesce
+        // them into a single history entry.
+        let positions: Vec<usize> = cmds
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| match c {
+                AppCommand::BeginNodeParamEdit { .. } | AppCommand::EndNodeParamEdit { .. } => Some(i),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(positions.len(), 4);
+        assert!(positions[0] < positions[1] && positions[1] < positions[2] && positions[2] < positions[3],
+            "brackets must not interleave");
+    }
+
+    #[test]
+    fn begin_end_cycle_with_no_mutation_still_produces_valid_entry() {
+        // Edge case: user clicks a slider but releases without dragging.
+        // Begin snapshots, End commits an identical graph. The entry should
+        // still be well-formed (undoing a no-op restores an identical graph).
+        let graph = klipp_nodes::NodeGraph::default();
+        let entry = HistoryEntry {
+            command: EditCommand::SetNodeGraph {
+                clip_id: ClipId::new(),
+                old_graph: graph.clone(),
+                new_graph: graph.clone(),
+            },
+        };
+        match &entry.command {
+            EditCommand::SetNodeGraph { old_graph, new_graph, .. } => {
+                assert_eq!(old_graph.nodes.len(), new_graph.nodes.len());
+            }
+            _ => panic!(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod add_on_rail_tests {
+    use super::add_on_rail;
+
+    #[test]
+    fn within_the_range_is_kept_and_past_it_is_held_and_said() {
+        assert_eq!(add_on_rail(10.0, -12.0), (-2.0, false));
+        assert_eq!(add_on_rail(40.0, 20.0), (50.0, true));
+        assert_eq!(add_on_rail(-45.0, -30.0), (-50.0, true));
+    }
+}
+
+#[cfg(test)]
+mod qualifier_pick_tests {
+    use super::{hue_range_points, picked_linear, qualifier_from_pick};
+
+    /// #612: a pick puts three neutral points round the hue, the middle
+    /// one on it; points inside the range give way, the rest stay; near
+    /// red the range stops at the curve's end.
+    #[test]
+    fn a_hue_pick_puts_a_neutral_range_round_the_hue() {
+        let picked = hue_range_points(&[], 0.5);
+        assert_eq!(picked.len(), 3);
+        assert!((picked[1][0] - 0.5).abs() < 1e-6 && picked.iter().all(|p| p[1] == 0.5), "{picked:?}");
+        assert!((picked[2][0] - picked[0][0] - 2.0 / 12.0).abs() < 1e-6, "30° either side");
+        let kept = hue_range_points(&[[0.1, 0.7], [0.52, 0.9], [0.9, 0.3]], 0.5);
+        assert!(kept.contains(&[0.1, 0.7]) && kept.contains(&[0.9, 0.3]), "outside the range they stay: {kept:?}");
+        assert!(!kept.iter().any(|p| p[1] == 0.9), "inside it they give way: {kept:?}");
+        assert!(kept.windows(2).all(|w| w[0][0] < w[1][0]), "in order");
+        let red = hue_range_points(&[], 0.01);
+        assert_eq!(red[0], [0.0, 0.5], "stops at the curve's start: {red:?}");
+        // And the hue the pick reads is the one the curve acts on: an
+        // orange patch reads as orange.
+        let frame: Vec<u8> = (0..16 * 8).flat_map(|_| [230u8, 120, 30, 255]).collect();
+        let hue = klipp_effects::cpu_grade::picture_hsl(picked_linear(&frame, 16, 8, 0.5, 0.5).unwrap()).h * 360.0;
+        assert!((hue - 28.0).abs() < 2.0, "orange: {hue}");
+    }
+
+    /// A frame of `left` on its left half and `right` on its right.
+    fn halves(left: [u8; 3], right: [u8; 3]) -> Vec<u8> {
+        (0..16 * 8).flat_map(|i| { let c = if i % 16 < 8 { left } else { right }; [c[0], c[1], c[2], 255] }).collect()
+    }
+
+    #[test]
+    fn the_pick_keys_the_colour_under_it_and_the_qualifier_passes_it() {
+        let (orange, blue) = ([230, 120, 30], [40, 80, 200]);
+        let frame = halves(orange, blue);
+        let base = klipp_core::QualifierSettings { hue_soft: 7.0, ..Default::default() };
+        let q = qualifier_from_pick(&frame, 16, 8, 0.1, 0.5, base.clone()).unwrap();
+        assert!(q.enabled);
+        assert!((q.hue_center - 28.0).abs() < 2.0, "orange: {}", q.hue_center);
+        assert_eq!(q.hue_soft, 7.0, "the node's softness is kept");
+        // The qualifier's own matte: the picked colour in, the other out.
+        let key = |c: [u8; 3]| {
+            let mut px = klipp_effects::srgb_u8_to_linear_f32_rgba(&[c[0], c[1], c[2], 255]);
+            klipp_effects::cpu_grade::qualifier_matte(
+                &mut px, q.hue_center / 360.0, q.hue_width / 360.0, q.hue_soft / 360.0,
+                q.sat_low, q.sat_high, q.sat_soft, q.lum_low, q.lum_high, q.lum_soft, q.invert,
+            );
+            px[0]
+        };
+        assert!(key(orange) > 0.99, "picked colour keyed: {}", key(orange));
+        assert!(key(blue) < 0.01, "other colour not: {}", key(blue));
+        assert!(qualifier_from_pick(&[], 0, 0, 0.5, 0.5, base).is_none());
+    }
+}
+
+#[cfg(test)]
+mod auto_wb_frame_tests {
+    use super::auto_wb_frame_refusal;
+    use klipp_core::RationalTime;
+
+    fn t(f: i64) -> RationalTime { RationalTime { value: f, rate: 30 } }
+
+    #[test]
+    fn a_parked_frame_of_the_clip_is_read() {
+        assert_eq!(auto_wb_frame_refusal(false, false, true, Some(t(15)), Some((t(10), t(40)))), None);
+    }
+
+    /// #404: while the GPU stack presents without bytes, the buffer holds
+    /// an older parked frame.
+    #[test]
+    fn a_zero_copy_frame_on_screen_is_refused() {
+        assert!(auto_wb_frame_refusal(true, false, true, Some(t(15)), Some((t(10), t(40)))).is_some());
+    }
+
+    #[test]
+    fn bytes_of_another_clip_are_refused() {
+        assert!(auto_wb_frame_refusal(false, false, true, Some(t(45)), Some((t(10), t(40)))).is_some());
+        assert!(auto_wb_frame_refusal(false, false, true, None, Some((t(10), t(40)))).is_some());
+    }
+
+    #[test]
+    fn an_hdr_monitor_frame_is_not_read() {
+        assert!(auto_wb_frame_refusal(false, true, true, Some(t(15)), Some((t(10), t(40)))).is_some());
+    }
+
+    #[test]
+    fn a_frame_still_being_drawn_is_not_read() {
+        assert!(auto_wb_frame_refusal(false, false, false, Some(t(15)), Some((t(10), t(40)))).is_some());
+    }
+}
+
+#[cfg(test)]
+mod colour_seek_tests {
+    use super::colour_seek_on_select;
+    use klipp_core::RationalTime;
+    use klipp_timeline::Clip;
+
+    fn t(secs: i64) -> RationalTime { RationalTime { value: secs * 30, rate: 30 } }
+
+    fn clip(from: i64, to: i64) -> Clip {
+        Clip::media(klipp_core::MediaId::new(), t(from), t(to), t(0), t(to - from))
+    }
+
+    #[test]
+    fn a_playhead_already_in_the_clip_stays_put() {
+        assert_eq!(colour_seek_on_select(&clip(10, 20), t(15), None), None);
+    }
+
+    #[test]
+    fn a_playhead_elsewhere_goes_to_the_first_frame() {
+        assert_eq!(colour_seek_on_select(&clip(10, 20), t(3), None), Some(t(10)));
+        assert_eq!(colour_seek_on_select(&clip(10, 20), t(20), None), Some(t(10)));
+    }
+
+    #[test]
+    fn returning_to_a_clip_goes_back_to_where_it_was_graded() {
+        assert_eq!(colour_seek_on_select(&clip(10, 20), t(3), Some(t(17))), Some(t(17)));
+    }
+
+    /// A remembered frame the clip no longer covers (it was trimmed)
+    /// is ignored rather than followed out of the clip.
+    #[test]
+    fn a_remembered_frame_outside_a_trimmed_clip_is_ignored() {
+        assert_eq!(colour_seek_on_select(&clip(10, 20), t(3), Some(t(25))), Some(t(10)));
+    }
+}

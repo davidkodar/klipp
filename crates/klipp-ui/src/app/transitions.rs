@@ -113,3 +113,16 @@ impl KlippApp {
         }
     }
 }
+
+impl KlippApp {
+    /// A transition's duration or alignment changed from the inspector:
+    /// through the document op that checks the clips have the footage
+    /// for it, refused with a toast when they have not, one undo step.
+    fn reshape_transition(&mut self, track_index: usize, transition_id: klipp_core::TransitionId, duration: klipp_core::RationalTime, alignment: klipp_core::TransitionAlignment) {
+        let seq = self.state.sequence();
+        match klipp_document::ops::reshape_transition(seq, &self.state.media_pool, track_index, transition_id, duration, alignment) {
+            Ok(edit) => self.apply_edits_as_one(std::slice::from_ref(&edit), "Transition"),
+            Err(r) => self.state.toast.show(format!("Transition unchanged: {}. {}", r.why, capitalise(&r.hint))),
+        }
+    }
+}

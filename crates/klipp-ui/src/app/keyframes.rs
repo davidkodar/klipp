@@ -1275,3 +1275,24 @@ impl KlippApp {
         }
     }
 }
+
+/// Recompute `clip.timeline_out` so that its visible length on the timeline
+/// matches the time it takes the speed curve to exhaust the clip's source range.
+/// Uses the constant `clip.speed` when there are no keyframes; integrates the
+/// curve otherwise. Called from the speed-keyframe command handlers so the UI
+/// and engine see a consistent clip length after a ramp edit.
+pub(super) fn recalc_timeline_out_from_speed(clip: &mut klipp_timeline::Clip) {
+    let source_dur_secs = clip.source_duration().to_secs_f64();
+    if source_dur_secs <= 0.0 {
+        return;
+    }
+    let rate = clip.timeline_in.rate;
+    let new_dur_secs = klipp_timeline::effective_timeline_duration_for_keyframes(
+        &clip.speed_keyframes,
+        source_dur_secs,
+        rate as f64,
+        clip.speed,
+    );
+    let new_duration = klipp_core::RationalTime::from_secs_f64(new_dur_secs, rate);
+    clip.timeline_out = clip.timeline_in + new_duration;
+}

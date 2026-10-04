@@ -1685,3 +1685,449 @@ impl KlippApp {
         }
     }
 }
+
+impl KlippApp {
+    fn relink_media(&mut self, media_id: MediaId, new_path: &Path) {
+        let Some(item) = self.state.media_pool.get_mut(&media_id) else { return };
+        let changed = item.path != new_path;
+        item.path = new_path.to_path_buf();
+        item.offline = !new_path.exists();
+        if changed {
+            if let Some(proxy) = item.proxy_path.take() {
+                let _ = std::fs::remove_file(&proxy);
+                let _ = std::fs::remove_file(partial_proxy_path(&proxy));
+            }
+            item.proxy_ready = false;
+            item.skim_file = None;
+            item.waveform_data = None;
+            item.audio_cache = None;
+            item.fingerprint = compute_media_fingerprint(new_path);
+            self.state.thumbnail_cache.set_filmstrip(media_id, Vec::new());
+        }
+        self.state.offline_media_ids.retain(|id| *id != media_id);
+        if new_path.exists() {
+            let _ = self.cmd_tx.send(AppCommand::LoadMediaFile {
+                path: new_path.to_path_buf(),
+                media_id,
+            });
+            // Its pictures, from the file it now names. The re-probe
+            // alone makes none: a moved file has the same size and date,
+            // so it reads as unchanged, and an item that was offline at
+            // open never had a thumbnail made in the first place.
+            self.refresh_media_pictures(media_id);
+        }
+        self.sync_media_pool_to_engine();
+    }
+
+    /// Seed the clip's InputTransform node `log_format` from the
+    /// source media. User per-media override (`MediaItem.log_format`,
+    /// set whenever the user picks a format on any clip of this
+    /// media) wins over the heuristic (`detected_log_format`); the
+    /// heuristic wins over Srgb default. Skipped entirely when the
+    /// effective format is Srgb so we don't insert pointless
+    /// `Some(Srgb)` overrides on plain SDR clips.
+    pub(super) fn apply_detected_log_format(&mut self, clip_id: klipp_core::ClipId, media_id: klipp_core::MediaId) {
+        let effective = self.state.media_pool.get(&media_id)
+            .map(|m| m.effective_log_format())
+            .unwrap_or_default();
+        if effective != klipp_core::LogFormat::Srgb {
+            let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+            if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
+                clip.set_input_log_format(effective);
+            }
+        }
+    }
+
+    /// A favourite or rejected stretch of the source clip: between its
+    /// in and out points, or the whole clip when none are set.
+    pub(super) fn source_range_marker(&self, kind: klipp_core::MediaMarkerKind) -> Option<klipp_core::MediaMarker> {
+        let media = self.state.media_pool.get(&self.state.source_media_id?)?;
+        let from = media.default_source_in.map(|t| t.to_secs_f64()).unwrap_or(0.0);
+        let to = media.default_source_out.map(|t| t.to_secs_f64()).unwrap_or_else(|| media.duration.to_secs_f64());
+        (to > from).then(|| klipp_core::MediaMarker::range(kind, from, to))
+    }
+
+    pub(super) fn apply_media_sync(&mut self, video_id: klipp_core::MediaId, sync: klipp_core::SyncedAudio) {
+        let audio_name = self.state.media_pool.get(&sync.audio_media_id).map(|m| m.filename.clone()).unwrap_or_default();
+        let Some(video) = self.state.media_pool.get_mut(&video_id) else { return };
+        let message = format!("Synced {} to {audio_name}: {}", video.filename, sync.describe());
+        video.synced_audio = Some(sync);
+        self.state.dirty = true;
+        tracing::info!("{message}");
+        self.state.toast.show(message);
+    }
+
+    /// Kick off a project consolidation on a background thread. Sets up the
+    /// `consolidate_progress` channel on state so the main loop picks up
+    /// progress + completion messages.
+    pub(super) fn start_consolidation(
+        &mut self,
+        dest_dir: std::path::PathBuf,
+        include_proxies: bool,
+        include_skims: bool,
+        create_zip: bool,
+        delete_folder_after_zip: bool,
+    ) {
+        let Some(source_dir) = self.state.project_path.clone() else {
+            self.state.toast.show(
+                "Save the project before consolidating.".to_string(),
+            );
+            return;
+        };
+        if self.state.consolidate_progress.is_some() {
+            self.state.toast.show(
+                "Consolidation already in progress.".to_string(),
+            );
+            return;
+        }
+
+        let media_pool = self.state.media_pool.clone();
+        let sequences = self.state.sequences.clone();
+        let color = klipp_project::ColorSettings {
+            global_lut_path: self.state.global_lut_path.clone(),
+            global_lut_opacity: self.state.global_lut_opacity,
+            global_lut_enabled: self.state.global_lut_enabled,
+            track_header_width: self.state.track_header_width,
+            auto_generate_filmstrips: self.state.project_auto_filmstrips,
+            auto_generate_skim: self.state.project_auto_skim,
+            working_colorspace: self.state.project_working_colorspace,
+            grade_encoding: self.state.project_grade_encoding,
+        };
+        let options = klipp_project::consolidate::ConsolidateOptions {
+            dest_dir,
+            include_proxies,
+            include_skims,
+        };
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.state.consolidate_progress = Some(crate::state::ConsolidateProgress {
+            files_done: 0,
+            files_total: 0,
+            current_file: String::new(),
+            expects_archive: create_zip,
+            archiving: false,
+            archive_bytes_done: 0,
+            archive_bytes_total: 0,
+            receiver: rx,
+        });
+        self.state.show_consolidate_dialog = false;
+
+        // Capture the destination once for Phase 2 so later state edits can't
+        // redirect the archive target mid-run.
+        let phase2_dest = options.dest_dir.clone();
+
+        let tx_progress = tx.clone();
+        std::thread::spawn(move || {
+            let result = klipp_project::consolidate::consolidate_project(
+                &source_dir,
+                &media_pool,
+                &sequences,
+                &color,
+                options,
+                Some(Box::new(move |done, total, name| {
+                    let _ = tx_progress.send(
+                        crate::state::ConsolidateMessage::Progress {
+                            done,
+                            total,
+                            filename: name.to_string(),
+                        },
+                    );
+                })),
+            );
+            let phase1_ok = result.is_ok();
+            let _ = tx.send(crate::state::ConsolidateMessage::Done(
+                result.map_err(|e| e.to_string()),
+            ));
+
+            if create_zip && phase1_ok {
+                // Place the archive next to the consolidated folder.
+                // `<dest>/MyProject/` → `<dest>/MyProject.zip`.
+                let zip_path = phase2_dest.with_extension("zip");
+                let tx_arch = tx.clone();
+                let progress_fn: klipp_project::consolidate::ArchiveProgressFn =
+                    Box::new(move |bytes_done: u64, bytes_total: u64, name: &str| {
+                        let _ = tx_arch.send(
+                            crate::state::ConsolidateMessage::ArchiveProgress {
+                                bytes_done,
+                                bytes_total,
+                                filename: name.to_string(),
+                            },
+                        );
+                    });
+                let archive_result = klipp_project::consolidate::execute_zip_folder(
+                    &phase2_dest,
+                    &zip_path,
+                    Some(&progress_fn),
+                );
+                match archive_result {
+                    Ok(()) => {
+                        let _ = tx.send(
+                            crate::state::ConsolidateMessage::ArchiveDone(Ok(zip_path.clone())),
+                        );
+                        if delete_folder_after_zip {
+                            // Best-effort cleanup — the archive is already on
+                            // disk, so a failure here isn't fatal.
+                            if let Err(e) = std::fs::remove_dir_all(&phase2_dest) {
+                                tracing::warn!(
+                                    "delete folder after archiving failed: {e}",
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(
+                            crate::state::ConsolidateMessage::ArchiveDone(Err(e.to_string())),
+                        );
+                    }
+                }
+            }
+        });
+    }
+}
+
+pub(super) fn media_usage_count(media_id: MediaId, sequences: &[Sequence]) -> usize {
+    sequences.iter()
+        .flat_map(|seq| seq.tracks.iter())
+        .flat_map(|t| &t.clips)
+        .filter(|c| c.media_id() == Some(media_id))
+        .count()
+}
+
+/// Compute a content fingerprint: FNV-1a hash of first 64KB + file_size.
+/// Returns None if the file can't be read.
+pub(super) fn compute_media_fingerprint(path: &Path) -> Option<u64> {
+    klipp_media::relink::fingerprint(path)
+}
+
+/// Detect if a set of paths forms a numbered image sequence.
+/// Returns (ffmpeg_pattern, start_frame, frame_count) if detected.
+pub fn detect_image_sequence(paths: &[PathBuf]) -> Option<(String, u32, u32)> {
+    if paths.len() < 2 { return None; }
+
+    // All must be in the same directory with the same extension
+    let dir = paths[0].parent()?;
+    let ext = paths[0].extension()?.to_str()?;
+    if !paths.iter().all(|p| {
+        p.parent() == Some(dir)
+            && p.extension().and_then(|e| e.to_str()) == Some(ext)
+    }) {
+        return None;
+    }
+
+    // Only image extensions (delegated to the canonical klipp_core list,
+    // so any future image format automatically participates in image
+    // sequence detection).
+    if !klipp_core::media_extensions::is_image(ext) {
+        return None;
+    }
+
+    // Extract numeric suffix from each filename: name_NNNN.ext
+    let mut frames: Vec<(u32, &PathBuf)> = paths.iter()
+        .filter_map(|p| {
+            let stem = p.file_stem()?.to_str()?;
+            // Find trailing digits
+            let digit_start = stem.rfind(|c: char| !c.is_ascii_digit())?;
+            let num_str = &stem[digit_start + 1..];
+            if num_str.is_empty() { return None; }
+            let n: u32 = num_str.parse().ok()?;
+            Some((n, p))
+        })
+        .collect();
+
+    if frames.len() < 2 { return None; }
+    frames.sort_by_key(|(n, _)| *n);
+
+    let start = frames[0].0;
+    let end = frames.last()?.0;
+    let count = frames.len() as u32;
+
+    // Must be mostly contiguous (allow up to 5% gaps)
+    let expected = end - start + 1;
+    if (count as f64) < (expected as f64 * 0.95) { return None; }
+
+    // Build ffmpeg pattern: determine padding width
+    let sample_stem = frames[0].1.file_stem()?.to_str()?;
+    let digit_start = sample_stem.rfind(|c: char| !c.is_ascii_digit())?;
+    let prefix = &sample_stem[..=digit_start];
+    let padding = sample_stem.len() - digit_start - 1;
+    let pattern = format!("{}/{prefix}%0{padding}d.{ext}", dir.display());
+
+    Some((pattern, start, count))
+}
+
+pub(super) fn is_video_ext(path: &std::path::Path) -> bool {
+    klipp_core::media_extensions::path_is_video(path)
+}
+
+/// What a pool clip puts on the timeline when no range was picked on its
+/// browser thumbnail: the In/Out marked in the source viewer, else the
+/// whole clip, as `(duration, source_in, source_out)`. The same rule as
+/// Insert and Overwrite; hover-skimming the tile never marks anything.
+pub(super) fn source_marks_range(item: &klipp_media::MediaItem) -> (Timecode, Option<Timecode>, Option<Timecode>) {
+    if item.default_source_in.is_none() && item.default_source_out.is_none() {
+        return (item.duration, None, None);
+    }
+    let raw_in = item.default_source_in.unwrap_or(Timecode { value: 0, rate: item.duration.rate });
+    let raw_out = item.default_source_out.unwrap_or(item.duration);
+    if raw_in >= raw_out {
+        return (item.duration, None, None);
+    }
+    (raw_out - raw_in, Some(raw_in), Some(raw_out))
+}
+
+/// A file that turns out to be in the pool already is not imported
+/// again, but a destination it was given (a drop on a track, "add at
+/// playhead") still holds: the item already there is placed instead.
+pub(super) fn retarget_pending_drop(
+    pending: &mut std::collections::HashMap<klipp_core::MediaId, klipp_core::events::ClipDrop>,
+    requested: klipp_core::MediaId,
+    existing: klipp_core::MediaId,
+) -> Option<AppCommand> {
+    let drop = pending.remove(&requested)?;
+    Some(AppCommand::PlaceMedia { media_id: existing, drop })
+}
+
+#[cfg(test)]
+mod external_tools_tests {
+    use crate::prefs::ExternalToolsPrefs;
+
+    #[test]
+    fn external_tools_prefs_default_round_trip_enabled() {
+        let prefs = ExternalToolsPrefs::default();
+        assert!(prefs.round_trip_reload);
+        assert!(prefs.image_editor.is_empty());
+        assert!(prefs.audio_editor.is_empty());
+        assert!(prefs.video_editor.is_empty());
+    }
+
+    /// Mirrors the routing in the `OpenInExternalApp` handler: stills always
+    /// go to the image editor.
+    #[test]
+    fn external_app_routing_still_uses_image_editor() {
+        let prefs = ExternalToolsPrefs {
+            image_editor: "gimp".into(),
+            audio_editor: "audacity".into(),
+            video_editor: "kdenlive".into(),
+            round_trip_reload: true,
+        };
+        let is_still = true;
+        let has_video = false;
+        let has_audio = false;
+        let app = if is_still {
+            &prefs.image_editor
+        } else if !has_video && has_audio {
+            &prefs.audio_editor
+        } else {
+            &prefs.video_editor
+        };
+        assert_eq!(app, "gimp");
+    }
+
+    /// Mirrors the routing in the `OpenInExternalApp` handler: audio-only
+    /// files (has_audio, no video_codec) route to the audio editor.
+    #[test]
+    fn external_app_routing_audio_only() {
+        let prefs = ExternalToolsPrefs {
+            image_editor: "gimp".into(),
+            audio_editor: "audacity".into(),
+            video_editor: "kdenlive".into(),
+            round_trip_reload: true,
+        };
+        let is_still = false;
+        let has_video = false;
+        let has_audio = true;
+        let app = if is_still {
+            &prefs.image_editor
+        } else if !has_video && has_audio {
+            &prefs.audio_editor
+        } else {
+            &prefs.video_editor
+        };
+        assert_eq!(app, "audacity");
+    }
+
+    /// Video clips route to the video editor.
+    #[test]
+    fn external_app_routing_video_uses_video_editor() {
+        let prefs = ExternalToolsPrefs {
+            image_editor: "gimp".into(),
+            audio_editor: "audacity".into(),
+            video_editor: "kdenlive".into(),
+            round_trip_reload: true,
+        };
+        let is_still = false;
+        let has_video = true;
+        let has_audio = true;
+        let app = if is_still {
+            &prefs.image_editor
+        } else if !has_video && has_audio {
+            &prefs.audio_editor
+        } else {
+            &prefs.video_editor
+        };
+        assert_eq!(app, "kdenlive");
+    }
+}
+
+#[cfg(test)]
+mod source_marks_range_tests {
+    use super::source_marks_range;
+    use klipp_core::Timecode;
+
+    fn t(secs: i64) -> Timecode { Timecode { value: secs * 30, rate: 30 } }
+
+    fn item(secs: i64) -> klipp_media::MediaItem {
+        // Any item will do: only the duration and the marks are read.
+        klipp_media::MediaItem::new_synthetic_title(
+            klipp_core::MediaId::new(), "clip".into(), t(secs), klipp_core::Fps::new(30, 1),
+        )
+    }
+
+    /// Issue #261: an unmarked clip goes on whole.
+    #[test]
+    fn an_unmarked_clip_is_added_whole() {
+        assert_eq!(source_marks_range(&item(140)), (t(140), None, None));
+    }
+
+    #[test]
+    fn marked_in_and_out_are_used() {
+        let mut m = item(140);
+        m.default_source_in = Some(t(10));
+        m.default_source_out = Some(t(40));
+        assert_eq!(source_marks_range(&m), (t(30), Some(t(10)), Some(t(40))));
+
+        // Only an In: from there to the end.
+        m.default_source_out = None;
+        assert_eq!(source_marks_range(&m), (t(130), Some(t(10)), Some(t(140))));
+
+        // Marks the wrong way round fall back to the whole clip.
+        m.default_source_out = Some(t(5));
+        assert_eq!(source_marks_range(&m), (t(140), None, None));
+    }
+}
+
+#[cfg(test)]
+mod retarget_drop_tests {
+    use super::{retarget_pending_drop, AppCommand};
+    use klipp_core::events::ClipDrop;
+    use klipp_core::MediaId;
+
+    #[test]
+    fn a_duplicate_with_a_destination_places_the_existing_item() {
+        let (requested, existing) = (MediaId::new(), MediaId::new());
+        let mut pending = std::collections::HashMap::new();
+        pending.insert(requested, ClipDrop::AppendToTrack { track_index: 0 });
+        let cmd = retarget_pending_drop(&mut pending, requested, existing);
+        assert!(matches!(
+            cmd,
+            Some(AppCommand::PlaceMedia { media_id, drop: ClipDrop::AppendToTrack { track_index: 0 } }) if media_id == existing
+        ));
+        assert!(pending.is_empty(), "the stale destination was left behind");
+    }
+
+    #[test]
+    fn a_duplicate_with_no_destination_places_nothing() {
+        let mut pending = std::collections::HashMap::new();
+        assert!(retarget_pending_drop(&mut pending, MediaId::new(), MediaId::new()).is_none());
+    }
+}

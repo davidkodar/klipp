@@ -1197,3 +1197,80 @@ mod decision_tests {
         }
     }
 }
+
+/// Count how many clips across all sequences reference this media_id.
+/// Persist the current custom workspace list to
+/// `~/.config/klipp/workspaces.json`. Errors are swallowed because this
+/// is a best-effort UI persistence write — if it fails the user gets
+/// the runtime state for this session and a warning in the log.
+pub(super) fn persist_workspaces(workspaces: &[crate::state::SavedWorkspaceLayout]) {
+    if let Ok(json) = serde_json::to_string_pretty(workspaces) {
+        let path = dirs::config_dir()
+            .unwrap_or_default()
+            .join("klipp/workspaces.json");
+        let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
+        if let Err(e) = std::fs::write(&path, json) {
+            tracing::warn!("Failed to persist workspaces.json: {e}");
+        }
+    }
+}
+
+/// Returns the autosave path for a given project path: `<stem>_autosave.klipp`
+pub(crate) fn autosave_path_for(project_path: &Path) -> PathBuf {
+    let stem = project_path.file_stem().unwrap_or_default().to_string_lossy();
+    project_path.with_file_name(format!("{stem}_autosave.klipp"))
+}
+
+/// Whether a path is an auto-save folder rather than a project.
+pub(crate) fn is_autosave_path(path: &Path) -> bool {
+    path.file_stem().is_some_and(|s| s.to_string_lossy().ends_with("_autosave"))
+}
+
+/// The project an auto-save folder belongs to: `X_autosave.klipp` → `X.klipp`.
+pub(crate) fn project_for_autosave(path: &Path) -> Option<PathBuf> {
+    let stem = path.file_stem()?.to_string_lossy();
+    let main = stem.strip_suffix("_autosave").filter(|m| !m.is_empty())?;
+    Some(path.with_file_name(format!("{main}.klipp")))
+}
+
+/// Mark a project's auto-save as seen after the user chose the saved
+/// version over it: the project folder's time moves past the auto-save's,
+/// so neither the open prompt nor the browser's "Unsaved work recovered"
+/// badge offers it again. The auto-save itself is left on disk, and goes
+/// the way it always has, on the next clean save or close.
+pub(crate) fn retire_autosave(project_path: &Path) {
+    let now = std::time::SystemTime::now();
+    if let Err(e) = std::fs::File::open(project_path).and_then(|f| f.set_modified(now)) {
+        tracing::warn!("Could not mark the auto-save of {project_path:?} as seen: {e}");
+    }
+}
+
+/// Whether a project has an auto-save newer than its last save: work
+/// that was never saved, usually because Klipp closed unexpectedly.
+pub(crate) fn has_newer_autosave(project_path: &Path) -> bool {
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    match (modified(project_path), modified(&autosave_path_for(project_path))) {
+        (Some(saved), Some(auto)) => auto > saved,
+        (None, Some(_)) => true,
+        _ => false,
+    }
+}
+
+/// Generate an ISO 8601 UTC timestamp string.
+pub fn iso8601_now() -> String {
+    chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+pub(super) fn ensure_klipp_extension(mut path: PathBuf) -> PathBuf {
+    if path.extension().and_then(|e| e.to_str()) != Some("klipp") {
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if !name.ends_with(".klipp") {
+            path.set_file_name(format!("{}.klipp", name));
+        }
+    }
+    path
+}

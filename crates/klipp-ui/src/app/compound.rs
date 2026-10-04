@@ -989,3 +989,127 @@ impl KlippApp {
         }
     }
 }
+
+/// Returns true if inserting `candidate_id` as a compound clip into a sequence
+/// identified by `host_id` would create a circular reference. Performs a DFS
+/// from `candidate_id` through every transitively-referenced compound clip;
+/// if `host_id` appears anywhere in that subtree (including `candidate_id`
+/// itself), it is a cycle.
+pub(super) fn would_create_cycle(
+    candidate_id: klipp_core::SequenceId,
+    host_id: klipp_core::SequenceId,
+    all_sequences: &[klipp_timeline::Sequence],
+) -> bool {
+    let mut visited = std::collections::HashSet::new();
+    let mut stack = vec![candidate_id];
+    while let Some(sid) = stack.pop() {
+        if sid == host_id {
+            return true;
+        }
+        if !visited.insert(sid) {
+            continue;
+        }
+        if let Some(seq) = all_sequences.iter().find(|s| s.id == sid) {
+            for track in &seq.tracks {
+                for clip in &track.clips {
+                    if let klipp_timeline::ClipKind::Sequence { sequence_id, .. } = &clip.kind {
+                        stack.push(*sequence_id);
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod compound_clip_cycle_tests {
+    //! Tests for the cycle-detection guard around compound clip creation.
+    use super::would_create_cycle;
+    use klipp_core::{Fps, RationalTime, Resolution, SequenceId};
+    use klipp_timeline::{Clip, Sequence, Track, TrackKind};
+
+    fn t(frames: i64) -> RationalTime {
+        RationalTime::from_frames(frames, 24)
+    }
+
+    fn make_seq(name: &str) -> Sequence {
+        Sequence {
+            drop_frame: false,
+            camera: Default::default(),
+            timeline_graph: None,
+            grade_groups: Vec::new(),
+            id: SequenceId::new(),
+            name: name.to_string(),
+            fps: Fps::new(24, 1),
+            resolution: Resolution { width: 1920, height: 1080 },
+            first_clip_autoset: Default::default(),
+            tracks: Vec::new(),
+            in_point: None,
+            out_point: None,
+            markers: Vec::new(),
+            last_playhead: None,
+            brief: None,
+            edit_plan: None,
+        }
+    }
+
+    fn add_compound(seq: &mut Sequence, target: SequenceId) {
+        let mut tr = Track::new("V1", TrackKind::Video);
+        tr.clips.push(Clip::sequence(target, t(0), t(24)));
+        seq.tracks.push(tr);
+    }
+
+    #[test]
+    fn self_reference_is_a_cycle() {
+        let a = make_seq("a");
+        let id = a.id;
+        assert!(would_create_cycle(id, id, &[a]));
+    }
+
+    #[test]
+    fn direct_cycle_a_contains_b_then_b_into_a_detected() {
+        let mut a = make_seq("a");
+        let b = make_seq("b");
+        let a_id = a.id;
+        let b_id = b.id;
+        // a contains b
+        add_compound(&mut a, b_id);
+        // would inserting a as compound clip into b create a cycle?
+        // candidate=a (contains b), host=b → DFS from a finds b, NOT host b ... wait
+        // We want: candidate must transitively reach host. a → b. host=b. Yes cycle.
+        let _ = b; // suppress unused
+        assert!(would_create_cycle(a_id, b_id, &[a.clone(), make_seq("b_dup")]),
+            "candidate=a (a contains b), host=b → DFS from a hits b");
+    }
+
+    #[test]
+    fn transitive_cycle_a_to_c_to_b_detected() {
+        let mut a = make_seq("a");
+        let mut c = make_seq("c");
+        let b = make_seq("b");
+        let a_id = a.id;
+        let b_id = b.id;
+        let c_id = c.id;
+        add_compound(&mut a, c_id); // a contains c
+        add_compound(&mut c, b_id); // c contains b
+        // candidate=a, host=b → DFS a → c → b. Cycle.
+        assert!(would_create_cycle(a_id, b_id, &[a, b, c]));
+    }
+
+    #[test]
+    fn independent_sequences_no_cycle() {
+        let a = make_seq("a");
+        let b = make_seq("b");
+        let a_id = a.id;
+        let b_id = b.id;
+        assert!(!would_create_cycle(a_id, b_id, &[a, b]));
+    }
+
+    #[test]
+    fn empty_all_sequences_no_panic() {
+        let a_id = SequenceId::new();
+        let b_id = SequenceId::new();
+        assert!(!would_create_cycle(a_id, b_id, &[]));
+    }
+}
