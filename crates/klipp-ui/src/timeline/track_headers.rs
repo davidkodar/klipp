@@ -135,6 +135,10 @@ pub fn show(
 
         // Right-click context menu on track header area (allocated FIRST so buttons sit on top)
         let header_resp = ui.allocate_rect(track_rect, egui::Sense::click());
+        // Ctrl-click on a track's header selects its clips (#844).
+        if header_resp.clicked() && ui.input(|i| i.modifiers.command) {
+            cmds.push(AppCommand::SelectClipsIn { track: Some(track_idx), range: klipp_core::SelectRange::All });
+        }
 
         // Layer index badge (V1, V2, A1, etc.) — fixed, shows compositing order
         let badge_x = track_rect.min.x + crate::theme::CLIP_ROLE_BAR_W + 4.0;
@@ -145,10 +149,14 @@ pub fn show(
                 klipp_timeline::TrackKind::Text => "T",
                 klipp_timeline::TrackKind::Subtitle => "S",
             };
-            // Extract number from track name (e.g., "Video 3" → "3")
+            // Extract number from track name (e.g., "Video 3" → "3"); a
+            // renamed track keeps its place among the tracks of its kind.
             let num = track.name.split_whitespace().last()
                 .and_then(|s| s.parse::<u32>().ok())
-                .unwrap_or(0);
+                .unwrap_or_else(|| {
+                    let tracks = &state.sequences[state.active_sequence_idx].tracks;
+                    tracks[..=track_idx].iter().filter(|t| t.kind == track.kind).count() as u32
+                });
             if num > 0 { format!("{}{}", prefix, num) } else { prefix.to_string() }
         };
         let badge_color = match track.kind {
@@ -173,13 +181,40 @@ pub fn show(
 
         // Track name (after the badge)
         let name_x = badge_rect.right() + 4.0;
-        ui.painter().text(
-            egui::pos2(name_x, track_rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            &track.name,
-            egui::FontId::proportional(10.0),
-            theme.text_secondary,
-        );
+        let renaming = ui.data(|d| d.get_temp::<(klipp_core::TrackId, String)>(rename_id()))
+            .filter(|(id, _)| *id == track.id);
+        if let Some((rename_track, mut buf)) = renaming {
+            let name_rect = egui::Rect::from_min_max(
+                egui::pos2(name_x, track_rect.center().y - 8.0),
+                egui::pos2(track_rect.max.x - 4.0, track_rect.center().y + 8.0),
+            );
+            let resp = ui.put(
+                name_rect,
+                egui::TextEdit::singleline(&mut buf)
+                    .id(rename_edit_id())
+                    .font(egui::FontId::proportional(10.0))
+                    .margin(egui::Margin::symmetric(2.0, 1.0)),
+            );
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                ui.data_mut(|d| d.remove::<(klipp_core::TrackId, String)>(rename_id()));
+            } else if resp.lost_focus() {
+                let new_name = buf.trim().to_string();
+                if !new_name.is_empty() && new_name != track.name {
+                    cmds.push(AppCommand::RenameTrack { track_id: rename_track, name: new_name });
+                }
+                ui.data_mut(|d| d.remove::<(klipp_core::TrackId, String)>(rename_id()));
+            } else {
+                ui.data_mut(|d| d.insert_temp(rename_id(), (rename_track, buf)));
+            }
+        } else {
+            ui.painter().text(
+                egui::pos2(name_x, track_rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                &track.name,
+                egui::FontId::proportional(10.0),
+                theme.text_secondary,
+            );
+        }
 
         // Magnetic role badge (small pill after track name)
         let role_badge = match track.magnetic_role {
@@ -435,8 +470,12 @@ pub fn show(
         let track_role = track.magnetic_role.clone();
         let track_id = track.id;
         let track_kind = track.kind;
+        let track_name = track.name.clone();
         header_resp.context_menu(|ui| {
             ui.set_min_width(180.0);
+
+            crate::panels::timeline::track_select_items(ui, track_idx, &mut cmds);
+            ui.separator();
 
             // Add track options
             ui.menu_button("Add Track Above", |ui| {
@@ -468,8 +507,18 @@ pub fn show(
             });
 
             ui.separator();
+            if ui.button("Rename Track").clicked() {
+                ui.data_mut(|d| d.insert_temp(rename_id(), (track_id, track_name.clone())));
+                ui.memory_mut(|m| m.request_focus(rename_edit_id()));
+                ui.close_menu();
+            }
+            crate::panels::timeline::track_waveform_zoom_item(ui, state, track_idx, &mut cmds);
 
-            // Magnetic role options
+            // Magnetic role options, with their separator only when
+            // there is one: a primary track has none.
+            if track_role != klipp_timeline::TrackRole::Primary {
+                ui.separator();
+            }
             match track_role {
                 klipp_timeline::TrackRole::Connected => {
                     if ui.button("Create Storyline (Shift+S)").clicked() {
@@ -492,6 +541,8 @@ pub fn show(
                 klipp_timeline::TrackRole::Primary => {}
             }
 
+            ui.separator();
+            crate::panels::timeline::track_attribute_items(ui, state, track_idx, &mut cmds);
             ui.separator();
 
             // Remove track
@@ -708,4 +759,15 @@ pub fn show(
     }
 
     cmds
+}
+
+/// Where the track being renamed, and the name typed so far, are kept
+/// between frames.
+fn rename_id() -> egui::Id {
+    egui::Id::new("track_header_rename")
+}
+
+/// The rename field's own id, so the menu item can give it focus.
+fn rename_edit_id() -> egui::Id {
+    egui::Id::new("track_header_rename_edit")
 }
