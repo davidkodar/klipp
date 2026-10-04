@@ -433,8 +433,23 @@ impl ToolbarPanel {
             }
             ui.separator();
             if ui.add(egui::Button::new("Select All").shortcut_text(kb.display_for("select_all"))).clicked() { cmds.push(AppCommand::SelectAllClips); ui.close_menu(); }
-            if ui.button("Select Forward").clicked() { cmds.push(AppCommand::SelectClipsForward); ui.close_menu(); }
-            if ui.button("Select Backward").clicked() { cmds.push(AppCommand::SelectClipsBackward); ui.close_menu(); }
+            // No default key (each would take one the other actions use);
+            // bindable in Preferences, so no shortcut text here.
+            if ui.button("Select Forward").on_hover_text("Every clip starting at or after the playhead, on every unlocked track").clicked() { cmds.push(AppCommand::SelectClipsForward); ui.close_menu(); }
+            if ui.button("Select Backward").on_hover_text("Every clip ending at or before the playhead, on every unlocked track").clicked() { cmds.push(AppCommand::SelectClipsBackward); ui.close_menu(); }
+            // The selected clip's track (#844); a track's own header menu
+            // has the same three for any track.
+            let on_track = state.selected_clip.is_some();
+            for (label, action, range) in [
+                ("Select All on Track", "select_track_clips", klipp_core::SelectRange::All),
+                ("Select Forward on Track", "select_track_forward", klipp_core::SelectRange::Forward),
+                ("Select Backward on Track", "select_track_backward", klipp_core::SelectRange::Backward),
+            ] {
+                if ui.add_enabled(on_track, egui::Button::new(label).shortcut_text(kb.display_for(action))).on_disabled_hover_text("Select a clip on the track first, or use the track header's menu").clicked() {
+                    cmds.push(AppCommand::SelectClipsOnSelectedTrack { range });
+                    ui.close_menu();
+                }
+            }
             if ui.add(egui::Button::new("Deselect All").shortcut_text(kb.display_for("deselect_all"))).clicked() { { state.selected_clip = None; state.selected_clips.clear(); }; ui.close_menu(); }
             ui.separator();
             if ui.add(egui::Button::new("Preferences...").shortcut_text(kb.display_for("preferences"))).clicked() { cmds.push(AppCommand::ShowPreferences); ui.close_menu(); }

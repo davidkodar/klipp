@@ -5432,8 +5432,24 @@ impl TimelinePanel {
                 egui::Sense::click(),
             );
             let track_id = state.sequence().tracks[track_idx].id;
+            // Ctrl-click on a track's header selects its clips (#844).
+            if hdr_resp.clicked() && ui.input(|i| i.modifiers.command) {
+                cmds.push(AppCommand::SelectClipsIn { track: Some(track_idx), range: klipp_core::SelectRange::All });
+            }
             hdr_resp.context_menu(|ui| {
                 ui.set_min_width(180.0);
+                for (label, range) in [
+                    ("Select All Clips on Track", klipp_core::SelectRange::All),
+                    ("Select Forward on Track", klipp_core::SelectRange::Forward),
+                    ("Select Backward on Track", klipp_core::SelectRange::Backward),
+                ] {
+                    let hint = if range == klipp_core::SelectRange::All { "Ctrl-click" } else { "" };
+                    if ui.add(egui::Button::new(label).shortcut_text(hint)).clicked() {
+                        cmds.push(AppCommand::SelectClipsIn { track: Some(track_idx), range });
+                        ui.close_menu();
+                    }
+                }
+                ui.separator();
                 ui.menu_button("Add Track Above", |ui| {
                     for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio),
                         ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {

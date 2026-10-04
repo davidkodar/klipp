@@ -7025,6 +7025,19 @@ impl KlippApp {
         }
     }
 
+    /// Select what `range` takes of `track` (every track when `None`),
+    /// the first of it the primary, and say so when it is nothing (#844).
+    fn select_clips_in(&mut self, track: Option<usize>, range: klipp_core::SelectRange) {
+        let ids = crate::selection::clips_in(self.state.sequence(), track, range, self.state.playhead);
+        if ids.is_empty() {
+            let where_ = if track.is_some() { "on that track" } else { "on the timeline" };
+            self.state.toast.show(format!("No clips to select {where_} (locked tracks are left out)"));
+            return;
+        }
+        self.state.selected_clip = ids.first().copied();
+        self.state.selected_clips = ids;
+    }
+
     fn clipboard_of(&self, clip_id: klipp_core::ClipId) -> Option<ClipboardContent> {
         clipboard_of(self.state.sequence(), &self.state.media_pool, clip_id)
     }
@@ -9129,46 +9142,27 @@ impl KlippApp {
                 // Grade versions — handled by handle_color_commands
                 // Select All clips on timeline
                 AppCommand::SelectAllClips => {
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    let all_ids: Vec<klipp_core::ClipId> = seq.tracks.iter()
-                        .flat_map(|t| t.clips.iter())
-                        .filter(|c| !matches!(c.kind, klipp_timeline::ClipKind::Gap))
-                        .map(|c| c.id)
-                        .collect();
-                    if let Some(first) = all_ids.first().copied() {
-                        self.state.selected_clip = Some(first);
-                    }
-                    self.state.selected_clips = all_ids;
+                    self.select_clips_in(None, klipp_core::SelectRange::All);
                     true
                 }
-                // Select all clips that start after playhead
                 AppCommand::SelectClipsForward => {
-                    let ph = self.state.playhead;
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    let ids: Vec<klipp_core::ClipId> = seq.tracks.iter()
-                        .flat_map(|t| t.clips.iter())
-                        .filter(|c| !matches!(c.kind, klipp_timeline::ClipKind::Gap) && c.timeline_in >= ph)
-                        .map(|c| c.id)
-                        .collect();
-                    if let Some(first) = ids.first().copied() {
-                        self.state.selected_clip = Some(first);
-                    }
-                    self.state.selected_clips = ids;
+                    self.select_clips_in(None, klipp_core::SelectRange::Forward);
                     true
                 }
-                // Select all clips that end before or at playhead
                 AppCommand::SelectClipsBackward => {
-                    let ph = self.state.playhead;
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    let ids: Vec<klipp_core::ClipId> = seq.tracks.iter()
-                        .flat_map(|t| t.clips.iter())
-                        .filter(|c| !matches!(c.kind, klipp_timeline::ClipKind::Gap) && c.timeline_out <= ph)
-                        .map(|c| c.id)
-                        .collect();
-                    if let Some(first) = ids.first().copied() {
-                        self.state.selected_clip = Some(first);
+                    self.select_clips_in(None, klipp_core::SelectRange::Backward);
+                    true
+                }
+                AppCommand::SelectClipsIn { track, range } => {
+                    self.select_clips_in(*track, *range);
+                    true
+                }
+                AppCommand::SelectClipsOnSelectedTrack { range } => {
+                    let track = self.state.selected_clip.and_then(|id| crate::selection::track_of(self.state.sequence(), id));
+                    match track {
+                        Some(track) => self.select_clips_in(Some(track), *range),
+                        None => self.state.toast.show("Select a clip on the track first".to_string()),
                     }
-                    self.state.selected_clips = ids;
                     true
                 }
                 // Frame grab: save current viewer frame as PNG
@@ -26479,6 +26473,23 @@ impl KlippApp {
             // Select All clips
             if kb.is_action_pressed("select_all", i) {
                 cmds.push(AppCommand::SelectAllClips);
+            }
+            // The selected clip's track: all of it, or from the playhead on
+            // or back (#844).
+            if kb.is_action_pressed("select_track_clips", i) {
+                cmds.push(AppCommand::SelectClipsOnSelectedTrack { range: klipp_core::SelectRange::All });
+            }
+            if kb.is_action_pressed("select_track_forward", i) {
+                cmds.push(AppCommand::SelectClipsOnSelectedTrack { range: klipp_core::SelectRange::Forward });
+            }
+            if kb.is_action_pressed("select_track_backward", i) {
+                cmds.push(AppCommand::SelectClipsOnSelectedTrack { range: klipp_core::SelectRange::Backward });
+            }
+            if kb.is_action_pressed("select_forward", i) {
+                cmds.push(AppCommand::SelectClipsForward);
+            }
+            if kb.is_action_pressed("select_backward", i) {
+                cmds.push(AppCommand::SelectClipsBackward);
             }
             // Previous edit point
             if kb.is_action_pressed("prev_edit_point", i) {
