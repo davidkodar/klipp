@@ -2574,3 +2574,92 @@ impl KlippApp {
         }
     }
 }
+
+impl KlippApp {
+    pub(super) fn show_render_queue_window(&mut self, ctx: &egui::Context) {
+        if !self.state.show_render_queue {
+            return;
+        }
+        // The Export workspace shows the queue in its column; no window
+        // on top of it.
+        if self.state.active_workspace == crate::state::Workspace::Export {
+            self.state.show_render_queue = false;
+            return;
+        }
+        let actions = crate::panels::render_queue::RenderQueuePanel::show(
+            ctx,
+            &self.state.render_queue,
+            &self.theme,
+        );
+        self.apply_render_queue_actions(actions);
+    }
+
+    pub(super) fn apply_render_queue_actions(&mut self, actions: Vec<crate::panels::render_queue::RenderQueueAction>) {
+        for action in actions {
+            match action {
+                crate::panels::render_queue::RenderQueueAction::CancelJob(id) => {
+                    self.state.render_queue.cancel_job(id);
+                }
+                crate::panels::render_queue::RenderQueueAction::RemoveJob(id) => {
+                    self.state.render_queue.remove_job(id);
+                }
+                crate::panels::render_queue::RenderQueueAction::ClearCompleted => {
+                    self.state.render_queue.clear_completed();
+                }
+                crate::panels::render_queue::RenderQueueAction::Close => {
+                    self.state.show_render_queue = false;
+                }
+                crate::panels::render_queue::RenderQueueAction::Play(path) => {
+                    if let Err(e) = std::process::Command::new("xdg-open").arg(&path).spawn() {
+                        self.state.toast.show(format!("Could not open {}: {e}", path.display()));
+                    }
+                }
+                crate::panels::render_queue::RenderQueueAction::ShowInFolder(path) => {
+                    self.send_commands(vec![AppCommand::RevealInFileManager { path }]);
+                }
+                crate::panels::render_queue::RenderQueueAction::RenderAgain(id) => self.render_job_again(id),
+            }
+        }
+    }
+
+    /// A finished, failed or cancelled job queued again (#717): its
+    /// settings, file and frames, from its sequence as it is now, through
+    /// the same checks as an export from the dialog. It takes the old
+    /// job's place on the list.
+    fn render_job_again(&mut self, id: uuid::Uuid) {
+        let Some(job) = self.state.render_queue.jobs.iter().find(|j| j.id == id) else { return };
+        let (settings, label, range, sequence_id) = (job.settings.clone(), job.label.clone(), job.export_range, job.sequence_id);
+        let Some(seq_idx) = self.state.sequences.iter().position(|s| s.id == sequence_id) else {
+            self.state.toast.show("The sequence this was rendered from is gone; export it again from the dialog");
+            return;
+        };
+        let seq = &self.state.sequences[seq_idx];
+        let offline = seq.tracks.iter().flat_map(|t| t.clips.iter()).filter_map(|c| c.media_id()).filter(|m| self.state.media_pool.get(m).is_some_and(|i| i.offline)).count();
+        if offline > 0 {
+            self.state.toast.show(format!("{offline} clip{} in it {} offline; relink before rendering again", if offline == 1 { "" } else { "s" }, if offline == 1 { "is" } else { "are" }));
+            return;
+        }
+        if let Some(name) = self.find_export_overwrite_conflict(&settings.output_path) {
+            self.state.toast.show(format!("{} is source media in this project; rendering over it would destroy it", name));
+            return;
+        }
+        let snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
+            &self.state.sequences[seq_idx],
+            &self.state.sequences,
+            &self.state.media_pool,
+            &settings,
+            self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
+            false,
+            self.state.project_working_colorspace,
+        );
+        match snapshot {
+            Ok(mut snap) => {
+                snap.sequence_snapshot.export_range = range;
+                snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
+                self.state.render_queue.remove_job(id);
+                self.state.render_queue.add_job(settings.output_path.clone(), settings, label, snap);
+            }
+            Err(e) => self.state.toast.show(format!("Could not render again: {e}")),
+        }
+    }
+}
