@@ -1,0 +1,2438 @@
+//! Export: the dialog and its settings, the checks before a render (media
+//! offline, a source about to be written over), the render queue's jobs,
+//! one per marker segment when asked, and the presets (#826).
+
+use super::*;
+
+/// Height reserved at the foot of the Export workspace's column for its
+/// action bar. Enough for one row of regular controls plus the rule
+/// above it and breathing room either side.
+/// The summary line above the Export buttons: one row of small text
+/// plus the gap under it.
+pub(super) const EXPORT_SUMMARY_H: f32 = 18.0;
+
+/// The Export panel's pinned foot at a comfortable size. Tall enough
+/// for the summary line *and* the buttons — it was 48, sized for the
+/// buttons alone, and adding the line above them pushed them out of
+/// the reserved strip and under the status bar.
+pub(super) const EXPORT_ACTION_BAR_H: f32 = 48.0 + EXPORT_SUMMARY_H;
+
+/// How tall the Export foot is for a panel of `available_h`, and
+/// whether the summary line fits inside it.
+///
+/// The buttons are the point of that strip: Export is the panel's
+/// reason to exist, and a primary action sliced in half by the status
+/// bar is worse than no summary at all. So when there is not room for
+/// both, the summary goes and the buttons keep their full height —
+/// and the strip is never taller than what it was given, whatever the
+/// window is doing.
+///
+/// Half the panel is the most the foot may take, so a short panel
+/// still shows some of the form above it.
+pub(super) fn export_foot_layout(available_h: f32) -> ExportFoot {
+    let buttons = crate::theme::control::REGULAR;
+    let both = EXPORT_SUMMARY_H + buttons;
+    let cap = (available_h * 0.5).max(0.0);
+    let (bar_h, show_summary) = if cap >= both {
+        // Room for both: the comfortable height, clamped to the cap
+        // and never below what the content needs.
+        (EXPORT_ACTION_BAR_H.min(cap).max(both), true)
+    } else {
+        // Buttons only, whole — unless the panel is smaller than one
+        // row, at which point there is nothing to be done but not
+        // overflow.
+        (buttons.min(available_h.max(0.0)), false)
+    };
+    // Clamped to the strip as well. A panel with no height at all —
+    // mid-resize, or collapsed — has nowhere to put a button, and
+    // claiming otherwise is how content ends up drawn past the edge.
+    let content_h = if show_summary { both } else { buttons }.min(bar_h);
+    // The top pad the drawing uses. Halved, because the content is
+    // centred in the strip — and computed *here* rather than at the
+    // call site, because that is where it went wrong: the padding was
+    // worked out for the button row alone while the summary was drawn
+    // above it, so the two together ran past the bottom of the strip.
+    let pad = ((bar_h - content_h) * 0.5).max(0.0);
+    ExportFoot { bar_h, pad, content_h, show_summary }
+}
+
+/// The Export foot's measurements: the strip, the pad above the
+/// content, what the content comes to, and whether the summary is part
+/// of it.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ExportFoot {
+    pub(super) bar_h: f32,
+    pub(super) pad: f32,
+    pub(super) content_h: f32,
+    pub(super) show_summary: bool,
+}
+
+pub(super) struct ExportDialogState {
+    pub(super) output_path: String,
+    pub(super) format: ExportFormat,
+    pub(super) video_codec: ExportVideoCodec,
+    pub(super) crf: u32,
+    pub(super) preset: EncoderPreset,
+    pub(super) audio_codec: ExportAudioCodec,
+    pub(super) audio_bitrate: u32,
+    pub(super) confirm_overwrite: bool,
+    /// Range selection for export.
+    /// - 0 = Full timeline
+    /// - 1 = Marked in/out range
+    /// - 2 = Selected clips
+    /// - 3 = Between markers (one file per range)
+    pub(super) range_mode: u8,
+    /// In multi-marker mode, include the segment from sequence start
+    /// to the first marker as its own export.
+    pub(super) include_pre_marker_segment: bool,
+    /// In multi-marker mode, include the segment from the last marker
+    /// to sequence end as its own export.
+    pub(super) include_post_marker_segment: bool,
+    pub(super) selected_preset_id: Option<String>,
+    pub(super) save_preset_name: String,
+    pub(super) show_save_preset: bool,
+    /// Override resolution (None = use sequence resolution).
+    pub(super) resolution_override: u8, // 0=Sequence, 1=720p, 2=1080p, 3=4K, 4=Custom
+    pub(super) custom_width: u32,
+    pub(super) custom_height: u32,
+    /// Override frame rate (None = use sequence fps).
+    pub(super) fps_override: u8, // 0=Sequence, 1=24, 2=25, 3=29.97, 4=30, 5=60
+    pub(super) rate_control: klipp_core::RateControl,
+    pub(super) video_bitrate_kbps: u32,
+    pub(super) burn_in_subtitles: bool,
+    pub(super) embed_subtitles: bool,
+    /// Write sequence markers as chapter metadata in the output container
+    /// (MP4/MKV/MOV only — ignored for WebM). Opt-in; default false.
+    pub(super) embed_chapters: bool,
+    pub(super) normalize_loudness: bool,
+    /// 0=YouTube/Spotify (-14), 1=Podcast (-16), 2=EBU R128 (-23), 3=ATSC A/85 (-24), 4=Custom
+    pub(super) loudness_preset: u8,
+    pub(super) custom_lufs: f32,
+    /// Encoder bit depth. 0 = codec default (8-bit), 10 = 10-bit encode.
+    /// Only meaningful for H.264, H.265 and AV1. (#65, #560)
+    pub(super) bit_depth: u8,
+    /// HDR transfer. Only surfaced in UI when bit_depth == 10 on H.264, H.265 or AV1. (#65)
+    pub(super) hdr_mode: klipp_core::HdrMode,
+    /// Display-boundary tone-map operator picked by the user.
+    /// Default Hable matches prior behaviour.
+    pub(super) tone_map_op: klipp_core::ToneMapOp,
+    /// Output Display Transform — picks the delivery-target colour
+    /// space of the rendered file. Default `MatchViewer` mirrors what
+    /// the user has been seeing while editing.
+    pub(super) odt: klipp_core::OdtChoice,
+    /// Mastering peak for a PQ delivery, cd/m². Only surfaced when the
+    /// delivery is PQ through the viewer's own picture — HLG has a
+    /// nominal peak of its own and the ACES transforms are named for
+    /// theirs, so neither offers the choice.
+    pub(super) mastering_peak_nits: f32,
+}
+
+impl Default for ExportDialogState {
+    fn default() -> Self {
+        Self {
+            output_path: String::new(),
+            format: ExportFormat::Mp4,
+            video_codec: ExportVideoCodec::H264,
+            crf: 23,
+            preset: EncoderPreset::default(),
+            audio_codec: ExportAudioCodec::Aac,
+            audio_bitrate: 128,
+            confirm_overwrite: false,
+            range_mode: 0,
+            include_pre_marker_segment: true,
+            include_post_marker_segment: true,
+            selected_preset_id: None,
+            save_preset_name: String::new(),
+            show_save_preset: false,
+            resolution_override: 0,
+            custom_width: 1920,
+            custom_height: 1080,
+            fps_override: 0,
+            rate_control: klipp_core::RateControl::default(),
+            video_bitrate_kbps: 10000,
+            burn_in_subtitles: true,
+            embed_subtitles: false,
+            embed_chapters: false,
+            normalize_loudness: false,
+            loudness_preset: 0,
+            custom_lufs: -14.0,
+            bit_depth: 0,
+            hdr_mode: klipp_core::HdrMode::Sdr,
+            tone_map_op: klipp_core::ToneMapOp::Hable,
+            odt: klipp_core::OdtChoice::MatchViewer,
+            mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS,
+        }
+    }
+}
+
+/// Seconds, as a length someone reads rather than a number.
+pub(super) fn humanise_secs(secs: f64) -> String {
+    // Clamped once, at the top. Clamping only the minute count let a
+    // negative range — which an in-point dragged past its out-point
+    // produces — fall through to the seconds branch and print itself.
+    let secs = secs.max(0.0);
+    let total = secs.round() as u64;
+    let (m, sec) = (total / 60, total % 60);
+    if m >= 60 {
+        format!("{} h {:02} min {:02} s", m / 60, m % 60, sec)
+    } else if m > 0 {
+        format!("{m} min {sec:02} s")
+    } else {
+        format!("{secs:.1} s")
+    }
+}
+
+pub(super) fn humanise_bytes(bytes: f64) -> String {
+    if bytes >= 1_000_000_000.0 {
+        format!("{:.1} GB", bytes / 1_000_000_000.0)
+    } else {
+        format!("{:.0} MB", bytes / 1_000_000.0)
+    }
+}
+
+pub(super) fn dialog_resolution(dialog: &ExportDialogState) -> Option<klipp_core::Resolution> {
+    match dialog.resolution_override {
+        1 => Some(klipp_core::Resolution { width: 1280, height: 720 }),
+        2 => Some(klipp_core::Resolution { width: 1920, height: 1080 }),
+        3 => Some(klipp_core::Resolution { width: 3840, height: 2160 }),
+        4 => Some(klipp_core::Resolution { width: dialog.custom_width, height: dialog.custom_height }),
+        _ => None, // 0 = use sequence
+    }
+}
+
+pub(super) fn dialog_fps(dialog: &ExportDialogState) -> Option<klipp_core::Fps> {
+    match dialog.fps_override {
+        1 => Some(klipp_core::Fps::new(24, 1)),
+        2 => Some(klipp_core::Fps::new(25, 1)),
+        3 => Some(klipp_core::Fps::new(30000, 1001)),
+        4 => Some(klipp_core::Fps::new(30, 1)),
+        5 => Some(klipp_core::Fps::new(60, 1)),
+        _ => None, // 0 = use sequence
+    }
+}
+
+/// Compute the frame range covering all selected clips. Returns None if no clips selected.
+/// Note: this is a time range, not a clip filter — unselected clips that overlap the range
+/// will still render, matching how in-to-out export works.
+/// Replace characters illegal on Linux/Windows/macOS filenames with
+/// underscores; trim leading/trailing whitespace and dots; fall back
+/// to "segment" when the result would be empty.
+pub(super) fn sanitise_filename(label: &str) -> String {
+    let sanitised: String = label.chars().map(|c| match c {
+        '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+        c => c,
+    }).collect();
+    let sanitised = sanitised.trim_matches(|c: char| c == '.' || c.is_whitespace()).to_string();
+    if sanitised.is_empty() {
+        "segment".to_string()
+    } else {
+        sanitised
+    }
+}
+
+/// Where an export goes when nothing says otherwise: the user's Videos
+/// folder where there is one, as every NLE does, else the home directory.
+pub(super) fn default_export_dir() -> PathBuf {
+    dirs::video_dir()
+        .filter(|d| d.is_dir())
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+}
+
+/// Build a unique export path under `base_dir` by suffixing `_2`, `_3`, …
+/// when a candidate name has already been used in this batch. Tracks
+/// taken names in `used` (caller owns the set).
+pub(super) fn unique_export_path(
+    base_dir: &std::path::Path,
+    stem: &str,
+    ext: &str,
+    used: &mut std::collections::HashSet<String>,
+) -> std::path::PathBuf {
+    let mut candidate = format!("{}.{}", stem, ext);
+    let mut counter = 2u32;
+    while used.contains(&candidate) {
+        candidate = format!("{}_{}.{}", stem, counter, ext);
+        counter += 1;
+    }
+    used.insert(candidate.clone());
+    base_dir.join(candidate)
+}
+
+/// Convert a Timecode to a frame number at the given fps. Mirrors the
+/// helper in `klipp-render/src/snapshot.rs:693` (private there).
+pub(super) fn timecode_to_frame(rt: &klipp_core::RationalTime, fps: f64) -> u64 {
+    (rt.to_secs_f64() * fps).round() as u64
+}
+
+/// Multi-export helper: build one segment per range marker. Point markers
+/// (`duration == None`) are skipped when explicit ranges are present. Used
+/// by `enqueue_marker_segments` when at least one marker has a duration.
+pub(super) fn build_range_marker_segments(
+    markers: &[klipp_timeline::Marker],
+    fps: f64,
+) -> Vec<(u64, u64, String)> {
+    let mut out = Vec::new();
+    let mut sorted: Vec<&klipp_timeline::Marker> = markers.iter().collect();
+    sorted.sort_by_key(|m| timecode_to_frame(&m.position, fps));
+    for m in sorted {
+        let Some(dur) = m.duration else { continue };
+        let start = timecode_to_frame(&m.position, fps);
+        let end = timecode_to_frame(&(m.position + dur), fps);
+        if end <= start {
+            continue; // zero-length or negative — skip
+        }
+        out.push((start, end, m.label.clone()));
+    }
+    out
+}
+
+/// Multi-export helper: treat consecutive point markers as segment
+/// boundaries (Kdenlive convention — each segment is named after the
+/// marker that ends it). The synthetic "start"/"end" pseudo-labels are
+/// recognised by the caller and trigger the numeric segment_N fallback.
+pub(super) fn build_inferred_marker_segments(
+    markers: &[klipp_timeline::Marker],
+    fps: f64,
+    seq_end_frame: u64,
+    include_pre: bool,
+    include_post: bool,
+) -> Vec<(u64, u64, String)> {
+    let mut sorted: Vec<&klipp_timeline::Marker> = markers.iter().collect();
+    sorted.sort_by_key(|m| timecode_to_frame(&m.position, fps));
+
+    let mut boundaries: Vec<(u64, String)> = Vec::new();
+    if include_pre {
+        boundaries.push((0, "start".to_string()));
+    } else if let Some(first) = sorted.first() {
+        boundaries.push((timecode_to_frame(&first.position, fps), first.label.clone()));
+    }
+    for m in sorted.iter().skip(if include_pre { 0 } else { 1 }) {
+        boundaries.push((timecode_to_frame(&m.position, fps), m.label.clone()));
+    }
+    if include_post {
+        boundaries.push((seq_end_frame, "end".to_string()));
+    }
+
+    let mut segments = Vec::new();
+    for i in 0..boundaries.len().saturating_sub(1) {
+        let (start, _) = &boundaries[i];
+        let (end, label) = &boundaries[i + 1];
+        if *end <= *start {
+            continue;
+        }
+        segments.push((*start, *end, label.clone()));
+    }
+    segments
+}
+
+pub(super) fn selected_clips_frame_range(
+    selected: &[klipp_core::ClipId],
+    seq: &klipp_timeline::Sequence,
+    fps: f64,
+) -> Option<(u64, u64)> {
+    if selected.is_empty() {
+        return None;
+    }
+    let mut min_in = f64::MAX;
+    let mut max_out = f64::MIN;
+    for track in &seq.tracks {
+        for clip in &track.clips {
+            if selected.contains(&clip.id) {
+                let t_in = clip.timeline_in.to_secs_f64();
+                let t_out = clip.timeline_out.to_secs_f64();
+                if t_in < min_in { min_in = t_in; }
+                if t_out > max_out { max_out = t_out; }
+            }
+        }
+    }
+    if min_in >= max_out {
+        return None;
+    }
+    let start = (min_in * fps).round() as u64;
+    let end = (max_out * fps).ceil() as u64;
+    Some((start, end))
+}
+
+/// The true-peak ceiling the chosen loudness spec asks for: -2 dBTP for
+/// ATSC A/85, and the renderer's -1 for the rest.
+pub(super) fn dialog_true_peak(dialog: &ExportDialogState) -> Option<f32> {
+    (dialog.normalize_loudness && dialog.loudness_preset == 3).then_some(-2.0)
+}
+
+pub(super) fn dialog_target_lufs(dialog: &ExportDialogState) -> Option<f32> {
+    if !dialog.normalize_loudness { return None; }
+    let lufs = match dialog.loudness_preset {
+        0 => -14.0, // YouTube / Spotify
+        1 => -16.0, // Podcast
+        2 => -23.0, // EBU R128 broadcast
+        3 => -24.0, // ATSC A/85 broadcast
+        _ => dialog.custom_lufs,
+    };
+    Some(lufs)
+}
+
+/// Build ExportSettings from the current dialog state. Single source of truth
+/// for all export buttons (Add to Queue, Export, Overwrite) — eliminates the
+/// bug where Export/Overwrite previously hardcoded resolution/fps to None.
+///
+/// `pan_law` comes from Preferences rather than the dialog: it is a
+/// project-wide mix setting, and it is a parameter rather than a lookup
+/// so that every export button has to supply it. The export used to have
+/// one law compiled into it and rendered 3 dB below playback.
+pub(super) fn build_export_settings(
+    dialog: &ExportDialogState,
+    pan_law: klipp_core::PanLaw,
+) -> ExportSettings {
+    ExportSettings {
+        pan_law,
+        output_path: PathBuf::from(&dialog.output_path),
+        format: dialog.format,
+        video_codec: dialog.video_codec,
+        resolution: dialog_resolution(dialog),
+        fps: dialog_fps(dialog),
+        crf: dialog.crf,
+        preset: dialog.preset,
+        audio_codec: dialog.audio_codec,
+        audio_bitrate_kbps: Some(dialog.audio_bitrate),
+        video_bitrate_kbps: if dialog.rate_control != klipp_core::RateControl::Crf {
+            Some(dialog.video_bitrate_kbps)
+        } else {
+            None
+        },
+        rate_control: dialog.rate_control,
+        burn_in_subtitles: dialog.burn_in_subtitles,
+        embed_subtitles: dialog.embed_subtitles,
+        target_lufs: dialog_target_lufs(dialog),
+        true_peak_dbtp: dialog_true_peak(dialog),
+        embed_chapters: dialog.embed_chapters,
+        bit_depth: dialog.bit_depth,
+        hdr_mode: dialog.hdr_mode,
+        tone_map_op: dialog.tone_map_op,
+        odt: dialog.odt,
+        mastering_peak_nits: dialog.mastering_peak_nits,
+    }
+}
+
+pub(super) fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPresetSettings) {
+    dialog.format = settings.format;
+    // A preset saved before the container rules may hold a pair FFmpeg
+    // refuses (H.264 in WebM); it opens fitted to its container.
+    (dialog.video_codec, dialog.audio_codec) = settings.format.fit(settings.video_codec, settings.audio_codec);
+    dialog.crf = settings.crf;
+    dialog.preset = settings.preset;
+    dialog.audio_bitrate = settings.audio_bitrate_kbps.unwrap_or(192);
+    dialog.rate_control = settings.rate_control;
+    dialog.video_bitrate_kbps = settings.video_bitrate_kbps.unwrap_or(10000);
+    // Map resolution preset to override enum
+    dialog.resolution_override = match settings.resolution {
+        Some(klipp_core::Resolution { width: 1280, height: 720 }) => 1,
+        Some(klipp_core::Resolution { width: 1920, height: 1080 }) => 2,
+        Some(klipp_core::Resolution { width: 3840, height: 2160 }) => 3,
+        Some(r) => { dialog.custom_width = r.width; dialog.custom_height = r.height; 4 }
+        None => 0,
+    };
+    // Map fps preset to override enum
+    dialog.fps_override = match settings.fps {
+        Some(f) if (f.as_f64() - 24.0).abs() < 0.01 => 1,
+        Some(f) if (f.as_f64() - 25.0).abs() < 0.01 => 2,
+        Some(f) if (f.as_f64() - 29.97).abs() < 0.02 => 3,
+        Some(f) if (f.as_f64() - 30.0).abs() < 0.01 => 4,
+        Some(f) if (f.as_f64() - 60.0).abs() < 0.01 => 5,
+        Some(_) => 0, // Unknown fps — fall back to Sequence
+        None => 0,
+    };
+    match settings.target_lufs {
+        Some(lufs) => {
+            dialog.normalize_loudness = true;
+            dialog.loudness_preset = match lufs as i32 {
+                -14 => 0,
+                -16 => 1,
+                -23 => 2,
+                -24 => 3,
+                _ => { dialog.custom_lufs = lufs; 4 }
+            };
+        }
+        None => { dialog.normalize_loudness = false; }
+    }
+}
+
+/// How far an export has been confirmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Confirmed {
+    /// Asked for, nothing confirmed yet.
+    Nothing,
+    /// Media offline was shown and the export asked for anyway.
+    Offline,
+    /// A source about to be written over was shown and accepted too.
+    Overwrite,
+}
+
+/// What comes next for an export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ExportStep {
+    /// Ask about these clips, offline: file name and timeline position.
+    AskOffline(Vec<(String, String)>),
+    /// Ask about writing over this source file.
+    AskOverwrite(String),
+    /// Nothing stands in the way: render.
+    Queue,
+}
+
+/// The rule before a render. Media offline is asked about first, then a
+/// source about to be written over, each until it is confirmed. A
+/// confirmed offline warning does not pass the overwrite check: writing a
+/// render over a file the timeline is decoding destroys both, so only its
+/// own confirmation lets it through.
+pub(super) fn export_step(confirmed: Confirmed, offline: Vec<(String, String)>, written_over: Option<String>) -> ExportStep {
+    if confirmed == Confirmed::Nothing && !offline.is_empty() {
+        return ExportStep::AskOffline(offline);
+    }
+    match written_over {
+        Some(name) if confirmed != Confirmed::Overwrite => ExportStep::AskOverwrite(name),
+        _ => ExportStep::Queue,
+    }
+}
+
+/// The clips of `seq` whose media is offline, by file name and timeline
+/// position, for the warning before a render.
+pub(super) fn offline_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool) -> Vec<(String, String)> {
+    seq.tracks
+        .iter()
+        .flat_map(|t| t.clips.iter())
+        .filter_map(|clip| {
+            let klipp_timeline::ClipKind::Media { media_id } = &clip.kind else { return None };
+            let item = pool.get(media_id)?;
+            item.offline.then(|| (item.filename.clone(), clip.timeline_in.to_timecode_string()))
+        })
+        .collect()
+}
+
+/// The file name of the source `output` would write over, if it is one
+/// of `sources`. Both are canonicalised (`..`, symlinks); a path that does
+/// not resolve (an export into a folder not made yet) is no conflict
+/// rather than a guessed one.
+pub(super) fn source_written_over<'a>(output: &std::path::Path, sources: impl IntoIterator<Item = &'a std::path::Path>) -> Option<String> {
+    let canon_out = output.canonicalize().ok()?;
+    sources.into_iter().find(|source| source.canonicalize().is_ok_and(|c| c == canon_out)).map(|source| {
+        source.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| source.display().to_string())
+    })
+}
+
+/// The first of `stem_1.ext`, `stem_2.ext` … beside `original` that is
+/// free (`taken` says which are not), for Auto-Rename on the source
+/// overwrite warning; `original` itself past 9999, so the warning comes
+/// again rather than anything being written over.
+pub(super) fn next_free_name(original: &std::path::Path, taken: impl Fn(&std::path::Path) -> bool) -> std::path::PathBuf {
+    let parent = original.parent().unwrap_or(std::path::Path::new("."));
+    let stem = original.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "output".into());
+    let ext = original.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+    (1..10000u32)
+        .map(|n| parent.join(if ext.is_empty() { format!("{stem}_{n}") } else { format!("{stem}_{n}.{ext}") }))
+        .find(|candidate| !taken(candidate))
+        .unwrap_or_else(|| original.to_path_buf())
+}
+
+/// Each marker segment's file and the label its job shows, from the path
+/// the dialog chose: `<stem>_<marker label>.<ext>` beside it, or
+/// `<stem>_segment_<n>` for the bookends and unnamed markers; each name
+/// once, and `[n/total]` after it in the queue.
+pub(super) fn segment_outputs(segments: &[(u64, u64, String)], base_path: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
+    let ext = base_path.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_string();
+    let base_dir = base_path.parent().unwrap_or(std::path::Path::new("."));
+    let base_stem = base_path.file_stem().and_then(|s| s.to_str()).unwrap_or("export").to_string();
+    let mut used_names = std::collections::HashSet::new();
+    let total = segments.len();
+    segments
+        .iter()
+        .enumerate()
+        .map(|(i, (_, _, label))| {
+            let name = if label.is_empty() || label == "start" || label == "end" {
+                format!("{base_stem}_segment_{}", i + 1)
+            } else {
+                format!("{base_stem}_{}", sanitise_filename(label))
+            };
+            let output = unique_export_path(base_dir, &name, &ext, &mut used_names);
+            let shown = format!("{} [{}/{total}]", output.file_name().and_then(|n| n.to_str()).unwrap_or("segment"), i + 1);
+            (output, shown)
+        })
+        .collect()
+}
+
+impl KlippApp {
+    /// The commands that export the sequence and look after its render
+    /// queue and the export presets: `false` for any other.
+    pub(super) fn handle_render_commands(&mut self, cmd: &AppCommand) -> bool {
+        match cmd {
+            AppCommand::ShowRenderQueue => {
+                self.state.show_render_queue = true;
+                true
+            }
+            AppCommand::ClearCompletedJobs => {
+                self.state.render_queue.clear_completed();
+                true
+            }
+            AppCommand::ShowExportDialog => {
+                self.state.show_export_dialog = true;
+                self.prepare_export_defaults();
+                // Restore last-used preset
+                if self.export_dialog.selected_preset_id.is_none() {
+                    if let Some(ref last_id) = self.prefs.export.last_preset_id {
+                        self.export_dialog.selected_preset_id = Some(last_id.clone());
+                        let all_presets = builtin_presets();
+                        let custom = &self.prefs.export.custom_presets;
+                        if let Some(preset) = all_presets.iter().chain(custom.iter()).find(|p| &p.id == last_id) {
+                            apply_preset_to_dialog(&mut self.export_dialog, &preset.settings);
+                        }
+                    }
+                }
+                true
+            }
+            // The sequence exported, once nothing stands in the way: media
+            // offline is asked about first, then a source about to be
+            // written over (see `export_step`). The Force commands are
+            // the answers to those two questions.
+            AppCommand::ExportSequence { settings } => {
+                self.export_or_ask(settings, Confirmed::Nothing);
+                true
+            }
+            AppCommand::ForceExportSequence { settings } => {
+                self.state.export_offline_warning = None;
+                self.export_or_ask(settings, Confirmed::Offline);
+                true
+            }
+            AppCommand::ForceExportSequenceOverwrite { settings } => {
+                self.state.export_offline_warning = None;
+                self.state.export_source_overwrite_warning = None;
+                self.export_or_ask(settings, Confirmed::Overwrite);
+                true
+            }
+            AppCommand::CancelExport => {
+                // Cancel active render queue job
+                if let Some(job) = self.state.render_queue.jobs.iter().find(|j| j.status == klipp_export::RenderJobStatus::Rendering) {
+                    let id = job.id;
+                    self.state.render_queue.cancel_job(id);
+                }
+                true
+            }
+            AppCommand::CancelExportJob { job_id } => {
+                if let Ok(id) = uuid::Uuid::parse_str(job_id) {
+                    self.state.render_queue.cancel_job(id);
+                } else {
+                    tracing::warn!("invalid render job ID {job_id:?} in cancellation command");
+                }
+                true
+            }
+            AppCommand::DeleteExportPreset { preset_id } => {
+                let id = preset_id.clone();
+                let before = self.prefs.export.custom_presets.len();
+                self.prefs.export.custom_presets.retain(|p| p.id != id);
+                if self.prefs.export.custom_presets.len() != before {
+                    // If the deleted preset was the "last used" pointer,
+                    // clear it so the export dialog reopens clean.
+                    if self.prefs.export.last_preset_id.as_deref() == Some(id.as_str()) {
+                        self.prefs.export.last_preset_id = None;
+                    }
+                    // Same for the active dialog selection.
+                    if self.export_dialog.selected_preset_id.as_deref() == Some(id.as_str()) {
+                        self.export_dialog.selected_preset_id = None;
+                    }
+                    self.prefs_dirty = true;
+                    self.state.toast.show("Preset deleted".to_string());
+                }
+                true
+            }
+            AppCommand::RenameExportPreset { preset_id, new_name } => {
+                let trimmed = new_name.trim().to_string();
+                if !trimmed.is_empty() {
+                    if let Some(p) = self.prefs.export.custom_presets
+                        .iter_mut()
+                        .find(|p| p.id == *preset_id && !p.built_in)
+                    {
+                        p.name = trimmed;
+                        self.prefs_dirty = true;
+                    }
+                }
+                true
+            }
+            AppCommand::DuplicateExportPreset { preset_id } => {
+                let all_presets: Vec<klipp_core::ExportPreset> = klipp_core::builtin_presets()
+                    .into_iter()
+                    .chain(self.prefs.export.custom_presets.iter().cloned())
+                    .collect();
+                if let Some(src) = all_presets.iter().find(|p| &p.id == preset_id).cloned() {
+                    let new_p = klipp_core::ExportPreset {
+                        id: format!("custom-{}", uuid::Uuid::new_v4()),
+                        name: format!("{} (copy)", src.name),
+                        built_in: false,
+                        settings: src.settings.clone(),
+                    };
+                    self.prefs.export.custom_presets.push(new_p);
+                    self.prefs_dirty = true;
+                    self.state.toast.show("Preset duplicated".to_string());
+                }
+                true
+            }
+            AppCommand::OpenExportDialogForSelectedClips => {
+                // Dispatched by the clip-context "Export This Clip…"
+                // gesture and the matching palette entry. We mirror
+                // the Ctrl+E open path (path defaulting + dialog
+                // state) and force the range radio to `2` (Selected
+                // clips) — `selected_clips_frame_range` reads
+                // `state.selected_clips` at export time and writes
+                // the right `export_range` into the snapshot, so we
+                // don't need to compute the range here.
+                if self.state.selected_clips.is_empty() {
+                    self.state.toast.show("No clips selected");
+                    return true;
+                }
+                self.state.show_export_dialog = true;
+                self.export_dialog.range_mode = 2;
+                self.prepare_export_defaults();
+                true
+            }
+            AppCommand::GenerateRenderScript { path } => {
+                let path = path.clone();
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                // Use current export-dialog settings so users can tweak format/codec
+                // via the normal Export dialog and then dump the equivalent script.
+                let settings = build_export_settings(&self.export_dialog, self.prefs.audio.pan_law);
+
+                // Compute output: same basename as script, but with the format's
+                // native extension (mp4 / mkv / mov / webm).
+                let mut output = path.clone();
+                output.set_extension(settings.format.extension());
+                let output_str = output.to_string_lossy().to_string();
+
+                let script = generate_render_script(
+                    seq,
+                    &self.state.media_pool,
+                    &settings,
+                    &output_str,
+                );
+
+                // Count media clips on the first video track for the toast message.
+                let clip_count = seq
+                    .tracks
+                    .iter()
+                    .find(|t| t.kind == klipp_timeline::TrackKind::Video)
+                    .map(|t| {
+                        t.clips
+                            .iter()
+                            .filter(|c| {
+                                c.enabled
+                                    && matches!(c.kind, klipp_timeline::ClipKind::Media { .. })
+                            })
+                            .count()
+                    })
+                    .unwrap_or(0);
+
+                match std::fs::write(&path, &script) {
+                    Ok(_) => {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            if let Ok(meta) = std::fs::metadata(&path) {
+                                let mut perms = meta.permissions();
+                                perms.set_mode(0o755);
+                                let _ = std::fs::set_permissions(&path, perms);
+                            }
+                        }
+                        let plural = if clip_count == 1 { "" } else { "s" };
+                        self.state.toast.show(format!(
+                            "Render script written ({clip_count} clip{plural}). Run: bash {}",
+                            path.display()
+                        ));
+                    }
+                    Err(e) => {
+                        self.state
+                            .toast
+                            .show(format!("Failed to write render script: {e}"));
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// If `output_path` resolves to the same file as any media-pool item,
+    /// returns the matching item's filename. Used to warn the user before
+    /// they overwrite a source file mid-edit (the encoder rewrites the
+    /// file under the live decoder, invalidates filmstrip cache, and on
+    /// reload the timeline references the rendered output rather than the
+    /// camera-original).
+    ///
+    /// Path comparison: try canonicalisation (resolves `..`, symlinks,
+    /// case-insensitive matches on relevant FSes); fall back to lexical
+    /// equality if canonicalisation fails (e.g. the export path is in a
+    /// directory that doesn't exist yet — won't conflict, so the
+    /// fall-back trivially returns None for it). Both paths must
+    /// canonicalise for a match — if only one resolves we treat it as
+    /// "no conflict" rather than risk a false positive.
+    pub(super) fn find_export_overwrite_conflict(
+        &self,
+        output_path: &std::path::Path,
+    ) -> Option<String> {
+        source_written_over(output_path, self.state.media_pool.all().filter(|item| !item.is_synthetic()).map(|item| item.path.as_path()))
+    }
+
+    /// Find next available numeric-suffixed filename (`output_1.mp4`,
+    /// `output_2.mp4` …) when the user picks "Auto-Rename" on the
+    /// source-overwrite warning. Walks suffix integers up to 9999 then
+    /// gives up — far beyond any plausible real-world clash.
+    pub(super) fn auto_rename_export_path(
+        original: &std::path::Path,
+    ) -> std::path::PathBuf {
+        next_free_name(original, |candidate| candidate.exists())
+    }
+
+    /// Export `settings` as far as `confirmed` allows: ask about media
+    /// offline, or a source about to be written over, when that is the
+    /// next question (see [`export_step`]); otherwise queue the render.
+    pub(super) fn export_or_ask(&mut self, settings: &klipp_core::ExportSettings, confirmed: Confirmed) {
+        let offline = if confirmed == Confirmed::Nothing {
+            offline_clips(&self.state.sequences[self.state.active_sequence_idx], &self.state.media_pool)
+        } else {
+            Vec::new()
+        };
+        let written_over = if confirmed == Confirmed::Overwrite { None } else { self.find_export_overwrite_conflict(&settings.output_path) };
+        match export_step(confirmed, offline, written_over) {
+            ExportStep::AskOffline(clips) => self.state.export_offline_warning = Some((clips, Box::new(settings.clone()))),
+            ExportStep::AskOverwrite(name) => self.state.export_source_overwrite_warning = Some((name, Box::new(settings.clone()))),
+            ExportStep::Queue => self.queue_export(settings),
+        }
+    }
+
+    /// Put the render of `settings` on the queue for the range the dialog
+    /// chose: the whole sequence, its in and out points, the selected
+    /// clips, or one job per marker segment. The three ways an export is
+    /// confirmed each had a copy of this.
+    pub(super) fn queue_export(&mut self, settings: &klipp_core::ExportSettings) {
+        if self.export_dialog.range_mode == 3 {
+            self.enqueue_marker_segments(settings);
+            self.state.show_render_queue = true;
+            return;
+        }
+        let use_marked = self.export_dialog.range_mode == 1;
+        let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
+            &self.state.sequences[self.state.active_sequence_idx],
+            &self.state.sequences,
+            &self.state.media_pool,
+            settings,
+            // The confirmation dialogs used to drop the LUT here.
+            self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
+            use_marked,
+            self.state.project_working_colorspace,
+        );
+        if let Ok(ref mut snap) = snapshot {
+            if self.export_dialog.range_mode == 2 {
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
+            }
+            snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
+        }
+        let label = settings.output_path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Render".into());
+        match snapshot {
+            Ok(snap) => {
+                self.state.render_queue.add_job(settings.output_path.clone(), settings.clone(), label, snap);
+            }
+            Err(e) => tracing::error!("Failed to create render snapshot: {e}"),
+        }
+        self.state.show_render_queue = true;
+    }
+
+    /// Marker multi-export: enqueue one render job per segment between
+    /// adjacent markers in the active sequence. Bookend segments
+    /// (sequence-start → first marker, last marker → sequence-end) are
+    /// included only when the corresponding dialog checkbox is on.
+    /// Zero-length segments (e.g. two markers at the same frame) are
+    /// silently skipped.
+    pub(super) fn enqueue_marker_segments(&mut self, settings: &klipp_core::ExportSettings) {
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let fps = seq.fps.as_f64();
+
+        // Explicit-range mode: if any marker carries a `duration`, the user
+        // has drawn explicit regions and we export one file per region,
+        // ignoring boundary-inference entirely. This is the more predictable
+        // shape — point markers scattered next to explicit ranges would
+        // otherwise produce surprising extra segments.
+        let has_range_markers = seq.markers.iter().any(|m| m.duration.is_some());
+
+        let segments: Vec<(u64, u64, String)> = if has_range_markers {
+            build_range_marker_segments(&seq.markers, fps)
+        } else {
+            build_inferred_marker_segments(
+                &seq.markers,
+                fps,
+                timecode_to_frame(&seq.total_duration(), fps),
+                self.export_dialog.include_pre_marker_segment,
+                self.export_dialog.include_post_marker_segment,
+            )
+        };
+
+        if segments.is_empty() {
+            self.state.toast.show("No valid segments to export.");
+            return;
+        }
+
+        let mut job_count = 0u32;
+        for (i, ((start_frame, end_frame, _), (output_path, display_label))) in segments.iter().zip(segment_outputs(&segments, &settings.output_path)).enumerate() {
+
+            // Per-job ExportSettings clone with overridden output path.
+            let mut job_settings: klipp_core::ExportSettings = settings.clone();
+            job_settings.output_path = output_path.clone();
+
+            // Build a snapshot for this segment. Pass `false` for
+            // use_marked_range and override export_range manually so the
+            // sequence in/out points (if any) don't interfere.
+            let snap = klipp_export::RenderSnapshot::from_sequence_with_all(
+                &self.state.sequences[self.state.active_sequence_idx],
+                &self.state.sequences,
+                &self.state.media_pool,
+                &job_settings,
+                self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
+                false,
+                self.state.project_working_colorspace,
+            );
+            let mut snap = match snap {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("Failed to create snapshot for segment {}: {e}", i + 1);
+                    continue;
+                }
+            };
+            snap.sequence_snapshot.export_range = Some((*start_frame, *end_frame));
+            snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
+
+            self.state
+                .render_queue
+                .add_job(output_path, job_settings, display_label, snap);
+            job_count += 1;
+        }
+
+        self.state.toast.show(format!("Queued {job_count} export job(s)."));
+    }
+
+    /// An output path before the form is shown, so an export can never
+    /// start with an empty name (that wrote `.partial` into the working
+    /// directory). Named after the project, in the Videos folder
+    /// (`XDG_VIDEOS_DIR`), else the home directory.
+    pub(super) fn prepare_export_defaults(&mut self) {
+        if self.export_dialog.output_path.trim().is_empty() {
+            let home = default_export_dir().to_string_lossy().to_string();
+            let stem = self
+                .state
+                .project_path
+                .as_ref()
+                .and_then(|p| p.file_stem())
+                .map(|s| s.to_string_lossy().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "output".into());
+            self.export_dialog.output_path = format!("{home}/{stem}.{}", self.export_dialog.format.extension());
+        }
+    }
+
+    /// The export settings form: presets, output, codec, audio, range
+    /// and the Export button. Hosted by the Export workspace's right
+    /// column and by the Export dialog elsewhere.
+    pub(super) fn export_settings_contents(&mut self, ui: &mut egui::Ui, all_presets: &[ExportPreset], cmds: &mut Vec<AppCommand>, in_dialog: bool) {
+        use crate::widgets::inspector_group::section_card;
+        let theme = self.theme.clone();
+        let grid = |name: &str| egui::Grid::new(name).num_columns(2).spacing([12.0, 6.0]);
+        let indent = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
+            ui.horizontal(|ui| { ui.add_space(12.0); ui.vertical(|ui| add(ui)); });
+        };
+        section_card(ui, "OUTPUT", None, &theme, |ui| { indent(ui, &mut |ui| {
+                // Preset selector
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Preset:");
+                    let selected_label = self.export_dialog.selected_preset_id.as_ref()
+                        .and_then(|id| all_presets.iter().find(|p| &p.id == id))
+                        .map(|p| p.name.as_str())
+                        .unwrap_or("Custom");
+                    egui::ComboBox::from_id_salt("export_preset")
+                        .selected_text(selected_label)
+                        .width(0.0)
+                        .wrap_mode(egui::TextWrapMode::Extend)
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_label(self.export_dialog.selected_preset_id.is_none(), "Custom").clicked() {
+                                self.export_dialog.selected_preset_id = None;
+                            }
+                            ui.separator();
+                            for preset in all_presets {
+                                let label = if preset.built_in {
+                                    preset.name.clone()
+                                } else {
+                                    format!("⚙ {}", preset.name)
+                                };
+                                let is_selected = self.export_dialog.selected_preset_id.as_ref() == Some(&preset.id);
+                                if ui.selectable_label(is_selected, &label).clicked() {
+                                    self.export_dialog.selected_preset_id = Some(preset.id.clone());
+                                    apply_preset_to_dialog(&mut self.export_dialog, &preset.settings);
+                                }
+                            }
+                        });
+                    if ui.button("Save as Preset").clicked() {
+                        self.export_dialog.show_save_preset = true;
+                        self.export_dialog.save_preset_name.clear();
+                    }
+                    // Opens the preset manager (#45) in a separate modal
+                    // so the user can delete, rename, duplicate, or
+                    // import/export user presets.
+                    if ui.button("\u{2699} Manage\u{2026}").on_hover_text("Manage export presets").clicked() {
+                        self.state.show_preset_manager = true;
+                    }
+                });
+                ui.add_space(4.0);
+
+                grid("export_grid_output").show(ui, |ui| {
+                        ui.label("Output file:");
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut self.export_dialog.output_path)
+                                .desired_width((ui.available_width() - 40.0).max(120.0)));
+                            let picker = egui::Id::new("export-output-path");
+                            if ui.button("...").clicked() {
+                                crate::file_dialog::pick_path(picker, || {
+                                    rfd::FileDialog::new().set_title("Export to...").save_file()
+                                });
+                            }
+                            if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(picker) {
+                                self.export_dialog.output_path = path.to_string_lossy().to_string();
+                            }
+                        });
+                        ui.end_row();
+
+                        // Auto-update file extension when format changes
+                        let old_ext = self.export_dialog.format.extension();
+
+                        ui.label("Format:");
+                        let prev_format = self.export_dialog.format;
+                        egui::ComboBox::from_id_salt("export_format")
+                            .selected_text(self.export_dialog.format.label())
+                            .show_ui(ui, |ui| {
+                                // Format options follow the codec's container
+                                // requirements. ProRes/DNxHD must be in MOV;
+                                // VP9 must be in WebM or MKV; the GIF codec
+                                // requires the GIF container exclusively;
+                                // H.264/H.265 accept any of the four
+                                // mainstream containers.
+                                for format in [ExportFormat::Mp4, ExportFormat::Mkv, ExportFormat::Mov, ExportFormat::WebM, ExportFormat::Gif] {
+                                    ui.selectable_value(&mut self.export_dialog.format, format, format.label());
+                                }
+                            });
+                        // A codec the new container cannot hold gives way to
+                        // the container's default, so every pair the dialog
+                        // shows is one FFmpeg will write.
+                        if self.export_dialog.format != prev_format {
+                            (self.export_dialog.video_codec, self.export_dialog.audio_codec) =
+                                self.export_dialog.format.fit(self.export_dialog.video_codec, self.export_dialog.audio_codec);
+                        }
+                        // Update file extension when format changes
+                        if self.export_dialog.format != prev_format {
+                            let new_ext = self.export_dialog.format.extension();
+                            if self.export_dialog.output_path.ends_with(&format!(".{old_ext}")) {
+                                let base = &self.export_dialog.output_path[..self.export_dialog.output_path.len() - old_ext.len()];
+                                self.export_dialog.output_path = format!("{base}{new_ext}");
+                            }
+                        }
+                        ui.end_row();
+
+                        ui.label("Video codec:");
+                        let prev_codec = self.export_dialog.video_codec;
+                        egui::ComboBox::from_id_salt("export_vcodec")
+                            .selected_text(self.export_dialog.video_codec.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::H264, "\u{26A1} H.264 — GPU accelerated");
+                                ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::H265, "\u{26A1} H.265 — GPU accelerated, best quality/size");
+                                ui.separator();
+                                ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::Av1, "AV1 — next-gen, best compression");
+                                ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::Vp9, "VP9 — web video (YouTube, WebM)");
+                                if self.export_dialog.format.holds_video(ExportVideoCodec::ProRes422) {
+                                    ui.separator();
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes422, "ProRes 422 — NLE interchange");
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes422HQ, "ProRes 422 HQ — high quality");
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes4444, "ProRes 4444 — 4:4:4 mastering");
+                                    ui.separator();
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD115, "DNxHD 115 — Avid interchange");
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD145, "DNxHD 145 — Avid high bitrate");
+                                }
+                            });
+                        ui.end_row();
+
+                        // Codec hint
+                        ui.label("");
+                        ui.colored_label(
+                            self.theme.text_dim,
+                            self.export_dialog.video_codec.hint_at_depth(self.export_dialog.bit_depth),
+                        );
+                        ui.end_row();
+
+                        // A codec the container cannot hold moves the export
+                        // to the codec's own container (ProRes and DNxHD to
+                        // MOV, VP9 to WebM), and the audio follows.
+                        if self.export_dialog.video_codec != prev_codec
+                            && !self.export_dialog.format.holds_video(self.export_dialog.video_codec)
+                        {
+                            let old_fmt_ext = self.export_dialog.format.extension();
+                            let format = self.export_dialog.video_codec.home_format();
+                            self.export_dialog.format = format;
+                            if !format.holds_audio(self.export_dialog.audio_codec) {
+                                self.export_dialog.audio_codec = format.default_audio();
+                            }
+                            let new_fmt_ext = format.extension();
+                            if self.export_dialog.output_path.ends_with(&format!(".{old_fmt_ext}")) {
+                                let base = &self.export_dialog.output_path[..self.export_dialog.output_path.len() - old_fmt_ext.len()];
+                                self.export_dialog.output_path = format!("{base}{new_fmt_ext}");
+                            }
+                        }
+                        ui.end_row();
+
+                });
+        }); });
+        section_card(ui, "VIDEO", None, &theme, |ui| { indent(ui, &mut |ui| {
+                grid("export_grid_video").show(ui, |ui| {
+                        // #65: bit-depth + HDR controls. H.264, H.265 and
+                        // AV1 pick their depth and take HDR at 10 bits;
+                        // ProRes is always 10-bit, so always can. DNxHD is
+                        // 8-bit, and VP9 stays 8-bit and SDR here.
+                        let picks_depth = matches!(
+                            self.export_dialog.video_codec,
+                            ExportVideoCodec::H264 | ExportVideoCodec::H265 | ExportVideoCodec::Av1
+                        );
+                        let prores = matches!(
+                            self.export_dialog.video_codec,
+                            ExportVideoCodec::ProRes422 | ExportVideoCodec::ProRes422HQ | ExportVideoCodec::ProRes4444
+                        );
+                        if picks_depth || prores {
+                            if picks_depth {
+                                ui.label("Bit depth:");
+                                ui.horizontal(|ui| {
+                                    ui.radio_value(&mut self.export_dialog.bit_depth, 0u8, "8-bit");
+                                    ui.radio_value(&mut self.export_dialog.bit_depth, 10u8, "10-bit");
+                                });
+                                ui.end_row();
+                            } else {
+                                self.export_dialog.bit_depth = 0;
+                            }
+
+                            if prores || self.export_dialog.bit_depth == 10 {
+                                ui.label("HDR:");
+                                ui.horizontal(|ui| {
+                                    ui.radio_value(
+                                        &mut self.export_dialog.hdr_mode,
+                                        klipp_core::HdrMode::Sdr,
+                                        "SDR",
+                                    );
+                                    ui.radio_value(
+                                        &mut self.export_dialog.hdr_mode,
+                                        klipp_core::HdrMode::Hlg,
+                                        "HLG",
+                                    );
+                                    ui.radio_value(
+                                        &mut self.export_dialog.hdr_mode,
+                                        klipp_core::HdrMode::Pq,
+                                        "HDR10 (PQ)",
+                                    );
+                                });
+                                ui.end_row();
+
+                                // A codec that will encode this delivery
+                                // but should not be the one chosen. Said
+                                // where the choice is made rather than
+                                // discovered after the render, and the fix
+                                // is offered instead of only named: the
+                                // user who hit this picked H.264 from a
+                                // dropdown that called it "universal".
+                                if let Some(advice) = self
+                                    .export_dialog
+                                    .video_codec
+                                    .hdr_advice(self.export_dialog.hdr_mode)
+                                {
+                                    ui.label("");
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("\u{26A0} {}", advice.headline))
+                                                .small()
+                                                .color(ui.visuals().warn_fg_color),
+                                        )
+                                        .on_hover_text(advice.detail);
+                                        if let Some(to) = advice.suggest {
+                                            if ui
+                                                .small_button(format!("Use {}", to.label()))
+                                                .on_hover_text(advice.detail)
+                                                .clicked()
+                                            {
+                                                self.export_dialog.video_codec = to;
+                                            }
+                                        }
+                                    });
+                                    ui.end_row();
+                                }
+                            } else {
+                                // Keep state consistent: no 10-bit → SDR.
+                                self.export_dialog.hdr_mode = klipp_core::HdrMode::Sdr;
+                            }
+                        } else {
+                            // Other codecs: reset to 8-bit/SDR so the
+                            // user-invisible state doesn't leak into the
+                            // export settings.
+                            self.export_dialog.bit_depth = 0;
+                            self.export_dialog.hdr_mode = klipp_core::HdrMode::Sdr;
+                        }
+
+                        // An output transform only serves the deliveries
+                        // it fits: the ACES PQ ones write PQ, the others
+                        // SDR. Switching the delivery drops one that no
+                        // longer fits.
+                        //
+                        // The working space rules some out too: the legacy
+                        // sRGB path converts no primaries, so it is only
+                        // sRGB in a Rec.709 project. A setting saved before
+                        // the project moved to a wide gamut is dropped here
+                        // the same way.
+                        let delivery = self.export_dialog.hdr_mode;
+                        let working = self.state.project_working_colorspace;
+                        if !self.export_dialog.odt.fits(delivery)
+                            || !self.export_dialog.odt.suits_working_space(working)
+                        {
+                            self.export_dialog.odt = klipp_core::OdtChoice::MatchViewer;
+                        }
+
+                        // Mastering peak — the display the HDR master is
+                        // graded for. It is what camera-log highlights
+                        // roll into, where the picture is held, and the
+                        // mastering-display max luminance written into
+                        // the file. Only a PQ delivery gets to pick one:
+                        // HLG is defined on a 1000-nit nominal display
+                        // (BT.2100), and the ACES PQ transforms are named
+                        // for the peak they master to.
+                        if delivery == klipp_core::HdrMode::Hlg {
+                            ui.label("Mastering peak:");
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(
+                                        "1000 nits — HLG is defined on a 1000-nit nominal display (BT.2100).",
+                                    )
+                                    .small()
+                                    .italics(),
+                                )
+                                .wrap(),
+                            );
+                            ui.end_row();
+                        } else if delivery == klipp_core::HdrMode::Pq && !self.export_dialog.odt.is_pq() {
+                            ui.label("Mastering peak:");
+                            ui.horizontal(|ui| {
+                                for peak in klipp_core::MASTERING_PEAK_CHOICES {
+                                    ui.radio_value(
+                                        &mut self.export_dialog.mastering_peak_nits,
+                                        peak,
+                                        format!("{peak:.0} nits"),
+                                    );
+                                }
+                            });
+                            ui.end_row();
+                        }
+
+                        // Tone-map operator. Applied at the display
+                        // boundary inside `Encoder::encode_linear_frame`
+                        // during export, after the grade and before sRGB
+                        // quantise. ACES is the industry-standard filmic
+                        // look; Hable is the previous default. An HDR
+                        // delivery keeps its highlights instead, so it
+                        // has none.
+                        //
+                        // Labelled "Tone map", not "Colour science".
+                        // In Resolve "colour science" names the pipeline
+                        // a project is graded through — YRGB against
+                        // ACES — and a colourist reading that word here
+                        // would expect to be choosing that, not a
+                        // highlight roll-off curve. The control picks
+                        // None / Reinhard / Hable / ACES, which is a
+                        // tone map and nothing else.
+                        // Only the legacy sRGB output reads it: "Match
+                        // viewer" and the ACES transforms carry their own
+                        // curves (`klipp_render::encoder::export_display`),
+                        // so shown for those it was a setting that did
+                        // nothing.
+                        if delivery == klipp_core::HdrMode::Sdr && self.export_dialog.odt == klipp_core::OdtChoice::Srgb {
+                            ui.label("Tone map:");
+                            egui::ComboBox::from_id_salt("export_tone_map")
+                                .selected_text(klipp_color::display::tone_map_op_label(
+                                    self.export_dialog.tone_map_op,
+                                ))
+                                .show_ui(ui, |ui| {
+                                    for op in klipp_color::display::TONE_MAP_OPS_ALL {
+                                        ui.selectable_value(
+                                            &mut self.export_dialog.tone_map_op,
+                                            op,
+                                            klipp_color::display::tone_map_op_label(op),
+                                        );
+                                    }
+                                });
+                            ui.end_row();
+                        }
+
+                        // Output Display Transform — picks the
+                        // delivery-target colour space the rendered
+                        // file lands in. Default `MatchViewer` gives
+                        // back-compat: same pixels the user has been
+                        // seeing while editing. The HDR + DCI cinema
+                        // entries assume an AcesCG-basis grade chain
+                        // (or a Rec.709 project, which the encoder
+                        // walks into AcesCG before applying the ODT).
+                        ui.label("Output transform:");
+                        egui::ComboBox::from_id_salt("export_odt")
+                            .selected_text(self.export_dialog.odt.label())
+                            .show_ui(ui, |ui| {
+                                for choice in klipp_core::OdtChoice::ALL
+                                    .into_iter()
+                                    .filter(|c| c.fits(delivery) && c.suits_working_space(working))
+                                {
+                                    ui.selectable_value(
+                                        &mut self.export_dialog.odt,
+                                        choice,
+                                        choice.label(),
+                                    );
+                                }
+                            });
+                        ui.end_row();
+
+                        // Plain-language hint so the default isn't
+                        // surprising. Only show under MatchViewer —
+                        // the explicit ODTs are self-explanatory by
+                        // their menu labels.
+                        if self.export_dialog.odt == klipp_core::OdtChoice::MatchViewer {
+                            let hint = if delivery == klipp_core::HdrMode::Sdr {
+                                "Match Viewer = same colour space your monitor's been showing you while editing."
+                                    .to_string()
+                            } else {
+                                // Name the peak the export actually masters
+                                // to, so the hint cannot contradict the
+                                // picker sitting above it.
+                                let peak = if delivery == klipp_core::HdrMode::Hlg {
+                                    klipp_core::DEFAULT_MASTERING_PEAK_NITS
+                                } else {
+                                    self.export_dialog.mastering_peak_nits
+                                };
+                                format!(
+                                    "Match Viewer = the viewer's picture with its highlights kept, mastered to {peak:.0} nits. \
+                                     SDR material sits at 203 nits (BT.2408). The viewer itself shows the SDR version."
+                                )
+                            };
+                            ui.label("");
+                            ui.add(egui::Label::new(egui::RichText::new(hint).small().italics()).wrap());
+                            ui.end_row();
+                        }
+
+                        // Rate control mode
+                        if self.export_dialog.video_codec.uses_crf() {
+                            ui.label("Rate control:");
+                            egui::ComboBox::from_id_salt("export_rate_ctrl")
+                                .selected_text(self.export_dialog.rate_control.label())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.export_dialog.rate_control, klipp_core::RateControl::Crf, "CRF (Quality)");
+                                    ui.selectable_value(&mut self.export_dialog.rate_control, klipp_core::RateControl::Cbr, "CBR (Constant Bitrate)");
+                                    ui.selectable_value(&mut self.export_dialog.rate_control, klipp_core::RateControl::Vbr, "VBR (Variable Bitrate)");
+                                });
+                            ui.end_row();
+
+                            match self.export_dialog.rate_control {
+                                klipp_core::RateControl::Crf => {
+                                    ui.label("Quality (CRF):");
+                                    ui.add(egui::Slider::new(&mut self.export_dialog.crf, 0..=51));
+                                    ui.end_row();
+                                }
+                                klipp_core::RateControl::Cbr | klipp_core::RateControl::Vbr => {
+                                    let mode_label = if self.export_dialog.rate_control == klipp_core::RateControl::Cbr {
+                                        "Bitrate (CBR):"
+                                    } else {
+                                        "Target bitrate (VBR):"
+                                    };
+                                    ui.label(mode_label);
+                                    ui.add(egui::Slider::new(&mut self.export_dialog.video_bitrate_kbps, 500..=100_000).suffix(" kbps").logarithmic(true));
+                                    ui.end_row();
+                                }
+                            }
+                        }
+
+                        // Encoder speed (only for codecs that support presets)
+                        if self.export_dialog.video_codec.supports_preset() {
+                            ui.label("Encoder speed:");
+                            egui::ComboBox::from_id_salt("export_enc_speed")
+                                .selected_text(self.export_dialog.preset.label())
+                                .show_ui(ui, |ui| {
+                                    for p in klipp_core::EncoderPreset::all() {
+                                        ui.selectable_value(&mut self.export_dialog.preset, *p, p.label());
+                                    }
+                                });
+                            ui.end_row();
+                        }
+
+                });
+        }); });
+        section_card(ui, "AUDIO", None, &theme, |ui| { indent(ui, &mut |ui| {
+                grid("export_grid_audio").show(ui, |ui| {
+                        // Audio settings disabled for GIF — the format
+                        // can't carry audio, so the encoder silently
+                        // drops it. Showing the controls in a disabled
+                        // state is more informative than hiding them.
+                        let audio_supported = self.export_dialog.format.supports_audio();
+                        ui.add_enabled_ui(audio_supported, |ui| {
+                            ui.label("Audio codec:");
+                        });
+                        ui.add_enabled_ui(audio_supported, |ui| {
+                            egui::ComboBox::from_id_salt("export_acodec")
+                                .selected_text(self.export_dialog.audio_codec.label())
+                                .show_ui(ui, |ui| {
+                                    // Only what the container holds: MOV takes no
+                                    // Opus or FLAC, WebM only Opus.
+                                    let format = self.export_dialog.format;
+                                    for group in [
+                                        &[(ExportAudioCodec::Aac, "AAC"), (ExportAudioCodec::Mp3, "MP3"), (ExportAudioCodec::Opus, "Opus")][..],
+                                        &[(ExportAudioCodec::Flac, "FLAC (lossless)"), (ExportAudioCodec::Pcm16, "PCM 16-bit (WAV)"), (ExportAudioCodec::Pcm24, "PCM 24-bit (WAV)")][..],
+                                        &[(ExportAudioCodec::Copy, ExportAudioCodec::Copy.label())][..],
+                                    ] {
+                                        let held: Vec<_> = group.iter().filter(|(c, _)| format.holds_audio(*c)).collect();
+                                        if held.is_empty() {
+                                            continue;
+                                        }
+                                        if group[0].0 != ExportAudioCodec::Aac {
+                                            ui.separator();
+                                        }
+                                        for (codec, label) in held {
+                                            ui.selectable_value(&mut self.export_dialog.audio_codec, *codec, *label);
+                                        }
+                                    }
+                                });
+                        });
+                        ui.end_row();
+
+                        ui.add_enabled_ui(audio_supported, |ui| {
+                            ui.label("Audio bitrate:");
+                        });
+                        ui.add_enabled_ui(audio_supported, |ui| {
+                            egui::ComboBox::from_id_salt("export_abitrate")
+                                .selected_text(format!("{} kbps", self.export_dialog.audio_bitrate))
+                                .show_ui(ui, |ui| {
+                                    for rate in [128, 192, 256, 320] {
+                                        ui.selectable_value(&mut self.export_dialog.audio_bitrate, rate, format!("{rate} kbps"));
+                                    }
+                                });
+                        });
+                        ui.end_row();
+
+                        // Loudness normalization (also gated on audio support)
+                        ui.add_enabled_ui(audio_supported, |ui| {
+                            ui.label("Loudness:");
+                        });
+                        ui.add_enabled_ui(audio_supported, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut self.export_dialog.normalize_loudness, "Normalize");
+                                if self.export_dialog.normalize_loudness {
+                                    let preset_labels = ["YouTube / Spotify (-14)", "Podcast (-16)", "EBU R128 (-23)", "ATSC A/85 (-24)", "Custom"];
+                                    egui::ComboBox::from_id_salt("export_lufs_preset")
+                                        .selected_text(preset_labels[self.export_dialog.loudness_preset as usize])
+                                        .show_ui(ui, |ui| {
+                                            for (i, label) in preset_labels.iter().enumerate() {
+                                                ui.selectable_value(&mut self.export_dialog.loudness_preset, i as u8, *label);
+                                            }
+                                        });
+                                    if self.export_dialog.loudness_preset == 4 {
+                                        let mut v = self.export_dialog.custom_lufs;
+                                        if ui.add(egui::DragValue::new(&mut v).range(-30.0..=-5.0).speed(0.5).suffix(" LUFS")).changed() {
+                                            self.export_dialog.custom_lufs = v;
+                                        }
+                                    }
+                                }
+                            });
+                        });
+                        ui.end_row();
+
+                        // A loudness target with no audio stream measures, computes
+                        // a gain and then writes nothing (#156).
+                        if audio_supported
+                            && self.export_dialog.normalize_loudness
+                            && self.export_dialog.audio_codec == ExportAudioCodec::Copy
+                        {
+                            ui.label("");
+                            ui.colored_label(theme.marker_warning, "No audio is written, so there is nothing to normalize.");
+                            ui.end_row();
+                        }
+
+                });
+        }); });
+        section_card(ui, "SIZE AND RATE", None, &theme, |ui| { indent(ui, &mut |ui| {
+                grid("export_grid_size").show(ui, |ui| {
+                        // Resolution override
+                        let seq_res = &self.state.sequences[self.state.active_sequence_idx].resolution;
+                        let res_labels = [
+                            format!("Sequence ({}x{})", seq_res.width, seq_res.height),
+                            "720p (1280x720)".into(),
+                            "1080p (1920x1080)".into(),
+                            "4K (3840x2160)".into(),
+                            "Custom".into(),
+                        ];
+                        ui.label("Resolution:");
+                        egui::ComboBox::from_id_salt("export_resolution")
+                            .selected_text(&res_labels[self.export_dialog.resolution_override as usize])
+                            .show_ui(ui, |ui| {
+                                for (i, label) in res_labels.iter().enumerate() {
+                                    ui.selectable_value(&mut self.export_dialog.resolution_override, i as u8, label.as_str());
+                                }
+                            });
+                        ui.end_row();
+
+                        if self.export_dialog.resolution_override == 4 {
+                            ui.label("Custom size:");
+                            ui.horizontal(|ui| {
+                                ui.add(egui::DragValue::new(&mut self.export_dialog.custom_width).range(128..=7680).suffix("w"));
+                                ui.label("\u{00d7}");
+                                ui.add(egui::DragValue::new(&mut self.export_dialog.custom_height).range(128..=4320).suffix("h"));
+                            });
+                            ui.end_row();
+                        }
+
+                        // Frame rate override
+                        let seq_fps = &self.state.sequences[self.state.active_sequence_idx].fps;
+                        let fps_labels = [
+                            format!("Sequence ({:.3} fps)", seq_fps.as_f64()),
+                            "24 fps".into(), "25 fps".into(), "29.97 fps".into(), "30 fps".into(), "60 fps".into(),
+                        ];
+                        ui.label("Frame rate:");
+                        egui::ComboBox::from_id_salt("export_fps")
+                            .selected_text(&fps_labels[self.export_dialog.fps_override as usize])
+                            .show_ui(ui, |ui| {
+                                for (i, label) in fps_labels.iter().enumerate() {
+                                    ui.selectable_value(&mut self.export_dialog.fps_override, i as u8, label.as_str());
+                                }
+                            });
+                        ui.end_row();
+                });
+        }); });
+
+        // Export range — radio selection: Full / Marked range / Selected clips
+        section_card(ui, "RANGE", None, &theme, |ui| { indent(ui, &mut |ui| {
+                ui.radio_value(&mut self.export_dialog.range_mode, 0, "Full timeline");
+                let has_range = self.state.sequences[self.state.active_sequence_idx].in_point.is_some()
+                    && self.state.sequences[self.state.active_sequence_idx].out_point.is_some();
+                if has_range {
+                    let in_pt = self.state.sequences[self.state.active_sequence_idx].in_point.unwrap();
+                    let out_pt = self.state.sequences[self.state.active_sequence_idx].out_point.unwrap();
+                    ui.radio_value(&mut self.export_dialog.range_mode, 1,
+                        format!("In/Out range ({} \u{2192} {})", in_pt.to_timecode_string(), out_pt.to_timecode_string()));
+                }
+                let sel_count = self.state.selected_clips.len();
+                let sel_enabled = sel_count > 0;
+                ui.add_enabled_ui(sel_enabled, |ui| {
+                    let label = if sel_count > 0 {
+                        format!("Selected clips ({sel_count})")
+                    } else {
+                        "Selected clips (none)".to_string()
+                    };
+                    ui.radio_value(&mut self.export_dialog.range_mode, 2, label);
+                });
+                // Marker-range multi-export: one file per segment between markers.
+                let marker_count = self.state.sequences[self.state.active_sequence_idx].markers.len();
+                let markers_enabled = marker_count > 0;
+                ui.add_enabled_ui(markers_enabled, |ui| {
+                    let label = if marker_count > 0 {
+                        format!("Between markers \u{2014} one file per range ({marker_count} marker{})",
+                            if marker_count == 1 { "" } else { "s" })
+                    } else {
+                        "Between markers \u{2014} one file per range".to_string()
+                    };
+                    ui.radio_value(&mut self.export_dialog.range_mode, 3, label);
+                });
+                if !markers_enabled {
+                    ui.indent("markers_hint", |ui| {
+                        ui.label(
+                            egui::RichText::new("Add markers to the timeline to use this mode.")
+                                .small()
+                                .color(self.theme.text_dim),
+                        );
+                    });
+                }
+                if self.export_dialog.range_mode == 3 {
+                    ui.indent("marker_options", |ui| {
+                        ui.checkbox(
+                            &mut self.export_dialog.include_pre_marker_segment,
+                            "Include segment before first marker",
+                        );
+                        ui.checkbox(
+                            &mut self.export_dialog.include_post_marker_segment,
+                            "Include segment after last marker",
+                        );
+                    });
+                }
+                // Reset to Full if the selected mode is no longer valid
+                if self.export_dialog.range_mode == 1 && !has_range {
+                    self.export_dialog.range_mode = 0;
+                }
+                if self.export_dialog.range_mode == 2 && !sel_enabled {
+                    self.export_dialog.range_mode = 0;
+                }
+                if self.export_dialog.range_mode == 3 && !markers_enabled {
+                    self.export_dialog.range_mode = 0;
+                }
+
+                // Subtitles — only show options if the active sequence has subtitle/text tracks
+                let has_subtitle_tracks = {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    seq.tracks.iter().any(|t| {
+                        matches!(t.kind, klipp_timeline::TrackKind::Subtitle | klipp_timeline::TrackKind::Text)
+                            && !t.clips.is_empty()
+                    })
+                };
+                if has_subtitle_tracks {
+                    ui.add_space(8.0);
+                    // Burn-in works for any format (it's video pixels);
+                    // soft-track embedding requires a format that
+                    // carries subtitle streams (everything but GIF).
+                    ui.checkbox(
+                        &mut self.export_dialog.burn_in_subtitles,
+                        "Burn subtitles into video",
+                    );
+                    ui.add_enabled_ui(self.export_dialog.format.supports_subtitles(), |ui| {
+                        ui.checkbox(
+                            &mut self.export_dialog.embed_subtitles,
+                            "Embed subtitles as soft track",
+                        );
+                    });
+                    if self.export_dialog.embed_subtitles
+                        && matches!(self.export_dialog.format, klipp_core::ExportFormat::WebM)
+                    {
+                        ui.label(
+                            egui::RichText::new("\u{26A0} WebM subtitle support varies by player")
+                                .color(self.theme.marker_warning)
+                                .size(11.0),
+                        );
+                    }
+                }
+
+                // Chapters — only show for formats that carry chapter metadata
+                // (MP4/MKV/MOV). WebM and GIF have no chapter concept, so the
+                // option is hidden entirely rather than rendered as a
+                // checkbox that silently does nothing on export.
+                let format_supports_chapters = self.export_dialog.format.supports_chapters();
+                if format_supports_chapters {
+                    ui.add_space(4.0);
+                    ui.checkbox(
+                        &mut self.export_dialog.embed_chapters,
+                        "Embed chapters from Chapter-kind markers",
+                    ).on_hover_text(
+                        "Write sequence markers tagged with kind = Chapter as chapter metadata in the output file. Other marker kinds (ToDo / Comment / Best Take / Section) are workflow notes and stay out of the container.",
+                    );
+                    if self.export_dialog.embed_chapters {
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let chapter_count = seq.markers.iter()
+                            .filter(|m| m.kind == klipp_core::MarkerKind::Chapter)
+                            .count();
+                        if chapter_count == 0 {
+                            ui.indent("chapters_hint", |ui| {
+                                let total_markers = seq.markers.len();
+                                let msg = if total_markers == 0 {
+                                    "\u{26A0} No markers in sequence".to_string()
+                                } else {
+                                    format!(
+                                        "\u{26A0} No Chapter-kind markers ({total_markers} other marker{} found)",
+                                        if total_markers == 1 { "" } else { "s" },
+                                    )
+                                };
+                                ui.label(
+                                    egui::RichText::new(msg)
+                                        .color(self.theme.marker_warning)
+                                        .size(11.0),
+                                );
+                            });
+                        }
+                    }
+                }
+
+        }); });
+
+                // In the Export workspace these live in a bar pinned
+                // to the foot of the column, so they cannot scroll away
+                // — see `export_action_bar`. The dialog has no such
+                // problem: it sizes itself to its contents.
+                if in_dialog {
+                    ui.add_space(12.0);
+                    // The dialog lays out vertically and is not
+                    // squeezed against a status bar, so the summary
+                    // always fits there.
+                    self.export_action_bar(ui, cmds, true, true);
+                }
+    }
+
+    /// The two things this panel exists to do.
+    ///
+    /// Drawn as its own row so the Export workspace can pin it to the
+    /// foot of the column rather than let it scroll off the bottom of
+    /// the form. It did scroll off: at a half-height window the button
+    /// that starts a render sat below the fold behind a scrollbar that
+    /// egui only paints on hover, so the primary action of a page named
+    /// Export had to be hunted for.
+    ///
+    /// `Export` is filled with the accent and `Add to Queue` is left as
+    /// a plain button. They were previously identical, which left the
+    /// panel with no primary action at all.
+    /// What pressing Export is about to write: the range's length, the
+    /// size and rate, the codecs, whether subtitles are going into the
+    /// picture, and the file size where that can be said honestly.
+    ///
+    /// The form asked for seven things and described none of them. The
+    /// one that actually cost something was subtitles: `burn_in_subtitles`
+    /// defaults to on, its checkbox sits near the bottom of a long
+    /// scroll, and burning them in is irreversible in the output — the
+    /// only undo is rendering again. Saying so beside the button fixes
+    /// the surprise without settling whether the default is right.
+    pub(super) fn export_summary(&self) -> String {
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq_fps = seq.fps.as_f64();
+        let fps = dialog_fps(&self.export_dialog).map(|f| f.as_f64()).unwrap_or(seq_fps);
+        let res = dialog_resolution(&self.export_dialog)
+            .unwrap_or(klipp_core::Resolution { width: seq.resolution.width, height: seq.resolution.height });
+
+        // The range, in the sequence's own time.
+        let secs = match self.export_dialog.range_mode {
+            1 => match (seq.in_point, seq.out_point) {
+                (Some(a), Some(b)) => (b - a).to_secs_f64().abs(),
+                _ => seq.total_duration().to_secs_f64(),
+            },
+            2 => selected_clips_frame_range(&self.state.selected_clips, seq, seq_fps)
+                .map(|(a, b)| (b - a) as f64 / seq_fps.max(1.0))
+                .unwrap_or(0.0),
+            // Between markers is one file per segment; a single length
+            // would be the wrong number, so it is left out.
+            3 => 0.0,
+            _ => seq.total_duration().to_secs_f64(),
+        };
+
+        let mut parts: Vec<String> = Vec::new();
+        if self.export_dialog.range_mode == 3 {
+            parts.push("one file per marker range".to_string());
+        } else if secs > 0.0 {
+            parts.push(humanise_secs(secs));
+        }
+        parts.push(format!("{}x{}", res.width, res.height));
+        parts.push(format!("{fps:.4} fps").replace(".0000 fps", " fps"));
+        parts.push(format!(
+            "{} / {}",
+            self.export_dialog.video_codec.label(),
+            self.export_dialog.audio_codec.label(),
+        ));
+
+        // Size, only where it is arithmetic rather than a guess.
+        let px = res.width as f64 * res.height as f64;
+        let audio_mbps = self.export_dialog.audio_bitrate as f64 / 1000.0;
+        let video_mbps = match self.export_dialog.rate_control {
+            klipp_core::RateControl::Cbr | klipp_core::RateControl::Vbr => {
+                Some(self.export_dialog.video_bitrate_kbps as f64 / 1000.0)
+            }
+            // CRF has no target bitrate by construction: the encoder
+            // spends what the picture needs. A number here would be
+            // confidently wrong, which is worse than none.
+            klipp_core::RateControl::Crf => intra_frame_mbps(self.export_dialog.video_codec, px, fps),
+        };
+        if let Some(v) = video_mbps {
+            if secs > 0.0 {
+                let bytes = (v + audio_mbps) * 1_000_000.0 / 8.0 * secs;
+                parts.push(format!("~{}", humanise_bytes(bytes)));
+            }
+        } else if let (klipp_core::RateControl::Crf, Some((lo, hi))) =
+            (self.export_dialog.rate_control, crf_mbps_range(self.export_dialog.video_codec, self.export_dialog.crf, px, fps))
+        {
+            // Quality has no one size: a range, from a still picture to
+            // busy handheld footage, true where a single number would not
+            // be. The queue measures the real one as it renders (#19).
+            if secs > 0.0 {
+                let at = |v: f64| (v + audio_mbps) * 1_000_000.0 / 8.0 * secs;
+                parts.push(format!("{}\u{2013}{} by the picture", humanise_bytes(at(lo)), humanise_bytes(at(hi))));
+            }
+        }
+
+        let has_subtitles = seq.tracks.iter().any(|t| {
+            matches!(t.kind, klipp_timeline::TrackKind::Subtitle | klipp_timeline::TrackKind::Text)
+                && !t.clips.is_empty()
+        });
+        if has_subtitles && self.export_dialog.burn_in_subtitles {
+            parts.push("subtitles burned in".to_string());
+        }
+        parts.join("  \u{00b7}  ")
+    }
+
+    pub(super) fn export_action_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        cmds: &mut Vec<AppCommand>,
+        in_dialog: bool,
+        show_summary: bool,
+    ) {
+        let theme = self.theme.clone();
+        // Said above the buttons rather than in the form, so it is read
+        // on the way to pressing Export rather than scrolled past.
+        let summary = if show_summary { self.export_summary() } else { String::new() };
+        if !summary.is_empty() {
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                ui.label(
+                    egui::RichText::new(summary)
+                        .size(11.0)
+                        .color(theme.text_dim),
+                );
+            });
+            ui.add_space(4.0);
+        }
+        // A pair the container cannot hold (from an older preset) is
+        // said here and blocks the render, which would otherwise fail
+        // only after the mixdown had run.
+        let (format, video, audio) = (self.export_dialog.format, self.export_dialog.video_codec, self.export_dialog.audio_codec);
+        let container_problem = klipp_core::ExportSettings { format, video_codec: video, audio_codec: audio, ..Default::default() }.container_problem();
+        if let Some(problem) = &container_problem {
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                ui.label(egui::RichText::new(format!("\u{26A0} {problem}")).size(11.0).color(ui.visuals().warn_fg_color));
+            });
+            ui.add_space(4.0);
+        }
+        let path_given = !self.export_dialog.output_path.trim().is_empty();
+        // An empty timeline has nothing to export (#655).
+        let empty = self.state.sequence().has_nothing_to_export();
+        let path_ok = path_given && container_problem.is_none() && !empty;
+        let disabled_reason = if empty {
+            "The timeline is empty: place some clips first"
+        } else if path_given {
+            "This container cannot hold the chosen codec"
+        } else {
+            "Choose an output file first"
+        };
+        let h = crate::theme::control::REGULAR;
+        ui.horizontal(|ui| {
+            // Secondary actions run from the left, the primary one is
+            // pushed to the right edge. Two same-sized buttons huddled
+            // at the left of a wide bar read as leftovers from the form
+            // above rather than as the point of the panel.
+            ui.add_space(12.0);
+            if in_dialog
+                && ui.add_sized([84.0, h], egui::Button::new("Cancel")).clicked()
+            {
+                self.state.show_export_dialog = false;
+            }
+            if ui
+                .add_enabled(
+                    path_ok,
+                    egui::Button::new("Add to Queue").min_size(egui::vec2(120.0, h)),
+                )
+                .on_disabled_hover_text(disabled_reason)
+                .clicked()
+            {
+                let path = PathBuf::from(&self.export_dialog.output_path);
+                let settings = build_export_settings(&self.export_dialog, self.prefs.audio.pan_law);
+                let use_marked = self.export_dialog.range_mode == 1;
+                let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
+                    &self.state.sequences[self.state.active_sequence_idx],
+                    &self.state.sequences,
+                    &self.state.media_pool,
+                    &settings,
+                    self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
+                    use_marked,
+                    self.state.project_working_colorspace,
+                );
+                if self.export_dialog.range_mode == 2 {
+                    if let Ok(ref mut snap) = snapshot {
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
+                    }
+                }
+                if let Ok(ref mut snap) = snapshot {
+                    snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
+                }
+                let label = path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Render".into());
+                match snapshot {
+                    Ok(snap) => {
+                        self.state.render_queue.add_job(path, settings, label, snap);
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to create render snapshot: {e}");
+                    }
+                }
+                self.state.show_export_dialog = false;
+                self.state.show_render_queue = true;
+                self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
+                self.prefs_dirty = true;
+            }
+            // The primary action, and the only thing in the row painted
+            // with the accent.
+            //
+            // Disabled, it drops to a flat raised fill: an explicit
+            // `.fill()` survives `add_enabled(false, ..)`, and a button
+            // wearing the accent that does nothing when clicked is
+            // worse than no emphasis at all.
+            let (fill, fg) = if path_ok {
+                (theme.accent, theme.text_on_accent)
+            } else {
+                (theme.bg_raised, theme.text_dim)
+            };
+            let draw_export = |ui: &mut egui::Ui| {
+                let btn = egui::Button::new(egui::RichText::new("Export").color(fg))
+                    .fill(fill)
+                    .rounding(4.0)
+                    .min_size(egui::vec2(140.0, h));
+                ui.add_enabled(path_ok, btn)
+                    .on_disabled_hover_text(disabled_reason)
+                    .clicked()
+            };
+
+            // In the workspace bar the button is anchored to the right
+            // edge, so which one does the thing the page is named after
+            // is legible without reading either label. The dialog is
+            // too narrow for that: right-aligning there pushed Export
+            // on top of Add to Queue, so its buttons keep flowing from
+            // the left with the accent alone carrying the emphasis.
+            let export_clicked = if in_dialog {
+                draw_export(ui)
+            } else {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(12.0);
+                    draw_export(ui)
+                })
+                .inner
+            };
+
+            if export_clicked {
+                let path = PathBuf::from(&self.export_dialog.output_path);
+                if path.exists() {
+                    self.export_dialog.confirm_overwrite = true;
+                } else {
+                    self.state.show_export_dialog = false;
+                    self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
+                    self.prefs_dirty = true;
+                    cmds.push(AppCommand::ExportSequence {
+                        settings: build_export_settings(&self.export_dialog, self.prefs.audio.pan_law),
+                    });
+                }
+            }
+        });
+    }
+
+    pub(super) fn show_export_dialog(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
+        // Build combined preset list for the combo box
+        let all_presets: Vec<ExportPreset> = builtin_presets()
+            .into_iter()
+            .chain(self.prefs.export.custom_presets.iter().cloned())
+            .collect();
+        let mut cmds = Vec::new();
+
+        let in_export_ws = self.state.active_workspace == crate::state::Workspace::Export;
+        if !self.state.show_export_dialog && !in_export_ws {
+            return cmds;
+        }
+
+        // Outside the Export workspace the settings are a dialog; the
+        // workspace hosts the same form in its right column.
+        if !in_export_ws {
+            let mut open = true;
+            egui::Window::new("Export Sequence")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    self.export_settings_contents(ui, &all_presets, &mut cmds, true);
+                });
+            if !open {
+                self.state.show_export_dialog = false;
+                self.export_dialog.confirm_overwrite = false;
+            }
+        }
+
+        // Overwrite confirmation dialog
+        if self.export_dialog.confirm_overwrite {
+            egui::Window::new("Overwrite File?")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(format!(
+                        "\"{}\" already exists. Overwrite?",
+                        self.export_dialog.output_path
+                    ));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            self.export_dialog.confirm_overwrite = false;
+                        }
+                        if ui.button("Overwrite").clicked() {
+                            self.export_dialog.confirm_overwrite = false;
+                            self.state.show_export_dialog = false;
+                            self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
+                            self.prefs_dirty = true;
+                            cmds.push(AppCommand::ExportSequence {
+                                settings: build_export_settings(&self.export_dialog, self.prefs.audio.pan_law),
+                            });
+                        }
+                    });
+                });
+        }
+
+        // Save as Preset dialog
+        if self.export_dialog.show_save_preset {
+            egui::Window::new("Save as Preset")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Preset name:");
+                        ui.text_edit_singleline(&mut self.export_dialog.save_preset_name);
+                    });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            self.export_dialog.show_save_preset = false;
+                        }
+                        let name_valid = !self.export_dialog.save_preset_name.trim().is_empty();
+                        if ui.add_enabled(name_valid, egui::Button::new("Save")).clicked() {
+                            let id = format!("custom-{}", uuid::Uuid::new_v4());
+                            let preset = ExportPreset {
+                                id: id.clone(),
+                                name: self.export_dialog.save_preset_name.trim().to_string(),
+                                built_in: false,
+                                settings: ExportPresetSettings {
+                                    format: self.export_dialog.format,
+                                    video_codec: self.export_dialog.video_codec,
+                                    resolution: None,
+                                    fps: None,
+                                    crf: self.export_dialog.crf,
+                                    preset: self.export_dialog.preset,
+                                    audio_codec: self.export_dialog.audio_codec,
+                                    audio_bitrate_kbps: Some(self.export_dialog.audio_bitrate),
+                                    video_bitrate_kbps: if self.export_dialog.rate_control != klipp_core::RateControl::Crf { Some(self.export_dialog.video_bitrate_kbps) } else { None },
+                                    rate_control: self.export_dialog.rate_control,
+                                    target_lufs: dialog_target_lufs(&self.export_dialog),
+                                    true_peak_dbtp: dialog_true_peak(&self.export_dialog),
+                                },
+                            };
+                            self.prefs.export.custom_presets.push(preset);
+                            self.export_dialog.selected_preset_id = Some(id);
+                            self.export_dialog.show_save_preset = false;
+                            self.prefs_dirty = true;
+                        }
+                    });
+                });
+        }
+
+        cmds
+    }
+}
+
+#[cfg(test)]
+mod range_marker_segment_tests {
+    use super::*;
+    use klipp_core::{MarkerColor, MarkerId, RationalTime};
+
+    fn mk(position_secs: f64, dur_secs: Option<f64>, label: &str) -> klipp_timeline::Marker {
+        klipp_timeline::Marker {
+            id: MarkerId::new(),
+            position: RationalTime::from_secs_f64(position_secs, 24),
+            label: label.into(),
+            color: MarkerColor::Blue,
+            duration: dur_secs.map(|s| RationalTime::from_secs_f64(s, 24)),
+            comment: String::new(),
+            kind: klipp_core::MarkerKind::None,
+        }
+    }
+
+    #[test]
+    fn range_segments_use_explicit_duration() {
+        let markers = vec![
+            mk(1.0, Some(2.0), "Act 1"),
+            mk(5.0, Some(3.0), "Act 2"),
+        ];
+        let segs = build_range_marker_segments(&markers, 24.0);
+        assert_eq!(segs.len(), 2, "got {segs:?}");
+        // Act 1: 1s..3s at 24fps = frames 24..72.
+        assert_eq!(segs[0].0, 24);
+        assert_eq!(segs[0].1, 72);
+        assert_eq!(segs[0].2, "Act 1");
+        // Act 2: 5s..8s at 24fps = frames 120..192.
+        assert_eq!(segs[1].0, 120);
+        assert_eq!(segs[1].1, 192);
+        assert_eq!(segs[1].2, "Act 2");
+    }
+
+    #[test]
+    fn range_segments_skip_point_markers() {
+        // Point marker sandwiched between two ranges — it's dropped because
+        // the "any-range" mode ignores points entirely.
+        let markers = vec![
+            mk(1.0, Some(2.0), "Act 1"),
+            mk(4.0, None, "Chapter Point"),
+            mk(6.0, Some(2.0), "Act 2"),
+        ];
+        let segs = build_range_marker_segments(&markers, 24.0);
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].2, "Act 1");
+        assert_eq!(segs[1].2, "Act 2");
+    }
+
+    #[test]
+    fn inferred_segments_infer_from_consecutive_points() {
+        // Three point markers at 1s, 3s, 5s with seq length 10s.
+        // No pre/post — boundaries are the three markers, segments:
+        //   [1s..3s] ending at "Two"
+        //   [3s..5s] ending at "Three"
+        let markers = vec![
+            mk(1.0, None, "One"),
+            mk(3.0, None, "Two"),
+            mk(5.0, None, "Three"),
+        ];
+        let segs = build_inferred_marker_segments(&markers, 24.0, 240, false, false);
+        assert_eq!(segs.len(), 2);
+        // 1s..3s = frames 24..72
+        assert_eq!(segs[0].0, 24);
+        assert_eq!(segs[0].1, 72);
+        assert_eq!(segs[0].2, "Two");
+        // 3s..5s = frames 72..120
+        assert_eq!(segs[1].0, 72);
+        assert_eq!(segs[1].1, 120);
+        assert_eq!(segs[1].2, "Three");
+    }
+
+    #[test]
+    fn inferred_segments_include_pre_post() {
+        // Same markers, but with pre and post segments — we get 4 segments.
+        let markers = vec![
+            mk(1.0, None, "One"),
+            mk(3.0, None, "Two"),
+            mk(5.0, None, "Three"),
+        ];
+        let segs = build_inferred_marker_segments(&markers, 24.0, 240, true, true);
+        assert_eq!(segs.len(), 4);
+        // Pre: 0..24, ends at "One"
+        assert_eq!(segs[0].0, 0);
+        assert_eq!(segs[0].2, "One");
+        // Last: 120..240, ends at "end" (synthetic)
+        assert_eq!(segs[3].1, 240);
+        assert_eq!(segs[3].2, "end");
+    }
+}
+
+#[cfg(test)]
+mod marker_export_tests {
+    use super::*;
+
+    #[test]
+    fn sanitise_filename_replaces_illegal_chars() {
+        assert_eq!(sanitise_filename("act/one"), "act_one");
+        assert_eq!(sanitise_filename("scene:1"), "scene_1");
+        assert_eq!(sanitise_filename("  .hidden"), "hidden");
+        assert_eq!(sanitise_filename(""), "segment");
+    }
+
+    #[test]
+    fn sanitise_filename_handles_all_illegal_chars() {
+        assert_eq!(sanitise_filename(r#"a\b/c:d*e?f"g<h>i|j"#), "a_b_c_d_e_f_g_h_i_j");
+    }
+
+    #[test]
+    fn unique_export_path_avoids_collisions() {
+        let dir = std::path::Path::new("/tmp");
+        let mut used = std::collections::HashSet::new();
+        let p1 = unique_export_path(dir, "clip", "mp4", &mut used);
+        let p2 = unique_export_path(dir, "clip", "mp4", &mut used);
+        let p3 = unique_export_path(dir, "clip", "mp4", &mut used);
+        assert!(p1.to_str().unwrap().ends_with("clip.mp4"));
+        assert!(p2.to_str().unwrap().ends_with("clip_2.mp4"));
+        assert!(p3.to_str().unwrap().ends_with("clip_3.mp4"));
+    }
+
+    #[test]
+    fn unique_export_path_distinct_stems_dont_collide() {
+        let dir = std::path::Path::new("/tmp");
+        let mut used = std::collections::HashSet::new();
+        let p1 = unique_export_path(dir, "intro", "mp4", &mut used);
+        let p2 = unique_export_path(dir, "outro", "mp4", &mut used);
+        assert!(p1.to_str().unwrap().ends_with("intro.mp4"));
+        assert!(p2.to_str().unwrap().ends_with("outro.mp4"));
+    }
+
+    #[test]
+    fn timecode_to_frame_rounds_to_nearest() {
+        use klipp_core::RationalTime;
+        // 2 seconds at 24 fps -> frame 48
+        let tc = RationalTime { value: 48, rate: 24 };
+        assert_eq!(timecode_to_frame(&tc, 24.0), 48);
+        // 1.5 seconds at 30 fps -> frame 45
+        let tc = RationalTime { value: 45, rate: 30 };
+        assert_eq!(timecode_to_frame(&tc, 30.0), 45);
+    }
+}
+
+#[cfg(test)]
+mod export_foot_tests {
+    use super::{export_foot_layout, EXPORT_ACTION_BAR_H, EXPORT_SUMMARY_H};
+    use crate::theme::control::REGULAR;
+
+    /// The rule: whatever the window is doing, the strip reserved for
+    /// the Export foot is never taller than what it was given, and the
+    /// buttons inside it are never shorter than a button.
+    ///
+    /// This is the one that matters. The summary line was added inside
+    /// a strip sized for the buttons alone, which pushed Export — the
+    /// panel's whole point — down under the status bar and sliced it in
+    /// half. A fix for that height is not a guarantee; this is.
+    #[test]
+    fn the_foot_never_overflows_and_the_buttons_are_never_clipped() {
+        let mut heights: Vec<f32> = (0..400).map(|i| i as f32 * 4.0).collect();
+        heights.extend([0.0, 1.0, REGULAR, REGULAR * 2.0, 47.0, 48.0, 1440.0, 4320.0]);
+        for h in heights {
+            let f = export_foot_layout(h);
+            assert!(f.bar_h >= 0.0, "negative strip at {h}");
+            assert!(f.bar_h <= h + 1e-3, "strip {} exceeds the panel's {h}", f.bar_h);
+
+            // What the drawing actually puts in: the pad, then the
+            // content. Both together must sit inside the strip, or the
+            // bottom of the content is under whatever follows it.
+            let laid_out = f.pad + f.content_h;
+            assert!(
+                laid_out <= f.bar_h + 1e-3,
+                "at {h}: pad {} + content {} = {laid_out} overflows the strip {}",
+                f.pad,
+                f.content_h,
+                f.bar_h,
+            );
+
+            // What is drawn, clamped to the strip: a panel too small
+            // for a button cannot be given one.
+            let want = if f.show_summary { EXPORT_SUMMARY_H + REGULAR } else { REGULAR };
+            let want = want.min(f.bar_h);
+            assert!(
+                (f.content_h - want).abs() < 1e-3,
+                "at {h}: content {} does not match what is drawn ({want})",
+                f.content_h,
+            );
+            if h >= REGULAR {
+                assert!(
+                    f.content_h >= REGULAR - 1e-3,
+                    "at {h}: the buttons were squeezed to {}",
+                    f.content_h,
+                );
+            }
+        }
+    }
+
+    /// When the panel is too short for both, the summary gives way and
+    /// the buttons keep their full height — not the other way round.
+    #[test]
+    fn a_short_panel_drops_the_summary_rather_than_the_buttons() {
+        // Half of this is under the two rows but over one.
+        let tight = (EXPORT_SUMMARY_H + REGULAR) * 2.0 - 4.0;
+        let f = export_foot_layout(tight);
+        assert!(!f.show_summary, "the summary was kept in a panel too short for it");
+        assert!(f.content_h >= REGULAR - 1e-3, "the buttons were squeezed: {}", f.content_h);
+        assert!(f.pad + f.content_h <= f.bar_h + 1e-3, "it still overflowed");
+    }
+
+    /// And a panel with room gets both.
+    #[test]
+    fn a_normal_panel_shows_the_summary() {
+        let f = export_foot_layout(1440.0);
+        assert!(f.show_summary, "a full-height panel hid the summary");
+        assert!((f.bar_h - EXPORT_ACTION_BAR_H).abs() < 1e-3, "got {}", f.bar_h);
+    }
+
+    /// The comfortable height has to actually fit what goes in it,
+    /// which is the invariant the original 48 quietly broke.
+    #[test]
+    fn the_declared_height_fits_its_contents() {
+        assert!(
+            EXPORT_ACTION_BAR_H >= EXPORT_SUMMARY_H + REGULAR,
+            "{EXPORT_ACTION_BAR_H} cannot hold {EXPORT_SUMMARY_H} + {REGULAR}",
+        );
+    }
+}
+
+#[cfg(test)]
+mod export_summary_tests {
+    use super::{crf_mbps_range, humanise_bytes, humanise_secs, intra_frame_mbps};
+
+    /// #19: a quality encode gets a range; better quality and more
+    /// pixels cost more; HEVC less than H.264; a GIF has none.
+    #[test]
+    fn a_quality_export_is_sized_as_a_range() {
+        use klipp_core::ExportVideoCodec as C;
+        let hd = 1920.0 * 1080.0;
+        let (lo, hi) = crf_mbps_range(C::H264, 23, hd, 30.0).unwrap();
+        assert!((lo - 3.0).abs() < 1e-9 && (hi - 12.0).abs() < 1e-9);
+        assert!(crf_mbps_range(C::H264, 17, hd, 30.0).unwrap().0 > lo * 1.9, "six steps better doubles it");
+        assert!(crf_mbps_range(C::H264, 23, 3840.0 * 2160.0, 30.0).unwrap().1 > hi * 2.0, "4K costs more");
+        assert!(crf_mbps_range(C::H265, 28, hd, 30.0).unwrap().1 < hi, "HEVC needs less");
+        assert!(crf_mbps_range(C::Gif, 23, hd, 30.0).is_none());
+        assert!(crf_mbps_range(C::ProRes422, 23, hd, 30.0).is_none(), "intra codecs are sized from their tables");
+    }
+    use klipp_core::ExportVideoCodec as C;
+
+    /// The rule the whole feature rests on: a number is only shown
+    /// where it is arithmetic. CRF has no target bitrate by
+    /// construction — the encoder spends what the picture needs — so
+    /// there is nothing to compute and nothing is claimed.
+    #[test]
+    fn the_codecs_that_cannot_be_sized_are_not_sized() {
+        let px = 1920.0 * 1080.0;
+        for codec in [C::H264, C::H265, C::Av1, C::Vp9, C::Gif] {
+            assert_eq!(
+                intra_frame_mbps(codec, px, 25.0),
+                None,
+                "{codec:?} was given a size it cannot have",
+            );
+        }
+    }
+
+    /// And the ones that can are, from their published rates.
+    #[test]
+    fn the_intra_frame_masters_are_sized_from_their_profiles() {
+        let hd = 1920.0 * 1080.0;
+        // Apple quotes ProRes 422 at 147 Mbps for 1080p29.97.
+        let at_reference = intra_frame_mbps(C::ProRes422, hd, 29.97).unwrap();
+        assert!((at_reference - 147.0).abs() < 0.5, "got {at_reference}");
+
+        // HQ is about half again, 4444 about double.
+        let hq = intra_frame_mbps(C::ProRes422HQ, hd, 29.97).unwrap();
+        assert!(hq > at_reference * 1.4 && hq < at_reference * 1.6, "got {hq}");
+
+        // Four times the pixels is four times the rate.
+        let uhd = intra_frame_mbps(C::ProRes422, 3840.0 * 2160.0, 29.97).unwrap();
+        assert!((uhd / at_reference - 4.0).abs() < 0.01, "got {}", uhd / at_reference);
+
+        // And half the frame rate is half the rate.
+        let slow = intra_frame_mbps(C::ProRes422, hd, 14.985).unwrap();
+        assert!((slow / at_reference - 0.5).abs() < 0.01, "got {}", slow / at_reference);
+    }
+
+    /// A ProRes 422 master of a minute at 1080p29.97 is about 1.1 GB,
+    /// which is the sort of number the form exists to warn about.
+    #[test]
+    fn a_minute_of_prores_is_about_a_gigabyte() {
+        let mbps = intra_frame_mbps(C::ProRes422, 1920.0 * 1080.0, 29.97).unwrap();
+        let bytes = mbps * 1_000_000.0 / 8.0 * 60.0;
+        assert!(
+            (1.0e9..1.3e9).contains(&bytes),
+            "expected about 1.1 GB, got {}",
+            humanise_bytes(bytes),
+        );
+    }
+
+    #[test]
+    fn lengths_read_as_lengths() {
+        assert_eq!(humanise_secs(4.25), "4.2 s");
+        assert_eq!(humanise_secs(84.0), "1 min 24 s");
+        assert_eq!(humanise_secs(3725.0), "1 h 02 min 05 s");
+        // A negative range — an in-point dragged past its out-point —
+        // must not print itself.
+        assert_eq!(humanise_secs(-3.0), "0.0 s");
+    }
+
+    #[test]
+    fn sizes_read_as_sizes() {
+        assert_eq!(humanise_bytes(148_000_000.0), "148 MB");
+        assert_eq!(humanise_bytes(1_100_000_000.0), "1.1 GB");
+    }
+}
+
+#[cfg(test)]
+mod true_peak_tests {
+    use super::*;
+
+    #[test]
+    fn the_atsc_entry_asks_for_minus_two_and_the_others_leave_the_default() {
+        let mut d = ExportDialogState { normalize_loudness: true, loudness_preset: 3, ..Default::default() };
+        assert_eq!((dialog_target_lufs(&d), dialog_true_peak(&d)), (Some(-24.0), Some(-2.0)));
+        for other in [0, 1, 2, 4] {
+            d.loudness_preset = other;
+            assert_eq!(dialog_true_peak(&d), None, "entry {other}");
+        }
+        // No normalisation, no ceiling.
+        d.loudness_preset = 3;
+        d.normalize_loudness = false;
+        assert_eq!(dialog_true_peak(&d), None);
+    }
+}
+
+#[cfg(test)]
+mod export_rule_tests {
+    use super::{export_step, next_free_name, offline_clips, segment_outputs, source_written_over, Confirmed, ExportStep};
+    use std::path::{Path, PathBuf};
+
+    fn offline() -> Vec<(String, String)> {
+        vec![("a.mov".into(), "00:00:01:00".into())]
+    }
+
+    /// #826: offline media is asked about first, then a source about to be
+    /// written over; a confirmed offline warning does not pass the
+    /// overwrite check, only the overwrite's own confirmation does.
+    #[test]
+    fn an_export_asks_about_offline_media_then_about_a_source_it_would_destroy() {
+        assert_eq!(export_step(Confirmed::Nothing, Vec::new(), None), ExportStep::Queue);
+        assert_eq!(export_step(Confirmed::Nothing, offline(), Some("b.mov".into())), ExportStep::AskOffline(offline()), "offline first");
+        assert_eq!(export_step(Confirmed::Offline, Vec::new(), Some("b.mov".into())), ExportStep::AskOverwrite("b.mov".into()), "past offline, still asked");
+        assert_eq!(export_step(Confirmed::Nothing, Vec::new(), Some("b.mov".into())), ExportStep::AskOverwrite("b.mov".into()));
+        assert_eq!(export_step(Confirmed::Overwrite, Vec::new(), Some("b.mov".into())), ExportStep::Queue, "accepted");
+        assert_eq!(export_step(Confirmed::Offline, offline(), None), ExportStep::Queue, "offline was confirmed");
+    }
+
+    #[test]
+    fn offline_clips_are_named_with_their_place() {
+        let mut pool = klipp_media::MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/gone.mov".into(), None);
+        item.offline = true;
+        let gone = pool.add(item);
+        let here = pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/here.mov".into(), None));
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks[0].clips = vec![klipp_timeline::Clip::media(gone, tc(2.0), tc(4.0), tc(0.0), tc(2.0)), klipp_timeline::Clip::media(here, tc(4.0), tc(6.0), tc(0.0), tc(2.0))];
+        let named = offline_clips(&seq, &pool);
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0].0, "gone.mov");
+    }
+
+    #[test]
+    fn a_render_over_a_source_is_found_by_where_it_points() {
+        let dir = std::env::temp_dir().join(format!("klipp-export-over-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let source = dir.join("take.mov");
+        std::fs::write(&source, b"x").unwrap();
+        let other = dir.join("other.mov");
+        std::fs::write(&other, b"y").unwrap();
+        let sources = [source.as_path(), other.as_path()];
+        // The same file, reached another way.
+        assert_eq!(source_written_over(&dir.join("sub/../take.mov"), sources), Some("take.mov".into()));
+        assert_eq!(source_written_over(&dir.join("render.mp4"), sources), None, "a new file is no conflict");
+        assert_eq!(source_written_over(&dir.join("nowhere/render.mp4"), sources), None, "nor one in a folder not made yet");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_rename_takes_the_first_free_number() {
+        let taken = [PathBuf::from("/out/film_1.mp4"), PathBuf::from("/out/film_2.mp4")];
+        assert_eq!(next_free_name(Path::new("/out/film.mp4"), |p| taken.iter().any(|t| t == p)), PathBuf::from("/out/film_3.mp4"));
+        assert_eq!(next_free_name(Path::new("/out/film"), |_| false), PathBuf::from("/out/film_1"));
+        assert_eq!(next_free_name(Path::new("/out/film.mp4"), |_| true), PathBuf::from("/out/film.mp4"), "nothing free: the original, so the warning comes again");
+    }
+
+    #[test]
+    fn marker_segments_are_named_by_their_markers_once_each() {
+        let segments = vec![(0, 10, "start".to_string()), (10, 20, "Intro: take 2".to_string()), (20, 30, "Intro: take 2".to_string()), (30, 40, "end".to_string())];
+        let out = segment_outputs(&segments, Path::new("/out/film.mov"));
+        let names: Vec<String> = out.iter().map(|(p, _)| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names[0], "film_segment_1.mov", "a bookend is numbered");
+        assert!(names[1].starts_with("film_Intro") && names[1].ends_with(".mov"), "{names:?}");
+        assert_ne!(names[1], names[2], "the same label twice is two files");
+        assert_eq!(names[3], "film_segment_4.mov");
+        assert!(out.iter().all(|(p, _)| p.parent() == Some(Path::new("/out"))));
+        assert_eq!(out[3].1, "film_segment_4.mov [4/4]");
+        // No extension on the chosen path: mp4.
+        assert!(segment_outputs(&segments[..1], Path::new("/out/film"))[0].0.to_string_lossy().ends_with(".mp4"));
+    }
+}
