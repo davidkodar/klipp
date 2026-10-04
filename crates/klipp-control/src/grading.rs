@@ -1,0 +1,600 @@
+//! Measuring and grading: faces and skin, shot spans, a clip's measures,
+//! looks and their targets, the mix's loudness, grade limits (#826).
+
+#[allow(unused_imports)]
+use super::*;
+
+/// A media item's file and duration, by id.
+pub(crate) fn media_path_and_duration(ctx: &ControlContext, media_id: &str) -> Result<(std::path::PathBuf, f64), String> {
+    let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
+    let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+    let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
+    if item.offline || item.kind != klipp_media::MediaItemKind::File {
+        return Err(format!("{} has no file to read", item.filename));
+    }
+    Ok((item.path.clone(), item.duration.to_secs_f64()))
+}
+
+/// An absolute output path the caller gave, or one in the temp dir.
+/// A sample's faces as boxes. Its people's heads stand in only when no
+/// face detector looked; when one did and found no face, there is none
+/// to read — the back of a head measured as a face failed every skin
+/// check on hair (#326).
+pub(crate) fn face_or_head_regions(framing: &klipp_analysis::framing::Framing, s: &klipp_analysis::framing::FrameSample) -> Vec<[f32; 4]> {
+    if !s.faces.is_empty() {
+        s.faces.iter().map(|f| [f.x, f.y, f.w, f.h]).collect()
+    } else if framing.detects_faces() {
+        Vec::new()
+    } else {
+        s.people.iter().map(|p| klipp_color::measure::head_region([p.0, p.1, p.2, p.3])).collect()
+    }
+}
+
+
+/// The skin regions to read in a frame: each detected face, its box
+/// drawn in a little so hair and background stay out; with no face
+/// model, each person's skin cluster, else the head's place in the box.
+pub(crate) fn skin_regions(ctx: &ControlContext, secs: f64, data: &[u8], w: u32, h: u32) -> Vec<[f32; 4]> {
+    let seq = match ctx.sequence.read() { Ok(s) => s, Err(_) => return Vec::new() };
+    let pool = match ctx.media_pool.read() { Ok(p) => p, Err(_) => return Vec::new() };
+    let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
+    let Some((clip, item)) = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).find_map(|t| {
+        let (_, c) = t.clip_at_timecode(tc)?;
+        let item = pool.get(&c.media_id()?)?;
+        c.enabled.then_some((c.clone(), item.clone()))
+    }) else { return Vec::new() };
+    let source = clip.source_secs_at((secs - clip.timeline_in.to_secs_f64()).max(0.0), seq.fps.as_f64());
+    let Some(framing) = klipp_analysis::report::MediaAnalysis::load(&item.path).framing else { return Vec::new() };
+    let Some(sample) = framing.people_at(source, 4.0) else { return Vec::new() };
+    if !sample.faces.is_empty() {
+        // The cheek band between the eyes and the mouth, which is skin
+        // and nothing else; the box drawn in, when the landmarks are no
+        // good.
+        return sample
+            .faces
+            .iter()
+            .map(|f| klipp_color::measure::skin_band(&f.landmarks).unwrap_or([f.x + f.w * 0.12, f.y + f.h * 0.15, f.w * 0.76, f.h * 0.72]))
+            .collect();
+    }
+    // A face detector looked and saw no face: someone walking away, or
+    // too small. There is no skin to read, and the back of a head read
+    // as one failed every skin check on hair.
+    if framing.detects_faces() {
+        return Vec::new();
+    }
+    sample.people.iter().map(|p| { let p = [p.0, p.1, p.2, p.3]; klipp_color::measure::skin_region(data, w, h, p).unwrap_or_else(|| klipp_color::measure::head_region(p)) }).collect()
+}
+
+/// The face's path across a clip, as window keys in clip time.
+///
+/// A skin key is a band of hue, and a red jumper, a brick wall, a
+/// wooden table and a tanned hand all sit inside it — a hue key alone
+/// turns every one of them when it turns the face. A window says
+/// *where*, and tracking it says where *now*: without the tracking a
+/// window is only good for a locked-off camera, and the face walks out
+/// of it half way through the shot, taking the correction with it.
+///
+/// Read from the framing analysis, which already holds face boxes over
+/// time, so this costs no inference. Empty when the clip has no
+/// analysis or no face in it, and the secondary is then keyed on hue
+/// alone as before.
+pub(crate) fn face_track(ctx: &ControlContext, clip_id: &str) -> Vec<klipp_document::ops::WindowKey> {
+    let Ok(seq) = ctx.sequence.read() else { return Vec::new() };
+    let Ok(pool) = ctx.media_pool.read() else { return Vec::new() };
+    let Ok(uuid) = clip_id.parse() else { return Vec::new() };
+    let id = klipp_core::ClipId(uuid);
+    let Some(clip) = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id) else { return Vec::new() };
+    let Some(item) = clip.media_id().and_then(|m| pool.get(&m)) else { return Vec::new() };
+    let Some(framing) = klipp_analysis::report::MediaAnalysis::load(&item.path).framing else { return Vec::new() };
+    let (s_in, s_out) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
+    let fps = seq.fps.as_f64();
+    let mut keys: Vec<klipp_document::ops::WindowKey> = framing
+        .samples
+        .iter()
+        .filter(|s| s.secs >= s_in && s.secs < s_out)
+        .filter_map(|s| {
+            // The biggest face in the sample: the subject. A window on
+            // a face in the background would leave the subject's own
+            // face outside the correction.
+            let b = face_or_head_regions(&framing, s).into_iter().max_by(|a, b| (a[2] * a[3]).total_cmp(&(b[2] * b[3])))?;
+            Some(klipp_document::ops::WindowKey { at: clip.elapsed_for_source_secs(s.secs, fps), x: b[0], y: b[1], w: b[2], h: b[3] })
+        })
+        .collect();
+    keys.sort_by(|a, b| a.at.total_cmp(&b.at));
+    // A window keyframed every few frames is neither more accurate nor
+    // cheaper to read; thirty samples across a shot is a tracker's
+    // worth of path.
+    if keys.len() > 30 {
+        let step = keys.len() as f64 / 30.0;
+        keys = (0..30).map(|i| keys[((i as f64 * step) as usize).min(keys.len() - 1)]).collect();
+    }
+    keys
+}
+
+/// A clip's span on the timeline, by its id.
+pub(crate) fn shot_span(ctx: &ControlContext, clip_id: &str) -> Option<(f64, f64)> {
+    let id = klipp_core::ClipId(clip_id.parse().ok()?);
+    let seq = ctx.sequence.read().ok()?;
+    seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id).map(|c| (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64()))
+}
+
+/// A clip read the way a colourist checks a shot: three frames across
+/// it, not one. One frame lies — a flash, a passer-by, a cloud — and
+/// the drift between them is itself a finding.
+/// A clip's detected shots in timeline seconds: the clip cut at the shot
+/// boundaries its media's analysis found. Slivers under half a second
+/// are dropped; when there are more than `max`, the longest `max` are
+/// kept, longest first. A clip with no analysis is one span, itself.
+pub(crate) fn clip_shot_spans(clip: &klipp_timeline::Clip, pool: &klipp_media::MediaPool, fps: f64, max: usize) -> Vec<(f64, f64)> {
+    let item = clip.media_id().and_then(|m| pool.get(&m));
+    let media_fps = item.map(|item| item.fps.as_f64()).filter(|f| *f > 0.0).unwrap_or(fps);
+    let boundaries = item
+        .and_then(|item| klipp_analysis::report::MediaAnalysis::load(&item.path).shots)
+        .map(|s| s.boundaries)
+        .unwrap_or_default();
+    // The boundaries on the timeline, through the clip's speed and in its
+    // direction (#617), each on the first frame that shows the new shot
+    // (#691); then cut the span there.
+    let from = clip.timeline_in.to_secs_f64();
+    let at: Vec<f64> = boundaries.iter().filter_map(|b| clip.first_frame_showing(*b, media_fps, fps)).map(|f| f as f64 / fps).collect();
+    shot_spans(from, clip.timeline_out.to_secs_f64(), from, 1.0, &at, max)
+}
+
+/// [`clip_shot_spans`] on numbers: the timeline span `from..to` of a
+/// clip starting `source_in` into its media at `speed`, cut at the
+/// media's shot `boundaries` (source seconds).
+pub(crate) fn shot_spans(from: f64, to: f64, source_in: f64, speed: f64, boundaries: &[f64], max: usize) -> Vec<(f64, f64)> {
+    let mut cuts: Vec<f64> = boundaries
+        .iter()
+        .map(|b| from + (b - source_in) / speed)
+        .filter(|t| *t > from && *t < to)
+        .collect();
+    cuts.sort_by(|a, b| a.total_cmp(b));
+    let mut edges = vec![from];
+    edges.extend(cuts);
+    edges.push(to);
+    let mut spans: Vec<(f64, f64)> = edges.windows(2).map(|w| (w[0], w[1])).filter(|(a, b)| b - a >= 0.5).collect();
+    if spans.is_empty() {
+        spans.push((from, to));
+    }
+    spans.sort_by(|a, b| (b.1 - b.0).total_cmp(&(a.1 - a.0)));
+    spans.truncate(max.max(1));
+    spans
+}
+
+#[cfg(test)]
+mod status_text_tests {
+    use super::*;
+
+    /// #626: what a person is told when they ask whether Klipp is there —
+    /// the version, the project by name and whether it is saved, the
+    /// timeline, the playhead and the media, in words.
+    #[test]
+    fn status_reads_as_a_person_would_say_it() {
+        let build = klipp_core::build_info::BuildInfo { version: "0.1.0", commit: "f5e7b0ee", dirty: false, profile: "release", exe: None, built_at: None };
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.name = "Main Sequence".into();
+        let facts = |seq: &klipp_timeline::Sequence, project: Option<&std::path::Path>, unsaved: bool, media: usize| status_text(&StatusFacts { build: &build, project, unsaved, sequence: seq, media, playhead_secs: 65.2, playing: false });
+        let empty = facts(&seq, Some(std::path::Path::new("/home/u/Videos/test it again.klipp")), false, 0);
+        assert!(empty.starts_with("Klipp 0.1.0 is running (build f5e7b0ee)."), "{empty}");
+        assert!(empty.contains("Project: \u{201c}test it again\u{201d}, all changes saved."), "{empty}");
+        assert!(empty.contains("no clips yet") && empty.contains("1920\u{00d7}1080 at 24 fps"), "{empty}");
+        assert!(empty.contains("Playhead: paused at 1:05.") && empty.contains("Media: none imported yet."), "{empty}");
+        assert!(!empty.contains('/'), "no paths: {empty}");
+
+        seq.tracks[0].clips.push(klipp_timeline::Clip::media(klipp_core::MediaId::new(), klipp_core::Timecode::zero(), klipp_core::Timecode { value: 24 * 90, rate: 24 }, klipp_core::Timecode::zero(), klipp_core::Timecode { value: 24 * 90, rate: 24 }));
+        let cut = facts(&seq, None, true, 3);
+        assert!(cut.contains("1 clip, 1:30 long") && cut.contains("a new project with changes, not saved yet") && cut.contains("Media: 3 files imported."), "{cut}");
+    }
+}
+
+#[cfg(test)]
+mod shot_span_tests {
+    use super::shot_spans;
+
+    /// #329: a clip with a cut in it is two shots, and the longest is
+    /// read first — not the clip's middle, which here is past the cut.
+    #[test]
+    fn a_clip_with_a_cut_is_read_inside_its_longest_shot() {
+        // Clip at 23.6..84.1 s of the timeline, from the media's start; the
+        // media cuts at 44 s.
+        let spans = shot_spans(23.6, 84.1, 0.0, 1.0, &[44.0], 6);
+        assert_eq!(spans.len(), 2);
+        let (a, b) = spans[0];
+        assert!((a - 23.6).abs() < 1e-9 && (b - 67.6).abs() < 1e-9, "the longest shot first: {spans:?}");
+        let mid = (a + b) / 2.0;
+        assert!(mid < 67.6, "its middle is inside the first shot, not past the cut");
+    }
+
+    #[test]
+    fn boundaries_outside_the_clip_and_slivers_are_ignored() {
+        // Trimmed to source 10..20 s; cuts at 5 (before), 10.2 (a sliver), 15 and 30 (after).
+        let spans = shot_spans(0.0, 10.0, 10.0, 1.0, &[5.0, 10.2, 15.0, 30.0], 6);
+        let want = [(5.0, 10.0), (0.2, 5.0)];
+        assert_eq!(spans.len(), want.len(), "{spans:?}");
+        for ((a, b), (x, y)) in spans.iter().zip(want) {
+            assert!((a - x).abs() < 1e-9 && (b - y).abs() < 1e-9, "{spans:?}");
+        }
+    }
+
+    #[test]
+    fn many_shots_keep_the_longest_and_none_is_the_whole_clip() {
+        let cuts: Vec<f64> = (1..30).map(|i| i as f64 * 10.0 + (i % 3) as f64).collect();
+        assert_eq!(shot_spans(0.0, 300.0, 0.0, 1.0, &cuts, 6).len(), 6);
+        assert_eq!(shot_spans(5.0, 9.0, 0.0, 1.0, &[], 6), vec![(5.0, 9.0)]);
+    }
+
+    #[test]
+    fn a_sped_up_clip_maps_its_cuts_onto_the_timeline() {
+        // Twice speed from source 0: the cut at source 10 s is 5 s in.
+        assert_eq!(shot_spans(0.0, 10.0, 0.0, 2.0, &[10.0], 6), vec![(0.0, 5.0), (5.0, 10.0)]);
+    }
+}
+
+pub(crate) fn measure_clip(ctx: &ControlContext, from: f64, to: f64, only: Option<klipp_core::ClipId>, timeout_ms: Option<u64>) -> Result<(Vec<(f64, klipp_color::measure::FrameMeasure)>, Option<String>), String> {
+    let span = (to - from).max(0.05);
+    let times: Vec<f64> = if span < 0.6 {
+        vec![from + span / 2.0]
+    } else {
+        [0.2, 0.5, 0.8].iter().map(|f| from + span * f).collect()
+    };
+    let mut out = Vec::new();
+    for t in times {
+        match measure_at(ctx, t, only, timeout_ms) {
+            Ok(m) => out.push((t, m)),
+            Err(e) if out.is_empty() => return Err(e),
+            Err(_) => {}
+        }
+    }
+    if out.is_empty() {
+        return Err("no frame of the clip could be read".into());
+    }
+    // What moved across the shot: the light, the exposure, the face.
+    let spread = |f: &dyn Fn(&klipp_color::measure::FrameMeasure) -> f32| {
+        let vs: Vec<f32> = out.iter().map(|(_, m)| f(m)).collect();
+        vs.iter().copied().fold(f32::MIN, f32::max) - vs.iter().copied().fold(f32::MAX, f32::min)
+    };
+    let (d_l, d_a, d_b) = (spread(&|m| m.l_p50), spread(&|m| m.cast_a), spread(&|m| m.cast_b));
+    let d_cast = (d_a * d_a + d_b * d_b).sqrt();
+    let faces: Vec<f32> = out.iter().filter_map(|(_, m)| m.faces.iter().find(|f| f.readable()).map(|f| f.hue)).collect();
+    let d_face = if faces.len() > 1 {
+        let (mut lo, mut hi) = (0.0f32, 0.0f32);
+        for w in faces.windows(2) {
+            let d = klipp_color::measure::hue_diff(w[0], w[1]);
+            lo = lo.min(d);
+            hi = hi.max(d);
+        }
+        hi - lo
+    } else {
+        0.0
+    };
+    let mut said = Vec::new();
+    if d_l > 6.0 {
+        said.push(format!("the exposure moves {d_l:.0} L* across the shot"));
+    }
+    if d_cast > 4.0 {
+        said.push(format!("the light moves {d_cast:.1} in colour across the shot"));
+    }
+    if d_face > 6.0 {
+        said.push(format!("the face's hue moves {d_face:.0}° across the shot"));
+    }
+    let drift = (!said.is_empty()).then(|| format!("{} — one grade for the whole shot will be wrong at one end; keyframe it or cut it", said.join("; ")));
+    Ok((out, drift))
+}
+
+/// The middle reading of a clip's frames: what a single grade is set by.
+pub(crate) fn median_measure(reads: &[(f64, klipp_color::measure::FrameMeasure)]) -> (f64, klipp_color::measure::FrameMeasure) {
+    let mut by_light: Vec<&(f64, klipp_color::measure::FrameMeasure)> = reads.iter().collect();
+    by_light.sort_by(|a, b| a.1.l_p50.total_cmp(&b.1.l_p50));
+    let mid = by_light[by_light.len() / 2];
+    (mid.0, mid.1.clone())
+}
+
+/// The frame at a timeline second, measured: Lab readings and the faces.
+/// A clip id given as text, for the colour tools' clip-alone reads.
+pub(crate) fn clip_of(id: &str) -> Option<klipp_core::ClipId> {
+    id.parse().ok().map(klipp_core::ClipId)
+}
+
+/// The frame at `secs` measured in Lab — with `only`, that clip alone
+/// (#719).
+pub(crate) fn measure_at(ctx: &ControlContext, secs: f64, only: Option<klipp_core::ClipId>, timeout_ms: Option<u64>) -> Result<klipp_color::measure::FrameMeasure, String> {
+    let (data, w, h) = grab_frame_rgba_of(ctx, secs, only, timeout_ms)?;
+    let faces = skin_regions(ctx, secs, &data, w, h);
+    let mut m = klipp_color::measure::measure_frame(&data, w, h, &faces);
+    m.log_prior = log_prior_at(ctx, secs);
+    Ok(m)
+}
+
+/// What the file of the picture clip at `secs` says about being log.
+pub(crate) fn log_prior_at(ctx: &ControlContext, secs: f64) -> klipp_color::measure::LogPrior {
+    let (Ok(seq), Ok(pool)) = (ctx.sequence.read(), ctx.media_pool.read()) else { return Default::default() };
+    let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
+    seq.tracks
+        .iter()
+        .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
+        .find_map(|t| t.clip_at_timecode(tc).map(|(_, c)| c).filter(|c| is_picture_clip(c)))
+        .and_then(|c| pool.get(&c.media_id()?).map(|item| item.log_prior()))
+        .unwrap_or_default()
+}
+
+/// Whether the colour tools grade this clip: an enabled clip of media.
+pub(crate) fn is_picture_clip(c: &klipp_timeline::Clip) -> bool {
+    c.enabled && matches!(c.kind, klipp_timeline::ClipKind::Media { .. })
+}
+
+/// The track the colour tools work on: the top visible video track
+/// with a picture clip on it. A track above holding only titles, or
+/// nothing, is passed over; taking the first video track as it came
+/// left every tool with nothing to grade (#513).
+pub(crate) fn picture_track(seq: &klipp_timeline::Sequence) -> Option<&klipp_timeline::Track> {
+    seq.tracks.iter().find(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible && t.clips.iter().any(is_picture_clip))
+}
+
+/// `current` with `fields` laid over it by name: what `update_brief`
+/// sets. A field given as null goes back to its empty value; a name
+/// the brief does not have is refused, where a whole `set_brief` would
+/// drop it without a word (#498).
+pub(crate) fn merge_brief(current: &klipp_timeline::Brief, fields: &serde_json::Value) -> Result<klipp_timeline::Brief, String> {
+    let object = |b: &klipp_timeline::Brief| match serde_json::to_value(b) {
+        Ok(serde_json::Value::Object(m)) => Ok(m),
+        _ => Err("the brief does not serialise as an object".to_string()),
+    };
+    let serde_json::Value::Object(fields) = fields else {
+        return Err("fields is an object: the brief's fields to change, by name".into());
+    };
+    let empty = object(&klipp_timeline::Brief::default())?;
+    let mut merged = object(current)?;
+    for (name, value) in fields {
+        let Some(cleared) = empty.get(name) else {
+            return Err(format!("{name:?} is not a field of the brief; it has {}", empty.keys().cloned().collect::<Vec<_>>().join(", ")));
+        };
+        merged.insert(name.clone(), if value.is_null() { cleared.clone() } else { value.clone() });
+    }
+    protocol::brief_from_value(serde_json::Value::Object(merged))
+}
+
+/// The look a frame is judged against: its grade group's when the group
+/// has one, or none past faults when the group leaves the look on
+/// purpose (#793); else the brief's, else neutral; a screen recording
+/// (the beat sheet found holds) is judged as one when the brief names no
+/// look.
+pub(crate) fn look_for(ctx: &ControlContext, secs: f64) -> klipp_color::measure::LookTarget {
+    use klipp_color::measure::LookTarget;
+    if let Ok(seq) = ctx.sequence.read() {
+        let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
+        if let Some(look) = group_look(&seq, tc) {
+            return look;
+        }
+        if let Some(look) = seq.brief.as_ref().and_then(|b| b.look.clone()) {
+            return resolve_look_target(look);
+        }
+        if let Ok(pool) = ctx.media_pool.read() {
+            // A screen recording, judged only for cast and clipping. A
+            // still picture held on screen also "never changes", and a
+            // locked-off camera shot holds too, so the beat sheet alone
+            // is not enough: a file with a person in it is footage.
+            let item = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).find_map(|t| t.clip_at_timecode(tc)).and_then(|(_, c)| pool.get(&c.media_id()?));
+            if let Some(item) = item {
+                let a = klipp_analysis::report::MediaAnalysis::load(&item.path);
+                let holds = a.beatsheet.as_ref().is_some_and(|b| b.has_freeze);
+                let people = a.framing.as_ref().is_some_and(|f| f.samples.iter().any(|s| !s.people.is_empty() || !s.faces.is_empty()));
+                if holds && !people {
+                    return LookTarget::preset("screencast").unwrap();
+                }
+            }
+        }
+    }
+    LookTarget::unbriefed()
+}
+
+/// The look the grade group of the picture on top at `tc` holds it to:
+/// the group's own, or faults only for a group that leaves the look on
+/// purpose; `None` when the picture is in no group or its group names
+/// neither, and the brief decides (#793).
+pub(crate) fn group_look(seq: &klipp_timeline::Sequence, tc: klipp_core::Timecode) -> Option<klipp_color::measure::LookTarget> {
+    let clip = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).find_map(|t| t.clip_at_timecode(tc).map(|(_, c)| c))?;
+    let g = seq.grade_groups.iter().find(|g| Some(g.id) == clip.grade_group)?;
+    if g.departs {
+        return Some(departing_look());
+    }
+    g.look.clone().map(resolve_look_target)
+}
+
+/// What a group that leaves the look on purpose is judged against:
+/// faults only. Clipping, crushed blacks, log left ungraded, noise and
+/// banding are judged whatever the target, and so is a face lost or
+/// blown (skin_lightness). No cast, black point, face exposure or taste
+/// numbers: the unbriefed target's neutral cast told a group warm on
+/// purpose that its neutrals sat toward orange shot after shot, and its
+/// face exposure would fail a section dark on purpose (#811 review).
+pub(crate) fn departing_look() -> klipp_color::measure::LookTarget {
+    klipp_color::measure::LookTarget { name: "off the look on purpose".into(), ..Default::default() }
+}
+
+/// A look given by name alone takes the preset's numbers.
+pub(crate) fn resolve_look_target(look: klipp_color::measure::LookTarget) -> klipp_color::measure::LookTarget {
+    use klipp_color::measure::LookTarget;
+    let bare = look.black_l.is_none() && look.white_l.is_none() && look.mid_l.is_none() && look.contrast_range.is_none() && look.chroma_mean.is_none() && look.cast_a.is_none() && look.skin_hue.is_none();
+    if bare {
+        if let Some(p) = LookTarget::preset(&look.name) {
+            return p;
+        }
+    }
+    look
+}
+
+/// The colour findings of a frame as report entries: (severity, secs, what, hint).
+pub(crate) fn colour_report(m: &klipp_color::measure::FrameMeasure, look: &klipp_color::measure::LookTarget, secs: f64) -> Vec<(String, f64, String, String)> {
+    use klipp_color::measure::Verdict;
+    klipp_color::measure::judge(m, look)
+        .into_iter()
+        .filter(|f| f.verdict != Verdict::Pass)
+        .map(|f| ((if f.verdict == Verdict::Fail { "error" } else { "warning" }).to_string(), secs, format!("{} [{}]", f.what, f.rule), f.fix.to_string()))
+        .collect()
+}
+
+/// The mix metered from `from` to `to` in `step`s: (step start, short-term
+/// LUFS at its end, loudest momentary LUFS inside it). Metering starts
+/// three seconds early, where there are three, so the first short-term
+/// reading has its window (#792).
+pub(crate) fn mix_loudness(snapshot: &klipp_render::SequenceSnapshot, from: f64, to: f64, step: f64) -> Result<Vec<(f64, f32, f32)>, String> {
+    let fps = snapshot.fps.max(1.0);
+    let mut mix = klipp_render::AudioMixdown::new(snapshot).map_err(|e| format!("the mix could not be read: {e}"))?;
+    let mut meter = klipp_audio::LufsMeter::new(snapshot.sample_rate as f32, false);
+    let first = ((from - 3.0).max(0.0) * fps).floor() as u64;
+    let last = (to * fps).ceil() as u64;
+    let floor_db = |v: f32| if v.is_finite() { v.max(-70.0) } else { -70.0 };
+    let mut rows = Vec::new();
+    let mut step_start = from;
+    let mut peak = f32::MIN;
+    for frame in first..last {
+        // Unclamped, as the export's loudness pass meters it (R-3): a hit
+        // summed over music is where the mix runs past full scale, and a
+        // clamp would read the step that should stand out as quieter (#812).
+        let audio = mix.get_frame_audio_unclamped(frame);
+        meter.process(&audio);
+        let t = (frame + 1) as f64 / fps;
+        if t <= from {
+            continue;
+        }
+        let r = meter.readings();
+        peak = peak.max(floor_db(r.momentary));
+        if t >= step_start + step - 1e-6 || frame + 1 == last {
+            rows.push(((step_start * 100.0).round() / 100.0, floor_db(r.short_term), peak));
+            step_start += step;
+            peak = f32::MIN;
+        }
+    }
+    Ok(rows)
+}
+
+/// The level an effect is set to so it sits `over_db` above the loudest
+/// sound already heard under it (#792): files a dozen decibels apart, all
+/// set to the same volume, left one whoosh shouting over the intro and
+/// another lost under the music. Each heard clip under it counts by its
+/// file's integrated loudness and its own volume and gain; effects on the
+/// SFX track do not count. `None` when either side has not been measured.
+pub(crate) fn level_over_bed(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, effect: klipp_core::MediaId, at: f64, secs: f64, over_db: f32) -> Option<f32> {
+    let loudness = |id: klipp_core::MediaId| -> Option<f32> {
+        let item = pool.get(&id)?;
+        let audio = klipp_analysis::report::MediaAnalysis::load(&item.path).audio?;
+        // A clip shorter than the meter's gate measures nothing; its
+        // true peak, twelve under, stands in for a short hit.
+        audio.integrated_lufs.filter(|l| *l > -60.0).or(audio.true_peak_dbtp.map(|p| p - 12.0))
+    };
+    let bed = seq
+        .tracks
+        .iter()
+        .filter(|t| t.kind == klipp_timeline::TrackKind::Audio && !t.name.eq_ignore_ascii_case("sfx") && !t.muted)
+        .flat_map(|t| t.clips.iter())
+        .filter(|c| c.enabled && c.timeline_in.to_secs_f64() < at + secs && c.timeline_out.to_secs_f64() > at)
+        .filter_map(|c| {
+            let id = c.media_id()?;
+            let owner = sound_owner(seq, c);
+            let db = 20.0 * (owner.volume.max(1e-4) * owner.gain.max(1e-4)).log10();
+            Some(loudness(id)? + db)
+        })
+        .fold(None, |m: Option<f32>, v| Some(m.map_or(v, |m| m.max(v))))?;
+    let own = loudness(effect)?;
+    Some((bed + over_db - own).clamp(-30.0, 12.0))
+}
+
+/// How far grade_to_target may move each knob from where a shot
+/// started (#742). Gentle by default: chasing a look's chroma on vivid
+/// phone footage took saturation to 1.3x and turned a sky olive.
+pub(crate) struct GradeLimits {
+    pub(crate) name: &'static str,
+    pub(crate) exposure: f32,
+    pub(crate) lift: f32,
+    pub(crate) gain: f32,
+    pub(crate) temperature: f32,
+    pub(crate) tint: f32,
+    /// Saturation as a factor of the start's: down to 1/x, up to x.
+    pub(crate) saturation: f32,
+}
+
+impl GradeLimits {
+    pub(crate) fn named(name: &str) -> Result<Self, String> {
+        let (name, k) = match name.to_lowercase().as_str() {
+            "gentle" => ("gentle", 1.0),
+            "normal" => ("normal", 2.0),
+            "bold" => ("bold", 3.0),
+            other => return Err(format!("strength {other:?} is not one of gentle, normal or bold")),
+        };
+        Ok(Self { name, exposure: 0.5 * k, lift: 0.05 * k, gain: 0.1 * k, temperature: 8.0 * k, tint: 6.0 * k, saturation: 1.0 + 0.12 * k })
+    }
+
+    /// The knobs after `step` from `now`, held within the limits around
+    /// `start`, and the names of the knobs the limits held.
+    pub(crate) fn clamp(&self, start: &klipp_color::measure::PrimaryStep, now: &klipp_color::measure::PrimaryStep, step: &klipp_color::measure::PrimaryStep) -> (klipp_color::measure::PrimaryStep, Vec<&'static str>) {
+        let mut held = Vec::new();
+        let mut within = |name: &'static str, want: f32, lo: f32, hi: f32| {
+            let got = want.clamp(lo, hi);
+            if (got - want).abs() > 1e-4 {
+                held.push(name);
+            }
+            got
+        };
+        let out = klipp_color::measure::PrimaryStep {
+            exposure: within("exposure", now.exposure + step.exposure, start.exposure - self.exposure, start.exposure + self.exposure).clamp(-6.0, 6.0),
+            lift: within("lift", now.lift + step.lift, start.lift - self.lift, start.lift + self.lift).clamp(-1.0, 1.0),
+            gain: within("gain", now.gain + step.gain, start.gain - self.gain, start.gain + self.gain).clamp(-1.0, 1.0),
+            temperature: within("temperature", now.temperature + step.temperature, start.temperature - self.temperature, start.temperature + self.temperature).clamp(-50.0, 50.0),
+            tint: within("tint", now.tint + step.tint, start.tint - self.tint, start.tint + self.tint).clamp(-50.0, 50.0),
+            saturation: within("saturation", now.saturation * (1.0 + step.saturation), start.saturation / self.saturation, start.saturation * self.saturation).clamp(0.0, 4.0),
+            held_for_highlights: step.held_for_highlights,
+        };
+        (out, held)
+    }
+}
+
+/// A step as the knobs it moves, from `from` to `to`: "exposure +0.30,
+/// temperature -6.0, saturation x1.10"; "nothing" when none moves.
+pub(crate) fn describe_step(from: &klipp_color::measure::PrimaryStep, to: &klipp_color::measure::PrimaryStep) -> String {
+    let mut parts = Vec::new();
+    for (name, d, min) in [
+        ("exposure", to.exposure - from.exposure, 0.01),
+        ("lift", to.lift - from.lift, 0.002),
+        ("gain", to.gain - from.gain, 0.002),
+        ("temperature", to.temperature - from.temperature, 0.1),
+        ("tint", to.tint - from.tint, 0.1),
+    ] {
+        if d.abs() >= min {
+            parts.push(format!("{name} {d:+.2}"));
+        }
+    }
+    if from.saturation > 0.0 && (to.saturation / from.saturation - 1.0).abs() >= 0.005 {
+        parts.push(format!("saturation x{:.2}", to.saturation / from.saturation));
+    }
+    if parts.is_empty() { "nothing".into() } else { parts.join(", ") }
+}
+
+/// Shots of one piece of media, two or more, as scenes to grade
+/// together: `{file, media_id, clips}` each. Keyed by the media, not the
+/// file name, so two cards' IMG_0001.mov are two scenes (#770 review).
+pub(crate) fn scene_groups(shots: &[(String, f64, String)], media_of: &std::collections::HashMap<String, klipp_core::MediaId>) -> Vec<serde_json::Value> {
+    let mut by_media: Vec<(klipp_core::MediaId, &str, Vec<&str>)> = Vec::new();
+    for (id, _, name) in shots {
+        let Some(media) = media_of.get(id).copied() else { continue };
+        match by_media.iter_mut().find(|(m, _, _)| *m == media) {
+            Some(g) => g.2.push(id.as_str()),
+            None => by_media.push((media, name.as_str(), vec![id.as_str()])),
+        }
+    }
+    by_media.iter().filter(|(_, _, ids)| ids.len() >= 2).map(|(media, name, ids)| json!({ "file": name, "media_id": media.0.to_string(), "clips": ids })).collect()
+}
+
+/// The clip's Corrector knobs as they are: what a grade step adds to.
+pub(crate) fn corrector_now(clip: &klipp_timeline::Clip) -> klipp_color::measure::PrimaryStep {
+    let mut s = klipp_color::measure::PrimaryStep { saturation: 1.0, ..Default::default() };
+    if let Some(n) = clip.own_grade().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector) {
+        s.exposure = n.params.exposure.unwrap_or(0.0);
+        s.lift = n.params.lift_master.unwrap_or(0.0);
+        s.gain = n.params.gain_master.unwrap_or(0.0);
+        s.temperature = n.params.temperature.unwrap_or(0.0);
+        s.tint = n.params.tint.unwrap_or(0.0);
+        s.saturation = n.params.saturation.unwrap_or(1.0);
+    }
+    s
+}
