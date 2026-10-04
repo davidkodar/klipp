@@ -42,11 +42,10 @@ pub fn label(cmd: &AppCommand) -> Option<&'static str> {
         | AppCommand::AddTrackAbove { .. }
         | AppCommand::AddTrackBelow { .. } => "Add Track",
         AppCommand::RemoveTrack { .. } => "Remove Track",
-        AppCommand::RemoveTransition { .. } => "Remove Transition",
-        AppCommand::SetTransitionDuration { .. } => "Transition Duration",
+        // Removing a transition, its duration and its alignment record
+        // themselves (through the document's transition ops).
         AppCommand::SetTransitionKind { .. } => "Transition Kind",
         AppCommand::SetTransitionParam { .. } => "Transition Settings",
-        AppCommand::SetTransitionAlignment { .. } => "Transition Alignment",
         _ => return None,
     })
 }
@@ -54,27 +53,45 @@ pub fn label(cmd: &AppCommand) -> Option<&'static str> {
 /// Whether repeats of this edit are one gesture, a value dragged, and
 /// fold into the step before when they come close together.
 fn is_gesture(label: &str) -> bool {
-    matches!(label, "Transition Duration" | "Transition Settings")
+    matches!(label, "Transition Settings")
 }
 
 /// The active sequence's tracks before an edit, to record it afterwards.
 pub struct Before {
     label: &'static str,
     sequence: klipp_core::SequenceId,
+    /// The tracks kept: every one, or only `scope`'s.
     tracks: Vec<Track>,
+    /// The one track an edit can change, when the command says which: a
+    /// transition's settings, sent every frame of a drag, keep one track
+    /// rather than all of them.
+    scope: Option<usize>,
+    /// The history's size before the edit: a handler that recorded its
+    /// own step is not recorded twice.
+    recorded: (u64, usize),
 }
 
 /// The tracks before `cmd`, when it is one of the edits recorded here.
 pub fn before(state: &AppState, cmd: &AppCommand) -> Option<Before> {
     let label = label(cmd)?;
-    before_labelled(state, label)
+    let scope = match cmd {
+        AppCommand::SetTransitionKind { track_index, .. } | AppCommand::SetTransitionParam { track_index, .. } => Some(*track_index),
+        _ => None,
+    };
+    let mut before = before_labelled(state, label)?;
+    if let Some(i) = scope {
+        let seq = state.sequences.get(state.active_sequence_idx)?;
+        before.tracks = vec![seq.tracks.get(i)?.clone()];
+        before.scope = Some(i);
+    }
+    Some(before)
 }
 
 /// The tracks before an edit made outside a command (a track added from
 /// a header's menu, a track removed with its clips from the dialog).
 pub fn before_labelled(state: &AppState, label: &'static str) -> Option<Before> {
     let seq = state.sequences.get(state.active_sequence_idx)?;
-    Some(Before { label, sequence: seq.id, tracks: seq.tracks.clone() })
+    Some(Before { label, sequence: seq.id, tracks: seq.tracks.clone(), scope: None, recorded: history_size(state) })
 }
 
 /// Record the edit since `before` as one undo step, when it changed the
@@ -82,10 +99,17 @@ pub fn before_labelled(state: &AppState, label: &'static str) -> Option<Before> 
 /// A dragged value's changes in quick succession stay one step.
 pub fn record(state: &mut AppState, before: Before) {
     let Some(seq) = state.sequences.get(state.active_sequence_idx) else { return };
-    if seq.id != before.sequence {
+    if seq.id != before.sequence || history_size(state) != before.recorded {
         return;
     }
-    let Some(edit) = edit_between(before.label, &before.tracks, &seq.tracks) else { return };
+    let edit = match before.scope {
+        Some(i) => match seq.tracks.get(i) {
+            Some(now) if now.id == before.tracks[0].id => edit_between(before.label, &before.tracks, std::slice::from_ref(now)).map(|e| at_index(e, i)),
+            _ => None,
+        },
+        None => edit_between(before.label, &before.tracks, &seq.tracks),
+    };
+    let Some(edit) = edit else { return };
     let now = std::time::Instant::now();
     let continues = is_gesture(before.label)
         && state
@@ -131,6 +155,22 @@ fn edit_between(label: &'static str, old: &[Track], new: &[Track]) -> Option<Edi
         0 => None,
         1 => edits.pop(),
         _ => Some(EditCommand::Named { label: label.to_string(), edit: Box::new(EditCommand::Batch(edits)) }),
+    }
+}
+
+/// How many steps the history has taken: pushes counted for autosave,
+/// and the undo stack's depth.
+fn history_size(state: &AppState) -> (u64, usize) {
+    (state.history_ops_since_save, state.active_history().undo_count())
+}
+
+/// A one-track record made against a list of that one track, moved to
+/// the track's real index.
+fn at_index(edit: EditCommand, i: usize) -> EditCommand {
+    match edit {
+        EditCommand::SetTrackContents { description, old, new, .. } => EditCommand::SetTrackContents { description, track_index: i, old, new },
+        EditCommand::SetTrack { description, old, new, .. } => EditCommand::SetTrack { description, track_index: i, old, new },
+        other => other,
     }
 }
 
@@ -223,6 +263,25 @@ mod tests {
         state.sequences[0].tracks.push(klipp_timeline::Track::new("Video 9", klipp_timeline::TrackKind::Video));
         record(&mut state, before);
         assert!(matches!(top(&mut state), Some(EditCommand::SetTracks { .. })));
+    }
+
+    #[test]
+    fn a_handler_that_recorded_its_own_step_is_not_recorded_twice() {
+        let mut state = state_with_a_clip();
+        let v1 = state.sequences[0].tracks.iter().position(|t| !t.clips.is_empty()).unwrap();
+        let before = before_labelled(&state, "Close Gap").unwrap();
+        let old = state.sequences[0].tracks[v1].clips[0].clone();
+        state.sequences[0].tracks[v1].clips[0].enabled = false;
+        let new = state.sequences[0].tracks[v1].clips[0].clone();
+        state.push_history(EditCommand::ReplaceClip { description: "Its own", old: Box::new(old), new: Box::new(new) });
+        record(&mut state, before);
+        assert_eq!(state.active_history_mut().undo_count(), 1, "only the handler's own step");
+    }
+
+    #[test]
+    fn transitions_that_record_themselves_are_not_named_here() {
+        let t = klipp_core::TransitionId::new();
+        assert!(label(&AppCommand::RemoveTransition { track_index: 0, transition_id: t }).is_none());
     }
 
     #[test]
