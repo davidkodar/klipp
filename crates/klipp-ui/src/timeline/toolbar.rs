@@ -54,6 +54,25 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             styled_tooltip(&hover, theme, tip, Some(&kb.display_for("toggle_edit_mode")));
         }
 
+        // ── Ripple: lit when edits close the gaps they leave (#912) ──
+        // The switch was only drawn by the timeline the app no longer
+        // shows, so ripple could not be turned off.
+        {
+            let text = egui::RichText::new("RIPPLE")
+                .font(egui::FontId::monospace(crate::theme::type_scale::CAPTION))
+                .color(if state.ripple_enabled { theme.accent } else { theme.text_dim });
+            let resp = ui.add(egui::Button::new(text).selected(state.ripple_enabled).min_size(egui::vec2(0.0, crate::theme::control::COMPACT)));
+            let tip = if state.ripple_enabled {
+                "Ripple on: deleting and trimming close the gap. Click to leave gaps."
+            } else {
+                "Ripple off: deleting and trimming leave a gap. Click to close gaps."
+            };
+            styled_tooltip(&resp, theme, tip, None);
+            if resp.clicked() {
+                cmds.push(AppCommand::SetRippleEnabled(!state.ripple_enabled));
+            }
+        }
+
         separator(ui, theme);
 
         // ── Snap (left-click = master; right-click = per-target menu) ──
@@ -111,6 +130,37 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             state.skimming_enabled = !state.skimming_enabled;
             let msg = if state.skimming_enabled { "Skimming On" } else { "Skimming Off" };
             state.toast.show(msg);
+        }
+
+        // ── Timeline options: follow, proxies, what an append brings,
+        // find (#912). Each was only on the timeline the app no longer
+        // shows. ──
+        let resp = ui.add(egui::Button::new("\u{22EF}").min_size(egui::vec2(btn, btn)));
+        styled_tooltip(&resp, theme, "Timeline options", None);
+        egui::popup::popup_below_widget(ui, ui.id().with("timeline_options"), &resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+            ui.set_min_width(230.0);
+            ui.label(egui::RichText::new("Follow the playhead").strong().size(11.0));
+            for follow in [crate::state::PlayheadFollow::Off, crate::state::PlayheadFollow::Page, crate::state::PlayheadFollow::Smooth] {
+                if ui.radio(state.playhead_follow == follow, follow.label()).clicked() {
+                    state.playhead_follow = follow;
+                    state.playhead_follow_chosen = true;
+                }
+            }
+            ui.separator();
+            if ui.checkbox(&mut state.use_proxies.clone(), "Play from proxies").on_hover_text("Lower quality, faster decode").clicked() {
+                cmds.push(AppCommand::SetUseProxies(!state.use_proxies));
+            }
+            if ui.checkbox(&mut state.append_brings_audio.clone(), "Appended clips bring their audio").clicked() {
+                cmds.push(AppCommand::SetAppendBringsAudio(!state.append_brings_audio));
+            }
+            ui.separator();
+            if ui.add(egui::Button::new("Find in Timeline\u{2026}").shortcut_text(kb.display_for("focus_panel_search"))).clicked() {
+                state.focus_search_request = Some(crate::state::PanelKind::Timeline);
+                ui.memory_mut(|m| m.close_popup());
+            }
+        });
+        if resp.clicked() {
+            ui.memory_mut(|m| m.toggle_popup(ui.id().with("timeline_options")));
         }
 
         separator(ui, theme);

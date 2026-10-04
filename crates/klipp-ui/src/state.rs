@@ -1277,6 +1277,9 @@ pub struct AppState {
     /// Per-track pre-collapse height memory for double-click collapse/expand toggle.
     pub timeline_track_pre_collapse: std::collections::HashMap<usize, f32>,
     pub playhead_follow: PlayheadFollow,
+    /// The editor chose the follow mode in the timeline's options (#912):
+    /// playback no longer turns Off into Page for them.
+    pub playhead_follow_chosen: bool,
     pub track_header_width: f32,
     /// Independent zoom + pan for the Source viewer. Source and Program
     /// are kept fully separate — scrolling over one viewer zooms only
@@ -3707,6 +3710,9 @@ impl AppState {
             || self.show_cache_manager
             || self.show_command_palette
             || self.quick_look_path.is_some()
+            // The confirmations: Delete and the like acted behind them.
+            || self.confirm_delete_sequence.is_some()
+            || self.confirm_remove_track.is_some()
     }
 }
 
@@ -3769,6 +3775,7 @@ impl Default for AppState {
             timeline_resizing_track: None,
             timeline_track_pre_collapse: std::collections::HashMap::new(),
             playhead_follow: PlayheadFollow::default(),
+            playhead_follow_chosen: false,
             track_header_width: 180.0,
             source_view: ViewerView::default(),
             program_view: ViewerView::default(),

@@ -237,6 +237,10 @@ impl NewTimelinePanel {
         // Sequence markers, over the ruler so their flags take the clicks
         // and drags on them (#909).
         markers::show(ui, ruler_rect, state, pps, scroll_x, &mut cmds);
+        // The ruler's right-click menu: snapping, grid, a marker or In/Out
+        // here, zoom to fit. It was only on the ruler the app no longer
+        // draws (#912).
+        old_timeline.show_ruler_context_menu(state, &mut cmds, &ruler_resp, &ruler_rect);
 
         // Clear snap line each frame
         state.range_snap_line_x = None;
@@ -681,6 +685,19 @@ mod menu_smoke_tests {
             // Closed again before the next one.
             timeline.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
         }
+    }
+
+    /// Controls once drawn only by the timeline the app no longer shows
+    /// (#912): the ripple switch is on the drawn toolbar, and the ruler
+    /// opens its menu on a right-click.
+    #[test]
+    fn the_ripple_switch_and_the_ruler_menu_are_on_the_drawn_timeline() {
+        let mut timeline = Timeline::new();
+        let drawn = timeline.frame(Vec::new());
+        assert!(drawn.iter().any(|(t, _)| t == "RIPPLE"), "the ripple switch is drawn: {drawn:?}");
+        let ruler_label = drawn.iter().find(|(t, _)| t == "0:00").expect("the ruler is drawn").1;
+        let menu = timeline.right_click(ruler_label + egui::vec2(30.0, 0.0));
+        assert!(menu.iter().any(|t| t == "Snap targets"), "the ruler's menu opens: {menu:?}");
     }
 
     #[test]

@@ -383,6 +383,32 @@ pub fn show(
             }
         }
 
+        // Eye (picture and text tracks): the track's output on or off, in
+        // the record-arm's place (#912). It was only drawn by the header
+        // the app no longer shows, so a track could not be hidden.
+        if matches!(track.kind, TrackKind::Video | TrackKind::Text) {
+            let eye_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    track_rect.max.x - btn_size * 4.0 - 16.0,
+                    track_rect.center().y - btn_size / 2.0,
+                ),
+                egui::vec2(btn_size, btn_size),
+            );
+            let eye_resp = ui.allocate_rect(eye_rect, egui::Sense::click());
+            let visible = track.visible;
+            ui.painter().rect_filled(
+                eye_rect,
+                3.0,
+                if eye_resp.hovered() { theme.bg_raised } else { egui::Color32::TRANSPARENT },
+            );
+            let (eye_icon, eye_color) = if visible { (Icon::Eye, theme.text_dim) } else { (Icon::EyeSlash, theme.accent) };
+            eye_icon.image(12.0).tint(eye_color).paint_at(ui, eye_rect.shrink(2.0));
+            styled_tooltip(&eye_resp, theme, if visible { "Hide this track's picture" } else { "Show this track's picture" }, None);
+            if eye_resp.clicked() {
+                cmds.push(AppCommand::SetTrackVisibility { track_index: track_idx, visible: !visible });
+            }
+        }
+
         // Mute button (right side, 16x16)
         let mute_rect = egui::Rect::from_min_size(
             egui::pos2(
