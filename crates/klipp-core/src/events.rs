@@ -2408,6 +2408,9 @@ pub enum AppCommand {
     /// `position..position + dur`.
     SetMarkerDuration { marker_id: MarkerId, duration: Option<Timecode> },
     JumpToMarker { marker_id: MarkerId },
+    /// Move a sequence marker to `position`: a drag of its flag on the
+    /// ruler, let go (#909).
+    MoveMarker { marker_id: MarkerId, position: Timecode },
 
     // Per-clip markers
     AddClipMarker { clip_id: ClipId, time_secs: f64, name: String, color: MarkerColor },

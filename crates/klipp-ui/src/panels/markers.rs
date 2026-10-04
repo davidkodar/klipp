@@ -41,6 +41,15 @@ pub fn marker_matches(label: &str, comment: &str, kind: MarkerKind, query: &str)
 impl MarkersPanel {
     pub fn show(&mut self, ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
+        // A marker asked for by its flag on the ruler, or Edit Marker…:
+        // its label opened for editing, and nothing filtering it out.
+        if let Some(id) = state.edit_marker_request.take() {
+            if let Some(m) = state.sequence().markers.iter().find(|m| m.id == id) {
+                self.editing_label = Some(id);
+                self.label_buf = m.label.clone();
+                self.search_query.clear();
+            }
+        }
         let mut open = state.show_markers_panel;
 
         let response = egui::Window::new("Markers")
