@@ -561,16 +561,23 @@ pub fn show(
 
                     if click_resp.double_clicked() {
                         if let Some(type_id) = effect_type_for_dispatch(entry) {
-                            if let Some(clip_id) = state.selected_clip {
-                                cmds.push(AppCommand::AddAudioEffect {
-                                    clip_id,
-                                    effect_type: type_id,
-                                });
-                                state
-                                    .toast
-                                    .show(format!("\"{}\" added to clip", entry.name));
-                            } else {
+                            // Every selected clip that can take it, as
+                            // one undo step, as the VFX tab does (#842):
+                            // this went onto the one clip last clicked.
+                            let targets = crate::effect_targets::targets(
+                                state.sequence(),
+                                state.selected_clip,
+                                &state.selected_clips,
+                                None,
+                                crate::effect_targets::EffectKind::Sound,
+                            );
+                            if targets.clips.is_empty() {
                                 state.toast.show("Select a clip first".to_string());
+                            } else {
+                                cmds.extend(crate::effect_targets::commands(&targets, |clip_id| {
+                                    vec![AppCommand::AddAudioEffect { clip_id, effect_type: type_id.clone() }]
+                                }));
+                                state.toast.show(crate::effect_targets::said(&entry.name, &targets));
                             }
                         }
                     }
