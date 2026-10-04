@@ -204,6 +204,7 @@ impl NewTimelinePanel {
 
         let ruler_painter = ui.painter().with_clip_rect(ruler_rect);
         ruler::draw_ruler(&ruler_painter, ruler_rect, pps, scroll_x, duration_secs, theme);
+        ruler::draw_render_status(&ruler_painter, ruler_rect, pps, scroll_x, &state.render_status, f64::from(state.fps.rate()), theme);
 
         // Draw range selection visuals (ruler fill + handles + lollipops + labels)
         // Clip handles/lollipops to the full timeline area (ruler + tracks)

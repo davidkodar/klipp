@@ -1564,6 +1564,9 @@ pub struct PlaybackEngine {
     skim_consumer: crate::audio_output::SkimConsumer,
     // Loop playback — cycle between in/out points or whole sequence
     loop_enabled: bool,
+    /// When the render status strip was last worked out (#924): idle,
+    /// it is refreshed once a second so edits show.
+    render_status_at: std::time::Instant,
     // Audio scrubbing: when false, audio is muted while the user drags the
     // playhead. Mirrors `prefs.playback.scrub_audio` from the UI side.
     scrub_audio_enabled: bool,
@@ -2202,6 +2205,7 @@ impl PlaybackEngine {
             use_proxies: true,
             skim_consumer,
             loop_enabled: false,
+            render_status_at: std::time::Instant::now(),
             scrub_audio_enabled: true,
             is_scrubbing: false,
             fadeable_media: FadeableMedia::new(),
@@ -2516,6 +2520,10 @@ impl PlaybackEngine {
                     // frames: one pre-render is a full render (~100 ms at
                     // 4K), and the next step waited for it.
                     self.prerender_cache_frames();
+                    if self.render_status_at.elapsed() >= Duration::from_secs(1) {
+                        self.render_status_at = std::time::Instant::now();
+                        self.update_render_cache_ranges();
+                    }
                 }
             }
 
@@ -3034,6 +3042,9 @@ impl PlaybackEngine {
                     self.render_cache_hot.clear();
                 }
                 debug!("Render cache enabled={enabled}");
+            }
+            AppCommand::ClearRenderCache { from, to } => {
+                self.clear_render_cache_range(from, to);
             }
             AppCommand::CleanOrphanedCaches => {
                 // Handled on UI thread — ignore in engine
@@ -6969,6 +6980,7 @@ impl PlaybackEngine {
         let sequence = Arc::clone(&self.sequence);
         let seq = sequence.read().unwrap_or_else(|e| e.into_inner());
         let mut ranges = Vec::new();
+        let mut status = Vec::new();
 
         for track in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
             for clip in &track.clips {
@@ -6988,12 +7000,42 @@ impl PlaybackEngine {
                 if cached > 0 {
                     ranges.push((clip.id, cached, total));
                 }
+                // The strip over the ruler (#924): frames in memory or on
+                // disk, which the disk cache knows from its file names.
+                let mut frames: Vec<i64> = self.render_cache_hot.frames_for(clip.id, grade_hash).collect();
+                frames.extend(self.render_cache_disk.cached_frames(clip.id, grade_hash));
+                frames.sort_unstable();
+                frames.dedup();
+                status.extend(crate::texture::render_spans(clip.timeline_in.value, clip.timeline_out.value, &frames, ticks_per_frame));
             }
         }
         drop(seq);
 
         let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
         fb.render_cache_ranges = ranges;
+        fb.render_status = status;
+    }
+
+    /// Clear the render cache for every clip under `from..to` (#924):
+    /// the frames in memory and on disk, at every grade and size.
+    fn clear_render_cache_range(&mut self, from: RationalTime, to: RationalTime) {
+        let clips: Vec<klipp_core::ClipId> = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            seq.tracks
+                .iter()
+                .flat_map(|t| t.clips.iter())
+                .filter(|c| c.timeline_in < to && c.timeline_out > from)
+                .map(|c| c.id)
+                .collect()
+        };
+        let mut removed = 0;
+        for clip in clips {
+            self.render_cache_hot.remove_frames(clip, from.value..to.value);
+            removed += self.render_cache_disk.remove_frames(clip, from.value..to.value);
+        }
+        info!("Render cache: cleared {removed} cached frame(s) from {:.2}s to {:.2}s", from.to_secs_f64(), to.to_secs_f64());
+        self.update_render_cache_ranges();
+        (self.repaint_cb)();
     }
 
     fn prefetch_ahead(&mut self) {

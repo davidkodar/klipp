@@ -85,6 +85,9 @@ impl KlippApp {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.swap_pending();
             self.state.render_cache_ranges = fb.render_cache_ranges.clone();
+            if self.state.render_status != fb.render_status {
+                self.state.render_status = fb.render_status.clone();
+            }
             // A frame the GPU stack wrote straight into the viewer's
             // texture: nothing to upload, the viewer samples it.
             self.viewer.gpu_frame_live = fb.gpu_output_live && fb.gpu_output.is_some();

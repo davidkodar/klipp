@@ -84,6 +84,35 @@ fn format_time_label(time_secs: f64, major_interval_secs: f64) -> String {
     }
 }
 
+/// The render status strip along the ruler's foot (#924): where graded
+/// clips are in the render cache and ready to play, and where they still
+/// need rendering. A span to render is drawn over a cached one, so a
+/// moment shows ready only when every graded clip there is.
+pub fn draw_render_status(
+    painter: &Painter,
+    ruler_rect: Rect,
+    pps: f32,
+    scroll_offset_px: f32,
+    spans: &[klipp_engine::texture::RenderSpan],
+    ticks_per_sec: f64,
+    theme: &KlippTheme,
+) {
+    if spans.is_empty() || ticks_per_sec <= 0.0 {
+        return;
+    }
+    let strip = Rect::from_min_max(Pos2::new(ruler_rect.min.x, ruler_rect.max.y - 3.0), ruler_rect.max);
+    let x_of = |ticks: i64| ruler_rect.min.x + (ticks as f64 / ticks_per_sec) as f32 * pps - scroll_offset_px;
+    for cached in [true, false] {
+        let colour = if cached { theme.marker_success } else { theme.marker_error };
+        for span in spans.iter().filter(|s| s.cached == cached) {
+            let (x1, x2) = (x_of(span.from).max(strip.min.x), x_of(span.to).min(strip.max.x));
+            if x2 > x1 {
+                painter.rect_filled(Rect::from_min_max(Pos2::new(x1, strip.min.y), Pos2::new(x2, strip.max.y)), 0.0, colour);
+            }
+        }
+    }
+}
+
 /// Draw the adaptive timeline ruler.
 ///
 /// - `painter`: clipped to `ruler_rect`

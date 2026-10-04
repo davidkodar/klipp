@@ -1010,6 +1010,8 @@ pub enum AppCommand {
     ImportMediaFolder { directory: PathBuf },
 
     // Loop
+    /// Clear the render cache under `from..to`, every clip there (#924).
+    ClearRenderCache { from: Timecode, to: Timecode },
     ToggleLoopPlayback,
     SetLoopPlayback(bool),
 
