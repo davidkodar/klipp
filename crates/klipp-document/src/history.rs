@@ -130,6 +130,19 @@ pub struct MarkerMove {
     pub new_duration: Option<RationalTime>,
 }
 
+/// What a track holds, for [`EditCommand::SetTrackContents`].
+#[derive(Debug, Clone)]
+pub struct TrackContents {
+    pub clips: Vec<Clip>,
+    pub transitions: Vec<klipp_timeline::Transition>,
+}
+
+impl TrackContents {
+    pub fn of(track: &klipp_timeline::Track) -> Self {
+        Self { clips: track.clips.clone(), transitions: track.transitions.clone() }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum EditCommand {
     // === LEGACY (Free tracks only — existing behaviour unchanged) ===
@@ -179,6 +192,11 @@ pub enum EditCommand {
     /// The sequence's markers, the whole list either side: a marker
     /// added, changed or removed, as one undo step.
     SetMarkers { old: Vec<klipp_timeline::Marker>, new: Vec<klipp_timeline::Marker> },
+    /// One track's clips and transitions, whole either side: an edit that
+    /// lays several clips over what was there (a paste of a selection, a
+    /// paste insert that cut every track), undone exactly, the clips it
+    /// covered or cut given back (#845).
+    SetTrackContents { description: &'static str, track_index: usize, old: Box<TrackContents>, new: Box<TrackContents> },
     /// The move over the whole sequence; see `klipp_timeline::Camera`.
     SetSequenceCamera { old: Box<klipp_timeline::Camera>, new: Box<klipp_timeline::Camera> },
     /// How far back a clip sits for the camera; see `Clip::depth`.
@@ -741,6 +759,7 @@ impl EditCommand {
             EditCommand::SetClipRole { .. } => "Set Clip Role",
             EditCommand::SetSequenceFormat { .. } => "Sequence Format",
             EditCommand::SetMarkers { .. } => "Markers",
+            EditCommand::SetTrackContents { description, .. } => description,
             EditCommand::SetSequenceCamera { .. } => "Camera",
             EditCommand::SetClipDepth { .. } => "Depth",
             EditCommand::SetGradeGroups { .. } => "Grade Groups",

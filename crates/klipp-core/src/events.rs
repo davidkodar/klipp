@@ -1240,6 +1240,9 @@ pub enum AppCommand {
     CutClip { clip_id: ClipId },
     CopyClip { clip_id: ClipId },
     PasteClip,
+    /// Paste at the playhead as an insert: every unlocked track is cut
+    /// there and what follows moves along by the paste's length (#845).
+    PasteClipInsert,
     DuplicateClip { clip_id: ClipId },
     /// Copy attributes from a clip for later paste-attributes.
     CopyAttributes { clip_id: ClipId },

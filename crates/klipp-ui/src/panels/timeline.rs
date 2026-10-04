@@ -8354,6 +8354,24 @@ impl TimelinePanel {
                     cmds.push(AppCommand::RemoveClip { clip_id });
                     ui.close_menu();
                 }
+                // Cut, Copy and Paste beside Duplicate (#845): of the whole
+                // selection when this clip is part of it.
+                if ui.button("Cut  Ctrl+X").clicked() {
+                    cmds.push(AppCommand::CutClip { clip_id });
+                    ui.close_menu();
+                }
+                if ui.button("Copy  Ctrl+C").clicked() {
+                    cmds.push(AppCommand::CopyClip { clip_id });
+                    ui.close_menu();
+                }
+                if ui.add_enabled(state.clipboard.is_some(), egui::Button::new("Paste at Playhead  Ctrl+V")).clicked() {
+                    cmds.push(AppCommand::PasteClip);
+                    ui.close_menu();
+                }
+                if ui.add_enabled(state.clipboard.is_some(), egui::Button::new("Paste Insert at Playhead")).on_hover_text("Cut every unlocked track at the playhead and move what follows along by the paste's length").clicked() {
+                    cmds.push(AppCommand::PasteClipInsert);
+                    ui.close_menu();
+                }
                 if ui.button("Duplicate Clip  Ctrl+D").clicked() {
                     cmds.push(AppCommand::DuplicateClip { clip_id });
                     ui.close_menu();

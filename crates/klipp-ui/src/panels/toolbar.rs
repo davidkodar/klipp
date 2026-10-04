@@ -413,6 +413,10 @@ impl ToolbarPanel {
                 cmds.push(AppCommand::PasteClip);
                 ui.close_menu();
             }
+            if ui.add_enabled(state.clipboard.is_some(), egui::Button::new("Paste Insert")).on_hover_text("Cut every unlocked track at the playhead and move what follows along by the paste's length").clicked() {
+                cmds.push(AppCommand::PasteClipInsert);
+                ui.close_menu();
+            }
             if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Copy Attributes").shortcut_text(kb.display_for("copy_attributes"))).clicked() {
                 if let Some(cid) = state.selected_clip { cmds.push(AppCommand::CopyAttributes { clip_id: cid }); }
                 ui.close_menu();

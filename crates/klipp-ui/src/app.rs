@@ -9,7 +9,7 @@ use crate::panels::timeline::TimelinePanel;
 use crate::panels::toolbar::ToolbarPanel;
 use crate::panels::transport::TransportBar;
 use crate::panels::viewer::ViewerPanel;
-use crate::state::{AppState, ClipboardContent, UnsavedAction};
+use crate::state::{AppState, UnsavedAction};
 use crate::theme::{self, KlippTheme};
 use crate::widgets::resizer;
 use crossbeam_channel::{Receiver, Sender};
@@ -7053,8 +7053,28 @@ impl KlippApp {
         self.state.selected_clips = ids;
     }
 
-    fn clipboard_of(&self, clip_id: klipp_core::ClipId) -> Option<ClipboardContent> {
-        clipboard_of(self.state.sequence(), &self.state.media_pool, clip_id)
+    /// Lay `cb` into the open sequence at `at`, the new clips selected,
+    /// every track it changed one undo step under `label` (#845).
+    fn paste_clipboard(&mut self, cb: &crate::clip_clipboard::ClipboardContent, at: klipp_core::Timecode, mode: crate::clip_clipboard::PasteMode, label: &'static str) {
+        let before = self.state.sequence().clone();
+        let pasted = crate::clip_clipboard::paste(&before, cb, at, mode);
+        if pasted.no_room {
+            self.state.toast.show(format!("{label}: could not open room at the playhead (is the track locked?); nothing was pasted"));
+            return;
+        }
+        if pasted.ids.is_empty() {
+            self.state.toast.show(format!("{label}: no track of the clips' kind to put them on"));
+            return;
+        }
+        let edits = crate::clip_clipboard::track_edits(&before, &pasted.sequence, &pasted.touched, label);
+        self.apply_edits_as_one(&edits, label);
+        self.state.selected_clip = pasted.ids.first().copied();
+        self.state.selected_clips = if pasted.ids.len() > 1 { pasted.ids.clone() } else { Vec::new() };
+        match (pasted.ids.len(), pasted.skipped) {
+            (1, 0) => {}
+            (n, 0) => self.state.toast.show(format!("{label}: {n} clips")),
+            (n, k) => self.state.toast.show(format!("{label}: {n} clips; {k} had no track of their kind here")),
+        }
     }
 
     fn remove_clip_impl(&mut self, clip_id: klipp_core::ClipId) {
@@ -8435,17 +8455,33 @@ impl KlippApp {
         match cmd {
                 // Phase 4: Cut/Copy/Paste
                 AppCommand::CutClip { clip_id } => {
-                    // The clip and its linked partner onto the clipboard,
-                    // then removed as Delete removes them: both, in sync,
-                    // one undo step. Cut took the selected half alone and
-                    // left the sound it was linked to (#458). A remove that
-                    // is refused (a locked track, a partner that cannot go)
-                    // leaves the clipboard as it was: a Cut that cut nothing
-                    // was a silent Copy over what it held.
-                    if let Some(cb) = self.clipboard_of(*clip_id) {
-                        self.remove_clip_impl(*clip_id);
-                        if self.state.sequence().find_clip(*clip_id).is_none() {
-                            self.state.clipboard = Some(cb);
+                    // The selection when the clip is part of one, each
+                    // clip with its linked partner, onto the clipboard,
+                    // then removed as Delete removes them, one undo step
+                    // (#458, #845). What a remove refused (a locked track)
+                    // stays, and stays off the clipboard: a Cut that cut
+                    // nothing was a silent Copy over what it held.
+                    let ids = crate::clip_clipboard::selection_for(*clip_id, self.state.selected_clip, &self.state.selected_clips);
+                    if let Some(cb) = crate::clip_clipboard::copy(self.state.sequence(), &ids) {
+                        let batching = self.state.active_history_mut().is_batching();
+                        if !batching {
+                            self.state.active_history_mut().begin_batch();
+                        }
+                        for c in &cb.clips {
+                            if self.state.sequence().find_clip(c.clip.id).is_some() {
+                                self.remove_clip_impl(c.clip.id);
+                            }
+                        }
+                        if !batching {
+                            self.state.active_history_mut().end_batch_as("Cut");
+                        }
+                        let mut cut = cb;
+                        cut.clips.retain(|c| self.state.sequence().find_clip(c.clip.id).is_none());
+                        if !cut.clips.is_empty() {
+                            if cut.clips.len() > 1 {
+                                self.state.toast.show(format!("Cut {} clips", cut.clips.len()));
+                            }
+                            self.state.clipboard = Some(cut);
                         }
                     }
                     true
@@ -8459,43 +8495,26 @@ impl KlippApp {
                     if attributes.is_some() {
                         self.state.attributes_clipboard = attributes;
                     }
-                    if let Some(cb) = self.clipboard_of(cid) {
+                    // The whole selection when the clip is part of one (#845).
+                    let ids = crate::clip_clipboard::selection_for(cid, self.state.selected_clip, &self.state.selected_clips);
+                    if let Some(cb) = crate::clip_clipboard::copy(self.state.sequence(), &ids) {
+                        if cb.clips.len() > 1 {
+                            self.state.toast.show(format!("Copied {} clips", cb.clips.len()));
+                        }
                         self.state.clipboard = Some(cb);
                     }
                     true
                 }
                 AppCommand::PasteClip => {
                     if let Some(cb) = self.state.clipboard.clone() {
-                        // At the playhead, each clip on its own track and at
-                        // its own offset from the first, a linked pair linked
-                        // again, as one undo step (#458).
-                        let batching = self.state.active_history_mut().is_batching();
-                        if !batching {
-                            self.state.active_history_mut().begin_batch();
-                        }
-                        let mut selected = None;
-                        for (mut new_clip, track_index) in pasted_clips(&cb, self.state.playhead) {
-                            let seq_idx = self.state.active_sequence_idx;
-                            // A grade group is the sequence's: in another
-                            // sequence the clip is in none (#237).
-                            if new_clip.grade_group.is_some_and(|g| self.state.sequences[seq_idx].grade_group(g).is_none()) {
-                                new_clip.grade_group = None;
-                            }
-                            if let Some(track) = self.state.sequences[seq_idx].tracks.get_mut(track_index) {
-                                Self::overwrite_insert_clip_on_track(track, new_clip.clone());
-                                selected.get_or_insert(new_clip.id);
-                                self.state.push_history(EditCommand::LegacyPasteClip { clip: new_clip, track_index });
-                            }
-                        }
-                        if !batching {
-                            self.state.active_history_mut().end_batch();
-                        }
-                        if selected.is_some() {
-                            self.state.selected_clip = selected;
-                            self.state.dirty = true;
-                        }
+                        self.paste_clipboard(&cb, self.state.playhead, crate::clip_clipboard::PasteMode::Overwrite, "Paste");
                     }
-                    self.sync_sequence_to_engine();
+                    true
+                }
+                AppCommand::PasteClipInsert => {
+                    if let Some(cb) = self.state.clipboard.clone() {
+                        self.paste_clipboard(&cb, self.state.playhead, crate::clip_clipboard::PasteMode::Insert, "Paste Insert");
+                    }
                     true
                 }
                 // Ctrl+D — Duplicate selected clip (place immediately after original)
@@ -8540,6 +8559,17 @@ impl KlippApp {
                 }
                 AppCommand::DuplicateClip { clip_id } => {
                     let cid = *clip_id;
+                    // Several clips selected: all of them, with their
+                    // partners and transitions, after the last of them, one
+                    // undo step (#845). One clip keeps its own path below.
+                    let ids = crate::clip_clipboard::selection_for(cid, self.state.selected_clip, &self.state.selected_clips);
+                    if ids.len() > 1 {
+                        if let Some(cb) = crate::clip_clipboard::copy(self.state.sequence(), &ids) {
+                            let after = cb.clips.iter().map(|c| c.clip.timeline_out).max().unwrap_or(self.state.playhead);
+                            self.paste_clipboard(&cb, after, crate::clip_clipboard::PasteMode::Overwrite, "Duplicate");
+                        }
+                        return true;
+                    }
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
                     let found = seq.tracks.iter().enumerate().find_map(|(ti, t)| {
                         t.find_clip(cid).map(|c| (ti, c.clone()))
@@ -25176,7 +25206,7 @@ impl KlippApp {
 
     /// Overwrite-insert a clip onto a track at a given position.
     /// Trims or removes any overlapping clips in the range [timeline_in, timeline_out].
-    fn overwrite_insert_clip_on_track(
+    pub(crate) fn overwrite_insert_clip_on_track(
         track: &mut klipp_timeline::Track,
         new_clip: klipp_timeline::Clip,
     ) {
@@ -26224,6 +26254,9 @@ impl KlippApp {
             //
             // Same shape as Ctrl+C: distinct rebindable actions sharing
             // the Ctrl+V default; panel context disambiguates.
+            if kb.is_action_pressed("paste_insert", i) {
+                cmds.push(AppCommand::PasteClipInsert);
+            }
             let paste_clip_pressed = kb.is_action_pressed("paste_clip", i);
             let paste_color_pressed = kb.is_action_pressed("paste_color_nodes", i);
             let color_clipboard_ready = self.state.grade_node_clipboard.as_ref()
@@ -42982,61 +43015,8 @@ mod skim_decode_height_tests {
     }
 }
 
-/// What Cut and Copy put on the clipboard: the clip and its linked
-/// partner, each with its file and its track, in timeline order (#458).
-fn clipboard_of(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, clip_id: klipp_core::ClipId) -> Option<ClipboardContent> {
-    let entry = |id: klipp_core::ClipId| {
-        let (ti, _) = seq.find_clip(id)?;
-        let clip = seq.tracks[ti].find_clip(id)?.clone();
-        let media = clip.media_id().and_then(|mid| pool.get(&mid)).cloned()?;
-        Some((clip, media, ti))
-    };
-    let first = entry(clip_id)?;
-    let partner = first.0.linked_clip_id.and_then(entry);
-    let mut clips: Vec<_> = std::iter::once(first).chain(partner).collect();
-    clips.sort_by_key(|(c, _, ti)| (c.timeline_in, *ti));
-    Some(ClipboardContent { clips })
-}
-
-/// The clips a paste at `at` makes from `cb`, each with its track: new
-/// ids, each at its own offset from the first, a linked pair linked to
-/// each other again, and what belongs to the original alone left behind.
-fn pasted_clips(cb: &ClipboardContent, at: klipp_core::Timecode) -> Vec<(klipp_timeline::Clip, usize)> {
-    let first = cb.clips.iter().map(|(c, _, _)| c.timeline_in).min();
-    let ids: std::collections::HashMap<klipp_core::ClipId, klipp_core::ClipId> = cb.clips.iter().map(|(c, _, _)| (c.id, klipp_core::ClipId::new())).collect();
-    cb.clips
-        .iter()
-        .map(|(clip, _, ti)| {
-            let timeline_in = at + first.map_or(klipp_core::Timecode::zero(), |f| clip.timeline_in - f);
-            let pasted = klipp_timeline::Clip {
-                id: ids[&clip.id],
-                timeline_in,
-                timeline_out: timeline_in + clip.duration(),
-                linked_clip_id: clip.linked_clip_id.and_then(|l| ids.get(&l).copied()),
-                linked_title_asset_id: None,
-                group_id: None,
-                magnetic_anchor: None,
-                transform_link: None,
-                deflicker_data: None,
-                deflicker_gains: None,
-                stabilization_data: None,
-                smoothed_trajectory: None,
-                track_points: Vec::new(),
-                // The keys are in file time: a pasted copy keeps the track,
-                // and a pinned copy pasted with its host follows the copy.
-                surfaces: clip.surfaces.clone(),
-                surface_pin: clip.surface_pin.map(|p| klipp_timeline::SurfacePin { host: ids.get(&p.host).copied().unwrap_or(p.host), ..p }),
-                precomp: None,
-                ..clip.clone()
-            };
-            (pasted, *ti)
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod linked_clipboard_tests {
-    use super::*;
 
     fn t(s: f64) -> klipp_core::Timecode {
         klipp_core::Timecode::from_secs_f64(s, 25)
@@ -43062,20 +43042,21 @@ mod linked_clipboard_tests {
         at.clips = vec![a];
         seq.tracks = vec![vt, at];
 
-        let cb = clipboard_of(&seq, &pool, vid).expect("on the clipboard");
-        assert_eq!(cb.clips.iter().map(|(c, _, ti)| (c.id, *ti)).collect::<Vec<_>>(), vec![(aid, 1), (vid, 0)], "both, each from its own track, in time order");
+        let cb = crate::clip_clipboard::copy(&seq, &[vid]).expect("on the clipboard");
+        assert_eq!(cb.clips.iter().map(|c| (c.clip.id, c.track)).collect::<Vec<_>>(), vec![(aid, 1), (vid, 0)], "both, each from its own track, in time order");
 
-        let pasted = pasted_clips(&cb, t(10.0));
-        let (pa, ta) = &pasted[0];
-        let (pv, tv) = &pasted[1];
-        assert_eq!((*ta, *tv), (1, 0));
+        let pasted = crate::clip_clipboard::paste(&seq, &cb, t(10.0), crate::clip_clipboard::PasteMode::Overwrite);
+        let find = |id: klipp_core::ClipId| pasted.sequence.tracks.iter().enumerate().find_map(|(ti, tr)| tr.clips.iter().find(|c| c.id == id).map(|c| (c.clone(), ti)));
+        let (pa, ta) = find(pasted.ids[0]).unwrap();
+        let (pv, tv) = find(pasted.ids[1]).unwrap();
+        assert_eq!((ta, tv), (1, 0));
         assert_eq!((pa.timeline_in, pv.timeline_in), (t(10.0), t(10.4)), "the J-cut's offset kept");
         assert_eq!((pa.linked_clip_id, pv.linked_clip_id), (Some(pv.id), Some(pa.id)), "linked to each other");
         assert!(pa.id != aid && pv.id != vid);
         // A clip with no partner comes alone.
         let mut lone = seq.clone();
         lone.tracks[0].clips[0].linked_clip_id = None;
-        assert_eq!(clipboard_of(&lone, &pool, vid).unwrap().clips.len(), 1);
+        assert_eq!(crate::clip_clipboard::copy(&lone, &[vid]).unwrap().clips.len(), 1);
     }
 }
 
