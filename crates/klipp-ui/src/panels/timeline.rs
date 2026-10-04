@@ -5438,17 +5438,7 @@ impl TimelinePanel {
             }
             hdr_resp.context_menu(|ui| {
                 ui.set_min_width(180.0);
-                for (label, range) in [
-                    ("Select All Clips on Track", klipp_core::SelectRange::All),
-                    ("Select Forward on Track", klipp_core::SelectRange::Forward),
-                    ("Select Backward on Track", klipp_core::SelectRange::Backward),
-                ] {
-                    let hint = if range == klipp_core::SelectRange::All { "Ctrl-click" } else { "" };
-                    if ui.add(egui::Button::new(label).shortcut_text(hint)).clicked() {
-                        cmds.push(AppCommand::SelectClipsIn { track: Some(track_idx), range });
-                        ui.close_menu();
-                    }
-                }
+                track_select_items(ui, track_idx, cmds);
                 ui.separator();
                 ui.menu_button("Add Track Above", |ui| {
                     for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio),
@@ -5492,59 +5482,9 @@ impl TimelinePanel {
                     self.renaming_track = Some((track_idx, track_name.to_string()));
                     ui.close_menu();
                 }
-                // Per-track waveform amplitude zoom reset (#50). Only shown
-                // for audio tracks where the zoom actually applies.
-                if state.sequence().tracks[track_idx].kind == TrackKind::Audio {
-                    let has_zoom = state.waveform_zoom
-                        .get(&track_id)
-                        .copied()
-                        .map(|v| (v - 1.0).abs() > 1e-4)
-                        .unwrap_or(false);
-                    let resp = ui.add_enabled(
-                        has_zoom,
-                        egui::Button::new("Reset Waveform Zoom"),
-                    );
-                    if resp.clicked() {
-                        cmds.push(AppCommand::ResetWaveformZoom { track_id });
-                        ui.close_menu();
-                    }
-                }
+                track_waveform_zoom_item(ui, state, track_idx, cmds);
                 ui.separator();
-                // The track's own effects, and its attributes to copy onto
-                // other tracks (#846).
-                track_effects_menu(ui, &state.sequence().tracks[track_idx], cmds);
-                if ui.button("Copy Track Attributes").on_hover_text("Keep this track's levels and its own effects, to paste onto other tracks").clicked() {
-                    cmds.push(AppCommand::CopyTrackAttributes { track_id });
-                    ui.close_menu();
-                }
-                let copied = state.copied_track_settings.as_ref().map(|(name, _)| name.clone());
-                ui.add_enabled_ui(copied.is_some(), |ui| {
-                    let label = match &copied {
-                        Some(name) => format!("Paste Track Attributes from {name}"),
-                        None => "Paste Track Attributes".to_string(),
-                    };
-                    ui.menu_button(label, |ui| {
-                        let kind = state.sequence().tracks[track_idx].kind;
-                        let same_kind: Vec<_> = state.sequence().tracks.iter().filter(|t| t.kind == kind).map(|t| t.id).collect();
-                        for (what, levels, picture, sound) in [
-                            ("All", true, true, true),
-                            ("Levels (volume, pan, opacity)", true, false, false),
-                            ("Picture Effects and Grade", false, true, false),
-                            ("Audio Effects", false, false, true),
-                        ] {
-                            if ui.button(what).clicked() {
-                                cmds.push(AppCommand::PasteTrackAttributes { track_ids: vec![track_id], levels, picture, sound });
-                                ui.close_menu();
-                            }
-                        }
-                        ui.separator();
-                        let plural = match kind { TrackKind::Video => "Video", TrackKind::Audio => "Audio", TrackKind::Text => "Text", TrackKind::Subtitle => "Subtitle" };
-                        if ui.button(format!("All to Every {plural} Track")).on_hover_text("One undo step for all of them").clicked() {
-                            cmds.push(AppCommand::PasteTrackAttributes { track_ids: same_kind, levels: true, picture: true, sound: true });
-                            ui.close_menu();
-                        }
-                    });
-                });
+                track_attribute_items(ui, state, track_idx, cmds);
                 ui.separator();
                 let has_clips = !state.sequence().tracks[track_idx].clips.is_empty();
                 let remove_resp = ui.add_enabled(!has_clips, egui::Button::new("Remove Track"));
@@ -18720,6 +18660,79 @@ const TRACK_PICTURE_EFFECTS: &[(&str, &str)] = &[
     ("denoise", "Denoise"),
     ("old_film", "Old Film"),
 ];
+
+/// The Select items of a track header's menu (#844).
+pub(crate) fn track_select_items(ui: &mut egui::Ui, track_idx: usize, cmds: &mut Vec<AppCommand>) {
+    for (label, range) in [
+        ("Select All Clips on Track", klipp_core::SelectRange::All),
+        ("Select Forward on Track", klipp_core::SelectRange::Forward),
+        ("Select Backward on Track", klipp_core::SelectRange::Backward),
+    ] {
+        let hint = if range == klipp_core::SelectRange::All { "Ctrl-click" } else { "" };
+        if ui.add(egui::Button::new(label).shortcut_text(hint)).clicked() {
+            cmds.push(AppCommand::SelectClipsIn { track: Some(track_idx), range });
+            ui.close_menu();
+        }
+    }
+}
+
+/// Per-track waveform amplitude zoom reset (#50), in a track header's
+/// menu. Only shown for audio tracks, where the zoom applies.
+pub(crate) fn track_waveform_zoom_item(ui: &mut egui::Ui, state: &AppState, track_idx: usize, cmds: &mut Vec<AppCommand>) {
+    let track = &state.sequence().tracks[track_idx];
+    if track.kind != TrackKind::Audio {
+        return;
+    }
+    let track_id = track.id;
+    let has_zoom = state.waveform_zoom
+        .get(&track_id)
+        .copied()
+        .map(|v| (v - 1.0).abs() > 1e-4)
+        .unwrap_or(false);
+    if ui.add_enabled(has_zoom, egui::Button::new("Reset Waveform Zoom")).clicked() {
+        cmds.push(AppCommand::ResetWaveformZoom { track_id });
+        ui.close_menu();
+    }
+}
+
+/// The track's own effects, and its attributes to copy onto other
+/// tracks (#846), in a track header's menu.
+pub(crate) fn track_attribute_items(ui: &mut egui::Ui, state: &AppState, track_idx: usize, cmds: &mut Vec<AppCommand>) {
+    let track_id = state.sequence().tracks[track_idx].id;
+    track_effects_menu(ui, &state.sequence().tracks[track_idx], cmds);
+    if ui.button("Copy Track Attributes").on_hover_text("Keep this track's levels and its own effects, to paste onto other tracks").clicked() {
+        cmds.push(AppCommand::CopyTrackAttributes { track_id });
+        ui.close_menu();
+    }
+    let copied = state.copied_track_settings.as_ref().map(|(name, _)| name.clone());
+    ui.add_enabled_ui(copied.is_some(), |ui| {
+        let label = match &copied {
+            Some(name) => format!("Paste Track Attributes from {name}"),
+            None => "Paste Track Attributes".to_string(),
+        };
+        ui.menu_button(label, |ui| {
+            let kind = state.sequence().tracks[track_idx].kind;
+            let same_kind: Vec<_> = state.sequence().tracks.iter().filter(|t| t.kind == kind).map(|t| t.id).collect();
+            for (what, levels, picture, sound) in [
+                ("All", true, true, true),
+                ("Levels (volume, pan, opacity)", true, false, false),
+                ("Picture Effects and Grade", false, true, false),
+                ("Audio Effects", false, false, true),
+            ] {
+                if ui.button(what).clicked() {
+                    cmds.push(AppCommand::PasteTrackAttributes { track_ids: vec![track_id], levels, picture, sound });
+                    ui.close_menu();
+                }
+            }
+            ui.separator();
+            let plural = match kind { TrackKind::Video => "Video", TrackKind::Audio => "Audio", TrackKind::Text => "Text", TrackKind::Subtitle => "Subtitle" };
+            if ui.button(format!("All to Every {plural} Track")).on_hover_text("One undo step for all of them").clicked() {
+                cmds.push(AppCommand::PasteTrackAttributes { track_ids: same_kind, levels: true, picture: true, sound: true });
+                ui.close_menu();
+            }
+        });
+    });
+}
 
 /// A track's own effects in its header's menu (#846): each one with its
 /// switch and a way to take it off, the grade when it has one, and what
