@@ -483,6 +483,25 @@ impl KlippApp {
             if kb.is_action_pressed("select_edit_point", i) {
                 cmds.push(if self.state.selected_edits.is_empty() { AppCommand::SelectNearestEditPoint } else { AppCommand::CycleEditSide });
             }
+            // Selected clips moved from the keyboard (#917).
+            if kb.is_action_pressed("nudge_clips_back", i) {
+                cmds.push(AppCommand::NudgeClips { frames: -1 });
+            }
+            if kb.is_action_pressed("nudge_clips_forward", i) {
+                cmds.push(AppCommand::NudgeClips { frames: 1 });
+            }
+            if kb.is_action_pressed("nudge_clips_back_many", i) {
+                cmds.push(AppCommand::NudgeClips { frames: -10 });
+            }
+            if kb.is_action_pressed("nudge_clips_forward_many", i) {
+                cmds.push(AppCommand::NudgeClips { frames: 10 });
+            }
+            if kb.is_action_pressed("move_clips_up_a_track", i) {
+                cmds.push(AppCommand::MoveClipsToTrack { up: true });
+            }
+            if kb.is_action_pressed("move_clips_down_a_track", i) {
+                cmds.push(AppCommand::MoveClipsToTrack { up: false });
+            }
             if kb.is_action_pressed("extend_edit", i) {
                 cmds.push(AppCommand::ExtendEditPoints);
             }
@@ -1256,10 +1275,14 @@ impl KlippApp {
     /// it, digits and : extend it, Backspace takes one off, Enter trims by
     /// it and Escape drops it. True while it holds the keys.
     fn trim_entry_keys(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) -> bool {
-        if self.state.selected_edits.is_empty() {
+        // For the selected edit points, else the selected clips: +12
+        // moves them twelve frames later (#917).
+        let has_clips = self.state.selected_clip.is_some() || !self.state.selected_clips.is_empty();
+        if self.state.selected_edits.is_empty() && !has_clips {
             self.state.trim_entry = None;
             return false;
         }
+        let edits = !self.state.selected_edits.is_empty();
         let fps = self.state.sequence().fps.as_f64();
         let entry = &mut self.state.trim_entry;
         let mut held = entry.is_some();
@@ -1288,7 +1311,7 @@ impl KlippApp {
                     }
                     egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
                         if let Some(frames) = entry.take().and_then(|typed| crate::edit_point::parse_amount(&typed, fps)) {
-                            cmds.push(AppCommand::TrimEditPoints { frames });
+                            cmds.push(if edits { AppCommand::TrimEditPoints { frames } } else { AppCommand::NudgeClips { frames } });
                         }
                     }
                     egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } if entry.take().is_some() => {

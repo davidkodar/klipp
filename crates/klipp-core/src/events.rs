@@ -2444,6 +2444,12 @@ pub enum AppCommand {
     TrimEditPoints { frames: i64 },
     /// Move the selected edit points to the playhead (extend edit).
     ExtendEditPoints,
+    /// Move the selected clips by `frames` (later when positive), as one
+    /// undo step (#917).
+    NudgeClips { frames: i64 },
+    /// Move the selected clips to the next track of their kind above (or
+    /// below), at the same time (#917).
+    MoveClipsToTrack { up: bool },
 
     // Per-clip markers
     AddClipMarker { clip_id: ClipId, time_secs: f64, name: String, color: MarkerColor },

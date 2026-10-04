@@ -509,7 +509,8 @@ impl NewTimelinePanel {
         markers::draw_lines(ui, tracks_rect, ruler_rect.left(), state, pps, scroll_x);
         // A trim amount being typed for the selected edit points (#913).
         if let Some(typed) = &state.trim_entry {
-            let text = format!("Trim  {typed}   frames, or s:ff \u{2014} Enter to trim, Esc to cancel");
+            let what = if state.selected_edits.is_empty() { "Move" } else { "Trim" };
+            let text = format!("{what}  {typed}   frames, or s:ff \u{2014} Enter to {}, Esc to cancel", what.to_lowercase());
             let font = egui::FontId::monospace(12.0);
             let galley = ui.painter().layout_no_wrap(text, font, theme.text_primary);
             let at = egui::pos2(tracks_rect.left() + 12.0, tracks_rect.bottom() - galley.size().y - 14.0);
