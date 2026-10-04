@@ -474,7 +474,7 @@ _record() {
         *) _result=fail ;;
     esac
     _history="$_common/klipp-pre-push.history"
-    printf '%s %s %s %s %s %s %s\n' "$_started" "$(date +%s)" "$_result" "$_step" "${_branch:-?}" "$ROOT" "${_log:--}" >>"$_history" 2>/dev/null || return 0
+    printf '%s %s %s %s %s %s %s\n' "$_started" "$(date +%s)" "$_result" "$_step" "${_branch:-?}" "${_pushed_from:-$ROOT}" "${_log:--}" >>"$_history" 2>/dev/null || return 0
     if [ "$(wc -l <"$_history" 2>/dev/null || echo 0)" -gt 400 ]; then
         tail -n 200 "$_history" >"$_history.new" 2>/dev/null && mv -f "$_history.new" "$_history" 2>/dev/null || true
     fi
@@ -488,6 +488,55 @@ _unmerge() {
     _merged_from=
 }
 trap '_s=$?; _unmerge; _record "$_s"; _leave_queue; exit "$_s"' EXIT
+
+# Where the gate builds (#871). It built in the worktree being pushed,
+# and every worktree started cold: a copy of the main checkout's build
+# with all its files touched (below), so all ~40 crates recompiled even
+# for a one-line change, and each worktree grew its own ~90 GB build. Now
+# it builds in one checkout of its own beside the main one, used only
+# under the gate lock: each run checks the pushed commit out there, git
+# rewrites only the files that differ, and cargo rebuilds only their
+# crates and what depends on them. That is cargo's own model, one tree
+# and one build folder, so nothing is borrowed from another tree after
+# its first build, which starts from the main checkout's as a worktree's
+# did. The pushing worktree is left as it is. When the checkout cannot be
+# made or used, or KLIPP_ALLOW_DIRTY asks for the files on disk to be
+# tested, or a CARGO_TARGET_DIR is set, the gate builds in place as
+# before, and says so. KLIPP_GATE_IN_PLACE=1 asks for that too, and
+# KLIPP_GATE_DIR moves the checkout.
+_pushed_from=$ROOT
+if [ -n "$_queue" ] && [ -z "${CARGO_TARGET_DIR:-}" ] && [ "${KLIPP_GATE_IN_PLACE:-}" != "1" ] && [ "$KLIPP_ALLOW_DIRTY" != "1" ]; then
+    _step=checkout
+    _main=$(dirname "$_common")
+    _gate_dir=${KLIPP_GATE_DIR:-$(dirname "$_main")/$(basename "$_main")-gate}
+    _pushed=$(git rev-parse HEAD)
+    # A hook may be run with these set for the pushing tree; the gate
+    # checkout is another tree.
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+    if [ ! -e "$_gate_dir/.git" ]; then
+        git worktree prune >/dev/null 2>&1 || true
+        if git worktree add --quiet --detach "$_gate_dir" "$_pushed" >/dev/null 2>&1; then
+            printf '  pre-push: made the gate checkout %s; its first build is a full one\n' "$_gate_dir"
+        fi
+    fi
+    if [ -e "$_gate_dir/.git" ] && (
+        cd "$_gate_dir" &&
+        { git merge --abort >/dev/null 2>&1 || true; } &&
+        # Files whose times moved but not their content (the first build's
+        # touch, below) are matched by content here; otherwise the reset
+        # rewrites every one of them and every run rebuilds everything.
+        { git update-index -q --refresh >/dev/null 2>&1 || true; } &&
+        git reset --quiet --hard &&
+        git checkout --quiet --detach --force "$_pushed" &&
+        git clean -fdq
+    ) >/dev/null 2>&1; then
+        ROOT=$_gate_dir
+        cd "$ROOT"
+        printf '  pre-push: building %s in the gate checkout %s; only what changed rebuilds\n' "$(git rev-parse --short HEAD)" "$ROOT"
+    else
+        printf '  pre-push: the gate checkout %s could not be used; building here, as before\n' "$_gate_dir" >&2
+    fi
+fi
 
 # What the merge will be, not the branch alone (#866). GitHub squashes a
 # branch onto main as main is when it merges, so a branch based on an older
@@ -548,7 +597,8 @@ fi
 # every tracked file here makes all of this tree's own crates rebuild
 # from its own sources; only the dependencies come from the copy. A
 # deliberate CARGO_TARGET_DIR still wins, and without reflink support
-# the target starts empty as before.
+# the target starts empty as before. The gate checkout's first build
+# (above) starts this way too, once.
 if [ -z "${CARGO_TARGET_DIR:-}" ] && [ -n "$_queue" ]; then
     _main=$(dirname "$_common")
     if [ "$_main" != "$ROOT" ] && [ ! -d "$ROOT/target/debug" ] && [ -d "$_main/target/debug" ]; then

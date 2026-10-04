@@ -321,9 +321,9 @@ class ScratchGateTests(unittest.TestCase):
 
 
 
-class MergeWithMainTests(unittest.TestCase):
-    """The gate tests a branch merged with current main, and refuses one that
-    cannot merge before building anything (#866). Real git, a fake cargo."""
+class RealGitGate(unittest.TestCase):
+    """A clone of a scratch origin, on a branch, with the gate copied in:
+    real git, a fake cargo."""
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2] / "target")
@@ -376,6 +376,11 @@ class MergeWithMainTests(unittest.TestCase):
     def built(self):
         path = Path(self.temp.name) / "built"
         return path.read_text().splitlines() if path.exists() else []
+
+
+class MergeWithMainTests(RealGitGate):
+    """The gate tests a branch merged with current main, and refuses one that
+    cannot merge before building anything (#866)."""
 
     def test_a_branch_behind_main_is_tested_merged_with_it_and_put_back(self):
         (self.root / "shared.txt").write_text("one\nbranch\n")
@@ -430,6 +435,58 @@ class MergeWithMainTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("could not say whether", result.stderr)
         self.assertEqual(self.built(), ["one,branch,|branch"], "tested as it is")
+
+
+class GateCheckoutTests(RealGitGate):
+    """The gate builds the pushed commit in a checkout of its own, so only
+    what changed rebuilds, and leaves the pushing worktree alone (#871)."""
+
+    def setUp(self):
+        super().setUp()
+        self.gate_dir = Path(self.temp.name) / "work-gate"
+        # cargo records where it builds and what the tree holds there.
+        self.script(self.bin / "cargo", 'if [ "$1" = clippy ]; then printf "%s|%s\\n" "$(pwd)" "$(tr "\\n" , < shared.txt)" >> "$TEST_ROOT/where"; fi\nexit 0')
+        (self.root / "other.txt").write_text("untouched\n")
+        self.commit(self.root, "another file")
+
+    def where(self):
+        path = Path(self.temp.name) / "where"
+        return path.read_text().splitlines() if path.exists() else []
+
+    def test_the_push_is_built_in_the_gate_checkout_and_the_worktree_is_left_alone(self):
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.where(), [f"{self.gate_dir}|one,"], "built in the gate checkout")
+        self.assertIn("in the gate checkout", result.stdout)
+        self.assertFalse((self.root / "target").exists(), "nothing built in the pushing worktree")
+        self.assertEqual(self.git(self.gate_dir, "rev-parse", "HEAD"), self.git(self.root, "rev-parse", "HEAD"))
+        history = (self.root / ".git/klipp-pre-push.history").read_text()
+        self.assertIn(str(self.root), history, "the history names the worktree pushed from")
+
+    def test_the_next_push_rewrites_only_what_changed(self):
+        self.assertEqual(self.run_gate().returncode, 0)
+        other = self.gate_dir / "other.txt"
+        old = time.time() - 3600
+        os.utime(other, (old, old))
+        (self.root / "shared.txt").write_text("one\ntwo\n")
+        self.commit(self.root, "a change")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.where()[-1], f"{self.gate_dir}|one,two,")
+        self.assertAlmostEqual(other.stat().st_mtime, old, delta=1, msg="an unchanged file keeps its time, so cargo keeps its build")
+
+    def test_in_place_when_asked_or_when_the_checkout_cannot_be_used(self):
+        self.env["KLIPP_GATE_IN_PLACE"] = "1"
+        self.assertEqual(self.run_gate().returncode, 0)
+        self.assertEqual(self.where(), [f"{self.root}|one,"])
+        del self.env["KLIPP_GATE_IN_PLACE"]
+        blocked = Path(self.temp.name) / "a-file"
+        blocked.write_text("not a checkout")
+        self.env["KLIPP_GATE_DIR"] = str(blocked)
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.where()[-1], f"{self.root}|one,")
+        self.assertIn("could not be used", result.stderr)
 
 
 if __name__ == "__main__":
