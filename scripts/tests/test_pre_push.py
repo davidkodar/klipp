@@ -29,6 +29,20 @@ class ScratchGateTests(unittest.TestCase):
         self.script(self.bin / "cargo", 'printf "%s|%s\\n" "$*" "$TMPDIR" >> "$TEST_ROOT/cargo-calls"\nfor fd in 8 9; do [ -e "/proc/$$/fd/$fd" ] && echo "$fd $*" >> "$TEST_ROOT/cargo-held-fd"; done\nif [ "$1" = clippy ]; then\n printf "%s\\n" "${TEST_TAG:-gate}" >> "$TEST_ROOT/gate-order"\n [ -n "$TEST_HOLD" ] && sleep "$TEST_HOLD"\nfi\nif [ "$*" = "test --workspace" ]; then exit "${TEST_EXIT:-0}"; fi')
         self.env = {k: v for k, v in os.environ.items() if not k.startswith(("KLIPP_", "CARGO_")) and k != "TMPDIR"}
         self.env.update(PATH=f"{self.bin}:{os.environ['PATH']}", TEST_ROOT=str(self.root), TEST_FREE="8000000", TEST_GITDIR=str(self.gitdir))
+        # cargo-deny is there and its advisory list was fetched just now,
+        # so a gate that does not test the audit passes it (#928): the
+        # fake cargo answers `cargo deny` with nothing and success.
+        self.script(self.bin / "cargo-deny", "exit 0")
+        self.advisory_db(age_days=0)
+
+    def advisory_db(self, age_days):
+        """The advisory list on disk, last fetched `age_days` ago."""
+        fetched = self.root / "advisory-db" / "advisory-db-1" / ".git" / "FETCH_HEAD"
+        fetched.parent.mkdir(parents=True, exist_ok=True)
+        fetched.write_text("")
+        when = time.time() - age_days * 86400
+        os.utime(fetched, (when, when))
+        self.env["KLIPP_ADVISORY_DB"] = str(self.root / "advisory-db")
 
     def script(self, path, body):
         path.write_text("#!/bin/sh\n" + body + "\n")
@@ -170,14 +184,53 @@ class ScratchGateTests(unittest.TestCase):
         self.assertIn("RUSTSEC-2020-0001", result.stderr)
         self.assertIn("drop them", result.stderr)
 
-    def test_an_audit_that_cannot_run_is_reported_not_refused(self):
+    def test_an_audit_that_cannot_run_refuses_the_push(self):
+        # #928: a check that could not finish passed nothing, so the push
+        # does not go on as if it had.
         self.with_cargo_deny("error: failed to open advisory database\n", status=1, fetch=1)
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("could not be refreshed", result.stderr)
+        self.assertIn("could not check the advisories — push refused", result.stderr)
+        self.assertIn("KLIPP_SKIP_AUDIT=1", result.stderr)
+        self.assertFalse((self.root / "gate-order").exists(), "refused before the build")
+
+    def test_offline_the_list_on_disk_is_used_and_its_age_said(self):
+        self.with_cargo_deny("advisories ok\n", fetch=1)
+        self.advisory_db(age_days=10)
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("could not be refreshed", result.stderr)
-        self.assertIn("could not check", result.stderr)
+        self.assertIn("10 days old", result.stderr)
 
-    def test_without_cargo_deny_the_gate_says_how_to_get_it(self):
+    def test_a_list_over_a_month_old_refuses_the_push(self):
+        self.with_cargo_deny("advisories ok\n", fetch=1)
+        self.advisory_db(age_days=40)
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("40 days old — push refused", result.stderr)
+        self.assertIn("cargo deny fetch db", result.stderr)
+
+    def test_skipping_the_audit_is_said_and_recorded(self):
+        # The opt-out for a machine that cannot check: the push goes on, and
+        # its line in the gate history says it was not checked.
+        self.with_cargo_deny(self.ADVISORY, status=1)
+        self.env["KLIPP_SKIP_AUDIT"] = "1"
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("not checked for advisories", result.stderr)
+        lines = (self.gitdir / "klipp-pre-push.history").read_text().splitlines()
+        self.assertEqual(lines[-1].split()[2], "pass")
+        self.assertEqual(lines[-1].split()[-1], "unaudited")
+
+    def test_an_audited_push_has_no_mark_in_the_history(self):
+        self.with_cargo_deny("advisories ok\n")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        line = (self.gitdir / "klipp-pre-push.history").read_text().splitlines()[-1]
+        self.assertEqual(len(line.split()), 7, line)
+
+    def test_without_cargo_deny_the_push_is_refused_and_says_how_to_get_it(self):
         # The system's own tools without cargo-deny, so one installed by
         # the distribution in /usr/bin is not found either.
         tools = self.root / "system-tools"
@@ -188,10 +241,12 @@ class ScratchGateTests(unittest.TestCase):
                 if entry.name not in linked:
                     linked.add(entry.name)
                     (tools / entry.name).symlink_to(entry.path)
+        (self.bin / "cargo-deny").unlink()
         self.env["PATH"] = f"{self.bin}:{tools}"
         result = self.run_gate()
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1, "#928: without the checker the push is refused")
         self.assertIn("cargo install --locked cargo-deny", result.stderr)
+        self.assertIn("KLIPP_SKIP_AUDIT=1", result.stderr)
 
     def test_a_held_gate_is_waited_for_or_refused(self):
         # Another gate holds the lock: with KLIPP_GATE_NO_WAIT the push is
