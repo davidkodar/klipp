@@ -158,7 +158,8 @@ pub enum JoinSide {
 /// group's post-clip grade, after each member's own, or its pre-clip
 /// grade, before it (`{"group": name, "stage": "pre"}`). With
 /// `{"track": index or kind}` it goes on every clip of that track that
-/// can take it, between `from` and `to` when given, as one step (#847).
+/// can take it, between `from` and `to` when given, as one step (#847);
+/// with `"itself": true`, on the track itself (#846).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum GradeOn {
@@ -173,6 +174,11 @@ pub enum GradeOn {
         from: Option<Anchor>,
         #[serde(default)]
         to: Option<Anchor>,
+        /// On the track itself rather than on each of its clips (#846):
+        /// one effect or grade the track runs after every clip's own,
+        /// clips added later included.
+        #[serde(default)]
+        itself: bool,
     },
     Named(String),
 }
@@ -838,6 +844,22 @@ pub enum Op {
         #[serde(default)]
         source_in: Option<f64>,
     },
+    /// A track's own audio chain (#846): `effect` (an audio effect's type,
+    /// "eq", "compressor", "limiter", "denoiser"…) added at the end of the
+    /// chain the track runs after every clip's own, with `params` by name
+    /// (the rest at their defaults); `bypass` switches the track's effect
+    /// of that type off (true) or on (false) without taking it off;
+    /// `remove` takes it off.
+    TrackAudio {
+        track: TrackRef,
+        effect: String,
+        #[serde(default)]
+        params: std::collections::BTreeMap<String, f32>,
+        #[serde(default)]
+        bypass: Option<bool>,
+        #[serde(default)]
+        remove: bool,
+    },
     /// Clean a clip's sound. Each flag adds the tool for it: `voice`
     /// Voice Isolation, the AI model that separates speech from wind,
     /// traffic and room noise (the best cleanup for dialogue; it also
@@ -1134,7 +1156,7 @@ pub const OP_NAMES: &[&str] = &[
     "vector_path", "place", "add_track", "remove_track", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
     "slip", "slide", "pin", "role", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "highlight",
-    "ramp", "grade_group", "remove_grade_group", "look", "qualify", "retime", "replace", "clean_audio",
+    "ramp", "grade_group", "remove_grade_group", "look", "qualify", "retime", "replace", "track_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "motion_blur",
 ];
 
@@ -2289,7 +2311,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
             ramp(seq, pool, fps, i, ti, ci, clip, *from, *to, *over)
         }
-        Op::Look { clip_id, on: Some(GradeOn::Track { track, from, to }), lut_path, name, opacity, remove } => {
+        Op::Look { clip_id, on: Some(GradeOn::Track { track, from, to, itself: true }), lut_path, name, opacity, remove } => {
+            let (ti, target) = track_grade_target(seq, fps, i, track, from.as_ref(), to.as_ref(), clip_id.as_ref())?;
+            onto_track_grade(seq, i, ti, apply_look(i, target, lut_path, name.as_deref(), *opacity, *remove)?)
+        }
+        Op::Look { clip_id, on: Some(GradeOn::Track { track, from, to, .. }), lut_path, name, opacity, remove } => {
             let on = TrackSpan::resolve(seq, fps, i, track, from.as_ref(), to.as_ref())?.alone(i, clip_id.as_ref())?;
             let (members, skipped) = on.members(seq, |t, c| takes_picture(pool, t, c));
             let whose = on.whose(members.len());
@@ -2334,11 +2360,16 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             replace_media(seq, pool, fps, i, clip, *media_id, *source_in)
         }
+        Op::TrackAudio { track, effect, params, bypass, remove } => track_audio(seq, fps, i, track, effect, params, *bypass, *remove),
         Op::CleanAudio { clip_id, voice, reduction_db, wind, hiss, hum, deess } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             clean_audio(seq, pool, i, clip, CleanFlags { voice: *voice, reduction_db: *reduction_db, wind: *wind, hiss: *hiss, hum: *hum, deess: *deess })
         }
-        Op::Grade { clip_id, on: Some(GradeOn::Track { track, from: span_from, to: span_to }), exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance, reset, from } => {
+        Op::Grade { clip_id, on: Some(GradeOn::Track { track, from: span_from, to: span_to, itself: true }), .. } => {
+            let (ti, target) = track_grade_target(seq, fps, i, track, span_from.as_ref(), span_to.as_ref(), clip_id.as_ref())?;
+            onto_track_grade(seq, i, ti, grade_op(seq, pool, fps, i, target, op)?)
+        }
+        Op::Grade { clip_id, on: Some(GradeOn::Track { track, from: span_from, to: span_to, .. }), exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance, reset, from } => {
             let on = TrackSpan::resolve(seq, fps, i, track, span_from.as_ref(), span_to.as_ref())?.alone(i, clip_id.as_ref())?;
             let source = from.as_ref().map(|f| resolve_clip(seq, fps, f, i).map(|(_, _, c)| c)).transpose()?;
             // The clip a grade is copied from is not graded as itself.
@@ -4377,11 +4408,14 @@ fn require_picture(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: 
     Ok(())
 }
 
-fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, kind: &str, amount: Option<f32>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
-    require_picture(seq, pool, i, ti, clip, "add the effect to")?;
+/// A picture effect by the name the ops and the app give it, at
+/// `amount` (0 to 1; a tasteful default when left out): the effect, and
+/// the amount it was made at. The one list behind `effect` on clips and
+/// the app's track effects (#846).
+pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_effects::BuiltinEffect, f32), (String, String)> {
     let a = amount.unwrap_or(match kind.to_lowercase().as_str() { "sharpen" => 0.4, "glow" | "grain" => 0.4, _ => 0.5 });
     if !a.is_finite() || !(0.0..=1.0).contains(&a) {
-        return Err(refuse(i, format!("amount {a} is out of range"), "give amount between 0 and 1"));
+        return Err((format!("amount {a} is out of range"), "give amount between 0 and 1".into()));
     }
     use klipp_effects::BuiltinEffect as E;
     let fx = match kind.to_lowercase().as_str() {
@@ -4424,8 +4458,15 @@ fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &
         "denoise" => E::Denoise { spatial_sigma: a * 4.0, color_sigma: a * 0.1, iterations: 1 },
         "vhs" => E::Vhs { tracking: a * 0.5, bleed: a, noise: a * 0.5, scanlines: a, seed: 1 },
         "old_film" => E::OldFilm { flicker: a * 0.5, scratches: a, dust: a, weave: a * 0.5, sepia: a * 0.5, seed: 1 },
-        other => return Err(refuse(i, format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, edge_detect, denoise, vhs or old_film")),
+        other => return Err((format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, edge_detect, denoise, vhs or old_film".into())),
     };
+    Ok((fx, a))
+}
+
+fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, kind: &str, amount: Option<f32>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    require_picture(seq, pool, i, ti, clip, "add the effect to")?;
+    let (fx, a) = named_picture_effect(kind, amount).map_err(|(why, fix)| refuse(i, why, fix))?;
+    use klipp_effects::BuiltinEffect as E;
     // The same kind of effect replaces the one that is there.
     let same_kind = |e: &E| std::mem::discriminant(e) == std::mem::discriminant(&fx);
     let mut effects: Vec<E> = clip.builtin_effects.iter().filter(|e| !same_kind(e)).cloned().collect();
@@ -4519,18 +4560,29 @@ fn on_each<'a>(
         let range = if on.from.is_some() || on.to.is_some() { " in that stretch" } else { "" };
         return Err(refuse(i, format!("{} has no {what}{range}", on.name), "name another track, or widen from and to"));
     }
-    let n = members.len();
-    let mut edits = Vec::with_capacity(n);
-    let mut touched = Vec::with_capacity(n);
+    let mut edits = Vec::with_capacity(members.len());
+    let mut touched = Vec::with_capacity(members.len());
     let mut said = String::new();
+    // A clip that refuses (fades longer than one short clip) is left as it
+    // was and said, not a refusal of the whole track; only when every clip
+    // refuses is the op refused, with the first clip's reason.
+    let mut refused: Vec<Refusal> = Vec::new();
     for (ti, clip) in members {
-        let (line, edit, ids) = one(ti, clip)?;
-        if said.is_empty() {
-            said = line;
+        match one(ti, clip) {
+            Ok((line, edit, ids)) => {
+                if said.is_empty() {
+                    said = line;
+                }
+                edits.push(edit);
+                touched.extend(ids);
+            }
+            Err(r) => refused.push(r),
         }
-        edits.push(edit);
-        touched.extend(ids);
     }
+    if edits.is_empty() {
+        return Err(refused.swap_remove(0));
+    }
+    let n = edits.len();
     // Said once for them all: the first clip's line, its own name swapped
     // for the track's when it named itself.
     let whose = on.whose(n);
@@ -4541,7 +4593,110 @@ fn on_each<'a>(
         };
     }
     let left = if skipped > 0 { format!("; {skipped} other clip{} left as {}", if skipped == 1 { "" } else { "s" }, if skipped == 1 { "it was" } else { "they were" }) } else { String::new() };
-    Ok((format!("{said}{left}"), EditCommand::Batch(edits), touched))
+    let refusals = match refused.first() {
+        None => String::new(),
+        Some(r) => format!("; {} clip{} refused it ({})", refused.len(), if refused.len() == 1 { "" } else { "s" }, r.why),
+    };
+    Ok((format!("{said}{left}{refusals}"), EditCommand::Batch(edits), touched))
+}
+
+/// A track itself as the place a look or a grade goes (#846): its own
+/// grade, which runs after each clip's. The target names the track, and
+/// its edit is turned into the track's settings by [`onto_track_grade`].
+fn track_grade_target(seq: &Sequence, fps: Fps, i: usize, track: &TrackRef, from: Option<&Anchor>, to: Option<&Anchor>, clip_id: Option<&ClipRef>) -> Result<(usize, GradeTarget), Refusal> {
+    if clip_id.is_some() {
+        return Err(refuse(i, "both a clip and a track given", "give clip_id for one clip, or on: {\"track\": n, \"itself\": true} for the track"));
+    }
+    if from.is_some() || to.is_some() {
+        return Err(refuse(i, "a track's own effects hold for all of it", "leave out from and to with itself, or take the clips of a stretch without itself"));
+    }
+    let on = TrackSpan::resolve(seq, fps, i, track, None, None)?;
+    let t = &seq.tracks[on.ti];
+    if !matches!(t.kind, TrackKind::Video | TrackKind::Text) {
+        return Err(refuse(i, format!("{} has no pictures", on.name), "name a video or text track"));
+    }
+    // The track's id stands in for a clip's: the edit is turned into the
+    // track's settings before anything applies it.
+    let target = GradeTarget { id: ClipId(t.id.0), graph: t.effects.grade.clone().unwrap_or_default(), name: format!("{} itself", on.name), touched: Vec::new() };
+    Ok((on.ti, target))
+}
+
+/// A grade edit made against a track's own grade (see
+/// [`track_grade_target`]), as a change of the track's settings: one
+/// undo step, and a grade back at neutral leaves the track none.
+fn onto_track_grade(seq: &Sequence, i: usize, ti: usize, (what, edit, _): (String, EditCommand, Vec<ClipId>)) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let EditCommand::SetNodeGraph { new_graph, .. } = edit else {
+        return Err(refuse(i, "that cannot go on a track itself", "put it on the track's clips instead"));
+    };
+    let t = &seq.tracks[ti];
+    let old = t.settings();
+    let mut new = old.clone();
+    new.effects.grade = (!new_graph.is_identity()).then_some(new_graph);
+    Ok((what, EditCommand::SetTrackSettings { changes: vec![(t.id, old, new)] }, Vec::new()))
+}
+
+/// The audio effects a track's chain (and a clip's) can run, by type:
+/// the built-in ones of `klipp_audio::dsp::available_effects`, which a
+/// test keeps this list in step with.
+pub const AUDIO_EFFECT_TYPES: &[&str] = &[
+    "eq", "compressor", "limiter", "gate", "high_pass", "denoiser", "voice_isolation", "reverb", "delay", "deesser",
+    "hum_removal", "noise_reduction", "declick", "normalize", "pitch_shift", "chorus", "multiband_compressor",
+];
+
+/// `track_audio`: the track's own audio chain (#846), one effect of a
+/// type added (with `params` set), switched, or taken off.
+#[allow(clippy::too_many_arguments)]
+fn track_audio(seq: &Sequence, fps: Fps, i: usize, track: &TrackRef, effect: &str, params: &std::collections::BTreeMap<String, f32>, bypass: Option<bool>, remove: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let on = TrackSpan::resolve(seq, fps, i, track, None, None)?;
+    let t = &seq.tracks[on.ti];
+    if !matches!(t.kind, TrackKind::Audio | TrackKind::Video) {
+        return Err(refuse(i, format!("{} carries no sound", on.name), "name an audio track, or a video track whose clips play their own sound"));
+    }
+    let effect = effect.trim().to_lowercase();
+    if !AUDIO_EFFECT_TYPES.contains(&effect.as_str()) {
+        return Err(refuse(i, format!("\"{effect}\" is not an audio effect"), format!("use one of {}", AUDIO_EFFECT_TYPES.join(", "))));
+    }
+    for (name, v) in params {
+        if !v.is_finite() {
+            return Err(refuse(i, format!("{name} {v} is not a number"), "give each param a finite value"));
+        }
+    }
+    let old = t.settings();
+    let mut new = old.clone();
+    let chain = &mut new.effects.audio;
+    let at = chain.iter().rposition(|e| e.effect_type == effect);
+    let what = if remove {
+        let k = at.ok_or_else(|| refuse(i, format!("{} has no {effect}", on.name), "nothing to take off"))?;
+        chain.remove(k);
+        format!("take {effect} off {}", on.name)
+    } else if let (Some(off), true) = (bypass, params.is_empty()) {
+        let k = at.ok_or_else(|| refuse(i, format!("{} has no {effect}", on.name), "add it first"))?;
+        chain[k].enabled = !off;
+        format!("{effect} on {} {}", on.name, if off { "bypassed" } else { "on again" })
+    } else {
+        // Set on the one already there, or added at the end of the chain.
+        let k = match at {
+            Some(k) => k,
+            None => {
+                chain.push(klipp_core::AudioEffectInstance { effect_type: effect.clone(), enabled: true, wet_dry: 1.0, params: Vec::new() });
+                chain.len() - 1
+            }
+        };
+        let fx = &mut chain[k];
+        for (name, v) in params {
+            match fx.params.iter_mut().find(|(n, _)| n == name) {
+                Some(p) => p.1 = *v,
+                None => fx.params.push((name.clone(), *v)),
+            }
+        }
+        if let Some(off) = bypass {
+            fx.enabled = !off;
+        }
+        let set: Vec<String> = params.iter().map(|(n, v)| format!("{n} {v}")).collect();
+        let how = if set.is_empty() { String::new() } else { format!(" ({})", set.join(", ")) };
+        format!("{effect}{how} on {}, after every clip's own chain", on.name)
+    };
+    Ok((what, EditCommand::SetTrackSettings { changes: vec![(t.id, old, new)] }, Vec::new()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4556,7 +4711,29 @@ fn effect_on_many(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id:
             seq.tracks.iter().enumerate().flat_map(|(ti, t)| t.clips.iter().filter(move |c| is_picture(t, c)).map(move |c| (ti, c))).collect(),
         ),
         GradeOn::Named(n) => return Err(refuse(i, format!("\"{n}\" is not somewhere to add an effect"), "give on: \"timeline\", {\"group\": name} or {\"track\": n}, or a clip_id alone")),
-        GradeOn::Track { track, from, to } => {
+        GradeOn::Track { track, from, to, itself: true } => {
+            let (ti, target) = track_grade_target(seq, fps, i, track, from.as_ref(), to.as_ref(), None)?;
+            let (fx, a) = named_picture_effect(kind, amount).map_err(|(why, fix)| refuse(i, why, fix))?;
+            let t = &seq.tracks[ti];
+            let old = t.settings();
+            let mut new = old.clone();
+            // One of a kind, as on a clip: a second vignette replaces the first.
+            let video = &mut new.effects.video;
+            new.effects.video_enabled.resize(video.len(), true);
+            match video.iter().position(|e| std::mem::discriminant(e) == std::mem::discriminant(&fx)) {
+                Some(k) => {
+                    video[k] = fx;
+                    new.effects.video_enabled[k] = true;
+                }
+                None => {
+                    video.push(fx);
+                    new.effects.video_enabled.push(true);
+                }
+            }
+            let what = format!("{} {a:.2} on {}, after every clip's own", kind.to_lowercase(), target.name);
+            return Ok((what, EditCommand::SetTrackSettings { changes: vec![(t.id, old, new)] }, Vec::new()));
+        }
+        GradeOn::Track { track, from, to, .. } => {
             let on = TrackSpan::resolve(seq, fps, i, track, from.as_ref(), to.as_ref())?;
             let (members, skipped) = on.members(seq, |t, c| takes_picture(pool, t, c));
             return on_each(i, &on, "pictures", members, skipped, |ti, clip| picture_effect(seq, pool, i, ti, clip, kind, amount));
@@ -7891,6 +8068,74 @@ mod tests {
         assert!(bad(r#"[{"op":"effect","on":{"track":0,"from":{"secs":20}},"kind":"grain"}]"#).contains("no pictures in that stretch"));
         assert!(bad(r#"[{"op":"grade","on":{"track":0,"from":{"secs":5},"to":{"secs":4}},"exposure":1}]"#).contains("not after"));
         assert!(bad(r#"[{"op":"look","on":{"track":9},"lut_path":"/x.cube"}]"#).contains("no track 9"));
+    }
+
+    /// #846: with `itself`, effect, look and grade go on the track itself,
+    /// one step that changes the track's settings and no clip; track_audio
+    /// adds to, switches and takes off the track's own audio chain. A
+    /// stretch, a track without pictures and an unknown effect are refused.
+    #[test]
+    fn effects_grades_and_an_audio_chain_go_on_the_track_itself() {
+        let (seq, pool, _, _, _) = fixture();
+        let ops = |json: &str| -> Vec<Op> { serde_json::from_str(json).unwrap() };
+        let settings = |plan: &Plan| -> klipp_timeline::TrackSettings {
+            let EditCommand::SetTrackSettings { changes } = &plan.steps[0].edit else { panic!("a track edit: {:?}", plan.steps[0].edit) };
+            assert_eq!(changes.len(), 1);
+            assert!(plan.steps[0].after.is_empty(), "no clip is changed");
+            changes[0].2.clone()
+        };
+        let apply = |seq: &Sequence, plan: &Plan| -> Sequence {
+            let mut seqs = vec![seq.clone()];
+            let mut p = pool.clone();
+            let mut fps = seq.fps;
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            view.apply_forward(&plan.steps[0].edit);
+            seqs.remove(0)
+        };
+
+        let plan = resolve(&seq, &pool, &ops(r#"[{"op":"effect","on":{"track":0,"itself":true},"kind":"vignette","amount":0.5}]"#)).unwrap();
+        let s = settings(&plan);
+        assert!(matches!(s.effects.video.as_slice(), [klipp_effects::BuiltinEffect::Vignette { .. }]), "{:?}", s.effects.video);
+        assert!(plan.steps[0].what.contains("track 0 \"V1\" itself"), "{}", plan.steps[0].what);
+        // A second vignette replaces the first.
+        let with = apply(&seq, &plan);
+        let plan = resolve(&with, &pool, &ops(r#"[{"op":"effect","on":{"track":0,"itself":true},"kind":"vignette","amount":0.2}]"#)).unwrap();
+        assert_eq!(settings(&plan).effects.video.len(), 1);
+
+        let plan = resolve(&seq, &pool, &ops(r#"[{"op":"grade","on":{"track":0,"itself":true},"exposure":-0.5}]"#)).unwrap();
+        let graded = settings(&plan).effects.grade.expect("a grade on the track");
+        assert!(!graded.is_identity());
+        let plan = resolve(&seq, &pool, &ops(r#"[{"op":"look","on":{"track":"video","itself":true},"lut_path":"/luts/kodak.cube","name":"Kodak"}]"#)).unwrap();
+        assert!(settings(&plan).effects.grade.is_some_and(|g| g.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Lut3D && n.params.lut_path.is_some())));
+
+        let plan = resolve(&seq, &pool, &ops(r#"[{"op":"track_audio","track":"audio","effect":"compressor","params":{"threshold":-18}}]"#)).unwrap();
+        let s = settings(&plan);
+        assert_eq!((s.effects.audio.len(), s.effects.audio[0].effect_type.as_str(), s.effects.audio[0].params.clone()), (1, "compressor", vec![("threshold".to_string(), -18.0)]));
+        let with = apply(&seq, &plan);
+        let plan = resolve(&with, &pool, &ops(r#"[{"op":"track_audio","track":"audio","effect":"compressor","bypass":true}]"#)).unwrap();
+        assert!(!settings(&plan).effects.audio[0].enabled, "bypassed, still there");
+        let plan = resolve(&with, &pool, &ops(r#"[{"op":"track_audio","track":"audio","effect":"compressor","remove":true}]"#)).unwrap();
+        assert!(settings(&plan).effects.audio.is_empty());
+
+        let bad = |json: &str| resolve(&seq, &pool, &ops(json)).unwrap_err().why;
+        assert!(bad(r#"[{"op":"effect","on":{"track":0,"itself":true,"from":{"secs":1}},"kind":"grain"}]"#).contains("all of it"));
+        assert!(bad(r#"[{"op":"grade","on":{"track":"audio","itself":true},"exposure":1}]"#).contains("no pictures"));
+        assert!(bad(r#"[{"op":"track_audio","track":"audio","effect":"autotune"}]"#).contains("not an audio effect"));
+        assert!(bad(r#"[{"op":"track_audio","track":"audio","effect":"limiter","remove":true}]"#).contains("has no limiter"));
+    }
+
+    /// #847: one clip of a track that cannot take a change (fades longer
+    /// than it) is left and said; the rest of the track takes it.
+    #[test]
+    fn a_clip_that_refuses_is_left_while_the_track_takes_the_change() {
+        let (mut seq, pool, media, _, _) = fixture();
+        // A short third sound on A1, too short for two-second fades.
+        seq.tracks[1].clips.push(Clip::media(media, tc(8.0), tc(9.0), tc(0.0), tc(1.0)));
+        let ops: Vec<Op> = serde_json::from_str(r#"[{"op":"audio","track":"audio","fade_in":2.0,"fade_out":1.5}]"#).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("a batch") };
+        assert_eq!(edits.len(), 2, "the two long clips take it");
+        assert!(plan.steps[0].what.contains("1 clip refused it"), "{}", plan.steps[0].what);
     }
 
     /// #782: a sound effect 0.4186 s long, reported as 0.42 s, placed

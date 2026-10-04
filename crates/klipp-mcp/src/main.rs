@@ -1961,6 +1961,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               stays. For an audio clip linked to a video clip the settings go on the video \
               clip, where playback and the render read them. track (index or kind) in place of \
               clip_id, with from?/to?, sets every clip heard on it in one step.\n\
+              track_audio {track, effect, params?: {name: value}, bypass?, remove?} — the track's own audio chain, run \
+              after every clip's own (eq, compressor, limiter, gate, high_pass, denoiser, voice_isolation, deesser, \
+              hum_removal, reverb…): adds the effect (or sets the one there), bypasses it, or takes it off.\n\
               duck {clip_id, by_db?, fade_secs?} — music under speech: the clip's volume comes \
               down (9 dB by default) wherever speech is heard over it (not clips marked music, \
               sfx, ambience, foley or broll, nor any set 12 dB under the music; a transcribed clip \
@@ -2012,7 +2015,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               onto a surface klipp_track_surface followed in the clip: on a video track above, following \
               it; surface is its id or name, the clip's latest when left out; fit stretch|fit (auto by \
               shape when left out); inset a margin each side, ~0.02 for a screen's bezel.\n\
-              effect {clip_id | on: \"timeline\" | {group} | {track, from?, to?}, kind, amount?} — a finishing effect on a picture, or on every picture of the timeline, a grade group or a track in one step: vignette, grain, glow, \
+              effect {clip_id | on: \"timeline\" | {group} | {track, from?, to?, itself?}, kind, amount?} — a finishing effect on a picture, or on every picture of the timeline, a grade group or a track in one step (with itself: true, on the track itself, after every clip's own, clips added later too): vignette, grain, glow, \
               bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
               directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \
               mirror, lens_distortion, edge_detect, denoise, vhs, old_film, corners (rounded alpha mask), \
@@ -2162,6 +2165,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               stays. For an audio clip linked to a video clip the settings go on the video \
               clip, where playback and the render read them. track (index or kind) in place of \
               clip_id, with from?/to?, sets every clip heard on it in one step.\n\
+              track_audio {track, effect, params?: {name: value}, bypass?, remove?} — the track's own audio chain, run \
+              after every clip's own (eq, compressor, limiter, gate, high_pass, denoiser, voice_isolation, deesser, \
+              hum_removal, reverb…): adds the effect (or sets the one there), bypasses it, or takes it off.\n\
               duck {clip_id, by_db?, fade_secs?} — music under speech: the clip's volume comes \
               down (9 dB by default) wherever speech is heard over it (not clips marked music, \
               sfx, ambience, foley or broll, nor any set 12 dB under the music; a transcribed clip \
@@ -2213,7 +2219,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               onto a surface klipp_track_surface followed in the clip: on a video track above, following \
               it; surface is its id or name, the clip's latest when left out; fit stretch|fit (auto by \
               shape when left out); inset a margin each side, ~0.02 for a screen's bezel.\n\
-              effect {clip_id | on: \"timeline\" | {group} | {track, from?, to?}, kind, amount?} — a finishing effect on a picture, or on every picture of the timeline, a grade group or a track in one step: vignette, grain, glow, \
+              effect {clip_id | on: \"timeline\" | {group} | {track, from?, to?, itself?}, kind, amount?} — a finishing effect on a picture, or on every picture of the timeline, a grade group or a track in one step (with itself: true, on the track itself, after every clip's own, clips added later too): vignette, grain, glow, \
               bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
               directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \
               mirror, lens_distortion, edge_detect, denoise, vhs, old_film, corners (rounded alpha mask), \
@@ -2491,7 +2497,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               a scene: on \"timeline\" puts it on the timeline grade, after every clip's own; on \
               {group} puts it on a grade group's post-clip grade (make the group with the \
               grade_group op) — one call, one undo step, and every clip follows a later change.",
-             json!({ "clip_id": { "type": "string" }, "on": { "description": "instead of clip_id: \"timeline\", {\"group\": name, \"stage\": \"post\" (default) or \"pre\"}, or {\"track\": index or kind, \"from\"?, \"to\"?} for every picture clip of a track" }, "name": { "type": "string", "description": "a look name from klipp_looks, or an absolute .cube path" }, "opacity": { "type": "number" }, "remove": { "type": "boolean" } }),
+             json!({ "clip_id": { "type": "string" }, "on": { "description": "instead of clip_id: \"timeline\", {\"group\": name, \"stage\": \"post\" (default) or \"pre\"}, or {\"track\": index or kind, \"from\"?, \"to\"?} for every picture clip of a track, with \"itself\": true for the track's own grade" }, "name": { "type": "string", "description": "a look name from klipp_looks, or an absolute .cube path" }, "opacity": { "type": "number" }, "remove": { "type": "boolean" } }),
              vec![]),
         tool("klipp_orient",
              "Start here. One call for where you are: the build, the project and whether it is \

@@ -2445,6 +2445,8 @@ pub struct AppState {
     /// Alt+scroll over an audio track adjusts this; right-click track header resets it.
     /// Clamped to [0.1, 8.0] by the UI handlers.
     pub waveform_zoom: std::collections::HashMap<TrackId, f32>,
+    /// What Copy Track Attributes kept, for Paste Track Attributes (#846).
+    pub copied_track_settings: Option<(String, klipp_timeline::TrackSettings)>,
 
     /// The clip currently designated as the audio-sync reference (set via the
     /// clip context menu). `AlignToAudioReference` shifts a target clip's
@@ -4157,6 +4159,7 @@ impl Default for AppState {
             audio_anti_click_fade: true,
             audio_show_crossfade_indicators: true,
             waveform_zoom: std::collections::HashMap::new(),
+            copied_track_settings: None,
             audio_reference_clip_id: None,
             dragging_fade_handle: None,
             proxy_generating: std::collections::HashSet::new(),

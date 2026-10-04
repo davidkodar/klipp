@@ -262,7 +262,21 @@ exist until the plan runs.
   same for one track, or a stretch of it (the B camera's clips). Each
   clip gets its own copy, so a shot added later needs it too. `look`
   takes the same `on: {"track": …}`. The reply says how many clips were
-  taken and how many others on the track were left.
+  taken, how many others on the track were left, and any that refused.
+  With `"itself": true` (and no `from`/`to`) the effect, look or grade
+  goes on the track itself instead: one effect the track runs after
+  every clip's own, clips added later included (a look for one camera's
+  track, a vignette over a whole reel).
+- `track_audio {track, effect, params?, bypass?, remove?}`: the track's
+  own audio chain, run after every clip's own: an EQ and a compressor on
+  the dialogue track, a limiter on the music. `effect` is `eq`,
+  `compressor`, `limiter`, `gate`, `high_pass`, `denoiser`,
+  `voice_isolation`, `deesser`, `hum_removal`, `noise_reduction`,
+  `declick`, `normalize`, `reverb`, `delay`, `chorus`, `pitch_shift` or
+  `multiband_compressor`; `params` by name set it (the rest stay at their
+  defaults), on the one there or a new one at the end; `bypass` switches
+  it off or on; `remove` takes it off. Set once, it holds for every clip
+  of the track.
   Kinds: `vignette`, `grain` (`film_grain`), `glow`, `bloom`, `diffusion`
   (`pro_mist`), `halation` (`film_halation`), `light_rays` (`god_rays`),
   `lens_flare`, `anamorphic` (`anamorphic_streak`, `streak`), `light_wrap`,

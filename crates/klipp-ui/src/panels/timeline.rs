@@ -5494,6 +5494,42 @@ impl TimelinePanel {
                     }
                 }
                 ui.separator();
+                // The track's own effects, and its attributes to copy onto
+                // other tracks (#846).
+                track_effects_menu(ui, &state.sequence().tracks[track_idx], cmds);
+                if ui.button("Copy Track Attributes").on_hover_text("Keep this track's levels and its own effects, to paste onto other tracks").clicked() {
+                    cmds.push(AppCommand::CopyTrackAttributes { track_id });
+                    ui.close_menu();
+                }
+                let copied = state.copied_track_settings.as_ref().map(|(name, _)| name.clone());
+                ui.add_enabled_ui(copied.is_some(), |ui| {
+                    let label = match &copied {
+                        Some(name) => format!("Paste Track Attributes from {name}"),
+                        None => "Paste Track Attributes".to_string(),
+                    };
+                    ui.menu_button(label, |ui| {
+                        let kind = state.sequence().tracks[track_idx].kind;
+                        let same_kind: Vec<_> = state.sequence().tracks.iter().filter(|t| t.kind == kind).map(|t| t.id).collect();
+                        for (what, levels, picture, sound) in [
+                            ("All", true, true, true),
+                            ("Levels (volume, pan, opacity)", true, false, false),
+                            ("Picture Effects and Grade", false, true, false),
+                            ("Audio Effects", false, false, true),
+                        ] {
+                            if ui.button(what).clicked() {
+                                cmds.push(AppCommand::PasteTrackAttributes { track_ids: vec![track_id], levels, picture, sound });
+                                ui.close_menu();
+                            }
+                        }
+                        ui.separator();
+                        let plural = match kind { TrackKind::Video => "Video", TrackKind::Audio => "Audio", TrackKind::Text => "Text", TrackKind::Subtitle => "Subtitle" };
+                        if ui.button(format!("All to Every {plural} Track")).on_hover_text("One undo step for all of them").clicked() {
+                            cmds.push(AppCommand::PasteTrackAttributes { track_ids: same_kind, levels: true, picture: true, sound: true });
+                            ui.close_menu();
+                        }
+                    });
+                });
+                ui.separator();
                 let has_clips = !state.sequence().tracks[track_idx].clips.is_empty();
                 let remove_resp = ui.add_enabled(!has_clips, egui::Button::new("Remove Track"));
                 if !has_clips && remove_resp.clicked() {
@@ -18629,5 +18665,101 @@ mod trim_preview_tests {
         assert!(matches!(command, AppCommand::TrimClip { ripple: true, .. }));
         assert_eq!(seq.tracks[0].clips[0].source_in, tc(0.0));
         assert_eq!(seq.tracks[0].clips[0].timeline_out, tc(4.0));
+    }
+}
+
+/// The picture effects a track can take from its header's menu, by the
+/// name the `effect` op gives each.
+const TRACK_PICTURE_EFFECTS: &[(&str, &str)] = &[
+    ("vignette", "Vignette"),
+    ("grain", "Film Grain"),
+    ("glow", "Glow"),
+    ("bloom", "Bloom"),
+    ("diffusion", "Diffusion"),
+    ("halation", "Halation"),
+    ("sharpen", "Sharpen"),
+    ("blur", "Blur"),
+    ("chromatic_aberration", "Chromatic Aberration"),
+    ("denoise", "Denoise"),
+    ("old_film", "Old Film"),
+];
+
+/// A track's own effects in its header's menu (#846): each one with its
+/// switch and a way to take it off, the grade when it has one, and what
+/// can be added: picture effects on a picture track, audio effects on a
+/// track with sound.
+fn track_effects_menu(ui: &mut egui::Ui, track: &klipp_timeline::Track, cmds: &mut Vec<AppCommand>) {
+    let track_id = track.id;
+    let fx = &track.effects;
+    let picture = matches!(track.kind, TrackKind::Video | TrackKind::Text);
+    let sound = matches!(track.kind, TrackKind::Audio | TrackKind::Video);
+    if !picture && !sound {
+        return;
+    }
+    let title = if fx.is_empty() { "Track Effects".to_string() } else { format!("Track Effects ({})", fx.video.len() + fx.audio.len() + usize::from(fx.grade.as_ref().is_some_and(|g| !g.is_identity()))) };
+    ui.menu_button(title, |ui| {
+        ui.set_min_width(220.0);
+        if fx.is_empty() {
+            ui.label(egui::RichText::new("On every clip of the track, after its own").weak());
+        }
+        let row = |ui: &mut egui::Ui, name: String, on: bool, audio: bool, index: usize, cmds: &mut Vec<AppCommand>| {
+            ui.horizontal(|ui| {
+                let mut on = on;
+                if ui.checkbox(&mut on, name).on_hover_text("Switch it off without taking it off").changed() {
+                    cmds.push(AppCommand::ToggleTrackEffect { track_id, audio, index });
+                }
+                if ui.small_button("Remove").clicked() {
+                    cmds.push(AppCommand::RemoveTrackEffect { track_id, audio, index });
+                }
+            });
+        };
+        for (k, e) in fx.video.iter().enumerate() {
+            let name = format!("{e:?}").split(['{', '(', ' ']).next().unwrap_or("").to_string();
+            row(ui, name, fx.video_enabled.get(k).copied().unwrap_or(true), false, k, cmds);
+        }
+        if fx.grade.as_ref().is_some_and(|g| !g.is_identity()) {
+            ui.label("Grade, after each clip's own");
+        }
+        for (k, e) in fx.audio.iter().enumerate() {
+            let name = klipp_audio::dsp::available_effects().into_iter().find(|(t, _)| *t == e.effect_type).map_or(e.effect_type.clone(), |(_, n)| n.to_string());
+            row(ui, name, e.enabled, true, k, cmds);
+        }
+        ui.separator();
+        if picture {
+            ui.menu_button("Add Picture Effect", |ui| {
+                for (kind, label) in TRACK_PICTURE_EFFECTS {
+                    if ui.button(*label).clicked() {
+                        cmds.push(AppCommand::AddTrackVideoEffect { track_id, kind: (*kind).to_string() });
+                        ui.close_menu();
+                    }
+                }
+            });
+        }
+        if sound {
+            ui.menu_button("Add Audio Effect", |ui| {
+                for (effect_type, label) in klipp_audio::dsp::available_effects() {
+                    if ui.button(label).clicked() {
+                        cmds.push(AppCommand::AddTrackAudioEffect { track_id, effect_type: effect_type.to_string() });
+                        ui.close_menu();
+                    }
+                }
+            });
+        }
+        if !fx.is_empty() && ui.button("Clear Track Effects").clicked() {
+            cmds.push(AppCommand::ClearTrackEffects { track_id });
+            ui.close_menu();
+        }
+    });
+}
+
+#[cfg(test)]
+mod track_effects_menu_tests {
+    /// The audio effects the ops accept by name are the ones the audio
+    /// engine has (#846): a type in one and not the other would be offered
+    /// and do nothing, or be refused though it exists.
+    #[test]
+    fn the_ops_name_every_audio_effect_the_engine_has() {
+        let engine: Vec<&str> = klipp_audio::dsp::available_effects().into_iter().map(|(t, _)| t).collect();
+        assert_eq!(klipp_document::ops::AUDIO_EFFECT_TYPES, engine.as_slice());
     }
 }

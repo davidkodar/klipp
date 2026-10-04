@@ -2110,6 +2110,131 @@ impl KlippApp {
         tracing::info!("applied \"{label}\": {} edits", edits.len());
     }
 
+    /// A new audio effect of `effect_type` at its defaults: a LADSPA
+    /// plugin's from what discovery found, a built-in one's from its own
+    /// descriptors.
+    fn default_audio_effect(&self, effect_type: &str) -> klipp_core::AudioEffectInstance {
+        let params: Vec<(String, f32)> = if effect_type.starts_with("ladspa:") {
+            effect_type
+                .strip_prefix("ladspa:")
+                .and_then(|rest| {
+                    let cut = rest.rfind(':')?;
+                    let path = &rest[..cut];
+                    let label = &rest[cut + 1..];
+                    self.state.ladspa_plugins.iter().find(|p| p.path.to_string_lossy() == path && p.label == label)
+                })
+                .map(|info| info.control_inputs.iter().map(|port| (port.name.clone(), port.default)).collect())
+                .unwrap_or_default()
+        } else {
+            klipp_audio::dsp::create_effect(effect_type, 48000)
+                .map(|fx| fx.param_descriptors().iter().map(|d| (d.name.to_string(), d.default)).collect())
+                .unwrap_or_default()
+        };
+        klipp_core::AudioEffectInstance { effect_type: effect_type.to_string(), enabled: true, wet_dry: 1.0, params }
+    }
+
+    /// A track's attributes copied and pasted, and its own effects added,
+    /// switched and taken off (#846): each change one undo step, through
+    /// `SetTrackSettings`.
+    fn handle_track_settings_commands(&mut self, cmd: &AppCommand) -> bool {
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let track = |id: &klipp_core::TrackId| seq.tracks.iter().find(|t| t.id == *id);
+        // One track's settings changed by `change`: the edit, or `None`
+        // when nothing changed.
+        let one = |id: &klipp_core::TrackId, change: &dyn Fn(&mut klipp_timeline::TrackSettings)| -> Option<EditCommand> {
+            let t = track(id)?;
+            let old = t.settings();
+            let mut new = old.clone();
+            change(&mut new);
+            (new != old).then(|| EditCommand::SetTrackSettings { changes: vec![(t.id, old, new)] })
+        };
+        let (edit, label): (Option<EditCommand>, &str) = match cmd {
+            AppCommand::CopyTrackAttributes { track_id } => {
+                if let Some(t) = track(track_id) {
+                    self.state.copied_track_settings = Some((t.name.clone(), t.settings()));
+                    self.state.toast.show(format!("Copied the attributes of {}", t.name));
+                }
+                return true;
+            }
+            AppCommand::PasteTrackAttributes { track_ids, levels, picture, sound } => {
+                let Some((_, copied)) = self.state.copied_track_settings.as_ref() else {
+                    self.state.toast.show("Copy a track's attributes first");
+                    return true;
+                };
+                let what = klipp_timeline::TrackPaste { levels: *levels, picture: *picture, sound: *sound };
+                let changes: Vec<_> = track_ids
+                    .iter()
+                    .filter_map(track)
+                    .map(|t| (t.id, t.settings(), t.pasted(copied, what)))
+                    .filter(|(_, old, new)| old != new)
+                    .collect();
+                ((!changes.is_empty()).then_some(EditCommand::SetTrackSettings { changes }), "Paste Track Attributes")
+            }
+            AppCommand::AddTrackVideoEffect { track_id, kind } => match klipp_document::ops::named_picture_effect(kind, None) {
+                Ok((fx, _)) => (
+                    one(track_id, &|s| {
+                        // One of a kind: a second vignette replaces the first.
+                        let at = s.effects.video.iter().position(|e| std::mem::discriminant(e) == std::mem::discriminant(&fx));
+                        match at {
+                            Some(k) => s.effects.video[k] = fx.clone(),
+                            None => s.effects.video.push(fx.clone()),
+                        }
+                    }),
+                    "Add Track Effect",
+                ),
+                Err((why, _)) => {
+                    self.state.toast.show(why);
+                    return true;
+                }
+            },
+            AppCommand::AddTrackAudioEffect { track_id, effect_type } => {
+                let fx = self.default_audio_effect(effect_type);
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let edit = seq.tracks.iter().find(|t| t.id == *track_id).map(|t| {
+                    let old = t.settings();
+                    let mut new = old.clone();
+                    new.effects.audio.push(fx);
+                    EditCommand::SetTrackSettings { changes: vec![(t.id, old, new)] }
+                });
+                (edit, "Add Track Audio Effect")
+            }
+            AppCommand::ToggleTrackEffect { track_id, audio, index } => (
+                one(track_id, &|s| {
+                    if *audio {
+                        if let Some(e) = s.effects.audio.get_mut(*index) {
+                            e.enabled = !e.enabled;
+                        }
+                    } else if *index < s.effects.video.len() {
+                        s.effects.video_enabled.resize(s.effects.video.len(), true);
+                        s.effects.video_enabled[*index] = !s.effects.video_enabled[*index];
+                    }
+                }),
+                "Toggle Track Effect",
+            ),
+            AppCommand::RemoveTrackEffect { track_id, audio, index } => (
+                one(track_id, &|s| {
+                    if *audio {
+                        if *index < s.effects.audio.len() {
+                            s.effects.audio.remove(*index);
+                        }
+                    } else if *index < s.effects.video.len() {
+                        s.effects.video.remove(*index);
+                        if *index < s.effects.video_enabled.len() {
+                            s.effects.video_enabled.remove(*index);
+                        }
+                    }
+                }),
+                "Remove Track Effect",
+            ),
+            AppCommand::ClearTrackEffects { track_id } => (one(track_id, &|s| s.effects = Default::default()), "Clear Track Effects"),
+            _ => return false,
+        };
+        if let Some(edit) = edit {
+            self.apply_edits_as_one(&[edit], label);
+        }
+        true
+    }
+
     /// Resolve and apply the document ops panels asked for, each request
     /// one undo step. A refusal says why in a toast; a request of
     /// independent ops applies the ones that resolve and names the rest.
@@ -11971,37 +12096,7 @@ impl KlippApp {
                 // Build default instance from effect descriptors. LADSPA plugins
                 // don't expose `&'static str` param names, so their defaults
                 // come from the discovered plugin info instead of the factory.
-                let instance = {
-                    let default_params: Vec<(String, f32)> = if effect_type.starts_with("ladspa:") {
-                        effect_type
-                            .strip_prefix("ladspa:")
-                            .and_then(|rest| {
-                                let cut = rest.rfind(':')?;
-                                let path = &rest[..cut];
-                                let label = &rest[cut + 1..];
-                                self.state.ladspa_plugins.iter().find(|p| {
-                                    p.path.to_string_lossy() == path && p.label == label
-                                })
-                            })
-                            .map(|info| {
-                                info.control_inputs
-                                    .iter()
-                                    .map(|port| (port.name.clone(), port.default))
-                                    .collect()
-                            })
-                            .unwrap_or_default()
-                    } else {
-                        klipp_audio::dsp::create_effect(effect_type, 48000)
-                            .map(|fx| fx.param_descriptors().iter().map(|d| (d.name.to_string(), d.default)).collect())
-                            .unwrap_or_default()
-                    };
-                    klipp_core::AudioEffectInstance {
-                        effect_type: effect_type.clone(),
-                        enabled: true,
-                        wet_dry: 1.0,
-                        params: default_params,
-                    }
-                };
+                let instance = self.default_audio_effect(effect_type);
                 let mut added = false;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -19938,6 +20033,9 @@ impl KlippApp {
 
 
     fn handle_project_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        if self.handle_track_settings_commands(cmd) {
+            return true;
+        }
         match cmd {
             AppCommand::NewProject => {
                 if self.state.dirty {
