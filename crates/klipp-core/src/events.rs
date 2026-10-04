@@ -1756,6 +1756,8 @@ pub enum AppCommand {
     /// settings struct.
     SetNodeDifferenceKeyPlate { clip_id: ClipId, node_id: uuid::Uuid, plate_path: Option<std::path::PathBuf> },
     SetNodeSoftClip { clip_id: ClipId, node_id: uuid::Uuid, soft_clip: crate::color_grade::SoftClipSettings },
+    /// A Film Grain node's settings, whole (#894).
+    SetNodeFilmGrain { clip_id: ClipId, node_id: uuid::Uuid, grain: crate::color_grade::FilmGrainSettings },
     SetNodeMasks { clip_id: ClipId, node_id: uuid::Uuid, masks: crate::color_grade::MaskStack },
     /// Store a computed colour-match result on a ColorMatch node. The
     /// UI runs `klipp_color::match_colors(source, reference)` against
