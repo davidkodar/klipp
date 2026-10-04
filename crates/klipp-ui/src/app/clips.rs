@@ -410,6 +410,11 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SelectClip(id) => {
+                    // A clip selected ends an edit point's (#913).
+                    if id.is_some() {
+                        self.state.selected_edits.clear();
+                        self.state.trim_entry = None;
+                    }
                     let newly_selected = self.state.selected_clip != *id;
                     self.state.selected_clip = *id;
                     if let Some(clip_id) = *id {

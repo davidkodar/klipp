@@ -15,6 +15,12 @@ impl KlippApp {
         if text_editing {
             return cmds;
         }
+        // A trim amount being typed for the selected edit points takes the
+        // keys until Enter or Escape: its digits are not angle switches,
+        // its + and - not zooms (#913).
+        if self.trim_entry_keys(ctx, &mut cmds) {
+            return cmds;
+        }
         self.shortcuts_magnetic_skim(ctx, &mut cmds);
         self.shortcuts_delete(ctx, &mut cmds);
         self.shortcuts_tools_and_clip_ops(ctx, &mut cmds);
@@ -471,6 +477,29 @@ impl KlippApp {
                 cmds.push(AppCommand::SetScopeRenderMode { mode: mode_byte });
                 cmds.push(AppCommand::SequenceUpdated);
             }
+            // Edit points (#913): U selects the one nearest the playhead,
+            // and again cycles its side; [ and ] trim it a frame, with
+            // Shift ten; E takes it to the playhead.
+            if kb.is_action_pressed("select_edit_point", i) {
+                cmds.push(if self.state.selected_edits.is_empty() { AppCommand::SelectNearestEditPoint } else { AppCommand::CycleEditSide });
+            }
+            if kb.is_action_pressed("extend_edit", i) {
+                cmds.push(AppCommand::ExtendEditPoints);
+            }
+            if !self.state.selected_edits.is_empty() {
+                if kb.is_action_pressed("trim_edit_back", i) {
+                    cmds.push(AppCommand::TrimEditPoints { frames: -1 });
+                }
+                if kb.is_action_pressed("trim_edit_forward", i) {
+                    cmds.push(AppCommand::TrimEditPoints { frames: 1 });
+                }
+                if kb.is_action_pressed("trim_edit_back_many", i) {
+                    cmds.push(AppCommand::TrimEditPoints { frames: -10 });
+                }
+                if kb.is_action_pressed("trim_edit_forward_many", i) {
+                    cmds.push(AppCommand::TrimEditPoints { frames: 10 });
+                }
+            }
             // [ / ] — navigate color nodes
             if kb.is_action_pressed("prev_color_node", i) || kb.is_action_pressed("next_color_node", i) {
                 let forward = kb.is_action_pressed("next_color_node", i);
@@ -842,6 +871,8 @@ impl KlippApp {
                 } else if let Some(drag) = self.state.range_drag.take() {
                     self.state.sequences[self.state.active_sequence_idx].in_point = drag.original_in;
                     self.state.sequences[self.state.active_sequence_idx].out_point = drag.original_out;
+                } else if !self.state.selected_edits.is_empty() {
+                    self.state.selected_edits.clear();
                 } else if self.state.selected_clip.is_some() || !self.state.selected_clips.is_empty() {
                     self.state.selected_clips.clear();
                     cmds.push(AppCommand::SelectClip(None));
@@ -1219,5 +1250,54 @@ impl KlippApp {
                 self.zoom_timeline_by(self.state.zoom_step);
             }
         });
+    }
+
+    /// The typed trim amount for the selected edit points: + or - starts
+    /// it, digits and : extend it, Backspace takes one off, Enter trims by
+    /// it and Escape drops it. True while it holds the keys.
+    fn trim_entry_keys(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) -> bool {
+        if self.state.selected_edits.is_empty() {
+            self.state.trim_entry = None;
+            return false;
+        }
+        let fps = self.state.sequence().fps.as_f64();
+        let entry = &mut self.state.trim_entry;
+        let mut held = entry.is_some();
+        ctx.input(|i| {
+            for event in &i.events {
+                match event {
+                    egui::Event::Text(text) if !i.modifiers.ctrl && !i.modifiers.alt => {
+                        for ch in text.chars() {
+                            match (entry.as_mut(), ch) {
+                                (None, '+' | '-') => {
+                                    *entry = Some(ch.to_string());
+                                    held = true;
+                                }
+                                (Some(typed), '0'..='9' | ':') => typed.push(ch),
+                                _ => {}
+                            }
+                        }
+                    }
+                    egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => {
+                        if let Some(typed) = entry.as_mut() {
+                            typed.pop();
+                            if typed.is_empty() {
+                                *entry = None;
+                            }
+                        }
+                    }
+                    egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
+                        if let Some(frames) = entry.take().and_then(|typed| crate::edit_point::parse_amount(&typed, fps)) {
+                            cmds.push(AppCommand::TrimEditPoints { frames });
+                        }
+                    }
+                    egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } if entry.take().is_some() => {
+                        held = true;
+                    }
+                    _ => {}
+                }
+            }
+        });
+        held
     }
 }

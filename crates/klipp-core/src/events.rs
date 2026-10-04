@@ -2426,6 +2426,15 @@ pub enum AppCommand {
     ToggleStoryline { clip_id: ClipId },
     /// Zoom the timeline to the selected clips (Shift+Z).
     ZoomToSelection,
+    /// Select the edit point nearest the playhead, both sides (#913).
+    SelectNearestEditPoint,
+    /// The selected edit points' next side: both, outgoing, incoming.
+    CycleEditSide,
+    /// Trim the selected edit points by `frames` (later when positive),
+    /// as one undo step.
+    TrimEditPoints { frames: i64 },
+    /// Move the selected edit points to the playhead (extend edit).
+    ExtendEditPoints,
 
     // Per-clip markers
     AddClipMarker { clip_id: ClipId, time_secs: f64, name: String, color: MarkerColor },

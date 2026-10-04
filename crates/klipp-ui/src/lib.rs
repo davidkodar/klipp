@@ -88,6 +88,7 @@ pub mod theme;
 pub mod transcript;
 pub mod timeline;
 pub mod tracks_undo;
+pub mod edit_point;
 pub mod ui_util;
 pub mod viewer_lut;
 pub mod widgets;
