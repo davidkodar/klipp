@@ -634,6 +634,10 @@ pub struct EditingPrefs {
     /// Default transition duration in frames (e.g. 24 frames = 1 second at 24fps).
     #[serde(default = "default_transition_frames")]
     pub default_transition_frames: u32,
+    /// How many frames Shift+Left and Shift+Right move the playhead; 0
+    /// moves one second, whatever the frame rate (#921).
+    #[serde(default)]
+    pub shift_step_frames: u32,
     // ── Expanded fields ──
     /// Default video track height in pixels.
     #[serde(default = "default_video_track_h")]
@@ -735,6 +739,7 @@ impl Default for EditingPrefs {
             undo_limit: default_undo_limit(),
             media_browser_view_mode: Default::default(),
             default_transition_frames: default_transition_frames(),
+            shift_step_frames: 0,
             default_video_track_height: default_video_track_h(),
             default_audio_track_height: default_audio_track_h(),
             snap_threshold_px: default_snap_px(),

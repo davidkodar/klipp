@@ -1012,6 +1012,10 @@ pub enum AppCommand {
     // Loop
     ToggleLoopPlayback,
     SetLoopPlayback(bool),
+    /// Play the sequence from its In to its Out once, and stop there
+    /// (#921). Without an In it starts at the beginning; without an Out
+    /// it plays to the end.
+    PlayInToOut,
 
     /// Toggle audio playback during hover skim. Mirrors FCP X's
     /// Shift+S audio-skim toggle. Flips both `state.audio_skimming_enabled`
@@ -2008,6 +2012,10 @@ pub enum AppCommand {
     /// `prefs.editing.default_transition_frames` ↔
     /// `state.default_transition_frames`.
     SetDefaultTransitionFrames(u32),
+    /// How many frames Shift+Left and Shift+Right move, 0 for one
+    /// second (#921). Mirrors `prefs.editing.shift_step_frames` ↔
+    /// `state.shift_step_frames`.
+    SetShiftStepFrames(u32),
     /// Whether multicam clips show angle-number overlays. Mirrors
     /// `prefs.editing.multicam_show_angles` ↔
     /// `state.multicam_show_angles`.

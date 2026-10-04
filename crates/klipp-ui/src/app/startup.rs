@@ -133,7 +133,7 @@ impl KlippApp {
             sound_over_time: Default::default(),
             narrate: Default::default(),
             preferences_panel: PreferencesPanel::default(),
-            transport: TransportBar,
+            transport: TransportBar::default(),
             timeline: {
                 // Field assignment rather than a struct literal with
                 // `..Default::default()`: TimelinePanel has private
@@ -361,6 +361,7 @@ impl KlippApp {
         app.state.multicam_show_angles = app.prefs.editing.multicam_show_angles;
         app.state.auto_create_tracks = app.prefs.editing.auto_create_tracks;
         app.state.default_transition_frames = app.prefs.editing.default_transition_frames;
+        app.state.shift_step_frames = app.prefs.editing.shift_step_frames;
         app.state.snap_threshold_px = app.prefs.editing.snap_threshold_px;
         app.state.grid_snap_interval = app.prefs.editing.grid_snap_interval;
         app.state.zoom_step = app.prefs.editing.zoom_step;

@@ -141,6 +141,23 @@ impl KlippApp {
                 self.prefs_dirty = true;
                 true
             }
+            AppCommand::SetShiftStepFrames(val) => {
+                apply_shift_step_frames(&mut self.prefs, &mut self.state, *val);
+                self.prefs_dirty = true;
+                true
+            }
+            // Play once from the In to the Out (#921). The frame loop
+            // pauses at the Out: `stop_at_out`.
+            AppCommand::PlayInToOut => {
+                let seq = self.state.sequence();
+                let from = seq.in_point.unwrap_or(klipp_core::Timecode { value: 0, rate: self.state.fps.rate() });
+                let to = seq.out_point.unwrap_or_else(|| self.state.sequence_duration());
+                if to > from {
+                    self.state.play_to_out = Some(crate::state::PlayToOut { out: to, asked: std::time::Instant::now(), started: false });
+                    self.send_commands(vec![AppCommand::SetSpeed(1.0), AppCommand::SeekTo(from), AppCommand::Play]);
+                }
+                true
+            }
             AppCommand::SetMulticamShowAngles(val) => {
                 apply_multicam_show_angles(&mut self.prefs, &mut self.state, *val);
                 self.prefs_dirty = true;
@@ -498,3 +515,26 @@ impl KlippApp {
         }
     }
 }
+
+impl KlippApp {
+    /// Play In to Out stops at the Out (#921): checked every frame, it
+    /// pauses on the frame the playhead reaches it and puts the playhead
+    /// on it. Pausing, stopping or seeking ends it, as does playback that
+    /// never started.
+    pub(super) fn stop_at_out(&mut self) {
+        let Some(run) = self.state.play_to_out else { return };
+        let playing = self.state.playback == PlaybackState::Playing;
+        match crate::navigation::play_to_out_step(run.started, playing, run.asked.elapsed(), self.state.playhead >= run.out) {
+            crate::navigation::PlayToOutStep::Wait => {}
+            crate::navigation::PlayToOutStep::Started => {
+                self.state.play_to_out = Some(crate::state::PlayToOut { started: true, ..run });
+            }
+            crate::navigation::PlayToOutStep::Done => self.state.play_to_out = None,
+            crate::navigation::PlayToOutStep::StopAtOut => {
+                self.state.play_to_out = None;
+                self.send_commands(vec![AppCommand::Pause, AppCommand::SeekTo(run.out)]);
+            }
+        }
+    }
+}
+

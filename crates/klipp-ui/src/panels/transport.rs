@@ -37,13 +37,22 @@ fn route_for_viewer(cmd: AppCommand, state: &AppState) -> AppCommand {
     route_command_for_viewer(cmd, state.viewer_mode)
 }
 
-pub struct TransportBar;
-
-impl Default for TransportBar {
-    fn default() -> Self {
-        Self
-    }
+#[derive(Default)]
+pub struct TransportBar {
+    /// J or L pressed with K held (#921): a frame stepped, and after a
+    /// moment held, slow play until either key is let go.
+    slow: Option<SlowPlay>,
 }
+
+/// One J or L pressed while K is held.
+struct SlowPlay {
+    forward: bool,
+    since: std::time::Instant,
+    playing: bool,
+}
+
+/// How long J or L is held with K before a frame step becomes slow play.
+const SLOW_PLAY_AFTER: std::time::Duration = std::time::Duration::from_millis(300);
 
 impl TransportBar {
     pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme) -> Vec<AppCommand> {
@@ -467,7 +476,7 @@ impl TransportBar {
     }
 
     pub fn handle_keyboard(
-        &self,
+        &mut self,
         ctx: &egui::Context,
         state: &AppState,
         kb: &crate::keybindings::KeyBindings,
@@ -491,9 +500,10 @@ impl TransportBar {
         }
 
         let text_editing = ctx.wants_keyboard_input() || state.editing_timecode || state.viewer_text_edit;
-        // One second, in frames (what SeekRelative counts). `fps.rate()`
-        // is the numerator — 30000 at 29.97 — not frames a second.
-        let fps_rate = state.fps.as_f64().round() as i64;
+        // What Shift+Left and Shift+Right move, in frames (what
+        // SeekRelative counts): the preference, or one second. Not
+        // `fps.rate()`, the numerator: 30000 at 29.97 (#921).
+        let shift_step = crate::navigation::shift_step_frames(state.shift_step_frames, state.fps.as_f64());
         ctx.input(|i| {
             // Spacebar: play/pause — UNLESS the file browser has keyboard
             // focus, in which case Spacebar belongs to Quick Look. Only
@@ -519,7 +529,7 @@ impl TransportBar {
             if !text_editing && !i.modifiers.alt
                 && (kb.is_action_pressed("step_backward", i) || (i.modifiers.shift && i.key_pressed(egui::Key::ArrowLeft))) {
                 if i.modifiers.shift {
-                    cmds.push(route_for_viewer(AppCommand::SeekRelative(-fps_rate), state));
+                    cmds.push(route_for_viewer(AppCommand::SeekRelative(-shift_step), state));
                 } else {
                     cmds.push(route_for_viewer(AppCommand::SeekRelative(-1), state));
                 }
@@ -527,7 +537,7 @@ impl TransportBar {
             if !text_editing && !i.modifiers.alt
                 && (kb.is_action_pressed("step_forward", i) || (i.modifiers.shift && i.key_pressed(egui::Key::ArrowRight))) {
                 if i.modifiers.shift {
-                    cmds.push(route_for_viewer(AppCommand::SeekRelative(fps_rate), state));
+                    cmds.push(route_for_viewer(AppCommand::SeekRelative(shift_step), state));
                 } else {
                     cmds.push(route_for_viewer(AppCommand::SeekRelative(1), state));
                 }
@@ -542,16 +552,19 @@ impl TransportBar {
                 let dur = state.sequence_duration();
                 cmds.push(route_for_viewer(AppCommand::SeekTo(dur), state));
             }
-            // J — reverse/faster reverse
+            // K held: J and L step a frame, and held on, play slowly (#921).
+            let k_held = !text_editing && kb.is_action_down("shuttle_pause", i);
+            // J — reverse, normal speed first, then faster
             if !text_editing && kb.is_action_pressed("shuttle_reverse", i) {
-                let s = state.playback_speed;
-                let new_speed = if s > 0.0 { -2.0 }
-                    else if s == -2.0 { -4.0 }
-                    else if s == -4.0 { -8.0 }
-                    else { -2.0 };
-                cmds.push(route_for_viewer(AppCommand::SetSpeed(new_speed), state));
-                if focus_playback != PlaybackState::Playing {
-                    cmds.push(route_for_viewer(AppCommand::Play, state));
+                if k_held {
+                    self.start_slow(false, &mut cmds, state);
+                } else {
+                    let playing = focus_playback == PlaybackState::Playing;
+                    let new_speed = crate::navigation::shuttle_speed(state.playback_speed, playing, false);
+                    cmds.push(route_for_viewer(AppCommand::SetSpeed(new_speed), state));
+                    if !playing {
+                        cmds.push(route_for_viewer(AppCommand::Play, state));
+                    }
                 }
             }
             // K — pause, reset speed
@@ -559,21 +572,64 @@ impl TransportBar {
                 cmds.push(route_for_viewer(AppCommand::SetSpeed(1.0), state));
                 cmds.push(route_for_viewer(AppCommand::Pause, state));
             }
-            // L — forward/faster forward
+            // L — forward, normal speed first, then faster
             if !text_editing && kb.is_action_pressed("shuttle_forward", i) {
-                let s = state.playback_speed;
-                let new_speed = if s < 0.0 { 2.0 }
-                    else if s == 2.0 { 4.0 }
-                    else if s == 4.0 { 8.0 }
-                    else { 2.0 };
-                cmds.push(route_for_viewer(AppCommand::SetSpeed(new_speed), state));
-                if focus_playback != PlaybackState::Playing {
-                    cmds.push(route_for_viewer(AppCommand::Play, state));
+                if k_held {
+                    self.start_slow(true, &mut cmds, state);
+                } else {
+                    let playing = focus_playback == PlaybackState::Playing;
+                    let new_speed = crate::navigation::shuttle_speed(state.playback_speed, playing, true);
+                    cmds.push(route_for_viewer(AppCommand::SetSpeed(new_speed), state));
+                    if !playing {
+                        cmds.push(route_for_viewer(AppCommand::Play, state));
+                    }
                 }
             }
+            if let Some(slow) = &mut self.slow {
+                let key = if slow.forward { "shuttle_forward" } else { "shuttle_reverse" };
+                if !k_held || !kb.is_action_down(key, i) {
+                    if slow.playing {
+                        cmds.push(route_for_viewer(AppCommand::Pause, state));
+                        cmds.push(route_for_viewer(AppCommand::SetSpeed(1.0), state));
+                    }
+                    self.slow = None;
+                } else if !slow.playing && slow.since.elapsed() >= SLOW_PLAY_AFTER {
+                    let speed = if slow.forward { crate::navigation::SLOW_SPEED } else { -crate::navigation::SLOW_SPEED };
+                    cmds.push(route_for_viewer(AppCommand::SetSpeed(speed), state));
+                    cmds.push(route_for_viewer(AppCommand::Play, state));
+                    slow.playing = true;
+                }
+            }
+            // Markers, and Play In to Out (#921)
+            if !text_editing && kb.is_action_pressed("next_marker", i) {
+                if let Some(at) = crate::navigation::marker_from(state.sequence(), state.playhead, true) {
+                    cmds.push(AppCommand::SeekTo(at));
+                }
+            }
+            if !text_editing && kb.is_action_pressed("prev_marker", i) {
+                if let Some(at) = crate::navigation::marker_from(state.sequence(), state.playhead, false) {
+                    cmds.push(AppCommand::SeekTo(at));
+                }
+            }
+            if !text_editing && kb.is_action_pressed("play_in_to_out", i) {
+                cmds.push(AppCommand::PlayInToOut);
+            }
         });
+        // Held keys are read each frame: keep frames coming while one is.
+        if self.slow.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(30));
+        }
 
         cmds
+    }
+}
+
+impl TransportBar {
+    /// J or L pressed with K held: one frame that way now, and slow play
+    /// if it is still held after `SLOW_PLAY_AFTER`.
+    fn start_slow(&mut self, forward: bool, cmds: &mut Vec<AppCommand>, state: &AppState) {
+        cmds.push(route_for_viewer(AppCommand::SeekRelative(if forward { 1 } else { -1 }), state));
+        self.slow = Some(SlowPlay { forward, since: std::time::Instant::now(), playing: false });
     }
 }
 
