@@ -158,6 +158,17 @@ impl HotCache {
             .count()
     }
 
+    /// The frames held for one clip at one grade, any size (#924).
+    pub fn frames_for(&self, clip_id: klipp_core::ClipId, grade_hash: u64) -> impl Iterator<Item = i64> + '_ {
+        self.entries.keys().filter(move |k| k.clip_id == clip_id && k.grade_hash == grade_hash).map(|k| k.frame_number)
+    }
+
+    /// Drop a clip's frames in `range`, at every grade and size (#924).
+    pub fn remove_frames(&mut self, clip_id: klipp_core::ClipId, range: std::ops::Range<i64>) {
+        self.entries.retain(|k, _| !(k.clip_id == clip_id && range.contains(&k.frame_number)));
+        self.order.retain(|k| !(k.clip_id == clip_id && range.contains(&k.frame_number)));
+    }
+
     pub fn new(capacity: usize) -> Self {
         Self {
             entries: HashMap::with_capacity(capacity),
@@ -261,6 +272,33 @@ pub struct DiskRenderCache {
     /// when deciding whether to evict.
     total_bytes: u64,
     enabled: bool,
+    /// Which frames are on disk, by clip and grade: how many sizes of
+    /// each (#924). Read from the file names, so the timeline can show
+    /// what is cached without a file check per frame.
+    frames: HashMap<(klipp_core::ClipId, u64), BTreeMap<i64, u32>>,
+}
+
+/// The clip, frame and grade a cache file's name says it holds.
+fn parse_filename(name: &str) -> Option<(klipp_core::ClipId, i64, u64)> {
+    let stem = name.strip_suffix(".lz4")?;
+    let mut parts = stem.split('_');
+    let clip = uuid::Uuid::parse_str(parts.next()?).ok()?;
+    let frame = parts.next()?.parse::<i64>().ok()?;
+    let hash = u64::from_str_radix(parts.next()?, 16).ok()?;
+    Some((klipp_core::ClipId(clip), frame, hash))
+}
+
+fn note_frame(frames: &mut HashMap<(klipp_core::ClipId, u64), BTreeMap<i64, u32>>, path: &Path, delta: i32) {
+    let Some((clip, frame, hash)) = path.file_name().and_then(|n| n.to_str()).and_then(parse_filename) else { return };
+    let by_frame = frames.entry((clip, hash)).or_default();
+    let count = by_frame.entry(frame).or_insert(0);
+    *count = count.saturating_add_signed(delta);
+    if *count == 0 {
+        by_frame.remove(&frame);
+        if by_frame.is_empty() {
+            frames.remove(&(clip, hash));
+        }
+    }
 }
 
 impl DiskRenderCache {
@@ -301,12 +339,17 @@ impl DiskRenderCache {
             elapsed.as_secs_f64() * 1000.0,
         );
 
+        let mut frames = HashMap::new();
+        for meta in index.values() {
+            note_frame(&mut frames, &meta.path, 1);
+        }
         let mut me = Self {
             cache_dir,
             max_size_bytes: max_size_gb as u64 * 1_073_741_824,
             index,
             total_bytes,
             enabled: true,
+            frames,
         };
         // If the existing cache already exceeds the cap (e.g. the cap was
         // lowered), trim it now rather than waiting for the first put().
@@ -407,8 +450,10 @@ impl DiskRenderCache {
         if let Some(k) = stale_key {
             if let Some(meta) = self.index.remove(&k) {
                 self.total_bytes = self.total_bytes.saturating_sub(meta.bytes);
+                note_frame(&mut self.frames, &meta.path, -1);
             }
         }
+        note_frame(&mut self.frames, &path, 1);
 
         let mtime = SystemTime::now();
         let key = EntryKey { mtime, path_hash: ph };
@@ -430,9 +475,37 @@ impl DiskRenderCache {
         if let Some(k) = key_to_remove {
             if let Some(meta) = self.index.remove(&k) {
                 self.total_bytes = self.total_bytes.saturating_sub(meta.bytes);
+                note_frame(&mut self.frames, &meta.path, -1);
             }
         }
         let _ = std::fs::remove_file(path);
+    }
+
+    /// The frames on disk for one clip at one grade, in order, at any
+    /// size (#924).
+    pub fn cached_frames(&self, clip_id: klipp_core::ClipId, grade_hash: u64) -> impl Iterator<Item = i64> + '_ {
+        self.frames.get(&(clip_id, grade_hash)).into_iter().flat_map(|m| m.keys().copied())
+    }
+
+    /// Delete a clip's frames in `range` from disk, at every grade and
+    /// size (#924). Returns how many files went.
+    pub fn remove_frames(&mut self, clip_id: klipp_core::ClipId, range: std::ops::Range<i64>) -> usize {
+        let doomed: Vec<PathBuf> = self
+            .index
+            .values()
+            .filter(|meta| {
+                meta.path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(parse_filename)
+                    .is_some_and(|(clip, frame, _)| clip == clip_id && range.contains(&frame))
+            })
+            .map(|meta| meta.path.clone())
+            .collect();
+        for path in &doomed {
+            self.remove_entry(path);
+        }
+        doomed.len()
     }
 
     /// Evict oldest entries until we're back under the size cap.
@@ -457,6 +530,7 @@ impl DiskRenderCache {
             };
             self.total_bytes = self.total_bytes.saturating_sub(meta.bytes);
             removed_bytes += meta.bytes;
+            note_frame(&mut self.frames, &meta.path, -1);
             match std::fs::remove_file(&meta.path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -522,6 +596,38 @@ fn decode_entry(file: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
 
 #[cfg(test)]
 mod tests {
+    /// The disk cache knows which frames it holds from its file names,
+    /// keeps that as frames are written and removed, and removes a range
+    /// of a clip at every grade (#924).
+    #[test]
+    fn disk_cache_tracks_its_frames_and_removes_a_range() {
+        let dir = std::env::temp_dir().join(format!("klipp_render_frames_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let clip = klipp_core::ClipId::new();
+        let other = klipp_core::ClipId::new();
+        let key = |clip_id, frame_number, grade_hash, size| RenderCacheKey { clip_id, frame_number, grade_hash, size };
+        {
+            let mut disk = DiskRenderCache::new(dir.clone(), 1);
+            for f in [0, 1001, 2002, 3003] {
+                disk.put(&key(clip, f, 7, (2, 2)), &[0; 16], 2, 2);
+            }
+            disk.put(&key(clip, 1001, 7, (1, 1)), &[0; 4], 1, 1);
+            disk.put(&key(clip, 1001, 9, (2, 2)), &[0; 16], 2, 2);
+            disk.put(&key(other, 1001, 7, (2, 2)), &[0; 16], 2, 2);
+            assert_eq!(disk.cached_frames(clip, 7).collect::<Vec<_>>(), vec![0, 1001, 2002, 3003]);
+        }
+        // A new cache over the same folder reads the same from the names.
+        let mut disk = DiskRenderCache::new(dir.clone(), 1);
+        assert_eq!(disk.cached_frames(clip, 7).collect::<Vec<_>>(), vec![0, 1001, 2002, 3003]);
+        assert_eq!(disk.cached_frames(clip, 9).collect::<Vec<_>>(), vec![1001]);
+        // Frames 1001 and 2002, at both grades and both sizes.
+        assert_eq!(disk.remove_frames(clip, 1001..3003), 4);
+        assert_eq!(disk.cached_frames(clip, 7).collect::<Vec<_>>(), vec![0, 3003]);
+        assert_eq!(disk.cached_frames(clip, 9).count(), 0);
+        assert_eq!(disk.cached_frames(other, 7).collect::<Vec<_>>(), vec![1001], "another clip is left alone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The coverage bar's count must come from the entries, not from
     /// probing timeline positions — and only this clip at this grade.
     #[test]

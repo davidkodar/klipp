@@ -32,12 +32,12 @@ lz4_flex = { workspace = true }
 serde_json = { workspace = true }
 walkdir = { workspace = true }
 dirs = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 klipp-testing = { workspace = true }
 pollster = "0.3"
 klipp-render = { workspace = true }
-uuid = { workspace = true }
 kamadak-exif = "0.6"
 
 [lints]

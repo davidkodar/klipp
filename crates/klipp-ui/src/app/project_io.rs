@@ -132,6 +132,7 @@ impl KlippApp {
 
         // 8. Clear render-cache range markers (no clips → no ranges)
         self.state.render_cache_ranges.clear();
+        self.state.render_status.clear();
     }
 
     /// Mark every item of the open project, and every import still

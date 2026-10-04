@@ -679,6 +679,17 @@ impl ToolbarPanel {
                 ui.close_menu();
             }
             ui.separator();
+            // The render cache for In to Out, or the whole timeline without
+            // them (#924): rendered frames dropped, to render again.
+            let (seq_in, seq_out) = (state.sequence().in_point, state.sequence().out_point);
+            let label = if seq_in.is_some() || seq_out.is_some() { "Clear Render Cache In to Out" } else { "Clear Render Cache" };
+            if ui.button(label).on_hover_text("Drop the rendered frames there; graded clips render again as they play").clicked() {
+                let from = seq_in.unwrap_or(klipp_core::Timecode { value: 0, rate: state.fps.rate() });
+                let to = seq_out.unwrap_or_else(|| state.sequence_duration());
+                cmds.push(AppCommand::ClearRenderCache { from, to });
+                ui.close_menu();
+            }
+            ui.separator();
             // Detect Scene Cuts (#616): the selected clip split at its
             // picture changes in one step; its progress and Cancel here
             // while it runs.

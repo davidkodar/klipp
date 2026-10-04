@@ -78,6 +78,52 @@ impl GpuOutputSnapshot {
     }
 }
 
+/// A span of the timeline the render status strip draws (#924): a graded
+/// clip's frames from `from` to `to` (timeline ticks, `to` exclusive),
+/// in the render cache or not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderSpan {
+    pub from: i64,
+    pub to: i64,
+    pub cached: bool,
+}
+
+/// A clip's spans from `start` to `end` (ticks), given its cached frames
+/// in order: a run of frames `ticks_per_frame` apart is one cached span,
+/// and what lies between runs is to render.
+pub fn render_spans(start: i64, end: i64, cached: &[i64], ticks_per_frame: i64) -> Vec<RenderSpan> {
+    let step = ticks_per_frame.max(1);
+    let mut spans = Vec::new();
+    let mut cursor = start;
+    let mut run: Option<(i64, i64)> = None;
+    for &f in cached.iter().filter(|&&f| f >= start && f < end) {
+        run = match run {
+            Some((a, b)) if f <= b => Some((a, b.max(f + step))),
+            Some((a, b)) => {
+                if a > cursor {
+                    spans.push(RenderSpan { from: cursor, to: a, cached: false });
+                }
+                spans.push(RenderSpan { from: a, to: b, cached: true });
+                cursor = b;
+                Some((f, f + step))
+            }
+            None => Some((f, f + step)),
+        };
+    }
+    if let Some((a, b)) = run {
+        if a > cursor {
+            spans.push(RenderSpan { from: cursor, to: a, cached: false });
+        }
+        let b = b.min(end);
+        spans.push(RenderSpan { from: a, to: b, cached: true });
+        cursor = b;
+    }
+    if cursor < end {
+        spans.push(RenderSpan { from: cursor, to: end, cached: false });
+    }
+    spans
+}
+
 pub struct FrameBuffer {
     pub data: Vec<u8>,
     /// Pre-grade original frame for Before/After split view.
@@ -144,6 +190,9 @@ pub struct FrameBuffer {
     /// Render cache status per clip: (clip_id, cached_frame_count, total_frame_count).
     /// Updated periodically by the engine for timeline visualization.
     pub render_cache_ranges: Vec<(klipp_core::ClipId, u32, u32)>,
+    /// What the strip over the ruler shows (#924): spans of graded clips,
+    /// in timeline ticks, cached or still to render.
+    pub render_status: Vec<RenderSpan>,
     // ── Double-buffer: engine writes to pending, UI swaps into data ──
     pub pending_data: Vec<u8>,
     pub pending_width: u32,
@@ -240,6 +289,7 @@ impl FrameBuffer {
             dirty: false,
             generation: 0,
             render_cache_ranges: Vec::new(),
+            render_status: Vec::new(),
             pending_data: Vec::new(),
             pending_width: 0,
             pending_height: 0,
@@ -527,6 +577,38 @@ pub type SharedFrameBuffer = Arc<Mutex<FrameBuffer>>;
 
 #[cfg(test)]
 mod tests {
+    use super::{render_spans, RenderSpan};
+
+    fn span(from: i64, to: i64, cached: bool) -> RenderSpan {
+        RenderSpan { from, to, cached }
+    }
+
+    /// A clip with cached runs reads as cached spans with what lies
+    /// between them to render (#924).
+    #[test]
+    fn cached_runs_and_the_gaps_between_them() {
+        // Frames are 1001 ticks apart (NTSC); the clip is ten frames.
+        let cached = [2002, 3003, 4004, 7007];
+        assert_eq!(
+            render_spans(0, 10010, &cached, 1001),
+            vec![span(0, 2002, false), span(2002, 5005, true), span(5005, 7007, false), span(7007, 8008, true), span(8008, 10010, false)]
+        );
+    }
+
+    #[test]
+    fn nothing_cached_is_all_to_render_and_everything_cached_is_one_span() {
+        assert_eq!(render_spans(100, 110, &[], 1), vec![span(100, 110, false)]);
+        let all: Vec<i64> = (100..110).collect();
+        assert_eq!(render_spans(100, 110, &all, 1), vec![span(100, 110, true)]);
+    }
+
+    /// Frames outside the clip, from a cache of the clip at another
+    /// position, are not counted.
+    #[test]
+    fn frames_outside_the_clip_are_ignored() {
+        assert_eq!(render_spans(10, 20, &[0, 5, 12, 25], 1), vec![span(10, 12, false), span(12, 13, true), span(13, 20, false)]);
+    }
+
     /// Two frames written before the UI swaps must get distinct, rising
     /// generations. With `generation + 1` both got the same number, so a
     /// waiter could never tell the second (the one reflecting an edit)

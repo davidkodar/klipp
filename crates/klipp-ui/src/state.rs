@@ -1512,6 +1512,9 @@ pub struct AppState {
     pub awaiting_seek_frame: bool,
     /// Render cache coverage per clip: (clip_id, cached_count, total_count).
     pub render_cache_ranges: Vec<(klipp_core::ClipId, u32, u32)>,
+    /// The render status strip over the ruler (#924): graded clips' spans,
+    /// cached or still to render, in timeline ticks.
+    pub render_status: Vec<klipp_engine::texture::RenderSpan>,
 
     // Phase 4: Relink
     pub show_relink_dialog: bool,
@@ -3842,6 +3845,7 @@ impl Default for AppState {
             showing_thumbnail_preview: false,
             awaiting_seek_frame: false,
             render_cache_ranges: Vec::new(),
+            render_status: Vec::new(),
             show_relink_dialog: false,
             offline_media_ids: Vec::new(),
             show_about_dialog: false,
