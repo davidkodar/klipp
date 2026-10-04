@@ -122,8 +122,10 @@ pub fn save_project_full(
         })
         .collect();
 
-    // One id for this save, written into both files (#821).
+    // One id for this save, written into both files (#821), and into the
+    // pending mark while it is under way (#840).
     let generation = new_generation();
+    let saving = generation.clone();
     let project = ProjectJson {
         version: "1.0.0".to_string(),
         klipp_version_min: "0.1.0".to_string(),
@@ -161,7 +163,7 @@ pub fn save_project_full(
     let manifest_json = serde_json::to_string_pretty(&manifest)
         .map_err(|e| format!("Failed to serialize media manifest: {e}"))?;
 
-    commit_pair(dir, project_json.as_bytes(), manifest_json.as_bytes(), backup_count)?;
+    commit_pair(dir, project_json.as_bytes(), manifest_json.as_bytes(), backup_count, &saving)?;
 
     info!("Project saved to {:?}", dir);
     Ok(())
@@ -174,27 +176,59 @@ fn new_generation() -> String {
     format!("{nanos:x}-{:x}", std::process::id())
 }
 
-/// Writes a save's two files as one step that can be recovered (#821).
-/// Each write is atomic on its own; the pair was not, so a failure between
-/// them left the new timeline beside the old media list, or none. Now:
+/// Where a save keeps the pair it replaces until the new one is whole
+/// (#840): `project.json`, `manifest.json`, and while a save is under way,
+/// `pending` with its generation.
+pub(crate) const RECOVERY_DIR: &str = ".recovery";
+
+/// Writes a save's two files as one step that can be recovered (#821,
+/// #840). Each write is atomic on its own; the pair was not, so a failure
+/// between them left the new timeline beside the old media list. Now:
 ///
-/// - both files' backups rotate together, so `.bak.N` of each is the same
-///   earlier save;
+/// - the pair being replaced is copied into `.recovery/` first, and a
+///   `pending` mark holding this save's generation is written: whatever
+///   the backup setting, an open after a crash finds the pair from before
+///   (`crate::load`), including for a project saved before generations;
+///   a save that cannot make that copy does not go ahead;
 /// - the manifest is written first and `project.json` last, the commit
 ///   point: if the manifest fails nothing has changed, and if
 ///   `project.json` fails the previous manifest is put back;
-/// - a crash in between (nothing left to put it back) leaves a pair whose
-///   generations differ, which [`crate::load::load_project`] mends from
-///   the backups.
-fn commit_pair(dir: &Path, project: &[u8], manifest: &[u8], backup_count: u32) -> Result<(), String> {
+/// - the mark is removed once both are written;
+/// - the user's backups rotate together, so `.bak.N` of each is the same
+///   earlier save, and a backup that fails is said rather than ignored.
+fn commit_pair(dir: &Path, project: &[u8], manifest: &[u8], backup_count: u32, generation: &str) -> Result<(), String> {
     let project_file = dir.join("project.json");
     let manifest_file = dir.join("media").join("manifest.json");
-    if backup_count > 0 {
-        if project_file.exists() {
-            rotate_backups(&project_file, backup_count);
+    let recovery = dir.join(RECOVERY_DIR);
+    std::fs::create_dir_all(&recovery).map_err(|e| format!("Failed to make the recovery folder: {e}"))?;
+    // After a save that stopped between its files the pair on disk is
+    // broken (its manifest new, its project.json not), and the recovery
+    // copy is the good one: copying the broken pair over it would lose it
+    // if this save stopped too (#858 review). It is kept as it is.
+    let broken = std::fs::read_to_string(recovery.join("pending")).ok().is_some_and(|pending| {
+        let generation_of = |f: &Path| -> Option<String> {
+            let v: serde_json::Value = serde_json::from_slice(&std::fs::read(f).ok()?).ok()?;
+            v.get("generation")?.as_str().map(str::to_string)
+        };
+        let pending = Some(pending.trim().to_string());
+        generation_of(&manifest_file) == pending && generation_of(&project_file) != pending
+    });
+    if broken {
+        tracing::warn!("the last save stopped between its files; keeping its recovery copy rather than copying the broken pair over it");
+    } else if project_file.exists() && manifest_file.exists() {
+        for (from, name) in [(&manifest_file, "manifest.json"), (&project_file, "project.json")] {
+            let data = std::fs::read(from).map_err(|e| format!("Failed to read {name} to keep a recovery copy: {e}"))?;
+            atomic_write(&recovery.join(name), &data).map_err(|e| format!("Failed to keep a recovery copy of {name}: {e}"))?;
         }
-        if manifest_file.exists() {
-            rotate_backups(&manifest_file, backup_count);
+    }
+    atomic_write(&recovery.join("pending"), generation.as_bytes()).map_err(|e| format!("Failed to mark the save as under way: {e}"))?;
+    if backup_count > 0 {
+        for file in [&project_file, &manifest_file] {
+            if file.exists() {
+                if let Err(e) = rotate_backups(file, backup_count) {
+                    tracing::warn!("{e}; the save goes on, its recovery copy is kept");
+                }
+            }
         }
     }
     let previous_manifest = std::fs::read(&manifest_file).ok();
@@ -206,9 +240,12 @@ fn commit_pair(dir: &Path, project: &[u8], manifest: &[u8], backup_count: u32) -
             None => std::fs::remove_file(&manifest_file).is_ok(),
         };
         if !restored {
-            tracing::warn!("project.json failed and the previous media manifest could not be put back; it will be mended from the backups on open");
+            tracing::warn!("project.json failed and the previous media manifest could not be put back; the recovery copy is used on open");
         }
         return Err(format!("Failed to write project.json: {e}"));
+    }
+    if let Err(e) = std::fs::remove_file(recovery.join("pending")) {
+        tracing::warn!("the save is complete, but its pending mark could not be removed ({e}); the next open still reads the new pair");
     }
     Ok(())
 }
@@ -651,26 +688,29 @@ fn media_item_to_json(item: &MediaItem, project_dir: &Path) -> MediaItemJson {
 }
 
 /// Rotate backup files: project.json → project.json.bak.1, .bak.1 → .bak.2, etc.
-/// Keeps up to `max_backups` versions.
-fn rotate_backups(path: &Path, max_backups: u32) {
+/// Keeps up to `max_backups` versions. A step that fails is said in the
+/// error, so a backup that was not made is not taken for one (#840).
+fn rotate_backups(path: &Path, max_backups: u32) -> Result<(), String> {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     // Remove oldest backup if at limit
     let oldest = path.with_extension(format!("json.bak.{max_backups}"));
-    let _ = std::fs::remove_file(&oldest);
+    if oldest.exists() {
+        std::fs::remove_file(&oldest).map_err(|e| format!("the oldest backup of {name} could not be removed: {e}"))?;
+    }
 
     // Shift existing backups: .bak.N-1 → .bak.N
     for i in (1..max_backups).rev() {
         let from = path.with_extension(format!("json.bak.{i}"));
         let to = path.with_extension(format!("json.bak.{}", i + 1));
         if from.exists() {
-            let _ = std::fs::rename(&from, &to);
+            std::fs::rename(&from, &to).map_err(|e| format!("backup {i} of {name} could not be moved along: {e}"))?;
         }
     }
 
     // Copy current file to .bak.1 atomically (read + atomic_write)
     let bak1 = path.with_extension("json.bak.1");
-    if let Ok(data) = std::fs::read(path) {
-        let _ = atomic_write(&bak1, &data);
-    }
+    let data = std::fs::read(path).map_err(|e| format!("{name} could not be read for its backup: {e}"))?;
+    atomic_write(&bak1, &data).map_err(|e| format!("the backup of {name} could not be written: {e}"))
 }
 
 /// Save the project's Looks library to `<dir>/looks/{id}.json`. One
