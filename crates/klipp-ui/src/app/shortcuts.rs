@@ -954,6 +954,16 @@ impl KlippApp {
             if kb.is_action_pressed("overwrite_edit", i) {
                 cmds.push(AppCommand::OverwriteEdit);
             }
+            // Fit to fill, place on top, replace (#919)
+            if kb.is_action_pressed("fit_to_fill_edit", i) {
+                cmds.push(AppCommand::FitToFillEdit);
+            }
+            if kb.is_action_pressed("place_on_top_edit", i) {
+                cmds.push(AppCommand::PlaceOnTopEdit);
+            }
+            if kb.is_action_pressed("replace_edit", i) {
+                cmds.push(AppCommand::ReplaceEdit);
+            }
             // Lift edit
             if kb.is_action_pressed("lift_edit", i) {
                 cmds.push(AppCommand::LiftEdit);

@@ -2061,6 +2061,20 @@ pub enum AppCommand {
     // Three-point edits
     InsertEdit,
     OverwriteEdit,
+    /// The source In to Out into the sequence In to Out, its speed
+    /// changed to fill it (#919).
+    FitToFillEdit,
+    /// The source on the first video track above the patched one that is
+    /// free over its span, a new track when none is (#919).
+    PlaceOnTopEdit,
+    /// The clip under the playhead on the patched track takes the source,
+    /// the source's playhead frame at the timeline's playhead; the clip
+    /// keeps its place and length (#919).
+    ReplaceEdit,
+    /// The clip under the playhead on the patched track replaced by the
+    /// source's marked range, which may be longer or shorter: what
+    /// follows moves by the difference (#919).
+    RippleOverwriteEdit,
     LiftEdit,
     ExtractEdit,
 
