@@ -433,8 +433,10 @@ impl ToolbarPanel {
             }
             ui.separator();
             if ui.add(egui::Button::new("Select All").shortcut_text(kb.display_for("select_all"))).clicked() { cmds.push(AppCommand::SelectAllClips); ui.close_menu(); }
-            if ui.add(egui::Button::new("Select Forward").shortcut_text(kb.display_for("select_forward"))).on_hover_text("Every clip starting at or after the playhead, on every unlocked track").clicked() { cmds.push(AppCommand::SelectClipsForward); ui.close_menu(); }
-            if ui.add(egui::Button::new("Select Backward").shortcut_text(kb.display_for("select_backward"))).on_hover_text("Every clip ending at or before the playhead, on every unlocked track").clicked() { cmds.push(AppCommand::SelectClipsBackward); ui.close_menu(); }
+            // No default key (each would take one the other actions use);
+            // bindable in Preferences, so no shortcut text here.
+            if ui.button("Select Forward").on_hover_text("Every clip starting at or after the playhead, on every unlocked track").clicked() { cmds.push(AppCommand::SelectClipsForward); ui.close_menu(); }
+            if ui.button("Select Backward").on_hover_text("Every clip ending at or before the playhead, on every unlocked track").clicked() { cmds.push(AppCommand::SelectClipsBackward); ui.close_menu(); }
             // The selected clip's track (#844); a track's own header menu
             // has the same three for any track.
             let on_track = state.selected_clip.is_some();
