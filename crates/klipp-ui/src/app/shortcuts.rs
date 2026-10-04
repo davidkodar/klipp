@@ -930,6 +930,11 @@ impl KlippApp {
                 cmds.push(AppCommand::SelectClipsBackward);
             }
             // Previous edit point
+            // Ctrl+Up: out of an opened compound clip, to the sequence
+            // it sits in (#910).
+            if kb.is_action_pressed("leave_compound", i) && !self.state.compound_clip_stack.is_empty() {
+                cmds.push(AppCommand::CloseCompoundClip);
+            }
             if kb.is_action_pressed("prev_edit_point", i) {
                 cmds.push(AppCommand::PrevEditPoint);
             }

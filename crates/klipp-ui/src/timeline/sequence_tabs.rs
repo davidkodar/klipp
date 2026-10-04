@@ -291,6 +291,40 @@ pub fn show(
         }
     }
 
+    // Inside an opened compound clip: the way back, right-aligned. Each
+    // parent is a step up (as many as it takes), and ‹ goes up one (#910).
+    // Nothing in the app led out of a compound clip before.
+    if let Some(crumbs) = breadcrumb(state) {
+        let font = egui::FontId::proportional(11.0);
+        let mut right = rect.max.x - 8.0;
+        for (i, (name, up)) in crumbs.iter().enumerate().rev() {
+            let current = *up == 0;
+            let text = if i == 0 { name.clone() } else { format!("\u{203A} {name}") };
+            let w = ui.painter().layout_no_wrap(text.clone(), font.clone(), theme.text_primary).rect.width();
+            let r = egui::Rect::from_min_size(egui::pos2(right - w, y), egui::vec2(w, TAB_HEIGHT));
+            let resp = ui.allocate_rect(r, if current { egui::Sense::hover() } else { egui::Sense::click() });
+            let color = if current { theme.text_primary } else if resp.hovered() { theme.accent } else { theme.text_dim };
+            ui.painter().text(egui::pos2(r.min.x, r.center().y), egui::Align2::LEFT_CENTER, &text, font.clone(), color);
+            if !current && resp.on_hover_text(format!("Back to {name}")).clicked() {
+                cmds.extend(std::iter::repeat_n(AppCommand::CloseCompoundClip, *up));
+            }
+            right -= w + 6.0;
+        }
+        let back = egui::Rect::from_min_size(egui::pos2(right - 18.0, y), egui::vec2(18.0, TAB_HEIGHT));
+        let resp = ui.allocate_rect(back, egui::Sense::click());
+        ui.painter().text(
+            back.center(),
+            egui::Align2::CENTER_CENTER,
+            "\u{2039}",
+            egui::FontId::proportional(15.0),
+            if resp.hovered() { theme.accent } else { theme.text_secondary },
+        );
+        let shortcut = crate::keybindings::KeyBindings::defaults().display_for("leave_compound");
+        if resp.on_hover_text(format!("Leave the compound clip ({shortcut})")).clicked() {
+            cmds.push(AppCommand::CloseCompoundClip);
+        }
+    }
+
     cmds
 }
 
@@ -312,6 +346,24 @@ fn open_tab_count(state: &AppState) -> usize {
 fn tab_after_closing(state: &AppState, closing: usize) -> Option<usize> {
     let open = |i: usize| i != closing && !state.closed_sequence_tabs.contains(&state.sequences[i].id);
     (closing + 1..state.sequences.len()).find(|&i| open(i)).or_else(|| (0..closing).rev().find(|&i| open(i)))
+}
+
+/// The way back out of an opened compound clip: each sequence from the
+/// outermost to the one shown, with how many steps up it is (0 for the
+/// one shown), or `None` when no compound clip is open.
+fn breadcrumb(state: &AppState) -> Option<Vec<(String, usize)>> {
+    if state.compound_clip_stack.is_empty() {
+        return None;
+    }
+    let depth = state.compound_clip_stack.len();
+    let mut crumbs: Vec<(String, usize)> = state
+        .compound_clip_stack
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (idx, _))| state.sequences.get(*idx).map(|s| (s.name.clone(), depth - i)))
+        .collect();
+    crumbs.push((state.sequence().name.clone(), 0));
+    Some(crumbs)
 }
 
 #[cfg(test)]
@@ -351,3 +403,24 @@ mod tests {
         assert_eq!(open_tab_count(&state), 1, "the last tab cannot be closed");
     }
 }
+
+#[cfg(test)]
+mod breadcrumb_tests {
+    use super::breadcrumb;
+    use crate::state::AppState;
+
+    #[test]
+    fn the_way_back_names_each_parent_and_how_far_up_it_is() {
+        let mut state = AppState::default();
+        assert!(breadcrumb(&state).is_none(), "no compound clip open");
+        let mut inner = state.sequences[0].clone();
+        inner.id = klipp_core::SequenceId::new();
+        inner.name = "Compound 1".into();
+        state.sequences.push(inner);
+        let main = state.sequences[0].name.clone();
+        state.compound_clip_stack.push((0, state.playhead));
+        state.active_sequence_idx = 1;
+        assert_eq!(breadcrumb(&state), Some(vec![(main, 1), ("Compound 1".to_string(), 0)]));
+    }
+}
+

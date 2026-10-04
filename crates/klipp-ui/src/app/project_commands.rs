@@ -383,6 +383,11 @@ impl KlippApp {
                     // pending entry on whatever sequence becomes active
                     // next.
                     self.state.active_history_mut().abandon_pending_drag();
+                    // A tab is another sequence, not a step out of an opened
+                    // compound clip: the way back to its parents is
+                    // dropped, so the breadcrumb and Ctrl+Up never lead into
+                    // a sequence it no longer sits in (#910).
+                    self.state.compound_clip_stack.clear();
                     // Switch
                     self.state.active_sequence_idx = *sequence_idx;
                     // Restore playhead from incoming sequence
