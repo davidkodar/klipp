@@ -193,3 +193,84 @@ fn two_stopped_saves_in_a_row_still_open_as_the_save_before() {
     assert_eq!(names(&dir), vec!["a.mov"], "after the second stop, still the save before both");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── #927: a retry that rewrites the mark ─────────────────────────────
+
+/// What a retried save leaves when it stops before its manifest: it has
+/// rewritten the pending mark with its own generation, and nothing else.
+fn retry_stopped_before_its_manifest(dir: &Path) {
+    std::fs::write(dir.join(".recovery").join("pending"), "a-retry-that-wrote-only-its-mark").unwrap();
+}
+
+/// Strip the generations, as a project saved before them has none.
+fn as_legacy(dir: &Path) {
+    for f in [dir.join("project.json"), dir.join("media").join("manifest.json")] {
+        let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("generation");
+        std::fs::write(&f, serde_json::to_vec(&v).unwrap()).unwrap();
+    }
+}
+
+/// A save stops between its files, the project reopens, and a retry
+/// stops before writing its manifest: the files on disk are still from
+/// different saves, and the recovery copy is opened, backups off.
+#[test]
+fn a_retry_that_stops_before_its_manifest_still_opens_as_the_save_before() {
+    let dir = fresh("retry");
+    save_without_backups(&dir, &["a.mov"]);
+    let a = std::fs::read(dir.join("project.json")).unwrap();
+    save_without_backups(&dir, &["b.mov"]);
+    stopped_between(&dir, &a);
+    assert_eq!(names(&dir), vec!["a.mov"], "after the first stop");
+    retry_stopped_before_its_manifest(&dir);
+    assert_eq!(names(&dir), vec!["a.mov"], "the retry wrote only its mark: still the save before");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same for a project from before generations: the old timeline is
+/// never opened with the newer media list.
+#[test]
+fn a_legacy_project_survives_a_retry_that_stops_before_its_manifest() {
+    let dir = fresh("retry_legacy");
+    save_project(&dir, &[Sequence::new_default()], &pool_of(&dir, &["a.mov"])).unwrap();
+    as_legacy(&dir);
+    let legacy = std::fs::read(dir.join("project.json")).unwrap();
+    save_project(&dir, &[Sequence::new_default()], &pool_of(&dir, &["b.mov"])).unwrap();
+    stopped_between(&dir, &legacy);
+    retry_stopped_before_its_manifest(&dir);
+    assert_eq!(names(&dir), vec!["a.mov"], "the old timeline with its own media list");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// After such a retry, a save that runs keeps the good recovery copy
+/// rather than copying the broken pair over it, and if it stops between
+/// its files too, the project still opens as the save before them all.
+#[test]
+fn a_save_after_a_stopped_retry_keeps_the_good_recovery_copy() {
+    let dir = fresh("retry_then_save");
+    save_without_backups(&dir, &["a.mov"]);
+    let a = std::fs::read(dir.join("project.json")).unwrap();
+    save_without_backups(&dir, &["b.mov"]);
+    stopped_between(&dir, &a);
+    retry_stopped_before_its_manifest(&dir);
+    save_without_backups(&dir, &["c.mov"]);
+    stopped_between(&dir, &a);
+    assert_eq!(names(&dir), vec!["a.mov"], "the recovery copy is still the pair from before");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A legacy timeline beside a media list a stopped save wrote, with the
+/// recovery copy gone: refused, not opened as if whole.
+#[test]
+fn a_legacy_pair_with_no_recovery_copy_is_refused() {
+    let dir = fresh("legacy_norecovery");
+    save_project(&dir, &[Sequence::new_default()], &pool_of(&dir, &["a.mov"])).unwrap();
+    as_legacy(&dir);
+    let legacy = std::fs::read(dir.join("project.json")).unwrap();
+    save_project(&dir, &[Sequence::new_default()], &pool_of(&dir, &["b.mov"])).unwrap();
+    stopped_between(&dir, &legacy);
+    std::fs::remove_file(dir.join(".recovery").join("project.json")).unwrap();
+    let err = load_project(&dir).unwrap_err();
+    assert!(err.contains("from different saves"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
