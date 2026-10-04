@@ -297,7 +297,7 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
         // The bed is what it is to the mix, and at the level asked for.
         ops.push(Op::Role { clip_id: ClipRef::At { track: music_track, secs: start + laid / 2.0 }, role: "music".into() });
         if m.volume_db.is_some() || m.fade_in_secs.is_some() || m.fade_out_secs.is_some() {
-            ops.push(Op::Audio { clip_id: ClipRef::At { track: music_track, secs: start + laid / 2.0 }, volume_db: m.volume_db, gain_db: None, pan: None, fade_in: m.fade_in_secs.map(|f| f as f32), fade_out: m.fade_out_secs.map(|f| f as f32) });
+            ops.push(Op::Audio { clip_id: Some(ClipRef::At { track: music_track, secs: start + laid / 2.0 }), track: None, from: None, to: None, volume_db: m.volume_db, gain_db: None, pan: None, fade_in: m.fade_in_secs.map(|f| f as f32), fade_out: m.fade_out_secs.map(|f| f as f32) });
         }
         // Ducked under the segments' own sound; with none, there is
         // nothing to duck under and the op would refuse.
@@ -330,7 +330,7 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
                 });
                 ops.push(Op::Role { clip_id: ClipRef::At { track: sfx_track, secs: when + secs / 2.0 }, role: "sfx".into() });
                 if let Some(v) = x.volume_db {
-                    ops.push(Op::Audio { clip_id: ClipRef::At { track: sfx_track, secs: when + secs / 2.0 }, volume_db: Some(v), gain_db: None, pan: None, fade_in: None, fade_out: None });
+                    ops.push(Op::Audio { clip_id: Some(ClipRef::At { track: sfx_track, secs: when + secs / 2.0 }), track: None, from: None, to: None, volume_db: Some(v), gain_db: None, pan: None, fade_in: None, fade_out: None });
                 }
             }
             at += s.duration_secs();

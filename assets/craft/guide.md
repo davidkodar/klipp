@@ -198,6 +198,9 @@ exist until the plan runs.
   (left) to 1, fades in seconds; what you leave out stays as it is.
   Name the clip you mean: for an audio clip linked to a video clip the
   settings are kept on the video clip, and the op puts them there.
+  `track` (an index or a kind) instead of `clip_id`, with `from?`/`to?`,
+  sets every clip heard on that track in one step (the dialogue track
+  3 dB down); a picture and its linked sound are set once.
 - `duck {clip_id, by_db?, fade_secs?}`: music under speech. The clip's
   volume comes down, nine decibels unless you say otherwise, wherever
   another clip is heard over it, and moves there and back over half a
@@ -240,7 +243,10 @@ exist until the plan runs.
   a picture clip's primary grade. What you give is set, the rest stays.
   Instead of `clip_id`, `on: {group, stage}` grades a grade group (`stage`
   `pre` or `post`, as `grade_group` made it) and `on: "timeline"` the
-  timeline grade, after every clip's own.
+  timeline grade, after every clip's own. `on: {"track": n, "from"?,
+  "to"?}` grades every picture clip of that track (or that stretch of
+  it), each in its own grade, in one step; with `from` it copies that
+  clip's grade onto the track's other clips.
   `from: <clip_id>` instead of knobs copies that clip's whole grade onto
   this one (a colourist's "apply grade from"); grade again after to adjust.
   Every knob is 0 at neutral, except `saturation` and `contrast`, whose
@@ -252,8 +258,11 @@ exist until the plan runs.
   clip. `amount` is 0 to 1; a second of the same kind replaces the first.
   With `on: "timeline"` or `on: {"group": name}` instead of `clip_id` it
   goes on every picture clip there in one step (a vignette and grain over
-  the whole film); each clip gets its own copy, so a shot added later
-  needs it too.
+  the whole film); `on: {"track": n or "video", "from"?, "to"?}` does the
+  same for one track, or a stretch of it (the B camera's clips). Each
+  clip gets its own copy, so a shot added later needs it too. `look`
+  takes the same `on: {"track": …}`. The reply says how many clips were
+  taken and how many others on the track were left.
   Kinds: `vignette`, `grain` (`film_grain`), `glow`, `bloom`, `diffusion`
   (`pro_mist`), `halation` (`film_halation`), `light_rays` (`god_rays`),
   `lens_flare`, `anamorphic` (`anamorphic_streak`, `streak`), `light_wrap`,
