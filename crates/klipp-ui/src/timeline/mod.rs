@@ -564,3 +564,124 @@ mod colour_strip_tests {
         assert!(old.select_only);
     }
 }
+
+/// The menus the user opens on the timeline, drawn as the app draws them
+/// (the embedded timeline, its track headers and clips) and opened with a
+/// right-click: their items must be there. Tests of each item's handler
+/// passed while the items were added to a header the app never draws,
+/// and nothing said so (#846, found by hand in #859).
+#[cfg(test)]
+mod menu_smoke_tests {
+    use super::*;
+    use klipp_core::{AppCommand, MediaId, RationalTime};
+    use klipp_timeline::{Clip, TrackKind};
+
+    struct Timeline {
+        ctx: egui::Context,
+        state: AppState,
+        panel: NewTimelinePanel,
+        old: crate::panels::timeline::TimelinePanel,
+        time: f64,
+    }
+
+    impl Timeline {
+        /// The default sequence with a long clip on its first video track.
+        fn new() -> Self {
+            let mut state = AppState::default();
+            let v1 = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("a video track");
+            let (zero, long) = (RationalTime { value: 0, rate: 24 }, RationalTime { value: 24 * 600, rate: 24 });
+            let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/smoke.mov".into(), None);
+            item.duration = long;
+            let media: MediaId = state.media_pool.add(item);
+            state.sequences[0].tracks[v1].clips.push(Clip::media(media, zero, long, zero, long));
+            let mut old = crate::panels::timeline::TimelinePanel::default();
+            old.embedded = true;
+            Self { ctx: egui::Context::default(), state, panel: NewTimelinePanel::default(), old, time: 0.0 }
+        }
+
+        /// One frame with `events`: the text drawn, with where.
+        fn frame(&mut self, events: Vec<egui::Event>) -> Vec<(String, egui::Pos2)> {
+            self.time += 0.5;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 400.0))),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let (theme, kb) = (KlippTheme::default(), crate::keybindings::KeyBindings::default());
+            let (state, panel, old) = (&mut self.state, &mut self.panel, &mut self.old);
+            let mut cmds: Vec<AppCommand> = Vec::new();
+            let out = self.ctx.run(input, |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    cmds = panel.show(ui, state, &theme, old, &kb, false);
+                });
+            });
+            // What the app does between frames with a selection the
+            // timeline asked for: a clip's menu shows the selected clip's.
+            for cmd in cmds {
+                if let AppCommand::SelectClip(id) = cmd {
+                    self.state.selected_clip = id;
+                }
+            }
+            out.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// Right-click at `at` and the menu it opens: the text drawn then.
+        fn right_click(&mut self, at: egui::Pos2) -> Vec<String> {
+            let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE };
+            self.frame(vec![egui::Event::PointerMoved(at), button(true)]);
+            self.frame(vec![button(false)]);
+            self.frame(Vec::new()).into_iter().map(|(t, _)| t).collect()
+        }
+
+        /// Where the track header of the first track of `kind` shows its name.
+        fn header(&mut self, kind: TrackKind) -> egui::Pos2 {
+            let name = self.state.sequences[0].tracks.iter().find(|t| t.kind == kind).expect("a track of that kind").name.clone();
+            let drawn = self.frame(Vec::new());
+            drawn.into_iter().find(|(t, _)| *t == name).unwrap_or_else(|| panic!("{name}'s header is drawn")).1
+        }
+    }
+
+    fn missing<'a>(menu: &[String], items: &[&'a str]) -> Vec<&'a str> {
+        items.iter().copied().filter(|item| !menu.iter().any(|t| t.starts_with(item))).collect()
+    }
+
+    #[test]
+    fn a_track_headers_menu_has_its_items() {
+        let mut timeline = Timeline::new();
+        for kind in [TrackKind::Video, TrackKind::Audio] {
+            let at = timeline.header(kind);
+            let menu = timeline.right_click(at);
+            let lacking = missing(&menu, &[
+                "Select All Clips on Track",
+                "Select Forward on Track",
+                "Select Backward on Track",
+                "Add Track Above",
+                "Rename Track",
+                "Track Effects",
+                "Copy Track Attributes",
+                "Paste Track Attributes",
+            ]);
+            assert!(lacking.is_empty(), "the {kind:?} track header's menu lacks {lacking:?}; it shows {menu:?}");
+            // Closed again before the next one.
+            timeline.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        }
+    }
+
+    #[test]
+    fn a_clips_menu_has_its_items() {
+        let mut timeline = Timeline::new();
+        // On the clip, where it shows its name.
+        let drawn = timeline.frame(Vec::new());
+        let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
+        let menu = timeline.right_click(at);
+        let lacking = missing(&menu, &["Cut", "Copy", "Paste at Playhead", "Paste Insert at Playhead", "Duplicate Clip"]);
+        assert!(lacking.is_empty(), "the clip's menu lacks {lacking:?}; it shows {menu:?}");
+    }
+}
