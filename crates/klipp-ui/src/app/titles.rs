@@ -2967,3 +2967,476 @@ impl KlippApp {
         }
     }
 }
+
+impl KlippApp {
+    /// Render a title clip to the viewer's overlay texture for instant UI preview.
+    /// This is the FCP approach: title is a separate layer composited by the viewer,
+    /// not written to the shared frame buffer (which avoids race conditions with the engine).
+    /// Snapshot a title clip's TitleData for undo. Returns None if clip not found or not a title.
+    fn snapshot_title(&self, clip_id: klipp_core::ClipId) -> Option<klipp_timeline::TitleData> {
+        self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+            .find_map(|t| t.clips.iter().find(|c| c.id == clip_id))
+            .and_then(|c| c.title_data())
+            .cloned()
+    }
+
+    /// Resolve which TextBox a title-style mutation should target.
+    /// Returns the selected object's id when it's a TextBox layer of
+    /// the named clip; falls back to `None` so the caller routes to
+    /// `target_textbox_mut(td, target_oid)` (the first TextBox in the stack).
+    /// Used by every per-property title command so Inspector edits
+    /// follow the on-canvas / Layers-panel selection.
+    /// The selected layer of `clip_id`, whatever it is: the target of a
+    /// command on a layer's stack — motion, loops, effects, motion blur
+    /// — which a shape or a picture carries as a text does.
+    fn title_layer_target_id(
+        &self,
+        clip_id: klipp_core::ClipId,
+    ) -> Option<klipp_timeline::TitleObjectId> {
+        let (selected_clip, oid) = self.state.selected_title_object?;
+        (selected_clip == clip_id).then_some(oid)
+    }
+
+    fn title_text_target_id(
+        &self,
+        clip_id: klipp_core::ClipId,
+    ) -> Option<klipp_timeline::TitleObjectId> {
+        let (selected_clip, oid) = self.state.selected_title_object?;
+        if selected_clip != clip_id {
+            return None;
+        }
+        // Only return the id when the object is actually a TextBox —
+        // a Shape selection shouldn't divert text-style mutations.
+        let td = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+            .find_map(|t| t.clips.iter().find(|c| c.id == clip_id))
+            .and_then(|c| c.title_data())?;
+        let obj = td.object(oid)?;
+        match &obj.content {
+            klipp_timeline::TitleObjectContent::TextBox(_) => Some(oid),
+            _ => None,
+        }
+    }
+
+    /// Push a title edit undo entry if the data changed.
+    fn push_title_undo(&mut self, clip_id: klipp_core::ClipId, description: &'static str, old: klipp_timeline::TitleData) {
+        if let Some(new) = self.snapshot_title(clip_id) {
+            if old != new {
+                if description == "Edit Title Text"
+                    && self.state.active_history_mut().try_coalesce_title_text(clip_id, &old, &new)
+                {
+                    return;
+                }
+                self.state.active_history_mut().push(crate::history::HistoryEntry {
+                    command: crate::history::EditCommand::EditTitle {
+                        clip_id, description, old_data: old, new_data: new,
+                    },
+                });
+                if description == "Edit Title Text" {
+                    self.state.active_history_mut().note_title_text_edit(clip_id);
+                }
+            }
+        }
+    }
+
+    pub(super) fn snapshot_generator(&self, clip_id: klipp_core::ClipId) -> Option<klipp_core::GeneratorData> {
+        self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+            .find_map(|t| t.clips.iter().find(|c| c.id == clip_id))
+            .and_then(|c| c.generator_data())
+            .cloned()
+    }
+
+    pub(super) fn push_generator_undo(&mut self, clip_id: klipp_core::ClipId, old: klipp_core::GeneratorData) {
+        if let Some(new) = self.snapshot_generator(clip_id) {
+            if old != new {
+                self.state.active_history_mut().push(crate::history::HistoryEntry {
+                    command: crate::history::EditCommand::EditGenerator {
+                        clip_id, old_data: old, new_data: new,
+                    },
+                });
+            }
+        }
+    }
+
+    /// Mark a title clip for overlay texture refresh on the next frame.
+    pub(super) fn render_title_to_viewer(&mut self, clip_id: klipp_core::ClipId) {
+        // Clear old overlay immediately to prevent ghosting during position/alignment changes.
+        // Route the drop through the deferred-drop ring — a bare `= None`
+        // here would drop the handle while the current submit may still
+        // reference its texture ID.
+        if let Some(old) = self.viewer.title_overlay_texture.take() {
+            self.defer_drop_texture(old);
+        }
+        self.state.pending_title_preview_clip = Some(clip_id);
+    }
+
+    /// Refresh what in-place title editing needs (glyph positions) for a
+    /// pending title. Called from update() where ctx is available.
+    pub(super) fn upload_title_overlay(&mut self, ctx: &egui::Context) {
+        // Explicit clear request (e.g. scrub passed beyond a title clip).
+        if self.state.pending_title_overlay_clear {
+            self.state.pending_title_overlay_clear = false;
+            if let Some(old) = self.viewer.title_overlay_texture.take() {
+                self.defer_drop_texture(old);
+            }
+        }
+        let clip_id = match self.state.pending_title_preview_clip.take() {
+            Some(id) => id,
+            None => return,
+        };
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let td = seq.tracks.iter()
+            .find_map(|t| t.clips.iter().find(|c| c.id == clip_id))
+            .and_then(|c| c.title_data());
+        if let Some(td) = td {
+            let mut td = td.clone();
+            // While the user is editing one TextBox object inline,
+            // suppress its rendered copy so the egui TextEdit
+            // floating in the bounding box doesn't double-print
+            // against the styled raster underneath. The bounding-
+            // box editor IS the WYSIWYG view during edit mode —
+            // stamping the rendered text behind it would show the
+            // string twice.
+            if self.state.viewer_text_edit {
+                if let Some(oid) = self.state.viewer_text_edit_object {
+                    if let Some(o) = td.object_mut(oid) {
+                        o.visible = false;
+                    }
+                }
+            }
+            let (w, h) = (seq.resolution.width, seq.resolution.height);
+
+            // The title itself is the engine's frame; no raster of it is
+            // made here any more. What in-place editing still needs is
+            // where the glyphs fall.
+            if self.state.viewer_text_edit {
+                self.state.viewer_char_positions = self.char_positions_for_edit(&td, w, h);
+                ctx.request_repaint();
+            }
+        }
+    }
+
+    /// Recompute cached character positions when entering text edit mode
+    /// or when positions are empty but edit mode is active.
+    pub(super) fn recompute_char_positions_if_needed(&mut self) {
+        if !self.state.viewer_text_edit {
+            return;
+        }
+        // Recompute if we have no positions cached (just entered edit mode)
+        // or if request_focus was just set (initial entry)
+        if !self.state.viewer_char_positions.is_empty() {
+            return;
+        }
+        if let Some(clip_id) = self.state.viewer_text_edit_clip {
+            let seq = &self.state.sequences[self.state.active_sequence_idx];
+            let td = seq.tracks.iter()
+                .find_map(|t| t.clips.iter().find(|c| c.id == clip_id))
+                .and_then(|c| c.title_data());
+            if let Some(td) = td {
+                let td = td.clone();
+                let (w, h) = (seq.resolution.width, seq.resolution.height);
+                self.state.viewer_char_positions = self.char_positions_for_edit(&td, w, h);
+            }
+        }
+    }
+
+    /// The glyph boxes of the layer being edited (the targeted object,
+    /// else the primary text), in frame pixels, for the viewer's caret
+    /// and selection.
+    fn char_positions_for_edit(&mut self, td: &klipp_timeline::TitleData, w: u32, h: u32) -> Vec<klipp_title::CharPosition> {
+        let single = self.state.viewer_text_edit_object.and_then(|oid| td.object(oid)).and_then(|o| match &o.content {
+            klipp_timeline::TitleObjectContent::TextBox(tb) => {
+                let mut s = klipp_timeline::TitleData::single_text(tb.clone());
+                if let Some(first) = s.objects.first_mut() {
+                    first.transform = o.transform.clone();
+                }
+                Some(s)
+            }
+            _ => None,
+        });
+        match single {
+            Some(s) => self.title_renderer.compute_char_positions(&s, w, h),
+            None => self.title_renderer.compute_char_positions(td, w, h),
+        }
+    }
+}
+
+/// Apply baked-in animation keyframes to a title clip based on an animation identifier string.
+///
+/// Extract the target `ClipId` from any title-edit `AppCommand`.
+/// Returns `None` when the command isn't a title edit (lifecycle /
+/// asset commands carry their own clip-id semantics handled
+/// elsewhere). Used by the title-command dispatcher to know which
+/// clip to propagate from after a successful edit.
+pub(super) fn title_edit_clip_id(cmd: &AppCommand) -> Option<klipp_core::ClipId> {
+    use AppCommand as C;
+    match cmd {
+        C::UpdateTitleData { clip_id, .. }
+        | C::ApplyTitleStyle { clip_id, .. }
+        | C::SetTitleAlignment { clip_id, .. }
+        | C::SetTitlePosition { clip_id, .. }
+        | C::SetTitleBackground { clip_id, .. }
+        | C::SetTitleShadow { clip_id, .. }
+        | C::SetTitleGradient { clip_id, .. }
+        | C::AddTitleObjectOpacityKeyframe { clip_id, .. }
+        | C::RemoveTitleObjectOpacityKeyframe { clip_id, .. }
+        | C::AddTitleObjectPositionKeyframe { clip_id, .. }
+        | C::RemoveTitleObjectPositionKeyframe { clip_id, .. }
+        | C::AddTitleObjectTransformKeyframe { clip_id, .. }
+        | C::RemoveTitleObjectTransformKeyframe { clip_id, .. }
+        | C::MoveTitleObjectPositionKeyframe { clip_id, .. }
+        | C::SetTitleObjectPositionKeyframeInterpolation { clip_id, .. }
+        | C::SetTitleObjectPositionKeyframeTangent { clip_id, .. }
+        | C::AddTitleObjectEffectKeyframe { clip_id, .. }
+        | C::RemoveTitleObjectEffectKeyframe { clip_id, .. }
+        | C::MoveTitleObjectEffectKeyframe { clip_id, .. }
+        | C::SetTitleObjectEffectKeyframeInterpolation { clip_id, .. }
+        | C::SetTitleObjectEffectKeyframeTangent { clip_id, .. }
+        | C::SetTitleTexturePreset { clip_id, .. }
+        | C::SetTitleTextureParams { clip_id, .. }
+        | C::SetTitleOutlineStackEnabled { clip_id, .. }
+        | C::SetTitleShadows { clip_id, .. }
+        | C::SetTitleShadowLayer { clip_id, .. }
+        | C::SetTitleShadowStackEnabled { clip_id, .. }
+        | C::SetTitleInnerShadows { clip_id, .. }
+        | C::SetTitleInnerShadowLayer { clip_id, .. }
+        | C::SetTitleInnerShadowStackEnabled { clip_id, .. }
+        | C::SetTitleGlows { clip_id, .. }
+        | C::SetTitleGlowLayer { clip_id, .. }
+        | C::SetTitleGlowStackEnabled { clip_id, .. } => Some(*clip_id),
+        _ => None,
+    }
+}
+
+/// Animation format: `"type_duration"` or `"type1+type2_duration"` where duration is in seconds.
+/// Examples: `"fade_in_0.5"`, `"slide_left_1.0"`, `"fade_in+slide_left_0.8"`, `"fade_in_out_0.5"`
+/// Resolve a `&mut TextBox` to mutate inside a TitleData given an
+/// optional target object id. Falls back to the title's primary
+/// TextBox when `target` is `None` (the historical single-text
+/// behaviour). Used by every per-property title command so an
+/// Inspector edit follows the active per-object selection.
+/// The object a title command targets: the one named, else the first
+/// text object — the same choice [`target_textbox_mut`] makes.
+pub(super) fn target_object_mut(
+    td: &mut klipp_timeline::TitleData,
+    target: Option<klipp_timeline::TitleObjectId>,
+) -> Option<&mut klipp_timeline::TitleObject> {
+    let idx = match target {
+        Some(oid) => td.objects.iter().position(|o| o.id == oid),
+        None => td.objects.iter().position(|o| matches!(o.content, klipp_timeline::TitleObjectContent::TextBox(_))),
+    }?;
+    td.objects.get_mut(idx)
+}
+
+/// The stack of the object a title command targets — where a title's
+/// motion and effects live now — to edit.
+pub(super) fn target_fx_mut(
+    td: &mut klipp_timeline::TitleData,
+    target: Option<klipp_timeline::TitleObjectId>,
+) -> Option<&mut klipp_timeline::LayerFx> {
+    target_object_mut(td, target).map(klipp_timeline::TitleObject::fx_mut)
+}
+
+pub(super) fn target_textbox_mut(
+    td: &mut klipp_timeline::TitleData,
+    target: Option<klipp_timeline::TitleObjectId>,
+) -> Option<&mut klipp_timeline::TextBox> {
+    // Resolve which index in `td.objects` the request targets. Done
+    // up-front (immutable scan) so the subsequent mutable borrow is
+    // a single, simple iter that the borrow checker accepts without
+    // Polonius. Falls back to the index of the first TextBox object
+    // when no target is specified.
+    let idx = match target {
+        Some(oid) => td.objects.iter().position(|o| o.id == oid
+            && matches!(o.content, klipp_timeline::TitleObjectContent::TextBox(_))),
+        None => td.objects.iter().position(|o|
+            matches!(o.content, klipp_timeline::TitleObjectContent::TextBox(_))),
+    };
+    let idx = idx?;
+    match &mut td.objects[idx].content {
+        klipp_timeline::TitleObjectContent::TextBox(tb) => Some(tb),
+        _ => None,
+    }
+}
+
+/// Flatten a Title-inspector style preset into the target TextBox.
+/// Each preset writes a deliberate combination of fill colour, glow,
+/// outline, shadow, and modern-FX fields. Presets coexist as
+/// applied-and-flattened settings — there's no "currently-selected
+/// preset" recorded on the data, so the inspector dropdown is a
+/// quick-style picker rather than a slot.
+pub(crate) fn apply_title_preset(tb: &mut klipp_timeline::TextBox, fx: &mut klipp_timeline::LayerFx, preset_id: u8) {
+    use klipp_timeline::{InnerShadow, TextGlow, TextOutline, TitleShadow};
+    match preset_id {
+        // 0 = "None" sentinel — no-op so the dropdown's default
+        // doesn't accidentally clobber the current style.
+        0 => {}
+        // 1 = Neon. Bright fill (uses current colour as accent),
+        // thin dark outline for legibility, strong outer glow tinted
+        // to the accent.
+        1 => {
+            let accent = tb.color;
+            fx.outlines = vec![TextOutline {
+                color: [10, 10, 14, 180],
+                width: 2.0,
+                enabled: true,
+                width_keyframes: Vec::new(),
+            }];
+            fx.glows = vec![TextGlow {
+                color: accent,
+                radius: 12.0,
+                intensity: 1.4,
+                enabled: true,
+                radius_keyframes: Vec::new(),
+                intensity_keyframes: Vec::new(),
+            }];
+            // Clear conflicting effects so the look is clean.
+            fx.shadows.clear();
+            fx.inner_shadows.clear();
+            tb.gradient = None;
+            tb.chromatic_aberration_px = 0.0;
+            tb.glitch_intensity = 0.0;
+        }
+        // 2 = Classic. White fill, no decorations.
+        2 => {
+            tb.color = [255, 255, 255, 255];
+            fx.outlines.clear();
+            fx.glows.clear();
+            fx.shadows.clear();
+            fx.inner_shadows.clear();
+            tb.gradient = None;
+            tb.pattern_fill = None;
+            tb.pattern_fill_enabled = true;
+            tb.chromatic_aberration_px = 0.0;
+            tb.glitch_intensity = 0.0;
+        }
+        // 3 = Bold Shadow. White fill + soft drop shadow for contrast
+        // against any background. Common lower-third look.
+        3 => {
+            tb.color = [255, 255, 255, 255];
+            fx.outlines.clear();
+            fx.glows.clear();
+            fx.shadows = vec![TitleShadow {
+                color: [0, 0, 0, 200],
+                offset_x: 4.0,
+                offset_y: 4.0,
+                blur: 6.0,
+                enabled: true,
+                offset_x_keyframes: Vec::new(),
+                offset_y_keyframes: Vec::new(),
+                blur_keyframes: Vec::new(),
+            }];
+            fx.inner_shadows.clear();
+            tb.gradient = None;
+            tb.chromatic_aberration_px = 0.0;
+            tb.glitch_intensity = 0.0;
+        }
+        // 4 = Outlined. White fill + thick black outline. Reads on
+        // any backdrop without a fill plate.
+        4 => {
+            tb.color = [255, 255, 255, 255];
+            fx.outlines = vec![TextOutline {
+                color: [0, 0, 0, 255],
+                width: 5.0,
+                enabled: true,
+                width_keyframes: Vec::new(),
+            }];
+            fx.glows.clear();
+            fx.shadows.clear();
+            fx.inner_shadows.clear();
+            tb.gradient = None;
+            tb.chromatic_aberration_px = 0.0;
+            tb.glitch_intensity = 0.0;
+        }
+        // 5 = VHS. Chromatic aberration + glitch slicing for the
+        // tape / synth-wave look. Keep the fill colour as-is so the
+        // user's chosen hue tints the channel split.
+        5 => {
+            fx.outlines.clear();
+            fx.glows.clear();
+            fx.shadows.clear();
+            fx.inner_shadows = vec![InnerShadow {
+                color: [0, 0, 0, 100],
+                offset_x: 0.0,
+                offset_y: 0.0,
+                blur: 2.0,
+                enabled: true,
+                offset_x_keyframes: Vec::new(),
+                offset_y_keyframes: Vec::new(),
+                blur_keyframes: Vec::new(),
+            }];
+            tb.chromatic_aberration_px = 6.0;
+            tb.glitch_intensity = 0.35;
+        }
+        _ => {}
+    }
+}
+
+/// Where a title clip shows at rest: past its entrance when a layer has
+/// one (a third of the clip, at most a second in), else its first frame.
+/// `None` for a clip that is not a title.
+pub(super) fn title_rest_time(clip: &klipp_timeline::Clip, fps_rate: u32) -> Option<klipp_core::RationalTime> {
+    let td = clip.title_data()?;
+    if !td.objects.iter().any(|o| o.fx().motion.enter.is_some()) {
+        return Some(clip.timeline_in);
+    }
+    let settle = ((clip.timeline_out - clip.timeline_in).to_secs_f64() / 3.0).min(1.0);
+    Some(klipp_core::RationalTime::from_secs_f64(clip.timeline_in.to_secs_f64() + settle, fps_rate))
+}
+
+/// Where to put the playhead when a title is selected: its rest pose if
+/// the playhead is outside the title, else nowhere (leave it).
+pub(super) fn title_seek_on_select(
+    clip: &klipp_timeline::Clip,
+    playhead: klipp_core::RationalTime,
+    fps_rate: u32,
+) -> Option<klipp_core::RationalTime> {
+    if playhead >= clip.timeline_in && playhead < clip.timeline_out {
+        return None;
+    }
+    title_rest_time(clip, fps_rate)
+}
+
+#[cfg(test)]
+mod title_rest_tests {
+    use super::{title_rest_time, title_seek_on_select};
+    use klipp_core::RationalTime;
+    use klipp_core::title_motion::{Motion, TitleMotion};
+    use klipp_timeline::{Clip, ClipKind, TitleData};
+
+    fn t(secs: i64) -> RationalTime { RationalTime { value: secs * 30, rate: 30 } }
+
+    fn title(from: i64, to: i64, entrance: bool) -> Clip {
+        let mut td = TitleData::default();
+        if entrance {
+            td.objects[0].fx_mut().motion = TitleMotion::enter(Motion::default());
+        }
+        let mut c = Clip::media(klipp_core::MediaId::new(), t(from), t(to), t(0), t(to - from));
+        c.kind = ClipKind::Title(td);
+        c
+    }
+
+    #[test]
+    fn a_plain_title_rests_on_its_first_frame() {
+        assert_eq!(title_rest_time(&title(10, 15, false), 30), Some(t(10)));
+    }
+
+    #[test]
+    fn a_title_with_an_entrance_rests_past_it() {
+        assert_eq!(title_rest_time(&title(10, 15, true), 30), Some(t(11)));
+    }
+
+    #[test]
+    fn selecting_a_title_off_the_playhead_brings_the_playhead_to_it() {
+        let c = title(10, 15, false);
+        assert_eq!(title_seek_on_select(&c, t(2), 30), Some(t(10)));
+        assert_eq!(title_seek_on_select(&c, t(15), 30), Some(t(10)), "the out point is past the title");
+        assert_eq!(title_seek_on_select(&c, t(12), 30), None, "a playhead on the title stays put");
+        assert_eq!(title_seek_on_select(&c, t(10), 30), None);
+    }
+
+    #[test]
+    fn a_clip_that_is_not_a_title_has_no_rest_pose() {
+        let c = Clip::media(klipp_core::MediaId::new(), t(0), t(5), t(0), t(5));
+        assert_eq!(title_rest_time(&c, 30), None);
+    }
+}

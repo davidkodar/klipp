@@ -2663,3 +2663,675 @@ impl KlippApp {
         }
     }
 }
+
+impl KlippApp {
+    pub(super) fn handle_export_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        if self.handle_render_commands(cmd) {
+            return true;
+        }
+        match cmd {
+            AppCommand::CaptureWindow { path, max_width } => {
+                self.state.window_capture = Some((path.clone(), *max_width, false));
+                true
+            }
+            AppCommand::ShowPreferences => {
+                self.state.show_preferences = true;
+                true
+            }
+            AppCommand::OpenClipProperties { media_id } => {
+                self.state.clip_properties_media_id = Some(*media_id);
+                self.state.clip_properties_tab = crate::state::ClipPropertiesTab::default();
+                self.state.show_clip_properties = true;
+                true
+            }
+            AppCommand::ApplyBuiltinWorkspaceLayout { index } => {
+                let builtins = crate::state::builtin_workspace_layouts();
+                if let Some(layout) = builtins.get(*index).cloned() {
+                    self.apply_workspace_layout(&layout);
+                    self.state.toast.show(format!("Applied workspace: {}", layout.name));
+                }
+                true
+            }
+            AppCommand::ApplyCustomWorkspaceLayout { name } => {
+                if let Some(layout) = self.state.custom_workspaces.iter()
+                    .find(|l| l.name == *name)
+                    .cloned()
+                {
+                    self.apply_workspace_layout(&layout);
+                    self.state.toast.show(format!("Applied workspace: {}", layout.name));
+                }
+                true
+            }
+            AppCommand::DeleteWorkspaceLayout { name } => {
+                let before = self.state.custom_workspaces.len();
+                self.state.custom_workspaces.retain(|l| l.name != *name);
+                if self.state.custom_workspaces.len() != before {
+                    if self.state.workspace_manager_selected.as_deref() == Some(name.as_str()) {
+                        self.state.workspace_manager_selected = None;
+                    }
+                    persist_workspaces(&self.state.custom_workspaces);
+                    self.state.toast.show("Workspace deleted".to_string());
+                }
+                true
+            }
+            AppCommand::RenameWorkspaceLayout { old_name, new_name } => {
+                let trimmed = new_name.trim().to_string();
+                if !trimmed.is_empty()
+                    && !self.state.custom_workspaces.iter().any(|l| l.name == trimmed)
+                {
+                    if let Some(l) = self.state.custom_workspaces
+                        .iter_mut()
+                        .find(|l| l.name == *old_name)
+                    {
+                        l.name = trimmed.clone();
+                        if self.state.workspace_manager_selected.as_deref() == Some(old_name.as_str()) {
+                            self.state.workspace_manager_selected = Some(trimmed);
+                        }
+                        persist_workspaces(&self.state.custom_workspaces);
+                    }
+                }
+                true
+            }
+            AppCommand::JogFrames { frames } => {
+                // Reuse the existing SeekRelative(i64) plumbing — the
+                // transport-bar step buttons already dispatch ±1 through
+                // this path, so `JogFrames { frames: N }` is identical
+                // except it bundles the N samples the wheel widget has
+                // accumulated since its last emit. Clamping + playhead
+                // math lives in the SeekRelative handler, no duplication.
+                if *frames != 0 {
+                    let _ = self.cmd_tx.send(AppCommand::SeekRelative(*frames as i64));
+                }
+                true
+            }
+            AppCommand::ImportSubtitles { path } => {
+                let path = path.clone();
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => {
+                        // Detect format by extension (case-insensitive). Unknown
+                        // extensions fall back to the SRT/VTT parser.
+                        let ext = path
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .map(|s| s.to_ascii_lowercase())
+                            .unwrap_or_default();
+                        let is_ass = ext == "ass" || ext == "ssa";
+
+                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                        let fps_rate = seq.fps.rate();
+                        // One new track per imported file, named after the file stem.
+                        let track_name = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("Subtitles")
+                            .to_string();
+                        let new_track_id = seq.add_subtitle_track(track_name);
+                        let sub_track_idx = seq
+                            .tracks
+                            .iter()
+                            .position(|t| t.id == new_track_id)
+                            .unwrap();
+                        let track = &mut seq.tracks[sub_track_idx];
+                        track.source_file = Some(path.clone());
+
+                        let imported_count;
+                        if is_ass {
+                            let (entries, styles) = parse_ass(&content);
+                            imported_count = entries.len();
+                            for entry in &entries {
+                                let timeline_in = klipp_core::RationalTime::from_secs_f64(entry.start_secs, fps_rate);
+                                let timeline_out = klipp_core::RationalTime::from_secs_f64(entry.end_secs, fps_rate);
+                                let dur = timeline_out - timeline_in;
+                                let style = styles.get(&entry.style_name);
+
+                                let (font_name, font_size, color, outline, shadow, font_style) = match style {
+                                    Some(s) => {
+                                        let fs = match (s.bold, s.italic) {
+                                            (false, false) => klipp_timeline::FontStyle::Regular,
+                                            (true, false) => klipp_timeline::FontStyle::Bold,
+                                            (false, true) => klipp_timeline::FontStyle::Italic,
+                                            (true, true) => klipp_timeline::FontStyle::BoldItalic,
+                                        };
+                                        let outline = if s.outline > 0.0 {
+                                            Some(klipp_timeline::TextOutline { color: [0, 0, 0, 255], width: s.outline, enabled: true, width_keyframes: Vec::new() })
+                                        } else { None };
+                                        let shadow = if s.shadow > 0.0 {
+                                            Some(klipp_timeline::TitleShadow {
+                                                color: [0, 0, 0, 180],
+                                                offset_x: s.shadow,
+                                                offset_y: s.shadow,
+                                                blur: s.shadow,
+                                                enabled: true,
+                                                offset_x_keyframes: Vec::new(),
+                                                offset_y_keyframes: Vec::new(),
+                                                blur_keyframes: Vec::new(),
+                                            })
+                                        } else { None };
+                                        (
+                                            if s.font_name.is_empty() { String::new() } else { s.font_name.clone() },
+                                            if s.font_size > 0.0 { s.font_size } else { 32.0 },
+                                            s.primary_color,
+                                            outline,
+                                            shadow,
+                                            fs,
+                                        )
+                                    }
+                                    None => (
+                                        String::new(),
+                                        32.0,
+                                        [255, 255, 255, 255],
+                                        Some(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0, enabled: true, width_keyframes: Vec::new() }),
+                                        None,
+                                        klipp_timeline::FontStyle::Regular,
+                                    ),
+                                };
+
+                                let mut tb = klipp_timeline::TextBox {
+                                    text: entry.text.clone(),
+                                    font_size,
+                                    font_name,
+                                    font_style,
+                                    color,
+                                    alignment: klipp_timeline::TextAlignment::Center,
+                                    ..Default::default()
+                                };
+                                let mut fx = klipp_timeline::LayerFx::default();
+                                if let Some(o) = outline { fx.outlines.push(o); }
+                                if let Some(s) = shadow { fx.shadows.push(s); }
+                                tb.ass_style_name = if entry.style_name.is_empty() { None } else { Some(entry.style_name.clone()) };
+                                let mut title_data = klipp_timeline::TitleData::single_text_fx(tb, fx);
+                                if let Some(o) = title_data.objects.first_mut() {
+                                    o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.88 };
+                                }
+                                let clip = klipp_timeline::Clip {
+                                    id: klipp_core::ClipId::new(),
+                                    kind: klipp_timeline::ClipKind::Title(title_data),
+                                    timeline_in,
+                                    timeline_out,
+                                    source_in: klipp_core::RationalTime::from_secs_f64(0.0, fps_rate),
+                                    source_out: dur,
+                                    ..klipp_timeline::Clip::gap(timeline_in, timeline_out)
+                                };
+                                track.clips.push(clip);
+                            }
+                        } else {
+                            let subs = parse_srt_vtt(&content);
+                            imported_count = subs.len();
+                            for sub in &subs {
+                                let timeline_in = klipp_core::RationalTime::from_secs_f64(sub.start_secs, fps_rate);
+                                let timeline_out = klipp_core::RationalTime::from_secs_f64(sub.end_secs, fps_rate);
+                                let dur = timeline_out - timeline_in;
+                                let tb = klipp_timeline::TextBox {
+                                    text: sub.text.clone(),
+                                    font_size: 32.0,
+                                    font_name: String::new(),
+                                    alignment: klipp_timeline::TextAlignment::Center,
+                                    ..Default::default()
+                                };
+                                let mut fx = klipp_timeline::LayerFx::default();
+                                fx.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0, enabled: true, width_keyframes: Vec::new() });
+                                let mut title_data = klipp_timeline::TitleData::single_text_fx(tb, fx);
+                                if let Some(o) = title_data.objects.first_mut() {
+                                    o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.88 };
+                                }
+                                let clip = klipp_timeline::Clip {
+                                    id: klipp_core::ClipId::new(),
+                                    kind: klipp_timeline::ClipKind::Title(title_data),
+                                    timeline_in,
+                                    timeline_out,
+                                    source_in: klipp_core::RationalTime::from_secs_f64(0.0, fps_rate),
+                                    source_out: dur,
+                                    ..klipp_timeline::Clip::gap(timeline_in, timeline_out)
+                                };
+                                track.clips.push(clip);
+                            }
+                        }
+
+                        if imported_count == 0 {
+                            // Remove the newly-created empty track and warn.
+                            let tid = track.id;
+                            let _ = seq.remove_track(tid);
+                            self.state.toast.show("No subtitles found in file".to_string());
+                        } else {
+                            track.sort_clips();
+                            self.state.toast.show(format!(
+                                "Imported {} subtitle(s) into \"{}\"",
+                                imported_count,
+                                seq.tracks[sub_track_idx].name,
+                            ));
+                            self.state.dirty = true;
+                        }
+                    }
+                    Err(e) => {
+                        self.state.toast.show(format!("Failed to read file: {e}"));
+                    }
+                }
+                self.sync_sequence_to_engine();
+                true
+            }
+            AppCommand::ImportKdenlive { path } => {
+                let path = path.clone();
+                match klipp_project::mlt_import::load_kdenlive(&path) {
+                    Ok(result) => {
+                        // Write warnings file if any features were dropped.
+                        if !result.warnings.is_empty() {
+                            let warnings_path = path.with_extension("import_warnings.txt");
+                            let body = result.warnings.join("\n");
+                            match std::fs::write(&warnings_path, &body) {
+                                Ok(_) => {
+                                    self.state.toast.show(format!(
+                                        "Kdenlive project imported with {} warning(s). See {}",
+                                        result.warnings.len(),
+                                        warnings_path.display(),
+                                    ));
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Could not write import warnings: {e}");
+                                    self.state.toast.show(format!(
+                                        "Imported with {} warning(s); could not write log: {e}",
+                                        result.warnings.len(),
+                                    ));
+                                }
+                            }
+                        } else {
+                            self.state.toast.show(
+                                "Kdenlive project imported successfully.".to_string(),
+                            );
+                        }
+
+                        // Merge the imported media pool into our state's pool.
+                        // We cloning the items then calling add() which preserves
+                        // the MediaId so clips that reference these items continue
+                        // to resolve correctly.
+                        let items: Vec<_> = result.media_pool.all().cloned().collect();
+                        for item in items {
+                            self.state.media_pool.add(item);
+                        }
+
+                        // Append the new sequence and switch to it.
+                        self.state.sequences.push(result.sequence);
+                        self.state.active_sequence_idx = self.state.sequences.len() - 1;
+                        self.state.dirty = true;
+                        self.sync_media_pool_to_engine();
+                        self.sync_sequence_to_engine();
+                    }
+                    Err(e) => {
+                        tracing::error!("Kdenlive import failed: {e:?}");
+                        self.state.toast.show(format!(
+                            "Failed to import Kdenlive project: {e}",
+                        ));
+                    }
+                }
+                true
+            }
+            AppCommand::ImportFcpxml { path } => {
+                let path = path.clone();
+                match klipp_project::fcpxml_import::load_fcpxml(&path) {
+                    Ok(result) => {
+                        // Write warnings file if any features were dropped.
+                        if !result.warnings.is_empty() {
+                            let warnings_path = path.with_extension("import_warnings.txt");
+                            let body = result.warnings.join("\n");
+                            match std::fs::write(&warnings_path, &body) {
+                                Ok(_) => {
+                                    self.state.toast.show(format!(
+                                        "FCPXML project imported with {} warning(s). See {}",
+                                        result.warnings.len(),
+                                        warnings_path.display(),
+                                    ));
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Could not write import warnings: {e}");
+                                    self.state.toast.show(format!(
+                                        "Imported with {} warning(s); could not write log: {e}",
+                                        result.warnings.len(),
+                                    ));
+                                }
+                            }
+                        } else {
+                            self.state.toast.show(
+                                "FCPXML project imported successfully.".to_string(),
+                            );
+                        }
+
+                        // Merge the imported media pool, preserving MediaIds so
+                        // imported clips resolve correctly. Same pattern as
+                        // Kdenlive / OTIO.
+                        let items: Vec<_> = result.media_pool.all().cloned().collect();
+                        for item in items {
+                            self.state.media_pool.add(item);
+                        }
+
+                        self.state.sequences.push(result.sequence);
+                        self.state.active_sequence_idx = self.state.sequences.len() - 1;
+                        self.state.dirty = true;
+                        self.sync_media_pool_to_engine();
+                        self.sync_sequence_to_engine();
+                    }
+                    Err(e) => {
+                        tracing::error!("FCPXML import failed: {e:?}");
+                        self.state.toast.show(format!(
+                            "Failed to import FCPXML project: {e}",
+                        ));
+                    }
+                }
+                true
+            }
+            AppCommand::ImportOtio { path } => {
+                let path = path.clone();
+                match klipp_project::otio_import::load_otio(&path) {
+                    Ok(result) => {
+                        // Write warnings file if any features were dropped.
+                        if !result.warnings.is_empty() {
+                            let warnings_path = path.with_extension("import_warnings.txt");
+                            let body = result.warnings.join("\n");
+                            match std::fs::write(&warnings_path, &body) {
+                                Ok(_) => {
+                                    self.state.toast.show(format!(
+                                        "OTIO project imported with {} warning(s). See {}",
+                                        result.warnings.len(),
+                                        warnings_path.display(),
+                                    ));
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Could not write import warnings: {e}");
+                                    self.state.toast.show(format!(
+                                        "Imported with {} warning(s); could not write log: {e}",
+                                        result.warnings.len(),
+                                    ));
+                                }
+                            }
+                        } else {
+                            self.state.toast.show(
+                                "OTIO project imported successfully.".to_string(),
+                            );
+                        }
+
+                        // Merge the imported media pool, preserving MediaIds so
+                        // imported clips resolve correctly. Same pattern as Kdenlive.
+                        let items: Vec<_> = result.media_pool.all().cloned().collect();
+                        for item in items {
+                            self.state.media_pool.add(item);
+                        }
+
+                        self.state.sequences.push(result.sequence);
+                        self.state.active_sequence_idx = self.state.sequences.len() - 1;
+                        self.state.dirty = true;
+                        self.sync_media_pool_to_engine();
+                        self.sync_sequence_to_engine();
+                    }
+                    Err(e) => {
+                        tracing::error!("OTIO import failed: {e:?}");
+                        self.state.toast.show(format!(
+                            "Failed to import OTIO project: {e}",
+                        ));
+                    }
+                }
+                true
+            }
+            AppCommand::ConsolidateProject {
+                dest_dir,
+                include_proxies,
+                include_skims,
+                create_zip,
+                delete_folder_after_zip,
+            } => {
+                self.start_consolidation(
+                    dest_dir.clone(),
+                    *include_proxies,
+                    *include_skims,
+                    *create_zip,
+                    *delete_folder_after_zip,
+                );
+                true
+            }
+            AppCommand::AddSubtitleAtPlayhead { timeline_in, duration_frames } => {
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let fps_rate = seq.fps.rate();
+                let timeline_in = timeline_in.rescale_to(fps_rate);
+                let duration = klipp_core::RationalTime::from_frames(
+                    *duration_frames as i64, fps_rate,
+                );
+                let timeline_out = timeline_in + duration;
+
+                // Find or create a Subtitle track (prefer existing Subtitle, then Text)
+                let track_idx = seq.tracks.iter()
+                    .position(|t| t.kind == klipp_timeline::TrackKind::Subtitle)
+                    .or_else(|| seq.tracks.iter()
+                        .position(|t| t.kind == klipp_timeline::TrackKind::Text))
+                    .unwrap_or_else(|| {
+                        let id = seq.add_subtitle_track("Subtitles".into());
+                        seq.tracks.iter().position(|t| t.id == id).unwrap()
+                    });
+
+                let tb = klipp_timeline::TextBox {
+                    text: String::new(),
+                    font_size: 32.0,
+                    font_name: String::new(),
+                    alignment: klipp_timeline::TextAlignment::Center,
+                    ..Default::default()
+                };
+                let mut fx = klipp_timeline::LayerFx::default();
+                fx.outlines.push(klipp_timeline::TextOutline {
+                    color: [0, 0, 0, 200],
+                    width: 2.0,
+                    enabled: true,
+                    width_keyframes: Vec::new(),
+                });
+                let mut title_data = klipp_timeline::TitleData::single_text_fx(tb, fx);
+                if let Some(o) = title_data.objects.first_mut() {
+                    o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.88 };
+                }
+
+                let new_clip = klipp_timeline::Clip {
+                    id: klipp_core::ClipId::new(),
+                    kind: klipp_timeline::ClipKind::Title(title_data),
+                    timeline_in,
+                    timeline_out,
+                    source_in: klipp_core::RationalTime::from_secs_f64(0.0, fps_rate),
+                    source_out: duration,
+                    ..klipp_timeline::Clip::gap(timeline_in, timeline_out)
+                };
+                let new_clip_id = new_clip.id;
+                seq.tracks[track_idx].clips.push(new_clip);
+                seq.tracks[track_idx].sort_clips();
+                self.state.selected_clip = Some(new_clip_id);
+                self.state.dirty = true;
+                self.sync_sequence_to_engine();
+                true
+            }
+            AppCommand::ExportSubtitles { path } => {
+                let path = path.clone();
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let mut subs = Vec::new();
+                // Subtitle tracks are the captions. Text tracks stand in
+                // only when there are none: with both, the text tracks
+                // hold titles and lower thirds, and a speaker's name does
+                // not belong in a subtitle file.
+                let has_subtitles = seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Subtitle && !t.clips.is_empty());
+                for track in &seq.tracks {
+                    let wanted = if has_subtitles { track.kind == klipp_timeline::TrackKind::Subtitle } else { track.kind == klipp_timeline::TrackKind::Text };
+                    if !wanted {
+                        continue;
+                    }
+                    for clip in &track.clips {
+                        if let Some(td) = clip.title_data() {
+                            subs.push(SubtitleEntry {
+                                start_secs: clip.timeline_in.to_secs_f64(),
+                                end_secs: clip.timeline_out.to_secs_f64(),
+                                text: td.text().clone(),
+                            });
+                        }
+                    }
+                }
+                subs.sort_by(|a, b| a.start_secs.partial_cmp(&b.start_secs).unwrap_or(std::cmp::Ordering::Equal));
+                let ext = path.extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                let content = match ext.as_str() {
+                    "vtt" => generate_vtt(&subs),
+                    "ass" | "ssa" => generate_ass(&subs),
+                    _ => generate_srt(&subs),
+                };
+                match std::fs::write(&path, &content) {
+                    Ok(_) => self.state.toast.show(format!("Exported {} subtitles to {}", subs.len(), path.display())),
+                    Err(e) => self.state.toast.show(format!("Failed to write: {e}")),
+                }
+                true
+            }
+            AppCommand::ExportYouTubeChapters { path } => {
+                // TODO: add clipboard copy variant (AppCommand::CopyYouTubeChapters)
+                //       once an `arboard`-style helper lives in the workspace.
+                let path = path.clone();
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                // Sequence markers only — auto-sorted by position on add.
+                let mut entries: Vec<(f64, String)> = seq.markers.iter()
+                    .map(|m| (m.position.to_secs_f64(), m.label.clone()))
+                    .collect();
+                // YouTube requires the first chapter at 0:00. If the earliest
+                // marker is more than half a second in (or there are no
+                // markers at all), prepend a synthetic "Intro" at 0:00.
+                let needs_intro = entries.first().map(|(s, _)| *s > 0.5).unwrap_or(true);
+                if needs_intro {
+                    entries.insert(0, (0.0, "Intro".to_string()));
+                }
+                let content = generate_youtube_chapters(&entries);
+                match std::fs::write(&path, &content) {
+                    Ok(_) => {
+                        let chapter_count = entries.len();
+                        let plural = if chapter_count == 1 { "" } else { "s" };
+                        let mut msg = format!("Exported {chapter_count} chapter{plural}.");
+                        if chapter_count < 3 {
+                            msg.push_str(
+                                " Note: YouTube requires at least 3 chapters to display the chapter list.",
+                            );
+                        }
+                        self.state.toast.show(msg);
+                    }
+                    Err(e) => {
+                        self.state.toast.show(format!("Failed to export chapters: {e}"));
+                    }
+                }
+                true
+            }
+            AppCommand::ExportFcpxml { path } => {
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                match klipp_project::fcpxml::export_fcpxml(seq, &self.state.media_pool, path) {
+                    Ok(_) => self.state.toast.show(format!("FCPXML exported to {}", path.display())),
+                    Err(e) => self.state.toast.show(format!("FCPXML export failed: {e}")),
+                }
+                true
+            }
+            AppCommand::ExportKdenlive { path } => {
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                match klipp_project::mlt_export::export_kdenlive(seq, &self.state.media_pool, path) {
+                    Ok(_) => self.state.toast.show(format!("Kdenlive project exported to {}", path.display())),
+                    Err(e) => self.state.toast.show(format!("Kdenlive export failed: {e}")),
+                }
+                true
+            }
+            AppCommand::ExportEdl { path } => {
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                match klipp_project::fcpxml::export_edl(seq, &self.state.media_pool, path) {
+                    Ok(_) => self.state.toast.show(format!("EDL exported to {}", path.display())),
+                    Err(e) => self.state.toast.show(format!("EDL export failed: {e}")),
+                }
+                true
+            }
+            AppCommand::ExportOtio { path } => {
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                match klipp_project::otio_export::export_otio(seq, &self.state.media_pool, path) {
+                    Ok(warnings) if warnings.is_empty() => {
+                        self.state.toast.show(format!("OTIO exported to {}", path.display()));
+                    }
+                    Ok(warnings) => {
+                        // OTIO cannot carry a title, a grade or an effect.
+                        // The editor is told how much was left behind, and
+                        // the detail goes beside the file — the same shape
+                        // the importer uses for what it drops, so neither
+                        // side of an interchange is a surprise.
+                        let note = path.with_extension("export_warnings.txt");
+                        let body = warnings.join("\n");
+                        let n = warnings.len();
+                        match std::fs::write(&note, &body) {
+                            Ok(()) => self.state.toast.show(format!(
+                                "OTIO exported to {} — {n} thing(s) the format cannot carry, listed in {}",
+                                path.display(),
+                                note.file_name().unwrap_or_default().to_string_lossy(),
+                            )),
+                            Err(e) => self.state.toast.show(format!(
+                                "OTIO exported to {} — {n} thing(s) dropped (could not write the list: {e})",
+                                path.display(),
+                            )),
+                        }
+                    }
+                    Err(e) => self.state.toast.show(format!("OTIO export failed: {e}")),
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+pub(super) fn channel_config_to_u32(c: klipp_timeline::ChannelConfig) -> u32 {
+    match c {
+        klipp_timeline::ChannelConfig::Default => 0,
+        klipp_timeline::ChannelConfig::MonoDownmix => 1,
+        klipp_timeline::ChannelConfig::SwapLR => 2,
+        klipp_timeline::ChannelConfig::Surround51 => 3,
+        klipp_timeline::ChannelConfig::Surround71 => 4,
+    }
+}
+
+/// Megabits per second a codec writes at a given pixel count, where
+/// that is a fixed property of the codec rather than a choice.
+///
+/// The intra-frame masters have published rates: every frame is coded
+/// on its own at a set quality, so the file size follows from the
+/// resolution, the frame rate and the running time and nothing else.
+/// Scaled from the profile's quoted 1920x1080 rate by pixel count and
+/// by frame rate, which is how the published tables are built.
+///
+/// `None` for anything whose size depends on the picture — H.264 and
+/// H.265 under CRF spend what the shot needs, and no arithmetic here
+/// can know that.
+pub(super) fn intra_frame_mbps(codec: klipp_core::ExportVideoCodec, px: f64, fps: f64) -> Option<f64> {
+    use klipp_core::ExportVideoCodec as C;
+    // At 1920x1080 and 29.97 fps, from Apple's and Avid's tables.
+    let at_1080p29 = match codec {
+        C::ProRes422 => 147.0,
+        C::ProRes422HQ => 220.0,
+        C::ProRes4444 => 330.0,
+        C::DNxHD115 => 115.0,
+        C::DNxHD145 => 145.0,
+        _ => return None,
+    };
+    let reference_px = 1920.0 * 1080.0;
+    Some(at_1080p29 * (px / reference_px) * (fps / 29.97))
+}
+
+/// What a quality (CRF) encode spends, low and high, in Mbps: from a
+/// calm, still picture to busy handheld footage. At 1080p30 and the
+/// encoder's default quality H.264 spends roughly 3 to 12 Mbps; six
+/// steps of CRF halve or double it; HEVC, VP9 and AV1 need less for the
+/// same picture. Pixels count for less than linearly (a 4K frame has
+/// more redundancy) and frame rate for less again (frames repeat
+/// themselves). `None` for what has no CRF to speak of (#19).
+pub(super) fn crf_mbps_range(codec: klipp_core::ExportVideoCodec, crf: u32, px: f64, fps: f64) -> Option<(f64, f64)> {
+    use klipp_core::ExportVideoCodec as C;
+    // The codec's own default quality, where its CRF scale sits.
+    let (default_crf, efficiency) = match codec {
+        C::H264 => (23.0, 1.0),
+        C::H265 => (28.0, 0.6),
+        C::Vp9 => (31.0, 0.65),
+        C::Av1 => (35.0, 0.5),
+        _ => return None,
+    };
+    let scale = efficiency
+        * (px / (1920.0 * 1080.0)).powf(0.75)
+        * (fps.max(1.0) / 30.0).powf(0.6)
+        * 2f64.powf((default_crf - crf as f64) / 6.0);
+    Some((3.0 * scale, 12.0 * scale))
+}
