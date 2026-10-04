@@ -474,7 +474,8 @@ _record() {
         *) _result=fail ;;
     esac
     _history="$_common/klipp-pre-push.history"
-    printf '%s %s %s %s %s %s %s\n' "$_started" "$(date +%s)" "$_result" "$_step" "${_branch:-?}" "${_pushed_from:-$ROOT}" "${_log:--}" >>"$_history" 2>/dev/null || return 0
+    # An eighth field marks a push that skipped the advisory check (#928).
+    printf '%s %s %s %s %s %s %s%s\n' "$_started" "$(date +%s)" "$_result" "$_step" "${_branch:-?}" "${_pushed_from:-$ROOT}" "${_log:--}" "${_audit:+ $_audit}" >>"$_history" 2>/dev/null || return 0
     if [ "$(wc -l <"$_history" 2>/dev/null || echo 0)" -gt 400 ]; then
         tail -n 200 "$_history" >"$_history.new" 2>/dev/null && mv -f "$_history.new" "$_history" 2>/dev/null || true
     fi
@@ -667,18 +668,41 @@ case "$_available" in
     fi ;;
 esac
 
-# Advisories in the dependencies (#825, #841). One that deny.toml does
-# not record refuses the push until it is fixed, or recorded there with
-# its reason; the ones recorded pass. The advisory list is refreshed
-# first, and a refresh that fails does not stop a push: the check runs
-# against the list already on disk, and with none at all it is reported,
-# not refused. An entry in deny.toml that no longer matches anything is
-# pointed at, to be dropped. Without cargo-deny the step says so, with
-# the line that installs it, and the push goes on.
+# Advisories in the dependencies (#825, #841, #928). One that deny.toml
+# does not record refuses the push until it is fixed, or recorded there
+# with its reason; the ones recorded pass. An entry in deny.toml that no
+# longer matches anything is pointed at, to be dropped.
+#
+# The check has to run for the push to go: without cargo-deny, or when it
+# cannot finish, the push is refused, with how to install it. The list of
+# advisories is refreshed first; offline, the copy on disk is used, said
+# when it is over a week old, and refused once it is over 30 days old,
+# since an old list passes what a current one would not. A machine that
+# cannot check sets KLIPP_SKIP_AUDIT=1: the push goes on, says so, and its
+# line in the gate history is marked `unaudited` for everyone to see.
 _step=advisories
-if command -v cargo-deny >/dev/null 2>&1; then
+_audit=
+_audit_refused() {
+    printf '            KLIPP_SKIP_AUDIT=1 git push   pushes without the check; the gate\n' >&2
+    printf '            history marks it unaudited.\n\n' >&2
+    exit 1
+}
+if [ "${KLIPP_SKIP_AUDIT:-}" = "1" ]; then
+    printf '\n  pre-push: KLIPP_SKIP_AUDIT=1: the dependencies are not checked for advisories;\n' >&2
+    printf '            this push is marked unaudited in the gate history.\n\n' >&2
+    _audit=unaudited
+elif command -v cargo-deny >/dev/null 2>&1; then
     if ! timeout 60 cargo deny fetch db >/dev/null 2>&1 9>&-; then
         printf '\n  pre-push: the advisory list could not be refreshed; checking against the one on disk.\n' >&2
+    fi
+    # How old the list on disk is: its last fetch, or failing that the
+    # folder itself (deny.toml keeps it in ~/.cargo/advisory-db).
+    _db=${KLIPP_ADVISORY_DB:-$HOME/.cargo/advisory-db}
+    _db_time=$(find "$_db" -maxdepth 3 \( -name FETCH_HEAD -o -name HEAD \) -path '*/.git/*' -printf '%T@\n' 2>/dev/null | sort -n | tail -n 1)
+    [ -n "$_db_time" ] || _db_time=$(find "$_db" -maxdepth 1 -mindepth 1 -type d -printf '%T@\n' 2>/dev/null | sort -n | tail -n 1)
+    _db_days=
+    if [ -n "$_db_time" ]; then
+        _db_days=$(( ($(date +%s) - ${_db_time%.*}) / 86400 ))
     fi
     # Under set -e a failing $(...) would end the gate unsaid: keep its status.
     _deny_status=0
@@ -702,13 +726,24 @@ if command -v cargo-deny >/dev/null 2>&1; then
         printf '            what would let it go. cargo deny check advisories shows the detail.\n\n' >&2
         exit 1
     elif [ "$_deny_status" -ne 0 ]; then
-        printf '\n  pre-push: cargo deny could not check the advisories (not refused):\n' >&2
+        printf '\n  pre-push: cargo deny could not check the advisories — push refused:\n' >&2
         printf '%s\n' "$_deny_out" | tail -n 3 | sed 's/^/            /' >&2
-        printf '\n' >&2
+        printf '            Run cargo deny check advisories to see why.\n' >&2
+        _audit_refused
+    elif [ -n "$_db_days" ] && [ "$_db_days" -gt 30 ]; then
+        printf '\n  pre-push: the advisory list on disk is %s days old — push refused:\n' "$_db_days" >&2
+        printf '            it passes what a current one would not. Refresh it online with\n' >&2
+        printf '            cargo deny fetch db.\n' >&2
+        _audit_refused
+    elif [ -n "$_db_days" ] && [ "$_db_days" -gt 7 ]; then
+        printf '\n  pre-push: the advisory list on disk is %s days old; refresh it online with\n' "$_db_days" >&2
+        printf '            cargo deny fetch db (over 30 days, the push is refused).\n\n' >&2
     fi
 else
-    printf '\n  pre-push: cargo-deny is not installed, so the dependencies were not checked\n' >&2
-    printf '            for advisories. Install it: cargo install --locked cargo-deny\n\n' >&2
+    printf '\n  pre-push: cargo-deny is not installed, so the dependencies cannot be checked\n' >&2
+    printf '            for advisories — push refused. Install it:\n' >&2
+    printf '            cargo install --locked cargo-deny\n' >&2
+    _audit_refused
 fi
 
 _step=lint

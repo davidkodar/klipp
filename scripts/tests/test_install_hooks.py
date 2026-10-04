@@ -293,5 +293,28 @@ class InstallHooksTests(unittest.TestCase):
         self.env["SHELLOPTS"] = "monitor"
         self.assertEqual(self.run_hook().returncode, 1)
 
+    def path_without(self, tool):
+        """PATH with the system's tools but not `tool`."""
+        tools = Path(self.temp.name) / "tools"
+        tools.mkdir(exist_ok=True)
+        seen = {tool}
+        for system in ("/usr/bin", "/bin"):
+            for entry in os.scandir(system):
+                if entry.name not in seen:
+                    seen.add(entry.name)
+                    (tools / entry.name).symlink_to(entry.path)
+        return str(tools)
+
+    def test_installing_without_cargo_deny_says_how_to_get_it(self):
+        # #928: the gate refuses a push it cannot check for advisories.
+        self.gate("exit 0")
+        self.env["PATH"] = self.path_without("cargo-deny")
+        result = self.install()
+        self.assertIn("cargo install --locked cargo-deny", result.stdout)
+        result = self.install()
+        self.assertIn("nothing to do", result.stdout)
+        self.assertIn("cargo install --locked cargo-deny", result.stdout, "said on a re-run too")
+
+
 if __name__ == "__main__":
     unittest.main()

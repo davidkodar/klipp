@@ -334,10 +334,19 @@ branch alone.) The routine that goes with it: the reviewer reviews while
 the gate runs, and merges as soon as it passes and GitHub shows the PR
 mergeable, so the next branch is tested on a `main` that already has it.
 
-The gate also runs `cargo deny check advisories` when cargo-deny is
-installed. An advisory that `deny.toml` does not record refuses the push
-until it is fixed by updating, or recorded there with the reason it
-cannot reach Klipp.
+The gate also runs `cargo deny check advisories`, and needs cargo-deny
+for it (`cargo install --locked cargo-deny`; `scripts/install-hooks.sh`
+says so when it is missing). An advisory that `deny.toml` does not
+record refuses the push until it is fixed by updating, or recorded there
+with the reason it cannot reach Klipp.
+
+The check has to run for a push to go. Without cargo-deny, or when it
+cannot finish, the push is refused. Offline, it checks against the list
+of advisories already on disk: past a week old it says so, and past 30
+days it refuses, since an old list passes what a current one would not
+(`cargo deny fetch db` refreshes it). A machine that cannot check pushes
+with `KLIPP_SKIP_AUDIT=1 git push`: the gate says so, and the push's
+line in the gate history is marked `unaudited`.
 
 `KLIPP_SKIP_TESTS=1 git push` bypasses the hook for a genuine reason (a
 work-in-progress branch, a mid-bisect push, a machine with no GPU). It

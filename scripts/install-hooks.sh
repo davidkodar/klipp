@@ -26,6 +26,13 @@ BLOCK_START='# --- Klipp test gate (scripts/pre-push.sh) ---'
 
 mkdir -p "$HOOKS"
 
+# The gate refuses a push it cannot check for advisories (#928): say so
+# now, when installing it, rather than at the first push.
+if ! command -v cargo-deny >/dev/null 2>&1; then
+    printf '  cargo-deny is not installed, and the gate refuses pushes it cannot check\n'
+    printf '  for advisories. Install it:  cargo install --locked cargo-deny\n'
+fi
+
 if grep -q "$VERSION" "$TARGET" 2>/dev/null; then
     printf '  already installed in %s — nothing to do\n' "$TARGET"
     exit 0
