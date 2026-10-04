@@ -1,0 +1,1469 @@
+//! Clips: the commands on a clip itself, its basic operations, selection and
+//! role, and the rest of its edits (#826).
+
+use super::*;
+
+impl KlippApp {
+    pub(super) fn handle_clip_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        if self.handle_clip_basic_ops(cmd, needs_refresh) { return true; }
+        if self.handle_clip_selection_role(cmd, needs_refresh) { return true; }
+        if self.handle_clip_edit_misc(cmd, needs_refresh) { return true; }
+
+        // Generator parameter editing
+        if let AppCommand::UpdateGeneratorData { clip_id, data } = cmd {
+            let old = self.snapshot_generator(*clip_id);
+            for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                    if let klipp_timeline::ClipKind::Generator(ref mut gd) = clip.kind {
+                        *gd = data.clone();
+                    }
+                }
+            }
+            if let Some(old_data) = old {
+                self.push_generator_undo(*clip_id, old_data);
+            }
+            self.sync_sequence_to_engine();
+            let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+            self.state.dirty = true;
+            return true;
+        }
+
+        false
+    }
+
+    fn handle_clip_basic_ops(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
+                // LoadMediaFile, ImportMedia, AppendClip, AppendClipToTrack,
+                // ImportMediaLinked — handled by handle_media_commands
+                AppCommand::RemoveClip { clip_id } => {
+                    self.remove_clip_impl(*clip_id);
+                    true
+                }
+                AppCommand::MoveClip {
+                    clip_id,
+                    new_timeline_in,
+                } => {
+                    if self.clip_track_is_locked(clip_id) { return true; }
+                    // Snapshot the link/group info and compute the delta before
+                    // we start mutating. The linked partner (set up by
+                    // ImportMediaLinked for A/V pairs) must follow the primary
+                    // by the same delta so linked clips stay phase-locked.
+                    let (group_id, linked_id, delta) = {
+                        let clip = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+                            .flat_map(|t| t.clips.iter())
+                            .find(|c| c.id == *clip_id);
+                        match clip {
+                            Some(c) => (c.group_id, c.linked_clip_id, *new_timeline_in - c.timeline_in),
+                            None => (None, None, klipp_core::RationalTime { value: 0, rate: 1 }),
+                        }
+                    };
+
+                    // Move primary clip and capture its old/new bounds.
+                    let mut primary_history: Option<(klipp_core::RationalTime, klipp_core::RationalTime, klipp_core::RationalTime, klipp_core::RationalTime)> = None;
+                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
+                        .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
+                    {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let old_in = clip.timeline_in;
+                            let old_out = clip.timeline_out;
+                            let dur = clip.duration();
+                            clip.timeline_in = *new_timeline_in;
+                            clip.timeline_out = *new_timeline_in + dur;
+                            primary_history = Some((old_in, old_out, clip.timeline_in, clip.timeline_out));
+                        }
+                        track.sort_clips();
+                    }
+
+                    // Move the linked partner by the same delta — but skip if
+                    // it's on a locked track, or if it's already in the same
+                    // group (group propagation below would double-move it).
+                    let partner_in_same_group = match (linked_id, group_id) {
+                        (Some(lid), Some(gid)) => self.state.sequences[self.state.active_sequence_idx]
+                            .tracks.iter()
+                            .flat_map(|t| t.clips.iter())
+                            .find(|c| c.id == lid)
+                            .is_some_and(|c| c.group_id == Some(gid)),
+                        _ => false,
+                    };
+                    let mut linked_partner: Option<crate::history::LinkedMovePartner> = None;
+                    if let Some(lid) = linked_id {
+                        if !partner_in_same_group && !self.clip_track_is_locked(&lid) && delta.value != 0 {
+                            if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
+                                .find(|t| t.clips.iter().any(|c| c.id == lid))
+                            {
+                                if let Some(lclip) = track.find_clip_mut(lid) {
+                                    let old_in = lclip.timeline_in;
+                                    let old_out = lclip.timeline_out;
+                                    lclip.timeline_in += delta;
+                                    lclip.timeline_out += delta;
+                                    linked_partner = Some(crate::history::LinkedMovePartner {
+                                        partner_id: lid,
+                                        old_timeline_in: old_in,
+                                        old_timeline_out: old_out,
+                                        new_timeline_in: lclip.timeline_in,
+                                        new_timeline_out: lclip.timeline_out,
+                                    });
+                                }
+                                track.sort_clips();
+                            }
+                        }
+                    }
+
+                    if let Some((old_in, old_out, new_in, new_out)) = primary_history {
+                        self.state.push_history(EditCommand::LegacyMoveClip {
+                                clip_id: *clip_id,
+                                old_timeline_in: old_in,
+                                old_timeline_out: old_out,
+                                new_timeline_in: new_in,
+                                new_timeline_out: new_out,
+                                linked_partner,
+                            });
+                    }
+
+                    // Propagate move to grouped clips (skip primary AND the
+                    // already-moved linked partner to avoid double-moving).
+                    if let Some(gid) = group_id {
+                        if delta.value != 0 {
+                            for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                                for clip in &mut track.clips {
+                                    if clip.group_id == Some(gid)
+                                        && clip.id != *clip_id
+                                        && Some(clip.id) != linked_id
+                                    {
+                                        clip.timeline_in += delta;
+                                        clip.timeline_out += delta;
+                                    }
+                                }
+                                track.sort_clips();
+                            }
+                        }
+                    }
+
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    true
+                }
+                AppCommand::MoveClipToTrack { clip_id, new_timeline_in, from_track, to_track } => {
+                    if self.clip_track_is_locked(clip_id) { return true; }
+                    if self.state.sequences[self.state.active_sequence_idx].tracks.get(*to_track).is_some_and(|t| t.locked) { return true; }
+                    let from = *from_track;
+                    let to = *to_track;
+                    let new_in = *new_timeline_in;
+                    if let Some(src_track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(from) {
+                        if let Some(clip) = src_track.find_clip(*clip_id).cloned() {
+                            let old_in = clip.timeline_in;
+                            let old_out = clip.timeline_out;
+                            let dur = clip.duration();
+                            let linked_id = clip.linked_clip_id;
+                            let delta = new_in - old_in;
+                            let mut moved_clip = clip.clone();
+                            moved_clip.timeline_in = new_in;
+                            moved_clip.timeline_out = new_in + dur;
+                            src_track.remove_clip(*clip_id);
+
+                            if let Some(dst_track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(to) {
+                                dst_track.clips.push(moved_clip.clone());
+                                dst_track.sort_clips();
+                            }
+
+                            // Shift the linked partner on its own track by the
+                            // same delta (A/V partners live on different track
+                            // kinds, so the partner doesn't cross tracks — only
+                            // its timeline bounds move).
+                            let mut linked_partner: Option<crate::history::LinkedMovePartner> = None;
+                            if let Some(lid) = linked_id {
+                                if !self.clip_track_is_locked(&lid) && delta.value != 0 {
+                                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
+                                        .find(|t| t.clips.iter().any(|c| c.id == lid))
+                                    {
+                                        if let Some(lclip) = track.find_clip_mut(lid) {
+                                            let p_old_in = lclip.timeline_in;
+                                            let p_old_out = lclip.timeline_out;
+                                            lclip.timeline_in += delta;
+                                            lclip.timeline_out += delta;
+                                            linked_partner = Some(crate::history::LinkedMovePartner {
+                                                partner_id: lid,
+                                                old_timeline_in: p_old_in,
+                                                old_timeline_out: p_old_out,
+                                                new_timeline_in: lclip.timeline_in,
+                                                new_timeline_out: lclip.timeline_out,
+                                            });
+                                        }
+                                        track.sort_clips();
+                                    }
+                                }
+                            }
+
+                            self.state.push_history(EditCommand::LegacyMoveClipToTrack {
+                                clip: moved_clip,
+                                old_timeline_in: old_in,
+                                old_timeline_out: old_out,
+                                new_timeline_in: new_in,
+                                from_track: from,
+                                to_track: to,
+                                linked_partner,
+                            });
+                            self.sync_sequence_to_engine();
+                            // Force engine to re-evaluate decoders at current playhead
+                            let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                            self.state.dirty = true;
+                        }
+                    }
+                    true
+                }
+                AppCommand::SwapAdjacentClips { clip_a, clip_b } => {
+                    if self.try_swap_adjacent_clips(*clip_a, *clip_b) {
+                        self.sync_sequence_to_engine();
+                        let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                        self.state.dirty = true;
+                    }
+                    true
+                }
+                AppCommand::ReplaceClipMedia { clip_id, new_media_id } => {
+                    if self.try_replace_clip_media(*clip_id, *new_media_id) {
+                        self.sync_sequence_to_engine();
+                        let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                        self.state.dirty = true;
+                    }
+                    true
+                }
+                AppCommand::TrimClip { .. } => {
+                    match crate::clip_edits::trim(self.state.sequence(), &self.state.media_pool, cmd) {
+                        Ok(Some(edit)) => self.apply_edits_as_one(&[edit], "Trim Clip"),
+                        Ok(None) => {},
+                        Err(why) => {
+                            self.state.toast.show(format!("Trim unchanged: {why}"));
+                            // A live preview may already have reached the
+                            // engine; publish the restored document too.
+                            self.sync_sequence_to_engine();
+                        }
+                    }
+                    true
+                }
+                AppCommand::RollTrimClip {
+                    clip_a_id,
+                    clip_b_id,
+                    new_a_source_out,
+                    new_a_timeline_out,
+                    new_b_source_in,
+                    new_b_timeline_in,
+                } => {
+                    if self.clip_track_is_locked(clip_a_id) || self.clip_track_is_locked(clip_b_id) { return true; }
+
+                    // Save old values for undo, then apply
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let old_a = seq.tracks.iter().flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == *clip_a_id)
+                        .map(|c| (c.source_out, c.timeline_out));
+                    let old_b = seq.tracks.iter().flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == *clip_b_id)
+                        .map(|c| (c.source_in, c.timeline_in));
+
+                    if let (Some((old_a_src_out, old_a_tl_out)), Some((old_b_src_in, old_b_tl_in))) = (old_a, old_b) {
+                        self.state.push_history(EditCommand::LegacyRollTrimClip {
+                                clip_a_id: *clip_a_id,
+                                clip_b_id: *clip_b_id,
+                                old_a_source_out: old_a_src_out,
+                                old_a_timeline_out: old_a_tl_out,
+                                old_b_source_in: old_b_src_in,
+                                old_b_timeline_in: old_b_tl_in,
+                                new_a_source_out: *new_a_source_out,
+                                new_a_timeline_out: *new_a_timeline_out,
+                                new_b_source_in: *new_b_source_in,
+                                new_b_timeline_in: *new_b_timeline_in,
+                            });
+
+                        // Apply to clip A
+                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                        for track in &mut seq.tracks {
+                            if let Some(c) = track.find_clip_mut(*clip_a_id) {
+                                c.source_out = *new_a_source_out;
+                                c.timeline_out = *new_a_timeline_out;
+                            }
+                            if let Some(c) = track.find_clip_mut(*clip_b_id) {
+                                c.source_in = *new_b_source_in;
+                                c.timeline_in = *new_b_timeline_in;
+                            }
+                        }
+
+                        // Also roll-trim linked partners
+                        let linked_a = seq.tracks.iter().flat_map(|t| t.clips.iter())
+                            .find(|c| c.id == *clip_a_id).and_then(|c| c.linked_clip_id);
+                        let linked_b = seq.tracks.iter().flat_map(|t| t.clips.iter())
+                            .find(|c| c.id == *clip_b_id).and_then(|c| c.linked_clip_id);
+                        if let Some(la) = linked_a {
+                            for track in &mut seq.tracks {
+                                if let Some(c) = track.find_clip_mut(la) {
+                                    c.source_out = *new_a_source_out;
+                                    c.timeline_out = *new_a_timeline_out;
+                                }
+                            }
+                        }
+                        if let Some(lb) = linked_b {
+                            for track in &mut seq.tracks {
+                                if let Some(c) = track.find_clip_mut(lb) {
+                                    c.source_in = *new_b_source_in;
+                                    c.timeline_in = *new_b_timeline_in;
+                                }
+                            }
+                        }
+                    }
+
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    true
+                }
+                AppCommand::SlipClip { clip_id, new_source_in: _, new_source_out: _ } => {
+                    if self.clip_track_is_locked(clip_id) { return true; }
+                    // Slip was already applied during drag.  Undo entry was pushed by the timeline panel.
+                    // Just sync the engine.
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    true
+                }
+                AppCommand::SlideClip {
+                    clip_id,
+                    new_timeline_in: _, new_timeline_out: _,
+                    left_clip_id: _, new_left_out: _,
+                    right_clip_id: _, new_right_in: _,
+                } => {
+                    if self.clip_track_is_locked(clip_id) { return true; }
+                    // Slide was already applied during drag.  Undo entry was pushed by the timeline panel.
+                    // Just sync the engine.
+                    self.sync_sequence_to_engine();
+                    self.state.dirty = true;
+                    true
+                }
+                // Undo/Redo/RubberBand/SequenceUpdated — handled by handle_playback_commands
+                // Export/RenderQueue/Preferences — handled by handle_export_commands
+                // SetSpeed — handled by handle_playback_commands (forwards to engine)
+                _ => false,
+        }
+    }
+
+    fn handle_clip_selection_role(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
+                AppCommand::CenterTimelineOnClip(clip_id) => {
+                    let cid = *clip_id;
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(c) = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid) {
+                        // Phase 4A: scroll the timeline so the clip's
+                        // start sits a small constant inset from the
+                        // left edge. Proper viewport-aware centring
+                        // would need the timeline's draw width (only
+                        // known at paint time); the inset is enough
+                        // to make the clip immediately visible from
+                        // a "jump to source" gesture without needing
+                        // a deferred state field.
+                        const LEFT_INSET_PX: f32 = 80.0;
+                        let zoom = self.state.timeline_zoom.max(1.0);
+                        let secs = c.timeline_in.to_secs_f64() as f32;
+                        let target = (secs * zoom) - LEFT_INSET_PX;
+                        self.state.timeline_scroll_x = target.max(0.0);
+                    }
+                    true
+                }
+                AppCommand::SelectClip(id) => {
+                    let newly_selected = self.state.selected_clip != *id;
+                    self.state.selected_clip = *id;
+                    if let Some(clip_id) = *id {
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let title = seq.tracks.iter()
+                            .find_map(|t| t.clips.iter().find(|c| c.id == clip_id))
+                            .filter(|c| c.title_data().is_some());
+                        if let Some(clip) = title {
+                            // The viewer shows a title only where the engine
+                            // draws it, at the playhead. Selecting one the
+                            // playhead is outside of brings the playhead to
+                            // it, so edits to it can be seen. Only on the
+                            // selection itself: moving the playhead away
+                            // afterwards is left alone.
+                            let seek = newly_selected
+                                .then(|| title_seek_on_select(clip, self.state.playhead, seq.fps.rate()))
+                                .flatten();
+                            if let Some(t) = seek {
+                                let _ = self.cmd_tx.send(AppCommand::SeekTo(t));
+                            }
+                            self.render_title_to_viewer(clip_id);
+                        } else if newly_selected
+                            && self.state.active_workspace == crate::state::Workspace::Color
+                        {
+                            // On the Colour page the viewer and the scopes
+                            // must show the shot whose grade the panel is
+                            // editing. Selecting a clip the playhead is not
+                            // in brings the playhead to it.
+                            let picture = seq.tracks.iter()
+                                .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video))
+                                .find_map(|t| t.clips.iter().find(|c| c.id == clip_id));
+                            let seek = picture.and_then(|clip| {
+                                colour_seek_on_select(clip, self.state.playhead, self.graded_positions.get(&clip_id).copied())
+                            });
+                            if let Some(t) = seek {
+                                self.state.playhead = t;
+                                self.state.playhead_smooth_secs = t.to_secs_f64();
+                                self.state.playhead_anchor = t;
+                                self.state.playhead_anchor_wall = std::time::Instant::now();
+                                // The follow below must not re-pick the
+                                // clip from this position: a clip under a
+                                // higher track would lose the selection.
+                                self.last_graded_playhead = Some(t);
+                                let _ = self.cmd_tx.send(AppCommand::SeekTo(t));
+                            }
+                        }
+                    } else {
+                        // Deselecting — clear title overlay if not in edit mode
+                        if !self.state.viewer_text_edit {
+                            if let Some(old) = self.viewer.title_overlay_texture.take() {
+                                self.defer_drop_texture(old);
+                            }
+                        }
+                    }
+                    true
+                }
+                // Node graph, color grading, keyframes, LUT — handled by handle_color_commands
+                AppCommand::SetClipDepth { clip_id, depth } => {
+                    let depth = depth.clamp(0.0, 20.0);
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some((ti, ci)) = seq.find_clip(*clip_id) {
+                        let clip = &mut seq.tracks[ti].clips[ci];
+                        let old = clip.depth;
+                        if (old - depth).abs() > 1e-6 {
+                            clip.depth = depth;
+                            let cid = *clip_id;
+                            let history = self.state.active_history_mut();
+                            let merged = history.merge_into_last(|last| match last {
+                                crate::history::EditCommand::SetClipDepth { clip_id, new, .. } if *clip_id == cid => {
+                                    *new = depth;
+                                    true
+                                }
+                                _ => false,
+                            });
+                            if !merged {
+                                history.push(crate::history::HistoryEntry {
+                                    command: crate::history::EditCommand::SetClipDepth { clip_id: cid, old, new: depth },
+                                });
+                            }
+                            self.sync_sequence_to_engine();
+                            self.state.dirty = true;
+                        }
+                    }
+                    true
+                }
+                AppCommand::SetTemplateOverride { clip_id, parameter, value } => {
+                    let selected = self.state.sequences[self.state.active_sequence_idx].find_clip(*clip_id)
+                        .and_then(|(ti, ci)| match &self.state.sequences[self.state.active_sequence_idx].tracks[ti].clips[ci].kind {
+                            klipp_timeline::ClipKind::TemplatePrecomposition { sequence_id, template_instance } => Some((*sequence_id, template_instance.clone())),
+                            _ => None,
+                        });
+                    let Some((sequence_id, old)) = selected else { return true };
+                    let Some(template) = self.state.composition_templates.templates().find(|template| template.id == old.template_id) else {
+                        self.state.toast.show("This template is not available in the local library");
+                        return true;
+                    };
+                    let Some(parameter_def) = template.parameters.get(parameter) else {
+                        self.state.toast.show(format!("Unknown template parameter '{parameter}'"));
+                        return true;
+                    };
+                    if let Err(error) = parameter_def.validate(value) {
+                        self.state.toast.show(error);
+                        return true;
+                    }
+                    let mut new = old.clone();
+                    new.overrides.insert(parameter.clone(), value.clone());
+                    let Some(template_sequence) = self.state.sequences.iter().find(|sequence| sequence.id == sequence_id) else {
+                        self.state.toast.show("Template composition is missing");
+                        return true;
+                    };
+                    if let Err(error) = klipp_timeline::flatten::validate_template_instance(&new, template_sequence) {
+                        self.state.toast.show(error);
+                        return true;
+                    }
+                    if old != new {
+                        if let Some((ti, ci)) = self.state.sequences[self.state.active_sequence_idx].find_clip(*clip_id) {
+                            if let klipp_timeline::ClipKind::TemplatePrecomposition { template_instance, .. } = &mut self.state.sequences[self.state.active_sequence_idx].tracks[ti].clips[ci].kind {
+                                *template_instance = new.clone();
+                            }
+                        }
+                        let cid = *clip_id;
+                        let history = self.state.active_history_mut();
+                        let merged = history.merge_into_last(|last| match last {
+                            crate::history::EditCommand::SetTemplateInstance { clip_id, parameter: last_parameter, new: last_new, .. } if *clip_id == cid && last_parameter == parameter => {
+                                **last_new = new.clone();
+                                true
+                            }
+                            _ => false,
+                        });
+                        if !merged {
+                            history.push(crate::history::HistoryEntry {
+                                command: crate::history::EditCommand::SetTemplateInstance { clip_id: cid, parameter: parameter.clone(), old: Box::new(old), new: Box::new(new) },
+                            });
+                        }
+                        self.sync_sequence_to_engine();
+                        self.state.dirty = true;
+                    }
+                    true
+                }
+                AppCommand::SaveCompositionTemplate { sequence_id, name } => {
+                    let Some(sequence) = self.state.sequences.iter().find(|sequence| sequence.id.0 == *sequence_id).cloned() else {
+                        self.state.toast.show("The selected composition is missing");
+                        return true;
+                    };
+                    match crate::parameterized_templates::save_composition_as_template(&mut self.state.composition_templates, &sequence, name.clone()) {
+                        Ok(true) => self.state.toast.show(format!("Updated the template '{name}'")),
+                        Ok(false) => self.state.toast.show(format!("Saved '{name}' as a template")),
+                        Err(error) => self.state.toast.show(format!("Could not save template: {error}")),
+                    }
+                    true
+                }
+                AppCommand::SetSequenceShutter { sequence_idx, shutter_deg, samples } => {
+                    if let Some(seq) = self.state.sequences.get_mut(*sequence_idx) {
+                        let old = seq.camera.clone();
+                        seq.camera.shutter_deg = shutter_deg.clamp(0.0, 360.0);
+                        seq.camera.shutter_samples = (*samples).clamp(2, 32);
+                        if seq.camera != old {
+                            let new = seq.camera.clone();
+                            let id = seq.id;
+                            self.state.history_for_mut(id).push(crate::history::HistoryEntry {
+                                command: crate::history::EditCommand::SetSequenceCamera { old: Box::new(old), new: Box::new(new) },
+                            });
+                            self.sync_sequence_to_engine();
+                            self.state.dirty = true;
+                        }
+                    }
+                    true
+                }
+                AppCommand::SetSequenceCameraKey { sequence_idx, param, time_secs, value } => {
+                    self.key_sequence_camera(*sequence_idx, *param, *time_secs, Some(*value));
+                    true
+                }
+                AppCommand::RemoveSequenceCameraKey { sequence_idx, param, time_secs } => {
+                    self.key_sequence_camera(*sequence_idx, *param, *time_secs, None);
+                    true
+                }
+                AppCommand::MoveSequenceCameraKey { sequence_idx, param, index, new_time_secs, new_value } => {
+                    self.edit_sequence_camera(*sequence_idx, |camera| { move_camera_key(camera, *param, *index, *new_time_secs, *new_value); });
+                    true
+                }
+                AppCommand::SetSequenceCameraKeyInterpolation { sequence_idx, param, index, interpolation } => {
+                    self.edit_sequence_camera(*sequence_idx, |camera| set_camera_key_interpolation(camera, *param, *index, *interpolation));
+                    true
+                }
+                AppCommand::SetSequenceCameraKeyTangent { sequence_idx, param, index, tangent_in, tangent_out } => {
+                    self.edit_sequence_camera(*sequence_idx, |camera| set_camera_key_tangent(camera, *param, *index, *tangent_in, *tangent_out));
+                    true
+                }
+                AppCommand::EaseSequenceCameraKey { sequence_idx, param, index, ease } => {
+                    self.edit_sequence_camera(*sequence_idx, |camera| klipp_core::keyframe::ease_into(crate::timeline::camera_lane::keys_mut(camera, *param), *index, *ease));
+                    true
+                }
+                AppCommand::BeginSequenceCameraDrag { sequence_idx } => {
+                    if let Some(seq) = self.state.sequences.get(*sequence_idx) {
+                        let before = Box::new(seq.camera.clone());
+                        let id = seq.id;
+                        self.state.history_for_mut(id).begin_drag(
+                            camera_drag_key(*sequence_idx),
+                            crate::history::HistoryEntry {
+                                command: crate::history::EditCommand::SetSequenceCamera { old: before.clone(), new: before },
+                            },
+                        );
+                    }
+                    true
+                }
+                AppCommand::EndSequenceCameraDrag { sequence_idx } => {
+                    if let Some(seq) = self.state.sequences.get(*sequence_idx) {
+                        let now = Box::new(seq.camera.clone());
+                        let id = seq.id;
+                        let history = self.state.history_for_mut(id);
+                        let unchanged = matches!(
+                            history.pending_old_entry_ref(),
+                            Some(crate::history::HistoryEntry { command: crate::history::EditCommand::SetSequenceCamera { old, .. } }) if *old == now
+                        );
+                        if unchanged {
+                            history.abandon_pending_drag();
+                        } else {
+                            history.end_drag(crate::history::HistoryEntry {
+                                command: crate::history::EditCommand::SetSequenceCamera { old: now.clone(), new: now },
+                            });
+                        }
+                    }
+                    true
+                }
+                AppCommand::SetClipRole { clip_id, role } => {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            clip.role = *role;
+                            break;
+                        }
+                    }
+                    self.state.dirty = true;
+                    true
+                }
+                // Speed keyframes, audio/video/effect keyframes, keyframe drag,
+                // clip audio params, audio drag — handled by handle_keyframe_commands
+
+                // Effect drag, reorder, presets, audio DSP, modifiers — handled by handle_effects_commands
+
+                // Transitions — handled by handle_transition_commands
+
+                // Title clips — handled by handle_title_commands
+
+                // Phase 4: Blade
+                AppCommand::BladeClip { track_index, clip_id, cut_at } => {
+                    self.blade_clip_at(*track_index, *clip_id, *cut_at);
+                    true
+                }
+                _ => false,
+        }
+    }
+
+    fn handle_clip_edit_misc(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        match cmd {
+                // Phase 4: Cut/Copy/Paste
+                AppCommand::CutClip { clip_id } => {
+                    // The selection when the clip is part of one, each
+                    // clip with its linked partner, onto the clipboard,
+                    // then removed as Delete removes them, one undo step
+                    // (#458, #845). What a remove refused (a locked track)
+                    // stays, and stays off the clipboard: a Cut that cut
+                    // nothing was a silent Copy over what it held.
+                    let ids = crate::clip_clipboard::selection_for(*clip_id, self.state.selected_clip, &self.state.selected_clips);
+                    if let Some(cb) = crate::clip_clipboard::copy(self.state.sequence(), &ids) {
+                        let batching = self.state.active_history_mut().is_batching();
+                        if !batching {
+                            self.state.active_history_mut().begin_batch();
+                        }
+                        for c in &cb.clips {
+                            if self.state.sequence().find_clip(c.clip.id).is_some() {
+                                self.remove_clip_impl(c.clip.id);
+                            }
+                        }
+                        if !batching {
+                            self.state.active_history_mut().end_batch_as("Cut");
+                        }
+                        let mut cut = cb;
+                        cut.clips.retain(|c| self.state.sequence().find_clip(c.clip.id).is_none());
+                        if !cut.clips.is_empty() {
+                            if cut.clips.len() > 1 {
+                                self.state.toast.show(format!("Cut {} clips", cut.clips.len()));
+                            }
+                            self.state.system_clipboard_text = Some(clips_clipboard_text(cut.clips.len()));
+                            self.state.clipboard = Some(cut);
+                        }
+                    }
+                    true
+                }
+                AppCommand::CopyClip { clip_id } => {
+                    let cid = *clip_id;
+                    // Its attributes too: copy a clip, then Paste
+                    // Attributes onto others. Paste Attributes stayed
+                    // greyed out after Copy, with nothing saying why (#325).
+                    let attributes = self.state.sequence().all_clips().find(|c| c.id == cid).map(crate::state::AttributesClipboard::of);
+                    if attributes.is_some() {
+                        self.state.attributes_clipboard = attributes;
+                    }
+                    // The whole selection when the clip is part of one (#845).
+                    let ids = crate::clip_clipboard::selection_for(cid, self.state.selected_clip, &self.state.selected_clips);
+                    if let Some(cb) = crate::clip_clipboard::copy(self.state.sequence(), &ids) {
+                        if cb.clips.len() > 1 {
+                            self.state.toast.show(format!("Copied {} clips", cb.clips.len()));
+                        }
+                        self.state.system_clipboard_text = Some(clips_clipboard_text(cb.clips.len()));
+                        self.state.clipboard = Some(cb);
+                    }
+                    true
+                }
+                AppCommand::PasteClip => {
+                    if let Some(cb) = self.state.clipboard.clone() {
+                        self.paste_clipboard(&cb, self.state.playhead, crate::clip_clipboard::PasteMode::Overwrite, "Paste");
+                    }
+                    true
+                }
+                AppCommand::PasteClipInsert => {
+                    if let Some(cb) = self.state.clipboard.clone() {
+                        self.paste_clipboard(&cb, self.state.playhead, crate::clip_clipboard::PasteMode::Insert, "Paste Insert");
+                    }
+                    true
+                }
+                // Ctrl+D — Duplicate selected clip (place immediately after original)
+                // Copy Attributes: snapshot a clip's effects/audio/transform/speed
+                AppCommand::CopyAttributes { clip_id } => {
+                    let cid = *clip_id;
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips().find(|c| c.id == cid) {
+                        self.state.attributes_clipboard = Some(crate::state::AttributesClipboard::of(clip));
+                        self.state.toast.show("Attributes copied".to_string());
+                    }
+                    true
+                }
+                // Paste Attributes: apply selected attribute categories to target clip(s)
+                AppCommand::PasteAttributes { effects, color_grade, audio, transform, speed } => {
+                    // One whole-clip snapshot either side per target, as
+                    // one undo step. It used to write the clips in place
+                    // with no history, and to stop at the first clip in
+                    // the sequence that was not a target — so it pasted
+                    // to whichever targets came before that, skipped the
+                    // engine sync, and said nothing.
+                    if let Some(attrs) = self.state.attributes_clipboard.clone() {
+                        let what = crate::state::PasteChoice {
+                            effects: *effects,
+                            color_grade: *color_grade,
+                            audio: *audio,
+                            transform: *transform,
+                            speed: *speed,
+                        };
+                        let mut targets = self.state.selected_clips.clone();
+                        if let Some(primary) = self.state.selected_clip {
+                            if !targets.contains(&primary) {
+                                targets.push(primary);
+                            }
+                        }
+                        let edits = paste_attributes_edits(&self.state.sequences[self.state.active_sequence_idx], &targets, &attrs, what);
+                        let count = edits.len();
+                        self.apply_edits_as_one(&edits, "Paste Attributes");
+                        self.state.toast.show(format!("Attributes pasted to {count} clip(s)"));
+                    }
+                    true
+                }
+                AppCommand::DuplicateClip { clip_id } => {
+                    let cid = *clip_id;
+                    // Several clips selected: all of them, with their
+                    // partners and transitions, after the last of them, one
+                    // undo step (#845). One clip keeps its own path below.
+                    let ids = crate::clip_clipboard::selection_for(cid, self.state.selected_clip, &self.state.selected_clips);
+                    if ids.len() > 1 {
+                        if let Some(cb) = crate::clip_clipboard::copy(self.state.sequence(), &ids) {
+                            let after = cb.clips.iter().map(|c| c.clip.timeline_out).max().unwrap_or(self.state.playhead);
+                            self.paste_clipboard(&cb, after, crate::clip_clipboard::PasteMode::Overwrite, "Duplicate");
+                        }
+                        return true;
+                    }
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let found = seq.tracks.iter().enumerate().find_map(|(ti, t)| {
+                        t.find_clip(cid).map(|c| (ti, c.clone()))
+                    });
+                    if let Some((track_index, clip)) = found {
+                        let new_id = klipp_core::ClipId::new();
+                        let timeline_in = clip.timeline_out;
+                        let dur = clip.duration();
+                        let new_clip = klipp_timeline::Clip {
+                            id: new_id,
+                            kind: clip.kind.clone(),
+                            timeline_in,
+                            timeline_out: timeline_in + dur,
+                            source_in: clip.source_in,
+                            source_out: clip.source_out,
+                            node_graph: clip.node_graph.clone(),
+                            effects: clip.effects.clone(),
+                            builtin_effects: clip.builtin_effects.clone(),
+                            builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
+                            linked_clip_id: None,
+                            linked_title_asset_id: None,
+                            group_id: None,
+                            grade_group: None,
+                            own_node_graph: None,
+                            own_effects: None,
+                            magnetic_anchor: None,
+                            gain: clip.gain,
+                            volume: clip.volume,
+                            pan: clip.pan,
+                            fade_in_secs: clip.fade_in_secs,
+                            fade_out_secs: clip.fade_out_secs,
+                            fade_in_curve: clip.fade_in_curve,
+                            fade_out_curve: clip.fade_out_curve,
+                            channel_config: clip.channel_config,
+                            volume_keyframes: clip.volume_keyframes.clone(),
+                            pan_keyframes: clip.pan_keyframes.clone(),
+                            gain_keyframes: clip.gain_keyframes.clone(),
+                            opacity_keyframes: clip.opacity_keyframes.clone(),
+                            transform_pos_x_keyframes: clip.transform_pos_x_keyframes.clone(),
+                            transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
+                            transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
+                            transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
+                            transform_tilt_x_keyframes: clip.transform_tilt_x_keyframes.clone(),
+                            transform_tilt_y_keyframes: clip.transform_tilt_y_keyframes.clone(),
+                            matte_feather_keyframes: clip.matte_feather_keyframes.clone(),
+                            matte_choke_keyframes: clip.matte_choke_keyframes.clone(),
+                            clip_markers: clip.clip_markers.clone(),
+                            effect_keyframes: clip.effect_keyframes.clone(),
+                            role: clip.role,
+                            param_modifiers: clip.param_modifiers.clone(),
+                            speed: clip.speed,
+                            speed_keyframes: clip.speed_keyframes.clone(),
+                            source_rotation: clip.source_rotation,
+                            enabled: clip.enabled,
+                            solo: clip.solo,
+                            blend_mode: clip.blend_mode,
+                            depth: clip.depth,
+                            matte_source: clip.matte_source.clone(),
+                            matte_stencil: clip.matte_stencil.clone(),
+                            consumed_as_matte: clip.consumed_as_matte,
+                            transform_link: None,
+                            grade_versions: clip.grade_versions.clone(),
+                            active_grade_version: clip.active_grade_version,
+                            multicam_group: clip.multicam_group,
+                            multicam_angle: clip.multicam_angle,
+                            multicam_cuts: clip.multicam_cuts.clone(),
+                            multicam_sound: clip.multicam_sound,
+                            audio_effects: clip.audio_effects.clone(),
+                            audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
+                            deflicker_data: None,
+                            deflicker_gains: None,
+                            stabilization_data: None,
+                            smoothed_trajectory: None,
+                            track_points: Vec::new(),
+                            surfaces: clip.surfaces.clone(),
+                            surface_pin: clip.surface_pin,
+                            precomp: None,
+                        };
+                        let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[track_index];
+                        Self::overwrite_insert_clip_on_track(track, new_clip.clone());
+                        self.state.push_history(EditCommand::LegacyPasteClip {
+                                clip: new_clip,
+                                track_index,
+                            });
+                        self.state.selected_clip = Some(new_id);
+                        self.state.selected_clips.clear();
+                        self.state.dirty = true;
+                    }
+                    self.sync_sequence_to_engine();
+                    true
+                }
+                // Toggle clip enabled/disabled
+                AppCommand::SetClipEnabled { clip_id, enabled } => {
+                    let cid = *clip_id;
+                    let en = *enabled;
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
+                        clip.enabled = en;
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    true
+                }
+                AppCommand::SetClipSolo { clip_id, solo } => {
+                    let cid = *clip_id;
+                    let s = *solo;
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
+                        clip.solo = s;
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    true
+                }
+
+                // ── Track matte / blend mode (Phase 1 data-model handlers) ────
+                AppCommand::SetClipBlendMode { clip_id, mode } => {
+                    let cid = *clip_id;
+                    let m = *mode;
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
+                        clip.blend_mode = m;
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    true
+                }
+                AppCommand::SetClipMatte {
+                    clip_id, source_clip_id, channel, invert, feather_px, choke_px,
+                } => {
+                    let consumer_id = *clip_id;
+                    let source_id = *source_clip_id;
+                    let seq_idx = self.state.active_sequence_idx;
+
+                    // Reject self-reference: a clip cannot be its own matte.
+                    if consumer_id == source_id {
+                        tracing::warn!("SetClipMatte: refusing self-reference for clip {consumer_id:?}");
+                        return true;
+                    }
+
+                    // Validate against the active sequence: source must exist,
+                    // must not be an AdjustmentLayer (no own pixels), and the
+                    // bind must not introduce a cycle.
+                    {
+                        let seq = &self.state.sequences[seq_idx];
+                        let source = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == source_id);
+                        let Some(source) = source else {
+                            tracing::warn!("SetClipMatte: source clip {source_id:?} not found in active sequence");
+                            return true;
+                        };
+                        if matches!(source.kind, klipp_timeline::ClipKind::AdjustmentLayer) {
+                            tracing::warn!("SetClipMatte: cannot bind an AdjustmentLayer as matte source — it has no own pixels");
+                            return true;
+                        }
+                        if matte_chain_creates_cycle(seq, consumer_id, source_id) {
+                            tracing::warn!("SetClipMatte: rejecting bind that would create a matte cycle ({consumer_id:?} ← {source_id:?})");
+                            return true;
+                        }
+                    }
+
+                    let binding = klipp_timeline::MatteBinding {
+                        source_clip_id: source_id,
+                        channel: matte_channel_from_u8(*channel),
+                        invert: *invert,
+                        feather_px: *feather_px,
+                        choke_px: *choke_px,
+                    };
+                    let seq = &mut self.state.sequences[seq_idx];
+                    if let Some(consumer) = seq.all_clips_mut().find(|c| c.id == consumer_id) {
+                        consumer.matte_source = Some(binding);
+                    }
+                    // Default-on: hide the source clip from the visible composite.
+                    // Pros can flip this back via SetClipConsumedAsMatte.
+                    if let Some(src) = seq.all_clips_mut().find(|c| c.id == source_id) {
+                        src.consumed_as_matte = true;
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    true
+                }
+                AppCommand::ClearClipMatte { clip_id } => {
+                    let consumer_id = *clip_id;
+                    let seq_idx = self.state.active_sequence_idx;
+                    // Capture which source the consumer was pointing at, then
+                    // clear the binding.
+                    let prior_source = {
+                        let seq = &mut self.state.sequences[seq_idx];
+                        if let Some(consumer) = seq.all_clips_mut().find(|c| c.id == consumer_id) {
+                            let prior = consumer.matte_source.as_ref().map(|b| b.source_clip_id);
+                            consumer.matte_source = None;
+                            prior
+                        } else {
+                            None
+                        }
+                    };
+                    // If nothing else references the source, return it to the
+                    // visible composite (clear `consumed_as_matte`).
+                    if let Some(sid) = prior_source {
+                        let still_referenced = self.state.sequences[seq_idx].tracks.iter()
+                            .flat_map(|t| t.clips.iter())
+                            .any(|c| c.matte_source.as_ref().is_some_and(|b| b.source_clip_id == sid));
+                        if !still_referenced {
+                            let seq = &mut self.state.sequences[seq_idx];
+                            if let Some(src) = seq.all_clips_mut().find(|c| c.id == sid) {
+                                src.consumed_as_matte = false;
+                            }
+                        }
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    true
+                }
+                AppCommand::SetClipTransformLink {
+                    clip_id, target, mode, inherit_scale, inherit_position, inherit_rotation, inherit_anchor,
+                } => {
+                    let consumer_id = *clip_id;
+                    let target_id = *target;
+                    let seq_idx = self.state.active_sequence_idx;
+
+                    // Reject self-link.
+                    if consumer_id == target_id {
+                        tracing::warn!("SetClipTransformLink: refusing self-link for clip {consumer_id:?}");
+                        return true;
+                    }
+
+                    // Validate target exists, is not an AdjustmentLayer
+                    // (no own transform — we want pixel-bearing clips
+                    // as targets), and the bind would not introduce a
+                    // cycle.
+                    {
+                        let seq = &self.state.sequences[seq_idx];
+                        let Some(target_clip) = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == target_id) else {
+                            tracing::warn!("SetClipTransformLink: target clip {target_id:?} not found in active sequence");
+                            return true;
+                        };
+                        if matches!(target_clip.kind, klipp_timeline::ClipKind::AdjustmentLayer) {
+                            tracing::warn!("SetClipTransformLink: AdjustmentLayer cannot be a transform-link target — it has no transform of its own");
+                            return true;
+                        }
+                        if transform_link_chain_creates_cycle(seq, consumer_id, target_id) {
+                            tracing::warn!("SetClipTransformLink: rejecting bind that would create a transform-link cycle ({consumer_id:?} ← {target_id:?})");
+                            return true;
+                        }
+                    }
+
+                    let link_mode = if *mode == 1 { klipp_timeline::LinkMode::Additive } else { klipp_timeline::LinkMode::Absolute };
+                    // SetClipTransformLink today only takes a ClipId
+                    // target — wrap into the Clip variant. The
+                    // tracker-target path (HZ-MATTE-NEXT-TRACKER-DRIVER
+                    // commit 3) will surface as a separate AppCommand
+                    // or a discriminator on this one.
+                    let link = klipp_timeline::TransformLink {
+                        target: klipp_timeline::TransformLinkTarget::Clip(target_id),
+                        mode: link_mode,
+                        inherit_scale: *inherit_scale,
+                        inherit_position: *inherit_position,
+                        inherit_rotation: *inherit_rotation,
+                        inherit_anchor: *inherit_anchor,
+                    };
+                    let seq = &mut self.state.sequences[seq_idx];
+                    if let Some(consumer) = seq.all_clips_mut().find(|c| c.id == consumer_id) {
+                        consumer.transform_link = Some(link);
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    true
+                }
+                AppCommand::SetClipTransformLinkTracker {
+                    clip_id, host_clip_id, point_index, mode,
+                    inherit_scale, inherit_position, inherit_rotation, inherit_anchor,
+                } => {
+                    let consumer_id = *clip_id;
+                    let host_id = *host_clip_id;
+                    let pt_idx = *point_index;
+                    let seq_idx = self.state.active_sequence_idx;
+
+                    // Validate: host clip exists; named tracker
+                    // exists on it; binding doesn't close a cycle
+                    // (a Tracker variant can't form a transform_link
+                    // chain on its own, but a host clip whose own
+                    // transform_link points back at consumer would
+                    // — defence-in-depth covers that).
+                    {
+                        let seq = &self.state.sequences[seq_idx];
+                        let Some(host) = seq.tracks.iter().flat_map(|t| t.clips.iter())
+                            .find(|c| c.id == host_id) else {
+                            tracing::warn!(
+                                "SetClipTransformLinkTracker: host clip {host_id:?} not found in active sequence"
+                            );
+                            return true;
+                        };
+                        if host.track_points.get(pt_idx as usize).is_none() {
+                            tracing::warn!(
+                                "SetClipTransformLinkTracker: tracker {pt_idx} doesn't exist on clip {host_id:?}"
+                            );
+                            return true;
+                        }
+                        if transform_link_chain_creates_cycle(seq, consumer_id, host_id) {
+                            tracing::warn!(
+                                "SetClipTransformLinkTracker: rejecting bind that would close a cycle ({consumer_id:?} ← tracker on {host_id:?})"
+                            );
+                            return true;
+                        }
+                    }
+
+                    let link_mode = if *mode == 1 { klipp_timeline::LinkMode::Additive } else { klipp_timeline::LinkMode::Absolute };
+                    let link = klipp_timeline::TransformLink {
+                        target: klipp_timeline::TransformLinkTarget::Tracker {
+                            clip_id: host_id, point_index: pt_idx,
+                        },
+                        mode: link_mode,
+                        inherit_scale: *inherit_scale,
+                        inherit_position: *inherit_position,
+                        inherit_rotation: *inherit_rotation,
+                        inherit_anchor: *inherit_anchor,
+                    };
+                    let seq = &mut self.state.sequences[seq_idx];
+                    if let Some(consumer) = seq.all_clips_mut().find(|c| c.id == consumer_id) {
+                        consumer.transform_link = Some(link);
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    true
+                }
+                AppCommand::ClearClipTransformLink { clip_id } => {
+                    let cid = *clip_id;
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
+                        clip.transform_link = None;
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    true
+                }
+                AppCommand::AutoLinkClipsBeneathSource {
+                    source_clip_id, ramp_secs, mode,
+                    inherit_scale, inherit_position, inherit_rotation, inherit_anchor,
+                } => {
+                    let src_id = *source_clip_id;
+                    let seq_idx = self.state.active_sequence_idx;
+                    let link_mode = if *mode == 1 {
+                        klipp_timeline::LinkMode::Additive
+                    } else {
+                        klipp_timeline::LinkMode::Absolute
+                    };
+                    let targets = {
+                        let seq = &self.state.sequences[seq_idx];
+                        crate::hyperzoom::collect_auto_link_targets(seq, src_id, *ramp_secs)
+                    };
+                    if targets.is_empty() {
+                        // Likely benign — no qualifying clip beneath the
+                        // source within the ramp window. Logging at
+                        // debug rather than warn so it doesn't pollute
+                        // the panel during normal use.
+                        tracing::debug!(
+                            "AutoLinkClipsBeneathSource: no clips matched for source {src_id:?} \
+                             within {ramp_secs} s ramp window"
+                        );
+                        return true;
+                    }
+                    let inherit = (*inherit_scale, *inherit_position, *inherit_rotation, *inherit_anchor);
+                    let seq = &mut self.state.sequences[seq_idx];
+                    for cid in &targets {
+                        if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *cid) {
+                            clip.transform_link = Some(klipp_timeline::TransformLink {
+                                target: klipp_timeline::TransformLinkTarget::Clip(src_id),
+                                mode: link_mode,
+                                inherit_scale: inherit.0,
+                                inherit_position: inherit.1,
+                                inherit_rotation: inherit.2,
+                                inherit_anchor: inherit.3,
+                            });
+                        }
+                    }
+                    tracing::info!(
+                        "AutoLinkClipsBeneathSource: linked {} clip(s) beneath {src_id:?} → {src_id:?} ({:?})",
+                        targets.len(), link_mode,
+                    );
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    true
+                }
+                AppCommand::ApplyHyperzoom {
+                    source_clip_id, target_clip_id, focal_x_norm, focal_y_norm,
+                    duration_secs, max_scale, easing, hold_secs,
+                    add_radial_blur, radial_blur_amount, focal_ref,
+                    add_whoosh, whoosh_variant, whoosh_custom_path,
+                    add_chromatic_aberration, chromatic_aberration_amount,
+                    add_light_leak, light_leak_intensity,
+                } => {
+                    let src_id = *source_clip_id;
+                    let seq_idx = self.state.active_sequence_idx;
+
+                    // Resolve source + target. If `target_clip_id` is
+                    // None, the handler walks the source's track and
+                    // picks the next clip; absent a "next" clip the
+                    // operation is a no-op (warn only — we don't want
+                    // a partial application that left a dangling
+                    // ramp on the source).
+                    let (src_dur_secs, src_timeline_out, tgt_id, tgt_dur_secs) = {
+                        let seq = &self.state.sequences[seq_idx];
+                        let mut found: Option<(f64, klipp_core::Timecode, klipp_core::ClipId, f64)> = None;
+                        'outer: for track in &seq.tracks {
+                            for (idx, c) in track.clips.iter().enumerate() {
+                                if c.id == src_id {
+                                    let src_dur = c.duration().to_secs_f64().max(0.0);
+                                    let src_out = c.timeline_out;
+                                    let tgt = match target_clip_id {
+                                        Some(t) => track.clips.iter().find(|c| c.id == *t).cloned(),
+                                        None => track.clips.get(idx + 1).cloned(),
+                                    };
+                                    let Some(tgt) = tgt else {
+                                        tracing::warn!(
+                                            "ApplyHyperzoom: source {src_id:?} has no resolvable target clip — \
+                                             pass an explicit target or ensure a clip follows it on the same track"
+                                        );
+                                        return true;
+                                    };
+                                    found = Some((src_dur, src_out, tgt.id, tgt.duration().to_secs_f64().max(0.0)));
+                                    break 'outer;
+                                }
+                            }
+                        }
+                        let Some(found) = found else {
+                            tracing::warn!("ApplyHyperzoom: source clip {src_id:?} not found in active sequence");
+                            return true;
+                        };
+                        found
+                    };
+
+                    if src_id == tgt_id {
+                        tracing::warn!("ApplyHyperzoom: refusing self-target ({src_id:?})");
+                        return true;
+                    }
+
+                    let plan = crate::hyperzoom::plan_hyperzoom(crate::hyperzoom::HyperzoomInput {
+                        source_clip_dur_secs: src_dur_secs,
+                        target_clip_dur_secs: tgt_dur_secs,
+                        focal_x_norm: *focal_x_norm,
+                        focal_y_norm: *focal_y_norm,
+                        duration_secs: *duration_secs,
+                        max_scale: *max_scale,
+                        easing: crate::hyperzoom::HyperzoomEasing::from_u8(*easing),
+                        hold_secs: *hold_secs,
+                        add_radial_blur: *add_radial_blur,
+                        radial_blur_amount: *radial_blur_amount,
+                        add_chromatic_aberration: *add_chromatic_aberration,
+                        chromatic_aberration_amount: *chromatic_aberration_amount,
+                        add_light_leak: *add_light_leak,
+                        light_leak_intensity: *light_leak_intensity,
+                    });
+
+                    let seq = &mut self.state.sequences[seq_idx];
+                    apply_hyperzoom_plan_to_clip(seq, src_id, plan.source_anchor, &plan.source_scale_kfs);
+                    apply_hyperzoom_plan_to_clip(seq, tgt_id, plan.target_anchor, &plan.target_scale_kfs);
+                    if let Some(rb) = plan.radial_blur.as_ref() {
+                        apply_hyperzoom_radial_blur_to_clip(seq, src_id, rb.center, rb.peak_amount, &rb.source_amount_kfs);
+                        apply_hyperzoom_radial_blur_to_clip(seq, tgt_id, rb.center, rb.peak_amount, &rb.target_amount_kfs);
+                    }
+                    if let Some(ca) = plan.chromatic_aberration.as_ref() {
+                        apply_hyperzoom_chromatic_aberration_to_clip(
+                            seq, src_id, ca.center, ca.peak_amount,
+                            &ca.source_red_kfs, &ca.source_blue_kfs,
+                        );
+                        apply_hyperzoom_chromatic_aberration_to_clip(
+                            seq, tgt_id, ca.center, ca.peak_amount,
+                            &ca.target_red_kfs, &ca.target_blue_kfs,
+                        );
+                    }
+                    if let Some(ll) = plan.light_leak.as_ref() {
+                        apply_hyperzoom_light_leak_to_clip(
+                            seq, src_id, ll.peak_intensity, &ll.source_intensity_kfs,
+                        );
+                        apply_hyperzoom_light_leak_to_clip(
+                            seq, tgt_id, ll.peak_intensity, &ll.target_intensity_kfs,
+                        );
+                    }
+
+                    // Glyph-anchored focal-point override. Written
+                    // ONLY on the source clip — the target's anchor
+                    // is the cut-frame zoom-out point, not a value
+                    // worth live-tracking (audit decision per
+                    // HZ-NEXT-GLYPH-LOCK question (f); revisit only
+                    // if a real "track the same letter on both sides
+                    // of the cut" use case shows up). focal_ref=None
+                    // (the back-compat path) skips this entirely and
+                    // anchor_x/y from apply_hyperzoom_plan_to_clip
+                    // remain the only authority on focal position.
+                    if let Some(fr) = focal_ref {
+                        apply_focal_ref_to_clip_transform(seq, src_id, *fr);
+                    }
+
+                    // Whoosh stinger (HZ-NEXT-WHOOSH). Opt-in via
+                    // `add_whoosh = true`. Folded into the same
+                    // dispatch arm so apply + whoosh are a single
+                    // undo step — same pattern as the radial-blur
+                    // convenience layer. The pure helper does the
+                    // variant resolution + pool registration + clip
+                    // insertion; we only record the undo entry on
+                    // success.
+                    if let Some(inserted) = maybe_insert_whoosh_for_apply(
+                        &mut self.state,
+                        seq_idx,
+                        src_timeline_out,
+                        *add_whoosh,
+                        *whoosh_variant,
+                        whoosh_custom_path.as_deref(),
+                    ) {
+                        self.state.push_history(EditCommand::LegacyAppendClip {
+                            clip: inserted.clip,
+                            track_index: inserted.track_index,
+                        });
+                    }
+
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    true
+                }
+                AppCommand::OpenSaveHyperzoomPresetDialog { source_clip } => {
+                    // Pin the source clip so the dialog reads the
+                    // right scratch even if the user navigates the
+                    // timeline before clicking Save. Clear any
+                    // stale name + error from a prior open.
+                    self.state.show_save_hyperzoom_preset_dialog = true;
+                    self.state.save_hyperzoom_preset_source_clip = Some(*source_clip);
+                    self.state.save_hyperzoom_preset_name.clear();
+                    self.state.save_hyperzoom_preset_error = None;
+                    true
+                }
+                AppCommand::SetClipConsumedAsMatte { clip_id, consumed } => {
+                    let cid = *clip_id;
+                    let c = *consumed;
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
+                        clip.consumed_as_matte = c;
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    true
+                }
+                AppCommand::SetClipStencil { clip_id, channel, invert, feather_px, choke_px } => {
+                    let cid = *clip_id;
+                    let stencil = klipp_timeline::StencilSettings {
+                        channel: matte_channel_from_u8(*channel),
+                        invert: *invert,
+                        feather_px: *feather_px,
+                        choke_px: *choke_px,
+                    };
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
+                        clip.matte_stencil = Some(stencil);
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    true
+                }
+                AppCommand::ClearClipStencil { clip_id } => {
+                    let cid = *clip_id;
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
+                        clip.matte_stencil = None;
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    true
+                }
+                AppCommand::UseClipAboveAsMatte { clip_id, channel } => {
+                    let cid = *clip_id;
+                    let chan = *channel;
+                    // Resolve the consumer's track index.
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let track_idx = seq.tracks.iter().position(|t| t.clips.iter().any(|c| c.id == cid));
+                    let Some(track_idx) = track_idx else {
+                        return true;
+                    };
+                    if let Some((source_id, _kind)) = crate::panels::timeline::find_matte_candidate_above(&self.state, track_idx, cid) {
+                        // Re-dispatch as SetClipMatte so the cycle /
+                        // self-ref / AdjustmentLayer guards in that
+                        // handler are the single source of truth. Through
+                        // the UI's dispatcher: the engine ignores it (#437).
+                        self.send_commands(vec![AppCommand::SetClipMatte {
+                            clip_id: cid,
+                            source_clip_id: source_id,
+                            channel: chan,
+                            invert: false,
+                            feather_px: 0.0,
+                            choke_px: 0.0,
+                        }]);
+                    } else {
+                        self.state.toast.show("No clip above to use as matte. Stack a clip on a higher track first.");
+                    }
+                    true
+                }
+                AppCommand::ToggleClipStencil { clip_id } => {
+                    let cid = *clip_id;
+                    let currently_on = self.state.sequences[self.state.active_sequence_idx]
+                        .tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid)
+                        .map(|c| c.matte_stencil.is_some()).unwrap_or(false);
+                    let next_cmd = if currently_on {
+                        AppCommand::ClearClipStencil { clip_id: cid }
+                    } else {
+                        AppCommand::SetClipStencil {
+                            clip_id: cid,
+                            channel: 1, // Luminance default
+                            invert: false,
+                            feather_px: 0.0,
+                            choke_px: 0.0,
+                        }
+                    };
+                    // The UI handles both; the engine ignores them (#437).
+                    self.send_commands(vec![next_cmd]);
+                    true
+                }
+
+                // Grade versions — handled by handle_color_commands
+                // Select All clips on timeline
+                AppCommand::SelectAllClips => {
+                    self.select_clips_in(None, klipp_core::SelectRange::All);
+                    true
+                }
+                AppCommand::SelectClipsForward => {
+                    self.select_clips_in(None, klipp_core::SelectRange::Forward);
+                    true
+                }
+                AppCommand::SelectClipsBackward => {
+                    self.select_clips_in(None, klipp_core::SelectRange::Backward);
+                    true
+                }
+                AppCommand::SelectClipsIn { track, range } => {
+                    self.select_clips_in(*track, *range);
+                    true
+                }
+                AppCommand::SelectClipsOnSelectedTrack { range } => {
+                    let track = self.state.selected_clip.and_then(|id| crate::selection::track_of(self.state.sequence(), id));
+                    match track {
+                        Some(track) => self.select_clips_in(Some(track), *range),
+                        None => self.state.toast.show("Select a clip on the track first".to_string()),
+                    }
+                    true
+                }
+                // Frame grab: save current viewer frame as PNG
+                AppCommand::FrameGrab => {
+                    let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                    if !fb.data.is_empty() && fb.width > 0 && fb.height > 0 {
+                        let w = fb.width;
+                        let h = fb.height;
+                        // Convert RGBA to RGB
+                        let rgb: Vec<u8> = fb.data.chunks_exact(4)
+                            .flat_map(|px| [px[0], px[1], px[2]])
+                            .collect();
+                        drop(fb);
+                        // Default filename from playhead timecode (colons are
+                        // illegal on Windows paths, so swap them for hyphens).
+                        let default_name = format!(
+                            "frame_{}.png",
+                            self.state.playhead.to_timecode_string().replace(':', "-")
+                        );
+                        crate::file_dialog::spawn(move || {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_title("Save Frame As")
+                                .add_filter("PNG Image", &["png"])
+                                .set_file_name(&default_name)
+                                .save_file()
+                            {
+                                if save_rgb_as_png(&rgb, w, h, &path) {
+                                    crate::file_dialog::notify(format!("Frame saved to {}", path.display()));
+                                } else {
+                                    crate::file_dialog::notify("Failed to save frame");
+                                }
+                            }
+                            Vec::new()
+                        });
+                    } else {
+                        self.state.toast.show("No frame available".to_string());
+                    }
+                    true
+                }
+                // Extract frame to bin: save PNG + import as still — no file dialog.
+                AppCommand::ExtractFrameToBin => {
+                    let (rgba, w, h) = {
+                        let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                        if fb.data.is_empty() || fb.width == 0 || fb.height == 0 {
+                            drop(fb);
+                            self.state.toast.show("No frame available".to_string());
+                            return true;
+                        }
+                        (fb.data.clone(), fb.width, fb.height)
+                    };
+
+                    // Output directory: the saved project's .klipp dir, or a
+                    // temp fallback so the feature still works in an unsaved
+                    // project. save_freeze_frame_png appends media/stills/.
+                    let stills_root: std::path::PathBuf = match self.writable_project_dir() {
+                        Some(dir) => dir,
+                        None => klipp_project::temp_still_roots()[1].clone(),
+                    };
+
+                    // Timecode-based filename + nanos suffix for uniqueness
+                    // when extracting the same frame more than once.
+                    let tc_str = self.state.playhead.to_timecode_string().replace(':', "-");
+                    let nanos = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.subsec_nanos())
+                        .unwrap_or(0);
+                    let filename = format!("frame_{tc_str}_{nanos}.png");
+
+                    match klipp_project::save_freeze_frame_png(&stills_root, &filename, &rgba, w, h) {
+                        Ok(png_path) => {
+                            // Route straight to the engine — LoadMediaFile will
+                            // probe the PNG, detect it as a still, and push a
+                            // MediaLoaded event that the UI handler turns into
+                            // a MediaItem with is_still = true.
+                            let media_id = klipp_core::MediaId::new();
+                            let _ = self.cmd_tx.send(AppCommand::LoadMediaFile {
+                                path: png_path.clone(),
+                                media_id,
+                            });
+                            self.state.toast.show("Frame extracted to bin".to_string());
+                        }
+                        Err(e) => {
+                            tracing::warn!("extract frame: {e}");
+                            self.state.toast.show(format!("Failed to extract frame: {e}"));
+                        }
+                    }
+                    true
+                }
+            _ => false,
+        }
+    }
+}
