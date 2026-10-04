@@ -332,3 +332,134 @@ impl KlippApp {
         }
     }
 }
+
+impl KlippApp {
+    /// Attach the control socket's command inbox. See `control_inbox`.
+    pub fn set_control_inbox(&mut self, inbox: Receiver<klipp_document::control::ControlEnvelope>) {
+        self.control_inbox = Some(inbox);
+    }
+}
+
+// Pinned: each apply_* helper writes the new value to BOTH the
+// persisted prefs side AND the runtime state side. Tests construct
+// fresh defaults, call the helper, and assert both sides match.
+// The handler arms in the AppCommand match call these helpers and
+// add `prefs_dirty = true` — the dirty flag is the App's
+// responsibility, not the helper's, so it isn't tested here.
+/// The commands of one control envelope as the router applies them. A
+/// parameter write is bracketed the way a slider drag is, so it records
+/// history (without the brackets it never did); a batch wraps everything
+/// in one history batch, so an agent's action is one undo step.
+pub fn expand_control_commands(commands: Vec<AppCommand>, batch: bool) -> Vec<AppCommand> {
+    let mut out = Vec::with_capacity(commands.len() * 3 + 2);
+    if batch {
+        out.push(AppCommand::BeginHistoryBatch);
+    }
+    for cmd in commands {
+        match &cmd {
+            AppCommand::SetNodeParam { clip_id, .. } => {
+                let clip_id = *clip_id;
+                out.push(AppCommand::BeginNodeParamEdit { clip_id });
+                out.push(cmd);
+                out.push(AppCommand::EndNodeParamEdit { clip_id });
+            }
+            _ => out.push(cmd),
+        }
+    }
+    if batch {
+        out.push(AppCommand::EndHistoryBatch);
+    }
+    out
+}
+
+/// The last absolute seek among a control envelope's commands: where the
+/// playhead is headed once they are applied.
+pub(super) fn last_seek(cmds: &[AppCommand]) -> Option<klipp_core::Timecode> {
+    cmds.iter().rev().find_map(|c| match c {
+        AppCommand::SeekTo(t) => Some(*t),
+        _ => None,
+    })
+}
+
+/// The lines a screen recording showed, each once in the order first
+/// seen, joined for a field; cut at a few thousand characters so a
+/// long recording's chrome does not swamp the pool.
+pub(super) fn screen_text_digest(st: &klipp_analysis::screentext::ScreenText) -> String {
+    const MAX_CHARS: usize = 4000;
+    let mut seen = std::collections::HashSet::new();
+    let mut out = String::new();
+    for s in &st.spans {
+        let key: String = s.text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        if key.len() < 2 || !seen.insert(key) {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str(" · ");
+        }
+        out.push_str(s.text.trim());
+        if out.len() > MAX_CHARS {
+            break;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod control_envelope_tests {
+    use super::*;
+    use klipp_core::ClipId;
+
+    #[test]
+    fn a_parameter_write_over_the_socket_is_bracketed_like_a_drag() {
+        let clip_id = ClipId::new();
+        let cmds = expand_control_commands(
+            vec![AppCommand::SetNodeParam { clip_id, node_id: klipp_nodes::NodeId::new_v4(), param: "exposure".into(), value: 0.5 }],
+            false,
+        );
+        assert!(matches!(cmds.as_slice(), [AppCommand::BeginNodeParamEdit { .. }, AppCommand::SetNodeParam { .. }, AppCommand::EndNodeParamEdit { .. }]));
+    }
+
+    #[test]
+    fn a_batch_is_one_history_entry() {
+        let cmds = expand_control_commands(vec![AppCommand::Play, AppCommand::Pause], true);
+        assert!(matches!(cmds.first(), Some(AppCommand::BeginHistoryBatch)));
+        assert!(matches!(cmds.last(), Some(AppCommand::EndHistoryBatch)));
+        assert_eq!(cmds.len(), 4);
+        // And the history collects what a batch pushes into one entry.
+        let mut h = crate::history::CommandHistory::new();
+        h.begin_batch();
+        h.push(crate::history::HistoryEntry { command: crate::history::EditCommand::Batch(vec![]) });
+        h.push(crate::history::HistoryEntry { command: crate::history::EditCommand::Batch(vec![]) });
+        h.end_batch();
+        assert!(h.undo().is_some());
+        assert!(h.undo().is_none(), "two pushes inside a batch are one undo step");
+    }
+}
+
+#[cfg(test)]
+mod last_seek_tests {
+    use super::{last_seek, AppCommand};
+    use klipp_core::Timecode;
+
+    #[test]
+    fn the_last_seek_of_an_envelope_is_where_the_playhead_is_going() {
+        let (a, b) = (Timecode::from_frames(30, 30), Timecode::from_frames(90, 30));
+        let cmds = [AppCommand::Pause, AppCommand::SeekTo(a), AppCommand::Play, AppCommand::SeekTo(b)];
+        assert_eq!(last_seek(&cmds), Some(b));
+        assert_eq!(last_seek(&[AppCommand::Play]), None);
+    }
+}
+
+#[cfg(test)]
+mod screen_text_digest_tests {
+    use super::screen_text_digest;
+    use klipp_analysis::screentext::{ScreenText, TextSpan};
+
+    #[test]
+    fn the_digest_lists_each_line_once_in_order_first_seen() {
+        let span = |t: &str, a: f64| TextSpan { text: t.into(), confidence: 0.9, start_secs: a, end_secs: a + 4.0, x: 0.1, y: 0.1, w: 0.2, h: 0.02, frames: 1 };
+        let st = ScreenText { spans: vec![span("SETTINGS", 0.0), span("General", 0.0), span("settings", 8.0), span("  General ", 12.0), span("x", 12.0)], ..Default::default() };
+        assert_eq!(screen_text_digest(&st), "SETTINGS · General");
+        assert_eq!(screen_text_digest(&ScreenText::default()), "");
+    }
+}

@@ -1102,3 +1102,68 @@ impl KlippApp {
             });
     }
 }
+
+/// Read `[start_secs, end_secs)` of a conformed 48 kHz stereo f32 PCM cache
+/// as mono, without loading the whole file.
+pub(super) fn read_pcm_mono_range(
+    path: &std::path::Path,
+    start_secs: f64,
+    end_secs: f64,
+    sample_rate: u32,
+) -> std::io::Result<Vec<f32>> {
+    use std::io::{Read, Seek, SeekFrom};
+    const FRAME_BYTES: u64 = 8;
+    let mut file = std::fs::File::open(path)?;
+    let total_frames = file.metadata()?.len() / FRAME_BYTES;
+    let first = ((start_secs.max(0.0) * sample_rate as f64) as u64).min(total_frames);
+    let last = ((end_secs.max(0.0) * sample_rate as f64) as u64).clamp(first, total_frames);
+    file.seek(SeekFrom::Start(first * FRAME_BYTES))?;
+    let mut bytes = vec![0u8; ((last - first) * FRAME_BYTES) as usize];
+    file.read_exact(&mut bytes)?;
+    Ok(bytes
+        .chunks_exact(8)
+        .map(|f| {
+            let l = f32::from_le_bytes([f[0], f[1], f[2], f[3]]);
+            let r = f32::from_le_bytes([f[4], f[5], f[6], f[7]]);
+            0.5 * (l + r)
+        })
+        .collect())
+}
+
+/// The audio meters' ballistics for one UI frame of `dt` seconds: tuned
+/// per frame at 60 fps (a 0.96 peak release, a 0.12 and 0.072 LUFS
+/// smoothing, a 1.5 LU drift with no signal), taken as that many 60 fps
+/// frames so the meters move in seconds, whatever the UI's frame rate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct MeterBallistics {
+    pub(super) peak_release: f32,
+    pub(super) momentary_alpha: f32,
+    pub(super) short_term_alpha: f32,
+    pub(super) drift: f32,
+}
+
+impl MeterBallistics {
+    pub(super) fn for_frame(dt: f32) -> Self {
+        // A frame after a stall counts as at most a tenth of a second.
+        let n = (dt * 60.0).clamp(0.0, 6.0);
+        let ema = |alpha: f32| 1.0 - (1.0 - alpha).powf(n);
+        Self { peak_release: 0.96_f32.powf(n), momentary_alpha: ema(0.12), short_term_alpha: ema(0.12 * 0.6), drift: 1.5 * n }
+    }
+}
+
+#[cfg(test)]
+mod meter_ballistics_tests {
+    use super::MeterBallistics;
+
+    /// Two frames at 120 fps move a meter as far as one at 60 fps.
+    #[test]
+    fn meters_move_in_seconds_whatever_the_frame_rate() {
+        let at60 = MeterBallistics::for_frame(1.0 / 60.0);
+        let at120 = MeterBallistics::for_frame(1.0 / 120.0);
+        assert!((at60.peak_release - 0.96).abs() < 1e-6 && (at60.momentary_alpha - 0.12).abs() < 1e-6 && (at60.drift - 1.5).abs() < 1e-6);
+        assert!((at120.peak_release * at120.peak_release - at60.peak_release).abs() < 1e-6);
+        let settle = |b: MeterBallistics, frames: usize| (0..frames).fold(0.0f32, |v, _| v * (1.0 - b.momentary_alpha) + b.momentary_alpha);
+        assert!((settle(at120, 2) - settle(at60, 1)).abs() < 1e-6);
+        assert!((2.0 * at120.drift - at60.drift).abs() < 1e-6);
+    }
+}

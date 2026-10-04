@@ -563,3 +563,63 @@ impl KlippApp {
         }
     }
 }
+
+/// `m:ss.s` for a source position in toasts.
+pub(super) fn format_profile_time(secs: f64) -> String {
+    let secs = secs.max(0.0);
+    format!("{}:{:04.1}", (secs / 60.0).floor() as u64, secs % 60.0)
+}
+
+/// Where a proxy is written while ffmpeg is still producing it. It is
+/// renamed to the real name once whole, so a file at the real name is a
+/// finished proxy — never one a crash cut short.
+pub(super) fn partial_proxy_path(proxy: &Path) -> PathBuf {
+    proxy.with_extension("partial.mp4")
+}
+
+/// Whether a file found at the proxy path covers the source: within two
+/// seconds or two percent of its duration, whichever is more (the proxy
+/// encode may drop or pad a few frames at the end). `None` — the file
+/// does not even probe — is not a proxy.
+pub(super) fn transcode_is_complete(proxy_secs: Option<f64>, source_secs: f64) -> bool {
+    let Some(p) = proxy_secs else { return false };
+    let slack = (source_secs * 0.02).max(2.0);
+    p + slack >= source_secs
+}
+
+/// Whether the skim transcode at `path` covers a source `source_secs`
+/// long (see [`transcode_is_complete`]). One header probe. A skim that
+/// ends before its media plays as a shorter clip when playback
+/// substitutes it, and every hover past its end fails.
+pub(super) fn skim_file_is_complete(path: &Path, source_secs: f64) -> bool {
+    let probed = klipp_engine::probe_media_header(path).ok().and_then(|h| h.duration_secs);
+    let complete = transcode_is_complete(probed, source_secs);
+    if !complete {
+        tracing::warn!(
+            "Skim transcode {} is incomplete ({probed:?} s of {source_secs:.2} s); discarding it",
+            path.display()
+        );
+    }
+    complete
+}
+
+/// The skim cache key for a media item, as the transcode names it.
+pub(super) fn skim_cache_key_for(item: &klipp_media::MediaItem) -> Option<String> {
+    let base = klipp_media::disk_cache::compute_cache_key(&item.path)?;
+    let hdr = matches!(item.colour_space, klipp_media::ColourSpace::Hdr10 | klipp_media::ColourSpace::Hlg);
+    Some(klipp_media::disk_cache::skim_cache_key(&base, hdr, item.source_rotation))
+}
+
+#[cfg(test)]
+mod proxy_completeness_tests {
+    use super::transcode_is_complete;
+
+    #[test]
+    fn a_truncated_transcode_is_not_one() {
+        assert!(transcode_is_complete(Some(120.0), 120.0));
+        assert!(transcode_is_complete(Some(118.5), 120.0), "a few frames short at the end is the encoder");
+        assert!(transcode_is_complete(Some(590.0), 600.0), "two percent on a long clip");
+        assert!(!transcode_is_complete(Some(60.0), 120.0), "half the clip is a cut-short generation");
+        assert!(!transcode_is_complete(None, 120.0), "a file that does not probe is not one");
+    }
+}

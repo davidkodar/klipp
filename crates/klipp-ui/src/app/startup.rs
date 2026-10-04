@@ -624,3 +624,26 @@ impl KlippApp {
         app
     }
 }
+
+impl KlippApp {
+    /// Take the next steps of [`Self::startup_open`]: open its project
+    /// through the dispatcher, then import its media once that project is
+    /// the one open, saying what could not be done.
+    pub(super) fn run_startup_open(&mut self) {
+        use crate::cli::Step;
+        let Some(open) = self.startup_open.as_mut() else { return };
+        let failed = self.last_open_error.take();
+        let steps = open.step(self.state.project_path.as_deref(), failed.as_deref());
+        if open.done() {
+            self.startup_open = None;
+        }
+        for step in steps {
+            match step {
+                Step::Open(path) => self.send_commands(vec![AppCommand::OpenProject { path }]),
+                Step::NewProject => self.state.project_path = Some(PathBuf::from("Untitled")),
+                Step::Import(path) => self.send_commands(vec![AppCommand::ImportMedia { path }]),
+                Step::Toast(text) => self.state.toast.show(text),
+            }
+        }
+    }
+}

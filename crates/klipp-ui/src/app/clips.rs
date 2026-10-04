@@ -1467,3 +1467,197 @@ impl KlippApp {
         }
     }
 }
+
+impl KlippApp {
+    /// Check if the track containing a given clip is locked.
+    pub(super) fn clip_track_is_locked(&self, clip_id: &ClipId) -> bool {
+        self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+            .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
+            .is_some_and(|t| t.locked)
+    }
+
+    /// Swap a clip's backing media while preserving timeline_in/out,
+    /// source_in/out, effects, transitions, and linked partner.
+    /// Auto-clamps source_out + timeline_out by the same delta when
+    /// the new media is shorter than the existing trim window.
+    /// Returns true on success; toasts + returns false on validation
+    /// failure (locked track, unknown clip / media, identical media,
+    /// non-Media kind).
+    fn try_replace_clip_media(
+        &mut self,
+        clip_id: ClipId,
+        new_media_id: MediaId,
+    ) -> bool {
+        if self.clip_track_is_locked(&clip_id) {
+            self.state.toast.show("Replace: track is locked");
+            return false;
+        }
+        // Resolve the new media's source duration so we know whether
+        // to clamp. None → media isn't in the pool.
+        let new_media_dur = match self.state.media_pool.get(&new_media_id) {
+            Some(item) => item.duration,
+            None => {
+                self.state.toast.show("Replace: target media not found in pool");
+                return false;
+            }
+        };
+        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) else {
+            self.state.toast.show("Replace: clip not found");
+            return false;
+        };
+        // Only Media-kind clips can have their media swapped — Title /
+        // Generator / Sequence clips have a different backing model
+        // and the gesture doesn't apply.
+        let old_media_id = match clip.kind {
+            klipp_timeline::ClipKind::Media { media_id } => media_id,
+            _ => {
+                self.state.toast.show("Replace: only media clips can be swapped");
+                return false;
+            }
+        };
+        if old_media_id == new_media_id {
+            return false; // no-op, no toast
+        }
+
+        // Clamp source_out (and timeline_out by the same delta) when
+        // the new media is shorter than the existing trim window.
+        // Source_in stays untouched — if user trimmed in by 5s on
+        // the old clip and the new media is at least source_in long,
+        // we keep the head trim. Both clamps are applied to the same
+        // timing reference (`clip.source_out`), so the visible clip
+        // length never grows; it only shortens to fit.
+        let old_source_out = clip.source_out;
+        let old_timeline_out = clip.timeline_out;
+        let new_source_out = if old_source_out > new_media_dur {
+            new_media_dur
+        } else {
+            old_source_out
+        };
+        let dt_secs = old_source_out.to_secs_f64() - new_source_out.to_secs_f64();
+        let new_timeline_out = if dt_secs > 0.0 {
+            // Convert delta to the timeline_out's rate to subtract.
+            let dt_at_timeline_rate = klipp_core::RationalTime::from_secs_f64(
+                dt_secs.max(0.0),
+                old_timeline_out.rate,
+            );
+            old_timeline_out - dt_at_timeline_rate
+        } else {
+            old_timeline_out
+        };
+
+        clip.kind = klipp_timeline::ClipKind::Media { media_id: new_media_id };
+        clip.source_out = new_source_out;
+        clip.timeline_out = new_timeline_out;
+
+        self.state.push_history(EditCommand::LegacyReplaceClipMedia {
+            clip_id,
+            old_media_id,
+            new_media_id,
+            old_source_out,
+            new_source_out,
+            old_timeline_out,
+            new_timeline_out,
+        });
+        true
+    }
+
+    /// Wrapper around [`klipp_timeline::Sequence::try_swap_adjacent_clips`]
+    /// that surfaces failure reasons as toasts and pushes a history
+    /// entry on success. The actual validation + mutation logic lives
+    /// in the timeline crate so it's testable without app scaffolding.
+    fn try_swap_adjacent_clips(
+        &mut self,
+        clip_a: ClipId,
+        clip_b: ClipId,
+    ) -> bool {
+        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        match seq.try_swap_adjacent_clips(clip_a, clip_b) {
+            Ok(result) => {
+                let linked_a_partner = result.partners.as_ref().map(|p| p.a_partner);
+                let linked_b_partner = result.partners.as_ref().map(|p| p.b_partner);
+                self.state.push_history(EditCommand::LegacySwapClips {
+                    clip_a_id: clip_a,
+                    a_old_in: result.a_old_in,
+                    a_old_out: result.a_old_out,
+                    clip_b_id: clip_b,
+                    b_old_in: result.b_old_in,
+                    b_old_out: result.b_old_out,
+                    linked_a_partner,
+                    linked_b_partner,
+                });
+                true
+            }
+            Err(reason) => {
+                self.state.toast.show(reason);
+                false
+            }
+        }
+    }
+
+    /// Check if a track uses magnetic editing (Primary, Connected, or ConnectedStoryline).
+    /// Returns false when the magnetic timeline pref is disabled.
+    pub(super) fn is_magnetic_track(&self, track_index: usize) -> bool {
+        self.state.magnetic_timeline_enabled
+            && matches!(
+                self.state.sequences[self.state.active_sequence_idx].tracks.get(track_index).map(|t| &t.magnetic_role),
+                Some(klipp_timeline::TrackRole::Primary | klipp_timeline::TrackRole::Connected | klipp_timeline::TrackRole::ConnectedStoryline)
+            )
+    }
+}
+
+/// What copied or cut clips leave on the system clipboard: a line
+/// saying what was copied, so Ctrl+V reaches Klipp (see
+/// `AppState::system_clipboard_text`) and a paste elsewhere shows text
+/// rather than whatever was there before.
+pub(super) fn clips_clipboard_text(count: usize) -> String {
+    match count {
+        1 => "1 clip copied in Klipp".into(),
+        n => format!("{n} clips copied in Klipp"),
+    }
+}
+
+#[cfg(test)]
+mod linked_clipboard_tests {
+
+    fn t(s: f64) -> klipp_core::Timecode {
+        klipp_core::Timecode::from_secs_f64(s, 25)
+    }
+
+    /// #458: a clip cut or copied takes its linked sound, each from its
+    /// own track; pasted, both land on their own tracks at the playhead,
+    /// at their own offset, linked to each other and not to the originals.
+    #[test]
+    fn a_linked_pair_goes_to_the_clipboard_and_comes_back_linked() {
+        let mut pool = klipp_media::MediaPool::new();
+        let media = pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/pair.mov".into(), None));
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut v = klipp_timeline::Clip::media(media, t(2.0), t(6.0), t(0.0), t(4.0));
+        // A J-cut: the sound starts 0.4 s before the picture.
+        let mut a = klipp_timeline::Clip::media(media, t(1.6), t(6.0), t(0.0), t(4.4));
+        v.linked_clip_id = Some(a.id);
+        a.linked_clip_id = Some(v.id);
+        let (vid, aid) = (v.id, a.id);
+        let mut vt = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        vt.clips = vec![v];
+        let mut at = klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio);
+        at.clips = vec![a];
+        seq.tracks = vec![vt, at];
+
+        let cb = crate::clip_clipboard::copy(&seq, &[vid]).expect("on the clipboard");
+        assert_eq!(cb.clips.iter().map(|c| (c.clip.id, c.track)).collect::<Vec<_>>(), vec![(aid, 1), (vid, 0)], "both, each from its own track, in time order");
+
+        let pasted = crate::clip_clipboard::paste(&seq, &cb, t(10.0), crate::clip_clipboard::PasteMode::Overwrite);
+        let find = |id: klipp_core::ClipId| pasted.sequence.tracks.iter().enumerate().find_map(|(ti, tr)| tr.clips.iter().find(|c| c.id == id).map(|c| (c.clone(), ti)));
+        let (pa, ta) = find(pasted.ids[0]).unwrap();
+        let (pv, tv) = find(pasted.ids[1]).unwrap();
+        assert_eq!((ta, tv), (1, 0));
+        assert_eq!((pa.timeline_in, pv.timeline_in), (t(10.0), t(10.4)), "the J-cut's offset kept");
+        assert_eq!((pa.linked_clip_id, pv.linked_clip_id), (Some(pv.id), Some(pa.id)), "linked to each other");
+        assert!(pa.id != aid && pv.id != vid);
+        // A clip with no partner comes alone.
+        let mut lone = seq.clone();
+        lone.tracks[0].clips[0].linked_clip_id = None;
+        assert_eq!(crate::clip_clipboard::copy(&lone, &[vid]).unwrap().clips.len(), 1);
+    }
+}

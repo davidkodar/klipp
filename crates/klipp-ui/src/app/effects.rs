@@ -777,3 +777,234 @@ impl KlippApp {
         }
     }
 }
+
+impl KlippApp {
+    /// A new audio effect of `effect_type` at its defaults: a LADSPA
+    /// plugin's from what discovery found, a built-in one's from its own
+    /// descriptors.
+    pub(super) fn default_audio_effect(&self, effect_type: &str) -> klipp_core::AudioEffectInstance {
+        let params: Vec<(String, f32)> = if effect_type.starts_with("ladspa:") {
+            effect_type
+                .strip_prefix("ladspa:")
+                .and_then(|rest| {
+                    let cut = rest.rfind(':')?;
+                    let path = &rest[..cut];
+                    let label = &rest[cut + 1..];
+                    self.state.ladspa_plugins.iter().find(|p| p.path.to_string_lossy() == path && p.label == label)
+                })
+                .map(|info| info.control_inputs.iter().map(|port| (port.name.clone(), port.default)).collect())
+                .unwrap_or_default()
+        } else {
+            klipp_audio::dsp::create_effect(effect_type, 48000)
+                .map(|fx| fx.param_descriptors().iter().map(|d| (d.name.to_string(), d.default)).collect())
+                .unwrap_or_default()
+        };
+        klipp_core::AudioEffectInstance { effect_type: effect_type.to_string(), enabled: true, wet_dry: 1.0, params }
+    }
+}
+
+/// A clip's built-in effects as an undo step sees them.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ClipEffectsState {
+    pub(super) effects: Vec<klipp_effects::BuiltinEffect>,
+    pub(super) enabled: Vec<bool>,
+    pub(super) speed: f64,
+    pub(super) timeline_out: klipp_core::RationalTime,
+}
+
+impl ClipEffectsState {
+    pub(super) fn of(clip: &klipp_timeline::Clip) -> Self {
+        Self {
+            effects: clip.builtin_effects.clone(),
+            enabled: clip.builtin_effects_enabled.clone(),
+            speed: clip.speed,
+            timeline_out: clip.timeline_out,
+        }
+    }
+}
+
+/// The history edits that take a clip from `before` to `after`: the
+/// effects list when it changed, and the speed and length when a speed
+/// ramp moved them. Adding or removing a built-in effect recorded
+/// nothing, so it could not be undone (#391).
+pub(super) fn effects_change_edits(clip_id: klipp_core::ClipId, before: &ClipEffectsState, after: &ClipEffectsState) -> Vec<EditCommand> {
+    let mut edits = Vec::new();
+    if before.effects != after.effects || before.enabled != after.enabled {
+        edits.push(EditCommand::SetBuiltinEffects {
+            clip_id,
+            old_effects: before.effects.clone(),
+            old_enabled: before.enabled.clone(),
+            new_effects: after.effects.clone(),
+            new_enabled: after.enabled.clone(),
+        });
+    }
+    if before.speed != after.speed || before.timeline_out != after.timeline_out {
+        edits.push(EditCommand::SetClipSpeed {
+            clip_id,
+            old_speed: before.speed,
+            new_speed: after.speed,
+            old_timeline_out: before.timeline_out,
+            new_timeline_out: after.timeline_out,
+        });
+    }
+    edits
+}
+
+/// Whether `last` is the add that appended effect `index` to `clip_id`.
+pub(super) fn is_add_of_effect(last: &EditCommand, clip_id: klipp_core::ClipId, index: usize) -> bool {
+    matches!(
+        last,
+        EditCommand::SetBuiltinEffects { clip_id: c, old_effects, new_effects, .. }
+            if *c == clip_id && new_effects.len() == old_effects.len() + 1 && index + 1 == new_effects.len()
+    )
+}
+
+/// Fold a finished drag of effect `index` into the history's last edit
+/// when that edit is the add that made the effect, with the effect as
+/// the drag found it: the add then records the effect as the drag left
+/// it, and one undo takes both back.
+pub(super) fn fold_drag_into_add(
+    last: &mut EditCommand,
+    clip_id: klipp_core::ClipId,
+    index: usize,
+    dragged_from: &klipp_effects::BuiltinEffect,
+    dragged_to: &klipp_effects::BuiltinEffect,
+) -> bool {
+    match last {
+        EditCommand::SetBuiltinEffects { clip_id: c, old_effects, new_effects, .. }
+            if *c == clip_id
+                && new_effects.len() == old_effects.len() + 1
+                && index + 1 == new_effects.len()
+                && new_effects[index] == *dragged_from =>
+        {
+            new_effects[index] = dragged_to.clone();
+            true
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod effect_toggle_tests {
+    //! Pure-logic coverage for the per-effect enable/disable toggle. The
+    //! full handler runs on KlippApp and is hard to unit-test in isolation;
+    //! these tests exercise the parallel-vec flip/grow logic that both the
+    //! forward handler and the undo/redo arms share.
+
+    fn toggle_builtin_enabled(enabled: &mut Vec<bool>, effect_count: usize, index: usize) {
+        while enabled.len() < effect_count {
+            enabled.push(true);
+        }
+        if let Some(val) = enabled.get_mut(index) {
+            *val = !*val;
+        }
+    }
+
+    #[test]
+    fn builtin_effects_enabled_flip_logic() {
+        let mut enabled = vec![true, true];
+        toggle_builtin_enabled(&mut enabled, 2, 0);
+        assert_eq!(enabled, vec![false, true]);
+        // Simulate undo (flip again) — returns to original state.
+        toggle_builtin_enabled(&mut enabled, 2, 0);
+        assert_eq!(enabled, vec![true, true]);
+    }
+
+    #[test]
+    fn builtin_toggle_is_idempotent_across_undo_redo() {
+        // Three flips round-trips through enabled -> disabled -> enabled
+        // -> disabled, mirroring user action -> undo -> redo -> user again.
+        let mut enabled = vec![true];
+        for _ in 0..3 {
+            toggle_builtin_enabled(&mut enabled, 1, 0);
+        }
+        assert_eq!(enabled, vec![false]);
+        toggle_builtin_enabled(&mut enabled, 1, 0);
+        assert_eq!(enabled, vec![true]);
+    }
+
+    #[test]
+    fn builtin_toggle_grows_parallel_vec_lazily() {
+        // The parallel vec may be shorter than the effect list when projects
+        // load from old `.klipp` files. Both the forward handler and the
+        // undo arm grow it with `true` defaults so toggling the last effect
+        // still works.
+        let mut enabled: Vec<bool> = Vec::new();
+        toggle_builtin_enabled(&mut enabled, 3, 2);
+        assert_eq!(enabled.len(), 3);
+        assert_eq!(enabled, vec![true, true, false]);
+    }
+
+    #[test]
+    fn ofx_enabled_field_round_trip() {
+        // OFX flag is an absolute bool — undo restores old, redo restores new.
+        let mut enabled = true;
+        let old = enabled;
+        let new = false;
+        // Forward
+        enabled = new;
+        assert!(!enabled);
+        // Undo
+        enabled = old;
+        assert!(enabled);
+        // Redo
+        enabled = new;
+        assert!(!enabled);
+    }
+}
+
+#[cfg(test)]
+mod effects_undo_tests {
+    use super::*;
+
+    fn crop(left: f32) -> klipp_effects::BuiltinEffect {
+        klipp_effects::BuiltinEffect::Crop { left, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 }
+    }
+
+    fn state(effects: Vec<klipp_effects::BuiltinEffect>, speed: f64) -> ClipEffectsState {
+        let enabled = vec![true; effects.len()];
+        ClipEffectsState { effects, enabled, speed, timeline_out: klipp_core::RationalTime { value: 300, rate: 30 } }
+    }
+
+    #[test]
+    fn adding_an_effect_is_one_undoable_edit() {
+        let id = klipp_core::ClipId::new();
+        let edits = effects_change_edits(id, &state(vec![], 1.0), &state(vec![crop(0.1)], 1.0));
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].label(), "Add Effect");
+    }
+
+    #[test]
+    fn removing_one_says_so_and_nothing_changed_records_nothing() {
+        let id = klipp_core::ClipId::new();
+        let edits = effects_change_edits(id, &state(vec![crop(0.1)], 1.0), &state(vec![], 1.0));
+        assert_eq!(edits[0].label(), "Remove Effect");
+        assert!(effects_change_edits(id, &state(vec![crop(0.1)], 1.0), &state(vec![crop(0.1)], 1.0)).is_empty());
+    }
+
+    #[test]
+    fn a_speed_ramp_brings_its_speed_with_it() {
+        let id = klipp_core::ClipId::new();
+        let mut after = state(vec![crop(0.1)], 2.0);
+        after.timeline_out = klipp_core::RationalTime { value: 150, rate: 30 };
+        let edits = effects_change_edits(id, &state(vec![], 1.0), &after);
+        assert_eq!(edits.len(), 2);
+        assert!(matches!(edits[1], EditCommand::SetClipSpeed { new_speed, .. } if new_speed == 2.0));
+    }
+
+    /// The gizmo's first drag: the add of an identity effect, then a
+    /// drag of it, becomes one add of the dragged effect.
+    #[test]
+    fn a_drag_of_the_effect_just_added_folds_into_the_add() {
+        let id = klipp_core::ClipId::new();
+        let mut last = effects_change_edits(id, &state(vec![], 1.0), &state(vec![crop(0.0)], 1.0)).remove(0);
+        assert!(fold_drag_into_add(&mut last, id, 0, &crop(0.0), &crop(0.3)));
+        let EditCommand::SetBuiltinEffects { new_effects, old_effects, .. } = &last else { panic!() };
+        assert!(old_effects.is_empty());
+        assert_eq!(new_effects, &vec![crop(0.3)]);
+        // Not another clip's, not another effect, not one that was changed since.
+        assert!(!fold_drag_into_add(&mut last.clone(), klipp_core::ClipId::new(), 0, &crop(0.3), &crop(0.5)));
+        assert!(!fold_drag_into_add(&mut last.clone(), id, 1, &crop(0.3), &crop(0.5)));
+        assert!(!fold_drag_into_add(&mut last.clone(), id, 0, &crop(0.9), &crop(0.5)));
+    }
+}

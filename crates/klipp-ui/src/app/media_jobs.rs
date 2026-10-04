@@ -1526,3 +1526,35 @@ impl KlippApp {
         }
     }
 }
+
+/// The skim decode height the `skim_resolution` preference asks for.
+#[cfg(test)]
+mod skim_decode_height_tests {
+    use super::KlippApp;
+
+    /// The whole point of the knob: it caps. Written with `max` it was
+    /// inert for every source at or above its own value, which at the
+    /// 720 default is most footage anyone edits.
+    #[test]
+    fn the_preference_caps_a_source_above_it() {
+        assert_eq!(KlippApp::skim_decode_height(2160, 720), 720);
+        assert_eq!(KlippApp::skim_decode_height(1080, 720), 720);
+        assert_eq!(KlippApp::skim_decode_height(1080, 480), 480);
+    }
+
+    /// And it never upscales: a source shorter than the preference
+    /// decodes at its own height, and nothing goes past 1080.
+    #[test]
+    fn the_source_height_and_the_1080_ceiling_still_bound_it() {
+        assert_eq!(KlippApp::skim_decode_height(480, 720), 480);
+        assert_eq!(KlippApp::skim_decode_height(4320, 4320), 1080);
+    }
+
+    /// `max` used to stop a nonsense value reaching the decoder. The
+    /// preference has no UI, so keep a floor now that it can lower.
+    #[test]
+    fn a_nonsense_preference_cannot_decode_a_two_pixel_frame() {
+        assert_eq!(KlippApp::skim_decode_height(1080, 2), 240);
+        assert_eq!(KlippApp::skim_decode_height(1080, 0), 240);
+    }
+}
