@@ -127,6 +127,7 @@ impl KlippApp {
             viewer: ViewerPanel::default(),
             title_renderer: title_renderer_ui,
             markers: MarkersPanel::default(),
+            edit_list: Default::default(),
             transcript_panel: crate::panels::transcript::TranscriptPanel::new(),
             transcript_source: Default::default(),
             colour_check: Default::default(),

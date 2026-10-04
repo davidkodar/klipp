@@ -1212,6 +1212,9 @@ pub struct AppState {
     /// The Colour Check window: what a colourist would read off the
     /// frame on screen, with the fault named and the knob to turn.
     pub show_colour_check: bool,
+    /// The Edit List window (#923): the sequence's clips, transitions and
+    /// markers in a sortable table.
+    pub show_edit_list: bool,
     /// The Sound Over Time window: a whole file's sound as frequency
     /// against time, with what is wrong with it named.
     pub show_sound_over_time: bool,
@@ -4077,6 +4080,7 @@ impl Default for AppState {
             show_project_notes: false,
             show_edit_plan: false,
             show_colour_check: false,
+            show_edit_list: false,
             show_sound_over_time: false,
             show_narrate: false,
             edit_plan_note: None,
