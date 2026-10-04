@@ -8622,6 +8622,7 @@ impl KlippApp {
                             if cut.clips.len() > 1 {
                                 self.state.toast.show(format!("Cut {} clips", cut.clips.len()));
                             }
+                            self.state.system_clipboard_text = Some(clips_clipboard_text(cut.clips.len()));
                             self.state.clipboard = Some(cut);
                         }
                     }
@@ -8629,8 +8630,8 @@ impl KlippApp {
                 }
                 AppCommand::CopyClip { clip_id } => {
                     let cid = *clip_id;
-                    // Its attributes too, as Resolve does: copy a clip, then
-                    // Paste Attributes onto others. Paste Attributes stayed
+                    // Its attributes too: copy a clip, then Paste
+                    // Attributes onto others. Paste Attributes stayed
                     // greyed out after Copy, with nothing saying why (#325).
                     let attributes = self.state.sequence().all_clips().find(|c| c.id == cid).map(crate::state::AttributesClipboard::of);
                     if attributes.is_some() {
@@ -8642,6 +8643,7 @@ impl KlippApp {
                         if cb.clips.len() > 1 {
                             self.state.toast.show(format!("Copied {} clips", cb.clips.len()));
                         }
+                        self.state.system_clipboard_text = Some(clips_clipboard_text(cb.clips.len()));
                         self.state.clipboard = Some(cb);
                     }
                     true
@@ -28554,6 +28556,9 @@ impl eframe::App for KlippApp {
         // the panel changes it implies land in the same frame the new
         // workspace does rather than a frame behind it.
         self.reconcile_workspace();
+        if let Some(text) = self.state.system_clipboard_text.take() {
+            ctx.copy_text(text);
+        }
         if std::mem::take(&mut self.preferences_panel.show_updates) {
             self.state.show_preferences = false;
             self.updates.open();
@@ -43378,4 +43383,15 @@ struct MultiEditPost {
     /// Whether this step opened the undo batch it closes; inside one
     /// already open it joins that instead.
     opened_batch: bool,
+}
+
+/// What copied or cut clips leave on the system clipboard: a line
+/// saying what was copied, so Ctrl+V reaches Klipp (see
+/// `AppState::system_clipboard_text`) and a paste elsewhere shows text
+/// rather than whatever was there before.
+fn clips_clipboard_text(count: usize) -> String {
+    match count {
+        1 => "1 clip copied in Klipp".into(),
+        n => format!("{n} clips copied in Klipp"),
+    }
 }

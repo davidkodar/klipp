@@ -59,7 +59,9 @@ impl KeyCombo {
 
         // Try to parse as egui::Key
         if let Some(egui_key) = parse_egui_key(&self.key) {
-            input.key_pressed(egui_key) || self.shifted_punctuation_pressed(egui_key, input)
+            input.key_pressed(egui_key)
+                || self.shifted_punctuation_pressed(egui_key, input)
+                || self.clipboard_event_pressed(egui_key, input)
         } else {
             // Text-based keys (punctuation: ,  .  ;  '  etc.). Ctrl and
             // Alt suppress the text event, so a modified one is read as
@@ -70,6 +72,21 @@ impl KeyCombo {
                         input.key_pressed(k) || self.shifted_punctuation_pressed(k, input)
                     }))
         }
+    }
+
+    /// The window layer turns Ctrl+X, Ctrl+C and Ctrl+V, with Shift or
+    /// Alt held or not, into Cut, Copy and Paste events and sends no key
+    /// press for them, so those combos are matched on the event: read as
+    /// key presses, Copy, Paste and Copy/Paste Attributes never fired.
+    fn clipboard_event_pressed(&self, key: egui::Key, input: &egui::InputState) -> bool {
+        use egui::Key as K;
+        self.ctrl
+            && input.events.iter().any(|e| {
+                matches!(
+                    (key, e),
+                    (K::X, egui::Event::Cut) | (K::C, egui::Event::Copy) | (K::V, egui::Event::Paste(_))
+                )
+            })
     }
 
     /// Shift changes what a punctuation key reports (`[` arrives as `{`
@@ -783,6 +800,25 @@ pub fn key_event_to_combo(input: &egui::InputState) -> Option<KeyCombo> {
         }
     }
 
+    // Ctrl+X, Ctrl+C and Ctrl+V arrive as Cut, Copy and Paste events,
+    // with no key press (see `KeyCombo::clipboard_event_pressed`).
+    if input.modifiers.ctrl {
+        let clipboard_key = input.events.iter().find_map(|e| match e {
+            egui::Event::Cut => Some("X"),
+            egui::Event::Copy => Some("C"),
+            egui::Event::Paste(_) => Some("V"),
+            _ => None,
+        });
+        if let Some(name) = clipboard_key {
+            return Some(KeyCombo {
+                ctrl: true,
+                shift: input.modifiers.shift,
+                alt: input.modifiers.alt,
+                key: name.into(),
+            });
+        }
+    }
+
     // Shift changes what punctuation reports (`[` arrives as `{`), so
     // Shift+punctuation is read from the physical key.
     if input.modifiers.shift {
@@ -1188,6 +1224,46 @@ mod shifted_punctuation {
         assert!(combo.is_pressed(&i));
         assert_eq!(key_event_to_combo(&i), Some(combo));
         assert!(!KeyCombo::parse("Ctrl+\\").unwrap().is_pressed(&i), "Shift must still count");
+    }
+}
+
+#[cfg(test)]
+mod clipboard_events {
+    use super::{key_event_to_combo, KeyCombo};
+
+    /// One frame holding `event` with `modifiers`, as the window layer
+    /// reports Ctrl+X/C/V: the event alone, no key press.
+    fn input(modifiers: egui::Modifiers, event: egui::Event) -> egui::InputState {
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput { modifiers, events: vec![event], ..Default::default() };
+        let _ = ctx.run(raw, |_| {});
+        ctx.input(|i| i.clone())
+    }
+
+    const CTRL: egui::Modifiers = egui::Modifiers { ctrl: true, command: true, alt: false, shift: false, mac_cmd: false };
+    const CTRL_SHIFT: egui::Modifiers = egui::Modifiers { ctrl: true, command: true, alt: false, shift: true, mac_cmd: false };
+
+    #[test]
+    fn ctrl_x_c_v_fire_from_the_clipboard_events() {
+        for (event, combo) in [
+            (egui::Event::Cut, "Ctrl+X"),
+            (egui::Event::Copy, "Ctrl+C"),
+            (egui::Event::Paste("text".into()), "Ctrl+V"),
+        ] {
+            let i = input(CTRL, event);
+            let combo = KeyCombo::parse(combo).unwrap();
+            assert!(combo.is_pressed(&i), "{combo:?}");
+            assert_eq!(key_event_to_combo(&i), Some(combo));
+        }
+    }
+
+    #[test]
+    fn shift_still_counts_and_other_keys_stay_quiet() {
+        let i = input(CTRL_SHIFT, egui::Event::Copy);
+        assert!(KeyCombo::parse("Ctrl+Shift+C").unwrap().is_pressed(&i));
+        assert!(!KeyCombo::parse("Ctrl+C").unwrap().is_pressed(&i));
+        assert!(!KeyCombo::parse("Ctrl+Shift+V").unwrap().is_pressed(&i));
+        assert!(!KeyCombo::parse("C").unwrap().is_pressed(&input(Default::default(), egui::Event::Copy)));
     }
 }
 
