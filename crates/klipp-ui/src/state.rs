@@ -1249,6 +1249,9 @@ pub struct AppState {
     /// project-save path. Lives on AppState (not on CommandHistory)
     /// because autosave fires on total project mutations.
     pub history_ops_since_save: u64,
+    /// The last edit recorded by `tracks_undo` and when, so a dragged
+    /// value's changes fold into one undo step.
+    pub tracks_undo_gesture: Option<(&'static str, std::time::Instant)>,
     /// What the control socket reads without the UI: the document
     /// revision (advanced by every recorded edit, undo and redo) and the
     /// render queue's jobs. Shared with `klipp_control` by the app.
@@ -3753,6 +3756,7 @@ impl Default for AppState {
             dirty: false,
             command_histories: std::collections::HashMap::new(),
             history_ops_since_save: 0,
+            tracks_undo_gesture: None,
             control_shared: std::sync::Arc::new(klipp_core::ControlShared::default()),
             history_max_size: 1000,
             viewer_inspector_split: 0.6,
