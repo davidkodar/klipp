@@ -445,62 +445,42 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
     // staying greyed-out matches the rest of the clip-targeted entries).
     e.push(PaletteEntry { label: Cow::Borrowed("Fade From Black (1 s)"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::Custom(|state, cmds| {
-            if let Some(clip_id) = state.selected_clip {
-                cmds.push(AppCommand::AddBuiltinEffect {
-                    clip_id,
-                    effect: klipp_effects::BuiltinEffect::ColorFade {
+            add_to_selection(state, cmds, "Fade", klipp_effects::BuiltinEffect::ColorFade {
                         color: [0, 0, 0, 255],
                         duration_secs: 1.0,
                         mode: klipp_effects::ColorFadeMode::In,
                         progress: 0.0,
-                    },
-                });
-            }
+                    });
         }),
         enabled: state.selected_clip.is_some() });
     e.push(PaletteEntry { label: Cow::Borrowed("Fade To Black (1 s)"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::Custom(|state, cmds| {
-            if let Some(clip_id) = state.selected_clip {
-                cmds.push(AppCommand::AddBuiltinEffect {
-                    clip_id,
-                    effect: klipp_effects::BuiltinEffect::ColorFade {
+            add_to_selection(state, cmds, "Fade", klipp_effects::BuiltinEffect::ColorFade {
                         color: [0, 0, 0, 255],
                         duration_secs: 1.0,
                         mode: klipp_effects::ColorFadeMode::Out,
                         progress: 0.0,
-                    },
-                });
-            }
+                    });
         }),
         enabled: state.selected_clip.is_some() });
     e.push(PaletteEntry { label: Cow::Borrowed("Fade From White (1 s)"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::Custom(|state, cmds| {
-            if let Some(clip_id) = state.selected_clip {
-                cmds.push(AppCommand::AddBuiltinEffect {
-                    clip_id,
-                    effect: klipp_effects::BuiltinEffect::ColorFade {
+            add_to_selection(state, cmds, "Fade", klipp_effects::BuiltinEffect::ColorFade {
                         color: [255, 255, 255, 255],
                         duration_secs: 1.0,
                         mode: klipp_effects::ColorFadeMode::In,
                         progress: 0.0,
-                    },
-                });
-            }
+                    });
         }),
         enabled: state.selected_clip.is_some() });
     e.push(PaletteEntry { label: Cow::Borrowed("Fade To White (1 s)"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::Custom(|state, cmds| {
-            if let Some(clip_id) = state.selected_clip {
-                cmds.push(AppCommand::AddBuiltinEffect {
-                    clip_id,
-                    effect: klipp_effects::BuiltinEffect::ColorFade {
+            add_to_selection(state, cmds, "Fade", klipp_effects::BuiltinEffect::ColorFade {
                         color: [255, 255, 255, 255],
                         duration_secs: 1.0,
                         mode: klipp_effects::ColorFadeMode::Out,
                         progress: 0.0,
-                    },
-                });
-            }
+                    });
         }),
         enabled: state.selected_clip.is_some() });
     e.push(PaletteEntry { label: Cow::Borrowed("Bake Grade as 3D LUT (.cube)"), shortcut: Cow::Borrowed(""),
@@ -1146,6 +1126,17 @@ pub fn dispatch_dialog(kind: DialogKind) -> Vec<AppCommand> {
             .map(|p| AppCommand::ImportOtio { path: p }),
     };
     single.into_iter().collect()
+}
+
+/// `effect` on every selected picture that can take it, as one undo step
+/// (#842), with the toast saying where it went.
+fn add_to_selection(state: &mut AppState, cmds: &mut Vec<AppCommand>, name: &str, effect: klipp_effects::BuiltinEffect) {
+    let targets = crate::effect_targets::targets(state.sequence(), state.selected_clip, &state.selected_clips, None, crate::effect_targets::EffectKind::Picture);
+    if targets.clips.is_empty() {
+        return;
+    }
+    cmds.extend(crate::effect_targets::commands(&targets, |clip_id| vec![AppCommand::AddBuiltinEffect { clip_id, effect: effect.clone() }]));
+    state.toast.show(crate::effect_targets::said(name, &targets));
 }
 
 #[cfg(test)]
