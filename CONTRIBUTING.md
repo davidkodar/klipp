@@ -279,15 +279,24 @@ filesystem or set `TMPDIR` to a disk-backed directory; `df` cannot detect
 every per-user quota. Worktrees on tmpfs should point `CARGO_TARGET_DIR`
 at a disk-backed build directory too.
 
-A worktree's first gate does not start from an empty `target/`: it takes
-a copy-on-write copy of the main checkout's `target/debug` (on btrfs or
-any filesystem with reflinks) and rebuilds this tree's own crates from
+The gate builds in a checkout of its own, beside the main one
+(`<repo>-gate`, or `KLIPP_GATE_DIR`), not in the worktree being pushed:
+each run checks the pushed commit out there, git rewrites only the files
+that differ, and cargo rebuilds only the crates they belong to and what
+depends on them. The pushing worktree is not built in or changed. With
+`KLIPP_ALLOW_DIRTY=1`, a `CARGO_TARGET_DIR`, `KLIPP_GATE_IN_PLACE=1`, or
+a gate checkout that cannot be used, it builds in place as before.
+
+A build folder's first build (the gate checkout's, or a worktree's built
+in place) does not start from an empty `target/`: it takes a
+copy-on-write copy of the main checkout's `target/debug` (on btrfs or
+any filesystem with reflinks) and rebuilds the tree's own crates from
 its sources, so only the dependencies come from the copy. Do not point
 several worktrees at one `CARGO_TARGET_DIR`: cargo names a workspace
 crate by its path within the workspace, the same in every worktree, and
 judges freshness by file times, so one tree's build can link another
 tree's crates. A worktree's `target/` can be deleted once its branch is
-merged. The gate runs at the lowest CPU and disk priority, so the machine
+merged; the gate does not need it. The gate runs at the lowest CPU and disk priority, so the machine
 stays usable while it builds; it takes longer when you are using it, not
 the other way round.
 
