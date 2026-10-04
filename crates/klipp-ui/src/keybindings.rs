@@ -908,8 +908,10 @@ mod registry_coverage {
         // seeing it — which is how the transport keys looked unwired
         // after they had been converted.
         format!(
-            "{}{}{}",
+            "{}{}{}{}",
             include_str!("app.rs"),
+            // The frame's key presses, since #826 moved them out of app.rs.
+            include_str!("app/shortcuts.rs"),
             include_str!("keybindings.rs"),
             include_str!("panels/transport.rs"),
         )
