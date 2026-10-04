@@ -1048,6 +1048,11 @@ pub struct Track {
     pub pan: f32,
     #[serde(default)]
     pub locked: bool,
+    /// Sync lock (#915): a ripple on another track moves this one's clips
+    /// by the same amount, so what is above or below the edit stays in
+    /// sync with it.
+    #[serde(default)]
+    pub sync_lock: bool,
     /// Magnetic role of this track. Defaults to Free — backward compatible.
     #[serde(default)]
     pub magnetic_role: TrackRole,
@@ -1233,6 +1238,7 @@ impl Track {
             pre_collapse_height: None,
             precomposition_sound: false,
             source_file: None,
+            sync_lock: false,
             record_armed: false,
             automation_lane_visible: None,
             automation_lane_height: None,

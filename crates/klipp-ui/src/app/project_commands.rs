@@ -759,6 +759,13 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::SetTrackSyncLock { track_id, on } => {
+                if let Some(t) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id) {
+                    t.sync_lock = *on;
+                    self.state.dirty = true;
+                }
+                true
+            }
             AppCommand::RenameTrack { track_id, ref name } => {
                 if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id) {
                     track.name = name.clone();
