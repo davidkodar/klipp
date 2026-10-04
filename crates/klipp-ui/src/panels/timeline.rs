@@ -9030,7 +9030,10 @@ impl TimelinePanel {
                     });
                     if let Some(colliding_id) = collision {
                         ui.separator();
-                        if ui.button("Push to Resolve").clicked() {
+                        // Named for what it does: "Push to Resolve" read as
+                        // the name of another editor rather than "resolve
+                        // the overlap".
+                        if ui.button("Move Overlapping Clip After This One").on_hover_text("This clip overlaps another on the track: move that one so it starts where this one ends").clicked() {
                             let result = klipp_timeline::magnetic::MagneticEditor::resolve_collision_push(
                                 state.sequence_mut(), clip_id, colliding_id);
                             state.active_history_mut().push(crate::history::HistoryEntry {
