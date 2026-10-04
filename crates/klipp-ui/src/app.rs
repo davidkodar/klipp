@@ -5544,21 +5544,38 @@ impl KlippApp {
         if others.is_empty() {
             return None;
         }
-        let in_drag = self.multi_edit.as_ref().is_some_and(|m| m.primary == clip);
+        let mut in_drag = self.multi_edit.as_ref().is_some_and(|m| m.primary == clip);
+        // An audio plugin's slider coalesces in its own handler under a
+        // history drag key: while that drag is open, a value is a live
+        // step of it, not a change of its own (#843 review).
+        if let AppCommand::UpdateAudioEffectParam { effect_index, param_name, .. } = cmd {
+            let key = format!("audio_chain:{}:{}:{}", clip.0, effect_index, param_name);
+            if !in_drag && self.state.active_history().is_dragging(&key) {
+                self.multi_edit = Some(MultiEditSession { primary: clip, before: self.multi_edit_snapshot(clip, &others) });
+                in_drag = true;
+            }
+        }
         match phase {
+            Phase::Live => Some(MultiEditPost { cmd: cmd.clone(), others, finish: false, opened_batch: false }),
             Phase::Begin => {
                 self.multi_edit = Some(MultiEditSession { primary: clip, before: self.multi_edit_snapshot(clip, &others) });
                 None
             }
-            Phase::Update if in_drag => Some(MultiEditPost { cmd: cmd.clone(), others, finish: false }),
-            Phase::Abandon => in_drag.then(|| MultiEditPost { cmd: cmd.clone(), others, finish: true }),
+            Phase::Update if in_drag => Some(MultiEditPost { cmd: cmd.clone(), others, finish: false, opened_batch: false }),
+            Phase::Abandon => in_drag.then(|| MultiEditPost { cmd: cmd.clone(), others, finish: true, opened_batch: false }),
             Phase::End if !in_drag => None,
             Phase::Update | Phase::End | Phase::Redo => {
                 if !in_drag {
                     self.multi_edit = Some(MultiEditSession { primary: clip, before: self.multi_edit_snapshot(clip, &others) });
                 }
-                self.state.active_history_mut().begin_batch();
-                Some(MultiEditPost { cmd: cmd.clone(), others, finish: true })
+                // Inside a batch already open (an agent's, a palette
+                // action's), the step joins it: opening another would drop
+                // what the open one has collected (#843 review).
+                let opened_batch = !self.state.active_history().is_batching();
+                if opened_batch {
+                    self.state.active_history_mut().begin_batch();
+                }
+                Some(MultiEditPost { cmd: cmd.clone(), others, finish: true, opened_batch })
             }
         }
     }
@@ -5623,8 +5640,10 @@ impl KlippApp {
             }
         }
         self.multi_edit = None;
-        let n = post.others.len() + 1;
-        self.state.active_history_mut().end_batch_as(&format!("Edit {n} Clips"));
+        if post.opened_batch {
+            let n = post.others.len() + 1;
+            self.state.active_history_mut().end_batch_as(&format!("Edit {n} Clips"));
+        }
         self.state.dirty = true;
     }
 
@@ -43375,4 +43394,7 @@ struct MultiEditPost {
     others: Vec<klipp_core::ClipId>,
     /// The last step: record it and close the undo step.
     finish: bool,
+    /// Whether this step opened the undo batch it closes; inside one
+    /// already open it joins that instead.
+    opened_batch: bool,
 }

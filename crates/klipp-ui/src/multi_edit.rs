@@ -21,18 +21,21 @@ pub enum Phase {
     /// A change that reshapes the clip (its speed changes its length):
     /// made on each clip by its own handler rather than copied.
     Redo,
+    /// A change its own handler records nowhere (an OFX parameter, set
+    /// every frame of a drag): copied live, and recorded nowhere either.
+    Live,
 }
 
 /// The clip a command edits and where it falls in a gesture, for the
 /// commands the Inspector edits a clip's settings with.
 pub fn classify(cmd: &AppCommand) -> Option<(ClipId, Phase)> {
     Some(match cmd {
-        AppCommand::BeginAudioDrag { clip_id, .. } | AppCommand::BeginEffectDrag { clip_id, .. } => (*clip_id, Phase::Begin),
-        AppCommand::EndAudioDrag { clip_id, .. } | AppCommand::EndEffectDrag { clip_id, .. } => (*clip_id, Phase::End),
+        AppCommand::BeginAudioDrag { clip_id, .. } | AppCommand::BeginEffectDrag { clip_id, .. } | AppCommand::BeginAudioChainDrag { clip_id, .. } => (*clip_id, Phase::Begin),
+        AppCommand::EndAudioDrag { clip_id, .. } | AppCommand::EndEffectDrag { clip_id, .. } | AppCommand::EndAudioChainDrag { clip_id, .. } => (*clip_id, Phase::End),
+        AppCommand::SetEffectParam { clip_id, .. } => (*clip_id, Phase::Live),
         AppCommand::AbandonEffectDrag { clip_id, .. } => (*clip_id, Phase::Abandon),
         AppCommand::UpdateClipAudio { clip_id, .. }
         | AppCommand::UpdateBuiltinEffect { clip_id, .. }
-        | AppCommand::SetEffectParam { clip_id, .. }
         | AppCommand::UpdateAudioEffectParam { clip_id, .. }
         | AppCommand::SetClipRole { clip_id, .. }
         | AppCommand::SetClipBlendMode { clip_id, .. } => (*clip_id, Phase::Update),
@@ -89,6 +92,9 @@ pub fn copy_to(cmd: &AppCommand, primary: &Clip, other: &mut Clip) -> bool {
             }
             true
         }
+        // An audio plugin drag's values were copied as they came; its end
+        // only records them.
+        AppCommand::BeginAudioChainDrag { .. } | AppCommand::EndAudioChainDrag { .. } => true,
         AppCommand::SetClipRole { .. } => {
             other.role = primary.role;
             true
@@ -213,6 +219,22 @@ mod tests {
         view.apply_inverse(&entry.command);
         assert!(view.sequences[0].tracks[0].clips.iter().all(|c| c.volume == 1.0), "every clip back as it was");
         assert!(history.undo().is_none(), "it was one step");
+    }
+
+    /// #843 review: an audio plugin's drag opens and closes a session like
+    /// any other drag, and an OFX parameter, which its own handler records
+    /// nowhere, is copied live and recorded nowhere either.
+    #[test]
+    fn plugin_drags_are_gestures_and_ofx_parameters_are_live() {
+        let c = clip();
+        let begin = AppCommand::BeginAudioChainDrag { drag_key: "audio_chain:x:0:gain".into(), clip_id: c.id };
+        let end = AppCommand::EndAudioChainDrag { drag_key: "audio_chain:x:0:gain".into(), clip_id: c.id };
+        assert_eq!(classify(&begin), Some((c.id, Phase::Begin)));
+        assert_eq!(classify(&end), Some((c.id, Phase::End)));
+        let mut other = clip();
+        assert!(copy_to(&end, &c, &mut other), "its values were copied as they came");
+        let ofx = AppCommand::SetEffectParam { clip_id: c.id, effect_index: 0, param_name: "amount".into(), value: klipp_core::OfxValue::Double(0.5) };
+        assert_eq!(classify(&ofx), Some((c.id, Phase::Live)));
     }
 
     #[test]
