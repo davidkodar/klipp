@@ -49,6 +49,9 @@ pub struct NewInspectorPanel {
     /// title/generator clips opening on their useful tab once, without
     /// overriding a user's later click on Video, Effects, or Info.
     pub last_synthetic_clip: Option<klipp_core::ClipId>,
+    /// The clip name being typed (#920), with the clip it was taken
+    /// from: refilled from the clip when another is selected.
+    clip_name_edit: Option<(klipp_core::ClipId, String)>,
 }
 
 impl NewInspectorPanel {
@@ -110,7 +113,7 @@ impl NewInspectorPanel {
                     format!("Title: {}", text_preview)
                 }
                 klipp_timeline::ClipKind::Gap => "Gap".into(),
-                _ => media.map(|m| m.filename.clone()).unwrap_or_else(|| "Clip".into()),
+                _ => c.label(media.map(|m| m.filename.as_str()).unwrap_or("Clip")).to_string(),
             };
             (name, false)
         } else if let Some(bm) = bin_media {
@@ -196,6 +199,17 @@ impl NewInspectorPanel {
                 );
             });
             ui.advance_cursor_after_rect(banner_rect);
+        }
+
+        // ── The clip's own name and colour (#920) ──
+        // Of every selected clip when several are.
+        if let Some((_, clip)) = clip_info {
+            let targets: Vec<klipp_core::ClipId> = if state.selected_clips.len() > 1 && state.selected_clips.contains(&clip.id) {
+                state.selected_clips.clone()
+            } else {
+                vec![clip.id]
+            };
+            show_clip_name_row(ui, theme, clip, &targets, &mut self.clip_name_edit, &mut cmds);
         }
 
         if let Some((_, clip)) = clip_info {
@@ -386,6 +400,8 @@ impl NewInspectorPanel {
                             track_points: Vec::new(),
                             surfaces: Vec::new(),
                             surface_pin: None,
+                            name: None,
+                            colour_label: 0,
                             precomp: None,
                         };
                         audio_tab::show(ui, theme, state, Some((&temp_clip, 0, false)), &mut cmds, (0.0, 0.0), None, source_channels, 0.0, &mut self.duck, &track_infos);
@@ -7840,4 +7856,51 @@ fn show_generator_editor(
             });
         }
     }
+}
+
+/// The Inspector's Name row (#920): the clip's own name, typed and
+/// committed on Enter or when the field is left, and its colour label as
+/// swatches. A blank name gives back the media's.
+fn show_clip_name_row(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip: &klipp_timeline::Clip,
+    targets: &[klipp_core::ClipId],
+    edit: &mut Option<(klipp_core::ClipId, String)>,
+    cmds: &mut Vec<AppCommand>,
+) {
+    // Refilled from the clip whenever it isn't being typed in, so an undo
+    // or a rename from the clip's menu shows here.
+    let field_id = ui.id().with("clip_name_field");
+    let typing = ui.memory(|m| m.has_focus(field_id));
+    if !typing || edit.as_ref().map(|(id, _)| *id) != Some(clip.id) {
+        *edit = Some((clip.id, clip.name.clone().unwrap_or_default()));
+    }
+    let Some((_, buf)) = edit.as_mut() else { return };
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Name").size(11.0).color(theme.text_secondary));
+        let field = ui.add(egui::TextEdit::singleline(buf).id(field_id).hint_text("The media's name").desired_width(ui.available_width() - 4.0));
+        if field.lost_focus() && buf.trim() != clip.name.as_deref().unwrap_or("").trim() {
+            cmds.push(AppCommand::RenameClips { clip_ids: targets.to_vec(), name: Some(buf.clone()) });
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Colour").size(11.0).color(theme.text_secondary));
+        for label in klipp_media::ColorLabel::ALL {
+            let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+            let chosen = clip.colour_label == label.to_u8();
+            match label.rgb() {
+                Some((r, g, b)) => { ui.painter().circle_filled(rect.center(), 6.0, egui::Color32::from_rgb(r, g, b)); }
+                None => { ui.painter().circle_stroke(rect.center(), 5.5, egui::Stroke::new(1.0_f32, theme.text_secondary)); }
+            }
+            if chosen {
+                ui.painter().circle_stroke(rect.center(), 7.5, egui::Stroke::new(1.5_f32, theme.text_primary));
+            }
+            if response.on_hover_text(label.label()).clicked() && !chosen {
+                cmds.push(AppCommand::SetClipColourLabels { clip_ids: targets.to_vec(), label: label.to_u8() });
+            }
+        }
+    });
+    ui.add_space(2.0);
 }

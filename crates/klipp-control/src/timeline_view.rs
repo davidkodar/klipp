@@ -123,6 +123,13 @@ pub(crate) fn timeline_text(
                 klipp_timeline::ClipKind::TemplatePrecomposition { .. } => "template precomposition".to_string(),
             };
             let mut line = format!("  [{}]  {what}", range(c.timeline_in, c.timeline_out));
+            // Its own name and colour on the timeline (#920).
+            if let Some(name) = c.name.as_deref().filter(|n| !n.trim().is_empty()) {
+                let _ = write!(line, "  named \"{name}\"");
+            }
+            if c.colour_label != 0 {
+                let _ = write!(line, "  colour {}", klipp_media::ColorLabel::from_u8(c.colour_label).label().to_lowercase());
+            }
             if !c.enabled {
                 line.push_str("  DISABLED");
             }
@@ -285,6 +292,8 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
                 "source_in_secs": c.source_in.to_secs_f64(),
                 "source_out_secs": c.source_out.to_secs_f64(),
                 "speed": c.speed,
+                "own_name": c.name,
+                "colour": (c.colour_label != 0).then(|| klipp_media::ColorLabel::from_u8(c.colour_label).label().to_lowercase()),
                 "blend_mode": format!("{:?}", c.blend_mode),
                 "grade_is_identity": c.own_grade().is_identity(),
                 "grade_nodes": c.own_grade().nodes.len(),
@@ -308,8 +317,12 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
             "in_secs": r3(c.timeline_in.to_secs_f64()),
             "out_secs": r3(c.timeline_out.to_secs_f64()),
         });
-        if let Some(n) = name(c) {
+        // Its own name when it has one (#920), else its media's or text.
+        if let Some(n) = c.name.clone().filter(|n| !n.trim().is_empty()).or_else(|| name(c)) {
             v["name"] = json!(n);
+        }
+        if c.colour_label != 0 {
+            v["colour"] = json!(klipp_media::ColorLabel::from_u8(c.colour_label).label().to_lowercase());
         }
         if let Some(id) = c.media_id() {
             v["media_id"] = json!(id.0.to_string());

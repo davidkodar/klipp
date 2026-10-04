@@ -790,6 +790,9 @@ pub struct TimelinePanel {
     marquee_start: Option<egui::Pos2>,
     /// Track rename: (track_index, text buffer)
     renaming_track: Option<(usize, String)>,
+    /// Clip rename (#920), open from the clip's menu until committed or
+    /// cancelled.
+    renaming_clip: Option<ClipRename>,
     /// Per-frame scratch cache — cleared at the top of `show()`.
     pub(crate) frame_cache: TimelineFrameCache,
     /// Cross-frame state for the on-snap legend's fade-on-kind-change
@@ -871,6 +874,16 @@ pub(crate) fn alpha_for_kind_change(
     let elapsed_ms = now.saturating_duration_since(last_change_time).as_millis() as u64;
     if elapsed_ms >= SNAP_LEGEND_FADE_MS { 1.0 }
     else { elapsed_ms as f32 / SNAP_LEGEND_FADE_MS as f32 }
+}
+
+/// A clip rename in progress (#920): the clips it names, the track whose
+/// menu opened it (the window is drawn once, with that track), and the
+/// name as typed.
+struct ClipRename {
+    clip_ids: Vec<ClipId>,
+    track_idx: usize,
+    buf: String,
+    focused: bool,
 }
 
 #[allow(dead_code)]
@@ -5796,6 +5809,19 @@ impl TimelinePanel {
             }
         }
 
+        // Speed badge (#920): a clip at a constant speed other than its
+        // own says so, top right, clear of the proxy badge. A speed ramp
+        // draws its curve instead.
+        if let Some(text) = speed_badge_text(clip) {
+            let galley = painter.layout_no_wrap(text, egui::FontId::proportional(10.0), egui::Color32::WHITE);
+            let size = galley.size() + egui::vec2(8.0, 2.0);
+            if clip_rect.width() > size.x + 34.0 && clip_rect.height() > size.y + 4.0 {
+                let badge = egui::Rect::from_min_size(egui::pos2(clip_rect.right() - 22.0 - size.x, clip_rect.top() + 2.0), size);
+                painter.rect_filled(badge, size.y / 2.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 170));
+                painter.galley(badge.min + egui::vec2(4.0, 1.0), galley, egui::Color32::WHITE);
+            }
+        }
+
         // Always-visible trim handle bars on both edges
         if clip_rect.width() > 12.0 {
             let handle_w = 5.0;
@@ -5863,7 +5889,8 @@ impl TimelinePanel {
                 // Text preview
                 if max_text_width > 10.0 {
                     let text_pos = egui::pos2(clip_rect.left() + 22.0, clip_rect.center().y);
-                    let truncated = truncate_text(&title_data.text(), max_text_width, font_size);
+                    let text = title_data.text();
+                    let truncated = truncate_text(clip.label(&text), max_text_width, font_size);
                     let font = egui::FontId::proportional(font_size);
                     let shadow_color = egui::Color32::from_rgba_premultiplied(0, 0, 0, 200);
                     for &(dx, dy) in &[(-1.0f32, 0.0f32), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
@@ -5886,10 +5913,11 @@ impl TimelinePanel {
             } else if let Some(media) = clip.media_id().and_then(|mid| state.media_pool.get(&mid)) {
                 let is_audio_clip = matches!(track_kind, TrackKind::Audio);
                 let font_size = if is_audio_clip { 10.0 } else { 11.0 };
+                let name = clip.label(&media.filename);
                 let label = if is_offline {
-                    format!("\u{26A0} offline: {}", media.filename)
+                    format!("\u{26A0} offline: {name}")
                 } else {
-                    media.filename.clone()
+                    name.to_string()
                 };
                 // DaVinci/FCP-style label strip beneath the content (filmstrip
                 // or waveform) so the name never obscures the visual payload.
@@ -8114,6 +8142,35 @@ impl TimelinePanel {
                 let track_kind = state.sequence().tracks.get(track_idx).map(|t| t.kind);
                 let is_video_track = track_kind == Some(TrackKind::Video);
 
+                // ── Name and colour (#920) ──
+                // Of the whole selection when this clip is part of it.
+                let targets: Vec<klipp_core::ClipId> = if state.selected_clips.len() > 1 && state.selected_clips.contains(&clip_id) {
+                    state.selected_clips.clone()
+                } else {
+                    vec![clip_id]
+                };
+                let (own_name, own_colour) = state.sequence().find_clip(clip_id)
+                    .map(|(ti, ci)| {
+                        let c = &state.sequence().tracks[ti].clips[ci];
+                        (c.name.clone().unwrap_or_default(), c.colour_label)
+                    })
+                    .unwrap_or_default();
+                if ui.button("Rename Clip\u{2026}").clicked() {
+                    self.renaming_clip = Some(ClipRename { clip_ids: targets.clone(), track_idx, buf: own_name, focused: false });
+                    ui.close_menu();
+                }
+                ui.menu_button("Clip Colour", |ui| {
+                    for label in klipp_media::ColorLabel::ALL {
+                        let swatch = label.rgb().map(|(r, g, b)| egui::Color32::from_rgb(r, g, b)).unwrap_or(ui.visuals().weak_text_color());
+                        let text = egui::RichText::new(format!("\u{25CF} {}", label.label())).color(swatch);
+                        if ui.selectable_label(own_colour == label.to_u8(), text).clicked() {
+                            cmds.push(AppCommand::SetClipColourLabels { clip_ids: targets.clone(), label: label.to_u8() });
+                            ui.close_menu();
+                        }
+                    }
+                });
+                ui.separator();
+
                 // ── Export this clip ──
                 // Open the export dialog with the range pre-set to
                 // "Selected clips" mode. The handler ensures the
@@ -9071,6 +9128,48 @@ impl TimelinePanel {
                 }
             }
         });
+        self.show_clip_rename(track_response.ctx.clone(), track_idx, cmds);
+    }
+
+    /// The Rename Clip window (#920): Enter or Rename names the clips,
+    /// Escape or Cancel leaves them; an empty name gives back their
+    /// media's.
+    fn show_clip_rename(&mut self, ctx: egui::Context, track_idx: usize, cmds: &mut Vec<AppCommand>) {
+        let Some(rename) = self.renaming_clip.as_mut().filter(|r| r.track_idx == track_idx) else { return };
+        let mut done: Option<bool> = None;
+        let title = if rename.clip_ids.len() > 1 { format!("Rename {} Clips", rename.clip_ids.len()) } else { "Rename Clip".to_string() };
+        egui::Window::new(title)
+            .id(egui::Id::new("timeline_clip_rename"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(&ctx, |ui| {
+                let field = ui.add(egui::TextEdit::singleline(&mut rename.buf).hint_text("The media's name").desired_width(260.0));
+                if !rename.focused {
+                    field.request_focus();
+                    rename.focused = true;
+                }
+                if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    done = Some(true);
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    done = Some(false);
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Rename").clicked() {
+                        done = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        done = Some(false);
+                    }
+                });
+            });
+        if let Some(commit) = done {
+            let rename = self.renaming_clip.take().expect("open");
+            if commit {
+                cmds.push(AppCommand::RenameClips { clip_ids: rename.clip_ids, name: Some(rename.buf) });
+            }
+        }
     }
 
     /// Process ongoing clip drag (magnetic and legacy free move, ghost rendering, cross-track, auto-connect).
@@ -11629,7 +11728,12 @@ impl TimelinePanel {
             TrackKind::Audio => true,
             _ => matches!(clip.role, klipp_timeline::ClipRole::BRoll | klipp_timeline::ClipRole::Graphics),
         };
-        let base_color = if is_title {
+        // The clip's own colour label (#920) wins over the colour its
+        // track, role or kind would give it; offline still shows as such.
+        let own_colour = klipp_media::ColorLabel::from_u8(clip.colour_label).rgb();
+        let base_color = if let (Some((r, g, b)), false) = (own_colour, is_offline) {
+            egui::Color32::from_rgb(r.saturating_sub(25), g.saturating_sub(25), b.saturating_sub(25))
+        } else if is_title {
             // Dim purple tint derived from role_title.
             let rt = theme_colors.role_title;
             egui::Color32::from_rgb(rt.r() / 3, rt.g() / 3, rt.b() / 3 + 20)
@@ -11646,7 +11750,9 @@ impl TimelinePanel {
         } else {
             clip_color(clip_index)
         };
-        let bright_color = if is_title {
+        let bright_color = if let (Some((r, g, b)), false) = (own_colour, is_offline) {
+            egui::Color32::from_rgb(r.saturating_add(20), g.saturating_add(20), b.saturating_add(20))
+        } else if is_title {
             let rt = theme_colors.role_title;
             egui::Color32::from_rgb(rt.r() / 2, rt.g() / 2, rt.b() / 2 + 30)
         } else if is_offline {
@@ -16049,6 +16155,18 @@ pub(crate) fn find_matte_candidate_above(
     None
 }
 
+/// The speed badge a clip shows (#920): its constant speed as a
+/// percentage, with a reverse mark when it plays backward. `None` at its
+/// own speed, and for a speed ramp, which draws its curve instead.
+fn speed_badge_text(clip: &klipp_timeline::Clip) -> Option<String> {
+    if !clip.speed_keyframes.is_empty() || clip.kind.is_gap() || !(clip.is_varispeed() || clip.is_reversed()) {
+        return None;
+    }
+    let percent = clip.speed.abs() * 100.0;
+    let percent = if (percent - percent.round()).abs() < 0.05 { format!("{percent:.0}%") } else { format!("{percent:.1}%") };
+    Some(if clip.is_reversed() { format!("\u{25C0} {percent}") } else { percent })
+}
+
 fn truncate_text(text: &str, max_width: f32, font_size: f32) -> String {
     let char_width = font_size * 0.6;
     let max_chars = (max_width / char_width) as usize;
@@ -17419,6 +17537,34 @@ mod compound_filmstrip_tests {
 // + summary logic is the load-bearing part: a wrong tooltip range
 // would mislead the user about WHEN the effect is bypassed.
 // ═══════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod speed_badge_tests {
+    use super::speed_badge_text;
+
+    fn at(speed: f64) -> klipp_timeline::Clip {
+        let tc = |v| klipp_core::RationalTime { value: v, rate: 24 };
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0), tc(24), tc(0), tc(24));
+        clip.speed = speed;
+        clip
+    }
+
+    #[test]
+    fn a_clip_says_its_speed_when_not_its_own() {
+        assert_eq!(speed_badge_text(&at(1.0)), None);
+        assert_eq!(speed_badge_text(&at(2.0)).as_deref(), Some("200%"));
+        assert_eq!(speed_badge_text(&at(0.5)).as_deref(), Some("50%"));
+        assert_eq!(speed_badge_text(&at(1.0 / 3.0)).as_deref(), Some("33.3%"));
+        assert_eq!(speed_badge_text(&at(-1.0)).as_deref(), Some("\u{25C0} 100%"), "reversed at its own speed still says so");
+    }
+
+    #[test]
+    fn a_speed_ramp_has_no_badge() {
+        let mut clip = at(1.5);
+        clip.speed_keyframes.push(klipp_core::Keyframe { time_secs: 0.0, value: 1.5, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) });
+        assert_eq!(speed_badge_text(&clip), None);
+    }
+}
+
 #[cfg(test)]
 mod bypass_strip_helper_tests {
     use super::{bypass_envelope_summary, effect_display_name};

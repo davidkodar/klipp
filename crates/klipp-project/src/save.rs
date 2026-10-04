@@ -438,6 +438,8 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         track_points: c.track_points.clone(),
                         surfaces: c.surfaces.clone(),
                         surface_pin: c.surface_pin,
+                        name: c.name.clone(),
+                        colour_label: c.colour_label,
                     }
                 }).collect(),
             }

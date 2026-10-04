@@ -81,6 +81,9 @@ fn secs(t: klipp_core::Timecode) -> f64 {
 }
 
 fn clip_label(pool: &MediaPool, c: &Clip) -> String {
+    if let Some(name) = c.name.as_deref().filter(|n| !n.trim().is_empty()) {
+        return format!("\"{name}\"");
+    }
     match &c.kind {
         ClipKind::Media { media_id } => pool.get(media_id).map(|m| m.filename.clone()).unwrap_or_else(|| "a missing file".into()),
         ClipKind::Title(td) => format!("title \"{}\"", td.text().lines().next().unwrap_or("")),

@@ -201,6 +201,10 @@ pub enum EditCommand {
     SetSequenceCamera { old: Box<klipp_timeline::Camera>, new: Box<klipp_timeline::Camera> },
     /// How far back a clip sits for the camera; see `Clip::depth`.
     SetClipDepth { clip_id: ClipId, old: f32, new: f32 },
+    /// Clips given their own name or colour label (#920), each as (clip,
+    /// before, after): a rename, or a recolour of a selection, as one
+    /// undo step.
+    SetClipLabels { description: &'static str, changes: Vec<(ClipId, klipp_timeline::ClipLabel, klipp_timeline::ClipLabel)> },
     /// The sequence's grade groups, the whole list either side: a group
     /// made, renamed or removed (#237). Their grades change through
     /// `SetNodeGraph` under each stage's editing id.
@@ -762,6 +766,7 @@ impl EditCommand {
             EditCommand::SetTrackContents { description, .. } => description,
             EditCommand::SetSequenceCamera { .. } => "Camera",
             EditCommand::SetClipDepth { .. } => "Depth",
+            EditCommand::SetClipLabels { description, .. } => description,
             EditCommand::SetGradeGroups { .. } => "Grade Groups",
             EditCommand::SetClipGradeGroups { .. } => "Grade Group",
             EditCommand::SetTemplateInstance { .. } => "Template Parameter",

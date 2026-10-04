@@ -582,6 +582,8 @@ mod menu_smoke_tests {
         panel: NewTimelinePanel,
         old: crate::panels::timeline::TimelinePanel,
         time: f64,
+        /// What the last frame asked the app to do.
+        sent: Vec<AppCommand>,
     }
 
     impl Timeline {
@@ -596,7 +598,7 @@ mod menu_smoke_tests {
             state.sequences[0].tracks[v1].clips.push(Clip::media(media, zero, long, zero, long));
             let mut old = crate::panels::timeline::TimelinePanel::default();
             old.embedded = true;
-            Self { ctx: egui::Context::default(), state, panel: NewTimelinePanel::default(), old, time: 0.0 }
+            Self { ctx: egui::Context::default(), state, panel: NewTimelinePanel::default(), old, time: 0.0, sent: Vec::new() }
         }
 
         /// One frame with `events`: the text drawn, with where.
@@ -618,11 +620,12 @@ mod menu_smoke_tests {
             });
             // What the app does between frames with a selection the
             // timeline asked for: a clip's menu shows the selected clip's.
-            for cmd in cmds {
+            for cmd in &cmds {
                 if let AppCommand::SelectClip(id) = cmd {
-                    self.state.selected_clip = id;
+                    self.state.selected_clip = *id;
                 }
             }
+            self.sent = cmds;
             out.shapes
                 .iter()
                 .filter_map(|s| match &s.shape {
@@ -681,7 +684,46 @@ mod menu_smoke_tests {
         let drawn = timeline.frame(Vec::new());
         let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
         let menu = timeline.right_click(at);
-        let lacking = missing(&menu, &["Cut", "Copy", "Paste at Playhead", "Paste Insert at Playhead", "Duplicate Clip"]);
+        let lacking = missing(&menu, &["Rename Clip", "Clip Colour", "Cut", "Copy", "Paste at Playhead", "Paste Insert at Playhead", "Duplicate Clip"]);
         assert!(lacking.is_empty(), "the clip's menu lacks {lacking:?}; it shows {menu:?}");
+    }
+
+    #[test]
+    fn rename_clip_from_its_menu_names_it() {
+        let mut timeline = Timeline::new();
+        let drawn = timeline.frame(Vec::new());
+        let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE };
+        timeline.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
+        timeline.frame(vec![button(at, false)]);
+        let menu = timeline.frame(Vec::new());
+        let item = menu.into_iter().find(|(t, _)| t.starts_with("Rename Clip")).expect("the menu has Rename Clip").1;
+        let click = |pressed| egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        timeline.frame(vec![egui::Event::PointerMoved(item), click(true)]);
+        timeline.frame(vec![click(false)]);
+        let window = timeline.frame(Vec::new());
+        assert!(window.iter().any(|(t, _)| t == "Rename Clip"), "the rename window opens: {window:?}");
+        timeline.frame(vec![egui::Event::Text("Hero shot".into())]);
+        timeline.frame(vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        let clip_id = timeline.state.sequences[0].tracks.iter().find(|t| t.kind == TrackKind::Video).unwrap().clips[0].id;
+        assert!(
+            timeline.sent.iter().any(|c| matches!(c, AppCommand::RenameClips { clip_ids, name } if *clip_ids == vec![clip_id] && name.as_deref() == Some("Hero shot"))),
+            "Enter renames the clip: {:?}", timeline.sent
+        );
+        let after = timeline.frame(Vec::new());
+        assert!(!after.iter().any(|(t, _)| t == "Rename Clip"), "and the window closes");
+    }
+
+    #[test]
+    fn a_clip_shows_its_own_name_and_its_speed() {
+        let mut timeline = Timeline::new();
+        let clip = &mut timeline.state.sequences[0].tracks.iter_mut().find(|t| t.kind == TrackKind::Video).unwrap().clips[0];
+        clip.name = Some("Hero shot".into());
+        clip.colour_label = 4;
+        clip.speed = 1.5;
+        let drawn: Vec<String> = timeline.frame(Vec::new()).into_iter().map(|(t, _)| t).collect();
+        assert!(drawn.iter().any(|t| t == "Hero shot"), "the clip's own name is drawn: {drawn:?}");
+        assert!(!drawn.iter().any(|t| t == "smoke.mov"), "and not its media's: {drawn:?}");
+        assert!(drawn.iter().any(|t| t == "150%"), "its speed badge is drawn: {drawn:?}");
     }
 }

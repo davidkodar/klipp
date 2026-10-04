@@ -217,6 +217,12 @@ exist until the plan runs.
   Mark a camera's own sound `ambience` (or the shot `broll`) when it
   runs under music, so a `duck` does not take it for speech; narration
   is marked dialogue when `narrate` places it.
+- `label {clip_id, name?, colour?}`: the clip's own name on the
+  timeline, shown in place of its media's (a blank name gives the
+  media's back), and its colour: none, red, orange, yellow, green, blue
+  or purple. Name the parts of a long cut ("cold open", "interview A")
+  and colour them by state, so the editor finds them; `timeline` and
+  `list_clips` show both.
 - `matte {clip_id, source?, channel?, invert?, feather_px?, choke_px?, show_source?, clear?}`:
   the clip seen only through another, a track matte. Without
   `source`, the clip above it at its time, on a picture or text track.

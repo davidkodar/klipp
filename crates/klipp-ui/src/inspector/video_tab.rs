@@ -213,6 +213,8 @@ fn show_bin_media_video(
         track_points: Vec::new(),
         surfaces: Vec::new(),
         surface_pin: None,
+        name: None,
+        colour_label: 0,
         precomp: None,
     };
     // is_timeline = false → no Speed Ramp, no amber banner

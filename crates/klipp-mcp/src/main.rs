@@ -2015,6 +2015,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               onto a surface klipp_track_surface followed in the clip: on a video track above, following \
               it; surface is its id or name, the clip's latest when left out; fit stretch|fit (auto by \
               shape when left out); inset a margin each side, ~0.02 for a screen's bezel.\n\
+              label {clip_id, name?, colour?} — the clip's own name on the timeline, shown in place \
+              of its media's (blank gives the media's back), and its colour: none, red, orange, \
+              yellow, green, blue or purple. Timeline and list_clips show both.\n\
               effect {clip_id | on: \"timeline\" | {group} | {track, from?, to?, itself?}, kind, amount?} — a finishing effect on a picture, or on every picture of the timeline, a grade group or a track in one step (with itself: true, on the track itself, after every clip's own, clips added later too): vignette, grain, glow, \
               bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
               directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \
@@ -2219,6 +2222,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               onto a surface klipp_track_surface followed in the clip: on a video track above, following \
               it; surface is its id or name, the clip's latest when left out; fit stretch|fit (auto by \
               shape when left out); inset a margin each side, ~0.02 for a screen's bezel.\n\
+              label {clip_id, name?, colour?} — the clip's own name on the timeline, shown in place \
+              of its media's (blank gives the media's back), and its colour: none, red, orange, \
+              yellow, green, blue or purple. Timeline and list_clips show both.\n\
               effect {clip_id | on: \"timeline\" | {group} | {track, from?, to?, itself?}, kind, amount?} — a finishing effect on a picture, or on every picture of the timeline, a grade group or a track in one step (with itself: true, on the track itself, after every clip's own, clips added later too): vignette, grain, glow, \
               bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
               directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \

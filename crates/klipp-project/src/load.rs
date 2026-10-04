@@ -714,6 +714,8 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     track_points: c.track_points.clone(),
                     surfaces: c.surfaces.clone(),
                     surface_pin: c.surface_pin,
+                    name: c.name.clone(),
+                    colour_label: c.colour_label,
                     precomp: None,
                 };
                 // Titles saved with the old whole-title or
