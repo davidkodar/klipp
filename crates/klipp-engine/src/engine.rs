@@ -1290,8 +1290,6 @@ pub struct PlaybackEngine {
     /// A clip the next frames render alone, for a colour measurement of
     /// it (#719); `None` for the picture as composited.
     measure_only_clip: Option<klipp_core::ClipId>,
-    // Scope tap — which node's output to capture for scope display
-    scope_tap_node: Option<klipp_nodes::NodeId>,
     /// An eyedropper read of a node's input, waiting on the render
     /// `sample_node_input` asked for. See `NodeSample`.
     node_sample: Option<NodeSample>,
@@ -2122,7 +2120,6 @@ impl PlaybackEngine {
             hdr_writer: None,
             inspector_matte_preview_target: None,
             measure_only_clip: None,
-            scope_tap_node: None,
             node_sample: None,
             solo_node: None,
             visible_node_thumbs: std::collections::HashSet::new(),
@@ -3277,11 +3274,6 @@ impl PlaybackEngine {
             }
             AppCommand::SampleNodeInput { clip_id, node_id, nx, ny } => {
                 self.sample_node_input(clip_id, node_id, nx, ny);
-            }
-            AppCommand::SetScopeTapNode { clip_id, node_id } => {
-                self.inspect_clip = Some(clip_id);
-                self.scope_tap_node = node_id;
-                debug!("Scope tap node: {:?}", self.scope_tap_node);
             }
             AppCommand::SetNodeSolo { node_id } => {
                 self.solo_node = node_id;
@@ -7746,9 +7738,6 @@ impl PlaybackEngine {
         match mode {
             FastPath::ParkedDrag | FastPath::PausedPresent => {
                 // What the grade tools read off the linear frame while paused.
-                if self.scope_tap_node.is_some() {
-                    blockers.push("scope tap on a node");
-                }
                 if self.node_sample.is_some() {
                     blockers.push("eyedropper read of a node's input");
                 }

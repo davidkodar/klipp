@@ -1823,10 +1823,9 @@ impl NodeGraphV2Panel {
             }
 
             // Compound body: overlay "N nodes" + a hint that double-
-            // click descends. No thumbnail for compounds yet (the
-            // executor doesn't recurse into sub-graphs — that lands
-            // with stage 5); for now the count is the best visual
-            // cue that the node "contains something".
+            // click descends. A compound has no thumbnail of its own
+            // (the thumbnail capture doesn't render sub-graphs), so the
+            // count is the cue that the node contains something.
             if kind == NodeKind::Compound && node_on {
                 let n = node.params.compound_subgraph
                     .as_ref()

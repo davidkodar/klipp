@@ -273,10 +273,9 @@ impl NodeInspectorPanel {
         // reach it and coming back to see what it did. Every grading
         // suite puts contrast on the primaries bar for this reason.
         //
-        // Pivot deliberately not offered: this grade model pivots
-        // contrast on mid grey, 0.18 linear, as a fixed point in the
-        // grade encoding. Making it adjustable is a change to the
-        // colour science and its CPU/GPU parity, not a slider.
+        // The pivot isn't on this row: it sits with Contrast on the
+        // Colour tab (`show_adjustments_tab`) and in the node's own
+        // inspector, so this row stays one control wide.
         if *color_tab == ColorTab::Wheels {
             self.show_wheels_contrast_row(ui, graph, clip_id, cmds, theme);
         }
@@ -819,9 +818,9 @@ impl NodeInspectorPanel {
                         ui.add_space(4.0);
                         let label = if is_tracked { "\u{1F3AF} Re-track" } else { "\u{1F3AF} Track" };
                         let hover = if is_tracked {
-                            "Re-run tracking from the playhead — overwrites the existing centre keyframes"
+                            "Re-run tracking from the playhead — overwrites the window's tracked keyframes"
                         } else {
-                            "Track this region across the clip — auto-keyframes the mask centre"
+                            "Track this region across the clip — keyframes the window's position, size and rotation as it follows"
                         };
                         if ui.add(egui::Button::new(
                             egui::RichText::new(label).size(10.0)
@@ -2938,7 +2937,7 @@ impl NodeInspectorPanel {
                     .color(theme.text_dim),
                 );
                 ui.label(
-                    egui::RichText::new("Double-click to descend (coming soon)")
+                    egui::RichText::new("Double-click it in the graph to open it")
                         .small()
                         .color(theme.text_dim),
                 );

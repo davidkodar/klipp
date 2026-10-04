@@ -185,15 +185,36 @@ pub fn show_project_info(
                         );
                     });
             });
+            // A switch with grades in the project asks first (#902): a naked
+            // switch re-bases every grade and changes its look.
+            let pending_id = ui.id().with("proj_ws_pending");
             if ws != state.project_working_colorspace {
-                state.project_working_colorspace = ws;
-                state.dirty = true;
-                // Push into the engine's atomic immediately — the
-                // decoder reads it lock-free per-frame, the executor
-                // mirrors it into the GPU pipeline's luma uniform.
-                // Without this push the change wouldn't take effect
-                // until the next project reload.
-                klipp_engine::video_decoder::set_working_colorspace(ws);
+                let graded = state.sequences.iter().flat_map(|s| s.all_clips()).any(|c| !c.node_graph.is_identity());
+                if graded {
+                    ui.data_mut(|d| d.insert_temp(pending_id, ws));
+                } else {
+                    switch_working_space(state, ws, false);
+                }
+            }
+            if let Some(to) = ui.data(|d| d.get_temp::<klipp_core::WorkingColorspace>(pending_id)) {
+                ui.label(egui::RichText::new(format!("Switch to {}? The project has grades.", working_colorspace_label(to))).size(11.0));
+                ui.horizontal(|ui| {
+                    let mut done = false;
+                    if ui.button("Convert grades (keep the look)").clicked() {
+                        switch_working_space(state, to, true);
+                        done = true;
+                    }
+                    if ui.button("Switch without converting").on_hover_text("Each grade is re-based on the new space and will look different").clicked() {
+                        switch_working_space(state, to, false);
+                        done = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        done = true;
+                    }
+                    if done {
+                        ui.data_mut(|d| d.remove::<klipp_core::WorkingColorspace>(pending_id));
+                    }
+                });
             }
             // What the grade's controls act in (#467). The ACES log
             // encodings are ACEScg's; elsewhere the grade is BT.1886.
@@ -224,10 +245,10 @@ pub fn show_project_info(
             ui.label(
                 egui::RichText::new(
                     "Switching working colorspace re-bases the entire grade \
-                     chain. The dropdown above does a naked switch — existing \
-                     grades will look different. Use the button below to \
-                     instead wrap each clip's chain with primaries-conversion \
-                     nodes so the look is preserved across the switch.",
+                     chain. With grades in the project the dropdown asks \
+                     whether to convert them, wrapping each clip's chain \
+                     with primaries-conversion nodes so the look is kept; \
+                     the button below does that conversion directly.",
                 )
                 .size(10.0)
                 .italics()
@@ -250,26 +271,37 @@ pub fn show_project_info(
                 working_colorspace_label(target),
             );
             if ui.button(label).clicked() {
-                let mut migrated = 0usize;
-                for sequence in &mut state.sequences {
-                    for track in &mut sequence.tracks {
-                        for clip in &mut track.clips {
-                            if clip.node_graph.migrate_working_space(from, target) {
-                                migrated += 1;
-                            }
-                        }
-                    }
-                }
-                state.project_working_colorspace = target;
-                state.dirty = true;
-                klipp_engine::video_decoder::set_working_colorspace(target);
-                state.toast.show(format!(
-                    "Migrated {migrated} clip{} to {}",
-                    if migrated == 1 { "" } else { "s" },
-                    working_colorspace_label(target),
-                ));
+                switch_working_space(state, target, true);
             }
         });
+}
+
+/// The project's working colorspace switched to `to`. With `convert`,
+/// each clip's grade is wrapped in primaries conversions so it keeps its
+/// look, and a toast says how many; without, the grades are re-based as
+/// they are. Pushed to the engine at once: the decoder reads it per frame,
+/// and without the push the change waits for the next project load.
+fn switch_working_space(state: &mut AppState, to: klipp_core::WorkingColorspace, convert: bool) {
+    let from = state.project_working_colorspace;
+    if from == to {
+        return;
+    }
+    if convert {
+        let mut migrated = 0usize;
+        for sequence in &mut state.sequences {
+            for track in &mut sequence.tracks {
+                for clip in &mut track.clips {
+                    if clip.node_graph.migrate_working_space(from, to) {
+                        migrated += 1;
+                    }
+                }
+            }
+        }
+        state.toast.show(format!("Migrated {migrated} clip{} to {}", if migrated == 1 { "" } else { "s" }, working_colorspace_label(to)));
+    }
+    state.project_working_colorspace = to;
+    state.dirty = true;
+    klipp_engine::video_decoder::set_working_colorspace(to);
 }
 
 fn grade_encoding_label(enc: klipp_core::GradeEncoding) -> &'static str {
@@ -342,5 +374,43 @@ fn format_size(bytes: u64) -> String {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     } else {
         format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+#[cfg(test)]
+mod working_space_tests {
+    use super::switch_working_space;
+    use crate::state::AppState;
+    use klipp_core::WorkingColorspace;
+
+    /// A project with one graded clip, in Rec.709 linear.
+    fn graded() -> AppState {
+        let mut state = AppState::default();
+        let tc = |v| klipp_core::RationalTime { value: v, rate: 24 };
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0), tc(24), tc(0), tc(24));
+        let n = clip.node_graph.ensure_corrector();
+        clip.node_graph.nodes.iter_mut().find(|x| x.id == n).unwrap().params.exposure = Some(0.5);
+        state.sequences[0].tracks[0].clips.push(clip);
+        state.project_working_colorspace = WorkingColorspace::Rec709Linear;
+        state
+    }
+
+    fn grade(state: &AppState) -> klipp_nodes::NodeGraph {
+        state.sequences[0].tracks[0].clips[0].node_graph.clone()
+    }
+
+    #[test]
+    fn converting_wraps_the_grades_and_a_plain_switch_leaves_them() {
+        let mut converted = graded();
+        let before = grade(&converted).nodes.len();
+        switch_working_space(&mut converted, WorkingColorspace::AcesCG, true);
+        assert_eq!(converted.project_working_colorspace, WorkingColorspace::AcesCG);
+        assert!(grade(&converted).nodes.len() > before, "the grade is wrapped in conversions");
+
+        let mut plain = graded();
+        let untouched = grade(&plain).nodes.len();
+        switch_working_space(&mut plain, WorkingColorspace::AcesCG, false);
+        assert_eq!(plain.project_working_colorspace, WorkingColorspace::AcesCG);
+        assert_eq!(grade(&plain).nodes.len(), untouched, "a plain switch leaves the grade as it is");
     }
 }

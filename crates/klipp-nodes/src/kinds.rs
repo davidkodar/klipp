@@ -104,11 +104,8 @@ pub enum NodeKind {
     /// Spatial noise reduction (bilateral filter).
     Denoise,
 
-    /// Holds a nested `NodeGraph` in `params.compound_subgraph`.
-    /// Acts as a passthrough until stage 5 wires the executor to
-    /// recursively render the sub-graph; before that the user can
-    /// already create + group + ungroup compounds, which is the
-    /// editing affordance the V2 canvas needs first.
+    /// Holds a nested `NodeGraph` in `params.compound_subgraph`, which
+    /// the executor renders recursively in place of the node.
     Compound,
 
     /// RGB Splitter — 1 input, 3 outputs (R / G / B). Each output

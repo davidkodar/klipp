@@ -1929,7 +1929,6 @@ impl KlippApp {
 
     fn handle_color_grade(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         match cmd {
-            AppCommand::SetScopeTapNode { .. } => { true }
             AppCommand::RefreshGrade => {
                 *needs_refresh = true;
                 self.state.dirty = true;
