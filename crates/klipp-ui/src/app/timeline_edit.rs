@@ -202,6 +202,7 @@ impl KlippApp {
                             ));
                             // Switch to nested sequence
                             self.state.active_sequence_idx = target_idx;
+                            self.state.fps = self.state.sequences[target_idx].fps;
                             self.state.playhead = klipp_core::RationalTime::from_secs_f64(
                                 0.0, self.state.sequences[target_idx].fps.rate());
                             self.state.selected_clip = None;
@@ -216,6 +217,7 @@ impl KlippApp {
                     if let Some((parent_idx, parent_playhead)) = self.state.compound_clip_stack.pop() {
                         if parent_idx < self.state.sequences.len() {
                             self.state.active_sequence_idx = parent_idx;
+                            self.state.fps = self.state.sequences[parent_idx].fps;
                             self.state.playhead = parent_playhead;
                             self.state.selected_clip = None;
                             self.state.selected_clips.clear();

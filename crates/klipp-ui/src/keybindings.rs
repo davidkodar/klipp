@@ -404,6 +404,7 @@ impl KeyBindings {
         // Navigation
         bind(&mut b, "next_edit_point", vec![KeyCombo::new("ArrowDown")]);
         bind(&mut b, "prev_edit_point", vec![KeyCombo::new("ArrowUp")]);
+        bind(&mut b, "leave_compound", vec![KeyCombo::ctrl("ArrowUp")]);
         bind(&mut b, "set_in_point", vec![KeyCombo::new("I")]);
         bind(&mut b, "set_out_point", vec![KeyCombo::new("O")]);
         bind(&mut b, "clear_in_point", vec![KeyCombo::shift("I")]);
@@ -650,6 +651,7 @@ impl KeyBindings {
             "prev_marker" => "Previous Marker",
             "play_in_to_out" => "Play In to Out",
             "prev_edit_point" => "Previous Edit Point",
+            "leave_compound" => "Leave Compound Clip",
             "set_in_point" => "Set In Point",
             "set_out_point" => "Set Out Point",
             "clear_in_point" => "Clear In Point",
@@ -725,7 +727,7 @@ impl KeyBindings {
             ("Edit", &["undo", "redo", "cut_clip", "copy_clip", "paste_clip", "paste_insert", "copy_attributes", "paste_attributes", "duplicate_clip", "select_all", "deselect_all", "select_track_clips", "select_track_forward", "select_track_backward", "select_forward", "select_backward", "delete_clip", "lift_clip", "split_at_playhead", "group_clips", "ungroup_clips"]),
             ("Tools", &["select_tool", "blade_tool", "range_tool", "trim_tool"]),
             ("Timeline", &["insert_edit", "overwrite_edit", "lift_edit", "extract_edit", "toggle_edit_mode", "ripple_trim_head", "ripple_trim_tail", "trim_out_to_playhead", "trim_in_to_playhead", "freeze_frame"]),
-            ("Navigation", &["next_edit_point", "prev_edit_point", "next_marker", "prev_marker", "set_in_point", "set_out_point", "clear_in_point", "clear_out_point", "clear_in_out", "set_range_to_clip", "match_frame_program_to_source", "match_frame_source_to_program"]),
+            ("Navigation", &["next_edit_point", "prev_edit_point", "leave_compound", "next_marker", "prev_marker", "set_in_point", "set_out_point", "clear_in_point", "clear_out_point", "clear_in_out", "set_range_to_clip", "match_frame_program_to_source", "match_frame_source_to_program"]),
             ("Transport", &["play_pause", "step_forward", "step_backward", "go_to_start", "go_to_end", "shuttle_reverse", "shuttle_pause", "shuttle_forward", "toggle_loop", "play_in_to_out"]),
             ("Viewer", &["toggle_fullscreen", "toggle_before_after", "toggle_color_panel", "toggle_scopes", "toggle_zebra", "toggle_false_color", "toggle_perf_overlay", "toggle_perf_recording", "toggle_matte_preview", "toggle_safe_areas", "toggle_grid_overlay", "extract_frame_to_file", "extract_frame_to_bin"]),
             ("Window", &["command_palette", "toggle_browser_panel", "toggle_inspector_panel", "toggle_audio_mixer", "toggle_subtitle_editor", "toggle_project_notes", "focus_panel_search"]),
