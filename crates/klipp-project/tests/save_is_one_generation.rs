@@ -174,3 +174,22 @@ fn an_unmendable_pair_is_refused() {
     assert!(err.contains("from different saves") && err.contains(".bak"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A save that stops, an open, then a second save that stops the same
+/// way (a full disk does it twice): the project still opens as the save
+/// before the first, because the second does not copy the broken pair
+/// over the recovery copy (#858 review).
+#[test]
+fn two_stopped_saves_in_a_row_still_open_as_the_save_before() {
+    let dir = fresh("twice");
+    save_without_backups(&dir, &["a.mov"]);
+    let a = std::fs::read(dir.join("project.json")).unwrap();
+    save_without_backups(&dir, &["b.mov"]);
+    stopped_between(&dir, &a);
+    assert_eq!(names(&dir), vec!["a.mov"], "after the first stop");
+    // The second save sees the broken pair and keeps the recovery copy.
+    save_without_backups(&dir, &["c.mov"]);
+    stopped_between(&dir, &a);
+    assert_eq!(names(&dir), vec!["a.mov"], "after the second stop, still the save before both");
+    let _ = std::fs::remove_dir_all(&dir);
+}

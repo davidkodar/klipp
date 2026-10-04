@@ -201,7 +201,21 @@ fn commit_pair(dir: &Path, project: &[u8], manifest: &[u8], backup_count: u32, g
     let manifest_file = dir.join("media").join("manifest.json");
     let recovery = dir.join(RECOVERY_DIR);
     std::fs::create_dir_all(&recovery).map_err(|e| format!("Failed to make the recovery folder: {e}"))?;
-    if project_file.exists() && manifest_file.exists() {
+    // After a save that stopped between its files the pair on disk is
+    // broken (its manifest new, its project.json not), and the recovery
+    // copy is the good one: copying the broken pair over it would lose it
+    // if this save stopped too (#858 review). It is kept as it is.
+    let broken = std::fs::read_to_string(recovery.join("pending")).ok().is_some_and(|pending| {
+        let generation_of = |f: &Path| -> Option<String> {
+            let v: serde_json::Value = serde_json::from_slice(&std::fs::read(f).ok()?).ok()?;
+            v.get("generation")?.as_str().map(str::to_string)
+        };
+        let pending = Some(pending.trim().to_string());
+        generation_of(&manifest_file) == pending && generation_of(&project_file) != pending
+    });
+    if broken {
+        tracing::warn!("the last save stopped between its files; keeping its recovery copy rather than copying the broken pair over it");
+    } else if project_file.exists() && manifest_file.exists() {
         for (from, name) in [(&manifest_file, "manifest.json"), (&project_file, "project.json")] {
             let data = std::fs::read(from).map_err(|e| format!("Failed to read {name} to keep a recovery copy: {e}"))?;
             atomic_write(&recovery.join(name), &data).map_err(|e| format!("Failed to keep a recovery copy of {name}: {e}"))?;
