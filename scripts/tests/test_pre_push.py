@@ -122,6 +122,66 @@ class ScratchGateTests(unittest.TestCase):
         self.assertNotIn("these are assertions", result.stderr)
 
 
+    # cargo-deny present, answering `cargo deny` with TEST_DENY_OUT (a file)
+    # and TEST_DENY_EXIT, its fetch with TEST_FETCH_EXIT (#841).
+    def with_cargo_deny(self, out="", status=0, fetch=0):
+        self.script(self.bin / "cargo-deny", "exit 0")
+        fake = self.root / "deny-out.txt"
+        fake.write_text(out)
+        cargo = (self.bin / "cargo").read_text().replace(
+            "#!/bin/sh\n",
+            '#!/bin/sh\nif [ "$1 $2" = "deny fetch" ]; then exit "$TEST_FETCH_EXIT"; fi\n'
+            'if [ "$1" = deny ]; then cat "$TEST_DENY_OUT"; exit "$TEST_DENY_EXIT"; fi\n', 1)
+        (self.bin / "cargo").write_text(cargo)
+        self.env.update(TEST_DENY_OUT=str(fake), TEST_DENY_EXIT=str(status), TEST_FETCH_EXIT=str(fetch))
+
+    ADVISORY = (
+        "error[vulnerability]: Double free in `Consumer::skip`\n"
+        "    ┌─ /w/Cargo.lock:470:1\n"
+        "470 │ ringbuf 0.3.3 registry+https://github.com/rust-lang/crates.io-index\n"
+        "    ├ ID: RUSTSEC-2026-0293\n"
+    )
+    STALE = (
+        "warning[advisory-not-detected]: advisory was not encountered\n"
+        "   ┌─ /w/deny.toml:37:11\n"
+        '37 │   { id = "RUSTSEC-2020-0001", reason = "gone" },\n'
+    )
+
+    def test_an_unrecorded_advisory_refuses_the_push(self):
+        self.with_cargo_deny(self.ADVISORY, status=1)
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("push refused", result.stderr)
+        self.assertIn("RUSTSEC-2026-0293  ringbuf 0.3.3: Double free", result.stderr)
+        self.assertFalse((self.root / "gate-order").exists(), "refused before the build")
+
+    def test_recorded_advisories_pass(self):
+        self.with_cargo_deny("advisories ok\n")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("advisor", result.stderr)
+
+    def test_a_stale_exception_is_pointed_at_not_refused(self):
+        self.with_cargo_deny(self.STALE + "advisories ok\n")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("RUSTSEC-2020-0001", result.stderr)
+        self.assertIn("drop them", result.stderr)
+
+    def test_an_audit_that_cannot_run_is_reported_not_refused(self):
+        self.with_cargo_deny("error: failed to open advisory database\n", status=1, fetch=1)
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("could not be refreshed", result.stderr)
+        self.assertIn("could not check", result.stderr)
+
+    def test_without_cargo_deny_the_gate_says_how_to_get_it(self):
+        # Only the system's own tools, so an installed cargo-deny is not found.
+        self.env["PATH"] = f"{self.bin}:/usr/bin:/bin"
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("cargo install --locked cargo-deny", result.stderr)
+
     def test_a_held_gate_is_waited_for_or_refused(self):
         # Another gate holds the lock: with KLIPP_GATE_NO_WAIT the push is
         # refused, naming the holder, before anything compiles — and
