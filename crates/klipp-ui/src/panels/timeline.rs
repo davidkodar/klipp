@@ -1381,6 +1381,20 @@ impl TimelinePanel {
                 egui::vec2(content_rect.width(), SEARCH_BAR_HEIGHT),
             );
             self.draw_search_bar(ui, state, &mut cmds, search_bar_rect, &bg_painter);
+        } else if self.search_visible {
+            // In the timeline the app draws, over the foot of the tracks,
+            // on top of them (#912): Ctrl+F opened a bar never drawn.
+            let search_bar_rect = egui::Rect::from_min_size(
+                egui::pos2(content_rect.left(), content_rect.bottom() - SEARCH_BAR_HEIGHT),
+                egui::vec2(content_rect.width(), SEARCH_BAR_HEIGHT),
+            );
+            egui::Area::new(ui.id().with("timeline_search_bar"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(search_bar_rect.min)
+                .show(ui.ctx(), |ui| {
+                    let painter = ui.painter().clone();
+                    self.draw_search_bar(ui, state, &mut cmds, search_bar_rect, &painter);
+                });
         } else {
             // Search bar hidden — clear the cached hit list so the
             // highlight pass below paints nothing.
@@ -3895,7 +3909,7 @@ impl TimelinePanel {
     /// `SetSnapTarget`, `SetGridInterval` — so the central handlers
     /// continue to be the single source of truth (and persistence
     /// dirties propagate as usual).
-    fn show_ruler_context_menu(
+    pub(crate) fn show_ruler_context_menu(
         &self,
         state: &AppState,
         cmds: &mut Vec<AppCommand>,
@@ -4013,7 +4027,7 @@ impl TimelinePanel {
 
             ui.separator();
 
-            if ui.button("Zoom to fit (Shift+Z)").clicked() {
+            if ui.button("Zoom to fit (Z)").clicked() {
                 cmds.push(AppCommand::FitTimelineToWindow);
                 ui.close_menu();
             }
@@ -8787,6 +8801,16 @@ impl TimelinePanel {
                             let partner_id = partner.id;
                             if ui.button("Link to Matching Clip").clicked() {
                                 cmds.push(AppCommand::LinkClips { clip_a: clip_id, clip_b: partner_id });
+                                ui.close_menu();
+                            }
+                        } else if track_kind == Some(TrackKind::Video)
+                            && clip.media_id().and_then(|m| state.media_pool.get(&m)).is_some_and(|m| m.has_audio)
+                        {
+                            // A picture whose sound was taken off, or never
+                            // brought: lay it back down, linked (#912). The
+                            // command had no way in from the app.
+                            if ui.button("Attach Its Audio").on_hover_text("Lay the clip's own sound on an audio track, linked to it").clicked() {
+                                cmds.push(AppCommand::AttachLinkedAudio { clip_id });
                                 ui.close_menu();
                             }
                         }

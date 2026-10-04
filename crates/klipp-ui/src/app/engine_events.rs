@@ -16,6 +16,7 @@ impl KlippApp {
                     self.state.playhead_anchor_wall = std::time::Instant::now();
                     if self.prefs.editing.playhead_follows_playback
                         && self.state.playhead_follow == crate::state::PlayheadFollow::Off
+                        && !self.state.playhead_follow_chosen
                     {
                         self.state.playhead_follow = crate::state::PlayheadFollow::Page;
                     }
