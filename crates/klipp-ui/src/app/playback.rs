@@ -153,7 +153,11 @@ impl KlippApp {
                 let from = seq.in_point.unwrap_or(klipp_core::Timecode { value: 0, rate: self.state.fps.rate() });
                 let to = seq.out_point.unwrap_or_else(|| self.state.sequence_duration());
                 if to > from {
-                    self.state.play_to_out = Some(crate::state::PlayToOut { out: to, asked: std::time::Instant::now(), started: false });
+                    self.state.play_to_out = Some(crate::state::PlayToOut { from, out: to, asked: std::time::Instant::now(), started: false });
+                    // The playhead is at the In from now: the first frames
+                    // after Play must not read the old position, past the
+                    // Out, and stop at once (#940 review).
+                    self.state.playhead = from;
                     self.send_commands(vec![AppCommand::SetSpeed(1.0), AppCommand::SeekTo(from), AppCommand::Play]);
                 }
                 true
@@ -524,7 +528,9 @@ impl KlippApp {
     pub(super) fn stop_at_out(&mut self) {
         let Some(run) = self.state.play_to_out else { return };
         let playing = self.state.playback == PlaybackState::Playing;
-        match crate::navigation::play_to_out_step(run.started, playing, run.asked.elapsed(), self.state.playhead >= run.out) {
+        let at = self.state.playhead;
+        let from_the_in = at >= run.from && at < run.out;
+        match crate::navigation::play_to_out_step(run.started, playing, run.asked.elapsed(), from_the_in, at >= run.out) {
             crate::navigation::PlayToOutStep::Wait => {}
             crate::navigation::PlayToOutStep::Started => {
                 self.state.play_to_out = Some(crate::state::PlayToOut { started: true, ..run });

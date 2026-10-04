@@ -1119,10 +1119,11 @@ pub struct DocOpsRequest {
     pub independent: bool,
 }
 
-/// Play In to Out under way (#921): where it stops, when it was asked
-/// for, and whether playback has started.
+/// Play In to Out under way (#921): where it starts and stops, when it
+/// was asked for, and whether playback has started from the In.
 #[derive(Debug, Clone, Copy)]
 pub struct PlayToOut {
+    pub from: klipp_core::Timecode,
     pub out: klipp_core::Timecode,
     pub asked: std::time::Instant,
     pub started: bool,

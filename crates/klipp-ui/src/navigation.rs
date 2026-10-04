@@ -87,13 +87,15 @@ pub enum PlayToOutStep {
 /// How long Play In to Out waits for playback to start.
 pub const PLAY_TO_OUT_START: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// The rule `KlippApp::stop_at_out` follows each frame.
-pub fn play_to_out_step(started: bool, playing: bool, since_asked: std::time::Duration, at_out: bool) -> PlayToOutStep {
+/// The rule `KlippApp::stop_at_out` follows each frame. It has started
+/// only once it plays with the playhead between the In and the Out
+/// (`from_the_in`): until the seek to the In lands, a playhead still past
+/// the Out would otherwise stop it at once (#940 review).
+pub fn play_to_out_step(started: bool, playing: bool, since_asked: std::time::Duration, from_the_in: bool, at_out: bool) -> PlayToOutStep {
     match (started, playing) {
-        (false, true) if at_out => PlayToOutStep::StopAtOut,
-        (false, true) => PlayToOutStep::Started,
-        (false, false) if since_asked > PLAY_TO_OUT_START => PlayToOutStep::Done,
-        (false, false) => PlayToOutStep::Wait,
+        (false, true) if from_the_in => PlayToOutStep::Started,
+        (false, _) if since_asked > PLAY_TO_OUT_START => PlayToOutStep::Done,
+        (false, _) => PlayToOutStep::Wait,
         (true, false) => PlayToOutStep::Done,
         (true, true) if at_out => PlayToOutStep::StopAtOut,
         (true, true) => PlayToOutStep::Wait,
@@ -193,11 +195,13 @@ mod tests {
     fn play_in_to_out_stops_at_the_out_and_nowhere_else() {
         use std::time::Duration;
         let soon = Duration::from_millis(100);
-        assert_eq!(play_to_out_step(false, false, soon, false), PlayToOutStep::Wait, "the seek and play are on their way");
-        assert_eq!(play_to_out_step(false, true, soon, false), PlayToOutStep::Started);
-        assert_eq!(play_to_out_step(true, true, soon, false), PlayToOutStep::Wait, "playing towards the Out");
-        assert_eq!(play_to_out_step(true, true, soon, true), PlayToOutStep::StopAtOut);
-        assert_eq!(play_to_out_step(true, false, soon, false), PlayToOutStep::Done, "the user paused: nothing to stop");
-        assert_eq!(play_to_out_step(false, false, Duration::from_secs(5), false), PlayToOutStep::Done, "playback never started");
+        assert_eq!(play_to_out_step(false, false, soon, false, true), PlayToOutStep::Wait, "the seek and play are on their way");
+        assert_eq!(play_to_out_step(false, true, soon, false, true), PlayToOutStep::Wait, "playing, but the playhead is still past the Out: not started, not stopped");
+        assert_eq!(play_to_out_step(false, true, soon, true, false), PlayToOutStep::Started, "playing from the In");
+        assert_eq!(play_to_out_step(true, true, soon, true, false), PlayToOutStep::Wait, "playing towards the Out");
+        assert_eq!(play_to_out_step(true, true, soon, false, true), PlayToOutStep::StopAtOut);
+        assert_eq!(play_to_out_step(true, false, soon, true, false), PlayToOutStep::Done, "the user paused: nothing to stop");
+        assert_eq!(play_to_out_step(false, false, Duration::from_secs(5), false, false), PlayToOutStep::Done, "playback never started");
+        assert_eq!(play_to_out_step(false, true, Duration::from_secs(5), false, true), PlayToOutStep::Done, "the seek never landed");
     }
 }
