@@ -1399,6 +1399,10 @@ pub struct AppState {
     /// handlers (and persisted back via `layout_dirty`).
     pub snap: crate::layout_state::SnapConfig,
     pub ripple_enabled: bool,
+    /// Linked selection (#916): on, a linked picture and sound trim and
+    /// move together; off (or Alt while trimming), each on its own, to
+    /// make a J or L cut.
+    pub linked_selection: bool,
     /// Whether appending a clip brings its audio to an audio track.
     ///
     /// Source patching, in one boolean. On is right for camera footage
@@ -3823,6 +3827,7 @@ impl Default for AppState {
             viewer_mode: ViewerMode::Program,
             snap: crate::layout_state::SnapConfig::default(),
             ripple_enabled: true,
+            linked_selection: true,
             append_brings_audio: true,
             default_transition_frames: 24,
             shift_step_frames: 0,

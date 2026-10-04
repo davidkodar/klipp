@@ -99,13 +99,13 @@ fn frame(seq: &Sequence, t: Timecode) -> i64 {
 /// outgoing end, the incoming start, or, for both, a roll, as two trims
 /// with the side that gives way first. `ripple` closes or opens the gap a
 /// one-sided trim leaves; a roll never changes the sequence's length.
-pub fn trim_ops(seq: &Sequence, edit: &EditPoint, frames: i64, ripple: bool) -> Vec<Op> {
+pub fn trim_ops(seq: &Sequence, edit: &EditPoint, frames: i64, ripple: bool, linked: bool) -> Vec<Op> {
     if frames == 0 {
         return Vec::new();
     }
     let Some(cut_at) = cut(seq, edit) else { return Vec::new() };
     let to = Anchor::Frame(frame(seq, cut_at) + frames);
-    let trim = |id: ClipId, edge: Edge, ripple: bool| Op::Trim { clip_id: ClipRef::Id(id), edge, to: to.clone(), ripple, linked: true };
+    let trim = |id: ClipId, edge: Edge, ripple: bool| Op::Trim { clip_id: ClipRef::Id(id), edge, to: to.clone(), ripple, linked };
     match (edit.side, edit.outgoing, edit.incoming) {
         (EditSide::Out, Some(o), _) => vec![trim(o, Edge::Out, ripple)],
         (EditSide::In, _, Some(i)) => vec![trim(i, Edge::In, ripple)],
@@ -190,13 +190,13 @@ mod tests {
     fn a_roll_trims_the_side_that_gives_way_first() {
         let seq = seq();
         let e = nearest(&seq, tc(4.0), |_| true).unwrap();
-        let ops = trim_ops(&seq, &e, 5, true);
+        let ops = trim_ops(&seq, &e, 5, true, true);
         assert!(matches!(&ops[..], [Op::Trim { edge: Edge::In, to: Anchor::Frame(105), ripple: false, .. }, Op::Trim { edge: Edge::Out, to: Anchor::Frame(105), ripple: false, .. }]), "{ops:?}");
-        let ops = trim_ops(&seq, &e, -3, true);
+        let ops = trim_ops(&seq, &e, -3, true, true);
         assert!(matches!(&ops[..], [Op::Trim { edge: Edge::Out, to: Anchor::Frame(97), .. }, Op::Trim { edge: Edge::In, .. }]), "{ops:?}");
         let out = EditPoint { side: EditSide::Out, ..e };
-        assert!(matches!(&trim_ops(&seq, &out, 2, true)[..], [Op::Trim { edge: Edge::Out, to: Anchor::Frame(102), ripple: true, .. }]));
-        assert!(trim_ops(&seq, &e, 0, true).is_empty());
+        assert!(matches!(&trim_ops(&seq, &out, 2, true, true)[..], [Op::Trim { edge: Edge::Out, to: Anchor::Frame(102), ripple: true, .. }]));
+        assert!(trim_ops(&seq, &e, 0, true, true).is_empty());
     }
 
     #[test]
@@ -204,7 +204,7 @@ mod tests {
         let seq = seq();
         let pool = klipp_media::MediaPool::new();
         let e = nearest(&seq, tc(4.0), |_| true).unwrap();
-        let plan = klipp_document::ops::resolve(&seq, &pool, &trim_ops(&seq, &e, 5, true));
+        let plan = klipp_document::ops::resolve(&seq, &pool, &trim_ops(&seq, &e, 5, true, true));
         // Synthetic media has no length to check against, so the roll is
         // what is asked: whether it is refused or planned, it names both.
         if let Ok(plan) = plan {

@@ -781,6 +781,8 @@ impl ToolbarPanel {
             ui.separator();
             let snap_check = if state.snap.master { "\u{2714} " } else { "  " };
             if ui.add(egui::Button::new(format!("{snap_check}Snapping")).shortcut_text(kb.display_for("toggle_snap"))).clicked() { cmds.push(AppCommand::SetSnapMaster(!state.snap.master)); ui.close_menu(); }
+            let linked_check = if state.linked_selection { "\u{2714} " } else { "  " };
+            if ui.button(format!("{linked_check}Linked Selection")).on_hover_text("Picture and sound trim and move together").clicked() { state.linked_selection = !state.linked_selection; ui.close_menu(); }
             if ui.add(egui::Button::new("Fit to Window").shortcut_text(kb.display_for("fit_to_window"))).clicked() { cmds.push(AppCommand::FitTimelineToWindow); ui.close_menu(); }
             if ui.add_enabled(state.selected_clip.is_some() || !state.selected_clips.is_empty(), egui::Button::new("Zoom to Selection").shortcut_text(kb.display_for("zoom_to_selection"))).clicked() { cmds.push(AppCommand::ZoomToSelection); ui.close_menu(); }
             ui.separator();

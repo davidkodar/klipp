@@ -1088,6 +1088,10 @@ pub enum AppCommand {
         new_timeline_in: Timecode,
         new_timeline_out: Timecode,
         ripple: bool,
+        /// Whether a linked partner follows (#916): false trims this
+        /// clip alone, a J or L cut (Alt while trimming, or the timeline's
+        /// Linked switch off).
+        linked: bool,
     },
     /// Roll trim: adjust the boundary between two adjacent clips.
     /// Clip A's out moves and Clip B's in moves by the same amount, keeping total duration constant.

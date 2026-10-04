@@ -163,6 +163,25 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             ui.memory_mut(|m| m.toggle_popup(ui.id().with("timeline_options")));
         }
 
+        // ── Linked: picture and sound trim and move together (#916) ──
+        // Off, each goes alone: a J or L cut. Alt while trimming does the
+        // same for one trim.
+        {
+            let text = egui::RichText::new("LINKED")
+                .font(egui::FontId::monospace(crate::theme::type_scale::CAPTION))
+                .color(if state.linked_selection { theme.accent } else { theme.text_dim });
+            let resp = ui.add(egui::Button::new(text).selected(state.linked_selection).min_size(egui::vec2(0.0, crate::theme::control::COMPACT)));
+            let tip = if state.linked_selection {
+                "Linked: picture and sound trim and move together. Click to work on each alone; Alt while trimming does it for one trim."
+            } else {
+                "Unlinked: picture and sound trim and move alone. Click to link them again."
+            };
+            styled_tooltip(&resp, theme, tip, None);
+            if resp.clicked() {
+                state.linked_selection = !state.linked_selection;
+            }
+        }
+
         separator(ui, theme);
 
         // ── Add marker ──

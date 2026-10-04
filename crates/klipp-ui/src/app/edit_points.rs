@@ -51,12 +51,13 @@ impl KlippApp {
             return;
         }
         let ripple = self.state.ripple_enabled;
+        let linked = self.state.linked_selection;
         let seq = self.state.sequence();
         let ops: Vec<klipp_document::ops::Op> = self
             .state
             .selected_edits
             .iter()
-            .flat_map(|edit| edit_point::trim_ops(seq, edit, frames(seq, edit), ripple))
+            .flat_map(|edit| edit_point::trim_ops(seq, edit, frames(seq, edit), ripple, linked))
             .collect();
         if ops.is_empty() {
             return;

@@ -3612,7 +3612,13 @@ pub fn place_narration(seq: &Sequence, media_id: MediaId, at: f64) -> Vec<Op> {
 /// timeline offsets and refusing the whole edit if either side cannot
 /// follow. No sequence is changed until the returned command is applied.
 pub fn trim_at(seq: &Sequence, pool: &MediaPool, clip_id: ClipId, edge: Edge, target: Timecode, ripple: bool) -> Result<EditCommand, Refusal> {
-    resolve_trim(seq, pool, 0, clip_id, edge, target, ripple, true).map(|(_, edit, _)| edit)
+    trim_at_linked(seq, pool, clip_id, edge, target, ripple, true)
+}
+
+/// [`trim_at`], saying whether a linked partner follows: false trims the
+/// clip alone, which is how a J or L cut is made by hand (#916).
+pub fn trim_at_linked(seq: &Sequence, pool: &MediaPool, clip_id: ClipId, edge: Edge, target: Timecode, ripple: bool, linked: bool) -> Result<EditCommand, Refusal> {
+    resolve_trim(seq, pool, 0, clip_id, edge, target, ripple, linked).map(|(_, edit, _)| edit)
 }
 
 #[allow(clippy::too_many_arguments)]
