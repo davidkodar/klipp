@@ -2359,7 +2359,8 @@ impl NodeInspectorPanel {
                     if ui.checkbox(&mut preserve, egui::RichText::new("Preserve Luma").size(11.0)
                         .color(theme.overlay(140))).changed()
                     {
-                        params.curves_preserve_luma = Some(preserve);
+                        // One undo step, and the viewer told (#894).
+                        push_atomic_node_edit(cmds, clip_id, node_id, "curves_preserve_luma", if preserve { 1.0 } else { 0.0 });
                     }
                 });
                 ui.add_space(2.0);
@@ -2536,7 +2537,8 @@ impl NodeInspectorPanel {
                     if ui.checkbox(&mut preserve, egui::RichText::new("Preserve Luma").size(11.0)
                         .color(theme.overlay(128))).changed()
                     {
-                        params.curves_preserve_luma = Some(preserve);
+                        // One undo step, and the viewer told (#894).
+                        push_atomic_node_edit(cmds, clip_id, node_id, "curves_preserve_luma", if preserve { 1.0 } else { 0.0 });
                     }
                 });
                 ui.add_space(2.0);
@@ -2566,7 +2568,12 @@ impl NodeInspectorPanel {
                 self.show_input_colour_space(ui, clip_id, cmds, theme);
             }
             NodeKind::Qualifier => {
-                let qual = params.qualifier.get_or_insert_with(Default::default);
+                // Edited as a copy and sent once when it changed (#894): the
+                // command makes the change, so its undo step has the value
+                // from before, and an open panel sends nothing.
+                let before = params.qualifier.clone().unwrap_or_default();
+                let mut edited = before.clone();
+                let qual = &mut edited;
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut qual.enabled, "Enabled");
                     let pick = ui.add(egui::Button::image(Icon::Eyedropper.image(12.0).tint(theme.overlay(160))).min_size(egui::vec2(22.0, 18.0)))
@@ -2607,11 +2614,16 @@ impl NodeInspectorPanel {
                     if grade_slider(ui, "Shrink / Grow", &mut sg, -20.0..=20.0, "px", cmds, clip_id, theme) { qual.shrink_grow = sg; }
                     let mut bl = qual.blur;
                     if grade_slider(ui, "Blur", &mut bl, 0.0..=50.0, "px", cmds, clip_id, theme) { qual.blur = bl; }
-                    cmds.push(AppCommand::SetNodeQualifier { clip_id, node_id, qualifier: qual.clone() });
+                }
+                if edited != before {
+                    cmds.push(AppCommand::SetNodeQualifier { clip_id, node_id, qualifier: edited });
                 }
             }
             NodeKind::LumaKey => {
-                let lk = params.luma_key.get_or_insert_with(Default::default);
+                // As the qualifier: a copy, sent once when it changed (#894).
+                let before = params.luma_key.clone().unwrap_or_default();
+                let mut edited = before.clone();
+                let lk = &mut edited;
                 ui.checkbox(&mut lk.enabled, "Enabled");
                 if lk.enabled {
                     let mut low = lk.low;
@@ -2621,18 +2633,25 @@ impl NodeInspectorPanel {
                     let mut soft = lk.soft;
                     if grade_slider(ui, "Soft", &mut soft, 0.0..=0.5, "", cmds, clip_id, theme) { lk.soft = soft; }
                     ui.checkbox(&mut lk.invert, "Invert");
-                    cmds.push(AppCommand::SetNodeLumaKey { clip_id, node_id, luma_key: lk.clone() });
+                }
+                if edited != before {
+                    cmds.push(AppCommand::SetNodeLumaKey { clip_id, node_id, luma_key: edited });
                 }
             }
             NodeKind::SoftClip => {
-                let sc = params.soft_clip.get_or_insert_with(Default::default);
+                // As the qualifier: a copy, sent once when it changed (#894).
+                let before = params.soft_clip.clone().unwrap_or_default();
+                let mut edited = before.clone();
+                let sc = &mut edited;
                 ui.checkbox(&mut sc.enabled, "Enabled");
                 if sc.enabled {
                     let mut threshold = sc.threshold;
                     if grade_slider(ui, "Threshold", &mut threshold, 0.0..=1.0, "", cmds, clip_id, theme) { sc.threshold = threshold; }
                     let mut knee = sc.knee;
                     if grade_slider(ui, "Knee", &mut knee, 0.0..=0.5, "", cmds, clip_id, theme) { sc.knee = knee; }
-                    cmds.push(AppCommand::SetNodeSoftClip { clip_id, node_id, soft_clip: sc.clone() });
+                }
+                if edited != before {
+                    cmds.push(AppCommand::SetNodeSoftClip { clip_id, node_id, soft_clip: edited });
                 }
             }
             NodeKind::Mask => {
@@ -2640,7 +2659,12 @@ impl NodeInspectorPanel {
                 Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, frame, &[]);
             }
             NodeKind::FilmGrain => {
-                let grain = params.grain.get_or_insert_with(Default::default);
+                // As the qualifier: a copy, sent once when it changed (#894).
+                // It used to be written in place with no command at all, so
+                // the viewer and undo never heard of it.
+                let before = params.grain.clone().unwrap_or_default();
+                let mut edited = before.clone();
+                let grain = &mut edited;
                 ui.checkbox(&mut grain.enabled, "Enabled");
                 if grain.enabled {
                     let mut a = grain.amount;
@@ -2652,6 +2676,9 @@ impl NodeInspectorPanel {
                     let mut hi = grain.highlights;
                     if grade_slider(ui, "Highlights", &mut hi, 0.0..=1.0, "", cmds, clip_id, theme) { grain.highlights = hi; }
                     ui.checkbox(&mut grain.monochrome, "Monochrome");
+                }
+                if edited != before {
+                    cmds.push(AppCommand::SetNodeFilmGrain { clip_id, node_id, grain: edited });
                 }
             }
             NodeKind::Lut3D => {
@@ -4417,6 +4444,131 @@ mod huesat_curve_coverage {
             missing.is_empty(),
             "these Hue/Sat curves have an editor but no reset: {missing:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod sends_on_change {
+    //! The panels that edit a node's settings as one value (#894): drawn,
+    //! they send nothing and leave the node as it was; changed, they send
+    //! the new value once, so the command makes the change and its undo
+    //! step holds the value from before.
+    use super::*;
+
+    struct Rig {
+        ctx: egui::Context,
+        time: f64,
+        panel: NodeInspectorPanel,
+        graph: NodeGraph,
+        node: NodeId,
+        sent: Vec<AppCommand>,
+    }
+
+    impl Rig {
+        fn new(kind: NodeKind, params: impl FnOnce(&mut NodeParams)) -> Self {
+            let mut graph = NodeGraph::default();
+            let node = graph.ensure_qualifier();
+            let n = graph.nodes.iter_mut().find(|n| n.id == node).unwrap();
+            n.kind = kind;
+            params(&mut n.params);
+            Rig { ctx: egui::Context::default(), time: 0.0, panel: NodeInspectorPanel::default(), graph, node, sent: Vec::new() }
+        }
+
+        fn params(&self) -> &NodeParams {
+            &self.graph.nodes.iter().find(|n| n.id == self.node).unwrap().params
+        }
+
+        /// One frame with `events`: the text drawn, with where.
+        fn frame(&mut self, events: Vec<egui::Event>) -> Vec<(String, egui::Pos2)> {
+            self.time += 1.0 / 60.0;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 1400.0))),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let theme = KlippTheme::default();
+            let selected = Some(self.node);
+            let frame = crate::inspector::keyframe_selection::FrameSelection::new(klipp_core::Timecode::zero(), klipp_core::Timecode::zero(), 0.02);
+            let (panel, graph, sent) = (&mut self.panel, &mut self.graph, &mut self.sent);
+            let out = self.ctx.run(input, |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    *sent = panel.show(ui, &selected, graph, ClipId::new(), &theme, frame);
+                });
+            });
+            out.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// Click the control labelled `label`; what that frame sent.
+        fn click(&mut self, label: &str) -> Vec<AppCommand> {
+            let drawn = self.frame(Vec::new());
+            let at = drawn.iter().find(|(t, _)| t == label).unwrap_or_else(|| panic!("{label} is drawn: {drawn:?}")).1;
+            let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            self.frame(vec![egui::Event::PointerMoved(at), button(true)]);
+            self.frame(vec![button(false)]);
+            std::mem::take(&mut self.sent)
+        }
+
+        fn idle(&mut self) -> Vec<AppCommand> {
+            let mut all = Vec::new();
+            for _ in 0..3 {
+                self.frame(Vec::new());
+                all.append(&mut self.sent);
+            }
+            all
+        }
+    }
+
+    #[test]
+    fn an_open_panel_sends_nothing_and_leaves_the_node_alone() {
+        let rigs = [
+            Rig::new(NodeKind::Qualifier, |p| p.qualifier = Some(klipp_core::color_grade::QualifierSettings { enabled: true, ..Default::default() })),
+            Rig::new(NodeKind::LumaKey, |p| p.luma_key = Some(klipp_core::color_grade::LumaKeySettings { enabled: true, ..Default::default() })),
+            Rig::new(NodeKind::SoftClip, |p| p.soft_clip = Some(klipp_core::color_grade::SoftClipSettings { enabled: true, ..Default::default() })),
+            Rig::new(NodeKind::FilmGrain, |p| p.grain = Some(klipp_core::color_grade::FilmGrainSettings { enabled: true, ..Default::default() })),
+            Rig::new(NodeKind::Qualifier, |_| {}),
+        ];
+        for mut rig in rigs {
+            let before = rig.params().clone();
+            let sent = rig.idle();
+            assert!(sent.is_empty(), "drawing the panel sent {sent:?}");
+            assert_eq!(rig.params(), &before, "drawing the panel changed the node");
+        }
+    }
+
+    #[test]
+    fn a_checkbox_sends_the_new_value_once_and_leaves_the_change_to_it() {
+        let mut grain = Rig::new(NodeKind::FilmGrain, |p| p.grain = Some(klipp_core::color_grade::FilmGrainSettings { enabled: true, ..Default::default() }));
+        let sent = grain.click("Monochrome");
+        let set: Vec<_> = sent.iter().filter_map(|c| match c { AppCommand::SetNodeFilmGrain { grain, .. } => Some(grain), _ => None }).collect();
+        assert_eq!(set.len(), 1, "one SetNodeFilmGrain: {sent:?}");
+        // Monochrome starts on, so the click turns it off.
+        assert!(!set[0].monochrome && set[0].enabled, "{:?}", set[0]);
+        assert!(grain.params().grain.as_ref().unwrap().monochrome, "the command makes the change, not the panel");
+
+        let mut qual = Rig::new(NodeKind::Qualifier, |p| p.qualifier = Some(klipp_core::color_grade::QualifierSettings { enabled: true, ..Default::default() }));
+        let sent = qual.click("Enabled");
+        assert!(
+            sent.iter().any(|c| matches!(c, AppCommand::SetNodeQualifier { qualifier, .. } if !qualifier.enabled)),
+            "turning the qualifier off is sent: {sent:?}"
+        );
+    }
+
+    #[test]
+    fn preserve_luma_is_one_undo_step() {
+        let mut rig = Rig::new(NodeKind::RGBCurves, |_| {});
+        let sent = rig.click("Preserve Luma");
+        assert!(
+            matches!(sent.as_slice(), [AppCommand::BeginNodeParamEdit { .. }, AppCommand::SetNodeParam { param, value, .. }, AppCommand::EndNodeParamEdit { .. }] if param == "curves_preserve_luma" && *value == 1.0),
+            "{sent:?}"
+        );
+        assert_eq!(rig.params().curves_preserve_luma, None, "the command makes the change");
     }
 }
 

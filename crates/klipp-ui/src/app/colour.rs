@@ -1386,7 +1386,6 @@ impl KlippApp {
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
                     if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
                         node.params.qualifier = Some(qualifier);
-                        node.enabled = true;
                     }
                 });
                 true
@@ -1397,7 +1396,6 @@ impl KlippApp {
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
                     if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
                         node.params.luma_key = Some(luma_key);
-                        node.enabled = true;
                     }
                 });
                 true
@@ -1431,7 +1429,16 @@ impl KlippApp {
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
                     if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
                         node.params.soft_clip = Some(soft_clip);
-                        node.enabled = true;
+                    }
+                });
+                true
+            }
+            AppCommand::SetNodeFilmGrain { clip_id, node_id, grain } => {
+                let node_id = *node_id;
+                let grain = grain.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.grain = Some(grain);
                     }
                 });
                 true
