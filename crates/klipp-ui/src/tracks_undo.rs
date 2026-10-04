@@ -4,10 +4,13 @@
 //! grouped, a track added, locked, renamed or removed, a transition
 //! changed or taken off. Each became an edit Ctrl+Z skipped, so the next
 //! undo took back something older, out of order. Their tracks are kept
-//! before the edit and recorded with the tracks after it as one named
-//! step, [`EditCommand::SetTracks`].
+//! before the edit, and what changed is recorded as one named step: the
+//! clips and transitions of the tracks whose clips changed, the one track
+//! locked or renamed, the whole list when a track came or went. Undoing a
+//! lift therefore leaves a track's mute or height, changed since, alone.
 
-use crate::history::EditCommand;
+use crate::history::{EditCommand, TrackContents};
+use klipp_timeline::Track;
 use crate::state::AppState;
 use klipp_core::AppCommand;
 
@@ -58,7 +61,7 @@ fn is_gesture(label: &str) -> bool {
 pub struct Before {
     label: &'static str,
     sequence: klipp_core::SequenceId,
-    tracks: Vec<klipp_timeline::Track>,
+    tracks: Vec<Track>,
 }
 
 /// The tracks before `cmd`, when it is one of the edits recorded here.
@@ -79,19 +82,21 @@ pub fn before_labelled(state: &AppState, label: &'static str) -> Option<Before> 
 /// A dragged value's changes in quick succession stay one step.
 pub fn record(state: &mut AppState, before: Before) {
     let Some(seq) = state.sequences.get(state.active_sequence_idx) else { return };
-    if seq.id != before.sequence || same_tracks(&before.tracks, &seq.tracks) {
+    if seq.id != before.sequence {
         return;
     }
-    let new = seq.tracks.clone();
+    let Some(edit) = edit_between(before.label, &before.tracks, &seq.tracks) else { return };
     let now = std::time::Instant::now();
     let continues = is_gesture(before.label)
         && state
             .tracks_undo_gesture
             .is_some_and(|(label, at)| label == before.label && now.duration_since(at) < GESTURE_GAP);
     state.tracks_undo_gesture = Some((before.label, now));
-    if continues {
+    if let (true, EditCommand::SetTrackContents { track_index, new, .. }) = (continues, &edit) {
         let merged = state.active_history_mut().merge_into_last(|last| match last {
-            EditCommand::SetTracks { description, new: last_new, .. } if *description == before.label => {
+            EditCommand::SetTrackContents { description, track_index: last_track, new: last_new, .. }
+                if *description == before.label && last_track == track_index =>
+            {
                 *last_new = new.clone();
                 true
             }
@@ -101,12 +106,42 @@ pub fn record(state: &mut AppState, before: Before) {
             return;
         }
     }
-    state.push_history(EditCommand::SetTracks { description: before.label, old: before.tracks, new });
+    state.push_history(edit);
 }
 
-/// Whether two track lists are the same, field for field.
-fn same_tracks(a: &[klipp_timeline::Track], b: &[klipp_timeline::Track]) -> bool {
-    a.len() == b.len() && serde_json::to_value(a).ok() == serde_json::to_value(b).ok()
+/// The undo record taking `old` to `new`: the whole list when a track
+/// came or went; else, for each track that changed, the track itself when
+/// more than its clips and transitions changed, or just those.
+fn edit_between(label: &'static str, old: &[Track], new: &[Track]) -> Option<EditCommand> {
+    let ids = |tracks: &[Track]| tracks.iter().map(|t| t.id).collect::<Vec<_>>();
+    if ids(old) != ids(new) {
+        return Some(EditCommand::SetTracks { description: label, old: old.to_vec(), new: new.to_vec() });
+    }
+    let mut edits: Vec<EditCommand> = Vec::new();
+    for (i, (o, n)) in old.iter().zip(new).enumerate() {
+        if !same((&o.clips, &o.transitions), (&n.clips, &n.transitions)) || !same(bare(o), bare(n)) {
+            edits.push(if same(bare(o), bare(n)) {
+                EditCommand::SetTrackContents { description: label, track_index: i, old: Box::new(TrackContents::of(o)), new: Box::new(TrackContents::of(n)) }
+            } else {
+                EditCommand::SetTrack { description: label, track_index: i, old: Box::new(o.clone()), new: Box::new(n.clone()) }
+            });
+        }
+    }
+    match edits.len() {
+        0 => None,
+        1 => edits.pop(),
+        _ => Some(EditCommand::Named { label: label.to_string(), edit: Box::new(EditCommand::Batch(edits)) }),
+    }
+}
+
+/// A track without its clips and transitions: the rest of what it is.
+fn bare(track: &Track) -> Track {
+    Track { clips: Vec::new(), transitions: Vec::new(), ..track.clone() }
+}
+
+/// Whether two values are the same, field for field.
+fn same(a: impl serde::Serialize, b: impl serde::Serialize) -> bool {
+    serde_json::to_value(a).ok() == serde_json::to_value(b).ok()
 }
 
 #[cfg(test)]
@@ -149,18 +184,45 @@ mod tests {
     #[test]
     fn a_dragged_value_is_one_step_and_a_separate_change_another() {
         let mut state = state_with_a_clip();
-        let rename = |state: &mut AppState, name: &str, label: &'static str| {
+        let v1 = state.sequences[0].tracks.iter().position(|t| !t.clips.is_empty()).unwrap();
+        let change = |state: &mut AppState, speed: f64, label: &'static str| {
             let before = before_labelled(state, label).unwrap();
-            state.sequences[0].tracks[0].name = name.into();
+            state.sequences[0].tracks[v1].clips[0].speed = speed;
             record(state, before);
         };
-        rename(&mut state, "a", "Transition Settings");
-        rename(&mut state, "b", "Transition Settings");
-        rename(&mut state, "c", "Transition Settings");
+        change(&mut state, 1.1, "Transition Settings");
+        change(&mut state, 1.2, "Transition Settings");
+        change(&mut state, 1.3, "Transition Settings");
         assert_eq!(state.active_history_mut().undo_count(), 1, "one drag, one step");
-        rename(&mut state, "d", "Rename Track");
-        rename(&mut state, "e", "Rename Track");
-        assert_eq!(state.active_history_mut().undo_count(), 3, "renames are steps of their own");
+        change(&mut state, 1.4, "Close Gap");
+        change(&mut state, 1.5, "Close Gap");
+        assert_eq!(state.active_history_mut().undo_count(), 3, "other edits are steps of their own");
+    }
+
+    #[test]
+    fn each_edit_records_only_what_it_changed() {
+        let mut state = state_with_a_clip();
+        let v1 = state.sequences[0].tracks.iter().position(|t| !t.clips.is_empty()).unwrap();
+        let top = |state: &mut AppState| state.active_history_mut().undo_entries().back().map(|e| e.command.clone());
+
+        // A clip changed: that track's clips, so undoing it leaves the
+        // track's mute, height or lock, changed since, alone.
+        let before = before_labelled(&state, "Disable Clip").unwrap();
+        state.sequences[0].tracks[v1].clips[0].enabled = false;
+        record(&mut state, before);
+        assert!(matches!(top(&mut state), Some(EditCommand::SetTrackContents { track_index, .. }) if track_index == v1));
+
+        // A track locked: that track.
+        let before = before_labelled(&state, "Lock Track").unwrap();
+        state.sequences[0].tracks[0].locked = true;
+        record(&mut state, before);
+        assert!(matches!(top(&mut state), Some(EditCommand::SetTrack { track_index: 0, .. })));
+
+        // A track added: the list.
+        let before = before_labelled(&state, "Add Track").unwrap();
+        state.sequences[0].tracks.push(klipp_timeline::Track::new("Video 9", klipp_timeline::TrackKind::Video));
+        record(&mut state, before);
+        assert!(matches!(top(&mut state), Some(EditCommand::SetTracks { .. })));
     }
 
     #[test]

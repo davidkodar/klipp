@@ -197,11 +197,13 @@ pub enum EditCommand {
     /// paste insert that cut every track), undone exactly, the clips it
     /// covered or cut given back (#845).
     SetTrackContents { description: &'static str, track_index: usize, old: Box<TrackContents>, new: Box<TrackContents> },
-    /// Every track of the sequence, whole either side: the timeline edits
-    /// whose handlers change tracks in place (lift, extract, close gap,
-    /// enable, link, group, a track added, locked, renamed or removed, a
-    /// transition changed) recorded as one undo step afterwards (#907).
+    /// Every track of the sequence, whole either side: a track added or
+    /// removed by a handler that changes the list in place (#907).
     SetTracks { description: &'static str, old: Vec<klipp_timeline::Track>, new: Vec<klipp_timeline::Track> },
+    /// One track, whole either side: a track locked or renamed in place
+    /// (#907). Edits of a track's clips record only those, as
+    /// `SetTrackContents`, so their undo leaves the rest of it as it is.
+    SetTrack { description: &'static str, track_index: usize, old: Box<klipp_timeline::Track>, new: Box<klipp_timeline::Track> },
     /// The move over the whole sequence; see `klipp_timeline::Camera`.
     SetSequenceCamera { old: Box<klipp_timeline::Camera>, new: Box<klipp_timeline::Camera> },
     /// How far back a clip sits for the camera; see `Clip::depth`.
@@ -770,6 +772,7 @@ impl EditCommand {
             EditCommand::SetMarkers { .. } => "Markers",
             EditCommand::SetTrackContents { description, .. } => description,
             EditCommand::SetTracks { description, .. } => description,
+            EditCommand::SetTrack { description, .. } => description,
             EditCommand::SetSequenceCamera { .. } => "Camera",
             EditCommand::SetClipDepth { .. } => "Depth",
             EditCommand::SetClipLabels { description, .. } => description,

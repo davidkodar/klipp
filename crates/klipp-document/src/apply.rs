@@ -131,6 +131,11 @@ impl DocumentView<'_> {
             EditCommand::SetTracks { old, .. } => {
                 self.sequences[self.active].tracks = old.clone();
             }
+            EditCommand::SetTrack { track_index, old, .. } => {
+                if let Some(t) = self.sequences[self.active].tracks.get_mut(*track_index).filter(|t| t.id == old.id) {
+                    *t = (**old).clone();
+                }
+            }
             EditCommand::SetTrackContents { track_index, old, .. } => {
                 if let Some(track) = self.sequences[self.active].tracks.get_mut(*track_index) {
                     track.clips = old.clips.clone();
@@ -806,6 +811,11 @@ impl DocumentView<'_> {
             }
             EditCommand::SetTracks { new, .. } => {
                 self.sequences[self.active].tracks = new.clone();
+            }
+            EditCommand::SetTrack { track_index, new, .. } => {
+                if let Some(t) = self.sequences[self.active].tracks.get_mut(*track_index).filter(|t| t.id == new.id) {
+                    *t = (**new).clone();
+                }
             }
             EditCommand::SetTrackContents { track_index, new, .. } => {
                 if let Some(track) = self.sequences[self.active].tracks.get_mut(*track_index) {
