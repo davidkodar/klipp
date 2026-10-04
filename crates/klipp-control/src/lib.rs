@@ -2199,7 +2199,7 @@ fn music_bed<'a>(seq: &'a klipp_timeline::Sequence, pool: &klipp_media::MediaPoo
         .flat_map(|t| t.clips.iter())
         .filter_map(|c| {
             let item = pool.get(&c.media_id()?)?;
-            let music = sound_owner(seq, c).role == klipp_core::ClipRole::Music
+            let music = sound_role(seq, c) == klipp_core::ClipRole::Music
                 || klipp_audio_search::library_source(&item.path) == Some(klipp_audio_search::Source::JamendoMusic);
             music.then(|| (c, item.path.clone()))
         })
@@ -3197,9 +3197,18 @@ fn music_reason(ctx: &ControlContext, path: &std::path::Path, id: klipp_core::Me
     let seq = ctx.sequence.read().ok()?;
     let roles: Vec<klipp_core::ClipRole> = seq.tracks.iter().flat_map(|t| t.clips.iter())
         .filter(|c| c.media_id() == Some(id))
-        .map(|c| sound_owner(&seq, c).role)
+        .map(|c| sound_role(&seq, c))
         .collect();
     (!roles.is_empty() && roles.iter().all(|r| *r == klipp_core::ClipRole::Music)).then_some("its clips play as music")
+}
+
+/// What `c`'s sound is, by its role: its own when one was set, else
+/// that of the clip holding its sound settings, as the document's ops
+/// read it (#777). The Inspector sets a role on the clip selected, which
+/// may be the sound half of a linked pair; read from the picture only,
+/// that role was lost to the music bed and the sound report (#862).
+fn sound_role(seq: &klipp_timeline::Sequence, c: &klipp_timeline::Clip) -> klipp_core::ClipRole {
+    if c.role != klipp_core::ClipRole::default() { c.role } else { sound_owner(seq, c).role }
 }
 
 /// The clip a sound's settings live on: the picture an audio clip is
@@ -3221,6 +3230,7 @@ fn sound_json(seq: &klipp_timeline::Sequence, c: &klipp_timeline::Clip, full: bo
     if !matches!(c.kind, klipp_timeline::ClipKind::Media { .. }) {
         return;
     }
+    let role = sound_role(seq, c);
     let c = sound_owner(seq, c);
     let db = |linear: f32| if linear > 0.0 { ((20.0 * linear.log10()) * 10.0).round() / 10.0 } else { -144.0 };
     let mut sound = serde_json::Map::new();
@@ -3235,7 +3245,7 @@ fn sound_json(seq: &klipp_timeline::Sequence, c: &klipp_timeline::Clip, full: bo
     put("fade_in_secs", json!((c.fade_in_secs * 1000.0).round() / 1000.0), c.fade_in_secs > 0.0);
     put("fade_out_secs", json!((c.fade_out_secs * 1000.0).round() / 1000.0), c.fade_out_secs > 0.0);
     put("volume_keys", json!(c.volume_keyframes.len()), !c.volume_keyframes.is_empty());
-    put("role", json!(format!("{:?}", c.role).to_lowercase()), c.role != klipp_core::ClipRole::default());
+    put("role", json!(format!("{role:?}").to_lowercase()), role != klipp_core::ClipRole::default());
     let effects: Vec<&str> = c.audio_effects.iter().filter(|e| e.enabled).map(|e| e.effect_type.as_str()).collect();
     put("effects", json!(effects), !effects.is_empty());
     if !sound.is_empty() {
@@ -7925,5 +7935,44 @@ mod grade_limit_tests {
         assert!((bold.clamp(&start, &start, &greedy).0.saturation - 1.3).abs() < 1e-4, "bold reaches the 1.3x gentle refused");
         assert!(GradeLimits::named("wild").is_err());
         assert_eq!(describe_step(&start, &one), "exposure +0.10, temperature +5.00, saturation x1.12");
+    }
+}
+
+#[cfg(test)]
+mod sound_role_tests {
+    use super::{sound_json, sound_role};
+    use klipp_core::{ClipRole, MediaId, RationalTime};
+    use klipp_timeline::{Clip, Sequence, Track, TrackKind};
+
+    /// A picture on V1 and its sound on A1, linked both ways.
+    fn pair() -> Sequence {
+        let tc = |s: f64| RationalTime::from_secs_f64(s, 30);
+        let media = MediaId::new();
+        let mut picture = Clip::media(media, tc(0.0), tc(10.0), tc(0.0), tc(10.0));
+        let mut sound = Clip::media(media, tc(0.0), tc(10.0), tc(0.0), tc(10.0));
+        picture.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(picture.id);
+        let mut seq = Sequence::new_default();
+        let mut v = Track::new("Video 1", TrackKind::Video);
+        v.clips.push(picture);
+        let mut a = Track::new("Audio 1", TrackKind::Audio);
+        a.clips.push(sound);
+        seq.tracks = vec![v, a];
+        seq
+    }
+
+    #[test]
+    fn a_role_set_on_either_half_is_the_pairs_role() {
+        let mut seq = pair();
+        seq.tracks[1].clips[0].role = ClipRole::Music;
+        let sound = &seq.tracks[1].clips[0];
+        assert_eq!(sound_role(&seq, sound), ClipRole::Music, "set on the sound half");
+        let mut v = serde_json::json!({});
+        sound_json(&seq, sound, false, &mut v);
+        assert_eq!(v["sound"]["role"], "music", "and reported: {v}");
+
+        let mut seq = pair();
+        seq.tracks[0].clips[0].role = ClipRole::Ambience;
+        assert_eq!(sound_role(&seq, &seq.tracks[1].clips[0]), ClipRole::Ambience, "set on the picture");
     }
 }
