@@ -2272,18 +2272,18 @@ impl NodeInspectorPanel {
                 // Section header: "RGB CURVES" with reset + enable
                 let (reset, is_open) = section_header(ui, "RGB CURVES", *enabled, theme);
                 if is_open && reset {
-                    // Reset all curves to identity (2 points: [0,0] and [1,1])
-                    if let Some(c) = &mut params.curves {
-                        c.master = vec![[0.0, 0.0], [1.0, 1.0]];
-                        c.red = vec![[0.0, 0.0], [1.0, 1.0]];
-                        c.green = vec![[0.0, 0.0], [1.0, 1.0]];
-                        c.blue = vec![[0.0, 0.0], [1.0, 1.0]];
-                    }
-                    params.curves_mix = Some(1.0);
-                    params.curves_preserve_luma = Some(false);
-                    cmds.push(AppCommand::SetNodeCurves {
-                        clip_id, node_id,
-                        curves: params.curves.clone().unwrap_or_default(),
+                    // Reset all curves to identity (2 points: [0,0] and [1,1]),
+                    // with Mix and Preserve Luma, as one undo step made by the
+                    // commands rather than written into the node here (#894).
+                    let mut curves = params.curves.clone().unwrap_or_default();
+                    curves.master = vec![[0.0, 0.0], [1.0, 1.0]];
+                    curves.red = vec![[0.0, 0.0], [1.0, 1.0]];
+                    curves.green = vec![[0.0, 0.0], [1.0, 1.0]];
+                    curves.blue = vec![[0.0, 0.0], [1.0, 1.0]];
+                    atomic_node_edit_batch(cmds, clip_id, |cmds| {
+                        cmds.push(AppCommand::SetNodeCurves { clip_id, node_id, curves });
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "curves_mix".into(), value: 1.0 });
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "curves_preserve_luma".into(), value: 0.0 });
                     });
                 }
 
@@ -4558,6 +4558,32 @@ mod sends_on_change {
             sent.iter().any(|c| matches!(c, AppCommand::SetNodeQualifier { qualifier, .. } if !qualifier.enabled)),
             "turning the qualifier off is sent: {sent:?}"
         );
+    }
+
+    #[test]
+    fn the_curves_reset_is_one_undo_step_made_by_its_commands() {
+        let mut rig = Rig::new(NodeKind::RGBCurves, |p| {
+            // Drawing the curve editor fills an unset curve set with the
+            // identity, which changes nothing; start with it set.
+            let identity = vec![[0.0, 0.0], [1.0, 1.0]];
+            p.curves = Some(klipp_core::color_grade::CurveSet { master: vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]], red: identity.clone(), green: identity.clone(), blue: identity });
+            p.curves_mix = Some(0.4);
+            p.curves_preserve_luma = Some(true);
+        });
+        let before = rig.params().clone();
+        let drawn = rig.frame(Vec::new());
+        // The section header's reset is the ↺ beside "RGB CURVES".
+        let header = drawn.iter().find(|(t, _)| t == "RGB CURVES").expect("the section header").1;
+        let reset = drawn.iter().filter(|(t, p)| (p.y - header.y).abs() < 6.0 && p.x > header.x && t.chars().count() == 1).map(|(_, p)| *p).next();
+        let Some(at) = reset else { panic!("a reset button on the header row: {drawn:?}") };
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        rig.frame(vec![egui::Event::PointerMoved(at), button(true)]);
+        rig.frame(vec![button(false)]);
+        let sent = std::mem::take(&mut rig.sent);
+        let begins = sent.iter().filter(|c| matches!(c, AppCommand::BeginNodeParamEdit { .. })).count();
+        assert!(begins == 1 && matches!(sent.last(), Some(AppCommand::EndNodeParamEdit { .. })), "one undo step: {sent:?}");
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::SetNodeParam { param, value, .. } if param == "curves_preserve_luma" && *value == 0.0)), "{sent:?}");
+        assert_eq!(rig.params(), &before, "the commands make the change, not the panel");
     }
 
     #[test]
