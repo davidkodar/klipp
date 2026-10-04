@@ -235,7 +235,7 @@ impl NewTimelinePanel {
         let ruler_resp = ui.interact(ruler_rect, ui.id().with("new_ruler_seek"), egui::Sense::click_and_drag());
         // Sequence markers, over the ruler so their flags take the clicks
         // and drags on them (#909).
-        markers::show(ui, ruler_rect, tracks_rect.bottom(), state, pps, scroll_x, &mut cmds);
+        markers::show(ui, ruler_rect, state, pps, scroll_x, &mut cmds);
 
         // Clear snap line each frame
         state.range_snap_line_x = None;
@@ -501,6 +501,7 @@ impl NewTimelinePanel {
             let old_cmds = old_timeline.show(ui, state);
             cmds.extend(old_cmds);
         });
+        markers::draw_lines(ui, tracks_rect, ruler_rect.left(), state, pps, scroll_x);
 
         // The menu on a camera key, opened on the lane or in the curve
         // editor, is drawn here once a frame.

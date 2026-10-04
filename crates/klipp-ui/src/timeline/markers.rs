@@ -15,19 +15,18 @@ fn drag_id() -> egui::Id {
     egui::Id::new("timeline_marker_drag")
 }
 
-/// Draw the markers over `ruler_rect`, with their lines down to
-/// `tracks_bottom`, and take the clicks and drags on them.
-#[allow(clippy::too_many_arguments)]
+/// Draw the markers over `ruler_rect` and take the clicks and drags on
+/// them. Their lines through the tracks are [`draw_lines`], drawn after
+/// the tracks so the clips do not cover them.
 pub fn show(
     ui: &mut egui::Ui,
     ruler_rect: egui::Rect,
-    tracks_bottom: f32,
     state: &mut AppState,
     pps: f32,
     scroll_x: f32,
     cmds: &mut Vec<AppCommand>,
 ) {
-    let painter = ui.painter().with_clip_rect(egui::Rect::from_min_max(ruler_rect.min, egui::pos2(ruler_rect.max.x, tracks_bottom)));
+    let painter = ui.painter().with_clip_rect(ruler_rect);
     let dragging: Option<(MarkerId, f64)> = ui.data(|d| d.get_temp(drag_id()));
     let x_of = |secs: f64| ruler_rect.left() + time_utils::time_to_x(secs, pps, scroll_x);
     let markers: Vec<klipp_timeline::Marker> = state.sequence().markers.clone();
@@ -53,11 +52,6 @@ pub fn show(
                 );
             }
         }
-        // A faint line through the tracks, so a cut can be lined up on it.
-        painter.line_segment(
-            [egui::pos2(x, ruler_rect.bottom()), egui::pos2(x, tracks_bottom)],
-            egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(r, g, b, 70)),
-        );
         let (top, bot, half_w) = (ruler_rect.bottom() - 11.0, ruler_rect.bottom() - 1.0, 5.0);
         painter.add(egui::Shape::convex_polygon(
             vec![egui::pos2(x - half_w, top), egui::pos2(x + half_w, top), egui::pos2(x, bot)],
@@ -93,6 +87,25 @@ pub fn show(
                 }
             }
         }
+    }
+}
+
+/// A faint line down through the tracks at each marker, so a cut can be
+/// lined up on it.
+pub fn draw_lines(ui: &egui::Ui, tracks_rect: egui::Rect, ruler_left: f32, state: &AppState, pps: f32, scroll_x: f32) {
+    let painter = ui.painter().with_clip_rect(tracks_rect);
+    let dragging: Option<(MarkerId, f64)> = ui.data(|d| d.get_temp(drag_id()));
+    for marker in &state.sequence().markers {
+        let secs = match dragging {
+            Some((id, at)) if id == marker.id => at,
+            _ => marker.position.to_secs_f64(),
+        };
+        let x = ruler_left + time_utils::time_to_x(secs, pps, scroll_x);
+        let (r, g, b) = marker.color.to_rgb();
+        painter.line_segment(
+            [egui::pos2(x, tracks_rect.top()), egui::pos2(x, tracks_rect.bottom())],
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(r, g, b, 110)),
+        );
     }
 }
 
