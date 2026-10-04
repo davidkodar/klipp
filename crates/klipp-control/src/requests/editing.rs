@@ -1,0 +1,273 @@
+//! Editing requests: projects and sequences, clips appended, removed and selected, surfaces, plans and their application, fonts (#826).
+
+#[allow(unused_imports)]
+use crate::*;
+
+pub(crate) fn respond(
+    ctx: &ControlContext,
+    cmd: ControlCommand,
+    collect: &mut Option<Collected>,
+) -> Result<serde_json::Value, String> {
+    let in_batch = collect.is_some();
+    let mut send = sender!(ctx, collect);
+
+    match cmd {
+        ControlCommand::NewProject { name, location, width, height, fps, sequence_name, discard_changes } => {
+            if in_batch {
+                return Err("new_project is not part of a batch; send it on its own".into());
+            }
+            let name = name.trim().to_string();
+            if name.is_empty() || name.contains('/') {
+                return Err("a project needs a name, without slashes".into());
+            }
+            let location = std::path::PathBuf::from(&location);
+            if !location.is_absolute() || !location.is_dir() {
+                return Err(format!("location must be an existing folder, as an absolute path (got {location:?})"));
+            }
+            let dir = location.join(format!("{name}.klipp"));
+            if dir.exists() {
+                return Err(format!("{} exists already: open_project it, or pick another name", dir.display()));
+            }
+            let (fps_num, fps_den) = match fps {
+                Some(f) => fps_fraction(f)?,
+                None => (0, 0),
+            };
+            let (width, height) = match (width, height) {
+                (Some(w), Some(h)) if w > 0 && h > 0 => (w, h),
+                (None, None) => (0, 0),
+                _ => return Err("give both width and height, or neither".into()),
+            };
+            let before = project_status(ctx)?;
+            if before.dirty && !discard_changes {
+                return Err("the open project has unsaved changes: save_project first, or pass discard_changes true to lose them".into());
+            }
+            let sequence_name = sequence_name.unwrap_or_else(|| "Main Sequence".into());
+            send_envelope(ctx, vec![AppCommand::CreateProject { name, location, fps_num, fps_den, width, height, sequence_name }], false)?;
+            let after = wait_for_project_event(ctx, before.generation, 60_000)?;
+            if let Some(e) = after.last_error {
+                return Err(e);
+            }
+            // The project is made before its first save has landed: answer
+            // once the file is there, as save_project does, so what reads
+            // the folder straight after finds it (#784).
+            let file = dir.join("project.json");
+            let waited = std::time::Instant::now();
+            while !file.exists() && waited.elapsed() < std::time::Duration::from_secs(10) {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            let saved = file.exists();
+            let made = if width == 0 { "Empty project made; its size and rate follow the first clip placed." } else { "Empty project made." };
+            Ok(json!({
+                "created": true,
+                "saved": saved,
+                "path": dir.to_string_lossy(),
+                "text": if saved { made.to_string() } else { format!("{made} Its first save has not landed yet: wait before reading the folder.") },
+            }))
+        }
+
+        ControlCommand::NewSequence { name, width, height, fps } => {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return Err("a sequence needs a name".into());
+            }
+            if width == 0 || height == 0 || width % 2 == 1 || height % 2 == 1 {
+                return Err(format!("{width}x{height} is not a picture size: both even and above zero"));
+            }
+            let (fps_num, fps_den) = fps_fraction(fps)?;
+            send(AppCommand::AddSequenceAndOpen { name, fps_num, fps_den, width, height })
+        }
+
+        ControlCommand::RenameSequence { name } => {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return Err("a sequence needs a name".into());
+            }
+            send(AppCommand::RenameSequence { sequence_idx: usize::MAX, new_name: name })
+        }
+
+        ControlCommand::AppendClip { media_id, track } => {
+            let id = klipp_core::MediaId(parse_uuid(&media_id, "media_id")?);
+            match track {
+                Some(t) => send(AppCommand::AppendClipToTrack { media_id: id, track_index: t }),
+                None => send(AppCommand::AppendClip { media_id: id }),
+            }
+        }
+
+        ControlCommand::RemoveClip { clip_id: c } => {
+            send(AppCommand::RemoveClip { clip_id: existing_clip_id(ctx, &c)? })
+        }
+
+        ControlCommand::AttachAudio { clip_id: c } => {
+            send(AppCommand::AttachLinkedAudio { clip_id: existing_clip_id(ctx, &c)? })
+        }
+
+        ControlCommand::SetAppendAudio { enabled } => {
+            send(AppCommand::SetAppendBringsAudio(enabled))
+        }
+
+        ControlCommand::DetectSceneCuts { clip_id } => {
+            if in_batch {
+                return Err("detect_scene_cuts runs in the background; send it on its own".into());
+            }
+            let id = existing_clip_id(ctx, &clip_id)?;
+            // What the app would refuse, refused here, not answered as
+            // started (#685 review).
+            {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                if let Some(why) = klipp_document::ops::scene_cut_refusal(&seq, &pool, id) {
+                    return Err(format!("no scene cuts to find: {why}"));
+                }
+            }
+            let mut v = send(AppCommand::DetectSceneCuts { clip_id: id })?;
+            v["text"] = json!("Finding the scene cuts in the background; the clip is split at them, its sound with it, as one undo step when it is done. Read the timeline in a while to see the shots, or undo to put it back.");
+            Ok(v)
+        }
+
+        ControlCommand::TrackSurface { clip_id, corners, click, at_secs, name, surface, direction } => {
+            let direction: i8 = match direction.as_deref().map(str::trim).map(str::to_lowercase).as_deref() {
+                None | Some("") | Some("both") => 0,
+                Some("forward") | Some("later") => 1,
+                Some("backward") | Some("earlier") => -1,
+                Some(other) => return Err(format!("direction \"{other}\" is not one: use forward, backward or both")),
+            };
+            if direction != 0 && surface.is_none() {
+                return Err("a track continues one way only on a surface it already has: give surface".into());
+            }
+            if in_batch {
+                return Err("track_surface runs in the background; send it on its own".into());
+            }
+            let id = existing_clip_id(ctx, &clip_id)?;
+            match (corners, click) {
+                (Some(_), Some(_)) => return Err("give corners or click, not both".into()),
+                (None, None) => return Err("give the surface's four corners, or click: a point inside it, fractions of the frame".into()),
+                (None, Some(c)) if c.iter().any(|v| !(0.0..=1.0).contains(v)) => return Err("click is a point in the frame, x and y from 0 to 1".into()),
+                (None, Some(_)) if surface.is_some() || direction != 0 => return Err("click finds a new surface: to track one again or continue it, give its corners".into()),
+                (Some(corners), _) if !klipp_timeline::surface::quad_is_usable(&corners) || corners.iter().flatten().any(|v| !(-1.0..=2.0).contains(v)) => {
+                    return Err("the corners must enclose an area, as fractions of the frame: top left, top right, bottom right, bottom left".into());
+                }
+                _ => {}
+            }
+            let surface = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let clip = seq.tracks.iter().find_map(|t| t.find_clip(id)).ok_or_else(|| format!("no clip with id {clip_id}"))?;
+                if clip.media_id().and_then(|m| pool.get(&m)).is_none_or(|m| m.is_still) {
+                    return Err("only a clip of moving footage from a file can be tracked".into());
+                }
+                if let Some(at) = at_secs {
+                    let (a, b) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
+                    if !(a..b).contains(&at) {
+                        return Err(format!("at_secs {at:.2} is outside the clip ({a:.2}-{b:.2} s): set the corners on a frame of it"));
+                    }
+                }
+                match surface.as_deref() {
+                    Some(n) => Some(
+                        klipp_document::ops::find_surface(clip, Some(n))
+                            .ok_or_else(|| format!("the clip has no surface \"{n}\""))?
+                            .id,
+                    ),
+                    None => None,
+                }
+            };
+            let mut v = match (corners, click) {
+                (Some(corners), _) => send(AppCommand::TrackSurface { clip_id: id, corners, at_secs, name, surface, direction, interactive: false })?,
+                (None, Some(click)) => send(AppCommand::SnapSurface { clip_id: id, click, at_secs, then_track: true, name })?,
+                (None, None) => unreachable!("refused above"),
+            };
+            v["text"] = json!(if click.is_some() {
+                "Finding the surface's edges round the click, then tracking it, in the background: it shows under the clip's surfaces in klipp_list_clips when done. If nothing shows, there was no surface with an edge all round there: look at the frame and give its corners."
+            } else {
+                "Tracking the surface in the background; it shows under the clip's surfaces in klipp_list_clips when done, one undo step, with where the track was lost if it was. Then pin a picture to it with the pin op."
+            });
+            Ok(v)
+        }
+
+        ControlCommand::SelectClip { clip_id: c } => {
+            let id = match c {
+                Some(s) => Some(existing_clip_id(ctx, &s)?),
+                None => None,
+            };
+            send(AppCommand::SelectClip(id))
+        }
+
+        ControlCommand::Plan { ops, detail } => {
+            if in_batch {
+                return read_in_batch("plan");
+            }
+            let (plan, revision) = resolve_plan(ctx, &ops)?;
+            let mut v = json!({ "text": if detail { plan.text() } else { plan.text_folded() }, "steps_resolved": plan.steps.len(), "duration_secs": plan.duration_secs, "revision": revision, "applied": false });
+            if detail {
+                v["steps"] = json!(plan.report());
+            }
+            with_warnings(&mut v, op_font_warnings(&ops));
+            Ok(v)
+        }
+
+        ControlCommand::Apply { ops, expected_revision, expected_project_identity, label, detail } => {
+            if in_batch {
+                return Err("apply is its own batch; send it on its own".into());
+            }
+            if let Some(want) = expected_project_identity {
+                let now = project_status(ctx)?.identity;
+                if now != want {
+                    return Err(format!("the project changed since this plan was made (expected identity {want}, current identity {now}); plan again"));
+                }
+            }
+            if let Some(want) = expected_revision {
+                let now = ctx.shared.revision();
+                if now != want {
+                    return Err(format!("the document is at revision {now}, the plan was made at {want}; plan again"));
+                }
+            }
+            let (plan, revision) = resolve_plan(ctx, &ops)?;
+            if let Some(want) = expected_revision {
+                if revision != want {
+                    return Err(format!("the document is at revision {revision}, the plan was made at {want}; plan again"));
+                }
+            }
+            let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+            let cut_changes = if ops.iter().any(|op| matches!(op, klipp_document::ops::Op::Cut { .. } | klipp_document::ops::Op::Split { .. })) {
+                Some(planned_cut_changes(ctx, &edits)?)
+            } else { None };
+            let label = label.unwrap_or_else(|| apply_label(&ops));
+            let mut v = send_full_envelope_for_project(ctx, Vec::new(), edits, true, Some(revision), expected_project_identity, Some(label))?;
+            if v["applied"] == true {
+                if let Some(changes) = cut_changes {
+                    v["changes"] = changes["changes"].clone();
+                    v["shifted"] = changes["shifted"].clone();
+                }
+            }
+            v["text"] = json!(if detail { plan.text() } else { plan.text_folded() });
+            with_warnings(&mut v, op_font_warnings(&ops));
+            if detail {
+                v["steps"] = json!(plan.report());
+            }
+            v["duration_secs"] = json!(plan.duration_secs);
+            let brief = ctx.sequence.read().ok().and_then(|s| s.brief.clone());
+            if let Some(next) = next_after_ops(&ops, brief.as_ref(), Trail::read(ctx, &ops)) {
+                v["next"] = json!(next);
+            }
+            let wants_voice = ops.iter().any(|o| matches!(o, klipp_document::ops::Op::CleanAudio { voice: true, .. }));
+            if wants_voice && !klipp_audio::dsp::voice_isolation::model_installed() {
+                v["next"] = json!("Voice Isolation is on the clip, but its model (8 MB) is not downloaded, so the sound passes through unchanged until it is. Klipp downloads it only when the user asks: tell them to press Download model on the effect in the Audio inspector, or use Preferences → AI → Manage models.");
+            }
+            Ok(v)
+        }
+
+        ControlCommand::Fonts => {
+            if in_batch {
+                return read_in_batch("fonts");
+            }
+            let bundled: Vec<String> = klipp_title::bundled::families().into_iter().map(|(name, _)| name.to_owned()).collect();
+            let installed: Vec<String> = klipp_title::font_discovery::discover_system_fonts().keys().cloned().collect();
+            let text = format!(
+                "Bundled with Klipp, always there: {}.\nInstalled on this machine ({}): {}.\nA title or type style takes any of these by its family name; anything else falls back to {}.",
+                bundled.join(", "), installed.len(), installed.join(", "), klipp_title::bundled::DEFAULT_FAMILY,
+            );
+            Ok(json!({ "text": text, "bundled": bundled, "installed": installed, "fallback": klipp_title::bundled::DEFAULT_FAMILY }))
+        }
+
+        _ => Err("internal: a request was routed to the wrong area".into()),
+    }
+}

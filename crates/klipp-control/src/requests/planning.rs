@@ -1,0 +1,554 @@
+//! Planning requests: orientation, the brief, the edit plan, checks, and batches (#826).
+
+#[allow(unused_imports)]
+use crate::*;
+
+pub(crate) fn respond(
+    ctx: &ControlContext,
+    cmd: ControlCommand,
+    collect: &mut Option<Collected>,
+) -> Result<serde_json::Value, String> {
+    let in_batch = collect.is_some();
+    let mut send = sender!(ctx, collect);
+
+    match cmd {
+        ControlCommand::Orient => {
+            if in_batch {
+                return read_in_batch("orient");
+            }
+            let project = project_status(ctx)?;
+            let (brief, edit_plan) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                (seq.brief.clone(), seq.edit_plan.clone())
+            };
+            let statuses = klipp_analysis::service::all();
+            let state_of = |path: &std::path::Path| -> serde_json::Value {
+                let filename = path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+                match statuses.iter().find(|s| s.filename == filename) {
+                    Some(s) => json!({ "state": format!("{:?}", s.state).to_lowercase(), "done": s.done, "current": s.current, "current_for_secs": s.current_for_secs }),
+                    None => json!({ "state": "not analysed" }),
+                }
+            };
+            let (media, all_analysed, any_running) = {
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let media: Vec<serde_json::Value> = pool.all().map(|m| json!({
+                    "media_id": m.id.0.to_string(),
+                    "filename": m.filename,
+                    "duration_secs": m.duration.to_secs_f64(),
+                    "width": m.resolution.width,
+                    "height": m.resolution.height,
+                    "fps": m.fps.as_f64(),
+                    "has_audio": m.has_audio,
+                    "analysis": state_of(&m.path),
+                })).collect();
+                let all_analysed = !media.is_empty() && statuses.iter().filter(|s| pool.all().any(|m| m.filename == s.filename)).all(|s| matches!(s.state, klipp_analysis::service::State::Done));
+                let any_running = statuses.iter().any(|s| matches!(s.state, klipp_analysis::service::State::Queued | klipp_analysis::service::State::Running));
+                (media, all_analysed, any_running)
+            };
+            let (seq_text, clips) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let clips: usize = seq.tracks.iter().map(|t| t.clips.len()).sum();
+                (timeline_text(&seq.with_own_grades(), &pool, None, ctx.shared.revision(), TimelineView::default()), clips)
+            };
+            // What to do next, from where the work stands.
+            let next = if media.is_empty() {
+                "Import the footage with import_media. Then set the brief with set_brief (its title, length, platform, loudness, captions, and the cast with names and spellings), and analyze."
+            } else if brief.is_none() {
+                "Set the brief with set_brief: the piece's title, target length, platform, loudness, whether it is captioned, and the cast with their names and how things are spelt. The spellings sharpen the transcript."
+            } else if any_running {
+                "Analysis is still running (see the media states). Read the transcript and the shots for the files that are done, and pull selects, while the rest finishes."
+            } else if !all_analysed {
+                "Analyze the footage: analyze runs shots, sound, motion, the transcript and framing. Then read a transcript to pull selects, and find_shots for B-roll."
+            } else if clips == 0 && edit_plan.is_none() {
+                "The footage is analysed. Propose the paper edit: read each file's beat_sheet (and transcript, where there is speech) and set_edit_plan with one segment per beat of the brief's arc — a stretch of a file for each ranked feature, a note saying what it shows, titles where the beat sheet has a hold window. Then show it to the user for approval."
+            } else if clips == 0 && edit_plan.as_ref().is_some_and(|p| !p.approved) {
+                "An edit plan is proposed and awaits approval. Show it to the user (edit_plan gives the text); change it with set_edit_plan if they ask; on their word, approve_edit_plan, then build_edit_plan."
+            } else if clips == 0 {
+                "The edit plan is approved. build_edit_plan shows what it builds; build_edit_plan with apply true builds it as one undo step."
+            } else {
+                "Clips are down. Look with frame_at and contact_sheet, run check to hold the cut to the brief and the craft, fix what it finds, then export at the brief's loudness and save_project."
+            };
+            Ok(json!({
+                "build": build_json(),
+                "project": {
+                    "path": project.path.as_ref().map(|p| p.to_string_lossy().to_string()),
+                    "unsaved_changes": project.dirty,
+                    "unsaved_changes_from": if project.dirty { project.changed_by.clone().or(Some("edits".into())) } else { None },
+                },
+                "brief": brief.as_ref().map(|b| b.text()),
+                "edit_plan": edit_plan.as_ref().map(|p| p.text(brief.as_ref().and_then(|b| b.target_secs))),
+                "media": media,
+                "sequence": seq_text,
+                "clips": clips,
+                "revision": ctx.shared.revision(),
+                "next": next,
+                "guide": "Call klipp_guide for how to work here, the craft rules and worked recipes.",
+            }))
+        }
+
+        ControlCommand::Brief => {
+            if in_batch {
+                return read_in_batch("brief");
+            }
+            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+            Ok(match &seq.brief {
+                Some(b) => json!({ "brief": b, "text": b.text() }),
+                None => json!({ "brief": null, "text": "There is no brief. Set one with set_brief: what the piece is about, its length, platform, loudness, whether it is captioned, and the cast with names and roles as they should appear." }),
+            })
+        }
+
+        ControlCommand::EditPlan => {
+            if in_batch {
+                return read_in_batch("edit_plan");
+            }
+            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            Ok(match &seq.edit_plan {
+                Some(p) => {
+                    let ops = klipp_document::edit_plan::to_ops(p, &seq, &pool, seq.brief.as_ref());
+                    json!({
+                        "plan": p,
+                        "text": p.text(seq.brief.as_ref().and_then(|b| b.target_secs)),
+                        "approved": p.approved,
+                        "ops": ops,
+                        "next": if p.approved { "Approved. build_edit_plan shows what it builds; build_edit_plan with apply true builds it as one undo step." } else { "Show the plan to the user and ask for their approval; on their word, approve_edit_plan, then build_edit_plan." },
+                    })
+                }
+                None => json!({ "plan": null, "text": "There is no edit plan. Propose one with set_edit_plan: the segments in order, each a stretch of a file for a feature of the brief, with a note saying what it shows and why; titles, joins and a music bed as the piece wants them." }),
+            })
+        }
+
+        ControlCommand::SetEditPlan { mut plan } => {
+            if in_batch {
+                return Err("set_edit_plan is its own undo step; send it on its own".into());
+            }
+            let (old, brief, text, snapped) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                klipp_document::edit_plan::validate(&plan, &pool, seq.brief.as_ref())?;
+                // Cut on the bars: the bed's beats, read now, round every
+                // segment to whole bars and start the bed on its first beat.
+                let mut snapped: Vec<String> = Vec::new();
+                if plan.snap_to_bars {
+                    let Some(m) = &plan.music else { return Err("snap_to_bars needs music in the plan: the bars are the bed's".into()) };
+                    let path = pool.get(&m.media_id).map(|it| it.path.clone()).ok_or("music: no such media item")?;
+                    let beats = klipp_analysis::beats::detect(std::path::Path::new("ffmpeg"), &path, 0.0)?;
+                    if beats.bpm <= 0.0 || beats.beat_times.is_empty() {
+                        snapped.push("no beat was found in the music; nothing snapped".into());
+                    } else {
+                        let bar = 240.0 / beats.bpm as f64;
+                        snapped = klipp_document::edit_plan::snap_to_bars(&mut plan, bar, beats.beat_times[0], &pool);
+                        snapped.insert(0, format!("bars of {bar:.3} s at {:.1} bpm", beats.bpm));
+                        klipp_document::edit_plan::validate(&plan, &pool, seq.brief.as_ref())?;
+                    }
+                }
+                // A proposal is never its own approval.
+                plan.approved = false;
+                let text = plan.text(seq.brief.as_ref().and_then(|b| b.target_secs));
+                (seq.edit_plan.clone(), seq.brief.clone(), text, snapped)
+            };
+            let missing: Vec<String> = brief.as_ref().map(|b| b.ranked_features().iter().filter(|f| !plan.segments.iter().any(|s| klipp_document::edit_plan::covers_feature(s, &f.title))).map(|f| f.title.clone()).collect()).unwrap_or_default();
+            let edit = klipp_document::history::EditCommand::SetEditPlan { old: old.map(Box::new), new: Some(Box::new(plan)) };
+            let mut v = send_full_envelope(ctx, Vec::new(), vec![edit], true, None, Some("Set Edit Plan".into()))?;
+            v["text"] = json!(text);
+            if !missing.is_empty() {
+                v["note"] = json!(format!("the brief's features not in the plan: {}", missing.join(", ")));
+            }
+            if !snapped.is_empty() {
+                v["snapped"] = json!(snapped);
+            }
+            v["next"] = json!("Show the plan to the user, as text, and ask whether to build it. On their word call approve_edit_plan; then build_edit_plan to see what it builds, and build_edit_plan with apply true to build it.");
+            Ok(v)
+        }
+
+        ControlCommand::ApproveEditPlan => {
+            if in_batch {
+                return Err("approve_edit_plan is its own undo step; send it on its own".into());
+            }
+            let old = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.edit_plan.clone();
+            let Some(old) = old else {
+                return Err("there is no edit plan to approve; propose one with set_edit_plan".into());
+            };
+            if old.approved {
+                return Ok(json!({ "approved": true, "revision": ctx.shared.revision(), "text": "The edit plan is already approved.", "next": "build_edit_plan shows what it builds; with apply true it builds it." }));
+            }
+            let mut new = old.clone();
+            new.approved = true;
+            let edit = klipp_document::history::EditCommand::SetEditPlan { old: Some(Box::new(old)), new: Some(Box::new(new)) };
+            let mut v = send_full_envelope(ctx, Vec::new(), vec![edit], true, None, Some("Approve Edit Plan".into()))?;
+            v["approved"] = json!(true);
+            v["next"] = json!("Approved. build_edit_plan shows what it builds; build_edit_plan with apply true builds it as one undo step. Then look (frame_at, contact_sheet), check, and export.");
+            Ok(v)
+        }
+
+        ControlCommand::BuildEditPlan { apply, detail } => {
+            if in_batch {
+                return Err("build_edit_plan is its own batch; send it on its own".into());
+            }
+            let ops = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let Some(plan) = seq.edit_plan.as_ref() else {
+                    return Err("there is no edit plan to build; propose one with set_edit_plan".into());
+                };
+                if !plan.approved {
+                    return Err("the edit plan is not approved; show it to the user and, on their word, approve_edit_plan".into());
+                }
+                klipp_document::edit_plan::validate(plan, &pool, seq.brief.as_ref()).map_err(|e| format!("the edit plan no longer builds: {e}"))?;
+                klipp_document::edit_plan::to_ops(plan, &seq, &pool, seq.brief.as_ref())
+            };
+            let (plan, revision) = resolve_plan(ctx, &ops)?;
+            let mut v = if apply {
+                let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+                let mut v = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some("Build Edit Plan".into()))?;
+                v["next"] = json!("Built. Look at it (frame_at at each cut, contact_sheet), run check to hold it to the brief and the craft, fix what it finds, then export at the brief's loudness and save_project.");
+                v
+            } else {
+                json!({ "revision": revision, "applied": false, "next": "That is what it builds. build_edit_plan with apply true builds it as one undo step." })
+            };
+            v["text"] = json!(if detail { plan.text() } else { plan.text_folded() });
+            with_warnings(&mut v, op_font_warnings(&ops));
+            v["steps_resolved"] = json!(plan.steps.len());
+            v["duration_secs"] = json!(plan.duration_secs);
+            v["ops"] = json!(ops);
+            if detail {
+                v["steps"] = json!(plan.report());
+            }
+            Ok(v)
+        }
+
+        ControlCommand::UpdateBrief { fields } => {
+            if in_batch {
+                return Err("update_brief is its own undo step; send it on its own".into());
+            }
+            let current = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.brief.clone().unwrap_or_default();
+            let brief = merge_brief(&current, &fields)?;
+            handle(ctx, ControlCommand::SetBrief { brief }, &mut None)
+        }
+
+        ControlCommand::SetBrief { mut brief } => {
+            if in_batch {
+                return Err("set_brief is its own undo step; send it on its own".into());
+            }
+            for style in &brief.type_styles {
+                klipp_document::title_style::resolve_motion(style)
+                    .map_err(|e| format!("type style {:?}: {e}", style.name))?;
+            }
+            if let Some(t) = brief.target_secs {
+                if !t.is_finite() || t <= 0.0 {
+                    return Err(format!("a length of {t} s is not a length"));
+                }
+            }
+            if let Some(l) = brief.loudness_lufs {
+                if !(-40.0..=-5.0).contains(&l) {
+                    return Err(format!("{l} LUFS is not a delivery loudness; the web is about -14, broadcast -23"));
+                }
+            }
+            if brief.width.is_some() != brief.height.is_some() {
+                return Err("give both width and height, or neither".into());
+            }
+            if let Some(dup) = brief.cast.iter().enumerate().find(|(i, c)| brief.cast[..*i].iter().any(|d| d.name.trim().eq_ignore_ascii_case(c.name.trim()))) {
+                return Err(format!("{} is in the cast twice", dup.1.name));
+            }
+            if brief.cast.iter().any(|c| c.name.trim().is_empty()) {
+                return Err("a cast member needs a name".into());
+            }
+            if brief.features.iter().any(|f| f.title.trim().is_empty()) {
+                return Err("a feature needs a title".into());
+            }
+            if let Some(dup) = brief.features.iter().enumerate().find(|(i, f)| brief.features[..*i].iter().any(|d| d.title.trim().eq_ignore_ascii_case(f.title.trim()))) {
+                return Err(format!("the feature \"{}\" is listed twice", dup.1.title));
+            }
+            if let Some(look) = brief.look.take() {
+                let name = look.name.clone();
+                let resolved = resolve_look_target(look);
+                if resolved.mid_l.is_none() && resolved.cast_a.is_none() && !resolved.screencast {
+                    return Err(format!("look \"{name}\" is neither a preset ({}) nor numbers; give a name, or the fields black_l, white_l, mid_l, contrast_range, chroma_mean, cast_a, cast_b, skin_hue — style_profile lifts them from a reference", klipp_color::measure::LookTarget::PRESETS.join(", ")));
+                }
+                brief.look = Some(resolved);
+            }
+            if let Some(c) = brief.brand_colors.iter().find(|c| { let c = c.trim(); !(c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit())) }) {
+                return Err(format!("\"{c}\" is not a brand colour; give #rrggbb"));
+            }
+            let old = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.brief.clone();
+            let fonts_named: Vec<String> = brief.type_styles.iter().filter_map(|t| t.font.clone()).collect();
+            let text = brief.text();
+            let new_spellings = brief.spellings();
+            let edit = klipp_document::history::EditCommand::SetBrief { old: old.clone().map(Box::new), new: Some(Box::new(brief)) };
+            let respelt = old.as_ref().map(|b| b.spellings()).unwrap_or_default() != new_spellings;
+            let mut v = send_full_envelope(ctx, Vec::new(), vec![edit], true, None, Some("Set Brief".into()))?;
+            v["text"] = json!(text);
+            with_warnings(&mut v, font_warnings(fonts_named.iter().map(String::as_str)));
+            if respelt && !new_spellings.is_empty() {
+                // Only when a transcript was made without them: one that
+                // already carries them is as good as it will get.
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let lacking: Vec<String> = pool
+                    .all()
+                    // Only what this project has analysed: a transcript in
+                    // the cache from another day is re-made when the item
+                    // is analysed here, and is nothing to warn about yet.
+                    .filter(|m| klipp_analysis::service::status(m.id).is_some_and(|s| matches!(s.state, klipp_analysis::service::State::Done)))
+                    .filter_map(|m| klipp_analysis::report::MediaAnalysis::load(&m.path).transcript.map(|t| (m.filename.clone(), t.vocabulary)))
+                    .filter(|(_, had)| klipp_analysis::transcript::lacks_spellings(had, &new_spellings))
+                    .map(|(f, _)| f)
+                    .collect();
+                let analysed_any = pool.all().any(|m| klipp_analysis::service::status(m.id).is_some_and(|s| matches!(s.state, klipp_analysis::service::State::Done)));
+                if !lacking.is_empty() {
+                    v["note"] = json!(format!("the spellings changed and these transcripts were made without them: {}; run analyze to have them transcribed again before captions or a transcript search", lacking.join(", ")));
+                } else if analysed_any {
+                    v["note"] = json!("the transcripts made so far already carry these spellings; a file analysed from now on gets them too");
+                }
+            }
+            Ok(v)
+        }
+
+        ControlCommand::Check { color } => {
+            if in_batch {
+                return read_in_batch("check");
+            }
+            // The colour pass grabs frames, so it takes the sequence read
+            // lock for a moment only; work out the times first, then let go.
+            let (report, color_times, audio_media) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let report = klipp_document::qc::check(&seq, &pool, &AnalysedTranscripts);
+                // Each detected shot of each picture clip, read on its own
+                // — a clip holding a cut, or a long walk through changing
+                // light, is several shots, and one median across them all
+                // judged none of them (#329) — on every visible video
+                // track: a short clip on a track above (an overlay, a
+                // reveal) used to stand for the whole piece, and the main
+                // picture under it went unread (#720). Each clip is read
+                // alone, so what is over it is not taken for it (#719).
+                // Up to six shots a clip (the longest), fewer when there
+                // are many clips, 48 in all.
+                let times: Vec<(f64, (f64, f64), klipp_core::ClipId)> = if color {
+                    let clips: Vec<&klipp_timeline::Clip> = seq.tracks.iter()
+                        .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
+                        .flat_map(|t| t.clips.iter())
+                        .filter(|c| is_picture_clip(c))
+                        .collect();
+                    let per_clip = (48 / clips.len().max(1)).clamp(1, 6);
+                    clips.into_iter()
+                        .flat_map(|c| clip_shot_spans(c, &pool, seq.fps.as_f64(), per_clip).into_iter().map(move |span| (span, c.id)))
+                        .map(|((a, b), id)| ((a + b) / 2.0, (a, b), id))
+                        .take(48).collect()
+                } else {
+                    Vec::new()
+                };
+                // Each distinct piece of media that carries sound, with a
+                // time it plays at — for reading its spectral faults off
+                // the analysis (no rendering, so this is always on).
+                // With it, the fixes every clip that plays the file's
+                // sound already carries (#505).
+                let mut audio_media: Vec<(std::path::PathBuf, String, f64, AudioFixes)> = Vec::new();
+                for t in &seq.tracks {
+                    for c in t.clips.iter().filter(|c| c.enabled) {
+                        let Some(item) = c.media_id().and_then(|mid| pool.get(&mid)) else { continue };
+                        if !item.has_audio {
+                            continue;
+                        }
+                        // Heard: a clip on an audio track, or a picture clip
+                        // playing its own sound. A picture whose sound is its
+                        // linked audio clip is not where the sound is fixed.
+                        let heard = t.kind == klipp_timeline::TrackKind::Audio || (c.linked_clip_id.is_none() && c.volume > 0.0);
+                        // A sound linked to a picture keeps its settings — the
+                        // cleaners among them — on the picture clip, so they
+                        // are read there (#725).
+                        let fixes = if heard { AudioFixes::on(&sound_owner(&seq, c).audio_effects) } else { AudioFixes::ALL };
+                        match audio_media.iter_mut().find(|m| m.0 == item.path) {
+                            Some(m) => m.3 = m.3.and(fixes),
+                            None => audio_media.push((item.path.clone(), item.filename.clone(), (c.timeline_in.to_secs_f64() + c.timeline_out.to_secs_f64()) / 2.0, fixes)),
+                        }
+                    }
+                }
+                (report, times, audio_media)
+            };
+            // Every shot read in Lab against the brief's look (or the
+            // neutral one, or the screen recording's), faces and all.
+            let mut color_findings: Vec<(String, f64, String, String)> = Vec::new();
+            let mut shots_on_target = 0usize;
+            // A survey of many shots reads each once, at its middle; a few
+            // are read three times across, so drift within a shot is said.
+            let survey = color_times.len() > 8;
+            let mut unread: Vec<String> = Vec::new();
+            for (t, span, clip) in &color_times {
+                let read = if survey {
+                    measure_at(ctx, *t, Some(*clip), Some(4000)).map(|m| (vec![(*t, m)], None))
+                } else {
+                    measure_clip(ctx, span.0, span.1, Some(*clip), Some(4000))
+                };
+                let (reads, drift) = match read {
+                    Ok(r) => r,
+                    Err(e) => {
+                        unread.push(format!("{t:.2} s ({e})"));
+                        continue;
+                    }
+                };
+                let (_, m) = median_measure(&reads);
+                let look = look_for(ctx, *t);
+                let mut found = colour_report(&m, &look, *t);
+                // The chain's own order, which no measurement can see:
+                // a balance behind a look never settles, however many
+                // rounds the loop runs.
+                {
+                    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                    if let Some(c) = seq.tracks.iter().flat_map(|tr| tr.clips.iter()).find(|c| c.id == *clip) {
+                        for fault in c.own_grade().chain_out_of_order() {
+                            found.push(("warning".to_string(), *t, format!("{fault} [grade order]"), "grade_chain shows the chain; the order is input, balance, secondary, look, output".to_string()));
+                        }
+                    }
+                }
+                if let Some(d) = drift {
+                    found.push(("warning".to_string(), *t, format!("{d} [drift]"), "keyframe the grade across the shot, or cut where the light changes".to_string()));
+                }
+                if found.is_empty() {
+                    shots_on_target += 1;
+                }
+                color_findings.extend(found);
+            }
+            let departing: Vec<String> = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                seq.grade_groups.iter().filter(|g| g.departs && seq.all_clips().any(|c| c.grade_group == Some(g.id))).map(|g| g.name.clone()).collect()
+            };
+            // Sound faults: wind, rumble, hum, hiss, from the analysis bands.
+            let mut audio_findings: Vec<(f64, String, String, String)> = Vec::new();
+            for (path, name, at, fixes) in &audio_media {
+                // A library track or effect is what it is: its low end is
+                // not a hum to clean.
+                if klipp_analysis::is_licensed_audio(path) {
+                    continue;
+                }
+                if let Some(au) = klipp_analysis::report::MediaAnalysis::load(path).audio {
+                    // The analysis reads the file; a fault the clips already
+                    // carry the fix for is not asked for again (#505).
+                    for (what, fix) in au.faults().into_iter().filter(|(what, _)| !fixes.covers(what)) {
+                        audio_findings.push((*at, name.clone(), what, fix));
+                    }
+                }
+            }
+
+            // The headline counts everything the check found, colour
+            // and sound included. It used to count only the craft
+            // findings, so a timeline with ten colour errors under it
+            // was announced as "0 errors, 0 warnings" and `next` said
+            // "Clean. Export." — which is what an agent reads.
+            let colour_errors = color_findings.iter().filter(|f| f.0 == "error").count();
+            let errors = report.errors + colour_errors;
+            let warnings = report.warnings + (color_findings.len() - colour_errors) + audio_findings.len();
+            let next = if errors > 0 {
+                "Fix the errors before you deliver — each finding says what and where. Then check again."
+            } else if warnings > 0 {
+                "No errors. Decide each warning: fix it, or keep it on purpose and be able to say why. Then export."
+            } else {
+                "Clean. Export at the brief's loudness, poll export_status, then save_project."
+            };
+            let mut text = report.text();
+            if errors != report.errors || warnings != report.warnings {
+                let notes = report.findings.len() - report.errors - report.warnings;
+                let head = format!(
+                    "Checked {:.2} s: {errors} error{}, {warnings} warning{}, {notes} note{}.",
+                    report.duration_secs,
+                    if errors == 1 { "" } else { "s" },
+                    if warnings == 1 { "" } else { "s" },
+                    if notes == 1 { "" } else { "s" },
+                );
+                match text.find('\n') {
+                    Some(i) => text.replace_range(..i, &head),
+                    None => text = head,
+                }
+            }
+            if color {
+                let read = color_times.len() - unread.len();
+                text.push_str(&format!("\n\nColour (measured in Lab on {read} shot{}, {shots_on_target} on target):", if read == 1 { "" } else { "s" }));
+                if color_findings.is_empty() {
+                    text.push_str(" nothing amiss.");
+                } else {
+                    for f in &color_findings {
+                        text.push_str(&format!("\n[{}] {:.2} s  {}. {}", f.0, f.1, f.2, f.3));
+                    }
+                }
+                // A group that leaves the look on purpose is said once, not
+                // as a taste finding on every shot of it (#793).
+                for name in &departing {
+                    text.push_str(&format!("\n[note] grade group \"{name}\" leaves the look on purpose: its shots are judged for faults only (clipping, crushed blacks, faces, noise), not for its colour or contrast"));
+                }
+                // A shot that could not be read is not one that passed.
+                if !unread.is_empty() {
+                    text.push_str(&format!("\n[warning] {} shot{} could not be read, so are not judged: {}", unread.len(), if unread.len() == 1 { "" } else { "s" }, unread.join("; ")));
+                }
+            }
+            if !audio_findings.is_empty() {
+                text.push_str("\n\nSound:");
+                for f in &audio_findings {
+                    text.push_str(&format!("\n[warning] {}: {}. {}", f.1, f.2, f.3));
+                }
+            }
+            let findings_json: Vec<serde_json::Value> = color_findings.iter().map(|f| json!({ "severity": f.0, "rule": "color", "at_secs": f.1, "what": f.2, "hint": f.3 })).collect();
+            let audio_json: Vec<serde_json::Value> = audio_findings.iter().map(|f| json!({ "severity": "warning", "rule": "sound", "at_secs": f.0, "media": f.1, "what": f.2, "hint": f.3 })).collect();
+            Ok(json!({ "text": text, "errors": errors, "warnings": warnings, "findings": report.findings, "color_findings": findings_json, "departing_groups": departing, "shots_on_target": shots_on_target, "sound_findings": audio_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
+        }
+
+        // Said what they did (#741): the step taken back or put back, as
+        // the history names it, and what the next one would be.
+        which @ (ControlCommand::Undo | ControlCommand::Redo) => {
+            let undo = matches!(which, ControlCommand::Undo);
+            let labels = || ctx.shared.project.lock().map(|p| (p.undo.clone(), p.redo.clone())).unwrap_or_default();
+            let (was_undo, was_redo) = labels();
+            let step = if undo { was_undo } else { was_redo };
+            let mut v = send(if undo { AppCommand::Undo } else { AppCommand::Redo })?;
+            let Some(step) = step else {
+                v["text"] = json!(if undo { "Nothing to undo." } else { "Nothing to redo." });
+                return Ok(v);
+            };
+            let (next_undo, next_redo) = labels();
+            let mut text = format!("{} \u{201c}{step}\u{201d}.", if undo { "Undid" } else { "Redid" });
+            match (&next_undo, &next_redo) {
+                (Some(u), _) if undo => text.push_str(&format!(" Next undo would take back \u{201c}{u}\u{201d}.")),
+                (_, Some(r)) if !undo => text.push_str(&format!(" Next redo would put back \u{201c}{r}\u{201d}.")),
+                _ if undo => text.push_str(" Nothing more to undo."),
+                _ => text.push_str(" Nothing more to redo."),
+            }
+            v[if undo { "undid" } else { "redid" }] = json!(step);
+            v["next_undo"] = json!(next_undo);
+            v["next_redo"] = json!(next_redo);
+            v["text"] = json!(text);
+            Ok(v)
+        }
+
+        ControlCommand::Batch { commands } => {
+            if in_batch {
+                return Err("a batch cannot contain a batch".into());
+            }
+            if commands.is_empty() {
+                return Err("an empty batch".into());
+            }
+            let mut buf = Some(Collected::default());
+            for (i, c) in commands.into_iter().enumerate() {
+                // Every command checked and translated before any is sent:
+                // a bad one refuses the batch whole.
+                handle(ctx, c, &mut buf).map_err(|e| format!("batch command {i}: {e}"))?;
+            }
+            let Collected { commands: cmds, ops } = buf.take().unwrap_or_default();
+            if ops.is_empty() {
+                return send_envelope(ctx, cmds, true);
+            }
+            // Looks are resolved edits and apply as one history entry of
+            // their own; with other writes beside them the batch would be
+            // two undo steps, not the one it promises.
+            if !cmds.is_empty() {
+                return Err("a batch with looks holds only looks; send the other writes in a batch of their own".into());
+            }
+            let (plan, revision) = resolve_plan(ctx, &ops)?;
+            let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+            let label = if ops.len() == 1 { "look".to_string() } else { format!("look on {} clips", ops.len()) };
+            let mut v = send_full_envelope(ctx, cmds, edits, true, Some(revision), Some(label))?;
+            v["text"] = json!(plan.text_folded());
+            Ok(v)
+        }
+
+        _ => Err("internal: a request was routed to the wrong area".into()),
+    }
+}
