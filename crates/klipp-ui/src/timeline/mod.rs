@@ -508,6 +508,20 @@ impl NewTimelinePanel {
         });
         markers::draw_lines(ui, tracks_rect, ruler_rect.left(), state, pps, scroll_x);
         // A trim amount being typed for the selected edit points (#913).
+        // A dynamic trim under way (#914): how far, and the keys.
+        if let (Some(cut), None) = (state.dynamic_trim, &state.trim_entry) {
+            let fps = state.sequence().fps.as_f64();
+            let frames = ((state.playhead.to_secs_f64() - cut.to_secs_f64()) * fps).round() as i64;
+            let text = format!("Dynamic trim  {frames:+} frames \u{2014} K to commit, Esc to cancel");
+            let font = egui::FontId::monospace(12.0);
+            let galley = ui.painter().layout_no_wrap(text, font, theme.text_primary);
+            let at = egui::pos2(tracks_rect.left() + 12.0, tracks_rect.bottom() - galley.size().y - 14.0);
+            let bg = egui::Rect::from_min_size(at, galley.size()).expand(6.0);
+            let painter = ui.painter().with_clip_rect(tracks_rect);
+            painter.rect_filled(bg, 4.0, theme.bg_raised);
+            painter.rect_stroke(bg, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(120, 220, 120)));
+            painter.galley(at, galley, theme.text_primary);
+        }
         if let Some(typed) = &state.trim_entry {
             let what = if state.selected_edits.is_empty() { "Move" } else { "Trim" };
             let text = format!("{what}  {typed}   frames, or s:ff \u{2014} Enter to {}, Esc to cancel", what.to_lowercase());

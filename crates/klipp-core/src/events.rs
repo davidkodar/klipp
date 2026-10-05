@@ -2444,6 +2444,18 @@ pub enum AppCommand {
     TrimEditPoints { frames: i64 },
     /// Move the selected edit points to the playhead (extend edit).
     ExtendEditPoints,
+    /// Dynamic trimming (#914): J or L with an edit point selected plays
+    /// from its cut; this arms the trim there.
+    BeginDynamicTrim,
+    /// K during a dynamic trim: the selected edit points go to where the
+    /// playhead stopped, one undo step.
+    CommitDynamicTrim,
+    /// Esc during a dynamic trim: playback stops and the playhead goes
+    /// back to the cut, nothing trimmed.
+    CancelDynamicTrim,
+    /// Play around the selected edit point (or the playhead), two seconds
+    /// each side, looping until stopped (#914).
+    PlayAroundEdit,
     /// Move the selected clips by `frames` (later when positive), as one
     /// undo step (#917).
     NudgeClips { frames: i64 },

@@ -153,7 +153,7 @@ impl KlippApp {
                 let from = seq.in_point.unwrap_or(klipp_core::Timecode { value: 0, rate: self.state.fps.rate() });
                 let to = seq.out_point.unwrap_or_else(|| self.state.sequence_duration());
                 if to > from {
-                    self.state.play_to_out = Some(crate::state::PlayToOut { from, out: to, asked: std::time::Instant::now(), started: false });
+                    self.state.play_to_out = Some(crate::state::PlayToOut { from, out: to, asked: std::time::Instant::now(), started: false, looping: false });
                     // The playhead is at the In from now: the first frames
                     // after Play must not read the old position, past the
                     // Out, and stop at once (#940 review).
@@ -536,6 +536,12 @@ impl KlippApp {
                 self.state.play_to_out = Some(crate::state::PlayToOut { started: true, ..run });
             }
             crate::navigation::PlayToOutStep::Done => self.state.play_to_out = None,
+            crate::navigation::PlayToOutStep::StopAtOut if run.looping => {
+                // Round again from the start of the loop.
+                self.state.play_to_out = Some(crate::state::PlayToOut { asked: std::time::Instant::now(), started: false, ..run });
+                self.state.playhead = run.from;
+                self.send_commands(vec![AppCommand::SeekTo(run.from)]);
+            }
             crate::navigation::PlayToOutStep::StopAtOut => {
                 self.state.play_to_out = None;
                 self.send_commands(vec![AppCommand::Pause, AppCommand::SeekTo(run.out)]);

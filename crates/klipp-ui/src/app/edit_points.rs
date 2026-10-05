@@ -7,6 +7,9 @@
 use super::*;
 use crate::edit_point::{self, EditPoint};
 
+/// How far either side of an edit Play Around Edit plays (#914).
+const PLAY_AROUND_SECS: f64 = 2.0;
+
 impl KlippApp {
     /// The edit-point commands: `false` for any other.
     pub(super) fn handle_edit_point_commands(&mut self, cmd: &AppCommand) -> bool {
@@ -36,6 +39,55 @@ impl KlippApp {
             AppCommand::ExtendEditPoints => {
                 let playhead = self.state.playhead;
                 self.trim_edit_points(|seq, edit| edit_point::frames_to(seq, edit, playhead), "Extend Edit");
+                true
+            }
+            // Dynamic trimming (#914): armed at the cut, the playhead put
+            // there for J or L to play from; K takes the edit points to
+            // where it stopped, Esc goes back.
+            AppCommand::BeginDynamicTrim => {
+                let cut = self.state.selected_edits.first().and_then(|e| edit_point::cut(self.state.sequence(), e));
+                if let Some(cut) = cut {
+                    self.state.dynamic_trim = Some(cut);
+                    self.state.playhead = cut;
+                    let _ = self.cmd_tx.send(AppCommand::SeekTo(cut));
+                }
+                true
+            }
+            AppCommand::CommitDynamicTrim => {
+                // The frame on screen when K went down is the one trimmed
+                // to; the engine may play one more before it pauses, so the
+                // playhead is put back on it.
+                if self.state.dynamic_trim.take().is_some() {
+                    let playhead = self.state.playhead;
+                    self.trim_edit_points(|seq, edit| edit_point::frames_to(seq, edit, playhead), "Dynamic Trim");
+                    self.send_commands(vec![AppCommand::SeekTo(playhead)]);
+                }
+                true
+            }
+            AppCommand::CancelDynamicTrim => {
+                if let Some(cut) = self.state.dynamic_trim.take() {
+                    self.state.playhead = cut;
+                    self.send_commands(vec![AppCommand::Pause, AppCommand::SetSpeed(1.0), AppCommand::SeekTo(cut)]);
+                }
+                true
+            }
+            AppCommand::PlayAroundEdit => {
+                let around = self
+                    .state
+                    .selected_edits
+                    .first()
+                    .and_then(|e| edit_point::cut(self.state.sequence(), e))
+                    .unwrap_or(self.state.playhead);
+                let rate = self.state.sequence().fps.rate();
+                let secs = around.to_secs_f64();
+                let end = self.state.sequence_duration().to_secs_f64();
+                let from = klipp_core::RationalTime::from_secs_f64((secs - PLAY_AROUND_SECS).max(0.0), rate);
+                let out = klipp_core::RationalTime::from_secs_f64((secs + PLAY_AROUND_SECS).min(end), rate);
+                if out > from {
+                    self.state.play_to_out = Some(crate::state::PlayToOut { from, out, asked: std::time::Instant::now(), started: false, looping: true });
+                    self.state.playhead = from;
+                    self.send_commands(vec![AppCommand::SetSpeed(1.0), AppCommand::SeekTo(from), AppCommand::Play]);
+                }
                 true
             }
             _ => false,

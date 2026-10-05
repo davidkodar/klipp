@@ -302,6 +302,9 @@ impl ViewerPanel {
         // targeting source vs sequence) but no longer drives visibility
         // here.
         self.show_program_viewer(ui, state, theme, viewer_rect, &mut cmds);
+        // Trim mode (#914): with an edit point selected, the two frames
+        // either side of the cut, over the picture.
+        crate::trim_view::draw(ui, state, theme, viewer_rect);
 
         // Scroll-zoom + middle-drag-pan over the video area. Allocated
         // AFTER `show_program_viewer` so transform handles / on-canvas

@@ -1127,6 +1127,9 @@ pub struct PlayToOut {
     pub out: klipp_core::Timecode,
     pub asked: std::time::Instant,
     pub started: bool,
+    /// Back to `from` at the Out instead of stopping: play around an
+    /// edit (#914).
+    pub looping: bool,
 }
 
 pub struct AppState {
@@ -1316,6 +1319,9 @@ pub struct AppState {
     /// A trim amount being typed (`+12`, `-1:05`) for the selected edit
     /// points, until Enter applies it or Escape drops it.
     pub trim_entry: Option<String>,
+    /// A dynamic trim armed at this cut (#914): K commits the selected
+    /// edit points to the playhead, Esc goes back here.
+    pub dynamic_trim: Option<Timecode>,
     pub hovered_clip: Option<ClipId>,
     /// Currently selected transition (track_idx, transition_id). UI-only state.
     pub selected_transition: Option<(usize, TransitionId)>,
@@ -3799,6 +3805,7 @@ impl Default for AppState {
             selected_clips: Vec::new(),
             selected_edits: Vec::new(),
             trim_entry: None,
+            dynamic_trim: None,
             hovered_clip: None,
             show_unsaved_dialog: false,
             unsaved_dialog_action: UnsavedAction::None,

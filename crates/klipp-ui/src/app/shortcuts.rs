@@ -505,6 +505,9 @@ impl KlippApp {
             if kb.is_action_pressed("extend_edit", i) {
                 cmds.push(AppCommand::ExtendEditPoints);
             }
+            if kb.is_action_pressed("play_around_edit", i) {
+                cmds.push(AppCommand::PlayAroundEdit);
+            }
             if !self.state.selected_edits.is_empty() {
                 if kb.is_action_pressed("trim_edit_back", i) {
                     cmds.push(AppCommand::TrimEditPoints { frames: -1 });
@@ -880,7 +883,10 @@ impl KlippApp {
             // Escape — deselect clips, clear range drag, or return Range tool to Select
             if i.key_pressed(egui::Key::Escape) {
                 // Unlock scope cursor on Escape
-                if self.state.surface_tool.is_some() {
+                if self.state.dynamic_trim.is_some() {
+                    // A dynamic trim goes back to its cut (#914).
+                    cmds.push(AppCommand::CancelDynamicTrim);
+                } else if self.state.surface_tool.is_some() {
                     // The viewer's surface tool goes; the clip stays selected.
                     self.state.surface_tool = None;
                 } else if self.state.scope_cursor_locked {
