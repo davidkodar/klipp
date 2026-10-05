@@ -52,6 +52,9 @@ pub struct NodeInspectorPanel {
     pub color_presets: Vec<ToolPreset>,
     pub preset_save_name_tool: String,
     pub preset_saving_tool: Option<ToolScope>,
+    /// Why the last tool-preset save was refused, shown under the name
+    /// field until the next attempt.
+    pub preset_save_error: Option<String>,
     /// The selected clip's input colour space and whether detection
     /// chose it, set by the caller each frame: the InputTransform node
     /// edits the media item's format, which this panel cannot see.
@@ -79,6 +82,7 @@ impl Default for NodeInspectorPanel {
             color_presets: presets::load_tool_presets(&ToolScope::Color),
             preset_save_name_tool: String::new(),
             preset_saving_tool: None,
+            preset_save_error: None,
             input_colour_space: (klipp_core::LogFormat::Srgb, false),
         }
     }
@@ -3408,6 +3412,7 @@ impl NodeInspectorPanel {
             if ui.small_button("\u{1F4BE}").on_hover_text("Save current settings as preset").clicked() {
                 self.preset_saving_tool = Some(tool.clone());
                 self.preset_save_name_tool.clear();
+                self.preset_save_error = None;
             }
         });
 
@@ -3433,7 +3438,11 @@ impl NodeInspectorPanel {
                         tool: tool.clone(),
                         params,
                     };
-                    let _ = presets::save_tool_preset(&preset);
+                    if let Err(e) = presets::save_tool_preset(&preset) {
+                        self.preset_save_error = Some(e);
+                        return;
+                    }
+                    self.preset_save_error = None;
                     let presets = match tool {
                         ToolScope::Wheels => &mut self.wheels_presets,
                         ToolScope::Curves => &mut self.curves_presets,
@@ -3451,6 +3460,9 @@ impl NodeInspectorPanel {
                     self.preset_saving_tool = None;
                 }
             });
+            if let Some(e) = &self.preset_save_error {
+                ui.label(egui::RichText::new(e).size(10.0).color(theme.marker_warning));
+            }
         }
         ui.add_space(2.0);
     }

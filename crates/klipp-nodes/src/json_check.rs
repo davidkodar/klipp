@@ -12,60 +12,119 @@
 //! as this build reads it, written back, and compared with what was
 //! saved. A kind that comes back `Unknown`, or a field that does not come
 //! back, is something the save would lose.
+//!
+//! A field that does not come back is not always unknown: a known one is
+//! left out of the written form when it holds its default. An unknown one
+//! is dropped whatever it holds, and its 0 or `false` may not be a newer
+//! build's default (a mix, an opacity) (#1050). So a field that comes back
+//! missing while holding an empty value is tried again holding a
+//! non-empty value of the same type: a known field then comes back, or
+//! fails to read, and an unknown one is still dropped. Unknown fields
+//! never fail a read, since none of these types denies them.
 
 use serde_json::Value;
 
 use crate::{Node, NodeKind, NodeParams};
 
-/// Whether a saved value carries nothing a default would not: a field
-/// holding it can be lost without losing anything.
-fn is_empty(v: &Value) -> bool {
+/// A non-empty value of `v`'s type, for a field holding the empty `v`, or
+/// `None` when dropping `v` loses nothing whatever the field: a `null`
+/// reads as absent, and an empty object as a map or settings left at
+/// their defaults.
+fn probe(v: &Value) -> Option<Value> {
     match v {
-        Value::Null => true,
-        Value::Bool(b) => !b,
-        Value::Number(n) => n.as_f64() == Some(0.0),
-        Value::String(s) => s.is_empty(),
-        Value::Array(a) => a.is_empty(),
-        Value::Object(o) => o.is_empty(),
+        Value::Null => None,
+        Value::Bool(false) => Some(Value::Bool(true)),
+        Value::Number(n) if n.as_f64() == Some(0.0) => {
+            Some(if n.is_f64() { Value::from(0.123_456) } else { Value::from(7) })
+        }
+        Value::String(s) if s.is_empty() => Some(Value::from("probe")),
+        Value::Array(a) if a.is_empty() => Some(Value::Array(vec![Value::Null])),
+        Value::Object(o) if o.is_empty() => None,
+        _ => Some(v.clone()),
     }
 }
 
-/// The paths, under `path`, of fields in `saved` that `back` (the same
-/// value read by this build and written again) no longer has.
-fn dropped(saved: &Value, back: &Value, path: &str, out: &mut Vec<String>) {
+/// One step of a JSON pointer.
+fn pointer_step(key: &str) -> String {
+    format!("/{}", key.replace('~', "~0").replace('/', "~1"))
+}
+
+/// Fields in `saved` that `back` (the same value read by this build and
+/// written again) no longer has, as (path for the message, JSON pointer,
+/// saved value).
+fn dropped(saved: &Value, back: &Value, path: &str, ptr: &str, out: &mut Vec<(String, String, Value)>) {
     match (saved, back) {
         (Value::Object(s), Value::Object(b)) => {
             for (k, v) in s {
-                let at = format!("{path}.{k}");
+                let (at, at_ptr) = (format!("{path}.{k}"), format!("{ptr}{}", pointer_step(k)));
                 match b.get(k) {
-                    None if !is_empty(v) => out.push(at),
-                    None => {}
-                    Some(bv) => dropped(v, bv, &at, out),
+                    None => out.push((at, at_ptr, v.clone())),
+                    Some(bv) => dropped(v, bv, &at, &at_ptr, out),
                 }
             }
         }
         (Value::Array(s), Value::Array(b)) if s.len() == b.len() => {
             for (i, (v, bv)) in s.iter().zip(b).enumerate() {
-                dropped(v, bv, &format!("{path}[{i}]"), out);
+                dropped(v, bv, &format!("{path}[{i}]"), &format!("{ptr}/{i}"), out);
             }
         }
         _ => {}
     }
 }
 
+/// The paths of fields in `saved` that reading it with `reread` (read by
+/// this build and written again; `None` when it cannot be read) would
+/// lose: dropped holding a value, or dropped holding an empty value that
+/// a non-empty one of its type does not bring back (module doc).
+fn lost_fields(saved: &Value, path: &str, reread: impl Fn(&Value) -> Option<Value>) -> Vec<String> {
+    let Some(back) = reread(saved) else { return Vec::new() };
+    let mut missing = Vec::new();
+    dropped(saved, &back, path, "", &mut missing);
+    missing
+        .into_iter()
+        .filter(|(_, ptr, v)| {
+            let Some(p) = probe(v) else { return false };
+            if p == *v {
+                return true;
+            }
+            let mut tried = saved.clone();
+            if let Some(slot) = tried.pointer_mut(ptr) {
+                *slot = p;
+            }
+            reread(&tried).is_some_and(|b| b.pointer(ptr).is_none())
+        })
+        .map(|(at, _, _)| at)
+        .collect()
+}
+
+/// `v` without `params.compound_subgraph`: nested graphs are checked as
+/// nodes of their own.
+fn without_subgraph(mut v: Value, params_at_root: bool) -> Value {
+    let params = if params_at_root { Some(&mut v) } else { v.get_mut("params") };
+    if let Some(p) = params.and_then(Value::as_object_mut) {
+        p.remove("compound_subgraph");
+    }
+    v
+}
+
 /// What a saved set of node settings (a `NodeParams` on its own, as a
 /// tool preset keeps one) holds that this build would lose by reading
-/// it: the paths of fields it would drop. Empty when nothing would be
-/// lost, and one entry naming the error if it cannot be read at all.
+/// it: the paths of fields it would drop, and any node a nested graph
+/// holds that it would lose. Empty when nothing would be lost, and one
+/// entry naming the error if it cannot be read at all.
 pub fn params_losses(saved: &Value) -> Vec<String> {
-    match serde_json::from_value::<NodeParams>(saved.clone()) {
-        Ok(p) => {
-            let mut out = Vec::new();
-            dropped(saved, &serde_json::to_value(&p).unwrap_or(Value::Null), "params", &mut out);
-            out
-        }
-        Err(e) => vec![format!("settings this Klipp cannot read ({e})")],
+    if let Err(e) = serde_json::from_value::<NodeParams>(saved.clone()) {
+        return vec![format!("settings this Klipp cannot read ({e})")];
     }
+    let reread = |v: &Value| {
+        let p = serde_json::from_value::<NodeParams>(v.clone()).ok()?;
+        Some(without_subgraph(serde_json::to_value(&p).ok()?, true))
+    };
+    let mut out = lost_fields(&without_subgraph(saved.clone(), true), "params", reread);
+    if let Some(sub) = saved.get("compound_subgraph") {
+        walk(sub, "params.compound_subgraph", &mut out);
+    }
+    out
 }
 
 /// Whether `text` is JSON this build reads in full: it parses, and no
@@ -109,24 +168,16 @@ fn check_node(saved: &Value, path: &str, out: &mut Vec<String>) {
         }
         Ok(_) => {}
     }
-    let node: Node = match serde_json::from_value(saved.clone()) {
-        Ok(n) => n,
-        Err(e) => {
-            out.push(format!("a grade node this Klipp cannot read at {path} ({e})"));
-            return;
-        }
-    };
-    let back = serde_json::to_value(&node).unwrap_or(Value::Null);
-    let mut fields = Vec::new();
-    // Nested graphs (a compound's) are walked as nodes of their own.
-    let mut saved_shallow = saved.clone();
-    let mut back_shallow = back;
-    for v in [&mut saved_shallow, &mut back_shallow] {
-        if let Some(p) = v.get_mut("params").and_then(Value::as_object_mut) {
-            p.remove("compound_subgraph");
-        }
+    if let Err(e) = serde_json::from_value::<Node>(saved.clone()) {
+        out.push(format!("a grade node this Klipp cannot read at {path} ({e})"));
+        return;
     }
-    dropped(&saved_shallow, &back_shallow, path, &mut fields);
+    // Nested graphs (a compound's) are walked as nodes of their own.
+    let reread = |v: &Value| {
+        let n = serde_json::from_value::<Node>(v.clone()).ok()?;
+        Some(without_subgraph(serde_json::to_value(&n).ok()?, false))
+    };
+    let fields = lost_fields(&without_subgraph(saved.clone(), false), path, reread);
     if !fields.is_empty() {
         out.push(format!("settings this Klipp does not know ({}) on the grade node at {path}", fields.join(", ")));
     }
@@ -167,6 +218,39 @@ mod tests {
         let l = losses(&node("Exposure", serde_json::json!({ "exposure": 0.5, "sparkle": 2.0, "unused": null })));
         assert_eq!(l.len(), 1, "{l:?}");
         assert!(l[0].contains("params.sparkle") && !l[0].contains("unused"), "{l:?}");
+    }
+
+    /// #1050: an unknown field holding 0, `false`, "" or [] is lost too,
+    /// and a newer build's default for it need not be that value.
+    #[test]
+    fn an_unknown_setting_holding_an_empty_value_is_named() {
+        for empty in [Value::from(0), Value::from(0.0), Value::Bool(false), Value::from(""), Value::Array(vec![])] {
+            let l = losses(&node("Exposure", serde_json::json!({ "exposure": 0.5, "future_mix": empty })));
+            assert!(l.len() == 1 && l[0].contains("params.future_mix"), "{empty}: {l:?}");
+            let l = params_losses(&serde_json::json!({ "exposure": 0.5, "future_mix": empty }));
+            assert_eq!(l, vec!["params.future_mix".to_string()], "{empty}");
+        }
+    }
+
+    /// A known field this build leaves out of what it writes when it holds
+    /// its default (a mask's empty tracking keys) loses nothing.
+    #[test]
+    fn a_known_setting_left_out_at_its_default_is_not_named() {
+        let mut mask = serde_json::to_value(klipp_core::Mask::default()).unwrap();
+        mask["keyframes"]["track_x"] = Value::Array(vec![]);
+        let params = serde_json::json!({ "masks": { "masks": [mask] } });
+        assert!(losses(&node("Exposure", params.clone())).is_empty(), "{:?}", losses(&node("Exposure", params.clone())));
+        assert!(params_losses(&params).is_empty(), "{:?}", params_losses(&params));
+    }
+
+    /// #1050: a tool preset's settings can hold a compound's graph; a node
+    /// in it this build does not know is named.
+    #[test]
+    fn a_settings_sets_nested_graph_is_checked() {
+        let mut graph = serde_json::to_value(crate::NodeGraph::default()).unwrap();
+        graph["nodes"][1]["kind"] = Value::from("HolographicKey");
+        let l = params_losses(&serde_json::json!({ "compound_subgraph": graph }));
+        assert!(l.len() == 1 && l[0].contains("HolographicKey") && l[0].contains("params.compound_subgraph"), "{l:?}");
     }
 
     #[test]
