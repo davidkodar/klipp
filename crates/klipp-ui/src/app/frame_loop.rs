@@ -1158,9 +1158,16 @@ impl KlippApp {
                 self.colour_check.show(ctx, &self.state, &fb, &self.theme, &mut open)
             };
             self.state.show_colour_check = open;
-            if action == crate::panels::colour_check::ColourAction::SelfCheck {
-                self.run_colour_self_check();
+            match action {
+                crate::panels::colour_check::ColourAction::None => {}
+                crate::panels::colour_check::ColourAction::SelfCheck => self.run_colour_self_check(),
+                tool => self.run_colour_tool(tool),
             }
+        }
+        // A colour tool keeps running with the window closed; its answer
+        // is there when it is opened again.
+        if self.colour_tool_reply.is_some() {
+            self.take_colour_tool_reply(ctx);
         }
 
         // Sound Over Time window: a whole file's sound at once.

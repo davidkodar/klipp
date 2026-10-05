@@ -2663,6 +2663,108 @@ impl KlippApp {
         }
         self.colour_check.selfcheck = Some((ok, said.join("\n")));
     }
+
+    /// The runner the Colour Check window's tools use (#897).
+    pub fn set_local_control(&mut self, run: crate::app::LocalControl) {
+        self.local_control = Some(run);
+        self.colour_check.tools_available = true;
+    }
+
+    /// Start a measured colour tool on a worker thread: it renders and
+    /// measures frames through this UI, so it must not run on it.
+    pub(super) fn run_colour_tool(&mut self, action: crate::panels::colour_check::ColourAction) {
+        let Some(run) = self.local_control.clone() else { return };
+        if self.colour_tool_reply.is_some() {
+            return;
+        }
+        let selected_media = (self.state.selected_media_ids.len() == 1).then(|| self.state.selected_media_ids.iter().next().copied()).flatten();
+        let Some(request) = colour_tool_request(action, self.state.selected_clip, &self.state.selected_clips, selected_media) else { return };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new().name("klipp-colour-tool".into()).spawn(move || {
+            let _ = tx.send(run(request));
+        });
+        if spawned.is_ok() {
+            self.colour_tool_reply = Some(rx);
+            self.colour_check.tool_running = Some(action);
+            self.colour_check.tool_result = None;
+        }
+    }
+
+    /// The running colour tool's answer, put in the window when it comes.
+    pub(super) fn take_colour_tool_reply(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.colour_tool_reply else { return };
+        let reply = match rx.try_recv() {
+            Ok(reply) => reply,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                // Asleep, egui would not look again until the mouse moved.
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+                return;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("the tool stopped without an answer".into()),
+        };
+        let name = self.colour_check.tool_running.take().map(|a| a.name()).unwrap_or("The tool");
+        self.colour_tool_reply = None;
+        self.colour_check.tool_result = Some(match reply {
+            Ok(v) => (true, v["text"].as_str().map(str::to_string).unwrap_or_else(|| format!("{name}: done."))),
+            Err(why) => (false, format!("{name}: {why}")),
+        });
+    }
+}
+
+/// The control request a Colour Check tool sends (#897), or `None` when
+/// what it acts on is not selected. Match to Hero takes the selected
+/// shots when there are two or more, else the whole picture track.
+fn colour_tool_request(
+    action: crate::panels::colour_check::ColourAction,
+    clip: Option<klipp_core::ClipId>,
+    clips: &[klipp_core::ClipId],
+    media: Option<klipp_core::MediaId>,
+) -> Option<serde_json::Value> {
+    use crate::panels::colour_check::ColourAction as A;
+    use serde_json::json;
+    Some(match action {
+        A::MatchToHero => {
+            let mut v = json!({ "method": "match_scenes", "apply": true });
+            if clips.len() >= 2 {
+                v["clip_ids"] = json!(clips.iter().map(|c| c.0.to_string()).collect::<Vec<_>>());
+            }
+            v
+        }
+        A::BalanceSkin => json!({ "method": "skin_balance", "clip_id": clip?.0.to_string(), "apply": true }),
+        A::GradeToLook => json!({ "method": "grade_to_target", "clip_id": clip?.0.to_string(), "apply": true }),
+        A::AdoptLookFromTimeline => json!({ "method": "adopt_look", "from_timeline": true, "apply": true }),
+        A::AdoptLookFromMedia => json!({ "method": "adopt_look", "media_id": media?.0.to_string(), "apply": true }),
+        A::None | A::SelfCheck => return None,
+    })
+}
+
+#[cfg(test)]
+mod colour_tool_tests {
+    use super::colour_tool_request;
+    use crate::panels::colour_check::ColourAction;
+    use klipp_core::{ClipId, MediaId};
+
+    /// Each button asks for what an assistant would, applied; a tool
+    /// with nothing selected to act on asks for nothing.
+    #[test]
+    fn each_tool_sends_its_request() {
+        let (a, b) = (ClipId::new(), ClipId::new());
+        let req = |action, clip, clips: &[ClipId], media| colour_tool_request(action, clip, clips, media);
+        let one = req(ColourAction::MatchToHero, Some(a), &[a], None).unwrap();
+        assert_eq!(one["method"], "match_scenes");
+        assert!(one.get("clip_ids").is_none(), "one shot selected: the whole track");
+        let two = req(ColourAction::MatchToHero, Some(a), &[a, b], None).unwrap();
+        assert_eq!(two["clip_ids"].as_array().unwrap().len(), 2);
+        let skin = req(ColourAction::BalanceSkin, Some(a), &[a], None).unwrap();
+        assert_eq!((skin["method"].as_str(), skin["clip_id"].as_str(), skin["apply"].as_bool()), (Some("skin_balance"), Some(a.0.to_string().as_str()), Some(true)));
+        assert_eq!(req(ColourAction::GradeToLook, Some(a), &[], None).unwrap()["method"], "grade_to_target");
+        assert!(req(ColourAction::BalanceSkin, None, &[], None).is_none(), "no clip, no request");
+        let m = MediaId::new();
+        assert_eq!(req(ColourAction::AdoptLookFromMedia, None, &[], Some(m)).unwrap()["media_id"], m.0.to_string());
+        assert!(req(ColourAction::AdoptLookFromMedia, None, &[], None).is_none());
+        assert_eq!(req(ColourAction::AdoptLookFromTimeline, None, &[], None).unwrap()["from_timeline"], true);
+        assert!(req(ColourAction::SelfCheck, None, &[], None).is_none());
+    }
 }
 
 /// `value + adjustment` held to the temperature and tint sliders' ±50,
