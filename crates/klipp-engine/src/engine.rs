@@ -4980,6 +4980,13 @@ impl PlaybackEngine {
         let mut display_frame = None;
         let mut q_len = 0usize;
 
+        // A file that ends before its clip does — a still image's one
+        // frame, a file shorter than the clip says — holds its last frame
+        // to the clip's end, as the export does (#978): its end of stream
+        // stays queued until then, and the playhead follows the clock.
+        // Taken at once, it cut the clip off at the file's end, and a
+        // still played from inside it snapped back and stalled.
+        let clip_runs_on = self.clip_runs_on(current_source_secs);
         if let Some(dec) = &self.v1_decoder {
             let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
             q_len = queue.len();
@@ -4988,6 +4995,9 @@ impl PlaybackEngine {
                 match queue.front() {
                     None => break,
                     Some(f) if f.is_eof => {
+                        if clip_runs_on {
+                            break;
+                        }
                         let frame = queue.pop().unwrap();
                         display_frame = Some(frame);
                         break;
@@ -5290,6 +5300,23 @@ impl PlaybackEngine {
         }
 
         let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+    }
+
+    /// Whether the current clip still runs at `current_source_secs` on
+    /// the playback clock: the playhead the clock puts in it is short of
+    /// its end on the timeline by more than half a frame (#978).
+    fn clip_runs_on(&self, current_source_secs: f64) -> bool {
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let Some(clip) = seq.tracks.get(self.current_track_index).and_then(|t| t.clips.get(self.current_clip_index)) else {
+            return false;
+        };
+        let elapsed = if let Some(r) = self.ramp_clip_relative_secs() {
+            r
+        } else {
+            ((current_source_secs - self.clip_source_start) / self.clip_speed.max(0.001)).max(0.0)
+        };
+        let at = self.clip_timeline_start.to_secs_f64() + elapsed;
+        at < clip.timeline_out.to_secs_f64() - 0.5 * self.fps.frame_duration_secs()
     }
 
     fn advance_to_next_clip(&mut self) {

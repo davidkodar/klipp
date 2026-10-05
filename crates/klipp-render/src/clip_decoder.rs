@@ -156,6 +156,8 @@ pub struct RenderDecoder {
     eof_sent: bool,
     frames_decoded: u64,
     frames_skipped: u64,
+    /// A still image (#978): opened at its one frame whatever the in point.
+    still: bool,
 }
 
 /// A scene-referred source frame (PQ, HLG, camera log) as the viewer's
@@ -287,6 +289,11 @@ impl RenderDecoder {
             crate::sws_colour::set_yuv_to_rgb(scaler.as_mut_ptr() as *mut _, yuv_matrix, yuv_range);
         }
 
+        // A still image is one frame at time 0 (#978): from any in point
+        // it is that frame, which a seek and a skip to the in point as
+        // into a video would pass by, leaving the clip black.
+        let still = klipp_core::media_extensions::is_still_image_demuxer(format_ctx.format().name());
+        let source_start_secs = if still { 0.0 } else { source_start_secs };
         if source_start_secs > 0.0 {
             let ts = (source_start_secs * 1_000_000.0) as i64;
             let _ = format_ctx.seek(ts, ..ts);
@@ -335,7 +342,14 @@ impl RenderDecoder {
             eof_sent: false,
             frames_decoded: 0,
             frames_skipped: 0,
+            still,
         })
+    }
+
+    /// Whether the file is a still image: its one frame is the clip's
+    /// picture throughout, not a file that ended early.
+    pub fn is_still(&self) -> bool {
+        self.still
     }
 
     /// Decode as this camera log format — the media's effective format,

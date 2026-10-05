@@ -2383,6 +2383,13 @@ fn decode_thread_main(
 
     let stream_index = video_stream.index();
     let time_base = video_stream.time_base();
+    // A still image is one frame at time 0 (#978). Seeking into it as
+    // into a video lands past that frame and finds nothing, so a clip of
+    // it was black wherever its source time was not 0. Every seek reads
+    // the image again from the start and stamps it with the time asked.
+    let still = klipp_core::media_extensions::is_still_image_demuxer(format_ctx.format().name());
+    // The time the next frame is stamped with, for a still.
+    let mut still_at: Option<f64> = None;
 
     // Decoder selection ladder (each tier is attempted; if its
     // `decoder.video()` open fails — codec / profile not supported,
@@ -2592,6 +2599,7 @@ fn decode_thread_main(
         }
         if let Some((secs, epoch, decode_on)) = latest_seek {
             seek_epoch = epoch;
+            let (secs, decode_on) = still_seek(still, secs, decode_on, &mut still_at);
             if decode_on {
                 // Keep decoding forward and skip up to the target: a
                 // scrub steps a frame or two at a time, and a container
@@ -2669,6 +2677,7 @@ fn decode_thread_main(
                 if inner_return { return; }
                 if let Some((secs, epoch, decode_on)) = latest_inner_seek {
                     seek_epoch = epoch;
+                    let (secs, decode_on) = still_seek(still, secs, decode_on, &mut still_at);
                     if decode_on {
                         let kept = frame_queue.lock().unwrap_or_else(|e| e.into_inner()).keep_from(secs - SEEK_PTS_SLACK, epoch);
                         debug!("decode_thread: seek to {secs:.3}s by decoding on, {kept} queued (epoch {epoch}) (in drain)");
@@ -2781,7 +2790,7 @@ fn decode_thread_main(
             // as of Phase 10a. Consumers on the legacy u8 path call
             // [`FrameQueue::pop_u8`] which does the conversion on their
             // side; linear consumers read it directly.
-            linear_frame.pts = RationalTime::from_secs_f64(pts_secs, 90000);
+            linear_frame.pts = RationalTime::from_secs_f64(still_at.take().unwrap_or(pts_secs), 90000);
             // Which seek this frame belongs to. Stamped here, at the push,
             // because this is the only place that knows: a frame already in
             // flight when a seek arrives was converted under the old epoch.
@@ -2884,6 +2893,18 @@ fn decode_thread_main(
             frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(eof);
             eof_sent = true;
         }
+    }
+}
+
+/// A seek as the decode thread carries it out (#978): for a still image,
+/// a container seek to its one frame at 0, remembering in `still_at` the
+/// time that frame is to be stamped with; anything else as asked.
+fn still_seek(still: bool, secs: f64, decode_on: bool, still_at: &mut Option<f64>) -> (f64, bool) {
+    if still {
+        *still_at = Some(secs);
+        (0.0, false)
+    } else {
+        (secs, decode_on)
     }
 }
 

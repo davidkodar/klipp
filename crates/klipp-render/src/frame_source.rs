@@ -110,7 +110,14 @@ impl ClipStream {
         // Holding the last frame past the file's end: say so once, so
         // a still where motion was expected can be traced to the file
         // being shorter than the timeline says.
-        if self.ended && self.error.is_none() && !self.held_warned {
+        // A clip whose file gave no frame at all would export black and
+        // say it succeeded (#978): it fails the export instead, naming it.
+        if self.ended && self.error.is_none() && self.current.is_none() {
+            self.error = Some(format!("{} gave no picture for the clip at {secs:.3}s: it could not be decoded there", self.path.display()));
+        }
+        // A still's one frame is its picture throughout, not a file
+        // that ended early: nothing to say.
+        if self.ended && self.error.is_none() && !self.held_warned && !self.decoder.is_still() {
             if let Some(c) = &self.current {
                 if secs > c.pts + 2.0 * half_frame {
                     self.held_warned = true;
