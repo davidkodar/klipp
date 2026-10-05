@@ -54,6 +54,7 @@ pub mod homography;
 pub mod light;
 pub mod nv12_gpu;
 pub mod p010_gpu;
+pub mod registry;
 pub mod rolling_shutter;
 pub mod scene_detect;
 pub mod stabilization;

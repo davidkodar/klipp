@@ -39,6 +39,7 @@ pub mod params;
 pub mod defaults;
 pub mod executor;
 pub mod auto_layout;
+pub mod registry;
 
 pub use graph::{CannotAppend, Edge, Node, NodeFrame, NodeFrameId, NodeGraph, NodeId, NodePos, NodeStickyNote, NodeStickyNoteId, PHANTOM_CORRECTOR_ID, effective_signal_role_at};
 pub use auto_layout::auto_layout;
