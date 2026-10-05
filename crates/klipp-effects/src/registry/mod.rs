@@ -24,6 +24,7 @@
 use crate::BuiltinEffect;
 
 mod colour;
+mod film;
 mod geometry;
 
 /// What kind of operation a node type is, for grouping in the browser and
@@ -306,7 +307,7 @@ pub struct EffectType {
 
 /// Every built-in effect described so far.
 pub fn effect_types() -> impl Iterator<Item = &'static EffectType> {
-    colour::TYPES.iter().chain(geometry::TYPES)
+    colour::TYPES.iter().chain(geometry::TYPES).chain(film::TYPES)
 }
 
 /// The description of the effect saved under `tag`, if it is described.
