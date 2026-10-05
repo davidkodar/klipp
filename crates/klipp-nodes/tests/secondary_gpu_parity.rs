@@ -580,3 +580,41 @@ fn two_stacked_secondaries_match_the_cpu_and_both_ride_the_chain() {
         "the second secondary changed nothing; its matte may be stale or dropped ({changed})",
     );
 }
+
+/// A qualifier's matte refinement (clean black and white, shrink/grow,
+/// blur) is applied in a recognised secondary too (#1013). The fused
+/// GPU path keyed with the window alone and dropped the refinement, so
+/// the same grade selected a harder, unshrunk matte on the GPU.
+#[test]
+fn a_refined_qualifier_in_a_secondary_matches_the_cpu() {
+    let refined = |graph: &mut NodeGraph| {
+        for n in &mut graph.nodes {
+            if let Some(q) = n.params.qualifier.as_mut() {
+                q.clean_black = 0.15;
+                q.clean_white = 0.15;
+                q.shrink_grow = 2.0;
+                q.blur = 3.0;
+            }
+        }
+    };
+    let mut graph = secondary_graph(Some(1.0));
+    refined(&mut graph);
+    let (cpu, _) = run(&graph, false);
+    let (gpu, stats) = run(&graph, true);
+    if stats.extends == 0 && stats.flushes == 0 {
+        eprintln!("skipping: no usable GPU");
+        return;
+    }
+    let worst = |a: &[f32], b: &[f32]| {
+        a.chunks_exact(4)
+            .zip(b.chunks_exact(4))
+            .map(|(c, g)| (0..3).map(|i| (c[i] - g[i]).abs()).fold(0.0f32, f32::max))
+            .fold(0.0f32, f32::max)
+    };
+    // The refinement has to change the picture, or the comparison below
+    // would pass with it dropped on both sides.
+    let (unrefined, _) = run(&secondary_graph(Some(1.0)), false);
+    assert!(worst(&cpu, &unrefined) > 0.01, "the refinement changed nothing ({})", worst(&cpu, &unrefined));
+    let off = worst(&cpu, &gpu);
+    assert!(off < 0.001, "a refined secondary differs between CPU and GPU by {off}");
+}
