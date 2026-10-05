@@ -923,6 +923,13 @@ impl Renderer {
         if title_motion_blur(clip).is_some() || may_blur(seq, clip) {
             return Single::ForTheStack;
         }
+        // Temporal noise reduction too: it averages CPU-decoded
+        // neighbours into the source, and the effect list checked below
+        // has had it lifted out, so this path would render the clip
+        // noisy (#996).
+        if temporal_denoise_of(clip, time, fps).is_some() {
+            return Single::ForTheStack;
+        }
         // Anything the grade panel asks for is read off the linear frame
         // or a node's output, neither of which this path produces.
         let i = &self.inspect;
@@ -1168,6 +1175,10 @@ impl Renderer {
                 Some("title motion blur")
             } else if may_blur(seq, c) {
                 Some("motion blur")
+            } else if temporal_denoise_of(c, time, fps).is_some() {
+                // Run on the CPU-decoded source and its neighbours, and
+                // lifted out of the effects the stack runs (#996).
+                Some("temporal noise reduction")
             } else {
                 None
             }
