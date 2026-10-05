@@ -34,6 +34,24 @@ pub fn backup_root(home: &Path) -> PathBuf {
 /// Folder names whose contents are never a project to convert in place.
 const SKIPPED_DIRS: &[&str] = &["target", "node_modules", ".cache", ".klipp-cache"];
 
+/// Whether `path`, found scanning `home`, is in a test run's scratch: in
+/// a folder named `tmp`, or starting `tmp-` or `tmp_`, below `home` (or
+/// below the system's temporary folder), or anywhere in the system's
+/// temporary folder when `home` is not itself inside it. Its projects are
+/// made by tests and sessions, never a user's, and the conversion must
+/// never rewrite them; they are counted, not listed (#1054).
+pub fn is_scratch(path: &Path, home: &Path) -> bool {
+    let tmp = std::env::temp_dir();
+    if path.starts_with(&tmp) && !home.starts_with(&tmp) {
+        return true;
+    }
+    let below = path.strip_prefix(home).or_else(|_| path.strip_prefix(&tmp)).unwrap_or(path);
+    below.components().any(|c| {
+        let n = c.as_os_str().to_string_lossy();
+        n == "tmp" || n.starts_with("tmp-") || n.starts_with("tmp_")
+    })
+}
+
 /// Whether `dir` is a folder the walk does not enter.
 fn skipped(dir: &Path, home: &Path) -> bool {
     let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -63,27 +81,33 @@ pub fn is_klipp_project(dir: &Path) -> bool {
 }
 
 /// Every Klipp project folder under `home`, not following symbolic links,
-/// sorted.
-pub fn discover(home: &Path) -> Vec<PathBuf> {
+/// sorted, and how many more sit in test runs' scratch ([`is_scratch`]).
+pub fn discover(home: &Path) -> (Vec<PathBuf>, usize) {
     let mut found = BTreeSet::new();
-    let mut stack = vec![home.to_path_buf()];
-    while let Some(dir) = stack.pop() {
+    let mut scratch = 0;
+    let mut stack = vec![(home.to_path_buf(), false)];
+    while let Some((dir, in_scratch)) = stack.pop() {
         if dir != home && skipped(&dir, home) {
             continue;
         }
+        let in_scratch = in_scratch || is_scratch(&dir, home);
         if is_klipp_project(&dir) {
-            found.insert(dir.clone());
+            if in_scratch {
+                scratch += 1;
+            } else {
+                found.insert(dir.clone());
+            }
         }
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         for e in entries.flatten() {
             // Not through links: a link into another tree would list its
             // projects twice, or a whole other disk.
             if e.file_type().is_ok_and(|t| t.is_dir()) {
-                stack.push(e.path());
+                stack.push((e.path(), in_scratch));
             }
         }
     }
-    found.into_iter().collect()
+    (found.into_iter().collect(), scratch)
 }
 
 /// The app's preferences file, which holds the recent-projects list.
@@ -292,6 +316,9 @@ pub struct Report {
     pub projects: Vec<ProjectScan>,
     /// Paths in the recent list that are not projects (moved, deleted).
     pub recent_missing: Vec<PathBuf>,
+    /// Projects in test runs' scratch, under the home directory or in the
+    /// recent list, left out: counted, never listed.
+    pub scratch_skipped: usize,
     pub presets: Presets,
     pub running: crate::running::Running,
     pub scanned_at: u64,
@@ -313,6 +340,7 @@ pub struct Counts {
     pub with_symlinks: usize,
     pub symlinked_projects: usize,
     pub on_other_filesystem: usize,
+    pub scratch_skipped: usize,
     pub rewritten_bytes: u64,
     pub backup_bytes: u64,
 }
@@ -334,6 +362,7 @@ impl Report {
             with_symlinks: n(|s| !s.symlinks.is_empty()),
             symlinked_projects: n(|s| s.is_symlink),
             on_other_filesystem: n(|s| s.other_filesystem),
+            scratch_skipped: self.scratch_skipped,
             rewritten_bytes: p.iter().map(|s| s.rewritten_bytes).sum(),
             backup_bytes: p.iter().map(|s| s.backup_bytes).sum(),
         }
@@ -373,12 +402,16 @@ impl Report {
 pub fn scan(home: &Path, config_dir: &Path) -> Report {
     let backup = backup_root(home);
     let device = std::fs::metadata(&backup).or_else(|_| std::fs::metadata(home)).map(|m| m.dev()).ok();
-    let walked = discover(home);
+    let (walked, mut scratch_skipped) = discover(home);
     let prefs = prefs_path(config_dir);
     let mut projects: Vec<ProjectScan> = walked.iter().map(|d| scan_project(d, false, device)).collect();
     let mut recent_missing = Vec::new();
     for r in recent_projects(&prefs) {
         if walked.contains(&r) {
+            continue;
+        }
+        if is_scratch(&r, home) {
+            scratch_skipped += usize::from(is_klipp_project(&r));
             continue;
         }
         if is_klipp_project(&r) {
@@ -397,6 +430,7 @@ pub fn scan(home: &Path, config_dir: &Path) -> Report {
         backup_root: backup,
         projects,
         recent_missing,
+        scratch_skipped,
         presets: presets(config_dir),
         running: crate::running::running(),
         scanned_at,

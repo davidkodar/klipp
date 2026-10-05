@@ -68,7 +68,7 @@ fn only_klipp_projects_outside_git_trees_and_build_folders_are_found() {
     project(&home.join("Videos/Trip.klipp.klipp-v1"));
     project(&home.join(".local/share/Trash/files/Old.klipp"));
 
-    assert_eq!(discover(&home), vec![kept]);
+    assert_eq!(discover(&home).0, vec![kept]);
     let _ = std::fs::remove_dir_all(&home);
 }
 
@@ -80,7 +80,7 @@ fn a_collected_project_is_found() {
     let seq = vec![klipp_timeline::Sequence::new_default()];
     let options = klipp_project::consolidate::ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new() };
     klipp_project::consolidate::consolidate_project(&source, &klipp_media::MediaPool::new(), &seq, &Default::default(), options, None).unwrap();
-    assert!(discover(&home).contains(&dest), "the Collect Project destination is found: {:?}", discover(&home));
+    assert!(discover(&home).0.contains(&dest), "the Collect Project destination is found: {:?}", discover(&home));
     let _ = std::fs::remove_dir_all(&home);
 }
 
@@ -121,7 +121,7 @@ fn links_are_reported_and_not_followed() {
     std::os::unix::fs::symlink(&real, home.join("Linked.klipp")).unwrap();
     std::fs::create_dir_all(home.join("Shared")).unwrap();
     std::os::unix::fs::symlink(home.join("Shared"), real.join("media/shared")).unwrap();
-    let found = discover(&home);
+    let found = discover(&home).0;
     assert_eq!(found, vec![real.clone()], "the linked folder is not walked into, so the project is listed once");
     let s = scan_project(&real, false, None);
     assert_eq!(s.symlinks, vec![PathBuf::from("media/shared")]);
@@ -214,4 +214,30 @@ fn only_a_control_socket_that_answers_counts() {
     let _c = std::os::unix::net::UnixListener::bind(&custom).unwrap();
     assert_eq!(answering_sockets(Some(&run), Some(&custom)), vec![custom.clone(), live]);
     let _ = std::fs::remove_dir_all(&run);
+}
+
+#[test]
+fn projects_in_a_test_runs_scratch_are_counted_not_listed() {
+    let home = temp("scratch");
+    let kept = project(&home.join("Videos/Trip.klipp"));
+    project(&home.join("Work/tmp-build/run1/a.klipp"));
+    project(&home.join("Work/tmp-build/run2/b.klipp"));
+    project(&home.join(".claude/jobs/abc/tmp/c.klipp"));
+    project(&home.join("Work/tmp_de/d.klipp"));
+    let (found, scratch) = discover(&home);
+    assert_eq!(found, vec![kept]);
+    assert_eq!(scratch, 4, "every scratch project is counted");
+    // In the recent list too: a project in a session's tmp folder.
+    let away = std::env::temp_dir().join(format!("klipp_scratch_recent_{}", std::process::id()));
+    let outside = project(&away.join("tmp/Session.klipp"));
+    let config = home.join(".config");
+    std::fs::create_dir_all(config.join("klipp")).unwrap();
+    std::fs::write(config.join("klipp/preferences.json"), serde_json::json!({ "general": { "recent_projects": [ { "path": outside } ] } }).to_string()).unwrap();
+    let report = scan(&home, &config);
+    assert_eq!(report.projects.len(), 1);
+    assert_eq!(report.scratch_skipped, 5);
+    assert_eq!(report.counts().scratch_skipped, 5);
+    for d in [&home, &away] {
+        let _ = std::fs::remove_dir_all(d);
+    }
 }
