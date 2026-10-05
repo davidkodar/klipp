@@ -522,6 +522,10 @@ impl KlippApp {
                     if !r.left_out.is_empty() {
                         msg.push_str(&format!(", {} unused left out", r.left_out.len()));
                     }
+                    let whole = r.warnings.iter().filter(|w| w.contains("copied whole")).count();
+                    if whole > 0 {
+                        msg.push_str(&format!(", {whole} copied whole as they could not be cut cleanly"));
+                    }
                     if !r.offline_skipped.is_empty() {
                         msg.push_str(&format!(", {} offline skipped", r.offline_skipped.len()));
                     }

@@ -72,16 +72,25 @@ pub fn used_ranges(pool: &MediaPool, sequences: &[Sequence], handle: f64) -> Has
         }
     }
     let mut raw: HashMap<PathBuf, (f64, Vec<Range>)> = HashMap::new();
-    for clip in sequences.iter().flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter()) {
-        let Some(item) = clip.media_id().and_then(|id| pool.get(&id)) else { continue };
-        if item.kind != MediaItemKind::File || whole.contains(&item.path) {
-            continue;
+    for track in sequences.iter().flat_map(|s| s.tracks.iter()) {
+        for clip in &track.clips {
+            let Some(item) = clip.media_id().and_then(|id| pool.get(&id)) else { continue };
+            if item.kind != MediaItemKind::File || whole.contains(&item.path) {
+                continue;
+            }
+            let duration = item.duration.to_secs_f64();
+            let (a, b) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
+            // A transition reads the outgoing clip's file past its out and
+            // the incoming's before its in, by up to its length at the
+            // clip's speed: kept whatever the handle.
+            let speed = clip.speed.abs().max(1e-6);
+            let into = track.transitions.iter().filter(|t| t.clip_b_id == clip.id).map(|t| t.duration.to_secs_f64() * speed).fold(0.0, f64::max);
+            let out_of = track.transitions.iter().filter(|t| t.clip_a_id == clip.id).map(|t| t.duration.to_secs_f64() * speed).fold(0.0, f64::max);
+            let (before, after) = if clip.speed < 0.0 { (out_of.max(into), out_of.max(into)) } else { (into, out_of) };
+            let entry = raw.entry(item.path.clone()).or_insert((duration, Vec::new()));
+            entry.0 = entry.0.max(duration);
+            entry.1.push(Range { start: a.min(b) - before, end: a.max(b) + after });
         }
-        let duration = item.duration.to_secs_f64();
-        let (a, b) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
-        let entry = raw.entry(item.path.clone()).or_insert((duration, Vec::new()));
-        entry.0 = entry.0.max(duration);
-        entry.1.push(Range { start: a.min(b), end: a.max(b) });
     }
     raw.into_iter().map(|(path, (duration, ranges))| (path, merge(ranges, handle, duration))).collect()
 }
@@ -121,10 +130,30 @@ pub struct Segment {
     pub path: PathBuf,
 }
 
+/// How far past a cut's end a clip may reach and still be held by it: a
+/// frame or two of container-versus-stream rounding (#963 review).
+const END_SLACK_SECS: f64 = 0.1;
+
 impl Segment {
     fn holds(&self, a: f64, b: f64) -> bool {
-        a >= self.start - 1e-6 && b <= self.start + self.duration + 1e-3
+        a >= self.start - 1e-6 && b <= self.start + self.duration + END_SLACK_SECS
     }
+}
+
+/// The cut files with a clip no segment of theirs holds (#963 review):
+/// remapped, such a clip would keep its whole-file times on a cut file
+/// and play the wrong frames, so the file is copied whole instead.
+pub fn unheld(pool: &MediaPool, sequences: &[Sequence], cuts: &HashMap<PathBuf, Vec<Segment>>) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for clip in sequences.iter().flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter()) {
+        let Some(item) = clip.media_id().and_then(|id| pool.get(&id)) else { continue };
+        let Some(segments) = cuts.get(&item.path) else { continue };
+        let (a, b) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
+        if !segments.iter().any(|s| s.holds(a.min(b), a.max(b))) && !out.contains(&item.path) {
+            out.push(item.path.clone());
+        }
+    }
+    out
 }
 
 /// The pool and sequences moved onto the cut files: each clip on the
@@ -306,12 +335,19 @@ pub fn cut(item: &MediaItem, range: Range, dst: &Path) -> Result<Segment, String
         Cutting::VideoCopy => keyframe_before(src, video_start, range.start).ok_or("no keyframe found before the stretch")?,
         Cutting::Pcm => range.start,
     };
-    let duration = range.end - start;
+    // A stretch that reaches the file's end is cut to the end of the
+    // file, not to its probed length: a clip may run a frame past that.
+    let to_end = range.end >= item.duration.to_secs_f64() - 1e-3;
+    let mut duration = range.end - start;
     // ffmpeg's -ss counts from the container's start; a hair past the
     // keyframe so the seek lands on it, not the one before.
     let seek = video_start - format_start + start + 0.0001;
     let mut cmd = Command::new("ffmpeg");
-    cmd.args(["-nostdin", "-v", "error", "-y", "-ss", &format!("{seek:.6}"), "-i"]).arg(src).args(["-t", &format!("{duration:.6}"), "-map", "0"]);
+    cmd.args(["-nostdin", "-v", "error", "-y", "-ss", &format!("{seek:.6}"), "-i"]).arg(src);
+    if !to_end {
+        cmd.args(["-t", &format!("{duration:.6}")]);
+    }
+    cmd.args(["-map", "0"]);
     match how {
         Cutting::VideoCopy => cmd.args(["-c", "copy", "-avoid_negative_ts", "make_zero"]),
         Cutting::Pcm => cmd.args(["-c:a", &item.audio_codec]),
@@ -320,6 +356,9 @@ pub fn cut(item: &MediaItem, range: Range, dst: &Path) -> Result<Segment, String
     if !out.status.success() {
         let _ = std::fs::remove_file(dst);
         return Err(format!("ffmpeg could not cut it: {}", String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or_default()));
+    }
+    if to_end {
+        duration = duration.max(probe_secs(dst, &["-show_entries", "format=duration", "-of", "csv=p=0"]).first().copied().unwrap_or(0.0));
     }
     let segment = Segment { start, duration, path: dst.to_path_buf() };
     if how == Cutting::VideoCopy {
@@ -446,6 +485,35 @@ mod tests {
         assert_eq!(pool2.get(&b).unwrap().path, PathBuf::from("/m/b.mov"));
     }
 
+    /// #963 review: a clip a frame past the file's probed end is still
+    /// held by the cut that reaches the end; one well past any cut is
+    /// reported, so its file is copied whole rather than remapped wrong.
+    #[test]
+    fn a_clip_no_cut_holds_sends_its_file_back_to_a_whole_copy() {
+        let mut pool = MediaPool::new();
+        let a = pool.add(item("/m/a.mov", 100.0));
+        let cuts = HashMap::from([(PathBuf::from("/m/a.mov"), vec![Segment { start: 80.0, duration: 20.0, path: "/x/a_1.mov".into() }])]);
+        let seq = seq_with(vec![Clip::media(a, t(0.0), t(5.0), t(95.0), t(100.04))]);
+        assert!(unheld(&pool, std::slice::from_ref(&seq), &cuts).is_empty(), "a frame past the end is held");
+        let seq = seq_with(vec![Clip::media(a, t(0.0), t(5.0), t(10.0), t(15.0))]);
+        assert_eq!(unheld(&pool, &[seq], &cuts), vec![PathBuf::from("/m/a.mov")]);
+    }
+
+    /// #963 review: a transition reads past the outgoing clip's out and
+    /// before the incoming's in; those frames are kept even with no handle.
+    #[test]
+    fn ranges_keep_what_transitions_read() {
+        let mut pool = MediaPool::new();
+        let a = pool.add(item("/m/a.mov", 100.0));
+        let out_clip = Clip::media(a, t(0.0), t(5.0), t(10.0), t(15.0));
+        let in_clip = Clip::media(a, t(5.0), t(10.0), t(50.0), t(55.0));
+        let mut seq = seq_with(vec![out_clip.clone(), in_clip.clone()]);
+        seq.tracks[0].transitions.push(klipp_timeline::Transition { id: klipp_core::TransitionId::new(), kind: klipp_timeline::TransitionKind::CrossDissolve, clip_a_id: out_clip.id, clip_b_id: in_clip.id, duration: t(2.0), user_params: Default::default(), alignment: Default::default() });
+        let ranges = &used_ranges(&pool, &[seq], 0.0)[Path::new("/m/a.mov")];
+        assert!((ranges[0].end - 17.0).abs() < 1e-6, "the outgoing clip reads 2 s past its out: {ranges:?}");
+        assert!((ranges[1].start - 48.0).abs() < 1e-6, "the incoming reads 2 s before its in: {ranges:?}");
+    }
+
     /// A real file cut and checked: needs ffmpeg, and skips without it.
     #[test]
     fn a_cut_starts_on_a_keyframe_and_its_frames_are_the_sources() {
@@ -476,6 +544,9 @@ mod tests {
         let (cf, cv) = starts(&segment.path);
         assert_eq!(frame_at(&src, sv - sf + 6.2), frame_at(&segment.path, cv - cf + 2.2));
         assert_ne!(frame_at(&src, sv - sf + 6.2), frame_at(&segment.path, cv - cf + 1.0), "and not any frame");
+        // A stretch to the file's end is cut to the end of the file.
+        let tail = cut(&m, Range { start: 9.0, end: 10.0 }, &dir.join("tail.mp4")).expect("the tail is cut");
+        assert!((tail.start - 8.0).abs() < 1e-3 && tail.duration >= 1.95, "{tail:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

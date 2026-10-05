@@ -568,6 +568,17 @@ pub fn consolidate_project(
         ConsolidateMode::Trimmed { handle_secs } => cut_used_files(media_pool, sequences, handle_secs, &options.dest_dir, progress.as_ref(), &mut cut_warnings),
         _ => HashMap::new(),
     };
+    // A file with a clip no cut of it holds is copied whole instead: it
+    // would be remapped wrong (#963 review).
+    let mut cuts = cuts;
+    for path in crate::consolidate_trim::unheld(media_pool, sequences, &cuts) {
+        if let Some(segments) = cuts.remove(&path) {
+            for s in segments {
+                let _ = std::fs::remove_file(&s.path);
+            }
+            cut_warnings.push(format!("{} copied whole: a clip runs past what was cut", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+        }
+    }
     let cut_paths: HashSet<PathBuf> = cuts.keys().cloned().collect();
     let mut plan = build_copy_plan(media_pool, sequences, color_settings, &options, used.as_ref(), &cut_paths);
     plan.warnings.extend(cut_warnings);
