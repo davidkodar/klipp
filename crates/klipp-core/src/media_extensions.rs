@@ -213,6 +213,15 @@ pub fn path_is_image(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether ffmpeg's demuxer `name` reads a single still image (#978):
+/// `image2`, or one of the `*_pipe` image demuxers (`png_pipe`,
+/// `jpeg_pipe`, `webp_pipe`...). Such a file is one frame at time 0, so a
+/// clip of it is that frame at every source time, wherever its in point:
+/// a decoder that seeks into it as into a video finds nothing.
+pub fn is_still_image_demuxer(name: &str) -> bool {
+    name.split(',').any(|n| n == "image2" || n.ends_with("_pipe"))
+}
+
 /// Path-aware variant of [`is_raw`].
 pub fn path_is_raw(path: &Path) -> bool {
     path.extension()
@@ -231,6 +240,16 @@ pub fn path_is_media(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn still_image_demuxers_are_named_as_ffmpeg_names_them() {
+        for still in ["image2", "png_pipe", "jpeg_pipe", "webp_pipe", "tiff_pipe"] {
+            assert!(is_still_image_demuxer(still), "{still}");
+        }
+        for moving in ["mov,mp4,m4a,3gp,3g2,mj2", "matroska,webm", "gif", "mpegts"] {
+            assert!(!is_still_image_demuxer(moving), "{moving}");
+        }
+    }
+
     use super::*;
     use std::path::PathBuf;
 
