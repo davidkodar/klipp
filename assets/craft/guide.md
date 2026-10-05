@@ -440,6 +440,22 @@ exist until the plan runs.
   shorter, so nothing else moves. Its sound and theirs go with it; one
   undo step. Refused where a neighbour would run out of its file or of
   its length; a clip touching nothing either side is moved, not slid.
+- `strobe {clip_id, piece_frames, on?, off?, from?, to?, ripple?}`: a
+  flicker: the clip (or `from` to `to` inside it) cut into pieces
+  `piece_frames` long, and of every `on` pieces kept the next `off`
+  removed (1 and 1). The last piece takes what does not divide, so no
+  sliver is left. With `ripple` the gaps close up; without, they stay
+  black. The linked sound is cut with it; one undo step.
+- `set_length {clips, frames, keep?, ripple?}`: each clip made `frames`
+  long, keeping its `start` (the default), `end` or `centre`; with
+  `ripple` what follows closes up or makes room. A rapid-fire montage is
+  every clip of a stretch at 3 frames with ripple; one undo step.
+- `over_edits {clip_id, tracks?, from?, to?, align?, every_clip?}`: a
+  copy of a clip (a flash, an adjustment clip) on its own track over
+  every cut of the targeted picture tracks (or `tracks`), its `centre`
+  (the default), `start` or `end` on the cut; `every_clip` uses each
+  clip's start. A cut where a copy would overlap a clip already there is
+  skipped and counted in the reply; one undo step.
 - `join {clip_id, side?}`: a split undone later, or a scene cut found
   where the shot did not change: the clip and the piece of the same shot
   on its `side` ("next", the default, or "previous") made one again, its

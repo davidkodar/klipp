@@ -8249,6 +8249,21 @@ impl TimelinePanel {
                     cmds.push(AppCommand::SubclipFromClip { clip_id });
                     ui.close_menu();
                 }
+                // Rhythmic edits in one step (#988), in a submenu of
+                // their own so the clip menu stays short.
+                ui.menu_button("Rhythm Edits", |ui| {
+                    for (kind, label, tip) in [
+                        (0u8, "Strobe\u{2026}", "Cut the clip (or its part between the In and Out) into short pieces and remove every other one, so the shot flickers"),
+                        (1, "Set Length\u{2026}", "Make the selected clips all the same length, as for a rapid-fire montage"),
+                        (2, "Copy Over Every Edit\u{2026}", "Lay a copy of this clip over every cut below it, as for a flash on every cut"),
+                    ] {
+                        if ui.button(label).on_hover_text(tip).clicked() {
+                            cmds.push(AppCommand::SelectClip(Some(clip_id)));
+                            cmds.push(AppCommand::OpenEditHelper { kind, clip_id });
+                            ui.close_menu();
+                        }
+                    }
+                });
                 // Several clips selected: line them up with this one (#925).
                 if state.selected_clips.len() > 1 && state.selected_clips.contains(&clip_id) {
                     ui.menu_button("Sync Selected Clips", |ui| {

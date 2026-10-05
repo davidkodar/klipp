@@ -1478,6 +1478,8 @@ pub struct AppState {
     pub show_paste_attributes_dialog: bool,
     /// Whether to show the Set Clip Speed dialog.
     pub show_speed_dialog: bool,
+    /// An editing helper's dialog, open on a clip (#988).
+    pub edit_helper: Option<crate::edit_helpers::EditHelperDialog>,
     /// Current value in the speed dialog (percentage, e.g. 100.0 = normal).
     pub speed_dialog_value: f64,
     /// Whether speed dialog reverse is checked.
@@ -3890,6 +3892,7 @@ impl Default for AppState {
             attributes_clipboard: None,
             show_paste_attributes_dialog: false,
             show_speed_dialog: false,
+            edit_helper: None,
             speed_dialog_value: 100.0,
             speed_dialog_reverse: false,
             speed_dialog_keep_pitch: false,

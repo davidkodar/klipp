@@ -247,6 +247,78 @@ impl KlippApp {
             }
         }
 
+        // An editing helper's dialog (#988): strobe, set length, copy
+        // over every edit.
+        if let Some(mut d) = self.state.edit_helper.take() {
+            let mut open = true;
+            let mut run = false;
+            let mut cancel = false;
+            egui::Window::new(d.title())
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.set_min_width(280.0);
+                    match d.kind {
+                        0 => {
+                            ui.label(egui::RichText::new("Between the In and Out when both are inside the clip, else the whole clip.").small().weak());
+                            ui.horizontal(|ui| {
+                                ui.label("Pieces of");
+                                ui.add(egui::DragValue::new(&mut d.piece_frames).range(1..=240).suffix(" frames"));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Keep");
+                                ui.add(egui::DragValue::new(&mut d.on).range(1..=16));
+                                ui.label("then remove");
+                                ui.add(egui::DragValue::new(&mut d.off).range(1..=16));
+                            });
+                            ui.checkbox(&mut d.ripple, "Close up the gaps").on_hover_text("Off, the removed pieces leave black");
+                        }
+                        1 => {
+                            ui.label(egui::RichText::new("Every selected clip, or this one.").small().weak());
+                            ui.horizontal(|ui| {
+                                ui.label("Length");
+                                ui.add(egui::DragValue::new(&mut d.frames).range(1..=100_000).suffix(" frames"));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Keep the");
+                                ui.selectable_value(&mut d.keep, klipp_document::ops::LengthKeep::Start, "start");
+                                ui.selectable_value(&mut d.keep, klipp_document::ops::LengthKeep::Centre, "centre");
+                                ui.selectable_value(&mut d.keep, klipp_document::ops::LengthKeep::End, "end");
+                            });
+                            ui.checkbox(&mut d.ripple, "Move what follows").on_hover_text("Closes up after shorter clips, makes room for longer ones");
+                        }
+                        _ => {
+                            ui.label(egui::RichText::new("On this clip's track, over the cuts of the targeted picture tracks, between the In and Out when set. A cut where a copy would overlap a clip is skipped.").small().weak());
+                            ui.horizontal(|ui| {
+                                ui.label("Put its");
+                                ui.selectable_value(&mut d.align, klipp_document::ops::EditAlign::Centre, "centre");
+                                ui.selectable_value(&mut d.align, klipp_document::ops::EditAlign::Start, "start");
+                                ui.selectable_value(&mut d.align, klipp_document::ops::EditAlign::End, "end");
+                                ui.label("on each");
+                            });
+                            ui.checkbox(&mut d.every_clip, "Every clip's start, not just the cuts");
+                        }
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Apply").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            run = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            if open && !cancel {
+                self.state.edit_helper = Some(d);
+                if run {
+                    cmds.push(AppCommand::RunEditHelper);
+                }
+            }
+        }
+
         // Speed dialog
         if self.state.show_speed_dialog {
             // Modal backdrop

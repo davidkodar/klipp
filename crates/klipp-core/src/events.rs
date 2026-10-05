@@ -1313,6 +1313,11 @@ pub enum AppCommand {
     SubclipFromClip { clip_id: ClipId },
     /// Open the Speed dialog on a clip, filled with its speed (#925).
     OpenSpeedDialog { clip_id: ClipId },
+    /// Open an editing helper's dialog on a clip (#988): 0 Strobe, 1 Set
+    /// Length (of the selection), 2 Copy Over Every Edit.
+    OpenEditHelper { kind: u8, clip_id: ClipId },
+    /// Run the editing helper its dialog is set up for, as one undo step.
+    RunEditHelper,
     /// Line the selected clips up with the selected one (the anchor), by
     /// their files' start timecodes, or by their first clip markers (#925).
     SyncSelectedClips { by_markers: bool },
