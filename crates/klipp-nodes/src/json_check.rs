@@ -53,6 +53,28 @@ fn dropped(saved: &Value, back: &Value, path: &str, out: &mut Vec<String>) {
     }
 }
 
+/// What a saved set of node settings (a `NodeParams` on its own, as a
+/// tool preset keeps one) holds that this build would lose by reading
+/// it: the paths of fields it would drop. Empty when nothing would be
+/// lost, and one entry naming the error if it cannot be read at all.
+pub fn params_losses(saved: &Value) -> Vec<String> {
+    match serde_json::from_value::<NodeParams>(saved.clone()) {
+        Ok(p) => {
+            let mut out = Vec::new();
+            dropped(saved, &serde_json::to_value(&p).unwrap_or(Value::Null), "params", &mut out);
+            out
+        }
+        Err(e) => vec![format!("settings this Klipp cannot read ({e})")],
+    }
+}
+
+/// Whether `text` is JSON this build reads in full: it parses, and no
+/// graph in it holds a node kind or setting this build would lose. A
+/// store must not delete or overwrite a file that is not.
+pub fn reads_in_full(text: &str) -> bool {
+    serde_json::from_str::<Value>(text).is_ok_and(|v| losses(&v).is_empty())
+}
+
 /// Whether `v` is a saved node: an object with an id, a kind and params.
 fn is_node(v: &Value) -> bool {
     v.get("id").is_some() && v.get("kind").is_some() && v.get("params").is_some()
@@ -119,6 +141,13 @@ mod tests {
 
     fn node(kind: &str, params: Value) -> Value {
         serde_json::json!({ "id": "00000000-0000-0000-0000-000000000001", "kind": kind, "label": "n", "enabled": true, "params": params })
+    }
+
+    #[test]
+    fn a_settings_set_alone_is_checked_too() {
+        assert!(params_losses(&serde_json::json!({ "exposure": 0.5 })).is_empty());
+        let l = params_losses(&serde_json::json!({ "exposure": 0.5, "sparkle": 1.0 }));
+        assert_eq!(l, vec!["params.sparkle".to_string()]);
     }
 
     #[test]

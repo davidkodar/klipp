@@ -1237,6 +1237,12 @@ pub fn load_looks(dir: &Path) -> Vec<Look> {
         let path = entry.path();
         if path.extension().is_none_or(|e| e != "json") { continue; }
         match read_to_string_capped(&path, MAX_INPUT_FILE_BYTES) {
+            // A Look holding a grade node this build would lose is not
+            // read: applied, the node would be a passthrough, and saved
+            // back it would be gone (#993). The file is left alone.
+            Ok(text) if !klipp_nodes::json_check::reads_in_full(&text) => {
+                warn!("Leaving Look {:?} as it is: it was saved by a newer Klipp, or cannot be read", path)
+            }
             Ok(text) => match serde_json::from_str::<Look>(&text) {
                 Ok(look) => out.push(look),
                 Err(e) => warn!("Skipping corrupt Look {:?}: {e}", path),
