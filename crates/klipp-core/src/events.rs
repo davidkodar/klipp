@@ -4500,11 +4500,15 @@ pub struct ProjectStatus {
     pub undo: Option<String>,
     #[serde(default)]
     pub redo: Option<String>,
+    /// The project's global LUT, kept when its file is missing (#1019),
+    /// so `check` can say so.
+    #[serde(default)]
+    pub global_lut: Option<PathBuf>,
 }
 
 impl Default for ProjectStatus {
     fn default() -> Self {
-        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None, undo: None, redo: None }
+        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None, undo: None, redo: None, global_lut: None }
     }
 }
 

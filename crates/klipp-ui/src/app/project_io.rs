@@ -26,6 +26,17 @@ enum SaveOutcome {
     Failed,
 }
 
+/// The global LUT a project names, as the app holds it once the project
+/// is open, and whether its file is there. A missing LUT is kept rather
+/// than dropped, so the next save does not delete it from the project
+/// (#1019): it is not applied, and Project Doctor offers to relink it.
+pub(super) fn opened_global_lut(saved: Option<&std::path::Path>) -> (Option<std::path::PathBuf>, bool) {
+    match saved {
+        Some(p) => (Some(p.to_path_buf()), p.exists()),
+        None => (None, false),
+    }
+}
+
 impl KlippApp {
     fn do_new_project(&mut self) {
         self.reset_project_state();
@@ -159,6 +170,7 @@ impl KlippApp {
             }
             project.path = self.state.project_path.clone();
             project.dirty = self.state.dirty;
+            project.global_lut = self.state.global_lut_path.clone();
             project.generation += 1;
             project.last_error = error;
             if !self.state.dirty {
@@ -655,18 +667,18 @@ impl KlippApp {
                 // Restore global LUT
                 self.state.global_lut_opacity = color_settings.global_lut_opacity;
                 self.state.global_lut_enabled = color_settings.global_lut_enabled;
-                if let Some(ref lut_path) = color_settings.global_lut_path {
-                    if lut_path.exists() {
-                        self.state.global_lut_path = Some(lut_path.clone());
+                let (kept, present) = opened_global_lut(color_settings.global_lut_path.as_deref());
+                self.state.global_lut_path = kept.clone();
+                if let Some(lut_path) = kept {
+                    if present {
                         self.cmd_tx.send(AppCommand::LoadGlobalLut { path: lut_path.clone() }).ok();
                         self.cmd_tx.send(AppCommand::SetGlobalLutOpacity(color_settings.global_lut_opacity)).ok();
                         self.cmd_tx.send(AppCommand::SetGlobalLutEnabled(color_settings.global_lut_enabled)).ok();
                     } else {
-                        tracing::warn!("Global LUT not found, skipping: {:?}", lut_path);
-                        self.state.global_lut_path = None;
+                        tracing::warn!("Global LUT not found, kept for relinking: {:?}", lut_path);
+                        let name = lut_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                        self.state.toast.show(format!("The project's LUT {name} is missing: relink it in Project Doctor"));
                     }
-                } else {
-                    self.state.global_lut_path = None;
                 }
                 // Restore track header width
                 self.state.track_header_width = color_settings.track_header_width;
@@ -1274,4 +1286,20 @@ pub(super) fn ensure_klipp_extension(mut path: PathBuf) -> PathBuf {
         }
     }
     path
+}
+
+#[cfg(test)]
+mod global_lut_tests {
+    use super::opened_global_lut;
+
+    /// A project whose LUT is not on this machine keeps naming it, so a
+    /// save writes it back; it is only not applied (#1019).
+    #[test]
+    fn a_missing_global_lut_is_kept_and_not_applied() {
+        let missing = std::path::Path::new("/nonexistent/klipp-1019/look.cube");
+        assert_eq!(opened_global_lut(Some(missing)), (Some(missing.to_path_buf()), false));
+        let here = std::env::current_exe().unwrap();
+        assert_eq!(opened_global_lut(Some(&here)), (Some(here.clone()), true));
+        assert_eq!(opened_global_lut(None), (None, false));
+    }
 }

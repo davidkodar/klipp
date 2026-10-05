@@ -2387,6 +2387,14 @@ impl KlippApp {
         }
     }
 
+    /// Tell the control socket which global LUT the project names, for
+    /// `check`.
+    fn publish_global_lut(&self) {
+        if let Ok(mut project) = self.state.control_shared.project.lock() {
+            project.global_lut = self.state.global_lut_path.clone();
+        }
+    }
+
     fn handle_color_lut_versions(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         match cmd {
             // Global LUT — update UI state and forward to engine
@@ -2395,11 +2403,13 @@ impl KlippApp {
                     self.state.global_lut_path = Some(path.clone());
                     self.state.global_lut_enabled = true;
                 }
+                self.publish_global_lut();
                 let _ = self.cmd_tx.send(cmd.clone());
                 true
             }
             AppCommand::ClearGlobalLut => {
                 self.state.global_lut_path = None;
+                self.publish_global_lut();
                 let _ = self.cmd_tx.send(cmd.clone());
                 true
             }

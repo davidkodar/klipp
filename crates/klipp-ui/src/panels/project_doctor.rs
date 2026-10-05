@@ -81,6 +81,10 @@ pub enum FixAction {
     ReEnableLadspaPlugin {
         unique_id: u64,
     },
+    /// Pick the project's global LUT again, from where it was (#1019).
+    RelinkGlobalLut {
+        original_path: PathBuf,
+    },
 }
 
 /// Render the Project Doctor modal. The scan runs every frame the
@@ -355,6 +359,26 @@ fn apply_fix(action: &FixAction, cmds: &mut Vec<AppCommand>) {
                 unique_id: *unique_id,
             });
         }
+        FixAction::RelinkGlobalLut { original_path } => {
+            let start_dir = original_path
+                .parent()
+                .filter(|d| d.is_dir())
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+            let original_name = original_path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "LUT".to_string());
+            crate::file_dialog::spawn(move || {
+                rfd::FileDialog::new()
+                    .set_title(format!("Relink LUT: {original_name}"))
+                    .set_directory(start_dir)
+                    .add_filter("LUT", &["cube", "3dl", "csp"])
+                    .pick_file()
+                    .map(|path| vec![AppCommand::LoadGlobalLut { path }])
+                    .unwrap_or_default()
+            });
+        }
     }
 }
 
@@ -362,6 +386,19 @@ fn apply_fix(action: &FixAction, cmds: &mut Vec<AppCommand>) {
 
 fn scan_project(state: &AppState) -> Vec<Finding> {
     let mut findings = Vec::new();
+
+    // 0. The project's global LUT, kept when its file is missing so it
+    //    can be relinked rather than lost on the next save (#1019).
+    if let Some(lut) = state.global_lut_path.as_ref().filter(|p| !p.exists()) {
+        let name = lut.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| lut.to_string_lossy().into_owned());
+        findings.push(Finding {
+            severity: Severity::Error,
+            category: "MISSING LUT".to_string(),
+            summary: format!("The project's LUT {name} is missing"),
+            detail: format!("{} is not on disk, so the timeline renders without it. Relink it to apply it again.", lut.display()),
+            fixes: vec![Fix { label: "Relink…".into(), action: FixAction::RelinkGlobalLut { original_path: lut.clone() } }],
+        });
+    }
 
     // 1. Missing media — every MediaItem in the pool whose path
     //    doesn't exist on disk. This is the most common project
