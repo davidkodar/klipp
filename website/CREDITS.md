@@ -1,6 +1,6 @@
 # Demo media credits
 
-The screenshots show Klipp with the Quiet Earth demo project. The finished film was edited and exported in Klipp, then compressed for web playback.
+The screenshots show Klipp with the Quiet Earth demo project. The finished film was edited and exported in Klipp, with its 1080p video stream preserved for web playback.
 
 ## Footage
 

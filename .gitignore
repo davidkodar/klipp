@@ -30,3 +30,6 @@ PHASE_*_PLAN.md
 
 # Python regression-test bytecode.
 __pycache__/
+
+# Finished homepage videos are release attachments, not Git source assets.
+/website/assets/*.mp4
