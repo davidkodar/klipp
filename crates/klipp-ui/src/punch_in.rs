@@ -71,6 +71,17 @@ pub fn place(seq: &Sequence, punch: &Punch, media_id: MediaId, take_secs: f64) -
     Some((TakeTrack::New { index: below, track: Box::new(Track::new(&format!("{stem} {n}"), TrackKind::Audio)) }, clip))
 }
 
+/// The folder a take is written to: a saved project's own Recordings
+/// folder, else `cache`'s recordings. An unsaved project's path is the
+/// placeholder "Untitled", which is no folder: a take there would land
+/// beside wherever the app was started.
+pub fn take_dir(project_path: Option<&std::path::Path>, cache: &std::path::Path) -> std::path::PathBuf {
+    match project_path {
+        Some(dir) if dir.is_absolute() && dir.is_dir() => dir.join("Recordings"),
+        _ => cache.join("recordings"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,5 +141,14 @@ mod tests {
         s.tracks.insert(index, *track);
         let Some((TakeTrack::New { index, track }, _)) = place(&s, &p, MediaId::new(), 6.0) else { panic!() };
         assert_eq!((index, track.name.as_str()), (3, "Voice Take 3"), "below the takes before it");
+    }
+
+    #[test]
+    fn an_unsaved_projects_takes_go_to_the_cache() {
+        let cache = std::env::temp_dir().join("klipp-take-dir-cache");
+        assert_eq!(take_dir(None, &cache), cache.join("recordings"));
+        assert_eq!(take_dir(Some(std::path::Path::new("Untitled")), &cache), cache.join("recordings"), "the placeholder is no folder");
+        let saved = std::env::temp_dir();
+        assert_eq!(take_dir(Some(&saved), &cache), saved.join("Recordings"));
     }
 }
