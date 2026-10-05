@@ -409,6 +409,15 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     let default_params = klipp_core::TransitionUserParams::default();
     for sequence in &mut sequences {
         for track in &mut sequence.tracks {
+            // A transition whose clip is gone, which a removal used to
+            // leave behind and every save kept (#979): it joins no cut, so
+            // it goes, and the project heals on opening.
+            let before = track.transitions.len();
+            let clips: Vec<ClipId> = track.clips.iter().map(|c| c.id).collect();
+            track.transitions.retain(|t| clips.contains(&t.clip_a_id) && clips.contains(&t.clip_b_id));
+            if track.transitions.len() < before {
+                warn!("dropped {} transition(s) on track {:?} whose clips are gone", before - track.transitions.len(), track.name);
+            }
             for transition in &mut track.transitions {
                 if transition.user_params == default_params {
                     transition.user_params =
