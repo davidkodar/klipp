@@ -1,0 +1,682 @@
+//! A fixed corpus of small projects, each drawn by every render path and
+//! compared (#1001).
+//!
+//! The same project renders through four paths:
+//!
+//! * **cpu**: `Renderer::render` with the GPU off;
+//! * **cpu+gpu**: `Renderer::render` with the GPU on, where grades and
+//!   effects run on the GPU and the composite on the CPU;
+//! * **stack**: the GPU stack, `Renderer::render_display_u8_on_gpu`;
+//! * **export**: `Renderer::render_yuv420_on_gpu`, the export's GPU path,
+//!   fed frames that arrive on the GPU as the export's decoders hand them
+//!   over.
+//!
+//! Every path that takes the frame has to agree with **cpu** within one
+//! level of 8-bit display code, the unit of the existing parity tests
+//! (`gpu_composite.rs`); the export is compared on its luma plane. A path
+//! may decline a frame (the stack declines what it cannot do yet), and
+//! which ones did is printed for each case, so a new decline shows up in
+//! the test's output. **cpu** must also give the same frame twice.
+//!
+//! Projects are flattened the way the engine flattens them before
+//! rendering (`flatten_sequence`), so track effects, grade groups and
+//! compounds are baked as they are for real.
+//!
+//! The corpus is the yardstick for #997: every later change to how a frame
+//! is rendered has to leave these frames where they are. Reference frames
+//! are recorded once phase 0 has landed; until then the paths are held to
+//! each other. A difference the corpus knows about is listed in [`KNOWN`]
+//! with its issue, and fails the moment it goes away, so the list cannot
+//! outlive the bug.
+
+use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
+
+use klipp_compose::{FrameSource, GpuPixels, RenderOptions, Renderer, SourceFrame, SourcePixels};
+use klipp_core::{ClipId, Keyframe, RationalTime, Timecode, WorkingColorspace};
+use klipp_effects::{BuiltinEffect, ColorFadeMode, SpillMethod};
+use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams, NodePos};
+use klipp_timeline::{Clip, ClipKind, GradeGroup, Sequence, TextBox, TitleData, Track, TrackKind};
+
+/// A multiple of 8 wide and even high, so the export's encode tiles.
+const W: u32 = 64;
+const H: u32 = 36;
+/// The worst difference two paths may show, in 8-bit display levels.
+const TOLERANCE: i32 = 1;
+
+// ── Frames ──────────────────────────────────────────────────────────────
+
+/// A clip's picture as sRGB bytes: a ramp across, a ramp down and a
+/// checker, shifted by `seed`, so no two clips and no two channels agree.
+fn pattern(seed: u8) -> Vec<u8> {
+    let mut v = Vec::with_capacity((W * H * 4) as usize);
+    for y in 0..H {
+        for x in 0..W {
+            let r = ((x * 255 / (W - 1)) as u8).wrapping_add(seed);
+            let g = (y * 255 / (H - 1)) as u8;
+            let b = if ((x / 8) + (y / 6)) % 2 == 0 { 200u8.wrapping_sub(seed) } else { 40 };
+            v.extend_from_slice(&[r, g, b, 255]);
+        }
+    }
+    v
+}
+
+fn linear_of(srgb: &[u8]) -> Vec<f32> {
+    srgb.chunks_exact(4)
+        .flat_map(|p| {
+            let c = |v: u8| klipp_color::transfer::srgb_to_linear(v as f32 / 255.0);
+            [c(p[0]), c(p[1]), c(p[2]), p[3] as f32 / 255.0]
+        })
+        .collect()
+}
+
+/// A frame the decoder left on the GPU, seeded from the same sRGB bytes
+/// the CPU paths are given, so both start from one picture.
+struct Seeded {
+    srgb: Arc<Vec<u8>>,
+    linear: Arc<Vec<f32>>,
+}
+
+impl GpuPixels for Seeded {
+    fn seed(&self, exec: &mut klipp_nodes::GraphExecutor, width: u32, height: u32) -> bool {
+        exec.prime_chain_from_srgb8(&self.srgb, width, height)
+    }
+    fn read(&self) -> Arc<Vec<f32>> {
+        Arc::clone(&self.linear)
+    }
+}
+
+/// Each media clip's picture, handed over as linear pixels or, for the
+/// export path, as a frame on the GPU.
+#[derive(Clone, Default)]
+struct Frames {
+    by_clip: HashMap<ClipId, Arc<Vec<u8>>>,
+    on_gpu: bool,
+}
+
+impl Frames {
+    fn with(mut self, c: &Clip, seed: u8) -> Self {
+        self.by_clip.insert(c.id, Arc::new(pattern(seed)));
+        self
+    }
+}
+
+impl FrameSource for Frames {
+    fn frame(&mut self, clip: &Clip, _source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        let srgb = self.by_clip.get(&clip.id)?;
+        let linear = Arc::new(linear_of(srgb));
+        let pixels = if self.on_gpu {
+            SourcePixels::Gpu(Arc::new(Seeded { srgb: Arc::clone(srgb), linear }))
+        } else {
+            SourcePixels::Linear(linear)
+        };
+        Some(SourceFrame { pixels, width, height, pts: None })
+    }
+}
+
+// ── Projects ────────────────────────────────────────────────────────────
+
+fn tc(secs: f64) -> Timecode {
+    RationalTime::from_secs_f64(secs, 24)
+}
+
+fn key(time_secs: f64, value: f32) -> Keyframe {
+    Keyframe { time_secs, value, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }
+}
+
+fn media(from: f64, to: f64) -> Clip {
+    Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(from), tc(to)) }
+}
+
+fn adjustment(from: f64, to: f64) -> Clip {
+    Clip { kind: ClipKind::AdjustmentLayer, ..Clip::gap(tc(from), tc(to)) }
+}
+
+fn title(text: &str, from: f64, to: f64) -> Clip {
+    let td = TitleData::single_text(TextBox { text: text.into(), font_size: 40.0, ..Default::default() });
+    Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(from), tc(to)) }
+}
+
+fn track(name: &str, kind: TrackKind, clips: Vec<Clip>) -> Track {
+    let mut t = Track::new(name, kind);
+    t.clips = clips;
+    t
+}
+
+/// A sequence of the corpus's size with `tracks`, top first.
+fn sequence(tracks: Vec<Track>) -> Sequence {
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    seq.tracks = tracks;
+    seq
+}
+
+/// Source → one node → Output.
+fn graph_of(kind: NodeKind, params: NodeParams) -> NodeGraph {
+    let node = |kind, params| Node {
+        id: NodeId::new_v4(),
+        kind,
+        label: format!("{kind:?}"),
+        enabled: true,
+        params,
+        keyframes: Default::default(),
+        output_link: None,
+        input_links: vec![],
+    };
+    let nodes = vec![node(NodeKind::Source, NodeParams::default()), node(kind, params), node(NodeKind::Output, NodeParams::default())];
+    let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
+    let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
+    NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions, working_space_override: None, frames: vec![], sticky_notes: vec![] }
+}
+
+fn exposure(stops: f32) -> NodeGraph {
+    graph_of(NodeKind::Exposure, NodeParams { exposure: Some(stops), ..Default::default() })
+}
+
+fn transform(scale: f32, x: f32, y: f32) -> BuiltinEffect {
+    BuiltinEffect::Transform {
+        position_x: x,
+        position_y: y,
+        scale_x: scale,
+        scale_y: scale,
+        rotation: 0.0,
+        anchor_x: 0.5,
+        anchor_y: 0.5,
+        rotation_x: 0.0,
+        rotation_y: 0.0,
+        perspective: 0.0,
+        focal_ref: None,
+    }
+}
+
+/// One project of the corpus: its sequences (the first is rendered), its
+/// pictures, the times to draw it at, and its working space.
+struct Case {
+    name: String,
+    project: Vec<Sequence>,
+    frames: Frames,
+    times: Vec<f64>,
+    working: WorkingColorspace,
+}
+
+impl Case {
+    fn new(name: impl Into<String>, seq: Sequence, frames: Frames) -> Self {
+        Case { name: name.into(), project: vec![seq], frames, times: vec![0.5, 1.25], working: WorkingColorspace::Rec709Linear }
+    }
+}
+
+/// One media clip over the frame carrying `fx`.
+fn single(name: impl Into<String>, fx: Vec<BuiltinEffect>) -> Case {
+    let mut c = media(0.0, 4.0);
+    c.builtin_effects = fx;
+    let frames = Frames::default().with(&c, 0);
+    Case::new(name, sequence(vec![track("V1", TrackKind::Video, vec![c])]), frames)
+}
+
+/// A clip placed small over a full-frame base clip, carrying `fx` after
+/// its transform: what shadows, glows and rounded corners need.
+fn placed(name: impl Into<String>, fx: Vec<BuiltinEffect>) -> Case {
+    let base = media(0.0, 4.0);
+    let mut top = media(0.0, 4.0);
+    top.builtin_effects = std::iter::once(transform(0.6, 4.0, -3.0)).chain(fx).collect();
+    let frames = Frames::default().with(&base, 90).with(&top, 0);
+    Case::new(name, sequence(vec![track("V2", TrackKind::Video, vec![top]), track("V1", TrackKind::Video, vec![base])]), frames)
+}
+
+/// The built-in effects, each with values that do something. The
+/// full-frame list follows the CPU/GPU parity suite
+/// (`klipp-effects/tests/cpu_gpu_effect_parity.rs`); here each also goes
+/// through the compositor, the stack and the export.
+fn effect_cases() -> Vec<Case> {
+    use BuiltinEffect::*;
+    let full = vec![
+        ("Opacity", Opacity { value: 0.5 }),
+        ("ColorFade", ColorFade { color: [20, 40, 200, 255], duration_secs: 1.0, mode: ColorFadeMode::In, progress: 0.4 }),
+        ("Crop", Crop { left: 0.1, right: 0.05, top: 0.1, bottom: 0.2, feather: 0.0 }),
+        ("Crop feathered", Crop { left: 0.1, right: 0.05, top: 0.1, bottom: 0.2, feather: 0.05 }),
+        ("GaussianBlur", GaussianBlur { radius: 4.0 }),
+        ("FocusBlur", FocusBlur { radius: 5.0, vertical: true, band: 0.3 }),
+        ("Sharpen", Sharpen { amount: 1.0 }),
+        ("CornerPin", CornerPin { tl: [0.1, 0.15], tr: [0.85, 0.05], br: [0.8, 0.9], bl: [0.2, 0.8] }),
+        ("Transform", transform(0.8, 10.0, -5.0)),
+        ("ChromaKey", ChromaKey { key_color: [13, 230, 26], tolerance: 0.3, soft_edge: 0.1, spill_method: SpillMethod::None, spill_strength: 0.0 }),
+        ("Bloom", Bloom { threshold: 0.7, radius: 6.0, intensity: 0.8 }),
+        ("Glow", Glow { radius: 6.0, intensity: 0.6 }),
+        ("LightRays", LightRays { center_x: 0.5, center_y: 0.3, threshold: 0.6, samples: 32, decay: 0.95, intensity: 0.5 }),
+        ("Vignette", Vignette { amount: 0.6, size: 0.5, softness: 0.5, roundness: 0.5 }),
+        ("Diffusion", Diffusion { amount: 0.5, radius: 5.0, threshold: 0.4, desaturation: 0.2 }),
+        ("LensFlare", LensFlare { position_x: 0.7, position_y: 0.3, brightness: 0.8, flare_size: 0.3, ghost_count: 4, ghost_intensity: 0.4, chromatic_aberration: 0.3 }),
+        ("LightWrap", LightWrap { width: 6.0, intensity: 0.5, softness: 0.5 }),
+        ("AnamorphicStreak", AnamorphicStreak { threshold: 0.7, length: 60.0, intensity: 0.6, tint: 0.5 }),
+        ("FilmHalation", FilmHalation { threshold: 0.6, radius: 6.0, intensity: 0.5, hue: 0.05 }),
+        ("Invert", Invert { mix: 0.7 }),
+        // Six levels, not five: a band edge then falls at 255/6, which no
+        // byte reaches. With five, the pattern's row of exactly 51/255
+        // sits on an edge, and one bit of float difference between paths
+        // moves the whole row a band (64 levels); that is the effect's
+        // step, not a disagreement.
+        ("Posterize", Posterize { levels: 6.0 }),
+        ("Mosaic", Mosaic { block_size: 8.0 }),
+        ("EdgeDetect", EdgeDetect { strength: 1.0, mix: 0.8 }),
+        ("ChannelMixer", ChannelMixer { red_red: 0.8, red_green: 0.2, red_blue: 0.0, green_red: 0.1, green_green: 0.8, green_blue: 0.1, blue_red: 0.0, blue_green: 0.3, blue_blue: 0.7 }),
+        ("DirectionalBlur", DirectionalBlur { angle: 30.0, distance: 8.0, samples: 12 }),
+        ("Emboss", Emboss { angle: 45.0, strength: 1.0, mix: 0.7 }),
+        ("Mirror", Mirror { horizontal: 1, vertical: 0 }),
+        ("LensDistortion", LensDistortion { distortion: 0.3, scale: 1.0 }),
+        ("Dilate", Dilate { radius: 2 }),
+        ("Erode", Erode { radius: 2 }),
+        ("Denoise", Denoise { spatial_sigma: 2.0, color_sigma: 0.1, iterations: 1 }),
+        ("Gamma", Gamma { gamma: 1.6 }),
+        ("HSVAdjust", HSVAdjust { hue_shift: 40.0, saturation: 1.3, value: 0.9 }),
+        ("Vibrance", Vibrance { amount: 0.5 }),
+        ("NoiseGenerator", NoiseGenerator { amount: 0.2, monochrome: 0, seed: 7 }),
+        ("FilmGrain", FilmGrain { amount: 0.5, size: 2.0, color: 0, shadows: 0.6, seed: 11 }),
+        ("TiltShift", TiltShift { center: 0.5, width: 0.3, softness: 0.2, radius: 6.0 }),
+        ("OldFilm", OldFilm { flicker: 0.5, scratches: 1.0, dust: 1.0, weave: 0.5, sepia: 0.6, seed: 13 }),
+        ("Vhs", Vhs { tracking: 0.6, bleed: 0.6, noise: 0.5, scanlines: 0.6, seed: 14 }),
+        ("MedianFilter", MedianFilter { radius: 2 }),
+        ("RadialBlur", RadialBlur { center_x: 0.5, center_y: 0.5, amount: 15.0, samples: 16, mode: 0 }),
+        ("Levels", Levels { in_black: 0.1, in_white: 0.9, gamma: 1.3, out_black: 0.05, out_white: 0.95 }),
+        ("Equalize", Equalize { strength: 1.0 }),
+        ("Deflicker", Deflicker { strength: 1.0, window_secs: 1.0, gain: 1.18 }),
+        ("Letterbox", Letterbox { aspect_ratio: 2.39, bar_color: 0, opacity: 1.0 }),
+        ("ChromaticAberration", ChromaticAberration { red_shift: 3.0, blue_shift: -3.0, center_x: 0.5, center_y: 0.5 }),
+    ];
+    let around = vec![
+        ("RoundedCorners", RoundedCorners { radius: 6.0, feather: 1.0 }),
+        ("DropShadow", DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 3.0, color: [0, 0, 0], opacity: 0.7 }),
+        ("OuterGlow", OuterGlow { radius: 5.0, intensity: 0.8, color: [255, 200, 80] }),
+        ("FillBars", FillBars { blur: 0.05, zoom: 1.0, darken: 0.25 }),
+    ];
+    full.into_iter()
+        .map(|(n, e)| single(format!("effect/{n}"), vec![e]))
+        .chain(around.into_iter().map(|(n, e)| placed(format!("effect/{n}"), vec![e])))
+        .collect()
+}
+
+/// Variants covered elsewhere for now, with the reason. Each needs frames
+/// at other times, an analysis, or a plug-in on the machine.
+const EFFECTS_IN_A_LATER_BATCH: &[&str] = &["TemporalDenoise", "RollingShutterCorrection", "VideoStabilization", "SpeedRamp", "Frei0r"];
+
+/// The rules the compositor applies around effects, each where it is
+/// subtle today.
+fn rule_cases() -> Vec<Case> {
+    let mut out = Vec::new();
+
+    // Keyframed effect parameters reach the picture (#992).
+    let mut c = media(0.0, 4.0);
+    c.builtin_effects = vec![BuiltinEffect::GaussianBlur { radius: 0.0 }, BuiltinEffect::Bloom { threshold: 0.6, radius: 4.0, intensity: 0.2 }];
+    c.effect_keyframes.insert("0:radius".into(), vec![key(0.0, 0.0), key(2.0, 6.0)]);
+    c.effect_keyframes.insert("1:intensity".into(), vec![key(0.0, 0.1), key(2.0, 1.2)]);
+    let f = Frames::default().with(&c, 0);
+    out.push(Case::new("rule/effect keyframes", sequence(vec![track("V1", TrackKind::Video, vec![c])]), f));
+
+    // Opacity: the last enabled Opacity effect wins, over a base.
+    let base = media(0.0, 4.0);
+    let mut top = media(0.0, 4.0);
+    top.builtin_effects = vec![BuiltinEffect::Opacity { value: 0.9 }, BuiltinEffect::Opacity { value: 0.2 }, BuiltinEffect::Opacity { value: 0.6 }];
+    top.builtin_effects_enabled = vec![true, true, false];
+    let f = Frames::default().with(&base, 90).with(&top, 0);
+    out.push(Case::new("rule/opacity last enabled wins", sequence(vec![track("V2", TrackKind::Video, vec![top]), track("V1", TrackKind::Video, vec![base])]), f));
+
+    // Opacity: the effect's keys over the clip's opacity keys.
+    let base = media(0.0, 4.0);
+    let mut top = media(0.0, 4.0);
+    top.builtin_effects = vec![BuiltinEffect::Opacity { value: 0.5 }];
+    top.opacity_keyframes = vec![key(0.0, 0.9), key(2.0, 0.9)];
+    top.effect_keyframes.insert("0:value".into(), vec![key(0.0, 0.2), key(2.0, 0.8)]);
+    let f = Frames::default().with(&base, 90).with(&top, 0);
+    out.push(Case::new("rule/opacity effect keys over clip keys", sequence(vec![track("V2", TrackKind::Video, vec![top]), track("V1", TrackKind::Video, vec![base])]), f));
+
+    // Opacity: an adjustment layer takes its first Opacity, even disabled.
+    let base = media(0.0, 4.0);
+    let mut adj = adjustment(0.0, 4.0);
+    adj.builtin_effects = vec![BuiltinEffect::Opacity { value: 0.4 }, BuiltinEffect::Invert { mix: 1.0 }];
+    adj.builtin_effects_enabled = vec![false, true];
+    let f = Frames::default().with(&base, 0);
+    out.push(Case::new("rule/adjustment first opacity", sequence(vec![track("Adj", TrackKind::Video, vec![adj]), track("V1", TrackKind::Video, vec![base])]), f));
+
+    // Transform: a disabled Transform still carries the clip's position.
+    let base = media(0.0, 4.0);
+    let mut top = media(0.0, 4.0);
+    top.builtin_effects = vec![transform(0.5, 12.0, 6.0)];
+    top.builtin_effects_enabled = vec![false];
+    let f = Frames::default().with(&base, 90).with(&top, 0);
+    out.push(Case::new("rule/disabled transform carries values", sequence(vec![track("V2", TrackKind::Video, vec![top]), track("V1", TrackKind::Video, vec![base])]), f));
+
+    // Transform: two enabled Transforms (#995 makes it apply once).
+    let base = media(0.0, 4.0);
+    let mut top = media(0.0, 4.0);
+    top.builtin_effects = vec![transform(0.7, 6.0, 0.0), BuiltinEffect::Invert { mix: 0.5 }, transform(0.7, 6.0, 0.0)];
+    let f = Frames::default().with(&base, 90).with(&top, 0);
+    out.push(Case::new("rule/two transforms", sequence(vec![track("V2", TrackKind::Video, vec![top]), track("V1", TrackKind::Video, vec![base])]), f));
+
+    // Transform keyframes move a placed clip with a shadow behind it.
+    let base = media(0.0, 4.0);
+    let mut top = media(0.0, 4.0);
+    top.builtin_effects = vec![transform(0.5, 0.0, 0.0), BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 2.0, color: [0, 0, 0], opacity: 0.8 }];
+    top.transform_pos_x_keyframes = vec![key(0.0, -10.0), key(2.0, 10.0)];
+    let f = Frames::default().with(&base, 90).with(&top, 0);
+    out.push(Case::new("rule/keyed transform with shadow", sequence(vec![track("V2", TrackKind::Video, vec![top]), track("V1", TrackKind::Video, vec![base])]), f));
+
+    // A title's soft edges over footage, blurred, with a shadow.
+    let base = media(0.0, 4.0);
+    let mut t = title("Corpus", 0.0, 4.0);
+    t.builtin_effects = vec![BuiltinEffect::GaussianBlur { radius: 1.5 }, BuiltinEffect::DropShadow { offset_x: 0.02, offset_y: 0.03, blur: 2.0, color: [0, 0, 0], opacity: 0.7 }];
+    let f = Frames::default().with(&base, 60);
+    out.push(Case::new("rule/title over footage", sequence(vec![track("T1", TrackKind::Text, vec![t]), track("V1", TrackKind::Video, vec![base])]), f));
+
+    // A blend mode and opacity between two clips.
+    let base = media(0.0, 4.0);
+    let mut top = media(0.0, 4.0);
+    top.blend_mode = klipp_core::BlendMode::Screen;
+    top.builtin_effects = vec![BuiltinEffect::Opacity { value: 0.7 }];
+    let f = Frames::default().with(&base, 30).with(&top, 120);
+    out.push(Case::new("rule/screen at 70 percent", sequence(vec![track("V2", TrackKind::Video, vec![top]), track("V1", TrackKind::Video, vec![base])]), f));
+
+    // An adjustment layer with a blur and an opacity weight.
+    let base = media(0.0, 4.0);
+    let mut adj = adjustment(0.0, 4.0);
+    adj.builtin_effects = vec![BuiltinEffect::GaussianBlur { radius: 3.0 }, BuiltinEffect::Opacity { value: 0.6 }];
+    let f = Frames::default().with(&base, 0);
+    out.push(Case::new("rule/adjustment blur at 60 percent", sequence(vec![track("Adj", TrackKind::Video, vec![adj]), track("V1", TrackKind::Video, vec![base])]), f));
+
+    out
+}
+
+/// Grades, and where track and group grades go.
+fn grade_cases() -> Vec<Case> {
+    let mut out = Vec::new();
+
+    // A clip's own grade, then an effect.
+    let mut c = media(0.0, 4.0);
+    c.node_graph = exposure(0.7);
+    c.builtin_effects = vec![BuiltinEffect::GaussianBlur { radius: 2.0 }];
+    let f = Frames::default().with(&c, 0);
+    out.push(Case::new("grade/clip grade then blur", sequence(vec![track("V1", TrackKind::Video, vec![c])]), f));
+
+    // Track effects and a track grade, on a clip with and without an
+    // enabled Transform, and a track shadow drawn around a placed clip.
+    for (name, own) in [("no transform", vec![]), ("own transform", vec![transform(0.6, 0.0, 0.0)])] {
+        let base = media(0.0, 4.0);
+        let mut top = media(0.0, 4.0);
+        top.builtin_effects = own;
+        let mut t = track("V2", TrackKind::Video, vec![top.clone()]);
+        t.effects.video = vec![BuiltinEffect::Vignette { amount: 0.6, size: 0.5, softness: 0.5, roundness: 0.5 }, BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.03, blur: 2.0, color: [0, 0, 0], opacity: 0.7 }];
+        t.effects.grade = Some(exposure(-0.5));
+        let f = Frames::default().with(&base, 90).with(&top, 0);
+        out.push(Case::new(format!("grade/track effects and grade, {name}"), sequence(vec![t, track("V1", TrackKind::Video, vec![base])]), f));
+    }
+
+    // A grade group's pre and post stages around a member's grade, and a
+    // timeline grade over the composite.
+    let mut c = media(0.0, 4.0);
+    c.node_graph = exposure(0.4);
+    let mut group = GradeGroup::new("Scene");
+    group.pre = Some(exposure(-0.3));
+    group.post = Some(graph_of(NodeKind::Saturation, NodeParams { saturation: Some(0.5), ..Default::default() }));
+    c.grade_group = Some(group.id);
+    let f = Frames::default().with(&c, 0);
+    let mut seq = sequence(vec![track("V1", TrackKind::Video, vec![c])]);
+    seq.grade_groups = vec![group];
+    seq.timeline_graph = Some(exposure(0.2));
+    out.push(Case::new("grade/group stages and timeline grade", seq, f));
+
+    // The same grade in each working space.
+    for ws in [WorkingColorspace::AcesCG, WorkingColorspace::Bt2020Linear] {
+        let mut c = media(0.0, 4.0);
+        c.node_graph = exposure(0.5);
+        c.builtin_effects = vec![BuiltinEffect::Glow { radius: 4.0, intensity: 0.5 }, BuiltinEffect::ColorFade { color: [200, 40, 20, 255], duration_secs: 1.0, mode: ColorFadeMode::In, progress: 0.5 }];
+        let f = Frames::default().with(&c, 0);
+        let mut case = Case::new(format!("grade/working space {ws:?}"), sequence(vec![track("V1", TrackKind::Video, vec![c])]), f);
+        case.working = ws;
+        out.push(case);
+    }
+
+    out
+}
+
+/// Compounds: an expanded one carrying its inner track's effects, and one
+/// whose inner sequence has a timeline grade, drawn as one picture.
+fn compound_cases() -> Vec<Case> {
+    let mut out = Vec::new();
+    for graded in [false, true] {
+        let inner_clip = media(0.0, 4.0);
+        let mut inner_track = track("Inner", TrackKind::Video, vec![inner_clip.clone()]);
+        inner_track.effects.video = vec![BuiltinEffect::Invert { mix: 0.6 }];
+        let mut inner = sequence(vec![inner_track]);
+        if graded {
+            inner.timeline_graph = Some(exposure(0.6));
+        }
+        let mut compound = Clip { kind: ClipKind::Sequence { sequence_id: inner.id }, ..Clip::gap(tc(0.0), tc(4.0)) };
+        compound.builtin_effects = vec![BuiltinEffect::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 }];
+        let outer = sequence(vec![track("V1", TrackKind::Video, vec![compound])]);
+        let f = Frames::default().with(&inner_clip, 0);
+        let name = if graded { "compound/graded inner sequence" } else { "compound/expanded" };
+        let mut case = Case::new(name, outer, f);
+        case.project.push(inner);
+        out.push(case);
+    }
+    out
+}
+
+fn corpus() -> Vec<Case> {
+    let mut all = effect_cases();
+    all.extend(rule_cases());
+    all.extend(grade_cases());
+    all.extend(compound_cases());
+    all
+}
+
+// ── Paths ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Path {
+    CpuWithGpu,
+    Stack,
+    Export,
+}
+
+/// A difference the corpus knows about: the case, the path that differs
+/// from cpu, and the issue tracking it.
+const KNOWN: &[(&str, Path, &str)] = &[];
+
+fn renderer(gpu: bool, ws: WorkingColorspace) -> Renderer {
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(gpu);
+    r.set_working_colorspace(ws);
+    r
+}
+
+fn display(linear: &[f32], ws: WorkingColorspace) -> Vec<u8> {
+    klipp_color::display::display_transform_ws_to(linear, klipp_color::display::ToneMapOp::None, ws, klipp_core::SdrTransfer::Srgb)
+}
+
+const LUMA_709: [f32; 3] = [0.2126, 0.7152, 0.0722];
+
+/// The export's encode target for `ws`, where the corpus checks the
+/// export path: Rec.709, and BT.2020 with its gamut step.
+fn export_target(ws: WorkingColorspace) -> Option<klipp_effects::gpu::Yuv420Target> {
+    let plain = klipp_effects::gpu::Yuv420Target {
+        tone_map_op: 0,
+        odt_tag: 0,
+        scene: None,
+        gamut_op: 0,
+        hdr_op: 0,
+        peak_nits: 0.0,
+        luma_coefs: LUMA_709,
+        semi_planar: false,
+        bits: 8,
+        sample_shift: 0,
+    };
+    match ws {
+        WorkingColorspace::Rec709Linear => Some(plain),
+        WorkingColorspace::Bt2020Linear => Some(klipp_effects::gpu::Yuv420Target { gamut_op: 1, ..plain }),
+        _ => None,
+    }
+}
+
+/// The CPU render as the export would encode it: its display transform,
+/// then luma at 16/219.
+fn luma_of(linear: &[f32], ws: WorkingColorspace) -> Vec<u8> {
+    let display = klipp_color::display::ExportDisplay::new(klipp_core::ToneMapOp::None, ws, klipp_core::OdtChoice::MatchViewer);
+    linear
+        .chunks_exact(4)
+        .map(|p| {
+            let e = display.encode([p[0], p[1], p[2]]);
+            let y = LUMA_709[0] * e[0] + LUMA_709[1] * e[1] + LUMA_709[2] * e[2];
+            (16.0 + y * 219.0 + 0.5).clamp(0.0, 255.0) as u8
+        })
+        .collect()
+}
+
+/// The worst difference between two byte pictures, and how many pixels
+/// differ by more than [`TOLERANCE`], ignoring alpha when `stride` is 4.
+fn compare(a: &[u8], b: &[u8], stride: usize) -> (i32, usize) {
+    assert_eq!(a.len(), b.len(), "pictures of different sizes");
+    let mut worst = 0;
+    let mut over = BTreeSet::new();
+    for (i, (x, y)) in a.iter().zip(b).enumerate() {
+        if stride == 4 && i % 4 == 3 {
+            continue;
+        }
+        let d = (*x as i32 - *y as i32).abs();
+        worst = worst.max(d);
+        if d > TOLERANCE {
+            over.insert(i / stride);
+        }
+    }
+    (worst, over.len())
+}
+
+/// What one path made of one frame.
+enum Took {
+    Declined,
+    Within(i32),
+    /// The worst difference, and how many pixels exceed the tolerance.
+    Differs(i32, usize),
+}
+
+fn judge((worst, over): (i32, usize)) -> Took {
+    if worst <= TOLERANCE {
+        Took::Within(worst)
+    } else {
+        Took::Differs(worst, over)
+    }
+}
+
+/// One CPU and one GPU renderer per working space, reused across cases as
+/// the viewer reuses its renderer: building the GPU pipelines afresh for
+/// every case cost minutes.
+#[derive(Default)]
+struct Renderers(HashMap<String, (Renderer, Renderer)>);
+
+impl Renderers {
+    fn get(&mut self, ws: WorkingColorspace) -> &mut (Renderer, Renderer) {
+        self.0.entry(format!("{ws:?}")).or_insert_with(|| (renderer(false, ws), renderer(true, ws)))
+    }
+}
+
+/// Every path at every time of `case`, against cpu.
+fn draw(case: &Case, renderers: &mut Renderers) -> (Vec<String>, Vec<(f64, Path, Took)>) {
+    let seq = klipp_timeline::flatten::flatten_sequence(&case.project[0], &case.project);
+    let ws = case.working;
+    let mut problems = Vec::new();
+    let mut results = Vec::new();
+    for &t in &case.times {
+        let mut frames = case.frames.clone();
+        let (cpu_r, gpu_r) = renderers.get(ws);
+        let cpu_linear = cpu_r.render(&seq, tc(t), W, H, &mut frames, RenderOptions::default());
+        let again = cpu_r.render(&seq, tc(t), W, H, &mut frames, RenderOptions::default());
+        if cpu_linear != again {
+            problems.push(format!("{} @{t}: cpu gave two different frames", case.name));
+        }
+        let cpu = display(&cpu_linear, ws);
+
+        let with_gpu = display(&gpu_r.render(&seq, tc(t), W, H, &mut frames, RenderOptions::default()), ws);
+        results.push((t, Path::CpuWithGpu, judge(compare(&cpu, &with_gpu, 4))));
+
+        let stack = gpu_r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut frames, RenderOptions::default());
+        results.push((t, Path::Stack, stack.map_or(Took::Declined, |(px, _)| judge(compare(&cpu, &px, 4)))));
+
+        let export = export_target(ws).and_then(|target| {
+            let mut on_gpu = Frames { on_gpu: true, ..case.frames.clone() };
+            gpu_r.render_yuv420_on_gpu(&seq, tc(t), W, H, &mut on_gpu, RenderOptions::default(), target)
+        });
+        let took = match export {
+            None => Took::Declined,
+            Some((planes, _)) => judge(compare(&luma_of(&cpu_linear, ws), &planes[..(W * H) as usize], 1)),
+        };
+        results.push((t, Path::Export, took));
+    }
+    (problems, results)
+}
+
+#[test]
+fn every_path_draws_the_corpus_alike() {
+    let mut failures = Vec::new();
+    let mut routes = Vec::new();
+    let known: HashMap<(&str, Path), &str> = KNOWN.iter().map(|(c, p, i)| ((*c, *p), *i)).collect();
+    let mut known_seen = BTreeSet::new();
+    let mut renderers = Renderers::default();
+    for case in corpus() {
+        let (problems, results) = draw(&case, &mut renderers);
+        failures.extend(problems);
+        let mut route = Vec::new();
+        for (t, path, took) in results {
+            let listed = known.get(&(case.name.as_str(), path)).copied();
+            match (&took, listed) {
+                (Took::Differs(d, n), None) => failures.push(format!("{} @{t}: {path:?} differs from cpu by up to {d} levels in {n} pixels", case.name)),
+                (Took::Differs(..), Some(_)) => {
+                    known_seen.insert((case.name.clone(), path));
+                }
+                (Took::Within(_), Some(issue)) => {
+                    failures.push(format!("{} @{t}: {path:?} now agrees with cpu: take it off KNOWN ({issue})", case.name))
+                }
+                _ => {}
+            }
+            let mark = match took {
+                Took::Declined => "-".to_string(),
+                Took::Within(d) => format!("{d}"),
+                Took::Differs(d, n) => format!("!{d}x{n}px"),
+            };
+            route.push(format!("{path:?}@{t}={mark}"));
+        }
+        routes.push(format!("{:<46} {}", case.name, route.join(" ")));
+    }
+    eprintln!("corpus routes (worst difference from cpu in levels; - = path declined):\n{}", routes.join("\n"));
+    for (c, p, i) in KNOWN {
+        if !known_seen.contains(&(c.to_string(), *p)) && !failures.iter().any(|f| f.starts_with(c)) {
+            failures.push(format!("KNOWN lists {c} on {p:?} ({i}), but that case never differed there"));
+        }
+    }
+    assert!(failures.is_empty(), "{} problems:\n{}", failures.len(), failures.join("\n"));
+}
+
+/// Every effect variant is in the corpus, or listed with a reason.
+#[test]
+fn every_effect_variant_is_in_the_corpus() {
+    let src = include_str!("../../klipp-effects/src/lib.rs");
+    let start = src.find("pub enum BuiltinEffect {").expect("the enum");
+    let body = &src[start..];
+    let end = body.find("\n}\n").expect("the enum's end");
+    let declared: BTreeSet<String> = body[..end]
+        .lines()
+        .filter_map(|l| {
+            let rest = l.strip_prefix("    ")?;
+            rest.chars().next()?.is_ascii_uppercase().then(|| rest.chars().take_while(|c| c.is_ascii_alphanumeric()).collect())
+        })
+        .collect();
+    let mut covered: BTreeSet<String> = BTreeSet::new();
+    for case in effect_cases() {
+        for clip in case.project[0].tracks.iter().flat_map(|t| &t.clips) {
+            for e in &clip.builtin_effects {
+                covered.insert(format!("{e:?}").chars().take_while(|c| c.is_ascii_alphanumeric()).collect());
+            }
+        }
+    }
+    covered.extend(EFFECTS_IN_A_LATER_BATCH.iter().map(|s| s.to_string()));
+    let missing: Vec<_> = declared.difference(&covered).collect();
+    assert!(declared.len() > 40, "the variant scan found only {declared:?}");
+    assert!(missing.is_empty(), "effects missing from the corpus: {missing:?}");
+}
