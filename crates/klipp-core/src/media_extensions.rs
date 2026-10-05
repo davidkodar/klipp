@@ -154,6 +154,18 @@ pub fn is_image(ext: &str) -> bool {
     IMAGE_EXTENSIONS.contains(&lower.as_str())
 }
 
+/// Why a camera RAW video file is not imported, for an extension that is
+/// one (#85): REDCODE, ARRIRAW, Blackmagic RAW. `None` for anything else.
+/// Shown where such a file is dropped or imported, rather than nothing.
+pub fn camera_raw_video_refusal(ext: &str) -> Option<&'static str> {
+    match ext.to_ascii_lowercase().as_str() {
+        "r3d" => Some("REDCODE RAW (.r3d) isn't supported: transcode it to ProRes or DNxHR in REDCINE-X PRO first"),
+        "ari" => Some("ARRIRAW (.ari) isn't supported: transcode it to ProRes or DNxHR in ARRI Reference Tool first"),
+        "braw" => Some("Blackmagic RAW (.braw) isn't supported: transcode it to ProRes or DNxHR in Blackmagic's free software first"),
+        _ => None,
+    }
+}
+
 /// Returns `true` if the extension is a camera RAW format that needs to be
 /// decoded via embedded-JPEG preview extraction rather than ffmpeg.
 /// Case-insensitive.
@@ -607,4 +619,16 @@ mod tests {
         assert!(path_is_video(&PathBuf::from("/home/user/My.Movies/clip.mp4")));
         assert!(!path_is_video(&PathBuf::from("/home/user/foo.mp4/notes")));
     }
+
+    #[test]
+    fn camera_raw_video_says_why_it_is_not_imported() {
+        for ext in ["r3d", "R3D", "ari", "braw"] {
+            let why = camera_raw_video_refusal(ext).unwrap_or_else(|| panic!("{ext} is refused with a reason"));
+            assert!(why.contains("transcode"), "{why}");
+            assert!(!is_media(ext), "{ext} is not offered as media");
+        }
+        assert_eq!(camera_raw_video_refusal("mov"), None);
+        assert_eq!(camera_raw_video_refusal("cr2"), None, "still RAW imports as a still");
+    }
+
 }

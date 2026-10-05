@@ -63,6 +63,14 @@ impl KlippApp {
 
     fn handle_media_loading(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
+                AppCommand::ImportMedia { ref path } | AppCommand::ImportMediaWithAnalysis { ref path, .. }
+                    if path.extension().and_then(|e| e.to_str()).and_then(klipp_core::media_extensions::camera_raw_video_refusal).is_some() =>
+                {
+                    // Camera RAW video is a non-goal (#85): say why.
+                    let why = path.extension().and_then(|e| e.to_str()).and_then(klipp_core::media_extensions::camera_raw_video_refusal).unwrap_or_default();
+                    self.state.toast.show(why);
+                    true
+                }
                 AppCommand::ImportMedia { ref path } | AppCommand::ImportMediaWithAnalysis { ref path, .. } => {
                     // Import media: load file to get metadata, then add to pool
                     let media_id = klipp_core::MediaId::new();

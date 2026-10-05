@@ -194,6 +194,10 @@ impl KlippApp {
                     // Opened through the UI, as a click would (#395): sent
                     // to the engine, OpenProject was dropped.
                     self.startup_open = Some(crate::cli::StartupOpen::project(path));
+                } else if let Some(why) = klipp_core::media_extensions::camera_raw_video_refusal(&ext) {
+                    // Camera RAW video is a non-goal (#85): say so and what
+                    // to do, rather than ignore the drop.
+                    self.state.toast.show(why);
                 }
             }
         }
