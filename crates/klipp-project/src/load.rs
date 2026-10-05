@@ -224,6 +224,20 @@ fn unmendable(dir: &Path) -> String {
     )
 }
 
+/// Refuse a project whose `format_revision` is newer than this Klipp
+/// reads (#994). Read from the raw JSON, so the refusal does not depend on
+/// the rest of the file parsing as this Klipp expects.
+fn refuse_newer_format(value: &serde_json::Value) -> Result<(), String> {
+    let revision = value.get("format_revision").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    if revision > u64::from(crate::FORMAT_REVISION) {
+        return Err(format!(
+            "This project was saved by a newer Klipp (project format {revision}; this Klipp reads up to {}). Open it in that version.",
+            crate::FORMAT_REVISION
+        ));
+    }
+    Ok(())
+}
+
 pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     // The pair a save left whole, from its recovery copy if it stopped (#840).
     let (project_str, manifest_str, interrupted) = pair_to_open(dir)?;
@@ -240,6 +254,12 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             info!("Migrated old single-sequence project format");
         }
     }
+
+    // Before anything is read as this Klipp understands it: a file that
+    // needs a newer reader is refused here, whole, with a sentence that
+    // says why, rather than failing somewhere inside with a parse error
+    // or, worse, reading with something missing (#994).
+    refuse_newer_format(&value)?;
 
     let project: ProjectJson = serde_json::from_value(value)
         .map_err(|e| format!("Failed to deserialize project: {e}"))?;

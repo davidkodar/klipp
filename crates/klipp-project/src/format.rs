@@ -1,10 +1,25 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProjectJson {
     pub version: String,
     pub klipp_version_min: String,
+    /// What this file needs a reader to understand, as a whole number that
+    /// only goes up (#994). A save writes the lowest revision that can
+    /// read what it wrote, so a file stays readable by older builds until
+    /// it genuinely is not; the loader refuses a revision newer than
+    /// [`crate::FORMAT_REVISION`] before reading anything else. Absent (0)
+    /// in every file so far.
+    ///
+    /// Not a version string: Klipp's version does not move with the
+    /// format, and `klipp_version_min` was never read.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub format_revision: u32,
     /// The save that wrote this file, shared with the media manifest it
     /// was written with, so a pair from two different saves is told apart
     /// on open (#821). Absent from files written before.
@@ -936,6 +951,7 @@ mod tests {
         let project = ProjectJson {
             version: "1.0.0".to_string(),
             klipp_version_min: "0.1.0".to_string(),
+            format_revision: 0,
             generation: None,
             klipp_version: None,
             saved_at: None,
