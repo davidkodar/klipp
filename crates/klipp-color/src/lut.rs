@@ -120,36 +120,155 @@ fn read_text_capped(file: impl std::io::Read, limit: u64) -> Result<String, LutE
 }
 
 /// Parse an Adobe .cube 3D LUT file.
+/// The size a 1D table or a shaper is baked into (#901): the 3D grid a
+/// curve becomes, so every LUT reaches the pipeline as one 3D table.
+/// 65 keeps a log shaper's shoulder within a code value of the curve.
+const BAKED_SIZE: usize = 65;
+
+/// One channel's curve, piecewise linear between `inputs` (ascending) and
+/// the `outputs` there; held flat outside them.
+#[derive(Debug, Clone)]
+struct Curve {
+    inputs: Vec<f32>,
+    outputs: Vec<f32>,
+}
+
+impl Curve {
+    /// `values` spread evenly over `min..=max`, as a `.cube` 1D table is.
+    fn uniform(values: Vec<f32>, min: f32, max: f32) -> Self {
+        let n = values.len().max(2) - 1;
+        let inputs = (0..values.len()).map(|i| min + (max - min) * i as f32 / n as f32).collect();
+        Self { inputs, outputs: values }
+    }
+
+    fn is_identity(&self) -> bool {
+        self.inputs.iter().zip(&self.outputs).all(|(i, o)| (i - o).abs() < 1e-6) && self.inputs.first() == Some(&0.0) && self.inputs.last() == Some(&1.0)
+    }
+
+    fn at(&self, x: f32) -> f32 {
+        let (ins, outs) = (&self.inputs, &self.outputs);
+        if ins.is_empty() {
+            return x;
+        }
+        if x <= ins[0] {
+            return outs[0];
+        }
+        let last = ins.len() - 1;
+        if x >= ins[last] {
+            return outs[last];
+        }
+        let k = ins.partition_point(|&v| v <= x).clamp(1, last);
+        let (x0, x1) = (ins[k - 1], ins[k]);
+        let t = if x1 > x0 { (x - x0) / (x1 - x0) } else { 0.0 };
+        outs[k - 1] + (outs[k] - outs[k - 1]) * t
+    }
+}
+
+/// `data`, a `size`³ table (red fastest), read at `rgb` in 0..1, trilinearly.
+fn sample_3d(data: &[f32], size: usize, rgb: [f32; 3]) -> [f32; 3] {
+    let n = (size - 1) as f32;
+    let axis = |v: f32| {
+        let p = v.clamp(0.0, 1.0) * n;
+        let i = (p.floor() as usize).min(size - 2);
+        (i, p - i as f32)
+    };
+    let ((r0, fr), (g0, fg), (b0, fb)) = (axis(rgb[0]), axis(rgb[1]), axis(rgb[2]));
+    let at = |r: usize, g: usize, b: usize, c: usize| data[((b * size + g) * size + r) * 3 + c];
+    let mut out = [0.0f32; 3];
+    for (c, o) in out.iter_mut().enumerate() {
+        let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+        let c00 = lerp(at(r0, g0, b0, c), at(r0 + 1, g0, b0, c), fr);
+        let c10 = lerp(at(r0, g0 + 1, b0, c), at(r0 + 1, g0 + 1, b0, c), fr);
+        let c01 = lerp(at(r0, g0, b0 + 1, c), at(r0 + 1, g0, b0 + 1, c), fr);
+        let c11 = lerp(at(r0, g0 + 1, b0 + 1, c), at(r0 + 1, g0 + 1, b0 + 1, c), fr);
+        *o = lerp(lerp(c00, c10, fg), lerp(c01, c11, fg), fb);
+    }
+    out
+}
+
+/// A `BAKED_SIZE`³ table of `f` over the unit cube (red fastest).
+fn bake(f: impl Fn([f32; 3]) -> [f32; 3]) -> Vec<f32> {
+    let size = BAKED_SIZE;
+    let n = (size - 1) as f32;
+    let mut data = Vec::with_capacity(size * size * size * 3);
+    for b in 0..size {
+        for g in 0..size {
+            for r in 0..size {
+                data.extend_from_slice(&f([r as f32 / n, g as f32 / n, b as f32 / n]));
+            }
+        }
+    }
+    data
+}
+
+/// A LUT from a 3D table, defaulting both sides to BT.709 / sRGB as an
+/// untagged file is taken to be authored.
+fn lut_data(size: usize, data: Vec<f32>) -> LutData {
+    LutData { size, data, input_space: WorkingColorspace::Rec709Linear, output_space: WorkingColorspace::Rec709Linear }
+}
+
 pub fn load_cube(path: &Path) -> Result<LutData, LutError> {
     let text = read_lut_text(path)?;
     parse_cube(&text)
 }
 
 /// Parse .cube format from a string (testable without filesystem).
+///
+/// A 3D table (`LUT_3D_SIZE`), a 1D table (`LUT_1D_SIZE`), or a 1D shaper
+/// followed by a 3D table (both sizes, the 1D rows first). A 1D table, and
+/// a shaper with the table it feeds, are baked into one 3D table (#901);
+/// they were skipped before, and a 1D file failed to load. The 1D input
+/// range is `DOMAIN_MIN`/`DOMAIN_MAX` or `LUT_1D_INPUT_RANGE`, 0..1 if
+/// neither is given.
 pub fn parse_cube(text: &str) -> Result<LutData, LutError> {
-    let mut size: Option<usize> = None;
+    let mut size_3d: Option<usize> = None;
+    let mut size_1d: Option<usize> = None;
+    let (mut dmin, mut dmax) = ([0.0f32; 3], [1.0f32; 3]);
     let mut data = Vec::new();
+    let floats = |rest: &str, line_num: usize| -> Result<Vec<f32>, LutError> {
+        rest.split_whitespace().map(|t| t.parse::<f32>().map_err(|_| LutError::ParseFloat { line_num, text: t.to_string() })).collect()
+    };
+    let size_of = |rest: &str, line_num: usize, max: usize| -> Result<usize, LutError> {
+        let n: usize = rest.trim().parse().map_err(|_| LutError::ParseFloat { line_num, text: rest.trim().to_string() })?;
+        if !(2..=max).contains(&n) {
+            return Err(LutError::InvalidSize(n));
+        }
+        Ok(n)
+    };
 
     for (line_idx, line) in text.lines().enumerate() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if line.starts_with("TITLE") || line.starts_with("DOMAIN_MIN") || line.starts_with("DOMAIN_MAX") {
+        let line_num = line_idx + 1;
+        if line.is_empty() || line.starts_with('#') || line.starts_with("TITLE") {
             continue;
         }
         if let Some(rest) = line.strip_prefix("LUT_3D_SIZE") {
-            let n: usize = rest.trim().parse().map_err(|_| LutError::ParseFloat {
-                line_num: line_idx + 1,
-                text: rest.trim().to_string(),
-            })?;
-            if !(2..=256).contains(&n) {
-                return Err(LutError::InvalidSize(n));
-            }
-            size = Some(n);
+            size_3d = Some(size_of(rest, line_num, 256)?);
             continue;
         }
-        // Skip any other keyword lines (LUT_1D_SIZE, etc.)
+        if let Some(rest) = line.strip_prefix("LUT_1D_SIZE") {
+            size_1d = Some(size_of(rest, line_num, 65536)?);
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("DOMAIN_MIN") {
+            if let [r, g, b] = floats(rest, line_num)?[..] {
+                dmin = [r, g, b];
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("DOMAIN_MAX") {
+            if let [r, g, b] = floats(rest, line_num)?[..] {
+                dmax = [r, g, b];
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("LUT_1D_INPUT_RANGE") {
+            if let [lo, hi] = floats(rest, line_num)?[..] {
+                (dmin, dmax) = ([lo; 3], [hi; 3]);
+            }
+            continue;
+        }
+        // Skip any other keyword lines (LUT_3D_INPUT_RANGE, etc.)
         if line.contains('_') && line.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
             continue;
         }
@@ -159,7 +278,7 @@ pub fn parse_cube(text: &str) -> Result<LutData, LutError> {
         if parts.len() >= 3 {
             for (i, part) in parts.iter().take(3).enumerate() {
                 let v: f32 = part.parse().map_err(|_| LutError::ParseFloat {
-                    line_num: line_idx + 1,
+                    line_num,
                     text: parts[i].to_string(),
                 })?;
                 data.push(v);
@@ -167,24 +286,31 @@ pub fn parse_cube(text: &str) -> Result<LutData, LutError> {
         }
     }
 
-    let size = size.ok_or(LutError::MissingSize)?;
-    let expected = size * size * size;
-    let got = data.len() / 3;
-    if got < expected {
-        return Err(LutError::NotEnoughEntries { expected, got });
+    let n1 = size_1d.unwrap_or(0);
+    let n3 = size_3d.map(|n| n * n * n).unwrap_or(0);
+    if n1 == 0 && n3 == 0 {
+        return Err(LutError::MissingSize);
     }
-    // Truncate to exact size (ignore extra)
-    data.truncate(expected * 3);
-
-    Ok(LutData {
-        size,
-        data,
-        // Untagged .cube/.csp/.3dl files are conventionally authored
-        // in BT.709 / sRGB. Users override via the Inspector when
-        // they know the LUT was authored in a different space.
-        input_space: WorkingColorspace::Rec709Linear,
-        output_space: WorkingColorspace::Rec709Linear,
-    })
+    let got = data.len() / 3;
+    if got < n1 + n3 {
+        return Err(LutError::NotEnoughEntries { expected: n1 + n3, got });
+    }
+    let curves = (n1 > 0).then(|| {
+        let channel = |c: usize| Curve::uniform((0..n1).map(|i| data[i * 3 + c]).collect(), dmin[c], dmax[c]);
+        [channel(0), channel(1), channel(2)]
+    });
+    match (curves, size_3d) {
+        // A 3D table alone, as before. Extra rows are ignored.
+        (None, Some(size)) => Ok(lut_data(size, data[..n3 * 3].to_vec())),
+        // A 1D table alone: each channel through its curve.
+        (Some(c), None) => Ok(lut_data(BAKED_SIZE, bake(|v| [c[0].at(v[0]), c[1].at(v[1]), c[2].at(v[2])]))),
+        // A shaper, then the 3D table it indexes.
+        (Some(c), Some(size)) => {
+            let table = &data[n1 * 3..(n1 + n3) * 3];
+            Ok(lut_data(BAKED_SIZE, bake(|v| sample_3d(table, size, [c[0].at(v[0]), c[1].at(v[1]), c[2].at(v[2])]))))
+        }
+        (None, None) => Err(LutError::MissingSize),
+    }
 }
 
 /// Load any supported LUT format by file extension (.cube, .3dl, .csp).
@@ -284,108 +410,79 @@ pub fn parse_3dl(text: &str) -> Result<LutData, LutError> {
 }
 
 /// Parse Rising Sun Research .csp LUT format.
-/// Header: CSPLUTV100 / 3D, optional 1D pre-LUTs, then 3D data as float triplets.
+///
+/// `CSPLUTV100`, then `1D` or `3D`, an optional metadata block, three
+/// per-channel curves (a count, that many inputs, that many outputs), and
+/// for a 3D file its size and table. The curves of a 1D file, and a 3D
+/// file's pre-LUTs with the table they index, are baked into one 3D table
+/// (#901); the pre-LUTs were skipped before, and read a line per entry,
+/// so a file with a long pre-LUT was misread. Identity pre-LUTs keep the
+/// table as it is.
 pub fn parse_csp(text: &str) -> Result<LutData, LutError> {
-    let mut lines = text.lines().peekable();
-    let mut found_header = false;
-    let mut is_3d = false;
-
-    // Parse header
-    for line in lines.by_ref() {
-        let line = line.trim();
-        if line.is_empty() { continue; }
-        if line == "CSPLUTV100" {
-            found_header = true;
-            continue;
-        }
-        if found_header && line == "3D" {
-            is_3d = true;
-            break;
-        }
-        if found_header && line == "1D" {
-            // 1D CSP not supported as 3D LUT
-            return Err(LutError::MissingSize);
-        }
-    }
-
-    if !found_header || !is_3d {
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty()).peekable();
+    if lines.next() != Some("CSPLUTV100") {
         return Err(LutError::MissingSize);
     }
-
-    // Skip 1D pre-LUT sections (3 sections, each: count on one line, then count pairs)
-    for _ in 0..3 {
-        // Read count line
-        let count_line = loop {
-            match lines.next() {
-                Some(l) if !l.trim().is_empty() => break l.trim().to_string(),
-                Some(_) => continue,
-                None => return Err(LutError::MissingSize),
+    let is_3d = match lines.next() {
+        Some("3D") => true,
+        Some("1D") => false,
+        _ => return Err(LutError::MissingSize),
+    };
+    if lines.peek() == Some(&"BEGIN METADATA") {
+        for line in lines.by_ref() {
+            if line == "END METADATA" {
+                break;
             }
-        };
-        let count: usize = count_line.parse().unwrap_or(0);
-        // Skip `count` data lines
-        for _ in 0..count {
-            lines.next();
         }
     }
-
-    // Read 3D LUT size
-    let size_line = loop {
-        match lines.next() {
-            Some(l) if !l.trim().is_empty() => break l.trim().to_string(),
-            Some(_) => continue,
-            None => return Err(LutError::MissingSize),
+    // Numbers as they come, across line breaks.
+    let mut tokens = lines.flat_map(str::split_whitespace).enumerate();
+    let mut next_f32 = || -> Result<f32, LutError> {
+        let (n, t) = tokens.next().ok_or(LutError::MissingSize)?;
+        t.parse::<f32>().map_err(|_| LutError::ParseFloat { line_num: n, text: t.to_string() })
+    };
+    let curve = |next_f32: &mut dyn FnMut() -> Result<f32, LutError>| -> Result<Curve, LutError> {
+        let count = next_f32()? as usize;
+        if !(2..=65536).contains(&count) {
+            return Err(LutError::InvalidSize(count));
         }
+        let inputs = (0..count).map(|_| next_f32()).collect::<Result<Vec<_>, _>>()?;
+        let outputs = (0..count).map(|_| next_f32()).collect::<Result<Vec<_>, _>>()?;
+        Ok(Curve { inputs, outputs })
     };
-    let parts: Vec<&str> = size_line.split_whitespace().collect();
-    let size: usize = if parts.len() >= 3 {
-        // "N N N" format
-        parts[0].parse().map_err(|_| LutError::ParseFloat { line_num: 0, text: size_line.clone() })?
-    } else {
-        size_line.parse().map_err(|_| LutError::ParseFloat { line_num: 0, text: size_line.clone() })?
-    };
-
+    let c = [curve(&mut next_f32)?, curve(&mut next_f32)?, curve(&mut next_f32)?];
+    if !is_3d {
+        return Ok(lut_data(BAKED_SIZE, bake(|v| [c[0].at(v[0]), c[1].at(v[1]), c[2].at(v[2])])));
+    }
+    // "N N N", or one N.
+    let size = next_f32()? as usize;
     if !(2..=256).contains(&size) {
         return Err(LutError::InvalidSize(size));
     }
-
-    // Read 3D data: size^3 lines of "r g b" floats
     let expected = size * size * size;
     let mut data = Vec::with_capacity(expected * 3);
-    let mut line_num = 0;
-
-    for line in lines {
-        let line = line.trim();
-        if line.is_empty() { continue; }
-        line_num += 1;
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 3 {
-            for part in parts.iter().take(3) {
-                let v: f32 = part.parse().map_err(|_| LutError::ParseFloat {
-                    line_num,
-                    text: part.to_string(),
-                })?;
-                data.push(v);
-            }
-        }
-        if data.len() >= expected * 3 { break; }
+    // The size may be written three times.
+    let mut first = vec![next_f32()?, next_f32()?];
+    if first.iter().all(|&v| v as usize == size && v.fract() == 0.0) {
+        first.clear();
     }
-
+    data.extend(first);
+    while data.len() < expected * 3 {
+        match next_f32() {
+            Ok(v) => data.push(v),
+            Err(LutError::MissingSize) => break,
+            Err(e) => return Err(e),
+        }
+    }
     let got = data.len() / 3;
     if got < expected {
         return Err(LutError::NotEnoughEntries { expected, got });
     }
     data.truncate(expected * 3);
-
-    Ok(LutData {
-        size,
-        data,
-        // Untagged .cube/.csp/.3dl files are conventionally authored
-        // in BT.709 / sRGB. Users override via the Inspector when
-        // they know the LUT was authored in a different space.
-        input_space: WorkingColorspace::Rec709Linear,
-        output_space: WorkingColorspace::Rec709Linear,
-    })
+    if c.iter().all(Curve::is_identity) {
+        return Ok(lut_data(size, data));
+    }
+    Ok(lut_data(BAKED_SIZE, bake(|v| sample_3d(&data, size, [c[0].at(v[0]), c[1].at(v[1]), c[2].at(v[2])]))))
 }
 
 /// Generate a small reference image (64x64 RGBA) with color ramps for LUT preview.
@@ -693,6 +790,104 @@ mod tests {
         // to the public LutData::identity so the public path stays
         // exercised by the same passthrough assertions.
         LutData::identity(size)
+    }
+
+    /// The baked table read at `rgb`.
+    fn read(lut: &LutData, rgb: [f32; 3]) -> [f32; 3] {
+        super::sample_3d(&lut.data, lut.size, rgb)
+    }
+
+    fn close(a: [f32; 3], b: [f32; 3]) -> bool {
+        a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 2e-3)
+    }
+
+    /// #901: a 1D .cube was refused for want of a 3D size; now each
+    /// channel goes through its curve.
+    #[test]
+    fn a_1d_cube_is_each_channel_through_its_curve() {
+        // Squares the red, halves the green, keeps the blue: 5 rows over 0..1.
+        let rows: String = (0..5).map(|i| { let x = i as f32 / 4.0; format!("{} {} {}\n", x * x, x / 2.0, x) }).collect();
+        let lut = parse_cube(&format!("TITLE \"curve\"\nLUT_1D_SIZE 5\n{rows}")).unwrap();
+        assert_eq!(lut.size, 65);
+        assert!(close(read(&lut, [0.5, 0.5, 0.5]), [0.25, 0.25, 0.5]), "{:?}", read(&lut, [0.5, 0.5, 0.5]));
+        assert!(close(read(&lut, [1.0, 1.0, 0.0]), [1.0, 0.5, 0.0]));
+        // Between rows the curve is linear: 0.375 lies between 0.25 and 0.5.
+        assert!((read(&lut, [0.375, 0.0, 0.0])[0] - (0.0625 + 0.25) / 2.0).abs() < 2e-3);
+    }
+
+    /// #901: a 1D table's range from DOMAIN_MIN/MAX.
+    #[test]
+    fn a_1d_cube_reads_its_domain() {
+        let lut = parse_cube("LUT_1D_SIZE 2\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 0.5 0.5 0.5\n0 0 0\n1 1 1\n").unwrap();
+        assert!(close(read(&lut, [0.25, 0.5, 1.0]), [0.5, 1.0, 1.0]), "0.25 is half way through 0..0.5, and past 0.5 the curve holds");
+    }
+
+    /// #901: a shaper, then the 3D table it indexes.
+    #[test]
+    fn a_shaper_feeds_the_3d_table() {
+        // Shaper: x -> x/2. Table: identity, size 2. So the whole is x/2.
+        let mut text = String::from("LUT_1D_SIZE 2\nLUT_3D_SIZE 2\n0 0 0\n0.5 0.5 0.5\n");
+        for b in 0..2 { for g in 0..2 { for r in 0..2 { text += &format!("{r} {g} {b}\n"); } } }
+        let lut = parse_cube(&text).unwrap();
+        assert!(close(read(&lut, [1.0, 0.5, 0.0]), [0.5, 0.25, 0.0]), "{:?}", read(&lut, [1.0, 0.5, 0.0]));
+    }
+
+    /// A 3D cube is kept as it is, at its own size.
+    #[test]
+    fn a_3d_cube_alone_is_kept_at_its_size() {
+        let mut text = String::from("LUT_3D_SIZE 2\n");
+        for b in 0..2 { for g in 0..2 { for r in 0..2 { text += &format!("{r} {g} {b}\n"); } } }
+        assert_eq!(parse_cube(&text).unwrap().size, 2);
+    }
+
+    fn identity_csp_table(size: usize) -> String {
+        let n = (size - 1) as f32;
+        let mut t = format!("{size} {size} {size}\n");
+        for b in 0..size { for g in 0..size { for r in 0..size { t += &format!("{} {} {}\n", r as f32 / n, g as f32 / n, b as f32 / n); } } }
+        t
+    }
+
+    /// #901: identity pre-LUTs keep the table; a long pre-LUT is read by
+    /// its values, not a line per entry, and applied.
+    #[test]
+    fn csp_pre_luts_are_read_and_applied() {
+        let ident = "2\n0 1\n0 1\n";
+        let plain = parse_csp(&format!("CSPLUTV100\n3D\n\n{ident}{ident}{ident}\n{}", identity_csp_table(3))).unwrap();
+        assert_eq!(plain.size, 3, "identity pre-LUTs: the table as it is");
+        // Red's pre-LUT halves it, in five points on one line each way.
+        let half = "5\n0 0.25 0.5 0.75 1\n0 0.125 0.25 0.375 0.5\n";
+        let lut = parse_csp(&format!("CSPLUTV100\n3D\nBEGIN METADATA\nmade by a test\nEND METADATA\n{half}{ident}{ident}{}", identity_csp_table(3))).unwrap();
+        assert!(close(read(&lut, [1.0, 1.0, 0.5]), [0.5, 1.0, 0.5]), "{:?}", read(&lut, [1.0, 1.0, 0.5]));
+    }
+
+    /// #901: a 1D CSP was refused; its curves are the LUT.
+    #[test]
+    fn a_1d_csp_is_its_curves() {
+        let invert = "2\n0 1\n1 0\n";
+        let ident = "2\n0 1\n0 1\n";
+        let lut = parse_csp(&format!("CSPLUTV100\n1D\n{invert}{ident}{ident}")).unwrap();
+        assert!(close(read(&lut, [0.25, 0.25, 0.25]), [0.75, 0.25, 0.25]));
+    }
+
+    /// Every bundled LUT still loads (#901 rewrote the parsers).
+    #[test]
+    fn every_bundled_lut_loads() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/luts");
+        let mut seen = 0;
+        let mut stack = vec![root];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "cube" || e == "csp" || e == "3dl") {
+                    let lut = load_lut(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+                    assert_eq!(lut.data.len(), lut.size.pow(3) * 3, "{}", path.display());
+                    seen += 1;
+                }
+            }
+        }
+        assert!(seen > 0, "no bundled LUTs found");
     }
 
     #[test]
