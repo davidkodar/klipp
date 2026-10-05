@@ -65,14 +65,45 @@ fn sanitize_filename(name: &str) -> String {
         .replace(' ', "_")
 }
 
-pub fn save_tool_preset(preset: &ToolPreset) -> std::io::Result<()> {
-    let dir = tool_presets_dir(&preset.tool)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Cannot find config directory"))?;
-    std::fs::create_dir_all(&dir)?;
+/// Whether the tool preset file `text` is one this build reads in full:
+/// the test `load_tool_presets` applies before offering it.
+fn tool_preset_reads_in_full(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text).is_ok_and(|v| {
+        v.get("params").map(klipp_nodes::json_check::params_losses).unwrap_or_default().is_empty()
+            && serde_json::from_value::<ToolPreset>(v).is_ok()
+    })
+}
+
+/// Whether the colour preset file `text` is one this build reads in full:
+/// the test `load_preset_file` applies before offering it.
+fn colour_preset_reads_in_full(text: &str) -> bool {
+    klipp_nodes::json_check::reads_in_full(text) && serde_json::from_str::<NodeGraph>(text).is_ok()
+}
+
+/// Refuses to write over `path` when it holds a preset this build cannot
+/// read in full. Loading leaves such a preset out, so the user cannot see
+/// it, and a save under the same name would replace it unseen (#1050).
+fn refuse_unreadable(path: &Path, reads_in_full: impl Fn(&str) -> bool) -> Result<(), String> {
+    match std::fs::read(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(bytes) if std::str::from_utf8(&bytes).is_ok_and(&reads_in_full) => Ok(()),
+        _ => Err(format!(
+            "A preset named {:?} is already saved, by a newer Klipp or in a form this one cannot read, and is kept. Choose another name.",
+            path.file_stem().unwrap_or_default()
+        )),
+    }
+}
+
+pub fn save_tool_preset(preset: &ToolPreset) -> Result<(), String> {
+    save_tool_preset_in(&tool_presets_dir(&preset.tool).ok_or("Cannot find config directory")?, preset)
+}
+
+fn save_tool_preset_in(dir: &Path, preset: &ToolPreset) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("Could not create {dir:?}: {e}"))?;
     let path = dir.join(format!("{}.json", sanitize_filename(&preset.name)));
-    let json = serde_json::to_string_pretty(preset)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path, json)
+    refuse_unreadable(&path, tool_preset_reads_in_full)?;
+    let json = serde_json::to_string_pretty(preset).map_err(|e| format!("Serialize error: {e}"))?;
+    std::fs::write(&path, json).map_err(|e| format!("Write error: {e}"))
 }
 
 pub fn load_tool_presets(tool: &ToolScope) -> Vec<ToolPreset> {
@@ -303,11 +334,15 @@ pub fn load_all_presets() -> Vec<(String, NodeGraph)> {
 
 /// Save a grade preset to the user directory.
 pub fn save_preset(name: &str, graph: &NodeGraph) -> Result<(), String> {
-    let dir = user_presets_dir().ok_or("Cannot find config directory")?;
+    save_preset_in(&user_presets_dir().ok_or("Cannot find config directory")?, name, graph)
+}
+
+fn save_preset_in(dir: &Path, name: &str, graph: &NodeGraph) -> Result<(), String> {
     let safe_name: String = name.chars()
         .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' })
         .collect();
     let path = dir.join(format!("{safe_name}.json"));
+    refuse_unreadable(&path, colour_preset_reads_in_full)?;
     let json = serde_json::to_string_pretty(graph)
         .map_err(|e| format!("Serialize error: {e}"))?;
     std::fs::write(&path, json)
@@ -343,4 +378,49 @@ fn load_preset_file(path: &Path) -> Option<(String, NodeGraph)> {
     let graph: NodeGraph = serde_json::from_str(&text).ok()?;
     let name = path.file_stem()?.to_string_lossy().to_string();
     Some((name, graph))
+}
+
+#[cfg(test)]
+mod overwrite_tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("klipp-presets-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// #1050: a preset this build cannot read is not offered, so a save
+    /// under its name must not replace it unseen.
+    #[test]
+    fn a_save_leaves_an_unreadable_tool_preset_untouched() {
+        let dir = temp_dir("tool");
+        let saved = r#"{"name":"Warm","tool":"Wheels","params":{"exposure":0.5,"future_mix":0}}"#;
+        let path = dir.join("Warm.json");
+        std::fs::write(&path, saved).unwrap();
+        let preset = ToolPreset { name: "Warm".into(), tool: ToolScope::Wheels, params: NodeParams::default() };
+        assert!(save_tool_preset_in(&dir, &preset).is_err(), "the save went through");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved, "the preset was overwritten");
+        // Under another name it saves.
+        let other = ToolPreset { name: "Cool".into(), ..preset };
+        assert!(save_tool_preset_in(&dir, &other).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_save_leaves_an_unreadable_colour_preset_untouched() {
+        let dir = temp_dir("colour");
+        let mut graph = serde_json::to_value(NodeGraph::default()).unwrap();
+        graph["nodes"][1]["kind"] = serde_json::Value::from("HolographicKey");
+        let saved = graph.to_string();
+        let path = dir.join("Teal.json");
+        std::fs::write(&path, &saved).unwrap();
+        assert!(save_preset_in(&dir, "Teal", &NodeGraph::default()).is_err(), "the save went through");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved, "the preset was overwritten");
+        // A readable one is replaced as before.
+        std::fs::write(&path, serde_json::to_string(&NodeGraph::default()).unwrap()).unwrap();
+        assert!(save_preset_in(&dir, "Teal", &NodeGraph::default()).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
