@@ -2532,6 +2532,19 @@ pub struct ChainStats {
     pub cpu_nodes: u32,
 }
 
+/// Whether `node` keyframes any of a qualifier's matte refinements. The
+/// secondary is recognised from the static settings, so a refinement
+/// that is 0 still but keyed above it would be fused and dropped on
+/// every frame it is not 0 (#1013).
+fn refinement_keyed(graph: &NodeGraph, node: NodeId) -> bool {
+    graph.nodes.iter().find(|n| n.id == node).is_some_and(|n| {
+        n.keyframes.tracks.iter().any(|t| {
+            !t.keyframes.is_empty()
+                && matches!(t.param_name.as_str(), "qual_clean_black" | "qual_clean_white" | "qual_shrink_grow" | "qual_blur")
+        })
+    })
+}
+
 /// A secondary correction the GPU chain can carry end to end: one
 /// node's picture keyed by a Qualifier, graded down a branch of any
 /// length, and the two recombined by an ApplyMatte.
@@ -2619,7 +2632,9 @@ impl SecondaryChain {
                 // CPU, so that qualifier runs per node, where it is
                 // (#1013).
                 Some(NodeKind::Qualifier) => {
-                    keys_the_source && matte_params.qualifier.as_ref().is_some_and(|q| q.enabled && !q.refines())
+                    keys_the_source
+                        && matte_params.qualifier.as_ref().is_some_and(|q| q.enabled && !q.refines())
+                        && !refinement_keyed(graph, matte)
                 }
                 Some(NodeKind::LumaKey) => {
                     keys_the_source && matte_params.luma_key.as_ref().is_some_and(|k| k.enabled)

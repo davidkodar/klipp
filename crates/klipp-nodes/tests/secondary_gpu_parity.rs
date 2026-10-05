@@ -618,3 +618,37 @@ fn a_refined_qualifier_in_a_secondary_matches_the_cpu() {
     let off = worst(&cpu, &gpu);
     assert!(off < 0.001, "a refined secondary differs between CPU and GPU by {off}");
 }
+
+/// The same with the refinement keyframed rather than set: a blur that
+/// is 0 still but keyed up to 8 px is refined on both paths (#1013).
+#[test]
+fn a_keyframed_refinement_in_a_secondary_matches_the_cpu() {
+    let key = |time_secs, value| klipp_core::Keyframe {
+        time_secs, value, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+    };
+    let mut graph = secondary_graph(Some(1.0));
+    for n in &mut graph.nodes {
+        if n.kind == NodeKind::Qualifier {
+            n.keyframes.tracks.push(klipp_nodes::params::NodeKeyframeTrack {
+                param_name: "qual_blur".into(),
+                keyframes: vec![key(0.0, 8.0), key(1.0, 8.0)],
+            });
+        }
+    }
+    let (cpu, _) = run(&graph, false);
+    let (gpu, stats) = run(&graph, true);
+    if stats.extends == 0 && stats.flushes == 0 {
+        eprintln!("skipping: no usable GPU");
+        return;
+    }
+    let worst = |a: &[f32], b: &[f32]| {
+        a.chunks_exact(4)
+            .zip(b.chunks_exact(4))
+            .map(|(c, g)| (0..3).map(|i| (c[i] - g[i]).abs()).fold(0.0f32, f32::max))
+            .fold(0.0f32, f32::max)
+    };
+    let (unrefined, _) = run(&secondary_graph(Some(1.0)), false);
+    assert!(worst(&cpu, &unrefined) > 0.005, "the keyed blur changed nothing ({})", worst(&cpu, &unrefined));
+    let off = worst(&cpu, &gpu);
+    assert!(off < 0.001, "a keyed refinement differs between CPU and GPU by {off}");
+}
