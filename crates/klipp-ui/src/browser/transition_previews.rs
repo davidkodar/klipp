@@ -127,6 +127,12 @@ impl TransitionPreviews {
         self.frames_source.is_some()
     }
 
+    /// Which frames the cards are rendered from: `"sample"`, or a
+    /// selected cut's (#547).
+    pub fn source(&self) -> Option<&str> {
+        self.frames_source.as_deref()
+    }
+
     pub fn get_or_request(
         &mut self,
         key: &str,
@@ -218,6 +224,63 @@ impl TransitionPreviews {
     pub fn drain(&mut self) -> Vec<egui::TextureHandle> {
         self.textures.drain().map(|(_, t)| t).collect()
     }
+}
+
+/// An sRGB RGBA picture resampled into the preview size whole, black
+/// either side of a portrait one or above and below a wide one, so a
+/// clip's framing is kept (#547), in linear light.
+pub fn frame_fit_from_rgba(rgba: &[u8], w: u32, h: u32) -> Arc<Vec<f32>> {
+    let (pw, ph) = (PREVIEW_W as usize, PREVIEW_H as usize);
+    let (w, h) = (w.max(1) as usize, h.max(1) as usize);
+    let scale = (pw as f32 / w as f32).min(ph as f32 / h as f32);
+    let (dw, dh) = ((w as f32 * scale).round() as usize, (h as f32 * scale).round() as usize);
+    let (ox, oy) = ((pw - dw.min(pw)) / 2, (ph - dh.min(ph)) / 2);
+    let mut out = vec![0u8; pw * ph * 4];
+    for px in out.chunks_exact_mut(4) {
+        px[3] = 255;
+    }
+    for y in 0..dh.min(ph) {
+        let sy = ((y as f32 + 0.5) / scale) as usize;
+        for x in 0..dw.min(pw) {
+            let sx = ((x as f32 + 0.5) / scale) as usize;
+            let si = (sy.min(h - 1) * w + sx.min(w - 1)) * 4;
+            let di = ((oy + y) * pw + ox + x) * 4;
+            if si + 4 <= rgba.len() {
+                out[di..di + 3].copy_from_slice(&rgba[si..si + 3]);
+            }
+        }
+    }
+    Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&out))
+}
+
+/// The frames either side of the selected edit point, for "Preview
+/// selected cut" (#547): the outgoing clip's last frame and the incoming
+/// clip's first, from their filmstrips, framing kept; `Ok(None)` when
+/// they are the frames `current` already names. `Err` says why there is
+/// nothing to preview. The project is only read.
+pub fn cut_frames(state: &crate::state::AppState, current: Option<&str>) -> Result<Option<Frames>, String> {
+    let Some(edit) = state.selected_edits.first() else {
+        return Err("select an edit point between two clips (U, or click a cut)".into());
+    };
+    let (out, inc) = crate::trim_view::sides(state.sequence(), edit, |m| state.media_pool.get(&m).map(|i| (i.duration.to_secs_f64(), i.filename.clone())));
+    let (Some(out), Some(inc)) = (out, inc) else {
+        return Err("the selected edit has a gap on one side".into());
+    };
+    // Keyed by the clips and the frames, so another cut, or a trim of
+    // this one, renders again.
+    let at = |s: &crate::trim_view::Side| s.frame.map(|(_, secs)| (secs * 1000.0).round() as i64);
+    let source = format!("cut:{:?}@{:?}|{:?}@{:?}", edit.outgoing, at(&out), edit.incoming, at(&inc));
+    // The filmstrip frame nearest each side's frame at the cut.
+    let nearest = |side: &crate::trim_view::Side| -> Result<&klipp_media::FilmstripFrame, String> {
+        let (media, secs) = side.frame.ok_or_else(|| format!("\"{}\" is not a media clip", side.name))?;
+        let strip = state.thumbnail_cache.filmstrip(&media).filter(|s| !s.is_empty()).ok_or_else(|| format!("no thumbnails for \"{}\" yet", side.name))?;
+        Ok(strip.iter().min_by(|a, b| (a.time_secs - secs).abs().total_cmp(&(b.time_secs - secs).abs())).expect("not empty"))
+    };
+    let (a, b) = (nearest(&out)?, nearest(&inc)?);
+    if current == Some(source.as_str()) {
+        return Ok(None);
+    }
+    Ok(Some(Frames { from: frame_fit_from_rgba(&a.rgba, a.width, a.height), to: frame_fit_from_rgba(&b.rgba, b.width, b.height), source }))
 }
 
 /// Resample an sRGB RGBA picture to the preview size, covering it
@@ -327,6 +390,47 @@ mod tests {
 
     /// #547: the samples are the preview's size, opaque, the same every
     /// time, and unlike each other: warm against cool.
+    /// #547: a portrait clip keeps its framing: black either side, the
+    /// picture whole in the middle.
+    #[test]
+    fn a_fitted_frame_keeps_the_pictures_framing() {
+        let (w, h) = (90u32, 160u32);
+        let f = frame_fit_from_rgba(&vec![255u8; (w * h * 4) as usize], w, h);
+        let at = |x: usize, y: usize| f[(y * PREVIEW_W as usize + x) * 4];
+        assert_eq!(at(5, 90), 0.0, "black at the side");
+        assert!(at(160, 90) > 0.9, "the picture in the middle");
+    }
+
+    /// #547: the selected cut's own frames, or the reason there are none;
+    /// asked again for the same cut, nothing new is made.
+    #[test]
+    fn the_selected_cut_previews_its_own_frames_or_says_why_not() {
+        use klipp_core::{MediaId, RationalTime};
+        use klipp_timeline::{Clip, Track, TrackKind};
+        let tc = |s: f64| RationalTime::from_secs_f64(s, 25);
+        let mut state = crate::state::AppState::default();
+        let (m1, m2) = (MediaId::new(), MediaId::new());
+        let seq = state.sequence_mut();
+        seq.fps = klipp_core::Fps::new(25, 1);
+        let mut v = Track::new("V1", TrackKind::Video);
+        v.clips = vec![Clip::media(m1, tc(0.0), tc(4.0), tc(0.0), tc(4.0)), Clip::media(m2, tc(4.0), tc(8.0), tc(0.0), tc(4.0))];
+        seq.tracks = vec![v];
+        let why = |state: &crate::state::AppState| match cut_frames(state, None) {
+            Err(why) => why,
+            Ok(_) => panic!("frames where there should be none"),
+        };
+        assert!(why(&state).contains("select an edit point"));
+        state.selected_edits = vec![crate::edit_point::nearest(state.sequence(), tc(4.0), |_| true).unwrap()];
+        assert!(why(&state).contains("no thumbnails"), "the filmstrips are not there yet");
+        let strip = |shade: u8| vec![klipp_media::FilmstripFrame { time_secs: 0.0, rgba: vec![shade; 16 * 9 * 4], width: 16, height: 9 }];
+        state.thumbnail_cache.set_filmstrip(m1, strip(40));
+        state.thumbnail_cache.set_filmstrip(m2, strip(220));
+        let Ok(Some(frames)) = cut_frames(&state, None) else { panic!("new frames") };
+        assert!(frames.source.starts_with("cut:"));
+        assert!(frames.from[0] < frames.to[0], "the outgoing clip's frame, then the incoming one's");
+        assert!(matches!(cut_frames(&state, Some(&frames.source)), Ok(None)), "the same cut again: nothing new");
+    }
+
     #[test]
     fn the_sample_pair_is_fixed_and_the_two_differ() {
         let (a, b) = (sample_frames(), sample_frames());
