@@ -93,7 +93,11 @@ Most users only see the graph when:
 
 ## Editing the Graph
 
-Open the graph from the inspector's **Effects** tab → **Show node graph…**
+Open the graph from the inspector's **Effects** tab → **Show node graph…** In the **Colour** workspace, use **Nodes** to show or hide the docked graph.
+
+The arrow beside **Nodes** offers **Below viewer** and **Right of viewer**. Drag the divider to resize the side-by-side view; placement and split are remembered. Compact windows temporarily put the graph below, returning it to the right when there is room.
+
+The right-side layout temporarily hides the left browser to make space. Reopen it from its rail whenever needed. Leaving the layout restores the previous browser state unless you changed it manually; the colour inspector stays available.
 
 The graph editor shows nodes as rounded rectangles with input ports on the left and output ports on the right. Drag from an output port to an input port to wire. Right-click a node to delete or replace it.
 

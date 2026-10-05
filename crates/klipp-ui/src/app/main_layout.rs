@@ -86,6 +86,10 @@ impl KlippApp {
 
                     // Pure rect computation — see crates/klipp-ui/src/layout.rs
                     let rects = crate::layout::compute_layout(full, &self.layout, &self.state);
+                    if self.nodes_were_on_right != rects.nodes_on_right {
+                        self.node_graph_v2_panel.request_fit();
+                        self.nodes_were_on_right = rects.nodes_on_right;
+                    }
                     // Cache the viewer panel rect for overlays (e.g. dim-on-play)
                     // that need to align with the viewer regardless of layout mode.
                     self.state.viewer_panel_rect = rects.viewer_rect;
@@ -112,6 +116,8 @@ impl KlippApp {
                         toggle_bar_rect,
                         scopes_rect,
                         nodes_rect,
+                        nodes_resizer_rect,
+                        nodes_on_right,
                     } = rects;
 
                     // Derived scalars consumed by the render section below. These mirror
@@ -131,10 +137,10 @@ impl KlippApp {
                     let center_w = right_resizer_rect.min.x - left_resizer_rect.max.x;
                     let in_color_ws = self.state.show_color_panel;
                     let show_scopes_bar = self.state.scopes_docked();
-                    let show_nodes_bar = in_color_ws && self.state.show_node_strip;
+                    let show_nodes_bar = in_color_ws && self.state.show_node_strip && !nodes_on_right;
                     let toggle_bar_h = toggle_bar_rect.height();
                     let scopes_h = scopes_rect.height();
-                    let nodes_h = nodes_rect.height();
+                    let nodes_h = if nodes_on_right { 0.0 } else { nodes_rect.height() };
                     let audio_mixer_h = audio_mixer_rect.height();
                     let curve_editor_h = curve_editor_rect.height();
                     // flexible_h is the ratio-drag denominator — same formula as in layout.rs.
@@ -299,6 +305,7 @@ impl KlippApp {
                                 flexible_h,
                                 toggle_bar_rect,
                                 nodes_rect,
+                                nodes_resizer_rect,
                                 bottom_scope_cursor,
                             },
                         );
@@ -833,6 +840,7 @@ impl KlippApp {
     }
 
     pub(super) fn set_browser_visible(&mut self, visible: bool) {
+        self.node_browser_borrow.manual_override();
         self.state.show_browser_panel = visible;
         if self.layout.browser_visible != visible {
             self.layout.browser_visible = visible;

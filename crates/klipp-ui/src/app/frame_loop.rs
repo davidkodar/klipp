@@ -11,7 +11,18 @@ impl KlippApp {
         // Settle any workspace switch before the layout is computed, so
         // the panel changes it implies land in the same frame the new
         // workspace does rather than a frame behind it.
+        let colour_visible = if self.state.active_workspace != self.last_workspace {
+            self.state.active_workspace == crate::state::Workspace::Color
+        } else {
+            self.state.show_color_panel
+        };
+        let side_nodes = colour_visible && self.state.show_node_strip
+            && self.layout.node_graph_placement == crate::layout_state::NodeGraphPlacement::Right;
+        // Release the nested node borrow before the workspace restores its
+        // browser, and take it only after the workspace has settled.
+        self.node_browser_borrow.leave_if_inactive(side_nodes, &mut self.state.show_browser_panel);
         self.reconcile_workspace();
+        self.node_browser_borrow.enter_if_active(side_nodes, &mut self.state.show_browser_panel);
         if let Some(text) = self.state.system_clipboard_text.take() {
             ctx.copy_text(text);
         }
