@@ -340,7 +340,7 @@ pub fn frame_snapshot(seq: &Sequence, time: Timecode) -> Sequence {
     let mut frontier: Vec<ClipId> = keep.iter().copied().collect();
     while let Some(id) = frontier.pop() {
         let Some(c) = by_id.get(&id) else { continue };
-        for r in clip_references(c) {
+        for r in c.picture_references() {
             if by_id.contains_key(&r) && keep.insert(r) {
                 frontier.push(r);
             }
@@ -380,27 +380,6 @@ pub fn frame_snapshot(seq: &Sequence, time: Timecode) -> Sequence {
         brief: None,
         edit_plan: None,
     }
-}
-
-/// Clips `c` reads when it renders: its transform link's target or
-/// tracker host, and its focal point's title or tracker.
-fn clip_references(c: &Clip) -> Vec<ClipId> {
-    let mut refs = Vec::new();
-    if let Some(link) = &c.transform_link {
-        match &link.target {
-            klipp_timeline::TransformLinkTarget::Clip(id) => refs.push(*id),
-            klipp_timeline::TransformLinkTarget::Tracker { clip_id, .. } => refs.push(*clip_id),
-        }
-    }
-    for e in &c.builtin_effects {
-        if let BuiltinEffect::Transform { focal_ref: Some(f), .. } = e {
-            match f {
-                klipp_effects::FocalRef::Glyph { title_clip_id, .. } => refs.push(ClipId(*title_clip_id)),
-                klipp_effects::FocalRef::Tracker { clip_id, .. } => refs.push(ClipId(*clip_id)),
-            }
-        }
-    }
-    refs
 }
 
 /// Visible tracks with something on them at `time`, bottom first.
@@ -964,7 +943,7 @@ impl Renderer {
             None => resolved,
         };
         let (fx, opacity) = clip_effects(clip, time, fps, Some(resolved), eval::surface_pin_corners(clip, seq, time, fps, &|_| None));
-        if !fx.is_empty() || (opacity - 1.0).abs() > 1e-6 {
+        if has_active_effects(&fx) || (opacity - 1.0).abs() > 1e-6 {
             return Single::ForTheStack;
         }
 
@@ -1020,7 +999,7 @@ impl Renderer {
         self.executor.set_grade_encoding(self.grade_encoding);
         self.executor.set_working_colorspace(self.working);
         self.executor.set_render_scale(self.px_scale);
-        if clip.node_graph.is_identity() {
+        if clip.grade_is_identity() {
             let GradeInput::Gpu(g) = &input else { return Single::Refused };
             if !g.seed(&mut self.executor, width, height)
                 || !self.executor.take_seeded_input_as_output()
@@ -1470,7 +1449,7 @@ impl Renderer {
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
         let temporal = fx.iter().any(|e| matches!(e, BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. }));
-        let fx_on_gpu = fx.is_empty() || (klipp_effects::chain_supports_gpu(&fx) && !temporal);
+        let fx_on_gpu = !has_active_effects(&fx) || (klipp_effects::chain_supports_gpu(&fx) && !temporal);
         let clip_time = eval_clip_time(c, time);
         let mut rows = (0, height);
         let mut effects_done = false;
@@ -1493,7 +1472,7 @@ impl Renderer {
                     other => other,
                 };
                 match pixels {
-                    SourcePixels::Gpu(g) if c.node_graph.is_identity() => {
+                    SourcePixels::Gpu(g) if c.grade_is_identity() => {
                         if g.seed(&mut self.executor, width, height) {
                             self.executor.take_seeded_input_as_output()
                                 && self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_chain(slot, true))
@@ -1518,7 +1497,7 @@ impl Renderer {
                     }
                     SourcePixels::Linear(p) => {
                         let t = Instant::now();
-                        let pixels = if c.node_graph.is_identity() {
+                        let pixels = if c.grade_is_identity() {
                             unshare(p)
                         } else {
                             self.grade(c, GradeInput::Cpu(p), clip_time, fps, width, height)
@@ -1529,7 +1508,7 @@ impl Renderer {
                     SourcePixels::SceneReferred { .. } => return Err("scene-referred source"),
                 }
             }
-            ClipKind::Title(td) if fx_on_gpu && c.node_graph.is_identity() => {
+            ClipKind::Title(td) if fx_on_gpu && c.grade_is_identity() => {
                 let total = (c.timeline_out - c.timeline_in).to_secs_f64() as f32;
                 let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
                 let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
@@ -1584,7 +1563,7 @@ impl Renderer {
                     }
                 }
             }
-            ClipKind::Generator(g) if fx_on_gpu && c.node_graph.is_identity() => {
+            ClipKind::Generator(g) if fx_on_gpu && c.grade_is_identity() => {
                 let total = (c.timeline_out - c.timeline_in).to_secs_f64();
                 // Half floats, sRGB-encoded, decoded on the way into
                 // the layer: the precision eight bits could not hold,
@@ -1608,7 +1587,7 @@ impl Renderer {
                     let names: Vec<String> = fx.iter().map(|e| format!("{e:?}").split([' ', '{', '(']).next().unwrap_or("").to_string()).collect();
                     tracing::debug!(
                         "GPU stack: a {kind} layer rendered on the CPU and uploaded: effects on gpu {fx_on_gpu} {names:?}, temporal {temporal}, graph identity {}",
-                        c.node_graph.is_identity(),
+                        c.grade_is_identity(),
                     );
                 }
                 let Some((pixels, _)) = self.render_clip(c, time, fps, width, height, src, transforms) else { return Ok(None) };
@@ -1619,7 +1598,7 @@ impl Renderer {
         if !placed {
             return Err("a layer could not be placed on the GPU");
         }
-        if !effects_done && !fx.is_empty() {
+        if !effects_done && has_active_effects(&fx) {
             let t = Instant::now();
             if !self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_apply_effects(slot, &fx)) {
                 return Err("an effect pass failed");
@@ -1662,11 +1641,11 @@ impl Renderer {
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
         let temporal = fx.iter().any(|e| matches!(e, BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. }));
-        if !fx.is_empty() && !(klipp_effects::chain_supports_gpu(&fx) && !temporal) {
+        if has_active_effects(&fx) && !(klipp_effects::chain_supports_gpu(&fx) && !temporal) {
             return Err("adjustment layer with a CPU-only effect");
         }
         let mut slot_a = true;
-        if c.node_graph.is_identity() {
+        if c.grade_is_identity() {
             if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_acc_to_chain()) {
                 return Err("the accumulator could not seed the chain");
             }
@@ -1686,7 +1665,7 @@ impl Renderer {
                 g.upload_chain_input_linear(&pixels);
             }
         }
-        if !fx.is_empty() {
+        if has_active_effects(&fx) {
             let t = Instant::now();
             let Some(g) = self.executor.gpu_pipeline_or_init() else { return Err("GPU gone") };
             g.stack_chain_to_slot_a(slot_a);
@@ -2060,7 +2039,7 @@ impl Renderer {
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
         self.prepare_temporal_effects(clip, &fx, time, fps, height, src);
-        let provider = if clip.effects.iter().any(|e| e.enabled && is_temporal_plugin(&e.plugin_name)) {
+        let provider = if clip.has_enabled_plugin_matching(is_temporal_plugin) {
             src.temporal_frames(clip)
         } else {
             None
@@ -2416,7 +2395,7 @@ impl Renderer {
     fn grade(&mut self, clip: &Clip, input: GradeInput, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
         let inspecting = self.inspect.clip == Some(clip.id);
         let matte_view = if inspecting { self.inspect.matte_view } else { None };
-        if clip.node_graph.is_identity() && matte_view.is_none() {
+        if clip.grade_is_identity() && matte_view.is_none() {
             // Take the buffer rather than clone the handle: a layer this
             // renderer just made is held once, and moves out for free.
             return match input {
@@ -2545,7 +2524,7 @@ impl Renderer {
     }
 
     fn effects(&mut self, fx: &[BuiltinEffect], pixels: Vec<f32>, clip_time: f64, width: u32, height: u32) -> Vec<f32> {
-        if fx.is_empty() {
+        if !has_active_effects(fx) {
             return pixels;
         }
         let t = Instant::now();
@@ -3062,6 +3041,11 @@ fn behind_the_camera(seq: &Sequence, time: Timecode, width: u32, height: u32, tr
     }
 }
 
+/// Whether the already evaluated pixel-effect list has work left.
+fn has_active_effects(fx: &[BuiltinEffect]) -> bool {
+    !fx.is_empty()
+}
+
 /// A clip's built-in effects evaluated at `time`, with its opacity split
 /// out. Keyframes and modifier stacks applied, the transform replaced by
 /// the resolved one (own keyframes, link, focal point), disabled and
@@ -3212,7 +3196,7 @@ fn tilt(clip: &Clip, fx: &[BuiltinEffect], t: f64) -> (f32, f32, f32) {
     let rx = klipp_core::keyframe::evaluate(&clip.transform_tilt_x_keyframes, t, rx);
     let ry = klipp_core::keyframe::evaluate(&clip.transform_tilt_y_keyframes, t, ry);
     // Keyframed, or set still in the inspector: either way a tilt.
-    let tilted = rx != 0.0 || ry != 0.0 || !clip.transform_tilt_x_keyframes.is_empty() || !clip.transform_tilt_y_keyframes.is_empty();
+    let tilted = rx != 0.0 || ry != 0.0 || clip.has_tilt_keyframes();
     (rx, ry, if tilted && persp <= 0.0 { 1.0 } else { persp })
 }
 
@@ -3258,16 +3242,7 @@ fn camera_moves_it(seq: &Sequence, c: &Clip) -> bool {
 }
 
 fn moves_itself(c: &Clip) -> bool {
-    [
-        &c.transform_pos_x_keyframes,
-        &c.transform_pos_y_keyframes,
-        &c.transform_scale_keyframes,
-        &c.transform_rotation_keyframes,
-        &c.transform_tilt_x_keyframes,
-        &c.transform_tilt_y_keyframes,
-    ]
-    .iter()
-    .any(|k| animated_keys(k))
+    c.has_changing_transform_keys()
 }
 
 /// Whether a clip is carried by something that moves.
@@ -3576,10 +3551,7 @@ pub fn temporal_denoise_of(clip: &Clip, time: Timecode, fps: f64) -> Option<(f32
 /// Whether `clip` frame-blends at `time`: a `SpeedRamp` in blend mode 1,
 /// not frozen, with the clip running below real time.
 pub fn frame_blends(clip: &Clip, time: Timecode) -> bool {
-    let enabled = |i: usize| clip.builtin_effects_enabled.get(i).copied().unwrap_or(true);
-    let blend = clip.builtin_effects.iter().enumerate().any(|(i, e)| {
-        enabled(i) && matches!(e, BuiltinEffect::SpeedRamp { blend_mode: 1, freeze: false, .. })
-    });
+    let blend = clip.has_frame_blend_entry();
     // A reversed clip's next frame is the one before: there is no
     // following frame to blend toward.
     blend && !clip.is_reversed() && clip.speed_at(eval_clip_time(clip, time)).abs() < 1.0 - 1e-6
@@ -3904,5 +3876,35 @@ mod shutter_tests {
         let full = shutter_offsets(360.0, 24.0, 8);
         assert!((full[7] - full[0] - 1.0 / 24.0).abs() < 1e-12);
         assert!(shutter_offsets(0.0, 24.0, 8).iter().all(|t| *t == 0.0));
+    }
+}
+
+#[cfg(test)]
+mod active_effect_gate_tests {
+    use super::*;
+
+    #[test]
+    fn active_effect_gate_uses_the_evaluated_list() {
+        let at = Timecode::from_frames(0, 24);
+        for (name, entry, enabled, expected) in [
+            ("empty", None, true, false),
+            ("disabled", Some(BuiltinEffect::GaussianBlur { radius: 2.0 }), false, false),
+            ("identity", Some(BuiltinEffect::GaussianBlur { radius: 0.0 }), true, false),
+            ("blur", Some(BuiltinEffect::GaussianBlur { radius: 2.0 }), true, true),
+            ("opacity is composite weight", Some(BuiltinEffect::Opacity { value: 0.5 }), true, false),
+            ("temporal runs earlier", Some(BuiltinEffect::TemporalDenoise { strength: 0.8, threshold: 0.1 }), true, false),
+            ("frei0r", Some(BuiltinEffect::Frei0r { type_id: "test".into(), params: vec![] }), true, true),
+        ] {
+            let mut clip = Clip::gap(at, Timecode::from_frames(48, 24));
+            clip.builtin_effects.extend(entry);
+            clip.builtin_effects_enabled.push(enabled);
+            let (effects, _) = clip_effects(&clip, at, 24.0, None, None);
+            assert_eq!(has_active_effects(&effects), expected, "{name}");
+        }
+        // An otherwise empty clip can still acquire a pixel transform from
+        // its resolved parent/camera. The query must see that evaluated list.
+        let clip = Clip::gap(at, Timecode::from_frames(48, 24));
+        let (effects, _) = clip_effects(&clip, at, 24.0, Some((0.2,0.0,1.0,1.0,0.0,0.5,0.5)), None);
+        assert!(has_active_effects(&effects));
     }
 }
