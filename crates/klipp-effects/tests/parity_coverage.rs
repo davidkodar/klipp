@@ -99,7 +99,7 @@ const EFFECTS: &[(&str, Cover)] = &[
     ("OldFilm", Case("OldFilm")),
     ("Vhs", Case("Vhs")),
     ("RollingShutterCorrection", MOTION),
-    ("TemporalDenoise", Exempt("CPU-only by design: the compositor lifts it out of the chain and averages the source with its neighbours at the head of the clip's pipeline; both chain arms pass through")),
+    ("TemporalDenoise", Exempt("CPU-only by design: the compositor lifts it out of the chain and averages the source with its neighbours at the head of the clip's pipeline; both chain arms pass through, and the GPU paths hand such a clip to the CPU (klipp-compose tests/temporal_denoise_gpu.rs)")),
     ("Deflicker", Case("Deflicker")),
     ("VideoStabilization", MOTION),
     ("SpeedRamp", Exempt("not a picture pass: the engine blends frames for it in the frame queue, and both chain arms pass through")),
