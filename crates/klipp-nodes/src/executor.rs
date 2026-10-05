@@ -707,8 +707,10 @@ impl GraphExecutor {
 
     /// A whole number of the sequence's pixels, in the buffer's: at least
     /// one wherever it was any, as `at_render_scale` keeps effect radii.
+    /// A value that rounds to none at full size stays none, so a full-size
+    /// render applies exactly what it always did.
     fn whole_px(&self, v: f32) -> f32 {
-        if v == 0.0 {
+        if v.abs().round() == 0.0 {
             0.0
         } else {
             v.signum() * (v.abs() * self.render_scale).round().max(1.0)
@@ -4995,6 +4997,24 @@ fn burn_channel(base: f32, top: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whole-pixel settings keep their full-size meaning: what rounded to
+    /// nothing still does, and what was any stays at least one pixel when
+    /// the render is smaller.
+    #[test]
+    fn whole_pixels_keep_their_full_size_meaning() {
+        let mut ex = GraphExecutor::new_cpu_only();
+        for v in [0.0, 0.25, -0.25, 0.49] {
+            assert_eq!(ex.whole_px(v), 0.0, "{v} px at full size");
+        }
+        assert_eq!(ex.whole_px(0.5), 1.0);
+        assert_eq!(ex.whole_px(-3.0), -3.0);
+        ex.set_render_scale(0.25);
+        assert_eq!(ex.whole_px(0.25), 0.0);
+        assert_eq!(ex.whole_px(1.0), 1.0);
+        assert_eq!(ex.whole_px(-2.0), -1.0);
+        assert_eq!(ex.whole_px(8.0), 2.0);
+    }
     // Tests use the legacy full chain so existing assertions that
     // poke specific grade nodes by kind keep working. The production
     // default is now bare Source → Output (see `default_graph`).
