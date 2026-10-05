@@ -935,7 +935,7 @@ impl OfxHostRuntime {
             param::with_param_set(param_set_handle, |pset| {
                 if let Some(&handle_key) = pset.param_handles.get(name) {
                     param::with_param(handle_key as ffi::OfxParamHandle, |pi| {
-                        pi.value = pv.clone();
+                        pi.value = declared_value(&pv, &pi.descriptor);
                     });
                 }
             });
@@ -1830,6 +1830,19 @@ fn default_filter_context() -> OfxCategory {
     OfxCategory::Filter
 }
 
+/// A saved value as the parameter the plug-in declares now. The host
+/// writes the declared type's bytes through the plug-in's pointer, so a
+/// value saved as another type (the plug-in changed it in an update) is
+/// converted first, and one that can't be converted gives way to the
+/// plug-in's default rather than reaching the instance (#1017).
+fn declared_value(saved: &ParamValue, desc: &ParamDescriptor) -> ParamValue {
+    if let Some(v) = saved.as_declared(&desc.param_type) {
+        return v;
+    }
+    warn!(param = %desc.name, ?saved, declared = ?desc.param_type, "[OFX] saved value doesn't fit the parameter's type; using the plug-in's default");
+    desc.default.clone()
+}
+
 /// Convert ParamType to OFX type string.
 fn param_type_to_ofx(pt: &param::ParamType) -> &'static str {
     match pt {
@@ -1897,3 +1910,95 @@ fn set_param_default_props(
 
 // Type alias for backward compatibility.
 pub type OfxHost = OfxHostRuntime;
+
+#[cfg(test)]
+mod declared_type_tests {
+    use super::*;
+
+    /// Every OFX value type with the bytes a plug-in reserves for it.
+    const DECLARED: [(&str, usize); 11] = [
+        ("OfxParamTypeDouble", 8),
+        ("OfxParamTypeDouble2D", 16),
+        ("OfxParamTypeDouble3D", 24),
+        ("OfxParamTypeInteger", 4),
+        ("OfxParamTypeInteger2D", 8),
+        ("OfxParamTypeInteger3D", 12),
+        ("OfxParamTypeBoolean", 4),
+        ("OfxParamTypeChoice", 4),
+        ("OfxParamTypeString", std::mem::size_of::<*const c_char>()),
+        ("OfxParamTypeRGBA", 32),
+        ("OfxParamTypeRGB", 24),
+    ];
+
+    fn stored() -> Vec<OfxValue> {
+        vec![
+            OfxValue::Double(2.6),
+            OfxValue::Double2(1.0, 2.0),
+            OfxValue::Double3(1.0, 2.0, 3.0),
+            OfxValue::Int(7),
+            OfxValue::Int2(1, 2),
+            OfxValue::Int3(1, 2, 3),
+            OfxValue::Bool(true),
+            OfxValue::Choice(2),
+            OfxValue::String("saved".into()),
+            OfxValue::Rgba(0.1, 0.2, 0.3, 0.4),
+            OfxValue::Rgb(0.1, 0.2, 0.3),
+        ]
+    }
+
+    const GUARD: u8 = 0xA5;
+
+    /// A parameter declared as `ofx_type`, given `value` the way a saved
+    /// project gives it, then read back into a slot followed by guard
+    /// bytes. Returns the slot and its guard.
+    fn read_back(ofx_type: &str, value: &OfxValue) -> [u8; 64] {
+        let inst = PluginInstance::new(0);
+        let pset = inst.param_set_handle;
+        let handle = instance::register_instance(inst);
+        let ty = std::ffi::CString::new(ofx_type).unwrap();
+        let mut props: ffi::OfxPropertySetHandle = std::ptr::null_mut();
+        assert_eq!(unsafe { param::param_define_fn(pset, ty.as_ptr(), c"P".as_ptr(), &mut props) }, ffi::K_OFX_STAT_OK);
+
+        let host = OfxHostRuntime::new();
+        host.sync_params_to_instance(handle, &HashMap::from([("P".to_string(), value.clone())]));
+
+        let param = param::with_param_set(pset, |s| s.param_handles["P"]).unwrap() as ffi::OfxParamHandle;
+        // u64s, so the slot is aligned for any value a plug-in reads.
+        let mut buf = [u64::from_ne_bytes([GUARD; 8]); 8];
+        assert_eq!(unsafe { param::param_get_value_fn(param, buf.as_mut_ptr() as *mut c_void) }, ffi::K_OFX_STAT_OK);
+        instance::remove_instance(handle);
+        let mut bytes = [0u8; 64];
+        for (i, w) in buf.iter().enumerate() {
+            bytes[i * 8..i * 8 + 8].copy_from_slice(&w.to_ne_bytes());
+        }
+        bytes
+    }
+
+    /// #1017: whatever a value was saved as, the host writes only the
+    /// declared type's bytes through the plug-in's pointer.
+    #[test]
+    fn a_saved_value_of_any_type_stays_inside_the_declared_slot() {
+        for (ofx_type, size) in DECLARED {
+            for value in stored() {
+                let bytes = read_back(ofx_type, &value);
+                assert!(
+                    bytes[size..].iter().all(|&b| b == GUARD),
+                    "{ofx_type} given {value:?} wrote past its {size} bytes"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_saved_value_is_converted_to_the_declared_type() {
+        let int = |b: [u8; 64]| i32::from_ne_bytes(b[..4].try_into().unwrap());
+        let double = |b: [u8; 64], i: usize| f64::from_ne_bytes(b[i * 8..i * 8 + 8].try_into().unwrap());
+        assert_eq!(int(read_back("OfxParamTypeInteger", &OfxValue::Double(2.6))), 3);
+        assert_eq!(double(read_back("OfxParamTypeDouble", &OfxValue::Int(7)), 0), 7.0);
+        assert_eq!(int(read_back("OfxParamTypeBoolean", &OfxValue::Double(0.0))), 0);
+        let rgba = read_back("OfxParamTypeRGBA", &OfxValue::Rgb(0.1, 0.2, 0.3));
+        assert_eq!((double(rgba, 2), double(rgba, 3)), (0.3, 1.0));
+        // A string can't be a number: the plug-in's default (none here) wins.
+        assert_eq!(double(read_back("OfxParamTypeDouble", &OfxValue::String("x".into())), 0), 0.0);
+    }
+}
