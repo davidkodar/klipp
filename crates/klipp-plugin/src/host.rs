@@ -264,7 +264,7 @@ unsafe extern "C" fn fetch_suite_fn(
 
 /// OFX plugin host runtime — discovers, loads, initializes, and renders .ofx.bundle plugins.
 pub struct OfxHostRuntime {
-    plugins: Vec<OfxPlugin>,
+    pub(crate) plugins: Vec<OfxPlugin>,
     search_paths: Vec<PathBuf>,
     /// Registered host property set handle.
     host_propset_handle: ffi::OfxPropertySetHandle,
@@ -909,16 +909,26 @@ impl OfxHostRuntime {
             return Ok(key as ffi::OfxImageEffectHandle);
         }
 
-        let plugin_idx = self
-            .plugins
-            .iter()
-            .position(|p| p.name == plugin_name && p.initialized)
-            .ok_or(PluginError::NotFound)?;
+        let plugin_idx = self.plugin_index(plugin_name).ok_or(PluginError::NotFound)?;
 
         self.create_instance(plugin_name, plugin_idx, context)
     }
 
-    /// Sync AppliedEffect.param_values into the instance's param store.
+    /// The plug-in that renders `name`: of the initialised ones with that
+    /// identifier, the highest version, the first found on a tie. Bundles
+    /// and search paths often carry several versions of one plug-in, and
+    /// the order they are found in says nothing about which is newer
+    /// (#1018).
+    pub(crate) fn plugin_index(&self, name: &str) -> Option<usize> {
+        best_version(self.plugins.iter().enumerate().filter(|(_, p)| p.name == name && p.initialized).map(|(i, p)| (i, p.version)))
+    }
+
+    /// Set the instance's parameters to a clip's: its saved values, and
+    /// the plug-in's defaults for everything it never changed. One
+    /// instance serves every clip that uses the plug-in, and a clip saves
+    /// only what was changed, so applying the saved values alone left each
+    /// parameter as the previous clip set it, and a picture depended on
+    /// the order clips were drawn in (#1018).
     fn sync_params_to_instance(
         &self,
         inst_handle: ffi::OfxImageEffectHandle,
@@ -930,14 +940,15 @@ impl OfxHostRuntime {
             return;
         };
 
-        for (name, value) in param_values {
-            let pv = value.to_param_value();
-            param::with_param_set(param_set_handle, |pset| {
-                if let Some(&handle_key) = pset.param_handles.get(name) {
-                    param::with_param(handle_key as ffi::OfxParamHandle, |pi| {
-                        pi.value = declared_value(&pv, &pi.descriptor);
-                    });
-                }
+        let Some(handles) = param::with_param_set(param_set_handle, |pset| pset.param_handles.clone()) else {
+            return;
+        };
+        for (name, handle_key) in handles {
+            param::with_param(handle_key as ffi::OfxParamHandle, |pi| {
+                pi.value = match param_values.get(&name) {
+                    Some(value) => declared_value(&value.to_param_value(), &pi.descriptor),
+                    None => pi.descriptor.default.clone(),
+                };
             });
         }
     }
@@ -1045,7 +1056,7 @@ impl OfxHostRuntime {
                 }
             }
             // Update render context with needs_float for this specific plugin
-            if let Some(idx) = self.plugins.iter().position(|p| p.name == effect.plugin_name && p.initialized) {
+            if let Some(idx) = self.plugin_index(&effect.plugin_name) {
                 let needs_float = self.plugins[idx].needs_float;
                 let premult = self.plugins[idx].premult_string.clone();
                 // Update context for this effect's float requirements
@@ -1760,8 +1771,21 @@ impl OfxHostRuntime {
         &self.plugins
     }
 
+    /// One entry per plug-in identifier, in the order they were found:
+    /// the version that renders it (the highest initialised one, else the
+    /// highest found), so the browser and inspector show what renders.
     pub fn plugin_infos(&self) -> Vec<OfxPluginInfo> {
-        self.plugins.iter().map(|p| p.info()).collect()
+        let mut seen = std::collections::HashSet::new();
+        self.plugins
+            .iter()
+            .filter(|p| seen.insert(p.name.as_str()))
+            .filter_map(|p| {
+                let idx = self.plugin_index(&p.name).or_else(|| {
+                    best_version(self.plugins.iter().enumerate().filter(|(_, q)| q.name == p.name).map(|(i, q)| (i, q.version)))
+                })?;
+                Some(self.plugins[idx].info())
+            })
+            .collect()
     }
 }
 
@@ -1828,6 +1852,16 @@ pub struct AppliedEffect {
 
 fn default_filter_context() -> OfxCategory {
     OfxCategory::Filter
+}
+
+/// The index of the highest version among `(index, version)`, the
+/// earliest on a tie.
+fn best_version(found: impl Iterator<Item = (usize, (u32, u32))>) -> Option<usize> {
+    found.fold(None, |best: Option<(usize, (u32, u32))>, (i, v)| match best {
+        Some((_, bv)) if bv >= v => best,
+        _ => Some((i, v)),
+    })
+    .map(|(i, _)| i)
 }
 
 /// A saved value as the parameter the plug-in declares now. The host

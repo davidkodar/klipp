@@ -885,11 +885,12 @@ impl EffectRegistry {
     }
 
     /// Merge discovered OFX plugins into the registry, skipping duplicates.
-    /// OFX bundles often ship multiple versions of the same plugin — keep only the latest.
+    /// The host already lists each identifier once, as the version that
+    /// renders it (the highest); the check here only guards a list built
+    /// some other way.
     pub fn merge_ofx_plugins(&mut self, plugins: &[klipp_plugin::OfxPluginInfo]) {
         let mut seen = std::collections::HashSet::new();
         for plugin in plugins {
-            // Deduplicate by plugin identifier — keep the first (highest version)
             if !seen.insert(plugin.name.clone()) {
                 continue;
             }
