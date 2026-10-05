@@ -302,6 +302,7 @@ fn identity_grade(ws: klipp_core::WorkingColorspace, enc: klipp_color::grade_mod
         saturation: 1.0, white_balance: NO_WHITE_BALANCE,
         highlights: 0.0, shadows: 0.0, whites: 0.0, blacks: 0.0,
         lift: zero, gamma: zero, gain: zero, offset: zero, log_wheels: None,
+        wheel_shape: klipp_color::grade_model::WheelShape::default(),
         hue: 0.0, global_mix: 1.0, luma: klipp_color::linear::luma_coefs(ws),
     }
 }
@@ -336,6 +337,17 @@ fn log_wheels(p: &NodeParams) -> Option<[(f32, f32, f32); 3]> {
     wheels.iter().any(|v| *v != (0.0, 0.0, 0.0)).then_some(wheels)
 }
 
+
+/// The log wheels' ranges and the wheels' luma mix from a node's params
+/// (#900), each at its default when unset.
+fn wheel_shape(p: &NodeParams) -> klipp_color::grade_model::WheelShape {
+    let d = klipp_color::grade_model::WheelShape::default();
+    klipp_color::grade_model::WheelShape {
+        low_range: p.log_low_range.unwrap_or(d.low_range),
+        high_range: p.log_high_range.unwrap_or(d.high_range),
+        luma_mix: p.luma_mix.unwrap_or(d.luma_mix),
+    }
+}
 
 /// Which hue/sat curves were edited, bit per curve in
 /// `build_huesat_lut_data`'s order.
@@ -377,7 +389,7 @@ impl GradeStage {
                 in_is_a, width, height,
                 g.exposure, g.contrast, g.contrast_pivot_encoded, g.saturation, g.white_balance,
                 g.highlights, g.shadows, g.whites, g.blacks,
-                g.lift, g.gamma, g.gain, g.offset, g.log_wheels,
+                g.lift, g.gamma, g.gain, g.offset, g.log_wheels, g.wheel_shape,
                 g.hue, g.global_mix,
             ),
             GradeStage::Clarity(a, _) => gpu.apply_clarity_chain(in_is_a, width, height, *a),
@@ -2890,7 +2902,7 @@ impl GraphExecutor {
                     in_is_a, width, height,
                     exp, 0.0, default_pivot_encoded(), 1.0, NO_WHITE_BALANCE,
                     0.0, 0.0, 0.0, 0.0,
-                    (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
+                    (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None, klipp_color::grade_model::WheelShape::default(),
                     0.0, 1.0,
                 );
                 Some(1)
@@ -2927,7 +2939,7 @@ impl GraphExecutor {
                         in_is_a, width, height,
                         0.0, con, pivot, 1.0, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
-                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
+                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None, klipp_color::grade_model::WheelShape::default(),
                         0.0, 1.0,
                     );
                     // Second: clarity reads from where color_grade wrote
@@ -2943,7 +2955,7 @@ impl GraphExecutor {
                         in_is_a, width, height,
                         0.0, con, pivot, 1.0, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
-                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
+                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None, klipp_color::grade_model::WheelShape::default(),
                         0.0, 1.0,
                     );
                 } else {
@@ -2964,7 +2976,7 @@ impl GraphExecutor {
                         in_is_a, width, height,
                         0.0, 0.0, default_pivot_encoded(), sat, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
-                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
+                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None, klipp_color::grade_model::WheelShape::default(),
                         0.0, 1.0,
                     );
                     self.gpu.as_mut().unwrap()
@@ -2976,7 +2988,7 @@ impl GraphExecutor {
                         in_is_a, width, height,
                         0.0, 0.0, default_pivot_encoded(), sat, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
-                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
+                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None, klipp_color::grade_model::WheelShape::default(),
                         0.0, 1.0,
                     );
                 } else {
@@ -2995,7 +3007,7 @@ impl GraphExecutor {
                     in_is_a, width, height,
                     0.0, 0.0, default_pivot_encoded(), 1.0, NO_WHITE_BALANCE,
                     hi, sh, wh, bl,
-                    (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
+                    (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None, klipp_color::grade_model::WheelShape::default(),
                     0.0, 1.0,
                 );
                 Some(1)
@@ -3121,7 +3133,7 @@ impl GraphExecutor {
                     in_is_a, width, height,
                     s.exposure, 0.0, default_pivot_encoded(), s.saturation, white_balance(s.temperature, s.tint, self.working_colorspace),
                     0.0, 0.0, 0.0, 0.0,
-                    (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
+                    (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None, klipp_color::grade_model::WheelShape::default(),
                     0.0, 1.0,
                 );
                 Some(1)
@@ -3179,6 +3191,7 @@ impl GraphExecutor {
             blacks: params.blacks.unwrap_or(0.0),
             lift, gamma, gain, offset,
             log_wheels: log,
+            wheel_shape: wheel_shape(params),
             hue: params.hue.unwrap_or(0.0),
             ..identity_grade(ws, self.grade_encoding)
         };
@@ -3264,7 +3277,7 @@ impl GraphExecutor {
         } else {
             linear_wheels(params)
         };
-        klipp_effects::cpu_grade::ColorGrade { lift, gamma, gain, offset, log_wheels: log, ..identity_grade(self.working_colorspace, self.grade_encoding) }
+        klipp_effects::cpu_grade::ColorGrade { lift, gamma, gain, offset, log_wheels: log, wheel_shape: wheel_shape(params), ..identity_grade(self.working_colorspace, self.grade_encoding) }
     }
 
     /// Dispatch the Corrector's stages ([`Self::corrector_stages`]) onto
@@ -3401,7 +3414,7 @@ impl GraphExecutor {
                             primary_input, width, height,
                             exp, 0.0, default_pivot_encoded(), 1.0, NO_WHITE_BALANCE,
                             0.0, 0.0, 0.0, 0.0,
-                            (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
+                            (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None, klipp_color::grade_model::WheelShape::default(),
                             0.0, 1.0,
                         )
                     } else {
@@ -3431,7 +3444,7 @@ impl GraphExecutor {
                                 primary_input, width, height,
                                 0.0, con, pivot, 1.0, NO_WHITE_BALANCE,
                                 0.0, 0.0, 0.0, 0.0,
-                                (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
+                                (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None, klipp_color::grade_model::WheelShape::default(),
                                 0.0, 1.0,
                             )
                         } else {
@@ -3465,7 +3478,7 @@ impl GraphExecutor {
                                 primary_input, width, height,
                                 0.0, 0.0, default_pivot_encoded(), sat, NO_WHITE_BALANCE,
                                 0.0, 0.0, 0.0, 0.0,
-                                (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
+                                (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None, klipp_color::grade_model::WheelShape::default(),
                                 0.0, 1.0,
                             )
                         } else {
@@ -3500,7 +3513,7 @@ impl GraphExecutor {
                             primary_input, width, height,
                             0.0, 0.0, default_pivot_encoded(), 1.0, NO_WHITE_BALANCE,
                             hi, sh, wh, bl,
-                            (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
+                            (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None, klipp_color::grade_model::WheelShape::default(),
                             0.0, 1.0,
                         )
                     } else {
@@ -3519,7 +3532,7 @@ impl GraphExecutor {
                         primary_input, width, height,
                         0.0, 0.0, default_pivot_encoded(), 1.0, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
-                        grade.lift, grade.gamma, grade.gain, grade.offset, grade.log_wheels,
+                        grade.lift, grade.gamma, grade.gain, grade.offset, grade.log_wheels, grade.wheel_shape,
                         0.0, 1.0,
                     )
                 } else {
@@ -4297,7 +4310,7 @@ impl GraphExecutor {
                         primary_input, width, height,
                         s.exposure, 0.0, default_pivot_encoded(), s.saturation, white_balance(s.temperature, s.tint, self.working_colorspace),
                         0.0, 0.0, 0.0, 0.0,
-                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
+                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None, klipp_color::grade_model::WheelShape::default(),
                         0.0, 1.0,
                     )
                 } else {

@@ -127,6 +127,8 @@ fn cases() -> Vec<(&'static str, NodeKind, NodeParams)> {
         ("tone", Corrector, p(|p| { p.highlights = Some(-0.3); p.shadows = Some(0.2); p.whites = Some(0.1); p.blacks = Some(-0.1) })),
         ("wheels", Corrector, p(|p| { p.lift_x = Some(0.1); p.gamma_y = Some(-0.1); p.gain_master = Some(0.1); p.offset_x = Some(0.05) })),
         ("log wheels", Corrector, p(|p| { p.wheels_log_mode = Some(true); p.log_low_x = Some(0.2); p.log_mid_y = Some(0.15); p.log_high_master = Some(0.1) })),
+        ("log wheels, moved ranges, luma mix", Corrector, p(|p| { p.wheels_log_mode = Some(true); p.log_low_x = Some(0.2); p.log_mid_y = Some(0.15); p.log_high_master = Some(0.1); p.log_low_range = Some(0.3); p.log_high_range = Some(0.66); p.luma_mix = Some(0.2) })),
+        ("wheels at no luma mix", ColorWheels, p(|p| { p.gain_x = Some(0.3); p.lift_master = Some(0.05); p.luma_mix = Some(0.0) })),
         ("wheel sat/bri", Corrector, p(|p| { p.gain_sat = Some(0.3); p.lift_bri = Some(0.1) })),
         ("temperature/tint", Corrector, p(|p| { p.temperature = Some(30.0); p.tint = Some(-20.0) })),
         ("hue", Corrector, p(|p| p.hue = Some(30.0))),

@@ -48,6 +48,7 @@ fn grade_at(pivot_linear: f32, contrast: f32) -> ColorGrade {
         gain: (0.0, 0.0, 0.0),
         offset: (0.0, 0.0, 0.0),
         log_wheels: None,
+        wheel_shape: klipp_grade_model::WheelShape::default(),
         hue: 0.0,
         global_mix: 1.0,
         luma: [0.2126, 0.7152, 0.0722],
@@ -73,7 +74,7 @@ fn on_gpu(gpu: &mut GpuEffectsPipeline, input: &[f32], g: &ColorGrade) -> Vec<f3
         g.gamma,
         g.gain,
         g.offset,
-        g.log_wheels,
+        g.log_wheels, g.wheel_shape,
         g.hue,
         g.global_mix,
     )
@@ -210,6 +211,51 @@ fn every_grade_encoding_gives_the_same_picture_on_cpu_and_gpu() {
                 let (d, _) = diff(&cpu, &on_cpu(&input, &full(Encoding::Bt1886, log)));
                 assert!(d > 1e-3, "{enc:?} grades like BT.1886");
             }
+        }
+    }
+}
+
+/// #900: the log wheels' moved ranges and a luma mix below one give the
+/// same picture on the CPU and the GPU in each encoding, and each changes
+/// the picture.
+#[test]
+fn wheel_ranges_and_luma_mix_match_on_cpu_and_gpu() {
+    use klipp_grade_model::{encode_contrast_pivot_in, Encoding, WheelShape};
+    let input = frame();
+    let graded = |enc: Encoding, log: bool, shape: WheelShape| ColorGrade {
+        contrast_pivot_encoded: encode_contrast_pivot_in(0.18, enc),
+        lift: (0.03, 0.0, -0.02),
+        gain: (0.12, 0.02, -0.06),
+        log_wheels: log.then_some([(0.04, 0.0, -0.02), (0.0, 0.03, 0.01), (-0.03, 0.0, 0.03)]),
+        wheel_shape: shape,
+        encoding: enc,
+        ..grade_at(0.18, 0.0)
+    };
+    let shape = WheelShape { low_range: 0.30, high_range: 0.65, luma_mix: 0.25 };
+    // On the CPU: each part of the shape moves the picture.
+    for log in [false, true] {
+        let plain = on_cpu(&input, &graded(Encoding::Bt1886, log, WheelShape::default()));
+        let mixed = on_cpu(&input, &graded(Encoding::Bt1886, log, WheelShape { luma_mix: 0.0, ..Default::default() }));
+        assert!(diff(&plain, &mixed).0 > 1e-3, "log {log}: the luma mix does nothing");
+        // At no luma mix, a pixel keeps the luma it had before the wheels.
+        let y = |p: &[f32]| 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+        for (a, b) in input.chunks_exact(4).zip(mixed.chunks_exact(4)) {
+            assert!((y(a) - y(b)).abs() < 1e-4 * y(a).abs().max(1.0), "log {log}: luma {} became {}", y(a), y(b));
+        }
+    }
+    let moved = on_cpu(&input, &graded(Encoding::Bt1886, true, WheelShape { low_range: 0.30, high_range: 0.65, ..Default::default() }));
+    assert!(diff(&on_cpu(&input, &graded(Encoding::Bt1886, true, WheelShape::default())), &moved).0 > 1e-3, "the ranges do nothing");
+    let Some(mut gpu) = GpuEffectsPipeline::new() else {
+        eprintln!("skipping the GPU half: no GPU");
+        return;
+    };
+    for enc in [Encoding::Bt1886, Encoding::AcesCct, Encoding::AcesCc] {
+        gpu.set_grade_encoding(enc.as_u8());
+        for log in [false, true] {
+            let g = graded(enc, log, shape);
+            let (worst, mean) = diff(&on_cpu(&input, &g), &on_gpu(&mut gpu, &input, &g));
+            eprintln!("{enc:?} log {log} shaped: worst {worst:.6} mean {mean:.6}");
+            assert!(worst < 2e-3, "{enc:?} log {log}: CPU and GPU differ by {worst}");
         }
     }
 }

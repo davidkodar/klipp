@@ -1773,6 +1773,7 @@ impl GpuEffectsPipeline {
         gain: (f32, f32, f32),
         offset: (f32, f32, f32),
         log_wheels: Option<[(f32, f32, f32); 3]>,
+        wheel_shape: klipp_grade_model::WheelShape,
         hue: f32,
         global_mix: f32,
     ) -> Vec<f32> {
@@ -1823,6 +1824,9 @@ impl GpuEffectsPipeline {
             encoding: self.grade_encoding,
             log_mode: log_wheels.is_some() as u32,
             log_wheels: flat_wheels(log_wheels),
+            log_low_range: wheel_shape.low_range,
+            log_high_range: wheel_shape.high_range,
+            luma_mix: wheel_shape.luma_mix,
         });
         self.dispatch(&self.color_grade_pipeline, buf_a, buf_b, workgroups);
 
@@ -4119,6 +4123,7 @@ impl GpuEffectsPipeline {
         gain: (f32, f32, f32),
         offset: (f32, f32, f32),
         log_wheels: Option<[(f32, f32, f32); 3]>,
+        wheel_shape: klipp_grade_model::WheelShape,
         hue: f32,
         global_mix: f32,
     ) {
@@ -4140,6 +4145,9 @@ impl GpuEffectsPipeline {
             encoding: self.grade_encoding,
             log_mode: log_wheels.is_some() as u32,
             log_wheels: flat_wheels(log_wheels),
+            log_low_range: wheel_shape.low_range,
+            log_high_range: wheel_shape.high_range,
+            luma_mix: wheel_shape.luma_mix,
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         // Disjoint-field borrow: read from chain_bg_3binding while
@@ -8073,8 +8081,13 @@ struct GpuColorGradeParams {
     /// replace lift/gamma/gain/offset.
     log_mode: u32,
     log_wheels: [f32; 9],
+    /// The log wheels' low and high band centres, and the wheels' luma
+    /// mix (#900): `klipp_grade_model::WheelShape`.
+    log_low_range: f32,
+    log_high_range: f32,
+    luma_mix: f32,
 }
-// 47 words = 188 bytes (still under 256-byte PARAMS_SIZE)
+// 50 words = 200 bytes (still under 256-byte PARAMS_SIZE)
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -12928,6 +12941,9 @@ struct Params {
     log_low_r: f32, log_low_g: f32, log_low_b: f32,
     log_mid_r: f32, log_mid_g: f32, log_mid_b: f32,
     log_high_r: f32, log_high_g: f32, log_high_b: f32,
+    log_low_range: f32,
+    log_high_range: f32,
+    luma_mix: f32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -13005,9 +13021,12 @@ fn tone_weights(l: f32) -> vec4<f32> {
 fn grade_gauss(l: f32, centre: f32, sigma: f32) -> f32 {
     return exp(-((l - centre) * (l - centre)) / (2.0 * sigma * sigma));
 }
-// (low, mid, high)
+// (low, mid, high), the low and high bands where the ranges put them
+// (#900): klipp_grade_model::log_wheel_weights_in.
 fn log_wheel_weights(l: f32) -> vec3<f32> {
-    return vec3<f32>(grade_gauss(l, 0.20, 0.14), grade_gauss(l, MID_GREY_ENCODED, 0.16), grade_gauss(l, 0.78, 0.14));
+    let low = clamp(params.log_low_range, 0.0, MID_GREY_ENCODED - 0.08);
+    let high = clamp(params.log_high_range, MID_GREY_ENCODED + 0.08, 1.2);
+    return vec3<f32>(grade_gauss(l, low, 0.14), grade_gauss(l, MID_GREY_ENCODED, 0.16), grade_gauss(l, high, 0.14));
 }
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -13040,6 +13059,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var er = grade_encode_in(r) + tone_adj;
     var eg = grade_encode_in(g) + tone_adj;
     var eb = grade_encode_in(b) + tone_adj;
+    let before_wheels = vec3<f32>(er, eg, eb);
     if params.log_mode != 0u {
         let lw = log_wheel_weights(l_band);
         er = er + params.log_low_r * lw.x + params.log_mid_r * lw.y + params.log_high_r * lw.z;
@@ -13049,6 +13069,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         er = cdl_channel(er, params.lift_r, params.gamma_r, params.gain_r, params.offset_r);
         eg = cdl_channel(eg, params.lift_g, params.gamma_g, params.gain_g, params.offset_g);
         eb = cdl_channel(eb, params.lift_b, params.gamma_b, params.gain_b, params.offset_b);
+    }
+    // The luma mix (#900), klipp_grade_model::luma_mix: the wheels'
+    // change to luma taken back by its complement, in linear light.
+    if params.luma_mix < 1.0 {
+        let luma_c = vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb);
+        let pre = vec3<f32>(grade_decode_in(before_wheels.x), grade_decode_in(before_wheels.y), grade_decode_in(before_wheels.z));
+        let post = vec3<f32>(grade_decode_in(er), grade_decode_in(eg), grade_decode_in(eb));
+        let back = (1.0 - clamp(params.luma_mix, 0.0, 1.0)) * (dot(luma_c, pre) - dot(luma_c, post));
+        er = grade_encode_in(post.x + back);
+        eg = grade_encode_in(post.y + back);
+        eb = grade_encode_in(post.z + back);
     }
     er = contrast_channel_at(er, params.contrast, params.contrast_pivot_encoded);
     eg = contrast_channel_at(eg, params.contrast, params.contrast_pivot_encoded);

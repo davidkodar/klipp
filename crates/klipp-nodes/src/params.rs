@@ -98,6 +98,17 @@ pub struct NodeParams {
     /// Whether wheels operate in log mode (true) or linear mode (false/default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wheels_log_mode: Option<bool>,
+    /// Where the log wheels' low band centres on the encoded luma
+    /// (#900): `klipp_grade_model::LOG_LOW_RANGE` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_low_range: Option<f32>,
+    /// Where the high band centres: `LOG_HIGH_RANGE` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_high_range: Option<f32>,
+    /// How much of the wheels' change to luma is kept, 0 to 1 (#900):
+    /// 1 when unset, as the wheels always were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub luma_mix: Option<f32>,
 
     // WheelSatBri
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -415,6 +426,9 @@ impl NodeParams {
             && z(&self.log_high_y)
             && z(&self.log_high_master)
             && self.wheels_log_mode.is_none()
+            && self.log_low_range.is_none()
+            && self.log_high_range.is_none()
+            && self.luma_mix.is_none_or(|v| (v - 1.0).abs() < 0.0001)
             && z(&self.lift_sat)
             && z(&self.lift_bri)
             && z(&self.gamma_sat)
@@ -502,6 +516,9 @@ impl NodeParams {
             "log_high_y" => self.log_high_y = n,
             "log_high_master" => self.log_high_master = n,
             "wheels_log_mode" => self.wheels_log_mode = Some(value > 0.5),
+            "log_low_range" => self.log_low_range = Some(value),
+            "log_high_range" => self.log_high_range = Some(value),
+            "luma_mix" => self.luma_mix = Some(value), // default is 1.0, not 0.0
             "lift_sat" => self.lift_sat = n,
             "lift_bri" => self.lift_bri = n,
             "gamma_sat" => self.gamma_sat = n,
@@ -819,7 +836,8 @@ mod tests {
         for name in ["exposure", "contrast", "temperature", "tint", "saturation",
                      "vibrance", "clarity", "highlights", "shadows", "whites",
                      "blacks", "lift_x", "gain_master", "mix", "global_mix",
-                     "warper_hue_0", "qual_sat_low", "luma_key_high"] {
+                     "warper_hue_0", "qual_sat_low", "luma_key_high",
+                     "log_low_range", "log_high_range", "luma_mix"] {
             assert!(p.apply_override(name, 0.5), "{name:?} should be accepted");
             assert!(NodeParams::accepts(name), "accepts({name:?}) should be true");
         }

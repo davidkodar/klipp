@@ -9,7 +9,7 @@
 //! Each function takes what its GPU entry point takes and works on
 //! linear RGBA f32 in place.
 
-use klipp_grade_model::{band_luma, cdl_channel, contrast_channel_at, decode, encode, log_wheel_weights, tone_weights, Encoding};
+use klipp_grade_model::{band_luma, cdl_channel, contrast_channel_at, decode, encode, log_wheel_weights_in, luma_mix, tone_weights, Encoding, WheelShape};
 use rayon::prelude::*;
 // The WGSL twins spell this `3.14159265`, and that literal rounds to
 // exactly this f32 — 0x40490fdb, the same bits — so the twins agree
@@ -43,6 +43,8 @@ pub struct ColorGrade {
     pub offset: (f32, f32, f32),
     /// Log-mode wheels (low, mid, high), replacing lift/gamma/gain/offset.
     pub log_wheels: Option<[(f32, f32, f32); 3]>,
+    /// The log wheels' ranges and the wheels' luma mix (#900).
+    pub wheel_shape: WheelShape,
     pub hue: f32,
     pub global_mix: f32,
     /// The working space's luma coefficients.
@@ -81,9 +83,11 @@ pub fn color_grade(px: &mut [f32], g: &ColorGrade) {
         let [hi_w, lo_w, white_w, black_w] = tone_weights(l_band);
         let tone_adj = g.highlights * hi_w + g.shadows * lo_w + g.whites * white_w + g.blacks * black_w;
         let mut e = [encode(r, enc) + tone_adj, encode(gr, enc) + tone_adj, encode(b, enc) + tone_adj];
+        let shape = g.wheel_shape;
+        let before_wheels = e;
         match g.log_wheels {
             Some([low, mid, high]) => {
-                let [low_w, mid_w, high_w] = log_wheel_weights(l_band);
+                let [low_w, mid_w, high_w] = log_wheel_weights_in(l_band, shape.low_range, shape.high_range);
                 let lo = [low.0, low.1, low.2];
                 let mi = [mid.0, mid.1, mid.2];
                 let hi = [high.0, high.1, high.2];
@@ -100,6 +104,13 @@ pub fn color_grade(px: &mut [f32], g: &ColorGrade) {
                     e[i] = cdl_channel(e[i], lift[i], gamma[i], gain[i], offset[i]);
                 }
             }
+        }
+        // The luma mix (#900): what the wheels did to luma, taken back
+        // by its complement, in linear light where luma is a sum.
+        if shape.luma_mix < 1.0 {
+            let lin = |e: [f32; 3]| [decode(e[0], enc), decode(e[1], enc), decode(e[2], enc)];
+            let mixed = luma_mix(lin(before_wheels), lin(e), l, shape.luma_mix);
+            e = [encode(mixed[0], enc), encode(mixed[1], enc), encode(mixed[2], enc)];
         }
         for v in &mut e {
             *v = contrast_channel_at(*v, g.contrast, g.contrast_pivot_encoded);

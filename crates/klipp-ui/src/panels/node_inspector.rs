@@ -438,6 +438,7 @@ impl NodeInspectorPanel {
                     push_atomic_node_edit(cmds, clip_id, node_id, "wheels_log_mode", 1.0);
                 }
             });
+            wheel_shape_sliders(ui, &mut graph.nodes[wi].params, log_mode, node_id, cmds, clip_id, theme);
             ui.add_space(4.0);
         }
 
@@ -1815,6 +1816,7 @@ impl NodeInspectorPanel {
                         push_atomic_node_edit(cmds, clip_id, node_id, "wheels_log_mode", 1.0);
                     }
                 });
+                wheel_shape_sliders(ui, params, log_mode, node_id, cmds, clip_id, theme);
                 ui.add_space(4.0);
 
                 // Helper closure for each wheel, and — where the wheel
@@ -4356,6 +4358,33 @@ fn bundled_luts(dir: &std::path::Path) -> Vec<(String, Vec<std::path::PathBuf>)>
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
+}
+
+/// The wheels' Luma Mix, and in log mode the Low and High Range (#900):
+/// how much of the wheels' change to brightness is kept, and where the
+/// low band ends and the high band begins on the encoded luma.
+fn wheel_shape_sliders(
+    ui: &mut egui::Ui,
+    params: &mut NodeParams,
+    log_mode: bool,
+    node_id: NodeId,
+    cmds: &mut Vec<AppCommand>,
+    clip_id: ClipId,
+    theme: &crate::theme::KlippTheme,
+) {
+    use klipp_color::grade_model::{LOG_HIGH_RANGE, LOG_LOW_RANGE, MID_GREY_ENCODED};
+    let mut rows = vec![("Luma Mix", "luma_mix", params.luma_mix.unwrap_or(1.0), 0.0..=1.0)];
+    if log_mode {
+        rows.push(("Low Range", "log_low_range", params.log_low_range.unwrap_or(LOG_LOW_RANGE), 0.0..=MID_GREY_ENCODED - 0.08));
+        rows.push(("High Range", "log_high_range", params.log_high_range.unwrap_or(LOG_HIGH_RANGE), MID_GREY_ENCODED + 0.08..=1.2));
+    }
+    for (label, pname, val, range) in rows {
+        let mut v = val;
+        if grade_slider(ui, label, &mut v, range, "", cmds, clip_id, theme) {
+            params.apply_override(pname, v);
+            cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: pname.into(), value: v });
+        }
+    }
 }
 
 /// Legacy grade_slider for non-Adjustments tabs. Takes `cmds` + `clip_id` so
