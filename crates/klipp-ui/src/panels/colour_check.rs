@@ -29,6 +29,33 @@ pub enum ColourAction {
     None,
     /// Send a known chart through the render path and read it back.
     SelfCheck,
+    /// The measured colour tools (#897), each one undo step, run by the
+    /// same code an assistant's request runs.
+    /// Match the selected shots (or the picture track's) to their
+    /// scene's hero.
+    MatchToHero,
+    /// Turn the selected clip's faces onto the skin band.
+    BalanceSkin,
+    /// Grade the selected clip to the brief's look.
+    GradeToLook,
+    /// Make the timeline's best-graded shot the look the rest are held to.
+    AdoptLookFromTimeline,
+    /// Make the selected media pool file the look's reference.
+    AdoptLookFromMedia,
+}
+
+impl ColourAction {
+    /// What the tool is called while it runs and in its result.
+    pub fn name(self) -> &'static str {
+        match self {
+            ColourAction::None => "",
+            ColourAction::SelfCheck => "Check the render path",
+            ColourAction::MatchToHero => "Match to Hero",
+            ColourAction::BalanceSkin => "Balance Skin",
+            ColourAction::GradeToLook => "Grade to Look",
+            ColourAction::AdoptLookFromTimeline | ColourAction::AdoptLookFromMedia => "Adopt Look",
+        }
+    }
 }
 
 /// One reading kept for the trend: small, because there is one per
@@ -133,11 +160,18 @@ pub struct ColourCheckPanel {
     show_all: bool,
     /// How the colour moves over the piece, filled in as it is watched.
     pub trend: ColourTrend,
+    /// Whether the app can run the colour tools in this process.
+    pub tools_available: bool,
+    /// The colour tool running now, if one is.
+    pub tool_running: Option<ColourAction>,
+    /// The last colour tool's answer: whether it did what it set out to,
+    /// and its readings before and after.
+    pub tool_result: Option<(bool, String)>,
 }
 
 impl Default for ColourCheckPanel {
     fn default() -> Self {
-        Self { measured: None, generation: u64::MAX, at: None, selfcheck: None, show_all: false, trend: ColourTrend::default() }
+        Self { measured: None, generation: u64::MAX, at: None, selfcheck: None, show_all: false, trend: ColourTrend::default(), tools_available: false, tool_running: None, tool_result: None }
     }
 }
 
@@ -212,11 +246,19 @@ impl ColourCheckPanel {
                     ui.add_space(4.0);
                     self.findings(ui, theme, &m, &look);
                     ui.add_space(4.0);
+                    let acted = self.act(ui, theme, state);
+                    if acted != ColourAction::None {
+                        action = acted;
+                    }
+                    ui.add_space(4.0);
                     self.chain(ui, theme, state);
                     ui.add_space(4.0);
                     self.trend_strip(ui, theme, state);
                     ui.add_space(4.0);
-                    action = self.render_path(ui, theme);
+                    let checked = self.render_path(ui, theme);
+                    if checked != ColourAction::None {
+                        action = checked;
+                    }
                 });
             });
         action
@@ -446,6 +488,54 @@ impl ColourCheckPanel {
                 .small()
                 .color(theme.text_dim),
         );
+    }
+
+    /// The tools that act on what the readings say (#897): the same
+    /// measured grading an assistant runs, each one undo step, each
+    /// answering with its readings before and after.
+    fn act(&mut self, ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState) -> ColourAction {
+        let mut action = ColourAction::None;
+        section(ui, theme, "ACT ON IT");
+        if !self.tools_available {
+            ui.label(egui::RichText::new("The colour tools are not available in this build.").small().color(theme.text_dim));
+            return action;
+        }
+        let idle = self.tool_running.is_none();
+        let clip = state.selected_clip.is_some();
+        let picked = state.selected_clips.len();
+        let media = state.selected_media_ids.len() == 1;
+        let button = |ui: &mut egui::Ui, enabled: bool, label: &str, hover: &str| {
+            ui.add_enabled(idle && enabled, egui::Button::new(label)).on_hover_text(hover).on_disabled_hover_text(hover).clicked()
+        };
+        ui.horizontal_wrapped(|ui| {
+            let scope = if picked >= 2 { format!("the {picked} selected shots") } else { "every shot on the picture track".to_string() };
+            if button(ui, true, "Match to Hero", &format!("Group {scope} into scenes by how they were lit, take the shot in each nearest the look as its hero, and move the others' primaries toward it, measuring after each round. One undo step.")) {
+                action = ColourAction::MatchToHero;
+            }
+            if button(ui, clip, "Balance Skin", "Measure the faces in the selected clip and add a skin secondary that turns their hue onto the skin band, measured again after each round. Refused when the whole scene carries the cast: that is a white balance. One undo step.") {
+                action = ColourAction::BalanceSkin;
+            }
+            if button(ui, clip, "Grade to Look", "Move the selected clip's primaries toward the brief's look in gentle rounds, measuring between them. A clip that looks like camera log with no input transform is left alone. One undo step.") {
+                action = ColourAction::GradeToLook;
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            if button(ui, true, "Adopt Look from Timeline", "Take the look of the timeline's best-graded shot and make it the target every colour reading and tool here is held to: it goes in the brief.") {
+                action = ColourAction::AdoptLookFromTimeline;
+            }
+            if button(ui, media, "Adopt Look from Reference", "Take the look of the one file selected in the media pool, read across its length, and make it the target: it goes in the brief.") {
+                action = ColourAction::AdoptLookFromMedia;
+            }
+        });
+        if let Some(running) = self.tool_running {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(egui::RichText::new(format!("{}: measuring and grading\u{2026}", running.name())).small().color(theme.text_secondary));
+            });
+        } else if let Some((ok, text)) = &self.tool_result {
+            ui.label(egui::RichText::new(text).small().color(if *ok { theme.text_primary } else { theme.marker_error }));
+        }
+        action
     }
 
     fn render_path(&mut self, ui: &mut egui::Ui, theme: &KlippTheme) -> ColourAction {

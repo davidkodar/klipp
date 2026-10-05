@@ -507,6 +507,11 @@ pub enum ControlCommand {
         apply: bool,
         #[serde(default)]
         rounds: Option<u32>,
+        /// Only these clips, each matched to the hero of its scene among
+        /// them (#897: the Colour page's Match to Hero on a selection).
+        /// All the picture track's shots when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        clip_ids: Option<Vec<String>>,
     },
     /// A clip's grade chain in the order the picture flows through it,
     /// each node named with the stage it belongs to, and whatever the

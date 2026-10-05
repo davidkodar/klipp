@@ -187,7 +187,7 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::MatchScenes { apply, rounds } => {
+        ControlCommand::MatchScenes { apply, rounds, clip_ids } => {
             if in_batch {
                 return Err("match_scenes measures and applies; send it on its own".into());
             }
@@ -198,6 +198,7 @@ pub(crate) fn respond(
                 picture_track(&seq).into_iter()
                     .flat_map(|t| t.clips.iter())
                     .filter(|c| is_picture_clip(c))
+                    .filter(|c| clip_ids.as_ref().is_none_or(|ids| ids.iter().any(|id| *id == c.id.0.to_string())))
                     .map(|c| (
                         c.id.0.to_string(),
                         c.timeline_in.to_secs_f64(),
@@ -208,7 +209,11 @@ pub(crate) fn respond(
                     .collect()
             };
             if shots.len() < 2 {
-                return Err("matching needs at least two shots on one video track".into());
+                return Err(if clip_ids.is_some() {
+                    "matching needs at least two of the selected shots on the picture track it reads (the first video track with pictures)".into()
+                } else {
+                    "matching needs at least two shots on one video track".into()
+                });
             }
             // Every shot read the way a colourist checks one: three
             // frames, the middle reading grading it.

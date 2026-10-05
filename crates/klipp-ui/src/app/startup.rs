@@ -131,6 +131,8 @@ impl KlippApp {
             transcript_panel: crate::panels::transcript::TranscriptPanel::new(),
             transcript_source: Default::default(),
             colour_check: Default::default(),
+            local_control: None,
+            colour_tool_reply: None,
             sound_over_time: Default::default(),
             narrate: Default::default(),
             preferences_panel: PreferencesPanel::default(),

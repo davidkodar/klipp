@@ -170,6 +170,10 @@ enum AudioConformResult {
     },
 }
 
+/// Runs one control request, as JSON, in this process and answers it:
+/// `klipp_control::respond_local` over the app's own control context.
+pub type LocalControl = std::sync::Arc<dyn Fn(serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
+
 pub struct KlippApp {
     /// The playback engine's channel, taking only what it acts on: a UI
     /// command sent there did nothing, silently (#437).
@@ -205,6 +209,12 @@ pub struct KlippApp {
     /// The Colour Check window's own state: the last reading of the
     /// displayed frame, and the last render-path self-check.
     colour_check: crate::panels::colour_check::ColourCheckPanel,
+    /// Answers a control request in this process (#897): the app's own
+    /// buttons for the measured colour tools run the code an assistant's
+    /// request runs. Set by the binary; `None` in tests.
+    local_control: Option<LocalControl>,
+    /// The running colour tool's answer, when it comes.
+    colour_tool_reply: Option<std::sync::mpsc::Receiver<Result<serde_json::Value, String>>>,
     /// The Sound Over Time window's own state: the reading in hand or
     /// the thread still making it.
     sound_over_time: crate::panels::sound_over_time::SoundOverTimePanel,

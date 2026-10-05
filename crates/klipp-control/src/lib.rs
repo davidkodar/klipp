@@ -560,6 +560,38 @@ fn read_in_batch(what: &str) -> Result<serde_json::Value, String> {
     Err(format!("{what} cannot be part of a batch; a batch is for writes"))
 }
 
+/// Answer one request in this process, as the socket would, without
+/// the socket (#897): the app's own buttons for the measured colour
+/// tools run the same code an assistant does, whether or not the
+/// assistant is on. `request` is the socket's JSON, `{"method": ...}`.
+/// Blocks until the request is done, which for a tool that grades in
+/// rounds is seconds, so it belongs on a worker thread.
+pub fn respond_local(ctx: &ControlContext, request: serde_json::Value) -> Result<serde_json::Value, String> {
+    let req: Request = serde_json::from_value(request).map_err(|e| format!("not a request Klipp knows: {e}"))?;
+    handle(ctx, req.command, &mut None)
+}
+
+#[cfg(test)]
+mod respond_local_tests {
+    use super::protocol::{ControlCommand, Request};
+    use serde_json::json;
+
+    /// The requests the app's Colour Check buttons send (#897,
+    /// `colour_tool_request` in klipp-ui) are ones the protocol reads,
+    /// with the fields they mean.
+    #[test]
+    fn the_colour_buttons_requests_parse() {
+        let parse = |v: serde_json::Value| serde_json::from_value::<Request>(v).expect("a request").command;
+        let ids = vec!["a".to_string(), "b".to_string()];
+        assert!(matches!(parse(json!({ "method": "match_scenes", "apply": true, "clip_ids": ids })), ControlCommand::MatchScenes { apply: true, clip_ids: Some(c), .. } if c.len() == 2));
+        assert!(matches!(parse(json!({ "method": "match_scenes", "apply": true })), ControlCommand::MatchScenes { clip_ids: None, .. }));
+        assert!(matches!(parse(json!({ "method": "skin_balance", "clip_id": "x", "apply": true })), ControlCommand::SkinBalance { apply: true, .. }));
+        assert!(matches!(parse(json!({ "method": "grade_to_target", "clip_id": "x", "apply": true })), ControlCommand::GradeToTarget { apply: true, clip_id: Some(_), .. }));
+        assert!(matches!(parse(json!({ "method": "adopt_look", "from_timeline": true, "apply": true })), ControlCommand::AdoptLook { from_timeline: true, apply: true, .. }));
+        assert!(matches!(parse(json!({ "method": "adopt_look", "media_id": "m", "apply": true })), ControlCommand::AdoptLook { media_id: Some(_), .. }));
+    }
+}
+
 /// `collect` is `Some` inside a batch: writes are gathered there instead
 /// of being sent, so the batch goes to the UI whole or not at all.
 fn handle(
