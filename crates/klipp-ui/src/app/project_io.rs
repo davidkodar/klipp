@@ -30,10 +30,20 @@ enum SaveOutcome {
 /// is open, and whether its file is there. A missing LUT is kept rather
 /// than dropped, so the next save does not delete it from the project
 /// (#1019): it is not applied, and Project Doctor offers to relink it.
-pub(super) fn opened_global_lut(saved: Option<&std::path::Path>) -> (Option<std::path::PathBuf>, bool) {
+///
+/// Also what to tell the engine: load a LUT that is there, and clear it
+/// otherwise. The engine keeps its LUT across projects, so sending nothing
+/// went on grading through the previous project's while Project Doctor and
+/// `check` said none was applied. The commands go to the engine alone
+/// (`cmd_tx`); through the UI's handler, the clear would forget the path.
+pub(super) fn opened_global_lut(saved: Option<&std::path::Path>, opacity: f32, enabled: bool) -> (Option<std::path::PathBuf>, Vec<AppCommand>) {
     match saved {
-        Some(p) => (Some(p.to_path_buf()), p.exists()),
-        None => (None, false),
+        Some(p) if p.exists() => (
+            Some(p.to_path_buf()),
+            vec![AppCommand::LoadGlobalLut { path: p.to_path_buf() }, AppCommand::SetGlobalLutOpacity(opacity), AppCommand::SetGlobalLutEnabled(enabled)],
+        ),
+        Some(p) => (Some(p.to_path_buf()), vec![AppCommand::ClearGlobalLut]),
+        None => (None, vec![AppCommand::ClearGlobalLut]),
     }
 }
 
@@ -667,14 +677,17 @@ impl KlippApp {
                 // Restore global LUT
                 self.state.global_lut_opacity = color_settings.global_lut_opacity;
                 self.state.global_lut_enabled = color_settings.global_lut_enabled;
-                let (kept, present) = opened_global_lut(color_settings.global_lut_path.as_deref());
+                let (kept, to_engine) = opened_global_lut(
+                    color_settings.global_lut_path.as_deref(),
+                    color_settings.global_lut_opacity,
+                    color_settings.global_lut_enabled,
+                );
                 self.state.global_lut_path = kept.clone();
+                for cmd in to_engine {
+                    self.cmd_tx.send(cmd).ok();
+                }
                 if let Some(lut_path) = kept {
-                    if present {
-                        self.cmd_tx.send(AppCommand::LoadGlobalLut { path: lut_path.clone() }).ok();
-                        self.cmd_tx.send(AppCommand::SetGlobalLutOpacity(color_settings.global_lut_opacity)).ok();
-                        self.cmd_tx.send(AppCommand::SetGlobalLutEnabled(color_settings.global_lut_enabled)).ok();
-                    } else {
+                    if !lut_path.exists() {
                         tracing::warn!("Global LUT not found, kept for relinking: {:?}", lut_path);
                         let name = lut_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                         self.state.toast.show(format!("The project's LUT {name} is missing: relink it in Project Doctor"));
@@ -1293,13 +1306,27 @@ mod global_lut_tests {
     use super::opened_global_lut;
 
     /// A project whose LUT is not on this machine keeps naming it, so a
-    /// save writes it back; it is only not applied (#1019).
+    /// save writes it back; it is not applied, and the engine is told to
+    /// drop the previous project's LUT rather than keep grading with it
+    /// (#1019).
     #[test]
     fn a_missing_global_lut_is_kept_and_not_applied() {
+        use klipp_core::AppCommand;
         let missing = std::path::Path::new("/nonexistent/klipp-1019/look.cube");
-        assert_eq!(opened_global_lut(Some(missing)), (Some(missing.to_path_buf()), false));
+        let (kept, to_engine) = opened_global_lut(Some(missing), 0.5, true);
+        assert_eq!(kept, Some(missing.to_path_buf()));
+        assert!(matches!(to_engine.as_slice(), [AppCommand::ClearGlobalLut]), "a missing LUT clears the engine's");
+
+        let (kept, to_engine) = opened_global_lut(None, 1.0, true);
+        assert_eq!(kept, None);
+        assert!(matches!(to_engine.as_slice(), [AppCommand::ClearGlobalLut]), "no LUT clears the engine's too");
+
         let here = std::env::current_exe().unwrap();
-        assert_eq!(opened_global_lut(Some(&here)), (Some(here.clone()), true));
-        assert_eq!(opened_global_lut(None), (None, false));
+        let (kept, to_engine) = opened_global_lut(Some(&here), 0.5, false);
+        assert_eq!(kept, Some(here.clone()));
+        assert!(matches!(
+            to_engine.as_slice(),
+            [AppCommand::LoadGlobalLut { path }, AppCommand::SetGlobalLutOpacity(o), AppCommand::SetGlobalLutEnabled(false)] if *path == here && *o == 0.5
+        ));
     }
 }
