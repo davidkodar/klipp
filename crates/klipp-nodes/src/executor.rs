@@ -2944,8 +2944,12 @@ impl GraphExecutor {
                 // otherwise a pivot set on a Contrast node would do
                 // nothing while the same pivot on a Corrector worked,
                 // and the CPU and GPU twins below would disagree.
-                let pivot = klipp_color::grade_model::encode_contrast_pivot(
+                // In the grade's encoding, as the Corrector encodes it: it
+                // was always BT.1886's, so under ACEScct the same pivot sat
+                // somewhere else on a Contrast node (#1039).
+                let pivot = klipp_color::grade_model::encode_contrast_pivot_in(
                     params.contrast_pivot.unwrap_or(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
+                    self.grade_encoding,
                 );
                 // When BOTH contrast and clarity are active, issue two
                 // sub-dispatches back-to-back inside the same chain
@@ -3462,8 +3466,12 @@ impl GraphExecutor {
                 // otherwise a pivot set on a Contrast node would do
                 // nothing while the same pivot on a Corrector worked,
                 // and the CPU and GPU twins below would disagree.
-                let pivot = klipp_color::grade_model::encode_contrast_pivot(
+                // In the grade's encoding, as the Corrector encodes it: it
+                // was always BT.1886's, so under ACEScct the same pivot sat
+                // somewhere else on a Contrast node (#1039).
+                let pivot = klipp_color::grade_model::encode_contrast_pivot_in(
                     params.contrast_pivot.unwrap_or(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
+                    self.grade_encoding,
                 );
                 if con != 0.0 || clarity != 0.0 {
                     let frame = if con != 0.0 {
@@ -4009,7 +4017,12 @@ impl GraphExecutor {
                         let g = src[si + 1];
                         let b = src[si + 2];
                         let a = src[si + 3];
-                        // Rec.709 luminance in linear light.
+                        // Rec.709 luminance in linear light: the image is
+                        // a file of its own, decoded from sRGB into BT.709
+                        // primaries and never into the working space, so
+                        // its weights are BT.709's in any project. (The
+                        // keys weigh by the working space because they read
+                        // the working space's picture.)
                         let m = match channel {
                             MatteChannel::Alpha => a,
                             MatteChannel::Luminance => 0.2126 * r + 0.7152 * g + 0.0722 * b,
