@@ -397,6 +397,7 @@ pub struct GpuEffectsPipeline {
     stack_dims: (u32, u32),
     blend_layer_pipeline: wgpu::ComputePipeline,
     premultiply_pipeline: wgpu::ComputePipeline,
+    alpha_form_pipeline: wgpu::ComputePipeline,
     sprite_rows_pipeline: wgpu::ComputePipeline,
     sprite_rows_f16_pipeline: wgpu::ComputePipeline,
     matte_extract_pipeline: wgpu::ComputePipeline,
@@ -1252,6 +1253,7 @@ impl GpuEffectsPipeline {
         let u8_to_texture_pipeline = create_pipeline(&device, &u8_to_texture_pl, "u8_to_texture", SHADER_U8_TO_TEXTURE);
         let blend_layer_pipeline = create_pipeline(&device, &pipeline_layout, "blend_layer", SHADER_BLEND_LAYER);
         let premultiply_pipeline = create_pipeline(&device, &pipeline_layout, "premultiply", SHADER_PREMULTIPLY);
+        let alpha_form_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_form", SHADER_ALPHA_FORM);
         let sprite_rows_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_rows", SHADER_SPRITE_ROWS);
         let sprite_rows_f16_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_rows_f16", SHADER_SPRITE_ROWS_F16);
         let sprite_place_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_place", SHADER_SPRITE_PLACE);
@@ -1468,6 +1470,7 @@ impl GpuEffectsPipeline {
             stack_dims: (0, 0),
             blend_layer_pipeline,
             premultiply_pipeline,
+            alpha_form_pipeline,
             sprite_rows_pipeline,
             sprite_rows_f16_pipeline,
             matte_extract_pipeline,
@@ -5697,13 +5700,24 @@ impl GpuEffectsPipeline {
         true
     }
 
-    /// A transition between layers `from` and `to` into layer `out`.
+    /// A transition between layers `from` and `to` into layer `out`. The
+    /// sides are mixed premultiplied and the result divided back to
+    /// straight, as the CPU mixes them: a side that is partly transparent
+    /// (scaled down, matted, faded) must lend its colour by its alpha, not
+    /// by the blend's weight alone (#718, #1026). With both sides opaque
+    /// it is the plain mix.
     #[allow(clippy::too_many_arguments)]
     pub fn stack_transition(&mut self, from: usize, to: usize, out: usize, kind_id: u32, progress: f32, p: [f32; 4], color: [f32; 4]) -> bool {
         if self.is_device_lost() || from >= self.stack_layers.len() || to >= self.stack_layers.len() || out >= self.stack_layers.len() {
             return false;
         }
         let (width, height) = self.stack_dims;
+        let wg = (self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE);
+        let (Some(from_pm), Some(to_pm)) = (self.buf_a.as_ref(), self.buf_b.as_ref()) else { return false };
+        self.write_params(&AlphaFormParams { width, height, unpremultiply: 0, _pad: 0 });
+        let (from_layer, to_layer) = (std::sync::Arc::clone(&self.stack_layers[from]), std::sync::Arc::clone(&self.stack_layers[to]));
+        self.stack_pass(&self.alpha_form_pipeline, &from_layer, from_pm, wg, "stack_transition_premultiply_from");
+        self.stack_pass(&self.alpha_form_pipeline, &to_layer, to_pm, wg, "stack_transition_premultiply_to");
         self.write_params(&TransitionParams {
             width, height, progress, kind_id,
             param0: p[0], param1: p[1], param2: p[2], param3: p[3],
@@ -5713,8 +5727,8 @@ impl GpuEffectsPipeline {
             label: Some("stack_transition_bg"),
             layout: &self.transition_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.stack_layers[from].as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.stack_layers[to].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: from_pm.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: to_pm.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: self.buf_c.as_ref().unwrap().as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: self.params_binding() },
             ],
@@ -5724,10 +5738,12 @@ impl GpuEffectsPipeline {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
             pass.set_pipeline(&self.transition_pipeline);
             pass.set_bind_group(0, &bg, &[]);
-            pass.dispatch_workgroups((self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+            pass.dispatch_workgroups(wg, 1, 1);
         }
-        enc.copy_buffer_to_buffer(self.buf_c.as_ref().unwrap(), 0, &self.stack_layers[out], 0, self.stack_pixel_count() * 16);
         self.submit(enc);
+        self.write_params(&AlphaFormParams { width, height, unpremultiply: 1, _pad: 0 });
+        let out_layer = std::sync::Arc::clone(&self.stack_layers[out]);
+        self.stack_pass(&self.alpha_form_pipeline, self.buf_c.as_ref().unwrap(), &out_layer, wg, "stack_transition_unpremultiply");
         true
     }
 
@@ -7485,6 +7501,16 @@ struct MaskPoolParams {
     width: u32,
     height: u32,
     radius: u32,
+    _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct AlphaFormParams {
+    width: u32,
+    height: u32,
+    /// 0 premultiplies, 1 divides back to straight.
+    unpremultiply: u32,
     _pad: u32,
 }
 
@@ -10345,6 +10371,30 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p = unpack(input[idx]);
     let a = clamp(p.w, 0.0, 1.0);
     output[idx] = pack(vec4<f32>(p.xyz * a, 1.0));
+}
+"
+);
+
+// A layer premultiplied keeping its alpha, or divided back to straight:
+// what a transition mixes in, as the CPU mixes it (#1026).
+const SHADER_ALPHA_FORM: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params { width: u32, height: u32, unpremultiply: u32, _pad: u32 }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let p = unpack(input[idx]);
+    var rgb = p.xyz * p.w;
+    if params.unpremultiply != 0u {
+        rgb = p.xyz;
+        if p.w > 1e-6 { rgb = p.xyz / p.w; }
+    }
+    output[idx] = pack(vec4<f32>(rgb, p.w));
 }
 "
 );
@@ -16699,6 +16749,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_CLARITY_APPLY", SHADER_CLARITY_APPLY),
         ("SHADER_BLEND_LAYER", SHADER_BLEND_LAYER),
         ("SHADER_PREMULTIPLY", SHADER_PREMULTIPLY),
+        ("SHADER_ALPHA_FORM", SHADER_ALPHA_FORM),
         ("SHADER_SPRITE_ROWS", SHADER_SPRITE_ROWS),
         ("SHADER_MATTE_EXTRACT", SHADER_MATTE_EXTRACT),
         ("SHADER_MASK_MIN_H", SHADER_MASK_MIN_H),
