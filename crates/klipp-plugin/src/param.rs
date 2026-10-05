@@ -102,6 +102,59 @@ pub enum ParamValue {
     None,
 }
 
+impl ParamValue {
+    /// This value as a parameter of type `ty` holds it, or `None` when it
+    /// can't be one. A saved value can disagree with what the plug-in
+    /// declares now (an update turned a double into an integer), and the
+    /// host writes the declared type's bytes through the plug-in's
+    /// pointer, so a value must be converted before it reaches an
+    /// instance (#1017). Numbers convert between one another, rounding to
+    /// whole numbers; vectors convert between vectors of the same length,
+    /// and an RGB gains an opaque alpha or an RGBA loses it.
+    pub fn as_declared(&self, ty: &ParamType) -> Option<ParamValue> {
+        fn whole(v: f64) -> i32 {
+            v.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
+        }
+        let scalar = match self {
+            Self::Double(v) => Some(*v),
+            Self::Int(v) | Self::Choice(v) => Some(*v as f64),
+            Self::Bool(v) => Some(if *v { 1.0 } else { 0.0 }),
+            _ => None,
+        };
+        let pair = match self {
+            Self::Double2(a, b) => Some((*a, *b)),
+            Self::Int2(a, b) => Some((*a as f64, *b as f64)),
+            _ => None,
+        };
+        let triple = match self {
+            Self::Double3(a, b, c) | Self::Rgb(a, b, c) => Some((*a, *b, *c)),
+            Self::Int3(a, b, c) => Some((*a as f64, *b as f64, *c as f64)),
+            Self::Rgba(r, g, b, _) => Some((*r, *g, *b)),
+            _ => None,
+        };
+        match ty {
+            ParamType::Double => scalar.map(Self::Double),
+            ParamType::Int => scalar.map(|v| Self::Int(whole(v))),
+            ParamType::Bool => scalar.map(|v| Self::Bool(v != 0.0)),
+            ParamType::Choice => scalar.map(|v| Self::Choice(whole(v))),
+            ParamType::Double2 => pair.map(|(a, b)| Self::Double2(a, b)),
+            ParamType::Int2 => pair.map(|(a, b)| Self::Int2(whole(a), whole(b))),
+            ParamType::Double3 => triple.map(|(a, b, c)| Self::Double3(a, b, c)),
+            ParamType::Int3 => triple.map(|(a, b, c)| Self::Int3(whole(a), whole(b), whole(c))),
+            ParamType::Rgb => triple.map(|(r, g, b)| Self::Rgb(r, g, b)),
+            ParamType::Rgba => match self {
+                Self::Rgba(r, g, b, a) => Some(Self::Rgba(*r, *g, *b, *a)),
+                _ => triple.map(|(r, g, b)| Self::Rgba(r, g, b, 1.0)),
+            },
+            ParamType::String => match self {
+                Self::String(v) => Some(Self::String(v.clone())),
+                _ => None,
+            },
+            ParamType::Group | ParamType::Page | ParamType::Parametric | ParamType::PushButton | ParamType::Custom => None,
+        }
+    }
+}
+
 /// Describes a parameter declared by a plugin during kOfxActionDescribe.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ParamDescriptor {
@@ -421,60 +474,86 @@ fn insert_keyframe(keyframes: &mut Vec<Keyframe>, time: f64, value: ParamValue) 
     }
 }
 
-/// Write a ParamValue to the output pointer, dispatching by param type.
-/// Shared by paramGetValue and paramGetValueAtTime.
-unsafe fn write_param_value(value: &ParamValue, descriptor: &ParamDescriptor, out: *mut c_void) {
-    match value {
-        ParamValue::Double(v) => { *(out as *mut f64) = *v; }
-        ParamValue::Double2(a, b) => {
-            *(out as *mut f64) = *a;
-            *(out as *mut f64).add(1) = *b;
+/// Write a parameter's value to the plug-in's output pointer(s), as the
+/// parameter's declared type and only that type's size, whatever the
+/// value was stored as (#1017). A value that can't be the declared type
+/// falls back to the declared default, then to zero. Shared by
+/// paramGetValue and paramGetValueAtTime.
+unsafe fn write_param_value(value: &ParamValue, pi: &ParamInstance, out: *mut c_void) {
+    let ty = &pi.descriptor.param_type;
+    let v = value.as_declared(ty).or_else(|| pi.descriptor.default.as_declared(ty));
+    match ty {
+        ParamType::Double => {
+            let Some(ParamValue::Double(a)) = v else { return write_f64s(out, &[0.0]) };
+            write_f64s(out, &[a]);
         }
-        ParamValue::Double3(a, b, c) => {
-            *(out as *mut f64) = *a;
-            *(out as *mut f64).add(1) = *b;
-            *(out as *mut f64).add(2) = *c;
+        ParamType::Double2 => {
+            let Some(ParamValue::Double2(a, b)) = v else { return write_f64s(out, &[0.0; 2]) };
+            write_f64s(out, &[a, b]);
         }
-        ParamValue::Int(v) => { *(out as *mut i32) = *v; }
-        ParamValue::Int2(a, b) => {
-            *(out as *mut i32) = *a;
-            *(out as *mut i32).add(1) = *b;
+        ParamType::Double3 => {
+            let Some(ParamValue::Double3(a, b, c)) = v else { return write_f64s(out, &[0.0; 3]) };
+            write_f64s(out, &[a, b, c]);
         }
-        ParamValue::Int3(a, b, c) => {
-            *(out as *mut i32) = *a;
-            *(out as *mut i32).add(1) = *b;
-            *(out as *mut i32).add(2) = *c;
+        ParamType::Rgb => {
+            let Some(ParamValue::Rgb(r, g, b)) = v else { return write_f64s(out, &[0.0; 3]) };
+            write_f64s(out, &[r, g, b]);
         }
-        ParamValue::Bool(v) => { *(out as *mut i32) = if *v { 1 } else { 0 }; }
-        ParamValue::Choice(v) => { *(out as *mut i32) = *v; }
-        ParamValue::Rgba(r, g, b, a) => {
-            *(out as *mut f64) = *r;
-            *(out as *mut f64).add(1) = *g;
-            *(out as *mut f64).add(2) = *b;
-            *(out as *mut f64).add(3) = *a;
+        ParamType::Rgba => {
+            let Some(ParamValue::Rgba(r, g, b, a)) = v else { return write_f64s(out, &[0.0, 0.0, 0.0, 1.0]) };
+            write_f64s(out, &[r, g, b, a]);
         }
-        ParamValue::Rgb(r, g, b) => {
-            *(out as *mut f64) = *r;
-            *(out as *mut f64).add(1) = *g;
-            *(out as *mut f64).add(2) = *b;
+        ParamType::Int | ParamType::Choice | ParamType::Bool => {
+            *(out as *mut i32) = match v {
+                Some(ParamValue::Int(a) | ParamValue::Choice(a)) => a,
+                Some(ParamValue::Bool(a)) => a as i32,
+                _ => 0,
+            };
         }
-        ParamValue::String(_) | ParamValue::None => {
-            // For None, use default
-            let fallback = if matches!(value, ParamValue::None) { &descriptor.default } else { value };
-            match fallback {
-                ParamValue::Double(v) => { *(out as *mut f64) = *v; }
-                ParamValue::Int(v) => { *(out as *mut i32) = *v; }
-                ParamValue::Bool(v) => { *(out as *mut i32) = if *v { 1 } else { 0 }; }
-                ParamValue::Choice(v) => { *(out as *mut i32) = *v; }
-                _ => { *(out as *mut i32) = 0; }
-            }
+        ParamType::Int2 => {
+            let Some(ParamValue::Int2(a, b)) = v else { return write_i32s(out, &[0; 2]) };
+            write_i32s(out, &[a, b]);
         }
+        ParamType::Int3 => {
+            let Some(ParamValue::Int3(a, b, c)) = v else { return write_i32s(out, &[0; 3]) };
+            write_i32s(out, &[a, b, c]);
+        }
+        ParamType::String => {
+            // The plug-in expects a *const c_char that outlives the call,
+            // so the string is kept in the parameter's property set.
+            let s = match v {
+                Some(ParamValue::String(s)) => s,
+                _ => String::new(),
+            };
+            let ptr = crate::property::with_propset(pi.props_handle, |ps| {
+                ps.set_string("_string_cache", 0, &s);
+                ps.get_string("_string_cache", 0).map(|cs| cs.as_ptr())
+            })
+            .flatten();
+            *(out as *mut *const c_char) = ptr.unwrap_or(c"".as_ptr());
+        }
+        // A group, page, button or custom parameter has no value to read.
+        ParamType::Group | ParamType::Page | ParamType::Parametric | ParamType::PushButton | ParamType::Custom => {}
+    }
+}
+
+/// Write `vals` to consecutive doubles at `out`.
+unsafe fn write_f64s(out: *mut c_void, vals: &[f64]) {
+    for (i, v) in vals.iter().enumerate() {
+        *(out as *mut f64).add(i) = *v;
+    }
+}
+
+/// Write `vals` to consecutive 32-bit integers at `out`.
+unsafe fn write_i32s(out: *mut c_void, vals: &[i32]) {
+    for (i, v) in vals.iter().enumerate() {
+        *(out as *mut i32).add(i) = *v;
     }
 }
 
 // ── OfxParameterSuiteV1 implementation ──────────────────────────────
 
-unsafe extern "C" fn param_define_fn(
+pub(crate) unsafe extern "C" fn param_define_fn(
     param_set: OfxParamSetHandle,
     param_type: *const c_char,
     name: *const c_char,
@@ -612,7 +691,7 @@ unsafe extern "C" fn param_get_property_set_fn(
 /// paramGetValue — reads the current value into output pointer(s).
 /// The C signature is variadic but we receive it as a single *mut c_void
 /// pointing to the first output argument. We dispatch based on param type.
-unsafe extern "C" fn param_get_value_fn(handle: OfxParamHandle, out: *mut c_void) -> OfxStatus {
+pub(crate) unsafe extern "C" fn param_get_value_fn(handle: OfxParamHandle, out: *mut c_void) -> OfxStatus {
     ofx_guard!({
     check_non_null!(out);
     let key = handle as usize;
@@ -622,79 +701,7 @@ unsafe extern "C" fn param_get_value_fn(handle: OfxParamHandle, out: *mut c_void
         return K_OFX_STAT_ERR_BAD_HANDLE;
     };
 
-    match &pi.value {
-        ParamValue::Double(v) => {
-            *(out as *mut f64) = *v;
-        }
-        ParamValue::Double2(a, b) => {
-            *(out as *mut f64) = *a;
-            *(out as *mut f64).add(1) = *b;
-        }
-        ParamValue::Double3(a, b, c) => {
-            *(out as *mut f64) = *a;
-            *(out as *mut f64).add(1) = *b;
-            *(out as *mut f64).add(2) = *c;
-        }
-        ParamValue::Int(v) => {
-            *(out as *mut i32) = *v;
-        }
-        ParamValue::Int2(a, b) => {
-            *(out as *mut i32) = *a;
-            *(out as *mut i32).add(1) = *b;
-        }
-        ParamValue::Int3(a, b, c) => {
-            *(out as *mut i32) = *a;
-            *(out as *mut i32).add(1) = *b;
-            *(out as *mut i32).add(2) = *c;
-        }
-        ParamValue::Bool(v) => {
-            *(out as *mut i32) = if *v { 1 } else { 0 };
-        }
-        ParamValue::Choice(v) => {
-            *(out as *mut i32) = *v;
-        }
-        ParamValue::Rgba(r, g, b, a) => {
-            *(out as *mut f64) = *r;
-            *(out as *mut f64).add(1) = *g;
-            *(out as *mut f64).add(2) = *b;
-            *(out as *mut f64).add(3) = *a;
-        }
-        ParamValue::Rgb(r, g, b) => {
-            *(out as *mut f64) = *r;
-            *(out as *mut f64).add(1) = *g;
-            *(out as *mut f64).add(2) = *b;
-        }
-        ParamValue::String(s) => {
-            // Plugin expects a *const c_char pointer
-            // We store a CString in the property set and return its pointer
-            let cstr = std::ffi::CString::new(s.as_str()).unwrap_or_default();
-            crate::property::with_propset(pi.props_handle, |ps| {
-                ps.set_string("_string_cache", 0, s);
-            });
-            // Re-read to get a stable pointer
-            if let Some(ptr) = crate::property::with_propset(pi.props_handle, |ps| {
-                ps.get_string("_string_cache", 0).map(|cs| cs.as_ptr())
-            }).flatten() {
-                *(out as *mut *const c_char) = ptr;
-            }
-            let _ = cstr;
-        }
-        ParamValue::None => {
-            // Value not set — use the descriptor's default
-            let default = &pi.descriptor.default;
-            match default {
-                ParamValue::Double(v) => { *(out as *mut f64) = *v; }
-                ParamValue::Int(v) => { *(out as *mut i32) = *v; }
-                ParamValue::Bool(v) => { *(out as *mut i32) = if *v { 1 } else { 0 }; }
-                ParamValue::Choice(v) => { *(out as *mut i32) = *v; }
-                _ => {
-                    // Last resort: write 0
-                    *(out as *mut i32) = 0;
-                }
-            }
-            return K_OFX_STAT_OK;
-        }
-    }
+    write_param_value(&pi.value, pi, out);
     K_OFX_STAT_OK
     })
 }
@@ -722,7 +729,7 @@ unsafe extern "C" fn param_get_value_at_time_fn(
         pi.value.clone()
     };
 
-    write_param_value(&value, &pi.descriptor, out);
+    write_param_value(&value, pi, out);
     K_OFX_STAT_OK
     })
 }
@@ -1102,12 +1109,19 @@ unsafe extern "C" fn param_copy_fn(
     let Some(dst_pi) = store.get_mut(&dst_key) else {
         return K_OFX_STAT_ERR_BAD_HANDLE;
     };
+    // The two parameters may be of different types; only what the
+    // destination can hold is copied, as its own type (#1017).
+    let ty = dst_pi.descriptor.param_type.clone();
     if src_keyframes.is_empty() {
         // No keyframes — just copy the current value
-        dst_pi.value = src_value;
+        if let Some(v) = src_value.as_declared(&ty) {
+            dst_pi.value = v;
+        }
     } else {
         for kf in src_keyframes {
-            insert_keyframe(&mut dst_pi.keyframes, kf.time, kf.value);
+            if let Some(v) = kf.value.as_declared(&ty) {
+                insert_keyframe(&mut dst_pi.keyframes, kf.time, v);
+            }
         }
     }
     K_OFX_STAT_OK
