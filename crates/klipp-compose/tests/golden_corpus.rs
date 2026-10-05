@@ -602,6 +602,8 @@ fn transition_cases() -> Vec<Case> {
     let f = Frames::default().with(&source, 40).with(&a, 0).with(&b, 160);
     let mut case = Case::new("transition/wipe out of a matted clip", sequence(vec![track("Matte", TrackKind::Video, vec![source]), t]), f);
     case.times = vec![1.75, 2.2];
+    // The GPU stack leaves a matte inside a transition to the CPU.
+    case.declines = Some(vec![Path::Stack, Path::Export]);
     out.push(case);
     out
 }
@@ -684,7 +686,10 @@ fn camera_cases() -> Vec<Case> {
     seq.camera.x_keyframes = vec![key(0.0, 0.45), key(2.0, 0.55)];
     seq.camera.shutter_deg = 180.0;
     seq.camera.shutter_samples = 8;
-    vec![Case::new("camera/shutter over a moving camera, effects around the transform", seq, f)]
+    let mut case = Case::new("camera/shutter over a moving camera, effects around the transform", seq, f);
+    // The GPU stack leaves the camera's shutter to the CPU.
+    case.declines = Some(vec![Path::Stack, Path::Export]);
+    vec![case]
 }
 
 /// A moving card that is a shape title with its own motion blur (#1025,
@@ -718,7 +723,10 @@ fn title_blur_cases() -> Vec<Case> {
         if camera {
             seq.camera.x_keyframes = vec![key(0.0, 0.45), key(2.0, 0.55)];
         }
-        out.push(Case::new(format!("title blur/{name}"), seq, f));
+        let mut case = Case::new(format!("title blur/{name}"), seq, f);
+        // The GPU stack leaves a title's own blur to the CPU.
+        case.declines = Some(vec![Path::Stack, Path::Export]);
+        out.push(case);
     }
     // Drawn after a precomposition: the scene's render must leave the
     // card's shutter alone.
@@ -728,6 +736,7 @@ fn title_blur_cases() -> Vec<Case> {
     let f = Frames::default().with(&scene_clip, 90);
     let mut case = Case::new("title blur/after a precomposition", sequence(vec![track("T1", TrackKind::Text, vec![card(false)]), track("V1", TrackKind::Video, vec![pre])]), f);
     case.project.push(scene);
+    case.declines = Some(vec![Path::Stack, Path::Export]);
     out.push(case);
     out
 }
