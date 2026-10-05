@@ -83,7 +83,8 @@ pub enum ParamKind {
     /// On or off.
     Bool,
     /// One of a fixed set, in the order the code numbers them. The
-    /// default is the index.
+    /// default is the index. Saved either by name (an enum) or by its
+    /// index (a `u32` the code matches on).
     Choice(&'static [&'static str]),
     /// An authored colour, sRGB bytes.
     Colour,
@@ -115,11 +116,30 @@ pub enum Unit {
     None,
 }
 
+/// What converts a pixel-sized parameter to the size a frame is rendered
+/// at. A parameter's [`Unit`] says what its number means; this says who
+/// makes it mean the same at every render size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scaling {
+    /// Nothing: the number is the same at every size.
+    None,
+    /// The effect itself, through [`BuiltinEffect::at_render_scale`].
+    AtRenderScale,
+    /// The compositor, which resolves the clip's placement in the
+    /// sequence's pixels and converts the offset to the rendered frame's
+    /// (`klipp_compose::render::to_render_pixels`).
+    Placement,
+}
+
 /// One parameter of a node type.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ParamDesc {
     /// The field's name in the saved effect (its serde name).
     pub field: &'static str,
+    /// Which element of the field, when the field is an array that is
+    /// keyframed element by element (a corner pin's corners are saved as
+    /// `[x, y]` and keyed `tl_x`, `tl_y`). `None` for a plain field.
+    pub index: Option<usize>,
     /// The name its keyframes are stored under. The same as `field`
     /// except where history says otherwise (chroma key's soft edge is
     /// keyed `"spill"`).
@@ -133,9 +153,16 @@ pub struct ParamDesc {
     /// The values the effect accepts. `None` where it accepts any number
     /// and the computation clamps (or does not need to).
     pub range: Option<(f32, f32)>,
-    /// The inspector slider's range: where the useful values are.
+    /// The inspector slider's range: where the useful values are. The
+    /// default may lie outside it when the reset value is a marker (a
+    /// transform's perspective resets to 0, "unset", read as 1); the
+    /// module describing such a parameter says so.
     pub soft: Option<(f32, f32)>,
     pub unit: Unit,
+    /// Who converts it to the rendered size. Every [`Unit::CanvasPx`]
+    /// parameter names one; [`Scaling::AtRenderScale`] must agree with
+    /// [`BuiltinEffect::at_render_scale`].
+    pub scaling: Scaling,
     /// Whether it can be keyframed. Must agree with
     /// [`BuiltinEffect::animate`].
     pub keyframable: bool,
@@ -150,6 +177,7 @@ impl ParamDesc {
     pub const fn float(field: &'static str, label: &'static str, default: f32, soft: (f32, f32), unit: Unit) -> Self {
         ParamDesc {
             field,
+            index: None,
             key: field,
             label,
             kind: ParamKind::Float,
@@ -157,9 +185,24 @@ impl ParamDesc {
             range: None,
             soft: Some(soft),
             unit,
+            scaling: if matches!(unit, Unit::CanvasPx) { Scaling::AtRenderScale } else { Scaling::None },
             keyframable: true,
             derived: false,
         }
+    }
+
+    /// The same parameter as one element of an array field, keyframed
+    /// under `key`.
+    pub const fn element(mut self, index: usize, key: &'static str) -> Self {
+        self.index = Some(index);
+        self.key = key;
+        self
+    }
+
+    /// The same parameter, converted to the rendered size by `scaling`.
+    pub const fn scaled_by(mut self, scaling: Scaling) -> Self {
+        self.scaling = scaling;
+        self
     }
 
     /// The same parameter with values outside `range` refused.

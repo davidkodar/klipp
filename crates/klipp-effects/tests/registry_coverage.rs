@@ -8,8 +8,9 @@
 //!   must be exactly the described parameters;
 //! * every default, inside its ranges, and equal to the sample's value;
 //! * the keyframable parameters, against [`BuiltinEffect::animate`];
-//! * the pixel-sized parameters, against
-//!   [`BuiltinEffect::at_render_scale`];
+//! * the parameters the effect scales to the render size, against
+//!   [`BuiltinEffect::at_render_scale`], and every pixel-sized
+//!   parameter naming who scales it;
 //! * whether it draws outside the picture, against
 //!   [`klipp_effects::draws_outside_the_picture`].
 //!
@@ -19,7 +20,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use klipp_effects::registry::{effect_types, EffectType, ParamKind, Unit};
+use klipp_effects::registry::{effect_types, EffectType, ParamDesc, ParamKind, Scaling, Unit};
 use klipp_effects::BuiltinEffect;
 use serde_json::Value;
 
@@ -114,6 +115,15 @@ fn ids_and_tags_are_unique() {
     }
 }
 
+/// The saved value a parameter describes: the field, or one element of it.
+fn value_of<'a>(fields: &'a BTreeMap<String, Value>, p: &ParamDesc) -> &'a Value {
+    let v = &fields[p.field];
+    match p.index {
+        None => v,
+        Some(i) => v.get(i).unwrap_or_else(|| panic!("{}[{i}]: no such element", p.field)),
+    }
+}
+
 #[test]
 fn the_sample_is_saved_under_the_tag_with_exactly_the_described_fields() {
     for t in effect_types() {
@@ -123,9 +133,18 @@ fn the_sample_is_saved_under_the_tag_with_exactly_the_described_fields() {
         // A field the compositor writes every frame is not saved.
         let described: BTreeSet<&str> = t.desc.params.iter().filter(|p| !p.derived).map(|p| p.field).collect();
         assert_eq!(saved_fields, described, "{}: saved fields and described parameters differ", t.desc.id);
+        // Each field is described once, or once per element, never both.
         let mut seen = BTreeSet::new();
         for p in t.desc.params {
-            assert!(seen.insert(p.field), "{}: {} is described twice", t.desc.id, p.field);
+            assert!(seen.insert((p.field, p.index)), "{}: {}{:?} is described twice", t.desc.id, p.field, p.index);
+        }
+        for p in t.desc.params.iter().filter(|p| p.index.is_some()) {
+            assert!(!seen.contains(&(p.field, None)), "{}: {} is described both whole and by element", t.desc.id, p.field);
+            if !p.derived {
+                let len = fields[p.field].as_array().map_or(0, Vec::len);
+                let elements = t.desc.params.iter().filter(|q| q.field == p.field).count();
+                assert_eq!(elements, len, "{}: {} has {len} elements, {elements} described", t.desc.id, p.field);
+            }
         }
     }
 }
@@ -144,24 +163,28 @@ fn defaults_are_the_samples_values_and_inside_their_ranges() {
                     if let Some((lo, hi)) = p.range {
                         assert!(lo <= p.default && p.default <= hi, "{at}: default {} outside {lo}..{hi}", p.default);
                     }
-                    if let Some((lo, hi)) = p.soft {
-                        assert!(lo <= p.default && p.default <= hi, "{at}: default {} outside the slider {lo}..{hi}", p.default);
-                    }
+                    // The slider's range is the inspector's hint, and a reset can
+                    // sit outside it (a transform's perspective resets to 0,
+                    // "unset", read as 1); the accepted range above cannot.
                     if p.derived {
                         continue;
                     }
-                    let v = fields[p.field].as_f64().unwrap_or_else(|| panic!("{at}: not a number"));
+                    let v = value_of(&fields, p).as_f64().unwrap_or_else(|| panic!("{at}: not a number"));
                     assert!((v as f32 - p.default).abs() < 1e-6, "{at}: default {} but the sample has {v}", p.default);
                 }
                 ParamKind::Bool => {
-                    let v = fields[p.field].as_bool().unwrap_or_else(|| panic!("{at}: not a bool"));
+                    let v = value_of(&fields, p).as_bool().unwrap_or_else(|| panic!("{at}: not a bool"));
                     assert_eq!(v, p.default != 0.0, "{at}: default and sample differ");
                 }
                 ParamKind::Choice(names) => {
                     let i = p.default as usize;
                     assert!(i < names.len(), "{at}: default index {i} has no choice");
-                    let v = fields[p.field].as_str().unwrap_or_else(|| panic!("{at}: not a choice"));
-                    assert!(v.eq_ignore_ascii_case(names[i]), "{at}: default {:?} but the sample has {v:?}", names[i]);
+                    // Saved by name (an enum) or by index (a u32).
+                    match value_of(&fields, p) {
+                        Value::String(v) => assert!(v.eq_ignore_ascii_case(names[i]), "{at}: default {:?} but the sample has {v:?}", names[i]),
+                        Value::Number(n) => assert_eq!(n.as_u64(), Some(i as u64), "{at}: default index {i} but the sample has {n}"),
+                        other => panic!("{at}: a choice saved as {other}"),
+                    }
                 }
                 ParamKind::Colour | ParamKind::Other => {
                     assert!(p.default.is_nan(), "{at}: a colour or other value has no single default number");
@@ -185,33 +208,73 @@ fn keyframable_parameters_are_the_ones_the_render_animates() {
     }
 }
 
-/// The sample with every number set to a distinct non-zero value, so a
-/// parameter scaled from zero cannot hide.
+/// The sample with every number, array elements included, set to a
+/// distinct non-zero value, so a parameter scaled from zero cannot hide.
 fn probe(t: &EffectType) -> BuiltinEffect {
     let mut v = serde_json::to_value((t.sample)()).unwrap();
     let Value::Object(map) = &mut v else { unreachable!() };
-    for (i, (k, val)) in map.iter_mut().enumerate() {
+    let mut n = 0u64;
+    let mut fresh = |val: &mut Value| {
+        n += 1;
+        if val.is_u64() {
+            *val = Value::from(2 + n);
+        } else if val.is_f64() {
+            *val = Value::from(0.375 + n as f64);
+        }
+    };
+    for (k, val) in map.iter_mut() {
         if k == "type" {
             continue;
         }
-        if val.is_u64() {
-            *val = Value::from(3 + i as u64);
-        } else if val.is_f64() {
-            *val = Value::from(0.375 + i as f64);
+        match val {
+            Value::Array(items) if items.iter().all(Value::is_f64) => items.iter_mut().for_each(&mut fresh),
+            other => fresh(other),
         }
     }
     serde_json::from_value(v).expect("the probe deserialises")
 }
 
+/// The (field, element) places whose saved values differ between two
+/// saved forms.
+fn changed(a: &BTreeMap<String, Value>, b: &BTreeMap<String, Value>) -> BTreeSet<(String, Option<usize>)> {
+    let mut out = BTreeSet::new();
+    for (k, va) in a {
+        let vb = &b[k];
+        match (va, vb) {
+            (Value::Array(xa), Value::Array(xb)) if xa.len() == xb.len() => {
+                out.extend(xa.iter().zip(xb).enumerate().filter(|(_, (x, y))| x != y).map(|(i, _)| (k.clone(), Some(i))));
+            }
+            _ if va != vb => {
+                out.insert((k.clone(), None));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 #[test]
-fn pixel_sized_parameters_are_the_ones_the_render_scales() {
+fn parameters_scaled_by_the_effect_are_the_ones_at_render_scale_scales() {
     for t in effect_types() {
         let before = probe(t);
         let (_, a) = saved(&before);
         let (_, b) = saved(&before.clone().at_render_scale(2.0));
-        let scaled: BTreeSet<&str> = a.iter().filter(|(k, v)| b.get(*k) != Some(*v)).map(|(k, _)| k.as_str()).collect();
-        let described: BTreeSet<&str> = t.desc.params.iter().filter(|p| p.unit == Unit::CanvasPx).map(|p| p.field).collect();
-        assert_eq!(described, scaled, "{}: CanvasPx parameters differ from what at_render_scale scales", t.desc.id);
+        let described: BTreeSet<(String, Option<usize>)> =
+            t.desc.params.iter().filter(|p| p.scaling == Scaling::AtRenderScale).map(|p| (p.field.to_string(), p.index)).collect();
+        assert_eq!(described, changed(&a, &b), "{}: AtRenderScale parameters differ from what at_render_scale scales", t.desc.id);
+    }
+}
+
+#[test]
+fn every_pixel_sized_parameter_names_who_scales_it() {
+    for t in effect_types() {
+        for p in t.desc.params {
+            let at = format!("{}.{}", t.desc.id, p.key);
+            match p.unit {
+                Unit::CanvasPx => assert_ne!(p.scaling, Scaling::None, "{at}: canvas pixels that nothing scales"),
+                _ => assert_eq!(p.scaling, Scaling::None, "{at}: scaled, but not measured in canvas pixels"),
+            }
+        }
     }
 }
 
