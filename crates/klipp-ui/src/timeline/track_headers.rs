@@ -207,6 +207,17 @@ pub fn show(
                 egui::FontId::proportional(10.0),
                 theme.text_secondary,
             );
+            // ⇄ after the name when the track is sync-locked (#915).
+            if track.sync_lock {
+                let name_w = ui.painter().layout_no_wrap(track.name.clone(), egui::FontId::proportional(10.0), theme.text_secondary).rect.width();
+                ui.painter().text(
+                    egui::pos2(name_x + name_w + 4.0, track_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    "\u{21C4}",
+                    egui::FontId::proportional(10.0),
+                    theme.accent,
+                );
+            }
         }
 
         // Magnetic role badge (small pill after track name)
@@ -571,6 +582,17 @@ pub fn show(
 
             ui.separator();
             crate::panels::timeline::track_attribute_items(ui, state, track_idx, &mut cmds);
+            ui.separator();
+
+            // Sync lock (#915): a ripple on another track moves this one too.
+            let sync_on = state.sequence().tracks[track_idx].sync_lock;
+            if ui.button(if sync_on { "\u{2714} Sync Lock" } else { "    Sync Lock" })
+                .on_hover_text("On: a ripple on another track moves this track's clips by the same amount, keeping them in sync")
+                .clicked()
+            {
+                cmds.push(AppCommand::SetTrackSyncLock { track_id, on: !sync_on });
+                ui.close_menu();
+            }
             ui.separator();
 
             // Remove track

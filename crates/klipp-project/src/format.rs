@@ -186,6 +186,9 @@ pub struct TrackJson {
     pub pan: f32,
     #[serde(default)]
     pub locked: bool,
+    /// Sync lock (#915).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sync_lock: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_height: Option<f32>,
     /// Per-track automation lane state. `None` = collapsed, `Some(param)`
@@ -1159,6 +1162,7 @@ mod tests {
                 visible: true,
                 pan: 0.0,
                 locked: false,
+                sync_lock: false,
                 custom_height: None,
                 automation_lane_visible: Some(label.to_string()),
                 automation_lane_height: None,
@@ -1203,6 +1207,7 @@ mod tests {
             visible: true,
             pan: 0.0,
             locked: false,
+            sync_lock: false,
             custom_height: None,
             automation_lane_visible: None,
             automation_lane_height: None,
@@ -1234,6 +1239,7 @@ mod tests {
             visible: true,
             pan: 0.0,
             locked: false,
+            sync_lock: false,
             custom_height: None,
             automation_lane_visible: Some("Volume".to_string()),
             automation_lane_height: Some(180.0),

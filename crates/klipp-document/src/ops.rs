@@ -2776,7 +2776,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 }
             }
             let (main, mut ids) = take(ti, ci, clip);
-            let (edit, with) = match partner {
+            let (mut edit, mut with) = match partner {
                 Some((pti, _, _)) if seq.tracks[pti].locked => (main, format!(", its linked clip left on locked track {pti}")),
                 Some((pti, pci, p)) => {
                     let (pe, pids) = take(pti, pci, p);
@@ -2785,6 +2785,16 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 }
                 None => (main, String::new()),
             };
+            // Sync-locked tracks close up with it (#915).
+            if *ripple {
+                let mut skip = vec![ti];
+                skip.extend(partner.map(|(pti, _, _)| pti));
+                let shifts = sync_lock_shifts(seq, i, &skip, clip.timeline_out, clip.timeline_in - clip.timeline_out)?;
+                if !shifts.is_empty() {
+                    with = format!("{with}, {} sync-locked track(s) with it", shifts.len());
+                    edit = EditCommand::Batch(std::iter::once(edit).chain(shifts).collect());
+                }
+            }
             let what = if *ripple {
                 let moved = ids.len();
                 format!("remove {} ({:.2}-{:.2} s){with} and close the gap: {moved} clips move {:.2} s earlier", name, secs(clip.timeline_in), secs(clip.timeline_out), secs(clip.timeline_out - clip.timeline_in))
@@ -3617,6 +3627,75 @@ pub fn trim_at(seq: &Sequence, pool: &MediaPool, clip_id: ClipId, edge: Edge, ta
 
 #[allow(clippy::too_many_arguments)]
 fn resolve_trim(seq: &Sequence, pool: &MediaPool, i: usize, clip_id: ClipId, edge: Edge, target: Timecode, ripple: bool, linked: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let (what, edit, ids) = resolve_trim_pair(seq, pool, i, clip_id, edge, target, ripple, linked)?;
+    if !ripple {
+        return Ok((what, edit, ids));
+    }
+    // A ripple moves what follows on the clip's track and its partner's;
+    // sync-locked tracks follow by the same amount (#915).
+    let (ti, _, clip) = resolve_clip(seq, seq.fps, &ClipRef::Id(clip_id), i)?;
+    let delta = match edge { Edge::Out => target - clip.timeline_out, Edge::In => clip.timeline_in - target };
+    let mut skip = vec![ti];
+    if let Some((pti, _, _)) = clip.linked_clip_id.filter(|_| linked).and_then(|lid| find_clip(seq, lid)) {
+        skip.push(pti);
+    }
+    let shifts = sync_lock_shifts(seq, i, &skip, clip.timeline_out, delta)?;
+    if shifts.is_empty() {
+        return Ok((what, edit, ids));
+    }
+    let n = shifts.len();
+    Ok((format!("{what}; {n} sync-locked track(s) follow"), EditCommand::Batch(std::iter::once(edit).chain(shifts).collect()), ids))
+}
+
+/// The clips of every sync-locked track not in `skip`, from `point` on,
+/// moved by `delta`, as one record per track (#915): a ripple on one
+/// track kept the others where they were, so what sat above or below a
+/// trimmed or removed clip drifted out of sync with it. Locked tracks
+/// stay. Refused when closing up would run a moved clip into one that
+/// stays, a clip across the edit.
+fn sync_lock_shifts(seq: &Sequence, i: usize, skip: &[usize], point: Timecode, delta: Timecode) -> Result<Vec<EditCommand>, Refusal> {
+    if delta.value == 0 {
+        return Ok(Vec::new());
+    }
+    let mut edits = Vec::new();
+    for (ti, track) in seq.tracks.iter().enumerate() {
+        if skip.contains(&ti) || !track.sync_lock || track.locked {
+            continue;
+        }
+        let mut clips = track.clips.clone();
+        let mut moved = false;
+        for c in clips.iter_mut().filter(|c| c.timeline_in >= point) {
+            c.timeline_in += delta;
+            c.timeline_out += delta;
+            moved = true;
+        }
+        if !moved {
+            continue;
+        }
+        let stays_until = track.clips.iter().filter(|c| c.timeline_in < point).map(|c| c.timeline_out).max();
+        let first_moved = clips.iter().filter(|c| c.timeline_in >= point + delta).map(|c| c.timeline_in).min();
+        if let (Some(end), Some(start)) = (stays_until, first_moved) {
+            if start < end {
+                return Err(refuse(
+                    i,
+                    format!("\"{}\" is sync-locked, and a clip on it runs across the edit, so what follows cannot close up", track.name),
+                    "turn that track's sync lock off, or make room on it first",
+                ));
+            }
+        }
+        edits.push(EditCommand::SetTrackContents {
+            description: "Sync Lock",
+            track_index: ti,
+            old: Box::new(crate::history::TrackContents::of(track)),
+            new: Box::new(crate::history::TrackContents { clips, transitions: track.transitions.clone() }),
+        });
+    }
+    Ok(edits)
+}
+
+/// A trim of one clip and, when `linked`, its partner by the same amount.
+#[allow(clippy::too_many_arguments)]
+fn resolve_trim_pair(seq: &Sequence, pool: &MediaPool, i: usize, clip_id: ClipId, edge: Edge, target: Timecode, ripple: bool, linked: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let (ti, ci, clip) = resolve_clip(seq, seq.fps, &ClipRef::Id(clip_id), i)?;
     let fps = seq.fps;
     let (what, edit, mut ids) = trim_clip(seq, pool, fps, i, ti, ci, clip, edge, target, ripple)?;
@@ -10869,3 +10948,75 @@ mod still_placement_tests {
         assert!(resolve(&seq, &pool, &[place(0.0, Some(20.0))]).is_err(), "moving footage still has a source end");
     }
 }
+
+#[cfg(test)]
+mod sync_lock_tests {
+    use super::*;
+    use klipp_core::RationalTime;
+    use klipp_timeline::Track;
+
+    fn tc(s: f64) -> Timecode {
+        RationalTime::from_secs_f64(s, 25)
+    }
+
+    /// V1: two clips cut at 4 s. V2, sync-locked: a clip at 6-7 s, and
+    /// optionally one across the cut at 3-5 s.
+    fn seq(across: bool) -> (Sequence, MediaPool, ClipId) {
+        let mut seq = Sequence::new_default();
+        seq.fps = Fps::new(25, 1);
+        let mut pool = MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/sync-lock.mov".into(), None);
+        item.duration = tc(60.0);
+        let m = pool.add(item);
+        let mut v1 = Track::new("V1", TrackKind::Video);
+        v1.clips = vec![Clip::media(m, tc(0.0), tc(4.0), tc(10.0), tc(14.0)), Clip::media(m, tc(4.0), tc(8.0), tc(20.0), tc(24.0))];
+        let mut v2 = Track::new("V2", TrackKind::Video);
+        v2.sync_lock = true;
+        if across {
+            v2.clips.push(Clip::media(m, tc(3.0), tc(5.0), tc(30.0), tc(32.0)));
+        }
+        v2.clips.push(Clip::media(m, tc(6.0), tc(7.0), tc(40.0), tc(41.0)));
+        let first = v1.clips[0].id;
+        seq.tracks = vec![v1, v2];
+        (seq, pool, first)
+    }
+
+    fn apply(seq: &Sequence, pool: &MediaPool, plan: &Plan) -> Sequence {
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        for step in &plan.steps {
+            view.apply_forward(&step.edit);
+        }
+        seqs.remove(0)
+    }
+
+    #[test]
+    fn a_ripple_trim_moves_a_sync_locked_track_with_it() {
+        let (seq, pool, first) = seq(false);
+        let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(first), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: true, linked: true }]).unwrap();
+        assert!(plan.steps[0].what.contains("sync-locked"), "{}", plan.steps[0].what);
+        let after = apply(&seq, &pool, &plan);
+        assert_eq!(after.tracks[1].clips[0].timeline_in, tc(5.0), "V2's clip after the cut moved a second earlier with it");
+        let mut unlocked = seq.clone();
+        unlocked.tracks[1].sync_lock = false;
+        let plan = resolve(&unlocked, &pool, &[Op::Trim { clip_id: ClipRef::Id(first), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: true, linked: true }]).unwrap();
+        assert_eq!(apply(&unlocked, &pool, &plan).tracks[1].clips[0].timeline_in, tc(6.0), "without sync lock it stays");
+    }
+
+    #[test]
+    fn a_ripple_remove_closes_a_sync_locked_track_up_too() {
+        let (seq, pool, first) = seq(false);
+        let plan = resolve(&seq, &pool, &[Op::Remove { clip_id: ClipRef::Id(first), ripple: true, linked: true }]).unwrap();
+        assert_eq!(apply(&seq, &pool, &plan).tracks[1].clips[0].timeline_in, tc(2.0));
+    }
+
+    #[test]
+    fn closing_up_across_a_clip_on_a_sync_locked_track_is_refused() {
+        let (seq, pool, first) = seq(true);
+        let refusal = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(first), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: true, linked: true }]).unwrap_err();
+        assert!(refusal.why.contains("sync-locked"), "{}", refusal.why);
+    }
+}
+

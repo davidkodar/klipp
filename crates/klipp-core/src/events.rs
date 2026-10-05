@@ -2459,6 +2459,9 @@ pub enum AppCommand {
     AddTrackBelow { track_index: usize },
     RemoveTrack { track_id: TrackId },
     RenameTrack { track_id: TrackId, name: String },
+    /// A track's sync lock on or off (#915): on, a ripple on another track
+    /// moves its clips too.
+    SetTrackSyncLock { track_id: TrackId, on: bool },
     /// Keep the track's levels and own effects to paste onto others
     /// (Copy Track Attributes, #846).
     CopyTrackAttributes { track_id: TrackId },

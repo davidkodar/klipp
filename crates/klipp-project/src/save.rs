@@ -306,6 +306,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                 visible: t.visible,
                 pan: t.pan,
                 locked: t.locked,
+                sync_lock: t.sync_lock,
                 custom_height: t.custom_height,
                 automation_lane_visible: t.automation_lane_visible.map(|p| match p {
                     klipp_core::AudioParam::Volume => "Volume".to_string(),

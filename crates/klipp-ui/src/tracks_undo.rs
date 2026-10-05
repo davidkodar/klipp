@@ -36,6 +36,8 @@ pub fn label(cmd: &AppCommand) -> Option<&'static str> {
         AppCommand::SetTrackLocked { locked: true, .. } => "Lock Track",
         AppCommand::SetTrackLocked { .. } => "Unlock Track",
         AppCommand::RenameTrack { .. } => "Rename Track",
+        AppCommand::SetTrackSyncLock { on: true, .. } => "Sync Lock Track",
+        AppCommand::SetTrackSyncLock { .. } => "Sync Unlock Track",
         AppCommand::AddVideoTrack
         | AppCommand::AddAudioTrack
         | AppCommand::AddSubtitleTrack { .. }
@@ -293,6 +295,7 @@ mod tests {
             AppCommand::UnlinkClip { clip_id: id },
             AppCommand::AddVideoTrack,
             AppCommand::AddAudioTrack,
+            AppCommand::SetTrackSyncLock { track_id: klipp_core::TrackId::new(), on: true },
         ] {
             assert!(label(&cmd).is_some(), "{cmd:?}");
         }
