@@ -1,0 +1,323 @@
+//! Film, generator, key, temporal and plug-in effects (#1008).
+//!
+//! Defaults are what resetting the effect gives (the inspector's
+//! `builtin_effect_default`); soft ranges are the inspector sliders', or,
+//! where the inspector draws no slider (stabilisation), the ranges the
+//! fields' own documentation gives.
+//!
+//! Some fields are written by the compositor every frame but are still
+//! saved: the grain, old-film, VHS and noise `seed` (the frame number)
+//! and deflicker's `gain` (from the clip's analysis). They are described
+//! as saved, fixed parameters; nothing a user sets.
+//!
+//! Where two places disagree, the description follows the reset and says
+//! so:
+//!
+//! * a speed ramp's `freeze_at` resets to 0, but its slider's double-click
+//!   reset is 0.5;
+//! * grain `size` is measured per 1080-line frame (the effect scales it
+//!   internally), so `at_render_scale` rightly leaves it alone.
+//!
+//! The temporal ones read other times in one of two ways: temporal noise
+//! reduction and a speed ramp's frame blending read neighbouring source
+//! frames; deflicker, stabilisation and rolling-shutter correction read
+//! per-frame results of an analysis of the clip.
+
+use super::{
+    Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling, Spatial, Temporal, Unit,
+    IMAGE_IN, IMAGE_OUT,
+};
+use crate::{BuiltinEffect, SpillMethod};
+
+#[allow(clippy::too_many_arguments)]
+const fn effect(
+    id: &'static str,
+    name: &'static str,
+    category: Category,
+    params: &'static [ParamDesc],
+    domain: ColourDomain,
+    spatial: Spatial,
+    temporal: Temporal,
+    gpu: bool,
+) -> NodeTypeDesc {
+    NodeTypeDesc {
+        id,
+        name,
+        category,
+        inputs: IMAGE_IN,
+        outputs: IMAGE_OUT,
+        params,
+        domain,
+        alpha: Alpha::Straight,
+        spatial,
+        temporal,
+        draws_outside: false,
+        gpu,
+        cpu: true,
+    }
+}
+
+/// A value that is not a single number: a colour, a path, a list.
+const fn other(field: &'static str, label: &'static str, kind: ParamKind) -> ParamDesc {
+    ParamDesc {
+        field,
+        index: None,
+        key: field,
+        label,
+        kind,
+        default: f32::NAN,
+        range: None,
+        soft: None,
+        unit: Unit::None,
+        scaling: Scaling::None,
+        keyframable: false,
+        derived: false,
+    }
+}
+
+/// One of a fixed set, saved as its index (a `u32`) or its name.
+const fn choice(field: &'static str, label: &'static str, default: f32, names: &'static [&'static str]) -> ParamDesc {
+    ParamDesc { kind: ParamKind::Choice(names), soft: None, ..ParamDesc::float(field, label, default, (0.0, 1.0), Unit::None).fixed() }
+}
+
+/// An on or off switch.
+const fn switch(field: &'static str, label: &'static str, on: bool) -> ParamDesc {
+    ParamDesc {
+        kind: ParamKind::Bool,
+        soft: None,
+        ..ParamDesc::float(field, label, if on { 1.0 } else { 0.0 }, (0.0, 1.0), Unit::None).fixed()
+    }
+}
+
+/// A pattern seed the compositor sets to the frame number each frame.
+const fn seed() -> ParamDesc {
+    ParamDesc { kind: ParamKind::Whole, soft: None, ..ParamDesc::float("seed", "Seed", 0.0, (0.0, 1.0), Unit::Count).fixed() }
+}
+
+const UNIT: (f32, f32) = (0.0, 1.0);
+
+pub(super) static TYPES: &[EffectType] = &[
+    EffectType {
+        desc: effect(
+            "klipp.fx.film_grain",
+            "Film Grain",
+            Category::FilmTemporal,
+            &[
+                ParamDesc::float("amount", "Amount", 0.3, UNIT, Unit::Ratio),
+                ParamDesc::float("size", "Size", 1.5, (0.5, 6.0), Unit::Per1080),
+                choice("color", "Colour", 0.0, &["mono", "colour"]),
+                ParamDesc::float("shadows", "Shadows", 0.6, UNIT, Unit::Ratio),
+                seed(),
+            ],
+            ColourDomain::Linear,
+            Spatial::PerPixel,
+            Temporal::None,
+            true,
+        ),
+        tag: "film_grain",
+        sample: || BuiltinEffect::FilmGrain { amount: 0.3, size: 1.5, color: 0, shadows: 0.6, seed: 0 },
+    },
+    EffectType {
+        desc: effect(
+            "klipp.fx.old_film",
+            "Old Film",
+            Category::FilmTemporal,
+            &[
+                ParamDesc::float("flicker", "Flicker", 0.4, UNIT, Unit::Ratio),
+                ParamDesc::float("scratches", "Scratches", 0.5, UNIT, Unit::Ratio),
+                ParamDesc::float("dust", "Dust", 0.5, UNIT, Unit::Ratio),
+                ParamDesc::float("weave", "Weave", 0.5, UNIT, Unit::Ratio),
+                ParamDesc::float("sepia", "Sepia", 0.6, UNIT, Unit::Ratio),
+                seed(),
+            ],
+            ColourDomain::Linear,
+            Spatial::Geometric,
+            Temporal::None,
+            true,
+        ),
+        tag: "old_film",
+        sample: || BuiltinEffect::OldFilm { flicker: 0.4, scratches: 0.5, dust: 0.5, weave: 0.5, sepia: 0.6, seed: 0 },
+    },
+    EffectType {
+        desc: effect(
+            "klipp.fx.vhs",
+            "VHS",
+            Category::FilmTemporal,
+            &[
+                ParamDesc::float("tracking", "Tracking", 0.5, UNIT, Unit::Ratio),
+                ParamDesc::float("bleed", "Bleed", 0.5, UNIT, Unit::Ratio),
+                ParamDesc::float("noise", "Noise", 0.4, UNIT, Unit::Ratio),
+                ParamDesc::float("scanlines", "Scanlines", 0.5, UNIT, Unit::Ratio),
+                seed(),
+            ],
+            ColourDomain::Linear,
+            Spatial::Neighbourhood,
+            Temporal::None,
+            true,
+        ),
+        tag: "vhs",
+        sample: || BuiltinEffect::Vhs { tracking: 0.5, bleed: 0.5, noise: 0.4, scanlines: 0.5, seed: 0 },
+    },
+    EffectType {
+        desc: effect(
+            "klipp.fx.noise_generator",
+            "Noise",
+            Category::FilmTemporal,
+            &[ParamDesc::float("amount", "Amount", 0.1, UNIT, Unit::Ratio), choice("monochrome", "Monochrome", 0.0, &["colour", "grey"]), seed()],
+            ColourDomain::Linear,
+            Spatial::PerPixel,
+            Temporal::None,
+            true,
+        ),
+        tag: "noise_generator",
+        sample: || BuiltinEffect::NoiseGenerator { amount: 0.1, monochrome: 0, seed: 0 },
+    },
+    EffectType {
+        desc: effect(
+            "klipp.fx.chroma_key",
+            "Chroma Key",
+            Category::Key,
+            &[
+                other("key_color", "Key Colour", ParamKind::Colour),
+                ParamDesc::float("tolerance", "Tolerance", 0.2, UNIT, Unit::Ratio),
+                // Keyed "spill" since before it was renamed from
+                // spill_suppression: the key never followed.
+                ParamDesc { key: "spill", ..ParamDesc::float("soft_edge", "Soft Edge", 0.1, UNIT, Unit::Ratio) },
+                choice("spill_method", "Spill", 1.0, &["none", "channel_clamp", "hawk"]),
+                ParamDesc::float("spill_strength", "Spill Strength", 0.6, UNIT, Unit::Ratio),
+            ],
+            ColourDomain::DisplayEncoded,
+            Spatial::PerPixel,
+            Temporal::None,
+            true,
+        ),
+        tag: "chroma_key",
+        sample: || BuiltinEffect::ChromaKey {
+            key_color: [0, 255, 0],
+            tolerance: 0.2,
+            soft_edge: 0.1,
+            spill_method: SpillMethod::ChannelClamp,
+            spill_strength: 0.6,
+        },
+    },
+    EffectType {
+        desc: effect(
+            "klipp.fx.rolling_shutter_correction",
+            "Rolling Shutter Correction",
+            Category::FilmTemporal,
+            &[
+                ParamDesc::float("strength", "Strength", 0.5, UNIT, Unit::Ratio),
+                ParamDesc::float("readout_ratio", "Readout", 0.5, UNIT, Unit::Ratio),
+            ],
+            ColourDomain::Linear,
+            Spatial::Geometric,
+            Temporal::AnalysisDriven,
+            true,
+        ),
+        tag: "rolling_shutter_correction",
+        sample: || BuiltinEffect::RollingShutterCorrection { strength: 0.5, readout_ratio: 0.5 },
+    },
+    EffectType {
+        desc: effect(
+            "klipp.fx.temporal_denoise",
+            "Temporal Noise Reduction",
+            Category::FilmTemporal,
+            &[
+                ParamDesc::float("strength", "Strength", 0.5, UNIT, Unit::Ratio),
+                ParamDesc::float("threshold", "Threshold", 0.02, (0.001, 0.2), Unit::Ratio),
+            ],
+            ColourDomain::Linear,
+            Spatial::PerPixel,
+            Temporal::SourceNeighbours,
+            // The GPU paths hand a clip with it to the CPU (#996).
+            false,
+        ),
+        tag: "temporal_denoise",
+        sample: || BuiltinEffect::TemporalDenoise { strength: 0.5, threshold: 0.02 },
+    },
+    EffectType {
+        desc: effect(
+            "klipp.fx.deflicker",
+            "Deflicker",
+            Category::FilmTemporal,
+            &[
+                ParamDesc::float("strength", "Strength", 0.8, UNIT, Unit::Ratio),
+                ParamDesc::float("window_secs", "Window", 1.0, (0.2, 4.0), Unit::Seconds).fixed(),
+                // Set each frame from the clip's analysis; 1.0 until it is analysed.
+                ParamDesc { soft: None, ..ParamDesc::float("gain", "Gain", 1.0, (0.0, 1.0), Unit::Ratio).fixed() },
+            ],
+            ColourDomain::Linear,
+            Spatial::PerPixel,
+            Temporal::AnalysisDriven,
+            true,
+        ),
+        tag: "deflicker",
+        sample: || BuiltinEffect::Deflicker { strength: 0.8, window_secs: 1.0, gain: 1.0 },
+    },
+    EffectType {
+        desc: effect(
+            "klipp.fx.video_stabilization",
+            "Stabilisation",
+            Category::FilmTemporal,
+            &[
+                ParamDesc::float("smoothing", "Smoothing", 0.5, UNIT, Unit::Ratio).fixed(),
+                ParamDesc::float("crop_ratio", "Crop", 0.05, (0.0, 0.2), Unit::Ratio),
+                switch("zoom", "Zoom to Fill", true),
+            ],
+            ColourDomain::Linear,
+            Spatial::Geometric,
+            Temporal::AnalysisDriven,
+            true,
+        ),
+        tag: "video_stabilization",
+        sample: || BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true },
+    },
+    EffectType {
+        desc: effect(
+            "klipp.fx.speed_ramp",
+            "Speed Ramp",
+            Category::FilmTemporal,
+            &[
+                ParamDesc::float("speed", "Speed", 1.0, (0.1, 4.0), Unit::Ratio).fixed(),
+                choice("blend_mode", "Blend", 1.0, &["nearest", "linear"]),
+                choice("ramp_curve", "Curve", 0.0, &["constant", "ease-in", "ease-out", "ease-in-out", "s-curve"]),
+                ParamDesc::float("ramp_start", "Ramp Start", 0.0, UNIT, Unit::Ratio).fixed(),
+                ParamDesc::float("ramp_end", "Ramp End", 1.0, UNIT, Unit::Ratio).fixed(),
+                switch("reverse", "Reverse", false),
+                ParamDesc::float("freeze_at", "Freeze At", 0.0, UNIT, Unit::Ratio).fixed(),
+                switch("freeze", "Freeze", false),
+            ],
+            ColourDomain::Linear,
+            Spatial::PerPixel,
+            Temporal::SourceNeighbours,
+            false,
+        ),
+        tag: "speed_ramp",
+        sample: || BuiltinEffect::SpeedRamp {
+            speed: 1.0,
+            blend_mode: 1,
+            ramp_curve: 0,
+            ramp_start: 0.0,
+            ramp_end: 1.0,
+            reverse: false,
+            freeze_at: 0.0,
+            freeze: false,
+        },
+    },
+    EffectType {
+        desc: effect(
+            "klipp.fx.frei0r",
+            "frei0r",
+            Category::PlugIn,
+            // The plug-in's own parameters are described per plug-in later;
+            // here the effect records which plug-in and its values in order.
+            &[other("type_id", "Plug-in", ParamKind::Other), other("params", "Values", ParamKind::Other)],
+            ColourDomain::DisplayEncoded,
+            Spatial::Global,
+            Temporal::None,
+            false,
+        ),
+        tag: "frei0r",
+        sample: || BuiltinEffect::Frei0r { type_id: String::new(), params: Vec::new() },
+    },
+];
