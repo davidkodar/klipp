@@ -3659,7 +3659,10 @@ impl GraphExecutor {
             }
 
             NodeKind::Qualifier => {
-                if let Some(qual) = &params.qualifier {
+                // A qualifier that is switched off selects the whole frame,
+                // as `NodeParams::apply_override` documents and the chain
+                // already did; this path keyed its window regardless (#1037).
+                if let Some(qual) = params.qualifier.as_ref().filter(|q| q.enabled) {
                     let mut frame = if let Some(gpu) = &mut self.gpu {
                         gpu.apply_qualifier_gpu(
                             primary_input, width, height,

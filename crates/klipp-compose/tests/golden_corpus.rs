@@ -441,6 +441,25 @@ fn grade_cases() -> Vec<Case> {
     seq.timeline_graph = Some(exposure(0.2));
     out.push(Case::new("grade/group stages and timeline grade", seq, f));
 
+    // Key nodes whose matte used to differ between the paths (#1037): a
+    // qualifier that is switched off selects the whole frame, and a luma
+    // key's matte is opaque over a part-transparent title.
+    let mut c = media(0.0, 4.0);
+    let off = klipp_core::QualifierSettings { enabled: false, hue_center: 200.0, hue_width: 20.0, lum_low: 0.1, lum_high: 0.5, ..Default::default() };
+    c.node_graph = graph_of(NodeKind::Qualifier, NodeParams { qualifier: Some(off), ..Default::default() });
+    let f = Frames::default().with(&c, 0);
+    let mut case = Case::new("grade/qualifier switched off", sequence(vec![track("V1", TrackKind::Video, vec![c])]), f);
+    // A lone qualifier runs per node, off the GPU chain, so the export's
+    // GPU path declines the grade and the CPU export renders it.
+    case.declines = Some(vec![Path::Export]);
+    out.push(case);
+    let base = media(0.0, 4.0);
+    let mut t = title("Key", 0.0, 4.0);
+    let lk = klipp_core::LumaKeySettings { enabled: true, low: 0.2, high: 0.7, soft: 0.1, ..Default::default() };
+    t.node_graph = graph_of(NodeKind::LumaKey, NodeParams { luma_key: Some(lk), ..Default::default() });
+    let f = Frames::default().with(&base, 60);
+    out.push(Case::new("grade/luma key on a title", sequence(vec![track("T1", TrackKind::Text, vec![t]), track("V1", TrackKind::Video, vec![base])]), f));
+
     // The same grade in each working space.
     for ws in [WorkingColorspace::AcesCG, WorkingColorspace::Bt2020Linear] {
         let mut c = media(0.0, 4.0);

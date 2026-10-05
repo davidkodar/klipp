@@ -13570,7 +13570,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var matte = soft_range(y, params.low, params.high, params.soft);
     if params.invert != 0u { matte = 1.0 - matte; }
 
-    output[idx] = pack(vec4<f32>(matte, matte, matte, orig.w));
+    // A matte is opaque, as the CPU writes it (#1037): the input's alpha
+    // made the two disagree over a part-transparent picture.
+    output[idx] = pack(vec4<f32>(matte, matte, matte, 1.0));
 }
 "
 );
