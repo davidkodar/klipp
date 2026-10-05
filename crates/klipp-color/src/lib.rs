@@ -83,4 +83,4 @@ pub use lut::{apply_3d_lut, apply_3d_lut_linear_ws, apply_3d_lut_linear_ws_with_
 pub use pipeline::ColorPipeline;
 pub use transforms::*;
 pub use klipp_core::ColorWarperParams;
-pub use wheels::{generate_wheel_texture, hsv_to_rgb, rgb_to_wheel_offset, wheel_offset_to_rgb};
+pub use wheels::{generate_wheel_texture, hsv_to_rgb, printer_light, printer_points, rgb_to_wheel_offset, wheel_offset_to_rgb};

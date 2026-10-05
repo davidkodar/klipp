@@ -505,6 +505,17 @@ impl KeyBindings {
         bind(&mut b, "next_color_node", vec![KeyCombo::new("]")]);
         bind(&mut b, "toggle_node_bypass", vec![KeyCombo::alt("D")]);
         bind(&mut b, "reset_current_node", vec![KeyCombo::ctrl_shift("R")]);
+        // Printer lights (#241), laid out as the numeric keypad's rows:
+        // 7 8 9 raise red, green, blue, 4 5 6 lower them, 3 and 1 the
+        // master.
+        bind(&mut b, "printer_red_up", vec![KeyCombo::ctrl_alt("7")]);
+        bind(&mut b, "printer_red_down", vec![KeyCombo::ctrl_alt("4")]);
+        bind(&mut b, "printer_green_up", vec![KeyCombo::ctrl_alt("8")]);
+        bind(&mut b, "printer_green_down", vec![KeyCombo::ctrl_alt("5")]);
+        bind(&mut b, "printer_blue_up", vec![KeyCombo::ctrl_alt("9")]);
+        bind(&mut b, "printer_blue_down", vec![KeyCombo::ctrl_alt("6")]);
+        bind(&mut b, "printer_master_up", vec![KeyCombo::ctrl_alt("3")]);
+        bind(&mut b, "printer_master_down", vec![KeyCombo::ctrl_alt("1")]);
         bind(&mut b, "cycle_scope_mode", vec![KeyCombo::shift("V")]);
 
         // AI Tools — task launchers + run/cancel.
@@ -736,6 +747,14 @@ impl KeyBindings {
             "next_color_node" => "Next Colour Node",
             "toggle_node_bypass" => "Toggle Node Bypass",
             "reset_current_node" => "Reset Current Node",
+            "printer_red_up" => "Printer Light: Red Up",
+            "printer_red_down" => "Printer Light: Red Down",
+            "printer_green_up" => "Printer Light: Green Up",
+            "printer_green_down" => "Printer Light: Green Down",
+            "printer_blue_up" => "Printer Light: Blue Up",
+            "printer_blue_down" => "Printer Light: Blue Down",
+            "printer_master_up" => "Printer Light: Master Up",
+            "printer_master_down" => "Printer Light: Master Down",
             "cycle_scope_mode" => "Cycle Scope Mode",
             "create_title" => "Create Title Clip",
             "connect_clip" => "Connect to Primary",
@@ -767,7 +786,7 @@ impl KeyBindings {
                 "multicam_angle_4", "multicam_angle_5", "multicam_angle_6",
                 "multicam_angle_7", "multicam_angle_8", "multicam_angle_9",
                 "create_multicam"]),
-            ("Colour", &["prev_color_node", "next_color_node", "toggle_node_bypass", "reset_current_node", "cycle_scope_mode", "copy_color_nodes", "paste_color_nodes"]),
+            ("Colour", &["prev_color_node", "next_color_node", "toggle_node_bypass", "reset_current_node", "printer_red_up", "printer_red_down", "printer_green_up", "printer_green_down", "printer_blue_up", "printer_blue_down", "printer_master_up", "printer_master_down", "cycle_scope_mode", "copy_color_nodes", "paste_color_nodes"]),
             ("AI Tools", &["ai_remove_background", "ai_isolate_object", "ai_detect_objects", "ai_run_inference", "ai_cancel_inference", "toggle_ai_tools_panel"]),
             ("Other", &["create_title", "connect_clip", "disconnect_clip"]),
         ]

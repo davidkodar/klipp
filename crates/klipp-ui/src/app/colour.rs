@@ -1249,6 +1249,36 @@ impl KlippApp {
                 });
                 true
             }
+            AppCommand::PrinterLight { channel, points } => {
+                // The offset of the grade the wheels show: the clip's
+                // Corrector, else its wheels node, else a new Corrector.
+                let Some(clip_id) = self.state.selected_clip else {
+                    self.state.toast.show("Select a clip to give it printer lights");
+                    return true;
+                };
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) else { return true };
+                let graph = &clip.node_graph;
+                let node = graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector && n.enabled)
+                    .or_else(|| graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::ColorWheels && n.enabled));
+                let (node_id, now) = match node {
+                    Some(n) => (n.id, (n.params.offset_x.unwrap_or(0.0), n.params.offset_y.unwrap_or(0.0), n.params.offset_master.unwrap_or(0.0))),
+                    None => (klipp_nodes::PHANTOM_CORRECTOR_ID, (0.0, 0.0, 0.0)),
+                };
+                let step = self.prefs.color.printer_point;
+                let which = (*channel < 3).then_some(*channel as usize);
+                let (x, y, m) = klipp_color::printer_light(now, which, *points, step);
+                let [r, g, b] = klipp_color::printer_points((x, y, m), step);
+                self.send_commands(vec![
+                    AppCommand::BeginNodeParamEdit { clip_id },
+                    AppCommand::SetNodeParam { clip_id, node_id, param: "offset_x".into(), value: x },
+                    AppCommand::SetNodeParam { clip_id, node_id, param: "offset_y".into(), value: y },
+                    AppCommand::SetNodeParam { clip_id, node_id, param: "offset_master".into(), value: m },
+                    AppCommand::EndNodeParamEdit { clip_id },
+                ]);
+                self.state.toast.show(format!("Printer lights R{r:+} G{g:+} B{b:+}"));
+                true
+            }
             AppCommand::SetNodeParam { clip_id, node_id, param, value } => {
                 // Lazy-create: if the inspector dispatched with the
                 // phantom Corrector id (no grade node existed on this
