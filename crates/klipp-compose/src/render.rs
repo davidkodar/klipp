@@ -2133,7 +2133,7 @@ impl Renderer {
     /// A precomposition's scene at `at`, on a transparent surface: its
     /// tracks, camera, masks and shutter resolve here, in the working
     /// space, with nothing of the outer render's applied to them. The
-    /// per-render state the outer stack has in hand — its shutter map,
+    /// per-render state the outer stack has in hand — its shutter maps,
     /// its global LUT, what it is inspecting — is set aside for the
     /// scene's render and restored after, so a scene neither inherits
     /// nor disturbs it. `None` past the nesting bound.
@@ -2143,6 +2143,7 @@ impl Renderer {
         }
         self.nesting += 1;
         let shutter = std::mem::take(&mut self.shutter);
+        let title_shutter = std::mem::take(&mut self.title_shutter);
         let lut = self.global_lut.take();
         let inspect = std::mem::take(&mut self.inspect);
         // The scene sets its own render scale, from its own resolution;
@@ -2156,6 +2157,7 @@ impl Renderer {
         self.inspect = inspect;
         self.global_lut = lut;
         self.shutter = shutter;
+        self.title_shutter = title_shutter;
         self.nesting -= 1;
         Some(surface)
     }

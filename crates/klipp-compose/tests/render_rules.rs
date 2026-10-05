@@ -1344,7 +1344,7 @@ fn a_scene_that_contains_itself_renders_nothing_and_returns() {
 /// card is, by partly-covered pixels across its edges.
 #[test]
 fn a_moving_shape_is_smeared_by_the_motion_blur_on_its_layer() {
-    let shot = |blur: Option<klipp_timeline::MotionBlur>| {
+    let shot = |blur: Option<klipp_timeline::MotionBlur>, precomp: bool| {
         let mut td = klipp_timeline::TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None };
         let mut xf = klipp_timeline::default_text_transform();
         xf.size = klipp_timeline::TitlePosition { x: 0.25, y: 0.5 };
@@ -1359,16 +1359,27 @@ fn a_moving_shape_is_smeared_by_the_motion_blur_on_its_layer() {
         // them unscaled, so the numbers were render pixels (#995).
         klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 0.0, -2880.0);
         klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 1.0, 2880.0);
-        let seq = sequence(vec![vec![card]]);
+        // Over a precomposition, drawn before the card, when asked: the
+        // scene's render must not take the card's shutter with it (#995).
+        let seq = if precomp {
+            let scene = sequence(vec![vec![solid([0, 0, 0], 0.0, 2.0)]]);
+            let outer = sequence(vec![vec![card], vec![Clip::precomposition(scene.id, tc(0.0), tc(2.0))]]);
+            klipp_timeline::flatten::flatten_sequence(&outer, &[outer.clone(), scene])
+        } else {
+            sequence(vec![vec![card]])
+        };
         let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
         r.set_gpu_enabled(false);
         r.render(&seq, tc(0.5), W, H, &mut Flat::default(), RenderOptions::default())
     };
     let soft = |img: &[f32]| (0..W).filter(|&x| (0.05..0.95).contains(&img[((9 * W + x) * 4) as usize])).count();
-    let sharp = shot(None);
-    let smeared = shot(Some(klipp_timeline::MotionBlur { enabled: true, shutter_angle: 360.0, shutter_angle_keyframes: vec![], samples: 8 }));
+    let blur = || Some(klipp_timeline::MotionBlur { enabled: true, shutter_angle: 360.0, shutter_angle_keyframes: vec![], samples: 8 });
+    let sharp = shot(None, false);
+    let smeared = shot(blur(), false);
     assert!(soft(&sharp) <= 2, "no blur, sharp edges: {}", soft(&sharp));
     assert!(soft(&smeared) >= 6, "blurred, both edges smeared: {}", soft(&smeared));
+    let over_a_scene = shot(blur(), true);
+    assert!(soft(&over_a_scene) >= 6, "blurred over a precomposition, both edges smeared: {}", soft(&over_a_scene));
 }
 
 /// The viewer's fast path lays a title sprite over the presented bytes
@@ -2162,5 +2173,6 @@ fn a_blur_entrance_is_the_same_on_cpu_and_gpu_under_an_effect() {
     let diffs: Vec<i32> = cpu.iter().zip(&gpu).map(|(a, b)| (*a as i32 - *b as i32).abs()).collect();
     let mean = diffs.iter().sum::<i32>() as f32 / diffs.len() as f32;
     let worst = diffs.iter().copied().max().unwrap_or(0);
-    assert!(mean < 0.5 && worst <= 24, "the blur entrance under a 2x scale differs between CPU and GPU: mean {mean} levels, worst {worst}");
+    // Fixed, the two agree to the level here; a little room for drivers.
+    assert!(mean < 0.1 && worst <= 2, "the blur entrance under a 2x scale differs between CPU and GPU: mean {mean} levels, worst {worst}");
 }

@@ -112,7 +112,7 @@ impl ExportJob {
         // The viewer's renderer. OFX plugin discovery is slow; only when a
         // clip uses a plugin.
         let mut ofx = klipp_plugin::OfxHost::new();
-        if timeline.tracks.iter().flat_map(|t| &t.clips).any(|c| !c.effects.is_empty()) {
+        if timeline.tracks.iter().flat_map(|t| &t.clips).any(|c| c.has_enabled_plugins()) {
             ofx.discover_plugins();
         }
         let mut renderer = klipp_compose::Renderer::new(ofx, klipp_title::TitleRenderer::new());

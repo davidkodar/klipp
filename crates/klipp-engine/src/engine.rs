@@ -7714,7 +7714,7 @@ impl PlaybackEngine {
                     // not move it.
                     && (seq.camera.is_still() || c.depth == 0.0)
                     && c.node_graph.is_identity()
-                    && c.effects.is_empty()
+                    && !c.has_enabled_plugins()
                     && c.builtin_effects.is_empty()
                     && c.param_modifiers.is_empty()
                     && c.opacity_keyframes.is_empty()
