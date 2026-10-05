@@ -197,11 +197,29 @@ struct Case {
     frames: Frames,
     times: Vec<f64>,
     working: WorkingColorspace,
+    /// Paths expected to decline this case. `None` takes the default
+    /// for its working space (see [`expected_declines`]).
+    declines: Option<Vec<Path>>,
 }
 
 impl Case {
     fn new(name: impl Into<String>, seq: Sequence, frames: Frames) -> Self {
-        Case { name: name.into(), project: vec![seq], frames, times: vec![0.5, 1.25], working: WorkingColorspace::Rec709Linear }
+        Case { name: name.into(), project: vec![seq], frames, times: vec![0.5, 1.25], working: WorkingColorspace::Rec709Linear, declines: None }
+    }
+}
+
+/// Which paths a case is expected to leave to the others. The GPU stack
+/// and the export's GPU path take Rec.709 projects and decline every
+/// other working space today (the stack is Rec.709 only, `render.rs`
+/// `composite_on_gpu`); a case that differs says so in
+/// [`Case::declines`]. A path that starts declining what it took, or
+/// taking what it declined, fails: losing GPU coverage wholesale must
+/// not pass quietly.
+fn expected_declines(case: &Case) -> Vec<Path> {
+    match &case.declines {
+        Some(d) => d.clone(),
+        None if case.working == WorkingColorspace::Rec709Linear => vec![],
+        None => vec![Path::Stack, Path::Export],
     }
 }
 
@@ -478,8 +496,8 @@ enum Path {
 }
 
 /// A difference the corpus knows about: the case, the path that differs
-/// from cpu, and the issue tracking it.
-const KNOWN: &[(&str, Path, &str)] = &[];
+/// from cpu, the time (`None` for every time), and the issue tracking it.
+const KNOWN: &[(&str, Path, Option<f64>, &str)] = &[];
 
 fn renderer(gpu: bool, ws: WorkingColorspace) -> Renderer {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
@@ -516,18 +534,35 @@ fn export_target(ws: WorkingColorspace) -> Option<klipp_effects::gpu::Yuv420Targ
     }
 }
 
-/// The CPU render as the export would encode it: its display transform,
-/// then luma at 16/219.
-fn luma_of(linear: &[f32], ws: WorkingColorspace) -> Vec<u8> {
+/// The CPU render as the export encodes it: its display transform, luma
+/// at 16/219, and each 2x2 block's chroma from the mean of its
+/// display-encoded RGB, at 128 ± 224/2. That's the encoder's own rule
+/// (`SHADER_LINEAR_TO_YUV420`): the mean of the encoded colour, then the
+/// difference, not the mean of four chroma values. Planar: Y, then Cb,
+/// then Cr.
+fn planes_of(linear: &[f32], ws: WorkingColorspace) -> Vec<u8> {
     let display = klipp_color::display::ExportDisplay::new(klipp_core::ToneMapOp::None, ws, klipp_core::OdtChoice::MatchViewer);
-    linear
-        .chunks_exact(4)
-        .map(|p| {
-            let e = display.encode([p[0], p[1], p[2]]);
-            let y = LUMA_709[0] * e[0] + LUMA_709[1] * e[1] + LUMA_709[2] * e[2];
-            (16.0 + y * 219.0 + 0.5).clamp(0.0, 255.0) as u8
-        })
-        .collect()
+    let e: Vec<[f32; 3]> = linear.chunks_exact(4).map(|p| display.encode([p[0], p[1], p[2]])).collect();
+    let [kr, kg, kb] = LUMA_709;
+    let luma = |c: [f32; 3]| kr * c[0] + kg * c[1] + kb * c[2];
+    let quant = |v: f32, offset: f32, scale: f32| (offset + v * scale).round().clamp(0.0, 255.0) as u8;
+    let mut y: Vec<u8> = e.iter().map(|c| quant(luma(*c), 16.0, 219.0)).collect();
+    let (cw, ch) = (W / 2, H / 2);
+    let mut cb = Vec::with_capacity((cw * ch) as usize);
+    let mut cr = Vec::with_capacity((cw * ch) as usize);
+    for cy in 0..ch {
+        for cx in 0..cw {
+            let at = |dx: u32, dy: u32| e[((cy * 2 + dy) * W + cx * 2 + dx) as usize];
+            let q = [at(0, 0), at(1, 0), at(0, 1), at(1, 1)];
+            let m = [0, 1, 2].map(|i| q.iter().map(|c| c[i]).sum::<f32>() * 0.25);
+            let l = luma(m);
+            cb.push(quant((m[2] - l) / (2.0 * (1.0 - kb)), 128.0, 224.0));
+            cr.push(quant((m[0] - l) / (2.0 * (1.0 - kr)), 128.0, 224.0));
+        }
+    }
+    y.extend(cb);
+    y.extend(cr);
+    y
 }
 
 /// The worst difference between two byte pictures, and how many pixels
@@ -605,7 +640,10 @@ fn draw(case: &Case, renderers: &mut Renderers) -> (Vec<String>, Vec<(f64, Path,
         });
         let took = match export {
             None => Took::Declined,
-            Some((planes, _)) => judge(compare(&luma_of(&cpu_linear, ws), &planes[..(W * H) as usize], 1)),
+            Some((planes, _)) => {
+                let want = planes_of(&cpu_linear, ws);
+                judge(compare(&want, &planes[..want.len()], 1))
+            }
         };
         results.push((t, Path::Export, took));
     }
@@ -616,19 +654,29 @@ fn draw(case: &Case, renderers: &mut Renderers) -> (Vec<String>, Vec<(f64, Path,
 fn every_path_draws_the_corpus_alike() {
     let mut failures = Vec::new();
     let mut routes = Vec::new();
-    let known: HashMap<(&str, Path), &str> = KNOWN.iter().map(|(c, p, i)| ((*c, *p), *i)).collect();
+    let known_at = |case: &str, path: Path, t: f64| {
+        KNOWN.iter().find(|(c, p, at, _)| *c == case && *p == path && at.is_none_or(|a| (a - t).abs() < 1e-9)).map(|k| k.3)
+    };
     let mut known_seen = BTreeSet::new();
     let mut renderers = Renderers::default();
     for case in corpus() {
         let (problems, results) = draw(&case, &mut renderers);
         failures.extend(problems);
         let mut route = Vec::new();
+        let declines = expected_declines(&case);
         for (t, path, took) in results {
-            let listed = known.get(&(case.name.as_str(), path)).copied();
+            let listed = known_at(&case.name, path, t);
+            match (&took, declines.contains(&path)) {
+                (Took::Declined, false) => failures.push(format!("{} @{t}: {path:?} declined a case it should take", case.name)),
+                (Took::Within(_) | Took::Differs(..), true) => {
+                    failures.push(format!("{} @{t}: {path:?} took a case it is expected to decline (update the case's declines)", case.name))
+                }
+                _ => {}
+            }
             match (&took, listed) {
                 (Took::Differs(d, n), None) => failures.push(format!("{} @{t}: {path:?} differs from cpu by up to {d} levels in {n} pixels", case.name)),
                 (Took::Differs(..), Some(_)) => {
-                    known_seen.insert((case.name.clone(), path));
+                    known_seen.insert((case.name.clone(), path, t.to_bits()));
                 }
                 (Took::Within(_), Some(issue)) => {
                     failures.push(format!("{} @{t}: {path:?} now agrees with cpu: take it off KNOWN ({issue})", case.name))
@@ -645,9 +693,10 @@ fn every_path_draws_the_corpus_alike() {
         routes.push(format!("{:<46} {}", case.name, route.join(" ")));
     }
     eprintln!("corpus routes (worst difference from cpu in levels; - = path declined):\n{}", routes.join("\n"));
-    for (c, p, i) in KNOWN {
-        if !known_seen.contains(&(c.to_string(), *p)) && !failures.iter().any(|f| f.starts_with(c)) {
-            failures.push(format!("KNOWN lists {c} on {p:?} ({i}), but that case never differed there"));
+    for (c, p, at, i) in KNOWN {
+        let seen = known_seen.iter().any(|(sc, sp, st)| sc == c && sp == p && at.is_none_or(|a| a.to_bits() == *st));
+        if !seen && !failures.iter().any(|f| f.starts_with(c)) {
+            failures.push(format!("KNOWN lists {c} on {p:?} at {at:?} ({i}), but that case never differed there"));
         }
     }
     assert!(failures.is_empty(), "{} problems:\n{}", failures.len(), failures.join("\n"));
