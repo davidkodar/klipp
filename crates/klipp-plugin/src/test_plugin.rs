@@ -371,6 +371,47 @@ mod tests {
         assert_eq!(infos[0].parameters[0].name, "Strength");
     }
 
+    /// #1018: one instance serves every clip using the plug-in, so a clip
+    /// that never changed Strength must still render at its default, not
+    /// at what the clip drawn before it set.
+    #[test]
+    fn a_clip_does_not_inherit_the_previous_clips_settings() {
+        let _guard = lock_tests();
+        let mut host = create_host_with_test_plugin();
+        let white = vec![255u8; 4 * 4 * 4];
+        let effect = |params: HashMap<String, OfxValue>| AppliedEffect {
+            plugin_name: "com.klipp.test.Invert".to_string(),
+            enabled: true,
+            param_values: params,
+            ..Default::default()
+        };
+        let a = host.apply_effects_chain(&[effect(HashMap::from([("Strength".to_string(), OfxValue::Double(0.0))]))], &white, 4, 4, 0.0);
+        assert_eq!(a[0], 255, "A at Strength 0 leaves white alone");
+        let b = host.apply_effects_chain(&[effect(HashMap::new())], &white, 4, 4, 0.0);
+        assert_eq!(b[0], 0, "B never set Strength, so it inverts fully at the default 1.0");
+    }
+
+    /// #1018: with one identifier installed at 1.0 and 2.0, 2.0 renders
+    /// and is the one listed, whichever was found first.
+    #[test]
+    fn the_highest_installed_version_is_the_one_used() {
+        let _guard = lock_tests();
+        for newer_first in [false, true] {
+            let mut host = OfxHostRuntime::new();
+            let version = |major| OfxPluginRaw { plugin_version_major: major, ..create_test_plugin_raw() };
+            let order = if newer_first { [2, 1] } else { [1, 2] };
+            for major in order {
+                let idx = host.register_raw_plugin(version(major));
+                host.initialise_plugin(idx).expect("plugin init failed");
+            }
+            let used = host.plugin_index("com.klipp.test.Invert").expect("the plug-in");
+            assert_eq!(host.plugins[used].version, (2, 0), "newer first: {newer_first}");
+            let infos = host.plugin_infos();
+            assert_eq!(infos.len(), 1, "one entry per identifier");
+            assert_eq!(infos[0].version, (2, 0), "the listed version renders, newer first: {newer_first}");
+        }
+    }
+
     #[test]
     fn test_invert_full_white() {
         let _guard = lock_tests();
