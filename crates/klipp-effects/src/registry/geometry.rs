@@ -1,0 +1,272 @@
+//! Geometry and frame effects (#1007), describing the existing renderers.
+//!
+//! Defaults follow the inspector's effect reset and soft ranges its controls.
+//! Crop feather is measured in pixels despite its 0..1 inspector range.
+//! Rounded-corner radius and feather are fractions of the opaque picture's
+//! shorter side, not the entire canvas. Both rounded corners and bar filling
+//! need the full frame to find that picture's bounds.
+//! Mirror switches and Letterbox's colour selector are stored as integers:
+//! zero is off/black and any non-zero value is on/white. They are not animated.
+//! Transform uses the clip's dedicated animation, not effect keyframes;
+//! the compositor scales its pixel offsets. The effect kernel supports
+//! independent scales, but clip placement currently ignores `scale_y`.
+//! Perspective resets to zero; the video inspector shows an implicit one
+//! and offers 0.1..3, and the compositor substitutes one when tilted.
+
+use super::{
+    Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling,
+    Spatial, Temporal, Unit, IMAGE_IN, IMAGE_OUT,
+};
+use crate::BuiltinEffect;
+
+const fn geometry(
+    id: &'static str,
+    name: &'static str,
+    params: &'static [ParamDesc],
+    spatial: Spatial,
+    draws_outside: bool,
+) -> NodeTypeDesc {
+    NodeTypeDesc {
+        id,
+        name,
+        category: Category::Geometry,
+        inputs: IMAGE_IN,
+        outputs: IMAGE_OUT,
+        params,
+        domain: ColourDomain::Linear,
+        alpha: Alpha::Straight,
+        spatial,
+        temporal: Temporal::None,
+        draws_outside,
+        gpu: true,
+        cpu: true,
+    }
+}
+
+const fn choice(
+    field: &'static str,
+    label: &'static str,
+    default: f32,
+    names: &'static [&'static str],
+) -> ParamDesc {
+    ParamDesc {
+        kind: ParamKind::Choice(names),
+        soft: None,
+        ..ParamDesc::float(field, label, default, (0.0, 1.0), Unit::None).fixed()
+    }
+}
+
+const fn corner(
+    field: &'static str,
+    index: usize,
+    key: &'static str,
+    label: &'static str,
+    default: f32,
+) -> ParamDesc {
+    ParamDesc::float(field, label, default, (-1.0, 2.0), Unit::Normalised).element(index, key)
+}
+
+pub(super) static TYPES: &[EffectType] = &[
+    EffectType {
+        desc: geometry(
+            "klipp.fx.crop",
+            "Crop",
+            &[
+                ParamDesc::float("left", "Left", 0.0, (0.0, 1.0), Unit::Normalised),
+                ParamDesc::float("right", "Right", 0.0, (0.0, 1.0), Unit::Normalised),
+                ParamDesc::float("top", "Top", 0.0, (0.0, 1.0), Unit::Normalised),
+                ParamDesc::float("bottom", "Bottom", 0.0, (0.0, 1.0), Unit::Normalised),
+                ParamDesc::float("feather", "Feather", 0.0, (0.0, 1.0), Unit::CanvasPx),
+            ],
+            Spatial::PerPixel,
+            false,
+        ),
+        tag: "crop",
+        sample: || BuiltinEffect::Crop {
+            left: 0.0,
+            right: 0.0,
+            top: 0.0,
+            bottom: 0.0,
+            feather: 0.0,
+        },
+    },
+    EffectType {
+        desc: geometry(
+            "klipp.fx.transform",
+            "Transform",
+            &[
+                ParamDesc::float(
+                    "position_x",
+                    "Pos X",
+                    0.0,
+                    (-2000.0, 2000.0),
+                    Unit::CanvasPx,
+                )
+                .scaled_by(Scaling::Placement)
+                .fixed(),
+                ParamDesc::float(
+                    "position_y",
+                    "Pos Y",
+                    0.0,
+                    (-2000.0, 2000.0),
+                    Unit::CanvasPx,
+                )
+                .scaled_by(Scaling::Placement)
+                .fixed(),
+                ParamDesc::float("scale_x", "Scale X", 1.0, (0.0, 4.0), Unit::Ratio).fixed(),
+                ParamDesc::float("scale_y", "Scale Y", 1.0, (0.0, 4.0), Unit::Ratio).fixed(),
+                ParamDesc::float("rotation", "Rotation", 0.0, (-360.0, 360.0), Unit::Degrees)
+                    .fixed(),
+                ParamDesc::float("anchor_x", "Anchor X", 0.5, (0.0, 1.0), Unit::Normalised).fixed(),
+                ParamDesc::float("anchor_y", "Anchor Y", 0.5, (0.0, 1.0), Unit::Normalised).fixed(),
+                ParamDesc::float("rotation_x", "Tilt X", 0.0, (-80.0, 80.0), Unit::Degrees).fixed(),
+                ParamDesc::float("rotation_y", "Tilt Y", 0.0, (-80.0, 80.0), Unit::Degrees).fixed(),
+                ParamDesc::float("perspective", "Perspective", 0.0, (0.1, 3.0), Unit::Ratio)
+                    .fixed(),
+                ParamDesc {
+                    kind: ParamKind::Other,
+                    soft: None,
+                    ..ParamDesc::float(
+                        "focal_ref",
+                        "Focal Anchor",
+                        f32::NAN,
+                        (0.0, 0.0),
+                        Unit::None,
+                    )
+                    .fixed()
+                },
+            ],
+            Spatial::Geometric,
+            false,
+        ),
+        tag: "transform",
+        sample: || BuiltinEffect::Transform {
+            position_x: 0.0,
+            position_y: 0.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            rotation: 0.0,
+            anchor_x: 0.5,
+            anchor_y: 0.5,
+            rotation_x: 0.0,
+            rotation_y: 0.0,
+            perspective: 0.0,
+            focal_ref: None,
+        },
+    },
+    EffectType {
+        desc: geometry(
+            "klipp.fx.rounded_corners",
+            "Rounded Corners",
+            &[
+                ParamDesc::float("radius", "Radius", 0.0, (0.0, 0.5), Unit::Normalised),
+                ParamDesc::float("feather", "Feather", 0.0, (0.0, 0.1), Unit::Normalised),
+            ],
+            Spatial::Global,
+            false,
+        ),
+        tag: "rounded_corners",
+        sample: || BuiltinEffect::RoundedCorners {
+            radius: 0.0,
+            feather: 0.0,
+        },
+    },
+    EffectType {
+        desc: geometry(
+            "klipp.fx.fill_bars",
+            "Fill Bars",
+            &[
+                ParamDesc::float("blur", "Blur", 0.05, (0.0, 0.2), Unit::Normalised),
+                ParamDesc::float("zoom", "Zoom", 1.0, (1.0, 3.0), Unit::Ratio),
+                ParamDesc::float("darken", "Darken", 0.25, (0.0, 1.0), Unit::Ratio),
+            ],
+            Spatial::Global,
+            true,
+        ),
+        tag: "fill_bars",
+        sample: || BuiltinEffect::FillBars {
+            blur: 0.05,
+            zoom: 1.0,
+            darken: 0.25,
+        },
+    },
+    EffectType {
+        desc: geometry(
+            "klipp.fx.mirror",
+            "Mirror",
+            &[
+                choice("horizontal", "Horizontal", 1.0, &["Off", "On"]),
+                choice("vertical", "Vertical", 0.0, &["Off", "On"]),
+            ],
+            Spatial::Geometric,
+            false,
+        ),
+        tag: "mirror",
+        sample: || BuiltinEffect::Mirror {
+            horizontal: 1,
+            vertical: 0,
+        },
+    },
+    EffectType {
+        desc: geometry(
+            "klipp.fx.lens_distortion",
+            "Lens Distortion",
+            &[
+                ParamDesc::float("distortion", "Distortion", 0.0, (-1.0, 1.0), Unit::Ratio),
+                ParamDesc::float("scale", "Scale", 1.0, (0.5, 2.0), Unit::Ratio),
+            ],
+            Spatial::Geometric,
+            false,
+        ),
+        tag: "lens_distortion",
+        sample: || BuiltinEffect::LensDistortion {
+            distortion: 0.0,
+            scale: 1.0,
+        },
+    },
+    EffectType {
+        desc: geometry(
+            "klipp.fx.letterbox",
+            "Letterbox",
+            &[
+                ParamDesc::float(
+                    "aspect_ratio",
+                    "Aspect Ratio",
+                    2.39,
+                    (0.5, 4.0),
+                    Unit::Ratio,
+                ),
+                choice("bar_color", "Bar Colour", 0.0, &["Black", "White"]),
+                ParamDesc::float("opacity", "Opacity", 1.0, (0.0, 1.0), Unit::Ratio),
+            ],
+            Spatial::PerPixel,
+            false,
+        ),
+        tag: "letterbox",
+        sample: || BuiltinEffect::Letterbox {
+            aspect_ratio: 2.39,
+            bar_color: 0,
+            opacity: 1.0,
+        },
+    },
+    EffectType {
+        desc: geometry(
+            "klipp.fx.corner_pin",
+            "Corner Pin",
+            &[
+                corner("tl", 0, "tl_x", "Top Left X", 0.0),
+                corner("tl", 1, "tl_y", "Top Left Y", 0.0),
+                corner("tr", 0, "tr_x", "Top Right X", 1.0),
+                corner("tr", 1, "tr_y", "Top Right Y", 0.0),
+                corner("br", 0, "br_x", "Bottom Right X", 1.0),
+                corner("br", 1, "br_y", "Bottom Right Y", 1.0),
+                corner("bl", 0, "bl_x", "Bottom Left X", 0.0),
+                corner("bl", 1, "bl_y", "Bottom Left Y", 1.0),
+            ],
+            Spatial::Geometric,
+            false,
+        ),
+        tag: "corner_pin",
+        sample: crate::corner_pin::still,
+    },
+];
