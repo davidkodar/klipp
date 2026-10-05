@@ -1019,6 +1019,7 @@ impl Renderer {
         // and a stale value there is a wrong picture rather than an error.
         self.executor.set_grade_encoding(self.grade_encoding);
         self.executor.set_working_colorspace(self.working);
+        self.executor.set_render_scale(self.px_scale);
         if clip.node_graph.is_identity() {
             let GradeInput::Gpu(g) = &input else { return Single::Refused };
             if !g.seed(&mut self.executor, width, height)
@@ -1260,6 +1261,7 @@ impl Renderer {
 
         self.executor.set_grade_encoding(self.grade_encoding);
         self.executor.set_working_colorspace(self.working);
+        self.executor.set_render_scale(self.px_scale);
         let luma = klipp_color::linear::luma_coefs(self.working);
         if !self.executor.gpu_pipeline_or_init().is_some_and(|g| {
             g.set_luma_coefs(luma);
@@ -2426,6 +2428,7 @@ impl Renderer {
         self.executor.prepare_clip(&clip.node_graph);
         self.executor.set_grade_encoding(self.grade_encoding);
         self.executor.set_working_colorspace(self.working);
+        self.executor.set_render_scale(self.px_scale);
         self.executor.set_lut_tetrahedral(self.lut_tetrahedral);
         self.executor.set_current_clip_track_points(&clip.track_points);
         self.executor.set_solo_node(if inspecting { self.inspect.solo } else { None });
@@ -2489,6 +2492,9 @@ impl Renderer {
         inspecting: bool,
         matte_view: Option<NodeId>,
     ) -> Result<Vec<f32>, klipp_nodes::executor::ExecutorError> {
+        // The grade's pixel-sized settings are authored at the
+        // sequence's size, as the effects' are (#1012).
+        self.executor.set_render_scale(self.px_scale);
         if !inspecting {
             return self
                 .executor

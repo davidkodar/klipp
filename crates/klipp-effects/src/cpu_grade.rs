@@ -178,12 +178,19 @@ fn luma(l: [f32; 3], p: &[f32]) -> f32 {
     l[0] * p[0] + l[1] * p[1] + l[2] * p[2]
 }
 
-/// `SHADER_CLARITY_BLUR_H`, `_BLUR_V` and `_APPLY`: a 41-pixel box blur of
-/// working-space luma, then midtone detail added back. The GPU's radius
-/// is 20.
-pub fn clarity(px: &mut [f32], width: u32, height: u32, amount: f32, l: [f32; 3]) {
+/// The clarity blur's radius at the sequence's size, in pixels.
+pub const CLARITY_RADIUS: f32 = 20.0;
+
+/// The bilateral denoise's largest kernel radius at the sequence's size,
+/// in pixels: a wider sigma stops growing here.
+pub const DENOISE_MAX_KERNEL: f32 = 10.0;
+
+/// `SHADER_CLARITY_BLUR_H`, `_BLUR_V` and `_APPLY`: a box blur of
+/// working-space luma `radius` pixels each way (20 at the sequence's
+/// size, [`CLARITY_RADIUS`]), then midtone detail added back.
+pub fn clarity(px: &mut [f32], width: u32, height: u32, amount: f32, radius: u32, l: [f32; 3]) {
     let (w, h) = (width as usize, height as usize);
-    let r: i32 = 20;
+    let r = radius.max(1) as i32;
     let lumas: Vec<f32> = px.chunks_exact(4).map(|p| luma(l, p)).collect();
     let mut horiz = vec![0.0f32; w * h];
     horiz.par_chunks_exact_mut(w).enumerate().for_each(|(y, row)| {
@@ -913,10 +920,11 @@ pub fn bilateral_denoise(
     height: u32,
     spatial_sigma: f32,
     color_sigma: f32,
+    max_kernel: u32,
     luma: [f32; 3],
 ) -> Vec<f32> {
     let (w, h) = (width as i32, height as i32);
-    let kernel = (spatial_sigma * 2.0).ceil().min(10.0) as i32;
+    let kernel = (spatial_sigma * 2.0).ceil().min(max_kernel as f32) as i32;
     let spatial_denom = 2.0 * spatial_sigma * spatial_sigma;
     let color_denom = 2.0 * color_sigma * color_sigma;
     let luma_at = |i: usize| luma[0] * px[i * 4] + luma[1] * px[i * 4 + 1] + luma[2] * px[i * 4 + 2];
