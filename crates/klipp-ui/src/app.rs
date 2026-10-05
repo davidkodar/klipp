@@ -426,6 +426,12 @@ pub struct KlippApp {
     /// Set by `BeginNodeParamEdit`, consumed by `EndNodeParamEdit`. `None`
     /// when no gesture is in progress.
     node_param_edit_snapshot: Option<(klipp_core::ClipId, klipp_nodes::NodeGraph)>,
+    /// The selected clip's node graph as it was before the press, key or
+    /// text that may start a gesture, kept while the pointer is held. The
+    /// grade panels write a value into the live graph as they draw it, a
+    /// moment before `BeginNodeParamEdit` is handled; the gesture's
+    /// snapshot comes from here so it holds the value from before.
+    graph_before_input: Option<(klipp_core::ClipId, klipp_nodes::NodeGraph)>,
     /// The default graph the timeline grade's stand-in shows while the
     /// sequence has no grade of its own; see
     /// [`stand_in_grade_on`] and [`stand_down_timeline_grade_on`].

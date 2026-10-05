@@ -237,6 +237,7 @@ impl KlippApp {
             node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel::default(),
             looks_panel_state: crate::panels::looks::LooksPanelState::default(),
             node_param_edit_snapshot: None,
+            graph_before_input: None,
             timeline_grade_fresh: None,
             last_gesture_sync: std::time::Instant::now(),
             scope_executor: klipp_nodes::GraphExecutor::new_cpu_only(),
