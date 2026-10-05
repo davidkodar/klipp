@@ -1344,7 +1344,7 @@ fn a_scene_that_contains_itself_renders_nothing_and_returns() {
 /// card is, by partly-covered pixels across its edges.
 #[test]
 fn a_moving_shape_is_smeared_by_the_motion_blur_on_its_layer() {
-    let shot = |blur: Option<klipp_timeline::MotionBlur>| {
+    let shot = |blur: Option<klipp_timeline::MotionBlur>, precomp: bool| {
         let mut td = klipp_timeline::TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None };
         let mut xf = klipp_timeline::default_text_transform();
         xf.size = klipp_timeline::TitlePosition { x: 0.25, y: 0.5 };
@@ -1354,18 +1354,32 @@ fn a_moving_shape_is_smeared_by_the_motion_blur_on_its_layer() {
         );
         td.object_mut(id).unwrap().fx = Some(klipp_timeline::LayerFx { motion_blur: blur, ..Default::default() });
         let mut card = clip(ClipKind::Title(td), 0.0, 2.0);
-        klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 0.0, -48.0);
-        klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 1.0, 48.0);
-        let seq = sequence(vec![vec![card]]);
+        // In the sequence's pixels (1920 across), as every transform is:
+        // 48 of the 32 rendered here either way. The blur used to place
+        // them unscaled, so the numbers were render pixels (#995).
+        klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 0.0, -2880.0);
+        klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 1.0, 2880.0);
+        // Over a precomposition, drawn before the card, when asked: the
+        // scene's render must not take the card's shutter with it (#995).
+        let seq = if precomp {
+            let scene = sequence(vec![vec![solid([0, 0, 0], 0.0, 2.0)]]);
+            let outer = sequence(vec![vec![card], vec![Clip::precomposition(scene.id, tc(0.0), tc(2.0))]]);
+            klipp_timeline::flatten::flatten_sequence(&outer, &[outer.clone(), scene])
+        } else {
+            sequence(vec![vec![card]])
+        };
         let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
         r.set_gpu_enabled(false);
         r.render(&seq, tc(0.5), W, H, &mut Flat::default(), RenderOptions::default())
     };
     let soft = |img: &[f32]| (0..W).filter(|&x| (0.05..0.95).contains(&img[((9 * W + x) * 4) as usize])).count();
-    let sharp = shot(None);
-    let smeared = shot(Some(klipp_timeline::MotionBlur { enabled: true, shutter_angle: 360.0, shutter_angle_keyframes: vec![], samples: 8 }));
+    let blur = || Some(klipp_timeline::MotionBlur { enabled: true, shutter_angle: 360.0, shutter_angle_keyframes: vec![], samples: 8 });
+    let sharp = shot(None, false);
+    let smeared = shot(blur(), false);
     assert!(soft(&sharp) <= 2, "no blur, sharp edges: {}", soft(&sharp));
     assert!(soft(&smeared) >= 6, "blurred, both edges smeared: {}", soft(&smeared));
+    let over_a_scene = shot(blur(), true);
+    assert!(soft(&over_a_scene) >= 6, "blurred over a precomposition, both edges smeared: {}", soft(&over_a_scene));
 }
 
 /// The viewer's fast path lays a title sprite over the presented bytes
@@ -2023,4 +2037,142 @@ fn keyframed_effects_ramp_in_the_picture() {
             assert!(most > 0.02, "{effect:?} {name}, run {run}: the picture did not move ({most})");
         }
     }
+}
+
+/// #995: a plug-in that is switched off leaves the picture as it is. The
+/// clip's frame used to go out to 8-bit BT.709 and back whenever it had
+/// any plug-in entry at all, enabled or not, which clamped everything
+/// above 1.0 and quantised the rest; and the entry alone kept the clip
+/// off the GPU paths. Here a scene-bright 2.5 must come through, on the
+/// CPU and on the GPU.
+#[test]
+fn a_disabled_plugin_leaves_the_picture_untouched() {
+    let mut c = media(0.0, 2.0);
+    c.effects = vec![klipp_plugin::AppliedEffect { plugin_name: "com.example.Off".into(), enabled: false, ..Default::default() }];
+    let mut src = Flat::default().grey(&c, 2.5);
+    let seq = sequence(vec![vec![c]]);
+    for (i, img) in render(&seq, 1.0, &mut src).iter().enumerate() {
+        assert_px(&format!("disabled plug-in, run {i}"), px(img, 16, 9), [2.5, 2.5, 2.5], 1e-3);
+    }
+}
+
+/// #995: an adjustment layer carrying a coloured effect gives what a clip
+/// carrying it does, in a wide-gamut project too. The effect's colour is
+/// authored in BT.709 and converted into the working space for a clip,
+/// but on the CPU an adjustment layer's went in unconverted, so in ACEScg
+/// a red fade on the layer was ACEScg's own, more saturated red.
+#[test]
+fn an_adjustment_layer_and_a_clip_agree_on_an_effect_colour() {
+    let fade = || BuiltinEffect::ColorFade { color: [255, 0, 0, 255], duration_secs: 2.0, mode: klipp_effects::ColorFadeMode::In, progress: 0.0 };
+    let mut on_clip = media(0.0, 2.0);
+    on_clip.builtin_effects = vec![fade()];
+    let base = media(0.0, 2.0);
+    let mut adj = clip(ClipKind::AdjustmentLayer, 0.0, 2.0);
+    adj.builtin_effects = vec![fade()];
+    let mut src = Flat::default().grey(&on_clip, 0.2).grey(&base, 0.2);
+    let clip_seq = sequence(vec![vec![on_clip]]);
+    let adj_seq = sequence(vec![vec![adj], vec![base]]);
+    for gpu in [false, true] {
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(gpu);
+        r.set_working_colorspace(klipp_core::WorkingColorspace::AcesCG);
+        let a = px(&r.render(&clip_seq, tc(0.5), W, H, &mut src, RenderOptions::default()), 16, 9);
+        let b = px(&r.render(&adj_seq, tc(0.5), W, H, &mut src, RenderOptions::default()), 16, 9);
+        assert!(a[0] > a[1] + 0.05, "the fade is mostly red at 0.5 s: {a:?}");
+        assert_px(&format!("adjustment layer vs clip in ACEScg, gpu {gpu}"), b, a, 2e-3);
+    }
+}
+
+/// #995: a title's own motion blur samples its transform as the camera
+/// shutter does, in render pixels and under the camera, and keeps the
+/// effects before the transform before it. So a title that stands still
+/// renders the same with its blur on as off: offset across the frame at
+/// a reduced preview scale, with a crop before its transform, and under
+/// a camera looking off-centre. The blur used to place the raw transform
+/// unscaled, run every other effect after it, and ignore the camera.
+#[test]
+fn a_still_title_renders_the_same_with_its_motion_blur_on() {
+    let shot = |blur: bool, crop: bool, camera_x: Option<f32>| {
+        let mut td = klipp_timeline::TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None };
+        let mut xf = klipp_timeline::default_text_transform();
+        xf.size = klipp_timeline::TitlePosition { x: 0.25, y: 0.5 };
+        let id = td.add_object(
+            klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([255, 255, 255, 255]), stroke: None, fit: None }),
+            xf,
+        );
+        let mb = blur.then_some(klipp_timeline::MotionBlur { enabled: true, shutter_angle: 360.0, shutter_angle_keyframes: vec![], samples: 8 });
+        td.object_mut(id).unwrap().fx = Some(klipp_timeline::LayerFx { motion_blur: mb, ..Default::default() });
+        let mut card = clip(ClipKind::Title(td), 0.0, 2.0);
+        // 480 of the sequence's 1920 pixels right: 8 of the 32 rendered.
+        let transform = BuiltinEffect::Transform {
+            position_x: 480.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0,
+            anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
+        };
+        card.builtin_effects = if crop {
+            vec![BuiltinEffect::Crop { left: 0.0, right: 0.6, top: 0.0, bottom: 0.0, feather: 0.0 }, transform]
+        } else {
+            vec![transform]
+        };
+        let mut seq = sequence(vec![vec![card]]);
+        if let Some(x) = camera_x {
+            klipp_core::keyframe::upsert_keyframe(&mut seq.camera.x_keyframes, 0.0, x);
+        }
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(false);
+        r.render(&seq, tc(0.5), W, H, &mut Flat::default(), RenderOptions::default())
+    };
+    for (crop, camera, what) in [(false, None, "offset"), (true, None, "a crop before the transform"), (false, Some(0.6), "an off-centre camera")] {
+        let sharp = shot(false, crop, camera);
+        let blurred = shot(true, crop, camera);
+        let most = sharp.iter().zip(&blurred).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
+        assert!(sharp.iter().any(|v| *v > 0.5), "{what}: the card is in the frame");
+        assert!(most < 1e-3, "{what}: a still title moved under its own motion blur, by up to {most}");
+    }
+}
+
+/// #995: a title's blur entrance gives one picture on the CPU and the
+/// GPU. The CPU blurs the title as it draws it, before the clip's
+/// effects and transform; the GPU stack added the blur to the end of the
+/// clip's effects, after them, so a title scaled 2x was blurred at its
+/// unscaled radius: 4 display levels off on average, 45 at worst.
+#[test]
+fn a_blur_entrance_is_the_same_on_cpu_and_gpu_under_an_effect() {
+    let blur_in = klipp_core::title_motion::Motion {
+        kind: klipp_core::title_motion::MotionKind::Blur,
+        duration_secs: 1.0,
+        delay_secs: 0.0,
+        easing: Default::default(),
+        stagger: Default::default(),
+        stagger_secs: 0.0,
+        distance: 1.0,
+        amount: None,
+        anchor: None,
+    };
+    let (mut seq, title) = entering_title(blur_in, None, [20, 20, 20, 255]);
+    seq.tracks[0].clips[0].builtin_effects = vec![BuiltinEffect::Transform {
+        position_x: 0.0, position_y: 0.0, scale_x: 2.0, scale_y: 2.0, rotation: 0.0,
+        anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
+    }];
+    let _ = title;
+    // The viewer's GPU stack, which places the title as a sprite, in
+    // display bytes; the CPU render brought to the same bytes.
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(true);
+    let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(0.4), 480, 270, &mut White, RenderOptions::default()) else {
+        eprintln!("skipping: no GPU stack");
+        return;
+    };
+    let mut c = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    c.set_gpu_enabled(false);
+    let cpu = klipp_color::display::display_transform_ws_to(
+        &c.render(&seq, tc(0.4), 480, 270, &mut White, RenderOptions::default()),
+        klipp_color::display::ToneMapOp::None,
+        klipp_core::WorkingColorspace::Rec709Linear,
+        klipp_core::SdrTransfer::Srgb,
+    );
+    let diffs: Vec<i32> = cpu.iter().zip(&gpu).map(|(a, b)| (*a as i32 - *b as i32).abs()).collect();
+    let mean = diffs.iter().sum::<i32>() as f32 / diffs.len() as f32;
+    let worst = diffs.iter().copied().max().unwrap_or(0);
+    // Fixed, the two agree to the level here; a little room for drivers.
+    assert!(mean < 0.1 && worst <= 2, "the blur entrance under a 2x scale differs between CPU and GPU: mean {mean} levels, worst {worst}");
 }

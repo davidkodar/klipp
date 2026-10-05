@@ -2386,6 +2386,13 @@ pub struct ClipLabel {
 }
 
 impl Clip {
+    /// Whether any of the clip's plug-in effects is on (#995). A clip
+    /// whose plug-ins are all off renders as one without any: no 8-bit
+    /// round trip, and nothing keeps it off the GPU paths.
+    pub fn has_enabled_plugins(&self) -> bool {
+        self.effects.iter().any(|e| e.enabled)
+    }
+
     pub fn media_id(&self) -> Option<MediaId> {
         match &self.kind {
             ClipKind::Media { media_id } => Some(*media_id),
