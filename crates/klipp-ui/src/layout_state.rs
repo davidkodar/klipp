@@ -7,6 +7,43 @@ use crate::theme::*;
 // it from `crate::layout_state::SnapConfig` keep working.
 pub use klipp_core::SnapConfig;
 
+/// Placement of the Colour workspace's node graph.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NodeGraphPlacement {
+    #[default]
+    Below,
+    Right,
+}
+
+/// A temporary browser collapse for the side-by-side node layout.
+/// Visibility preferences are never written by the borrow itself.
+#[derive(Default)]
+pub(crate) struct NodeBrowserBorrow {
+    active: bool,
+    previous: Option<bool>,
+}
+
+impl NodeBrowserBorrow {
+    pub fn leave_if_inactive(&mut self, wanted: bool, visible: &mut bool) {
+        if self.active && !wanted {
+            self.active = false;
+            if let Some(was) = self.previous.take() { *visible = was; }
+        }
+    }
+
+    pub fn enter_if_active(&mut self, wanted: bool, visible: &mut bool) {
+        if wanted && !self.active {
+            self.active = true;
+            self.previous = Some(*visible);
+            *visible = false;
+        } else if wanted && *visible {
+            self.manual_override();
+        }
+    }
+
+    pub fn manual_override(&mut self) { self.previous = None; }
+}
+
 /// Persistent UI layout state — panel sizes, active tabs, tool selection.
 /// Saved to disk on every change and restored on launch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +84,12 @@ pub struct LayoutState {
     #[serde(default = "default_color_inspector_width")]
     pub color_inspector_width: f32,
 
+    /// Nodes stay below on compact windows; the preference remains Right.
+    #[serde(default)]
+    pub node_graph_placement: NodeGraphPlacement,
+    #[serde(default = "default_node_width_ratio")]
+    pub node_width_ratio: f32,
+
     // ── Panel visibility ──
     // Persisted, because a hidden panel that comes back on restart is
     // not hidden, it is flickering. These mirror
@@ -67,6 +110,7 @@ pub struct LayoutState {
     pub files_split_ratio: f32,
 }
 
+fn default_node_width_ratio() -> f32 { 0.42 }
 fn default_files_split_ratio() -> f32 { 0.5 }
 fn default_true() -> bool { true }
 fn default_color_timeline_h() -> f32 { 112.0 }
@@ -92,6 +136,8 @@ impl Default for LayoutState {
             color_panel_height: default_color_panel_height(),
             color_viewer_height_ratio: default_color_viewer_ratio(),
             color_inspector_width: default_color_inspector_width(),
+            node_graph_placement: NodeGraphPlacement::Below,
+            node_width_ratio: default_node_width_ratio(),
             browser_visible: true,
             inspector_visible: true,
             files_pinned: false,
@@ -311,5 +357,71 @@ mod tests {
         });
         let loaded: LayoutState = serde_json::from_value(json).expect("missing snap is OK");
         assert_eq!(loaded.snap, SnapConfig::default());
+    }
+}
+
+#[cfg(test)]
+mod node_layout_tests {
+    use super::*;
+
+    #[test]
+    fn placement_and_split_survive_save_and_old_layouts_default_below() {
+        let layout = LayoutState { node_graph_placement: NodeGraphPlacement::Right, node_width_ratio: 0.55, ..Default::default() };
+        let mut value = serde_json::to_value(layout).unwrap();
+        let restored: LayoutState = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(restored.node_graph_placement, NodeGraphPlacement::Right);
+        assert_eq!(restored.node_width_ratio, 0.55);
+        value.as_object_mut().unwrap().remove("node_graph_placement");
+        value.as_object_mut().unwrap().remove("node_width_ratio");
+        let old: LayoutState = serde_json::from_value(value).unwrap();
+        assert_eq!(old.node_graph_placement, NodeGraphPlacement::Below);
+        assert_eq!(old.node_width_ratio, 0.42);
+    }
+
+    #[test]
+    fn browser_borrow_restores_visible_and_hidden_panels() {
+        for original in [false, true] {
+            let mut borrow = NodeBrowserBorrow::default();
+            let mut visible = original;
+            borrow.enter_if_active(true, &mut visible);
+            assert!(!visible);
+            for _ in 0..3 { borrow.enter_if_active(true, &mut visible); }
+            borrow.leave_if_inactive(false, &mut visible);
+            assert_eq!(visible, original);
+        }
+    }
+
+    #[test]
+    fn reopening_is_respected_even_when_user_closes_again() {
+        let mut borrow = NodeBrowserBorrow::default();
+        let mut visible = true;
+        borrow.enter_if_active(true, &mut visible);
+        visible = true; // rail, menu or Reveal in Browser
+        borrow.enter_if_active(true, &mut visible);
+        assert!(visible);
+        visible = false;
+        borrow.manual_override();
+        borrow.enter_if_active(true, &mut visible);
+        borrow.leave_if_inactive(false, &mut visible);
+        assert!(!visible);
+        // A deliberate new entry borrows again, not every idle frame.
+        visible = true;
+        borrow.enter_if_active(true, &mut visible);
+        assert!(!visible);
+        borrow.leave_if_inactive(false, &mut visible);
+        assert!(visible);
+    }
+
+    #[test]
+    fn nested_node_borrow_is_released_before_workspace_restore() {
+        let mut visible = true;
+        let workspace_previous = visible;
+        visible = false; // Colour borrows first
+        let mut nodes = NodeBrowserBorrow::default();
+        nodes.enter_if_active(true, &mut visible);
+        nodes.leave_if_inactive(false, &mut visible);
+        assert!(!visible);
+        visible = workspace_previous;
+        assert!(visible);
     }
 }

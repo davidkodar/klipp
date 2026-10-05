@@ -32,6 +32,8 @@ pub(crate) struct LayoutRects {
     pub toggle_bar_rect: egui::Rect,
     pub scopes_rect: egui::Rect,
     pub nodes_rect: egui::Rect,
+    pub nodes_resizer_rect: egui::Rect,
+    pub nodes_on_right: bool,
 }
 
 /// Compute all panel rects from the full available rect, layout state, and
@@ -111,7 +113,10 @@ pub(crate) fn compute_layout(
     // strip stay gated to Color since they're Color-specific tooling.
     let in_color_ws = state.show_color_panel;
     let show_scopes_bar = state.scopes_docked();
-    let show_nodes_bar = in_color_ws && state.show_node_strip;
+    let nodes_on_right = in_color_ws && state.show_node_strip
+        && layout.node_graph_placement == crate::layout_state::NodeGraphPlacement::Right
+        && center_w >= 640.0;
+    let show_nodes_bar = in_color_ws && state.show_node_strip && !nodes_on_right;
 
     // In Color workspace: allocate bottom space for toggle + scopes + nodes
     // Use ratio to split between viewer+timeline and bottom panels
@@ -148,7 +153,7 @@ pub(crate) fn compute_layout(
         egui::pos2(center_left, toggle_bar_rect.max.y),
         egui::vec2(center_w, scopes_h),
     );
-    let nodes_rect = egui::Rect::from_min_size(
+    let mut nodes_rect = egui::Rect::from_min_size(
         egui::pos2(center_left, scopes_rect.max.y),
         egui::vec2(center_w, nodes_h),
     );
@@ -229,13 +234,28 @@ pub(crate) fn compute_layout(
     //
     // A single-viewer layout hands the whole row to whichever viewer
     // `viewer_mode` names and leaves the other with no width.
+    let mut nodes_resizer_rect = egui::Rect::NOTHING;
+    let viewer_w = if nodes_on_right {
+        let usable = center_w - theme::RESIZER_THICKNESS;
+        let node_w = (usable * layout.node_width_ratio.clamp(0.0, 1.0))
+            .clamp(240.0, usable - 320.0);
+        let width = usable - node_w;
+        nodes_resizer_rect = egui::Rect::from_min_max(
+            egui::pos2(center_left + width, viewer_row_top),
+            egui::pos2(center_left + width + theme::RESIZER_THICKNESS, viewer_row_bottom),
+        );
+        nodes_rect = egui::Rect::from_min_max(
+            nodes_resizer_rect.right_top(), egui::pos2(center_left + center_w, viewer_row_bottom),
+        );
+        width
+    } else { center_w };
     let viewer_gutter = theme::RESIZER_THICKNESS;
     let full_row = egui::Rect::from_min_max(
         egui::pos2(center_left, viewer_row_top),
-        egui::pos2(center_left + center_w, viewer_row_bottom),
+        egui::pos2(center_left + viewer_w, viewer_row_bottom),
     );
     let (source_viewer_rect, viewer_rect) = if state.viewers_side_by_side() {
-        let half_w = ((center_w - viewer_gutter) * 0.5).max(0.0);
+        let half_w = ((viewer_w - viewer_gutter) * 0.5).max(0.0);
         (
             egui::Rect::from_min_max(
                 egui::pos2(center_left, viewer_row_top),
@@ -243,7 +263,7 @@ pub(crate) fn compute_layout(
             ),
             egui::Rect::from_min_max(
                 egui::pos2(center_left + half_w + viewer_gutter, viewer_row_top),
-                egui::pos2(center_left + center_w, viewer_row_bottom),
+                egui::pos2(center_left + viewer_w, viewer_row_bottom),
             ),
         )
     } else if !state.single_viewer_is_program() && state.viewer_mode == klipp_core::ViewerMode::Source {
@@ -269,6 +289,8 @@ pub(crate) fn compute_layout(
         toggle_bar_rect,
         scopes_rect,
         nodes_rect,
+        nodes_resizer_rect,
+        nodes_on_right,
     }
 }
 
@@ -497,5 +519,67 @@ mod tests {
         assert!(rects.timeline_rect.max.y <= rects.statusbar_rect.min.y);
         // Browser and inspector should not overlap
         assert!(rects.browser_rect.max.x <= rects.inspector_rect.min.x);
+    }
+}
+
+#[cfg(test)]
+mod side_node_tests {
+    use super::*;
+    use crate::layout_state::NodeGraphPlacement;
+
+    #[test]
+    fn side_nodes_keep_viewers_scopes_and_inspector_separate() {
+        for width in [1024.0, 1280.0, 1920.0, 3072.0] {
+            for browser in [false, true] {
+                for dual in [false, true] {
+                    for scopes in [false, true] {
+                        for ratio in [0.0, 0.42, 1.0] {
+                            let full = egui::Rect::from_min_size(egui::pos2(20.0, 30.0), egui::vec2(width, 900.0));
+                            let layout = LayoutState { node_graph_placement: NodeGraphPlacement::Right, node_width_ratio: ratio, ..Default::default() };
+                            let mut state = AppState { show_color_panel: true, show_node_strip: true,
+                                show_browser_panel: browser, show_scopes: scopes, color_dual_viewers: dual,
+                                active_workspace: crate::state::Workspace::Color, ..Default::default() };
+                            let r = compute_layout(full, &layout, &state);
+                            let center_w = r.right_resizer_rect.left() - r.left_resizer_rect.right();
+                            assert_eq!(r.nodes_on_right, center_w >= 640.0);
+                            assert!(full.contains_rect(r.nodes_rect));
+                            assert!(r.nodes_rect.width() > 0.0 && r.nodes_rect.height() > 0.0);
+                            assert!(r.nodes_rect.right() <= r.inspector_rect.left());
+                            if r.nodes_on_right {
+                                assert!(r.viewer_rect.right() <= r.nodes_resizer_rect.left());
+                                assert_eq!(r.nodes_resizer_rect.right(), r.nodes_rect.left());
+                                assert_eq!(r.nodes_rect.top(), r.viewer_rect.top());
+                                assert_eq!(r.nodes_rect.bottom(), r.viewer_rect.bottom());
+                                assert!(r.nodes_rect.width() >= 239.9);
+                                let viewer_span = r.nodes_resizer_rect.left() - r.left_resizer_rect.right();
+                                assert!(viewer_span >= 319.9);
+                                assert!((r.timeline_rect.width() - center_w).abs() < 0.01);
+                                if dual { assert!((r.source_viewer_rect.width() - r.viewer_rect.width()).abs() < 0.01); }
+                                state.show_node_strip = false;
+                                let hidden = compute_layout(full, &layout, &state);
+                                assert_eq!(r.timeline_rect, hidden.timeline_rect);
+                                assert_eq!(r.scopes_rect, hidden.scopes_rect);
+                            } else {
+                                assert!(!r.nodes_resizer_rect.is_positive());
+                                assert!(r.nodes_rect.top() >= r.timeline_rect.bottom());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn below_remains_the_default_and_resize_fallback_preserves_preference() {
+        let mut layout = LayoutState::default();
+        let state = AppState { show_color_panel: true, show_node_strip: true, show_browser_panel: false, ..Default::default() };
+        let rect = |w| egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, 1080.0));
+        assert!(!compute_layout(rect(1920.0), &layout, &state).nodes_on_right);
+        layout.node_graph_placement = NodeGraphPlacement::Right;
+        assert!(compute_layout(rect(1920.0), &layout, &state).nodes_on_right);
+        assert!(!compute_layout(rect(900.0), &layout, &state).nodes_on_right);
+        assert_eq!(layout.node_graph_placement, NodeGraphPlacement::Right);
+        assert!(compute_layout(rect(1920.0), &layout, &state).nodes_on_right);
     }
 }

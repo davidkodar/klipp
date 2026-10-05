@@ -434,6 +434,9 @@ impl Default for NodeGraphV2Panel {
 }
 
 impl NodeGraphV2Panel {
+    /// Reframe the graph after moving its panel to a different dock.
+    pub fn request_fit(&mut self) { self.fit_pending = true; }
+
     /// Capture the current pan + zoom into bookmark slot `slot`
     /// (0..8 → hotkeys 1..9). Out-of-range slots are silently
     /// ignored. Used by the command palette / toolbar entries to
@@ -562,7 +565,7 @@ impl NodeGraphV2Panel {
         let mut toolbar_ui = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(toolbar_rect)
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                .layout(egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true)),
         );
         toolbar_ui.add_space(6.0);
         // ── Group 1: view controls ──
@@ -749,7 +752,10 @@ impl NodeGraphV2Panel {
                 ),
             ),
         };
-        let menu_resp = toolbar_ui.add_enabled_ui(keeps_versions, |ui| ui.menu_button(menu_label, |mb_ui| {
+        // Keep this widget directly in the wrapping row. A nested scope
+        // measures against the remaining row width and can turn the menu
+        // label into a tall, clipped column before the parent wraps it.
+        let menu_resp = if keeps_versions { toolbar_ui.menu_button(menu_label, |mb_ui| {
             // Existing versions — click to switch.
             for (i, name) in grade_version_names.iter().enumerate() {
                 let marker = if Some(i) == active_grade_version { "●" } else { "○" };
@@ -783,11 +789,13 @@ impl NodeGraphV2Panel {
                     mb_ui.close_menu();
                 }
             }
-        })).inner;
+        }).response } else {
+            toolbar_ui.add_enabled(false, egui::Button::new(menu_label))
+        };
         if keeps_versions {
-            menu_resp.response.on_hover_text(menu_tooltip);
+            menu_resp.on_hover_text(menu_tooltip);
         } else {
-            menu_resp.response.on_disabled_hover_text("Versions are kept per clip; the timeline grade has none. Save it as a Look to keep a copy.");
+            menu_resp.on_disabled_hover_text("Versions are kept per clip; the timeline grade has none. Save it as a Look to keep a copy.");
         }
         toolbar_ui.add_space(8.0);
         // Solo indicator — only visible when a node is currently
@@ -833,8 +841,13 @@ impl NodeGraphV2Panel {
             self.pan = egui::Vec2::ZERO;
         }
 
+        // Side docks can be narrow. Let the toolbar wrap, then reserve
+        // its actual height so every control remains above the canvas.
+        ui.add_space((toolbar_ui.min_rect().height() - toolbar_h).max(0.0));
+        let canvas_h = ui.available_height().max(0.0);
+        if canvas_h < 1.0 { return cmds; }
         let (canvas_rect, canvas_resp) = ui.allocate_exact_size(
-            egui::vec2(avail.x, (avail.y - toolbar_h).max(80.0)),
+            egui::vec2(avail.x, canvas_h),
             egui::Sense::click_and_drag(),
         );
         let painter = ui.painter_at(canvas_rect);
@@ -4861,5 +4874,45 @@ mod rename_tests {
             cmds.iter().any(|c| matches!(c, AppCommand::RenameNode { node_id, label, .. } if *node_id == node && label == "Skin")),
             "Enter names it: {cmds:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod dock_toolbar_tests {
+    use super::*;
+
+    #[test]
+    fn narrow_docks_keep_toolbar_actions_visible() {
+        for width in [240.0, 320.0, 480.0, 586.0, 800.0] {
+            let ctx = egui::Context::default();
+            let mut panel = NodeGraphV2Panel::default();
+            let mut graph = NodeGraph::default();
+            graph.ensure_corrector();
+            let theme = KlippTheme::default();
+            theme.apply_fonts_with_size(&ctx, 12.0);
+            let clip = ClipId::new();
+            for _ in 0..3 {
+                let out = ctx.run(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 600.0))),
+                    ..Default::default()
+                }, |ctx| {
+                    egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                        panel.show(ui, &mut None, &mut Default::default(), &mut graph, clip, &theme,
+                            &Default::default(), 0, &mut Vec::new(), &mut Vec::new(), &[], Some(&[]), None,
+                            0.0, false, 0.0, None);
+                    });
+                });
+                let texts: Vec<_> = out.shapes.iter().filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some((t.galley.text(), egui::Rect::from_min_size(t.pos, t.galley.size()), s.clip_rect)),
+                    _ => None,
+                }).collect();
+                for label in ["Fit", "1:1", "Auto-layout", "+ Save version"] {
+                    let (_, rect, clip) = texts.iter().find(|(t, _, _)| t.starts_with(label)).unwrap_or_else(|| panic!("missing {label}"));
+                    assert!(rect.left() >= -1.0 && rect.right() <= width + 1.0, "{width}: {label} at {rect:?}");
+                    assert!(clip.expand(1.0).contains_rect(*rect), "{width}: {label} clipped");
+                    assert!(rect.bottom() < 100.0, "{width}: {label} creates an oversized toolbar: {rect:?}");
+                }
+            }
+        }
     }
 }

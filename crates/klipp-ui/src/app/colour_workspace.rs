@@ -24,6 +24,7 @@ impl KlippApp {
             flexible_h,
             toggle_bar_rect,
             nodes_rect,
+            nodes_resizer_rect,
             bottom_scope_cursor,
         } = p;
         let theme = self.theme.clone();
@@ -88,8 +89,18 @@ impl KlippApp {
             self.render_color_ws_scope_settings_dropdown(ctx, ui, toggle_bar_rect, &theme);
         }
 
+        if nodes_resizer_rect.is_positive() {
+            let delta = resizer::vertical_resizer(ui, nodes_resizer_rect, &theme);
+            if delta != 0.0 {
+                let usable = center_w - theme::RESIZER_THICKNESS;
+                let width = (nodes_rect.width() - delta).clamp(240.0, usable - 320.0);
+                self.layout.node_width_ratio = width / usable;
+                self.layout_dirty = true;
+            }
+        }
+
         // Node strip panel — read live state
-        if self.state.show_node_strip {
+        if self.state.show_node_strip && nodes_rect.is_positive() {
             self.render_color_ws_node_strip(ui, all_cmds, nodes_rect, &theme);
         }
     }
@@ -120,12 +131,24 @@ impl KlippApp {
                     ui.ctx().request_repaint();
                 }
                 if ui.selectable_label(self.state.show_node_strip, "Nodes")
-                    .on_hover_text("Show / hide the node-graph strip below the timeline")
+                    .on_hover_text("Show / hide the node graph")
                     .clicked()
                 {
                     self.state.show_node_strip = !self.state.show_node_strip;
                     ui.ctx().request_repaint();
                 }
+                ui.menu_button("▾", |ui| {
+                    use crate::layout_state::NodeGraphPlacement;
+                    for (placement, label) in [(NodeGraphPlacement::Below, "Below viewer"), (NodeGraphPlacement::Right, "Right of viewer")] {
+                        if ui.selectable_label(self.layout.node_graph_placement == placement, label).clicked() {
+                            self.layout.node_graph_placement = placement;
+                            self.state.show_node_strip = true;
+                            self.layout_dirty = true;
+                            ui.close_menu();
+                        }
+                    }
+                    ui.label(egui::RichText::new("Compact windows place nodes below.").small().color(theme.text_dim));
+                }).response.on_hover_text("Node graph placement");
                 ui.separator();
                 {
                     use crate::state::ColorToolsPosition;
@@ -909,5 +932,6 @@ pub(super) struct ColorWsParams {
     pub(super) flexible_h: f32,
     pub(super) toggle_bar_rect: egui::Rect,
     pub(super) nodes_rect: egui::Rect,
+    pub(super) nodes_resizer_rect: egui::Rect,
     pub(super) bottom_scope_cursor: Option<crate::state::ScopeCursorData>,
 }

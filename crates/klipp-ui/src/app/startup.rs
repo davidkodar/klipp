@@ -195,6 +195,8 @@ impl KlippApp {
             last_graded_playhead: None,
             graded_positions: std::collections::HashMap::new(),
             browser_before_workspace: None,
+            node_browser_borrow: Default::default(),
+            nodes_were_on_right: false,
             last_workspace: crate::state::Workspace::default(),
             hb_max_gap: std::time::Duration::ZERO,
             unsaved_save_waiting: false,
