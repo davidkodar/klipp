@@ -787,6 +787,29 @@ impl KlippApp {
                 self.spawn_audio_sync(*clip_id);
                 true
             }
+            // Auto Align Audio (#615).
+            AppCommand::OpenAutoAlignAudio { reference, recording } => {
+                let pair = crate::auto_align::AlignPair { reference: *reference, recording: *recording };
+                self.state.auto_align = Some((pair, crate::auto_align::AlignMethod::Waveform));
+                true
+            }
+            AppCommand::AutoAlignAudio { reference, recording, by_timecode } => {
+                let pair = crate::auto_align::AlignPair { reference: *reference, recording: *recording };
+                if *by_timecode {
+                    match crate::auto_align::timecode_position(self.state.sequence(), &self.state.media_pool, pair) {
+                        Ok(new_timeline_in) => {
+                            self.send_commands(vec![AppCommand::MoveClip { clip_id: *recording, new_timeline_in }]);
+                            self.state.toast.show(format!("Aligned by timecode: the recording starts at {:.2} s", new_timeline_in.to_secs_f64()));
+                        }
+                        Err(why) => self.state.toast.show(format!("Not aligned: {why}")),
+                    }
+                } else if let Some(why) = crate::auto_align::waveform_unavailable(self.state.sequence(), &self.state.media_pool, pair) {
+                    self.state.toast.show(format!("Not aligned: {why}"));
+                } else {
+                    self.spawn_audio_sync_between(*reference, *recording, true);
+                }
+                true
+            }
             AppCommand::SetAudioReferenceByMedia { media_id } => {
                 // Resolve to the first timeline clip using this media.
                 // The by-media variants (F-160) let the bin context menu
@@ -872,6 +895,43 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            // A track's colour (#922), shown on its header.
+            AppCommand::SetTrackColourLabel { track_index, label } => {
+                if let Some(track) = self.state.sequence_mut().tracks.get_mut(*track_index) {
+                    track.colour_label = *label;
+                    self.state.dirty = true;
+                }
+                true
+            }
+            // A track moved up or down among tracks of its kind (#922):
+            // its order is the composite's, so the engine is told.
+            AppCommand::MoveTrack { from, to } => {
+                let seq = self.state.sequence_mut();
+                if move_track(&mut seq.tracks, *from, *to) {
+                    seq.renumber_tracks();
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                }
+                true
+            }
+            AppCommand::SetTrackChannelWaveforms { track_index, on } => {
+                if let Some(track) = self.state.sequence_mut().tracks.get_mut(*track_index) {
+                    track.channel_waveforms = *on;
+                    self.state.dirty = true;
+                }
+                true
+            }
+            AppCommand::SplitToMono { clip_id } => {
+                match split_to_mono(self.state.sequence_mut(), *clip_id) {
+                    Ok(()) => {
+                        self.state.dirty = true;
+                        self.sync_sequence_to_engine();
+                        self.state.toast.show("Split to mono: the left channel stays, the right is on the track below");
+                    }
+                    Err(why) => self.state.toast.show(why),
+                }
+                true
+            }
             AppCommand::SetTrackCustomHeight { track_id, height } => {
                 self.state.timeline_track_scale = 1.0;
                 let seq = self.state.sequence_mut();
@@ -933,3 +993,122 @@ impl KlippApp {
         }
     }
 }
+
+/// Move the track at `from` to `to` among `tracks`, when both are tracks
+/// of the same kind and differ (#922). Returns whether it moved.
+pub(super) fn move_track(tracks: &mut Vec<klipp_timeline::Track>, from: usize, to: usize) -> bool {
+    if from == to || from >= tracks.len() || to >= tracks.len() || tracks[from].kind != tracks[to].kind {
+        return false;
+    }
+    let track = tracks.remove(from);
+    tracks.insert(to, track);
+    true
+}
+
+/// Split a stereo clip on an audio track into its two channels (#922):
+/// the clip plays its left channel, and a copy of it playing the right one
+/// goes on the first audio track below with room for it, or on a new one.
+pub(super) fn split_to_mono(seq: &mut klipp_timeline::Sequence, clip_id: klipp_core::ClipId) -> Result<(), String> {
+    use klipp_timeline::{ChannelConfig, TrackKind};
+    let (ti, ci) = seq.find_clip(clip_id).ok_or("the clip is not on the timeline")?;
+    if seq.tracks[ti].kind != TrackKind::Audio {
+        return Err("Split to Mono is for a clip on an audio track".into());
+    }
+    if seq.tracks[ti].locked {
+        return Err(format!("{} is locked", seq.tracks[ti].name));
+    }
+    let left = &mut seq.tracks[ti].clips[ci];
+    left.channel_config = ChannelConfig::LeftOnly;
+    let mut right = left.clone();
+    right.id = klipp_core::ClipId::new();
+    right.channel_config = ChannelConfig::RightOnly;
+    right.linked_clip_id = None;
+    let (start, end) = (right.timeline_in, right.timeline_out);
+    let free = |t: &klipp_timeline::Track| t.kind == TrackKind::Audio && !t.locked && t.clips.iter().all(|c| c.timeline_out <= start || c.timeline_in >= end);
+    let below = (ti + 1..seq.tracks.len()).find(|&i| free(&seq.tracks[i]));
+    let target = match below {
+        Some(i) => i,
+        None => {
+            let name = seq.next_track_name(TrackKind::Audio);
+            seq.tracks.insert(ti + 1, klipp_timeline::Track::new(&name, TrackKind::Audio));
+            ti + 1
+        }
+    };
+    let track = &mut seq.tracks[target];
+    let at = track.clips.partition_point(|c| c.timeline_in < start);
+    track.clips.insert(at, right);
+    seq.renumber_tracks();
+    Ok(())
+}
+
+#[cfg(test)]
+mod track_tests {
+    use super::{move_track, split_to_mono};
+    use klipp_timeline::{ChannelConfig, Clip, Sequence, Track, TrackKind};
+
+    fn t(secs: i64) -> klipp_core::Timecode {
+        klipp_core::Timecode { value: secs * 25, rate: 25 }
+    }
+
+    fn seq_with_audio(clips: usize) -> (Sequence, Vec<klipp_core::ClipId>) {
+        let mut seq = Sequence::new_default();
+        seq.tracks.clear();
+        seq.tracks.push(Track::new("Video 1", TrackKind::Video));
+        let mut a = Track::new("Audio 1", TrackKind::Audio);
+        let mut ids = Vec::new();
+        for i in 0..clips {
+            let c = Clip::media(klipp_core::MediaId::new(), t(i as i64 * 5), t(i as i64 * 5 + 4), t(0), t(4));
+            ids.push(c.id);
+            a.clips.push(c);
+        }
+        seq.tracks.push(a);
+        (seq, ids)
+    }
+
+    #[test]
+    fn a_track_moves_among_its_kind_only() {
+        let (mut seq, _) = seq_with_audio(0);
+        seq.tracks.push(Track::new("Audio 2", TrackKind::Audio));
+        let a2 = seq.tracks[2].id;
+        assert!(move_track(&mut seq.tracks, 2, 1));
+        assert_eq!(seq.tracks[1].id, a2, "Audio 2 is now above Audio 1");
+        assert!(!move_track(&mut seq.tracks, 0, 1), "a video track does not go among the audio tracks");
+        assert!(!move_track(&mut seq.tracks, 1, 1));
+        assert!(!move_track(&mut seq.tracks, 1, 9));
+    }
+
+    #[test]
+    fn split_to_mono_keeps_the_left_and_puts_the_right_below() {
+        let (mut seq, ids) = seq_with_audio(1);
+        split_to_mono(&mut seq, ids[0]).unwrap();
+        assert_eq!(seq.tracks.len(), 3, "a new audio track for the right channel");
+        let left = &seq.tracks[1].clips[0];
+        let right = &seq.tracks[2].clips[0];
+        assert_eq!((left.id, left.channel_config), (ids[0], ChannelConfig::LeftOnly));
+        assert_eq!(right.channel_config, ChannelConfig::RightOnly);
+        assert_ne!(right.id, left.id);
+        assert_eq!((right.timeline_in, right.timeline_out), (left.timeline_in, left.timeline_out), "at the same time");
+    }
+
+    #[test]
+    fn split_to_mono_uses_room_on_a_track_below() {
+        let (mut seq, ids) = seq_with_audio(1);
+        let mut below = Track::new("Audio 2", TrackKind::Audio);
+        below.clips.push(Clip::media(klipp_core::MediaId::new(), t(10), t(12), t(0), t(2)));
+        seq.tracks.push(below);
+        split_to_mono(&mut seq, ids[0]).unwrap();
+        assert_eq!(seq.tracks.len(), 3, "no new track: Audio 2 is free at 0..4");
+        assert_eq!(seq.tracks[2].clips.len(), 2);
+        assert_eq!(seq.tracks[2].clips[0].channel_config, ChannelConfig::RightOnly, "in time order, before the clip at 10 s");
+    }
+
+    #[test]
+    fn split_to_mono_refuses_a_picture_clip() {
+        let (mut seq, _) = seq_with_audio(0);
+        let pic = Clip::media(klipp_core::MediaId::new(), t(0), t(2), t(0), t(2));
+        let id = pic.id;
+        seq.tracks[0].clips.push(pic);
+        assert!(split_to_mono(&mut seq, id).is_err());
+    }
+}
+

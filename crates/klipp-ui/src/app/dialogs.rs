@@ -734,6 +734,57 @@ impl KlippApp {
             }
         }
 
+        // 4a4. Auto Align Audio (#615): the two files, the method, and why
+        // a method cannot run; Sync moves the recording, Cancel nothing.
+        if let Some((pair, mut method)) = self.state.auto_align {
+            use crate::auto_align::{self, AlignMethod};
+            let name = |id: klipp_core::ClipId| {
+                self.state.sequence().find_clip(id)
+                    .and_then(|(t, c)| self.state.sequence().tracks[t].clips[c].media_id())
+                    .and_then(|m| self.state.media_pool.get(&m))
+                    .map(|m| m.filename.clone())
+                    .unwrap_or_else(|| "(missing)".into())
+            };
+            let (camera, recording) = (name(pair.reference), name(pair.recording));
+            let waveform_no = auto_align::waveform_unavailable(self.state.sequence(), &self.state.media_pool, pair);
+            let timecode_no = auto_align::timecode_position(self.state.sequence(), &self.state.media_pool, pair).err();
+            let mut open = true;
+            let mut close = false;
+            egui::Window::new("Auto Align Audio")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(format!("Reference (stays): {camera}"));
+                    ui.label(format!("Recording (moves): {recording}"));
+                    ui.add_space(6.0);
+                    for (m, label, why) in [(AlignMethod::Waveform, "Waveform", &waveform_no), (AlignMethod::Timecode, "Timecode", &timecode_no)] {
+                        ui.add_enabled_ui(why.is_none(), |ui| {
+                            ui.radio_value(&mut method, m, label);
+                        });
+                        if let Some(why) = why {
+                            ui.label(egui::RichText::new(format!("    {label} cannot run: {why}")).weak().size(11.0));
+                        }
+                    }
+                    let can = match method {
+                        AlignMethod::Waveform => waveform_no.is_none(),
+                        AlignMethod::Timecode => timecode_no.is_none(),
+                    };
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(can, egui::Button::new("Sync")).clicked() {
+                            cmds.push(AppCommand::AutoAlignAudio { reference: pair.reference, recording: pair.recording, by_timecode: method == AlignMethod::Timecode });
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            self.state.auto_align = if close || !open { None } else { Some((pair, method)) };
+        }
+
         // 4b. Export dialog
         let export_cmds = self.show_export_dialog(ctx);
         cmds.extend(export_cmds);

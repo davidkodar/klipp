@@ -15,6 +15,10 @@ pub struct AudioCacheEntry {
     pub duration_secs: f64,
     /// Waveform peaks: (min, max) per ~256 samples for timeline display.
     pub peaks: Vec<(f32, f32)>,
+    /// The same peaks for each channel, left and right, for a track that
+    /// shows its channels apart (#922). `None` for a cache made before
+    /// they were written, until the media is conformed again.
+    pub channel_peaks: Option<[Vec<(f32, f32)>; 2]>,
 }
 
 /// Errors from audio conforming.
@@ -258,6 +262,15 @@ pub fn conform_audio_to_paths(
     std::fs::write(&peaks_tmp, peaks_bytes)?;
     std::fs::rename(&peaks_tmp, peaks_path)?;
 
+    // Each channel's peaks too, beside them (#922): left and right
+    // interleaved per bin.
+    let channel_peaks = generate_channel_peaks(&all_samples, CONFORM_CHANNELS as usize, PEAK_BIN_SIZE);
+    let flat: Vec<f32> = channel_peaks[0].iter().zip(&channel_peaks[1]).flat_map(|(&(a, b), &(c, d))| [a, b, c, d]).collect();
+    let channel_path = channel_peaks_path(peaks_path);
+    let channel_tmp = channel_path.with_extension("peaks2.tmp");
+    std::fs::write(&channel_tmp, bytemuck::cast_slice::<f32, u8>(&flat))?;
+    std::fs::rename(&channel_tmp, &channel_path)?;
+
     let elapsed = start.elapsed();
     let pcm_size_mb = pcm_bytes.len() as f64 / (1024.0 * 1024.0);
     info!(
@@ -277,7 +290,43 @@ pub fn conform_audio_to_paths(
         channels: CONFORM_CHANNELS,
         duration_secs,
         peaks,
+        channel_peaks: Some(channel_peaks),
     })
+}
+
+/// Where a peaks file's per-channel peaks are kept (#922).
+pub fn channel_peaks_path(peaks_path: &Path) -> PathBuf {
+    peaks_path.with_extension("peaks2")
+}
+
+/// Each channel's (min, max) per `bin_size` frames: the first channel and
+/// the second, or the first twice for mono.
+fn generate_channel_peaks(samples: &[f32], channels: usize, bin_size: usize) -> [Vec<(f32, f32)>; 2] {
+    let channels = channels.max(1);
+    let frames = samples.len() / channels;
+    let bins = frames.div_ceil(bin_size.max(1));
+    let peaks_of = |channel: usize| -> Vec<(f32, f32)> {
+        (0..bins)
+            .map(|bin| {
+                let (start, end) = (bin * bin_size, ((bin + 1) * bin_size).min(frames));
+                (start..end).map(|i| samples[i * channels + channel]).fold((0.0f32, 0.0f32), |(lo, hi), s| (lo.min(s), hi.max(s)))
+            })
+            .collect()
+    };
+    [peaks_of(0), peaks_of(1.min(channels - 1))]
+}
+
+/// Load per-channel peaks written by a conform (#922).
+pub fn load_channel_peaks(path: &Path) -> Result<[Vec<(f32, f32)>; 2], std::io::Error> {
+    let bytes = std::fs::read(path)?;
+    if bytes.len() % 16 != 0 {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "channel peaks file size not aligned to bins"));
+    }
+    let mut floats = vec![0f32; bytes.len() / 4];
+    bytemuck::cast_slice_mut::<f32, u8>(&mut floats).copy_from_slice(&bytes);
+    let left = floats.chunks_exact(4).map(|c| (c[0], c[1])).collect();
+    let right = floats.chunks_exact(4).map(|c| (c[2], c[3])).collect();
+    Ok([left, right])
 }
 
 /// Generate waveform peaks: (min, max) per `bin_size` mono samples.
@@ -324,6 +373,31 @@ pub fn load_peaks(peaks_path: &Path) -> Result<Vec<(f32, f32)>, std::io::Error> 
     bytemuck::cast_slice_mut::<f32, u8>(&mut floats).copy_from_slice(&bytes);
     let peaks: Vec<(f32, f32)> = floats.chunks_exact(2).map(|c| (c[0], c[1])).collect();
     Ok(peaks)
+}
+
+#[cfg(test)]
+mod channel_peaks_tests {
+    use super::{generate_channel_peaks, load_channel_peaks};
+
+    #[test]
+    fn each_channel_has_its_own_peaks_and_they_round_trip() {
+        // Left loud and positive, right quiet and negative, two bins of two.
+        let samples = [0.9, -0.1, 0.5, -0.2, 0.3, -0.05, 0.8, -0.3];
+        let peaks = generate_channel_peaks(&samples, 2, 2);
+        assert_eq!(peaks[0], vec![(0.0, 0.9), (0.0, 0.8)]);
+        assert_eq!(peaks[1], vec![(-0.2, 0.0), (-0.3, 0.0)]);
+        let path = std::env::temp_dir().join(format!("klipp_channel_peaks_{}.peaks2", std::process::id()));
+        let flat: Vec<f32> = peaks[0].iter().zip(&peaks[1]).flat_map(|(&(a, b), &(c, d))| [a, b, c, d]).collect();
+        std::fs::write(&path, bytemuck::cast_slice::<f32, u8>(&flat)).unwrap();
+        assert_eq!(load_channel_peaks(&path).unwrap(), peaks);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn mono_shows_its_one_channel_on_both_lanes() {
+        let peaks = generate_channel_peaks(&[0.5, -0.4], 1, 2);
+        assert_eq!(peaks[0], peaks[1]);
+    }
 }
 
 #[cfg(test)]

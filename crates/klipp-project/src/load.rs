@@ -542,6 +542,8 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
             track.locked = t.locked;
             track.sync_lock = t.sync_lock;
             track.custom_height = t.custom_height;
+            track.colour_label = t.colour_label;
+            track.channel_waveforms = t.channel_waveforms;
             if let Some(role) = &t.magnetic_role {
                 track.magnetic_role = role.clone();
             }

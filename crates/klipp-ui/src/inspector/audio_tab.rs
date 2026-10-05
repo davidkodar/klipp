@@ -1270,6 +1270,7 @@ pub(crate) const FADE_CURVES: &[FadeCurve] = &[
 
 const CHANNEL_CONFIG_VARIANTS: &[ChannelConfig] = &[
     ChannelConfig::Default, ChannelConfig::MonoDownmix, ChannelConfig::SwapLR,
+    ChannelConfig::LeftOnly, ChannelConfig::RightOnly,
 ];
 
 fn channel_config_label(config: ChannelConfig) -> &'static str {
@@ -1279,6 +1280,8 @@ fn channel_config_label(config: ChannelConfig) -> &'static str {
         ChannelConfig::SwapLR => "Swap L/R",
         ChannelConfig::Surround51 => "5.1 Surround",
         ChannelConfig::Surround71 => "7.1 Surround",
+        ChannelConfig::LeftOnly => "Left Only",
+        ChannelConfig::RightOnly => "Right Only",
     }
 }
 

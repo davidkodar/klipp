@@ -45,6 +45,7 @@
 //!   through `AppCommand` / `AppEvent` (defined in `klipp-core`).
 
 pub mod app;
+pub mod auto_align;
 pub mod audio_plugins_disabled;
 pub mod browser;
 pub mod effect_targets;

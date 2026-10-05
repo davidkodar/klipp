@@ -264,6 +264,8 @@ impl AudioClipShape {
                 ChannelConfig::Default | ChannelConfig::Surround51 | ChannelConfig::Surround71 => 0,
                 ChannelConfig::MonoDownmix => 1,
                 ChannelConfig::SwapLR => 2,
+                ChannelConfig::LeftOnly => 5,
+                ChannelConfig::RightOnly => 6,
             },
             clip_duration_secs: duration_secs,
             volume_keyframes: clip.volume_keyframes.clone(),

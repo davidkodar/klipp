@@ -47,6 +47,9 @@ pub fn label(cmd: &AppCommand) -> Option<&'static str> {
         // Removing a transition, its duration and its alignment record
         // themselves (through the document's transition ops).
         AppCommand::SetTransitionKind { .. } => "Transition Kind",
+        AppCommand::SetTrackColourLabel { .. } => "Track Colour",
+        AppCommand::MoveTrack { .. } => "Move Track",
+        AppCommand::SplitToMono { .. } => "Split to Mono",
         AppCommand::SetTransitionParam { .. } => "Transition Settings",
         _ => return None,
     })

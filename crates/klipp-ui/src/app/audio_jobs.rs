@@ -77,6 +77,7 @@ impl KlippApp {
                                 entry: klipp_media::AudioCacheEntry {
                                     media_id,
                                     pcm_path,
+                                    channel_peaks: klipp_media::audio_cache::load_channel_peaks(&klipp_media::audio_cache::channel_peaks_path(&peaks_path)).ok(),
                                     peaks_path,
                                     sample_rate: 48000,
                                     channels: 2,
@@ -140,15 +141,27 @@ impl KlippApp {
     /// worker pushes `AudioSyncComplete` / `AudioSyncFailed` onto the
     /// proxy event channel, handled by `apply_audio_sync_result`.
     pub(super) fn spawn_audio_sync(&mut self, clip_id: klipp_core::ClipId) {
-        let ref_clip_id = match self.state.audio_reference_clip_id {
-            Some(id) => id,
+        let Some(ref_clip_id) = self.audio_reference_or_say() else { return };
+        self.spawn_audio_sync_between(ref_clip_id, clip_id, false);
+    }
+
+    /// The reference clip set for audio sync, or a toast saying how to set one.
+    fn audio_reference_or_say(&mut self) -> Option<klipp_core::ClipId> {
+        match self.state.audio_reference_clip_id {
+            Some(id) => Some(id),
             None => {
                 self.state.toast.show(
                     "Set an audio reference first: right-click a clip \u{2192} Set as Audio Reference.".to_string(),
                 );
-                return;
+                None
             }
-        };
+        }
+    }
+
+    /// Line `clip_id`'s sound up with `ref_clip_id`'s and move it there.
+    /// `strict` (Auto Align Audio, #615): only each clip's used source range
+    /// is compared, and a match too weak to trust moves nothing.
+    pub(super) fn spawn_audio_sync_between(&mut self, ref_clip_id: klipp_core::ClipId, clip_id: klipp_core::ClipId, strict: bool) {
         if ref_clip_id == clip_id {
             self.state.toast.show(
                 "Target and reference are the same clip \u{2014} pick a different clip to align.".to_string(),
@@ -197,6 +210,8 @@ impl KlippApp {
         // those when resolving the offset so we correlate comparable regions.
         let ref_source_in_secs = ref_clip.source_in.to_secs_f64();
         let tgt_source_in_secs = tgt_clip.source_in.to_secs_f64();
+        let ref_source_out_secs = ref_clip.source_out.to_secs_f64();
+        let tgt_source_out_secs = tgt_clip.source_out.to_secs_f64();
 
         let tx = self.proxy_event_tx.clone();
         self.state.toast.show("Syncing audio\u{2026}".to_string());
@@ -235,8 +250,24 @@ impl KlippApp {
                     let start = ((start_secs.max(0.0)) * sr as f64) as usize;
                     if start >= buf.len() { &[] } else { &buf[start..] }
                 }
-                let ref_slice = slice_from(&ref_full, ref_source_in_secs, SR);
-                let tgt_slice = slice_from(&tgt_full, tgt_source_in_secs, SR);
+                let mut ref_slice = slice_from(&ref_full, ref_source_in_secs, SR);
+                let mut tgt_slice = slice_from(&tgt_full, tgt_source_in_secs, SR);
+                if strict {
+                    // What the timeline plays of each, trims and all.
+                    let keep = |s: &[f32], secs: f64| s.len().min((secs.max(0.0) * SR as f64) as usize);
+                    ref_slice = &ref_slice[..keep(ref_slice, ref_source_out_secs - ref_source_in_secs)];
+                    tgt_slice = &tgt_slice[..keep(tgt_slice, tgt_source_out_secs - tgt_source_in_secs)];
+                    let (offset, confidence) = klipp_analysis::audio_sync::find_sync_offset_scored(ref_slice, tgt_slice, SR, 60.0);
+                    if confidence < klipp_core::sync::MIN_AUDIO_CONFIDENCE {
+                        let _ = tx.send(AppEvent::AudioSyncFailed {
+                            clip_id,
+                            error: format!("the two sounds do not match well enough to trust (confidence {confidence:.2}); nothing was moved"),
+                        });
+                        return;
+                    }
+                    let _ = tx.send(AppEvent::AudioSyncComplete { clip_id, offset_samples: offset, ref_timeline_in_secs });
+                    return;
+                }
 
                 let offset = find_sync_offset(ref_slice, tgt_slice, SR, 60.0);
                 let _ = tx.send(AppEvent::AudioSyncComplete {

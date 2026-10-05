@@ -7135,6 +7135,13 @@ impl TimelinePanel {
 
                         if first_bin < last_bin {
                             let clip_peaks = &peaks[first_bin..last_bin];
+                            // Each channel apart, left above right, when the
+                            // track asks for it and the cache has them (#922).
+                            let apart = state.sequence().tracks.iter().find(|t| t.id == track_id).is_some_and(|t| t.channel_waveforms);
+                            let channels = state.media_pool.get(&mid).and_then(|m| m.audio_cache.as_ref()).and_then(|c| c.channel_peaks.as_ref())
+                                .filter(|_| apart)
+                                .map(|[l, r]| (&l[first_bin.min(l.len())..last_bin.min(l.len())], &r[first_bin.min(r.len())..last_bin.min(r.len())]))
+                                .filter(|(l, r)| !l.is_empty() && !r.is_empty());
                             // Bright waveform: lighter than background for clear visibility
                             let waveform_color = egui::Color32::from_rgba_premultiplied(
                                 bright_color.r().saturating_add(100),
@@ -7151,8 +7158,15 @@ impl TimelinePanel {
                                 None => clip_rect,
                             };
                             let clip_painter = painter.with_clip_rect(wave_rect);
-                            let center_y = wave_rect.center().y;
-                            let half_h = wave_rect.height() * 0.48; // nearly full height
+                            // One lane, or two (#922): the peaks drawn, the
+                            // line they sit on, and how far they reach.
+                            let lanes: Vec<(&[(f32, f32)], f32, f32)> = match channels {
+                                Some((l, r)) => {
+                                    let quarter = wave_rect.height() * 0.25;
+                                    vec![(l, wave_rect.top() + quarter, quarter * 0.92), (r, wave_rect.bottom() - quarter, quarter * 0.92)]
+                                }
+                                None => vec![(clip_peaks, wave_rect.center().y, wave_rect.height() * 0.48)],
+                            };
                             let w = wave_rect.width();
 
                             // Per-track amplitude zoom (#50). Default 1.0 when
@@ -7203,6 +7217,7 @@ impl TimelinePanel {
                             // e.g. peak=0.003 -> sqrt(0.003)=0.055 -> 5.5% of height (visible!)
                             //      peak=1.0   -> sqrt(1.0)=1.0     -> 100% of height
                             let num_cols = (w as usize).max(1);
+                            for (clip_peaks, center_y, half_h) in lanes {
                             for col in 0..num_cols {
                                 let x = wave_rect.left() + col as f32;
                                 let peak_idx = col * clip_peaks.len() / num_cols;
@@ -7227,6 +7242,7 @@ impl TimelinePanel {
                                         egui::Stroke::new(1.0_f32, waveform_color),
                                     );
                                 }
+                            }
                             }
                         }
                     }
@@ -8825,6 +8841,35 @@ impl TimelinePanel {
                                 ui.close_menu();
                             }
                         }
+                    }
+                }
+
+                // A stereo clip on an audio track into its two channels (#922).
+                let stereo = state.sequence().find_clip(clip_id)
+                    .map(|(ti, ci)| &state.sequence().tracks[ti].clips[ci])
+                    .is_some_and(|clip| {
+                        clip.channel_config == klipp_timeline::ChannelConfig::Default
+                            && clip.media_id().and_then(|m| state.media_pool.get(&m)).is_some_and(|m| m.audio_channels == Some(2))
+                    });
+                if track_kind == Some(TrackKind::Audio)
+                    && stereo
+                    && ui.button("Split to Mono").on_hover_text("The left channel stays here; the right goes on the audio track below").clicked()
+                {
+                    cmds.push(AppCommand::SplitToMono { clip_id });
+                    ui.close_menu();
+                }
+
+                // Auto Align Audio (#615): the camera clip and a separate
+                // recording among the selection, the recording lined up.
+                let mut chosen: Vec<klipp_core::ClipId> = state.selected_clips.clone();
+                chosen.extend(state.selected_clip);
+                if !chosen.contains(&clip_id) {
+                    chosen.push(clip_id);
+                }
+                if let Ok(pair) = crate::auto_align::pair_from_selection(state.sequence(), &chosen) {
+                    if ui.button("Auto Align Audio\u{2026}").on_hover_text("Line the separate recording up with the camera's sound").clicked() {
+                        cmds.push(AppCommand::OpenAutoAlignAudio { reference: pair.reference, recording: pair.recording });
+                        ui.close_menu();
                     }
                 }
 
