@@ -760,23 +760,6 @@ else
     _audit_refused
 fi
 
-_step=lint
-if ! _logged cargo clippy --workspace --all-targets -- -D warnings 9>&-; then
-    printf '\n  pre-push: clippy warned — push refused.\n' >&2
-    printf '            Fix it, or if the lint is wrong for this code, decline\n' >&2
-    printf '            it with a reason: in place with #[allow], or for the\n' >&2
-    printf '            whole workspace under [workspace.lints.clippy].\n\n' >&2
-    exit 1
-fi
-
-_step=docs
-if ! _logged env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps 9>&-; then
-    printf '\n  pre-push: rustdoc warned — push refused.\n' >&2
-    printf '            Usually a [`link`] to something renamed or private, or a\n' >&2
-    printf '            bare [0,1] or Vec<T> in prose that needs backticks.\n\n' >&2
-    exit 1
-fi
-
 # Which crates' tests run (#873). The whole suite ran for every push,
 # whatever it touched: a change to the app's UI ran the colour science's
 # tests too. Now the changed files (this branch against the main it
@@ -785,8 +768,8 @@ fi
 # scripts/affected_crates.py from cargo's own metadata. A change to a
 # file the whole workspace shares (Cargo.lock, assets/, vendor/, this
 # script), or to a path it does not know, runs everything; documentation
-# alone runs no tests. clippy and rustdoc above always cover the whole
-# workspace. And the whole suite runs anyway when it has not passed in
+# alone runs no tests. rustdoc documents the same crates; clippy always
+# covers the whole workspace. And the whole suite runs anyway when it has not passed in
 # KLIPP_GATE_FULL_HOURS (12) hours, so what a narrower run could miss is
 # caught the same day, with its merge; KLIPP_GATE_FULL=1 asks for it.
 _scope_args="--workspace"
@@ -820,6 +803,52 @@ if [ "${KLIPP_GATE_FULL:-}" != "1" ]; then
     fi
     [ -n "${_metafile:-}" ] && rm -f "$_metafile"
 fi
+
+# How long each step took, in the log: what to read when the gate is
+# slow, and what a change to it is measured by.
+_took() {
+    printf '  pre-push: %s took %ss\n' "$1" $(( $(date +%s) - $2 ))
+}
+
+# Line tables instead of full debug info for everything the gate builds.
+# The test binaries are linked with the dev profile's debug info, about
+# 2 GB each, which made linking most of the test build (8 of a full run's
+# 16 minutes) and set the gate's job count by memory, not by cores
+# (gate-jobs.sh). Line tables keep file and line in a failing test's
+# backtrace. The gate builds in its own target, so this rebuilds nothing
+# anyone else uses.
+export CARGO_PROFILE_DEV_DEBUG=line-tables-only
+
+_step=lint
+_t=$(date +%s)
+if ! _logged cargo clippy --workspace --all-targets -- -D warnings 9>&-; then
+    printf '\n  pre-push: clippy warned — push refused.\n' >&2
+    printf '            Fix it, or if the lint is wrong for this code, decline\n' >&2
+    printf '            it with a reason: in place with #[allow], or for the\n' >&2
+    printf '            whole workspace under [workspace.lints.clippy].\n\n' >&2
+    exit 1
+fi
+
+_took clippy "$_t"
+
+# rustdoc documents the crates whose tests run (#873's scope): those a
+# change touches and those built on them. It documented the whole
+# workspace for every push, about 4 of a full run's 16 minutes, though a
+# crate nothing changed in cannot have gained a broken link. A change
+# with no tests to run (documentation) is documented whole, being rare.
+_step=docs
+_t=$(date +%s)
+_doc_args=$_scope_args
+[ "$_scope" = none ] && _doc_args=--workspace
+# shellcheck disable=SC2086 # the crates, one -p each
+if ! _logged env RUSTDOCFLAGS="-D warnings" cargo doc $_doc_args --no-deps 9>&-; then
+    printf '\n  pre-push: rustdoc warned — push refused.\n' >&2
+    printf '            Usually a [`link`] to something renamed or private, or a\n' >&2
+    printf '            bare [0,1] or Vec<T> in prose that needs backticks.\n\n' >&2
+    exit 1
+fi
+_took rustdoc "$_t"
+
 case "$_scope" in
     full) printf '  pre-push: running the whole test suite: %s\n' "$_scope_why" ;;
     packages) printf '  pre-push: running the tests of the crates this touches: %s\n' "$_scope_why" ;;
@@ -848,6 +877,7 @@ if [ "$_scope" = none ]; then
     printf '\n  pre-push: clippy and rustdoc pass; nothing else to run.\n\n'
     exit 0
 fi
+_t=$(date +%s)
 # shellcheck disable=SC2086 # the crates, one -p each
 if ! _logged cargo test $_scope_args --no-run 9>&-; then
     printf '\n  pre-push: the tests did not BUILD — push refused.\n' >&2
@@ -860,9 +890,13 @@ if ! _logged cargo test $_scope_args --no-run 9>&-; then
     exit 1
 fi
 
+_took "the test build" "$_t"
+
 _step=tests
+_t=$(date +%s)
 # shellcheck disable=SC2086 # the crates, one -p each
 if _logged cargo test $_scope_args 9>&-; then
+    _took "the tests" "$_t"
     printf '\n  pre-push: tests pass.\n\n'
     # When the whole suite last passed, for the next gate's scope.
     [ "$_scope" = full ] && [ -n "${_common:-}" ] && date +%s >"$_common/klipp-pre-push.full" 2>/dev/null
