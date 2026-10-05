@@ -2958,6 +2958,7 @@ version = "0.1.0"
 dependencies = [
  "klipp-core",
  "klipp-effects",
+ "klipp-media",
  "klipp-nodes",
  "klipp-project",
  "klipp-timeline",
