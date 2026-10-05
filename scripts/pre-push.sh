@@ -696,13 +696,19 @@ elif command -v cargo-deny >/dev/null 2>&1; then
         printf '\n  pre-push: the advisory list could not be refreshed; checking against the one on disk.\n' >&2
     fi
     # How old the list on disk is: its last fetch, or failing that the
-    # folder itself (deny.toml keeps it in ~/.cargo/advisory-db).
-    _db=${KLIPP_ADVISORY_DB:-$HOME/.cargo/advisory-db}
+    # folder itself. The folder is deny.toml's db-path, so moving it there
+    # moves the check with it (#949 review); cargo-deny's own default when
+    # deny.toml names none.
+    _db=${KLIPP_ADVISORY_DB:-$(sed -n 's/^[[:space:]]*db-path[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' deny.toml 2>/dev/null | head -n 1)}
+    _db=${_db:-${CARGO_HOME:-$HOME/.cargo}/advisory-dbs}
+    case "$_db" in "~"/*) _db="$HOME/${_db#\~/}" ;; esac
     _db_time=$(find "$_db" -maxdepth 3 \( -name FETCH_HEAD -o -name HEAD \) -path '*/.git/*' -printf '%T@\n' 2>/dev/null | sort -n | tail -n 1)
     [ -n "$_db_time" ] || _db_time=$(find "$_db" -maxdepth 1 -mindepth 1 -type d -printf '%T@\n' 2>/dev/null | sort -n | tail -n 1)
     _db_days=
     if [ -n "$_db_time" ]; then
         _db_days=$(( ($(date +%s) - ${_db_time%.*}) / 86400 ))
+    else
+        printf '\n  pre-push: no advisory list found in %s, so its age is not known.\n' "$_db" >&2
     fi
     # Under set -e a failing $(...) would end the gate unsaid: keep its status.
     _deny_status=0
