@@ -2816,6 +2816,20 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 }
                 None => (main, String::new()),
             };
+            // A transition joining a removed clip goes with it (#979): left
+            // behind, it named a clip that was gone, survived saving, and
+            // nothing could remove it. Undo puts it back with its clips.
+            let mut gone = vec![clip.id];
+            if let Some((pti, _, p)) = partner {
+                if !seq.tracks[pti].locked {
+                    gone.push(p.id);
+                }
+            }
+            let transitions = transitions_removed_with(seq, &gone);
+            if !transitions.is_empty() {
+                with = format!("{with}, {} transition{} on it", transitions.len(), if transitions.len() == 1 { "" } else { "s" });
+                edit = EditCommand::Batch(transitions.into_iter().chain(std::iter::once(edit)).collect());
+            }
             // Sync-locked tracks close up with it (#915).
             if *ripple {
                 let mut skip = vec![ti];
@@ -7363,6 +7377,30 @@ fn split_edit(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: Cli
     Ok((what, EditCommand::Batch(edits), vec![out_a.id, in_a.id]))
 }
 
+/// The transitions that join any of the clips `gone`, as the edits that
+/// remove them (#979): a transition belongs to the cut between its two
+/// clips and cannot outlive either. Each restores its clips' fades on undo.
+pub fn transitions_removed_with(seq: &Sequence, gone: &[ClipId]) -> Vec<EditCommand> {
+    let fade = |t: &klipp_timeline::Track, id: ClipId, out: bool| {
+        t.clips.iter().find(|c| c.id == id).map_or(0.0, |c| if out { c.fade_out_secs } else { c.fade_in_secs })
+    };
+    seq.tracks
+        .iter()
+        .enumerate()
+        .flat_map(|(ti, t)| {
+            t.transitions
+                .iter()
+                .filter(|tr| gone.contains(&tr.clip_a_id) || gone.contains(&tr.clip_b_id))
+                .map(move |tr| EditCommand::RemoveTransition {
+                    track_index: ti,
+                    transition: *tr,
+                    old_fade_out_a: fade(t, tr.clip_a_id, true),
+                    old_fade_in_b: fade(t, tr.clip_b_id, false),
+                })
+        })
+        .collect()
+}
+
 /// The new title in `edit` follows the style `name` (#66).
 fn set_followed_style(edit: &mut EditCommand, name: &str) {
     if let EditCommand::AddTitleClip { clip, .. } = edit {
@@ -7991,6 +8029,68 @@ mod tests {
         assert_eq!(view.sequences[0].tracks[2].clips.len(), 2, "the sound stays on its track");
         let audio = seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
         assert!(resolve(&seq, &pool, &mv(audio)).unwrap_err().why.contains("cannot go on it"));
+    }
+
+    /// #979: a transition goes with the clips it joins. Removing both
+    /// clips of a dissolve left it in the sequence naming clips that were
+    /// gone, through saving and every later edit. Now it goes with them,
+    /// the sound's crossfade too, and undo and redo put it back and take
+    /// it away again; the saved sequence has nothing dangling.
+    #[test]
+    fn a_transition_goes_with_the_clips_it_joins() {
+        let (seq, mut pool, _, ia, ib) = fixture();
+        let mut sequences = vec![seq];
+        let mut fps = Fps::new(25, 1);
+        let mut run = |sequences: &mut Vec<Sequence>, pool: &mut MediaPool, ops: &[Op]| -> Vec<EditCommand> {
+            let plan = resolve(&sequences[0], pool, ops).unwrap_or_else(|r| panic!("{r:?}"));
+            let edits: Vec<EditCommand> = plan.steps.into_iter().map(|s| s.edit).collect();
+            let mut view = crate::apply::DocumentView { sequences, active: 0, media_pool: pool, fps: &mut fps };
+            for e in &edits {
+                view.apply_forward(e);
+            }
+            edits
+        };
+        let dangling = |seq: &Sequence| -> usize {
+            seq.tracks.iter().map(|t| t.transitions.iter().filter(|tr| !t.clips.iter().any(|c| c.id == tr.clip_a_id) || !t.clips.iter().any(|c| c.id == tr.clip_b_id)).count()).sum()
+        };
+        let count = |seq: &Sequence| -> usize { seq.tracks.iter().map(|t| t.transitions.len()).sum() };
+        run(&mut sequences, &mut pool, &[Op::Transition { clip_id: ClipRef::Id(ia), kind: "dissolve".into(), secs: 1.0, remove: false }]);
+        let with = count(&sequences[0]);
+        assert!(with >= 1, "a dissolve on the cut");
+        let before = sequences[0].clone();
+        let remove = |id| Op::Remove { clip_id: ClipRef::Id(id), ripple: false, linked: true };
+        let edits = run(&mut sequences, &mut pool, &[remove(ia), remove(ib)]);
+        assert_eq!(count(&sequences[0]), 0, "the transitions went with their clips");
+        assert_eq!(dangling(&sequences[0]), 0);
+        // Saved and read back: nothing names a clip that is gone.
+        let saved: Sequence = serde_json::from_str(&serde_json::to_string(&sequences[0]).unwrap()).unwrap();
+        assert_eq!(dangling(&saved), 0);
+        // Undo: the clips and the dissolve, as they were.
+        {
+            let mut fps = Fps::new(25, 1);
+            let mut view = crate::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+            for e in edits.iter().rev() {
+                view.apply_inverse(e);
+            }
+        }
+        assert_eq!(count(&sequences[0]), with, "undo puts the dissolve back");
+        assert_eq!(serde_json::to_value(&sequences[0].tracks).unwrap(), serde_json::to_value(&before.tracks).unwrap(), "undo restores the tracks exactly");
+        // Redo: gone again.
+        {
+            let mut fps = Fps::new(25, 1);
+            let mut view = crate::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+            for e in &edits {
+                view.apply_forward(e);
+            }
+        }
+        assert_eq!((count(&sequences[0]), dangling(&sequences[0])), (0, 0), "redo takes it away again");
+
+        // Removing only one of the two clips takes the transition too.
+        let (seq, mut pool, _, ia, _) = fixture();
+        let mut sequences = vec![seq];
+        run(&mut sequences, &mut pool, &[Op::Transition { clip_id: ClipRef::Id(ia), kind: "dissolve".into(), secs: 1.0, remove: false }]);
+        run(&mut sequences, &mut pool, &[remove(ia)]);
+        assert_eq!((count(&sequences[0]), dangling(&sequences[0])), (0, 0));
     }
 
     fn fixture() -> (Sequence, MediaPool, MediaId, ClipId, ClipId) {

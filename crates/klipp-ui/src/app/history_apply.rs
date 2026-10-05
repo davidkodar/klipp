@@ -84,7 +84,7 @@ impl KlippApp {
         self.run_document_effects(effects);
     }
 
-    fn apply_edit_forward(&mut self, cmd: &EditCommand) {
+    pub(super) fn apply_edit_forward(&mut self, cmd: &EditCommand) {
         let effects = self.document_view().apply_forward(cmd);
         self.run_document_effects(effects);
     }

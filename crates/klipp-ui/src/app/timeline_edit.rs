@@ -1153,9 +1153,26 @@ impl KlippApp {
             }
         }
 
+        // A transition joining the clip (or its linked partner, which the
+        // ripple delete takes too) goes with it, in the same undo step
+        // (#979): left behind, it named a clip that was gone.
+        let gone: Vec<klipp_core::ClipId> = std::iter::once(clip_id).chain(self.state.sequence().find_clip(clip_id).and_then(|(ti, ci)| self.state.sequence().tracks[ti].clips[ci].linked_clip_id)).collect();
+        let transitions = klipp_document::ops::transitions_removed_with(self.state.sequence(), &gone);
+        // One batch, unless a gesture removing several clips has one open.
+        let own_batch = !transitions.is_empty() && !self.state.active_history_mut().is_batching();
+        if own_batch {
+            self.state.active_history_mut().begin_batch();
+        }
+        for e in &transitions {
+            self.apply_edit_forward(e);
+            self.state.push_history(e.clone());
+        }
         let result = klipp_timeline::magnetic::MagneticEditor::ripple_delete(
             &mut self.state.sequences[self.state.active_sequence_idx], clip_id);
         self.state.push_history(EditCommand::Magnetic(result.command));
+        if own_batch {
+            self.state.active_history_mut().end_batch_as("Remove Clip");
+        }
         if self.state.selected_clip == Some(clip_id) {
             self.state.selected_clip = None;
         }
