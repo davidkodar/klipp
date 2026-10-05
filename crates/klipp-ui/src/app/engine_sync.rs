@@ -106,15 +106,10 @@ impl KlippApp {
         if let Some((ref pregrade, full_w, full_h)) = fb_snapshot {
             if let Some(cid) = self.state.selected_clip {
                 let seq_idx = self.state.active_sequence_idx;
-                if let Some(clip) = self.state.sequences[seq_idx].tracks.iter()
-                    .find_map(|t| t.clips.iter().find(|c| c.id == cid))
-                {
-                    // Inside its grade group's grades, as the engine runs it (#237).
-                    let seq = &self.state.sequences[seq_idx];
-                    let graph = match clip.grade_group.and_then(|g| seq.grade_group(g)).filter(|g| g.grades()) {
-                        Some(group) => std::borrow::Cow::Owned(group.wrap(&clip.node_graph)),
-                        None => std::borrow::Cow::Borrowed(&clip.node_graph),
-                    };
+                // Its grade as the render copy runs it: inside its grade
+                // group's (#237), then its track's (#1060).
+                let seq = &self.state.sequences[seq_idx];
+                if let (Some(clip), Some(graph)) = (seq.tracks.iter().find_map(|t| t.clips.iter().find(|c| c.id == cid)), seq.render_grade(cid)) {
                     let graph = graph.as_ref();
                     if !graph.is_identity() {
                         // Here, and not before: an identity graph gets no
