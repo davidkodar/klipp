@@ -767,6 +767,7 @@ impl KlippApp {
                 AppCommand::TranscribeClip { media_id } => {
                     let info = self.state.media_pool.get(media_id).map(|item| {
                         if item.has_audio {
+                            brief_to_transcription(self.state.sequences.get(self.state.active_sequence_idx).and_then(|s| s.brief.as_ref()));
                             klipp_analysis::service::request_transcription(item);
                         }
                         (item.has_audio, item.filename.clone())

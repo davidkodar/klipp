@@ -202,7 +202,12 @@ fn run_all(item: &MediaItem, ctx: &AnalysisCtx, force_transcript: bool) -> (Vec<
         if !a.wants(item) {
             continue;
         }
-        if crate::has_fresh(a.as_ref(), &key) {
+        // A file asked to be transcribed again (#531) is, however fresh.
+        #[cfg(feature = "transcript")]
+        let redo = a.id() == crate::transcript::ID && crate::transcript::wants_redo(&item.path);
+        #[cfg(not(feature = "transcript"))]
+        let redo = false;
+        if !redo && crate::has_fresh(a.as_ref(), &key) {
             done.push(a.id());
             continue;
         }

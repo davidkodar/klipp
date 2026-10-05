@@ -18,8 +18,10 @@ pub(crate) fn respond(
             let downloaded = if download_models { klipp_analysis::download_models()? } else { Vec::new() };
             // How the brief spells things goes to the transcriber; a
             // transcript made without those spellings is made again.
-            let spellings = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.brief.as_ref().map(|b| b.spellings()).unwrap_or_default();
+            let (spellings, language) = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.brief.as_ref().map(|b| (b.spellings(), b.language.clone())).unwrap_or_default();
             klipp_analysis::transcript::set_vocabulary(spellings);
+            // And the language it is spoken in, when the brief names one (#531).
+            klipp_analysis::transcript::set_language(language);
             let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
             let items: Vec<&klipp_media::MediaItem> = match media_id {
                 Some(id) => {

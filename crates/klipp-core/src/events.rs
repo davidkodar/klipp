@@ -1731,6 +1731,18 @@ pub enum AppCommand {
     /// The LUT file a LUT node applies (#892); `None` takes it off. One
     /// undo step.
     SetNodeLut { clip_id: ClipId, node_id: uuid::Uuid, path: Option<std::path::PathBuf> },
+    /// The word spoken at `source_secs` of `media_id`'s sound corrected to
+    /// `text` in its transcript (#531): captions, search and word cuts read
+    /// the correction, and it is kept when the file is transcribed again.
+    CorrectTranscriptWord { media_id: MediaId, source_secs: f64, text: String },
+    /// Transcribe `media_id` again however fresh its transcript (#531):
+    /// with `model` (an id; `None` the best installed) and in `language`
+    /// (an ISO 639-1 code; `None` the brief's, or detected).
+    RetranscribeClip { media_id: MediaId, model: Option<String>, language: Option<String> },
+    /// The language the project's speech is in, kept on the brief (#531):
+    /// an ISO 639-1 code, or `None` to detect it per file. One undo step;
+    /// transcripts detected in another language are made again.
+    SetTranscriptLanguage { language: Option<String> },
     /// Read the picture node `node_id` of `clip_id` receives, at `(nx,
     /// ny)` (0..=1 over the frame) of the parked frame: the qualifier
     /// eyedropper's sample. Answered by `AppEvent::NodeInputSampled`.

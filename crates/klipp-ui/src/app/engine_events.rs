@@ -248,10 +248,8 @@ impl KlippApp {
                     // cache key, so a file seen before costs nothing.
                     let skip_analysis = self.state.pending_skip_analysis.remove(&media_id);
                     if media_item.kind == klipp_media::MediaItemKind::File && !skip_analysis {
-                        // With the brief's spellings, when there is one.
-                        if let Some(b) = self.state.sequences.get(self.state.active_sequence_idx).and_then(|s| s.brief.as_ref()) {
-                            klipp_analysis::transcript::set_vocabulary(b.spellings());
-                        }
+                        // With the brief's spellings and language, when there is one.
+                        self.apply_brief_to_transcription();
                         klipp_analysis::service::request(&media_item);
                     }
                     self.state.media_pool.add(media_item);

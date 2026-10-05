@@ -85,6 +85,10 @@ pub struct Brief {
     /// cast's names count without being listed.
     #[serde(default)]
     pub vocabulary: Vec<String>,
+    /// The language the speech is in, as an ISO 639-1 code ("en", "sv")
+    /// for the speech-to-text (#531). Left out, it is detected per file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
     /// Anything else the editor should know.
     #[serde(default)]
     pub notes: String,
