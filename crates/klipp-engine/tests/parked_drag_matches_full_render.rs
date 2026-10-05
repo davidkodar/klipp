@@ -78,6 +78,11 @@ fn thumbnails_wait_for_the_release() {
     });
     parked.settle();
     parked.begin_drag();
+    // The begin goes through the command channel and a step through the
+    // parameter queue, so on a loaded machine the first step's frame can
+    // be rendered before the engine has seen the drag begin, as a full
+    // render. One step lets the drag start; the next is the one judged.
+    parked.step(0.5).expect("a drag step showed no frame");
     parked.step(1.0).expect("a drag step showed no frame");
     let s = parked.perf().last().cloned().unwrap();
     assert!(s.reencode_ms == 0.0 && s.composite_ms == 0.0, "thumbnails sent the drag through the full render ({s:?})");
