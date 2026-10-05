@@ -238,6 +238,21 @@ fn refuse_newer_format(value: &serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Refuse a project holding grade nodes or settings this Klipp would lose
+/// by reading it (#993): a node kind it does not know, or a setting it
+/// would drop. Found on the saved JSON, wherever a graph is stored.
+fn refuse_graph_losses(value: &serde_json::Value) -> Result<(), String> {
+    let losses = klipp_nodes::json_check::losses(value);
+    let Some(first) = losses.first() else { return Ok(()) };
+    let more = match losses.len() {
+        1 => String::new(),
+        n => format!(" (and {} more)", n - 1),
+    };
+    Err(format!(
+        "This project has {first}{more}, which this Klipp does not know. It was saved by a newer Klipp: open it there. Opening it here would lose them on the next save."
+    ))
+}
+
 pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     // The pair a save left whole, from its recovery copy if it stopped (#840).
     let (project_str, manifest_str, interrupted) = pair_to_open(dir)?;
@@ -260,6 +275,11 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     // says why, rather than failing somewhere inside with a parse error
     // or, worse, reading with something missing (#994).
     refuse_newer_format(&value)?;
+
+    // A grade node or setting this Klipp does not know is refused by name,
+    // as an unknown effect is (#993), before anything is read: read, it
+    // would run as a passthrough and the next save would write it away.
+    refuse_graph_losses(&value)?;
 
     let project: ProjectJson = serde_json::from_value(value)
         .map_err(|e| format!("Failed to deserialize project: {e}"))?;
