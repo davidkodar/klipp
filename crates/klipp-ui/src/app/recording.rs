@@ -1,4 +1,5 @@
-//! Recording: a take started and stopped (#890).
+//! Recording: a take started and stopped (#890), punched in to picture
+//! and placed when it stops (#114).
 
 use super::*;
 
@@ -26,17 +27,22 @@ impl KlippApp {
             return;
         }
         let track_id = track.id;
+        let punch = crate::punch_in::plan(seq, track_id, self.state.playhead, f64::from(self.prefs.playback.pre_roll_duration));
 
-        // Build recording path under the proxy cache dir (or fall back to
-        // the OS cache dir). Parent dir is created lazily.
-        let cache_root = self
-            .prefs
-            .proxy
-            .proxy_cache_dir
-            .clone()
-            .or_else(|| dirs::cache_dir().map(|d| d.join("klipp")))
-            .unwrap_or_else(|| std::path::PathBuf::from("/tmp/klipp"));
-        let rec_dir = cache_root.join("recordings");
+        // A take is the project's own media: it goes in the project's
+        // folder, not a cache that may be cleared (#114). An unsaved
+        // project's go under the cache until it is saved.
+        let rec_dir = match &self.state.project_path {
+            Some(dir) => dir.join("Recordings"),
+            None => self
+                .prefs
+                .proxy
+                .proxy_cache_dir
+                .clone()
+                .or_else(|| dirs::cache_dir().map(|d| d.join("klipp")))
+                .unwrap_or_else(|| std::path::PathBuf::from("/tmp/klipp"))
+                .join("recordings"),
+        };
         if let Err(e) = std::fs::create_dir_all(&rec_dir) {
             self.state.toast.show(format!("Recording dir error: {e}"));
             return;
@@ -54,6 +60,8 @@ impl KlippApp {
         };
         let sample_rate = self.state.audio_sample_rate;
 
+        // The meter's stream lets go of the device for the take's.
+        self.state.input_meter = None;
         let (input, consumer) = match klipp_engine::audio_input::AudioInput::new(device, sample_rate) {
             Ok(pair) => pair,
             Err(e) => {
@@ -79,6 +87,10 @@ impl KlippApp {
         self.state.recording_path = Some(path);
         self.state.recording_track_id = Some(track_id);
         self.state.is_recording = true;
+        self.state.recording_punch = Some(punch);
+        // Roll from the pre-roll, as the capture starts (#114).
+        self.state.playhead = punch.roll_from;
+        self.send_commands(vec![AppCommand::SetSpeed(1.0), AppCommand::SeekTo(punch.roll_from), AppCommand::Play]);
         self.state.toast.show("Recording\u{2026}");
     }
 
@@ -98,6 +110,8 @@ impl KlippApp {
             drop(input);
         }
         self.state.is_recording = false;
+        let punch = self.state.recording_punch.take();
+        self.send_commands(vec![AppCommand::Pause]);
 
         // 3. Hand the WAV off to the import pipeline. The writer thread may
         //    still be finalizing the header — that's OK, the import side
@@ -118,20 +132,65 @@ impl KlippApp {
             // the pool. `pending_media_path = None` prevents auto-append.
             let media_id = klipp_core::MediaId::new();
             self.state.pending_media_path = None;
+            self.state.pending_take = punch.map(|p| (media_id, p));
             let _ = self.cmd_tx.send(AppCommand::LoadMediaFile {
                 path: path.clone(),
                 media_id,
             });
-            self.state.toast.show("Recording saved. Drag from media pool onto a track, then use Audio Sync to align if needed.");
             tracing::info!("Recording saved: {}", path.display());
-            // Auto-align bonus: deferred. Wiring requires teaching the
-            // MediaLoaded event handler to (a) know which incoming imports
-            // originated from a recording, (b) auto-append the resulting
-            // clip to the armed track, and (c) fire AlignToAudioReference
-            // once the clip exists on the timeline. That's tier-2b+ scope
-            // (not in the 11-gap MVP). Leaving as manual for now.
         } else {
             self.state.toast.show("Recording stopped");
         }
+    }
+
+    /// A stopped take, loaded: placed where it was punched in (#114), on
+    /// the armed track or a take track below it, as one undo step.
+    pub(super) fn place_take(&mut self, media_id: klipp_core::MediaId) {
+        let Some((id, punch)) = self.state.pending_take else { return };
+        if id != media_id {
+            return;
+        }
+        self.state.pending_take = None;
+        let Some(secs) = self.state.media_pool.get(&media_id).map(|m| m.duration.to_secs_f64()) else { return };
+        let Some((track, clip)) = crate::punch_in::place(self.state.sequence(), &punch, media_id, secs) else {
+            self.state.toast.show("The take stopped before the In; it is in the media pool");
+            return;
+        };
+        let edits = match track {
+            crate::punch_in::TakeTrack::Armed(track_index) => vec![EditCommand::LegacyAppendClip { clip, track_index }],
+            crate::punch_in::TakeTrack::New { index, track } => {
+                let name = track.name.clone();
+                self.state.toast.show(format!("Take on a new track, {name}"));
+                vec![EditCommand::AddTrack { index, track: *track }, EditCommand::LegacyAppendClip { clip, track_index: index }]
+            }
+        };
+        self.apply_edits_as_one(&edits, "Record Take");
+    }
+
+    /// Each frame: the input meter, open while a track is armed and
+    /// nothing records, and the punch out (#114).
+    pub(super) fn tick_recording(&mut self) {
+        if self.state.is_recording {
+            if let Some(out) = self.state.recording_punch.and_then(|p| p.punch_out) {
+                if self.state.playhead >= out {
+                    self.stop_recording();
+                }
+            }
+        }
+        let armed = self.state.sequence().tracks.iter().any(|t| t.record_armed && t.kind == klipp_timeline::TrackKind::Audio);
+        if !armed {
+            self.state.input_meter = None;
+            self.state.input_meter_failed = false;
+        } else if !self.state.is_recording && self.state.input_meter.is_none() && !self.state.input_meter_failed {
+            let device = (!self.prefs.audio_hardware.input_device.is_empty()).then_some(self.prefs.audio_hardware.input_device.as_str());
+            match klipp_engine::audio_input::AudioInput::new(device, self.state.audio_sample_rate) {
+                Ok((input, _samples)) if input.start().is_ok() => self.state.input_meter = Some(input),
+                _ => self.state.input_meter_failed = true,
+            }
+        }
+        let live = self.state.recording_audio_input.as_ref().or(self.state.input_meter.as_ref());
+        let peak = live.map(|i| i.take_peak()).unwrap_or(0.0);
+        // Up at once, down gently, as a peak meter falls back.
+        self.state.input_level = peak.max(self.state.input_level * 0.92);
     }
 }

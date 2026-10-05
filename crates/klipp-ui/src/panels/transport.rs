@@ -170,7 +170,7 @@ impl TransportBar {
                     .on_hover_text(if state.is_recording {
                         "Stop recording"
                     } else {
-                        "Start recording (arm an audio track first)"
+                        "Record to picture on the armed audio track: playback rolls from the pre-roll before the In (or the playhead), the take lands at the In, and an Out stops it. Your voice is not played back while recording, so it cannot feed back into the take; listen through your interface's direct monitoring."
                     });
                 if resp.clicked() {
                     if state.is_recording {
@@ -178,6 +178,19 @@ impl TransportBar {
                     } else {
                         cmds.push(AppCommand::StartRecording);
                     }
+                }
+                // The input's level while a track is armed (#114): seen
+                // before rolling, so a take is not recorded clipped.
+                let armed = state.sequence().tracks.iter().any(|t| t.record_armed);
+                if armed || state.is_recording {
+                    let db = 20.0 * state.input_level.max(1e-6).log10();
+                    let (rect, meter) = ui.allocate_exact_size(egui::vec2(6.0, 28.0), egui::Sense::hover());
+                    let fill = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
+                    let colour = if db > -1.0 { theme.marker_error } else if db > -12.0 { theme.marker_warning } else { theme.accent };
+                    ui.painter().rect_filled(rect, 2.0, theme.bg_raised);
+                    let lit = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - rect.height() * fill), rect.max);
+                    ui.painter().rect_filled(lit, 2.0, colour);
+                    meter.on_hover_text(format!("Input {db:.0} dBFS{}", if db > -1.0 { " \u{2014} clipping: turn the input down" } else { "" }));
                 }
             }
 
