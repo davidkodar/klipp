@@ -33,10 +33,11 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use klipp_compose::{FrameSource, GpuPixels, RenderOptions, Renderer, SourceFrame, SourcePixels};
-use klipp_core::{ClipId, Keyframe, RationalTime, Timecode, WorkingColorspace};
+use klipp_core::{ClipId, Keyframe, RationalTime, Timecode, TransitionAlignment, TransitionId, TransitionKind, WorkingColorspace};
 use klipp_effects::{BuiltinEffect, ColorFadeMode, SpillMethod};
+use klipp_nodes::params::MatteChannel;
 use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams, NodePos};
-use klipp_timeline::{Clip, ClipKind, GradeGroup, Sequence, TextBox, TitleData, Track, TrackKind};
+use klipp_timeline::{Clip, ClipKind, GradeGroup, MatteBinding, Sequence, StencilSettings, TextBox, TitleData, Track, TrackKind, Transition};
 
 /// A multiple of 8 wide and even high, so the export's encode tiles.
 const W: u32 = 64;
@@ -478,11 +479,248 @@ fn compound_cases() -> Vec<Case> {
     out
 }
 
+/// Two clips on two tracks, top first.
+fn two_tracks(top: Clip, base: Clip) -> Sequence {
+    sequence(vec![track("V2", TrackKind::Video, vec![top]), track("V1", TrackKind::Video, vec![base])])
+}
+
+/// `consumer` matted by `source`, which is consumed and not shown.
+fn matted(consumer: &mut Clip, source: &mut Clip, channel: MatteChannel, invert: bool, feather_px: f32, choke_px: f32) {
+    source.consumed_as_matte = true;
+    let mut binding = MatteBinding::new(source.id);
+    binding.channel = channel;
+    binding.invert = invert;
+    binding.feather_px = feather_px;
+    binding.choke_px = choke_px;
+    consumer.matte_source = Some(binding);
+}
+
+fn transition(kind: TransitionKind, a: &Clip, b: &Clip) -> Transition {
+    Transition {
+        id: TransitionId::new(),
+        kind,
+        duration: tc(1.0),
+        clip_a_id: a.id,
+        clip_b_id: b.id,
+        user_params: Default::default(),
+        alignment: TransitionAlignment::Center,
+    }
+}
+
+/// Track mattes and stencils (#1025).
+fn matte_cases() -> Vec<Case> {
+    let mut out = Vec::new();
+    // Luma and alpha mattes, plain and inverted, with feather and choke.
+    // The alpha matte's source is cropped with a feather, so its alpha
+    // has an edge to read.
+    for (name, channel, invert, feather, choke) in [
+        ("luma", MatteChannel::Luminance, false, 0.0, 0.0),
+        ("luma inverted", MatteChannel::Luminance, true, 0.0, 0.0),
+        ("luma feathered and choked", MatteChannel::Luminance, false, 3.0, 1.0),
+        ("alpha", MatteChannel::Alpha, false, 0.0, 0.0),
+        ("alpha inverted, feathered", MatteChannel::Alpha, true, 2.0, 0.0),
+    ] {
+        let base = media(0.0, 4.0);
+        let mut source = media(0.0, 4.0);
+        if channel == MatteChannel::Alpha {
+            source.builtin_effects = vec![BuiltinEffect::Crop { left: 0.2, right: 0.3, top: 0.1, bottom: 0.25, feather: 0.08 }];
+        }
+        let mut consumer = media(0.0, 4.0);
+        consumer.builtin_effects = vec![BuiltinEffect::HSVAdjust { hue_shift: 90.0, saturation: 1.2, value: 1.0 }];
+        matted(&mut consumer, &mut source, channel, invert, feather, choke);
+        let f = Frames::default().with(&base, 90).with(&source, 40).with(&consumer, 0);
+        let seq = sequence(vec![
+            track("Matte", TrackKind::Video, vec![source]),
+            track("V2", TrackKind::Video, vec![consumer]),
+            track("V1", TrackKind::Video, vec![base]),
+        ]);
+        out.push(Case::new(format!("matte/{name}"), seq, f));
+    }
+
+    // Feather and choke keyframed, and a matte source carrying an effect.
+    let base = media(0.0, 4.0);
+    let mut source = media(0.0, 4.0);
+    source.builtin_effects = vec![BuiltinEffect::GaussianBlur { radius: 3.0 }, BuiltinEffect::Levels { in_black: 0.2, in_white: 0.7, gamma: 1.0, out_black: 0.0, out_white: 1.0 }];
+    let mut consumer = media(0.0, 4.0);
+    matted(&mut consumer, &mut source, MatteChannel::Luminance, false, 0.0, 0.0);
+    consumer.matte_feather_keyframes = vec![key(0.0, 0.0), key(2.0, 6.0)];
+    consumer.matte_choke_keyframes = vec![key(0.0, 2.0), key(2.0, 0.0)];
+    let f = Frames::default().with(&base, 90).with(&source, 40).with(&consumer, 0);
+    let seq = sequence(vec![
+        track("Matte", TrackKind::Video, vec![source]),
+        track("V2", TrackKind::Video, vec![consumer]),
+        track("V1", TrackKind::Video, vec![base]),
+    ]);
+    out.push(Case::new("matte/keyed feather and choke, source with effects", seq, f));
+
+    // A stencil over two tracks: it cuts both, and a track above it shows.
+    let mut stencil = media(0.0, 4.0);
+    stencil.matte_stencil = Some(StencilSettings { channel: MatteChannel::Luminance, invert: false, feather_px: 2.0, choke_px: 0.0 });
+    let mut above = media(0.0, 4.0);
+    above.builtin_effects = vec![transform(0.4, -12.0, 0.0)];
+    let (mid, low) = (media(0.0, 4.0), media(0.0, 4.0));
+    let mut mid = mid;
+    mid.builtin_effects = vec![transform(0.7, 8.0, 4.0)];
+    let f = Frames::default().with(&stencil, 50).with(&above, 200).with(&mid, 0).with(&low, 120);
+    let seq = sequence(vec![
+        track("V4", TrackKind::Video, vec![above]),
+        track("Stencil", TrackKind::Video, vec![stencil]),
+        track("V2", TrackKind::Video, vec![mid]),
+        track("V1", TrackKind::Video, vec![low]),
+    ]);
+    out.push(Case::new("matte/stencil over two tracks", seq, f));
+    out
+}
+
+/// Transitions between clips that carry effects and grades (#1025). The
+/// cut is at 2 s and each transition a second long, so the corpus's
+/// times are moved into it.
+fn transition_cases() -> Vec<Case> {
+    let mut out = Vec::new();
+    for kind in [TransitionKind::CrossDissolve, TransitionKind::WipeLeft] {
+        let mut a = media(0.0, 2.0);
+        a.builtin_effects = vec![BuiltinEffect::Vignette { amount: 0.6, size: 0.5, softness: 0.5, roundness: 0.5 }];
+        a.node_graph = exposure(0.5);
+        let mut b = media(2.0, 4.0);
+        b.builtin_effects = vec![transform(0.8, 6.0, 0.0), BuiltinEffect::Invert { mix: 0.4 }];
+        b.node_graph = graph_of(NodeKind::Saturation, NodeParams { saturation: Some(0.4), ..Default::default() });
+        let mut t = track("V1", TrackKind::Video, vec![a.clone(), b.clone()]);
+        t.transitions.push(transition(kind, &a, &b));
+        let f = Frames::default().with(&a, 0).with(&b, 120);
+        let mut case = Case::new(format!("transition/{kind:?} with effects and grades"), sequence(vec![t]), f);
+        case.times = vec![1.75, 2.2];
+        out.push(case);
+    }
+
+    // #718's case: a wipe out of a matted clip keeps the matte.
+    let mut source = media(0.0, 4.0);
+    let mut a = media(0.0, 2.0);
+    matted(&mut a, &mut source, MatteChannel::Luminance, false, 2.0, 0.0);
+    let b = media(2.0, 4.0);
+    let mut t = track("V1", TrackKind::Video, vec![a.clone(), b.clone()]);
+    t.transitions.push(transition(TransitionKind::WipeLeft, &a, &b));
+    let f = Frames::default().with(&source, 40).with(&a, 0).with(&b, 160);
+    let mut case = Case::new("transition/wipe out of a matted clip", sequence(vec![track("Matte", TrackKind::Video, vec![source]), t]), f);
+    case.times = vec![1.75, 2.2];
+    out.push(case);
+    out
+}
+
+/// A multicam angle whose own track carries effects, shown where the
+/// primary is (#1025): angle 0 until 1 s, then angle 1.
+fn multicam_cases() -> Vec<Case> {
+    let group = klipp_core::GroupId::new();
+    let mut primary = media(0.0, 4.0);
+    primary.multicam_group = Some(group);
+    primary.multicam_cuts = vec![(1.0, 1)];
+    let mut angle = media(0.0, 4.0);
+    angle.multicam_group = Some(group);
+    angle.multicam_angle = 1;
+    angle.builtin_effects = vec![BuiltinEffect::GaussianBlur { radius: 2.0 }];
+    let mut angle_track = track("Angle 1", TrackKind::Video, vec![angle.clone()]);
+    angle_track.effects.video = vec![BuiltinEffect::Vignette { amount: 0.6, size: 0.5, softness: 0.5, roundness: 0.5 }];
+    let f = Frames::default().with(&primary, 0).with(&angle, 120);
+    vec![Case::new("multicam/angle track with effects", sequence(vec![angle_track, track("V1", TrackKind::Video, vec![primary])]), f)]
+}
+
+/// Compounds and precompositions beyond the first batch's two (#1025).
+fn nesting_cases() -> Vec<Case> {
+    let mut out = Vec::new();
+
+    // A graded compound nested one level inside an expanded compound.
+    let inner_clip = media(0.0, 4.0);
+    let mut graded = sequence(vec![track("Inner", TrackKind::Video, vec![inner_clip.clone()])]);
+    graded.timeline_graph = Some(exposure(0.6));
+    let mut middle_clip = Clip::sequence(graded.id, tc(0.0), tc(4.0));
+    middle_clip.builtin_effects = vec![BuiltinEffect::Invert { mix: 0.3 }];
+    let middle = sequence(vec![track("Middle", TrackKind::Video, vec![middle_clip])]);
+    let mut outer_clip = Clip::sequence(middle.id, tc(0.0), tc(4.0));
+    outer_clip.builtin_effects = vec![BuiltinEffect::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 }];
+    let mut case = Case::new("compound/graded inside expanded", sequence(vec![track("V1", TrackKind::Video, vec![outer_clip])]), Frames::default().with(&inner_clip, 0));
+    case.project.extend([middle, graded]);
+    out.push(case);
+
+    // A graded compound on a Text track, over footage.
+    let inner_clip = media(0.0, 4.0);
+    let mut inner = sequence(vec![track("Inner", TrackKind::Video, vec![inner_clip.clone()])]);
+    inner.timeline_graph = Some(exposure(-0.4));
+    let mut compound = Clip::sequence(inner.id, tc(0.0), tc(4.0));
+    compound.builtin_effects = vec![transform(0.5, 10.0, 5.0)];
+    let base = media(0.0, 4.0);
+    let f = Frames::default().with(&inner_clip, 0).with(&base, 90);
+    let mut case = Case::new("compound/graded on a text track", sequence(vec![track("T1", TrackKind::Text, vec![compound]), track("V1", TrackKind::Video, vec![base])]), f);
+    case.project.push(inner);
+    out.push(case);
+
+    // A precomposition whose scene is another size than its parent.
+    let scene_clip = media(0.0, 4.0);
+    let mut scene_top = title("Pre", 0.0, 4.0);
+    scene_top.builtin_effects = vec![BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 2.0, color: [0, 0, 0], opacity: 0.7 }];
+    let mut scene = sequence(vec![track("T1", TrackKind::Text, vec![scene_top]), track("V1", TrackKind::Video, vec![scene_clip.clone()])]);
+    scene.resolution = klipp_core::Resolution { width: W / 2, height: H / 2 };
+    let mut pre = Clip::precomposition(scene.id, tc(0.0), tc(4.0));
+    pre.builtin_effects = vec![BuiltinEffect::GaussianBlur { radius: 1.5 }];
+    let base = media(0.0, 4.0);
+    let f = Frames::default().with(&scene_clip, 0).with(&base, 90);
+    let mut case = Case::new("precomposition/another size than its parent", two_tracks(pre, base), f);
+    case.project.push(scene);
+    out.push(case);
+    out
+}
+
+/// The camera's shutter over a moving camera, on a clip with effects on
+/// both sides of its transform (#1025).
+fn camera_cases() -> Vec<Case> {
+    let base = media(0.0, 4.0);
+    let mut top = media(0.0, 4.0);
+    top.builtin_effects = vec![
+        BuiltinEffect::HSVAdjust { hue_shift: 30.0, saturation: 1.2, value: 1.0 },
+        transform(0.5, 0.0, 0.0),
+        BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 2.0, color: [0, 0, 0], opacity: 0.7 },
+    ];
+    top.transform_pos_x_keyframes = vec![key(0.0, -12.0), key(2.0, 12.0)];
+    let f = Frames::default().with(&base, 90).with(&top, 0);
+    let mut seq = two_tracks(top, base);
+    seq.camera.x_keyframes = vec![key(0.0, 0.45), key(2.0, 0.55)];
+    seq.camera.shutter_deg = 180.0;
+    seq.camera.shutter_samples = 8;
+    vec![Case::new("camera/shutter over a moving camera, effects around the transform", seq, f)]
+}
+
+/// Grade groups whose stages work in another space than the project, and
+/// a track grade on a clip in a group (#1025).
+fn group_cases() -> Vec<Case> {
+    let mut out = Vec::new();
+    let mut c = media(0.0, 4.0);
+    let mut own = exposure(0.3);
+    own.working_space_override = Some(WorkingColorspace::AcesCG);
+    c.node_graph = own;
+    let mut group = GradeGroup::new("Mismatch");
+    let mut pre = graph_of(NodeKind::Saturation, NodeParams { saturation: Some(1.4), ..Default::default() });
+    pre.working_space_override = Some(WorkingColorspace::Bt2020Linear);
+    group.pre = Some(pre);
+    group.post = Some(exposure(-0.2));
+    c.grade_group = Some(group.id);
+    let mut t = track("V1", TrackKind::Video, vec![c.clone()]);
+    t.effects.grade = Some(exposure(0.25));
+    let f = Frames::default().with(&c, 0);
+    let mut seq = sequence(vec![t]);
+    seq.grade_groups = vec![group];
+    out.push(Case::new("grade/group in other spaces, with a track grade", seq, f));
+    out
+}
+
 fn corpus() -> Vec<Case> {
     let mut all = effect_cases();
     all.extend(rule_cases());
     all.extend(grade_cases());
     all.extend(compound_cases());
+    all.extend(matte_cases());
+    all.extend(transition_cases());
+    all.extend(multicam_cases());
+    all.extend(nesting_cases());
+    all.extend(camera_cases());
+    all.extend(group_cases());
     all
 }
 
