@@ -226,6 +226,7 @@ fn have_gpu() -> bool {
 /// A red window over the middle of the hue wheel.
 fn red_window() -> klipp_core::QualifierSettings {
     klipp_core::QualifierSettings {
+        enabled: true,
         hue_center: 0.0, hue_width: 60.0, hue_soft: 10.0,
         sat_low: 0.2, sat_high: 1.0, sat_soft: 0.1,
         lum_low: 0.0, lum_high: 1.0, lum_soft: 0.1,
@@ -242,6 +243,7 @@ fn red_window() -> klipp_core::QualifierSettings {
 /// before the twin. Worth a case rather than a re-reading.)
 fn off_centre_window() -> klipp_core::QualifierSettings {
     klipp_core::QualifierSettings {
+        enabled: true,
         hue_center: 27.0, hue_width: 20.0, hue_soft: 10.0,
         sat_low: 0.2, sat_high: 0.5, sat_soft: 0.05,
         lum_low: 0.1, lum_high: 0.85, lum_soft: 0.04,
