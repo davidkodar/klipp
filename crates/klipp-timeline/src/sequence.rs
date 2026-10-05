@@ -694,6 +694,32 @@ impl Sequence {
     // Magnetic Timeline Helpers
     // ═══════════════════════════════════════════════════════════════════
 
+    /// The track a source edit lays `kind` on (#915): the one patched for
+    /// it, else the first track of the kind.
+    pub fn source_track(&self, kind: TrackKind) -> Option<usize> {
+        self.tracks
+            .iter()
+            .position(|t| t.kind == kind && t.source_patch)
+            .or_else(|| self.tracks.iter().position(|t| t.kind == kind))
+    }
+
+    /// Patch the source to `track_index`, taking the patch off every
+    /// other track of its kind.
+    pub fn patch_source_to(&mut self, track_index: usize) {
+        let Some(kind) = self.tracks.get(track_index).map(|t| t.kind) else { return };
+        for (i, t) in self.tracks.iter_mut().enumerate() {
+            if t.kind == kind {
+                t.source_patch = i == track_index;
+            }
+        }
+    }
+
+    /// Whether track targeting lets edits act on `track_index` (#915):
+    /// it is targeted, or no track is.
+    pub fn is_targeted(&self, track_index: usize) -> bool {
+        self.tracks.get(track_index).is_some_and(|t| t.targeted) || !self.tracks.iter().any(|t| t.targeted)
+    }
+
     /// Find the index of the Primary track. Returns None if no primary track set.
     pub fn primary_track_index(&self) -> Option<usize> {
         self.tracks.iter().position(|t| t.magnetic_role == TrackRole::Primary)
@@ -1053,6 +1079,16 @@ pub struct Track {
     /// sync with it.
     #[serde(default)]
     pub sync_lock: bool,
+    /// Track targeting (#915): whether edit-point navigation, paste,
+    /// split at playhead and match frame act on this track. On for every
+    /// track by default; with none on, they act on all of them.
+    #[serde(default = "default_true")]
+    pub targeted: bool,
+    /// Source patching (#915): a source edit (insert, overwrite, append)
+    /// lays its picture, or its sound, on this track. At most one track
+    /// of each kind has it; with none, the first track of the kind does.
+    #[serde(default)]
+    pub source_patch: bool,
     /// Magnetic role of this track. Defaults to Free — backward compatible.
     #[serde(default)]
     pub magnetic_role: TrackRole,
@@ -1249,6 +1285,8 @@ impl Track {
             precomposition_sound: false,
             source_file: None,
             sync_lock: false,
+            targeted: true,
+            source_patch: false,
             record_armed: false,
             automation_lane_visible: None,
             automation_lane_height: None,
@@ -3773,6 +3811,32 @@ mod tests {
         assert_eq!(track.find_clip(id0).unwrap().timeline_in, tc(0));
         assert_eq!(track.find_clip(id1).unwrap().timeline_in, tc(24));
         assert!(track.find_clip(ClipId::new()).is_none());
+    }
+
+    #[test]
+    fn source_edits_go_to_the_patched_track_and_targets_default_to_all() {
+        let mut seq = Sequence::new_default();
+        seq.tracks = vec![
+            Track::new("V2", TrackKind::Video),
+            Track::new("V1", TrackKind::Video),
+            Track::new("A1", TrackKind::Audio),
+            Track::new("A2", TrackKind::Audio),
+        ];
+        assert_eq!(seq.source_track(TrackKind::Video), Some(0), "no patch: the first of the kind");
+        seq.patch_source_to(1);
+        seq.patch_source_to(3);
+        assert_eq!((seq.source_track(TrackKind::Video), seq.source_track(TrackKind::Audio)), (Some(1), Some(3)));
+        seq.patch_source_to(0);
+        assert!(!seq.tracks[1].source_patch, "one patch per kind");
+        assert!(seq.tracks[3].source_patch, "the other kind's patch stays");
+
+        assert!((0..4).all(|i| seq.is_targeted(i)), "every track is targeted by default");
+        seq.tracks[2].targeted = false;
+        assert!(!seq.is_targeted(2) && seq.is_targeted(3));
+        for t in &mut seq.tracks {
+            t.targeted = false;
+        }
+        assert!((0..4).all(|i| seq.is_targeted(i)), "none targeted acts on all");
     }
 
     #[test]

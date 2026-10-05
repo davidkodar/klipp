@@ -541,6 +541,8 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
             track.pan = t.pan;
             track.locked = t.locked;
             track.sync_lock = t.sync_lock;
+            track.targeted = t.targeted;
+            track.source_patch = t.source_patch;
             track.custom_height = t.custom_height;
             track.colour_label = t.colour_label;
             track.channel_waveforms = t.channel_waveforms;

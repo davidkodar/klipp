@@ -144,6 +144,7 @@ pub struct SequenceJson {
 fn default_header_width() -> f32 { 160.0 }
 fn default_lut_opacity() -> f32 { 1.0 }
 fn default_true() -> bool { true }
+fn is_true(b: &bool) -> bool { *b }
 fn is_zero_u8(v: &u8) -> bool { *v == 0 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,6 +190,12 @@ pub struct TrackJson {
     /// Sync lock (#915).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sync_lock: bool,
+    /// Track targeting (#915): on unless turned off.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub targeted: bool,
+    /// Source patching (#915).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub source_patch: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_height: Option<f32>,
     /// The track's colour label, 0 for none (#922).
@@ -1169,6 +1176,8 @@ mod tests {
                 pan: 0.0,
                 locked: false,
                 sync_lock: false,
+                targeted: true,
+                source_patch: false,
                 custom_height: None,
                 colour_label: 0,
                 channel_waveforms: false,
@@ -1216,6 +1225,8 @@ mod tests {
             pan: 0.0,
             locked: false,
             sync_lock: false,
+            targeted: true,
+            source_patch: false,
             custom_height: None,
             colour_label: 0,
             channel_waveforms: false,
@@ -1250,6 +1261,8 @@ mod tests {
             pan: 0.0,
             locked: false,
             sync_lock: false,
+            targeted: true,
+            source_patch: false,
             custom_height: None,
             colour_label: 0,
             channel_waveforms: false,

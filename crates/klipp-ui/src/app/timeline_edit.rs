@@ -727,10 +727,14 @@ impl KlippApp {
                             // Magnetic path: video clip, primary track exists, primary matches
                             // target kind, magnetic timeline enabled. Everything else falls
                             // through to the legacy track.clips path.
+                            // The track the source is patched to (#915); the
+                            // magnetic path only when that is the primary.
+                            let target = self.state.sequences[seq_idx].source_track(target_kind).expect("checked above");
                             let primary_idx = self.state.sequences[seq_idx].primary_track_index();
                             let use_magnetic = !is_audio_only
                                 && primary_idx.is_some_and(|idx| {
-                                    self.is_magnetic_track(idx)
+                                    idx == target
+                                        && self.is_magnetic_track(idx)
                                         && self.state.sequences[seq_idx].tracks[idx].kind == target_kind
                                 });
 
@@ -746,10 +750,8 @@ impl KlippApp {
                                     source_out,
                                     klipp_timeline::magnetic::EditMode::Overwrite,
                                 );
-                            } else if let Some(track) = self.state.sequences[seq_idx].tracks.iter_mut()
-                                .find(|t| t.kind == target_kind)
-                            {
-                                Self::overwrite_insert_clip_on_track(track, new_clip);
+                            } else {
+                                Self::overwrite_insert_clip_on_track(&mut self.state.sequences[seq_idx].tracks[target], new_clip);
                             }
                             self.state.selected_clip = Some(new_id);
                             self.state.dirty = true;
@@ -812,10 +814,14 @@ impl KlippApp {
                             );
                             let new_id = new_clip.id;
 
+                            // The track the source is patched to (#915); the
+                            // magnetic path only when that is the primary.
+                            let target = self.state.sequences[seq_idx].source_track(target_kind).expect("checked above");
                             let primary_idx = self.state.sequences[seq_idx].primary_track_index();
                             let use_magnetic = !is_audio_only
                                 && primary_idx.is_some_and(|idx| {
-                                    self.is_magnetic_track(idx)
+                                    idx == target
+                                        && self.is_magnetic_track(idx)
                                         && self.state.sequences[seq_idx].tracks[idx].kind == target_kind
                                 });
 
@@ -837,9 +843,6 @@ impl KlippApp {
                                 // rippled by the clip's length, so they stay
                                 // in sync; a straddling clip is split. See
                                 // klipp_timeline::insert_edit.
-                                let target = self.state.sequences[seq_idx].tracks.iter()
-                                    .position(|t| t.kind == target_kind)
-                                    .expect("checked above");
                                 let Some(mut edit) = self.state.sequences[seq_idx].insert_edit(target, new_clip, timeline_in) else {
                                     self.state.toast.show("Target track is locked");
                                     return true;
@@ -1246,7 +1249,8 @@ impl KlippApp {
         //      same playhead. Pro NLEs honour the selection here.
         //   2. Else fall back to the topmost video clip at the
         //      playhead — this is the keyboard-F path and matches
-        //      the engine's seek_in_sequence convention.
+        //      the engine's seek_in_sequence convention. Only
+        //      targeted tracks are looked at (#915).
         //   3. Else walk audio tracks — handles pure-audio
         //      sequences (music edits, podcasts) where there's no
         //      video at the playhead at all. Without this fallback,
@@ -1265,9 +1269,10 @@ impl KlippApp {
         });
         let hit = selected_hit.or_else(|| {
             seq.tracks.iter()
-                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .enumerate()
+                .filter(|(i, t)| t.kind == klipp_timeline::TrackKind::Video && seq.is_targeted(*i))
                 .rev()
-                .find_map(|track| {
+                .find_map(|(_, track)| {
                     track.clip_at_timecode(playhead).and_then(|(_, clip)| {
                         let mid = clip.media_id()?;
                         let src = clip.source_time_for_sequence_time(playhead, fps)?;
@@ -1276,9 +1281,10 @@ impl KlippApp {
                 })
         }).or_else(|| {
             seq.tracks.iter()
-                .filter(|t| t.kind == klipp_timeline::TrackKind::Audio)
+                .enumerate()
+                .filter(|(i, t)| t.kind == klipp_timeline::TrackKind::Audio && seq.is_targeted(*i))
                 .rev()
-                .find_map(|track| {
+                .find_map(|(_, track)| {
                     track.clip_at_timecode(playhead).and_then(|(_, clip)| {
                         let mid = clip.media_id()?;
                         let src = clip.source_time_for_sequence_time(playhead, fps)?;

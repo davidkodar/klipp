@@ -4387,7 +4387,8 @@ impl AppState {
         let mut queued: Vec<ClipId> = Vec::new();
         let mut cmds = Vec::new();
         for (track_index, track) in self.sequence().tracks.iter().enumerate() {
-            if track.locked { continue; }
+            // Locked and untargeted tracks are left whole (#915).
+            if track.locked || !self.sequence().is_targeted(track_index) { continue; }
             let Some((_, clip)) = track.clip_at_timecode(ph) else { continue };
             if !klipp_document::blade::cut_is_inside(clip, ph, fps) { continue; }
             if clip.linked_clip_id.is_some_and(|l| queued.contains(&l)) { continue; }
@@ -4987,6 +4988,36 @@ mod tests {
 // the popup picker so a future "let me simplify the enum" change
 // can't silently break the routing.
 // ═══════════════════════════════════════════════════════════════════
+/// #915: split at playhead leaves untargeted tracks whole.
+#[cfg(test)]
+mod split_targeting_tests {
+    use super::*;
+    use klipp_timeline::{Clip, Track, TrackKind};
+
+    #[test]
+    fn split_at_playhead_leaves_untargeted_tracks_whole() {
+        let mut state = AppState::default();
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let seq = state.sequence_mut();
+        seq.tracks.clear();
+        for (name, kind) in [("V1", TrackKind::Video), ("A1", TrackKind::Audio)] {
+            let mut t = Track::new(name, kind);
+            t.clips.push(Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0)));
+            seq.tracks.push(t);
+        }
+        state.playhead = tc(2.0);
+        let cut_tracks = |state: &AppState| -> Vec<usize> {
+            state.split_at_playhead_commands().iter().filter_map(|c| match c {
+                klipp_core::AppCommand::BladeClip { track_index, .. } => Some(*track_index),
+                _ => None,
+            }).collect()
+        };
+        assert_eq!(cut_tracks(&state), vec![0, 1]);
+        state.sequence_mut().tracks[1].targeted = false;
+        assert_eq!(cut_tracks(&state), vec![0]);
+    }
+}
+
 #[cfg(test)]
 mod rubber_band_param_tests {
     use super::*;

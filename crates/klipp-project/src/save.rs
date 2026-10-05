@@ -307,6 +307,8 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                 pan: t.pan,
                 locked: t.locked,
                 sync_lock: t.sync_lock,
+                targeted: t.targeted,
+                source_patch: t.source_patch,
                 custom_height: t.custom_height,
                 colour_label: t.colour_label,
                 channel_waveforms: t.channel_waveforms,
