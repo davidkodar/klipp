@@ -236,6 +236,7 @@ impl KlippApp {
                 if self.handle_transition_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
                 if self.handle_playback_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
                 if self.handle_transition_key_commands(&cmd) { break 'dispatch; }
+                if self.handle_edit_point_commands(&cmd) { break 'dispatch; }
                 if self.handle_export_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
                 if self.handle_browser_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
                 if self.handle_stabilization_commands(&cmd, &mut needs_refresh) { break 'dispatch; }

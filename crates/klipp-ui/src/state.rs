@@ -1310,6 +1310,12 @@ pub struct AppState {
     /// UI-only state — not undoable. Multi-clip selection is managed directly
     /// for performance (marquee updates every frame). Do not convert to commands.
     pub selected_clips: Vec<ClipId>,
+    /// Edit points selected for trimming from the keyboard (#913), one
+    /// per track at most; empty when none is.
+    pub selected_edits: Vec<crate::edit_point::EditPoint>,
+    /// A trim amount being typed (`+12`, `-1:05`) for the selected edit
+    /// points, until Enter applies it or Escape drops it.
+    pub trim_entry: Option<String>,
     pub hovered_clip: Option<ClipId>,
     /// Currently selected transition (track_idx, transition_id). UI-only state.
     pub selected_transition: Option<(usize, TransitionId)>,
@@ -3787,6 +3793,8 @@ impl Default for AppState {
             selected_clip_loc_cache: std::cell::Cell::new(None),
             selected_transition: None,
             selected_clips: Vec::new(),
+            selected_edits: Vec::new(),
+            trim_entry: None,
             hovered_clip: None,
             show_unsaved_dialog: false,
             unsaved_dialog_action: UnsavedAction::None,

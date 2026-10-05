@@ -11595,6 +11595,8 @@ impl TimelinePanel {
             self.draw_clip_overlays(ui, painter, clip_rect, track_idx, clip_index, state, cmds, track_kind, content_rect, zoom, scroll, interactive, pointer_pos);
 
         }
+        // The selected edit points on this track, over its clips (#913).
+        Self::draw_edit_points(painter, state, track_idx, content_rect, track_rect, zoom, scroll);
 
         // Draw transition indicators between clips
         self.draw_transition_overlays(ui, painter, content_rect, track_rect, track_idx, state, zoom, scroll, track_height);
@@ -11650,7 +11652,11 @@ impl TimelinePanel {
 
         self.show_clip_context_menu(ui, &track_response, state, cmds, track_idx, content_rect, zoom, scroll, track_height, track_rect, pointer_pos, fps);
 
-        self.handle_clip_click(ui, &track_response, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, fps);
+        // A click on a cut selects the edit point (#913); anywhere else is
+        // the clip's click as before.
+        if !Self::select_edit_on_click(ui, &track_response, state, track_idx, content_rect, track_rect, zoom, scroll) {
+            self.handle_clip_click(ui, &track_response, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, fps);
+        }
 
         self.detect_drag_start(ui, &track_response, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, track_kind, pointer_pos);
 
@@ -14595,6 +14601,100 @@ impl TimelinePanel {
                             egui::Stroke::new(1.5_f32, acc));
                     }
                 }
+            }
+        }
+    }
+
+    /// A click within a few pixels of a cut on this track selects its
+    /// edit point (#913): both sides with the Select tool, the side
+    /// clicked with the Trim tool. Ctrl adds it to (or takes it from) the
+    /// edit points already selected, one per track. True when it did.
+    #[allow(clippy::too_many_arguments)]
+    fn select_edit_on_click(
+        ui: &egui::Ui,
+        response: &egui::Response,
+        state: &mut AppState,
+        track_idx: usize,
+        content_rect: &egui::Rect,
+        track_rect: &egui::Rect,
+        zoom: f32,
+        scroll: f32,
+    ) -> bool {
+        use crate::edit_point::{self, EditSide};
+        if !response.clicked() || !matches!(state.active_tool, Tool::Select | Tool::Trim) {
+            return false;
+        }
+        let Some(pos) = response.interact_pointer_pos() else { return false };
+        if pos.y < track_rect.top() || pos.y > track_rect.bottom() {
+            return false;
+        }
+        let track = &state.sequence().tracks[track_idx];
+        if track.locked {
+            return false;
+        }
+        let x_of = |t: klipp_core::Timecode| content_rect.left() + t.to_secs_f64() as f32 * zoom - scroll;
+        let Some(cut) = track
+            .clips
+            .iter()
+            .filter(|c| !c.kind.is_gap())
+            .flat_map(|c| [c.timeline_in, c.timeline_out])
+            .filter(|t| (x_of(*t) - pos.x).abs() <= 4.0)
+            .min_by(|a, b| (x_of(*a) - pos.x).abs().total_cmp(&(x_of(*b) - pos.x).abs()))
+        else {
+            return false;
+        };
+        let side = match state.active_tool {
+            Tool::Trim if pos.x < x_of(cut) => EditSide::Out,
+            Tool::Trim => EditSide::In,
+            _ => EditSide::Both,
+        };
+        let Some(edit) = edit_point::at(track, cut, side) else { return false };
+        if ui.input(|i| i.modifiers.command) {
+            let same = state.selected_edits.iter().position(|e| *e == edit);
+            state.selected_edits.retain(|e| e.track != edit.track);
+            if same.is_none() {
+                state.selected_edits.push(edit);
+            }
+        } else {
+            state.selected_edits = vec![edit];
+        }
+        state.selected_clip = None;
+        state.selected_clips.clear();
+        state.trim_entry = None;
+        true
+    }
+
+    /// The selected edit points on `track_idx`, drawn at their cuts: a
+    /// bracket on each side being trimmed, ] on the outgoing clip's end,
+    /// [ on the incoming clip's start, both for a roll (#913).
+    fn draw_edit_points(
+        painter: &egui::Painter,
+        state: &AppState,
+        track_idx: usize,
+        content_rect: &egui::Rect,
+        track_rect: &egui::Rect,
+        zoom: f32,
+        scroll: f32,
+    ) {
+        use crate::edit_point::EditSide;
+        let Some(track) = state.sequence().tracks.get(track_idx) else { return };
+        let colour = egui::Color32::from_rgb(120, 220, 120);
+        for edit in state.selected_edits.iter().filter(|e| e.track == track.id) {
+            let Some(cut) = crate::edit_point::cut(state.sequence(), edit) else { continue };
+            let x = content_rect.left() + cut.to_secs_f64() as f32 * zoom - scroll;
+            let (top, bottom) = (track_rect.top() + 1.0, track_rect.bottom() - 1.0);
+            let stroke = egui::Stroke::new(2.0_f32, colour);
+            painter.line_segment([egui::pos2(x, top), egui::pos2(x, bottom)], stroke);
+            let arm = 6.0;
+            if matches!(edit.side, EditSide::Out | EditSide::Both) {
+                // ] on the outgoing end.
+                painter.line_segment([egui::pos2(x - arm, top), egui::pos2(x, top)], stroke);
+                painter.line_segment([egui::pos2(x - arm, bottom), egui::pos2(x, bottom)], stroke);
+            }
+            if matches!(edit.side, EditSide::In | EditSide::Both) {
+                // [ on the incoming start.
+                painter.line_segment([egui::pos2(x, top), egui::pos2(x + arm, top)], stroke);
+                painter.line_segment([egui::pos2(x, bottom), egui::pos2(x + arm, bottom)], stroke);
             }
         }
     }

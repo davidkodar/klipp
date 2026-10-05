@@ -488,6 +488,12 @@ impl KeyBindings {
         bind(&mut b, "create_multicam", vec![KeyCombo::alt("C")]);
 
         // Color grading
+        bind(&mut b, "select_edit_point", vec![KeyCombo::new("U")]);
+        bind(&mut b, "extend_edit", vec![KeyCombo::new("E")]);
+        bind(&mut b, "trim_edit_back", vec![KeyCombo::new("[")]);
+        bind(&mut b, "trim_edit_forward", vec![KeyCombo::new("]")]);
+        bind(&mut b, "trim_edit_back_many", vec![KeyCombo::shift("[")]);
+        bind(&mut b, "trim_edit_forward_many", vec![KeyCombo::shift("]")]);
         bind(&mut b, "prev_color_node", vec![KeyCombo::new("[")]);
         bind(&mut b, "next_color_node", vec![KeyCombo::new("]")]);
         bind(&mut b, "toggle_node_bypass", vec![KeyCombo::alt("D")]);
@@ -656,6 +662,12 @@ impl KeyBindings {
             "leave_compound" => "Leave Compound Clip",
             "add_default_transition" => "Add Default Transition",
             "add_audio_crossfade" => "Add Audio Crossfade",
+            "select_edit_point" => "Select Edit Point / Cycle Its Side",
+            "extend_edit" => "Extend Edit to Playhead",
+            "trim_edit_back" => "Trim Edit Point Back a Frame",
+            "trim_edit_forward" => "Trim Edit Point Forward a Frame",
+            "trim_edit_back_many" => "Trim Edit Point Back Ten Frames",
+            "trim_edit_forward_many" => "Trim Edit Point Forward Ten Frames",
             "set_in_point" => "Set In Point",
             "set_out_point" => "Set Out Point",
             "clear_in_point" => "Clear In Point",
@@ -730,7 +742,7 @@ impl KeyBindings {
             ("File", &["new_project", "open_project", "save_project", "save_project_as", "close_project", "import_media", "export", "preferences", "quit"]),
             ("Edit", &["undo", "redo", "cut_clip", "copy_clip", "paste_clip", "paste_insert", "copy_attributes", "paste_attributes", "duplicate_clip", "select_all", "deselect_all", "select_track_clips", "select_track_forward", "select_track_backward", "select_forward", "select_backward", "delete_clip", "lift_clip", "split_at_playhead", "group_clips", "ungroup_clips"]),
             ("Tools", &["select_tool", "blade_tool", "range_tool", "trim_tool"]),
-            ("Timeline", &["add_default_transition", "add_audio_crossfade", "insert_edit", "overwrite_edit", "lift_edit", "extract_edit", "toggle_edit_mode", "ripple_trim_head", "ripple_trim_tail", "trim_out_to_playhead", "trim_in_to_playhead", "freeze_frame"]),
+            ("Timeline", &["add_default_transition", "add_audio_crossfade", "select_edit_point", "extend_edit", "trim_edit_back", "trim_edit_forward", "trim_edit_back_many", "trim_edit_forward_many", "insert_edit", "overwrite_edit", "lift_edit", "extract_edit", "toggle_edit_mode", "ripple_trim_head", "ripple_trim_tail", "trim_out_to_playhead", "trim_in_to_playhead", "freeze_frame"]),
             ("Navigation", &["next_edit_point", "prev_edit_point", "leave_compound", "next_marker", "prev_marker", "set_in_point", "set_out_point", "clear_in_point", "clear_out_point", "clear_in_out", "set_range_to_clip", "match_frame_program_to_source", "match_frame_source_to_program"]),
             ("Transport", &["play_pause", "step_forward", "step_backward", "go_to_start", "go_to_end", "shuttle_reverse", "shuttle_pause", "shuttle_forward", "toggle_loop", "play_in_to_out"]),
             ("Viewer", &["toggle_fullscreen", "toggle_before_after", "toggle_color_panel", "toggle_scopes", "toggle_zebra", "toggle_false_color", "toggle_perf_overlay", "toggle_perf_recording", "toggle_matte_preview", "toggle_safe_areas", "toggle_grid_overlay", "extract_frame_to_file", "extract_frame_to_bin"]),
@@ -949,6 +961,8 @@ mod registry_coverage {
     const SHARED_ON_PURPOSE: &[(&str, &str)] = &[
         ("Ctrl+C", "copy_clip / copy_color_nodes — resolved by active panel"),
         ("Ctrl+V", "paste_clip / paste_color_nodes — resolved by active panel"),
+        ("[", "trim_edit_back / prev_color_node — the trim needs a selected edit point, the node step a selected clip, and selecting one clears the other"),
+        ("]", "trim_edit_forward / next_color_node — as ["),
     ];
 
     /// Whether any handler dispatches `action`.
@@ -1054,6 +1068,8 @@ mod registry_coverage {
         const INTENTIONAL: &[(&str, &str)] = &[
             ("copy_clip", "copy_color_nodes"),
             ("paste_clip", "paste_color_nodes"),
+            ("trim_edit_back", "prev_color_node"),
+            ("trim_edit_forward", "next_color_node"),
         ];
 
         let kb = KeyBindings::defaults();
@@ -1150,7 +1166,8 @@ mod preset_tests {
     #[test]
     fn no_preset_makes_one_press_run_two_actions() {
         use std::collections::BTreeMap;
-        let allowed = ["Ctrl+C", "Ctrl+V"];
+        // [ and ]: an edit point trim or a colour node step, never both (#913).
+        let allowed = ["Ctrl+C", "Ctrl+V", "[", "]"];
         for preset in KeymapPreset::ALL {
             let mut by_combo: BTreeMap<String, Vec<String>> = BTreeMap::new();
             for (action, combos) in preset.bindings() {
