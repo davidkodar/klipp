@@ -25,6 +25,8 @@ pub fn label(cmd: &AppCommand) -> Option<&'static str> {
         AppCommand::LiftEdit => "Lift",
         AppCommand::ExtractEdit => "Extract",
         AppCommand::CloseGap { .. } => "Close Gap",
+        AppCommand::CloseAllGaps { .. } => "Close All Gaps",
+        AppCommand::SetClipKeepPitch { .. } => "Keep Pitch",
         AppCommand::InsertGapOnTrack { .. } => "Insert Gap",
         AppCommand::SetClipEnabled { enabled: true, .. } => "Enable Clip",
         AppCommand::SetClipEnabled { .. } => "Disable Clip",

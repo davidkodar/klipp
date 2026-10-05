@@ -229,6 +229,17 @@ impl ToolbarPanel {
                             .unwrap_or_default()
                     });
                 }
+                if ui.button("EDL (.edl)...").clicked() {
+                    ui.close_menu();
+                    crate::file_dialog::spawn(move || {
+                        rfd::FileDialog::new()
+                            .set_title("Import EDL")
+                            .add_filter("CMX 3600 EDL", &["edl"])
+                            .pick_file()
+                            .map(|path| vec![AppCommand::ImportEdl { path }])
+                            .unwrap_or_default()
+                    });
+                }
                 if ui.button("OpenTimelineIO (.otio)...").clicked() {
                     ui.close_menu();
                     crate::file_dialog::spawn(move || {
@@ -328,6 +339,20 @@ impl ToolbarPanel {
                             .set_file_name("export.edl")
                             .save_file()
                             .map(|path| vec![AppCommand::ExportEdl { path }])
+                            .unwrap_or_default()
+                    });
+                }
+                // OpenTimelineIO, here with the other formats (#925); it was
+                // only in the command palette.
+                if ui.button("OpenTimelineIO...").clicked() {
+                    ui.close_menu();
+                    crate::file_dialog::spawn(move || {
+                        rfd::FileDialog::new()
+                            .set_title("Export OpenTimelineIO")
+                            .add_filter("OpenTimelineIO", &["otio"])
+                            .set_file_name("export.otio")
+                            .save_file()
+                            .map(|path| vec![AppCommand::ExportOtio { path }])
                             .unwrap_or_default()
                     });
                 }
@@ -441,6 +466,20 @@ impl ToolbarPanel {
             // bindable in Preferences, so no shortcut text here.
             if ui.button("Select Forward").on_hover_text("Every clip starting at or after the playhead, on every unlocked track").clicked() { cmds.push(AppCommand::SelectClipsForward); ui.close_menu(); }
             if ui.button("Select Backward").on_hover_text("Every clip ending at or before the playhead, on every unlocked track").clicked() { cmds.push(AppCommand::SelectClipsBackward); ui.close_menu(); }
+            // By what the clips are (#925).
+            let any = state.selected_clip.is_some() || !state.selected_clips.is_empty();
+            if ui.button("Invert Selection").on_hover_text("Every clip not selected now").clicked() { cmds.push(AppCommand::SelectInverse); ui.close_menu(); }
+            if ui.add_enabled(any, egui::Button::new("Select Same Source")).on_hover_text("Every clip from the selected clips' media files").clicked() { cmds.push(AppCommand::SelectSameSource); ui.close_menu(); }
+            ui.menu_button("Select by Colour", |ui| {
+                for label in klipp_media::ColorLabel::ALL.into_iter().filter(|l| l.to_u8() != 0) {
+                    let swatch = label.rgb().map(|(r, g, b)| egui::Color32::from_rgb(r, g, b)).unwrap_or(ui.visuals().weak_text_color());
+                    if ui.button(egui::RichText::new(format!("\u{25CF} {}", label.label())).color(swatch)).clicked() {
+                        cmds.push(AppCommand::SelectByColour { label: label.to_u8() });
+                        ui.close_menu();
+                    }
+                }
+            });
+            if ui.button("Go to Next Gap").on_hover_text("The playhead to the next empty stretch on an unlocked track").clicked() { cmds.push(AppCommand::GoToNextGap); ui.close_menu(); }
             // The selected clip's track (#844); a track's own header menu
             // has the same three for any track.
             let on_track = state.selected_clip.is_some();
@@ -525,13 +564,9 @@ impl ToolbarPanel {
             }
             ui.separator();
             if ui.add_enabled(has_clip, egui::Button::new("Speed...")).clicked() {
-                // Read current clip speed to pre-fill dialog
-                if let Some(cid) = state.selected_clip {
-                    let spd = state.sequence().all_clips().find(|c| c.id == cid).map(|c| c.speed).unwrap_or(1.0);
-                    state.speed_dialog_value = spd.abs() * 100.0;
-                    state.speed_dialog_reverse = spd < 0.0;
+                if let Some(clip_id) = state.selected_clip {
+                    cmds.push(AppCommand::OpenSpeedDialog { clip_id });
                 }
-                state.show_speed_dialog = true;
                 ui.close_menu();
             }
             ui.menu_button("Motion Presets", |ui| {

@@ -251,7 +251,14 @@ fn get_track_samples(
                     let frames = clip.timeline_end_frame.saturating_sub(clip.timeline_start_frame);
                     let want = (frames as f64 / fps * sample_rate as f64).ceil() as usize + 1;
                     let from = (v.source_at(0.0) - clip.source_start_secs) * sample_rate as f64;
-                    buf = klipp_audio::dsp::varispeed::read(&buf, 2, from, v.speed, want);
+                    buf = if v.keep_pitch && v.speed > 0.0 {
+                        // On playback's grain grid: anchored at the clip's
+                        // in, its sound starting `head_secs` before it.
+                        let anchor = (v.source_in - clip.source_start_secs) * sample_rate as f64;
+                        klipp_audio::dsp::stretch::Stretcher::new(anchor, v.speed).read(&buf, 2, (-v.head_secs * sample_rate as f64).round() as i64, want)
+                    } else {
+                        klipp_audio::dsp::varispeed::read(&buf, 2, from, v.speed, want)
+                    };
                 }
                 // Apply per-clip audio effects (EQ, compressor, reverb, etc.).
                 // `decode_clip_audio` is called with `source_start_secs`, so the

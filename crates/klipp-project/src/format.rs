@@ -372,6 +372,8 @@ pub struct ClipJson {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed_keyframes: Option<Vec<klipp_core::Keyframe>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_pitch: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_rotation: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
@@ -1052,7 +1054,7 @@ mod tests {
             effect_keyframes: None,
             role: None,
             param_modifiers: None,
-            speed: None, speed_keyframes: None,
+            speed: None, speed_keyframes: None, keep_pitch: None,
             source_rotation: None,
             enabled: None,
             audio_effects: None,
@@ -1125,7 +1127,7 @@ mod tests {
             clip_markers: None,
             effect_keyframes: None,
             role: None, param_modifiers: None,
-            speed: None, speed_keyframes: None,
+            speed: None, speed_keyframes: None, keep_pitch: None,
             source_rotation: None, enabled: None,
             audio_effects: None,
             audio_effect_keyframes: std::collections::HashMap::new(),
@@ -1315,7 +1317,7 @@ mod tests {
             matte_feather_keyframes: None, matte_choke_keyframes: None,
             clip_markers: None, effect_keyframes: None,
             role: None, param_modifiers: None,
-            speed: None, speed_keyframes: None,
+            speed: None, speed_keyframes: None, keep_pitch: None,
             source_rotation: None, enabled: None,
             audio_effects: None,
             audio_effect_keyframes: std::collections::HashMap::new(),

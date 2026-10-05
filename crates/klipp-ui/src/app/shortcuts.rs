@@ -340,6 +340,12 @@ impl KlippApp {
                 if let (Some((track_index, transition_id)), None) = (self.state.selected_transition, self.state.selected_clip) {
                     cmds.push(AppCommand::RemoveTransition { track_index, transition_id });
                     self.state.selected_transition = None;
+                } else if let (Some((track_index, gap_start, gap_end)), None) = (self.state.selected_gap.take(), self.state.selected_clip) {
+                    // A selected gap closes, the clips after it moving up (#925).
+                    let still = self.state.sequence().tracks.get(track_index).and_then(|t| crate::selection::gap_at(t, gap_start)) == Some((gap_start, gap_end));
+                    if still {
+                        cmds.push(AppCommand::CloseGap { track_index, gap_start, gap_end });
+                    }
                 } else if let Some(clip_id) = self.state.selected_clip {
                     cmds.push(AppCommand::RemoveClip { clip_id });
                 } else if self.state.selected_clips.is_empty()

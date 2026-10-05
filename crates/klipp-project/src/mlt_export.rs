@@ -453,6 +453,7 @@ mod tests {
             param_modifiers: Default::default(),
             speed: 1.0,
             speed_keyframes: Vec::new(),
+            keep_pitch: false,
             audio_effects: Vec::new(),
             audio_effect_keyframes: Default::default(),
             source_rotation: 0,

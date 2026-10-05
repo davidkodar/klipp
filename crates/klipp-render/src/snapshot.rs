@@ -149,12 +149,14 @@ pub struct VarispeedRead {
     pub source_in: f64,
     pub source_out: f64,
     pub head_secs: f64,
+    /// Read with its pitch kept, forward only (#925).
+    pub keep_pitch: bool,
 }
 
 impl VarispeedRead {
     /// `clip`'s, when it is retimed.
     pub fn of(clip: &klipp_timeline::Clip, head_secs: f64) -> Option<Self> {
-        clip.is_varispeed().then(|| Self { speed: clip.speed, source_in: clip.source_in.to_secs_f64(), source_out: clip.source_out.to_secs_f64(), head_secs })
+        clip.is_varispeed().then(|| Self { speed: clip.speed, source_in: clip.source_in.to_secs_f64(), source_out: clip.source_out.to_secs_f64(), head_secs, keep_pitch: clip.keep_pitch })
     }
 
     /// Where decoding starts: early enough for a forward clip's handle,

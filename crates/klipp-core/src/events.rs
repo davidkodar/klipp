@@ -1295,6 +1295,27 @@ pub enum AppCommand {
     /// [`AppCommand::SelectClipsIn`] on the track of the selected clip:
     /// for a key binding, which has no track of its own to name.
     SelectClipsOnSelectedTrack { range: SelectRange },
+    /// Select every clip not selected now (#925).
+    SelectInverse,
+    /// Select every clip from the same media files as the selection (#925).
+    SelectSameSource,
+    /// Select every clip with this colour label (#925).
+    SelectByColour { label: u8 },
+    /// Close every gap on a track: each clip moved up to the one before (#925).
+    CloseAllGaps { track_index: usize },
+    /// Keep a retimed clip's pitch, or let it move with the speed as
+    /// tape's does (#925); its linked sound with it.
+    SetClipKeepPitch { clip_id: ClipId, keep_pitch: bool },
+    /// Put the playhead on the next gap on any unlocked track (#925).
+    GoToNextGap,
+    /// A subclip of a timeline clip's media, over the source range the
+    /// clip uses (#925).
+    SubclipFromClip { clip_id: ClipId },
+    /// Open the Speed dialog on a clip, filled with its speed (#925).
+    OpenSpeedDialog { clip_id: ClipId },
+    /// Line the selected clips up with the selected one (the anchor), by
+    /// their files' start timecodes, or by their first clip markers (#925).
+    SyncSelectedClips { by_markers: bool },
     /// Save current viewer frame as PNG via a file dialog.
     FrameGrab,
     /// Save the current viewer frame as a PNG under `<project>/media/stills/`
@@ -1312,6 +1333,9 @@ pub enum AppCommand {
     /// stacks) are logged to a `<name>.import_warnings.txt` file alongside
     /// the source.
     ImportOtio { path: PathBuf },
+    /// Import a CMX 3600 EDL as a new sequence, its events matched to the
+    /// media in the pool (#925).
+    ImportEdl { path: PathBuf },
     /// Parse a Final Cut Pro XML (`.fcpxml`) file and import its timeline as
     /// a new Sequence. Unsupported features (effects, transitions, compound
     /// clips, multicam, roles, connected clips) are logged to a

@@ -485,7 +485,7 @@ impl ReelNamer {
 /// format is column-based and a space in the reel field shifts every
 /// column after it. A name with nothing left becomes AX, the
 /// conventional reel for a source that cannot name itself.
-fn sanitise_reel(name: &str) -> String {
+pub(crate) fn sanitise_reel(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .filter(|c| c.is_ascii_alphanumeric())
@@ -663,6 +663,7 @@ mod tests {
             param_modifiers: Default::default(),
             speed: 1.0,
             speed_keyframes: Vec::new(),
+            keep_pitch: false,
             audio_effects: Vec::new(),
             audio_effect_keyframes: Default::default(),
             source_rotation: 0,

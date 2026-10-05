@@ -42,6 +42,7 @@ pub mod consolidate;
 mod format;
 pub mod fcpxml;
 pub mod fcpxml_import;
+pub mod edl_import;
 pub mod grade_stills;
 pub mod made_media;
 mod load;

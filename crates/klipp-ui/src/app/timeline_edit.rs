@@ -1406,7 +1406,14 @@ impl KlippApp {
             self.state.toast.show("OUT point must be after IN point.".to_string());
             return;
         }
+        self.make_subclip(source_media_id, zone_in, zone_out, name);
+    }
 
+    /// A subclip of `source_media_id` from `zone_in` to `zone_out`, as one
+    /// undo step: the Source viewer's In to Out, or a timeline clip's
+    /// source range (#925).
+    pub(super) fn make_subclip(&mut self, source_media_id: klipp_core::MediaId, zone_in: Timecode, zone_out: Timecode, name: Option<String>) {
+        let Some(parent) = self.state.media_pool.get(&source_media_id).cloned() else { return };
         // Auto-name: count existing subclips of this parent, suffix N+1.
         let n = self
             .state

@@ -126,29 +126,33 @@ pub struct PcmAudioFeeder {
 /// tape's does and it stays on its picture. 1.0 reads straight through.
 /// `source_in` and `source_out` are the clip's own, in seconds: where
 /// fades and effects take its time from, as at 1x they take it from the
-/// source position.
+/// source position. With `keep_pitch` a forward clip's sound keeps its
+/// pitch instead (#925), stretched by [`klipp_audio::dsp::stretch`] on a
+/// grain grid anchored at `source_in`, as the export lays it.
 pub struct Varispeed {
     speed: AtomicU64,
     source_in: AtomicU64,
     source_out: AtomicU64,
+    keep_pitch: AtomicBool,
 }
 
 impl Default for Varispeed {
     fn default() -> Self {
-        Self { speed: AtomicU64::new(1.0f64.to_bits()), source_in: AtomicU64::new(0.0f64.to_bits()), source_out: AtomicU64::new(0.0f64.to_bits()) }
+        Self { speed: AtomicU64::new(1.0f64.to_bits()), source_in: AtomicU64::new(0.0f64.to_bits()), source_out: AtomicU64::new(0.0f64.to_bits()), keep_pitch: AtomicBool::new(false) }
     }
 }
 
 impl Varispeed {
-    pub fn set(&self, speed: f64, source_in: f64, source_out: f64) {
+    pub fn set(&self, speed: f64, source_in: f64, source_out: f64, keep_pitch: bool) {
+        self.keep_pitch.store(keep_pitch, Ordering::Relaxed);
         self.source_in.store(source_in.to_bits(), Ordering::Relaxed);
         self.source_out.store(source_out.to_bits(), Ordering::Relaxed);
         self.speed.store(speed.to_bits(), Ordering::Relaxed);
     }
 
-    fn get(&self) -> (f64, f64, f64) {
+    fn get(&self) -> (f64, f64, f64, bool) {
         let f = |a: &AtomicU64| f64::from_bits(a.load(Ordering::Relaxed));
-        (f(&self.speed), f(&self.source_in), f(&self.source_out))
+        (f(&self.speed), f(&self.source_in), f(&self.source_out), self.keep_pitch.load(Ordering::Relaxed))
     }
 }
 
@@ -413,8 +417,8 @@ impl PcmAudioFeeder {
 
     /// Read the clip's sound at `speed`, from its `source_in`..`source_out`
     /// (#642).
-    pub fn set_varispeed(&self, speed: f64, source_in: f64, source_out: f64) {
-        self.varispeed.set(speed, source_in, source_out);
+    pub fn set_varispeed(&self, speed: f64, source_in: f64, source_out: f64, keep_pitch: bool) {
+        self.varispeed.set(speed, source_in, source_out, keep_pitch);
     }
 
     pub fn seek(&self, secs: f64) {
@@ -533,6 +537,8 @@ fn pcm_feed_thread(
     // taken up from it when the speed comes back to 1 (#642).
     let mut vpos: f64 = 0.0;
     let mut vari = false;
+    // A forward read with its pitch kept (#925), carried between chunks.
+    let mut stretcher: Option<klipp_audio::dsp::stretch::Stretcher> = None;
 
     // Source frames per device frame, when the device is not at 48 kHz
     // (the slow path below resamples with a windowed sinc).
@@ -669,7 +675,7 @@ fn pcm_feed_thread(
         // A retimed clip (#642): its sound read at its speed, backward when
         // reversed, then faded, effected and sent on as at 1x, its time
         // being the clip's own.
-        let (speed, vs_in, vs_out) = varispeed.get();
+        let (speed, vs_in, vs_out, keep_pitch) = varispeed.get();
         if (speed - 1.0).abs() > 1e-6 && speed.is_finite() && speed != 0.0 {
             if !vari {
                 vpos = (read_pos / CHANNELS) as f64;
@@ -681,7 +687,18 @@ fn pcm_feed_thread(
                 std::thread::sleep(Duration::from_millis(1));
                 continue;
             }
-            let mut buf = klipp_audio::dsp::varispeed::read(samples, CHANNELS, vpos, speed, n);
+            let mut buf = if keep_pitch && speed > 0.0 {
+                // Output frames counted from the clip's start, where the
+                // grain grid is anchored: the export's grid too.
+                let anchor = vs_in * SAMPLE_RATE as f64;
+                let s = match stretcher.take() {
+                    Some(s) if s.reads(anchor, speed) => stretcher.insert(s),
+                    _ => stretcher.insert(klipp_audio::dsp::stretch::Stretcher::new(anchor, speed)),
+                };
+                s.read(samples, CHANNELS, ((vpos - anchor) / speed).round() as i64, n)
+            } else {
+                klipp_audio::dsp::varispeed::read(samples, CHANNELS, vpos, speed, n)
+            };
             let got = buf.len() / CHANNELS;
             if got == 0 {
                 eof = true;
@@ -907,7 +924,7 @@ mod tests {
             let (feeder, mut consumer) = PcmAudioFeeder::open(&path, SAMPLE_RATE, vec![], Default::default()).unwrap();
             feeder.set_fade(0.0, f64::MAX, 0.0, 0.0, 0, 0, 1.0);
             feeder.anti_click.store(false, Ordering::Relaxed);
-            feeder.set_varispeed(speed, 0.5, 3.5);
+            feeder.set_varispeed(speed, 0.5, 3.5, false);
             feeder.seek(1.0);
             feeder.resume();
             let mut got = Vec::new();

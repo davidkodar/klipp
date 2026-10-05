@@ -50,6 +50,7 @@ pub mod audio_plugins_disabled;
 pub mod browser;
 pub mod effect_targets;
 pub mod selection;
+pub mod timeline_sync;
 pub mod clip_clipboard;
 pub mod trim_view;
 pub mod ai_tools;

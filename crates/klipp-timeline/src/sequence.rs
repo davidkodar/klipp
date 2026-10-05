@@ -1352,6 +1352,7 @@ impl Track {
             param_modifiers: HashMap::new(),
             speed: 1.0,
             speed_keyframes: Vec::new(),
+            keep_pitch: false,
             audio_effects: Vec::new(),
             audio_effect_keyframes: std::collections::HashMap::new(),
             source_rotation: 0,
@@ -1652,6 +1653,7 @@ impl Track {
             param_modifiers: clip.param_modifiers.clone(),
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
+            keep_pitch: clip.keep_pitch,
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
             solo: clip.solo,
@@ -1726,6 +1728,7 @@ impl Track {
             param_modifiers: clip.param_modifiers.clone(),
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
+            keep_pitch: clip.keep_pitch,
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
             solo: clip.solo,
@@ -2208,6 +2211,11 @@ pub struct Clip {
     /// When non-empty, these override the constant `speed` field.
     #[serde(default)]
     pub speed_keyframes: Vec<klipp_core::Keyframe>,
+    /// A retimed clip's sound keeps its pitch, played longer or shorter,
+    /// where by default it moves with the speed as tape's does (#925).
+    /// Forward speeds only: a reversed clip's sound is tape's.
+    #[serde(default)]
+    pub keep_pitch: bool,
     /// Source media rotation in degrees (0, 90, 180, 270). Auto-detected from metadata.
     /// Applied as a pre-transform via the GPU pipeline. Users can override per-clip.
     #[serde(default)]
@@ -2697,6 +2705,7 @@ impl Clip {
             param_modifiers: HashMap::new(),
             speed: 1.0,
             speed_keyframes: Vec::new(),
+            keep_pitch: false,
             source_rotation: 0,
             enabled: true,
             solo: false,
@@ -2810,6 +2819,7 @@ impl Clip {
             param_modifiers: HashMap::new(),
             speed: 1.0,
             speed_keyframes: Vec::new(),
+            keep_pitch: false,
             source_rotation: 0,
             enabled: true,
             solo: false,
@@ -2912,6 +2922,7 @@ impl Clip {
             param_modifiers: HashMap::new(),
             speed: 1.0,
             speed_keyframes: Vec::new(),
+            keep_pitch: false,
             source_rotation: 0,
             enabled: true,
             solo: false,

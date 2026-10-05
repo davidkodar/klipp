@@ -376,6 +376,7 @@ impl NewInspectorPanel {
                             param_modifiers: std::collections::HashMap::new(),
                             speed: 1.0,
                             speed_keyframes: Vec::new(),
+                            keep_pitch: false,
                             source_rotation: 0,
                             enabled: true,
                             solo: false,
