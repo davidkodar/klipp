@@ -128,6 +128,10 @@ pub fn extract_tool_params(graph: &NodeGraph, tool: &ToolScope) -> NodeParams {
                 params.log_high_x = p.log_high_x;
                 params.log_high_y = p.log_high_y;
                 params.log_high_master = p.log_high_master;
+                // Where the log bands sit and the luma mix (#900)
+                params.log_low_range = p.log_low_range;
+                params.log_high_range = p.log_high_range;
+                params.luma_mix = p.luma_mix;
             }
             if let Some(node) = graph.nodes.iter().find(|n| n.kind == NodeKind::WheelSatBri) {
                 let p = &node.params;
@@ -218,6 +222,9 @@ pub fn apply_tool_preset(graph: &mut NodeGraph, preset: &ToolPreset) {
                 if p.log_high_x.is_some() { np.log_high_x = p.log_high_x; }
                 if p.log_high_y.is_some() { np.log_high_y = p.log_high_y; }
                 if p.log_high_master.is_some() { np.log_high_master = p.log_high_master; }
+                if p.log_low_range.is_some() { np.log_low_range = p.log_low_range; }
+                if p.log_high_range.is_some() { np.log_high_range = p.log_high_range; }
+                if p.luma_mix.is_some() { np.luma_mix = p.luma_mix; }
             }
             if let Some(node) = graph.nodes.iter_mut().find(|n| n.kind == NodeKind::WheelSatBri) {
                 let np = &mut node.params;

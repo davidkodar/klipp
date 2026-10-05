@@ -274,8 +274,55 @@ pub fn tone_weights(l: f32) -> [f32; 4] {
 /// wheel adds `amount × weight` to the encoding.
 #[inline]
 pub fn log_wheel_weights(l: f32) -> [f32; 3] {
+    log_wheel_weights_in(l, LOG_LOW_RANGE, LOG_HIGH_RANGE)
+}
+
+/// Where the low band centres on the encoded luma unless moved (#900).
+pub const LOG_LOW_RANGE: f32 = 0.20;
+/// Where the high band centres unless moved.
+pub const LOG_HIGH_RANGE: f32 = 0.78;
+/// How near mid grey either range may come: the bands stay either side
+/// of the mid one.
+const LOG_RANGE_GAP: f32 = 0.08;
+
+/// [`log_wheel_weights`] with the low and high bands centred on `low`
+/// and `high` (#900): the Low Range and High Range controls, moving
+/// where the shadows end and the highlights begin. Each is held its own
+/// side of mid grey.
+#[inline]
+pub fn log_wheel_weights_in(l: f32, low: f32, high: f32) -> [f32; 3] {
+    let low = low.clamp(0.0, MID_GREY_ENCODED - LOG_RANGE_GAP);
+    let high = high.clamp(MID_GREY_ENCODED + LOG_RANGE_GAP, 1.2);
     let g = |centre: f32, sigma: f32| (-((l - centre) * (l - centre)) / (2.0 * sigma * sigma)).exp();
-    [g(0.20, 0.14), g(MID_GREY_ENCODED, 0.16), g(0.78, 0.14)]
+    [g(low, 0.14), g(MID_GREY_ENCODED, 0.16), g(high, 0.14)]
+}
+
+/// How the wheels act beyond their amounts (#900): where the log
+/// wheels' low and high bands sit, and how much of what the wheels do
+/// to luma is kept. At a luma mix of 1 the wheels change brightness as
+/// they always have; at 0 they balance colour only, each pixel keeping
+/// the luma it had before them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WheelShape {
+    pub low_range: f32,
+    pub high_range: f32,
+    pub luma_mix: f32,
+}
+
+impl Default for WheelShape {
+    fn default() -> Self {
+        Self { low_range: LOG_LOW_RANGE, high_range: LOG_HIGH_RANGE, luma_mix: 1.0 }
+    }
+}
+
+/// The wheels' result `after` (linear RGB) with `1 - luma_mix` of the
+/// change they made to luma from `before` taken back, as an even shift
+/// of the three channels so the colour they gave is kept (#900).
+#[inline]
+pub fn luma_mix(before: [f32; 3], after: [f32; 3], luma: [f32; 3], mix: f32) -> [f32; 3] {
+    let y = |c: [f32; 3]| luma[0] * c[0] + luma[1] * c[1] + luma[2] * c[2];
+    let back = (1.0 - mix.clamp(0.0, 1.0)) * (y(before) - y(after));
+    [after[0] + back, after[1] + back, after[2] + back]
 }
 
 #[cfg(test)]
@@ -500,6 +547,34 @@ mod tests {
         let [low, mid, high] = log_wheel_weights(MID_GREY_ENCODED);
         assert!(close(mid, 1.0, 1e-6) && low < 0.2 && high < 0.2, "the mid band peaks at mid grey");
         assert!(log_wheel_weights(0.20)[0] > 0.99 && log_wheel_weights(0.78)[2] > 0.99);
+    }
+
+    /// #900: the ranges move the low and high bands, never past mid grey.
+    #[test]
+    fn the_log_ranges_move_the_bands() {
+        assert_eq!(log_wheel_weights_in(0.4, LOG_LOW_RANGE, LOG_HIGH_RANGE), log_wheel_weights(0.4));
+        let low_at = |range: f32| log_wheel_weights_in(0.30, range, LOG_HIGH_RANGE)[0];
+        assert!(low_at(0.30) > 0.99 && low_at(0.10) < low_at(0.20), "a higher low range reaches further up");
+        let high_at = |range: f32| log_wheel_weights_in(0.65, LOG_LOW_RANGE, range)[2];
+        assert!(high_at(0.65) > 0.99 && high_at(0.90) < high_at(0.78), "a lower high range reaches further down");
+        // Held off mid grey: a low range dragged past it stops short.
+        assert!(log_wheel_weights_in(MID_GREY_ENCODED, 0.9, LOG_HIGH_RANGE)[0] < 0.9);
+    }
+
+    /// #900: a luma mix of 0 keeps the luma the wheels found and the
+    /// colour they made; 1 keeps all they did.
+    #[test]
+    fn luma_mix_takes_back_the_wheels_brightness() {
+        let rec709 = [0.2126, 0.7152, 0.0722];
+        let y = |c: [f32; 3]| rec709[0] * c[0] + rec709[1] * c[1] + rec709[2] * c[2];
+        let before = [0.18, 0.18, 0.18];
+        let after = [0.30, 0.22, 0.16];
+        assert_eq!(luma_mix(before, after, rec709, 1.0), after);
+        let none = luma_mix(before, after, rec709, 0.0);
+        assert!(close(y(none), y(before), 1e-6), "the luma is as before");
+        assert!(close(none[0] - none[1], after[0] - after[1], 1e-6) && close(none[1] - none[2], after[1] - after[2], 1e-6), "the colour is as the wheels made it");
+        let half = luma_mix(before, after, rec709, 0.5);
+        assert!(close(y(half), (y(before) + y(after)) / 2.0, 1e-6));
     }
 }
 
