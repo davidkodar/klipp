@@ -205,6 +205,38 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
         }
     }
 
+    // A picture clip trimmed past the end of its file (#978): from an in
+    // point at or past the end it shows nothing, in the viewer and the
+    // export alike, which now fails on it; running on past the end, it
+    // holds the file's last frame. A still image is one frame for any
+    // length, so it is neither.
+    for (_, c) in pictures.iter().filter(|(_, c)| c.enabled) {
+        let Some(m) = c.media_id().and_then(|id| pool.get(&id)) else { continue };
+        let file_end = secs(m.duration);
+        if m.is_still || m.offline || file_end <= 0.0 {
+            continue;
+        }
+        let (src_in, src_out) = (secs(c.source_in), secs(c.source_out));
+        if src_in >= file_end - frame * 0.5 {
+            add(
+                Severity::Error,
+                "past_end",
+                Some(secs(c.timeline_in)),
+                format!("{} starts at {src_in:.2} s of a {file_end:.2} s file: it has no picture", m.filename),
+                "Slip the clip back inside the file, or remove it",
+            );
+        } else if src_out > file_end + frame * 1.5 {
+            let held_from = secs(c.timeline_in) + (file_end - src_in) / c.speed.max(0.001);
+            add(
+                Severity::Warning,
+                "held_end",
+                Some(held_from),
+                format!("{} runs {:.2} s past the end of its file: its last frame is held from {held_from:.2} s", m.filename, src_out - file_end),
+                "Trim the clip to the file's end, or cover the hold",
+            );
+        }
+    }
+
     // Clips laid over each other on one track: only one of them shows
     // there, in the viewer and the export alike, and the other is hidden
     // with its grade (#639). Nothing makes this on purpose; a retime that
@@ -918,6 +950,37 @@ mod tests {
         let f = r.findings.iter().find(|f| f.rule == "overlap").unwrap_or_else(|| panic!("{}", r.text()));
         assert_eq!((f.severity, f.at_secs), (Severity::Error, Some(4.0)));
         assert!(f.what.contains("from 4.00 to 6.00 s"), "{}", f.what);
+    }
+
+    /// #978: a clip trimmed past its file's end is caught before export:
+    /// starting there it has no picture, an error; running on past it, the
+    /// last frame is held, a warning. A still of any length is neither.
+    #[test]
+    fn a_clip_past_the_end_of_its_file_is_caught() {
+        let (mut seq, mut pool, talk, _) = piece();
+        let r = check(&seq, &pool, &Spoken(talk));
+        assert!(!rules(&r).contains(&"past_end") && !rules(&r).contains(&"held_end"), "{}", r.text());
+        // The talk file is 60 s: the second picture slipped to start at 61 s.
+        let second = &mut seq.tracks[0].clips[1];
+        (second.source_in, second.source_out) = (tc(61.0), tc(65.0));
+        let r = check(&seq, &pool, &Spoken(talk));
+        let f = r.findings.iter().find(|f| f.rule == "past_end").unwrap_or_else(|| panic!("{}", r.text()));
+        assert_eq!((f.severity, f.at_secs), (Severity::Error, Some(4.0)));
+        // Starting at 58 s, it runs 2 s past the end: held from 6 s.
+        let second = &mut seq.tracks[0].clips[1];
+        (second.source_in, second.source_out) = (tc(58.0), tc(62.0));
+        let r = check(&seq, &pool, &Spoken(talk));
+        let f = r.findings.iter().find(|f| f.rule == "held_end").unwrap_or_else(|| panic!("{}", r.text()));
+        assert_eq!((f.severity, f.at_secs), (Severity::Warning, Some(6.0)));
+        // A still: its 5 s pool duration is a default, not an end.
+        let mut still = klipp_media::MediaItem::synthetic_for_test("/tmp/card.png".into(), None);
+        still.duration = tc(5.0);
+        still.video_codec = "png".into();
+        still.is_still = true;
+        let card = pool.add(still);
+        seq.tracks[0].clips[1] = Clip::media(card, tc(4.0), tc(8.0), tc(3.0), tc(7.0));
+        let r = check(&seq, &pool, &Spoken(talk));
+        assert!(!rules(&r).contains(&"past_end") && !rules(&r).contains(&"held_end"), "{}", r.text());
     }
 
     /// #517: a full-frame title is picture. The film ended on a 7.6 s end
