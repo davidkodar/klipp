@@ -13,6 +13,22 @@ impl KlippApp {
             .map(ClipEffectsState::of)
     }
 
+    /// The clip as it is, before an edit that moves its effects about.
+    fn clip_snapshot(&self, clip_id: klipp_core::ClipId) -> Option<klipp_timeline::Clip> {
+        self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned()
+    }
+
+    /// Record an edit that moved effects about as one undo step: the
+    /// clip whole either side, since the effects' keyframes and
+    /// modifiers moved with them and the effects list alone would put
+    /// them back without (#992).
+    fn record_clip_replaced(&mut self, description: &'static str, before: Option<klipp_timeline::Clip>) {
+        let Some(before) = before else { return };
+        let Some(after) = self.clip_snapshot(before.id) else { return };
+        self.state.dirty = true;
+        self.state.push_history(EditCommand::ReplaceClip { description, old: Box::new(before), new: Box::new(after) });
+    }
+
     /// Record an effect added or removed as one undo step: the effects
     /// list, and the clip's speed and length when a speed ramp moved them.
     fn record_effects_change(&mut self, clip_id: klipp_core::ClipId, before: Option<ClipEffectsState>) {
@@ -196,8 +212,9 @@ impl KlippApp {
                 true
             }
             AppCommand::RemoveBuiltinEffect { clip_id, index } => {
-                let before = self.clip_effects_state(*clip_id);
+                let before = self.clip_snapshot(*clip_id);
                 let mut was_speed_ramp = false;
+                let mut removed = false;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if *index < clip.builtin_effects.len() {
@@ -205,13 +222,10 @@ impl KlippApp {
                             if matches!(clip.builtin_effects[*index], klipp_effects::BuiltinEffect::SpeedRamp { .. }) {
                                 was_speed_ramp = true;
                             }
-                            clip.builtin_effects.remove(*index);
-                            // The enabled flags run parallel to the
-                            // effects: leaving this one in place gave
-                            // every effect after it its neighbour's flag.
-                            if *index < clip.builtin_effects_enabled.len() {
-                                clip.builtin_effects_enabled.remove(*index);
-                            }
+                            // Its enabled flag, keyframes and modifiers
+                            // go with it, and those of the effects after
+                            // it move down with theirs.
+                            removed = clip.remove_builtin_effect(*index).is_some();
                         }
                         // Reset clip speed if SpeedRamp was removed and no other SpeedRamp remains
                         if was_speed_ramp && !clip.builtin_effects.iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::SpeedRamp { .. })) {
@@ -242,7 +256,9 @@ impl KlippApp {
                         }
                     }
                 }
-                self.record_effects_change(*clip_id, before);
+                if removed {
+                    self.record_clip_replaced("Remove Effect", before);
+                }
                 self.sync_sequence_to_engine();
                 if was_speed_ramp {
                     let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
@@ -369,13 +385,7 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if retracted {
-                            if *effect_index < clip.builtin_effects.len() {
-                                clip.builtin_effects.remove(*effect_index);
-                                changed = true;
-                            }
-                            if *effect_index < clip.builtin_effects_enabled.len() {
-                                clip.builtin_effects_enabled.remove(*effect_index);
-                            }
+                            changed = clip.remove_builtin_effect(*effect_index).is_some();
                         } else if let Some(old) = old_effect {
                             if let Some(fx) = clip.builtin_effects.get_mut(*effect_index) {
                                 changed = *fx != old;
@@ -473,17 +483,20 @@ impl KlippApp {
                 true
             }
             AppCommand::ReorderBuiltinEffect { clip_id, from_index, to_index } => {
+                let before = self.clip_snapshot(*clip_id);
+                let mut moved = false;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        let from = *from_index;
-                        let to = *to_index;
-                        if from < clip.builtin_effects.len() && to < clip.builtin_effects.len() {
-                            let fx = clip.builtin_effects.remove(from);
-                            clip.builtin_effects.insert(to, fx);
-                        }
+                        // The effect's enabled flag, keyframes and
+                        // modifiers move with it.
+                        moved = clip.move_builtin_effect(*from_index, *to_index);
                         break;
                     }
                 }
+                if !moved {
+                    return true;
+                }
+                self.record_clip_replaced("Reorder Effects", before);
                 self.sync_sequence_to_engine();
                 if self.state.playback != PlaybackState::Playing {
                     let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
