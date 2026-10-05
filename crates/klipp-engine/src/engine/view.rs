@@ -347,7 +347,7 @@ impl PlaybackEngine {
             clip,
             thumbs,
             // An eyedropper read borrows the tap for one render.
-            scope_tap: self.node_sample.map(|s| s.tap).or(self.scope_tap_node),
+            scope_tap: self.node_sample.map(|s| s.tap),
             matte_view,
             solo: self.solo_node,
             ungraded: self.bypass_color_grade,
@@ -396,7 +396,6 @@ impl PlaybackEngine {
             || self.bypass_color_grade
             || self.compare_stabilization
             || self.compare_effect_active
-            || self.scope_tap_node.is_some()
             || self.node_sample.is_some()
             || (self.state != PlaybackState::Playing && !self.visible_node_thumbs.is_empty())
         {
@@ -857,9 +856,9 @@ impl PlaybackEngine {
             }
             _ => {}
         }
-        // The scopes keep their own tap: a tap borrowed for the read is
-        // not theirs to show, answered or not.
-        let scope_tap = found.scope_tap.as_ref().filter(|_| borrowed.is_none() || borrowed == self.scope_tap_node);
+        // A tap borrowed for the read is not the scopes' to show,
+        // answered or not.
+        let scope_tap = found.scope_tap.as_ref().filter(|_| borrowed.is_none());
         if scope_tap.is_some() || !found.thumbs.is_empty() {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(tap) = scope_tap {

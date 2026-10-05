@@ -618,6 +618,12 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "clip_id": arg_str(args, "clip_id")?,
             "node_id": arg_str(args, "node_id")?,
         }),
+        "klipp_rename_node" => json!({
+            "method": "rename_node",
+            "clip_id": arg_str(args, "clip_id")?,
+            "node_id": arg_str(args, "node_id")?,
+            "name": arg_str(args, "name")?,
+        }),
         "klipp_set_log_format" => json!({
             "method": "set_log_format",
             "clip_id": arg_str(args, "clip_id")?,
@@ -1633,6 +1639,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_toggle_node", "Enable or disable a grade node (a bypass toggle).",
              json!({ "clip_id": { "type": "string" }, "node_id": { "type": "string" } }),
              vec!["clip_id", "node_id"]),
+        tool("klipp_rename_node", "Give a grade node a name of its own, shown on its card in the node graph: \"skin\", \"sky\", \"look\".",
+             json!({ "clip_id": { "type": "string" }, "node_id": { "type": "string", "description": "From klipp_get_grade for THIS clip" }, "name": { "type": "string" } }),
+             vec!["clip_id", "node_id", "name"]),
         tool("klipp_set_log_format",
              "Set the camera log (or HDR) encoding a clip was recorded in, for footage \
               whose file metadata does not say (most camera log files do not). Klipp \

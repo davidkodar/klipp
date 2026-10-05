@@ -1026,15 +1026,27 @@ impl KlippApp {
                                     if resp.clicked() && !is_active {
                                         all_cmds.push(AppCommand::SwitchGradeVersion { clip_id, version_index: i });
                                     }
+                                    let current_name = clip.grade_versions[i].name.clone();
                                     resp.context_menu(|ui| {
-                                        if ui.button("Rename...").clicked() {
+                                        // The version's name, typed (#902): Rename used
+                                        // to write a fixed "Version N".
+                                        let id = ui.id().with(("grade_version_name", clip_id.0, i));
+                                        let mut buf: String = ui.data_mut(|d| d.get_temp(id)).unwrap_or_else(|| current_name.clone());
+                                        ui.label(egui::RichText::new("Name").size(crate::theme::type_scale::CAPTION).weak());
+                                        let field = ui.add(egui::TextEdit::singleline(&mut buf).desired_width(140.0));
+                                        let entered = field.lost_focus() && ui.input(|inp| inp.key_pressed(egui::Key::Enter));
+                                        if (entered || ui.button("Rename").clicked()) && !buf.trim().is_empty() {
                                             all_cmds.push(AppCommand::RenameGradeVersion {
                                                 clip_id,
                                                 version_index: i,
-                                                name: format!("Version {}", i + 1),
+                                                name: buf.trim().to_string(),
                                             });
+                                            ui.data_mut(|d| d.remove::<String>(id));
                                             ui.close_menu();
+                                        } else {
+                                            ui.data_mut(|d| d.insert_temp(id, buf));
                                         }
+                                        ui.separator();
                                         if !is_active && ui.button("Delete").clicked() {
                                             all_cmds.push(AppCommand::DeleteGradeVersion { clip_id, version_index: i });
                                             ui.close_menu();

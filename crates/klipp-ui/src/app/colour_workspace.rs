@@ -829,7 +829,7 @@ impl KlippApp {
         // While descended into a compound the filmstrip thumb
         // pipeline would render top-level clip graph outputs for
         // every node — misleading while the user is editing inside a
-        // sub-graph the executor doesn't recurse into yet (stage 5).
+        // sub-graph, whose own nodes that pipeline doesn't capture.
         // Skip the dispatch for now; the V2 canvas falls back to
         // whatever thumb bytes are still in state.node_thumbs from
         // the last root-level capture, which is fine (stale but

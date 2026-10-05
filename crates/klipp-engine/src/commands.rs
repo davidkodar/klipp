@@ -39,7 +39,7 @@ engine_commands!(
     SetLutTetrahedral, SetMasterVolume, SetMattePreview, SetNodeSolo, SetPanLaw,
     SetPlayhead, SetRenderCacheEnabled, SetScopeBloom, SetScopeLowPass,
     SetScopeRenderMode, SetScopeSettings, SetScopeSizes, SetScopesVisible,
-    SetScopeTapNode, SetScrubAudioEnabled, SetSdrTransfer, SetSourceMedia, SetSpeed,
+    SetScrubAudioEnabled, SetSdrTransfer, SetSourceMedia, SetSpeed,
     SetSplitCompareEffect, SetTrackMute, SetTrackPan, SetTrackSolo, SetTrackVolume,
     SetUseProxies, SetVisibleNodeThumbs, StepSource, Stop, StopSource,
     ToggleBeforeAfter, ToggleStabilizationCompare

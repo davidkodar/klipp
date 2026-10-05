@@ -450,6 +450,22 @@ fn control_socket_reads_state_and_forwards_commands() {
         }),
         "has no node",
     );
+    refused(
+        &mut h,
+        json!({
+            "method": "rename_node",
+            "clip_id": clip_a, "node_id": corr_b, "name": "skin",
+        }),
+        "has no node",
+    );
+    refused(
+        &mut h,
+        json!({
+            "method": "rename_node",
+            "clip_id": clip_a, "node_id": corr_a, "name": "  ",
+        }),
+        "not blank",
+    );
 
     // A parameter name the grade does not carry is the same silent
     // no-op one level down: `apply_override` would drop it on its

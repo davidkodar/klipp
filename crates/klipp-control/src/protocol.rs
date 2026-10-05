@@ -276,6 +276,8 @@ pub enum ControlCommand {
         value: f32,
     },
     ToggleNodeEnabled { clip_id: String, node_id: String },
+    /// Give a grade node a name of its own (#893): "skin", "sky", "look".
+    RenameNode { clip_id: String, node_id: String, name: String },
     /// Tell Klipp what camera log (or HDR) encoding a clip's media was
     /// recorded in — for footage whose file metadata does not say. Applies
     /// to the media, so every clip of the same file follows. `format` is a

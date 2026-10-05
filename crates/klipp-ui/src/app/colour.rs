@@ -1229,6 +1229,16 @@ impl KlippApp {
 
     fn handle_color_node_config(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         match cmd {
+            AppCommand::SetNodeLut { clip_id, node_id, path } => {
+                let node_id = *node_id;
+                let path = path.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.lut_path = path;
+                    }
+                });
+                true
+            }
             AppCommand::RenameNode { clip_id, node_id, ref label } => {
                 let node_id = *node_id;
                 let label = label.clone();
@@ -1929,7 +1939,6 @@ impl KlippApp {
 
     fn handle_color_grade(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         match cmd {
-            AppCommand::SetScopeTapNode { .. } => { true }
             AppCommand::RefreshGrade => {
                 *needs_refresh = true;
                 self.state.dirty = true;
