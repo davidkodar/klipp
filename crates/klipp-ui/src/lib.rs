@@ -51,6 +51,7 @@ pub mod browser;
 pub mod effect_targets;
 pub mod selection;
 pub mod timeline_sync;
+pub mod punch_in;
 pub mod clip_clipboard;
 pub mod source_edit;
 pub mod trim_view;

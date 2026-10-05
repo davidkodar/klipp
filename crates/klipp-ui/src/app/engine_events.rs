@@ -254,6 +254,8 @@ impl KlippApp {
                     }
                     self.state.media_pool.add(media_item);
                     self.refresh_spans_beside(&span_path);
+                    // A recorded take lands where it was punched in (#114).
+                    self.place_take(media_id);
                     // Imports stay off the timeline-edit undo stack (FCP /
                     // Premiere convention). Mixing them in caused two
                     // surprises: every drop-from-FILES tab took two ctrl+z

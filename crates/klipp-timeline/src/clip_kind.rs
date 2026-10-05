@@ -1150,6 +1150,11 @@ pub struct TitleData {
     /// at which point this field can be retired.
     #[serde(default)]
     pub background: TitleBackground,
+    /// The brief's type style this title follows, by name (#66): a brief
+    /// that changes the style carries the title with it, in every field
+    /// the title still has as the style had it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
 }
 
 /// What `TitleData::migrate_legacy_animation` did.
@@ -1290,6 +1295,7 @@ impl TitleData {
             next_object_id: 0,
             animation_type: TitleAnimationType::default(),
             background: TitleBackground::None,
+            style: None,
         };
         td.add_object(TitleObjectContent::TextBox(text_box), default_text_transform());
         td

@@ -4618,6 +4618,24 @@ fn show_title_editor(
     }
     ui.add_space(8.0);
 
+    // The brief's style this title follows (#66), where it differs from
+    // it, and the way back to it.
+    if let Some(name) = td.style.as_deref() {
+        let diverged = state.sequence().all_clips().find(|c| c.id == clip_id).map(|c| klipp_document::ops::style_divergence(state.sequence(), c)).unwrap_or_default();
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(format!("Follows style \u{201c}{name}\u{201d}")).size(11.0).color(theme.text_secondary))
+                .on_hover_text("A change to this style in the brief carries this title with it, in every field it still has as the style has it");
+            if diverged.is_empty() {
+                return;
+            }
+            ui.label(egui::RichText::new(format!("\u{00b7} differs in {}", diverged.join(", "))).size(11.0).color(theme.text_accent));
+            if ui.small_button("Revert to Style").on_hover_text("Give this title every field of its style again").clicked() {
+                cmds.push(AppCommand::RevertTitleToStyle { clip_id });
+            }
+        });
+        ui.add_space(6.0);
+    }
+
     // ── Motion and Style: the first tier, always open ──
     if let Some(tb) = tb_target {
         // The text travels its own size at 1080p, as the renderer

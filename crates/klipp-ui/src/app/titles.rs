@@ -711,6 +711,15 @@ impl KlippApp {
 
     fn handle_title_content(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
+            AppCommand::RevertTitleToStyle { clip_id } => {
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let reverted = seq.all_clips().find(|c| c.id == *clip_id).ok_or_else(|| "the title is gone".to_string()).and_then(|c| klipp_document::ops::revert_to_style(seq, c));
+                match reverted {
+                    Ok(edit) => self.apply_edits_as_one(&[edit], "Revert to Style"),
+                    Err(why) => self.state.toast.show(format!("Not reverted: {why}")),
+                }
+                true
+            }
             AppCommand::UpdateTitleData { clip_id, text, font_size, font_name, font_style, color } => {
                 let old = self.snapshot_title(*clip_id);
                 let target_oid = self.title_text_target_id(*clip_id);

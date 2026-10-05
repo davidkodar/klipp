@@ -5509,6 +5509,7 @@ mod tests {
             next_object_id: 0,
             animation_type: klipp_timeline::TitleAnimationType::default(),
             background: TitleBackground::None,
+            style: None,
         };
         let _shape_id = td.add_object(
             TitleObjectContent::Shape(klipp_timeline::Shape {

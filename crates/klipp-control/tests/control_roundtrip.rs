@@ -1962,3 +1962,50 @@ fn mix_loudness_finds_the_hit_over_the_bed() {
     assert!(peak > 4.5, "the burst is metered over full scale, not clamped: {peak:.1} LUFS (+6.5 unclamped, +2.2 clamped)");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// #503: a music track's sections and a fit to a length. A 120 BPM click
+/// over a tone, quiet, then loud for two phrases, then quiet: the read
+/// names the loud stretch, and a fit to 32 s gives place ops that put
+/// the fitted track on the timeline, its start and end kept.
+#[test]
+fn beats_reads_music_sections_and_fits_a_track_to_a_length() {
+    let mut h = harness();
+    let dir = std::env::temp_dir().join(format!("klipp-music-fit-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("bed.wav");
+    let made = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+               "aevalsrc='0.6*lt(mod(t\\,0.5)\\,0.02)*sin(2*PI*1000*t)+0.4*sin(2*PI*220*t)*if(between(t\\,16\\,32)\\,1\\,0.08)':s=22050:d=48",
+               "-ac", "1"])
+        .arg(&wav)
+        .status();
+    if !made.is_ok_and(|s| s.success()) {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let mut item = klipp_media::MediaItem::synthetic_for_test(wav.clone(), None);
+    item.has_audio = true;
+    item.video_codec = String::new();
+    item.duration = klipp_core::RationalTime::from_secs_f64(48.0, 30);
+    let media = h.media_pool.write().unwrap().add(item);
+    {
+        let mut seq = h.sequence.write().unwrap();
+        if !seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Audio) {
+            seq.tracks.push(klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio));
+        }
+    }
+    let r = h.ok(json!({ "method": "beats", "media_id": media.0.to_string(), "target_secs": 32.0 }));
+    assert!((r["bpm"].as_f64().unwrap() - 120.0).abs() < 6.0, "{r}");
+    let sections = r["sections"].as_array().unwrap();
+    assert!(sections.iter().any(|s| s["kind"] == "peak" && (s["start_secs"].as_f64().unwrap() - 16.0).abs() < 1.0), "the loud phrases are the peak: {r}");
+    assert!((r["fit"]["length_secs"].as_f64().unwrap() - 32.0).abs() <= 2.0, "within a bar of the target: {r}");
+    let ops = r["ops"].as_array().unwrap();
+    assert_eq!(ops.len(), 2, "{r}");
+    assert_eq!(ops[0]["source_in"], json!(0.0), "it starts as it did: {r}");
+    // The ops apply as they are: two clips of the track, back to back.
+    let v = h.ok(json!({ "method": "apply", "ops": r["ops"] }));
+    assert_eq!(v["applied"], json!(true), "{v}");
+    let placed = h.edits_seen.lock().unwrap().len();
+    assert_eq!(placed, 2, "two clips placed: {v}");
+    std::fs::remove_dir_all(&dir).ok();
+}

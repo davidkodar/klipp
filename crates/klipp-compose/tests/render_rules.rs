@@ -1345,7 +1345,7 @@ fn a_scene_that_contains_itself_renders_nothing_and_returns() {
 #[test]
 fn a_moving_shape_is_smeared_by_the_motion_blur_on_its_layer() {
     let shot = |blur: Option<klipp_timeline::MotionBlur>| {
-        let mut td = klipp_timeline::TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None };
+        let mut td = klipp_timeline::TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None };
         let mut xf = klipp_timeline::default_text_transform();
         xf.size = klipp_timeline::TitlePosition { x: 0.25, y: 0.5 };
         let id = td.add_object(

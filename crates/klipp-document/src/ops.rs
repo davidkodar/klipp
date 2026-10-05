@@ -2502,7 +2502,13 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 edge_fade: *edge_fade,
                 shadow: shadow.as_ref().map(|s| title_shadow(s, i)).transpose()?.flatten(),
             };
-            title_op(seq, fps, i, at, args)
+            // The title follows the style it was made in (#66).
+            let followed = style.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| if look.name.is_empty() { s.to_string() } else { look.name.clone() });
+            let (what, mut edit, ids) = title_op(seq, fps, i, at, args)?;
+            if let Some(name) = followed {
+                set_followed_style(&mut edit, &name);
+            }
+            Ok((what, edit, ids))
         }
         Op::LowerThird { name, role, at, secs: hold, track, side, x, y } => {
             let at = resolve_anchor(seq, fps, at, i)?;
@@ -5384,7 +5390,7 @@ fn highlight(seq: &Sequence, fps: Fps, i: usize, at: Timecode, hold: f64, region
     if !stroke.is_finite() || !(1.0..=40.0).contains(&stroke) {
         return Err(refuse(i, format!("stroke {stroke} is out of range"), "give a stroke width 1 to 40"));
     }
-    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None };
+    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None };
     let boxed = |cx: f32, cy: f32, bw: f32, bh: f32| ObjectTransform { center: TitlePosition { x: cx, y: cy }, size: TitlePosition { x: bw, y: bh }, ..klipp_timeline::default_text_transform() };
     match kind.to_lowercase().as_str() {
         "box" | "ring" => {
@@ -6901,6 +6907,7 @@ fn lower_third_title(name: &str, role: Option<&str>, place: LowerThirdPlace) -> 
         next_object_id: 0,
         animation_type: Default::default(),
         background: klipp_timeline::TitleBackground::None,
+        style: None,
     };
     let name_box = TextBox {
         text: name.to_string(),
@@ -7356,6 +7363,128 @@ fn split_edit(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: Cli
     Ok((what, EditCommand::Batch(edits), vec![out_a.id, in_a.id]))
 }
 
+/// The new title in `edit` follows the style `name` (#66).
+fn set_followed_style(edit: &mut EditCommand, name: &str) {
+    if let EditCommand::AddTitleClip { clip, .. } = edit {
+        if let klipp_timeline::ClipKind::Title(td) = &mut clip.kind {
+            td.style = Some(name.to_string());
+        }
+    }
+}
+
+/// A type style's fields, each as a look of that field alone, named as
+/// the title inspector names them (#66). The style's fill is a card's
+/// colour when it is full-frame and its backing's otherwise, as the
+/// title op reads it; its motion fields are one.
+fn style_looks(ts: &klipp_timeline::TypeStyle) -> Vec<(&'static str, Look)> {
+    let col = |c: &Option<String>| c.as_deref().and_then(parse_color);
+    let full = ts.full_frame.unwrap_or(false);
+    let mut out = Vec::new();
+    let mut add = |name: &'static str, look: Look| {
+        if look != Look::default() {
+            out.push((name, look));
+        }
+    };
+    add("font", Look { font: ts.font.clone(), ..Default::default() });
+    add("bold", Look { bold: ts.bold, ..Default::default() });
+    add("size", Look { size: ts.size, ..Default::default() });
+    add("colour", Look { color: col(&ts.color), ..Default::default() });
+    if full {
+        add("card", Look { full_frame: Some(col(&ts.fill).unwrap_or([0x10, 0x14, 0x18, 255])), ..Default::default() });
+    } else {
+        add("backing colour", Look { backing_color: col(&ts.fill), ..Default::default() });
+    }
+    add("backing", Look { backing: ts.backing, ..Default::default() });
+    add("x", Look { x: ts.x, ..Default::default() });
+    add("y", Look { y: ts.y, ..Default::default() });
+    let align = ts.align.as_deref().and_then(|a| match a.to_lowercase().as_str() {
+        "left" => Some(klipp_timeline::TextAlignment::Left),
+        "center" | "centre" => Some(klipp_timeline::TextAlignment::Center),
+        "right" => Some(klipp_timeline::TextAlignment::Right),
+        _ => None,
+    });
+    add("alignment", Look { align, ..Default::default() });
+    add("outline", Look { outline: ts.outline, ..Default::default() });
+    add("outline colour", Look { outline_color: col(&ts.outline_color), ..Default::default() });
+    add("glow", Look { glow: ts.glow, ..Default::default() });
+    add("glow colour", Look { glow_color: col(&ts.glow_color), ..Default::default() });
+    let gradient = ts.gradient.as_ref().and_then(|[a, b]| Some([parse_color(a)?, parse_color(b)?]));
+    add("gradient", Look { gradient, ..Default::default() });
+    let motion = MotionAsk { enter: ts.enter.clone(), exit: ts.exit.clone(), animate: ts.animate.clone(), animate_secs: ts.animate_secs, stagger: ts.stagger.clone() };
+    add("motion", Look { motion: (motion != MotionAsk::default()).then_some(motion), ..Default::default() });
+    add("loop", Look { loop_effect: ts.loop_effect.clone(), ..Default::default() });
+    out
+}
+
+/// Whether `td` has `look`'s field as the look has it: restyling with it
+/// changes nothing.
+fn has_look(td: &klipp_timeline::TitleData, look: &Look, secs: f64) -> bool {
+    restyle(td, look, secs).is_ok_and(|after| after == *td)
+}
+
+/// The fields of the style `clip` follows that it no longer has as the
+/// style has them (#66), for the inspector to mark. Empty for a title
+/// that follows no style, or one the brief does not have.
+pub fn style_divergence(seq: &Sequence, clip: &Clip) -> Vec<&'static str> {
+    let Some(td) = clip.title_data() else { return Vec::new() };
+    let Some(ts) = td.style.as_deref().and_then(|name| crate::title_style::look(seq.brief.as_ref(), name)) else { return Vec::new() };
+    let secs = secs(clip.timeline_out - clip.timeline_in);
+    style_looks(&ts).into_iter().filter(|(_, look)| !has_look(td, look, secs)).map(|(name, _)| name).collect()
+}
+
+/// `clip` given every field of the style it follows again (#66): the
+/// edit, or why there is none.
+pub fn revert_to_style(seq: &Sequence, clip: &Clip) -> Result<EditCommand, String> {
+    let td = clip.title_data().ok_or("not a title")?;
+    let name = td.style.as_deref().ok_or("this title follows no style")?;
+    let ts = crate::title_style::look(seq.brief.as_ref(), name).ok_or_else(|| format!("the brief has no style \"{name}\""))?;
+    let secs = secs(clip.timeline_out - clip.timeline_in);
+    let mut new = td.clone();
+    for (_, look) in style_looks(&ts) {
+        new = restyle(&new, &look, secs)?;
+    }
+    if new == *td {
+        return Err("it already looks as its style does".into());
+    }
+    Ok(EditCommand::EditTitle { clip_id: clip.id, description: "Revert to Style", old_data: td.clone(), new_data: new })
+}
+
+/// The titles that follow a style, carried along when the brief changes
+/// from `old` to `new` (#66): each field the style changed is changed on
+/// every title that still has it as the old style had it, so what an
+/// editor set on one title by hand stays. A field the style gains is
+/// given to all of them; one it drops is left as it is.
+pub fn follow_brief(seq: &Sequence, old: Option<&klipp_timeline::Brief>, new: Option<&klipp_timeline::Brief>) -> Vec<EditCommand> {
+    let mut edits = Vec::new();
+    for clip in seq.tracks.iter().filter(|t| !t.locked).flat_map(|t| t.clips.iter()) {
+        let Some(td) = clip.title_data() else { continue };
+        let Some(name) = td.style.as_deref() else { continue };
+        let Some(after) = crate::title_style::look(new, name) else { continue };
+        let before = crate::title_style::look(old, name).unwrap_or_default();
+        if before == (klipp_timeline::TypeStyle { name: before.name.clone(), ..after.clone() }) {
+            continue;
+        }
+        let secs = secs(clip.timeline_out - clip.timeline_in);
+        let was = style_looks(&before);
+        let mut data = td.clone();
+        for (field, look) in style_looks(&after) {
+            let old_look = was.iter().find(|(f, _)| *f == field).map(|(_, l)| l);
+            if old_look == Some(&look) {
+                continue;
+            }
+            if old_look.is_none_or(|l| has_look(td, l, secs)) {
+                if let Ok(next) = restyle(&data, &look, secs) {
+                    data = next;
+                }
+            }
+        }
+        if data != *td {
+            edits.push(EditCommand::EditTitle { clip_id: clip.id, description: "Follow Style", old_data: td.clone(), new_data: data });
+        }
+    }
+    edits
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -7667,6 +7796,58 @@ mod tests {
         assert!(resolve(&seq, &pool, &[op(Some("card"), None)]).is_ok());
         let err = resolve(&seq, &pool, &[op(Some("banner"), None)]).unwrap_err();
         assert!(format!("{err:?}").contains("kicker"), "{err:?}");
+    }
+
+    /// A title follows the style it was made in (#66): the brief changing
+    /// the style carries it along, except in what was set on the title
+    /// itself, which the inspector is told and can revert.
+    #[test]
+    fn titles_follow_their_style_when_the_brief_changes_it() {
+        use klipp_timeline::{Brief, TypeStyle};
+        let (mut seq, pool, _, _, _) = fixture();
+        let kicker = |size: f32, color: &str| TypeStyle { name: "kicker".into(), size: Some(size), color: Some(color.into()), y: Some(0.12), ..Default::default() };
+        let old = Brief { type_styles: vec![kicker(28.0, "#ff6600")], ..Default::default() };
+        seq.brief = Some(old.clone());
+        let op = |size: Option<f32>, at: f64| Op::Title { text: "Now".into(), at: Anchor::Secs(at), style: Some("kicker".into()), secs: 2.0, track: None, x: None, y: None, size, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None };
+        // Two titles in the style; the second given its own size.
+        let mut ids = Vec::new();
+        for (size, at) in [(None, 1.0), (Some(40.0), 5.0)] {
+            let plan = resolve(&seq, &pool, &[op(size, at)]).unwrap();
+            let EditCommand::AddTitleClip { clip, track_index, created_track } = plan.steps[plan.steps.len() - 1].edit.clone() else { panic!("a title is a clip") };
+            assert_eq!(clip.title_data().and_then(|t| t.style.as_deref()), Some("kicker"), "it records the style it follows");
+            if created_track {
+                seq.tracks.insert(track_index, Track::new("Text 1", TrackKind::Text));
+            }
+            ids.push(clip.id);
+            seq.tracks[track_index].clips.push(clip);
+        }
+        let clip = |seq: &Sequence, id: ClipId| seq.all_clips().find(|c| c.id == id).unwrap().clone();
+        assert!(style_divergence(&seq, &clip(&seq, ids[0])).is_empty());
+        assert_eq!(style_divergence(&seq, &clip(&seq, ids[1])), vec!["size"]);
+        // The brief makes kickers larger and white.
+        let new = Brief { type_styles: vec![kicker(36.0, "#ffffff")], ..Default::default() };
+        let edits = follow_brief(&seq, Some(&old), Some(&new));
+        assert_eq!(edits.len(), 2, "both follow the colour");
+        for e in &edits {
+            let EditCommand::EditTitle { clip_id, new_data, .. } = e else { panic!("a title edit") };
+            let tb = new_data.primary_text().unwrap();
+            assert_eq!(tb.color, [255, 255, 255, 255]);
+            let want = if *clip_id == ids[0] { 36.0 } else { 40.0 };
+            assert_eq!(tb.font_size, want, "the size follows only where it was the style's");
+            for t in seq.tracks.iter_mut() {
+                if let Some(c) = t.clips.iter_mut().find(|c| c.id == *clip_id) {
+                    c.kind = ClipKind::Title(new_data.clone());
+                }
+            }
+        }
+        seq.brief = Some(new.clone());
+        // An unchanged brief carries nothing.
+        assert!(follow_brief(&seq, Some(&new), Some(&new)).is_empty());
+        // The second still differs in its size, and reverting gives it the style's.
+        assert_eq!(style_divergence(&seq, &clip(&seq, ids[1])), vec!["size"]);
+        let EditCommand::EditTitle { new_data, .. } = revert_to_style(&seq, &clip(&seq, ids[1])).unwrap() else { panic!() };
+        assert_eq!(new_data.primary_text().unwrap().font_size, 36.0);
+        assert!(revert_to_style(&seq, &clip(&seq, ids[0])).is_err(), "the first already looks as its style does");
     }
 
     use super::*;

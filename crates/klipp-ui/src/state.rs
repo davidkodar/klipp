@@ -2230,6 +2230,18 @@ pub struct AppState {
     /// Live cpal input stream. Dropping halts capture; kept here so the
     /// stream lives as long as the recording session.
     pub recording_audio_input: Option<klipp_engine::audio_input::AudioInput>,
+    /// Where the take being recorded lands (#114).
+    pub recording_punch: Option<crate::punch_in::Punch>,
+    /// A stopped take waiting for its file to load, to be placed then.
+    pub pending_take: Option<(klipp_core::MediaId, crate::punch_in::Punch)>,
+    /// The input opened for its meter while a track is armed and nothing
+    /// records (#114): levels are seen before rolling.
+    pub input_meter: Option<klipp_engine::audio_input::AudioInput>,
+    /// The input could not be opened for metering: not tried again until
+    /// the arming changes.
+    pub input_meter_failed: bool,
+    /// The input's level as the meter shows it, 0 to 1, falling back.
+    pub input_level: f32,
 
     // Phase 6B: VU metering
     /// Per-track peak levels (display values with decay)
@@ -4132,6 +4144,11 @@ impl Default for AppState {
             recording_path: None,
             recording_stop_tx: None,
             recording_audio_input: None,
+            recording_punch: None,
+            pending_take: None,
+            input_meter: None,
+            input_meter_failed: false,
+            input_level: 0.0,
             track_peak_levels: Vec::new(),
             master_peak_left: 0.0,
             master_peak_right: 0.0,

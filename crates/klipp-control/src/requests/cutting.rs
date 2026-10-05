@@ -147,18 +147,21 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::Beats { media_id } => {
+        ControlCommand::Beats { media_id, target_secs, at_secs, track } => {
             if in_batch {
                 return read_in_batch("beats");
             }
             let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
-            let (path, filename, has_audio) = {
+            let (path, filename, has_audio, duration) = {
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
                 let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
-                (item.path.clone(), item.filename.clone(), item.has_audio)
+                (item.path.clone(), item.filename.clone(), item.has_audio, item.duration.to_secs_f64())
             };
             if !has_audio {
                 return Err(format!("{filename} has no sound to find a beat in"));
+            }
+            if target_secs.is_some_and(|t| !t.is_finite() || t <= 0.0) {
+                return Err("target_secs must be a length in seconds above 0".into());
             }
             // Kept in the analysis store too, so the next-step hint can tell
             // whether the cut is on these beats without reading them again.
@@ -176,7 +179,14 @@ pub(crate) fn respond(
             let last = b.beat_times.last().copied().unwrap_or(first);
             let drift = if b.beat_times.len() > 1 && interval > 0.0 { last - (first + interval * (b.beat_times.len() - 1) as f64) } else { 0.0 };
             let text = format!("{text}\nFirst beat at {first:.3} s, then every {interval:.4} s ({:.1} s a bar of four); beat n = {first:.3} + n × {interval:.4}, drifting {drift:+.2} s by the end of the read. The first {} beats: {}", interval * 4.0, first_beats.len(), first_beats.iter().map(|t| format!("{t:.2}")).collect::<Vec<_>>().join(" "));
-            Ok(json!({ "text": text, "media_id": media_id, "bpm": b.bpm, "confidence": b.confidence, "first_beat_secs": first, "beat_interval_secs": interval, "bar_secs": interval * 4.0, "beats_read": b.beat_times.len(), "drift_secs": drift, "first_beats": first_beats, "next": "Cut on beat n = first + n × interval; a shot of two bars is 8 beats. style_profile reads a whole reference at once." }))
+            let mut v = json!({ "text": text, "media_id": media_id, "bpm": b.bpm, "confidence": b.confidence, "first_beat_secs": first, "beat_interval_secs": interval, "bar_secs": interval * 4.0, "beats_read": b.beat_times.len(), "drift_secs": drift, "first_beats": first_beats, "next": "Cut on beat n = first + n × interval; a shot of two bars is 8 beats. style_profile reads a whole reference at once." });
+            // Music: its sections and energy, and a fit to a length (#503).
+            if b.confidence >= 0.3 {
+                music_shape(&mut v, &path, id, duration, &b, target_secs, at_secs.unwrap_or(0.0), track.as_deref())?;
+            } else if target_secs.is_some() {
+                return Err(format!("{filename} has no clear beat to fit by bars"));
+            }
+            Ok(v)
         }
 
         ControlCommand::StyleProfile { media_id } => {
@@ -282,3 +292,58 @@ pub(crate) fn respond(
         _ => Err("internal: a request was routed to the wrong area".into()),
     }
 }
+
+/// A music track's sections and energy over its whole length, added to
+/// a beats read (#503), and with `target` a fit to that length by whole
+/// bars, as place ops from `at` on `track`.
+#[allow(clippy::too_many_arguments)]
+fn music_shape(v: &mut serde_json::Value, path: &std::path::Path, id: klipp_core::MediaId, duration: f64, beats: &klipp_analysis::beats::BeatData, target: Option<f64>, at: f64, track: Option<&str>) -> Result<(), String> {
+    use klipp_analysis::music_structure as music;
+    const SR: u32 = 22_050;
+    let pcm = klipp_analysis::audio_sync::decode_mono_pcm(std::path::Path::new("ffmpeg"), path, SR, 0.0, duration.clamp(1.0, 1800.0))?;
+    let Some(shape) = music::analyse(&pcm, SR, beats) else { return Ok(()) };
+    let kind = |k: music::SectionKind| serde_json::to_value(k).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+    let said: Vec<String> = shape.sections.iter().map(|s| format!("{} {:.1}-{:.1} s (energy {:.0}%)", kind(s.kind), s.start_secs, s.end_secs, s.energy * 100.0)).collect();
+    let mut text = v["text"].as_str().unwrap_or_default().to_string();
+    text.push_str(&format!("\nSections, on phrases of four bars: {}.", said.join("; ")));
+    v["sections"] = json!(shape.sections);
+    v["bar_lines"] = json!(shape.bars.iter().map(|t| (t * 1000.0).round() / 1000.0).collect::<Vec<_>>());
+    v["bar_energy"] = json!(shape.energy.iter().map(|e| (e * 100.0).round() / 100.0).collect::<Vec<_>>());
+    if let Some(target) = target {
+        let fit = music::fit(&shape, target).ok_or_else(|| format!("the track ({duration:.1} s) cannot be fitted to {target:.1} s by whole bars: it needs a first and last phrase and room between"))?;
+        let track_ref = match track {
+            Some(t) => match t.parse::<usize>() {
+                Ok(i) => klipp_document::ops::TrackRef::Index(i),
+                Err(_) => klipp_document::ops::TrackRef::Kind(t.to_string()),
+            },
+            None => klipp_document::ops::TrackRef::Kind("audio".into()),
+        };
+        let mut place_at = at;
+        let ops: Vec<serde_json::Value> = fit
+            .segments
+            .iter()
+            .map(|&(a, b)| {
+                let op = klipp_document::ops::Op::Place { media_id: id, track: track_ref.clone(), at: klipp_document::ops::Anchor::Secs(place_at), source_in: Some(a), source_out: Some(b), insert: false, with_audio: true };
+                place_at += b - a;
+                serde_json::to_value(op).unwrap_or_default()
+            })
+            .collect();
+        let how = match fit.bars_changed {
+            0 => "already that long".to_string(),
+            n if n < 0 => format!("{} bars taken out", -n),
+            n => format!("{n} bars repeated"),
+        };
+        text.push_str(&format!(
+            "\nFitted to {:.2} s ({how}{}): play {} back to back. Apply the ops to place it; a short crossfade on the join smooths it.",
+            fit.length_secs,
+            fit.join_secs.map(|j| format!(", the join at {j:.2} s")).unwrap_or_default(),
+            fit.segments.iter().map(|(a, b)| format!("{a:.2}-{b:.2} s")).collect::<Vec<_>>().join(" then ")
+        ));
+        v["fit"] = json!(fit);
+        v["ops"] = json!(ops);
+        v["next"] = json!("apply the ops to place the fitted track, then add a short crossfade at the join");
+    }
+    v["text"] = json!(text);
+    Ok(())
+}
+

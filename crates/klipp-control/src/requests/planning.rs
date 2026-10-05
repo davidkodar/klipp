@@ -275,9 +275,20 @@ pub(crate) fn respond(
             let fonts_named: Vec<String> = brief.type_styles.iter().filter_map(|t| t.font.clone()).collect();
             let text = brief.text();
             let new_spellings = brief.spellings();
+            // The titles that follow a style the brief changes go with it,
+            // in the same step (#66).
+            let followers = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                klipp_document::ops::follow_brief(&seq, old.as_ref(), Some(&brief))
+            };
+            let restyled = followers.len();
             let edit = klipp_document::history::EditCommand::SetBrief { old: old.clone().map(Box::new), new: Some(Box::new(brief)) };
             let respelt = old.as_ref().map(|b| b.spellings()).unwrap_or_default() != new_spellings;
-            let mut v = send_full_envelope(ctx, Vec::new(), vec![edit], true, None, Some("Set Brief".into()))?;
+            let edits: Vec<_> = std::iter::once(edit).chain(followers).collect();
+            let mut v = send_full_envelope(ctx, Vec::new(), edits, true, None, Some("Set Brief".into()))?;
+            if restyled > 0 {
+                v["restyled_titles"] = json!(restyled);
+            }
             v["text"] = json!(text);
             with_warnings(&mut v, font_warnings(fonts_named.iter().map(String::as_str)));
             if respelt && !new_spellings.is_empty() {

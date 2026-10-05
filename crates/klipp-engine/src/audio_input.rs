@@ -48,6 +48,9 @@ pub struct AudioInput {
     stream: Option<cpal::Stream>,
     pub sample_rate: u32,
     pub channels: u16,
+    /// The loudest sample since the meter last read it, as f32 bits
+    /// (#114): levels seen before and while a take is recorded.
+    peak: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl AudioInput {
@@ -122,6 +125,8 @@ impl AudioInput {
         // panic deserves exactly one log per process run.
         static INPUT_CALLBACK_PANIC_LOGGED: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
+        let peak = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let (p_f32, p_i16, p_u16) = (peak.clone(), peak.clone(), peak.clone());
 
         // Build for f32 — every mainstream device on every OS supports f32
         // via cpal's auto-conversion.
@@ -136,6 +141,7 @@ impl AudioInput {
                             // Best-effort — if the ring is full (writer thread stalled),
                             // we drop samples rather than blocking the audio thread.
                             let _ = producer.push_slice(data);
+                            note_peak(&p_f32, data);
                         },
                     );
                 },
@@ -154,6 +160,7 @@ impl AudioInput {
                                 tmp.push(s as f32 / i16::MAX as f32);
                             }
                             let _ = producer.push_slice(&tmp);
+                            note_peak(&p_i16, &tmp);
                         },
                     );
                 },
@@ -174,6 +181,7 @@ impl AudioInput {
                                 tmp.push(centered / 32768.0);
                             }
                             let _ = producer.push_slice(&tmp);
+                            note_peak(&p_u16, &tmp);
                         },
                     );
                 },
@@ -191,6 +199,7 @@ impl AudioInput {
                 stream: Some(stream),
                 sample_rate: chosen_rate,
                 channels,
+                peak,
             },
             consumer,
         ))
@@ -204,11 +213,26 @@ impl AudioInput {
         Ok(())
     }
 
+    /// The loudest sample since the last call, 0 to 1 (more when the
+    /// device clips past full scale), and the meter starts again.
+    pub fn take_peak(&self) -> f32 {
+        f32::from_bits(self.peak.swap(0, std::sync::atomic::Ordering::Relaxed))
+    }
+
     /// Stop capturing and release the device. Further `start()` calls are no-ops.
     pub fn stop(&mut self) {
         // Dropping the cpal::Stream halts and releases the device.
         self.stream = None;
     }
+}
+
+/// Raise `peak` to the loudest of `data`, without a lock: the audio
+/// thread must not wait.
+fn note_peak(peak: &std::sync::atomic::AtomicU32, data: &[f32]) {
+    let loudest = data.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    let _ = peak.fetch_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |was| {
+        (loudest > f32::from_bits(was)).then_some(loudest.to_bits())
+    });
 }
 
 /// Pick the caller's requested sample rate if it's listed as supported.
@@ -405,6 +429,19 @@ fn write_f32_samples<W: Write>(w: &mut W, samples: &[f32]) -> std::io::Result<()
 
 #[cfg(test)]
 mod tests {
+    /// The meter keeps the loudest sample until it is read, and reading
+    /// starts it again (#114).
+    #[test]
+    fn the_peak_holds_the_loudest_until_read() {
+        let peak = std::sync::atomic::AtomicU32::new(0);
+        super::note_peak(&peak, &[0.1, -0.5, 0.2]);
+        super::note_peak(&peak, &[0.3]);
+        assert_eq!(f32::from_bits(peak.load(std::sync::atomic::Ordering::Relaxed)), 0.5, "a quieter block does not lower it");
+        assert_eq!(f32::from_bits(peak.swap(0, std::sync::atomic::Ordering::Relaxed)), 0.5);
+        super::note_peak(&peak, &[0.25]);
+        assert_eq!(f32::from_bits(peak.load(std::sync::atomic::Ordering::Relaxed)), 0.25);
+    }
+
     use super::*;
 
     #[test]
