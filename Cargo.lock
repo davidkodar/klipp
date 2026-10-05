@@ -2870,6 +2870,7 @@ dependencies = [
  "dirs",
  "klipp-core",
  "klipp-deepfilter",
+ "klipp-load-lock",
  "klipp-ml",
  "klipp-ml-ort",
  "libloading 0.8.9",
@@ -3031,6 +3032,7 @@ dependencies = [
  "klipp-core",
  "klipp-frei0r",
  "klipp-grade-model",
+ "klipp-load-lock",
  "klipp-testing",
  "klipp-title",
  "naga",
@@ -3101,6 +3103,7 @@ name = "klipp-frei0r"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "klipp-load-lock",
  "libloading 0.8.9",
  "serde",
  "serde_json",
@@ -3157,6 +3160,10 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
 ]
+
+[[package]]
+name = "klipp-load-lock"
+version = "0.1.0"
 
 [[package]]
 name = "klipp-mcp"
@@ -3273,6 +3280,7 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "klipp-core",
+ "klipp-load-lock",
  "libloading 0.8.9",
  "serde",
  "tracing",

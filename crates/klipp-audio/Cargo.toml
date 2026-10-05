@@ -9,6 +9,7 @@ default = []
 kokoro = ["dep:klipp-ml-ort", "klipp-ml-ort/ort"]
 
 [dependencies]
+klipp-load-lock = { workspace = true }
 klipp-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

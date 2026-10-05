@@ -117,10 +117,13 @@ unsafe impl Sync for OpenClApi {}
 
 impl OpenClApi {
     fn load() -> Option<Self> {
-        let lib = unsafe {
-            libloading::Library::new("libOpenCL.so.1")
-                .or_else(|_| libloading::Library::new("libOpenCL.so"))
-                .ok()?
+        let lib = {
+            let _loading = klipp_load_lock::library_loading();
+            unsafe {
+                libloading::Library::new("libOpenCL.so.1")
+                    .or_else(|_| libloading::Library::new("libOpenCL.so"))
+                    .ok()?
+            }
         };
         let lib = Arc::new(lib);
 

@@ -96,7 +96,7 @@ impl Frei0rPlugin {
     /// Open a `.so` and resolve every required symbol. Returns `Err`
     /// if the file isn't a frei0r plugin.
     pub fn open(path: &Path, info: Frei0rPluginInfo) -> Result<Self, String> {
-        let lib = unsafe { libloading::Library::new(path) }
+        let lib = klipp_load_lock::while_loading(|| unsafe { libloading::Library::new(path) })
             .map_err(|e| format!("dlopen failed: {e}"))?;
 
         macro_rules! sym {

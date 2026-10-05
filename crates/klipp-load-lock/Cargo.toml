@@ -1,0 +1,10 @@
+[package]
+name = "klipp-load-lock"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

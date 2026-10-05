@@ -297,7 +297,7 @@ pub fn discover_frei0r_plugins_cached(cache_dir: Option<&Path>) -> Vec<Frei0rPlu
 pub fn scan_library(path: &Path) -> Vec<Frei0rPluginInfo> {
     // SAFETY: dlopen of an arbitrary .so is inherently unsafe. Same
     // contract OFX + LADSPA hosts already accept.
-    let lib = match unsafe { libloading::Library::new(path) } {
+    let lib = match klipp_load_lock::while_loading(|| unsafe { libloading::Library::new(path) }) {
         Ok(l) => l,
         Err(e) => {
             tracing::debug!("frei0r: dlopen failed for {}: {e}", path.display());
