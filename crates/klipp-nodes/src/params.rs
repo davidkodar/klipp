@@ -243,8 +243,9 @@ pub struct NodeParams {
 
     // ExternalMatte
     /// Absolute path to the image file read as a matte source.
-    /// `None` = identity / disabled (executor emits a transparent-
-    /// black matte so ApplyMatte treats the node as a no-op).
+    /// `None`, or an image that will not load: the matte selects
+    /// everything, as every matte producer does with nothing chosen
+    /// (#1039), so a correction it gates grades as if there were no key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matte_image_path: Option<PathBuf>,
     /// Which channel of the image becomes the matte signal.
