@@ -10,7 +10,7 @@ Klipp is under active development. Expect rough edges and breaking changes; broa
 
 [![Klipp editing workspace with titles, video clips and a music waveform](website/assets/editing.webp)](website/assets/editing.webp)
 
-[Colour workspace](website/assets/colour.webp) · [Demo film](website/assets/quiet-earth.mp4) · [Media credits](website/CREDITS.md)
+[Colour workspace](website/assets/colour.webp) · [Preview the demo](website/README.md#preview) · [Media credits](website/CREDITS.md)
 
 *Klipp* is Swedish for “cut”.
 
