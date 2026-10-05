@@ -2532,6 +2532,19 @@ pub struct ChainStats {
     pub cpu_nodes: u32,
 }
 
+/// Whether `node` keyframes any of a qualifier's matte refinements. The
+/// secondary is recognised from the static settings, so a refinement
+/// that is 0 still but keyed above it would be fused and dropped on
+/// every frame it is not 0 (#1013).
+fn refinement_keyed(graph: &NodeGraph, node: NodeId) -> bool {
+    graph.nodes.iter().find(|n| n.id == node).is_some_and(|n| {
+        n.keyframes.tracks.iter().any(|t| {
+            !t.keyframes.is_empty()
+                && matches!(t.param_name.as_str(), "qual_clean_black" | "qual_clean_white" | "qual_shrink_grow" | "qual_blur")
+        })
+    })
+}
+
 /// A secondary correction the GPU chain can carry end to end: one
 /// node's picture keyed by a Qualifier, graded down a branch of any
 /// length, and the two recombined by an ApplyMatte.
@@ -2614,8 +2627,14 @@ impl SecondaryChain {
             let Some(matte_params) = params_of(matte) else { continue };
             let keys_the_source = graph.input_of(matte, 0) == Some(plain);
             let matte_armed = match kind_of(matte) {
+                // The chain's keyer draws the window alone. A refined
+                // matte (clean, shrink/grow, blur) is finished on the
+                // CPU, so that qualifier runs per node, where it is
+                // (#1013).
                 Some(NodeKind::Qualifier) => {
-                    keys_the_source && matte_params.qualifier.as_ref().is_some_and(|q| q.enabled)
+                    keys_the_source
+                        && matte_params.qualifier.as_ref().is_some_and(|q| q.enabled && !q.refines())
+                        && !refinement_keyed(graph, matte)
                 }
                 Some(NodeKind::LumaKey) => {
                     keys_the_source && matte_params.luma_key.as_ref().is_some_and(|k| k.enabled)
@@ -3655,7 +3674,7 @@ impl GraphExecutor {
                     };
                     // The matte comes back to the CPU on both paths; the
                     // finesse — clean, shrink/grow, blur — is one code.
-                    if qual.clean_black != 0.0 || qual.clean_white != 0.0 || qual.shrink_grow != 0.0 || qual.blur != 0.0 {
+                    if qual.refines() {
                         klipp_effects::cpu_grade::matte_finesse(
                             &mut frame, width, height,
                             qual.clean_black, qual.clean_white, qual.shrink_grow, qual.blur,

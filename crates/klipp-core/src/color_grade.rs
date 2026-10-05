@@ -106,6 +106,14 @@ pub struct QualifierSettings {
     pub blur: f32,
 }
 
+impl QualifierSettings {
+    /// Whether the matte is refined after the key: cleaned, shrunk or
+    /// grown, or blurred.
+    pub fn refines(&self) -> bool {
+        self.clean_black != 0.0 || self.clean_white != 0.0 || self.shrink_grow != 0.0 || self.blur != 0.0
+    }
+}
+
 impl Default for QualifierSettings {
     fn default() -> Self {
         Self {
