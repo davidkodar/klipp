@@ -8020,7 +8020,7 @@ impl PlaybackEngine {
         if !clip.node_graph.is_identity() {
             blockers.push("grade graph is not an identity");
         }
-        if !clip.effects.is_empty() {
+        if clip.has_enabled_plugins() {
             blockers.push("plugin effects on clip");
         }
         if !clip.builtin_effects.is_empty() {

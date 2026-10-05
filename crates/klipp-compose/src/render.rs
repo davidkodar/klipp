@@ -461,6 +461,9 @@ pub struct Renderer {
     /// sequence camera's shutter is open, its transform and clip time at
     /// each sample across the shutter. Filled with the transforms.
     shutter: HashMap<ClipId, Vec<(ResolvedTransform, f64)>>,
+    /// Each title with a motion blur of its own: its transform at every
+    /// sample of its shutter, resolved as the camera shutter's are (#995).
+    title_shutter: HashMap<ClipId, Vec<(ResolvedTransform, f64)>>,
     /// Pinned clips' corners on their surfaces this frame (#684), resolved
     /// with the transforms.
     pins: HashMap<ClipId, klipp_timeline::surface::Quad>,
@@ -551,6 +554,7 @@ impl Renderer {
             warm_rx: None,
             glyph_cache: HashMap::new(),
             shutter: HashMap::new(),
+            title_shutter: HashMap::new(),
             pins: HashMap::new(),
             px_scale: 1.0,
             working: WorkingColorspace::default(),
@@ -912,7 +916,7 @@ impl Renderer {
         }
         // OFX plugins run on the CPU frame, and a temporal one wants
         // neighbouring frames too.
-        if !clip.effects.is_empty() {
+        if clip.has_enabled_plugins() {
             return Single::ForTheStack;
         }
         // Two frames blended for a speed ramp is a CPU operation on the
@@ -1167,7 +1171,7 @@ impl Renderer {
 
         // What a clip needs that the stack does not have.
         let blocker = |c: &Clip| -> Option<&'static str> {
-            if !c.effects.is_empty() {
+            if c.has_enabled_plugins() {
                 Some("OFX plugin")
             } else if frame_blends(c, time) {
                 Some("frame blending")
@@ -1533,15 +1537,20 @@ impl Renderer {
                 match self.titles.frame_with_window(td, width, height, gpu, clip_time as f32, Some(total)) {
                     klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, blur, shape, rows: r } => {
                         rows = r;
+                        // The blur entrance, and a roll's focus band going
+                        // soft (#592): the placed sprite blurred first, as
+                        // the CPU blurs the title it draws, and then the
+                        // clip's effects and transform (#995). Added to
+                        // the end, they ran after them, so a scaled title
+                        // was blurred at the wrong size.
+                        let mut soft = Vec::new();
                         if blur > 0.5 {
-                            // The blur entrance: the placed sprite, blurred
-                            // on the layer with the clip's other effects.
-                            fx.push(BuiltinEffect::GaussianBlur { radius: blur });
+                            soft.push(BuiltinEffect::GaussianBlur { radius: blur });
                         }
                         if let Some((radius, axis, band)) = self.titles.last_focus_blur() {
-                            // A roll's focus band going soft (#592).
-                            fx.push(BuiltinEffect::FocusBlur { radius, vertical: axis == klipp_core::title_motion::RampAxis::Vertical, band });
+                            soft.push(BuiltinEffect::FocusBlur { radius, vertical: axis == klipp_core::title_motion::RampAxis::Vertical, band });
                         }
+                        fx.splice(0..0, soft);
                         self.executor.gpu_pipeline_or_init().is_some_and(|p| {
                             // The layer's fade by where it is, the sprite
                             // shader's own (#592).
@@ -2063,7 +2072,10 @@ impl Renderer {
             _ => None,
         };
         let pixels = match (title_motion_blur(clip), self.shutter.get(&clip.id).cloned()) {
-            (Some(samples), _) => self.motion_blurred(clip, pixels, redrawn, &fx, samples, time, fps, width, height),
+            (Some(_), _) => match self.title_shutter.get(&clip.id).cloned() {
+                Some(samples) => self.motion_blurred(clip, pixels, redrawn, &fx, &samples, time, fps, width, height),
+                None => self.effects(&fx, pixels, clip_time, width, height),
+            },
             (None, Some(samples)) => self.shuttered(clip, pixels, &fx, &samples, clip_time, width, height),
             (None, None) => self.effects(&fx, pixels, clip_time, width, height),
         };
@@ -2503,7 +2515,9 @@ impl Renderer {
         height: u32,
         frames: Option<klipp_plugin::FrameProviderFn>,
     ) -> Vec<f32> {
-        if clip.effects.is_empty() {
+        // Only a plug-in that is on gets the frame: a clip whose plug-ins
+        // are all off keeps its full precision and range (#995).
+        if !clip.has_enabled_plugins() {
             return pixels;
         }
         let t = Instant::now();
@@ -2571,13 +2585,26 @@ impl Renderer {
 
     fn open_shutter(&mut self, seq: &Sequence, time: Timecode, fps: f64, width: u32, height: u32, transforms: &HashMap<ClipId, ResolvedTransform>) {
         self.shutter.clear();
+        self.title_shutter.clear();
+        let clips: HashMap<ClipId, &Clip> = seq.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| (c.id, c)).collect();
+        // A title's own motion blur samples its transform the way the
+        // camera shutter does (#995): in render pixels, under the camera
+        // at the title's depth. It sampled the raw transform, so a
+        // blurred title sat elsewhere at a reduced preview scale and
+        // ignored a moving camera. Its own shutter, whatever the camera's.
+        for id in transforms.keys() {
+            let Some(c) = clips.get(id).copied() else { continue };
+            let Some(mb) = title_motion_blur(c) else { continue };
+            let offsets = shutter_offsets(mb.evaluated_shutter_angle(eval_clip_time(c, time)), fps, mb.samples);
+            let samples: Vec<(ResolvedTransform, f64)> = offsets.iter().map(|&o| self.shutter_sample(seq, c, time, o, fps, width, height)).collect();
+            self.title_shutter.insert(*id, samples);
+        }
         let cam = &seq.camera;
         if cam.shutter_deg <= 0.0 {
             return;
         }
         let offsets = shutter_offsets(cam.shutter_deg, fps, cam.shutter_samples.clamp(2, 32));
         let n = offsets.len();
-        let clips: HashMap<ClipId, &Clip> = seq.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| (c.id, c)).collect();
         for id in transforms.keys() {
             let Some(c) = clips.get(id).copied() else { continue };
             // A title carrying its own blur keeps it; sampling the
@@ -2585,43 +2612,7 @@ impl Renderer {
             if title_motion_blur(c).is_some() {
                 continue;
             }
-            // A clip that follows another has no transform of its own to
-            // sample — its position at an instant is whatever its target
-            // was at that instant. So it is resolved the same way the
-            // frame resolves it, once per sample, each with a cache of
-            // its own: the resolver keys by clip id for one moment, and
-            // reusing one across the shutter would hand every sample the
-            // first sample's answer.
-            let linked = c.transform_link.is_some();
-            let mut samples: Vec<(ResolvedTransform, f64)> = Vec::with_capacity(n);
-            for &o in &offsets {
-                let t = (eval_clip_time(c, time) + o).max(0.0);
-                let own = if linked {
-                    // Carried at a far finer rate than the sequence's.
-                    // A Timecode rounds to whole frames and a shutter's
-                    // offsets are fractions of one, so at the sequence
-                    // rate every sample lands on one of two frames and
-                    // the clip smears about half as far as it should.
-                    let fine = time.rate.saturating_mul(1000);
-                    let at_sample = Timecode::from_secs_f64(time.to_secs_f64() + o, fine);
-                    // In the sequence's pixels, as the frame resolves it,
-                    // then scaled with everything else.
-                    let mut cache = HashMap::new();
-                    eval::resolve_clip_transform(
-                        c, seq, at_sample, fps, &mut cache,
-                        &mut self.glyph_cache, &mut self.titles, seq.resolution.width, seq.resolution.height,
-                    )
-                } else {
-                    let ctx = klipp_core::EvalContext { clip_time_secs: t, ..eval::eval_context(c, time, fps) };
-                    eval::evaluate_clip_own_transform(c, t, &ctx)
-                };
-                let own = to_render_pixels(own, render_scale(seq, width, height));
-                let xf = match eval::camera_at_secs(seq, time.to_secs_f64() + o).and_then(|k| eval::camera_at_depth(k, c.depth)) {
-                    Some(k) => eval::apply_camera(own, k, width, height),
-                    None => own,
-                };
-                samples.push((xf, t));
-            }
+            let samples: Vec<(ResolvedTransform, f64)> = offsets.iter().map(|&o| self.shutter_sample(seq, c, time, o, fps, width, height)).collect();
             let tilt_at = |t: f64| (klipp_core::keyframe::evaluate(&c.transform_tilt_x_keyframes, t, 0.0), klipp_core::keyframe::evaluate(&c.transform_tilt_y_keyframes, t, 0.0));
             let (first, last) = (samples[0], samples[n - 1]);
             let moved = (first.0 .0 - last.0 .0).abs() > 0.05
@@ -2633,6 +2624,46 @@ impl Renderer {
                 self.shutter.insert(*id, samples);
             }
         }
+    }
+
+    /// `c`'s transform at shutter offset `o` from `time`, as the frame
+    /// would resolve it then: in render pixels, under the camera at the
+    /// clip's depth; with the clip time it was taken at.
+    ///
+    /// A clip that follows another has no transform of its own to
+    /// sample — its position at an instant is whatever its target was at
+    /// that instant. So it is resolved the same way the frame resolves
+    /// it, each sample with a cache of its own: the resolver keys by clip
+    /// id for one moment, and reusing one across the shutter would hand
+    /// every sample the first sample's answer.
+    #[allow(clippy::too_many_arguments)]
+    fn shutter_sample(&mut self, seq: &Sequence, c: &Clip, time: Timecode, o: f64, fps: f64, width: u32, height: u32) -> (ResolvedTransform, f64) {
+        let t = (eval_clip_time(c, time) + o).max(0.0);
+        let own = if c.transform_link.is_some() {
+            // Carried at a far finer rate than the sequence's. A Timecode
+            // rounds to whole frames and a shutter's offsets are fractions
+            // of one, so at the sequence rate every sample lands on one of
+            // two frames and the clip smears about half as far as it
+            // should.
+            let fine = time.rate.saturating_mul(1000);
+            let at_sample = Timecode::from_secs_f64(time.to_secs_f64() + o, fine);
+            // In the sequence's pixels, as the frame resolves it, then
+            // scaled with everything else.
+            let mut cache = HashMap::new();
+            eval::resolve_clip_transform(
+                c, seq, at_sample, fps, &mut cache,
+                &mut self.glyph_cache, &mut self.titles, seq.resolution.width, seq.resolution.height,
+            )
+        } else {
+            let ctx = klipp_core::EvalContext { clip_time_secs: t, ..eval::eval_context(c, time, fps) };
+            eval::evaluate_clip_own_transform(c, t, &ctx)
+        };
+        let own = to_render_pixels(own, render_scale(seq, width, height));
+        let xf = match eval::camera_at_secs(seq, time.to_secs_f64() + o).and_then(|k| eval::camera_at_depth(k, c.depth)) {
+            Some(k) => eval::apply_camera(own, k, width, height),
+            None => own,
+        };
+        (xf, t)
     }
 
     /// A clip smeared along its path while the shutter is open. What sits
@@ -2661,6 +2692,14 @@ impl Renderer {
         self.effects(&after, acc, clip_time, width, height)
     }
 
+    /// A title smeared by its own motion blur: as [`Self::shuttered`]
+    /// does for the camera's shutter (#995), what sits before the
+    /// transform in its chain runs on the picture, the picture is placed
+    /// at every sample and the samples averaged, and the rest runs once
+    /// on the result. It used to place the raw picture and run every
+    /// other effect after, so a crop or a rounded corner before the
+    /// transform was placed and blurred where it should have been drawn
+    /// first.
     #[allow(clippy::too_many_arguments)]
     fn motion_blurred(
         &mut self,
@@ -2668,17 +2707,19 @@ impl Renderer {
         pixels: Vec<f32>,
         redrawn: Option<&klipp_timeline::TitleData>,
         fx: &[BuiltinEffect],
-        mb: klipp_timeline::MotionBlur,
+        samples: &[(ResolvedTransform, f64)],
         time: Timecode,
         fps: f64,
         width: u32,
         height: u32,
     ) -> Vec<f32> {
         let clip_time = eval_clip_time(clip, time);
-        let others: Vec<BuiltinEffect> =
-            fx.iter().filter(|e| !matches!(e, BuiltinEffect::Transform { .. })).cloned().collect();
-        let offsets = shutter_offsets(mb.evaluated_shutter_angle(clip_time), fps, mb.samples);
-        let n = offsets.len();
+        let cut = fx
+            .iter()
+            .position(|e| matches!(e, BuiltinEffect::Transform { .. }))
+            .unwrap_or_else(|| fx.iter().position(klipp_effects::draws_outside_the_picture).unwrap_or(fx.len()));
+        let before = &fx[..cut];
+        let after: Vec<BuiltinEffect> = fx[cut..].iter().filter(|e| !matches!(e, BuiltinEffect::Transform { .. })).cloned().collect();
         // A title whose glyphs move has a different picture at every
         // instant the shutter is open, so placing one rasterisation
         // eight times blurs only where the clip went, not where the
@@ -2699,24 +2740,30 @@ impl Renderer {
         // a seam in it, eight is smooth, and the cost is linear in
         // between. The renderer's cache does not soften this, because
         // a title that moves is exactly the one it declines to cache.
+        // The picture drawn once and carried through what precedes the
+        // transform, when its drawing does not move.
+        let still = match redrawn {
+            Some(_) => None,
+            None => Some(self.effects(before, pixels.clone(), clip_time, width, height)),
+        };
         let mut acc = vec![0.0f32; pixels.len()];
-        for offset in offsets {
-            let t = clip_time + offset;
-            let ctx = klipp_core::EvalContext { clip_time_secs: t.max(0.0), ..eval::eval_context(clip, time, fps) };
-            let (px, py, sx, sy, ro, ax, ay) = eval::evaluate_clip_own_transform(clip, t.max(0.0), &ctx);
-            let xf = transform_effect((px, py, sx, sy, ro, ax, ay), tilt(clip, fx, t.max(0.0)));
-            let at_sample = match redrawn {
-                Some(td) => self.title_pixels_at(clip, td, t.max(0.0), fps, width, height),
-                None => pixels.clone(),
+        for &(xf, t) in samples {
+            let picture = match (&still, redrawn) {
+                (Some(base), _) => base.clone(),
+                (None, Some(td)) => {
+                    let drawn = self.title_pixels_at(clip, td, t, fps, width, height);
+                    self.effects(before, drawn, t, width, height)
+                }
+                (None, None) => unreachable!("a still picture is drawn when the title's drawing does not move"),
             };
-            let sample = self.effects(&[xf], at_sample, t.max(0.0), width, height);
-            for (a, s) in acc.iter_mut().zip(&sample) {
+            let placed = self.effects(&[transform_effect(xf, tilt(clip, fx, t))], picture, t, width, height);
+            for (a, s) in acc.iter_mut().zip(&placed) {
                 *a += *s;
             }
         }
-        let inv = 1.0 / n as f32;
+        let inv = 1.0 / samples.len().max(1) as f32;
         acc.iter_mut().for_each(|v| *v *= inv);
-        self.effects(&others, acc, clip_time, width, height)
+        self.effects(&after, acc, clip_time, width, height)
     }
 
     /// Both clips of a transition as full layers at `time`, blended.
@@ -2827,6 +2874,11 @@ impl Renderer {
         let graded = self.grade(clip, GradeInput::Cpu(Arc::new(below)), clip_time, fps, width, height);
         let graded = self.ofx(clip, graded, clip_time, width, height, None);
         let (mut fx, _) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied());
+        // Its effect colours are authored in BT.709, as a clip's are, and
+        // converted into the working space the same way (#995): left as
+        // they were, an adjustment layer and a clip with the same effect
+        // differed in ACEScg and BT.2020 projects.
+        self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
         // An adjustment layer has no footage of its own to analyse, so its
         // stabilisation and rolling-shutter correction have no motion data
@@ -3108,11 +3160,22 @@ pub fn clip_effects(
     let three_d = tilt(clip, &fx, t);
     let identity = xf == (0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5) && three_d.0 == 0.0 && three_d.1 == 0.0;
     if has_transform {
-        for e in fx.iter_mut() {
-            if matches!(e, BuiltinEffect::Transform { .. }) {
-                *e = transform_effect(xf, three_d);
+        // The clip's transform goes where its first Transform effect is,
+        // once (#995): every Transform effect used to become it, so two
+        // moved, scaled and turned the clip twice. Later ones are dropped
+        // here, and `check` says so.
+        let mut placed = false;
+        fx.retain_mut(|e| {
+            if !matches!(e, BuiltinEffect::Transform { .. }) {
+                return true;
             }
-        }
+            if placed {
+                return false;
+            }
+            *e = transform_effect(xf, three_d);
+            placed = true;
+            true
+        });
     } else if !identity {
         // A shadow or a glow draws in the transparent margin the
         // transform leaves around a placed layer, so it has to run after
@@ -3746,6 +3809,22 @@ mod temporal_denoise_placement_tests {
             builtin_effects: effects,
             ..Clip::gap(tc(0), tc(48))
         }
+    }
+
+    /// #995: the clip's transform is applied once, where its first
+    /// Transform effect is. Every Transform effect used to become it, so a
+    /// clip with two was moved, scaled and turned twice.
+    #[test]
+    fn two_transform_effects_place_the_clip_once() {
+        let t = |scale: f32| BuiltinEffect::Transform {
+            position_x: 40.0, position_y: 0.0, scale_x: scale, scale_y: scale,
+            rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
+        };
+        let clip = clip_with(vec![t(0.5), BuiltinEffect::Sharpen { amount: 0.5 }, t(0.5)]);
+        let (fx, _) = clip_effects(&clip, tc(0), 24.0, None, None);
+        let transforms: Vec<usize> = fx.iter().enumerate().filter(|(_, e)| matches!(e, BuiltinEffect::Transform { .. })).map(|(i, _)| i).collect();
+        assert_eq!(transforms, vec![0], "one transform, at the first one's place: {fx:?}");
+        assert!(matches!(fx[1], BuiltinEffect::Sharpen { .. }), "{fx:?}");
     }
 
     /// The chain must never see it. It ran at the head of the pipeline,

@@ -237,6 +237,23 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
         }
     }
 
+    // A second Transform effect on a clip does nothing (#995): the clip's
+    // transform is applied once, at the first, and the render drops the
+    // rest, which used to move, scale and turn the clip again.
+    for (_, c) in pictures.iter().filter(|(_, c)| c.enabled) {
+        let on = |i: usize| c.builtin_effects_enabled.get(i).copied().unwrap_or(true);
+        let transforms = c.builtin_effects.iter().enumerate().filter(|(i, e)| on(*i) && matches!(e, klipp_effects::BuiltinEffect::Transform { .. })).count();
+        if transforms > 1 {
+            add(
+                Severity::Warning,
+                "extra_transform",
+                Some(secs(c.timeline_in)),
+                format!("{} has {transforms} Transform effects: only the first places it, the rest do nothing", clip_label(pool, c)),
+                "Remove the extra Transform effects, or move what they did into the first",
+            );
+        }
+    }
+
     // Clips laid over each other on one track: only one of them shows
     // there, in the viewer and the export alike, and the other is hidden
     // with its grade (#639). Nothing makes this on purpose; a retime that
@@ -981,6 +998,23 @@ mod tests {
         seq.tracks[0].clips[1] = Clip::media(card, tc(4.0), tc(8.0), tc(3.0), tc(7.0));
         let r = check(&seq, &pool, &Spoken(talk));
         assert!(!rules(&r).contains(&"past_end") && !rules(&r).contains(&"held_end"), "{}", r.text());
+    }
+
+    /// #995: a clip with two Transform effects is told that only the
+    /// first places it.
+    #[test]
+    fn a_second_transform_effect_is_reported() {
+        let (mut seq, pool, talk, _) = piece();
+        let t = || klipp_effects::BuiltinEffect::Transform { position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+        seq.tracks[0].clips[0].builtin_effects = vec![t()];
+        assert!(!rules(&check(&seq, &pool, &Spoken(talk))).contains(&"extra_transform"));
+        seq.tracks[0].clips[0].builtin_effects.push(t());
+        let r = check(&seq, &pool, &Spoken(talk));
+        let f = r.findings.iter().find(|f| f.rule == "extra_transform").unwrap_or_else(|| panic!("{}", r.text()));
+        assert_eq!((f.severity, f.at_secs), (Severity::Warning, Some(0.0)));
+        // Switched off, the second is no finding.
+        seq.tracks[0].clips[0].builtin_effects_enabled = vec![true, false];
+        assert!(!rules(&check(&seq, &pool, &Spoken(talk))).contains(&"extra_transform"));
     }
 
     /// #517: a full-frame title is picture. The film ended on a 7.6 s end
