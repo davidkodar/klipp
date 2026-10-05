@@ -109,8 +109,8 @@ pub enum Unit {
     Seconds,
     /// A fraction of the frame's width or height (a crop edge, a centre).
     Normalised,
-    /// Pixels of the sequence's frame. Scaled by the render size, exactly
-    /// as [`BuiltinEffect::at_render_scale`] scales it.
+    /// Pixels of the sequence's frame, converted to the rendered size by
+    /// whoever its [`Scaling`] names.
     CanvasPx,
     /// Pixels of a 1080-line frame, whatever the sequence's size.
     Per1080,
@@ -133,6 +133,10 @@ pub enum Scaling {
     /// sequence's pixels and converts the offset to the rendered frame's
     /// (`klipp_compose::render::to_render_pixels`).
     Placement,
+    /// The grade executor, by the render scale the compositor and the
+    /// node preview set (`GraphExecutor::set_render_scale`): a grade
+    /// node's pixel sizes (#1009).
+    Executor,
 }
 
 /// One parameter of a node type.
