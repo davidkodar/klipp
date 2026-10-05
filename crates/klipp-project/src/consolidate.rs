@@ -18,7 +18,9 @@
 //! - Copies every file a grade node reads (a LUT, an external matte or
 //!   AI mask, a difference key's plate), in the sequences and in the
 //!   project's Looks, into `dest_dir/media/grade/`, and writes the Looks
-//!   into the destination (#1016).
+//!   into the destination (#1016). Graphs inside Compound nodes are
+//!   walked too, and the grade stills come along with their grades
+//!   (#1042).
 //! - Writes the project via the existing
 //!   `save_project_with_color_and_backups` flow — path relativisation is
 //!   handled by the existing `to_project_relative` plumbing.
@@ -212,6 +214,7 @@ fn build_copy_plan(
     options: &ConsolidateOptions,
     only: Option<&HashSet<MediaId>>,
     cut: &HashSet<PathBuf>,
+    still_grades: &[&NodeGraph],
 ) -> CopyPlan {
     let mut items: Vec<CopyItem> = Vec::new();
     let mut used_primary: HashSet<String> = HashSet::new();
@@ -418,7 +421,7 @@ fn build_copy_plan(
     let mut node_file_new_paths: HashMap<PathBuf, PathBuf> = HashMap::new();
     let mut used_grade: HashSet<String> = HashSet::new();
     let library = klipp_core::assets::bundled_luts_dir();
-    let graphs = sequences.iter().flat_map(sequence_graphs).chain(options.looks.iter().map(|l| &l.node_graph));
+    let graphs = sequences.iter().flat_map(sequence_graphs).chain(options.looks.iter().map(|l| &l.node_graph)).chain(still_grades.iter().copied());
     for path in graphs.flat_map(node_files) {
         if node_file_new_paths.contains_key(path) || library.is_some_and(|lib| path.starts_with(lib)) {
             continue;
@@ -486,16 +489,22 @@ fn sequence_graphs_mut(seq: &mut Sequence) -> Vec<&mut NodeGraph> {
 }
 
 /// The files a graph's nodes read: LUTs, external mattes and
-/// difference-key plates.
+/// difference-key plates, in the graph and in every graph a Compound node
+/// in it holds (#1042).
 fn node_files(g: &NodeGraph) -> Vec<&PathBuf> {
-    g.nodes
-        .iter()
-        .flat_map(|n| [n.params.lut_path.as_ref(), n.params.matte_image_path.as_ref(), n.params.difference_key.as_ref().and_then(|d| d.plate_path.as_ref())])
-        .flatten()
-        .collect()
+    let mut out = Vec::new();
+    for n in &g.nodes {
+        let p = &n.params;
+        out.extend([p.lut_path.as_ref(), p.matte_image_path.as_ref(), p.difference_key.as_ref().and_then(|d| d.plate_path.as_ref())].into_iter().flatten());
+        if let Some(inner) = &p.compound_subgraph {
+            out.extend(node_files(inner));
+        }
+    }
+    out
 }
 
-/// Point every file `g`'s nodes read at its copy, where it has one.
+/// Point every file `g`'s nodes read at its copy, where it has one, in
+/// Compound nodes' graphs too.
 fn remap_node_files(g: &mut NodeGraph, new_paths: &HashMap<PathBuf, PathBuf>) {
     for n in &mut g.nodes {
         let p = &mut n.params;
@@ -503,6 +512,9 @@ fn remap_node_files(g: &mut NodeGraph, new_paths: &HashMap<PathBuf, PathBuf>) {
             if let Some(new) = new_paths.get(path) {
                 *path = new.clone();
             }
+        }
+        if let Some(inner) = p.compound_subgraph.as_mut() {
+            remap_node_files(inner, new_paths);
         }
     }
 }
@@ -676,7 +688,11 @@ pub fn consolidate_project(
         }
     }
     let cut_paths: HashSet<PathBuf> = cuts.keys().cloned().collect();
-    let mut plan = build_copy_plan(media_pool, sequences, color_settings, &options, used.as_ref(), &cut_paths);
+    // The grade stills, as saved with the source project: their pictures
+    // go with the project, and their grades read files like any other.
+    let mut stills = crate::grade_stills::load_grade_stills(source_project_dir);
+    let still_grades: Vec<&NodeGraph> = stills.iter().filter_map(|s| s.grade.as_ref()).collect();
+    let mut plan = build_copy_plan(media_pool, sequences, color_settings, &options, used.as_ref(), &cut_paths, &still_grades);
     plan.warnings.extend(cut_warnings);
     let files_trimmed = cuts.len();
 
@@ -738,6 +754,17 @@ pub fn consolidate_project(
     if let Err(e) = crate::save::save_looks(&options.dest_dir, &looks) {
         let _ = std::fs::remove_dir_all(&options.dest_dir);
         return Err(ConsolidateError::SaveFailed(e));
+    }
+    for still in &mut stills {
+        if let Some(g) = still.grade.as_mut() {
+            remap_node_files(g, &plan.node_file_new_paths);
+        }
+    }
+    if !stills.is_empty() {
+        if let Err(e) = crate::grade_stills::save_grade_stills(&options.dest_dir, &stills) {
+            let _ = std::fs::remove_dir_all(&options.dest_dir);
+            return Err(ConsolidateError::SaveFailed(e));
+        }
     }
 
     Ok(ConsolidateResult {
@@ -826,7 +853,7 @@ pub fn summarise(media_pool: &MediaPool, sequences: &[Sequence], color_settings:
         _ => Vec::new(),
     };
     let cut: HashSet<PathBuf> = candidates.iter().map(|(m, _)| m.path.clone()).collect();
-    let plan = build_copy_plan(media_pool, sequences, color_settings, options, used.as_ref(), &cut);
+    let plan = build_copy_plan(media_pool, sequences, color_settings, options, used.as_ref(), &cut, &[]);
     let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
     let mut bytes: u64 = plan.items.iter().map(|i| size(&i.src)).sum();
     let mut files = plan.items.len();

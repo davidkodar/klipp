@@ -584,3 +584,51 @@ fn collect_brings_the_files_grades_read_and_the_looks() {
         let _ = std::fs::remove_dir_all(d);
     }
 }
+
+/// #1042: Collect also brings the files read by a graph inside a Compound
+/// node, and the grade stills, with the files their grades read.
+#[test]
+fn collect_walks_compound_graphs_and_brings_the_stills() {
+    use klipp_nodes::{Node, NodeGraph, NodeId, NodeKind, NodeParams};
+    let source_dir = tmp_path("nested_src");
+    let outside = tmp_path("nested_outside");
+    let dest = tmp_path("nested_dst");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let (inner_lut, still_mask) = (outside.join("inner.cube"), outside.join("still_mask.png"));
+    for f in [&inner_lut, &still_mask] {
+        std::fs::write(f, b"grade file").unwrap();
+    }
+    let node = |kind, params| Node { id: NodeId::new_v4(), kind, label: String::new(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: Vec::new() };
+    let mut inner = NodeGraph::default();
+    inner.nodes.push(node(NodeKind::Lut3D, NodeParams { lut_path: Some(inner_lut.clone()), ..Default::default() }));
+    let mut clip_graph = NodeGraph::default();
+    clip_graph.nodes.push(node(NodeKind::Compound, NodeParams { compound_subgraph: Some(inner), ..Default::default() }));
+    let mut still_grade = NodeGraph::default();
+    still_grade.nodes.push(node(NodeKind::ExternalMatte, NodeParams { matte_image_path: Some(still_mask.clone()), ..Default::default() }));
+
+    let mut seq = Sequence::new_default();
+    let mut clip = klipp_timeline::Clip::gap(RationalTime::from_frames(0, 24), RationalTime::from_frames(24, 24));
+    clip.node_graph = clip_graph;
+    seq.tracks[0].clips.push(clip);
+    save_project_with_color(&source_dir, std::slice::from_ref(&seq), &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
+    let still = klipp_project::GradeStillData { name: "Hero".into(), filename: "hero.png".into(), rgba: vec![255; 2 * 2 * 4], width: 2, height: 2, source: None, grade: Some(still_grade) };
+    klipp_project::save_grade_stills(&source_dir, &[still]).unwrap();
+
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new() };
+    consolidate_project(&source_dir, &MediaPool::new(), std::slice::from_ref(&seq), &ColorSettings::default(), options, None).unwrap();
+
+    let (seqs, ..) = load_project(&dest).unwrap();
+    let compound = &seqs[0].tracks[0].clips[0].node_graph.nodes.iter().find(|n| n.kind == NodeKind::Compound).unwrap().params;
+    let inner_read = compound.compound_subgraph.as_ref().unwrap().nodes.iter().find_map(|n| n.params.lut_path.clone()).unwrap();
+    let stills = klipp_project::load_grade_stills(&dest);
+    assert_eq!(stills.len(), 1, "the still came along");
+    let still_read = stills[0].grade.as_ref().unwrap().nodes.iter().find_map(|n| n.params.matte_image_path.clone()).unwrap();
+    for f in [&inner_read, &still_read] {
+        assert!(f.starts_with(&dest), "{} is read from the collected folder", f.display());
+        assert!(f.exists(), "{} was copied", f.display());
+    }
+    for d in [&source_dir, &outside, &dest] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
