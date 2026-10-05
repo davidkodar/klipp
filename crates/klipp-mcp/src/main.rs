@@ -2551,7 +2551,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               contrast_range, chroma_mean, cast_a, cast_b, skin_hue; style_profile lifts a \
               look_target from a reference to paste here), \
               vocabulary (names, products and terms as they are spelt, for the \
-              speech-to-text: run klipp_analyze after setting it), notes. What is left out asks for nothing. Names in lower thirds \
+              speech-to-text: run klipp_analyze after setting it), language (the speech's \
+              ISO 639-1 code, \"en\", \"sv\", for the speech-to-text; left out it is detected per \
+              file), notes. What is left out asks for nothing. Names in lower thirds \
               come from the cast, klipp_check holds the piece to the brief, and an export \
               that names no size or loudness takes the brief's.",
              json!({ "brief": { "type": "object" }, "merge": { "type": "boolean", "description": "change only the fields given; the rest stay" } }), vec!["brief"]),

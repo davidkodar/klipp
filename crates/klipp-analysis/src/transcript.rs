@@ -93,6 +93,50 @@ pub fn vocabulary() -> Vec<String> {
     VOCABULARY.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+/// The language the project's speech is in (#531), as an ISO 639-1 code
+/// ("en", "sv"); `None` detects it per file, from the first thirty
+/// seconds, as before. Set from the project.
+static LANGUAGE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn set_language(language: Option<String>) {
+    *LANGUAGE.lock().unwrap_or_else(|e| e.into_inner()) = language.map(|l| l.trim().to_lowercase()).filter(|l| !l.is_empty() && l != "auto");
+}
+
+pub fn language() -> Option<String> {
+    LANGUAGE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// A file to transcribe again however fresh its transcript (#531): with
+/// another model, or in another language than the project's.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Redo {
+    /// A model id from [`MODELS`]; `None` takes the best installed.
+    pub model: Option<String>,
+    /// `None` takes the project's language, or detects.
+    pub language: Option<String>,
+}
+
+static REDO: std::sync::Mutex<Vec<(std::path::PathBuf, Redo)>> = std::sync::Mutex::new(Vec::new());
+
+/// Ask for `path` to be transcribed again as `redo` says, on its next
+/// analysis run.
+pub fn redo(path: &std::path::Path, redo: Redo) {
+    let mut all = REDO.lock().unwrap_or_else(|e| e.into_inner());
+    all.retain(|(p, _)| p != path);
+    all.push((path.to_path_buf(), redo));
+}
+
+/// Whether `path` waits to be transcribed again.
+pub fn wants_redo(path: &std::path::Path) -> bool {
+    REDO.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(p, _)| p == path)
+}
+
+fn take_redo(path: &std::path::Path) -> Option<Redo> {
+    let mut all = REDO.lock().unwrap_or_else(|e| e.into_inner());
+    let at = all.iter().position(|(p, _)| p == path)?;
+    Some(all.remove(at).1)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Segment {
     pub start_secs: f64,
@@ -107,6 +151,9 @@ pub struct Word {
     pub text: String,
     /// The model's probability for the word's tokens, 0 to 1.
     pub confidence: f32,
+    /// Corrected by hand (#531): kept when the file is transcribed again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub corrected: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -121,6 +168,13 @@ pub struct Transcript {
     /// Whisper ran only where voice activity detection heard speech.
     #[serde(default)]
     pub vad: bool,
+    /// The language whisper was told (#531); `None` when it detected one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_language: Option<String>,
+    /// The model was chosen for this file, not the best installed (#531),
+    /// so a better one installed later does not redo it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chosen_model: bool,
     pub segments: Vec<Segment>,
     pub words: Vec<Word>,
 }
@@ -148,6 +202,51 @@ impl Transcript {
     pub fn text(&self) -> String {
         self.segments.iter().map(|s| s.text.trim()).collect::<Vec<_>>().join(" ")
     }
+
+    /// The word spoken at `at_secs` set to `text`, marked corrected
+    /// (#531), and the text of the segment holding it made again from its
+    /// words, so captions and search read the correction. `false` when no
+    /// word is there or `text` is blank.
+    pub fn correct(&mut self, at_secs: f64, text: &str) -> bool {
+        let text = text.trim();
+        if text.is_empty() {
+            return false;
+        }
+        let Some(i) = self.words.iter().position(|w| w.start_secs <= at_secs && at_secs < w.end_secs).or_else(|| {
+            self.words.iter().enumerate().min_by(|a, b| {
+                let d = |w: &Word| ((w.start_secs + w.end_secs) / 2.0 - at_secs).abs();
+                d(a.1).total_cmp(&d(b.1))
+            }).filter(|(_, w)| ((w.start_secs + w.end_secs) / 2.0 - at_secs).abs() < 0.5).map(|(i, _)| i)
+        }) else { return false };
+        self.words[i].text = text.to_string();
+        self.words[i].corrected = true;
+        let mid = (self.words[i].start_secs + self.words[i].end_secs) / 2.0;
+        if let Some(seg) = self.segments.iter_mut().find(|s| s.start_secs <= mid && mid <= s.end_secs) {
+            let (from, to) = (seg.start_secs, seg.end_secs);
+            seg.text = self.words.iter().filter(|w| (w.start_secs + w.end_secs) / 2.0 >= from && (w.start_secs + w.end_secs) / 2.0 <= to).map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+        }
+        true
+    }
+
+    /// The corrections in `before`, the transcript this one replaces,
+    /// made again on the words here that cover the same moments (#531).
+    pub fn keep_corrections(&mut self, before: &Transcript) {
+        for w in before.words.iter().filter(|w| w.corrected) {
+            self.correct((w.start_secs + w.end_secs) / 2.0, &w.text);
+        }
+    }
+}
+
+/// Correct the word spoken at `at_secs` of `path` to `text` (#531), in
+/// the stored transcript, so captions, search and word cuts read it.
+pub fn correct_word(path: &std::path::Path, at_secs: f64, text: &str) -> Result<(), String> {
+    let key = crate::store::key_for(path).ok_or_else(|| format!("{} is not readable", path.display()))?;
+    let stored = crate::store::load(&key, ID, VERSION).ok_or("the clip has no transcript")?;
+    let mut t: Transcript = serde_json::from_value(stored).map_err(|e| e.to_string())?;
+    if !t.correct(at_secs, text) {
+        return Err("no word there to correct".into());
+    }
+    crate::store::save(&key, ID, VERSION, &serde_json::to_value(&t).map_err(|e| e.to_string())?)
 }
 
 /// One token as whisper reports it, for grouping into words.
@@ -174,7 +273,7 @@ pub fn group_words(tokens: &[Token]) -> Vec<Word> {
                 last.confidence = ps.iter().copied().sum::<f32>() / ps.len().max(1) as f32;
             }
             ps.clear();
-            words.push(Word { start_secs: t.t0, end_secs: t.t1, text: t.text.trim().to_string(), confidence: t.p });
+            words.push(Word { start_secs: t.t0, end_secs: t.t1, text: t.text.trim().to_string(), confidence: t.p, corrected: false });
         } else if let Some(last) = words.last_mut() {
             last.text.push_str(t.text.trim_end());
             last.end_secs = t.t1;
@@ -211,6 +310,30 @@ pub fn installed_model() -> Option<(&'static str, std::path::PathBuf)> {
         let path = cache.path_for(entry);
         path.is_file().then_some((*id, path))
     })
+}
+
+/// Every model installed, best first (#531): what a re-transcription can
+/// choose from.
+pub fn installed_models() -> Vec<&'static str> {
+    MODELS.iter().copied().filter(|id| installed_model_named(id).is_some()).collect()
+}
+
+/// The model `id` and its file, when it is installed.
+pub fn installed_model_named(id: &str) -> Option<(&'static str, std::path::PathBuf)> {
+    let manifest = klipp_ml::manifest::load_effective().ok()?;
+    let cache = klipp_ml::cache::ModelCache::open().ok()?;
+    let id = *MODELS.iter().find(|m| **m == id)?;
+    let path = cache.path_for(manifest.get(id)?);
+    path.is_file().then_some((id, path))
+}
+
+/// A model's name for people: "Large v3 Turbo", "Base".
+pub fn model_label(id: &str) -> &'static str {
+    match id {
+        "whisper_large_v3_turbo_q5" => "Large v3 Turbo",
+        "whisper_base_ggml" => "Base",
+        _ => "another model",
+    }
 }
 
 pub fn model_path() -> Option<std::path::PathBuf> {
@@ -425,7 +548,7 @@ pub fn respell(t: &mut Transcript, spellings: &[String]) {
                     fixes.push((was.join(" "), now.clone()));
                     let (start, end) = (t.words[i].start_secs, t.words[i + took - 1].end_secs);
                     let confidence = t.words[i..i + took].iter().map(|w| w.confidence).fold(1.0, f32::min);
-                    t.words.splice(i..i + took, [Word { start_secs: start, end_secs: end, text: now, confidence }]);
+                    t.words.splice(i..i + took, [Word { start_secs: start, end_secs: end, text: now, confidence, corrected: false }]);
                     took = 1;
                 }
                 break;
@@ -452,6 +575,15 @@ pub fn lacks_spellings(given: &[String], wanted: &[String]) -> bool {
     wanted.iter().any(|w| !given.contains(&w.to_lowercase()))
 }
 
+/// Whether a stored transcript is in the wrong language for a project
+/// in `project` (#531): one whisper detected, other than the project's.
+/// One asked for, the project's or the file's own, stands.
+fn language_is_stale(stored: &serde_json::Value, project: Option<&str>) -> bool {
+    let asked = stored.get("asked_language").and_then(|v| v.as_str()).is_some();
+    let detected = stored.get("language").and_then(|v| v.as_str());
+    !asked && project.is_some_and(|want| detected.is_some_and(|d| d != want))
+}
+
 pub struct TranscriptAnalyser;
 
 impl crate::Analyser for TranscriptAnalyser {
@@ -476,19 +608,35 @@ impl crate::Analyser for TranscriptAnalyser {
             return true;
         }
         let words: Vec<String> = stored.get("vocabulary").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+        // A language detected where the project now names another (#531);
+        // one asked for, the project's or the file's own, stands.
+        let wrong_language = language_is_stale(stored, language().as_deref());
+        // A model chosen for the file (#531) is not redone for a better one.
+        let chosen = stored.get("chosen_model").and_then(|v| v.as_bool()).unwrap_or(false);
         // Spellings asked for now that the stored one was not given. One
         // made with more is as good; with none asked for, any will do.
-        installed_model().is_some_and(|(best, _)| best != model) || lacks_spellings(&words, &vocabulary())
+        (!chosen && installed_model().is_some_and(|(best, _)| best != model)) || lacks_spellings(&words, &vocabulary()) || wrong_language
     }
     fn run(&self, item: &klipp_media::MediaItem, ctx: &crate::AnalysisCtx) -> Result<serde_json::Value, String> {
-        let (model_id, model) = ensure_model(false)?;
+        // A re-transcription asked for this file (#531): its model and
+        // language; otherwise the best model and the project's language.
+        let redo = take_redo(&item.path).unwrap_or_default();
+        let chosen = redo.model.as_deref().and_then(|id| installed_model_named(id));
+        let chosen_model = chosen.is_some();
+        let (model_id, model) = match chosen {
+            Some(m) => m,
+            None => ensure_model(false)?,
+        };
+        let asked_language = redo.language.clone().or_else(language);
         let words = vocabulary();
         let audio = decode_audio(&ctx.ffmpeg, &item.path)?;
         if audio.len() < 16000 / 2 {
-            let t = Transcript { duration_secs: item.duration.to_secs_f64(), model: model_id.into(), vocabulary: words, vad: vad_model_path().is_some(), ..Default::default() };
+            let t = Transcript { duration_secs: item.duration.to_secs_f64(), model: model_id.into(), vocabulary: words, vad: vad_model_path().is_some(), asked_language, chosen_model, ..Default::default() };
             return serde_json::to_value(t).map_err(|e| e.to_string());
         }
-        let mut transcript = transcribe_safely(model_id, &model, &audio, item.duration.to_secs_f64(), &words)?;
+        let mut transcript = transcribe_safely(model_id, &model, &audio, item.duration.to_secs_f64(), &words, asked_language.as_deref())?;
+        transcript.asked_language = asked_language;
+        transcript.chosen_model = chosen_model;
         drop_repeated_phrases(&mut transcript);
         // The sound analyser has already found where the file is silent;
         // words whisper places there are its invention, whatever it
@@ -505,6 +653,13 @@ impl crate::Analyser for TranscriptAnalyser {
             drop_words_in_silence(&mut transcript, &env);
         }
         respell(&mut transcript, &words);
+        // Hand corrections outlive the transcript they were made on.
+        if let Some(before) = crate::store::key_for(&item.path)
+            .and_then(|key| crate::store::load(&key, ID, VERSION))
+            .and_then(|v| serde_json::from_value::<Transcript>(v).ok())
+        {
+            transcript.keep_corrections(&before);
+        }
         serde_json::to_value(transcript).map_err(|e| e.to_string())
     }
 }
@@ -551,6 +706,9 @@ struct WorkerJob {
     /// Word times by alignment (DTW), or the segments' own.
     aligned: bool,
     on_cpu: bool,
+    /// The language to transcribe in; `None` detects (#531).
+    #[serde(default)]
+    language: Option<String>,
 }
 
 /// One worker at a time: each loads the model itself, half a gigabyte
@@ -567,17 +725,17 @@ static ONE_WORKER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// or less, which quiet sound makes, and took the editor down with it —
 /// on every open of a project holding such a clip, since analysis runs
 /// again then.
-fn transcribe_safely(model_id: &str, model: &std::path::Path, audio: &[f32], duration_secs: f64, words: &[String]) -> Result<Transcript, String> {
+fn transcribe_safely(model_id: &str, model: &std::path::Path, audio: &[f32], duration_secs: f64, words: &[String], language: Option<&str>) -> Result<Transcript, String> {
     match crate::worker::exe() {
-        Some(exe) => transcribe_in(exe, model_id, model, audio, duration_secs, words),
-        None => transcribe(model_id, model, audio, duration_secs, words, true),
+        Some(exe) => transcribe_in(exe, model_id, model, audio, duration_secs, words, language),
+        None => transcribe(model_id, model, audio, duration_secs, words, true, language),
     }
 }
 
 /// [`transcribe_safely`] in the worker `exe`.
-fn transcribe_in(exe: &std::path::Path, model_id: &str, model: &std::path::Path, audio: &[f32], duration_secs: f64, words: &[String]) -> Result<Transcript, String> {
+fn transcribe_in(exe: &std::path::Path, model_id: &str, model: &std::path::Path, audio: &[f32], duration_secs: f64, words: &[String], language: Option<&str>) -> Result<Transcript, String> {
     let _one = ONE_WORKER.lock().unwrap_or_else(|e| e.into_inner());
-    let job = |aligned: bool| WorkerJob { model_id: model_id.into(), model: model.into(), duration_secs, words: words.to_vec(), aligned, on_cpu: transcribe_on_cpu() };
+    let job = |aligned: bool| WorkerJob { model_id: model_id.into(), model: model.into(), duration_secs, words: words.to_vec(), aligned, on_cpu: transcribe_on_cpu(), language: language.map(str::to_string) };
     match run_worker(exe, &job(true), audio) {
         Ok(reply) => reply,
         Err(died) => {
@@ -616,7 +774,7 @@ pub(crate) fn worker_main(spec: &str) -> i32 {
         std::io::stdin().read_to_end(&mut bytes).map_err(|e| format!("the sound: {e}"))?;
         let audio: Vec<f32> = bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
         set_transcribe_on_cpu(job.on_cpu);
-        transcribe(&job.model_id, &job.model, &audio, job.duration_secs, &job.words, job.aligned).map(Box::new)
+        transcribe(&job.model_id, &job.model, &audio, job.duration_secs, &job.words, job.aligned, job.language.as_deref()).map(Box::new)
     })();
     crate::worker::answer(reply)
 }
@@ -624,7 +782,7 @@ pub(crate) fn worker_main(spec: &str) -> i32 {
 /// Transcribe `audio`. `aligned`: word times from the model's alignment
 /// heads (DTW); without, the timestamp tokens' — rougher, and what a
 /// worker falls back to when alignment brought whisper.cpp down (#640).
-fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_secs: f64, words: &[String], aligned: bool) -> Result<Transcript, String> {
+fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_secs: f64, words: &[String], aligned: bool, language: Option<&str>) -> Result<Transcript, String> {
     use whisper_rs::{DtwMode, DtwModelPreset, DtwParameters, FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
     whisper_rs::install_logging_hooks();
     let mut cparams = WhisperContextParameters::default();
@@ -688,7 +846,7 @@ fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_s
     if !prompt.is_empty() {
         params.set_initial_prompt(&prompt);
     }
-    params.set_language(Some("auto"));
+    params.set_language(Some(language.unwrap_or("auto")));
     params.set_translate(false);
     params.set_token_timestamps(true);
     params.set_print_special(false);
@@ -771,7 +929,7 @@ fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_s
     let spoken = group_words(&tokens);
     // A language detected over silence is a guess; say nothing instead.
     let language = if segments.is_empty() { None } else { lang };
-    Ok(Transcript { duration_secs, language, model: model_id.into(), vocabulary: words.to_vec(), vad: speech.is_some(), segments, words: spoken })
+    Ok(Transcript { duration_secs, language, model: model_id.into(), vocabulary: words.to_vec(), vad: speech.is_some(), asked_language: None, chosen_model: false, segments, words: spoken })
 }
 
 /// Where in 16 kHz mono `audio` someone speaks, as (start, end) seconds,
@@ -924,9 +1082,40 @@ mod tests {
     /// #779: the beach take's transcript as stored, the wind heard as one
     /// sentence three times over, is dropped whole; a line that repeats a
     /// short phrase, or says a sentence twice, is kept.
+    fn said(words: &[(&str, f64)]) -> Transcript {
+        let words: Vec<Word> = words.iter().map(|&(t, at)| Word { start_secs: at, end_secs: at + 0.4, text: t.into(), confidence: 0.9, corrected: false }).collect();
+        let text = words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+        Transcript { segments: vec![Segment { start_secs: 0.0, end_secs: 10.0, text }], words, ..Default::default() }
+    }
+
+    #[test]
+    fn a_corrected_word_reaches_its_segment_and_outlives_a_new_transcript() {
+        let mut t = said(&[("Welcome", 0.0), ("to", 0.5), ("a", 1.0), ("matchy", 1.5)]);
+        assert!(t.correct(1.6, "Omarchy"));
+        assert_eq!(t.segments[0].text, "Welcome to a Omarchy");
+        assert!(t.words[3].corrected);
+        assert!(!t.correct(1.6, "  "), "a blank correction is not taken");
+        assert!(!t.correct(30.0, "x"), "nothing is said there");
+        // Transcribed again, a little differently: the correction lands
+        // on the word covering the same moment.
+        let mut again = said(&[("Welcome", 0.05), ("to", 0.55), ("a", 1.05), ("much", 1.55)]);
+        again.keep_corrections(&t);
+        assert_eq!(again.words[3].text, "Omarchy");
+        assert_eq!(again.segments[0].text, "Welcome to a Omarchy");
+    }
+
+    #[test]
+    fn a_detected_language_other_than_the_projects_is_stale_and_an_asked_one_is_not() {
+        let stored = |asked: Option<&str>, detected: &str| serde_json::json!({ "language": detected, "asked_language": asked });
+        assert!(language_is_stale(&stored(None, "en"), Some("sv")), "detected English in a Swedish project: made again in Swedish");
+        assert!(!language_is_stale(&stored(None, "sv"), Some("sv")));
+        assert!(!language_is_stale(&stored(Some("en"), "en"), Some("sv")), "English asked for this file stands");
+        assert!(!language_is_stale(&stored(None, "en"), None), "no project language: anything detected stands");
+    }
+
     #[test]
     fn a_sentence_looped_over_wind_is_dropped() {
-        let word = |text: &str, at: f64| Word { start_secs: at, end_secs: at + 0.2, text: text.into(), confidence: 1.0 };
+        let word = |text: &str, at: f64| Word { start_secs: at, end_secs: at + 0.2, text: text.into(), confidence: 1.0, corrected: false };
         let said = |text: &str, from: f64| text.split(' ').enumerate().map(|(k, w)| word(w, from + k as f64 * 0.3)).collect::<Vec<_>>();
         let mut beach = Transcript {
             duration_secs: 23.6,
@@ -964,8 +1153,8 @@ mod tests {
     /// second. Uncapped, the talk took four.
     #[test]
     fn looking_for_loops_in_a_long_transcript_is_quick() {
-        let talk: Vec<Word> = (0..100_000).map(|k| Word { start_secs: k as f64 * 0.3, end_secs: k as f64 * 0.3 + 0.2, text: format!("w{}", (k * 7919) % 5003), confidence: 1.0 }).collect();
-        let same: Vec<Word> = (0..100_000).map(|k| Word { start_secs: k as f64 * 0.3, end_secs: k as f64 * 0.3 + 0.2, text: "so".into(), confidence: 1.0 }).collect();
+        let talk: Vec<Word> = (0..100_000).map(|k| Word { start_secs: k as f64 * 0.3, end_secs: k as f64 * 0.3 + 0.2, text: format!("w{}", (k * 7919) % 5003), confidence: 1.0, corrected: false }).collect();
+        let same: Vec<Word> = (0..100_000).map(|k| Word { start_secs: k as f64 * 0.3, end_secs: k as f64 * 0.3 + 0.2, text: "so".into(), confidence: 1.0, corrected: false }).collect();
         for (what, words) in [("talk", talk), ("one word", same)] {
             let mut t = Transcript { segments: vec![Segment { start_secs: 0.0, end_secs: 30_000.0, text: String::new() }], words, ..Default::default() };
             let start = std::time::Instant::now();
@@ -997,7 +1186,7 @@ mod tests {
     #[test]
     fn names_written_by_ear_are_respelt_and_ordinary_words_are_not() {
         let say = |text: &str| -> Transcript {
-            let words = text.split(' ').enumerate().map(|(k, w)| Word { start_secs: k as f64, end_secs: k as f64 + 0.5, text: w.into(), confidence: 1.0 }).collect();
+            let words = text.split(' ').enumerate().map(|(k, w)| Word { start_secs: k as f64, end_secs: k as f64 + 0.5, text: w.into(), confidence: 1.0, corrected: false }).collect();
             Transcript { segments: vec![Segment { start_secs: 0.0, end_secs: 99.0, text: text.into() }], words, ..Default::default() }
         };
         let spell: Vec<String> = ["Omarchy", "Quickshell", "Hyprland", "Claude Code", "Ruby on Rails", "QML", "DHH"].iter().map(|s| s.to_string()).collect();
@@ -1040,8 +1229,8 @@ mod tests {
                 Segment { start_secs: 5.0, end_secs: 7.0, text: "hello".into() },
             ],
             words: vec![
-                Word { start_secs: 1.0, end_secs: 2.0, text: "encounters".into(), confidence: 0.5 },
-                Word { start_secs: 5.0, end_secs: 5.5, text: "hello".into(), confidence: 0.9 },
+                Word { start_secs: 1.0, end_secs: 2.0, text: "encounters".into(), confidence: 0.5, corrected: false },
+                Word { start_secs: 5.0, end_secs: 5.5, text: "hello".into(), confidence: 0.9, corrected: false },
             ],
             ..Default::default()
         };
@@ -1070,10 +1259,10 @@ mod tests {
             language: Some("en".into()),
             segments: vec![stretched.clone(), Segment { start_secs: 31.0, end_secs: 33.0, text: "Look at that.".into() }],
             words: vec![
-                Word { start_secs: 10.2, end_secs: 10.6, text: "So,".into(), confidence: 0.4 },
-                Word { start_secs: 10.7, end_secs: 11.2, text: "let's".into(), confidence: 0.4 },
-                Word { start_secs: 11.3, end_secs: 11.8, text: "go.".into(), confidence: 0.4 },
-                Word { start_secs: 31.0, end_secs: 31.4, text: "Look".into(), confidence: 0.9 },
+                Word { start_secs: 10.2, end_secs: 10.6, text: "So,".into(), confidence: 0.4, corrected: false },
+                Word { start_secs: 10.7, end_secs: 11.2, text: "let's".into(), confidence: 0.4, corrected: false },
+                Word { start_secs: 11.3, end_secs: 11.8, text: "go.".into(), confidence: 0.4, corrected: false },
+                Word { start_secs: 31.0, end_secs: 31.4, text: "Look".into(), confidence: 0.9, corrected: false },
             ],
             ..Default::default()
         };
@@ -1182,13 +1371,13 @@ mod worker_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let worker = fake_worker(&dir);
         let audio = vec![0.0f32; 32000];
-        let t = transcribe_in(&worker, "fake", std::path::Path::new("/nowhere"), &audio, 2.0, &[]).expect("a transcript after the second run");
+        let t = transcribe_in(&worker, "fake", std::path::Path::new("/nowhere"), &audio, 2.0, &[], None).expect("a transcript after the second run");
         assert_eq!(t.model, "fake");
 
         let dead = dir.join("dead.sh");
         std::fs::write(&dead, "#!/bin/sh\ncat > /dev/null\nexit 134\n").unwrap();
         std::fs::set_permissions(&dead, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        let err = transcribe_in(&dead, "fake", std::path::Path::new("/nowhere"), &audio, 2.0, &[]).expect_err("dead twice");
+        let err = transcribe_in(&dead, "fake", std::path::Path::new("/nowhere"), &audio, 2.0, &[], None).expect_err("dead twice");
         assert!(err.contains("twice"), "{err}");
 
         // An app upgraded while it ran starts the new file at its path.
