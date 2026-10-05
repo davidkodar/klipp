@@ -32,8 +32,6 @@ const NOT_YET_DESCRIBED: &[&str] = &[
     // #1006: light, glow and look.
     "Bloom", "Glow", "LightRays", "Diffusion", "LensFlare", "OuterGlow", "LightWrap", "AnamorphicStreak", "FilmHalation",
     "ChromaticAberration", "Vignette", "DropShadow",
-    // #1007: geometry and frame.
-    "Crop", "Transform", "RoundedCorners", "FillBars", "Mirror", "LensDistortion", "Letterbox", "CornerPin",
     // #1008: film, generator, key, temporal and plug-in.
     "FilmGrain", "OldFilm", "Vhs", "NoiseGenerator", "ChromaKey", "RollingShutterCorrection", "TemporalDenoise",
     "Deflicker", "VideoStabilization", "SpeedRamp", "Frei0r",
