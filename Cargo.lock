@@ -2914,6 +2914,7 @@ dependencies = [
  "klipp-color",
  "klipp-core",
  "klipp-effects",
+ "klipp-frei0r",
  "klipp-nodes",
  "klipp-plugin",
  "klipp-timeline",

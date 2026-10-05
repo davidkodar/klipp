@@ -21,6 +21,7 @@ tracing           = { workspace = true }
 
 [dev-dependencies]
 klipp-color = { workspace = true }
+klipp-frei0r = { workspace = true }
 
 [lints]
 workspace = true

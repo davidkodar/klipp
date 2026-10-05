@@ -29,10 +29,11 @@
 //! with its issue, and fails the moment it goes away, so the list cannot
 //! outlive the bug.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
-use klipp_compose::{FrameSource, GpuPixels, RenderOptions, Renderer, SourceFrame, SourcePixels};
+use klipp_color::hdr::HdrTransfer;
+use klipp_compose::{FrameSource, GpuPixels, LinearFrameProviderFn, RenderOptions, Renderer, SourceFrame, SourcePixels};
 use klipp_core::{ClipId, Keyframe, RationalTime, Timecode, TransitionAlignment, TransitionId, TransitionKind, WorkingColorspace};
 use klipp_effects::{BuiltinEffect, ColorFadeMode, SpillMethod};
 use klipp_nodes::params::MatteChannel;
@@ -60,6 +61,66 @@ fn pattern(seed: u8) -> Vec<u8> {
         }
     }
     v
+}
+
+/// The picture of a moving, grainy clip at frame `n`: [`pattern`] moved
+/// two pixels to the right a frame, with grain that changes every frame.
+/// What frame blending, temporal noise reduction and motion analysis
+/// need: neighbouring frames that differ.
+fn pattern_at(seed: u8, n: i64) -> Vec<u8> {
+    let still = pattern(seed);
+    let mut v = Vec::with_capacity(still.len());
+    for y in 0..H as i64 {
+        for x in 0..W as i64 {
+            let sx = (x - 2 * n).rem_euclid(W as i64);
+            let i = ((y * W as i64 + sx) * 4) as usize;
+            let grain = ((x * 7919 + y * 104_729 + n * 15_485_863).rem_euclid(9) - 4) as i16;
+            for c in 0..3 {
+                v.push((still[i + c] as i16 + grain).clamp(0, 255) as u8);
+            }
+            v.push(255);
+        }
+    }
+    v
+}
+
+/// The size of the frames motion analysis reads: the corpus's own is too
+/// small for corner detection at the half size it works at.
+const MOTION_W: u32 = 256;
+const MOTION_H: u32 = 144;
+
+/// A blocky texture with corners everywhere, six pixels further right
+/// each frame: what rolling-shutter correction measures motion from.
+fn motion_texture(n: i64) -> Vec<u8> {
+    let mut v = Vec::with_capacity((MOTION_W * MOTION_H * 4) as usize);
+    for y in 0..MOTION_H as i64 {
+        for x in 0..MOTION_W as i64 {
+            let (bx, by) = ((x - 6 * n).div_euclid(8), y.div_euclid(8));
+            let g = ((bx * 7919 + by * 104_729).rem_euclid(251)) as u8;
+            v.extend_from_slice(&[g, g, g, 255]);
+        }
+    }
+    v
+}
+
+/// The frame of `source_secs` at the corpus's rate.
+fn frame_no(source_secs: f64) -> i64 {
+    (source_secs * 24.0).floor() as i64
+}
+
+/// Scene-referred codes, as a log, PQ or HLG decoder hands them over: a
+/// ramp down the frame with a hue across it, so every curve's segments
+/// are sampled.
+fn scene_codes() -> Vec<u32> {
+    (0..H)
+        .flat_map(|y| {
+            (0..W).map(move |x| {
+                let v = (y + 1) * 1000 / H;
+                let t = x * 1000 / W;
+                klipp_color::hdr::pack_rgb10(v.min(1023), (v * 3 / 4 + t / 4).min(1023), (v / 2 + t / 2).min(1023))
+            })
+        })
+        .collect()
 }
 
 fn linear_of(srgb: &[u8]) -> Vec<f32> {
@@ -92,26 +153,88 @@ impl GpuPixels for Seeded {
 #[derive(Clone, Default)]
 struct Frames {
     by_clip: HashMap<ClipId, Arc<Vec<u8>>>,
+    seeds: HashMap<ClipId, u8>,
+    /// Clips whose picture moves and changes grain every frame.
+    moving: HashSet<ClipId>,
+    /// Clips whose source is scene-referred codes in this transfer.
+    scene: HashMap<ClipId, HdrTransfer>,
     on_gpu: bool,
 }
 
 impl Frames {
     fn with(mut self, c: &Clip, seed: u8) -> Self {
         self.by_clip.insert(c.id, Arc::new(pattern(seed)));
+        self.seeds.insert(c.id, seed);
         self
+    }
+
+    /// `c` as a moving, grainy picture ([`pattern_at`]).
+    fn moving(mut self, c: &Clip, seed: u8) -> Self {
+        self.seeds.insert(c.id, seed);
+        self.moving.insert(c.id);
+        self
+    }
+
+    /// `c` as scene-referred codes in `transfer`.
+    fn scene(mut self, c: &Clip, transfer: HdrTransfer) -> Self {
+        self.scene.insert(c.id, transfer);
+        self
+    }
+
+    /// `clip`'s picture at `source_secs` as sRGB bytes.
+    fn srgb_at(&self, clip: &Clip, source_secs: f64) -> Option<Arc<Vec<u8>>> {
+        if self.moving.contains(&clip.id) {
+            return Some(Arc::new(pattern_at(*self.seeds.get(&clip.id)?, frame_no(source_secs))));
+        }
+        self.by_clip.get(&clip.id).cloned()
     }
 }
 
 impl FrameSource for Frames {
-    fn frame(&mut self, clip: &Clip, _source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
-        let srgb = self.by_clip.get(&clip.id)?;
-        let linear = Arc::new(linear_of(srgb));
+    fn frame(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        if let Some(&transfer) = self.scene.get(&clip.id) {
+            let pixels = SourcePixels::SceneReferred {
+                codes: Arc::new(scene_codes()),
+                transfer,
+                source_to_working: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            };
+            return Some(SourceFrame { pixels, width, height, pts: None });
+        }
+        let srgb = self.srgb_at(clip, source_secs)?;
+        let linear = Arc::new(linear_of(&srgb));
         let pixels = if self.on_gpu {
-            SourcePixels::Gpu(Arc::new(Seeded { srgb: Arc::clone(srgb), linear }))
+            SourcePixels::Gpu(Arc::new(Seeded { srgb, linear }))
         } else {
             SourcePixels::Linear(linear)
         };
-        Some(SourceFrame { pixels, width, height, pts: None })
+        // A moving clip's frames carry their time, which frame blending
+        // weighs the two frames by.
+        let pts = self.moving.contains(&clip.id).then(|| frame_no(source_secs) as f64 / 24.0);
+        Some(SourceFrame { pixels, width, height, pts })
+    }
+
+    fn frame_after(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        if !self.moving.contains(&clip.id) {
+            return None;
+        }
+        let next = (frame_no(source_secs) + 1) as f64 / 24.0;
+        self.frame(clip, next, width, height)
+    }
+
+    fn motion_frame(&mut self, clip: &Clip, source_secs: f64, max_width: u32) -> Option<(Vec<u8>, u32, u32)> {
+        if !self.moving.contains(&clip.id) || MOTION_W > max_width {
+            return None;
+        }
+        Some((motion_texture(frame_no(source_secs)), MOTION_W, MOTION_H))
+    }
+
+    fn temporal_frames_linear(&mut self, clip: &Clip, _working: WorkingColorspace) -> Option<LinearFrameProviderFn> {
+        if !self.moving.contains(&clip.id) {
+            return None;
+        }
+        let seed = *self.seeds.get(&clip.id)?;
+        let source_in = clip.source_in.to_secs_f64();
+        Some(Box::new(move |clip_secs| Some((linear_of(&pattern_at(seed, frame_no(source_in + clip_secs))), W, H))))
     }
 }
 
@@ -201,11 +324,13 @@ struct Case {
     /// Paths expected to decline this case. `None` takes the default
     /// for its working space (see [`expected_declines`]).
     declines: Option<Vec<Path>>,
+    /// The delivery: an HDR peak makes the export a PQ encode.
+    opts: RenderOptions,
 }
 
 impl Case {
     fn new(name: impl Into<String>, seq: Sequence, frames: Frames) -> Self {
-        Case { name: name.into(), project: vec![seq], frames, times: vec![0.5, 1.25], working: WorkingColorspace::Rec709Linear, declines: None }
+        Case { name: name.into(), project: vec![seq], frames, times: vec![0.5, 1.25], working: WorkingColorspace::Rec709Linear, declines: None, opts: RenderOptions::default() }
     }
 }
 
@@ -313,9 +438,124 @@ fn effect_cases() -> Vec<Case> {
         .collect()
 }
 
-/// Variants covered elsewhere for now, with the reason. Each needs frames
-/// at other times, an analysis, or a plug-in on the machine.
-const EFFECTS_IN_A_LATER_BATCH: &[&str] = &["TemporalDenoise", "RollingShutterCorrection", "VideoStabilization", "SpeedRamp", "Frei0r"];
+/// Variants covered elsewhere for now, with the reason. None: the
+/// temporal effects are in [`temporal_cases`], and a frei0r plug-in in
+/// [`frei0r_case`] when one is installed.
+const EFFECTS_IN_A_LATER_BATCH: &[&str] = &[];
+
+/// One moving, grainy clip carrying `fx` (#1024).
+fn moving(name: impl Into<String>, fx: Vec<BuiltinEffect>) -> (Case, Clip) {
+    let mut c = media(0.0, 4.0);
+    c.builtin_effects = fx;
+    let frames = Frames::default().moving(&c, 0);
+    (Case::new(name, sequence(vec![track("V1", TrackKind::Video, vec![c.clone()])]), frames), c)
+}
+
+/// The effects that read other frames or an analysis of the clip, and
+/// sources that are not display video (#1024).
+fn temporal_cases() -> Vec<Case> {
+    use klipp_effects::homography::Homography;
+    use klipp_effects::stabilization::SmoothedTrajectory;
+    let mut out = Vec::new();
+
+    // Temporal noise reduction: the frame averaged with its neighbours
+    // on the source, ahead of the grade (#996 sends it to the CPU on
+    // every path).
+    let (mut case, _) = moving("temporal/noise reduction", vec![BuiltinEffect::TemporalDenoise { strength: 0.8, threshold: 0.05 }]);
+    // Both GPU paths hand it to the CPU, which decodes the neighbours.
+    case.declines = Some(vec![Path::Stack, Path::Export]);
+    out.push(case);
+
+    // Frame blending: a speed ramp at half speed in blend mode, so each
+    // frame mixes two source frames by where it falls between them.
+    let (mut case, _) = moving(
+        "temporal/frame blending",
+        vec![BuiltinEffect::SpeedRamp {
+            speed: 0.5,
+            blend_mode: 1,
+            ramp_curve: 0,
+            ramp_start: 0.0,
+            ramp_end: 1.0,
+            reverse: false,
+            freeze_at: 0.0,
+            freeze: false,
+        }],
+    );
+    for c in case.project[0].tracks[0].clips.iter_mut() {
+        c.speed = 0.5;
+        c.source_out = tc(2.0);
+    }
+    // Odd timeline frames: at half speed each falls halfway between two
+    // source frames, so both are weighed in.
+    case.times = vec![13.0 / 24.0, 31.0 / 24.0];
+    // Blending two decoded frames is a CPU step on the source.
+    case.declines = Some(vec![Path::Stack, Path::Export]);
+    out.push(case);
+
+    // Stabilisation with its analysis: every frame corrected by a shift.
+    let (mut case, _) = moving("temporal/stabilisation", vec![BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }]);
+    let shift = Homography { h: [[1.0, 0.0, 3.5], [0.0, 1.0, -1.5], [0.0, 0.0, 1.0]] };
+    case.project[0].tracks[0].clips[0].smoothed_trajectory = Some(SmoothedTrajectory {
+        smoothed: Vec::new(),
+        corrections: vec![shift; 96],
+        smoothing_window_secs: 1.0,
+        raw_jitter_px: 1.0,
+        smoothed_jitter_px: 0.1,
+    });
+    out.push(case);
+
+    // Rolling-shutter correction, its motion measured from the moving
+    // picture's frames.
+    out.push(moving("temporal/rolling shutter", vec![BuiltinEffect::RollingShutterCorrection { strength: 1.0, readout_ratio: 0.9 }]).0);
+
+    // Deflicker with measured gains that move frame to frame.
+    let mut c = media(0.0, 4.0);
+    c.builtin_effects = vec![BuiltinEffect::Deflicker { strength: 1.0, window_secs: 1.0, gain: 1.0 }];
+    c.deflicker_gains = Some(klipp_effects::deflicker::DeflickerGains {
+        gains: (0..96).map(|i| 1.0 + 0.2 * ((i as f32) * 0.7).sin()).collect(),
+        window_secs: 1.0,
+        fps: 24.0,
+    });
+    let f = Frames::default().with(&c, 0);
+    out.push(Case::new("temporal/deflicker gains", sequence(vec![track("V1", TrackKind::Video, vec![c])]), f));
+
+    // Scene-referred sources, graded and with an effect.
+    for (name, transfer) in [
+        ("S-Log3", HdrTransfer::Log(klipp_core::ColorTransfer::SLog3)),
+        ("PQ", HdrTransfer::Pq),
+        ("HLG", HdrTransfer::Hlg),
+    ] {
+        let mut c = media(0.0, 4.0);
+        c.node_graph = exposure(0.3);
+        c.builtin_effects = vec![BuiltinEffect::Glow { radius: 4.0, intensity: 0.5 }];
+        let f = Frames::default().scene(&c, transfer);
+        let mut case = Case::new(format!("scene/{name} graded with glow"), sequence(vec![track("V1", TrackKind::Video, vec![c])]), f);
+        // A scene-referred clip with an effect: the export's single-clip
+        // path hands it to the stack, which takes no scene-referred
+        // source today.
+        case.declines = Some(vec![Path::Stack, Path::Export]);
+        out.push(case);
+    }
+
+    // An HDR delivery: an SDR clip and a PQ source, exported as PQ.
+    let mut c = media(0.0, 4.0);
+    c.node_graph = exposure(0.5);
+    let f = Frames::default().with(&c, 0);
+    let mut case = Case::new("hdr/PQ delivery", sequence(vec![track("V1", TrackKind::Video, vec![c])]), f);
+    case.opts = RenderOptions { hdr_peak_nits: Some(1000.0), ..Default::default() };
+    // The stack draws SDR display bytes; an HDR delivery is the export's.
+    case.declines = Some(vec![Path::Stack]);
+    out.push(case);
+    let mut c = media(0.0, 4.0);
+    c.node_graph = exposure(0.2);
+    let f = Frames::default().scene(&c, HdrTransfer::Pq);
+    let mut case = Case::new("hdr/PQ source in a PQ delivery", sequence(vec![track("V1", TrackKind::Video, vec![c])]), f);
+    case.opts = RenderOptions { hdr_peak_nits: Some(1000.0), ..Default::default() };
+    case.declines = Some(vec![Path::Stack]);
+    out.push(case);
+
+    out
+}
 
 /// The rules the compositor applies around effects, each where it is
 /// subtle today.
@@ -776,6 +1016,7 @@ fn corpus() -> Vec<Case> {
     all.extend(camera_cases());
     all.extend(group_cases());
     all.extend(title_blur_cases());
+    all.extend(temporal_cases());
     all
 }
 
@@ -825,6 +1066,36 @@ fn export_target(ws: WorkingColorspace) -> Option<klipp_effects::gpu::Yuv420Targ
         WorkingColorspace::Bt2020Linear => Some(klipp_effects::gpu::Yuv420Target { gamut_op: 1, ..plain }),
         _ => None,
     }
+}
+
+/// A PQ delivery mastered to `peak`: ten bits, P010, BT.2020 luma.
+fn pq_target(peak: f32) -> klipp_effects::gpu::Yuv420Target {
+    klipp_effects::gpu::Yuv420Target {
+        tone_map_op: 0,
+        odt_tag: 0,
+        scene: None,
+        gamut_op: 0,
+        hdr_op: 1,
+        peak_nits: peak,
+        luma_coefs: [0.2627, 0.6780, 0.0593],
+        semi_planar: true,
+        bits: 10,
+        sample_shift: 6,
+    }
+}
+
+/// The CPU render as a PQ export encodes it: display light, PQ, BT.2020
+/// luma at 16/219 in ten bits.
+fn pq_luma_of(linear: &[f32], ws: WorkingColorspace, peak: f32) -> Vec<u16> {
+    let display = klipp_color::display::ExportDisplay::hdr(ws, klipp_core::HdrMode::Pq, peak);
+    let k = [0.2627f32, 0.6780, 0.0593];
+    linear
+        .chunks_exact(4)
+        .map(|p| {
+            let (e, _) = display.encode_light([p[0], p[1], p[2]]);
+            ((16.0 + (k[0] * e[0] + k[1] * e[1] + k[2] * e[2]) * 219.0) * 4.0 + 0.5).clamp(0.0, 1023.0) as u16
+        })
+        .collect()
 }
 
 /// The CPU render as the export encodes it: its display transform, luma
@@ -914,28 +1185,42 @@ fn draw(case: &Case, renderers: &mut Renderers) -> (Vec<String>, Vec<(f64, Path,
     for &t in &case.times {
         let mut frames = case.frames.clone();
         let (cpu_r, gpu_r) = renderers.get(ws);
-        let cpu_linear = cpu_r.render(&seq, tc(t), W, H, &mut frames, RenderOptions::default());
-        let again = cpu_r.render(&seq, tc(t), W, H, &mut frames, RenderOptions::default());
+        let opts = case.opts;
+        let cpu_linear = cpu_r.render(&seq, tc(t), W, H, &mut frames, opts);
+        let again = cpu_r.render(&seq, tc(t), W, H, &mut frames, opts);
         if cpu_linear != again {
             problems.push(format!("{} @{t}: cpu gave two different frames", case.name));
         }
         let cpu = display(&cpu_linear, ws);
 
-        let with_gpu = display(&gpu_r.render(&seq, tc(t), W, H, &mut frames, RenderOptions::default()), ws);
+        let with_gpu = display(&gpu_r.render(&seq, tc(t), W, H, &mut frames, opts), ws);
         results.push((t, Path::CpuWithGpu, judge(compare(&cpu, &with_gpu, 4))));
 
-        let stack = gpu_r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut frames, RenderOptions::default());
+        let stack = gpu_r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut frames, opts);
         results.push((t, Path::Stack, stack.map_or(Took::Declined, |(px, _)| judge(compare(&cpu, &px, 4)))));
 
-        let export = export_target(ws).and_then(|target| {
+        let peak = opts.hdr_peak_nits;
+        let target = match peak {
+            Some(p) => (ws == WorkingColorspace::Rec709Linear).then(|| pq_target(p)),
+            None => export_target(ws),
+        };
+        let export = target.and_then(|target| {
             let mut on_gpu = Frames { on_gpu: true, ..case.frames.clone() };
-            gpu_r.render_yuv420_on_gpu(&seq, tc(t), W, H, &mut on_gpu, RenderOptions::default(), target)
+            gpu_r.render_yuv420_on_gpu(&seq, tc(t), W, H, &mut on_gpu, opts, target)
         });
-        let took = match export {
-            None => Took::Declined,
-            Some((planes, _)) => {
+        let took = match (export, peak) {
+            (None, _) => Took::Declined,
+            (Some((planes, _)), None) => {
                 let want = planes_of(&cpu_linear, ws);
                 judge(compare(&want, &planes[..want.len()], 1))
+            }
+            // Ten-bit luma, P010: each sample's ten bits at the top of a
+            // little-endian u16. Held to one ten-bit level.
+            (Some((planes, _)), Some(p)) => {
+                let want = pq_luma_of(&cpu_linear, ws, p);
+                let got: Vec<u16> = planes[..want.len() * 2].chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]]) >> 6).collect();
+                let diffs: Vec<i32> = got.iter().zip(&want).map(|(g, w)| (*g as i32 - *w as i32).abs()).collect();
+                judge((diffs.iter().copied().max().unwrap_or(0), diffs.iter().filter(|d| **d > TOLERANCE).count()))
             }
         };
         results.push((t, Path::Export, took));
@@ -1010,7 +1295,9 @@ fn every_effect_variant_is_in_the_corpus() {
         })
         .collect();
     let mut covered: BTreeSet<String> = BTreeSet::new();
-    for case in effect_cases() {
+    // Frei0r has its own test below, at a size it accepts.
+    covered.insert("Frei0r".into());
+    for case in effect_cases().into_iter().chain(temporal_cases()) {
         for clip in case.project[0].tracks.iter().flat_map(|t| &t.clips) {
             for e in &clip.builtin_effects {
                 covered.insert(format!("{e:?}").chars().take_while(|c| c.is_ascii_alphanumeric()).collect());
@@ -1021,4 +1308,85 @@ fn every_effect_variant_is_in_the_corpus() {
     let missing: Vec<_> = declared.difference(&covered).collect();
     assert!(declared.len() > 40, "the variant scan found only {declared:?}");
     assert!(missing.is_empty(), "effects missing from the corpus: {missing:?}");
+}
+
+/// Each temporal case's effect does something on the CPU, so the paths
+/// agreeing is not agreement on doing nothing: without the effect (and
+/// its analysis), the frame comes out different (#1024).
+#[test]
+fn the_temporal_effects_change_the_picture() {
+    for case in temporal_cases().into_iter().filter(|c| c.name.starts_with("temporal/")) {
+        let mut plain = case.project[0].clone();
+        for c in plain.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+            c.builtin_effects.clear();
+            c.smoothed_trajectory = None;
+            c.deflicker_gains = None;
+        }
+        let mut r = renderer(false, case.working);
+        let t = case.times[0];
+        let with = r.render(&case.project[0], tc(t), W, H, &mut case.frames.clone(), case.opts);
+        let without = r.render(&plain, tc(t), W, H, &mut case.frames.clone(), case.opts);
+        let moved = with.iter().zip(&without).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        assert!(moved > 0.01, "{}: the effect changed nothing (largest change {moved})", case.name);
+    }
+}
+
+/// A frei0r plug-in draws alike on every path that takes it (#1024).
+/// Apart from the corpus because frei0r refuses a frame whose sides are
+/// not multiples of 8, and the corpus's are 64x36: there it would pass
+/// the picture through on every path and agree by doing nothing. Run
+/// with `invert0r`, which every frei0r install carries; without it the
+/// test says it is skipped.
+#[test]
+fn a_frei0r_plugin_draws_alike() {
+    const FW: u32 = 64;
+    const FH: u32 = 40;
+    struct Ramp;
+    impl FrameSource for Ramp {
+        fn frame(&mut self, _c: &Clip, _s: f64, w: u32, h: u32) -> Option<SourceFrame> {
+            let px: Vec<f32> = (0..h).flat_map(|y| (0..w).flat_map(move |x| [x as f32 / w as f32, y as f32 / h as f32, 0.3, 1.0])).collect();
+            Some(SourceFrame { pixels: SourcePixels::Linear(Arc::new(px)), width: w, height: h, pts: None })
+        }
+    }
+    // The GPU first. Discovery loads every frei0r plug-in, and one that
+    // links NVIDIA's OpenGL runs its loader with the dynamic linker's lock
+    // held; a Vulkan instance created at the same moment on another
+    // thread (the corpus test's renderers) waits for that lock inside the
+    // same driver, and the two deadlock (#1032).
+    let _ = klipp_effects::gpu_context::GpuContext::shared();
+    let plugins = klipp_frei0r::discover_frei0r_plugins();
+    let Some(info) = plugins.iter().find(|p| p.name.eq_ignore_ascii_case("invert0r")).cloned() else {
+        eprintln!("skipped: no frei0r invert0r plug-in is installed");
+        return;
+    };
+    klipp_effects::frei0r_effect::set_plugin_registry(plugins);
+    let type_id = info.type_id();
+    let params = klipp_effects::frei0r_effect::default_params(&type_id).unwrap_or_default();
+    let mut c = media(0.0, 4.0);
+    let plain_seq = {
+        let mut s = sequence(vec![track("V1", TrackKind::Video, vec![c.clone()])]);
+        s.resolution = klipp_core::Resolution { width: FW, height: FH };
+        s
+    };
+    c.builtin_effects = vec![BuiltinEffect::Frei0r { type_id, params }];
+    let mut seq = sequence(vec![track("V1", TrackKind::Video, vec![c])]);
+    seq.resolution = klipp_core::Resolution { width: FW, height: FH };
+    let ws = WorkingColorspace::Rec709Linear;
+    let (mut cpu_r, mut gpu_r) = (renderer(false, ws), renderer(true, ws));
+    let opts = RenderOptions::default();
+    let cpu_linear = cpu_r.render(&seq, tc(0.5), FW, FH, &mut Ramp, opts);
+    let plain = cpu_r.render(&plain_seq, tc(0.5), FW, FH, &mut Ramp, opts);
+    let moved = cpu_linear.iter().zip(&plain).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    assert!(moved > 0.1, "invert0r changed nothing (largest change {moved})");
+    let cpu = display(&cpu_linear, ws);
+    let with_gpu = display(&gpu_r.render(&seq, tc(0.5), FW, FH, &mut Ramp, opts), ws);
+    let (worst, _) = compare(&cpu, &with_gpu, 4);
+    assert!(worst <= TOLERANCE, "cpu+gpu differs from cpu by {worst} levels");
+    match gpu_r.render_display_u8_on_gpu(&seq, tc(0.5), FW, FH, &mut Ramp, opts) {
+        Some((stack, _)) => {
+            let (worst, _) = compare(&cpu, &stack, 4);
+            assert!(worst <= TOLERANCE, "the stack differs from cpu by {worst} levels");
+        }
+        None => eprintln!("frei0r: the stack declined"),
+    }
 }
