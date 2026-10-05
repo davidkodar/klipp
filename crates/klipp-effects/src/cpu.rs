@@ -341,16 +341,17 @@ pub(crate) fn apply(
                 } else if dist < tolerance + soft_edge {
                     px[3] *= (dist - tolerance) / soft_edge;
                 }
+                // The spill is taken out of the key channel alone, on the
+                // pixel's own values: rebuilding all three from the clamped
+                // copy the key is measured on flattened every channel above
+                // white and every negative (#1020).
                 if method != 0 && spill_strength > 0.0 && px[3] > 0.0 {
-                    let mut srgb = s;
-                    let key = srgb[key_idx];
-                    let (a, b) = (srgb[(key_idx + 1) % 3], srgb[(key_idx + 2) % 3]);
+                    let e = [0, 1, 2].map(|c| encode(px[c]) * 255.0);
+                    let key = e[key_idx];
+                    let (a, b) = (e[(key_idx + 1) % 3], e[(key_idx + 2) % 3]);
                     let target = if method == 1 { a.max(b) } else { 0.5 * (a + b) };
                     if key > target {
-                        srgb[key_idx] = (key + spill_strength * (target - key)).clamp(0.0, 255.0);
-                        for c in 0..3 {
-                            px[c] = decode(srgb[c] / 255.0);
-                        }
+                        px[key_idx] = decode((key + spill_strength * (target - key)) / 255.0);
                     }
                 }
                 px
@@ -504,6 +505,10 @@ pub(crate) fn apply(
             // Bands even on the display scale; white stays white, and
             // above it the ladder carries on at the same spacing rather
             // than every highlight landing on white.
+            // Fewer than two levels has no band to step to: at one, every
+            // pixel was 0/0. No control reaches it, but a keyframe curve's
+            // overshoot or a hand-edited file can (#1020).
+            let levels = levels.max(2.0);
             let div = levels - 1.0;
             each_encoded(p, |s| {
                 s.map(|v| {
@@ -734,13 +739,13 @@ pub(crate) fn apply(
             })
         }
         Equalize { strength } => {
-            let cdf = equalize_cdf(&p);
+            let cdf = equalize_cdf(&p, yw);
             // The histogram covers what the display shows; light above
             // white passes through, so equalising does not crush the
             // highlights.
             each_encoded(p, |s| {
                 let d = s.map(|v| v.min(1.0));
-                let l = 0.2126 * d[0] + 0.7152 * d[1] + 0.0722 * d[2];
+                let l = yw[0] * d[0] + yw[1] * d[1] + yw[2] * d[2];
                 let eq = cdf[(l * 255.0).clamp(0.0, 255.0) as usize];
                 let k = if l < 0.001 { 1.0 } else { eq / l };
                 [0, 1, 2].map(|i| d[i] + (d[i] * k - d[i]) * strength + (s[i] - 1.0).max(0.0))
@@ -1039,12 +1044,13 @@ pub const EQUALIZE_CDF_LEN: usize = 256;
 
 /// Histogram equalisation's lookup: the cumulative distribution of the
 /// display-encoded luma in [`EQUALIZE_CDF_LEN`] bins, normalised past
-/// the first occupied bin. The GPU path builds it with this function
-/// too, then uploads it to its own storage buffer.
-pub fn equalize_cdf(linear: &[f32]) -> [f32; EQUALIZE_CDF_LEN] {
+/// the first occupied bin. The luma is by the working space's weights
+/// `yw`, as everywhere else (#1020). The GPU path builds it with this
+/// function too, then uploads it to its own storage buffer.
+pub fn equalize_cdf(linear: &[f32], yw: [f32; 3]) -> [f32; EQUALIZE_CDF_LEN] {
     let mut hist = [0u32; EQUALIZE_CDF_LEN];
     for c in linear.chunks_exact(4) {
-        let l = (0.2126 * encode(c[0]) + 0.7152 * encode(c[1]) + 0.0722 * encode(c[2])).clamp(0.0, 1.0);
+        let l = (yw[0] * encode(c[0]) + yw[1] * encode(c[1]) + yw[2] * encode(c[2])).clamp(0.0, 1.0);
         hist[(l * 255.0) as usize] += 1;
     }
     let total = (linear.len() / 4) as f32;

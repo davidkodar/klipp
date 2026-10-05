@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -138,6 +138,10 @@ pub struct GraphExecutor {
     /// when the path changes; editing the image on disk is an
     /// acknowledged rough edge.
     matte_image_cache: HashMap<PathBuf, Arc<(Vec<f32>, u32, u32)>>,
+    /// Matte and plate images that would not load, each warned about
+    /// once. Only loads that succeed are cached, so a missing file is
+    /// tried again every frame, and it warned every frame (#1020).
+    unreadable_images: HashSet<PathBuf>,
     /// The same plate already resized to the frame, keyed by path and
     /// target size. `matte_image_cache` above saves the *decode*; this
     /// saves the resize, which is a full-frame write — 33 MB at 4K — and
@@ -558,6 +562,7 @@ impl GraphExecutor {
             lut_cache: HashMap::new(),
             curve_lut_cache: HashMap::new(),
             matte_image_cache: HashMap::new(),
+            unreadable_images: HashSet::new(),
             plate_resize_cache: HashMap::new(),
             matte_cache: HashMap::new(),
             gpu_chain_preseeded: false,
@@ -615,6 +620,7 @@ impl GraphExecutor {
             lut_cache: HashMap::new(),
             curve_lut_cache: HashMap::new(),
             matte_image_cache: HashMap::new(),
+            unreadable_images: HashSet::new(),
             plate_resize_cache: HashMap::new(),
             matte_cache: HashMap::new(),
             gpu_chain_preseeded: false,
@@ -2749,10 +2755,13 @@ impl GraphExecutor {
                     }
                     let arc = Arc::new((linear, iw, ih));
                     self.matte_image_cache.insert(path.to_path_buf(), Arc::clone(&arc));
+                    self.unreadable_images.remove(path);
                     arc
                 }
                 Err(e) => {
-                    tracing::warn!("DifferenceKey: failed to load {:?}: {e}", path);
+                    if self.unreadable_images.insert(path.to_path_buf()) {
+                        tracing::warn!("DifferenceKey: failed to load {:?}: {e}", path);
+                    }
                     return None;
                 }
             },
@@ -3952,10 +3961,13 @@ impl GraphExecutor {
                             }
                             let arc = Arc::new((linear, iw, ih));
                             self.matte_image_cache.insert(path.clone(), Arc::clone(&arc));
+                            self.unreadable_images.remove(path);
                             arc
                         }
                         Err(e) => {
-                            tracing::warn!("ExternalMatte: failed to load {:?}: {e}", path);
+                            if self.unreadable_images.insert(path.clone()) {
+                                tracing::warn!("ExternalMatte: failed to load {:?}: {e}", path);
+                            }
                             let mut out = vec![0.0f32; pixel_count * 4];
                             for i in 0..pixel_count { out[i * 4 + 3] = 1.0; }
                             return out;
@@ -7302,5 +7314,40 @@ mod tests {
                 (r_plain[i] - r_wrapped_rec709[i]).abs(),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod unreadable_image_tests {
+    use super::*;
+    use crate::graph::{Edge, Node, NodeId};
+    use crate::NodeKind;
+
+    /// #1020: a matte image that won't load is warned about once, not
+    /// on every frame, and a graph that loads it later is warned again
+    /// only if it goes missing again.
+    #[test]
+    fn a_missing_matte_image_warns_once() {
+        let (w, h) = (8u32, 4u32);
+        let missing = std::env::temp_dir().join(format!("klipp-missing-matte-{}.png", std::process::id()));
+        let _ = std::fs::remove_file(&missing);
+        let mut g = NodeGraph::default();
+        let corr = g.ensure_corrector();
+        let matte = NodeId::new_v4();
+        let params = NodeParams { matte_image_path: Some(missing.clone()), ..Default::default() };
+        g.nodes.push(Node { id: matte, kind: NodeKind::ExternalMatte, label: "Matte".into(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+        g.edges.push(Edge { from_node: matte, from_port: 0, to_node: corr, to_port: 1 });
+        let frame = vec![128u8; (w * h * 4) as usize];
+        let mut ex = GraphExecutor::new_cpu_only();
+        for _ in 0..5 {
+            ex.execute(&frame, &g, w, h, 0.0, 0, None, None).unwrap();
+        }
+        assert_eq!(ex.unreadable_images.len(), 1, "one warning for one missing file, whatever the frame count");
+        assert!(ex.unreadable_images.contains(&missing));
+
+        image::GrayImage::from_fn(w, h, |_, _| image::Luma([255])).save(&missing).unwrap();
+        ex.execute(&frame, &g, w, h, 0.0, 0, None, None).unwrap();
+        assert!(ex.unreadable_images.is_empty(), "found again, it may warn again if it goes");
+        let _ = std::fs::remove_file(&missing);
     }
 }

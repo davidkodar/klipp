@@ -6303,7 +6303,8 @@ impl GpuEffectsPipeline {
                 BuiltinEffect::Posterize { levels } => {
                     self.write_params(&PosterizeParams {
                         width, height,
-                        levels: *levels,
+                        // At least two, as on the CPU (#1020).
+                        levels: levels.max(2.0),
                         _pad: 0,
                     });
                     self.dispatch(&self.posterize_pipeline, input, output, workgroups);
@@ -6530,7 +6531,7 @@ impl GpuEffectsPipeline {
                     let frame_bytes = self.download(current_buf, byte_size);
                     let frame_data: &[f32] = bytemuck::cast_slice(&frame_bytes);
 
-                    let cdf = crate::equalize_cdf(frame_data);
+                    let cdf = crate::equalize_cdf(frame_data, self.luma_coefs);
 
                     // Step 4: Upload CDF as storage buffer and dispatch GPU remap shader
                     let cdf_bytes = bytemuck::cast_slice(&cdf);
@@ -6542,6 +6543,7 @@ impl GpuEffectsPipeline {
                         height,
                         strength: *strength,
                         _pad0: 0,
+                        luma: [self.luma_coefs[0], self.luma_coefs[1], self.luma_coefs[2], 0.0],
                     });
 
                     let input = if current_in_a { buf_a } else { buf_b };
@@ -8620,8 +8622,9 @@ struct EqualizeParams {
     height: u32,
     strength: f32,
     _pad0: u32,
+    /// The working space's luma weights, and a pad.
+    luma: [f32; 4],
 }
-// 4 fields x 4 bytes = 16 bytes
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -9598,8 +9601,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // `apply_spill` shape: pick a target value the key channel drops
     // toward when it exceeds that target, blend by spill_strength.
     if params.spill_method != 0u && params.spill_strength > 0.0 && pixel.w > 0.0 {
-        // Work in sRGB 0-255 to match the CPU oracle byte-for-byte.
-        var srgb = vec3<f32>(srgb_r, srgb_g, srgb_b);
+        // On the pixel's own values, unclamped, and only the key channel
+        // changes, as on the CPU: above white and below black survive
+        // (#1020).
+        let srgb = vec3<f32>(linear_to_srgb_component(pixel.x), linear_to_srgb_component(pixel.y), linear_to_srgb_component(pixel.z)) * 255.0;
         let key = srgb[params.spill_key_idx];
         let other_a_idx = (params.spill_key_idx + 1u) % 3u;
         let other_b_idx = (params.spill_key_idx + 2u) % 3u;
@@ -9613,11 +9618,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         if key > spill_target {
             let new_key = key + params.spill_strength * (spill_target - key);
-            srgb[params.spill_key_idx] = clamp(new_key, 0.0, 255.0);
-            // Re-encode the mutated sRGB triplet back to linear for output.
-            pixel.x = srgb_to_linear_component(srgb.x / 255.0);
-            pixel.y = srgb_to_linear_component(srgb.y / 255.0);
-            pixel.z = srgb_to_linear_component(srgb.z / 255.0);
+            pixel[params.spill_key_idx] = srgb_to_linear_component(new_key / 255.0);
         }
     }
 
@@ -15405,6 +15406,7 @@ struct Params {
     height: u32,
     strength: f32,
     _pad0: u32,
+    luma: vec4<f32>,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -15428,7 +15430,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let d = min(e, vec3<f32>(1.0));
 
     // Compute luminance and look up equalised value from CDF
-    let luma = 0.2126 * d.x + 0.7152 * d.y + 0.0722 * d.z;
+    let luma = dot(params.luma.xyz, d);
     let luma_idx = u32(clamp(luma * 255.0, 0.0, 255.0));
     let eq_luma = cdf[luma_idx];
 
