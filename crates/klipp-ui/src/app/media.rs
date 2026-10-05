@@ -1810,6 +1810,7 @@ impl KlippApp {
             include_proxies,
             include_skims,
             mode,
+            looks: self.state.looks.clone(),
         };
 
         let (tx, rx) = std::sync::mpsc::channel();

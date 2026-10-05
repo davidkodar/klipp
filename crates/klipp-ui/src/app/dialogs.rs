@@ -1128,6 +1128,7 @@ impl KlippApp {
                             include_proxies: self.state.consolidate_include_proxies,
                             include_skims: self.state.consolidate_include_skims,
                             mode,
+                            looks: self.state.looks.clone(),
                         };
                         let color = klipp_project::ColorSettings { global_lut_path: self.state.global_lut_path.clone(), ..Default::default() };
                         let summary = klipp_project::consolidate::summarise(&self.state.media_pool, &self.state.sequences, &color, &options);
