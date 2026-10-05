@@ -27,6 +27,7 @@ mod blur;
 mod colour;
 mod film;
 mod geometry;
+mod light;
 
 /// What kind of operation a node type is, for grouping in the browser and
 /// the add menu.
@@ -308,7 +309,7 @@ pub struct EffectType {
 
 /// Every built-in effect described so far.
 pub fn effect_types() -> impl Iterator<Item = &'static EffectType> {
-    colour::TYPES.iter().chain(geometry::TYPES).chain(film::TYPES).chain(blur::TYPES)
+    colour::TYPES.iter().chain(geometry::TYPES).chain(film::TYPES).chain(blur::TYPES).chain(light::TYPES)
 }
 
 /// The description of the effect saved under `tag`, if it is described.

@@ -26,9 +26,6 @@ use serde_json::Value;
 
 /// Variants with no description yet, by the family issue that adds them.
 const NOT_YET_DESCRIBED: &[&str] = &[
-    // #1006: light, glow and look.
-    "Bloom", "Glow", "LightRays", "Diffusion", "LensFlare", "OuterGlow", "LightWrap", "AnamorphicStreak", "FilmHalation",
-    "ChromaticAberration", "Vignette", "DropShadow",
 ];
 
 /// The variant names of `pub enum BuiltinEffect`, read from its source so
