@@ -19,9 +19,9 @@ pub enum NodeKind {
     /// the inspector's tab-based grading UI always has somewhere to
     /// write. Power users can still add the dedicated single-purpose
     /// nodes alongside it for granular pipelines or parallel mixers.
-    /// Note: log-mode wheels are NOT supported here — they break the
-    /// GPU chain and force a CPU detour. Use a dedicated `ColorWheels`
-    /// node when log mode is needed.
+    /// Log-mode wheels work here too (the Wheels tab offers them); they
+    /// take the Corrector off the fused GPU chain, as they do a
+    /// `ColorWheels` node.
     Corrector,
     /// Exposure in stops — single parameter.
     Exposure,

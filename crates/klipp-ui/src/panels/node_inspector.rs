@@ -1496,7 +1496,7 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_chroma".into(), value: chroma });
                     }
                     let mut radius = node.params.denoise_radius.unwrap_or(3) as f32;
-                    if inspector_row(ui, "Radius", &mut radius, 1.0..=7.0, 3.0, "px", theme, cmds, clip_id) {
+                    if inspector_row(ui, "Radius", &mut radius, 1.0..=DENOISE_RADIUS_MAX, 3.0, "px", theme, cmds, clip_id) {
                         let r = radius.round() as u32;
                         node.params.denoise_radius = Some(r);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_radius".into(), value: r as f32 });
@@ -2281,20 +2281,10 @@ impl NodeInspectorPanel {
                     cmds.push(AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat: huesat.clone() });
                 }
 
-                ui.add_space(4.0);
-
-                // Preserve Luma checkbox
-                ui.horizontal(|ui| {
-                    ui.add_space(PAD);
-                    let mut preserve = params.curves_preserve_luma.unwrap_or(false);
-                    if ui.checkbox(&mut preserve, egui::RichText::new("Preserve Luma").size(11.0)
-                        .color(theme.overlay(128))).changed()
-                    {
-                        // One undo step, and the viewer told (#894).
-                        push_atomic_node_edit(cmds, clip_id, node_id, "curves_preserve_luma", if preserve { 1.0 } else { 0.0 });
-                    }
-                });
-                ui.add_space(2.0);
+                // No Preserve Luma here: it is the RGB curves' setting, which
+                // hue/sat curves never read, and on a Corrector it toggled the
+                // RGB curves from this tab (#1039).
+                ui.add_space(6.0);
 
                 // Mix slider
                 let mut mix = params.huesat_mix.unwrap_or(1.0);
@@ -2501,7 +2491,11 @@ impl NodeInspectorPanel {
                 );
             }
             NodeKind::Blend | NodeKind::ApplyMatte => {
-                let mut mix = params.mix.unwrap_or(1.0);
+                // What the executor does with an unset mix: Blend halves
+                // the two inputs, ApplyMatte applies the grade in full. The
+                // slider showed 1.0 for both (#1039).
+                let unset = if *kind == NodeKind::Blend { 0.5 } else { 1.0 };
+                let mut mix = params.mix.unwrap_or(unset);
                 if grade_slider(ui, "Mix", &mut mix, 0.0..=1.0, "", cmds, clip_id, theme) {
                     params.mix = Some(mix);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "mix".into(), value: mix });
@@ -2519,7 +2513,7 @@ impl NodeInspectorPanel {
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "denoise_chroma".into(), value: chroma });
                 }
                 let mut radius = params.denoise_radius.unwrap_or(3) as f32;
-                if grade_slider(ui, "Radius", &mut radius, 1.0..=7.0, "px", cmds, clip_id, theme) {
+                if grade_slider(ui, "Radius", &mut radius, 1.0..=DENOISE_RADIUS_MAX, "px", cmds, clip_id, theme) {
                     let r = radius.round() as u32;
                     params.denoise_radius = Some(r);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "denoise_radius".into(), value: r as f32 });
@@ -3471,6 +3465,10 @@ impl NodeInspectorPanel {
 // ── Mockup-matching helpers ──────────────────────────────────────────────────
 
 const PAD: f32 = 14.0;
+/// The largest denoise radius that does anything: the kernel is capped at
+/// ten pixels across (`denoise_sigmas`), which a radius of five reaches, so
+/// the slider's 6 and 7 behaved as 5 (#1039).
+const DENOISE_RADIUS_MAX: f32 = 5.0;
 const ROW_H: f32 = 28.0;
 
 /// Section header: "EXPOSURE" with enabled dot and reset icon.
@@ -4489,6 +4487,28 @@ mod sends_on_change {
             .collect();
         assert_eq!(listed, vec![("cinematic".to_string(), vec!["teal.cube".to_string()]), ("film print".to_string(), vec!["a.3dl".to_string(), "b.cube".to_string()])]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1039: the hue/sat curves draw no Preserve Luma; it is the RGB
+    /// curves' setting, which hue/sat curves never read.
+    #[test]
+    fn the_hue_sat_curves_offer_no_preserve_luma() {
+        let mut rig = Rig::new(NodeKind::HueSatCurves, |_| {});
+        let drawn = rig.frame(Vec::new());
+        assert!(drawn.iter().all(|(t, _)| t != "Preserve Luma"), "{drawn:?}");
+        let mut rig = Rig::new(NodeKind::RGBCurves, |_| {});
+        assert!(rig.frame(Vec::new()).iter().any(|(t, _)| t == "Preserve Luma"), "the RGB curves keep it");
+    }
+
+    /// #1039: an unset mix shows what the executor does with it: half on
+    /// a Blend, all of the grade on an ApplyMatte.
+    #[test]
+    fn an_unset_mix_shows_what_the_node_does() {
+        for (kind, shown) in [(NodeKind::Blend, "0.50"), (NodeKind::ApplyMatte, "1.00")] {
+            let mut rig = Rig::new(kind, |_| {});
+            let drawn = rig.frame(Vec::new());
+            assert!(drawn.iter().any(|(t, _)| t == shown), "{kind:?}: an unset mix shows {shown}: {drawn:?}");
+        }
     }
 
     #[test]
