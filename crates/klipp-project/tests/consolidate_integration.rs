@@ -113,6 +113,7 @@ fn run_consolidate(
             include_proxies: false,
             include_skims: false,
             mode: Default::default(),
+            looks: Vec::new(),
         },
         None,
     )
@@ -440,7 +441,7 @@ fn used_only_copies_what_the_timeline_uses() {
     seq.tracks.push(v);
     let seqs = vec![seq];
     let dest = tmp_path("used_dest");
-    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: ConsolidateMode::UsedOnly };
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: ConsolidateMode::UsedOnly, looks: Vec::new() };
 
     let summary = summarise(&pool, &seqs, &ColorSettings::default(), &options);
     assert_eq!((summary.files, summary.bytes), (1, 10), "{summary:?}");
@@ -502,7 +503,7 @@ fn trimmed_cuts_the_file_and_moves_the_clip() {
     seq.tracks.push(v);
     let seqs = vec![seq];
     let dest = tmp_path("trim_dest");
-    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: ConsolidateMode::Trimmed { handle_secs: 1.0 } };
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: ConsolidateMode::Trimmed { handle_secs: 1.0 }, looks: Vec::new() };
     let summary = summarise(&pool, &seqs, &ColorSettings::default(), &options);
     assert_eq!((summary.files, summary.trimmed), (1, 1), "{summary:?}");
 
@@ -530,6 +531,56 @@ fn trimmed_cuts_the_file_and_moves_the_clip() {
     assert_eq!(frame(&src, 20.5), frame(&cut.path, clip.source_in.to_secs_f64() + 0.5));
 
     for d in [&source_dir, &media_dir, &dest] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// #1016: Collect copies what the grades read and the project's Looks.
+/// A Look and a clip each read a LUT outside the project, and the clip an
+/// external matte (as an AI mask is); after collecting, the destination
+/// holds the Looks and copies of all three files, and the collected
+/// project and Looks read them there, not at the originals.
+#[test]
+fn collect_brings_the_files_grades_read_and_the_looks() {
+    use klipp_nodes::{Node, NodeGraph, NodeId, NodeKind, NodeParams};
+    let source_dir = tmp_path("grades_src");
+    let outside = tmp_path("grades_outside");
+    let dest = tmp_path("grades_dst");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let (clip_lut, look_lut, mask) = (outside.join("clip.cube"), outside.join("look.cube"), outside.join("mask.png"));
+    for f in [&clip_lut, &look_lut, &mask] {
+        std::fs::write(f, b"grade file").unwrap();
+    }
+    let node = |kind, params| Node { id: NodeId::new_v4(), kind, label: String::new(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: Vec::new() };
+    let mut clip_graph = NodeGraph::default();
+    clip_graph.nodes.push(node(NodeKind::Lut3D, NodeParams { lut_path: Some(clip_lut.clone()), ..Default::default() }));
+    clip_graph.nodes.push(node(NodeKind::ExternalMatte, NodeParams { matte_image_path: Some(mask.clone()), ..Default::default() }));
+    let mut look_graph = NodeGraph::default();
+    look_graph.nodes.push(node(NodeKind::Lut3D, NodeParams { lut_path: Some(look_lut.clone()), ..Default::default() }));
+    let look = klipp_timeline::Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: look_graph };
+
+    let mut seq = Sequence::new_default();
+    let mut clip = klipp_timeline::Clip::gap(RationalTime::from_frames(0, 24), RationalTime::from_frames(24, 24));
+    clip.node_graph = clip_graph;
+    seq.tracks[0].clips.push(clip);
+    save_project_with_color(&source_dir, std::slice::from_ref(&seq), &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
+
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: vec![look] };
+    consolidate_project(&source_dir, &MediaPool::new(), std::slice::from_ref(&seq), &ColorSettings::default(), options, None).unwrap();
+
+    let read = |g: &NodeGraph| -> Vec<PathBuf> { g.nodes.iter().flat_map(|n| [n.params.lut_path.clone(), n.params.matte_image_path.clone()]).flatten().collect() };
+    let looks = klipp_project::load_looks(&dest);
+    assert_eq!(looks.len(), 1, "the Looks are in the collected project");
+    let (seqs, ..) = load_project(&dest).unwrap();
+    let clip_files = read(&seqs[0].tracks[0].clips[0].node_graph);
+    let look_files = read(&looks[0].node_graph);
+    assert_eq!((clip_files.len(), look_files.len()), (2, 1));
+    for f in clip_files.iter().chain(&look_files) {
+        assert!(f.starts_with(&dest), "{} is read from the collected folder", f.display());
+        assert!(f.exists(), "{} was copied", f.display());
+    }
+    for d in [&source_dir, &outside, &dest] {
         let _ = std::fs::remove_dir_all(d);
     }
 }

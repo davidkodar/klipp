@@ -15,6 +15,10 @@
 //! - Copies `ColorSettings::global_lut_path` into `dest_dir/media/luts/`.
 //! - Copies every `TitleData::texture_fill_path` into
 //!   `dest_dir/media/textures/` (deduplicated by source path).
+//! - Copies every file a grade node reads (a LUT, an external matte or
+//!   AI mask, a difference key's plate), in the sequences and in the
+//!   project's Looks, into `dest_dir/media/grade/`, and writes the Looks
+//!   into the destination (#1016).
 //! - Writes the project via the existing
 //!   `save_project_with_color_and_backups` flow — path relativisation is
 //!   handled by the existing `to_project_relative` plumbing.
@@ -35,7 +39,8 @@ use std::path::{Path, PathBuf};
 
 use klipp_core::MediaId;
 use klipp_media::{MediaItem, MediaPool};
-use klipp_timeline::{ClipKind, Sequence};
+use klipp_nodes::NodeGraph;
+use klipp_timeline::{ClipKind, Look, Sequence};
 
 use crate::save::{save_project_with_color_and_backups, ColorSettings};
 
@@ -50,6 +55,9 @@ pub struct ConsolidateOptions {
     pub include_skims: bool,
     /// What is copied (#77).
     pub mode: ConsolidateMode,
+    /// The project's Looks library, written into the destination with
+    /// the files its grades read (#1016).
+    pub looks: Vec<Look>,
 }
 
 /// What a consolidation copies (#77).
@@ -184,6 +192,8 @@ struct CopyPlan {
     texture_new_paths: HashMap<String, PathBuf>,
     /// New LUT path, if the original was present and exists on disk.
     lut_new_path: Option<PathBuf>,
+    /// A file a grade node reads → its new absolute path (#1016).
+    node_file_new_paths: HashMap<PathBuf, PathBuf>,
     offline_skipped: Vec<String>,
     warnings: Vec<String>,
     /// Items left out as unused (#77), by file name.
@@ -401,6 +411,32 @@ fn build_copy_plan(
         }
     }
 
+    // Files the grade nodes read, in the sequences and the Looks: LUTs,
+    // external mattes (AI masks among them, which live in a cache that is
+    // pruned), difference-key plates. A LUT from the library that ships
+    // with Klipp is saved by its name there, so it is left where it is.
+    let mut node_file_new_paths: HashMap<PathBuf, PathBuf> = HashMap::new();
+    let mut used_grade: HashSet<String> = HashSet::new();
+    let library = klipp_core::assets::bundled_luts_dir();
+    let graphs = sequences.iter().flat_map(sequence_graphs).chain(options.looks.iter().map(|l| &l.node_graph));
+    for path in graphs.flat_map(node_files) {
+        if node_file_new_paths.contains_key(path) || library.is_some_and(|lib| path.starts_with(lib)) {
+            continue;
+        }
+        if !path.exists() {
+            warnings.push(format!("File a grade reads not found on disk, skipped: {}", path.display()));
+            continue;
+        }
+        if is_symlinked_leaf(path) {
+            warnings.push(format!("Refused symlinked file a grade reads (potential exfiltration): {}", path.display()));
+            continue;
+        }
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "grade_file".to_string());
+        let dst = collision_safe_name(&name, &mut used_grade);
+        items.push(CopyItem { src: path.clone(), dst_name: dst.clone(), subfolder: "grade" });
+        node_file_new_paths.insert(path.clone(), options.dest_dir.join("media").join("grade").join(&dst));
+    }
+
     CopyPlan {
         items,
         media_new_paths,
@@ -408,9 +444,66 @@ fn build_copy_plan(
         skim_new_paths,
         texture_new_paths,
         lut_new_path,
+        node_file_new_paths,
         offline_skipped,
         warnings,
         left_out,
+    }
+}
+
+/// Every node graph a sequence keeps: the timeline's, each grade group's
+/// two stages, each track's grade, and each clip's grade and its saved
+/// versions.
+fn sequence_graphs(seq: &Sequence) -> Vec<&NodeGraph> {
+    let mut out: Vec<&NodeGraph> = seq.timeline_graph.iter().collect();
+    for g in &seq.grade_groups {
+        out.extend(g.pre.iter().chain(g.post.iter()));
+    }
+    for track in &seq.tracks {
+        out.extend(track.effects.grade.iter());
+        for clip in &track.clips {
+            out.push(&clip.node_graph);
+            out.extend(clip.grade_versions.iter().map(|v| &v.node_graph));
+        }
+    }
+    out
+}
+
+/// [`sequence_graphs`], to change.
+fn sequence_graphs_mut(seq: &mut Sequence) -> Vec<&mut NodeGraph> {
+    let mut out: Vec<&mut NodeGraph> = seq.timeline_graph.iter_mut().collect();
+    for g in &mut seq.grade_groups {
+        out.extend(g.pre.iter_mut().chain(g.post.iter_mut()));
+    }
+    for track in &mut seq.tracks {
+        out.extend(track.effects.grade.iter_mut());
+        for clip in &mut track.clips {
+            out.push(&mut clip.node_graph);
+            out.extend(clip.grade_versions.iter_mut().map(|v| &mut v.node_graph));
+        }
+    }
+    out
+}
+
+/// The files a graph's nodes read: LUTs, external mattes and
+/// difference-key plates.
+fn node_files(g: &NodeGraph) -> Vec<&PathBuf> {
+    g.nodes
+        .iter()
+        .flat_map(|n| [n.params.lut_path.as_ref(), n.params.matte_image_path.as_ref(), n.params.difference_key.as_ref().and_then(|d| d.plate_path.as_ref())])
+        .flatten()
+        .collect()
+}
+
+/// Point every file `g`'s nodes read at its copy, where it has one.
+fn remap_node_files(g: &mut NodeGraph, new_paths: &HashMap<PathBuf, PathBuf>) {
+    for n in &mut g.nodes {
+        let p = &mut n.params;
+        for path in [p.lut_path.as_mut(), p.matte_image_path.as_mut(), p.difference_key.as_mut().and_then(|d| d.plate_path.as_mut())].into_iter().flatten() {
+            if let Some(new) = new_paths.get(path) {
+                *path = new.clone();
+            }
+        }
     }
 }
 
@@ -514,6 +607,9 @@ fn remap_media_pool(original: &MediaPool, plan: &CopyPlan) -> MediaPool {
 fn remap_sequences(original: &[Sequence], plan: &CopyPlan) -> Vec<Sequence> {
     let mut out = original.to_vec();
     for seq in &mut out {
+        for g in sequence_graphs_mut(seq) {
+            remap_node_files(g, &plan.node_file_new_paths);
+        }
         for track in &mut seq.tracks {
             for clip in &mut track.clips {
                 if let ClipKind::Title(td) = &mut clip.kind {
@@ -631,6 +727,15 @@ pub fn consolidate_project(
         None,
         None,
     ) {
+        let _ = std::fs::remove_dir_all(&options.dest_dir);
+        return Err(ConsolidateError::SaveFailed(e));
+    }
+    // The Looks, reading their files where they were copied to.
+    let mut looks = options.looks.clone();
+    for look in &mut looks {
+        remap_node_files(&mut look.node_graph, &plan.node_file_new_paths);
+    }
+    if let Err(e) = crate::save::save_looks(&options.dest_dir, &looks) {
         let _ = std::fs::remove_dir_all(&options.dest_dir);
         return Err(ConsolidateError::SaveFailed(e));
     }
@@ -932,6 +1037,7 @@ mod tests {
                 include_proxies: false,
                 include_skims: false,
                 mode: ConsolidateMode::Collect,
+                looks: Vec::new(),
             },
             None,
         )
@@ -960,6 +1066,7 @@ mod tests {
                 include_proxies: false,
                 include_skims: false,
                 mode: ConsolidateMode::Collect,
+                looks: Vec::new(),
             },
             None,
         )
