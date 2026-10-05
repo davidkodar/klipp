@@ -189,6 +189,7 @@ fn show_bin_media_video(
         param_modifiers: HashMap::new(),
         speed: 1.0,
         speed_keyframes: Vec::new(),
+        keep_pitch: false,
         source_rotation: 0,
         enabled: true,
         solo: false,
@@ -3586,6 +3587,14 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                         }
                     }
                 });
+                // A retimed clip's sound at its own pitch (#925).
+                let mut keep = clip.keep_pitch;
+                if ui.add_enabled(clip.speed > 0.0, egui::Checkbox::new(&mut keep, "Keep pitch"))
+                    .on_hover_text("The sound plays at its own pitch, longer or shorter. Off, its pitch moves with the speed, as tape's does.")
+                    .changed()
+                {
+                    cmds.push(AppCommand::SetClipKeepPitch { clip_id, keep_pitch: keep });
+                }
             });
     });
 }

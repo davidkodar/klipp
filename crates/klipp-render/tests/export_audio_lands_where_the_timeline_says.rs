@@ -198,7 +198,7 @@ fn a_wav_is_heard_and_lands_at_its_in_point() {
 fn a_retimed_clip_is_heard_at_its_speed_both_ways() {
     let Some(path) = ramp() else { return };
     let read = |speed: f64, (source_in, source_out): (f64, f64)| {
-        let v = klipp_render::snapshot::VarispeedRead { speed, source_in, source_out, head_secs: 0.0 };
+        let v = klipp_render::snapshot::VarispeedRead { speed, source_in, source_out, head_secs: 0.0, keep_pitch: false };
         let frames = ((source_out - source_in) / speed.abs() * 24.0).round() as u64;
         let mut c = clip(path.clone(), 0, frames, v.decode_from());
         c.varispeed = Some(v);

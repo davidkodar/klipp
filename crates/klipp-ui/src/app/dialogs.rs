@@ -301,8 +301,17 @@ impl KlippApp {
                         .on_disabled_hover_text("Only a clip of a media file can play in reverse");
                     ui.checkbox(&mut self.state.speed_dialog_ripple, "Move the clips after it")
                         .on_hover_text("A clip made longer pushes what follows on its track (and its sound's) along; one made shorter pulls it up. Off, a clip that would grow into the next one is not changed.");
-                    // What a speed change does to the sound (#638).
-                    ui.label(egui::RichText::new("The sound plays at the new speed, its pitch moving with it, as tape does.").small().weak());
+                    // What a speed change does to the sound (#638, #925).
+                    let reverse = self.state.speed_dialog_reverse;
+                    ui.add_enabled(!reverse, egui::Checkbox::new(&mut self.state.speed_dialog_keep_pitch, "Keep the pitch"))
+                        .on_hover_text("The sound plays at its own pitch, longer or shorter. Off, its pitch moves with the speed, as tape's does.")
+                        .on_disabled_hover_text("A reversed clip's sound plays backward, its pitch moving with the speed");
+                    let says = if self.state.speed_dialog_keep_pitch && !reverse {
+                        "The sound plays at the new speed at its own pitch."
+                    } else {
+                        "The sound plays at the new speed, its pitch moving with it, as tape does."
+                    };
+                    ui.label(egui::RichText::new(says).small().weak());
                     ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
@@ -311,6 +320,7 @@ impl KlippApp {
                                 let mut speed = self.state.speed_dialog_value / 100.0;
                                 if self.state.speed_dialog_reverse { speed = -speed; }
                                 cmds.push(AppCommand::SetClipSpeed { clip_id, speed, ripple: self.state.speed_dialog_ripple });
+                                cmds.push(AppCommand::SetClipKeepPitch { clip_id, keep_pitch: self.state.speed_dialog_keep_pitch });
                             }
                             self.state.show_speed_dialog = false;
                         }

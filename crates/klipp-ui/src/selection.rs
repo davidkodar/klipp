@@ -26,6 +26,76 @@ pub fn clips_in(seq: &Sequence, track: Option<usize>, range: SelectRange, playhe
         .collect()
 }
 
+/// Every clip [`clips_in`] would take of the whole timeline but those
+/// already `selected` (#925).
+pub fn invert(seq: &Sequence, selected: &[ClipId], playhead: Timecode) -> Vec<ClipId> {
+    clips_in(seq, None, SelectRange::All, playhead).into_iter().filter(|id| !selected.contains(id)).collect()
+}
+
+/// Every selectable clip using a media file one of `selected` uses (#925).
+pub fn same_source(seq: &Sequence, selected: &[ClipId], playhead: Timecode) -> Vec<ClipId> {
+    let media: Vec<klipp_core::MediaId> = seq.tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| selected.contains(&c.id)).filter_map(|c| c.media_id()).collect();
+    let all = clips_in(seq, None, SelectRange::All, playhead);
+    seq.tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| all.contains(&c.id) && c.media_id().is_some_and(|m| media.contains(&m))).map(|c| c.id).collect()
+}
+
+/// Every selectable clip with colour label `colour` (#925).
+pub fn with_colour(seq: &Sequence, colour: u8, playhead: Timecode) -> Vec<ClipId> {
+    let all = clips_in(seq, None, SelectRange::All, playhead);
+    seq.tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| all.contains(&c.id) && c.colour_label == colour).map(|c| c.id).collect()
+}
+
+/// The empty stretches of a track between its clips, in order: what lies
+/// between one clip's end and the next one's start, and any explicit gap
+/// clip (#925). Before the first clip is not a gap.
+pub fn gaps(track: &klipp_timeline::Track) -> Vec<(Timecode, Timecode)> {
+    let mut clips: Vec<&klipp_timeline::Clip> = track.clips.iter().filter(|c| !matches!(c.kind, ClipKind::Gap)).collect();
+    clips.sort_by_key(|c| c.timeline_in);
+    let mut out: Vec<(Timecode, Timecode)> = clips.windows(2).filter(|w| w[1].timeline_in > w[0].timeline_out).map(|w| (w[0].timeline_out, w[1].timeline_in)).collect();
+    out.extend(track.clips.iter().filter(|c| matches!(c.kind, ClipKind::Gap)).map(|c| (c.timeline_in, c.timeline_out)));
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The gap of `track` that `at` falls in.
+pub fn gap_at(track: &klipp_timeline::Track, at: Timecode) -> Option<(Timecode, Timecode)> {
+    gaps(track).into_iter().find(|&(a, b)| a <= at && at < b)
+}
+
+/// The first gap starting after `after` on any unlocked track: its track
+/// and its span (#925).
+pub fn next_gap(seq: &Sequence, after: Timecode) -> Option<(usize, Timecode, Timecode)> {
+    seq.tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| !t.locked)
+        .flat_map(|(i, t)| gaps(t).into_iter().map(move |(a, b)| (i, a, b)))
+        .filter(|&(_, a, _)| a > after)
+        .min_by_key(|&(_, a, _)| a)
+}
+
+/// Close every gap on `track`: each clip moves left to meet the one
+/// before, explicit gap clips go, and the first clip stays where it is
+/// (#925). Returns how many gaps were closed.
+pub fn close_all_gaps(track: &mut klipp_timeline::Track) -> usize {
+    let closed = gaps(track).len();
+    track.clips.retain(|c| !matches!(c.kind, ClipKind::Gap));
+    track.sort_clips();
+    let mut cursor: Option<Timecode> = None;
+    for c in track.clips.iter_mut() {
+        if let Some(end) = cursor {
+            if c.timeline_in > end {
+                let shift = c.timeline_in - end;
+                c.timeline_in -= shift;
+                c.timeline_out -= shift;
+            }
+        }
+        cursor = Some(cursor.map_or(c.timeline_out, |e: Timecode| e.max(c.timeline_out)));
+    }
+    closed
+}
+
 /// The track a clip is on, for the commands that act on "the selected
 /// clip's track".
 pub fn track_of(seq: &Sequence, clip: ClipId) -> Option<usize> {
@@ -85,4 +155,39 @@ mod tests {
         assert_eq!(clips_in(&seq, None, SelectRange::Forward, tc(2.0)), [ids(0, &[1, 3]), ids(2, &[1])].concat());
         assert_eq!(track_of(&seq, seq.tracks[2].clips[1].id), Some(2));
     }
+
+    #[test]
+    fn invert_same_source_and_colour_select_what_they_say() {
+        let mut seq = timeline();
+        let v1 = seq.tracks[0].clips.iter().filter(|c| !matches!(c.kind, ClipKind::Gap)).map(|c| c.id).collect::<Vec<_>>();
+        let first = v1[0];
+        let inverse = invert(&seq, &[first], tc(0.0));
+        assert!(!inverse.contains(&first) && inverse.len() == 4, "the other two of V1 and both of A1; V2 is locked: {inverse:?}");
+        // The A1 clip at 3 s uses V1's first clip's file.
+        let media = seq.tracks[0].clips[0].media_id().unwrap();
+        if let klipp_timeline::ClipKind::Media { media_id } = &mut seq.tracks[2].clips[1].kind {
+            *media_id = media;
+        }
+        let same = same_source(&seq, &[first], tc(0.0));
+        assert_eq!(same, vec![first, seq.tracks[2].clips[1].id]);
+        seq.tracks[0].clips[1].colour_label = 3;
+        assert_eq!(with_colour(&seq, 3, tc(0.0)), vec![seq.tracks[0].clips[1].id]);
+    }
+
+    #[test]
+    fn gaps_are_found_selected_and_closed() {
+        let mut seq = timeline();
+        // V1: 0-2, 2-4, an explicit gap 4-5, 5-6. A1 moved to leave 3-4 empty.
+        seq.tracks[2].clips[1].timeline_in = tc(4.0);
+        seq.tracks[2].clips[1].timeline_out = tc(7.0);
+        assert_eq!(gaps(&seq.tracks[0]), vec![(tc(4.0), tc(5.0))]);
+        assert_eq!(gap_at(&seq.tracks[2], tc(3.5)), Some((tc(3.0), tc(4.0))));
+        assert_eq!(gap_at(&seq.tracks[2], tc(1.0)), None);
+        assert_eq!(next_gap(&seq, tc(0.0)), Some((2, tc(3.0), tc(4.0))), "the earliest, on A1");
+        assert_eq!(next_gap(&seq, tc(3.5)), Some((0, tc(4.0), tc(5.0))));
+        assert_eq!(close_all_gaps(&mut seq.tracks[0]), 1);
+        let ends: Vec<f64> = seq.tracks[0].clips.iter().map(|c| c.timeline_out.to_secs_f64()).collect();
+        assert_eq!(ends, vec![2.0, 4.0, 5.0], "the last clip moved up to 4-5");
+    }
 }
+

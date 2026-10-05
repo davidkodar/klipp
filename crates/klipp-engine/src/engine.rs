@@ -3981,7 +3981,7 @@ impl PlaybackEngine {
                     let source_in_secs = audio_clip.source_in.to_secs_f64();
                     let clip_dur_secs = audio_clip.duration().to_secs_f64();
                     // Read at the clip's speed, backward when reversed (#642).
-                    active.source.set_varispeed(audio_clip.speed, source_in_secs, audio_clip.source_out.to_secs_f64());
+                    active.source.set_varispeed(audio_clip.speed, source_in_secs, audio_clip.source_out.to_secs_f64(), audio_clip.keep_pitch);
 
                     // If linked to a video clip, use the video clip's audio params
                     if let Some(linked_id) = audio_clip.linked_clip_id {
@@ -4318,6 +4318,7 @@ pub(crate) fn audio_fingerprint_for_clip(clip: &klipp_timeline::Clip) -> u64 {
     let mut fp: u64 = 0;
     fp = fp.wrapping_mul(31).wrapping_add(mid.0.as_u64_pair().0);
     fp = fp.wrapping_mul(31).wrapping_add(clip.speed.to_bits());
+    fp = fp.wrapping_mul(31).wrapping_add(u64::from(clip.keep_pitch));
     fp = fp.wrapping_mul(31).wrapping_add(audio_chain_fingerprint_for(
         &clip.audio_effects,
         &clip.audio_effect_keyframes,
@@ -4629,7 +4630,7 @@ impl PlaybackEngine {
                         fade_curve_to_u32(new_clip.fade_out_curve),
                         new_clip.gain,
                     );
-                    active_src.source.set_varispeed(new_clip.speed, new_source_in, new_clip.source_out.to_secs_f64());
+                    active_src.source.set_varispeed(new_clip.speed, new_source_in, new_clip.source_out.to_secs_f64(), new_clip.keep_pitch);
                 }
             }
             set_crossfade_envelope(&seq, &self.fadeable_media, active_src, tc);

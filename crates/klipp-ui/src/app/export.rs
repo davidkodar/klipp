@@ -3017,6 +3017,32 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::ImportEdl { path } => {
+                let fps = self.state.sequence().fps;
+                match klipp_project::path_util::read_capped(path, klipp_project::path_util::MAX_INPUT_FILE_BYTES) {
+                    Ok(bytes) => {
+                        let edl = klipp_project::edl_import::parse(&String::from_utf8_lossy(&bytes), fps);
+                        let name = edl.title.clone().unwrap_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().into_owned());
+                        let pool = &self.state.media_pool;
+                        let (seq, warnings) = klipp_project::edl_import::build(&edl, &name, fps, |e| klipp_project::edl_import::match_in_pool(pool, e, fps));
+                        let clips = seq.tracks.iter().map(|t| t.clips.len()).sum::<usize>();
+                        self.state.sequences.push(seq);
+                        self.state.active_sequence_idx = self.state.sequences.len() - 1;
+                        self.state.dirty = true;
+                        self.sync_sequence_to_engine();
+                        if warnings.is_empty() {
+                            self.state.toast.show(format!("EDL imported: {clips} clip(s) in \u{201C}{name}\u{201D}"));
+                        } else {
+                            for w in &warnings {
+                                tracing::warn!("EDL import: {w}");
+                            }
+                            self.state.toast.show(format!("EDL imported: {clips} clip(s), {} warning(s), first: {}", warnings.len(), warnings[0]));
+                        }
+                    }
+                    Err(e) => self.state.toast.show(format!("Could not read the EDL: {e}")),
+                }
+                true
+            }
             AppCommand::ImportOtio { path } => {
                 let path = path.clone();
                 match klipp_project::otio_import::load_otio(&path) {

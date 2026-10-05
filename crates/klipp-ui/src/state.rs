@@ -1466,6 +1466,11 @@ pub struct AppState {
     pub speed_dialog_value: f64,
     /// Whether speed dialog reverse is checked.
     pub speed_dialog_reverse: bool,
+    /// The Speed dialog's Keep pitch box (#925).
+    pub speed_dialog_keep_pitch: bool,
+    /// The gap selected by a click on empty track space (#925): its track,
+    /// start and end. Delete closes it.
+    pub selected_gap: Option<(usize, Timecode, Timecode)>,
     /// The Speed dialog's "move the clips after it" (#639).
     pub speed_dialog_ripple: bool,
 
@@ -3841,6 +3846,8 @@ impl Default for AppState {
             show_speed_dialog: false,
             speed_dialog_value: 100.0,
             speed_dialog_reverse: false,
+            speed_dialog_keep_pitch: false,
+            selected_gap: None,
             speed_dialog_ripple: true,
             source_media_id: None,
             source_playhead: Timecode::zero(),

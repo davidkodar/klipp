@@ -707,8 +707,35 @@ mod menu_smoke_tests {
         let drawn = timeline.frame(Vec::new());
         let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
         let menu = timeline.right_click(at);
-        let lacking = missing(&menu, &["Rename Clip", "Clip Colour", "Cut", "Copy", "Paste at Playhead", "Paste Insert at Playhead", "Duplicate Clip"]);
+        let lacking = missing(&menu, &["Rename Clip", "Clip Colour", "Speed", "Make Subclip", "Select Same Source", "Cut", "Copy", "Paste at Playhead", "Paste Insert at Playhead", "Duplicate Clip"]);
         assert!(lacking.is_empty(), "the clip's menu lacks {lacking:?}; it shows {menu:?}");
+    }
+
+    /// A right-click on the cut between two clips opens the edit point's
+    /// menu (#925), not either clip's.
+    #[test]
+    fn an_edit_points_menu_has_its_items() {
+        let mut timeline = Timeline::new();
+        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let track = &mut timeline.state.sequences[0].tracks[v1];
+        let media = track.clips[0].media_id().unwrap();
+        let t = |secs: i64| RationalTime { value: 24 * secs, rate: 24 };
+        track.clips = vec![Clip::media(media, t(0), t(4), t(0), t(4)), Clip::media(media, t(4), t(600), t(4), t(600))];
+        track.clips[1].name = Some("Second".into());
+        let drawn = timeline.frame(Vec::new());
+        let second = drawn.into_iter().find(|(t, _)| t == "Second").expect("the second clip is drawn").1;
+        // Leftward from the second clip's name to its start, the cut.
+        let menu = (0..200)
+            .map(|step| second - egui::vec2(step as f32 * 2.0, 0.0))
+            .find_map(|at| {
+                let menu = timeline.right_click(at);
+                timeline.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+                menu.iter().any(|t| t == "Move Playhead Here").then_some(menu)
+            })
+            .expect("a right-click on the cut opens the edit point's menu");
+        let lacking = missing(&menu, &["Add Cross Dissolve", "Add Transition", "Move Playhead Here", "Select Clip Before", "Select Clip After", "Select Both Clips"]);
+        assert!(lacking.is_empty(), "the edit point's menu lacks {lacking:?}; it shows {menu:?}");
+        assert!(!menu.iter().any(|t| t.starts_with("Rename Clip")), "and not a clip's: {menu:?}");
     }
 
     #[test]

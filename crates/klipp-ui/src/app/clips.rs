@@ -411,6 +411,9 @@ impl KlippApp {
                 }
                 AppCommand::SelectClip(id) => {
                     let newly_selected = self.state.selected_clip != *id;
+                    if id.is_some() {
+                        self.state.selected_gap = None;
+                    }
                     self.state.selected_clip = *id;
                     if let Some(clip_id) = *id {
                         let seq = &self.state.sequences[self.state.active_sequence_idx];
@@ -845,6 +848,7 @@ impl KlippApp {
                             param_modifiers: clip.param_modifiers.clone(),
                             speed: clip.speed,
                             speed_keyframes: clip.speed_keyframes.clone(),
+                            keep_pitch: clip.keep_pitch,
                             source_rotation: clip.source_rotation,
                             enabled: clip.enabled,
                             solo: clip.solo,
@@ -1425,6 +1429,111 @@ impl KlippApp {
                 }
                 AppCommand::SelectClipsIn { track, range } => {
                     self.select_clips_in(*track, *range);
+                    true
+                }
+                // Selection by what the clips are (#925).
+                AppCommand::SelectInverse | AppCommand::SelectSameSource | AppCommand::SelectByColour { .. } => {
+                    let mut selected = self.state.selected_clips.clone();
+                    selected.extend(self.state.selected_clip);
+                    let (seq, at) = (self.state.sequence(), self.state.playhead);
+                    let ids = match cmd {
+                        AppCommand::SelectInverse => crate::selection::invert(seq, &selected, at),
+                        AppCommand::SelectSameSource => crate::selection::same_source(seq, &selected, at),
+                        AppCommand::SelectByColour { label } => crate::selection::with_colour(seq, *label, at),
+                        _ => Vec::new(),
+                    };
+                    if ids.is_empty() {
+                        self.state.toast.show("No clips to select (locked tracks are left out)");
+                    } else {
+                        self.state.selected_clip = ids.first().copied();
+                        self.state.selected_clips = ids;
+                    }
+                    true
+                }
+                AppCommand::CloseAllGaps { track_index } => {
+                    let closed = self.state.sequence_mut().tracks.get_mut(*track_index).filter(|t| !t.locked).map(crate::selection::close_all_gaps).unwrap_or(0);
+                    if closed > 0 {
+                        self.state.dirty = true;
+                        self.sync_sequence_to_engine();
+                    }
+                    self.state.toast.show(match closed {
+                        0 => "No gaps to close on that track".to_string(),
+                        1 => "Closed 1 gap".to_string(),
+                        n => format!("Closed {n} gaps"),
+                    });
+                    true
+                }
+                AppCommand::SetClipKeepPitch { clip_id, keep_pitch } => {
+                    let seq = self.state.sequence_mut();
+                    let partner = seq.all_clips().find(|c| c.id == *clip_id).and_then(|c| c.linked_clip_id);
+                    let mut changed = false;
+                    for id in std::iter::once(*clip_id).chain(partner) {
+                        if let Some((t, c)) = seq.find_clip(id) {
+                            let clip = &mut seq.tracks[t].clips[c];
+                            changed |= clip.keep_pitch != *keep_pitch;
+                            clip.keep_pitch = *keep_pitch;
+                        }
+                    }
+                    if changed {
+                        self.state.dirty = true;
+                        self.sync_sequence_to_engine();
+                    }
+                    true
+                }
+                AppCommand::GoToNextGap => {
+                    match crate::selection::next_gap(self.state.sequence(), self.state.playhead) {
+                        Some((_, at, _)) => {
+                            self.state.playhead = at;
+                            let _ = self.cmd_tx.send(AppCommand::SeekTo(at));
+                        }
+                        None => self.state.toast.show("No gap after the playhead"),
+                    }
+                    true
+                }
+                AppCommand::SyncSelectedClips { by_markers } => {
+                    let Some(anchor) = self.state.selected_clip else {
+                        self.state.toast.show("Select the clip to line the others up with");
+                        return true;
+                    };
+                    let mut selected = self.state.selected_clips.clone();
+                    selected.extend(self.state.selected_clip);
+                    let result = if *by_markers {
+                        crate::timeline_sync::by_markers(self.state.sequence(), &selected, anchor)
+                    } else {
+                        crate::timeline_sync::by_timecode(self.state.sequence(), &self.state.media_pool, &selected, anchor)
+                    };
+                    match result {
+                        Ok((moves, skipped)) => {
+                            let n = moves.len();
+                            self.send_commands(moves.into_iter().map(|(clip_id, new_timeline_in)| AppCommand::MoveClip { clip_id, new_timeline_in }).collect());
+                            let how = if *by_markers { "markers" } else { "timecode" };
+                            self.state.toast.show(match (n, skipped.first()) {
+                                (_, None) => format!("Synced {n} clip(s) by {how}"),
+                                (_, Some(why)) => format!("Synced {n} clip(s) by {how}; {} left: {why}", skipped.len()),
+                            });
+                        }
+                        Err(why) => self.state.toast.show(format!("Not synced: {why}")),
+                    }
+                    true
+                }
+                AppCommand::OpenSpeedDialog { clip_id } => {
+                    let spd = self.state.sequence().all_clips().find(|c| c.id == *clip_id).map(|c| c.speed).unwrap_or(1.0);
+                    self.state.speed_dialog_value = spd.abs() * 100.0;
+                    self.state.speed_dialog_reverse = spd < 0.0;
+                    let keep = self.state.sequence().all_clips().any(|c| c.id == *clip_id && c.keep_pitch);
+                    self.state.speed_dialog_keep_pitch = keep;
+                    self.state.show_speed_dialog = true;
+                    true
+                }
+                AppCommand::SubclipFromClip { clip_id } => {
+                    let found = self.state.sequence().find_clip(*clip_id).map(|(t, c)| {
+                        let clip = &self.state.sequence().tracks[t].clips[c];
+                        (clip.media_id(), clip.source_in, clip.source_out, clip.name.clone())
+                    });
+                    match found {
+                        Some((Some(media_id), from, to, name)) if to > from => self.make_subclip(media_id, from, to, name),
+                        _ => self.state.toast.show("A subclip is made from a media clip"),
+                    }
                     true
                 }
                 AppCommand::SelectClipsOnSelectedTrack { range } => {

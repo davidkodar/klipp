@@ -782,6 +782,8 @@ pub struct TimelinePanel {
     last_refine_request: Option<std::time::Instant>,
     /// Suppress clip context menu when keyframe diamond right-click was handled
     suppress_clip_context_menu: bool,
+    /// The edit point right-clicked, for its menu (#925).
+    context_edit_point: Option<EditPoint>,
     /// Track height resize drag: (track_index, start_y, original_height)
     resizing_track: Option<(usize, f32, f32)>,
     /// Automation lane height resize drag: (track_index, start_y, original_lane_height)
@@ -8091,6 +8093,9 @@ impl TimelinePanel {
                     if self.dragging_clip.is_none() && self.trimming_clip.is_none() {
                         state.selected_clips.clear();
                         cmds.push(AppCommand::SelectClip(None));
+                        // The gap clicked in is selected, for Delete to
+                        // close (#925).
+                        state.selected_gap = state.sequence().tracks.get(track_idx).and_then(|t| crate::selection::gap_at(t, click_tc)).map(|(s, e)| (track_idx, s, e));
                     }
                 }
             }
@@ -8134,8 +8139,16 @@ impl TimelinePanel {
         if track_response.secondary_clicked() && !self.suppress_clip_context_menu {
             // A transition first (#918): its own menu, not the clips'.
             let on_transition = pointer_pos.and_then(|pos| transition_at(state, track_idx, content_rect, track_rect, zoom, scroll, pos));
+            let on_edit = pointer_pos.filter(|_| on_transition.is_none()).and_then(|pos| edit_point_at(state, track_idx, content_rect, track_rect, zoom, scroll, pos));
+            self.context_edit_point = on_edit;
             if let Some(tid) = on_transition {
                 state.selected_transition = Some((track_idx, tid));
+                state.selected_clip = None;
+                state.selected_clips.clear();
+                cmds.push(AppCommand::SelectClip(None));
+            } else if on_edit.is_some() {
+                // An edit point's own menu, not either clip's (#925).
+                state.selected_transition = None;
                 state.selected_clip = None;
                 state.selected_clips.clear();
                 cmds.push(AppCommand::SelectClip(None));
@@ -8155,6 +8168,10 @@ impl TimelinePanel {
             ui.set_min_width(160.0);
             if let (None, Some((ti, tid))) = (state.selected_clip, state.selected_transition.filter(|(t, _)| *t == track_idx)) {
                 transition_menu(ui, state, ti, tid, cmds);
+                return;
+            }
+            if let (None, Some(edit)) = (state.selected_clip, self.context_edit_point.filter(|e| e.track_index == track_idx)) {
+                edit_point_menu(ui, state, edit, cmds);
                 return;
             }
             if let Some(clip_id) = state.selected_clip {
@@ -8182,6 +8199,37 @@ impl TimelinePanel {
                     .unwrap_or_default();
                 if ui.button("Rename Clip\u{2026}").clicked() {
                     self.renaming_clip = Some(ClipRename { clip_ids: targets.clone(), track_idx, buf: own_name, focused: false });
+                    ui.close_menu();
+                }
+                // Speed, a subclip of what the clip uses, and its source's
+                // other clips (#925).
+                if ui.button("Speed\u{2026}").on_hover_text("The clip's speed, and reverse").clicked() {
+                    cmds.push(AppCommand::SelectClip(Some(clip_id)));
+                    cmds.push(AppCommand::OpenSpeedDialog { clip_id });
+                    ui.close_menu();
+                }
+                if ui.button("Make Subclip").on_hover_text("A subclip in the media pool over what this clip uses of its file").clicked() {
+                    cmds.push(AppCommand::SubclipFromClip { clip_id });
+                    ui.close_menu();
+                }
+                // Several clips selected: line them up with this one (#925).
+                if state.selected_clips.len() > 1 && state.selected_clips.contains(&clip_id) {
+                    ui.menu_button("Sync Selected Clips", |ui| {
+                        if ui.button("By Timecode").on_hover_text("The same moment of the shoot under each, from the files' start timecodes").clicked() {
+                            cmds.push(AppCommand::SelectClip(Some(clip_id)));
+                            cmds.push(AppCommand::SyncSelectedClips { by_markers: false });
+                            ui.close_menu();
+                        }
+                        if ui.button("By Markers").on_hover_text("Each clip's first clip marker where this clip's is").clicked() {
+                            cmds.push(AppCommand::SelectClip(Some(clip_id)));
+                            cmds.push(AppCommand::SyncSelectedClips { by_markers: true });
+                            ui.close_menu();
+                        }
+                    });
+                }
+                if ui.button("Select Same Source").clicked() {
+                    cmds.push(AppCommand::SelectClip(Some(clip_id)));
+                    cmds.push(AppCommand::SelectSameSource);
                     ui.close_menu();
                 }
                 ui.menu_button("Clip Colour", |ui| {
@@ -9163,6 +9211,21 @@ impl TimelinePanel {
                                 });
                                 ui.close_menu();
                             }
+                        }
+                        // Every gap on the track at once, and pasting here
+                        // (#925): more than Close Gap on empty space.
+                        if !crate::selection::gaps(track).is_empty() && ui.button("Close All Gaps on Track").clicked() {
+                            cmds.push(AppCommand::CloseAllGaps { track_index: track_idx });
+                            ui.close_menu();
+                        }
+                        if ui.button("Paste Here").clicked() {
+                            cmds.push(AppCommand::SeekTo(tc));
+                            cmds.push(AppCommand::PasteClip);
+                            ui.close_menu();
+                        }
+                        if ui.button("Go to Next Gap").clicked() {
+                            cmds.push(AppCommand::GoToNextGap);
+                            ui.close_menu();
                         }
                     }
                 }
@@ -11063,6 +11126,16 @@ impl TimelinePanel {
         track_height: f32,
     ) {
         let tt = theme();
+        // The selected gap (#925), while it is still there.
+        if let Some((start, end)) = state.selected_gap.filter(|(t, ..)| *t == track_idx).map(|(_, s, e)| (s, e)) {
+            let still = state.sequence().tracks.get(track_idx).and_then(|t| crate::selection::gap_at(t, start)) == Some((start, end));
+            if still {
+                let x = |t: Timecode| content_rect.left() + (t.to_secs_f64() * zoom as f64) as f32 - scroll;
+                let rect = egui::Rect::from_min_max(egui::pos2(x(start), track_rect.top() + 2.0), egui::pos2(x(end), track_rect.bottom() - 2.0));
+                painter.rect_filled(rect, 2.0, tt.accent.linear_multiply(0.15));
+                painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.5_f32, tt.accent));
+            }
+        }
         if let Some(track) = state.sequence().tracks.get(track_idx) {
             for transition in &track.transitions {
                 // Find clip_b (the incoming clip) to determine the transition position
@@ -16207,6 +16280,76 @@ fn transition_at(state: &AppState, track_idx: usize, content_rect: &egui::Rect, 
         let rect = egui::Rect::from_x_y_ranges((boundary_x - half)..=(boundary_x + half), track_rect.y_range());
         rect.contains(pos).then_some(transition.id)
     })
+}
+
+/// A cut between two clips that touch on a track (#925).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct EditPoint {
+    track_index: usize,
+    before: ClipId,
+    after: ClipId,
+    at: Timecode,
+}
+
+/// The edit point within a few pixels of `pos`, where no transition is.
+#[allow(clippy::too_many_arguments)]
+fn edit_point_at(state: &AppState, track_idx: usize, content_rect: &egui::Rect, track_rect: &egui::Rect, zoom: f32, scroll: f32, pos: egui::Pos2) -> Option<EditPoint> {
+    if !track_rect.y_range().contains(pos.y) {
+        return None;
+    }
+    let track = state.sequence().tracks.get(track_idx)?;
+    track.clips.windows(2).find_map(|pair| {
+        let (a, b) = (&pair[0], &pair[1]);
+        if a.timeline_out != b.timeline_in || track.transitions.iter().any(|t| t.clip_a_id == a.id && t.clip_b_id == b.id) {
+            return None;
+        }
+        let x = content_rect.left() + a.timeline_out.to_secs_f64() as f32 * zoom - scroll;
+        ((pos.x - x).abs() <= 5.0).then_some(EditPoint { track_index: track_idx, before: a.id, after: b.id, at: a.timeline_out })
+    })
+}
+
+/// An edit point's right-click menu (#925): a transition on it, the
+/// playhead to it, and the clips either side selected.
+fn edit_point_menu(ui: &mut egui::Ui, state: &mut AppState, edit: EditPoint, cmds: &mut Vec<AppCommand>) {
+    let track_index = edit.track_index;
+    let add = |kind_id: u8| AppCommand::AddTransition { track_index, clip_a_id: edit.before, clip_b_id: edit.after, kind_id, duration_frames: state.default_transition_frames };
+    let sound = state.sequence().tracks.get(track_index).is_some_and(|t| t.kind == TrackKind::Audio);
+    if let Some(spec) = klipp_core::TRANSITION_SPECS.iter().find(|s| s.string_key == "CrossDissolve") {
+        if ui.button(if sound { "Add Crossfade" } else { "Add Cross Dissolve" }).clicked() {
+            cmds.push(add(spec.kind_id));
+            ui.close_menu();
+        }
+    }
+    if !sound {
+        ui.menu_button("Add Transition", |ui| {
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                for &(kind_id, label) in klipp_engine::transition::all_transition_kinds() {
+                    if ui.button(label).clicked() {
+                        cmds.push(add(kind_id));
+                        ui.close_menu();
+                    }
+                }
+            });
+        });
+    }
+    ui.separator();
+    if ui.button("Move Playhead Here").clicked() {
+        cmds.push(AppCommand::SeekTo(edit.at));
+        ui.close_menu();
+    }
+    if ui.button("Select Clip Before").clicked() {
+        cmds.push(AppCommand::SelectClip(Some(edit.before)));
+        ui.close_menu();
+    }
+    if ui.button("Select Clip After").clicked() {
+        cmds.push(AppCommand::SelectClip(Some(edit.after)));
+        ui.close_menu();
+    }
+    if ui.button("Select Both Clips").clicked() {
+        state.selected_clips = vec![edit.before, edit.after];
+        cmds.push(AppCommand::SelectClip(Some(edit.after)));
+        ui.close_menu();
+    }
 }
 
 /// A transition's right-click menu (#918): its kind, its length, where it
