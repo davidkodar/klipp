@@ -306,6 +306,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
                     let mut row_counter: usize = 0;
                     for st in &sub_tracks {
                         render_track_header(ui, st, playhead, fps, state, &mut cmds);
+                        render_style_form(ui, st, state, &mut cmds);
 
                         let collapsed = state.subtitle_editor.subtitle_track_collapsed.contains(&st.track_id);
                         if !collapsed {
@@ -471,6 +472,21 @@ fn render_track_header(
                 {
                     cmds.push(AppCommand::RemoveTrack { track_id: st.track_id });
                 }
+                // The track's caption style (#70): opens the form under
+                // the header.
+                let styling = state.subtitle_editor.style_draft.as_ref().is_some_and(|(id, _)| *id == st.track_id);
+                if ui
+                    .small_button(if styling { "Style \u{25B4}" } else { "Style\u{2026}" })
+                    .on_hover_text("The look of the captions on this track: new ones take it, and it can be put on all of them")
+                    .clicked()
+                {
+                    state.subtitle_editor.style_draft = if styling {
+                        None
+                    } else {
+                        let current = state.sequence().tracks.iter().find(|t| t.id == st.track_id).and_then(|t| t.caption_style.clone());
+                        Some((st.track_id, current.unwrap_or_default()))
+                    };
+                }
                 // Add row at playhead, on THIS track.
                 if ui
                     .small_button("+ Row")
@@ -491,6 +507,66 @@ fn render_track_header(
             });
         });
     });
+}
+
+/// The caption style form under a track's header (#70): the draft is
+/// the editor's own until it is saved.
+fn render_style_form(ui: &mut egui::Ui, st: &SubTrack, state: &mut AppState, cmds: &mut Vec<AppCommand>) {
+    let has_style = state.sequence().tracks.iter().find(|t| t.id == st.track_id).is_some_and(|t| t.caption_style.is_some());
+    let Some((id, draft)) = state.subtitle_editor.style_draft.as_mut() else { return };
+    if *id != st.track_id {
+        return;
+    }
+    let track_id = *id;
+    let mut close = false;
+    ui.group(|ui| {
+        egui::Grid::new(("caption_style", track_id)).num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+            ui.label("Size");
+            ui.add(egui::DragValue::new(&mut draft.size).range(12.0..=160.0).suffix(" px"));
+            ui.end_row();
+            ui.label("Font");
+            ui.add(egui::TextEdit::singleline(&mut draft.font).hint_text("default").desired_width(140.0));
+            ui.end_row();
+            ui.label("Colour");
+            ui.horizontal(|ui| {
+                ui.color_edit_button_srgba_unmultiplied(&mut draft.color);
+                ui.checkbox(&mut draft.bold, "Bold");
+            });
+            ui.end_row();
+            ui.label("Outline");
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut draft.outline).range(0.0..=12.0).speed(0.1).suffix(" px"));
+                ui.color_edit_button_srgba_unmultiplied(&mut draft.outline_color);
+            });
+            ui.end_row();
+            ui.label("Backing");
+            ui.add(egui::Slider::new(&mut draft.backing, 0.0..=1.0).custom_formatter(|v, _| if v <= 0.0 { "none".into() } else { format!("{:.0}%", v * 100.0) }));
+            ui.end_row();
+            ui.label("Shadow");
+            ui.checkbox(&mut draft.shadow, "Soft drop shadow");
+            ui.end_row();
+            ui.label("Height");
+            ui.add(egui::Slider::new(&mut draft.y, 0.05..=0.95).custom_formatter(|v, _| format!("{:.0}% down", v * 100.0)));
+            ui.end_row();
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Save").on_hover_text("New captions on this track take this look").clicked() {
+                cmds.push(AppCommand::SaveCaptionStyle { track_id, apply_to_all: false });
+            }
+            if ui.button("Save and Apply to All").on_hover_text("Also restyle every caption already on this track, as one undo step").clicked() {
+                cmds.push(AppCommand::SaveCaptionStyle { track_id, apply_to_all: true });
+            }
+            if has_style && ui.button("Default Look").on_hover_text("New captions take the default look again; the captions there keep theirs").clicked() {
+                cmds.push(AppCommand::ClearCaptionStyle { track_id });
+            }
+            if ui.button("Cancel").clicked() {
+                close = true;
+            }
+        });
+    });
+    if close {
+        state.subtitle_editor.style_draft = None;
+    }
 }
 
 fn render_row(

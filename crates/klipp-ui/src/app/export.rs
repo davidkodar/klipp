@@ -3122,6 +3122,10 @@ impl KlippApp {
                 if let Some(o) = title_data.objects.first_mut() {
                     o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.88 };
                 }
+                // The track's caption style, when it has one (#70).
+                if let Some(style) = &seq.tracks[track_idx].caption_style {
+                    title_data = klipp_document::ops::apply_caption_style(&title_data, style);
+                }
 
                 let new_clip = klipp_timeline::Clip {
                     id: klipp_core::ClipId::new(),
@@ -3138,6 +3142,35 @@ impl KlippApp {
                 self.state.selected_clip = Some(new_clip_id);
                 self.state.dirty = true;
                 self.sync_sequence_to_engine();
+                true
+            }
+            AppCommand::SaveCaptionStyle { track_id, apply_to_all } => {
+                // The draft the subtitle editor holds for this track (#70);
+                // saving it, and restyling the captions with it, is one
+                // undo step (tracks_undo).
+                let Some((_, style)) = self.state.subtitle_editor.style_draft.take().filter(|(id, _)| id == track_id) else { return true };
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                if let Some(track) = seq.tracks.iter_mut().find(|t| t.id == *track_id) {
+                    if *apply_to_all {
+                        for clip in &mut track.clips {
+                            if let klipp_timeline::ClipKind::Title(td) = &mut clip.kind {
+                                *td = klipp_document::ops::apply_caption_style(td, &style);
+                            }
+                        }
+                    }
+                    track.caption_style = Some(style);
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                }
+                true
+            }
+            AppCommand::ClearCaptionStyle { track_id } => {
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                if let Some(track) = seq.tracks.iter_mut().find(|t| t.id == *track_id) {
+                    track.caption_style = None;
+                    self.state.dirty = true;
+                }
+                self.state.subtitle_editor.style_draft = None;
                 true
             }
             AppCommand::ExportSubtitles { path } => {

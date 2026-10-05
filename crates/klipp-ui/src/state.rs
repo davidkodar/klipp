@@ -2824,6 +2824,8 @@ pub struct SubtitleEditorState {
     pub track_name_buf: String,
     /// The "Captions from Transcript" form, when open.
     pub captions_form: Option<CaptionsForm>,
+    /// The caption style being edited for a track, before it is saved (#70).
+    pub style_draft: Option<(klipp_core::TrackId, klipp_timeline::CaptionStyle)>,
 }
 
 /// How to make captions from the transcript: the settings of

@@ -196,6 +196,9 @@ pub struct TrackJson {
     /// Source patching (#915).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub source_patch: bool,
+    /// A subtitle track's caption style (#70).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption_style: Option<klipp_timeline::CaptionStyle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_height: Option<f32>,
     /// The track's colour label, 0 for none (#922).
@@ -1178,6 +1181,7 @@ mod tests {
                 sync_lock: false,
                 targeted: true,
                 source_patch: false,
+                caption_style: None,
                 custom_height: None,
                 colour_label: 0,
                 channel_waveforms: false,
@@ -1227,6 +1231,7 @@ mod tests {
             sync_lock: false,
             targeted: true,
             source_patch: false,
+            caption_style: None,
             custom_height: None,
             colour_label: 0,
             channel_waveforms: false,
@@ -1263,6 +1268,7 @@ mod tests {
             sync_lock: false,
             targeted: true,
             source_patch: false,
+            caption_style: None,
             custom_height: None,
             colour_label: 0,
             channel_waveforms: false,
