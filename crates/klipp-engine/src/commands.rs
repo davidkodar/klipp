@@ -28,11 +28,11 @@ macro_rules! engine_commands {
 }
 
 engine_commands!(
-    BeginNodeParamEdit, BeginScrub, CleanOrphanedCaches, ClearGlobalLut, ClearRenderCache,
+    BeginNodeParamEdit, BeginScrub, CleanOrphanedCaches, ClearGlobalLut, ClearRenderCache, CancelRenderRange,
     EndNodeParamEdit, EndScrub, LoadGlobalLut, LoadMediaFile, MediaDecodeChanged, Pause,
     PauseSource, Play, PlaySource, Quit, RenderNodeThumbsFromSource,
     RenderScopesForFrame, RenderScopeSnapshot, ResetEngine, ResetLufsMeter,
-    SampleNodeInput, SeekRelative, SeekSource, SeekTo, SequenceUpdated,
+    RenderRange, SampleNodeInput, SeekRelative, SeekSource, SeekTo, SequenceUpdated,
     SetActiveScopeModes, SetAntiClickFade, SetClipChannelConfig, SetClipGain,
     SetClipPan, SetClipVolume, SetGlobalLutEnabled, SetGlobalLutOpacity, SetHdrMonitor,
     SetHdrReferenceOutput, SetInspectorMattePreviewTarget, SetMeasureOnlyClip, SetLoopPlayback,

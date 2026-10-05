@@ -683,9 +683,36 @@ impl ToolbarPanel {
                 ui.close_menu();
             }
             ui.separator();
+            // Render In to Out, or the whole timeline without them, and
+            // Render Selection (#924): graded clips rendered into the cache
+            // in the background while paused; its progress and Cancel here.
+            let (seq_in, seq_out) = (state.sequence().in_point, state.sequence().out_point);
+            if let Some((done, total)) = state.render_range {
+                ui.horizontal(|ui| {
+                    ui.label(format!("Rendering\u{2026} {done} of {total} frames"));
+                    if ui.small_button("Cancel").clicked() {
+                        cmds.push(AppCommand::CancelRenderRange);
+                        ui.close_menu();
+                    }
+                });
+            } else {
+                let label = if seq_in.is_some() || seq_out.is_some() { "Render In to Out" } else { "Render Timeline" };
+                if ui.button(label).on_hover_text("Render graded clips into the render cache, so they play from it").clicked() {
+                    let from = seq_in.unwrap_or(klipp_core::Timecode { value: 0, rate: state.fps.rate() });
+                    let to = seq_out.unwrap_or_else(|| state.sequence_duration());
+                    cmds.push(AppCommand::RenderRange { from, to });
+                    ui.close_menu();
+                }
+                let span = selection_span(state);
+                if ui.add_enabled(span.is_some(), egui::Button::new("Render Selection")).on_disabled_hover_text("Select the clips to render").clicked() {
+                    if let Some((from, to)) = span {
+                        cmds.push(AppCommand::RenderRange { from, to });
+                    }
+                    ui.close_menu();
+                }
+            }
             // The render cache for In to Out, or the whole timeline without
             // them (#924): rendered frames dropped, to render again.
-            let (seq_in, seq_out) = (state.sequence().in_point, state.sequence().out_point);
             let label = if seq_in.is_some() || seq_out.is_some() { "Clear Render Cache In to Out" } else { "Clear Render Cache" };
             if ui.button(label).on_hover_text("Drop the rendered frames there; graded clips render again as they play").clicked() {
                 let from = seq_in.unwrap_or(klipp_core::Timecode { value: 0, rate: state.fps.rate() });
@@ -1304,6 +1331,16 @@ fn draw_export_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) 
     ], c, egui::Stroke::NONE));
 }
 
+
+/// The span of the selected clips, from the first one's start to the
+/// last one's end, for Render Selection (#924).
+fn selection_span(state: &AppState) -> Option<(klipp_core::Timecode, klipp_core::Timecode)> {
+    let selected = |id: &klipp_core::ClipId| state.selected_clip == Some(*id) || state.selected_clips.contains(id);
+    let clips: Vec<&klipp_timeline::Clip> = state.sequence().tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| selected(&c.id)).collect();
+    let from = clips.iter().map(|c| c.timeline_in).min()?;
+    let to = clips.iter().map(|c| c.timeline_out).max()?;
+    (to > from).then_some((from, to))
+}
 
 #[cfg(test)]
 mod shortcut_label_tests {

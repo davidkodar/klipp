@@ -84,7 +84,7 @@ fn format_time_label(time_secs: f64, major_interval_secs: f64) -> String {
     }
 }
 
-/// The render status strip along the ruler's foot (#924): where graded
+/// The render status strip along the ruler's top (#924): where graded
 /// clips are in the render cache and ready to play, and where they still
 /// need rendering. A span to render is drawn over a cached one, so a
 /// moment shows ready only when every graded clip there is.
@@ -100,7 +100,8 @@ pub fn draw_render_status(
     if spans.is_empty() || ticks_per_sec <= 0.0 {
         return;
     }
-    let strip = Rect::from_min_max(Pos2::new(ruler_rect.min.x, ruler_rect.max.y - 3.0), ruler_rect.max);
+    // Along the top: the foot is where the marker flags point (#946 review).
+    let strip = Rect::from_min_max(ruler_rect.min, Pos2::new(ruler_rect.max.x, ruler_rect.min.y + 3.0));
     let x_of = |ticks: i64| ruler_rect.min.x + (ticks as f64 / ticks_per_sec) as f32 * pps - scroll_offset_px;
     for cached in [true, false] {
         let colour = if cached { theme.marker_success } else { theme.marker_error };

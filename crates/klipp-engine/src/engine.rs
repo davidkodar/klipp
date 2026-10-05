@@ -10,6 +10,7 @@ use klipp_compose::eval::eval_with_modifiers;
 #[cfg(test)]
 use klipp_compose::eval::{resolve_clip_transform, ResolvedTransform};
 
+mod render_job;
 mod streams;
 mod view;
 
@@ -1564,6 +1565,8 @@ pub struct PlaybackEngine {
     skim_consumer: crate::audio_output::SkimConsumer,
     // Loop playback — cycle between in/out points or whole sequence
     loop_enabled: bool,
+    /// Render In to Out under way (#924).
+    render_job: Option<render_job::RenderJob>,
     /// When the render status strip was last worked out (#924): idle,
     /// it is refreshed once a second so edits show.
     render_status_at: std::time::Instant,
@@ -2205,6 +2208,7 @@ impl PlaybackEngine {
             use_proxies: true,
             skim_consumer,
             loop_enabled: false,
+            render_job: None,
             render_status_at: std::time::Instant::now(),
             scrub_audio_enabled: true,
             is_scrubbing: false,
@@ -2511,6 +2515,10 @@ impl PlaybackEngine {
                     self.scope_render_owed = false;
                     self.dbg_regrade_count += 1;
                     self.regrade_cached_frame();
+                } else if !had_commands && self.state != PlaybackState::Playing && self.render_job.is_some() {
+                    // Render In to Out (#924): a frame a tick while
+                    // paused, ahead of the nearby pre-render.
+                    self.step_render_range();
                 } else if !had_commands && self.last_command_at.elapsed() >= PRERENDER_AFTER_IDLE {
                     // Engine is genuinely idle — pre-render nearby frames
                     // into cache. Skip prerender when we just applied param
@@ -3042,6 +3050,12 @@ impl PlaybackEngine {
                     self.render_cache_hot.clear();
                 }
                 debug!("Render cache enabled={enabled}");
+            }
+            AppCommand::RenderRange { from, to } => {
+                self.start_render_range(from, to);
+            }
+            AppCommand::CancelRenderRange => {
+                self.cancel_render_range();
             }
             AppCommand::ClearRenderCache { from, to } => {
                 self.clear_render_cache_range(from, to);
