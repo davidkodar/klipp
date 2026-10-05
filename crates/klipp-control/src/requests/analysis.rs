@@ -502,57 +502,70 @@ pub(crate) fn respond(
             let object = object.map(|o| o.to_lowercase());
             let framing = framing.map(|f| f.to_lowercase());
             let motion = motion.map(|m| m.to_lowercase());
+            // Whether a stretch passes the search, from what is known of it.
+            let passes = |len: f64, fr_framing: Option<&str>, people: Option<u32>, objects: &[String], motion_class: Option<&str>, words: usize| {
+                !min_secs.is_some_and(|s| len < s)
+                    && framing.as_ref().is_none_or(|want| fr_framing == Some(want.as_str()))
+                    && min_people.is_none_or(|n| people.is_some_and(|p| p >= n))
+                    && object.as_ref().is_none_or(|o| objects.iter().any(|x| x.to_lowercase() == *o))
+                    && motion.as_ref().is_none_or(|want| motion_class == Some(want.as_str()))
+                    && with_speech.is_none_or(|want| (words > 0) == want)
+            };
             'items: for m in pool.all().filter(|m| m.kind == klipp_media::MediaItemKind::File) {
                 let report = klipp_analysis::report::MediaAnalysis::load(&m.path);
                 let Some(shots) = report.shots.as_ref() else { continue };
                 for (i, shot) in shots.shots.iter().enumerate() {
                     let (a, b) = (shot.start_secs, shot.end_secs);
-                    if min_secs.is_some_and(|s| b - a < s) {
-                        continue;
-                    }
                     let fr = report.framing.as_ref().and_then(|f| f.shots.iter().find(|s| (s.start_secs - a).abs() < 0.05));
-                    if let Some(want) = &framing {
-                        if !fr.is_some_and(|f| f.framing == *want) {
-                            continue;
-                        }
-                    }
-                    if let Some(n) = min_people {
-                        if !fr.is_some_and(|f| f.people >= n) {
-                            continue;
-                        }
-                    }
-                    if let Some(o) = &object {
-                        if !fr.is_some_and(|f| f.objects.iter().any(|x| x.to_lowercase() == *o)) {
-                            continue;
-                        }
-                    }
+                    let objects: Vec<String> = fr.map(|f| f.objects.clone()).unwrap_or_default();
+                    let words_in = |x: f64, y: f64| report.transcript.as_ref().map(|t| t.words_within(x, y).len()).unwrap_or(0);
                     let motion_class = report.motion.as_ref().and_then(|mo| mo.class_within(a, b));
-                    if let Some(want) = &motion {
-                        if motion_class != Some(want.as_str()) {
-                            continue;
+                    let words = words_in(a, b);
+                    if passes(b - a, fr.map(|f| f.framing.as_str()), fr.map(|f| f.people), &objects, motion_class, words) {
+                        hits.push(json!({
+                            "media_id": m.id.0.to_string(),
+                            "filename": m.filename,
+                            "shot": i + 1,
+                            "start_secs": a,
+                            "end_secs": b,
+                            "framing": fr.map(|f| f.framing.clone()),
+                            "people": fr.map(|f| f.people),
+                            "position": fr.map(|f| f.position.clone()),
+                            "objects": fr.map(|f| f.objects.clone()),
+                            "motion": motion_class,
+                            "words": words,
+                        }));
+                        if hits.len() >= max {
+                            break 'items;
                         }
                     }
-                    let words = report.transcript.as_ref().map(|t| t.words_within(a, b).len()).unwrap_or(0);
-                    if let Some(want) = with_speech {
-                        if (words > 0) != want {
+                    // A long take's moments, each searched on its own
+                    // movement and framing (#502); the shot's objects stand
+                    // for its moments'.
+                    let samples = report.framing.as_ref().map(|f| f.samples.as_slice()).unwrap_or(&[]);
+                    for (k, mo) in klipp_analysis::moments::moments(a, b, report.motion.as_ref(), samples).iter().enumerate() {
+                        let words = words_in(mo.start_secs, mo.end_secs);
+                        if !passes(mo.end_secs - mo.start_secs, Some(mo.framing), Some(mo.people), &objects, mo.motion, words) {
                             continue;
                         }
-                    }
-                    hits.push(json!({
-                        "media_id": m.id.0.to_string(),
-                        "filename": m.filename,
-                        "shot": i + 1,
-                        "start_secs": a,
-                        "end_secs": b,
-                        "framing": fr.map(|f| f.framing.clone()),
-                        "people": fr.map(|f| f.people),
-                        "position": fr.map(|f| f.position.clone()),
-                        "objects": fr.map(|f| f.objects.clone()),
-                        "motion": motion_class,
-                        "words": words,
-                    }));
-                    if hits.len() >= max {
-                        break 'items;
+                        hits.push(json!({
+                            "media_id": m.id.0.to_string(),
+                            "filename": m.filename,
+                            "shot": i + 1,
+                            "moment": k + 1,
+                            "start_secs": mo.start_secs,
+                            "end_secs": mo.end_secs,
+                            "framing": mo.framing,
+                            "people": mo.people,
+                            "position": mo.position,
+                            "objects": objects,
+                            "motion": mo.motion,
+                            "steady": mo.steady(),
+                            "words": words,
+                        }));
+                        if hits.len() >= max {
+                            break 'items;
+                        }
                     }
                 }
             }
