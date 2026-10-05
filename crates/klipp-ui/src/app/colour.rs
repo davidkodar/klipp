@@ -5,6 +5,39 @@
 use super::*;
 
 impl KlippApp {
+    /// Keep [`Self::graph_before_input`] for this frame: the selected
+    /// clip's graph taken on a press, key or text that could begin a
+    /// grade gesture, held while the pointer is down, dropped after.
+    pub(super) fn keep_graph_before_input(&mut self, ctx: &egui::Context) {
+        let (began, held) = ctx.input(|i| {
+            let began = i.events.iter().any(|e| {
+                matches!(
+                    e,
+                    egui::Event::PointerButton { pressed: true, .. }
+                        | egui::Event::Key { pressed: true, .. }
+                        | egui::Event::Text(_)
+                        | egui::Event::Paste(_)
+                )
+            });
+            // Released counts as held: a click lands its value on the
+            // frame it is let go.
+            (began, i.pointer.any_down() || i.pointer.any_released())
+        });
+        match keep_before(began, held, self.node_param_edit_snapshot.is_some()) {
+            Keep::Take => {
+                self.graph_before_input = self.state.selected_clip.and_then(|id| {
+                    self.state.sequences[self.state.active_sequence_idx]
+                        .tracks
+                        .iter()
+                        .find_map(|t| t.find_clip(id))
+                        .map(|clip| (id, clip.node_graph.clone()))
+                });
+            }
+            Keep::Hold => {}
+            Keep::Drop => self.graph_before_input = None,
+        }
+    }
+
     pub(super) fn handle_color_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         // Grade groups themselves are edits to the sequence, not to a
         // graph: never through a stand-in.
@@ -1343,12 +1376,17 @@ impl KlippApp {
                 // gesture is already in progress for this clip we keep the
                 // original snapshot.
                 if self.node_param_edit_snapshot.is_none() {
-                    for track in &self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip(*clip_id) {
-                            self.node_param_edit_snapshot = Some((*clip_id, clip.node_graph.clone()));
-                            break;
-                        }
-                    }
+                    // As the graph was before the input that began the
+                    // gesture: the panel has already written its first
+                    // value into the live one.
+                    let before = self.graph_before_input.take().filter(|(id, _)| id == clip_id);
+                    self.node_param_edit_snapshot = before.or_else(|| {
+                        self.state.sequences[self.state.active_sequence_idx]
+                            .tracks
+                            .iter()
+                            .find_map(|t| t.find_clip(*clip_id))
+                            .map(|clip| (*clip_id, clip.node_graph.clone()))
+                    });
                 }
                 // Auto-capture a "Before" reference still the first time the
                 // user touches grade params on a saved project. Cheap gate
@@ -2750,6 +2788,46 @@ pub(super) fn colour_seek_on_select(
         return None;
     }
     Some(remembered.filter(|&t| inside(t)).unwrap_or(clip.timeline_in))
+}
+
+/// What to do with the graph kept from before the input this frame.
+#[derive(Debug, PartialEq)]
+enum Keep {
+    /// Take it afresh: the input may begin a gesture.
+    Take,
+    /// Keep the one taken at the press, the pointer still held.
+    Hold,
+    Drop,
+}
+
+/// A new press, key or text takes the graph, unless a gesture is under
+/// way and its snapshot already taken; a pointer held, or let go this
+/// frame, keeps it, for a drag that begins frames after its press and a
+/// click that lands on its release; otherwise it goes.
+fn keep_before(began: bool, held: bool, in_gesture: bool) -> Keep {
+    if began && !in_gesture {
+        Keep::Take
+    } else if held {
+        Keep::Hold
+    } else {
+        Keep::Drop
+    }
+}
+
+#[cfg(test)]
+mod keep_before_tests {
+    use super::{keep_before, Keep};
+
+    /// A press takes the graph from before it; a drag holds it; a let go
+    /// drops it; a gesture under way keeps its own snapshot.
+    #[test]
+    fn the_graph_before_a_press_is_kept_through_the_drag() {
+        assert_eq!(keep_before(true, true, false), Keep::Take, "a press");
+        assert_eq!(keep_before(false, true, false), Keep::Hold, "dragging");
+        assert_eq!(keep_before(false, false, false), Keep::Drop, "let go");
+        assert_eq!(keep_before(true, false, false), Keep::Take, "a key or typed text");
+        assert_eq!(keep_before(true, true, true), Keep::Hold, "a press inside a gesture keeps the gesture's");
+    }
 }
 
 #[cfg(test)]
