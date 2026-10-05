@@ -763,6 +763,15 @@ fn prune_stale_looks(looks_dir: &Path, kept_ids: &[String]) {
             None => continue,
         };
         if !kept_ids.iter().any(|id| id == stem) {
+            // A Look this build could not read was never loaded, so it is
+            // not among the kept ids: that is not a reason to delete it
+            // (#993). Only what this build reads in full is pruned.
+            let readable = crate::path_util::read_to_string_capped(&path, crate::path_util::MAX_INPUT_FILE_BYTES)
+                .is_ok_and(|t| serde_json::from_str::<klipp_timeline::Look>(&t).is_ok() && klipp_nodes::json_check::reads_in_full(&t));
+            if !readable {
+                warn!("Keeping Look {:?}: this Klipp cannot read it in full, so it is not removed", path);
+                continue;
+            }
             if let Err(e) = std::fs::remove_file(&path) {
                 warn!("Failed to remove stale look {:?}: {e}", path);
             }

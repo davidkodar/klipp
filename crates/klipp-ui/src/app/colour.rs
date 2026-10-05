@@ -2361,7 +2361,7 @@ impl KlippApp {
 
     /// Write all current grade stills (PNG sidecars + index) to the
     /// project directory. No-op if the project hasn't been saved yet.
-    pub(super) fn persist_grade_stills(&self) {
+    pub(super) fn persist_grade_stills(&mut self) {
         let Some(project_dir) = self.writable_project_dir() else {
             return;
         };
@@ -2381,6 +2381,9 @@ impl KlippApp {
             .collect();
         if let Err(e) = klipp_project::save_grade_stills(&project_dir, &stills) {
             tracing::warn!("Failed to persist grade stills: {e}");
+            // Said, not only logged: a newer Klipp's stills are kept by
+            // not saving these over them (#993).
+            self.state.toast.show(e);
         }
     }
 

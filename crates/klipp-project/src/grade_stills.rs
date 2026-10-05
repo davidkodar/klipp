@@ -159,6 +159,20 @@ pub fn save_grade_stills(
     project_dir: &Path,
     stills: &[GradeStillData],
 ) -> Result<(), String> {
+    // An index this build cannot read in full was not loaded, so the
+    // stills in memory are not all the project's stills: writing them
+    // would delete the rest (#993). It is left as it is instead.
+    let index_path = stills_index_path(project_dir);
+    if index_path.exists() {
+        let readable = crate::path_util::read_to_string_capped(&index_path, crate::path_util::MAX_INPUT_FILE_BYTES)
+            .is_ok_and(|t| serde_json::from_str::<Vec<GradeStillMeta>>(&t).is_ok() && klipp_nodes::json_check::reads_in_full(&t));
+        if !readable {
+            return Err(format!(
+                "The grade stills in {} were saved by a newer Klipp or cannot be read, so they are left as they are and not overwritten",
+                index_path.display()
+            ));
+        }
+    }
     let stills_dir = stills_dir(project_dir);
     std::fs::create_dir_all(&stills_dir)
         .map_err(|e| format!("Failed to create stills directory: {e}"))?;
@@ -216,6 +230,10 @@ pub fn load_grade_stills(project_dir: &Path) -> Vec<GradeStillData> {
             return Vec::new();
         }
     };
+    if !klipp_nodes::json_check::reads_in_full(&index_str) {
+        warn!("Leaving the grade stills as they are: they were saved by a newer Klipp (#993)");
+        return Vec::new();
+    }
     let mut metas: Vec<GradeStillMeta> = match serde_json::from_str(&index_str) {
         Ok(v) => v,
         Err(e) => {

@@ -83,7 +83,15 @@ pub fn load_tool_presets(tool: &ToolScope) -> Vec<ToolPreset> {
         .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
         .filter_map(|e| {
             let text = std::fs::read_to_string(e.path()).ok()?;
-            serde_json::from_str(&text).ok()
+            // A preset holding settings this build would drop is not
+            // offered: applied, they would be lost (#993). Left as it is.
+            let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+            let lost = value.get("params").map(klipp_nodes::json_check::params_losses).unwrap_or_default();
+            if !lost.is_empty() {
+                tracing::warn!("Leaving tool preset {:?} as it is: saved by a newer Klipp ({})", e.path(), lost.join(", "));
+                return None;
+            }
+            serde_json::from_value(value).ok()
         })
         .collect();
     presets.sort_by(|a, b| a.name.cmp(&b.name));
@@ -326,6 +334,12 @@ fn load_user_presets() -> Vec<(String, NodeGraph)> {
 
 fn load_preset_file(path: &Path) -> Option<(String, NodeGraph)> {
     let text = std::fs::read_to_string(path).ok()?;
+    // A preset holding a grade node this build would lose is not offered:
+    // applied, the node would be a passthrough (#993). Left as it is.
+    if !klipp_nodes::json_check::reads_in_full(&text) {
+        tracing::warn!("Leaving colour preset {:?} as it is: saved by a newer Klipp", path);
+        return None;
+    }
     let graph: NodeGraph = serde_json::from_str(&text).ok()?;
     let name = path.file_stem()?.to_string_lossy().to_string();
     Some((name, graph))
