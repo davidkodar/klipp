@@ -167,6 +167,10 @@ pub struct GraphExecutor {
     /// engine sets the value behave exactly like the pre-Phase-E
     /// pipeline.
     working_colorspace: klipp_core::WorkingColorspace,
+    /// The buffer's size against the sequence's: 0.5 for a half-size
+    /// preview. Grade settings measured in pixels are authored at the
+    /// sequence's size and scaled by it (#1012).
+    render_scale: f32,
     /// The encoding the grade's controls act in (#467), from the
     /// project's choice and the working space: set with it.
     grade_encoding: klipp_color::grade_model::Encoding,
@@ -370,7 +374,8 @@ enum GradeStage {
     /// Keep the node's input for a closing `Mix`.
     Keep,
     Grade(klipp_effects::cpu_grade::ColorGrade),
-    Clarity(f32, [f32; 3]),
+    /// Amount, luma weights, blur radius in the buffer's pixels.
+    Clarity(f32, [f32; 3], u32),
     Vibrance(f32, [f32; 3]),
     WheelSatBri([f32; 8], [f32; 3]),
     Curves { lut: Box<[f32; 1024]>, preserve_luma: bool, mix: f32, luma: [f32; 3] },
@@ -396,7 +401,7 @@ impl GradeStage {
                 g.lift, g.gamma, g.gain, g.offset, g.log_wheels, g.wheel_shape,
                 g.hue, g.global_mix,
             ),
-            GradeStage::Clarity(a, _) => gpu.apply_clarity_chain(in_is_a, width, height, *a),
+            GradeStage::Clarity(a, _, r) => gpu.apply_clarity_chain(in_is_a, width, height, *a, *r),
             GradeStage::Vibrance(a, _) => gpu.apply_vibrance_chain(in_is_a, width, height, *a),
             GradeStage::WheelSatBri(v, _) => {
                 gpu.apply_wheel_sat_bri_chain(in_is_a, width, height, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7])
@@ -417,7 +422,7 @@ impl GradeStage {
         match self {
             GradeStage::Keep => *kept = Some(frame.to_vec()),
             GradeStage::Grade(g) => cg::color_grade(frame, g),
-            GradeStage::Clarity(a, l) => cg::clarity(frame, width, height, *a, *l),
+            GradeStage::Clarity(a, l, r) => cg::clarity(frame, width, height, *a, *r, *l),
             GradeStage::Vibrance(a, l) => cg::vibrance(frame, *a, *l),
             GradeStage::WheelSatBri(v, l) => cg::wheel_sat_bri(frame, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], *l),
             GradeStage::Curves { lut, preserve_luma, mix, luma } => cg::rgb_curves(frame, lut, *preserve_luma, *mix, *luma),
@@ -577,6 +582,7 @@ impl GraphExecutor {
             last_chain_final_slot: None,
             compound_depth: 0,
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+            render_scale: 1.0,
             grade_encoding: klipp_color::grade_model::Encoding::Bt1886,
             project_grade_encoding: klipp_core::grade_encoding(),
             lut_tetrahedral: true,
@@ -635,6 +641,7 @@ impl GraphExecutor {
             last_chain_final_slot: None,
             compound_depth: 0,
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+            render_scale: 1.0,
             grade_encoding: klipp_color::grade_model::Encoding::Bt1886,
             project_grade_encoding: klipp_core::grade_encoding(),
             lut_tetrahedral: true,
@@ -683,6 +690,39 @@ impl GraphExecutor {
     /// tetrahedral.
     pub fn set_lut_tetrahedral(&mut self, tetrahedral: bool) {
         self.lut_tetrahedral = tetrahedral;
+    }
+
+    /// Grade a buffer `scale` times the sequence's size: the settings
+    /// measured in pixels (a qualifier's shrink/grow and blur, the
+    /// denoise radius, the grain's size, the clarity blur) cover the same
+    /// share of the picture at any render size. 1 until set.
+    pub fn set_render_scale(&mut self, scale: f32) {
+        self.render_scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    }
+
+    /// A length authored in the sequence's pixels, in the buffer's.
+    fn px(&self, v: f32) -> f32 {
+        v * self.render_scale
+    }
+
+    /// A whole number of the sequence's pixels, in the buffer's: at least
+    /// one wherever it was any, as `at_render_scale` keeps effect radii.
+    fn whole_px(&self, v: f32) -> f32 {
+        if v == 0.0 {
+            0.0
+        } else {
+            v.signum() * (v.abs() * self.render_scale).round().max(1.0)
+        }
+    }
+
+    /// The clarity blur's radius in the buffer's pixels.
+    fn clarity_radius(&self) -> u32 {
+        self.whole_px(klipp_effects::cpu_grade::CLARITY_RADIUS) as u32
+    }
+
+    /// The denoise kernel's cap in the buffer's pixels.
+    fn denoise_max_kernel(&self) -> u32 {
+        self.whole_px(klipp_effects::cpu_grade::DENOISE_MAX_KERNEL) as u32
     }
 
     pub fn set_working_colorspace(&mut self, ws: klipp_core::WorkingColorspace) {
@@ -2492,16 +2532,16 @@ fn lut_node_bracket(
 
 /// The grain `size` both the shader and its CPU twin quantise pixel
 /// coordinates by, floored away from zero — at zero each divides by it.
-fn grain_size(grain: &klipp_core::FilmGrainSettings) -> f32 {
-    grain.size.max(0.001)
+fn grain_size(grain: &klipp_core::FilmGrainSettings, render_scale: f32) -> f32 {
+    (grain.size * render_scale).max(0.001)
 }
 
 /// The bilateral filter's spatial and colour sigmas, floored away from
 /// zero. Both sides divide by twice the square of each, so a zero
 /// radius made the spatial term 0/0 and turned every weight into a NaN
 /// — a black frame on the GPU, from a control the UI lets you reach.
-fn denoise_sigmas(luma: f32, chroma: f32, radius: u32) -> (f32, f32) {
-    ((radius as f32).max(0.001), ((luma + chroma) * 0.5).max(0.001))
+fn denoise_sigmas(luma: f32, chroma: f32, radius_px: f32) -> (f32, f32) {
+    (radius_px.max(0.001), ((luma + chroma) * 0.5).max(0.001))
 }
 
 /// Does this node's dispatch take `grade_mix_src` over for itself?
@@ -2974,8 +3014,9 @@ impl GraphExecutor {
                     // (!in_is_a), writes back to in_is_a. apply_clarity_chain
                     // uses buf_c as scratch internally (does not affect the
                     // a/b parity) — it's a net 1-flip op like color_grade.
+                    let radius = self.clarity_radius();
                     self.gpu.as_mut().unwrap()
-                        .apply_clarity_chain(!in_is_a, width, height, clarity);
+                        .apply_clarity_chain(!in_is_a, width, height, clarity, radius);
                     return Some(2);
                 }
                 if con != 0.0 {
@@ -2987,8 +3028,9 @@ impl GraphExecutor {
                         0.0, 1.0,
                     );
                 } else {
+                    let radius = self.clarity_radius();
                     self.gpu.as_mut().unwrap()
-                        .apply_clarity_chain(in_is_a, width, height, clarity);
+                        .apply_clarity_chain(in_is_a, width, height, clarity, radius);
                 }
                 Some(1)
             }
@@ -3130,7 +3172,7 @@ impl GraphExecutor {
             NodeKind::FilmGrain => {
                 let grain = params.grain.as_ref()?;
                 if !grain.enabled || grain.amount <= 0.001 { return None; }
-                let size = grain_size(grain);
+                let size = grain_size(grain, self.render_scale);
                 self.gpu.as_mut().unwrap().apply_grain_chain(
                     in_is_a, width, height,
                     grain.amount, size,
@@ -3171,10 +3213,11 @@ impl GraphExecutor {
                 let chroma = params.denoise_chroma.unwrap_or(0.0);
                 let radius = params.denoise_radius.unwrap_or(3);
                 if luma <= 0.0 && chroma <= 0.0 { return None; }
-                let (spatial_sigma, color_sigma) = denoise_sigmas(luma, chroma, radius);
+                let (spatial_sigma, color_sigma) = denoise_sigmas(luma, chroma, self.px(radius as f32));
+                    let max_kernel = self.denoise_max_kernel();
                 self.gpu.as_mut().unwrap().apply_denoise_chain(
                     in_is_a, width, height,
-                    spatial_sigma, color_sigma,
+                    spatial_sigma, color_sigma, max_kernel,
                 );
                 Some(1)
             }
@@ -3236,7 +3279,7 @@ impl GraphExecutor {
         let luma = klipp_color::linear::luma_coefs(ws);
         let clarity = params.clarity.unwrap_or(0.0);
         if clarity != 0.0 {
-            later.push(GradeStage::Clarity(clarity, luma));
+            later.push(GradeStage::Clarity(clarity, luma, self.clarity_radius()));
         }
         let vib = params.vibrance.unwrap_or(0.0);
         if vib != 0.0 {
@@ -3483,10 +3526,11 @@ impl GraphExecutor {
                         primary_input.to_vec()
                     };
                     if clarity != 0.0 {
+                        let radius = self.clarity_radius();
                         if let Some(gpu) = &mut self.gpu {
-                            gpu.apply_clarity_gpu(&frame, width, height, clarity)
+                            gpu.apply_clarity_gpu(&frame, width, height, clarity, radius)
                         } else {
-                            run_stages_cpu(&[GradeStage::Clarity(clarity, klipp_color::linear::luma_coefs(self.working_colorspace))], &frame, width, height)
+                            run_stages_cpu(&[GradeStage::Clarity(clarity, klipp_color::linear::luma_coefs(self.working_colorspace), radius)], &frame, width, height)
                         }
                     } else {
                         frame
@@ -3686,7 +3730,7 @@ impl GraphExecutor {
                     if qual.refines() {
                         klipp_effects::cpu_grade::matte_finesse(
                             &mut frame, width, height,
-                            qual.clean_black, qual.clean_white, qual.shrink_grow, qual.blur,
+                            qual.clean_black, qual.clean_white, self.whole_px(qual.shrink_grow), self.whole_px(qual.blur),
                         );
                     }
                     frame
@@ -4296,7 +4340,7 @@ impl GraphExecutor {
                         // `size` to give the grain particles, so a zero
                         // divides by it. Clamped once, before the fork,
                         // so the two sides are handed the same number.
-                        let size = grain_size(grain);
+                        let size = grain_size(grain, self.render_scale);
                         let coefs =
                             klipp_color::linear::luma_coefs(self.working_colorspace);
                         if let Some(gpu) = &mut self.gpu {
@@ -4379,17 +4423,18 @@ impl GraphExecutor {
                     // sigma. A zero radius made the spatial term 0/0 and
                     // every weight a NaN, so the floor goes here, before
                     // the fork, rather than in either twin.
-                    let (spatial_sigma, color_sigma) = denoise_sigmas(luma, chroma, radius);
+                    let (spatial_sigma, color_sigma) = denoise_sigmas(luma, chroma, self.px(radius as f32));
+                    let max_kernel = self.denoise_max_kernel();
                     let coefs = klipp_color::linear::luma_coefs(self.working_colorspace);
                     if let Some(gpu) = &mut self.gpu {
                         gpu.apply_denoise_gpu(
                             primary_input, width, height,
-                            spatial_sigma, color_sigma,
+                            spatial_sigma, color_sigma, max_kernel,
                         )
                     } else {
                         klipp_effects::cpu_grade::bilateral_denoise(
                             primary_input, width, height,
-                            spatial_sigma, color_sigma, coefs,
+                            spatial_sigma, color_sigma, max_kernel, coefs,
                         )
                     }
                 } else {

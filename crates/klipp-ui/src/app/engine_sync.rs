@@ -137,6 +137,11 @@ impl KlippApp {
                         }
 
                         let clip_time = (self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
+                        // A shrunk preview, graded with its pixel-sized
+                        // settings shrunk with it, so it looks like the
+                        // full frame (#1012).
+                        let seq_h = self.state.sequence().resolution.height.max(1) as f32;
+                        self.scope_executor.set_render_scale(small_h as f32 / seq_h);
                         match self.scope_executor.execute(
                             &small, graph, small_w, small_h,
                             clip_time, 0, None, None,

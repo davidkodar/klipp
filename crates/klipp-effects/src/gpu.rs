@@ -3341,7 +3341,7 @@ impl GpuEffectsPipeline {
 
 
     /// Apply clarity (midtone unsharp mask) on GPU using 3-pass approach.
-    pub fn apply_clarity_gpu(&mut self, linear_rgba: &[f32], width: u32, height: u32, amount: f32) -> Vec<f32> {
+    pub fn apply_clarity_gpu(&mut self, linear_rgba: &[f32], width: u32, height: u32, amount: f32, radius: u32) -> Vec<f32> {
         if self.is_device_lost() {
             return linear_rgba.to_vec();
         }
@@ -3363,7 +3363,7 @@ impl GpuEffectsPipeline {
 
         self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        let radius = 20u32;
+        let radius = radius.max(1);
 
         // Pass 1: horizontal blur (input RGBA → buf_b luma)
         self.write_params(&GpuClarityBlurParams { width, height, radius, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad1: 0 });
@@ -3406,6 +3406,7 @@ impl GpuEffectsPipeline {
         height: u32,
         spatial_sigma: f32,
         color_sigma: f32,
+        max_kernel: u32,
     ) -> Vec<f32> {
         if self.is_device_lost() {
             return linear_rgba.to_vec();
@@ -3423,7 +3424,7 @@ impl GpuEffectsPipeline {
 
         self.write_params(&DenoiseParams {
             width, height, spatial_sigma, color_sigma,
-            luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
+            luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], max_kernel,
         });
         self.dispatch(&self.denoise_pipeline, buf_a, buf_b, workgroups);
 
@@ -4309,6 +4310,7 @@ impl GpuEffectsPipeline {
         width: u32,
         height: u32,
         amount: f32,
+        radius: u32,
     ) {
         if self.is_device_lost() {
             return;
@@ -4329,7 +4331,7 @@ impl GpuEffectsPipeline {
             self.rebuild_chain_bind_group_pools();
         }
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        let radius = 20u32;
+        let radius = radius.max(1);
 
         // Clarity is 3 passes (blur_h, blur_v, apply). Two distinct
         // params structs (`GpuClarityBlurParams` for the blurs,
@@ -4842,12 +4844,13 @@ impl GpuEffectsPipeline {
         height: u32,
         spatial_sigma: f32,
         color_sigma: f32,
+        max_kernel: u32,
     ) {
         if self.is_device_lost() {
             return;
         }
         let slot = self.next_params_slot();
-        self.write_chain_params(slot, &DenoiseParams { width, height, spatial_sigma, color_sigma, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0 });
+        self.write_chain_params(slot, &DenoiseParams { width, height, spatial_sigma, color_sigma, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], max_kernel });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let bind_group = self.chain_bg_3binding[slot * 4 + Self::chain_cfg_3b_ab(in_is_a)]
             .as_ref()
@@ -6440,7 +6443,10 @@ impl GpuEffectsPipeline {
                         width, height,
                         spatial_sigma: *spatial_sigma,
                         color_sigma: *color_sigma,
-                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
+                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2],
+                        // The effect's sigma is scaled with the render
+                        // size; its kernel keeps the cap it always had.
+                        max_kernel: 10,
                     });
                     // Multi-pass: ping-pong between buffers
                     for _iter in 0..iters {
@@ -8561,7 +8567,9 @@ struct DenoiseParams {
     luma_yr: f32,
     luma_yg: f32,
     luma_yb: f32,
-    _pad_luma: u32,
+    /// The largest kernel radius, in pixels of the buffer: 10 at the
+    /// sequence's size, scaled with the render size for the grade node.
+    max_kernel: u32,
 }
 // 4 fields x 4 bytes = 16 bytes
 
@@ -14747,7 +14755,7 @@ struct Params {
     height: u32,
     spatial_sigma: f32,
     color_sigma: f32,
-    luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad_luma: u32,
+    luma_yr: f32, luma_yg: f32, luma_yb: f32, max_kernel: u32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -14768,7 +14776,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let center = unpack(input[idx]);
     let center_luma = dot(vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb), center.xyz);
 
-    let kernel_size = min(i32(ceil(params.spatial_sigma * 2.0)), 10);
+    let kernel_size = min(i32(ceil(params.spatial_sigma * 2.0)), i32(params.max_kernel));
     let spatial_denom = 2.0 * params.spatial_sigma * params.spatial_sigma;
     let color_denom = 2.0 * params.color_sigma * params.color_sigma;
 
