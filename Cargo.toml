@@ -34,6 +34,7 @@ members = [
     "crates/klipp-hdr-out",
     "crates/klipp-mcp",
     "crates/klipp-audio-search",
+    "crates/klipp-graph-format",
 ]
 resolver = "2"
 
@@ -222,6 +223,7 @@ ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "
 klipp-core    = { path = "crates/klipp-core" }
 klipp-project = { path = "crates/klipp-project" }
 klipp-timeline = { path = "crates/klipp-timeline" }
+klipp-graph-format = { path = "crates/klipp-graph-format" }
 klipp-transitions = { path = "crates/klipp-transitions" }
 klipp-validation  = { path = "crates/klipp-validation" }
 klipp-media   = { path = "crates/klipp-media" }

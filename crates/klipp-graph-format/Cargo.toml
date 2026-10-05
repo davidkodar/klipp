@@ -1,0 +1,17 @@
+[package]
+name = "klipp-graph-format"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+# Only to prove today's grade parameters survive inside a payload.
+klipp-nodes = { workspace = true }
+
+[lints]
+workspace = true
