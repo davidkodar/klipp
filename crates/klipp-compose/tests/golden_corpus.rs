@@ -687,6 +687,51 @@ fn camera_cases() -> Vec<Case> {
     vec![Case::new("camera/shutter over a moving camera, effects around the transform", seq, f)]
 }
 
+/// A moving card that is a shape title with its own motion blur (#1025,
+/// after #1021): plain, with a crop before its transform, under a moving
+/// camera, and drawn after a precomposition in the same frame.
+fn title_blur_cases() -> Vec<Case> {
+    let card = |crop: bool| {
+        let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None };
+        let mut xf = klipp_timeline::default_text_transform();
+        xf.size = klipp_timeline::TitlePosition { x: 0.25, y: 0.4 };
+        let id = td.add_object(
+            klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([240, 200, 60, 255]), stroke: None, fit: None }),
+            xf,
+        );
+        let blur = klipp_timeline::MotionBlur { enabled: true, shutter_angle: 180.0, shutter_angle_keyframes: vec![], samples: 8 };
+        td.object_mut(id).unwrap().fx = Some(klipp_timeline::LayerFx { motion_blur: Some(blur), ..Default::default() });
+        let mut c = Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(4.0)) };
+        c.builtin_effects = if crop {
+            vec![BuiltinEffect::Crop { left: 0.0, right: 0.3, top: 0.0, bottom: 0.0, feather: 0.0 }, transform(1.0, 0.0, 0.0)]
+        } else {
+            vec![transform(1.0, 0.0, 0.0)]
+        };
+        c.transform_pos_x_keyframes = vec![key(0.0, -20.0), key(2.0, 20.0)];
+        c
+    };
+    let mut out = Vec::new();
+    for (name, crop, camera) in [("plain", false, false), ("a crop before the transform", true, false), ("under a moving camera", false, true)] {
+        let base = media(0.0, 4.0);
+        let f = Frames::default().with(&base, 90);
+        let mut seq = sequence(vec![track("T1", TrackKind::Text, vec![card(crop)]), track("V1", TrackKind::Video, vec![base])]);
+        if camera {
+            seq.camera.x_keyframes = vec![key(0.0, 0.45), key(2.0, 0.55)];
+        }
+        out.push(Case::new(format!("title blur/{name}"), seq, f));
+    }
+    // Drawn after a precomposition: the scene's render must leave the
+    // card's shutter alone.
+    let scene_clip = media(0.0, 4.0);
+    let scene = sequence(vec![track("V1", TrackKind::Video, vec![scene_clip.clone()])]);
+    let pre = Clip::precomposition(scene.id, tc(0.0), tc(4.0));
+    let f = Frames::default().with(&scene_clip, 90);
+    let mut case = Case::new("title blur/after a precomposition", sequence(vec![track("T1", TrackKind::Text, vec![card(false)]), track("V1", TrackKind::Video, vec![pre])]), f);
+    case.project.push(scene);
+    out.push(case);
+    out
+}
+
 /// Grade groups whose stages work in another space than the project, and
 /// a track grade on a clip in a group (#1025).
 fn group_cases() -> Vec<Case> {
@@ -721,6 +766,7 @@ fn corpus() -> Vec<Case> {
     all.extend(nesting_cases());
     all.extend(camera_cases());
     all.extend(group_cases());
+    all.extend(title_blur_cases());
     all
 }
 
