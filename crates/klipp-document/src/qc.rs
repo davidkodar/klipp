@@ -387,6 +387,15 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             if let Some(face) = faces.iter().find(|f| crate::ops::boxes_overlap(tb, **f, 0.04)) {
                 let zone = crate::ops::clear_zone((tb[0] + tb[2] / 2.0, tb[1] + tb[3] / 2.0), (tb[2], tb[3]), &faces).and_then(|(_, z)| z);
                 add(Severity::Error, "title_over_face", Some(a), format!("{} sits over a face (at {:.0}% across, {:.0}% down) while it is up from {a:.2} to {b:.2} s", clip_label(pool, c), (face[0] + face[2] / 2.0) * 100.0, (face[1] + face[3] / 2.0) * 100.0), &match zone { Some(z) => format!("Move it to the {z}, which is clear of every face for its span (a title op with x and y, or leave x and y out and it is placed clear)"), None => "No zone is clear of a face for its whole span: hold it where the shot has no face, or make it a card".to_string() });
+            } else {
+                // Across someone, if not their face: a walker in a
+                // handheld shot moves under words placed at one frame (#510).
+                let people = crate::ops::people_under(seq, pool, transcripts, a, b);
+                if people.iter().any(|p| crate::ops::boxes_overlap(tb, *p, 0.02)) {
+                    let all: Vec<[f32; 4]> = people.iter().chain(&faces).copied().collect();
+                    let zone = crate::ops::clear_zone((tb[0] + tb[2] / 2.0, tb[1] + tb[3] / 2.0), (tb[2], tb[3]), &all).and_then(|(_, z)| z);
+                    add(Severity::Warning, "title_over_person", Some(a), format!("{} crosses a person in the shot while it is up from {a:.2} to {b:.2} s", clip_label(pool, c)), &match zone { Some(z) => format!("Move it to the {z}, which stays clear of them for its whole span"), None => "No zone stays clear of them for its whole span; a backing or a card keeps it readable".to_string() });
+                }
             }
         }
         let low = td.objects.iter().any(|o| o.visible && o.transform.center.y > 0.72);
@@ -716,6 +725,36 @@ mod tests {
         seq.tracks.insert(0, text);
         let r = check(&seq, &pool, &Screen(screen));
         let f: Vec<_> = r.findings.iter().filter(|f| f.rule == "title_over_face").collect();
+        assert_eq!(f.len(), 1, "{}", r.text());
+        assert!(f[0].hint.contains("Move it to the"), "{}", f[0].hint);
+        assert!((f[0].at_secs.unwrap() - 1.0).abs() < 1e-6);
+    }
+
+    /// #510: a title across someone's body, not their face, is a warning
+    /// with a zone that stays clear of them; one clear of them is not.
+    #[test]
+    fn a_title_across_a_person_is_a_warning() {
+        struct Walker(klipp_core::MediaId);
+        impl Transcripts for Walker {
+            fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+            fn people(&self, item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
+                if item.id == self.0 { vec![(41.0, [0.4, 0.35, 0.2, 0.6]), (43.0, [0.45, 0.35, 0.2, 0.6])] } else { vec![] }
+            }
+        }
+        let (mut seq, pool, media) = screencast(&[(0.0, 10.0, 40.0)]);
+        let title = |text: &str, y: f32| {
+            let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: text.into(), font_size: 60.0, ..Default::default() });
+            td.objects[0].transform.center = klipp_timeline::TitlePosition { x: 0.5, y };
+            td
+        };
+        let mut text = Track::new("T", TrackKind::Text);
+        text.clips.push(Clip { id: klipp_core::ClipId::new(), kind: ClipKind::Title(title("Across", 0.6)), source_in: tc(0.0), source_out: tc(3.0), ..Clip::gap(tc(1.0), tc(4.0)) });
+        text.clips.push(Clip { id: klipp_core::ClipId::new(), kind: ClipKind::Title(title("Above", 0.12)), source_in: tc(0.0), source_out: tc(3.0), ..Clip::gap(tc(5.0), tc(8.0)) });
+        seq.tracks.insert(0, text);
+        let r = check(&seq, &pool, &Walker(media));
+        let f: Vec<_> = r.findings.iter().filter(|f| f.rule == "title_over_person").collect();
         assert_eq!(f.len(), 1, "{}", r.text());
         assert!(f[0].hint.contains("Move it to the"), "{}", f[0].hint);
         assert!((f[0].at_secs.unwrap() - 1.0).abs() < 1e-6);

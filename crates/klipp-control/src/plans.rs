@@ -161,6 +161,10 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
         klipp_analysis::report::MediaAnalysis::load(&item.path).screentext.map(|st| st.sensitive.into_iter().map(|s| klipp_document::ops::SensitiveText { kind: s.kind, masked: s.masked, start_secs: s.start_secs, end_secs: s.end_secs, x: s.x, y: s.y, w: s.w, h: s.h }).collect()).unwrap_or_default()
     }
 
+    fn people(&self, item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
+        klipp_analysis::report::MediaAnalysis::load(&item.path).framing.map(|f| f.samples.iter().flat_map(|s| s.people.iter().map(move |p| (s.secs, [p.0, p.1, p.2, p.3]))).collect()).unwrap_or_default()
+    }
+
     fn faces(&self, item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
         klipp_analysis::report::MediaAnalysis::load(&item.path).framing.map(|f| f.samples.iter().flat_map(|s| face_or_head_regions(&f, s).into_iter().map(move |b| (s.secs, b))).collect()).unwrap_or_default()
     }

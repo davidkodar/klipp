@@ -1604,6 +1604,13 @@ pub trait Transcripts {
     fn faces(&self, _item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
         Vec::new()
     }
+    /// Where the people are in `item`, whole, per sampled frame: (file
+    /// seconds, the body as left, top, width, height). What a title
+    /// would rather not cross either (#510): someone walking through a
+    /// handheld shot sweeps a band no title should sit in.
+    fn people(&self, _item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
+        Vec::new()
+    }
     /// How much `item`'s picture moves between two of its times, as the
     /// mean frame-to-frame difference (the motion analyser's YDIF; 4 and
     /// up is a moving camera); `None` when it was not analysed.
@@ -1621,6 +1628,18 @@ pub trait Transcripts {
 /// The faces under a stretch of the timeline: every picture clip that
 /// overlaps `from..to`, its file's faces inside the stretch it shows.
 pub fn faces_under(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, from: f64, to: f64) -> Vec<[f32; 4]> {
+    boxes_under(seq, pool, from, to, |item| transcripts.faces(item))
+}
+
+/// The people under a stretch of the timeline, whole bodies, as
+/// [`faces_under`] finds faces (#510).
+pub fn people_under(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, from: f64, to: f64) -> Vec<[f32; 4]> {
+    boxes_under(seq, pool, from, to, |item| transcripts.people(item))
+}
+
+/// Every box `get` finds in the files of the picture clips over
+/// `from..to`, inside the stretch each shows.
+fn boxes_under(seq: &Sequence, pool: &MediaPool, from: f64, to: f64, get: impl Fn(&klipp_media::MediaItem) -> Vec<(f64, [f32; 4])>) -> Vec<[f32; 4]> {
     let mut out = Vec::new();
     for t in seq.tracks.iter().filter(|t| t.kind == TrackKind::Video && t.visible) {
         for c in t.clips.iter().filter(|c| c.enabled && secs(c.timeline_in) < to && secs(c.timeline_out) > from) {
@@ -1630,7 +1649,7 @@ pub fn faces_under(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcrip
             // A reversed clip's file times fall as the timeline's rise.
             let (a, b) = (file_at(lo), file_at(hi));
             let (f_lo, f_hi) = (a.min(b) - 0.75, a.max(b) + 0.75);
-            out.extend(transcripts.faces(item).into_iter().filter(|(s, _)| *s >= f_lo && *s <= f_hi).map(|(_, b)| b));
+            out.extend(get(item).into_iter().filter(|(s, _)| *s >= f_lo && *s <= f_hi).map(|(_, b)| b));
         }
     }
     out
@@ -2469,8 +2488,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let full_frame_color = full_frame.clone().or_else(|| look.full_frame.filter(|f| *f).map(|_| look.fill.clone().unwrap_or_else(|| "#101418".into())));
             let backing_color = backing_color.clone().or_else(|| if look.full_frame.unwrap_or(false) { None } else { look.fill.clone() });
             let keep_out = if *over_faces { Vec::new() } else { faces_under(seq, pool, transcripts, crate::ops::secs(at), crate::ops::secs(at) + *secs) };
+            let rather_not = if *over_faces { Vec::new() } else { people_under(seq, pool, transcripts, crate::ops::secs(at), crate::ops::secs(at) + *secs) };
             let args = TitleArgs {
                 keep_out,
+                rather_not,
                 text, secs: *secs, track: track.as_ref(), x: x.or(look.x), y: y.or(look.y), size: size.or(look.size),
                 color: color.as_deref().or(look.color.as_deref()), font: font.clone().or(look.font.clone()), bold: bold.or(look.bold), align: align.as_deref().or(look.align.as_deref()),
                 backing: backing.or(if backing_color.is_some() { None } else { look.backing }), backing_color: backing_color.as_deref(), full_frame: full_frame_color.as_deref(),
@@ -6921,6 +6942,9 @@ struct TitleArgs<'a> {
     shadow: Option<klipp_timeline::TitleShadow>,
     /// Faces under the title's span: the words keep clear of them.
     keep_out: Vec<[f32; 4]>,
+    /// The people under it, whole (#510): kept clear of too when some
+    /// zone allows, else only their faces are.
+    rather_not: Vec<[f32; 4]>,
 }
 
 /// Build a styled, animated title from scratch and place it on a text
@@ -7050,7 +7074,8 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
     // the reply says so. A full-frame card has nothing behind it to keep
     // clear of.
     let mut moved: Option<&'static str> = None;
-    if !a.keep_out.is_empty() && a.full_frame.is_none() {
+    let mut kept_from = "a face";
+    if (!a.keep_out.is_empty() || !a.rather_not.is_empty()) && a.full_frame.is_none() {
         let font = td.font_size();
         let td_align = td.primary_text().map(|tb| tb.alignment);
         if let Some(obj) = td.objects.get_mut(0) {
@@ -7059,7 +7084,17 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
             // anchors, and back after the move.
             let shift = match td_align { Some(TextAlignment::Left) => size.0 / 2.0, Some(TextAlignment::Right) => -size.0 / 2.0, _ => 0.0 };
             let center = (obj.transform.center.x + shift, obj.transform.center.y);
-            match clear_zone(center, size, &a.keep_out) {
+            // Clear of the people as they move through the span when a
+            // zone is; else clear of their faces at least.
+            let bodies: Vec<[f32; 4]> = a.keep_out.iter().chain(&a.rather_not).copied().collect();
+            let placed = match clear_zone(center, size, &bodies).filter(|_| !a.rather_not.is_empty()) {
+                Some(p) => {
+                    kept_from = "the people in the shot";
+                    Some(p)
+                }
+                None => clear_zone(center, size, &a.keep_out),
+            };
+            match placed {
                 Some((c, Some(zone))) => {
                     obj.transform.center.x = c.0 - shift;
                     obj.transform.center.y = c.1;
@@ -7112,7 +7147,7 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
             None if seq.tracks.is_empty() => "a new text track 0".to_string(),
             None => "a new text track 0; every other track's index moves down by one".to_string(),
         },
-        moved.map(|z| format!(", moved to the {z} to keep clear of a face")).unwrap_or_default(),
+        moved.map(|z| format!(", moved to the {z} to keep clear of {kept_from}")).unwrap_or_default(),
     );
     let edit = EditCommand::AddTitleClip { clip, track_index: existing.unwrap_or(0), created_track: existing.is_none() };
     Ok((what, edit, vec![id]))
@@ -7407,6 +7442,47 @@ mod tests {
         assert_eq!(clear_zone((0.5, 0.5), (0.2, 0.1), &[]).unwrap().1, None);
     }
 
+
+    /// #510: someone walking across a handheld shot sweeps a band; a title
+    /// keeps clear of the whole band for its span, not only of where they
+    /// stood at one frame, and falls back to clearing their faces when no
+    /// zone clears their bodies.
+    #[test]
+    fn a_title_keeps_clear_of_a_person_moving_through_its_span() {
+        struct Walker(MediaId, bool);
+        impl Transcripts for Walker {
+            fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+            fn faces(&self, item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
+                if item.id == self.0 { vec![(1.0, [0.2, 0.3, 0.08, 0.1]), (2.5, [0.6, 0.3, 0.08, 0.1])] } else { vec![] }
+            }
+            fn people(&self, item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
+                // Walking left to right through the middle of the frame;
+                // filling it, when the second field says so.
+                if item.id != self.0 {
+                    return vec![];
+                }
+                if self.1 {
+                    return vec![(1.5, [0.0, 0.0, 1.0, 1.0])];
+                }
+                vec![(1.0, [0.15, 0.3, 0.2, 0.6]), (1.75, [0.35, 0.3, 0.2, 0.6]), (2.5, [0.55, 0.3, 0.2, 0.6])]
+            }
+        }
+        let (seq, pool, media, _, _) = fixture();
+        // Asked for the middle of the frame, where the walker passes.
+        let op = Op::Title { text: "Hello".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(0.5), size: Some(60.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None };
+        let plan = resolve_with(&seq, &pool, std::slice::from_ref(&op), &Walker(media, false)).unwrap();
+        assert!(plan.steps[0].what.contains("keep clear of the people in the shot"), "{}", plan.steps[0].what);
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
+        let tb = title_box(clip.title_data().unwrap(), seq.resolution).unwrap();
+        for body in Walker(media, false).people(pool.get(&media).unwrap()) {
+            assert!(!boxes_overlap(tb, body.1, 0.0), "clear of every place the walker is: {tb:?} {body:?}");
+        }
+        // Someone filling the frame: no zone clears them, so only the faces are kept clear of.
+        let plan = resolve_with(&seq, &pool, &[op], &Walker(media, true)).unwrap();
+        assert!(!plan.steps[0].what.contains("people"), "{}", plan.steps[0].what);
+    }
 
     /// #588: a title can be a credits roll or a ticker, fitted to its
     /// length, and nothing else is.
