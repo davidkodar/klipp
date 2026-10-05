@@ -26,9 +26,6 @@ use serde_json::Value;
 
 /// Variants with no description yet, by the family issue that adds them.
 const NOT_YET_DESCRIBED: &[&str] = &[
-    // #1005: blur, sharpen and detail.
-    "GaussianBlur", "FocusBlur", "Sharpen", "DirectionalBlur", "RadialBlur", "TiltShift", "Denoise", "MedianFilter",
-    "Dilate", "Erode", "Emboss", "EdgeDetect", "Mosaic",
     // #1006: light, glow and look.
     "Bloom", "Glow", "LightRays", "Diffusion", "LensFlare", "OuterGlow", "LightWrap", "AnamorphicStreak", "FilmHalation",
     "ChromaticAberration", "Vignette", "DropShadow",
