@@ -18,10 +18,18 @@ class GateJobsTests(unittest.TestCase):
         self.assertEqual(jobs(32, 64_000), 16)
         self.assertEqual(jobs(8, 64_000), 4)
 
-    def test_memory_caps_it_at_two_and_a_half_gigabytes_a_job(self):
-        # What the machine had on 2026-10-05: 32 cores, 9 GB free.
-        self.assertEqual(jobs(32, 9_000), 3)
-        self.assertEqual(jobs(32, 25_600), 10)
+    def test_memory_caps_it_at_one_point_eight_gigabytes_a_job(self):
+        # What the machine had on 2026-10-05: 32 cores, 9 GB free, and
+        # 15.5 GB on a quiet evening (6 jobs at 2.5 GB, now 8).
+        self.assertEqual(jobs(32, 9_000), 5)
+        self.assertEqual(jobs(32, 15_500), 8)
+        self.assertEqual(jobs(32, 25_600), 14)
+
+    def test_the_per_job_figure_can_be_set(self):
+        out = subprocess.run(["sh", str(SCRIPT), "32", "25600"], capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL, env={"KLIPP_GATE_MB_PER_JOB": "2560", "PATH": "/usr/bin:/bin"})
+        self.assertEqual(int(out.stdout.strip()), 10)
+        out = subprocess.run(["sh", str(SCRIPT), "32", "25600"], capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL, env={"KLIPP_GATE_MB_PER_JOB": "nonsense", "PATH": "/usr/bin:/bin"})
+        self.assertEqual(int(out.stdout.strip()), 14, "a bad value falls back to the default")
 
     def test_never_fewer_than_two(self):
         self.assertEqual(jobs(2, 64_000), 2)
