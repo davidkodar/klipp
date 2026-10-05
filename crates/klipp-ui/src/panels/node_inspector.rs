@@ -18,6 +18,9 @@ use klipp_nodes::{NodeGraph, NodeId, NodeKind, NodeParams};
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub struct NodeInspectorPanel {
+    /// One printer point, from the colour preferences (#241), for the
+    /// offset's readout in points.
+    pub printer_point: f32,
     // ── Inspector widgets ──
     pub lift_wheel: ColorWheelState,
     pub gamma_wheel: ColorWheelState,
@@ -58,6 +61,7 @@ pub struct NodeInspectorPanel {
 impl Default for NodeInspectorPanel {
     fn default() -> Self {
         Self {
+            printer_point: 0.0125,
             lift_wheel: ColorWheelState::default(),
             gamma_wheel: ColorWheelState::default(),
             gain_wheel: ColorWheelState::default(),
@@ -435,6 +439,17 @@ impl NodeInspectorPanel {
                 }
             });
             ui.add_space(4.0);
+        }
+
+        // The offset as printer points (#241), as the keys move it.
+        if let Some(wi) = wheels_idx {
+            let p = &graph.nodes[wi].params;
+            let [r, g, b] = klipp_color::printer_points((p.offset_x.unwrap_or(0.0), p.offset_y.unwrap_or(0.0), p.offset_master.unwrap_or(0.0)), self.printer_point.max(1e-4));
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(format!("Printer points  R{r:+}  G{g:+}  B{b:+}")).small().monospace().color(theme.text_dim))
+                    .on_hover_text("The offset in printer points. Ctrl+Alt+7/8/9 raise red, green, blue a point, Ctrl+Alt+4/5/6 lower them, Ctrl+Alt+3/1 move all three; the step is in Preferences \u{2192} Colour.");
+            });
         }
 
         // Helper: render one wheel + its sat/bri sliders in a column

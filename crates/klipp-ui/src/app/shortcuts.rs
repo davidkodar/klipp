@@ -574,6 +574,21 @@ impl KlippApp {
                     }
                 }
             }
+            // Printer lights (#241): a channel's offset up or down a point.
+            for (pressed, channel, points) in [
+                (kb.is_action_pressed("printer_red_up", i), 0u8, 1),
+                (kb.is_action_pressed("printer_red_down", i), 0, -1),
+                (kb.is_action_pressed("printer_green_up", i), 1, 1),
+                (kb.is_action_pressed("printer_green_down", i), 1, -1),
+                (kb.is_action_pressed("printer_blue_up", i), 2, 1),
+                (kb.is_action_pressed("printer_blue_down", i), 2, -1),
+                (kb.is_action_pressed("printer_master_up", i), 3, 1),
+                (kb.is_action_pressed("printer_master_down", i), 3, -1),
+            ] {
+                if pressed {
+                    cmds.push(AppCommand::PrinterLight { channel, points });
+                }
+            }
             // Ctrl+Shift+R — reset current color node to defaults
             if kb.is_action_pressed("reset_current_node", i) {
                 if let Some(node_id) = self.state.selected_node_id {

@@ -3709,6 +3709,16 @@ impl PreferencesPanel {
                 });
         });
 
+        Self::setting_row(ui, "Printer point", theme, |ui| {
+            let mut v = prefs.color.printer_point;
+            if ui.add(egui::DragValue::new(&mut v).range(0.001..=0.1).speed(0.0005).fixed_decimals(4))
+                .on_hover_text("How far one printer-light key moves a channel's offset, as a share of the signal. The keys step red, green, blue or all three by it.")
+                .changed()
+            {
+                prefs.color.printer_point = v; *dirty = true;
+            }
+        });
+
         Self::setting_row(ui, "Vectorscope skin angle", theme, |ui| {
             let mut v = prefs.color.vectorscope_skin_angle;
             if ui.add(egui::DragValue::new(&mut v).range(0.0..=360.0).speed(0.5).suffix("\u{00b0}").fixed_decimals(0)).changed() {

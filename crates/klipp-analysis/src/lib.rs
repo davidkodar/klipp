@@ -29,6 +29,7 @@ pub mod beats;
 pub mod beatsheet;
 pub mod hold;
 pub mod motion;
+pub mod moments;
 pub mod report;
 pub mod sheet;
 pub mod spectrogram;

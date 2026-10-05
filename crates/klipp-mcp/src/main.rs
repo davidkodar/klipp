@@ -1912,7 +1912,11 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               object the detector named (cat, car, cup…), motion (static, gentle, \
               moving, busy), whether anything is said, a minimum length. Every condition \
               given must hold. Each hit has the media id and the shot's start and end in \
-              the file, ready for an edit.",
+              the file, ready for an edit. A long continuous take (over 12 s: a walk, a \
+              held phone shot) is also searched moment by moment, split where the camera \
+              settles or moves off or the framing changes; such a hit carries a moment \
+              number and steady (the camera still enough to use as it is), so motion \
+              static or gentle finds a steady few seconds inside a walk.",
              json!({
                  "framing": { "type": "string" }, "min_people": { "type": "integer" },
                  "object": { "type": "string" }, "motion": { "type": "string" },

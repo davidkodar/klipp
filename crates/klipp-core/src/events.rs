@@ -1786,6 +1786,9 @@ pub enum AppCommand {
     /// 0 waveform, 1 parade, 2 vectorscope, 3 histogram.
     RenderScopeSnapshot { modes: Vec<u8>, rgba: Vec<u8>, width: u32, height: u32 },
     SetNodeParam { clip_id: ClipId, node_id: uuid::Uuid, param: String, value: f32 },
+    /// Printer lights (#241): the selected clip's offset moved `points`
+    /// printer points on red (0), green (1), blue (2) or all three (3).
+    PrinterLight { channel: u8, points: i32 },
     /// Called when the user starts dragging a color-grading parameter
     /// (color wheel, sat/bri slider, scrubby slider, etc.). Snapshots the
     /// current node graph so the gesture can be committed as one undo entry.

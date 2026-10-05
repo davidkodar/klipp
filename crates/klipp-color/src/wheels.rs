@@ -206,6 +206,56 @@ pub fn rgb_to_wheel_offset(rgb: (f32, f32, f32)) -> (f32, f32, f32) {
     (dist * hue.to_radians().cos(), dist * hue.to_radians().sin(), master)
 }
 
+/// The offset as printer points (#241): each channel's shift in whole
+/// steps of `step`, as a film colourist reads a correction ("R+2 G-1").
+pub fn printer_points(offset: (f32, f32, f32), step: f32) -> [i32; 3] {
+    let (r, g, b) = wheel_offset_to_rgb(offset.0, offset.1, offset.2);
+    let pt = |v: f32| if step > 0.0 { (v / step).round() as i32 } else { 0 };
+    [pt(r), pt(g), pt(b)]
+}
+
+/// The offset moved by `points` printer points of `step` on one channel
+/// (0 red, 1 green, 2 blue), or on all three for `None` (the master),
+/// back as a wheel position.
+pub fn printer_light(offset: (f32, f32, f32), channel: Option<usize>, points: i32, step: f32) -> (f32, f32, f32) {
+    let (r, g, b) = wheel_offset_to_rgb(offset.0, offset.1, offset.2);
+    let mut rgb = [r, g, b];
+    let d = points as f32 * step;
+    match channel {
+        Some(c) if c < 3 => rgb[c] += d,
+        Some(_) => {}
+        None => rgb.iter_mut().for_each(|v| *v += d),
+    }
+    rgb_to_wheel_offset((rgb[0], rgb[1], rgb[2]))
+}
+
+#[cfg(test)]
+mod printer_light_tests {
+    use super::*;
+
+    /// Points add up per channel and read back as whole points; the
+    /// master moves all three together and leaves the balance alone.
+    #[test]
+    fn printer_points_step_each_channel_and_read_back() {
+        let step = 0.0125;
+        let mut o = (0.0, 0.0, 0.0);
+        o = printer_light(o, Some(0), 2, step);
+        o = printer_light(o, Some(1), -1, step);
+        assert_eq!(printer_points(o, step), [2, -1, 0]);
+        o = printer_light(o, None, 3, step);
+        assert_eq!(printer_points(o, step), [5, 2, 3]);
+        o = printer_light(o, Some(2), -3, step);
+        assert_eq!(printer_points(o, step), [5, 2, 0]);
+        // Back to neutral, point by point.
+        o = printer_light(o, None, -2, step);
+        o = printer_light(o, Some(0), -3, step);
+        assert_eq!(printer_points(o, step), [0, 0, -2]);
+        o = printer_light(o, Some(2), 2, step);
+        assert_eq!(printer_points(o, step), [0, 0, 0]);
+        assert!(o.0.abs() < 1e-4 && o.1.abs() < 1e-4 && o.2.abs() < 1e-4, "{o:?}");
+    }
+}
+
 #[cfg(test)]
 mod inverse_tests {
     use super::*;

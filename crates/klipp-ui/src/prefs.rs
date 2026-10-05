@@ -1516,6 +1516,10 @@ pub struct ColorPrefs {
     /// (the wire snaps to the nearest port instead of dropping).
     #[serde(default = "default_port_snap_radius")]
     pub port_snap_radius_px: f32,
+    /// One printer point on the offset, as a shift of the signal (0 to
+    /// 1): the step the printer-light keys move a channel by (#241).
+    #[serde(default = "default_printer_point")]
+    pub printer_point: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1529,6 +1533,7 @@ fn default_scope_ms() -> u32 { 32 }
 fn default_skin_angle() -> f32 { 123.0 }
 fn default_port_snap_enabled() -> bool { true }
 fn default_port_snap_radius() -> f32 { 18.0 }
+fn default_printer_point() -> f32 { 0.0125 }
 impl Default for ColorPrefs {
     fn default() -> Self {
         Self {
@@ -1540,6 +1545,7 @@ impl Default for ColorPrefs {
             vectorscope_skin_angle: default_skin_angle(),
             port_snap_enabled: default_port_snap_enabled(),
             port_snap_radius_px: default_port_snap_radius(),
+            printer_point: default_printer_point(),
         }
     }
 }

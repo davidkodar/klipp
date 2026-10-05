@@ -1573,6 +1573,21 @@ fn media_analysis_returns_null_for_undecoded_bins_and_ignores_old_sentinel_cache
     let known = h.ok(json!({"method":"find_shots","motion":"static"}));
     assert!(known["hits"].as_array().unwrap().iter().any(|v|v["media_id"]==id.0.to_string() && v["start_secs"]==1.0));
 
+    // #502: a 40 s take with no cut, walking for 20 s and then held still,
+    // is one shot; the held moment inside it is found as static.
+    let walk_path = cache.path.join("walk.mp4");
+    std::fs::write(&walk_path, b"a long take; no decoding requested").unwrap();
+    let walk_key = klipp_analysis::store::key_for(&walk_path).unwrap();
+    let walk = h.media_pool.write().unwrap_or_else(|e| e.into_inner()).add(klipp_media::MediaItem::synthetic_for_test(walk_path, None));
+    let bins: Vec<Option<f32>> = (0..40).map(|k| Some(if k < 20 { 7.0 } else { 0.5 })).collect();
+    klipp_analysis::store::save(&walk_key, "motion", klipp_analysis::motion::VERSION, &serde_json::to_value(klipp_analysis::motion::Motion::from_samples(40.0, bins)).unwrap()).unwrap();
+    klipp_analysis::store::save(&walk_key, "shots", klipp_analysis::shots::VERSION, &serde_json::to_value(klipp_analysis::shots::Shots::from_boundaries(40.0, vec![])).unwrap()).unwrap();
+    let held = h.ok(json!({"method":"find_shots","motion":"static"}));
+    let hit = held["hits"].as_array().unwrap().iter().find(|v| v["media_id"] == walk.0.to_string()).unwrap_or_else(|| panic!("the held moment is found: {held}"));
+    assert_eq!(hit["moment"], json!(2), "{hit}");
+    assert!((hit["start_secs"].as_f64().unwrap() - 20.0).abs() <= 1.0 && hit["end_secs"] == 40.0, "{hit}");
+    assert_eq!(hit["steady"], json!(true));
+
 }
 
 #[test]
