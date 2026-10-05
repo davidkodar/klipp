@@ -614,10 +614,10 @@ impl NodeParams {
                     "lum_high" => { q.lum_high = value; q.enabled = true }
                     "lum_soft" => { q.lum_soft = value; q.enabled = true }
                     "invert" => q.invert = value != 0.0,
-                    "exposure" => q.exposure = value,
-                    "saturation" => q.saturation = value,
-                    "hue_shift" => q.hue_shift = value,
-                    "temperature" => q.temperature = value,
+                    // No exposure, saturation, hue_shift or temperature:
+                    // a Qualifier node outputs its matte, and the change
+                    // a secondary makes is the gated correction's, so those
+                    // names keyed nothing and went nowhere (#1040).
                     "clean_black" => q.clean_black = value,
                     "clean_white" => q.clean_white = value,
                     "shrink_grow" => q.shrink_grow = value,
@@ -1028,5 +1028,20 @@ mod portable_lut_path_tests {
         assert!(!json.contains("lut_path"));
         let back: NodeParams = serde_json::from_str("{}").unwrap();
         assert_eq!(back.lut_path, None);
+    }
+}
+
+#[cfg(test)]
+mod override_names_tests {
+    use super::NodeParams;
+
+    /// #1040: the qualifier names that keyed nothing are not taken, so a
+    /// caller setting one is told it went nowhere.
+    #[test]
+    fn the_qualifiers_correction_names_are_not_taken() {
+        for name in ["qual_exposure", "qual_saturation", "qual_hue_shift", "qual_temperature"] {
+            assert!(!NodeParams::accepts(name), "{name} keys nothing and must not be taken");
+        }
+        assert!(NodeParams::accepts("qual_hue_center"), "the key's own settings still are");
     }
 }

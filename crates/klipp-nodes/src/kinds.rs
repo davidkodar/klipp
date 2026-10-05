@@ -10,7 +10,9 @@ pub enum NodeKind {
     Output,
 
     // ── Primary Grade (each maps to one step of the old 12-step pipeline) ──
-    /// Camera log → Rec.709 input transform.
+    /// Camera log → Rec.709 input transform. The node holds the choice
+    /// (`log_format`); the decoder applies it as it decodes, and the
+    /// executor passes the picture through (#1040).
     InputTransform,
     /// Bundled "do everything" corrector — exposes the full set of
     /// primary-grade params (exposure, contrast, saturation, vibrance,
@@ -55,6 +57,8 @@ pub enum NodeKind {
     /// rolloff. Value transform (not a matte producer).
     SoftClip,
     /// Spatial masks (circle, rectangle, gradient) — generates a matte.
+    /// It draws its shapes and reads no picture: its counted input is not
+    /// read (#1040).
     Mask,
     /// Combine two matte inputs by `params.matte_combine_op` —
     /// intersect (the default, and what this node did when multiplying
@@ -93,7 +97,11 @@ pub enum NodeKind {
     Lut3D,
     /// Film grain overlay.
     FilmGrain,
-    /// Colour match (histogram matching). Ports: 0=input, 1=reference frame.
+    /// Colour match: an exposure, white balance and saturation worked out
+    /// once, by matching the Lab mean and spread of a frame the user picks
+    /// ("Apply match"), and applied at render. Port 1 (reference) is
+    /// counted for the editor but not read by the executor: the reference
+    /// is read when the match is made, not at render (#1040).
     ColorMatch,
 
     // ── Color Warper ────────────────────────────────────────────
