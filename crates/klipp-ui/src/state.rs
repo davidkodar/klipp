@@ -2258,6 +2258,9 @@ pub struct AppState {
     /// confirmation dialog.
     pub confirm_delete_sequence: Option<SequenceId>,
     pub show_markers_panel: bool,
+    /// The Auto Align Audio dialog, open on a pair, with the method chosen
+    /// (#615).
+    pub auto_align: Option<(crate::auto_align::AlignPair, crate::auto_align::AlignMethod)>,
     /// A marker to open for editing in the Markers panel: a double-click
     /// on its flag, or Edit Marker… (#909).
     pub edit_marker_request: Option<klipp_core::MarkerId>,
@@ -3710,6 +3713,7 @@ impl AppState {
             || self.show_cache_manager
             || self.show_command_palette
             || self.quick_look_path.is_some()
+            || self.auto_align.is_some()
             // The confirmations: Delete and the like acted behind them.
             || self.confirm_delete_sequence.is_some()
             || self.confirm_remove_track.is_some()
@@ -4118,6 +4122,7 @@ impl Default for AppState {
             closed_sequence_tabs: Default::default(),
             confirm_delete_sequence: None,
             show_markers_panel: false,
+            auto_align: None,
             edit_marker_request: None,
             show_subtitle_editor: false,
             show_transcript_panel: false,

@@ -780,6 +780,29 @@ impl KlippApp {
                 self.spawn_audio_sync(*clip_id);
                 true
             }
+            // Auto Align Audio (#615).
+            AppCommand::OpenAutoAlignAudio { reference, recording } => {
+                let pair = crate::auto_align::AlignPair { reference: *reference, recording: *recording };
+                self.state.auto_align = Some((pair, crate::auto_align::AlignMethod::Waveform));
+                true
+            }
+            AppCommand::AutoAlignAudio { reference, recording, by_timecode } => {
+                let pair = crate::auto_align::AlignPair { reference: *reference, recording: *recording };
+                if *by_timecode {
+                    match crate::auto_align::timecode_position(self.state.sequence(), &self.state.media_pool, pair) {
+                        Ok(new_timeline_in) => {
+                            self.send_commands(vec![AppCommand::MoveClip { clip_id: *recording, new_timeline_in }]);
+                            self.state.toast.show(format!("Aligned by timecode: the recording starts at {:.2} s", new_timeline_in.to_secs_f64()));
+                        }
+                        Err(why) => self.state.toast.show(format!("Not aligned: {why}")),
+                    }
+                } else if let Some(why) = crate::auto_align::waveform_unavailable(self.state.sequence(), &self.state.media_pool, pair) {
+                    self.state.toast.show(format!("Not aligned: {why}"));
+                } else {
+                    self.spawn_audio_sync_between(*reference, *recording, true);
+                }
+                true
+            }
             AppCommand::SetAudioReferenceByMedia { media_id } => {
                 // Resolve to the first timeline clip using this media.
                 // The by-media variants (F-160) let the bin context menu

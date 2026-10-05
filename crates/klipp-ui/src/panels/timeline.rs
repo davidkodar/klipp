@@ -8848,6 +8848,20 @@ impl TimelinePanel {
                     ui.close_menu();
                 }
 
+                // Auto Align Audio (#615): the camera clip and a separate
+                // recording among the selection, the recording lined up.
+                let mut chosen: Vec<klipp_core::ClipId> = state.selected_clips.clone();
+                chosen.extend(state.selected_clip);
+                if !chosen.contains(&clip_id) {
+                    chosen.push(clip_id);
+                }
+                if let Ok(pair) = crate::auto_align::pair_from_selection(state.sequence(), &chosen) {
+                    if ui.button("Auto Align Audio\u{2026}").on_hover_text("Line the separate recording up with the camera's sound").clicked() {
+                        cmds.push(AppCommand::OpenAutoAlignAudio { reference: pair.reference, recording: pair.recording });
+                        ui.close_menu();
+                    }
+                }
+
                 // Reveal source in media browser + open in external app —
                 // both are media-scoped actions, so they share the same
                 // `media_id()` gate. Keeps parity with the bin context

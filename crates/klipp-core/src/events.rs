@@ -2485,6 +2485,13 @@ pub enum AppCommand {
     /// clip uses this media, emits a toast and no-ops.
     SetAudioReferenceByMedia { media_id: MediaId },
     AlignToAudioReferenceByMedia { media_id: MediaId },
+    /// Open the Auto Align Audio dialog for a camera clip's sound and a
+    /// separate recording (#615).
+    OpenAutoAlignAudio { reference: ClipId, recording: ClipId },
+    /// Move `recording` so its sound lines up with `reference`'s, by
+    /// waveform (`by_timecode` false) or by the files' start timecodes.
+    /// Nothing moves on a failed or weak match (#615).
+    AutoAlignAudio { reference: ClipId, recording: ClipId, by_timecode: bool },
 
     // Audio recording (#60)
     /// Arm / un-arm a track for recording. Only one track is armed at a time
