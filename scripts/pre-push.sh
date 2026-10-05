@@ -88,11 +88,12 @@ fi
 # `undefined hidden symbol: anon.*.llvm.*` in some crate nobody
 # touched — a failure that looks like anything except what it is.
 #
-# Half the cores, at least two. Respected if already set.
+# Half the cores and what free memory allows, at least two
+# (scripts/gate-jobs.sh); worked out again when the gate is taken, since a
+# push can wait an hour in the queue. Respected if already set.
+_jobs_given=${CARGO_BUILD_JOBS:+yes}
 if [ -z "$CARGO_BUILD_JOBS" ]; then
-    _cores=$(nproc 2>/dev/null || echo 4)
-    CARGO_BUILD_JOBS=$(( _cores / 2 ))
-    [ "$CARGO_BUILD_JOBS" -lt 2 ] && CARGO_BUILD_JOBS=2
+    CARGO_BUILD_JOBS=$(sh "$ROOT/scripts/gate-jobs.sh" 2>/dev/null || echo 2)
     export CARGO_BUILD_JOBS
 fi
 
@@ -429,6 +430,13 @@ QUEUE
         done
     fi
     printf '%s %s %s %s\n' "$$" "${_branch:-?}" "$ROOT" "$(date +%s)" >"$_holder"
+fi
+
+# The jobs for what memory is free now, the gate being ours.
+if [ -z "$_jobs_given" ] && [ -f "$ROOT/scripts/gate-jobs.sh" ]; then
+    CARGO_BUILD_JOBS=$(sh "$ROOT/scripts/gate-jobs.sh" 2>/dev/null || echo "$CARGO_BUILD_JOBS")
+    export CARGO_BUILD_JOBS
+    printf '  pre-push: building with %s jobs (half the cores, within free memory).\n' "$CARGO_BUILD_JOBS" >&2
 fi
 
 # A line per gate that ran, kept beside the queue, so whoever watches it
