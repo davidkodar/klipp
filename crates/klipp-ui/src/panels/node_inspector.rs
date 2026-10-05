@@ -438,7 +438,7 @@ impl NodeInspectorPanel {
                     push_atomic_node_edit(cmds, clip_id, node_id, "wheels_log_mode", 1.0);
                 }
             });
-            wheel_shape_sliders(ui, &mut graph.nodes[wi].params, log_mode, node_id, cmds, clip_id, theme);
+            wheel_shape_sliders(ui, &graph.nodes[wi].params, log_mode, node_id, cmds, clip_id, theme);
             ui.add_space(4.0);
         }
 
@@ -4365,7 +4365,7 @@ fn bundled_luts(dir: &std::path::Path) -> Vec<(String, Vec<std::path::PathBuf>)>
 /// low band ends and the high band begins on the encoded luma.
 fn wheel_shape_sliders(
     ui: &mut egui::Ui,
-    params: &mut NodeParams,
+    params: &NodeParams,
     log_mode: bool,
     node_id: NodeId,
     cmds: &mut Vec<AppCommand>,
@@ -4378,10 +4378,12 @@ fn wheel_shape_sliders(
         rows.push(("Low Range", "log_low_range", params.log_low_range.unwrap_or(LOG_LOW_RANGE), 0.0..=MID_GREY_ENCODED - 0.08));
         rows.push(("High Range", "log_high_range", params.log_high_range.unwrap_or(LOG_HIGH_RANGE), MID_GREY_ENCODED + 0.08..=1.2));
     }
+    // Sent, not written into `params`: they are the clip's own, and a
+    // value written there on the press would already be in the snapshot
+    // the gesture's BeginNodeParamEdit takes, so undo would return to it.
     for (label, pname, val, range) in rows {
         let mut v = val;
         if grade_slider(ui, label, &mut v, range, "", cmds, clip_id, theme) {
-            params.apply_override(pname, v);
             cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: pname.into(), value: v });
         }
     }
