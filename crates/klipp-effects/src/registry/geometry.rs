@@ -1,7 +1,7 @@
 //! Geometry and frame effects (#1007), describing the existing renderers.
 //!
 //! Defaults follow the inspector's effect reset and soft ranges its controls.
-//! Crop feather is measured in pixels despite its 0..1 inspector range.
+//! Crop feather is measured in the sequence's pixels, its slider 0..200 (#1030).
 //! Rounded-corner radius and feather are fractions of the opaque picture's
 //! shorter side, not the entire canvas. Both rounded corners and bar filling
 //! need the full frame to find that picture's bounds.
@@ -76,7 +76,7 @@ pub(super) static TYPES: &[EffectType] = &[
                 ParamDesc::float("right", "Right", 0.0, (0.0, 1.0), Unit::Normalised),
                 ParamDesc::float("top", "Top", 0.0, (0.0, 1.0), Unit::Normalised),
                 ParamDesc::float("bottom", "Bottom", 0.0, (0.0, 1.0), Unit::Normalised),
-                ParamDesc::float("feather", "Feather", 0.0, (0.0, 1.0), Unit::CanvasPx),
+                ParamDesc::float("feather", "Feather", 0.0, (0.0, 200.0), Unit::CanvasPx),
             ],
             Spatial::PerPixel,
             false,

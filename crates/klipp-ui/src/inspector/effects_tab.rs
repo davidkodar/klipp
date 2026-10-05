@@ -690,6 +690,11 @@ pub fn show(
     show_preset_selectors(ui, theme, state, clip, show_add_builtin, show_add_ofx, cmds);
 }
 
+
+/// The widest crop feather the inspector offers, in the sequence's pixels:
+/// a soft edge across a fifth of a 1080-line frame's height.
+const CROP_FEATHER_MAX_PX: f32 = 200.0;
+
 fn show_preset_selectors(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
@@ -1696,7 +1701,10 @@ fn show_builtin_effect_params(
             track_scrubby!("top", r_t, *top);
             let r_b = scrubby_param_row(ui, "Bottom", bottom, 0.0..=1.0, 0.0, 0.005, 3, "", ks_b);
             track_scrubby!("bottom", r_b, *bottom);
-            let r_f = scrubby_param_row(ui, "Feather", feather, 0.0..=1.0, 0.0, 0.005, 3, "", ks_f);
+            // In pixels of the sequence's frame, as the crop measures it: the
+            // slider ran 0..1, so no feather could be wider than a pixel
+            // (#1030).
+            let r_f = scrubby_param_row(ui, "Feather", feather, 0.0..=CROP_FEATHER_MAX_PX, 0.0, 0.5, 1, " px", ks_f);
             track_scrubby!("feather", r_f, *feather);
         }
         klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, .. } => {
