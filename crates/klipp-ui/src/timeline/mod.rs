@@ -642,7 +642,8 @@ mod menu_smoke_tests {
         fn frame(&mut self, events: Vec<egui::Event>) -> Vec<(String, egui::Pos2)> {
             self.time += 0.5;
             let input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 400.0))),
+                // Tall enough for the whole clip menu, as any real window is.
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 600.0))),
                 time: Some(self.time),
                 events,
                 ..Default::default()
@@ -734,7 +735,7 @@ mod menu_smoke_tests {
         let drawn = timeline.frame(Vec::new());
         let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
         let menu = timeline.right_click(at);
-        let lacking = missing(&menu, &["Rename Clip", "Clip Colour", "Speed", "Make Subclip", "Select Same Source", "Cut", "Copy", "Paste at Playhead", "Paste Insert at Playhead", "Duplicate Clip"]);
+        let lacking = missing(&menu, &["Rename Clip", "Clip Colour", "Rhythm Edits", "Speed", "Make Subclip", "Select Same Source", "Cut", "Copy", "Paste at Playhead", "Paste Insert at Playhead", "Duplicate Clip"]);
         assert!(lacking.is_empty(), "the clip's menu lacks {lacking:?}; it shows {menu:?}");
     }
 

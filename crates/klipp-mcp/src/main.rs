@@ -2022,7 +2022,16 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               secs (later in the file for positive), the timeline untouched; its linked sound slips by as \
               much, a J or L cut kept. slide {clip_id, secs} — the clip moved between its neighbours, \
               its picture and length kept: the one before longer, the one after shorter, sound with them; \
-              refused where a neighbour runs out. role {clip_id, role} — \
+              refused where a neighbour runs out. strobe {clip_id, piece_frames, on?, off?, from?, to?, \
+              ripple?} — the clip (or from..to inside it) cut into pieces piece_frames long and of every \
+              on pieces kept the next off removed (1 and 1), so the shot flickers; ripple closes the gaps, \
+              else they stay black; the last piece takes the remainder; one undo. set_length {clips, \
+              frames, keep?, ripple?} — each clip made frames long, keep start (default), end or centre; \
+              ripple closes up, as for a rapid-fire montage of 3-frame clips; one undo. over_edits \
+              {clip_id, tracks?, align?, every_clip?, from?, to?} — a copy of the clip (a flash, an \
+              adjustment clip) on its own track over every cut of the targeted picture tracks (or the \
+              tracks given), align centre (default), start or end on the cut; every_clip uses each \
+              clip's start; a cut where a copy would overlap is skipped; one undo. role {clip_id, role} — \
               what a clip is to the mix and the checks: dialogue, music, sfx, ambience, foley, \
               voiceover, broll, graphics; a bed marked music is never taken for speech. matte \
               {clip_id, source?, channel?, invert?, feather_px?, choke_px?, show_source?, clear?} — \
@@ -2229,7 +2238,16 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               secs (later in the file for positive), the timeline untouched; its linked sound slips by as \
               much, a J or L cut kept. slide {clip_id, secs} — the clip moved between its neighbours, \
               its picture and length kept: the one before longer, the one after shorter, sound with them; \
-              refused where a neighbour runs out. role {clip_id, role} — \
+              refused where a neighbour runs out. strobe {clip_id, piece_frames, on?, off?, from?, to?, \
+              ripple?} — the clip (or from..to inside it) cut into pieces piece_frames long and of every \
+              on pieces kept the next off removed (1 and 1), so the shot flickers; ripple closes the gaps, \
+              else they stay black; the last piece takes the remainder; one undo. set_length {clips, \
+              frames, keep?, ripple?} — each clip made frames long, keep start (default), end or centre; \
+              ripple closes up, as for a rapid-fire montage of 3-frame clips; one undo. over_edits \
+              {clip_id, tracks?, align?, every_clip?, from?, to?} — a copy of the clip (a flash, an \
+              adjustment clip) on its own track over every cut of the targeted picture tracks (or the \
+              tracks given), align centre (default), start or end on the cut; every_clip uses each \
+              clip's start; a cut where a copy would overlap is skipped; one undo. role {clip_id, role} — \
               what a clip is to the mix and the checks: dialogue, music, sfx, ambience, foley, \
               voiceover, broll, graphics; a bed marked music is never taken for speech. matte \
               {clip_id, source?, channel?, invert?, feather_px?, choke_px?, show_source?, clear?} — \

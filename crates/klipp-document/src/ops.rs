@@ -1163,6 +1163,85 @@ pub enum Op {
         #[serde(default)]
         samples: Option<u8>,
     },
+    /// A strobe (#988): `clip_id`, or the stretch of it from `from` to
+    /// `to`, cut into pieces `piece_frames` long, and of every `on` pieces
+    /// kept the next `off` removed, so the shot flickers on and off. The
+    /// last piece takes what does not divide, so no sliver is left. With
+    /// `ripple` the gaps close up; without, they stay as black. The linked
+    /// sound is cut with the picture. One undo step.
+    Strobe {
+        clip_id: ClipRef,
+        piece_frames: i64,
+        #[serde(default)]
+        from: Option<Anchor>,
+        #[serde(default)]
+        to: Option<Anchor>,
+        #[serde(default = "one_piece")]
+        on: u32,
+        #[serde(default = "one_piece")]
+        off: u32,
+        #[serde(default)]
+        ripple: bool,
+    },
+    /// The `clips` each made `frames` long (#988): a rapid-fire montage of
+    /// clips of a few frames each. `keep` says which end stays put: the
+    /// start (the out point is trimmed, the default), the end, or the
+    /// centre. With `ripple` what follows closes up or makes room. The
+    /// linked sound goes with each. One undo step.
+    SetLength {
+        clips: Vec<ClipRef>,
+        frames: i64,
+        #[serde(default)]
+        keep: LengthKeep,
+        #[serde(default)]
+        ripple: bool,
+    },
+    /// A copy of `clip_id` (a flash, an adjustment clip, any clip) laid on
+    /// its own track over every cut of `tracks` (#988), or over the start
+    /// of every clip there with `every_clip`; `tracks` left out are the
+    /// targeted picture tracks other than its own. Within `from` to `to`
+    /// when given. `align` puts each copy's centre (the default), start or
+    /// end on the cut. A cut where a copy would overlap a clip already
+    /// there is skipped. One undo step.
+    OverEdits {
+        clip_id: ClipRef,
+        #[serde(default)]
+        tracks: Vec<TrackRef>,
+        #[serde(default)]
+        from: Option<Anchor>,
+        #[serde(default)]
+        to: Option<Anchor>,
+        #[serde(default)]
+        align: EditAlign,
+        #[serde(default)]
+        every_clip: bool,
+    },
+}
+
+/// Which end of a clip [`Op::SetLength`] keeps where it is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LengthKeep {
+    #[default]
+    Start,
+    End,
+    #[serde(alias = "center")]
+    Centre,
+}
+
+/// Where on a cut each copy of [`Op::OverEdits`] sits.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditAlign {
+    #[default]
+    #[serde(alias = "center")]
+    Centre,
+    Start,
+    End,
+}
+
+fn one_piece() -> u32 {
+    1
 }
 
 /// Serialized operation tags accepted by `Op`. Keep this in sync with the
@@ -1173,6 +1252,7 @@ pub const OP_NAMES: &[&str] = &[
     "slip", "slide", "pin", "role", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "highlight",
     "ramp", "grade_group", "remove_grade_group", "look", "qualify", "retime", "replace", "track_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
+    "strobe", "set_length", "over_edits",
 ];
 
 /// A drop shadow behind a title's text, what keeps bright words
@@ -2135,6 +2215,15 @@ struct PlaceCarry(std::collections::HashMap<usize, (i64, f64)>);
 
 fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, transcripts: &dyn Transcripts, carry: &mut PlaceCarry) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     match op {
+        Op::Strobe { clip_id, piece_frames, from, to, on, off, ripple } => {
+            let (ops, what) = strobe_ops(seq, fps, i, clip_id, *piece_frames, from.as_ref(), to.as_ref(), *on, *off, *ripple)?;
+            as_one_step(seq, pool, i, transcripts, &ops, "Strobe", what)
+        }
+        Op::SetLength { clips, frames, keep, ripple } => {
+            let (ops, what) = set_length_ops(seq, fps, i, clips, *frames, *keep, *ripple)?;
+            as_one_step(seq, pool, i, transcripts, &ops, "Set Length", what)
+        }
+        Op::OverEdits { clip_id, tracks, from, to, align, every_clip } => over_edits(seq, fps, i, clip_id, tracks, from.as_ref(), to.as_ref(), *align, *every_clip),
         Op::Captions { track, from, to, max_chars, max_lines, replace } => {
             let from = from.as_ref().map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
             let to = to.as_ref().map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
@@ -7523,6 +7612,196 @@ pub fn follow_brief(seq: &Sequence, old: Option<&klipp_timeline::Brief>, new: Op
     edits
 }
 
+/// `ops`, resolved one after another against `seq`, as one undo step
+/// named `label` (#988): the edits of a strobe or a set length are many
+/// splits, trims and removes, each seeing the ones before it.
+fn as_one_step(seq: &Sequence, pool: &MediaPool, i: usize, transcripts: &dyn Transcripts, ops: &[Op], label: &str, what: String) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let plan = resolve_with(seq, pool, ops, transcripts).map_err(|r| refuse(i, format!("{}: {}", label.to_lowercase(), r.why), r.hint))?;
+    let mut touched: Vec<ClipId> = Vec::new();
+    for c in plan.steps.iter().flat_map(|s| &s.after) {
+        if !touched.contains(&c.clip_id) {
+            touched.push(c.clip_id);
+        }
+    }
+    let edits: Vec<EditCommand> = plan.steps.into_iter().map(|s| s.edit).collect();
+    Ok((what, EditCommand::Named { label: label.to_string(), edit: Box::new(EditCommand::Batch(edits)) }, touched))
+}
+
+/// The splits and removes of a strobe (#988), and what it does in words.
+#[allow(clippy::too_many_arguments)]
+fn strobe_ops(seq: &Sequence, fps: Fps, i: usize, clip_ref: &ClipRef, piece: i64, from: Option<&Anchor>, to: Option<&Anchor>, on: u32, off: u32, ripple: bool) -> Result<(Vec<Op>, String), Refusal> {
+    if piece < 1 || on < 1 || off < 1 {
+        return Err(refuse(i, "a strobe needs pieces of at least a frame, and at least one kept and one removed", "give piece_frames, on and off of 1 or more"));
+    }
+    let (ti, _, clip) = resolve_clip(seq, fps, clip_ref, i)?;
+    if seq.tracks[ti].locked {
+        return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+    }
+    let rate = fps.as_f64();
+    let frame = |t: Timecode| (secs(t) * rate).round() as i64;
+    let (clip_in, clip_out) = (frame(clip.timeline_in), frame(clip.timeline_out));
+    let a = match from {
+        Some(x) => frame(resolve_anchor(seq, fps, x, i)?),
+        None => clip_in,
+    };
+    let b = match to {
+        Some(x) => frame(resolve_anchor(seq, fps, x, i)?),
+        None => clip_out,
+    };
+    if a < clip_in || b > clip_out || b <= a {
+        return Err(refuse(i, "the strobe's stretch is not inside the clip", "give from and to within the clip, from before to"));
+    }
+    let n = (b - a) / piece;
+    if n < 2 {
+        return Err(refuse(i, format!("{} frames make fewer than two pieces of {piece}", b - a), "use shorter pieces or a longer stretch"));
+    }
+    // Piece k runs from a + k·piece; the last takes the remainder.
+    let start = |k: i64| a + k * piece;
+    let mut cuts: Vec<i64> = (1..n).map(start).collect();
+    if a > clip_in {
+        cuts.insert(0, a);
+    }
+    if b < clip_out {
+        cuts.push(b);
+    }
+    let at = |f: i64, half: f64| ClipRef::At { track: ti, secs: (f as f64 + half) / rate };
+    let mut ops: Vec<Op> = cuts.iter().map(|&f| Op::Split { clip_id: at(f, -0.5), at: Anchor::Frame(f) }).collect();
+    let cycle = (on + off) as i64;
+    let removed: Vec<i64> = (0..n).filter(|k| k % cycle >= on as i64).collect();
+    // From the last back, so a ripple never moves a piece still to go.
+    ops.extend(removed.iter().rev().map(|&k| Op::Remove { clip_id: at(start(k), 0.5), ripple, linked: true }));
+    let what = format!(
+        "strobe {} frames into {n} pieces of {piece}, {} removed{}",
+        b - a,
+        removed.len(),
+        if ripple { ", the gaps closed" } else { ", the gaps left black" }
+    );
+    Ok((ops, what))
+}
+
+/// The trims that make each clip `frames` long (#988), and what that is in
+/// words. Each trim is anchored on the clip's own start or end as it
+/// stands when the trim runs, so a ripple before it moves it right.
+fn set_length_ops(seq: &Sequence, fps: Fps, i: usize, clips: &[ClipRef], frames: i64, keep: LengthKeep, ripple: bool) -> Result<(Vec<Op>, String), Refusal> {
+    if frames < 1 {
+        return Err(refuse(i, "a clip needs at least a frame", "give frames of 1 or more"));
+    }
+    if clips.is_empty() {
+        return Err(refuse(i, "no clips were named", "name the clips to set"));
+    }
+    let rate = fps.as_f64();
+    let len = frames as f64 / rate;
+    let mut ids: Vec<ClipId> = Vec::new();
+    for r in clips {
+        let (_, _, c) = resolve_clip(seq, fps, r, i)?;
+        if !ids.contains(&c.id) {
+            ids.push(c.id);
+        }
+    }
+    let mut ops = Vec::new();
+    for id in &ids {
+        let (_, _, c) = find_clip(seq, *id).expect("resolved above");
+        let now = ((secs(c.timeline_out) - secs(c.timeline_in)) * rate).round() as i64;
+        if now == frames {
+            continue;
+        }
+        let me = || ClipRef::Id(*id);
+        let trim = |edge: Edge, to: Anchor| Op::Trim { clip_id: me(), edge, to, ripple, linked: true };
+        let from_start = |s: f64| Anchor::Offset { from: Box::new(Anchor::ClipStart(me())), secs: s };
+        let from_end = |s: f64| Anchor::Offset { from: Box::new(Anchor::ClipEnd(me())), secs: s };
+        match keep {
+            LengthKeep::Start => ops.push(trim(Edge::Out, from_start(len))),
+            LengthKeep::End => ops.push(trim(Edge::In, from_end(-len))),
+            LengthKeep::Centre => {
+                // Half the change at each end: the out first, then the in
+                // a whole length back from it.
+                let half = ((now + frames) / 2) as f64 / rate;
+                ops.push(trim(Edge::Out, from_start(half)));
+                ops.push(trim(Edge::In, from_end(-len)));
+            }
+        }
+    }
+    if ops.is_empty() {
+        return Err(refuse(i, format!("every clip is {frames} frames long already"), "nothing to do"));
+    }
+    let what = format!("set {} clip{} to {frames} frames{}", ids.len(), if ids.len() == 1 { "" } else { "s" }, if ripple { ", what follows moved with them" } else { "" });
+    Ok((ops, what))
+}
+
+/// A copy of a clip over every cut (#988): the copies, one undo step.
+#[allow(clippy::too_many_arguments)]
+fn over_edits(seq: &Sequence, fps: Fps, i: usize, clip_ref: &ClipRef, tracks: &[TrackRef], from: Option<&Anchor>, to: Option<&Anchor>, align: EditAlign, every_clip: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let (dest, _, template) = resolve_clip(seq, fps, clip_ref, i)?;
+    if seq.tracks[dest].locked {
+        return Err(refuse(i, format!("track {dest} is locked"), "unlock it first"));
+    }
+    let rate = fps.as_f64();
+    let frame = |t: Timecode| (secs(t) * rate).round() as i64;
+    let sources: Vec<usize> = if tracks.is_empty() {
+        (0..seq.tracks.len()).filter(|&t| t != dest && seq.tracks[t].kind == TrackKind::Video && seq.is_targeted(t)).collect()
+    } else {
+        tracks.iter().map(|t| resolve_track(seq, t, i)).collect::<Result<_, _>>()?
+    };
+    let lo = from.map(|a| resolve_anchor(seq, fps, a, i)).transpose()?.map(frame).unwrap_or(i64::MIN);
+    let hi = to.map(|a| resolve_anchor(seq, fps, a, i)).transpose()?.map(frame).unwrap_or(i64::MAX);
+    let mut points: Vec<i64> = Vec::new();
+    for &t in &sources {
+        let mut clips: Vec<&Clip> = seq.tracks[t].clips.iter().filter(|c| !c.kind.is_gap()).collect();
+        clips.sort_by_key(|c| c.timeline_in);
+        if every_clip {
+            points.extend(clips.iter().map(|c| frame(c.timeline_in)));
+        } else {
+            points.extend(clips.windows(2).filter(|w| w[0].timeline_out == w[1].timeline_in).map(|w| frame(w[0].timeline_out)));
+        }
+    }
+    points.retain(|p| *p >= lo && *p < hi);
+    points.sort_unstable();
+    points.dedup();
+    let len = frame(template.timeline_out) - frame(template.timeline_in);
+    let mut taken: Vec<(i64, i64)> = seq.tracks[dest].clips.iter().filter(|c| !c.kind.is_gap()).map(|c| (frame(c.timeline_in), frame(c.timeline_out))).collect();
+    let mut edits = Vec::new();
+    let mut ids = Vec::new();
+    let mut skipped = 0;
+    let tc = |f: i64| Timecode::from_secs_f64(f as f64 / rate, fps.rate());
+    for p in points {
+        let start = match align {
+            EditAlign::Centre => p - len / 2,
+            EditAlign::Start => p,
+            EditAlign::End => p - len,
+        };
+        let end = start + len;
+        if start < 0 || taken.iter().any(|&(a, b)| a < end && start < b) {
+            skipped += 1;
+            continue;
+        }
+        taken.push((start, end));
+        let mut copy = template.clone();
+        copy.id = ClipId::new();
+        copy.linked_clip_id = None;
+        copy.group_id = None;
+        copy.timeline_in = tc(start);
+        copy.timeline_out = tc(end);
+        ids.push(copy.id);
+        edits.push(EditCommand::LegacyAppendClip { clip: copy, track_index: dest });
+    }
+    if edits.is_empty() {
+        return Err(refuse(i, if skipped > 0 { "a copy would overlap a clip at every cut there" } else { "there is no cut there" }, "name tracks with cuts, widen from and to, or move what is in the way"));
+    }
+    let what = format!(
+        "copy {} over {} {}{}",
+        clip_name_plain(template),
+        edits.len(),
+        if every_clip { "clip starts" } else { "cuts" },
+        if skipped > 0 { format!(", {skipped} skipped where a copy would overlap a clip") } else { String::new() }
+    );
+    Ok((what, EditCommand::Named { label: "Copy Over Every Edit".to_string(), edit: Box::new(EditCommand::Batch(edits)) }, ids))
+}
+
+/// A clip's own name, or "the clip".
+fn clip_name_plain(c: &Clip) -> String {
+    c.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "the clip".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -11443,3 +11722,168 @@ mod sync_lock_tests {
     }
 }
 
+
+/// #988: strobe, set length and a clip over every edit, each one undo step.
+#[cfg(test)]
+mod edit_helper_tests {
+    use super::*;
+    use klipp_core::RationalTime;
+    use klipp_timeline::Track;
+
+    const FPS: i64 = 25;
+
+    fn tc(frames: i64) -> Timecode {
+        RationalTime::from_secs_f64(frames as f64 / FPS as f64, FPS as u32)
+    }
+
+    fn frames(t: Timecode) -> i64 {
+        (t.to_secs_f64() * FPS as f64).round() as i64
+    }
+
+    /// V1 holding `clips` (timeline frames, each from a 60 s file at the
+    /// same place), with linked sound under each on A1; a spare V2 on top.
+    fn timeline(clips: &[(i64, i64)]) -> (Sequence, MediaPool, Vec<ClipId>) {
+        let mut seq = Sequence::new_default();
+        seq.fps = Fps::new(25, 1);
+        let mut pool = MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/a.mov".into(), None);
+        item.duration = tc(60 * FPS);
+        item.video_codec = "hevc".into();
+        item.has_audio = true;
+        let media = pool.add(item);
+        let (mut v1, mut a1) = (Track::new("V1", TrackKind::Video), Track::new("A1", TrackKind::Audio));
+        let mut ids = Vec::new();
+        for &(a, b) in clips {
+            let mut v = Clip::media(media, tc(a), tc(b), tc(a), tc(b));
+            let mut s = Clip::media(media, tc(a), tc(b), tc(a), tc(b));
+            v.linked_clip_id = Some(s.id);
+            s.linked_clip_id = Some(v.id);
+            ids.push(v.id);
+            v1.clips.push(v);
+            a1.clips.push(s);
+        }
+        seq.tracks = vec![Track::new("V2", TrackKind::Video), v1, a1];
+        (seq, pool, ids)
+    }
+
+    fn view<'a>(seqs: &'a mut Vec<Sequence>, pool: &'a mut MediaPool, fps: &'a mut Fps) -> crate::apply::DocumentView<'a> {
+        crate::apply::DocumentView { sequences: seqs, active: 0, media_pool: pool, fps }
+    }
+
+    /// The plan's one step applied, and undone.
+    fn done_and_undone(seq: &Sequence, pool: &MediaPool, op: Op, label: &str) -> (Sequence, Sequence) {
+        let plan = resolve(seq, pool, &[op]).unwrap_or_else(|r| panic!("{}: {}", r.why, r.hint));
+        assert_eq!(plan.steps.len(), 1, "one step");
+        assert_eq!(plan.steps[0].edit.label(), label, "one undo step, named");
+        let (mut seqs, mut p, mut fps) = (vec![seq.clone()], pool.clone(), seq.fps);
+        view(&mut seqs, &mut p, &mut fps).apply_forward(&plan.steps[0].edit);
+        let done = seqs[0].clone();
+        view(&mut seqs, &mut p, &mut fps).apply_inverse(&plan.steps[0].edit);
+        (done, seqs.remove(0))
+    }
+
+    fn spans(seq: &Sequence, track: usize) -> Vec<(i64, i64)> {
+        let mut s: Vec<(i64, i64)> = seq.tracks[track].clips.iter().filter(|c| !c.kind.is_gap()).map(|c| (frames(c.timeline_in), frames(c.timeline_out))).collect();
+        s.sort_unstable();
+        s
+    }
+
+    #[test]
+    fn a_strobe_cuts_two_frame_pieces_and_removes_every_other() {
+        // Two seconds of a clip, 2-frame pieces: 25 pieces, 12 removed.
+        let (seq, pool, ids) = timeline(&[(0, 50)]);
+        let op = Op::Strobe { clip_id: ClipRef::Id(ids[0]), piece_frames: 2, from: None, to: None, on: 1, off: 1, ripple: false };
+        let (done, undone) = done_and_undone(&seq, &pool, op, "Strobe");
+        let kept = spans(&done, 1);
+        assert_eq!(kept.len(), 13, "{kept:?}");
+        assert!(kept.iter().enumerate().all(|(k, &(a, b))| a == 4 * k as i64 && b - a == 2), "every other 2-frame piece, in place: {kept:?}");
+        assert_eq!(spans(&done, 2), kept, "the sound strobes with the picture");
+        assert_eq!(spans(&undone, 1), vec![(0, 50)], "one undo puts the clip back");
+        assert_eq!(spans(&undone, 2), vec![(0, 50)]);
+    }
+
+    #[test]
+    fn a_strobe_closes_up_with_ripple_and_leaves_no_sliver() {
+        // 100 frames in 3-frame pieces: 33 pieces, the last 4 frames long.
+        let (seq, pool, ids) = timeline(&[(0, 100), (100, 150)]);
+        let op = Op::Strobe { clip_id: ClipRef::Id(ids[0]), piece_frames: 3, from: None, to: None, on: 1, off: 1, ripple: true };
+        let (done, _) = done_and_undone(&seq, &pool, op, "Strobe");
+        let kept = spans(&done, 1);
+        // 17 kept pieces back to back, the last 4 frames: 16·3 + 4 = 52.
+        assert_eq!(kept.len(), 17 + 1, "{kept:?}");
+        assert!(kept.windows(2).all(|w| w[0].1 == w[1].0), "closed up: {kept:?}");
+        assert!(kept[..17].iter().all(|&(a, b)| b - a >= 3), "no sliver: {kept:?}");
+        assert_eq!(kept[16], (48, 52), "the last piece takes the remainder");
+        assert_eq!(kept[17], (52, 102), "what follows moved up");
+    }
+
+    #[test]
+    fn a_strobe_of_a_stretch_inside_the_clip() {
+        // Frames 20 to 40 of a 100-frame clip, on 1 off 2, 4-frame pieces.
+        let (seq, pool, ids) = timeline(&[(0, 100)]);
+        let op = Op::Strobe { clip_id: ClipRef::Id(ids[0]), piece_frames: 4, from: Some(Anchor::Frame(20)), to: Some(Anchor::Frame(40)), on: 1, off: 2, ripple: false };
+        let (done, _) = done_and_undone(&seq, &pool, op, "Strobe");
+        assert_eq!(spans(&done, 1), vec![(0, 20), (20, 24), (32, 36), (40, 100)]);
+        let refused = resolve(&seq, &pool, &[Op::Strobe { clip_id: ClipRef::Id(ids[0]), piece_frames: 30, from: Some(Anchor::Frame(20)), to: Some(Anchor::Frame(40)), on: 1, off: 1, ripple: false }]);
+        assert!(refused.is_err(), "fewer than two pieces");
+    }
+
+    #[test]
+    fn set_length_makes_a_rapid_fire_montage() {
+        // Five 1-second clips set to 3 frames each, closed up: 15 frames.
+        let clips: Vec<(i64, i64)> = (0..5).map(|k| (k * 25, (k + 1) * 25)).collect();
+        let (seq, pool, ids) = timeline(&clips);
+        let op = Op::SetLength { clips: ids.iter().map(|id| ClipRef::Id(*id)).collect(), frames: 3, keep: LengthKeep::Start, ripple: true };
+        let (done, undone) = done_and_undone(&seq, &pool, op, "Set Length");
+        assert_eq!(spans(&done, 1), (0..5).map(|k| (k * 3, k * 3 + 3)).collect::<Vec<_>>());
+        assert_eq!(spans(&done, 2), spans(&done, 1), "the sound with them");
+        assert_eq!(spans(&undone, 1), clips);
+        // Without ripple each keeps its start, and the gaps stay.
+        let op = Op::SetLength { clips: ids.iter().map(|id| ClipRef::Id(*id)).collect(), frames: 3, keep: LengthKeep::Start, ripple: false };
+        let (done, _) = done_and_undone(&seq, &pool, op, "Set Length");
+        assert_eq!(spans(&done, 1), (0..5).map(|k| (k * 25, k * 25 + 3)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn set_length_keeps_the_end_or_the_centre() {
+        let (seq, pool, ids) = timeline(&[(25, 75)]);
+        let one = |keep| Op::SetLength { clips: vec![ClipRef::Id(ids[0])], frames: 10, keep, ripple: false };
+        assert_eq!(spans(&done_and_undone(&seq, &pool, one(LengthKeep::End), "Set Length").0, 1), vec![(65, 75)]);
+        assert_eq!(spans(&done_and_undone(&seq, &pool, one(LengthKeep::Centre), "Set Length").0, 1), vec![(45, 55)]);
+        assert!(resolve(&seq, &pool, &[Op::SetLength { clips: vec![ClipRef::Id(ids[0])], frames: 50, keep: LengthKeep::Start, ripple: false }]).is_err(), "already that long");
+    }
+
+    #[test]
+    fn a_clip_goes_over_every_cut_and_skips_where_it_would_overlap() {
+        // Four clips on V1, cuts at 25, 50 and 75; an 8-frame flash on V2
+        // at 200, and something already on V2 across the cut at 50.
+        let (mut seq, pool, _) = timeline(&[(0, 25), (25, 50), (50, 75), (75, 100)]);
+        let media = seq.tracks[1].clips[0].media_id().unwrap();
+        let flash = Clip::media(media, tc(200), tc(208), tc(0), tc(8));
+        let flash_id = flash.id;
+        seq.tracks[0].clips = vec![flash, Clip::media(media, tc(48), tc(52), tc(0), tc(4))];
+        let op = Op::OverEdits { clip_id: ClipRef::Id(flash_id), tracks: Vec::new(), from: None, to: None, align: EditAlign::Centre, every_clip: false };
+        let plan = resolve(&seq, &pool, std::slice::from_ref(&op)).unwrap();
+        assert!(plan.steps[0].what.contains("over 2 cuts") && plan.steps[0].what.contains("1 skipped"), "{}", plan.steps[0].what);
+        let (done, undone) = done_and_undone(&seq, &pool, op, "Copy Over Every Edit");
+        assert_eq!(spans(&done, 0), vec![(21, 29), (48, 52), (71, 79), (200, 208)]);
+        assert_eq!(spans(&undone, 0), vec![(48, 52), (200, 208)]);
+        // Ending on each clip's start, within 0 to 60.
+        let op = Op::OverEdits { clip_id: ClipRef::Id(flash_id), tracks: vec![TrackRef::Index(1)], from: Some(Anchor::Frame(0)), to: Some(Anchor::Frame(60)), align: EditAlign::Start, every_clip: true };
+        let (done, _) = done_and_undone(&seq, &pool, op, "Copy Over Every Edit");
+        assert_eq!(spans(&done, 0), vec![(0, 8), (25, 33), (48, 52), (200, 208)], "50 is skipped: it would overlap");
+    }
+
+    /// The assistant names them as JSON.
+    #[test]
+    fn the_ops_read_from_json() {
+        let id = ClipId::new().0.to_string();
+        for v in [
+            serde_json::json!({ "op": "strobe", "clip_id": id, "piece_frames": 2 }),
+            serde_json::json!({ "op": "set_length", "clips": [id], "frames": 3, "keep": "center", "ripple": true }),
+            serde_json::json!({ "op": "over_edits", "clip_id": id, "align": "end", "every_clip": true }),
+        ] {
+            serde_json::from_value::<Op>(v.clone()).unwrap_or_else(|e| panic!("{v}: {e}"));
+        }
+    }
+}

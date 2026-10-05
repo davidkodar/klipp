@@ -77,6 +77,7 @@ mod storyline;
 mod clip_moves;
 mod edit_points;
 mod source_edits;
+mod edit_helper_commands;
 mod subtitles;
 mod render_script;
 mod batch_rename;
