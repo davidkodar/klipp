@@ -42,7 +42,7 @@ pub(crate) fn remove(seq: &Sequence, pool: &MediaPool, id: ClipId) -> Result<Edi
 
 pub(crate) fn trim(seq: &Sequence, pool: &MediaPool, cmd: &AppCommand) -> Result<Option<EditCommand>, String> {
     let AppCommand::TrimClip { clip_id, old_source_in, old_source_out, old_timeline_in, old_timeline_out,
-        new_source_in, new_source_out, new_timeline_in, new_timeline_out, ripple } = cmd else {
+        new_source_in, new_source_out, new_timeline_in, new_timeline_out, ripple, linked } = cmd else {
         return Err("not a trim request".into());
     };
     let old = [*old_source_in, *old_source_out, *old_timeline_in, *old_timeline_out];
@@ -58,7 +58,7 @@ pub(crate) fn trim(seq: &Sequence, pool: &MediaPool, cmd: &AppCommand) -> Result
     } else {
         (Edge::Out, *new_timeline_out)
     };
-    ops::trim_at(seq, pool, *clip_id, edge, target, *ripple)
+    ops::trim_at_linked(seq, pool, *clip_id, edge, target, *ripple, *linked)
         .map(Some).map_err(|r| r.why)
 }
 
@@ -104,7 +104,7 @@ mod tests {
         };
         AppCommand::TrimClip { clip_id: c.id, old_source_in: c.source_in, old_source_out: c.source_out,
             old_timeline_in: c.timeline_in, old_timeline_out: c.timeline_out,
-            new_source_in: si, new_source_out: so, new_timeline_in: ti, new_timeline_out: to, ripple }
+            new_source_in: si, new_source_out: so, new_timeline_in: ti, new_timeline_out: to, ripple, linked: true }
     }
 
     fn apply_and_round_trip(seq: Sequence, mut pool: MediaPool, edit: EditCommand) -> Sequence {

@@ -79,7 +79,8 @@ impl KlippApp {
                             .flat_map(|t| t.clips.iter())
                             .find(|c| c.id == *clip_id);
                         match clip {
-                            Some(c) => (c.group_id, c.linked_clip_id, *new_timeline_in - c.timeline_in),
+                            // The Linked switch off moves the clip alone (#916).
+                            Some(c) => (c.group_id, c.linked_clip_id.filter(|_| self.state.linked_selection), *new_timeline_in - c.timeline_in),
                             None => (None, None, klipp_core::RationalTime { value: 0, rate: 1 }),
                         }
                     };

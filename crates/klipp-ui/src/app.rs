@@ -72,6 +72,7 @@ mod camera;
 mod transition_keys;
 mod locks;
 mod storyline;
+mod clip_moves;
 mod edit_points;
 mod subtitles;
 mod render_script;

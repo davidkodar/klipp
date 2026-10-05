@@ -1098,6 +1098,10 @@ pub enum AppCommand {
         new_timeline_in: Timecode,
         new_timeline_out: Timecode,
         ripple: bool,
+        /// Whether a linked partner follows (#916): false trims this
+        /// clip alone, a J or L cut (Alt while trimming, or the timeline's
+        /// Linked switch off).
+        linked: bool,
     },
     /// Roll trim: adjust the boundary between two adjacent clips.
     /// Clip A's out moves and Clip B's in moves by the same amount, keeping total duration constant.
@@ -2452,6 +2456,24 @@ pub enum AppCommand {
     TrimEditPoints { frames: i64 },
     /// Move the selected edit points to the playhead (extend edit).
     ExtendEditPoints,
+    /// Dynamic trimming (#914): J or L with an edit point selected plays
+    /// from its cut; this arms the trim there.
+    BeginDynamicTrim,
+    /// K during a dynamic trim: the selected edit points go to where the
+    /// playhead stopped, one undo step.
+    CommitDynamicTrim,
+    /// Esc during a dynamic trim: playback stops and the playhead goes
+    /// back to the cut, nothing trimmed.
+    CancelDynamicTrim,
+    /// Play around the selected edit point (or the playhead), two seconds
+    /// each side, looping until stopped (#914).
+    PlayAroundEdit,
+    /// Move the selected clips by `frames` (later when positive), as one
+    /// undo step (#917).
+    NudgeClips { frames: i64 },
+    /// Move the selected clips to the next track of their kind above (or
+    /// below), at the same time (#917).
+    MoveClipsToTrack { up: bool },
 
     // Per-clip markers
     AddClipMarker { clip_id: ClipId, time_secs: f64, name: String, color: MarkerColor },

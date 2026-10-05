@@ -341,6 +341,10 @@ pub enum Op {
         to: Anchor,
         #[serde(default)]
         track: Option<TrackRef>,
+        /// Whether its linked partner moves with it, by the same amount
+        /// (true unless said otherwise); false moves this clip alone.
+        #[serde(default = "default_true")]
+        linked: bool,
     },
     /// The stretch from `from` to `to` out of the timeline: taken from
     /// every unlocked track, a clip across either edge split there (its
@@ -2810,7 +2814,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             cut_range(seq, pool, i, from, to)
         }
 
-        Op::Move { clip_id: clip_ref, to, track } => {
+        Op::Move { clip_id: clip_ref, to, track, linked } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_ref, i)?;
             let clip_id = &clip.id;
             if seq.tracks[ti].locked {
@@ -2842,7 +2846,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             }
             let delta = new_in - clip.timeline_in;
             let mut touched = vec![*clip_id];
-            let linked_partner = clip.linked_clip_id.and_then(|pid| {
+            let linked_partner = clip.linked_clip_id.filter(|_| *linked).and_then(|pid| {
                 let (pti, _, p) = find_clip(seq, pid)?;
                 let p_in = p.timeline_in + delta;
                 let p_out = p.timeline_out + delta;
@@ -2867,7 +2871,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 // no longer there (#760 review), and its partner's, whose
                 // time moves: taken off in the same step.
                 let mut off: Vec<EditCommand> = Vec::new();
-                let partner = clip.linked_clip_id.and_then(|pid| find_clip(seq, pid)).map(|(pti, _, p)| (pti, p.id));
+                let partner = clip.linked_clip_id.filter(|_| *linked).and_then(|pid| find_clip(seq, pid)).map(|(pti, _, p)| (pti, p.id));
                 for (track, id) in std::iter::once((ti, clip.id)).chain(partner) {
                     for tr in seq.tracks[track].transitions.iter().filter(|t| t.clip_a_id == id || t.clip_b_id == id) {
                         let find = |cid: ClipId| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid);
@@ -3622,7 +3626,13 @@ pub fn place_narration(seq: &Sequence, media_id: MediaId, at: f64) -> Vec<Op> {
 /// timeline offsets and refusing the whole edit if either side cannot
 /// follow. No sequence is changed until the returned command is applied.
 pub fn trim_at(seq: &Sequence, pool: &MediaPool, clip_id: ClipId, edge: Edge, target: Timecode, ripple: bool) -> Result<EditCommand, Refusal> {
-    resolve_trim(seq, pool, 0, clip_id, edge, target, ripple, true).map(|(_, edit, _)| edit)
+    trim_at_linked(seq, pool, clip_id, edge, target, ripple, true)
+}
+
+/// [`trim_at`], saying whether a linked partner follows: false trims the
+/// clip alone, which is how a J or L cut is made by hand (#916).
+pub fn trim_at_linked(seq: &Sequence, pool: &MediaPool, clip_id: ClipId, edge: Edge, target: Timecode, ripple: bool, linked: bool) -> Result<EditCommand, Refusal> {
+    resolve_trim(seq, pool, 0, clip_id, edge, target, ripple, linked).map(|(_, edit, _)| edit)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5951,7 +5961,7 @@ fn slide(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: 
     } else if let Some(b) = before {
         ops.push(trim(b, Edge::Out, start + d));
     }
-    ops.push(Op::Move { clip_id: ClipRef::Id(clip.id), to: Anchor::Secs(start + d), track: None });
+    ops.push(Op::Move { clip_id: ClipRef::Id(clip.id), to: Anchor::Secs(start + d), track: None, linked: true });
     if d > 0.0 {
         if let Some(b) = before {
             ops.push(trim(b, Edge::Out, start + d));
@@ -10192,11 +10202,11 @@ mod tests {
         assert!(over.hint.contains("clip_end"), "{over}");
         let past = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(b), edge: Edge::Out, to: Anchor::Secs(11.0), ripple: false, linked: false }]).unwrap_err();
         assert!(past.why.contains("after this clip's out point"), "{past}");
-        let into = resolve(&seq, &pool, &[Op::Move { clip_id: ClipRef::Id(a), to: Anchor::Secs(1.0), track: None }]).unwrap_err();
+        let into = resolve(&seq, &pool, &[Op::Move { clip_id: ClipRef::Id(a), to: Anchor::Secs(1.0), track: None, linked: true }]).unwrap_err();
         assert!(into.why.contains("overlap"), "{into}");
         let outside = resolve(&seq, &pool, &[Op::Split { clip_id: ClipRef::Id(a), at: Anchor::Secs(4.0) }]).unwrap_err();
         assert!(outside.why.contains("not inside"), "{outside}");
-        let no_marker = resolve(&seq, &pool, &[Op::Move { clip_id: ClipRef::Id(a), to: Anchor::Marker("outro".into()), track: None }]).unwrap_err();
+        let no_marker = resolve(&seq, &pool, &[Op::Move { clip_id: ClipRef::Id(a), to: Anchor::Marker("outro".into()), track: None, linked: true }]).unwrap_err();
         assert!(no_marker.why.contains("no marker"), "{no_marker}");
     }
 

@@ -662,6 +662,7 @@ fn emit_trim_start(row: &SubRow, new_timeline_in: Timecode, ripple: bool, cmds: 
         new_timeline_in,
         new_timeline_out: row.timeline_out,
         ripple,
+        linked: true,
     });
 }
 
@@ -679,6 +680,7 @@ fn emit_trim_end(row: &SubRow, new_timeline_out: Timecode, ripple: bool, cmds: &
         new_timeline_in: row.timeline_in,
         new_timeline_out,
         ripple,
+        linked: true,
     });
 }
 

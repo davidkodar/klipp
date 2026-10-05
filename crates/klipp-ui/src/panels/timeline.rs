@@ -906,6 +906,9 @@ struct TrimState {
     original_timeline_in: Timecode,
     original_timeline_out: Timecode,
     ripple: bool,
+    /// Whether the linked partner follows (#916): Alt held when the trim
+    /// began, or the Linked switch off, trims this clip alone.
+    linked: bool,
     /// For ripple trim: original positions of clips after the trimmed clip
     subsequent_clips: Vec<(ClipId, Timecode, Timecode)>, // (id, original_timeline_in, original_timeline_out)
 }
@@ -923,6 +926,7 @@ impl TrimState {
             new_timeline_in: c.timeline_in,
             new_timeline_out: c.timeline_out,
             ripple: self.ripple,
+            linked: self.linked,
         });
         self.restore_preview(seq);
         command
@@ -5836,6 +5840,18 @@ impl TimelinePanel {
             }
         }
 
+        // Out of sync (#916): a linked picture or sound that has slipped
+        // from its partner says by how many frames, bottom right, in red.
+        if let Some(frames) = out_of_sync_frames(state.sequence(), clip) {
+            let galley = painter.layout_no_wrap(format!("{frames:+}"), egui::FontId::proportional(10.0), egui::Color32::WHITE);
+            let size = galley.size() + egui::vec2(8.0, 2.0);
+            if clip_rect.width() > size.x + 12.0 && clip_rect.height() > size.y + 4.0 {
+                let badge = egui::Rect::from_min_size(egui::pos2(clip_rect.right() - 6.0 - size.x, clip_rect.bottom() - size.y - 3.0), size);
+                painter.rect_filled(badge, size.y / 2.0, egui::Color32::from_rgb(200, 50, 50));
+                painter.galley(badge.min + egui::vec2(4.0, 1.0), galley, egui::Color32::WHITE);
+            }
+        }
+
         // Always-visible trim handle bars on both edges
         if clip_rect.width() > 12.0 {
             let handle_w = 5.0;
@@ -7789,6 +7805,9 @@ impl TimelinePanel {
                         original_timeline_in: hit_tl_in,
                         original_timeline_out: hit_tl_out,
                         ripple: state.ripple_enabled,
+                        // Alt, or the Linked switch off: this clip alone,
+                        // a J or L cut (#916).
+                        linked: state.linked_selection && !ui.input(|i| i.modifiers.alt),
                         subsequent_clips: subsequent,
                     });
                 }
@@ -7837,6 +7856,8 @@ impl TimelinePanel {
                     };
 
                     if let Some((hit_id, hit_tl_in, hit_tl_out, hit_src_in, hit_src_out, linked_id, media_id, left, right)) = body_hit {
+                        // The Linked switch off: the clip moves alone (#916).
+                        let linked_id = linked_id.filter(|_| state.linked_selection);
                         let alt_held = ui.input(|i| i.modifiers.alt);
                         let shift_held = ui.input(|i| i.modifiers.shift);
                         let gesture = body_drag_gesture(state.active_tool, alt_held, shift_held);
@@ -16340,6 +16361,21 @@ pub(crate) fn find_matte_candidate_above(
     None
 }
 
+/// How many frames `clip` has slipped from its linked partner (#916),
+/// later when positive: picture and sound of one file are in sync when
+/// the same moment of the file sits at the same place on the timeline.
+/// `None` in sync, unlinked, from different files (sound recorded apart
+/// keeps the offset it was synced at), or at different speeds.
+fn out_of_sync_frames(seq: &klipp_timeline::Sequence, clip: &klipp_timeline::Clip) -> Option<i64> {
+    let partner = seq.all_clips().find(|c| Some(c.id) == clip.linked_clip_id)?;
+    if clip.media_id().is_none() || clip.media_id() != partner.media_id() || (clip.speed - partner.speed).abs() > 1e-9 || clip.speed <= 0.0 {
+        return None;
+    }
+    let zero = |c: &klipp_timeline::Clip| c.timeline_in.to_secs_f64() - c.source_in.to_secs_f64() / c.speed;
+    let frames = ((zero(clip) - zero(partner)) * seq.fps.as_f64()).round() as i64;
+    (frames != 0).then_some(frames)
+}
+
 /// The transition on `track_idx` under `pos`, if any: its span on the
 /// timeline, at least a few pixels wide either side of the cut.
 #[allow(clippy::too_many_arguments)]
@@ -17778,6 +17814,41 @@ mod compound_filmstrip_tests {
 // would mislead the user about WHEN the effect is bypassed.
 // ═══════════════════════════════════════════════════════════════════
 #[cfg(test)]
+mod out_of_sync_tests {
+    use super::out_of_sync_frames;
+    use klipp_core::{MediaId, RationalTime};
+
+    #[test]
+    fn a_slipped_half_says_by_how_much_and_a_synced_pair_says_nothing() {
+        let tc = |s: f64| RationalTime::from_secs_f64(s, 25);
+        let m = MediaId::new();
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.fps = klipp_core::Fps::new(25, 1);
+        let mut v = klipp_timeline::Clip::media(m, tc(0.0), tc(4.0), tc(10.0), tc(14.0));
+        let mut a = klipp_timeline::Clip::media(m, tc(0.0), tc(4.0), tc(10.0), tc(14.0));
+        v.linked_clip_id = Some(a.id);
+        a.linked_clip_id = Some(v.id);
+        seq.tracks[0].clips = vec![v.clone()];
+        seq.tracks[1].clips = vec![a.clone()];
+        assert_eq!(out_of_sync_frames(&seq, &v), None, "in sync");
+        // An L cut keeps sync: the sound runs on, from the same file time.
+        seq.tracks[1].clips[0].timeline_out = tc(5.0);
+        seq.tracks[1].clips[0].source_out = tc(15.0);
+        assert_eq!(out_of_sync_frames(&seq, &v), None, "a J or L cut is still in sync");
+        // The sound moved 6 frames later on its own.
+        let d = tc(0.24);
+        seq.tracks[1].clips[0].timeline_in += d;
+        seq.tracks[1].clips[0].timeline_out += d;
+        let sound = seq.tracks[1].clips[0].clone();
+        assert_eq!(out_of_sync_frames(&seq, &sound), Some(6));
+        assert_eq!(out_of_sync_frames(&seq, &v), Some(-6));
+        // Sound from another file keeps the offset it was synced at.
+        seq.tracks[1].clips[0].kind = klipp_timeline::ClipKind::Media { media_id: MediaId::new() };
+        assert_eq!(out_of_sync_frames(&seq, &v), None);
+    }
+}
+
+#[cfg(test)]
 mod speed_badge_tests {
     use super::speed_badge_text;
 
@@ -18980,6 +19051,7 @@ mod trim_preview_tests {
                 original_source_in: clip.source_in, original_source_out: clip.source_out,
                 original_timeline_in: clip.timeline_in, original_timeline_out: clip.timeline_out,
                 ripple: true,
+                linked: true,
                 subsequent_clips: vec![(seq.tracks[0].clips[1].id, tc(4.0), tc(8.0))],
             };
             // Exactly the speculative mutation made while the pointer
@@ -19018,7 +19090,7 @@ mod trim_preview_tests {
             clip_id: c.id, track_idx: 0, edge: TrimEdge::Left, start_x: 0.0,
             original_source_in: c.source_in, original_source_out: c.source_out,
             original_timeline_in: c.timeline_in, original_timeline_out: c.timeline_out,
-            ripple: true, subsequent_clips: vec![],
+            ripple: true, linked: true, subsequent_clips: vec![],
         };
         track.clips.push(c);
         seq.tracks = vec![track];

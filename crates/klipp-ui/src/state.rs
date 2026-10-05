@@ -1127,6 +1127,9 @@ pub struct PlayToOut {
     pub out: klipp_core::Timecode,
     pub asked: std::time::Instant,
     pub started: bool,
+    /// Back to `from` at the Out instead of stopping: play around an
+    /// edit (#914).
+    pub looping: bool,
 }
 
 pub struct AppState {
@@ -1316,6 +1319,9 @@ pub struct AppState {
     /// A trim amount being typed (`+12`, `-1:05`) for the selected edit
     /// points, until Enter applies it or Escape drops it.
     pub trim_entry: Option<String>,
+    /// A dynamic trim armed at this cut (#914): K commits the selected
+    /// edit points to the playhead, Esc goes back here.
+    pub dynamic_trim: Option<Timecode>,
     pub hovered_clip: Option<ClipId>,
     /// Currently selected transition (track_idx, transition_id). UI-only state.
     pub selected_transition: Option<(usize, TransitionId)>,
@@ -1399,6 +1405,10 @@ pub struct AppState {
     /// handlers (and persisted back via `layout_dirty`).
     pub snap: crate::layout_state::SnapConfig,
     pub ripple_enabled: bool,
+    /// Linked selection (#916): on, a linked picture and sound trim and
+    /// move together; off (or Alt while trimming), each on its own, to
+    /// make a J or L cut.
+    pub linked_selection: bool,
     /// Whether appending a clip brings its audio to an audio track.
     ///
     /// Source patching, in one boolean. On is right for camera footage
@@ -3799,6 +3809,7 @@ impl Default for AppState {
             selected_clips: Vec::new(),
             selected_edits: Vec::new(),
             trim_entry: None,
+            dynamic_trim: None,
             hovered_clip: None,
             show_unsaved_dialog: false,
             unsaved_dialog_action: UnsavedAction::None,
@@ -3827,6 +3838,7 @@ impl Default for AppState {
             viewer_mode: ViewerMode::Program,
             snap: crate::layout_state::SnapConfig::default(),
             ripple_enabled: true,
+            linked_selection: true,
             append_brings_audio: true,
             default_transition_frames: 24,
             shift_step_frames: 0,
