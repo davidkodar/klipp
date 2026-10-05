@@ -3282,6 +3282,8 @@ pub(super) fn channel_config_to_u32(c: klipp_timeline::ChannelConfig) -> u32 {
         klipp_timeline::ChannelConfig::SwapLR => 2,
         klipp_timeline::ChannelConfig::Surround51 => 3,
         klipp_timeline::ChannelConfig::Surround71 => 4,
+        klipp_timeline::ChannelConfig::LeftOnly => 5,
+        klipp_timeline::ChannelConfig::RightOnly => 6,
     }
 }
 

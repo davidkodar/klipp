@@ -1012,6 +1012,16 @@ pub enum AppCommand {
     // Loop
     /// Clear the render cache under `from..to`, every clip there (#924).
     ClearRenderCache { from: Timecode, to: Timecode },
+    /// A track's colour label, 0 for none (#922).
+    SetTrackColourLabel { track_index: usize, label: u8 },
+    /// Move a track from `from` to `to` among the sequence's tracks: a
+    /// header dragged up or down, kept among tracks of its kind (#922).
+    MoveTrack { from: usize, to: usize },
+    /// Split a stereo audio clip into two mono clips, its left and right
+    /// channels, the right on the audio track below (#922).
+    SplitToMono { clip_id: ClipId },
+    /// Whether an audio track draws each clip's channels apart (#922).
+    SetTrackChannelWaveforms { track_index: usize, on: bool },
     ToggleLoopPlayback,
     SetLoopPlayback(bool),
     /// Play the sequence from its In to its Out once, and stop there

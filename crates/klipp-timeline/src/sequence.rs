@@ -1057,6 +1057,14 @@ pub struct Track {
     /// Custom track height in pixels. None = use default for track kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_height: Option<f32>,
+    /// The track's colour, on the media pool's colour label scale; 0 is
+    /// none, and the header's colour is then guessed from its name (#922).
+    #[serde(default)]
+    pub colour_label: u8,
+    /// An audio track draws each clip's channels apart, left above right
+    /// (#922).
+    #[serde(default)]
+    pub channel_waveforms: bool,
     /// Stored height before collapse, so double-click can restore it.
     #[serde(skip)]
     pub pre_collapse_height: Option<f32>,
@@ -1230,6 +1238,8 @@ impl Track {
             magnetic_role: TrackRole::Free,
             storyline_anchor: None,
             custom_height: None,
+            colour_label: 0,
+            channel_waveforms: false,
             pre_collapse_height: None,
             precomposition_sound: false,
             source_file: None,

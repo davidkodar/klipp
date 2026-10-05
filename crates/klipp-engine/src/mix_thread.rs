@@ -63,6 +63,17 @@ impl SourceMix {
                     pair.swap(0, 1);
                 }
             }
+            // One side of a stereo clip split to mono (#922).
+            5 => {
+                for pair in samples.chunks_exact_mut(2) {
+                    pair[1] = pair[0];
+                }
+            }
+            6 => {
+                for pair in samples.chunks_exact_mut(2) {
+                    pair[0] = pair[1];
+                }
+            }
             _ => {}
         }
     }
@@ -574,6 +585,16 @@ mod source_mix_tests {
         let mut s = [1.0, 0.0];
         mix.apply(&mut s);
         assert_eq!(s, [0.5, 0.5], "mono downmix");
+
+        // One side of a stereo clip split to mono (#922).
+        mix.set(1.0, 0.0, 5);
+        let mut s = [0.75, 0.25];
+        mix.apply(&mut s);
+        assert_eq!(s, [0.75, 0.75], "left only, on both sides");
+        mix.set(1.0, 0.0, 6);
+        let mut s = [0.75, 0.25];
+        mix.apply(&mut s);
+        assert_eq!(s, [0.25, 0.25], "right only, on both sides");
 
         mix.set(1.0, 0.0, 2);
         let mut s = [1.0, 0.0];

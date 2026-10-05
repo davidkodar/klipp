@@ -481,6 +481,9 @@ fn shape_samples(samples: &mut [f32], shape: &AudioClipShape, clip_pos_ext: f64,
                     *r = mono;
                 }
                 2 => std::mem::swap(l, r),
+                // One side of a stereo clip split to mono (#922).
+                5 => *r = *l,
+                6 => *l = *r,
                 _ => {}
             }
         } else if let [l] = pair {
@@ -830,6 +833,15 @@ mod tests {
         let mut s = vec![1.0f32, 0.0, 1.0, 0.0];
         shape_samples(&mut s, &shape, 1.0, 1.0, 25.0, sr);
         assert_eq!(&s[..], &[0.5, 0.5, 0.5, 0.5]);
+
+        // Left only and right only, each side of a split clip (#922),
+        // as playback mixes them.
+        for (config, want) in [(5u8, [0.75f32, 0.75]), (6, [0.25, 0.25])] {
+            let shape = AudioClipShape { channel_config: config, clip_duration_secs: 10.0, ..Default::default() };
+            let mut s = vec![0.75f32, 0.25];
+            shape_samples(&mut s, &shape, 1.0, 1.0, 25.0, sr);
+            assert_eq!(&s[..], &want[..], "channel config {config}");
+        }
 
         // Keyframed volume: from 1 at 0 s to 0 at 2 s, read at 1 s.
         let shape = AudioClipShape {

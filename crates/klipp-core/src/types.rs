@@ -178,6 +178,11 @@ pub enum ChannelConfig {
     SwapLR,        // Swap left and right channels
     Surround51,    // 5.1 output: L, R, C, LFE, Ls, Rs
     Surround71,    // 7.1 output: L, R, C, LFE, Ls, Rs, Lb, Rb
+    /// The left channel alone, on both sides: one half of a stereo clip
+    /// split to mono (#922).
+    LeftOnly,
+    /// The right channel alone, on both sides (#922).
+    RightOnly,
 }
 
 /// Audio fade curve shape.

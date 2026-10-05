@@ -77,6 +77,7 @@ impl KlippApp {
                                 entry: klipp_media::AudioCacheEntry {
                                     media_id,
                                     pcm_path,
+                                    channel_peaks: klipp_media::audio_cache::load_channel_peaks(&klipp_media::audio_cache::channel_peaks_path(&peaks_path)).ok(),
                                     peaks_path,
                                     sample_rate: 48000,
                                     channels: 2,

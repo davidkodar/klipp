@@ -62,6 +62,11 @@ pub fn show(
         SetAsPrimary(usize),
     }
     let mut deferred_action: Option<TrackAction> = None;
+    // A header dragged to reorder its track (#922): the track being
+    // dragged, kept between frames, and every row drawn, to drop on.
+    let drag_key = egui::Id::new("track_header_reorder");
+    let dragging: Option<usize> = ui.data(|d| d.get_temp(drag_key));
+    let mut rows: Vec<(usize, egui::Rect)> = Vec::new();
 
     let track_count = state.sequence().tracks.len();
     for track_idx in 0..track_count {
@@ -97,8 +102,10 @@ pub fn show(
             egui::Stroke::new(1.0_f32, theme.border),
         );
 
-        // Role color bar (3px left edge)
-        let role_color = match track.kind {
+        // Role color bar (3px left edge): the track's own colour when it
+        // has one (#922), else guessed from its name.
+        let own_colour = klipp_media::ColorLabel::from_u8(track.colour_label).rgb().map(|(r, g, b)| egui::Color32::from_rgb(r, g, b));
+        let role_color = if let Some(c) = own_colour { c } else { match track.kind {
             TrackKind::Video => {
                 // Determine role by track name
                 if track.name.to_lowercase().contains("b-roll") || track.name.to_lowercase().contains("broll") {
@@ -122,7 +129,7 @@ pub fn show(
             }
             TrackKind::Text => theme.role_title,
             TrackKind::Subtitle => theme.role_title,
-        };
+        } };
         let bar_rect = egui::Rect::from_min_size(
             track_rect.min,
             egui::vec2(crate::theme::CLIP_ROLE_BAR_W, track_h),
@@ -134,7 +141,11 @@ pub fn show(
         );
 
         // Right-click context menu on track header area (allocated FIRST so buttons sit on top)
-        let header_resp = ui.allocate_rect(track_rect, egui::Sense::click());
+        rows.push((track_idx, track_rect));
+        let header_resp = ui.allocate_rect(track_rect, egui::Sense::click_and_drag());
+        if header_resp.drag_started() {
+            ui.data_mut(|d| d.insert_temp(drag_key, track_idx));
+        }
         // Ctrl-click on a track's header selects its clips (#844).
         if header_resp.clicked() && ui.input(|i| i.modifiers.command) {
             cmds.push(AppCommand::SelectClipsIn { track: Some(track_idx), range: klipp_core::SelectRange::All });
@@ -541,6 +552,40 @@ pub fn show(
                 ui.close_menu();
             }
             crate::panels::timeline::track_waveform_zoom_item(ui, state, track_idx, &mut cmds);
+            // The track's colour, and moving it (#922).
+            let own_label = state.sequence().tracks[track_idx].colour_label;
+            ui.menu_button("Track Colour", |ui| {
+                for label in klipp_media::ColorLabel::ALL {
+                    let swatch = label.rgb().map(|(r, g, b)| egui::Color32::from_rgb(r, g, b)).unwrap_or(ui.visuals().weak_text_color());
+                    let text = egui::RichText::new(format!("\u{25CF} {}", label.label())).color(swatch);
+                    if ui.selectable_label(own_label == label.to_u8(), text).clicked() {
+                        cmds.push(AppCommand::SetTrackColourLabel { track_index: track_idx, label: label.to_u8() });
+                        ui.close_menu();
+                    }
+                }
+            });
+            if track_kind == TrackKind::Audio {
+                let mut apart = state.sequence().tracks[track_idx].channel_waveforms;
+                if ui.checkbox(&mut apart, "Show Channels Separately").on_hover_text("Each clip's left channel above its right").clicked() {
+                    cmds.push(AppCommand::SetTrackChannelWaveforms { track_index: track_idx, on: apart });
+                    ui.close_menu();
+                }
+            }
+            let same_kind = |i: &usize| state.sequence().tracks[*i].kind == track_kind;
+            let up = (0..track_idx).rev().find(same_kind);
+            let down = (track_idx + 1..state.sequence().tracks.len()).find(same_kind);
+            if ui.add_enabled(up.is_some(), egui::Button::new("Move Track Up")).on_hover_text("Or drag the track's header").clicked() {
+                if let Some(to) = up {
+                    cmds.push(AppCommand::MoveTrack { from: track_idx, to });
+                }
+                ui.close_menu();
+            }
+            if ui.add_enabled(down.is_some(), egui::Button::new("Move Track Down")).clicked() {
+                if let Some(to) = down {
+                    cmds.push(AppCommand::MoveTrack { from: track_idx, to });
+                }
+                ui.close_menu();
+            }
 
             // Magnetic role options, with their separator only when
             // there is one: a primary track has none.
@@ -787,6 +832,25 @@ pub fn show(
                 state.dirty = true;
                 cmds.push(AppCommand::SequenceUpdated);
             }
+        }
+    }
+
+    // The dragged header: a frame round the track it would land on, of
+    // its own kind, and on release the move (#922).
+    if let Some(from) = dragging {
+        let kind_of = |i: usize| state.sequence().tracks.get(i).map(|t| t.kind);
+        let pointer = ui.input(|i| i.pointer.interact_pos());
+        let target = pointer.and_then(|p| rows.iter().find(|(_, r)| r.contains(p))).map(|(i, r)| (*i, *r)).filter(|(i, _)| *i != from && kind_of(*i) == kind_of(from));
+        if let Some((_, rect)) = target {
+            ui.painter().rect_stroke(rect.shrink(1.0), 2.0, egui::Stroke::new(2.0_f32, theme.accent));
+        }
+        if !ui.input(|i| i.pointer.primary_down()) {
+            if let Some((to, _)) = target {
+                cmds.push(AppCommand::MoveTrack { from, to });
+            }
+            ui.data_mut(|d| d.remove::<usize>(drag_key));
+        } else {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
         }
     }
 

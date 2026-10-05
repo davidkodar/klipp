@@ -37,6 +37,8 @@ fn channel_config_to_u32(c: klipp_timeline::ChannelConfig) -> u32 {
         klipp_timeline::ChannelConfig::SwapLR => 2,
         klipp_timeline::ChannelConfig::Surround51 => 3,
         klipp_timeline::ChannelConfig::Surround71 => 4,
+        klipp_timeline::ChannelConfig::LeftOnly => 5,
+        klipp_timeline::ChannelConfig::RightOnly => 6,
     }
 }
 
@@ -12509,6 +12511,7 @@ mod audio_crossfade_schedule_tests {
                 channels: 2,
                 duration_secs: 5.0,
                 peaks: Vec::new(),
+                channel_peaks: None,
             });
             pool.add(m)
         };

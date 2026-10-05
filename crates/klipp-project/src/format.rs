@@ -188,6 +188,12 @@ pub struct TrackJson {
     pub locked: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_height: Option<f32>,
+    /// The track's colour label, 0 for none (#922).
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub colour_label: u8,
+    /// An audio track showing each clip's channels apart (#922).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub channel_waveforms: bool,
     /// Per-track automation lane state. `None` = collapsed, `Some(param)`
     /// = lane open showing the named param's curve. Stored as the
     /// stringified `AudioParam` variant ("Volume" / "Pan" / "Gain").
@@ -1160,6 +1166,8 @@ mod tests {
                 pan: 0.0,
                 locked: false,
                 custom_height: None,
+                colour_label: 0,
+                channel_waveforms: false,
                 automation_lane_visible: Some(label.to_string()),
                 automation_lane_height: None,
             };
@@ -1204,6 +1212,8 @@ mod tests {
             pan: 0.0,
             locked: false,
             custom_height: None,
+            colour_label: 0,
+            channel_waveforms: false,
             automation_lane_visible: None,
             automation_lane_height: None,
         };
@@ -1235,6 +1245,8 @@ mod tests {
             pan: 0.0,
             locked: false,
             custom_height: None,
+            colour_label: 0,
+            channel_waveforms: false,
             automation_lane_visible: Some("Volume".to_string()),
             automation_lane_height: Some(180.0),
         };
