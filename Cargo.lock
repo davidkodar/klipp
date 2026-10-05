@@ -2953,6 +2953,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "klipp-convert"
+version = "0.1.0"
+dependencies = [
+ "klipp-core",
+ "klipp-effects",
+ "klipp-nodes",
+ "klipp-project",
+ "klipp-timeline",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "klipp-core"
 version = "0.1.0"
 dependencies = [
