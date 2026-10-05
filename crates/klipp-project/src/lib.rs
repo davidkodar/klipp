@@ -39,6 +39,7 @@
 pub mod lock;
 pub mod metadata_sheet;
 pub mod consolidate;
+pub mod consolidate_trim;
 mod format;
 pub mod fcpxml;
 pub mod fcpxml_import;

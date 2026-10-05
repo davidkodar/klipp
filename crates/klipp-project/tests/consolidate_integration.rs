@@ -112,6 +112,7 @@ fn run_consolidate(
             dest_dir: dest,
             include_proxies: false,
             include_skims: false,
+            mode: Default::default(),
         },
         None,
     )
@@ -413,4 +414,122 @@ fn consolidate_rollback_when_source_file_missing_mid_copy() {
 
     let _ = std::fs::remove_dir_all(&source_dir);
     let _ = std::fs::remove_dir_all(&media_dir);
+}
+
+/// Only what the sequences use (#77): the unused file is left out of the
+/// copy and of the consolidated pool, and the summary said so first.
+#[test]
+fn used_only_copies_what_the_timeline_uses() {
+    use klipp_project::consolidate::{summarise, ConsolidateMode};
+    use klipp_timeline::{Clip, Track, TrackKind};
+    let source_dir = tmp_path("used_src");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    let media_dir = tmp_path("used_media");
+    std::fs::create_dir_all(&media_dir).unwrap();
+    let (a, b) = (media_dir.join("used.mp4"), media_dir.join("unused.mp4"));
+    std::fs::write(&a, b"used media").unwrap();
+    std::fs::write(&b, b"the unused take, longer").unwrap();
+    let mut pool = MediaPool::new();
+    let used = pool.add(make_media_item(a.clone()));
+    let unused = pool.add(make_media_item(b.clone()));
+    let mut seq = Sequence::new_default();
+    seq.tracks.clear();
+    let mut v = Track::new("Video 1", TrackKind::Video);
+    let t = |f: i64| RationalTime::from_frames(f, 24);
+    v.clips.push(Clip::media(used, t(0), t(24), t(0), t(24)));
+    seq.tracks.push(v);
+    let seqs = vec![seq];
+    let dest = tmp_path("used_dest");
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: ConsolidateMode::UsedOnly };
+
+    let summary = summarise(&pool, &seqs, &ColorSettings::default(), &options);
+    assert_eq!((summary.files, summary.bytes), (1, 10), "{summary:?}");
+    assert_eq!(summary.left_out, vec!["unused.mp4".to_string()]);
+
+    let result = consolidate_project(&source_dir, &pool, &seqs, &ColorSettings::default(), options, None).unwrap();
+    assert_eq!(result.files_copied, 1);
+    assert_eq!(result.left_out, vec!["unused.mp4".to_string()]);
+    assert!(dest.join("media/used.mp4").exists());
+    assert!(!dest.join("media/unused.mp4").exists());
+    let (_seqs, loaded_pool, ..) = load_project(&dest).unwrap();
+    assert!(loaded_pool.get(&used).is_some_and(|m| m.path.exists()));
+    assert!(loaded_pool.get(&unused).is_none(), "the unused item leaves the pool");
+
+    for d in [&source_dir, &media_dir, &dest] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// The archive (#77): a real file cut to what its clips use with handles,
+/// the timeline moved onto the cut, and the clip's frames still the
+/// source's. Needs ffmpeg, and skips without it.
+#[test]
+fn trimmed_cuts_the_file_and_moves_the_clip() {
+    use klipp_project::consolidate::{summarise, ConsolidateMode};
+    use klipp_timeline::{Clip, Track, TrackKind};
+    let have = |bin: &str| std::process::Command::new(bin).arg("-version").output().is_ok_and(|o| o.status.success());
+    if !have("ffmpeg") || !have("ffprobe") {
+        eprintln!("skipped: no ffmpeg");
+        return;
+    }
+    let source_dir = tmp_path("trim_src");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    let media_dir = tmp_path("trim_media");
+    std::fs::create_dir_all(&media_dir).unwrap();
+    let src = media_dir.join("rush.mp4");
+    let made = std::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=24:duration=30", "-c:v", "libx264", "-g", "48", "-keyint_min", "48", "-sc_threshold", "0", "-pix_fmt", "yuv420p"])
+        .arg(&src)
+        .status();
+    if !made.is_ok_and(|s| s.success()) {
+        eprintln!("skipped: ffmpeg could not make the test file");
+        return;
+    }
+    let mut item = make_media_item(src.clone());
+    item.duration = RationalTime::from_frames(30 * 24, 24);
+    let id = {
+        let mut pool = MediaPool::new();
+        let id = pool.add(item);
+        (pool, id)
+    };
+    let (pool, id) = id;
+    // One clip, 20 s to 22 s of the 30 s rush, at 5 s on the timeline.
+    let t = |secs: i64| RationalTime::from_frames(secs * 24, 24);
+    let mut seq = Sequence::new_default();
+    seq.tracks.clear();
+    let mut v = Track::new("Video 1", TrackKind::Video);
+    v.clips.push(Clip::media(id, t(5), t(7), t(20), t(22)));
+    seq.tracks.push(v);
+    let seqs = vec![seq];
+    let dest = tmp_path("trim_dest");
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: ConsolidateMode::Trimmed { handle_secs: 1.0 } };
+    let summary = summarise(&pool, &seqs, &ColorSettings::default(), &options);
+    assert_eq!((summary.files, summary.trimmed), (1, 1), "{summary:?}");
+
+    let result = consolidate_project(&source_dir, &pool, &seqs, &ColorSettings::default(), options, None).unwrap();
+    assert_eq!(result.files_trimmed, 1, "{:?}", result.warnings);
+    let (loaded, loaded_pool, ..) = load_project(&dest).unwrap();
+    let cut = loaded_pool.get(&id).expect("the item is kept");
+    assert!(cut.path.starts_with(&dest), "{:?}", cut.path);
+    assert!(cut.path.exists());
+    assert!(std::fs::metadata(&cut.path).unwrap().len() < std::fs::metadata(&src).unwrap().len());
+    // Handles to 19 s; the keyframe at or before it is at 18 s (every 2 s).
+    let clip = &loaded[0].tracks[0].clips[0];
+    assert!((clip.source_in.to_secs_f64() - 2.0).abs() < 0.05, "20 s is 2 s into the cut: {}", clip.source_in.to_secs_f64());
+    assert!((clip.timeline_in.to_secs_f64() - 5.0).abs() < 1e-6, "the timeline is unmoved");
+    // The clip's frame half a second in, from the cut, is the source's.
+    let frame = |path: &std::path::Path, at: f64| {
+        std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-ss", &format!("{at:.3}"), "-i"])
+            .arg(path)
+            .args(["-frames:v", "1", "-vf", "scale=64:36", "-pix_fmt", "gray", "-f", "rawvideo", "-"])
+            .output()
+            .unwrap()
+            .stdout
+    };
+    assert_eq!(frame(&src, 20.5), frame(&cut.path, clip.source_in.to_secs_f64() + 0.5));
+
+    for d in [&source_dir, &media_dir, &dest] {
+        let _ = std::fs::remove_dir_all(d);
+    }
 }

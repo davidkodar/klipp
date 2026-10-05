@@ -953,10 +953,65 @@ impl KlippApp {
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
                     ui.label(
-                        "Copies all referenced media into a new self-contained \
-                         project folder. The original is untouched.",
+                        "Copies media into a new self-contained project folder. \
+                         The original is untouched.",
                     );
                     ui.add_space(8.0);
+
+                    // What is copied (#77): everything, to hand the project
+                    // on; or only what the timeline uses, to archive it.
+                    ui.radio_value(&mut self.state.consolidate_mode, 0, "Everything in the media pool")
+                        .on_hover_text("Every file, whole: for handing the project to someone who may want the unused takes");
+                    ui.radio_value(&mut self.state.consolidate_mode, 1, "Only media the timelines use")
+                        .on_hover_text("Files no sequence uses are left out; the ones used are copied whole");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut self.state.consolidate_mode, 2, "Only what is used, with handles of")
+                            .on_hover_text("Each file cut to the stretches its clips use, plus the handles, without re-encoding (from the keyframe before). A file that cannot be cut cleanly is copied whole");
+                        ui.add_enabled(
+                            self.state.consolidate_mode == 2,
+                            egui::DragValue::new(&mut self.state.consolidate_handle_secs).range(0.0..=30.0).speed(0.1).suffix(" s"),
+                        );
+                    });
+                    let mode = match self.state.consolidate_mode {
+                        1 => klipp_project::consolidate::ConsolidateMode::UsedOnly,
+                        2 => klipp_project::consolidate::ConsolidateMode::Trimmed { handle_secs: self.state.consolidate_handle_secs },
+                        _ => klipp_project::consolidate::ConsolidateMode::Collect,
+                    };
+                    // Said before anything is written: files, size, and what
+                    // is left out.
+                    let key = {
+                        use std::hash::{Hash, Hasher};
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        (self.state.consolidate_mode, self.state.consolidate_handle_secs.to_bits(), self.state.consolidate_include_proxies, self.state.consolidate_include_skims).hash(&mut h);
+                        total_media.hash(&mut h);
+                        for c in self.state.sequences.iter().flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter()) {
+                            (c.id, c.source_in.value, c.source_out.value).hash(&mut h);
+                        }
+                        h.finish()
+                    };
+                    if self.state.consolidate_summary.as_ref().is_none_or(|(k, _)| *k != key) {
+                        let options = klipp_project::consolidate::ConsolidateOptions {
+                            dest_dir: std::path::PathBuf::new(),
+                            include_proxies: self.state.consolidate_include_proxies,
+                            include_skims: self.state.consolidate_include_skims,
+                            mode,
+                        };
+                        let color = klipp_project::ColorSettings { global_lut_path: self.state.global_lut_path.clone(), ..Default::default() };
+                        let summary = klipp_project::consolidate::summarise(&self.state.media_pool, &self.state.sequences, &color, &options);
+                        self.state.consolidate_summary = Some((key, summary));
+                    }
+                    if let Some((_, s)) = &self.state.consolidate_summary {
+                        let size = if s.bytes >= 1 << 30 { format!("{:.1} GB", s.bytes as f64 / (1u64 << 30) as f64) } else { format!("{:.1} MB", s.bytes as f64 / (1u64 << 20) as f64) };
+                        let mut said = format!("Will write {} file(s), about {size}", s.files);
+                        if s.trimmed > 0 {
+                            said.push_str(&format!("; {} cut to what is used", s.trimmed));
+                        }
+                        if !s.left_out.is_empty() {
+                            said.push_str(&format!("; {} unused left out", s.left_out.len()));
+                        }
+                        ui.label(said).on_hover_text(if s.left_out.is_empty() { String::new() } else { format!("Left out:\n{}", s.left_out.join("\n")) });
+                    }
+                    ui.add_space(4.0);
 
                     ui.label(format!("Media files:  {online_count} online"));
                     if offline_count > 0 {
@@ -1043,6 +1098,7 @@ impl KlippApp {
                                 include_skims,
                                 create_zip,
                                 delete_folder_after_zip,
+                                mode,
                             );
                         }
                     });

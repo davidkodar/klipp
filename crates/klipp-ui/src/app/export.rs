@@ -3082,6 +3082,7 @@ impl KlippApp {
                     *include_skims,
                     *create_zip,
                     *delete_folder_after_zip,
+                    klipp_project::consolidate::ConsolidateMode::Collect,
                 );
                 true
             }

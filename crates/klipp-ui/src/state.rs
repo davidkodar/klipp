@@ -2302,6 +2302,14 @@ pub struct AppState {
     /// consolidated folder so only the archive remains. Default off.
     /// Only visible when `consolidate_create_zip` is true.
     pub consolidate_delete_folder_after_zip: bool,
+    /// What the consolidate dialog copies (#77): 0 everything, 1 only the
+    /// used media, 2 only what is used, cut with handles.
+    pub consolidate_mode: u8,
+    /// The handles kept either side of what is used, in seconds (#77).
+    pub consolidate_handle_secs: f64,
+    /// The dialog's summary and what it was worked out for (#77): worked
+    /// out again when the options or the project change, not every frame.
+    pub consolidate_summary: Option<(u64, klipp_project::consolidate::ConsolidateSummary)>,
     pub show_browser_panel: bool,
     /// When set, the browser panel should scroll to this media item.
     pub reveal_in_browser: Option<klipp_core::MediaId>,
@@ -4149,6 +4157,9 @@ impl Default for AppState {
             consolidate_include_proxies: false,
             consolidate_include_skims: false,
             consolidate_create_zip: false,
+            consolidate_mode: 0,
+            consolidate_handle_secs: 1.0,
+            consolidate_summary: None,
             consolidate_delete_folder_after_zip: false,
             show_browser_panel: true,
             reveal_in_browser: None,

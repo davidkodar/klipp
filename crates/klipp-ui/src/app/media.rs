@@ -1767,6 +1767,7 @@ impl KlippApp {
         include_skims: bool,
         create_zip: bool,
         delete_folder_after_zip: bool,
+        mode: klipp_project::consolidate::ConsolidateMode,
     ) {
         let Some(source_dir) = self.state.project_path.clone() else {
             self.state.toast.show(
@@ -1797,6 +1798,7 @@ impl KlippApp {
             dest_dir,
             include_proxies,
             include_skims,
+            mode,
         };
 
         let (tx, rx) = std::sync::mpsc::channel();

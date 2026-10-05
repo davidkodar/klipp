@@ -515,18 +515,21 @@ impl KlippApp {
         if let Some(result) = phase1_finished {
             match result {
                 Ok(ref r) => {
-                    let msg = if r.offline_skipped.is_empty() {
-                        format!(
-                            "Project consolidated — {} file(s) copied.",
-                            r.files_copied,
-                        )
-                    } else {
-                        format!(
-                            "Project consolidated — {} file(s) copied, {} offline skipped.",
-                            r.files_copied,
-                            r.offline_skipped.len(),
-                        )
-                    };
+                    let mut msg = format!("Project consolidated — {} file(s) copied", r.files_copied);
+                    if r.files_trimmed > 0 {
+                        msg.push_str(&format!(", {} cut to what is used", r.files_trimmed));
+                    }
+                    if !r.left_out.is_empty() {
+                        msg.push_str(&format!(", {} unused left out", r.left_out.len()));
+                    }
+                    if !r.offline_skipped.is_empty() {
+                        msg.push_str(&format!(", {} offline skipped", r.offline_skipped.len()));
+                    }
+                    msg.push('.');
+                    // A file that could not be cut cleanly was copied whole.
+                    for w in &r.warnings {
+                        tracing::info!("consolidate: {w}");
+                    }
                     self.state.toast.show(msg);
                 }
                 Err(ref e) => {
