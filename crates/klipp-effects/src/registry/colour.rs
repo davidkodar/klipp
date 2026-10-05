@@ -12,8 +12,8 @@
 //!   reset is 0.5.
 
 use super::{
-    Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Spatial, Temporal, Unit, IMAGE_IN,
-    IMAGE_OUT,
+    Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling, Spatial, Temporal, Unit,
+    IMAGE_IN, IMAGE_OUT,
 };
 use crate::{BuiltinEffect, ColorFadeMode};
 
@@ -62,6 +62,7 @@ pub(super) static TYPES: &[EffectType] = &[
             &[
                 ParamDesc {
                     field: "color",
+                    index: None,
                     key: "color",
                     label: "Colour",
                     kind: ParamKind::Colour,
@@ -69,12 +70,14 @@ pub(super) static TYPES: &[EffectType] = &[
                     range: None,
                     soft: None,
                     unit: Unit::None,
+                    scaling: Scaling::None,
                     keyframable: false,
                     derived: false,
                 },
                 ParamDesc::float("duration_secs", "Duration", 1.0, (0.05, 10.0), Unit::Seconds).fixed(),
                 ParamDesc {
                     field: "mode",
+                    index: None,
                     key: "mode",
                     label: "Mode",
                     kind: ParamKind::Choice(&["in", "out"]),
@@ -82,11 +85,13 @@ pub(super) static TYPES: &[EffectType] = &[
                     range: None,
                     soft: None,
                     unit: Unit::None,
+                    scaling: Scaling::None,
                     keyframable: false,
                     derived: false,
                 },
                 ParamDesc {
                     field: "progress",
+                    index: None,
                     key: "progress",
                     label: "Progress",
                     kind: ParamKind::Float,
@@ -94,6 +99,7 @@ pub(super) static TYPES: &[EffectType] = &[
                     range: Some((0.0, 1.0)),
                     soft: None,
                     unit: Unit::Ratio,
+                    scaling: Scaling::None,
                     keyframable: false,
                     derived: true,
                 },
