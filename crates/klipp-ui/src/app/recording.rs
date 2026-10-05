@@ -31,18 +31,16 @@ impl KlippApp {
 
         // A take is the project's own media: it goes in the project's
         // folder, not a cache that may be cleared (#114). An unsaved
-        // project's go under the cache until it is saved.
-        let rec_dir = match &self.state.project_path {
-            Some(dir) => dir.join("Recordings"),
-            None => self
-                .prefs
-                .proxy
-                .proxy_cache_dir
-                .clone()
-                .or_else(|| dirs::cache_dir().map(|d| d.join("klipp")))
-                .unwrap_or_else(|| std::path::PathBuf::from("/tmp/klipp"))
-                .join("recordings"),
-        };
+        // project's go under the cache until it is saved, its path then
+        // being the placeholder "Untitled", not a folder.
+        let cache = self
+            .prefs
+            .proxy
+            .proxy_cache_dir
+            .clone()
+            .or_else(|| dirs::cache_dir().map(|d| d.join("klipp")))
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp/klipp"));
+        let rec_dir = crate::punch_in::take_dir(self.state.project_path.as_deref(), &cache);
         if let Err(e) = std::fs::create_dir_all(&rec_dir) {
             self.state.toast.show(format!("Recording dir error: {e}"));
             return;
