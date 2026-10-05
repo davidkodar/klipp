@@ -21,6 +21,13 @@
 //!
 //! Offline media items are skipped and returned in
 //! `ConsolidateResult::offline_skipped` so the UI can surface them.
+//!
+//! Three modes (#77), chosen by [`ConsolidateMode`]: collect the whole
+//! pool, whole files, to hand a project on; only the media the sequences
+//! use, whole files; or an archive of only what they use, each file cut
+//! to the stretches its clips use plus handles, the timeline moved onto
+//! the cut files (see [`crate::consolidate_trim`]). [`summarise`] says
+//! what a run will copy before anything is written.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -41,6 +48,38 @@ pub struct ConsolidateOptions {
     pub include_proxies: bool,
     /// Copy skim (all-keyframe) transcodes (off by default).
     pub include_skims: bool,
+    /// What is copied (#77).
+    pub mode: ConsolidateMode,
+}
+
+/// What a consolidation copies (#77).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ConsolidateMode {
+    /// Every item in the pool, whole files: the project handed to someone
+    /// who may want the unused takes.
+    #[default]
+    Collect,
+    /// Only the media the sequences use, whole files.
+    UsedOnly,
+    /// Only what the sequences use, each file cut to the stretches its
+    /// clips use, widened by `handle_secs` both ways.
+    Trimmed { handle_secs: f64 },
+}
+
+/// What a consolidation will do, said before it is run (#77).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ConsolidateSummary {
+    /// Files written: whole copies and cut stretches.
+    pub files: usize,
+    /// Their size, in bytes; a cut file's estimated from its share of
+    /// the source's length.
+    pub bytes: u64,
+    /// Files to be cut to what is used.
+    pub trimmed: usize,
+    /// Media in the pool left out because no sequence uses it.
+    pub left_out: Vec<String>,
+    /// Media that cannot be copied because it is offline.
+    pub offline: Vec<String>,
 }
 
 /// Progress callback signature: `(files_done, files_total, current_filename)`.
@@ -57,6 +96,10 @@ pub struct ConsolidateResult {
     pub files_copied: usize,
     pub offline_skipped: Vec<String>,
     pub warnings: Vec<String>,
+    /// Media left out because no sequence uses it (#77).
+    pub left_out: Vec<String>,
+    /// Files cut to what the sequences use (#77).
+    pub files_trimmed: usize,
 }
 
 /// Errors that can abort consolidation before completion.
@@ -143,16 +186,22 @@ struct CopyPlan {
     lut_new_path: Option<PathBuf>,
     offline_skipped: Vec<String>,
     warnings: Vec<String>,
+    /// Items left out as unused (#77), by file name.
+    left_out: Vec<String>,
 }
 
 /// Build the copy plan from the media pool, sequences, and color settings.
 /// Purely in-memory — no filesystem side effects. Returns the plan plus any
 /// upfront warnings (missing LUT, missing texture files).
+/// `only`, when given, is the media to copy (the used media); `cut` the
+/// files cut separately, whose items are not copied whole.
 fn build_copy_plan(
     media_pool: &MediaPool,
     sequences: &[Sequence],
     color_settings: &ColorSettings,
     options: &ConsolidateOptions,
+    only: Option<&HashSet<MediaId>>,
+    cut: &HashSet<PathBuf>,
 ) -> CopyPlan {
     let mut items: Vec<CopyItem> = Vec::new();
     let mut used_primary: HashSet<String> = HashSet::new();
@@ -167,9 +216,26 @@ fn build_copy_plan(
     let mut texture_new_paths = HashMap::new();
     let mut offline_skipped: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
+    let mut left_out: Vec<String> = Vec::new();
+    // A file several items share (a subclip and its parent) is copied once.
+    let mut copied_paths: HashMap<PathBuf, PathBuf> = HashMap::new();
 
     // Primary media
     for item in media_pool.all() {
+        if item.kind != klipp_media::MediaItemKind::File {
+            continue;
+        }
+        if only.is_some_and(|used| !used.contains(&item.id)) {
+            left_out.push(item.filename.clone());
+            continue;
+        }
+        if cut.contains(&item.path) {
+            continue;
+        }
+        if let Some(dst) = copied_paths.get(&item.path) {
+            media_new_paths.insert(item.id, dst.clone());
+            continue;
+        }
         if item.offline || !item.path.exists() {
             offline_skipped.push(item.path.display().to_string());
             continue;
@@ -200,6 +266,7 @@ fn build_copy_plan(
             subfolder: "",
         });
         media_new_paths.insert(item.id, options.dest_dir.join("media").join(&dst_name));
+        copied_paths.insert(item.path.clone(), options.dest_dir.join("media").join(&dst_name));
 
         // Proxy (opt-in)
         if options.include_proxies {
@@ -343,6 +410,7 @@ fn build_copy_plan(
         lut_new_path,
         offline_skipped,
         warnings,
+        left_out,
     }
 }
 
@@ -488,13 +556,35 @@ pub fn consolidate_project(
         return Err(ConsolidateError::DestinationExists(options.dest_dir));
     }
 
-    let plan = build_copy_plan(media_pool, sequences, color_settings, &options);
-
     // Create destination layout (media/ is always needed).
     std::fs::create_dir_all(options.dest_dir.join("media"))
         .map_err(ConsolidateError::CreateDir)?;
 
-    let files_total = plan.items.len();
+    let used = (options.mode != ConsolidateMode::Collect).then(|| crate::consolidate_trim::used_media(media_pool, sequences));
+    // The archive's cut files first: a file that cannot be cut cleanly is
+    // copied whole below instead.
+    let mut cut_warnings = Vec::new();
+    let cuts = match options.mode {
+        ConsolidateMode::Trimmed { handle_secs } => cut_used_files(media_pool, sequences, handle_secs, &options.dest_dir, progress.as_ref(), &mut cut_warnings),
+        _ => HashMap::new(),
+    };
+    // A file with a clip no cut of it holds is copied whole instead: it
+    // would be remapped wrong (#963 review).
+    let mut cuts = cuts;
+    for path in crate::consolidate_trim::unheld(media_pool, sequences, &cuts) {
+        if let Some(segments) = cuts.remove(&path) {
+            for s in segments {
+                let _ = std::fs::remove_file(&s.path);
+            }
+            cut_warnings.push(format!("{} copied whole: a clip runs past what was cut", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+        }
+    }
+    let cut_paths: HashSet<PathBuf> = cuts.keys().cloned().collect();
+    let mut plan = build_copy_plan(media_pool, sequences, color_settings, &options, used.as_ref(), &cut_paths);
+    plan.warnings.extend(cut_warnings);
+    let files_trimmed = cuts.len();
+
+    let files_total = plan.items.len() + cuts.values().map(Vec::len).sum::<usize>();
 
     if let Err(e) = execute_copy_plan(&plan, &options.dest_dir, progress.as_ref()) {
         let _ = std::fs::remove_dir_all(&options.dest_dir);
@@ -504,6 +594,24 @@ pub fn consolidate_project(
     // Remap MediaPool and sequences to use the new paths.
     let new_pool = remap_media_pool(media_pool, &plan);
     let new_seqs = remap_sequences(sequences, &plan);
+    let (new_pool, new_seqs) = if cuts.is_empty() { (new_pool, new_seqs) } else { crate::consolidate_trim::remap(&new_pool, &new_seqs, &cuts) };
+    // Unused media leaves the archive's pool; items split onto several
+    // cut files are new and stay.
+    let new_pool = match &used {
+        Some(used) => {
+            let mut pool = new_pool;
+            let drop: Vec<MediaId> = pool
+                .all()
+                .filter(|m| m.kind == klipp_media::MediaItemKind::File && media_pool.get(&m.id).is_some() && !used.contains(&m.id))
+                .map(|m| m.id)
+                .collect();
+            for id in drop {
+                pool.remove(&id);
+            }
+            pool
+        }
+        None => new_pool,
+    };
     let mut new_color = color_settings.clone();
     new_color.global_lut_path = plan.lut_new_path.clone();
 
@@ -531,7 +639,99 @@ pub fn consolidate_project(
         files_copied: files_total,
         offline_skipped: plan.offline_skipped,
         warnings: plan.warnings,
+        left_out: plan.left_out,
+        files_trimmed,
     })
+}
+
+/// The files worth cutting, cut into `dest_dir/media/trimmed/`: each
+/// used file whose used stretches, with handles, leave out a fifth or
+/// more of it. A file whose cut fails or does not check out is left to
+/// be copied whole, with a warning.
+fn cut_used_files(
+    pool: &MediaPool,
+    sequences: &[Sequence],
+    handle_secs: f64,
+    dest_dir: &Path,
+    progress: Option<&ProgressFn>,
+    warnings: &mut Vec<String>,
+) -> HashMap<PathBuf, Vec<crate::consolidate_trim::Segment>> {
+    use crate::consolidate_trim as trim;
+    let planned = trim_candidates(pool, sequences, handle_secs);
+    let total: usize = planned.iter().map(|(_, r)| r.len()).sum();
+    let mut done = 0;
+    let mut names: HashSet<String> = HashSet::new();
+    let mut cuts = HashMap::new();
+    let dir = dest_dir.join("media").join("trimmed");
+    if !planned.is_empty() && std::fs::create_dir_all(&dir).is_err() {
+        warnings.push("Could not make the trimmed folder; files copied whole".into());
+        return cuts;
+    }
+    for (item, ranges) in planned {
+        let filename = item.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| format!("media_{}", item.id.0));
+        let mut segments = Vec::new();
+        for (j, range) in ranges.iter().enumerate() {
+            let stem = Path::new(&filename).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let ext = Path::new(&filename).extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+            let name = collision_safe_name(&format!("{stem}_part{}{ext}", j + 1), &mut names);
+            done += 1;
+            if let Some(cb) = progress {
+                cb(done, total, &name);
+            }
+            match trim::cut(item, *range, &dir.join(&name)) {
+                Ok(segment) => segments.push(segment),
+                Err(why) => {
+                    warnings.push(format!("{filename} copied whole: {why}"));
+                    for s in &segments {
+                        let _ = std::fs::remove_file(&s.path);
+                    }
+                    segments.clear();
+                    break;
+                }
+            }
+        }
+        if !segments.is_empty() {
+            cuts.insert(item.path.clone(), segments);
+        }
+    }
+    cuts
+}
+
+/// The used files worth cutting, each with its used stretches: one item
+/// of the file stands for it (its probe facts are the file's).
+fn trim_candidates<'a>(pool: &'a MediaPool, sequences: &[Sequence], handle_secs: f64) -> Vec<(&'a MediaItem, Vec<crate::consolidate_trim::Range>)> {
+    use crate::consolidate_trim as trim;
+    let mut out: Vec<(&MediaItem, Vec<trim::Range>)> = trim::used_ranges(pool, sequences, handle_secs)
+        .into_iter()
+        .filter_map(|(path, ranges)| {
+            let item = pool.all().find(|m| m.path == path && !m.offline && m.path.exists() && !is_symlinked_leaf(&m.path) && trim::can_cut(m))?;
+            trim::worth_trimming(&ranges, item.duration.to_secs_f64()).then_some((item, ranges))
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.path.cmp(&b.0.path));
+    out
+}
+
+/// What [`consolidate_project`] will copy with these options, said before
+/// it runs (#77). Reads file sizes; writes nothing.
+pub fn summarise(media_pool: &MediaPool, sequences: &[Sequence], color_settings: &ColorSettings, options: &ConsolidateOptions) -> ConsolidateSummary {
+    let used = (options.mode != ConsolidateMode::Collect).then(|| crate::consolidate_trim::used_media(media_pool, sequences));
+    let candidates = match options.mode {
+        ConsolidateMode::Trimmed { handle_secs } => trim_candidates(media_pool, sequences, handle_secs),
+        _ => Vec::new(),
+    };
+    let cut: HashSet<PathBuf> = candidates.iter().map(|(m, _)| m.path.clone()).collect();
+    let plan = build_copy_plan(media_pool, sequences, color_settings, options, used.as_ref(), &cut);
+    let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    let mut bytes: u64 = plan.items.iter().map(|i| size(&i.src)).sum();
+    let mut files = plan.items.len();
+    for (item, ranges) in &candidates {
+        let duration = item.duration.to_secs_f64().max(1e-9);
+        let share: f64 = ranges.iter().map(|r| r.len()).sum::<f64>() / duration;
+        bytes += (size(&item.path) as f64 * share.min(1.0)) as u64;
+        files += ranges.len();
+    }
+    ConsolidateSummary { files, bytes, trimmed: candidates.len(), left_out: plan.left_out, offline: plan.offline_skipped }
 }
 
 /// Stream a folder into a zip archive at `zip_path` using stored (no-compression)
@@ -731,6 +931,7 @@ mod tests {
                 dest_dir: dst.clone(),
                 include_proxies: false,
                 include_skims: false,
+                mode: ConsolidateMode::Collect,
             },
             None,
         )
@@ -758,6 +959,7 @@ mod tests {
                 dest_dir: dst,
                 include_proxies: false,
                 include_skims: false,
+                mode: ConsolidateMode::Collect,
             },
             None,
         )
