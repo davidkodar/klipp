@@ -783,6 +783,11 @@ pub struct BrowserPanel {
     /// Starred generators by name, persisted as the transitions are.
     pub favorite_generators: Vec<String>,
     pub transitions_view_mode: effects_tab::EffectViewMode,
+    /// The transition cards play the selected cut's own frames instead of
+    /// the samples (#547). The browser's alone: the project is untouched.
+    pub transitions_cut_preview: bool,
+    /// Why the selected cut cannot be previewed, while it is asked for.
+    pub transitions_cut_note: Option<String>,
     /// How large the transition cards are, so how many fit across (#548).
     pub transitions_card_size: transitions_tab::CardSize,
     pub transitions_sort: effects_tab::EffectSort,
@@ -1028,6 +1033,8 @@ impl Default for BrowserPanel {
             generators_list: None,
             favorite_generators: Vec::new(),
             transitions_view_mode: effects_tab::EffectViewMode::Grid,
+            transitions_cut_preview: false,
+            transitions_cut_note: None,
             transitions_sort: effects_tab::EffectSort::NameAsc,
             transitions_selected: None,
             generators_category: None,
@@ -4863,9 +4870,22 @@ impl BrowserPanel {
                     // The same two sample pictures in every project, made
                     // once (#547): converting the project's thumbnails
                     // again every frame found nothing new most frames (#549).
-                    if !self.transition_previews.has_frames() {
-                        self.transition_previews.set_frames(transition_previews::sample_frames(), &mut displaced);
+                    // Or, asked for, the selected cut's own two frames;
+                    // with none to show, the samples and the reason.
+                    let cut = self.transitions_cut_preview.then(|| transition_previews::cut_frames(state, self.transition_previews.source()));
+                    match cut {
+                        Some(Ok(Some(ref frames))) => self.transition_previews.set_frames(frames.clone(), &mut displaced),
+                        Some(Ok(None)) => {}
+                        _ => {
+                            if self.transition_previews.source() != Some("sample") {
+                                self.transition_previews.set_frames(transition_previews::sample_frames(), &mut displaced);
+                            }
+                        }
                     }
+                    self.transitions_cut_note = match cut {
+                        Some(Err(why)) => Some(why),
+                        _ => None,
+                    };
                     self.defer_drop_textures(displaced);
                 }
                 transitions_tab::show(
@@ -4881,6 +4901,8 @@ impl BrowserPanel {
                     &mut self.transitions_card_size,
                     &mut self.transitions_selected,
                     &mut self.transition_previews,
+                    &mut self.transitions_cut_preview,
+                    self.transitions_cut_note.as_deref(),
                 )
             }
             LibraryCategory::Generators => {

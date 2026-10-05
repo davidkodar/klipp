@@ -1526,6 +1526,8 @@ pub fn show(
     card_size: &mut CardSize,
     selected: &mut Option<String>,
     previews: &mut TransitionPreviews,
+    cut_preview: &mut bool,
+    cut_note: Option<&str>,
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
     let avail = ui.available_rect_before_wrap();
@@ -1715,11 +1717,25 @@ pub fn show(
 
         // Result strip
         tx_result_strip(ui, theme, filtered.len(), sort_mode);
-        // Where the pictures come from: the same two samples in every
-        // project, said so the cards are not read as the project's (#547).
+        // Where the pictures come from, said so the cards are not misread
+        // (#547): the same two samples in every project, or the selected
+        // cut's own frames, when asked for and there is one.
         ui.horizontal(|ui| {
             ui.add_space(12.0);
-            ui.label(egui::RichText::new("Played between two sample pictures").size(10.0).color(theme.text_dim));
+            ui.selectable_value(cut_preview, false, egui::RichText::new("Samples").size(10.0))
+                .on_hover_text("Play the cards between two sample pictures, the same in every project");
+            ui.selectable_value(cut_preview, true, egui::RichText::new("Selected cut").size(10.0))
+                .on_hover_text("Play the cards between the two clips at the selected edit point: the outgoing clip's last frame and the incoming clip's first");
+        });
+        // On a line of its own: the reason can be long, the panel narrow.
+        let said = match (*cut_preview, cut_note) {
+            (false, _) => "Played between two sample pictures".to_string(),
+            (true, None) => "Played between the clips at the selected cut".to_string(),
+            (true, Some(why)) => format!("Sample pictures: {why}"),
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new(said).size(10.0).color(theme.text_dim));
         });
         ui.add_space(4.0);
 
@@ -3283,6 +3299,7 @@ mod tests {
                     show(
                         ui, state, &KlippTheme::default(), &mut search, &mut tab.category, &mut tab.list,
                         &mut tab.favourites, &mut tab.view, &mut tab.sort, &mut tab.size, &mut selected, &mut tab.previews,
+                        &mut false, None,
                     );
                 });
             },
