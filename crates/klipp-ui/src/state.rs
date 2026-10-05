@@ -3648,12 +3648,24 @@ impl AttributesClipboard {
     /// is the footage's, not part of the grade. A clip without one (a
     /// Rec.709 shot, audio, a title, the timeline grade's stand-in) gets
     /// the grade alone.
+    /// Replace `clip`'s effect modifiers (`effects`) or its other
+    /// modifiers — opacity, position and the rest — with these, leaving
+    /// the other kind alone.
+    fn paste_modifiers(&self, clip: &mut klipp_timeline::Clip, effects: bool) {
+        let ours = |id: &klipp_core::ParamId| matches!(id, klipp_core::ParamId::Effect { .. }) == effects;
+        clip.param_modifiers.retain(|id, _| !ours(id));
+        clip.param_modifiers.extend(self.param_modifiers.iter().filter(|(id, _)| ours(id)).map(|(id, m)| (id.clone(), m.clone())));
+    }
+
     pub fn paste_onto(&self, clip: &mut klipp_timeline::Clip, what: PasteChoice) {
         if what.effects {
             clip.builtin_effects = self.builtin_effects.clone();
             clip.builtin_effects_enabled = self.builtin_effects_enabled.clone();
             clip.effects = self.effects.clone();
             clip.effect_keyframes = self.effect_keyframes.clone();
+            // An effect's modifiers go with it, as its keyframes do: a
+            // pasted wiggle was lost (#992).
+            self.paste_modifiers(clip, true);
         }
         if what.color_grade {
             clip.node_graph = clip.node_graph.with_grade_of(&self.node_graph);
@@ -3678,7 +3690,7 @@ impl AttributesClipboard {
             clip.transform_pos_y_keyframes = self.transform_pos_y_keyframes.clone();
             clip.transform_scale_keyframes = self.transform_scale_keyframes.clone();
             clip.transform_rotation_keyframes = self.transform_rotation_keyframes.clone();
-            clip.param_modifiers = self.param_modifiers.clone();
+            self.paste_modifiers(clip, false);
         }
         if what.speed {
             // The ramp as well as the rate: copied with the clip, it
@@ -5612,5 +5624,32 @@ mod paste_speed_tests {
         copied.paste_onto(&mut target, PasteChoice { effects: false, color_grade: false, audio: false, transform: false, speed: true });
         assert_eq!(target.speed, 0.5);
         assert_eq!(target.speed_keyframes, source.speed_keyframes);
+    }
+
+    /// An effect's modifiers paste with the effects, and a clip's own
+    /// modifiers with the transform, each without touching the other.
+    #[test]
+    fn pasting_effects_brings_their_modifiers() {
+        use klipp_core::{ModifierStack, ParamId};
+        let tc = |f| RationalTime::from_frames(f, 24);
+        let wiggle = ParamId::Effect { effect_index: 0, param_name: "amount".into() };
+        let mut source = klipp_timeline::Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
+        source.builtin_effects = vec![klipp_effects::BuiltinEffect::Vibrance { amount: 0.3 }];
+        source.param_modifiers.insert(wiggle.clone(), ModifierStack::default());
+        source.param_modifiers.insert(ParamId::Scale, ModifierStack::default());
+        let copied = AttributesClipboard::of(&source);
+        let none = PasteChoice { effects: false, color_grade: false, audio: false, transform: false, speed: false };
+
+        let mut target = klipp_timeline::Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
+        target.param_modifiers.insert(ParamId::Opacity, ModifierStack::default());
+        copied.paste_onto(&mut target, PasteChoice { effects: true, ..none });
+        assert!(target.param_modifiers.contains_key(&wiggle), "the effect's modifier was lost");
+        assert!(target.param_modifiers.contains_key(&ParamId::Opacity), "the clip's own modifier was replaced");
+        assert!(!target.param_modifiers.contains_key(&ParamId::Scale), "a transform modifier came with the effects");
+
+        let mut target = klipp_timeline::Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
+        copied.paste_onto(&mut target, PasteChoice { transform: true, ..none });
+        assert!(target.param_modifiers.contains_key(&ParamId::Scale));
+        assert!(!target.param_modifiers.contains_key(&wiggle), "an effect modifier came without its effect");
     }
 }

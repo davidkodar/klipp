@@ -1965,7 +1965,7 @@ impl Renderer {
                 // CPU. That cost is the feature, not an oversight: the
                 // neighbours it averages against are CPU-decoded source
                 // frames.
-                let tnr = temporal_denoise_of(clip);
+                let tnr = temporal_denoise_of(clip, time, fps);
                 match f {
                     // Left on the GPU for the grade to start from.
                     SourceFrame { pixels: SourcePixels::Gpu(g), width: w, height: h, .. }
@@ -3018,34 +3018,20 @@ pub fn clip_effects(
             let kfs = clip.effect_keyframes.get(&format!("{i}:{name}")).map(|v| v.as_slice()).unwrap_or(&[]);
             eval::eval_effect_with_modifiers(kfs, &clip.param_modifiers, *i, name, t, v, &ctx)
         };
+        // Every keyframable parameter, from the one list the inspector
+        // offers keyframes from. Opacity is the exception: the clip's
+        // own opacity keyframes come first, below.
+        if !matches!(effect, BuiltinEffect::Opacity { .. }) {
+            effect.animate(&mut |name, v| param(name, v));
+        }
         match effect {
-            BuiltinEffect::GaussianBlur { radius } => *radius = param("radius", *radius),
-            BuiltinEffect::Sharpen { amount } => *amount = param("amount", *amount),
-            BuiltinEffect::Crop { left, right, top, bottom, feather } => {
-                *left = param("left", *left);
-                *right = param("right", *right);
-                *top = param("top", *top);
-                *bottom = param("bottom", *bottom);
-                *feather = param("feather", *feather);
-            }
-            BuiltinEffect::ChromaKey { tolerance, soft_edge, spill_strength, .. } => {
-                *tolerance = param("tolerance", *tolerance);
-                // The "spill" key has always addressed the soft edge.
-                *soft_edge = param("spill", *soft_edge);
-                *spill_strength = param("spill_strength", *spill_strength);
-            }
             // The animated film effects take a fresh pattern per frame:
             // the seed is the timeline frame number, so a still export
             // and a scrub land on the same grain.
-            BuiltinEffect::FilmGrain { amount, size, shadows, seed, .. } => {
-                *amount = param("amount", *amount);
-                *size = param("size", *size);
-                *shadows = param("shadows", *shadows);
+            BuiltinEffect::FilmGrain { seed, .. } | BuiltinEffect::OldFilm { seed, .. } | BuiltinEffect::Vhs { seed, .. } => {
                 *seed = (t * fps).round().max(0.0) as u32;
             }
-            BuiltinEffect::Deflicker { strength, window_secs, gain } => {
-                *strength = param("strength", *strength);
-                *window_secs = param("window_secs", *window_secs);
+            BuiltinEffect::Deflicker { gain, .. } => {
                 // The measured gain for this frame, at full weight —
                 // the effect applies `strength` itself, and doing it
                 // here as well would square it.
@@ -3055,38 +3041,11 @@ pub fn clip_effects(
                     .map(|g| klipp_effects::deflicker::gain_at(&g.gains, t, g.fps, 1.0))
                     .unwrap_or(1.0);
             }
-            BuiltinEffect::OldFilm { flicker, scratches, dust, weave, sepia, seed } => {
-                *flicker = param("flicker", *flicker);
-                *scratches = param("scratches", *scratches);
-                *dust = param("dust", *dust);
-                *weave = param("weave", *weave);
-                *sepia = param("sepia", *sepia);
-                *seed = (t * fps).round().max(0.0) as u32;
-            }
-            BuiltinEffect::Vhs { tracking, bleed, noise, scanlines, seed } => {
-                *tracking = param("tracking", *tracking);
-                *bleed = param("bleed", *bleed);
-                *noise = param("noise", *noise);
-                *scanlines = param("scanlines", *scanlines);
-                *seed = (t * fps).round().max(0.0) as u32;
-            }
-            BuiltinEffect::TiltShift { center, width, softness, radius } => {
-                *center = param("center", *center);
-                *width = param("width", *width);
-                *softness = param("softness", *softness);
-                *radius = param("radius", *radius);
-            }
             // A pinned clip's first corner pin is on its surface.
             BuiltinEffect::CornerPin { tl, tr, br, bl } if pin.is_some() && !pinned => {
                 let q = pin.unwrap_or_default();
                 (*tl, *tr, *br, *bl) = (q[0], q[1], q[2], q[3]);
                 pinned = true;
-            }
-            BuiltinEffect::CornerPin { tl, tr, br, bl } => {
-                for (corner, names) in [tl, tr, br, bl].into_iter().zip(klipp_effects::corner_pin::PARAMS) {
-                    corner[0] = param(names[0], corner[0]);
-                    corner[1] = param(names[1], corner[1]);
-                }
             }
             BuiltinEffect::Opacity { value } => {
                 // Clip opacity keyframes / modifiers first, then the
@@ -3510,16 +3469,26 @@ fn to_linear(f: SourceFrame, width: u32, height: u32) -> (Arc<Vec<f32>>, Option<
     }
 }
 
-/// The temporal noise reduction settings on `clip`, if it has any
-/// enabled and they would do something.
-pub fn temporal_denoise_of(clip: &Clip) -> Option<(f32, f32)> {
+/// The temporal noise reduction settings on `clip` at `time`, keyframes
+/// applied, if it has any enabled and they would do something there.
+pub fn temporal_denoise_of(clip: &Clip, time: Timecode, fps: f64) -> Option<(f32, f32)> {
     let enabled = |i: usize| clip.builtin_effects_enabled.get(i).copied().unwrap_or(true);
-    clip.builtin_effects.iter().enumerate().find_map(|(i, e)| match e {
-        BuiltinEffect::TemporalDenoise { strength, threshold } if enabled(i) && *strength > 0.0 => {
-            Some((*strength, *threshold))
-        }
+    let (i, mut tnr) = clip
+        .builtin_effects
+        .iter()
+        .enumerate()
+        .find(|(i, e)| enabled(*i) && matches!(e, BuiltinEffect::TemporalDenoise { .. }))
+        .map(|(i, e)| (i, e.clone()))?;
+    let t = eval_clip_time(clip, time);
+    let ctx = eval::eval_context(clip, time, fps);
+    tnr.animate(&mut |name, v| {
+        let kfs = clip.effect_keyframes.get(&format!("{i}:{name}")).map(|v| v.as_slice()).unwrap_or(&[]);
+        eval::eval_effect_with_modifiers(kfs, &clip.param_modifiers, i, name, t, v, &ctx)
+    });
+    match tnr {
+        BuiltinEffect::TemporalDenoise { strength, threshold } if strength > 0.0 => Some((strength, threshold)),
         _ => None,
-    })
+    }
 }
 
 /// Whether `clip` frame-blends at `time`: a `SpeedRamp` in blend mode 1,
@@ -3801,7 +3770,7 @@ mod temporal_denoise_placement_tests {
         ] {
             let clip = clip_with(effects);
             assert_eq!(
-                temporal_denoise_of(&clip),
+                temporal_denoise_of(&clip, tc(0), 24.0),
                 Some((0.8, 0.02)),
                 "not found at this position",
             );
@@ -3812,13 +3781,13 @@ mod temporal_denoise_placement_tests {
     fn a_disabled_or_zero_strength_one_is_not_applied() {
         let mut clip = clip_with(vec![BuiltinEffect::TemporalDenoise { strength: 0.8, threshold: 0.02 }]);
         clip.builtin_effects_enabled = vec![false];
-        assert_eq!(temporal_denoise_of(&clip), None, "a disabled effect ran");
+        assert_eq!(temporal_denoise_of(&clip, tc(0), 24.0), None, "a disabled effect ran");
 
         let off = clip_with(vec![BuiltinEffect::TemporalDenoise { strength: 0.0, threshold: 0.02 }]);
-        assert_eq!(temporal_denoise_of(&off), None, "strength 0 still took the CPU route");
+        assert_eq!(temporal_denoise_of(&off, tc(0), 24.0), None, "strength 0 still took the CPU route");
 
         let none = clip_with(vec![BuiltinEffect::Sharpen { amount: 0.5 }]);
-        assert_eq!(temporal_denoise_of(&none), None);
+        assert_eq!(temporal_denoise_of(&none, tc(0), 24.0), None);
     }
 }
 

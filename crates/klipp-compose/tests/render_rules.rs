@@ -1995,3 +1995,32 @@ fn a_word_matte_grown_about_its_solid_point_fills_the_frame() {
         assert!(solid_point > centre + 0.3, "gpu {gpu}: the centre is the gap between the lines: {centre} against {solid_point}");
     }
 }
+
+/// A keyframed effect ramps in the picture, on the CPU and the GPU
+/// (#992). A hyperzoom keys its radial blur and its fringing; neither
+/// was ever read, so both held their still value for the whole move.
+/// Pixel sizes are authored for 1080 lines and this renders 18, so the
+/// fringe is keyed wide enough to survive the scale.
+#[test]
+fn keyframed_effects_ramp_in_the_picture() {
+    let key = |time_secs, value| klipp_core::Keyframe {
+        time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0),
+    };
+    for (effect, name, from, to) in [
+        (BuiltinEffect::RadialBlur { center_x: 0.5, center_y: 0.5, amount: 0.0, samples: 16, mode: 0 }, "amount", 0.0, 30.0),
+        (BuiltinEffect::ChromaticAberration { red_shift: 0.0, blue_shift: 0.0, center_x: 0.5, center_y: 0.5 }, "red_shift", 0.0, 400.0),
+        (BuiltinEffect::Vignette { amount: 0.0, size: 0.5, softness: 0.5, roundness: 0.5 }, "amount", 0.0, 1.0),
+    ] {
+        let mut c = media(0.0, 2.0);
+        c.builtin_effects = vec![effect.clone()];
+        c.effect_keyframes.insert(format!("0:{name}"), vec![key(0.0, from), key(1.0, to)]);
+        let seq = sequence(vec![vec![c.clone()]]);
+        let mut src = Flat::default().ramp(&c);
+        let still = render(&seq, 0.0, &mut src);
+        let moved = render(&seq, 1.0, &mut src);
+        for run in 0..2 {
+            let most = still[run].iter().zip(&moved[run]).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
+            assert!(most > 0.02, "{effect:?} {name}, run {run}: the picture did not move ({most})");
+        }
+    }
+}

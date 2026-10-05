@@ -32,6 +32,7 @@
 //! and export. Analyse went from 10–15 min to ~18 s on 4K through the
 //! decoder optimisation.
 
+pub mod animate;
 pub mod blur;
 mod cpu;
 pub mod layer;
