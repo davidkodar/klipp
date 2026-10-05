@@ -579,7 +579,7 @@ class TestScopeTests(RealGitGate):
         meta = ('{"workspace_root":"%s","packages":['
                 '{"name":"a","manifest_path":"%s/crates/a/Cargo.toml","dependencies":[]},'
                 '{"name":"b","manifest_path":"%s/crates/b/Cargo.toml","dependencies":[{"name":"a","path":"%s/crates/a"}]}]}')
-        self.script(self.bin / "cargo", f'case "$1" in\n metadata) printf \'{meta}\' "$PWD" "$PWD" "$PWD" "$PWD";;\n test) echo "$*" >> "$TEST_ROOT/tests";;\nesac\nexit 0')
+        self.script(self.bin / "cargo", f'case "$1" in\n metadata) printf \'{meta}\' "$PWD" "$PWD" "$PWD" "$PWD";;\n test) echo "$*" >> "$TEST_ROOT/tests";;\n doc) echo "$*" >> "$TEST_ROOT/docs";;\nesac\necho "$1 $CARGO_PROFILE_DEV_DEBUG" >> "$TEST_ROOT/debuginfo"\nexit 0')
         self.full_mark = self.root / ".git/klipp-pre-push.full"
 
     def tests_run(self):
@@ -617,6 +617,37 @@ class TestScopeTests(RealGitGate):
         result = self.run_gate()
         self.assertEqual(self.tests_run(), ["test --workspace --no-run", "test --workspace"])
         self.assertIn("Cargo.lock is shared", result.stdout)
+
+    def logged(self, name):
+        path = Path(self.temp.name) / name
+        lines = path.read_text().splitlines() if path.exists() else []
+        path.unlink(missing_ok=True)
+        return lines
+
+    def test_rustdoc_documents_the_crates_whose_tests_run(self):
+        # The scope is the branch's changes against main, so each step
+        # adds to what the one before it changed.
+        self.full_mark.write_text(str(int(time.time())))
+        self.change("README.md")
+        self.run_gate()
+        self.assertEqual(self.logged("docs"), ["doc --workspace --no-deps"], "no tests to run: documented whole")
+        self.change("crates/b/src/lib.rs")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.logged("docs"), ["doc -p b --no-deps"], "b: nothing is built on it")
+        self.assertIn("rustdoc took", result.stdout)
+        self.change("Cargo.lock")
+        self.run_gate()
+        self.assertEqual(self.logged("docs"), ["doc --workspace --no-deps"], "a shared file: everything")
+
+    def test_everything_the_gate_builds_has_line_tables_only(self):
+        self.full_mark.write_text(str(int(time.time())))
+        self.change("crates/a/src/lib.rs")
+        self.run_gate()
+        calls = [c for c in self.logged("debuginfo") if c.split()[0] in ("clippy", "doc", "test")]
+        self.assertTrue(calls, "cargo was called")
+        for call in calls:
+            self.assertEqual(call.split()[1:], ["line-tables-only"], call)
 
     def test_a_stale_full_run_or_klipp_gate_full_runs_everything(self):
         self.full_mark.write_text(str(int(time.time()) - 13 * 3600))
