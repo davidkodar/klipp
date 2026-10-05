@@ -948,7 +948,14 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(x) = args.get("min_gap_secs").and_then(|v| v.as_f64()) { v["min_gap_secs"] = json!(x); }
             v
         }
-        "klipp_beats" => json!({ "method": "beats", "media_id": arg_str(args, "media_id")? }),
+        "klipp_beats" => {
+            let mut v = json!({ "method": "beats", "media_id": arg_str(args, "media_id")? });
+            for key in ["target_secs", "at_secs"] {
+                if let Some(x) = args.get(key).and_then(|v| v.as_f64()) { v[key] = json!(x); }
+            }
+            if let Some(t) = args.get("track") { v["track"] = json!(t.as_u64().map(|i| i.to_string()).or_else(|| t.as_str().map(str::to_string))); }
+            v
+        }
         "klipp_search_music" => {
             let mut v = json!({ "method": "search_music", "query": arg_str(args, "query")? });
             if let Some(x) = args.get("limit").and_then(|v| v.as_u64()) { v["limit"] = json!(x); }
@@ -1284,6 +1291,11 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             if let Some(bt) = result.get("beat_times") {
                 out.push_str("\n\nCut or place on one of these beat times (seconds):\n");
                 out.push_str(&serde_json::to_string(bt).unwrap_or_default());
+            }
+            // The fit's ops, to hand to klipp_apply as they are (#503).
+            if let Some(ops) = result.get("ops") {
+                out.push_str("\n\nOps to apply:\n");
+                out.push_str(&serde_json::to_string(ops).unwrap_or_default());
             }
             return Ok(with_next(out));
         }
@@ -2432,8 +2444,13 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "The tempo and beat grid of a clip's sound: BPM, a confidence, and the beat times \
               in seconds. Run it on the music you are cutting to, then place or trim cuts to a \
               beat time for a musical rhythm. A low confidence means no clear beat (speech or \
-              ambience). A read; changes nothing.",
-             json!({ "media_id": { "type": "string" } }), vec!["media_id"]),
+              ambience). For music it also gives the track's sections (intro, build, peak, \
+              breakdown, outro, body) on phrase lines and its energy bar by bar, for putting \
+              chapter changes on musical turns. With target_secs it fits the track to that \
+              length by taking out or repeating whole bars where the join is cleanest, keeping \
+              its start and end, and returns place ops (on track, from at_secs) to apply. A \
+              read; changes nothing.",
+             json!({ "media_id": { "type": "string" }, "target_secs": { "type": "number", "description": "fit the track to this length, seconds" }, "at_secs": { "type": "number", "description": "where the fitted track's place ops start on the timeline (0)" }, "track": { "description": "the track for the place ops: an index, or a kind such as \"audio\" (the first audio track)" } }), vec!["media_id"]),
         tool("klipp_style_profile",
              "Read a reference video's editing style as facts, so you can build a clip in the \
               same feel from other footage: its cut cadence (how many shots, how long, how many \

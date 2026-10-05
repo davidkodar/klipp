@@ -877,8 +877,19 @@ pub enum ControlCommand {
         page_url: String,
     },
     /// The tempo and beat grid of a clip's sound: BPM, a confidence, and
-    /// the beat times, for cutting to the music.
-    Beats { media_id: String },
+    /// the beat times, for cutting to the music; and for music, its
+    /// sections and energy bar by bar (#503). With `target_secs`, a fit of
+    /// the track to that length by whole bars, as place ops on `track`
+    /// (the first audio track when left out) from `at_secs` (0).
+    Beats {
+        media_id: String,
+        #[serde(default)]
+        target_secs: Option<f64>,
+        #[serde(default)]
+        at_secs: Option<f64>,
+        #[serde(default)]
+        track: Option<String>,
+    },
     /// A reference video's editing style as facts: its cut cadence and
     /// whether it cuts on the beat, its tempo, its look measured off the
     /// picture, and its motion — so an agent can build a clip in the same
