@@ -129,6 +129,7 @@ pub fn save_project_full(
     let project = ProjectJson {
         version: "1.0.0".to_string(),
         klipp_version_min: "0.1.0".to_string(),
+        format_revision: crate::FORMAT_REVISION,
         generation: Some(generation.clone()),
         klipp_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         saved_at: Some(now),

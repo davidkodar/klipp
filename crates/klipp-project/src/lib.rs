@@ -56,6 +56,14 @@ mod save;
 pub mod workspace;
 
 pub use grade_stills::{adopt_still, adopt_temp_stills, delete_grade_still_file, is_temp_still, load_grade_stills, save_freeze_frame_png, save_grade_stills, temp_still_roots, GradeStillData, GradeStillMeta, StillAdoption, StillSource};
+/// The newest project format this Klipp reads and writes (#994): the
+/// `format_revision` a save writes, and the highest a load accepts. It
+/// goes up only when a change to the file would be *misread* by a build
+/// that knows the previous revision (data moved or removed, not merely
+/// added), and that change's PR raises it and says why. 0 is every file
+/// written so far.
+pub const FORMAT_REVISION: u32 = 0;
+
 pub use load::{load_looks, load_project};
 pub use made_media::{adopt_made_media, MediaAdoption};
 pub use save::{iso8601_now, save_looks, save_project, save_project_full, save_project_with_color, save_project_with_color_and_backups, ColorSettings};
