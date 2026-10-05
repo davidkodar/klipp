@@ -1358,6 +1358,11 @@ pub enum AppCommand {
     /// the first Subtitle/Text track (creates a Subtitle track if none exists).
     /// Used by the subtitle editor panel's "Add at playhead" button.
     AddSubtitleAtPlayhead { timeline_in: Timecode, duration_frames: u32 },
+    /// The subtitle editor's style draft saved as the track's caption
+    /// style, and with `apply_to_all` put on every caption there (#70).
+    SaveCaptionStyle { track_id: TrackId, apply_to_all: bool },
+    /// Back to the default caption look for new captions on the track.
+    ClearCaptionStyle { track_id: TrackId },
     /// Export subtitles from subtitle tracks as SRT.
     ExportSubtitles { path: PathBuf },
     /// Export sequence as FCPXML 1.9 for Final Cut Pro interchange.

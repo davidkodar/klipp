@@ -1053,6 +1053,36 @@ impl Sequence {
     }
 }
 
+/// A subtitle track's caption look (#70): what every caption on it is
+/// styled to. The default is the look captions are made with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CaptionStyle {
+    /// The face; empty for the default.
+    #[serde(default)]
+    pub font: String,
+    /// In pixels of a 1080-line frame.
+    pub size: f32,
+    pub color: [u8; 4],
+    #[serde(default)]
+    pub bold: bool,
+    /// Outline width in pixels, 0 for none.
+    pub outline: f32,
+    pub outline_color: [u8; 4],
+    /// How dark the panel behind the text is, 0 (none) to 1 (black).
+    pub backing: f32,
+    /// A soft drop shadow behind the text.
+    #[serde(default)]
+    pub shadow: bool,
+    /// The text's centre, down the frame, 0 (top) to 1 (bottom).
+    pub y: f32,
+}
+
+impl Default for CaptionStyle {
+    fn default() -> Self {
+        Self { font: String::new(), size: 40.0, color: [255, 255, 255, 255], bold: false, outline: 2.0, outline_color: [0, 0, 0, 200], backing: 0.92, shadow: false, y: 0.88 }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Track {
     pub id: TrackId,
@@ -1089,6 +1119,11 @@ pub struct Track {
     /// of each kind has it; with none, the first track of the kind does.
     #[serde(default)]
     pub source_patch: bool,
+    /// The look of the captions on this subtitle track (#70): new
+    /// captions made on it take it, and it can be put on every caption
+    /// already there. `None` keeps the default caption look.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption_style: Option<CaptionStyle>,
     /// Magnetic role of this track. Defaults to Free — backward compatible.
     #[serde(default)]
     pub magnetic_role: TrackRole,
@@ -1276,6 +1311,7 @@ impl Track {
             visible: true,
             pan: 0.0,
             locked: false,
+            caption_style: None,
             magnetic_role: TrackRole::Free,
             storyline_anchor: None,
             custom_height: None,

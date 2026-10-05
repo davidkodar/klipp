@@ -48,6 +48,12 @@ pub fn label(cmd: &AppCommand) -> Option<&'static str> {
         AppCommand::SetTrackTargeted { on: true, .. } => "Target Track",
         AppCommand::SetTrackTargeted { .. } => "Untarget Track",
         AppCommand::SetTrackSourcePatch { .. } => "Patch Source",
+        // Captions (#70): adding one was not undoable; a caption style,
+        // with the captions it restyles, is one step.
+        AppCommand::AddSubtitleAtPlayhead { .. } => "Add Caption",
+        AppCommand::SaveCaptionStyle { apply_to_all: true, .. } => "Restyle Captions",
+        AppCommand::SaveCaptionStyle { .. } => "Caption Style",
+        AppCommand::ClearCaptionStyle { .. } => "Caption Style",
         AppCommand::AddVideoTrack
         | AppCommand::AddAudioTrack
         | AppCommand::AddSubtitleTrack { .. }

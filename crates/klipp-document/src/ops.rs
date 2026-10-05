@@ -4257,6 +4257,26 @@ fn caption_title(text: &str) -> klipp_timeline::TitleData {
     td
 }
 
+/// `td` styled as a subtitle track's caption style says (#70): size,
+/// colour, face, weight, outline, backing, shadow and height, through the
+/// same restyle a `style` op makes.
+pub fn apply_caption_style(td: &klipp_timeline::TitleData, s: &klipp_timeline::CaptionStyle) -> klipp_timeline::TitleData {
+    let look = Look {
+        size: Some(s.size),
+        color: Some(s.color),
+        font: (!s.font.is_empty()).then(|| s.font.clone()),
+        bold: Some(s.bold),
+        y: Some(s.y),
+        outline: Some(s.outline),
+        outline_color: Some(s.outline_color),
+        backing: Some(s.backing),
+        shadow: Some(if s.shadow { title_shadow(&ShadowSpec { x: None, y: None, blur: None, color: None, opacity: None }, 0).ok().flatten() } else { None }),
+        ..Look::default()
+    };
+    // No motion is asked for, so the length cannot refuse it.
+    restyle(td, &look, 1.0).unwrap_or_else(|_| td.clone())
+}
+
 fn title_clip(td: klipp_timeline::TitleData, tl_in: Timecode, tl_out: Timecode, fps: Fps) -> Clip {
     Clip {
         id: ClipId::new(),
@@ -4339,7 +4359,13 @@ fn captions(
                 return Err(r);
             }
         }
-        let clip = title_clip(caption_title(&cue.text), tl_in, tl_out, fps);
+        // A track with a caption style gives its new captions that look (#70).
+        let td = caption_title(&cue.text);
+        let td = match seq.tracks.get(ti).and_then(|t| t.caption_style.as_ref()) {
+            Some(s) => apply_caption_style(&td, s),
+            None => td,
+        };
+        let clip = title_clip(td, tl_in, tl_out, fps);
         ids.push(clip.id);
         last_out = Some(tl_out);
         edits.push(EditCommand::LegacyAppendClip { clip, track_index: ti });
@@ -8319,6 +8345,36 @@ mod tests {
         ]).unwrap();
         assert_eq!((plan.steps[0].after[0].timeline_in_secs, plan.steps[0].after[0].timeline_out_secs), (8.0, 9.0));
         assert_eq!((plan.steps[1].after[0].timeline_in_secs, plan.steps[1].after[0].timeline_out_secs), (9.0, 10.0));
+    }
+
+    /// #70: captions made on a track with a caption style take it.
+    #[test]
+    fn captions_made_on_a_styled_track_take_its_style() {
+        let (mut seq, pool, _, _, _) = fixture();
+        let mut subs = klipp_timeline::Track::new("Subtitles", TrackKind::Subtitle);
+        subs.caption_style = Some(klipp_timeline::CaptionStyle { size: 60.0, color: [255, 0, 0, 255], y: 0.5, shadow: true, ..Default::default() });
+        seq.tracks.push(subs);
+        let ti = seq.tracks.len() - 1;
+        let plan = resolve_with(&seq, &pool, &[Op::Captions { track: Some(TrackRef::Index(ti)), from: None, to: None, max_chars: 30, max_lines: 2, replace: false }], &Spoken).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let track = &view.sequences[0].tracks[ti];
+        assert!(!track.clips.is_empty());
+        for clip in &track.clips {
+            let td = clip.title_data().unwrap();
+            let o = &td.objects[0];
+            let klipp_timeline::TitleObjectContent::TextBox(tb) = &o.content else { panic!("a text box") };
+            assert_eq!((tb.font_size, tb.color), (60.0, [255, 0, 0, 255]));
+            assert!((o.transform.center.y - 0.5).abs() < 1e-6);
+            assert!(o.fx.as_ref().is_some_and(|fx| !fx.shadows.is_empty()), "the shadow");
+        }
+        // The default look is unchanged for an unstyled track.
+        let plain = apply_caption_style(&caption_title("hi"), &klipp_timeline::CaptionStyle::default());
+        let klipp_timeline::TitleObjectContent::TextBox(tb) = &plain.objects[0].content else { panic!() };
+        assert_eq!(tb.font_size, 40.0);
     }
 
     #[test]
