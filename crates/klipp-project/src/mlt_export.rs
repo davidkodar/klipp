@@ -422,6 +422,7 @@ mod tests {
             effects: Vec::new(),
             builtin_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
+            effect_ids: Default::default(),
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,

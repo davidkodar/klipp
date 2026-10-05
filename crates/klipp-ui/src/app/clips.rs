@@ -821,6 +821,7 @@ impl KlippApp {
                             effects: clip.effects.clone(),
                             builtin_effects: clip.builtin_effects.clone(),
                             builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
+                            effect_ids: Default::default(),
                             linked_clip_id: None,
                             linked_title_asset_id: None,
                             group_id: None,

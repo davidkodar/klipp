@@ -383,6 +383,7 @@ impl KlippApp {
                 node_graph: snap.node_graph,
                 builtin_effects: snap.builtin_effects,
                 builtin_effects_enabled: snap.builtin_effects_enabled,
+                effect_ids: Default::default(),
                 effects: snap.effects,
                 effect_keyframes: snap.effect_keyframes,
                 opacity_keyframes: snap.opacity_keyframes,
