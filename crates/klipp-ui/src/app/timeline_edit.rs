@@ -688,14 +688,9 @@ impl KlippApp {
                                 ));
                                 return true;
                             }
-                            let raw_in = item.default_source_in.unwrap_or(Timecode { value: 0, rate: item.duration.rate });
-                            let raw_out = item.default_source_out.unwrap_or(item.duration);
-                            // If in/out are equal or both zero, use the full clip
-                            let (source_in, source_out) = if raw_in >= raw_out {
-                                (Timecode { value: 0, rate: item.duration.rate }, item.duration)
-                            } else {
-                                (raw_in, raw_out)
-                            };
+                            // Three-point placement from the source's and the
+                            // sequence's marks: a sequence Out alone backtimes (#919).
+                            let (timeline_in, source_in, source_out) = self.source_placement(&item);
                             let dur = source_out - source_in;
                             let is_audio_only = item.video_codec.is_empty();
                             let target_kind = if is_audio_only {
@@ -714,7 +709,6 @@ impl KlippApp {
                                 });
                                 return true;
                             }
-                            let timeline_in = self.state.sequences[seq_idx].in_point.unwrap_or(self.state.playhead);
                             let new_clip = klipp_timeline::Clip::media(
                                 mid,
                                 timeline_in,
@@ -751,7 +745,13 @@ impl KlippApp {
                                     klipp_timeline::magnetic::EditMode::Overwrite,
                                 );
                             } else {
+                                // Its sound under it, as an insert lays one; the
+                                // edit is one undo step (tracks_undo, #919).
                                 Self::overwrite_insert_clip_on_track(&mut self.state.sequences[seq_idx].tracks[target], new_clip);
+                                if item.has_audio && !is_audio_only {
+                                    let external = self.external_audio_of(mid);
+                                    let _ = attach_linked_audio_to_clip(&mut self.state.sequences[seq_idx], new_id, external);
+                                }
                             }
                             self.state.selected_clip = Some(new_id);
                             self.state.dirty = true;
@@ -779,13 +779,9 @@ impl KlippApp {
                                 ));
                                 return true;
                             }
-                            let raw_in = item.default_source_in.unwrap_or(Timecode { value: 0, rate: item.duration.rate });
-                            let raw_out = item.default_source_out.unwrap_or(item.duration);
-                            let (source_in, source_out) = if raw_in >= raw_out {
-                                (Timecode { value: 0, rate: item.duration.rate }, item.duration)
-                            } else {
-                                (raw_in, raw_out)
-                            };
+                            // Three-point placement from the source's and the
+                            // sequence's marks: a sequence Out alone backtimes (#919).
+                            let (timeline_in, source_in, source_out) = self.source_placement(&item);
                             let dur = source_out - source_in;
                             let is_audio_only = item.video_codec.is_empty();
                             let target_kind = if is_audio_only {
@@ -804,7 +800,6 @@ impl KlippApp {
                                 });
                                 return true;
                             }
-                            let timeline_in = self.state.sequences[seq_idx].in_point.unwrap_or(self.state.playhead);
                             let new_clip = klipp_timeline::Clip::media(
                                 mid,
                                 timeline_in,

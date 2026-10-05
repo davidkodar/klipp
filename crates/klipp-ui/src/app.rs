@@ -74,6 +74,7 @@ mod locks;
 mod storyline;
 mod clip_moves;
 mod edit_points;
+mod source_edits;
 mod subtitles;
 mod render_script;
 mod batch_rename;

@@ -243,6 +243,7 @@ impl KlippApp {
                 if self.handle_stabilization_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
                 if self.handle_keyframe_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
                 if self.handle_clip_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
+                if self.handle_source_edit_commands(&cmd) { break 'dispatch; }
                 if self.handle_timeline_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
                 if self.handle_effects_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
                 if self.handle_color_commands(&cmd, &mut needs_refresh) { break 'dispatch; }

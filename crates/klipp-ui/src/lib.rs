@@ -52,6 +52,7 @@ pub mod effect_targets;
 pub mod selection;
 pub mod timeline_sync;
 pub mod clip_clipboard;
+pub mod source_edit;
 pub mod trim_view;
 pub mod ai_tools;
 pub mod assistant_clients;

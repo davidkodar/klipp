@@ -23,6 +23,11 @@ const GESTURE_GAP: std::time::Duration = std::time::Duration::from_millis(700);
 pub fn label(cmd: &AppCommand) -> Option<&'static str> {
     Some(match cmd {
         AppCommand::LiftEdit => "Lift",
+        AppCommand::OverwriteEdit | AppCommand::InsertSourceAtPlayhead => "Overwrite",
+        AppCommand::FitToFillEdit => "Fit to Fill",
+        AppCommand::PlaceOnTopEdit => "Place on Top",
+        AppCommand::ReplaceEdit => "Replace",
+        AppCommand::RippleOverwriteEdit => "Ripple Overwrite",
         AppCommand::ExtractEdit => "Extract",
         AppCommand::CloseGap { .. } => "Close Gap",
         AppCommand::CloseAllGaps { .. } => "Close All Gaps",

@@ -28,7 +28,8 @@ pub enum MagneticEditCommand {
         /// with, and `set_clip_position(remnant_id, …)` silently
         /// no-oped because the remnant didn't exist in the sequence at
         /// replay time. Stored here as full Clip values so redo
-        /// reconstructs the remnant exactly.
+        /// reconstructs the remnant exactly. The overlap-left/right
+        /// trimmed clips are kept here too, under their own ids (#919).
         split_remnants: Vec<Clip>,
     },
     RippleDelete {

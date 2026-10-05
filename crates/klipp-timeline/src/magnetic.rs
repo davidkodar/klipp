@@ -255,11 +255,12 @@ impl MagneticEditor {
 
         let mut overwritten_clips = Vec::new();
         let mut trimmed_clips = Vec::new();
-        // T-8: full Clip values for split-case remnants so redo can
-        // reconstruct them. Overlap-left/right trimmed clips keep their
-        // original ClipId (they're the same clip with a shortened
-        // in/out) so they DON'T need to live here — the trimmed_clips
-        // RippleRecord already tells apply_forward how to move them.
+        // T-8: full Clip values for what the overwrite leaves in place of
+        // the clips it cut, so redo and undo can rebuild both states: the
+        // split-case remnants, and the overlap-left/right trimmed clips
+        // too. Those keep their original ClipId, so a position record
+        // alone left undo with the trimmed copy beside the restored
+        // original, and redo with nothing to move (#919).
         let mut split_remnants: Vec<Clip> = Vec::new();
         let mut new_clips_list: Vec<Clip> = Vec::new();
 
@@ -324,6 +325,7 @@ impl MagneticEditor {
                     new_in: trimmed.timeline_in,
                     new_out: trimmed.timeline_out,
                 });
+                split_remnants.push(trimmed.clone());
                 new_clips_list.push(trimmed);
             } else if cin < region_out && cout > region_out {
                 // Overlaps right — trim head
@@ -339,6 +341,7 @@ impl MagneticEditor {
                     new_in: trimmed.timeline_in,
                     new_out: trimmed.timeline_out,
                 });
+                split_remnants.push(trimmed.clone());
                 new_clips_list.push(trimmed);
             }
         }
@@ -1493,17 +1496,19 @@ impl MagneticEditor {
                 trimmed_clips,
                 split_remnants,
             } => {
-                let _ = split_remnants; // remnants are removed below by id.
-                // Remove inserted clip
+                // Take out the inserted clip and what the overwrite left in
+                // place of the clips it cut (split pieces, and trimmed
+                // clips under their own ids), then put the originals back.
                 sequence.tracks[*track_index].remove_clip(inserted_clip.id);
-                // Restore trimmed clips to old positions
-                for rr in trimmed_clips.iter().rev() {
+                for r in split_remnants {
+                    sequence.tracks[*track_index].remove_clip(r.id);
+                }
+                // Anything else the repack moved goes back where it was.
+                let cut = |id: ClipId| overwritten_clips.iter().any(|oc| oc.id == id) || split_remnants.iter().any(|r| r.id == id);
+                for rr in trimmed_clips.iter().rev().filter(|rr| !cut(rr.clip_id)) {
                     sequence.set_clip_position(rr.clip_id, rr.old_in, rr.old_out);
                 }
-                // Re-insert overwritten clips (they need to be put back)
-                // Remove any remnant clips from trimming and restore originals
                 for oc in overwritten_clips {
-                    // Find correct position to insert
                     let track = &sequence.tracks[*track_index];
                     let pos = track
                         .clips
@@ -1511,15 +1516,6 @@ impl MagneticEditor {
                         .position(|c| c.timeline_in >= oc.timeline_in)
                         .unwrap_or(track.clips.len());
                     sequence.tracks[*track_index].clips.insert(pos, oc.clone());
-                }
-                // Remove leftover remnant clips that were created during overwrite
-                // (trimmed clips that aren't original clips)
-                for rr in trimmed_clips {
-                    // If this clip_id doesn't match any overwritten clip, it's a remnant
-                    let is_original = overwritten_clips.iter().any(|oc| oc.id == rr.clip_id);
-                    if !is_original {
-                        sequence.tracks[*track_index].remove_clip(rr.clip_id);
-                    }
                 }
                 repack_primary(sequence);
             }
@@ -1808,10 +1804,9 @@ impl MagneticEditor {
                         .clips
                         .insert(pos, remnant.clone());
                 }
-                // Apply trims (overlap-left / overlap-right case, where
-                // the trimmed clip kept its original ClipId so
-                // set_clip_position does find it).
-                for rr in trimmed_clips {
+                // The trimmed clips came back whole above, as remnants;
+                // what else the repack moved goes where it went.
+                for rr in trimmed_clips.iter().filter(|rr| !split_remnants.iter().any(|r| r.id == rr.clip_id)) {
                     sequence.set_clip_position(rr.clip_id, rr.new_in, rr.new_out);
                 }
                 // Insert the new clip
@@ -3128,6 +3123,28 @@ mod tests {
         // undo again → back to original 3 clips.
         MagneticEditor::apply_inverse(&mut seq, &result.command);
         assert_eq!(seq.tracks[0].clips.len(), 3);
+    }
+
+    /// #919: an overwrite across a cut trims the clip before it and the
+    /// clip after it, which keep their ids. Undo put the originals back
+    /// beside the trimmed copies (two clips with one id) and the repack
+    /// pushed everything after along; redo lost the trimmed clips.
+    #[test]
+    fn test_overwrite_primary_across_a_cut_undoes_and_redoes_exactly() {
+        let mut seq = make_sequence(&[(0, 24), (24, 48), (48, 72)]);
+        let state = |seq: &Sequence| -> Vec<(ClipId, RationalTime, RationalTime, RationalTime, RationalTime)> {
+            seq.tracks[0].clips.iter().map(|c| (c.id, c.timeline_in, c.timeline_out, c.source_in, c.source_out)).collect()
+        };
+        let before = state(&seq);
+        let result = MagneticEditor::overwrite_primary(&mut seq, media_clip(0, 12), tc(18));
+        let after = state(&seq);
+        assert_eq!(after.len(), 4, "A trimmed, the new clip, B trimmed, C");
+        MagneticEditor::apply_inverse(&mut seq, &result.command);
+        assert_eq!(state(&seq), before, "undo gives back the clips as they were");
+        MagneticEditor::apply_forward(&mut seq, &result.command);
+        assert_eq!(state(&seq), after, "redo gives back the overwrite");
+        MagneticEditor::apply_inverse(&mut seq, &result.command);
+        assert_eq!(state(&seq), before);
     }
 
     #[test]
