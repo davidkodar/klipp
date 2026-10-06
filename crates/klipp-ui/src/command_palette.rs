@@ -1060,10 +1060,7 @@ pub fn import_media_commands() -> Vec<AppCommand> {
 /// for pickers that take several files.
 pub fn dispatch_dialog(kind: DialogKind) -> Vec<AppCommand> {
     let single = match kind {
-        DialogKind::OpenProject => rfd::FileDialog::new()
-            .set_title("Open Project")
-            .pick_folder()
-            .map(|p| AppCommand::OpenProject { path: p }),
+        DialogKind::OpenProject => return crate::project_paths::pick_project_commands(),
         DialogKind::SaveProjectAs => rfd::FileDialog::new()
             .set_title("Save Project As")
             .add_filter("Klipp Project", &["klipp"])

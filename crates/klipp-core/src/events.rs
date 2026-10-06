@@ -1133,6 +1133,9 @@ pub enum AppCommand {
     SaveProject,
     SaveProjectAs { path: PathBuf },
     OpenProject { path: PathBuf },
+    /// The folder new projects go in and the welcome screen lists
+    /// projects from (#1143).
+    SetProjectsFolder { path: PathBuf },
     /// Open `path` as it is, with no dialog: not the unsaved-changes
     /// question (the caller has settled that) and not the autosave
     /// recovery offer. For the control socket, where nobody is there to

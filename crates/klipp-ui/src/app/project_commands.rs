@@ -187,6 +187,8 @@ impl KlippApp {
                 true
             }
             AppCommand::OpenProject { path } => {
+                // Whatever was picked or named, the project it is in (#1143).
+                let path = &crate::project_paths::project_dir_of(path);
                 if self.state.dirty {
                     self.state.show_unsaved_dialog = true;
                     self.state.unsaved_dialog_action =
@@ -194,6 +196,11 @@ impl KlippApp {
                     return true;
                 }
                 self.do_open_project(path);
+                true
+            }
+            AppCommand::SetProjectsFolder { path } => {
+                self.prefs.general.default_project_dir = Some(path.clone());
+                self.prefs_dirty = true;
                 true
             }
             AppCommand::RemoveRecentProject { path } => {
