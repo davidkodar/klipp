@@ -1420,3 +1420,27 @@ fn a_damaged_file_never_panics_the_conversion() {
     eprintln!("damaged files: {runs} converted or refused without a panic ({refused} refused)");
     assert!(refused > 0, "the damage reached nothing the conversion refuses");
 }
+
+/// `revision2(unlift(v)) == v` byte for byte over the generated projects,
+/// the odd cases included: what a save after the switch writes back is the
+/// file it read (#1089).
+#[test]
+fn every_generated_project_comes_back_to_the_same_revision_2_file() {
+    let mut projects = 0;
+    let mut failures = Vec::new();
+    for seed in 0..40 {
+        let dir = temp("unlift");
+        generated_project(&dir, seed, 25);
+        let raw: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("project.json")).unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let (v2, _) = klipp_convert::revision2::project(&raw).unwrap();
+        let back = klipp_convert::unlift::project(&v2).unwrap();
+        let (again, _) = klipp_convert::revision2::project(&back).unwrap();
+        projects += 1;
+        if serde_json::to_string(&v2).unwrap() != serde_json::to_string(&again).unwrap() {
+            failures.push(format!("seed {seed}: {}", first_diff(&v2, &again, "")));
+        }
+    }
+    eprintln!("unlift: {projects} generated projects back and forth");
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.iter().take(5).cloned().collect::<Vec<_>>().join("\n"));
+}

@@ -14,7 +14,7 @@ pub mod scan;
 pub mod v1;
 pub mod verify;
 /// The pure conversion, in its own crate so the app can use it.
-pub use klipp_graph_lift::{canon, delift, ids, lift, old_fields, paths, revision, splice, to_v1, to_v2};
+pub use klipp_graph_lift::{canon, delift, ids, lift, old_fields, paths, revision, splice, to_v1, to_v2, unlift};
 pub mod revision2;
 pub use document::{Document, Picture, PictureField, StoreKind};
 
