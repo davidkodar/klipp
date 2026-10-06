@@ -401,3 +401,50 @@ fn filled_inputs_become_edges() {
     assert!(has_edge(b, id(BLEND), id(RGB), "g") && has_edge(b, id(BLEND), id(RGB), "b"), "G and B read R");
     assert!(has_edge(b, id(SRC), id(AM), "pregrade"), "the pre-grade reads the frame");
 }
+
+/// Reads of the primary's picture become edges from what feeds the
+/// primary, wired or wireless; ApplyMatte's empty ungraded input reads the
+/// frame.
+#[test]
+fn reads_of_the_primary_become_edges_from_its_feed() {
+    const EXP: &str = "00000000-0000-0000-0000-000000000010";
+    const BLD: &str = "00000000-0000-0000-0000-000000000011";
+    const CMB: &str = "00000000-0000-0000-0000-000000000012";
+    const APM: &str = "00000000-0000-0000-0000-000000000013";
+    let mut exp = gn(EXP, "Exposure");
+    exp["output_link"] = json!("graded");
+    let mut cmb = gn(CMB, "RGBCombiner");
+    cmb["input_links"] = json!(["graded"]);
+    let g = json!({
+        "nodes": [gn(SRC, "Source"), exp, gn(KEY, "Qualifier"), gn(BLD, "Blend"), cmb, gn(APM, "ApplyMatte"), gn(OUT, "Output")],
+        "edges": [edge(SRC, 0, EXP, 0), edge(EXP, 0, BLD, 0), edge(EXP, 0, APM, 0), edge(KEY, 0, APM, 1), edge(APM, 0, OUT, 0)],
+        "output_node_id": OUT
+    });
+    let (p, _) = lift(clip(json!({"node_graph": g})), ClipKind::Media);
+    let b = body(&p);
+    let key = |kind: &str, port: u8| klipp_graph_format::ports::input_key(kind, port);
+    assert!(has_edge(b, id(EXP), id(BLD), key("Blend", 1).as_str()), "Blend's B reads A");
+    for port in [1, 2] {
+        assert!(has_edge(b, id(EXP), id(CMB), key("RGBCombiner", port).as_str()), "the combiner's {port} reads its wireless primary");
+    }
+    assert!(!b.edges.iter().any(|e| e.to.0 == id(CMB) && e.to.1 == key("RGBCombiner", 0)), "the wireless primary stays wireless");
+    assert!(has_edge(b, id(SRC), id(APM), key("ApplyMatte", 2).as_str()), "ApplyMatte's ungraded input reads the frame");
+}
+
+#[test]
+fn every_clip_kind_the_app_writes_is_known() {
+    for (tag, kind) in [
+        ("media", ClipKind::Media),
+        ("title", ClipKind::Title),
+        ("title_v2", ClipKind::Title),
+        ("vector_title", ClipKind::Title),
+        ("generator", ClipKind::Generator),
+        ("sequence", ClipKind::Compound),
+        ("precomposition", ClipKind::Precomposition),
+        ("template_precomposition", ClipKind::Precomposition),
+        ("adjustment_layer", ClipKind::Adjustment),
+        ("gap", ClipKind::Gap),
+    ] {
+        assert_eq!(ClipKind::from_json(Some(&json!({"type": tag}))), Ok(kind), "{tag}");
+    }
+}
