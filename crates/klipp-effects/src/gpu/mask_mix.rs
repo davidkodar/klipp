@@ -1,5 +1,5 @@
 //! Record-only mask mixing with explicit image resources.
-use super::{GpuEffectsPipeline, CHAIN_PARAMS_RING_SIZE, WORKGROUP_SIZE};
+use super::{GpuEffectsPipeline, WORKGROUP_SIZE};
 use crate::mask_mix::{MaskMix, MaskMixError};
 
 pub(super) struct MaskMixGpu {
@@ -98,7 +98,7 @@ impl GpuEffectsPipeline {
         {
             return Err(MaskMixError::SizeMismatch);
         }
-        if self.chain_slot_idx as usize >= CHAIN_PARAMS_RING_SIZE {
+        if self.chain_params.remaining() == 0 {
             return Err(MaskMixError::ParamsExhausted);
         }
         let slot = self.next_params_slot();
@@ -118,7 +118,7 @@ impl GpuEffectsPipeline {
             effect,
             mask.unwrap_or(input),
             output,
-            &self.params_ring[slot],
+            self.chain_params.buffer(slot),
         ];
         let entries: Vec<_> = buffers
             .iter()
