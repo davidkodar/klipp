@@ -1027,6 +1027,65 @@ fn the_renderer_consumes_every_generated_render_copy_alike_after_the_splice() {
     }
 }
 
+/// A clip whose own grade loops by its edges (decision 6), in a grade
+/// group with a pre and a post stage: today the baked graph still loops
+/// and nothing grades, stages included, and the lifted splice, its grade
+/// switched off, renders it the same, lifted here and read from the file.
+#[test]
+fn a_looping_grade_in_a_group_grades_nothing_stages_included() {
+    let stage = |seed: u64| {
+        let mut r = Rng(0xC0FF_EE00 ^ seed);
+        loop {
+            let g = loop_free(grade_graph(&mut r));
+            if g["nodes"].as_array().is_some_and(|n| n.len() > 2) {
+                return g;
+            }
+        }
+    };
+    let (a, b, src, out) = ("00000000-0000-4000-8000-0000000000a1", "00000000-0000-4000-8000-0000000000b2", "00000000-0000-4000-8000-0000000000c3", "00000000-0000-4000-8000-0000000000d4");
+    let looping = json!({
+        "nodes": [
+            { "id": src, "kind": "Source", "label": "", "enabled": true },
+            { "id": a, "kind": "Exposure", "label": "", "enabled": true, "params": { "exposure": 0.5 } },
+            { "id": b, "kind": "Saturation", "label": "", "enabled": true, "params": { "saturation": 1.5 } },
+            { "id": out, "kind": "Output", "label": "", "enabled": true },
+        ],
+        "edges": [
+            { "from_node": b, "from_port": 0, "to_node": a, "to_port": 0 },
+            { "from_node": a, "from_port": 0, "to_node": b, "to_port": 0 },
+            { "from_node": b, "from_port": 0, "to_node": out, "to_port": 0 },
+        ],
+        "output_node_id": out,
+    });
+    for from_file in [false, true] {
+        let (dir, scratch) = (temp("loopgrp"), temp("loopgrp_out"));
+        let mut seq = Sequence::new_default();
+        let id = klipp_core::ClipId(Uuid::from_u64_pair(0x100b, 1));
+        let tc = |s: f64| Timecode::from_secs_f64(s, 24);
+        seq.tracks[0].clips.push(Clip { id, kind: klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) });
+        klipp_project::save_project(&dir, &[seq], &klipp_media::MediaPool::new()).expect("save");
+        let path = dir.join("project.json");
+        let mut project: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let group = Uuid::from_u64_pair(0x100b, 2).to_string();
+        let s = &mut project["sequences"][0];
+        s["grade_groups"] = json!([{ "id": group, "name": "Night", "pre": stage(1), "post": stage(2) }]);
+        let clip = &mut s["tracks"][0]["clips"][0];
+        clip["node_graph"] = looping.clone();
+        clip["grade_group"] = json!(group);
+        std::fs::write(&path, project.to_string()).unwrap();
+
+        // Both stages reach the baked graph, and it still loops.
+        let baked = load(&dir).unwrap()[0].baked_for_render().into_owned();
+        let c = &baked.tracks[0].clips[0];
+        assert!(c.node_graph.nodes.len() > 4, "the stages are baked in");
+        assert_eq!(render_inputs(c, 24.0)["grade"], "passthrough", "today grades nothing");
+        let checked = check_spliced(&dir, &scratch, from_file).unwrap_or_else(|e| panic!("from_file {from_file}: {e}"));
+        assert_eq!((checked.alike + checked.unstable_load, checked.passthrough), (1, 1));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+}
+
 /// The lift and its adapter change nothing today's renderer consumes,
 /// over generated clips.
 #[test]
