@@ -1,3 +1,4 @@
+use klipp_timeline::GradeAccess;
 use crate::history::{CommandHistory, EditCommand, HistoryEntry};
 use klipp_core::{AudioParam, ClipId, Fps, MediaId, SequenceId, Timecode, Tool, TrackId, TransitionId, VideoParam, ViewerMode};
 use klipp_engine::PlaybackState;
@@ -3616,7 +3617,7 @@ impl AttributesClipboard {
             builtin_effects: clip.builtin_effects.clone(),
             builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
             effects: clip.effects.clone(),
-            node_graph: clip.node_graph.clone(),
+            node_graph: clip.grade().clone(),
             volume: clip.volume,
             pan: clip.pan,
             gain: clip.gain,
@@ -3671,7 +3672,7 @@ impl AttributesClipboard {
             clip.effects = self.effects.clone();
         }
         if what.color_grade {
-            clip.node_graph = clip.node_graph.with_grade_of(&self.node_graph);
+            clip.set_grade(clip.grade().with_grade_of(&self.node_graph));
         }
         if what.audio {
             clip.volume = self.volume;

@@ -1,3 +1,4 @@
+use klipp_timeline::GradeAccess;
 use crate::widgets::inspector_group::section_card;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -33,7 +34,7 @@ pub fn show_color_and_luts(
                     .find(|c| c.id == clip_id)
                     .and_then(|c| {
                         let clip_time = crate::inspector::keyframe_selection::clip_time(state, c);
-                        let mask_node = c.node_graph.nodes.iter()
+                        let mask_node = c.grade().nodes.iter()
                             .find(|n| n.kind == klipp_nodes::NodeKind::Mask);
                         mask_node.map(|n| {
                             // Build the list of mask indices that have
@@ -355,7 +356,7 @@ pub(crate) fn clip_input_colour_space(state: &AppState, clip_id: klipp_core::Cli
         return (format, detected);
     }
     let node_format = clip
-        .and_then(|c| c.node_graph.nodes.iter().find_map(|n| n.params.log_format))
+        .and_then(|c| c.grade().nodes.iter().find_map(|n| n.params.log_format))
         .unwrap_or_default();
     (node_format, false)
 }

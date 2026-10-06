@@ -151,6 +151,20 @@ impl GradeAccess for Clip {
     }
 }
 
+impl GradeVersion {
+    /// A grade version named `name`, holding `grade`.
+    pub fn new(name: impl Into<String>, grade: NodeGraph) -> Self {
+        Self { name: name.into(), node_graph: grade }
+    }
+}
+
+impl Look {
+    /// A Look with its id and name, holding `grade`.
+    pub fn new(id: uuid::Uuid, name: impl Into<String>, grade: NodeGraph) -> Self {
+        Self { id, name: name.into(), node_graph: grade }
+    }
+}
+
 impl GradeAccess for GradeVersion {
     fn grade(&self) -> &NodeGraph {
         &self.node_graph

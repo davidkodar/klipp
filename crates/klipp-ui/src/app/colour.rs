@@ -2,6 +2,7 @@
 //! grade, sampling the picture (balance, qualifier, hue curves), tracked
 //! windows, grade stills and LUT versions (#826).
 
+use klipp_timeline::GradeAccess;
 use super::*;
 
 impl KlippApp {
@@ -30,7 +31,7 @@ impl KlippApp {
                         .tracks
                         .iter()
                         .find_map(|t| t.find_clip(id))
-                        .map(|clip| (id, clip.node_graph.clone()))
+                        .map(|clip| (id, clip.grade().clone()))
                 });
             }
             Keep::Hold => {}
@@ -480,10 +481,10 @@ impl KlippApp {
     }
 
     pub(super) fn resolve_graph_at_path_mut<'a>(
-        clip: &'a mut klipp_timeline::Clip,
+        root: &'a mut klipp_nodes::NodeGraph,
         path: &[klipp_nodes::NodeId],
     ) -> Result<&'a mut klipp_nodes::NodeGraph, String> {
-        let mut current = &mut clip.node_graph;
+        let mut current = root;
         for &node_id in path {
             let node = current
                 .nodes
@@ -530,18 +531,16 @@ impl KlippApp {
         let mut path_went_stale = false;
         for track in &mut self.state.sequences[seq_idx].tracks {
             if let Some(clip) = track.find_clip_mut(clip_id) {
-                let old = clip.node_graph.clone();
-                let resolve = Self::resolve_graph_at_path_mut(clip, &path);
+                let old = clip.grade().clone();
+                let resolve = clip.edit_grade(|root| Self::resolve_graph_at_path_mut(root, &path).map(mutate));
                 match resolve {
-                    Ok(graph) => {
-                        mutate(graph);
-                    }
+                    Ok(()) => {}
                     Err(_e) => {
                         path_went_stale = true;
                         break;
                     }
                 }
-                new_top_graph = Some(clip.node_graph.clone());
+                new_top_graph = Some(clip.grade().clone());
                 old_top_graph = Some(old);
                 applied = true;
                 break;
@@ -599,18 +598,24 @@ impl KlippApp {
         let path = self.state.graph_descent_path.clone();
         for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
             let Some(clip) = track.find_clip_mut(clip_id) else { continue };
-            let old_root_graph = clip.node_graph.clone();
-            let Ok(target_graph) = Self::resolve_graph_at_path_mut(clip, &path) else {
-                self.state.toast.show("Auto-layout: invalid descent path");
-                return;
-            };
-            let new_positions = klipp_nodes::auto_layout(target_graph);
-            if new_positions.is_empty() {
-                // Empty graph or cycle bail-out — nothing to do.
+            let old_root_graph = clip.grade().clone();
+            let changed = clip.edit_grade(|root| {
+                let Ok(target_graph) = Self::resolve_graph_at_path_mut(root, &path) else {
+                    self.state.toast.show("Auto-layout: invalid descent path");
+                    return false;
+                };
+                let new_positions = klipp_nodes::auto_layout(target_graph);
+                if new_positions.is_empty() {
+                    // Empty graph or cycle bail-out — nothing to do.
+                    return false;
+                }
+                target_graph.node_positions = new_positions;
+                true
+            });
+            if !changed {
                 return;
             }
-            target_graph.node_positions = new_positions;
-            let new_root_graph = clip.node_graph.clone();
+            let new_root_graph = clip.grade().clone();
             self.state.active_history_mut().push(crate::history::HistoryEntry {
                 command: crate::history::EditCommand::SetNodeGraph {
                     clip_id,
@@ -672,22 +677,23 @@ impl KlippApp {
         let mut edit: Option<(klipp_nodes::NodeGraph, klipp_nodes::NodeGraph, bool)> = None;
         for track in &mut seq.tracks {
             if let Some(clip) = track.find_clip_mut(clip_id) {
-                let before = clip.node_graph.clone();
+                let before = clip.grade().clone();
                 // The Corrector's temperature/tint feed the unified grade
                 // shader; the legacy Colour Balance node is the fallback.
-                let target = clip
-                    .node_graph
-                    .nodes
-                    .iter()
-                    .position(|n| n.kind == klipp_nodes::NodeKind::Corrector)
-                    .or_else(|| clip.node_graph.nodes.iter().position(|n| n.kind == klipp_nodes::NodeKind::ColorBalance));
-                if let Some(idx) = target {
-                    let node = &mut clip.node_graph.nodes[idx];
-                    let (t, t_railed) = add_on_rail(node.params.temperature.unwrap_or(0.0), temp_adj);
-                    let (g, g_railed) = add_on_rail(node.params.tint.unwrap_or(0.0), tint_adj);
-                    node.params.temperature = Some(t);
-                    node.params.tint = Some(g);
-                    edit = Some((before, clip.node_graph.clone(), t_railed || g_railed));
+                let railed = clip.edit_grade(|graph| {
+                    let target = graph.nodes.iter().position(|n| n.kind == klipp_nodes::NodeKind::Corrector)
+                        .or_else(|| graph.nodes.iter().position(|n| n.kind == klipp_nodes::NodeKind::ColorBalance));
+                    target.map(|idx| {
+                        let node = &mut graph.nodes[idx];
+                        let (t, t_railed) = add_on_rail(node.params.temperature.unwrap_or(0.0), temp_adj);
+                        let (g, g_railed) = add_on_rail(node.params.tint.unwrap_or(0.0), tint_adj);
+                        node.params.temperature = Some(t);
+                        node.params.tint = Some(g);
+                        t_railed || g_railed
+                    })
+                });
+                if let Some(railed) = railed {
+                    edit = Some((before, clip.grade().clone(), railed));
                 }
                 break;
             }
@@ -744,7 +750,7 @@ impl KlippApp {
         let mut huesat = self.state.sequences[self.state.active_sequence_idx]
             .all_clips()
             .find(|c| c.id == clip_id)
-            .and_then(|c| c.node_graph.nodes.iter().find(|n| n.id == node_id))
+            .and_then(|c| c.grade().nodes.iter().find(|n| n.id == node_id))
             .and_then(|n| n.params.huesat.clone())
             .unwrap_or_default();
         let points = match curve {
@@ -772,7 +778,7 @@ impl KlippApp {
         let base = self.state.sequences[self.state.active_sequence_idx]
             .all_clips()
             .find(|c| c.id == clip_id)
-            .and_then(|c| c.node_graph.nodes.iter().find(|n| n.id == node_id))
+            .and_then(|c| c.grade().nodes.iter().find(|n| n.id == node_id))
             .and_then(|n| n.params.qualifier.clone())
             .unwrap_or_default();
         let qualifier = match sample {
@@ -1006,8 +1012,9 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(clip_id) {
                         if let Some(idx) = clip.active_grade_version {
+                            let grade = clip.grade().clone();
                             if let Some(v) = clip.grade_versions.get_mut(idx) {
-                                v.node_graph = clip.node_graph.clone();
+                                v.set_grade(grade);
                                 self.state.dirty = true;
                             }
                         }
@@ -1027,14 +1034,16 @@ impl KlippApp {
                 let mut ok = false;
                 for track in &mut self.state.sequences[seq_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Ok(graph) = Self::resolve_graph_at_path_mut(clip, &path) {
-                            let is_compound = graph.nodes.iter().any(|n| {
-                                n.id == *node_id
-                                    && n.kind == klipp_nodes::NodeKind::Compound
-                                    && n.params.compound_subgraph.is_some()
-                            });
-                            if is_compound { ok = true; }
-                        }
+                        clip.edit_grade(|root| {
+                            if let Ok(graph) = Self::resolve_graph_at_path_mut(root, &path) {
+                                let is_compound = graph.nodes.iter().any(|n| {
+                                    n.id == *node_id
+                                        && n.kind == klipp_nodes::NodeKind::Compound
+                                        && n.params.compound_subgraph.is_some()
+                                });
+                                if is_compound { ok = true; }
+                            }
+                        });
                         break;
                     }
                 }
@@ -1127,11 +1136,13 @@ impl KlippApp {
                 let path = self.state.graph_descent_path.clone();
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Ok(graph) = Self::resolve_graph_at_path_mut(clip, &path) {
-                            let pos = graph.node_positions.entry(*node_id).or_default();
-                            pos.x += delta_x;
-                            pos.y += delta_y;
-                        }
+                        clip.edit_grade(|root| {
+                            if let Ok(graph) = Self::resolve_graph_at_path_mut(root, &path) {
+                                let pos = graph.node_positions.entry(*node_id).or_default();
+                                pos.x += delta_x;
+                                pos.y += delta_y;
+                            }
+                        });
                         break;
                     }
                 }
@@ -1188,7 +1199,7 @@ impl KlippApp {
                 let clipboard = seq.tracks.iter()
                     .flat_map(|t| t.clips.iter())
                     .find(|c| c.id == *clip_id)
-                    .map(|c| crate::state::GradeNodeClipboard::from_selection(&c.node_graph, &selection))
+                    .map(|c| crate::state::GradeNodeClipboard::from_selection(c.grade(), &selection))
                     .unwrap_or(crate::state::GradeNodeClipboard {
                         nodes: Vec::new(), edges: Vec::new(),
                         node_positions: std::collections::HashMap::new(),
@@ -1254,7 +1265,7 @@ impl KlippApp {
         }
         for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
             if let Some(clip) = track.find_clip_mut(clip_id) {
-                return clip.node_graph.ensure_corrector();
+                return clip.edit_grade(|g| g.ensure_corrector());
             }
         }
         node_id
@@ -1291,7 +1302,7 @@ impl KlippApp {
                 };
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
                 let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) else { return true };
-                let graph = &clip.node_graph;
+                let graph = clip.grade();
                 let node = graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector && n.enabled)
                     .or_else(|| graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::ColorWheels && n.enabled));
                 let (node_id, now) = match node {
@@ -1326,11 +1337,13 @@ impl KlippApp {
                 let path = self.state.graph_descent_path.clone();
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Ok(graph) = Self::resolve_graph_at_path_mut(clip, &path) {
-                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                                node.params.apply_override(param, *value);
+                        clip.edit_grade(|root| {
+                            if let Ok(graph) = Self::resolve_graph_at_path_mut(root, &path) {
+                                if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                    node.params.apply_override(param, *value);
+                                }
                             }
-                        }
+                        });
                         break;
                     }
                 }
@@ -1385,7 +1398,7 @@ impl KlippApp {
                             .tracks
                             .iter()
                             .find_map(|t| t.find_clip(*clip_id))
-                            .map(|clip| (*clip_id, clip.node_graph.clone()))
+                            .map(|clip| (*clip_id, clip.grade().clone()))
                     });
                 }
                 // Auto-capture a "Before" reference still the first time the
@@ -1412,7 +1425,7 @@ impl KlippApp {
                     if snap_clip_id == *clip_id {
                         for track in &self.state.sequences[self.state.active_sequence_idx].tracks {
                             if let Some(clip) = track.find_clip(*clip_id) {
-                                let new_graph = clip.node_graph.clone();
+                                let new_graph = clip.grade().clone();
                                 // NodeGraph doesn't impl PartialEq, so we push
                                 // unconditionally; undoing a no-op gesture just
                                 // restores an identical graph.
@@ -1687,7 +1700,7 @@ impl KlippApp {
                     .state.sequences[self.state.active_sequence_idx]
                     .tracks.iter().flat_map(|t| t.clips.iter())
                     .find(|c| c.id == clip_id)
-                    .and_then(|c| c.node_graph.nodes.iter()
+                    .and_then(|c| c.grade().nodes.iter()
                         .find(|n| n.kind == klipp_nodes::NodeKind::Mask)
                         .map(|n| n.id));
                 self.with_current_clip_graph_mut(clip_id, needs_refresh, |graph| {
@@ -1727,15 +1740,17 @@ impl KlippApp {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
                     clip.track_points.retain(|tp| tp.linked_mask != Some((node_id, mask_index)));
-                    if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        if let Some(masks) = &mut node.params.masks {
-                            if let Some(mask) = masks.masks.get_mut(mask_index) {
-                                mask.keyframes.center_x.clear();
-                                mask.keyframes.center_y.clear();
-                                mask.keyframes.clear_track();
+                    clip.edit_grade(|graph| {
+                        if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                            if let Some(masks) = &mut node.params.masks {
+                                if let Some(mask) = masks.masks.get_mut(mask_index) {
+                                    mask.keyframes.center_x.clear();
+                                    mask.keyframes.center_y.clear();
+                                    mask.keyframes.clear_track();
+                                }
                             }
                         }
-                    }
+                    });
                 }
                 self.state.dirty = true;
                 *needs_refresh = true;
@@ -1783,12 +1798,14 @@ impl KlippApp {
                 let mut applied = false;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(clip_id) {
-                        let node_id = clip.node_graph.ensure_color_match();
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                            node.params.color_match = Some(settings);
-                            node.enabled = true;
-                            applied = true;
-                        }
+                        let node_id = clip.edit_grade(|g| g.ensure_color_match());
+                        clip.edit_grade(|graph| {
+                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                                node.params.color_match = Some(settings);
+                                node.enabled = true;
+                                applied = true;
+                            }
+                        });
                         break;
                     }
                 }
@@ -1838,10 +1855,12 @@ impl KlippApp {
                 // when we already have everything we need here.
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.params.color_match = Some(settings);
-                            node.enabled = true;
-                        }
+                        clip.edit_grade(|graph| {
+                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                node.params.color_match = Some(settings);
+                                node.enabled = true;
+                            }
+                        });
                         break;
                     }
                 }
@@ -1861,28 +1880,30 @@ impl KlippApp {
             AppCommand::AddMaskKeyframe { clip_id, node_id, mask_index, ref param, time_secs, value } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            if let Some(masks) = &mut node.params.masks {
-                                if let Some(mask) = masks.masks.get_mut(*mask_index) {
-                                    if let Some(track) = mask.keyframes.track_mut(param) {
-                                        // Insert or update keyframe at this time
-                                        let epsilon = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
-                                        if let Some(kf) = track.iter_mut().find(|k| (k.time_secs - time_secs).abs() < epsilon) {
-                                            kf.value = *value;
-                                        } else {
-                                            track.push(klipp_core::Keyframe {
-                                                time_secs: *time_secs,
-                                                value: *value,
-                                                interpolation: klipp_core::Interpolation::Linear,
-                                                tangent_out: (0.0, 0.0),
-                                                tangent_in: (0.0, 0.0),
-                                            });
-                                            track.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                        clip.edit_grade(|graph| {
+                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                if let Some(masks) = &mut node.params.masks {
+                                    if let Some(mask) = masks.masks.get_mut(*mask_index) {
+                                        if let Some(track) = mask.keyframes.track_mut(param) {
+                                            // Insert or update keyframe at this time
+                                            let epsilon = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
+                                            if let Some(kf) = track.iter_mut().find(|k| (k.time_secs - time_secs).abs() < epsilon) {
+                                                kf.value = *value;
+                                            } else {
+                                                track.push(klipp_core::Keyframe {
+                                                    time_secs: *time_secs,
+                                                    value: *value,
+                                                    interpolation: klipp_core::Interpolation::Linear,
+                                                    tangent_out: (0.0, 0.0),
+                                                    tangent_in: (0.0, 0.0),
+                                                });
+                                                track.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
+                        });
                         break;
                     }
                 }
@@ -1892,15 +1913,17 @@ impl KlippApp {
             AppCommand::RemoveMaskKeyframe { clip_id, node_id, mask_index, ref param, time_secs } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            if let Some(masks) = &mut node.params.masks {
-                                if let Some(mask) = masks.masks.get_mut(*mask_index) {
-                                    if let Some(track) = mask.keyframes.track_mut(param) {
-                                        klipp_core::keyframe::remove_keyframe_at(track, *time_secs);
+                        clip.edit_grade(|graph| {
+                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                if let Some(masks) = &mut node.params.masks {
+                                    if let Some(mask) = masks.masks.get_mut(*mask_index) {
+                                        if let Some(track) = mask.keyframes.track_mut(param) {
+                                            klipp_core::keyframe::remove_keyframe_at(track, *time_secs);
+                                        }
                                     }
                                 }
                             }
-                        }
+                        });
                         break;
                     }
                 }
@@ -1910,15 +1933,17 @@ impl KlippApp {
             AppCommand::ClearMaskKeyframes { clip_id, node_id, mask_index, ref param } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            if let Some(masks) = &mut node.params.masks {
-                                if let Some(mask) = masks.masks.get_mut(*mask_index) {
-                                    if let Some(track) = mask.keyframes.track_mut(param) {
-                                        track.clear();
+                        clip.edit_grade(|graph| {
+                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                if let Some(masks) = &mut node.params.masks {
+                                    if let Some(mask) = masks.masks.get_mut(*mask_index) {
+                                        if let Some(track) = mask.keyframes.track_mut(param) {
+                                            track.clear();
+                                        }
                                     }
                                 }
                             }
-                        }
+                        });
                         break;
                     }
                 }
@@ -1928,16 +1953,18 @@ impl KlippApp {
             AppCommand::AddKeyframe { clip_id, node_id, ref param, time_secs, value } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            let track = node.keyframes.track_mut(param);
-                            track.set_keyframe(*time_secs, *value);
-                            if param == klipp_nodes::ENABLED_TRACK {
-                                let epsilon = 0.01;
-                                if let Some(kf) = track.keyframes.iter_mut().find(|kf| (kf.time_secs - *time_secs).abs() < epsilon) {
-                                    kf.interpolation = klipp_core::keyframe::Interpolation::Step;
+                        clip.edit_grade(|graph| {
+                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                let track = node.keyframes.track_mut(param);
+                                track.set_keyframe(*time_secs, *value);
+                                if param == klipp_nodes::ENABLED_TRACK {
+                                    let epsilon = 0.01;
+                                    if let Some(kf) = track.keyframes.iter_mut().find(|kf| (kf.time_secs - *time_secs).abs() < epsilon) {
+                                        kf.interpolation = klipp_core::keyframe::Interpolation::Step;
+                                    }
                                 }
                             }
-                        }
+                        });
                         break;
                     }
                 }
@@ -1947,9 +1974,11 @@ impl KlippApp {
             AppCommand::RemoveKeyframe { clip_id, node_id, ref param, time_secs } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.keyframes.track_mut(param).remove_keyframe(*time_secs);
-                        }
+                        clip.edit_grade(|graph| {
+                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                node.keyframes.track_mut(param).remove_keyframe(*time_secs);
+                            }
+                        });
                         break;
                     }
                 }
@@ -1959,9 +1988,11 @@ impl KlippApp {
             AppCommand::ClearKeyframes { clip_id, node_id, ref param } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.keyframes.tracks.retain(|t| t.param_name != *param);
-                        }
+                        clip.edit_grade(|graph| {
+                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                node.keyframes.tracks.retain(|t| t.param_name != *param);
+                            }
+                        });
                         break;
                     }
                 }
@@ -1971,13 +2002,15 @@ impl KlippApp {
             AppCommand::SetKeyframeInterpolation { clip_id, node_id, ref param, time_secs, interpolation } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            let track = node.keyframes.track_mut(param);
-                            let epsilon = 0.01;
-                            if let Some(kf) = track.keyframes.iter_mut().find(|kf| (kf.time_secs - *time_secs).abs() < epsilon) {
-                                kf.interpolation = *interpolation;
+                        clip.edit_grade(|graph| {
+                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                let track = node.keyframes.track_mut(param);
+                                let epsilon = 0.01;
+                                if let Some(kf) = track.keyframes.iter_mut().find(|kf| (kf.time_secs - *time_secs).abs() < epsilon) {
+                                    kf.interpolation = *interpolation;
+                                }
                             }
-                        }
+                        });
                         break;
                     }
                 }
@@ -1987,14 +2020,16 @@ impl KlippApp {
             AppCommand::SetKeyframeTangents { clip_id, node_id, ref param, time_secs, tangent_in, tangent_out } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            let track = node.keyframes.track_mut(param);
-                            let epsilon = 0.01;
-                            if let Some(kf) = track.keyframes.iter_mut().find(|kf| (kf.time_secs - *time_secs).abs() < epsilon) {
-                                kf.tangent_in = *tangent_in;
-                                kf.tangent_out = *tangent_out;
+                        clip.edit_grade(|graph| {
+                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                let track = node.keyframes.track_mut(param);
+                                let epsilon = 0.01;
+                                if let Some(kf) = track.keyframes.iter_mut().find(|kf| (kf.time_secs - *time_secs).abs() < epsilon) {
+                                    kf.tangent_in = *tangent_in;
+                                    kf.tangent_out = *tangent_out;
+                                }
                             }
-                        }
+                        });
                         break;
                     }
                 }
@@ -2354,7 +2389,7 @@ impl KlippApp {
             width: tw,
             height: th,
             source,
-            grade: clip.map(|c| c.node_graph.clone()),
+            grade: clip.map(|c| c.grade().clone()),
             texture: None,
         })
     }
@@ -2437,7 +2472,7 @@ impl KlippApp {
 
                 let graph = {
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    seq.all_clips().find(|c| c.id == clip_id).map(|c| c.node_graph.clone())
+                    seq.all_clips().find(|c| c.id == clip_id).map(|c| c.grade().clone())
                 };
                 let Some(graph) = graph else {
                     self.state.toast.show("Bake failed — clip not found");
@@ -2478,10 +2513,7 @@ impl KlippApp {
             AppCommand::SaveGradeVersion { clip_id, name } => {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
-                    let version = klipp_timeline::GradeVersion {
-                        name: name.clone(),
-                        node_graph: clip.node_graph.clone(),
-                    };
+                    let version = klipp_timeline::GradeVersion::new(name.clone(), clip.grade().clone());
                     clip.grade_versions.push(version);
                     clip.active_grade_version = Some(clip.grade_versions.len() - 1);
                 }
@@ -2494,12 +2526,13 @@ impl KlippApp {
                     // Save current graph back to active version slot before switching
                     if let Some(active_idx) = clip.active_grade_version {
                         if active_idx < clip.grade_versions.len() {
-                            clip.grade_versions[active_idx].node_graph = clip.node_graph.clone();
+                            let grade = clip.grade().clone();
+                            clip.grade_versions[active_idx].set_grade(grade);
                         }
                     }
                     // Load the target version
                     if let Some(version) = clip.grade_versions.get(*version_index) {
-                        clip.node_graph = version.node_graph.clone();
+                        clip.set_grade(version.grade().clone());
                         clip.active_grade_version = Some(*version_index);
                     }
                 }
@@ -2541,17 +2574,13 @@ impl KlippApp {
                 };
                 let snapshot = {
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    seq.all_clips().find(|c| c.id == clip_id).map(|c| c.node_graph.clone())
+                    seq.all_clips().find(|c| c.id == clip_id).map(|c| c.grade().clone())
                 };
                 let Some(node_graph) = snapshot else {
                     self.state.toast.show("Selected clip not found");
                     return true;
                 };
-                let look = klipp_timeline::Look {
-                    id: uuid::Uuid::new_v4(),
-                    name: name.trim().to_string(),
-                    node_graph,
-                };
+                let look = klipp_timeline::Look::new(uuid::Uuid::new_v4(), name.trim().to_string(), node_graph);
                 let label = look.name.clone();
                 self.state.looks.push(look);
                 self.state.dirty = true;
@@ -2572,23 +2601,23 @@ impl KlippApp {
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                     for clip_id in clip_ids {
                         if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
-                            let old_graph = clip.node_graph.clone();
+                            let old_graph = clip.grade().clone();
                             // Fresh node ids per clip, so two clips with the
                             // same Look don't collide, and the clip's own
                             // Input Transform kept: the Look's, if it has
                             // one, is the shot it was saved on.
                             if *append {
-                                if let Err(why) = clip.node_graph.append(&look.node_graph) {
+                                if let Err(why) = clip.edit_grade(|g| g.append(look.grade())) {
                                     if !refused.contains(&why) {
                                         refused.push(why);
                                     }
                                     continue;
                                 }
                             } else {
-                                clip.node_graph = clip.node_graph.with_grade_of(&look.node_graph);
+                                clip.set_grade(clip.grade().with_grade_of(look.grade()));
                             }
                             applied += 1;
-                            history_pushes.push((*clip_id, old_graph, clip.node_graph.clone()));
+                            history_pushes.push((*clip_id, old_graph, clip.grade().clone()));
                         }
                     }
                 }

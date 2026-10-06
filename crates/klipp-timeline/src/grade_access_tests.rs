@@ -96,6 +96,16 @@ fn an_absent_grade_takes_no_edit_and_says_so() {
 }
 
 #[test]
+fn a_version_and_a_look_are_made_holding_their_grade() {
+    let (g, _) = graded();
+    let v = GradeVersion::new("A", g.clone());
+    let id = uuid::Uuid::new_v4();
+    let l = Look::new(id, "Warm", g.clone());
+    assert_eq!((v.name.as_str(), v.grade()), ("A", &g));
+    assert_eq!((l.id, l.name.as_str(), l.grade()), (id, "Warm", &g));
+}
+
+#[test]
 fn edit_grade_gives_its_closures_result_back() {
     let mut clip = Clip::gap(t(0.0), t(1.0));
     let n = clip.edit_grade(|g| {

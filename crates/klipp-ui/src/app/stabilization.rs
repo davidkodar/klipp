@@ -1,5 +1,6 @@
 //! Stabilization: a clip's motion analysed and smoothed (#826).
 
+use klipp_timeline::GradeAccess;
 use super::*;
 
 impl KlippApp {
@@ -679,7 +680,7 @@ impl KlippApp {
                 let reference = (source_secs * media_fps).round() as usize;
                 let first = (clip.source_in.to_secs_f64() * media_fps).floor() as usize;
                 let last = ((clip.source_out.to_secs_f64() * media_fps).ceil() as usize).min(frame_count.saturating_sub(1)).max(first);
-                let window = clip.node_graph.nodes.iter()
+                let window = clip.grade().nodes.iter()
                     .find(|n| n.id == node_id)
                     .and_then(|n| n.params.masks.as_ref())
                     .and_then(|ms| ms.masks.get(mask_index))
@@ -917,15 +918,17 @@ impl KlippApp {
                                 // step.
                                 let track = window_perspective_track(clip, tp, &self.state.media_pool, fps);
                                 let count = track.as_ref().map_or(0, |t| t.keys.len());
-                                let old_graph = clip.node_graph.clone();
-                                if let Some(mask) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id)
-                                    .and_then(|n| n.params.masks.as_mut())
-                                    .and_then(|ms| ms.masks.get_mut(mask_index))
-                                {
-                                    mask.keyframes.clear_track();
-                                    mask.keyframes.track_perspective = track.filter(|t| !t.keys.is_empty());
-                                }
-                                let new_graph = clip.node_graph.clone();
+                                let old_graph = clip.grade().clone();
+                                clip.edit_grade(|graph| {
+                                    if let Some(mask) = graph.nodes.iter_mut().find(|n| n.id == node_id)
+                                        .and_then(|n| n.params.masks.as_mut())
+                                        .and_then(|ms| ms.masks.get_mut(mask_index))
+                                    {
+                                        mask.keyframes.clear_track();
+                                        mask.keyframes.track_perspective = track.filter(|t| !t.keys.is_empty());
+                                    }
+                                });
+                                let new_graph = clip.grade().clone();
                                 if let Some(tp) = clip.track_points.get_mut(point_index) {
                                     tp.linked_mask = Some((node_id, mask_index));
                                 }
@@ -936,21 +939,23 @@ impl KlippApp {
                                 // size and turn, as keyframes on its own
                                 // clock, one undo step.
                                 let keys = window_track_keys(clip, tp, &self.state.media_pool, fps);
-                                let old_graph = clip.node_graph.clone();
-                                if let Some(mask) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id)
-                                    .and_then(|n| n.params.masks.as_mut())
-                                    .and_then(|ms| ms.masks.get_mut(mask_index))
-                                {
-                                    mask.keyframes.clear_track();
-                                    let k = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) };
-                                    for &(t, dx, dy, scale, rot) in &keys {
-                                        mask.keyframes.track_x.push(k(t, dx));
-                                        mask.keyframes.track_y.push(k(t, dy));
-                                        mask.keyframes.track_scale.push(k(t, scale));
-                                        mask.keyframes.track_rotation.push(k(t, rot));
+                                let old_graph = clip.grade().clone();
+                                clip.edit_grade(|graph| {
+                                    if let Some(mask) = graph.nodes.iter_mut().find(|n| n.id == node_id)
+                                        .and_then(|n| n.params.masks.as_mut())
+                                        .and_then(|ms| ms.masks.get_mut(mask_index))
+                                    {
+                                        mask.keyframes.clear_track();
+                                        let k = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) };
+                                        for &(t, dx, dy, scale, rot) in &keys {
+                                            mask.keyframes.track_x.push(k(t, dx));
+                                            mask.keyframes.track_y.push(k(t, dy));
+                                            mask.keyframes.track_scale.push(k(t, scale));
+                                            mask.keyframes.track_rotation.push(k(t, rot));
+                                        }
                                     }
-                                }
-                                let new_graph = clip.node_graph.clone();
+                                });
+                                let new_graph = clip.grade().clone();
                                 if let Some(tp) = clip.track_points.get_mut(point_index) {
                                     tp.linked_mask = Some((node_id, mask_index));
                                 }
@@ -960,33 +965,35 @@ impl KlippApp {
                                 if let Some(tp) = clip.track_points.get_mut(point_index) {
                                     tp.linked_mask = Some((node_id, mask_index));
                                 }
-                                if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                                    if let Some(mask_stack) = &mut node.params.masks {
-                                        if let Some(mask) = mask_stack.masks.get_mut(mask_index) {
-                                            mask.keyframes.center_x.clear();
-                                            mask.keyframes.center_y.clear();
-                                            for (i, &(nx, ny)) in positions.iter().enumerate() {
-                                                let frame_idx = start_frame + i;
-                                                let t = frame_idx as f64 / fps;
-                                                mask.keyframes.center_x.push(klipp_core::Keyframe {
-                                                    time_secs: t,
-                                                    value: nx as f32,
-                                                    interpolation: klipp_core::Interpolation::Linear,
-                                                    tangent_in: (0.0, 0.0),
-                                                    tangent_out: (0.0, 0.0),
-                                                });
-                                                mask.keyframes.center_y.push(klipp_core::Keyframe {
-                                                    time_secs: t,
-                                                    value: ny as f32,
-                                                    interpolation: klipp_core::Interpolation::Linear,
-                                                    tangent_in: (0.0, 0.0),
-                                                    tangent_out: (0.0, 0.0),
-                                                });
+                                clip.edit_grade(|graph| {
+                                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                                        if let Some(mask_stack) = &mut node.params.masks {
+                                            if let Some(mask) = mask_stack.masks.get_mut(mask_index) {
+                                                mask.keyframes.center_x.clear();
+                                                mask.keyframes.center_y.clear();
+                                                for (i, &(nx, ny)) in positions.iter().enumerate() {
+                                                    let frame_idx = start_frame + i;
+                                                    let t = frame_idx as f64 / fps;
+                                                    mask.keyframes.center_x.push(klipp_core::Keyframe {
+                                                        time_secs: t,
+                                                        value: nx as f32,
+                                                        interpolation: klipp_core::Interpolation::Linear,
+                                                        tangent_in: (0.0, 0.0),
+                                                        tangent_out: (0.0, 0.0),
+                                                    });
+                                                    mask.keyframes.center_y.push(klipp_core::Keyframe {
+                                                        time_secs: t,
+                                                        value: ny as f32,
+                                                        interpolation: klipp_core::Interpolation::Linear,
+                                                        tangent_in: (0.0, 0.0),
+                                                        tangent_out: (0.0, 0.0),
+                                                    });
+                                                }
+                                                self.state.toast.show("Generated mask center keyframes from tracker");
                                             }
-                                            self.state.toast.show("Generated mask center keyframes from tracker");
                                         }
                                     }
-                                }
+                                });
                             }
                         }
                     }

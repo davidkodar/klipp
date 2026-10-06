@@ -1,6 +1,7 @@
 //! AI tool runs: the tick that dispatches and polls them, inference, a mask
 //! applied to a clip, its overlay, and model downloads (#890).
 
+use klipp_timeline::GradeAccess;
 use super::*;
 
 impl KlippApp {
@@ -291,41 +292,42 @@ impl KlippApp {
                 params.matte_image_path = Some(path_for_node);
                 params.matte_channel =
                     Some(klipp_nodes::params::MatteChannel::Luminance);
-                clip.node_graph.nodes.push(klipp_nodes::graph::Node {
-                    id: matte_id,
-                    kind: klipp_nodes::kinds::NodeKind::ExternalMatte,
-                    label: "AI mask".into(),
-                    enabled: true,
-                    params,
-                    keyframes: klipp_nodes::params::NodeKeyframeTracks::default(),
-                    output_link: None,
-                    input_links: Vec::new(),
-                });
-                // Find the first Corrector node — that's where the
-                // default-graph's grade-with-matte expects the
-                // matte input to feed (port 1).
-                let corrector_id = clip
-                    .node_graph
-                    .nodes
-                    .iter()
-                    .find(|n| {
-                        matches!(n.kind, klipp_nodes::kinds::NodeKind::Corrector)
-                    })
-                    .map(|n| n.id);
-                if let Some(corrector_id) = corrector_id {
-                    // Drop any existing matte edge into the
-                    // corrector's port 1 so the new mask wins.
-                    clip.node_graph
-                        .edges
-                        .retain(|e| !(e.to_node == corrector_id && e.to_port == 1));
-                    clip.node_graph.edges.push(klipp_nodes::graph::Edge {
-                        from_node: matte_id,
-                        from_port: 0,
-                        to_node: corrector_id,
-                        to_port: 1,
+                clip.edit_grade(|graph| {
+                    graph.nodes.push(klipp_nodes::graph::Node {
+                        id: matte_id,
+                        kind: klipp_nodes::kinds::NodeKind::ExternalMatte,
+                        label: "AI mask".into(),
+                        enabled: true,
+                        params,
+                        keyframes: klipp_nodes::params::NodeKeyframeTracks::default(),
+                        output_link: None,
+                        input_links: Vec::new(),
                     });
-                    wired = true;
-                }
+                    // Find the first Corrector node — that's where the
+                    // default-graph's grade-with-matte expects the
+                    // matte input to feed (port 1).
+                    let corrector_id = graph
+                        .nodes
+                        .iter()
+                        .find(|n| {
+                            matches!(n.kind, klipp_nodes::kinds::NodeKind::Corrector)
+                        })
+                        .map(|n| n.id);
+                    if let Some(corrector_id) = corrector_id {
+                        // Drop any existing matte edge into the
+                        // corrector's port 1 so the new mask wins.
+                        graph
+                            .edges
+                            .retain(|e| !(e.to_node == corrector_id && e.to_port == 1));
+                        graph.edges.push(klipp_nodes::graph::Edge {
+                            from_node: matte_id,
+                            from_port: 0,
+                            to_node: corrector_id,
+                            to_port: 1,
+                        });
+                        wired = true;
+                    }
+                });
             }
         }
 

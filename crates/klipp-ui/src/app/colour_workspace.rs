@@ -1,6 +1,7 @@
 //! The Colour workspace's bottom: its toggle bar, its tools, the scopes and
 //! their settings, and the node strip (#826).
 
+use klipp_timeline::GradeAccess;
 use super::*;
 
 impl KlippApp {
@@ -186,7 +187,7 @@ impl KlippApp {
                 // Marked while a timeline grade is doing something, so
                 // its being there shows from Clip mode too.
                 let has_timeline_grade = self.state.sequences.get(self.state.active_sequence_idx)
-                    .and_then(|s| s.timeline_graph.as_ref())
+                    .and_then(|s| s.timeline_grade())
                     .is_some_and(|g| !g.is_identity());
                 let timeline_label = if has_timeline_grade && !self.state.grade_timeline {
                     egui::RichText::new("Timeline \u{25CF}").color(theme.accent)
@@ -401,18 +402,20 @@ impl KlippApp {
                 if let Some(clip) = clip {
                     let mask_frame = crate::inspector::keyframe_selection::FrameSelection::new(self.state.playhead, clip.timeline_in, mask_tolerance);
                     let path = self.state.graph_descent_path.clone();
-                    let graph: &mut klipp_nodes::NodeGraph =
-                        match Self::resolve_graph_at_path_mut(clip, &path) {
-                            Ok(g) => g,
-                            Err(_) => &mut clip.node_graph,
-                        };
-                    let panel_cmds = self.node_inspector_panel.show_simple_horizontal(
-                        ui, graph, clip_id,
-                        &mut self.state.selected_node_id,
-                        &mut self.state.color_tab_bottom,
-                        &self.theme,
-                        mask_frame,
-                    );
+                    let panel_cmds = clip.edit_grade(|root| {
+                        let graph: &mut klipp_nodes::NodeGraph =
+                            match Self::resolve_graph_at_path_mut(root, &path) {
+                                Ok(g) => g,
+                                Err(_) => root,
+                            };
+                        self.node_inspector_panel.show_simple_horizontal(
+                            ui, graph, clip_id,
+                            &mut self.state.selected_node_id,
+                            &mut self.state.color_tab_bottom,
+                            &self.theme,
+                            mask_frame,
+                        )
+                    });
                     all_cmds.extend(panel_cmds);
                 }
             } else {
@@ -707,7 +710,7 @@ impl KlippApp {
                     // this frame. Selection clears alongside so the
                     // inspector doesn't linger on a ghost.
                     let path_valid = {
-                        let mut cursor = &clip.node_graph;
+                        let mut cursor = clip.grade();
                         self.state.graph_descent_path.iter().all(|id| {
                             match cursor.nodes.iter().find(|n| n.id == *id) {
                                 Some(n) if n.kind == klipp_nodes::NodeKind::Compound => {
@@ -727,14 +730,14 @@ impl KlippApp {
                     }
                     // Build breadcrumb labels by walking the descent
                     // path through each compound's subgraph. Done
-                    // BEFORE the mutable resolve so `clip.node_graph`
+                    // BEFORE the mutable resolve so the clip grade
                     // can be read cleanly; the vec then survives the
                     // `Self::resolve_graph_at_path_mut` call.
                     let breadcrumb_labels: Vec<String> = {
                         let mut labels = Vec::with_capacity(
                             self.state.graph_descent_path.len()
                         );
-                        let mut cursor = &clip.node_graph;
+                        let mut cursor = clip.grade();
                         for id in &self.state.graph_descent_path {
                             if let Some(n) = cursor.nodes.iter().find(|n| n.id == *id) {
                                 labels.push(n.label.clone());
@@ -772,28 +775,30 @@ impl KlippApp {
                         // call falls back to the root graph so the
                         // user isn't stuck on a blank canvas.
                         let path = self.state.graph_descent_path.clone();
-                        let resolved = Self::resolve_graph_at_path_mut(clip, &path);
-                        let graph = match resolved {
-                            Ok(g) => g,
-                            Err(_) => &mut clip.node_graph,
-                        };
                         let panel_rect = ui.max_rect();
-                        let cmds = self.node_graph_v2_panel.show(
-                            ui, &mut self.state.selected_node_id,
-                            &mut self.state.selected_node_ids,
-                            graph, cid, &self.theme,
-                            &self.state.node_thumbs,
-                            self.state.node_thumbs_gen,
-                            &mut self.state.deferred_texture_drops[slot],
-                            &mut self.state.graph_descent_path,
-                            &breadcrumb_labels,
-                            keeps_versions.then_some(&grade_version_names[..]),
-                            active_grade_version,
-                            clip_time_secs,
-                            self.prefs.color.port_snap_enabled,
-                            self.prefs.color.port_snap_radius_px,
-                            self.state.solo_node,
-                        );
+                        let cmds = clip.edit_grade(|root| {
+                            let resolved = Self::resolve_graph_at_path_mut(root, &path);
+                            let graph = match resolved {
+                                Ok(g) => g,
+                                Err(_) => root,
+                            };
+                            self.node_graph_v2_panel.show(
+                                ui, &mut self.state.selected_node_id,
+                                &mut self.state.selected_node_ids,
+                                graph, cid, &self.theme,
+                                &self.state.node_thumbs,
+                                self.state.node_thumbs_gen,
+                                &mut self.state.deferred_texture_drops[slot],
+                                &mut self.state.graph_descent_path,
+                                &breadcrumb_labels,
+                                keeps_versions.then_some(&grade_version_names[..]),
+                                active_grade_version,
+                                clip_time_secs,
+                                self.prefs.color.port_snap_enabled,
+                                self.prefs.color.port_snap_radius_px,
+                                self.state.solo_node,
+                            )
+                        });
                         // Tag the node-graph panel as the active panel
                         // when the user clicks anywhere inside its rect
                         // — including on a node, the canvas background,
@@ -810,10 +815,10 @@ impl KlippApp {
                         );
                         cmds
                     } else {
-                        self.node_graph_panel.show(
+                        clip.edit_grade(|graph| self.node_graph_panel.show(
                             ui, &mut self.state.selected_node_id,
-                            &mut clip.node_graph, cid, &self.theme,
-                        )
+                            graph, cid, &self.theme,
+                        ))
                     };
                     all_cmds.extend(panel_cmds);
                 } else {
@@ -868,7 +873,7 @@ impl KlippApp {
                         c.timeline_in,
                         c.speed,
                         klipp_engine::render_cache::compute_grade_hash(
-                            &c.node_graph,
+                            c.grade(),
                             &c.builtin_effects,
                             &c.builtin_effects_enabled,
                         ),

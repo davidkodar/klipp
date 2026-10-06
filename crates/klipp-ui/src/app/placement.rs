@@ -2,6 +2,7 @@
 //! new tracks, overwritten or inserted, a range lifted, and the frame-rate
 //! prompt before it (#890).
 
+use klipp_timeline::GradeAccess;
 use super::*;
 
 impl KlippApp {
@@ -453,14 +454,14 @@ impl KlippApp {
             track.clips[i].source_out = clip.source_in + left_dur;
 
             // Right portion: new clip starting at new_out
-            let right_clip = klipp_timeline::Clip {
+            let mut right_clip = klipp_timeline::Clip {
                 id: klipp_core::ClipId::new(),
                 kind: clip.kind.clone(),
                 timeline_in: new_out,
                 timeline_out: clip.timeline_out,
                 source_in: clip.source_in + right_offset,
                 source_out: clip.source_out,
-                node_graph: clip.node_graph,
+                node_graph: klipp_nodes::NodeGraph::default(),
                 effects: clip.effects.clone(),
                 builtin_effects: clip.builtin_effects.clone(),
                 builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
@@ -528,6 +529,7 @@ impl KlippApp {
                 colour_label: clip.colour_label,
                 precomp: None,
             };
+            right_clip.set_grade(clip.grade().clone());
             track.clips.insert(i + 1, right_clip);
         }
 
@@ -597,14 +599,14 @@ impl KlippApp {
 
             // Right portion
             let right_offset = range_out - clip.timeline_in;
-            let right_clip = klipp_timeline::Clip {
+            let mut right_clip = klipp_timeline::Clip {
                 id: klipp_core::ClipId::new(),
                 kind: clip.kind.clone(),
                 timeline_in: range_out,
                 timeline_out: clip.timeline_out,
                 source_in: clip.source_in + right_offset,
                 source_out: clip.source_out,
-                node_graph: clip.node_graph,
+                node_graph: klipp_nodes::NodeGraph::default(),
                 effects: clip.effects.clone(),
                 builtin_effects: clip.builtin_effects.clone(),
                 builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
@@ -672,6 +674,7 @@ impl KlippApp {
                 colour_label: clip.colour_label,
                 precomp: None,
             };
+            right_clip.set_grade(clip.grade().clone());
             track.clips.insert(i + 1, right_clip);
         }
 

@@ -2,6 +2,7 @@
 //! the main layout's panels and rails and their resizers, and which panels a
 //! workspace shows (#826).
 
+use klipp_timeline::GradeAccess;
 use super::*;
 
 impl KlippApp {
@@ -1247,58 +1248,60 @@ impl KlippApp {
                     // if the descent path has gone stale (self-heal
                     // on the next frame).
                     let path = self.state.graph_descent_path.clone();
-                    let graph: &mut klipp_nodes::NodeGraph =
-                        match Self::resolve_graph_at_path_mut(clip, &path) {
-                            Ok(g) => g,
-                            Err(_) => &mut clip.node_graph,
-                        };
-                    let use_per_node_inspector = self.state.selected_node_id
-                        .and_then(|nid| graph.nodes.iter().find(|n| n.id == nid))
-                        .map(|n| matches!(n.kind,
-                            klipp_nodes::NodeKind::Mask
-                            | klipp_nodes::NodeKind::Qualifier
-                            | klipp_nodes::NodeKind::LumaKey
-                            | klipp_nodes::NodeKind::SoftClip
-                            | klipp_nodes::NodeKind::FilmGrain
-                            | klipp_nodes::NodeKind::Lut3D
-                            | klipp_nodes::NodeKind::ColorMatch
-                            | klipp_nodes::NodeKind::LayerMixer
-                            | klipp_nodes::NodeKind::ExternalMatte
-                            | klipp_nodes::NodeKind::DifferenceKey
-                            | klipp_nodes::NodeKind::Denoise
-                            | klipp_nodes::NodeKind::ColorWarper
-                            // Source / Output / composite-only nodes:
-                            // no params, but showing the grade tabs
-                            // for them misleads users into thinking
-                            // clicking one does something. Route to
-                            // the per-node inspector which falls
-                            // through to a plain "No parameters" /
-                            // node-specific placeholder label.
-                            | klipp_nodes::NodeKind::Source
-                            | klipp_nodes::NodeKind::Output
-                            | klipp_nodes::NodeKind::Layer
-                            | klipp_nodes::NodeKind::Blend
-                            | klipp_nodes::NodeKind::CombineMattes
-                            | klipp_nodes::NodeKind::ApplyMatte
-                            | klipp_nodes::NodeKind::Compound
-                            | klipp_nodes::NodeKind::RGBSplitter
-                            | klipp_nodes::NodeKind::RGBCombiner
-                        ))
-                        .unwrap_or(false);
-                    let panel_cmds = if use_per_node_inspector {
-                        self.node_inspector_panel.show(
-                            ui, &self.state.selected_node_id,
-                            graph, clip_id, &self.theme, mask_frame,
-                        )
-                    } else {
-                        self.node_inspector_panel.show_simple(
-                            ui, graph, clip_id,
-                            &mut self.state.selected_node_id,
-                            &mut self.state.color_tab,
-                            &self.theme,
-                            mask_frame,
-                        )
-                    };
+                    let panel_cmds = clip.edit_grade(|root| {
+                        let graph: &mut klipp_nodes::NodeGraph =
+                            match Self::resolve_graph_at_path_mut(root, &path) {
+                                Ok(g) => g,
+                                Err(_) => root,
+                            };
+                        let use_per_node_inspector = self.state.selected_node_id
+                            .and_then(|nid| graph.nodes.iter().find(|n| n.id == nid))
+                            .map(|n| matches!(n.kind,
+                                klipp_nodes::NodeKind::Mask
+                                | klipp_nodes::NodeKind::Qualifier
+                                | klipp_nodes::NodeKind::LumaKey
+                                | klipp_nodes::NodeKind::SoftClip
+                                | klipp_nodes::NodeKind::FilmGrain
+                                | klipp_nodes::NodeKind::Lut3D
+                                | klipp_nodes::NodeKind::ColorMatch
+                                | klipp_nodes::NodeKind::LayerMixer
+                                | klipp_nodes::NodeKind::ExternalMatte
+                                | klipp_nodes::NodeKind::DifferenceKey
+                                | klipp_nodes::NodeKind::Denoise
+                                | klipp_nodes::NodeKind::ColorWarper
+                                // Source / Output / composite-only nodes:
+                                // no params, but showing the grade tabs
+                                // for them misleads users into thinking
+                                // clicking one does something. Route to
+                                // the per-node inspector which falls
+                                // through to a plain "No parameters" /
+                                // node-specific placeholder label.
+                                | klipp_nodes::NodeKind::Source
+                                | klipp_nodes::NodeKind::Output
+                                | klipp_nodes::NodeKind::Layer
+                                | klipp_nodes::NodeKind::Blend
+                                | klipp_nodes::NodeKind::CombineMattes
+                                | klipp_nodes::NodeKind::ApplyMatte
+                                | klipp_nodes::NodeKind::Compound
+                                | klipp_nodes::NodeKind::RGBSplitter
+                                | klipp_nodes::NodeKind::RGBCombiner
+                            ))
+                            .unwrap_or(false);
+                        if use_per_node_inspector {
+                            self.node_inspector_panel.show(
+                                ui, &self.state.selected_node_id,
+                                graph, clip_id, &self.theme, mask_frame,
+                            )
+                        } else {
+                            self.node_inspector_panel.show_simple(
+                                ui, graph, clip_id,
+                                &mut self.state.selected_node_id,
+                                &mut self.state.color_tab,
+                                &self.theme,
+                                mask_frame,
+                            )
+                        }
+                    });
                     all_cmds.extend(panel_cmds);
                 }
             } else {

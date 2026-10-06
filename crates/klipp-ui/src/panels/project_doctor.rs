@@ -18,6 +18,7 @@
 //!     loads it (non-destructive disable semantic) but the user
 //!     should know they're using a plugin they marked off-list
 
+use klipp_timeline::GradeAccess;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, ClipId, MediaId};
@@ -656,7 +657,7 @@ fn scan_project(state: &AppState) -> Vec<Finding> {
     if let Some(seq) = active {
         for track in &seq.tracks {
             for clip in &track.clips {
-                for node in &clip.node_graph.nodes {
+                for node in &clip.grade().nodes {
                     if let klipp_nodes::NodeKind::ExternalMatte = node.kind {
                         if let Some(path) = node.params.matte_image_path.as_ref() {
                             if !path.exists() {

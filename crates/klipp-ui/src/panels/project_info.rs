@@ -1,3 +1,4 @@
+use klipp_timeline::GradeAccess;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 
@@ -189,7 +190,7 @@ pub fn show_project_info(
             // switch re-bases every grade and changes its look.
             let pending_id = ui.id().with("proj_ws_pending");
             if ws != state.project_working_colorspace {
-                let graded = state.sequences.iter().flat_map(|s| s.all_clips()).any(|c| !c.node_graph.is_identity());
+                let graded = state.sequences.iter().flat_map(|s| s.all_clips()).any(|c| !c.grade().is_identity());
                 if graded {
                     ui.data_mut(|d| d.insert_temp(pending_id, ws));
                 } else {
@@ -291,7 +292,7 @@ fn switch_working_space(state: &mut AppState, to: klipp_core::WorkingColorspace,
         for sequence in &mut state.sequences {
             for track in &mut sequence.tracks {
                 for clip in &mut track.clips {
-                    if clip.node_graph.migrate_working_space(from, to) {
+                    if clip.edit_grade(|g| g.migrate_working_space(from, to)) {
                         migrated += 1;
                     }
                 }
@@ -382,21 +383,22 @@ mod working_space_tests {
     use super::switch_working_space;
     use crate::state::AppState;
     use klipp_core::WorkingColorspace;
+    use klipp_timeline::GradeAccess;
 
     /// A project with one graded clip, in Rec.709 linear.
     fn graded() -> AppState {
         let mut state = AppState::default();
         let tc = |v| klipp_core::RationalTime { value: v, rate: 24 };
         let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0), tc(24), tc(0), tc(24));
-        let n = clip.node_graph.ensure_corrector();
-        clip.node_graph.nodes.iter_mut().find(|x| x.id == n).unwrap().params.exposure = Some(0.5);
+        let n = clip.edit_grade(|g| g.ensure_corrector());
+        clip.edit_grade(|g| g.nodes.iter_mut().find(|x| x.id == n).unwrap().params.exposure = Some(0.5));
         state.sequences[0].tracks[0].clips.push(clip);
         state.project_working_colorspace = WorkingColorspace::Rec709Linear;
         state
     }
 
     fn grade(state: &AppState) -> klipp_nodes::NodeGraph {
-        state.sequences[0].tracks[0].clips[0].node_graph.clone()
+        state.sequences[0].tracks[0].clips[0].grade().clone()
     }
 
     #[test]

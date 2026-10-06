@@ -1,6 +1,7 @@
 //! Grades taken from elsewhere: from a still, and attributes pasted from one
 //! clip onto others, as the edits that make them (#890).
 
+use klipp_timeline::GradeAccess;
 use super::*;
 
 /// The clip a grade still is taken from: the selected clip when it is
@@ -41,7 +42,7 @@ pub(super) fn grade_from_still_edits(
         .filter(|c| targets.contains(&c.id))
         .filter_map(|c| {
             let new_graph = if append {
-                let mut g = c.node_graph.clone();
+                let mut g = c.grade().clone();
                 if let Err(why) = g.append(grade) {
                     if !refused.contains(&why) {
                         refused.push(why);
@@ -50,9 +51,9 @@ pub(super) fn grade_from_still_edits(
                 }
                 g
             } else {
-                c.node_graph.with_grade_of(grade)
+                c.grade().with_grade_of(grade)
             };
-            Some(EditCommand::SetNodeGraph { clip_id: c.id, old_graph: c.node_graph.clone(), new_graph })
+            Some(EditCommand::SetNodeGraph { clip_id: c.id, old_graph: c.grade().clone(), new_graph })
         })
         .collect();
     (edits, refused)
@@ -100,7 +101,7 @@ mod paste_attributes_tests {
         let mut seq = Sequence::new_default();
         let source = {
             let mut c = clip(0, 2);
-            c.node_graph = klipp_nodes::NodeGraph::default();
+            c.set_grade(klipp_nodes::NodeGraph::default());
             c.volume = 0.25;
             c
         };
@@ -125,8 +126,8 @@ mod paste_attributes_tests {
         assert!(pasted.iter().all(|x| x.volume == 0.25));
         // Fresh node ids on each clip, not the source's.
         let ids = |g: &klipp_nodes::NodeGraph| g.nodes.iter().map(|n| n.id).collect::<Vec<_>>();
-        assert_ne!(ids(&pasted[0].node_graph), ids(&source.node_graph));
-        assert_ne!(ids(&pasted[0].node_graph), ids(&pasted[1].node_graph));
+        assert_ne!(ids(pasted[0].grade()), ids(source.grade()));
+        assert_ne!(ids(pasted[0].grade()), ids(pasted[1].grade()));
         assert_eq!(sequences[0].tracks[0].clips[0].volume, a.volume, "a clip that was not a target is untouched");
 
         let mut view = klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
@@ -139,10 +140,12 @@ mod paste_attributes_tests {
 
     /// A clip graded by `stops` of exposure on its Corrector.
     fn graded(mut c: Clip, stops: f32) -> Clip {
-        let id = c.node_graph.ensure_corrector();
-        if let Some(n) = c.node_graph.nodes.iter_mut().find(|n| n.id == id) {
-            n.params.exposure = Some(stops);
-        }
+        let id = c.edit_grade(|g| g.ensure_corrector());
+        c.edit_grade(|graph| {
+            if let Some(n) = graph.nodes.iter_mut().find(|n| n.id == id) {
+                n.params.exposure = Some(stops);
+            }
+        });
         c
     }
 
@@ -164,23 +167,23 @@ mod paste_attributes_tests {
         source.set_input_log_format(LogFormat::LogC3);
         let mut target = graded(clip(2, 4), 0.4);
         target.set_input_log_format(LogFormat::SLog3);
-        let own = input_transforms(&target.node_graph)[0].clone();
+        let own = input_transforms(target.grade())[0].clone();
 
         let attrs = crate::state::AttributesClipboard::of(&source);
         let what = crate::state::PasteChoice { color_grade: true, ..Default::default() };
         attrs.paste_onto(&mut target, what);
 
-        let kept = input_transforms(&target.node_graph);
+        let kept = input_transforms(target.grade());
         assert_eq!(kept.len(), 1, "one Input Transform, the clip's own");
         assert_eq!(kept[0].kind, klipp_nodes::NodeKind::InputTransform);
         assert_eq!(kept[0].params, own.params, "the Sony decode, not ARRI's");
         assert_eq!(kept[0].params.log_format, Some(LogFormat::SLog3));
-        assert_eq!(exposure(&target.node_graph), Some(-0.2), "the source's grade");
+        assert_eq!(exposure(target.grade()), Some(-0.2), "the source's grade");
         assert!(
-            target.node_graph.nodes.iter().all(|n| !source.node_graph.nodes.iter().any(|s| s.id == n.id)),
+            target.grade().nodes.iter().all(|n| !source.grade().nodes.iter().any(|s| s.id == n.id)),
             "fresh ids"
         );
-        assert!(target.node_graph.topo_sort().is_ok(), "still a graph the executor can run");
+        assert!(target.grade().topo_sort().is_ok(), "still a graph the executor can run");
     }
 
     /// A grade copied from a Rec.709 shot has no Input Transform; the
@@ -189,19 +192,19 @@ mod paste_attributes_tests {
     fn a_pasted_grade_without_an_input_transform_keeps_the_targets() {
         use klipp_core::LogFormat;
         let source = graded(clip(0, 2), -0.2);
-        assert!(input_transforms(&source.node_graph).is_empty());
+        assert!(input_transforms(source.grade()).is_empty());
         let mut target = graded(clip(2, 4), 0.4);
         target.set_input_log_format(LogFormat::SLog3);
-        let own = input_transforms(&target.node_graph)[0].clone();
+        let own = input_transforms(target.grade())[0].clone();
 
         let attrs = crate::state::AttributesClipboard::of(&source);
         let what = crate::state::PasteChoice { color_grade: true, ..Default::default() };
         attrs.paste_onto(&mut target, what);
 
-        let kept = input_transforms(&target.node_graph);
+        let kept = input_transforms(target.grade());
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].params, own.params);
-        assert_eq!(exposure(&target.node_graph), Some(-0.2));
+        assert_eq!(exposure(target.grade()), Some(-0.2));
     }
 
     /// The other way round: a Rec.709 shot pasted a LogC shot's grade
@@ -214,8 +217,8 @@ mod paste_attributes_tests {
         let attrs = crate::state::AttributesClipboard::of(&source);
         let what = crate::state::PasteChoice { color_grade: true, ..Default::default() };
         attrs.paste_onto(&mut target, what);
-        assert!(input_transforms(&target.node_graph).is_empty());
-        assert_eq!(exposure(&target.node_graph), Some(-0.2));
+        assert!(input_transforms(target.grade()).is_empty());
+        assert_eq!(exposure(target.grade()), Some(-0.2));
     }
 }
 
@@ -263,8 +266,8 @@ mod grade_still_tests {
     fn an_added_still_grade_keeps_each_clips_own_balance() {
         let mut seq = Sequence::new_default();
         let mut a = clip(0, 2);
-        a.node_graph.ensure_corrector();
-        let own: Vec<_> = a.node_graph.nodes.iter().map(|n| n.id).collect();
+        a.edit_grade(|g| g.ensure_corrector());
+        let own: Vec<_> = a.grade().nodes.iter().map(|n| n.id).collect();
         seq.tracks[0].clips = vec![a.clone()];
         let mut look = klipp_nodes::NodeGraph::default();
         look.ensure_lut3d();
@@ -281,7 +284,7 @@ mod grade_still_tests {
         use klipp_core::WorkingColorspace as Ws;
         let mut seq = Sequence::new_default();
         let mut a = clip(0, 2);
-        a.node_graph.working_space_override = Some(Ws::Rec709Linear);
+        a.edit_grade(|g| g.working_space_override = Some(Ws::Rec709Linear));
         seq.tracks[0].clips = vec![a.clone()];
         let mut look = klipp_nodes::NodeGraph::default();
         look.ensure_lut3d();
