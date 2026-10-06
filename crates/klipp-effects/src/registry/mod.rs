@@ -69,12 +69,58 @@ pub struct PortDesc {
     pub ty: PortType,
     /// Whether the node works with nothing connected here.
     pub optional: bool,
+    /// Settings of what arrives here, saved with the node as parameters
+    /// under [`port_param_key`] (`"mask.channel"`).
+    pub params: &'static [PortParamDesc],
 }
 
-/// The single picture input every built-in effect has today.
-pub const IMAGE_IN: &[PortDesc] = &[PortDesc { key: "in", ty: PortType::Image, optional: false }];
-/// The single picture output every built-in effect has today.
-pub const IMAGE_OUT: &[PortDesc] = &[PortDesc { key: "out", ty: PortType::Image, optional: false }];
+/// A setting of an input, chosen from named options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PortParamDesc {
+    pub key: &'static str,
+    pub label: &'static str,
+    /// The options, as saved.
+    pub options: &'static [&'static str],
+    /// The option a new connection starts with.
+    pub default: &'static str,
+    /// The option a connection carried over from before the setting
+    /// existed keeps: what it always meant.
+    pub migrated: &'static str,
+}
+
+/// The key a port's setting is saved under among the node's parameters.
+pub fn port_param_key(port: &str, param: &str) -> String {
+    format!("{port}.{param}")
+}
+
+/// Which part of a picture arriving at a mask input is the mask (#1089,
+/// M2). Luminance is read in the picture's linear working space. Mattes
+/// carried over from revision 1 have always been their red channel.
+pub const MASK_CHANNEL: PortParamDesc = PortParamDesc {
+    key: "channel",
+    label: "Channel",
+    options: &["red", "luminance", "alpha"],
+    default: "luminance",
+    migrated: "red",
+};
+
+/// The single picture input every built-in effect has.
+pub const IMAGE_IN: &[PortDesc] = &[PortDesc { key: "in", ty: PortType::Image, optional: false, params: &[] }];
+/// A mixable node's inputs: its picture, and an optional mask limiting
+/// where its result replaces the picture.
+pub const MIXABLE_IN: &[PortDesc] = &[
+    PortDesc { key: "in", ty: PortType::Image, optional: false, params: &[] },
+    PortDesc { key: "mask", ty: PortType::Matte, optional: true, params: &[MASK_CHANNEL] },
+];
+/// The single picture output every built-in effect has.
+pub const IMAGE_OUT: &[PortDesc] = &[PortDesc { key: "out", ty: PortType::Image, optional: false, params: &[] }];
+
+/// `desc` as a mixable node: it takes a `mask` and a `mix` amount, and
+/// its result is blended over its input by them (#1089, M2: declared;
+/// nothing executes it yet).
+pub const fn mixable(desc: NodeTypeDesc) -> NodeTypeDesc {
+    NodeTypeDesc { mixable: true, inputs: MIXABLE_IN, ..desc }
+}
 
 /// What kind of value a parameter holds.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -298,6 +344,9 @@ pub struct NodeTypeDesc {
     pub gpu: bool,
     /// Has a CPU implementation.
     pub cpu: bool,
+    /// A single-picture node whose result can be limited by a `mask` and
+    /// faded by `mix` against its input; then its inputs are [`MIXABLE_IN`].
+    pub mixable: bool,
 }
 
 /// A built-in effect's description, tied to its variant.

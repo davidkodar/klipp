@@ -21,6 +21,7 @@
 //!   zero intensity): adding one changes nothing until it is set.
 
 use super::{
+    mixable,
     Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling, Spatial, Temporal, Unit,
     IMAGE_IN, IMAGE_OUT,
 };
@@ -41,6 +42,7 @@ const fn light(id: &'static str, name: &'static str, params: &'static [ParamDesc
         draws_outside,
         gpu: true,
         cpu: true,
+        mixable: false,
     }
 }
 
@@ -82,7 +84,7 @@ const fn colour(field: &'static str, label: &'static str) -> ParamDesc {
 
 pub(super) static TYPES: &[EffectType] = &[
     EffectType {
-        desc: light(
+        desc: mixable(light(
             "klipp.fx.bloom",
             "Bloom",
             &[
@@ -92,12 +94,12 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
             Spatial::Neighbourhood,
             false,
-        ),
+        )),
         tag: "bloom",
         sample: || BuiltinEffect::Bloom { threshold: 0.7, radius: 20.0, intensity: 0.5 },
     },
     EffectType {
-        desc: light(
+        desc: mixable(light(
             "klipp.fx.glow",
             "Glow",
             &[
@@ -106,12 +108,12 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
             Spatial::Neighbourhood,
             false,
-        ),
+        )),
         tag: "glow",
         sample: || BuiltinEffect::Glow { radius: 30.0, intensity: 0.4 },
     },
     EffectType {
-        desc: light(
+        desc: mixable(light(
             "klipp.fx.light_rays",
             "Light Rays",
             &[
@@ -124,12 +126,12 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
             Spatial::Neighbourhood,
             false,
-        ),
+        )),
         tag: "light_rays",
         sample: || BuiltinEffect::LightRays { center_x: 0.5, center_y: 0.3, threshold: 0.6, samples: 64, decay: 0.3, intensity: 0.5 },
     },
     EffectType {
-        desc: light(
+        desc: mixable(light(
             "klipp.fx.vignette",
             "Vignette",
             &[
@@ -140,12 +142,12 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
             Spatial::PerPixel,
             false,
-        ),
+        )),
         tag: "vignette",
         sample: || BuiltinEffect::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.5 },
     },
     EffectType {
-        desc: light(
+        desc: mixable(light(
             "klipp.fx.diffusion",
             "Diffusion",
             &[
@@ -156,12 +158,12 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
             Spatial::Neighbourhood,
             false,
-        ),
+        )),
         tag: "diffusion",
         sample: || BuiltinEffect::Diffusion { amount: 0.3, radius: 25.0, threshold: 0.5, desaturation: 0.2 },
     },
     EffectType {
-        desc: light(
+        desc: mixable(light(
             "klipp.fx.lens_flare",
             "Lens Flare",
             &[
@@ -175,7 +177,7 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
             Spatial::PerPixel,
             false,
-        ),
+        )),
         tag: "lens_flare",
         sample: || BuiltinEffect::LensFlare {
             position_x: 0.7,
@@ -203,7 +205,7 @@ pub(super) static TYPES: &[EffectType] = &[
         sample: || BuiltinEffect::OuterGlow { radius: 0.0, intensity: 0.0, color: [255, 255, 255] },
     },
     EffectType {
-        desc: light(
+        desc: mixable(light(
             "klipp.fx.light_wrap",
             "Light Wrap",
             &[
@@ -213,12 +215,12 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
             Spatial::Neighbourhood,
             false,
-        ),
+        )),
         tag: "light_wrap",
         sample: || BuiltinEffect::LightWrap { width: 15.0, intensity: 0.5, softness: 1.0 },
     },
     EffectType {
-        desc: light(
+        desc: mixable(light(
             "klipp.fx.anamorphic_streak",
             "Anamorphic Streak",
             &[
@@ -229,12 +231,12 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
             Spatial::Neighbourhood,
             false,
-        ),
+        )),
         tag: "anamorphic_streak",
         sample: || BuiltinEffect::AnamorphicStreak { threshold: 0.7, length: 80.0, intensity: 0.5, tint: 0.3 },
     },
     EffectType {
-        desc: light(
+        desc: mixable(light(
             "klipp.fx.film_halation",
             "Film Halation",
             &[
@@ -245,12 +247,12 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
             Spatial::Neighbourhood,
             false,
-        ),
+        )),
         tag: "film_halation",
         sample: || BuiltinEffect::FilmHalation { threshold: 0.75, radius: 15.0, intensity: 0.3, hue: 0.2 },
     },
     EffectType {
-        desc: light(
+        desc: mixable(light(
             "klipp.fx.chromatic_aberration",
             "Chromatic Aberration",
             &[
@@ -261,7 +263,7 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
             Spatial::Geometric,
             false,
-        ),
+        )),
         tag: "chromatic_aberration",
         sample: || BuiltinEffect::ChromaticAberration { red_shift: 2.0, blue_shift: -2.0, center_x: 0.5, center_y: 0.5 },
     },

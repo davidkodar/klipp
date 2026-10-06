@@ -12,6 +12,7 @@
 //!   reset is 0.5.
 
 use super::{
+    mixable,
     Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling, Spatial, Temporal, Unit,
     IMAGE_IN, IMAGE_OUT,
 };
@@ -38,6 +39,7 @@ const fn colour(
         draws_outside: false,
         gpu: true,
         cpu: true,
+        mixable: false,
     }
 }
 
@@ -56,7 +58,7 @@ pub(super) static TYPES: &[EffectType] = &[
         sample: || BuiltinEffect::Opacity { value: 1.0 },
     },
     EffectType {
-        desc: colour(
+        desc: mixable(colour(
             "klipp.fx.color_fade",
             "Colour Fade",
             &[
@@ -106,7 +108,7 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
             ColourDomain::Linear,
             Spatial::PerPixel,
-        ),
+        )),
         tag: "color_fade",
         sample: || BuiltinEffect::ColorFade { color: [0, 0, 0, 255], duration_secs: 1.0, mode: ColorFadeMode::In, progress: 0.0 },
     },
@@ -122,18 +124,18 @@ pub(super) static TYPES: &[EffectType] = &[
         sample: || BuiltinEffect::Invert { mix: 1.0 },
     },
     EffectType {
-        desc: colour(
+        desc: mixable(colour(
             "klipp.fx.posterize",
             "Posterize",
             &[ParamDesc::float("levels", "Levels", 8.0, (2.0, 256.0), Unit::Count)],
             ColourDomain::DisplayEncoded,
             Spatial::PerPixel,
-        ),
+        )),
         tag: "posterize",
         sample: || BuiltinEffect::Posterize { levels: 8.0 },
     },
     EffectType {
-        desc: colour(
+        desc: mixable(colour(
             "klipp.fx.channel_mixer",
             "Channel Mixer",
             &[
@@ -149,7 +151,7 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
             ColourDomain::Linear,
             Spatial::PerPixel,
-        ),
+        )),
         tag: "channel_mixer",
         sample: || BuiltinEffect::ChannelMixer {
             red_red: 1.0,
@@ -164,18 +166,18 @@ pub(super) static TYPES: &[EffectType] = &[
         },
     },
     EffectType {
-        desc: colour(
+        desc: mixable(colour(
             "klipp.fx.gamma",
             "Gamma",
             &[ParamDesc::float("gamma", "Gamma", 1.0, (0.1, 5.0), Unit::Ratio)],
             ColourDomain::DisplayEncoded,
             Spatial::PerPixel,
-        ),
+        )),
         tag: "gamma",
         sample: || BuiltinEffect::Gamma { gamma: 1.0 },
     },
     EffectType {
-        desc: colour(
+        desc: mixable(colour(
             "klipp.fx.hsv_adjust",
             "HSV Adjust",
             &[
@@ -185,23 +187,23 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
             ColourDomain::DisplayEncoded,
             Spatial::PerPixel,
-        ),
+        )),
         tag: "h_s_v_adjust",
         sample: || BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 1.0, value: 1.0 },
     },
     EffectType {
-        desc: colour(
+        desc: mixable(colour(
             "klipp.fx.vibrance",
             "Vibrance",
             &[ParamDesc::float("amount", "Amount", 0.0, (-1.0, 2.0), Unit::Ratio)],
             ColourDomain::Linear,
             Spatial::PerPixel,
-        ),
+        )),
         tag: "vibrance",
         sample: || BuiltinEffect::Vibrance { amount: 0.0 },
     },
     EffectType {
-        desc: colour(
+        desc: mixable(colour(
             "klipp.fx.levels",
             "Levels",
             &[
@@ -213,18 +215,18 @@ pub(super) static TYPES: &[EffectType] = &[
             ],
             ColourDomain::DisplayEncoded,
             Spatial::PerPixel,
-        ),
+        )),
         tag: "levels",
         sample: || BuiltinEffect::Levels { in_black: 0.0, in_white: 1.0, gamma: 1.0, out_black: 0.0, out_white: 1.0 },
     },
     EffectType {
-        desc: colour(
+        desc: mixable(colour(
             "klipp.fx.equalize",
             "Equalize",
             &[ParamDesc::float("strength", "Strength", 1.0, (0.0, 1.0), Unit::Ratio)],
             ColourDomain::DisplayEncoded,
             Spatial::Global,
-        ),
+        )),
         tag: "equalize",
         sample: || BuiltinEffect::Equalize { strength: 1.0 },
     },
