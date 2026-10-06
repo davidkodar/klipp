@@ -1264,7 +1264,42 @@ fn load_transform_link(j: &crate::format::TransformLinkJson) -> Option<klipp_tim
 /// Read every `<dir>/looks/*.json` and deserialize as a Look. Files
 /// that fail to parse are logged and skipped — a single corrupt Look
 /// shouldn't block the rest of the project from loading.
+/// A Look file as this Klipp reads it (#1089): a revision-2 Look, brought
+/// back through `unlift`, and only one this build reads in full (#993). A
+/// Look from before revision 2 is refused, naming the converter. The one
+/// test both a load and a save's pruning ask, so a Look that isn't loaded
+/// is never removed either.
+pub(crate) fn read_look(text: &str, form: crate::FileForm) -> Result<Look, String> {
+    let v1_text = match form {
+        crate::FileForm::Revision2 => {
+            let v2: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
+            if v2.get("format_revision").and_then(serde_json::Value::as_u64) != Some(u64::from(crate::FORMAT_REVISION)) {
+                return Err("it is from before revision 2: convert it with `klipp-convert run`".into());
+            }
+            let v1 = klipp_graph_lift::unlift::look(&v2)?;
+            serde_json::to_string(&v1).map_err(|e| e.to_string())?
+        }
+        #[cfg(feature = "v1-oracle")]
+        crate::FileForm::V1 => text.to_owned(),
+    };
+    if !klipp_nodes::json_check::reads_in_full(&v1_text) {
+        return Err("it was saved by a newer Klipp, or cannot be read".into());
+    }
+    serde_json::from_str::<Look>(&v1_text).map_err(|e| format!("corrupt: {e}"))
+}
+
 pub fn load_looks(dir: &Path) -> Vec<Look> {
+    load_looks_as(dir, crate::FileForm::Revision2)
+}
+
+/// Today's v1 Look reader, kept only to prove the one-time conversion
+/// (#1089), behind `v1-oracle`.
+#[cfg(feature = "v1-oracle")]
+pub fn load_looks_v1(dir: &Path) -> Vec<Look> {
+    load_looks_as(dir, crate::FileForm::V1)
+}
+
+fn load_looks_as(dir: &Path, form: crate::FileForm) -> Vec<Look> {
     let looks_dir = dir.join("looks");
     if !looks_dir.exists() {
         return Vec::new();
@@ -1280,16 +1315,12 @@ pub fn load_looks(dir: &Path) -> Vec<Look> {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().is_none_or(|e| e != "json") { continue; }
+        // A Look this build can't read in full, or from before revision 2,
+        // is not read, and the file is left alone (#993, #1089).
         match read_to_string_capped(&path, MAX_INPUT_FILE_BYTES) {
-            // A Look holding a grade node this build would lose is not
-            // read: applied, the node would be a passthrough, and saved
-            // back it would be gone (#993). The file is left alone.
-            Ok(text) if !klipp_nodes::json_check::reads_in_full(&text) => {
-                warn!("Leaving Look {:?} as it is: it was saved by a newer Klipp, or cannot be read", path)
-            }
-            Ok(text) => match serde_json::from_str::<Look>(&text) {
+            Ok(text) => match read_look(&text, form) {
                 Ok(look) => out.push(look),
-                Err(e) => warn!("Skipping corrupt Look {:?}: {e}", path),
+                Err(why) => warn!("Leaving Look {:?} as it is: {why}", path),
             },
             Err(e) => warn!("Failed to read Look {:?}: {e}", path),
         }

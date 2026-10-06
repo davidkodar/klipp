@@ -78,8 +78,10 @@ pub(crate) enum FileForm {
 
 pub use load::{load_looks, load_project, migrate_graph};
 #[cfg(feature = "v1-oracle")]
-pub use load::load_project_v1;
+pub use load::{load_looks_v1, load_project_v1};
 #[cfg(feature = "v1-oracle")]
-pub use save::save_project_v1;
+pub use save::{save_looks_v1, save_project_v1};
+#[cfg(feature = "v1-oracle")]
+pub use grade_stills::{load_grade_stills_v1, save_grade_stills_v1};
 pub use made_media::{adopt_made_media, MediaAdoption};
 pub use save::{iso8601_now, save_looks, save_project, save_project_full, save_project_with_color, save_project_with_color_and_backups, ColorSettings};

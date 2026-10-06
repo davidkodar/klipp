@@ -768,33 +768,56 @@ fn rotate_backups(path: &Path, max_backups: u32) -> Result<(), String> {
 /// the user deleted in the session) are pruned on save so the on-disk
 /// library matches in-memory state.
 pub fn save_looks(dir: &Path, looks: &[Look]) -> Result<(), String> {
+    save_looks_as(dir, looks, crate::FileForm::Revision2)
+}
+
+/// Today's v1 Look writer, kept only to prove the one-time conversion
+/// (#1089), behind `v1-oracle`.
+#[cfg(feature = "v1-oracle")]
+pub fn save_looks_v1(dir: &Path, looks: &[Look]) -> Result<(), String> {
+    save_looks_as(dir, looks, crate::FileForm::V1)
+}
+
+fn save_looks_as(dir: &Path, looks: &[Look], form: crate::FileForm) -> Result<(), String> {
     let looks_dir = dir.join("looks");
     if looks.is_empty() {
         // Nothing to save — leave an empty looks/ directory if it
         // already exists, otherwise skip the mkdir entirely.
         if looks_dir.exists() {
-            prune_stale_looks(&looks_dir, &[]);
+            prune_stale_looks(&looks_dir, &[], form);
         }
         return Ok(());
     }
     std::fs::create_dir_all(&looks_dir)
         .map_err(|e| format!("Failed to create looks dir: {e}"))?;
     for look in looks {
-        let json = serde_json::to_string_pretty(look)
-            .map_err(|e| format!("Failed to serialize Look {}: {e}", look.name))?;
+        let json = match form {
+            // Through text, as the project: an f32 keeps today's digits.
+            crate::FileForm::Revision2 => {
+                let text = serde_json::to_string(look).map_err(|e| format!("Failed to serialize Look {}: {e}", look.name))?;
+                let v1: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("Failed to serialize Look {}: {e}", look.name))?;
+                let (v2, notes) = klipp_graph_lift::revision2::look_noted(&v1).map_err(|e| format!("Failed to write Look {}'s revision-2 file: {e}", look.name))?;
+                if let Some(n) = notes.iter().find(|n| klipp_graph_lift::revision2::is_lost(n)) {
+                    return Err(format!("Saving Look {} would lose part of it ({n:?}), so it was not saved", look.name));
+                }
+                serde_json::to_string_pretty(&v2).map_err(|e| format!("Failed to serialize Look {}: {e}", look.name))?
+            }
+            #[cfg(feature = "v1-oracle")]
+            crate::FileForm::V1 => serde_json::to_string_pretty(look).map_err(|e| format!("Failed to serialize Look {}: {e}", look.name))?,
+        };
         let path = looks_dir.join(format!("{}.json", look.id));
         atomic_write(&path, json.as_bytes())
             .map_err(|e| format!("Failed to write Look {}: {e}", look.name))?;
     }
     let kept_ids: Vec<String> = looks.iter().map(|l| l.id.to_string()).collect();
-    prune_stale_looks(&looks_dir, &kept_ids);
+    prune_stale_looks(&looks_dir, &kept_ids, form);
     Ok(())
 }
 
 /// Remove `looks/*.json` files whose UUID isn't in `kept_ids`. Deleted
 /// Looks shouldn't reappear after the next save just because their
 /// file lingers on disk.
-fn prune_stale_looks(looks_dir: &Path, kept_ids: &[String]) {
+fn prune_stale_looks(looks_dir: &Path, kept_ids: &[String], form: crate::FileForm) {
     let Ok(entries) = std::fs::read_dir(looks_dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -806,9 +829,10 @@ fn prune_stale_looks(looks_dir: &Path, kept_ids: &[String]) {
         if !kept_ids.iter().any(|id| id == stem) {
             // A Look this build could not read was never loaded, so it is
             // not among the kept ids: that is not a reason to delete it
-            // (#993). Only what this build reads in full is pruned.
+            // (#993), nor is a Look from before revision 2 (#1089). Only
+            // what a load would read is pruned: the same test.
             let readable = crate::path_util::read_to_string_capped(&path, crate::path_util::MAX_INPUT_FILE_BYTES)
-                .is_ok_and(|t| serde_json::from_str::<klipp_timeline::Look>(&t).is_ok() && klipp_nodes::json_check::reads_in_full(&t));
+                .is_ok_and(|t| crate::load::read_look(&t, form).is_ok());
             if !readable {
                 warn!("Keeping Look {:?}: this Klipp cannot read it in full, so it is not removed", path);
                 continue;
