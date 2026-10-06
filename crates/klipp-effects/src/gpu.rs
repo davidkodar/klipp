@@ -20,6 +20,8 @@ use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 mod params;
+mod slots;
+pub use slots::{OverBudget, SlotId, SlotKey, SlotPool, SlotUsage};
 pub use params::ParamSlots;
 mod record;
 pub use record::{converts_inside, slots_needed, EffectRecording, Recorded};
