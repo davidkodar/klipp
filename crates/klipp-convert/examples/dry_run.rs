@@ -21,8 +21,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use klipp_convert::dry_run::{check_colour_presets, check_project, ProjectReport};
-use klipp_convert::{installed, StoreKind};
+use klipp_convert::dry_run::{check_colour_presets, check_project_with, ProjectReport};
+use klipp_convert::splice::{stage_body, track_parts, SpliceInputs, StageInputs, TrackInputs};
+use klipp_convert::{installed, to_v2, StoreKind};
 use serde_json::{json, Value};
 
 /// The parity test's comparison, which asserts, turned into a result: a
@@ -35,6 +36,63 @@ fn parity(raw: &Value, kind: StoreKind) -> Result<(), String> {
     .map_err(|e| {
         e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_owned())).unwrap_or_else(|| "differs".into())
     })
+}
+
+/// Whether today's merge would add `stage` to `base` (`wrap`'s prepend
+/// or append, and the track grade's append): not an identity, and the
+/// merge neither refuses (a working space that doesn't match, no source)
+/// nor adds nothing.
+fn applies(base: &klipp_nodes::NodeGraph, stage: &klipp_nodes::NodeGraph, prepend: bool) -> bool {
+    if stage.is_identity() {
+        return false;
+    }
+    let mut g = base.clone();
+    let r = if prepend { g.prepend_keeping_ids(stage) } else { g.append_keeping_ids(stage) };
+    r.is_ok() && &g != base
+}
+
+fn graph(v: &Value) -> Result<klipp_nodes::NodeGraph, String> {
+    serde_json::from_value(v.clone()).map_err(|e| e.to_string())
+}
+
+/// A clip's splice inputs, decided with today's code: its grade group's
+/// stages as `wrap` takes them, then its track's grade as the bake appends
+/// it to the wrapped graph, and its track's effects when the track draws
+/// pictures and `touches_picture`.
+fn splice_inputs(clip: &Value, seq: &Value, track: &Value) -> Result<SpliceInputs, String> {
+    let own = match clip.get("node_graph").filter(|g| !g.is_null()) {
+        Some(g) => graph(g)?,
+        None => klipp_nodes::NodeGraph::default(),
+    };
+    let mut wrapped = own.clone();
+    let mut inputs = SpliceInputs::default();
+    let group = clip.get("grade_group").and_then(Value::as_str).and_then(|id| {
+        seq.get("grade_groups").and_then(Value::as_array).into_iter().flatten().find(|g| g.get("id").and_then(Value::as_str) == Some(id))
+    });
+    if let Some(group) = group {
+        let typed: klipp_timeline::GradeGroup = serde_json::from_value(group.clone()).map_err(|e| e.to_string())?;
+        let (pre, post) = to_v2::stages_to_v2(group.as_object().ok_or("group")?).map_err(|e| e.to_string())?;
+        let take = |stage: &Option<klipp_nodes::NodeGraph>, conv: Option<klipp_graph_format::Graph>, prepend: bool| -> Result<Option<klipp_graph_format::Graph>, String> {
+            match (stage, conv) {
+                (Some(s), Some(c)) if applies(&own, s, prepend) => stage_body(&c).map(Some),
+                _ => Ok(None),
+            }
+        };
+        inputs.stages = Some(StageInputs { group: typed.id.0, pre: take(&typed.pre, pre, true)?, post: take(&typed.post, post, false)? });
+        wrapped = typed.wrap(&own);
+    }
+    if let Some(fx) = track.get("effects").filter(|e| !e.is_null()) {
+        let typed: klipp_timeline::TrackEffects = serde_json::from_value(fx.clone()).map_err(|e| e.to_string())?;
+        let picture_track = matches!(track.get("kind").and_then(Value::as_str), Some("Video" | "Text"));
+        if picture_track && typed.touches_picture() {
+            let structural = to_v2::track_to_v2(track.as_object().ok_or("track")?).map_err(|e| e.to_string())?;
+            let (effects, grade) = track_parts(&structural)?;
+            let grade = grade.filter(|_| typed.grade.as_ref().is_some_and(|g| applies(&wrapped, g, false)));
+            let id = uuid::Uuid::parse_str(track.get("id").and_then(Value::as_str).unwrap_or_default()).map_err(|e| e.to_string())?;
+            inputs.track = Some(TrackInputs { track: id, effects, grade });
+        }
+    }
+    Ok(inputs)
 }
 
 fn project_dirs(scan: &str) -> Result<Vec<PathBuf>, String> {
@@ -61,7 +119,7 @@ fn main() {
     std::panic::set_hook(Box::new(|_| {}));
 
     let started = Instant::now();
-    let reports: Vec<ProjectReport> = dirs.iter().map(|d| check_project(d, &parity)).collect();
+    let reports: Vec<ProjectReport> = dirs.iter().map(|d| check_project_with(d, &parity, Some(&splice_inputs))).collect();
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))

@@ -18,12 +18,17 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::{assemble, lift, revision, to_v2, verify, Document, StoreKind};
-use klipp_graph_format::lifted::LiftNote;
+use crate::{assemble, lift, revision, splice, to_v2, verify, Document, StoreKind};
+use klipp_graph_format::lifted::{ClipPicture, LiftNote};
 
 /// A file compared between the frozen reader and today's reader: `Err`
 /// says where they differ.
 pub type Parity<'a> = &'a dyn Fn(&Value, StoreKind) -> Result<(), String>;
+
+/// What a clip's render copy takes from its track and grade group,
+/// decided with today's code (`wrap`, `touches_picture`, the merges'
+/// refusals): given the clip, its sequence and its track.
+pub type SpliceDecider<'a> = &'a dyn Fn(&Value, &Value, &Value) -> Result<splice::SpliceInputs, String>;
 
 /// What the dry run found in one project.
 #[derive(Debug, Default)]
@@ -73,14 +78,21 @@ fn track_has_picture(track: &Value) -> bool {
 
 /// Run the dry run over one project directory.
 pub fn check_project(dir: &Path, parity: Parity) -> ProjectReport {
+    check_project_with(dir, parity, None)
+}
+
+/// [`check_project`], and with `splice` also both properties of the splice
+/// on every clip: `unsplice(splice(c)) == c` and `splice(splice(c)) ==
+/// splice(c)`, with the clip's real track and grade group.
+pub fn check_project_with(dir: &Path, parity: Parity, splice: Option<SpliceDecider>) -> ProjectReport {
     let started = Instant::now();
     let mut report = ProjectReport { dir: dir.to_path_buf(), ..Default::default() };
-    check_into(dir, parity, &mut report);
+    check_into(dir, parity, splice, &mut report);
     report.elapsed = started.elapsed();
     report
 }
 
-fn check_into(dir: &Path, parity: Parity, report: &mut ProjectReport) {
+fn check_into(dir: &Path, parity: Parity, splicer: Option<SpliceDecider>, report: &mut ProjectReport) {
     let text = match std::fs::read_to_string(dir.join("project.json")) {
         Ok(t) => t,
         Err(e) => return report.stops.push(format!("project.json unreadable: {e}")),
@@ -109,6 +121,7 @@ fn check_into(dir: &Path, parity: Parity, report: &mut ProjectReport) {
     };
     let mut stores = BTreeMap::new();
     let mut lift_notes: BTreeMap<String, usize> = BTreeMap::new();
+    let mut took = 0usize;
     let (mut clips, mut track_or_group_picture) = (0usize, false);
     for (si, seq) in sequences(&raw).into_iter().enumerate() {
         if let Some(g) = non_null(seq, "timeline_graph") {
@@ -130,11 +143,23 @@ fn check_into(dir: &Path, parity: Parity, report: &mut ProjectReport) {
                 clips += 1;
                 let at = format!("sequence {si} track {ti} clip {ci}");
                 stop(&mut stores, "clips", at.clone(), verify::check_clip(clip));
-                let lifted = lift_one(clip).map(|notes| {
+                let lifted = lift_one(clip).map(|(picture, notes)| {
                     for n in notes {
                         *lift_notes.entry(note_kind(&n)).or_default() += 1;
                     }
+                    picture
                 });
+                if let (Some(decide), Ok((picture, kind))) = (splicer, &lifted) {
+                    let r = decide(clip, seq, track).and_then(|inputs| {
+                        splice_properties(picture, *kind, &inputs)?;
+                        if splice::splice(picture, *kind, &inputs) != *picture {
+                            took += 1;
+                        }
+                        Ok(())
+                    });
+                    stop(&mut stores, "spliced clips", at.clone(), r);
+                }
+                let lifted = lifted.map(drop);
                 stop(&mut stores, "lifted clips", at.clone(), lifted.map_err(|e| format!("the lift refused it: {e}")));
                 for (vi, version) in items(clip, "grade_versions").enumerate() {
                     if let Some(g) = version.get("node_graph") {
@@ -152,6 +177,9 @@ fn check_into(dir: &Path, parity: Parity, report: &mut ProjectReport) {
         report.stops.push("no clip to carry the sentinel, and Looks or stills an old build could lose".into());
     }
     report.lift_notes = lift_notes;
+    if took > 0 {
+        stores.insert("clips taking a splice", took);
+    }
 
     if let Err(e) = old_fields_round_trip(&raw) {
         report.stops.push(format!("old fields: {e}"));
@@ -160,13 +188,26 @@ fn check_into(dir: &Path, parity: Parity, report: &mut ProjectReport) {
     report.stores = stores;
 }
 
-/// Lift one clip, for its notes.
-fn lift_one(clip: &Value) -> Result<Vec<LiftNote>, String> {
+/// Lift one clip: its picture and kind, and its notes.
+#[allow(clippy::type_complexity)]
+fn lift_one(clip: &Value) -> Result<((ClipPicture, lift::ClipKind), Vec<LiftNote>), String> {
     let o = clip.as_object().ok_or("a clip isn't an object")?;
     let record = to_v2::clip_to_v2(o).map_err(|e| e.to_string())?;
     let clip_id = uuid::Uuid::parse_str(o.get("id").and_then(Value::as_str).unwrap_or_default()).map_err(|e| e.to_string())?;
     let kind = lift::ClipKind::from_json(o.get("kind"))?;
-    lift::lift_clip(&record, &lift::LiftCtx { clip_id, kind }).map(|(_, notes)| notes)
+    lift::lift_clip(&record, &lift::LiftCtx { clip_id, kind }).map(|(p, notes)| ((p, kind), notes))
+}
+
+/// Both properties of the splice on one clip.
+fn splice_properties(picture: &ClipPicture, kind: lift::ClipKind, inputs: &splice::SpliceInputs) -> Result<(), String> {
+    let spliced = splice::splice(picture, kind, inputs);
+    if &splice::unsplice(&spliced) != picture {
+        return Err("unsplice(splice(c)) isn't c".into());
+    }
+    if splice::splice(&spliced, kind, inputs) != spliced {
+        return Err("splicing twice isn't splicing once".into());
+    }
+    Ok(())
 }
 
 /// A note's kind, for counting.
