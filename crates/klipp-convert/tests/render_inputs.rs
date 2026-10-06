@@ -311,6 +311,10 @@ struct Checked {
     unstable_load: usize,
     blending: usize,
     passthrough: usize,
+    /// Render copies left out of the comparison because the conversion
+    /// stops their project: a `CrossGroupWireless` note (#1102), where
+    /// today's merged namespace and revision 2's scoped links may differ.
+    crossed: usize,
 }
 
 impl Checked {
@@ -629,6 +633,19 @@ fn check_spliced(dir: &Path, scratch: &Path, from_file: bool) -> Result<Checked,
     let file = std::fs::read_to_string(dir.join("project.json")).map_err(|e| e.to_string())?;
     let mut project: Value = serde_json::from_str(&file).map_err(|e| e.to_string())?;
     let converted = if from_file { Some(klipp_convert::revision2::project(&project).map_err(|e| format!("revision 2: {e}"))?.0) } else { None };
+    // The clips whose link names meet a merged graph's: the conversion
+    // stops their project, so their render copies are not compared.
+    let crossed: std::collections::BTreeSet<Uuid> = project["sequences"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .flat_map(klipp_convert::revision2::cross_group_wireless)
+        .filter_map(|n| match n {
+            klipp_graph_format::lifted::LiftNote::CrossGroupWireless { clip, .. } => Some(clip),
+            _ => None,
+        })
+        .collect();
     let mut grades: Vec<Value> = Vec::new();
     // How many of each copy's effects are its track's, which the bake
     // marks by keeping the clip's own aside (`own_effects`).
@@ -693,6 +710,10 @@ fn check_spliced(dir: &Path, scratch: &Path, from_file: bool) -> Result<Checked,
         }
         if !grade.is_null() {
             cb.node_graph = serde_json::from_value(grade.clone()).map_err(|e| format!("clip {}: the flattened grade: {e}", cb.id.0))?;
+        }
+        if crossed.contains(&ca.id.0) {
+            checked.crossed += 1;
+            continue;
         }
         let (mut ra, rb) = (render_inputs(ca, *fa), render_inputs(&cb, *fa));
         checked.reached(&ra);
@@ -1003,7 +1024,7 @@ fn generated_spliced_project(dir: &Path, seed: u64, n: usize) {
 #[test]
 fn the_renderer_consumes_every_generated_render_copy_alike_after_the_splice() {
     for from_file in [false, true] {
-        let (mut clips, mut migrated, mut blending, mut passthrough) = (0, 0, 0, 0);
+        let (mut clips, mut migrated, mut blending, mut passthrough, mut crossed) = (0, 0, 0, 0, 0);
         let mut failures = Vec::new();
         for seed in 0..40 {
             let (dir, scratch) = (temp("spl"), temp("spl_out"));
@@ -1014,6 +1035,7 @@ fn the_renderer_consumes_every_generated_render_copy_alike_after_the_splice() {
                     migrated += c.unstable_load;
                     blending += c.blending;
                     passthrough += c.passthrough;
+                    crossed += c.crossed;
                 }
                 Err(e) => failures.push(format!("seed {seed}: {e}")),
             }
@@ -1021,9 +1043,12 @@ fn the_renderer_consumes_every_generated_render_copy_alike_after_the_splice() {
             let _ = std::fs::remove_dir_all(&scratch);
         }
         let how = if from_file { "read from the revision-2 file" } else { "lifted" };
-        eprintln!("spliced, {how}: {clips} render copies alike, {migrated} of them rewritten on load, {blending} blending frames, {passthrough} not graded");
+        eprintln!("spliced, {how}: {clips} render copies alike, {migrated} of them rewritten on load, {blending} blending frames, {passthrough} not graded, {crossed} stopped for crossed links");
         assert!(failures.is_empty(), "{how}: {} failures:\n{}", failures.len(), failures.join("\n"));
         assert!(clips >= 700 && blending > 0 && passthrough > 0, "the generator reached too little: {clips} clips, {blending} blending, {passthrough} not graded");
+        // The note fires on the generated case of a stage's sender taking
+        // over a clip's receiver (seed 3), and leaves out only a few.
+        assert!((1..=clips / 20).contains(&crossed), "{crossed} render copies stopped for crossed links");
     }
 }
 
