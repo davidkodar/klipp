@@ -95,6 +95,31 @@ if [ ! -t 0 ]; then
     fi
 fi
 
+# Keep the initiating checkout and commit even when the gate changes ROOT
+# to its build worktree. Recheck after waiting and before success (#1163).
+_push_root=$ROOT
+_push_head=$(git rev-parse --verify HEAD)
+_check_push_refs() (
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
+    cd "$_push_root" || exit 1
+    _now=$(git rev-parse --verify HEAD 2>/dev/null) || _now=
+    if [ "$_now" != "$_push_head" ]; then
+        printf '\n  pre-push: HEAD moved during the gate — push refused. Push again to test the new commit.\n\n' >&2
+        exit 1
+    fi
+    while read -r _ref _sha _remote _remote_sha; do
+        [ -n "$_sha" ] || continue
+        case "$_sha" in *[!0]*) ;; *) continue ;; esac
+        _now=$(git rev-parse --verify --end-of-options "$_ref" 2>/dev/null) || _now=
+        if [ "$_now" != "$_sha" ]; then
+            printf '\n  pre-push: %s moved during the gate — push refused. Push again to test the new commit.\n\n' "$_ref" >&2
+            exit 1
+        fi
+    done <<EOF
+${_refs:-}
+EOF
+)
+
 if ! command -v cargo >/dev/null 2>&1; then
     printf '\n  pre-push: cargo not on PATH; cannot run the tests. Refusing rather\n' >&2
     printf '            than letting an unchecked push through silently. Set\n' >&2
@@ -535,6 +560,7 @@ trap '_s=$?; _unmerge; _record "$_s"; _leave_queue; exit "$_s"' EXIT
 # before, and says so. KLIPP_GATE_IN_PLACE=1 asks for that too, and
 # KLIPP_GATE_DIR moves the checkout.
 _pushed_from=$ROOT
+_check_push_refs
 if [ -n "$_queue" ] && [ -z "${CARGO_TARGET_DIR:-}" ] && [ "${KLIPP_GATE_IN_PLACE:-}" != "1" ] && [ "$KLIPP_ALLOW_DIRTY" != "1" ]; then
     _step=checkout
     _main=$(dirname "$_common")
@@ -896,6 +922,7 @@ fi
 # for a problem that is not in any of them.
 _step=build
 if [ "$_scope" = none ]; then
+    _check_push_refs
     printf '\n  pre-push: clippy and rustdoc pass; nothing else to run.\n\n'
     exit 0
 fi
@@ -919,6 +946,7 @@ _t=$(date +%s)
 # shellcheck disable=SC2086 # the crates, one -p each
 if _logged cargo test $_scope_args 9>&-; then
     _took "the tests" "$_t"
+    _check_push_refs
     printf '\n  pre-push: tests pass.\n\n'
     # When the whole suite last passed, for the next gate's scope.
     [ "$_scope" = full ] && [ -n "${_common:-}" ] && date +%s >"$_common/klipp-pre-push.full" 2>/dev/null
