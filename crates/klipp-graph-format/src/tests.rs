@@ -22,6 +22,7 @@ fn node(n: u128, type_id: &str) -> Node {
         wireless: Wireless::default(),
         group: None,
         legacy: legacy(json!({})),
+        legacy_flags: None,
     }
 }
 

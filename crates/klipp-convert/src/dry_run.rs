@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::{assemble, revision, verify, Document, StoreKind};
+use crate::{assemble, lift, revision, to_v2, verify, Document, StoreKind};
+use klipp_graph_format::lifted::LiftNote;
 
 /// A file compared between the frozen reader and today's reader: `Err`
 /// says where they differ.
@@ -36,6 +37,8 @@ pub struct ProjectReport {
     /// Picture data on tracks or grade groups but no clip: an old build
     /// from before the revision check can't be kept out of it.
     pub picture_without_clips: bool,
+    /// What the lift reported, by kind of note (#1068).
+    pub lift_notes: BTreeMap<String, usize>,
     pub elapsed: Duration,
 }
 
@@ -105,6 +108,7 @@ fn check_into(dir: &Path, parity: Parity, report: &mut ProjectReport) {
         }
     };
     let mut stores = BTreeMap::new();
+    let mut lift_notes: BTreeMap<String, usize> = BTreeMap::new();
     let (mut clips, mut track_or_group_picture) = (0usize, false);
     for (si, seq) in sequences(&raw).into_iter().enumerate() {
         if let Some(g) = non_null(seq, "timeline_graph") {
@@ -126,6 +130,12 @@ fn check_into(dir: &Path, parity: Parity, report: &mut ProjectReport) {
                 clips += 1;
                 let at = format!("sequence {si} track {ti} clip {ci}");
                 stop(&mut stores, "clips", at.clone(), verify::check_clip(clip));
+                let lifted = lift_one(clip).map(|notes| {
+                    for n in notes {
+                        *lift_notes.entry(note_kind(&n)).or_default() += 1;
+                    }
+                });
+                stop(&mut stores, "lifted clips", at.clone(), lifted.map_err(|e| format!("the lift refused it: {e}")));
                 for (vi, version) in items(clip, "grade_versions").enumerate() {
                     if let Some(g) = version.get("node_graph") {
                         stop(&mut stores, "grade versions", format!("{at} version {vi}"), verify::check_grade(g));
@@ -141,12 +151,27 @@ fn check_into(dir: &Path, parity: Parity, report: &mut ProjectReport) {
     if clips == 0 && (dir.join("looks").is_dir() || dir.join("media/stills.json").is_file()) {
         report.stops.push("no clip to carry the sentinel, and Looks or stills an old build could lose".into());
     }
+    report.lift_notes = lift_notes;
 
     if let Err(e) = old_fields_round_trip(&raw) {
         report.stops.push(format!("old fields: {e}"));
     }
     side_stores(dir, parity, &mut stores, &mut report.stops);
     report.stores = stores;
+}
+
+/// Lift one clip, for its notes.
+fn lift_one(clip: &Value) -> Result<Vec<LiftNote>, String> {
+    let o = clip.as_object().ok_or("a clip isn't an object")?;
+    let record = to_v2::clip_to_v2(o).map_err(|e| e.to_string())?;
+    let clip_id = uuid::Uuid::parse_str(o.get("id").and_then(Value::as_str).unwrap_or_default()).map_err(|e| e.to_string())?;
+    let kind = lift::ClipKind::from_json(o.get("kind"))?;
+    lift::lift_clip(&record, &lift::LiftCtx { clip_id, kind }).map(|(_, notes)| notes)
+}
+
+/// A note's kind, for counting.
+fn note_kind(n: &LiftNote) -> String {
+    serde_json::to_value(n).ok().and_then(|v| v.get("note").and_then(Value::as_str).map(str::to_owned)).unwrap_or_default()
 }
 
 /// Build the whole converted project as the real run will write it, write

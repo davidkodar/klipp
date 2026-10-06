@@ -1,0 +1,475 @@
+//! The semantic lift (phase 2a, #1068): a revision-1 clip record becomes
+//! the lifted [`ClipPicture`], by the rules of the design's §13.2, each
+//! paired with a [`LiftNote`] for what it dropped or gave a meaning to.
+//!
+//! Pure functions over the record, wired into nothing. The proof is the
+//! adapter property, `adapter(lift(to_v2(x))) == render_inputs(x)`, where
+//! the adapter and `render_inputs` (today's code, read off v1) live with
+//! the oracle.
+//!
+//! The lifted graph, in render order: `klipp.source` → head nodes (Media
+//! clips) → the Grade group → `scene_to_display` → OFX → built-in effects
+//! (with `klipp.placement` among them) → `klipp.output`.
+
+use std::collections::BTreeMap;
+
+use klipp_graph_format::lifted::{types as lt, ClipPicture, LegacyFlags, LiftNote, PlacementProps};
+use klipp_graph_format::{
+    types, Animation, ClipRecordV2, Edge, Graph, GraphUi, GroupBody, Legacy, Node, NodeId, NodeTypeId, ParamKey, ParamValue,
+    PortKey, GRAPH_VERSION,
+};
+use serde_json::{json, Value};
+use uuid::Uuid;
+
+use crate::ids::{entry_id, RootKind};
+
+/// What the record alone doesn't say about the clip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipKind {
+    /// A clip of media: the only kind whose head nodes run.
+    Media,
+    Title,
+    Generator,
+    Precomposition,
+    Adjustment,
+    /// An empty stretch of a track: it draws nothing.
+    Gap,
+}
+
+impl ClipKind {
+    /// The kind a clip's stored `kind` names (`{"type": "media", ...}`).
+    pub fn from_json(kind: Option<&Value>) -> Result<Self, String> {
+        let tag = match kind {
+            None | Some(Value::Null) => return Ok(Self::Media),
+            Some(k) => k.get("type").and_then(Value::as_str).unwrap_or_default(),
+        };
+        Ok(match tag {
+            "media" => Self::Media,
+            "title" | "title_v2" | "vector_title" => Self::Title,
+            "generator" => Self::Generator,
+            "sequence" => Self::Precomposition,
+            "adjustment_layer" => Self::Adjustment,
+            "gap" => Self::Gap,
+            other => return Err(format!("a clip kind the lift doesn't know: {other:?}")),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LiftCtx {
+    pub clip_id: Uuid,
+    pub kind: ClipKind,
+}
+
+/// The corrections a matte on port 1 gates (`graph.rs`'s `gateable`).
+const GATEABLE: [&str; 8] = ["Corrector", "ColorBalance", "Exposure", "Contrast", "Saturation", "ColorWheels", "ToneControls", "RGBCurves"];
+
+/// Effect keyframe names that animate a parameter of another name
+/// (`render.rs`: ChromaKey's `spill` drives `soft_edge`). Kept in step with
+/// the registry's keyframe aliases by a test.
+pub const KEYFRAME_ALIASES: [(&str, &str, &str); 1] = [("chroma_key", "spill", "soft_edge")];
+
+/// The modifier types that remap time rather than change a value.
+const TIME_MODIFIERS: [&str; 2] = ["loop", "ping_pong"];
+
+fn node(id: NodeId, type_id: &str, enabled: bool, legacy: Option<Legacy>) -> Node {
+    Node {
+        id,
+        type_id: NodeTypeId::new(type_id),
+        type_version: 1,
+        label: String::new(),
+        enabled,
+        params: BTreeMap::new(),
+        anim: BTreeMap::new(),
+        mix: None,
+        wireless: Default::default(),
+        group: None,
+        legacy,
+        legacy_flags: None,
+    }
+}
+
+fn flags(n: &mut Node) -> &mut LegacyFlags {
+    n.legacy_flags.get_or_insert_with(LegacyFlags::default)
+}
+
+fn payload(n: &Node) -> &Value {
+    n.legacy.as_ref().map(|l| &l.payload).unwrap_or(&Value::Null)
+}
+
+fn num(v: &Value, key: &str) -> Option<f32> {
+    v.get(key).and_then(Value::as_f64).map(|f| f as f32)
+}
+
+fn kind_of(n: &Node) -> &str {
+    payload(n).get("kind").and_then(Value::as_str).unwrap_or("")
+}
+
+/// Whether input `port` of `n` is connected: an edge into it, or a wireless
+/// link naming a sender in the same graph (today's `input_of`).
+fn connected(body: &Graph, n: &Node, port: &PortKey) -> bool {
+    body.edges.iter().any(|e| e.to.0 == n.id && &e.to.1 == port)
+        || n.wireless.input_links.get(port).is_some_and(|name| {
+            body.nodes.iter().any(|o| o.id != n.id && o.wireless.output_link.as_deref() == Some(name.as_str()))
+        })
+}
+
+/// The Grade group's body, lifted: gates decided on the graph as saved,
+/// then implicit source reads made explicit, then the merges named.
+fn lift_grade_body(group: &Node, notes: &mut Vec<LiftNote>) -> (Graph, LegacyFlags) {
+    let mut body = group.group.as_ref().map(|g| g.graph.clone()).unwrap_or_else(Graph::empty);
+    let mut group_flags = LegacyFlags::default();
+    let input_port = |kind: &str, port: u8| klipp_graph_format::ports::input_key(kind, port);
+
+    // 1. Gates, on the graph as saved: a correction is gated only when its
+    // port 0 and port 1 are both connected. A port-1 edge with port 0
+    // unwired was never a gate: it is parked, outside the graph.
+    let mut gated = Vec::new();
+    let mut parked = Vec::new();
+    for n in &body.nodes {
+        let kind = kind_of(n);
+        if !GATEABLE.contains(&kind) {
+            continue;
+        }
+        let (p0, p1) = (input_port(kind, 0), input_port(kind, 1));
+        let has1 = connected(&body, n, &p1);
+        if has1 && connected(&body, n, &p0) {
+            gated.push(n.id);
+        } else if has1 {
+            parked.extend(body.edges.iter().enumerate().filter(|(_, e)| e.to.0 == n.id && e.to.1 == p1).map(|(i, _)| i));
+        }
+    }
+    for i in parked.iter().rev() {
+        let edge = body.edges.remove(*i);
+        let value = serde_json::to_value(&edge).unwrap_or(Value::Null);
+        notes.push(LiftNote::ParkedEdge { group: group.id, edge: value.clone() });
+        group_flags.parked_edges.insert(0, value);
+    }
+    for n in body.nodes.iter_mut().filter(|n| gated.contains(&n.id)) {
+        flags(n).alpha_one = true;
+    }
+
+    // 2. v1's Source and Output become the group's ends.
+    let mut input_id = None;
+    for n in &mut body.nodes {
+        match kind_of(n) {
+            "Source" => {
+                n.type_id = NodeTypeId::new(lt::GROUP_INPUT);
+                input_id.get_or_insert(n.id);
+            }
+            "Output" => n.type_id = NodeTypeId::new(lt::GROUP_OUTPUT),
+            _ => {}
+        }
+    }
+    // A graph with no Source still reads the frame: give it an input.
+    let input_id = input_id.unwrap_or_else(|| {
+        let id = Uuid::new_v5(&group.id, b"group.input");
+        body.nodes.insert(0, node(id, lt::GROUP_INPUT, true, None));
+        id
+    });
+
+    // 3. Implicit reads become explicit edges from the group's input: an
+    // unwired primary reads the frame (`executor.rs`, `unwrap_or(source)`),
+    // and so does Layer's unwired background.
+    let mut added = Vec::new();
+    for n in &body.nodes {
+        let kind = kind_of(n);
+        if n.id == input_id || matches!(kind, "Source" | "ExternalMatte") {
+            continue;
+        }
+        let mut ports = vec![input_port(kind, 0)];
+        if kind == "Layer" {
+            ports.push(input_port(kind, 1));
+        }
+        for p in ports {
+            if !connected(&body, n, &p) {
+                added.push(Edge { from: (input_id, "out".into()), to: (n.id, p) });
+            }
+        }
+    }
+    body.edges.extend(added);
+
+    // 4. Layer, Blend and LayerMixer become merges with their legacy op.
+    for n in &mut body.nodes {
+        if let Some((_, op)) = lt::MERGE_OPS.iter().find(|(k, _)| *k == kind_of(n)) {
+            n.type_id = NodeTypeId::new(lt::MERGE);
+            n.params.insert("op".into(), ParamValue::Text((*op).to_owned()));
+        }
+    }
+    (body, group_flags)
+}
+
+/// An effect's keyframes and modifiers by parameter name, its stored
+/// `"i:k"` and `effect:i:k` keys read once.
+fn effect_anim(n: &Node) -> BTreeMap<ParamKey, Animation> {
+    let Some(legacy) = &n.legacy else { return BTreeMap::new() };
+    let tag = legacy.payload.get("type").and_then(Value::as_str).unwrap_or("");
+    let alias = |k: &str| {
+        KEYFRAME_ALIASES.iter().find(|(t, from, _)| *t == tag && *from == k).map(|(_, _, to)| (*to).to_owned()).unwrap_or_else(|| k.to_owned())
+    };
+    let mut anim: BTreeMap<ParamKey, Animation> = BTreeMap::new();
+    if let Some(keys) = legacy.keyframes.as_ref().and_then(Value::as_object) {
+        for (k, v) in keys {
+            if let Some((_, param)) = k.split_once(':') {
+                let a = anim.entry(ParamKey::new(alias(param))).or_insert(Animation { keys: Vec::new(), modifiers: None });
+                a.keys = v.as_array().cloned().unwrap_or_default();
+            }
+        }
+    }
+    for (k, stack) in &legacy.modifiers {
+        if let Some(param) = k.splitn(3, ':').nth(2) {
+            let a = anim.entry(ParamKey::new(alias(param))).or_insert(Animation { keys: Vec::new(), modifiers: None });
+            a.modifiers = Some(stack.clone());
+        }
+    }
+    anim
+}
+
+fn stack_modifiers(stack: Option<&Value>) -> Vec<Value> {
+    stack.and_then(|s| s.get("modifiers")).and_then(Value::as_array).cloned().unwrap_or_default()
+}
+
+fn is_time_modifier(m: &Value) -> bool {
+    m.get("type").and_then(Value::as_str).is_some_and(|t| TIME_MODIFIERS.contains(&t))
+}
+
+/// An animation from keys and a modifier list, or none when both are empty.
+fn animation(keys: Option<&Value>, modifiers: Vec<Value>) -> Option<Animation> {
+    let keys: Vec<Value> = keys.and_then(Value::as_array).cloned().unwrap_or_default();
+    if keys.is_empty() && modifiers.is_empty() {
+        return None;
+    }
+    let modifiers = (!modifiers.is_empty()).then(|| json!({ "modifiers": modifiers }));
+    Some(Animation { keys, modifiers })
+}
+
+/// The clip's opacity, by today's rules (`render.rs` `clip_effects`, and
+/// `eval.rs` for adjustment layers).
+fn opacity(record: &ClipRecordV2, effects: &[&Node], ctx: &LiftCtx, notes: &mut Vec<LiftNote>, clip_orphans: &mut BTreeMap<String, Value>) -> (f32, Option<Animation>) {
+    let lc = &record.legacy_clip;
+    let clip_keys = lc.fields.get("opacity_keyframes");
+    let clip_mods = stack_modifiers(lc.param_modifiers.get("opacity"));
+    let opacities: Vec<&&Node> = effects.iter().filter(|n| n.type_id.as_str() == types::LEGACY_OPACITY).collect();
+    let value = |n: &Node| num(payload(n), "value").unwrap_or(1.0);
+    let slot_keys = |n: &Node| -> (Option<Value>, Option<Value>) {
+        let l = n.legacy.as_ref();
+        let slot = l.and_then(|l| l.slot).unwrap_or(0);
+        let keys = l.and_then(|l| l.keyframes.as_ref()).and_then(|k| k.get(format!("{slot}:value"))).cloned();
+        let mods = l.and_then(|l| l.modifiers.get(&format!("effect:{slot}:value"))).cloned();
+        (keys, mods)
+    };
+    let orphan = |n: &Node, clip_orphans: &mut BTreeMap<String, Value>, notes: &mut Vec<LiftNote>| {
+        let l = n.legacy.as_ref();
+        let mut keys = Vec::new();
+        for (k, v) in l.and_then(|l| l.keyframes.as_ref()).and_then(Value::as_object).into_iter().flatten() {
+            clip_orphans.insert(k.clone(), v.clone());
+            keys.push(k.clone());
+        }
+        for (k, v) in l.map(|l| &l.modifiers).into_iter().flatten() {
+            clip_orphans.insert(k.clone(), v.clone());
+            keys.push(k.clone());
+        }
+        if !keys.is_empty() {
+            notes.push(LiftNote::OrphanKeys { node: Some(n.id), keys });
+        }
+    };
+
+    if ctx.kind == ClipKind::Adjustment {
+        // The first Opacity effect's value, enabled or not, with the clip's
+        // keys and modifiers; the effects' own keys never ran.
+        let base = opacities.first().map(|n| value(n)).unwrap_or(1.0);
+        for n in &opacities {
+            orphan(n, clip_orphans, notes);
+        }
+        return (base.clamp(0.0, 1.0), animation(clip_keys, clip_mods));
+    }
+    let enabled: Vec<&&&Node> = opacities.iter().filter(|n| n.enabled).collect();
+    for n in opacities.iter().filter(|n| !n.enabled || enabled.last().is_some_and(|l| l.id != n.id)) {
+        // Only the last enabled Opacity effect sets the result.
+        orphan(n, clip_orphans, notes);
+    }
+    match enabled.last() {
+        None => (1.0, animation(clip_keys, clip_mods)),
+        Some(last) => {
+            let (keys, mods) = slot_keys(last);
+            let v = value(last);
+            if keys.as_ref().and_then(Value::as_array).is_some_and(|k| !k.is_empty()) {
+                // Its own keys, with its own modifiers.
+                (v.clamp(0.0, 1.0), animation(keys.as_ref(), stack_modifiers(mods.as_ref())))
+            } else {
+                // The clip's keys and modifiers, then its value modifiers on
+                // top; its time modifiers acted on no keys and never ran.
+                let (time, value_mods): (Vec<Value>, Vec<Value>) = stack_modifiers(mods.as_ref()).into_iter().partition(is_time_modifier);
+                if !time.is_empty() {
+                    let slot = last.legacy.as_ref().and_then(|l| l.slot).unwrap_or(0);
+                    let key = format!("effect:{slot}:value#time");
+                    clip_orphans.insert(key.clone(), json!({ "modifiers": time }));
+                    notes.push(LiftNote::OrphanKeys { node: Some(last.id), keys: vec![key] });
+                }
+                let mut all = clip_mods;
+                all.extend(value_mods);
+                (v.clamp(0.0, 1.0), animation(clip_keys, all))
+            }
+        }
+    }
+}
+
+/// The clip's placement values, by the three rules over its own Transform
+/// entries, and their animation from the clip's transform keyframes.
+fn placement(record: &ClipRecordV2, transforms: &[&Node], notes: &mut Vec<LiftNote>) -> (PlacementProps, BTreeMap<ParamKey, Animation>) {
+    let mut p = PlacementProps::default();
+    if let Some(first) = transforms.first() {
+        let v = payload(first);
+        p.pos_x = num(v, "position_x");
+        p.pos_y = num(v, "position_y");
+        p.scale = num(v, "scale_x");
+        p.rotation = num(v, "rotation");
+        p.anchor_x = num(v, "anchor_x");
+        p.anchor_y = num(v, "anchor_y");
+        if num(v, "scale_y") != num(v, "scale_x") {
+            notes.push(LiftNote::DroppedField { what: "transform".into(), field: "scale_y".into() });
+        }
+    }
+    if let Some(first_on) = transforms.iter().find(|n| n.enabled) {
+        let v = payload(first_on);
+        p.tilt_x = num(v, "rotation_x");
+        p.tilt_y = num(v, "rotation_y");
+        p.perspective = num(v, "perspective");
+    }
+    p.focal_ref = transforms.iter().find_map(|n| payload(n).get("focal_ref").filter(|f| !f.is_null()).cloned());
+
+    let lc = &record.legacy_clip;
+    let mut anim = BTreeMap::new();
+    for (param, field, modifier) in [
+        ("pos_x", "transform_pos_x_keyframes", Some("position_x")),
+        ("pos_y", "transform_pos_y_keyframes", Some("position_y")),
+        ("scale", "transform_scale_keyframes", Some("scale")),
+        ("rotation", "transform_rotation_keyframes", Some("rotation")),
+        ("tilt_x", "transform_tilt_x_keyframes", None),
+        ("tilt_y", "transform_tilt_y_keyframes", None),
+    ] {
+        let mods = modifier.map(|m| stack_modifiers(lc.param_modifiers.get(m))).unwrap_or_default();
+        if let Some(a) = animation(lc.fields.get(field), mods) {
+            anim.insert(ParamKey::new(param), a);
+        }
+    }
+    (p, anim)
+}
+
+/// Lift one clip's record.
+pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, Vec<LiftNote>), String> {
+    let mut notes = Vec::new();
+    let mut clip_orphans: BTreeMap<String, Value> = BTreeMap::new();
+    let id = |list: &str| entry_id(RootKind::Clip, ctx.clip_id, &format!("lift/{list}"), 0);
+    let nodes = &record.graph.nodes;
+    let grade = nodes.iter().find(|n| n.type_id.as_str() == types::LEGACY_GRADE);
+    let ofx: Vec<&Node> = nodes.iter().filter(|n| n.type_id.as_str() == types::LEGACY_OFX).collect();
+    let effects: Vec<&Node> = nodes
+        .iter()
+        .filter(|n| !matches!(n.type_id.as_str(), types::LEGACY_GRADE | types::LEGACY_OFX))
+        .collect();
+
+    // Head: TNR and frame blending, on Media clips only.
+    let media = ctx.kind == ClipKind::Media;
+    let mut head = Vec::new();
+    let mut tnr_taken = false;
+    for n in effects.iter().filter(|n| n.type_id.as_str() == types::LEGACY_TEMPORAL_DENOISE) {
+        let strong = num(payload(n), "strength").is_some_and(|s| s > 0.0);
+        let runs = media && n.enabled && strong && !tnr_taken;
+        tnr_taken |= runs;
+        let mut h = node(n.id, lt::TEMPORAL_DENOISE, runs, n.legacy.clone());
+        h.legacy_flags = n.legacy_flags.clone();
+        if !runs {
+            let why = if media { "a temporal denoise after the first that ran, or with no strength" } else { "temporal denoise runs on media clips only" };
+            notes.push(LiftNote::NeverRan { node: n.id, why: why.into() });
+        }
+        head.push(h);
+    }
+    let blend = effects.iter().find(|n| {
+        let v = payload(n);
+        n.type_id.as_str() == types::LEGACY_SPEED_RAMP && n.enabled && v.get("blend_mode").and_then(Value::as_u64) == Some(1) && v.get("freeze") != Some(&Value::Bool(true))
+    });
+    if let Some(n) = blend {
+        head.push(node(n.id, lt::FRAME_BLEND, media, n.legacy.clone()));
+        if !media {
+            notes.push(LiftNote::NeverRan { node: n.id, why: "frame blending runs on media clips only".into() });
+        }
+    }
+    for n in effects.iter().filter(|n| n.type_id.as_str() == types::LEGACY_SPEED_RAMP) {
+        let v = payload(n);
+        for (field, default) in [("ramp_curve", json!(0)), ("ramp_start", json!(0.0)), ("ramp_end", json!(1.0)), ("reverse", json!(false)), ("freeze_at", json!(0.0))] {
+            if v.get(field).is_some_and(|x| x.as_f64() != default.as_f64() || x.as_bool() != default.as_bool()) {
+                notes.push(LiftNote::DroppedField { what: "speed ramp".into(), field: field.into() });
+            }
+        }
+    }
+
+    // The clip's opacity and placement become properties.
+    let (opacity, opacity_anim) = opacity(record, &effects, ctx, &mut notes, &mut clip_orphans);
+    let transforms: Vec<&Node> = effects.iter().copied().filter(|n| n.type_id.as_str() == types::LEGACY_TRANSFORM).collect();
+    let (placement, placement_anim) = placement(record, &transforms, &mut notes);
+    let fixed_at = transforms.iter().find(|n| n.enabled).map(|n| n.id);
+
+    // The chain.
+    let mut chain = vec![node(id("source"), lt::SOURCE, true, None)];
+    chain.extend(head);
+    if let Some(g) = grade {
+        let (body, group_flags) = lift_grade_body(g, &mut notes);
+        let mut group = node(g.id, lt::GROUP, true, g.legacy.clone());
+        group.group = Some(Box::new(GroupBody { graph: body, ports: Vec::new() }));
+        if !group_flags.is_empty() {
+            group.legacy_flags = Some(group_flags);
+        }
+        chain.push(group);
+    }
+    chain.push(node(id("scene_to_display"), lt::SCENE_TO_DISPLAY, true, None));
+    chain.extend(ofx.iter().map(|n| (*n).clone()));
+    for n in &effects {
+        match n.type_id.as_str() {
+            types::LEGACY_OPACITY | types::LEGACY_SPEED_RAMP | types::LEGACY_TEMPORAL_DENOISE => {}
+            types::LEGACY_TRANSFORM if Some(n.id) == fixed_at => {
+                let mut p = node(n.id, lt::PLACEMENT, true, n.legacy.clone());
+                p.params.insert("mode".into(), ParamValue::Enum(lt::PLACEMENT_FIXED));
+                chain.push(p);
+            }
+            types::LEGACY_TRANSFORM => {
+                let mut t = (*n).clone();
+                t.enabled = false;
+                notes.push(LiftNote::ExtraTransform { node: n.id });
+                chain.push(t);
+            }
+            _ => {
+                let mut e = (*n).clone();
+                e.anim = effect_anim(n);
+                chain.push(e);
+            }
+        }
+    }
+    if fixed_at.is_none() {
+        let mut p = node(id("placement"), lt::PLACEMENT, true, None);
+        p.params.insert("mode".into(), ParamValue::Enum(lt::PLACEMENT_AUTO));
+        chain.push(p);
+    }
+    chain.push(node(id("output"), lt::OUTPUT, true, None));
+
+    // What claims nothing on the clip: unclaimed effect keys and modifiers.
+    let lc = &record.legacy_clip;
+    for (k, v) in &lc.effect_keyframes {
+        clip_orphans.insert(k.clone(), v.clone());
+    }
+    for (k, v) in lc.param_modifiers.iter().filter(|(k, _)| !matches!(k.as_str(), "opacity" | "position_x" | "position_y" | "scale" | "rotation")) {
+        clip_orphans.insert(k.clone(), v.clone());
+    }
+    let unclaimed: Vec<String> = lc.effect_keyframes.keys().cloned().chain(lc.param_modifiers.keys().filter(|k| !matches!(k.as_str(), "opacity" | "position_x" | "position_y" | "scale" | "rotation")).cloned()).collect();
+    if !unclaimed.is_empty() {
+        notes.push(LiftNote::OrphanKeys { node: None, keys: unclaimed });
+    }
+    if !clip_orphans.is_empty() {
+        flags(&mut chain[0]).orphan_keys = clip_orphans;
+    }
+
+    let edges = chain.windows(2).map(|w| Edge { from: (w[0].id, "out".into()), to: (w[1].id, "in".into()) }).collect();
+    let output = chain.last().map(|n| n.id).unwrap_or_default();
+    let graph = Graph { graph_version: GRAPH_VERSION, nodes: chain, edges, output, ui: GraphUi::default(), working_space_override: None };
+    Ok((ClipPicture { graph, placement, placement_anim, opacity, opacity_anim }, notes))
+}

@@ -8,6 +8,7 @@ pub mod canon;
 pub mod document;
 pub mod dry_run;
 pub mod ids;
+pub mod lift;
 pub mod installed;
 pub mod old_fields;
 pub mod revision;
@@ -24,3 +25,6 @@ mod tests;
 
 #[cfg(test)]
 mod to_v2_tests;
+
+#[cfg(test)]
+mod lift_tests;

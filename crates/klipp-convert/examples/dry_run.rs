@@ -89,6 +89,13 @@ fn main() {
     }
     println!("  colour presets: {presets}");
     println!("picture on tracks or groups with no clip: {no_clip}");
+    let mut notes: BTreeMap<&str, usize> = BTreeMap::new();
+    for r in &reports {
+        for (k, n) in &r.lift_notes {
+            *notes.entry(k).or_default() += n;
+        }
+    }
+    println!("lift notes: {}", if notes.is_empty() { "none".to_owned() } else { notes.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(", ") });
     println!("time: {:.1} s in total, slowest project {:.2} s", total.as_secs_f64(), slowest.as_secs_f64());
     println!(
         "installed package: {}",
@@ -108,6 +115,7 @@ fn main() {
             "stores": r.stores,
             "stops": r.stops,
             "picture_without_clips": r.picture_without_clips,
+            "lift_notes": r.lift_notes,
             "millis": r.elapsed.as_millis() as u64,
         })).collect::<Vec<_>>(),
         "colour_presets": {"checked": presets, "stops": preset_stops},
