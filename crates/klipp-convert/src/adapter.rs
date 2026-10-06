@@ -55,7 +55,7 @@ pub fn clip(p: &ClipPicture, ctx: &LiftCtx) -> Result<Value, Refusal> {
         fx.push(json!({ "type": "opacity", "value": p.opacity }), true, &BTreeMap::new());
     }
     // The clip's own grade, and the spliced groups before and after it.
-    let mut own: Option<Value> = None;
+    let mut own: Option<Grade> = None;
     let (mut before, mut after) = (Vec::new(), Vec::new());
     for n in nodes {
         // What the splice put in from the track, as the bake appends it.
@@ -65,14 +65,19 @@ pub fn clip(p: &ClipPicture, ctx: &LiftCtx) -> Result<Value, Refusal> {
         }
         match n.type_id.as_str() {
             lt::SOURCE | lt::SCENE_TO_DISPLAY | lt::OUTPUT => {}
+            lt::TEMPORAL_DENOISE | lt::FRAME_BLEND if n.enabled && ctx.kind != ClipKind::Media => {
+                // Today's renderer runs the head on a Media clip's source
+                // only: the lift keeps it off on any other clip.
+                return Err(format!("head node {} ({}) is on in a {:?} clip", n.id, n.type_id, ctx.kind));
+            }
             lt::TEMPORAL_DENOISE => {
                 // Off when it never ran: v1 runs the first enabled one.
-                if n.enabled && ctx.kind == ClipKind::Media {
+                if n.enabled {
                     fx.push(payload(n)?.clone(), true, &n.anim);
                 }
             }
             lt::FRAME_BLEND => {
-                if n.enabled && ctx.kind == ClipKind::Media {
+                if n.enabled {
                     let mut ramp = payload(n)?.clone();
                     ramp["blend_mode"] = json!(1);
                     ramp["freeze"] = json!(false);
@@ -81,6 +86,9 @@ pub fn clip(p: &ClipPicture, ctx: &LiftCtx) -> Result<Value, Refusal> {
             }
             lt::GROUP => {
                 let g = grade(n)?;
+                if n.origin.is_some() && !n.enabled {
+                    return Err(format!("spliced grade {} is off: a standalone grade that loops stops the conversion", n.id));
+                }
                 match (n.origin, &own) {
                     (None, None) => own = Some(g),
                     (None, Some(_)) => return Err(format!("a second grade of the clip's own, {}", n.id)),
@@ -114,15 +122,24 @@ pub fn clip(p: &ClipPicture, ctx: &LiftCtx) -> Result<Value, Refusal> {
     if !placed {
         return Err("a lifted clip without a placement node".into());
     }
-    if let Some(mut g) = own {
+    if let Some(Grade { graph: mut g, mut reads }) = own {
         // A stage before the clip's grade is prepended, every one after
         // appended, as the bakes do (`GradeGroup::wrap`, then the track's).
         for b in before.iter().rev() {
-            prepend(&mut g, b)?;
+            prepend(&mut g, &b.graph)?;
+            reads.extend(b.reads.iter().cloned());
         }
         for a in &after {
-            append(&mut g, a)?;
+            append(&mut g, &a.graph)?;
+            reads.extend(a.reads.iter().cloned());
         }
+        // What each group read of the frame entering the grade, drawn last
+        // from the footage, so no flattening step moves it: today an
+        // unwired port reads the decoded source wherever its node sits.
+        let source = first_of(&g, "Source").ok_or("frame reads in a grade with no Source")?.to_owned();
+        let mut es = edges(&g).clone();
+        es.extend(reads.iter().map(|(to, port)| edge(&(source.clone(), 0), to, *port)));
+        g["edges"] = Value::Array(es);
         out.insert("node_graph".into(), g);
     } else if !before.is_empty() || !after.is_empty() {
         return Err("spliced grades on a clip with no grade of its own".into());
@@ -269,25 +286,48 @@ fn chain(g: &Graph) -> Result<Vec<&Node>, Refusal> {
     Ok(order)
 }
 
+/// A grade group back in v1: its graph, and the ports its body reads the
+/// frame entering the grade at, as (node, port), drawn from the footage
+/// once the groups are flattened.
+struct Grade {
+    graph: Value,
+    reads: Vec<(String, u64)>,
+}
+
 /// The Grade group's body back to a v1 grade graph: its ends as Source
 /// and Output, its merges by their op, a gate wherever the lift flagged
-/// one. A group input the lift added (v1 had no Source) is left out with
-/// its edges, as an unwired port reads the frame; so are a correction's
-/// port-1 edges where it is not gated, which v1 never read.
-fn grade(group: &Node) -> Result<Value, Refusal> {
+/// one. The frame entering the grade, and an input the lift added (v1 had
+/// no Source), are what an unwired port reads today: their edges come
+/// back as reads of the footage, from a Source made for them when v1 had
+/// none. An output the lift added is a bare Output. A correction's port-1
+/// edges where it is not gated, which v1 never read, are left out.
+///
+/// A group the lift switched off (its grade loops, so today's renderer
+/// never ran it) comes back as a graph today's renderer refuses to order,
+/// whatever is spliced around it: an edge from its Output into itself.
+/// Whether the lift switched off just the grades that loop is the tests'
+/// to check, against today's ordering.
+fn grade(group: &Node) -> Result<Grade, Refusal> {
     let body = &group.group.as_ref().ok_or_else(|| format!("grade group {} has no body", group.id))?.graph;
     let mut kinds: BTreeMap<NodeId, String> = BTreeMap::new();
     let mut minted = Vec::new();
+    let mut source = None;
     let mut nodes = Vec::new();
     for n in &body.nodes {
         let kind = match n.type_id.as_str() {
-            // The frame entering the grade, and an input the lift added (v1
-            // had no Source): what v1 reads at an unwired port.
             lt::GROUP_FRAME | lt::GROUP_INPUT if n.legacy.is_none() => {
                 minted.push(n.id);
                 continue;
             }
-            lt::GROUP_INPUT => "Source".to_owned(),
+            lt::GROUP_OUTPUT if n.legacy.is_none() => {
+                kinds.insert(n.id, "Output".to_owned());
+                nodes.push(json!({ "id": n.id, "kind": "Output", "label": "", "enabled": true }));
+                continue;
+            }
+            lt::GROUP_INPUT => {
+                source.get_or_insert(n.id);
+                "Source".to_owned()
+            }
             lt::GROUP_OUTPUT => "Output".to_owned(),
             lt::MERGE => {
                 let op = match n.params.get(&klipp_graph_format::ParamKey::new("op")) {
@@ -335,16 +375,30 @@ fn grade(group: &Node) -> Result<Value, Refusal> {
         nodes.push(Value::Object(v));
     }
     let mut edges = Vec::new();
-    for e in body.edges.iter().filter(|e| !minted.contains(&e.from.0)) {
-        let from_kind = kinds.get(&e.from.0).map(String::as_str).unwrap_or("");
+    let mut reads = Vec::new();
+    for e in &body.edges {
         let to_kind = kinds.get(&e.to.0).map(String::as_str).unwrap_or("");
-        let from_port = port(from_kind, &e.from.1, false).ok_or_else(|| format!("an edge leaves {} by {}", e.from.0, e.from.1))?;
         let to_port = port(to_kind, &e.to.1, true).ok_or_else(|| format!("an edge enters {} by {}", e.to.0, e.to.1))?;
         let gated = body.nodes.iter().find(|n| n.id == e.to.0).and_then(|n| n.legacy_flags.as_ref()).is_some_and(|f| f.alpha_one);
         if to_port == 1 && GATEABLE.contains(&to_kind) && !gated {
             continue;
         }
+        if minted.contains(&e.from.0) {
+            reads.push((e.to.0.to_string(), u64::from(to_port)));
+            continue;
+        }
+        let from_kind = kinds.get(&e.from.0).map(String::as_str).unwrap_or("");
+        let from_port = port(from_kind, &e.from.1, false).ok_or_else(|| format!("an edge leaves {} by {}", e.from.0, e.from.1))?;
         edges.push(json!({ "from_node": e.from.0, "from_port": from_port, "to_node": e.to.0, "to_port": to_port }));
+    }
+    // The frame's reads need a Source to come from: v1 had none, so one
+    // stands in, under the id of the input the lift added.
+    if source.is_none() && !reads.is_empty() {
+        let id = body.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP_INPUT).map_or(group.id, |n| n.id);
+        nodes.insert(0, json!({ "id": id, "kind": "Source", "label": "", "enabled": true }));
+    }
+    if !group.enabled {
+        edges.push(json!({ "from_node": body.output, "from_port": 0, "to_node": body.output, "to_port": 1 }));
     }
     let mut g = Map::new();
     g.insert("nodes".into(), Value::Array(nodes));
@@ -353,7 +407,8 @@ fn grade(group: &Node) -> Result<Value, Refusal> {
     if let Some(w) = &body.working_space_override {
         g.insert("working_space_override".into(), w.clone());
     }
-    Ok(Value::Object(g))
+    let graph = Value::Object(g);
+    Ok(Grade { graph, reads })
 }
 
 // The flattening, on v1 grade graphs as JSON, step for step as today's
