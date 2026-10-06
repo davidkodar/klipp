@@ -346,11 +346,23 @@ fn colour_presets_are_backed_up_then_converted() {
     std::fs::write(config.join("presets/color/Warm.json"), serde_json::to_string(&graph()).unwrap()).unwrap();
     std::fs::write(config.join("presets/color/broken.json"), b"{ not json").unwrap();
     std::fs::write(config.join("prefs.json"), b"{}").unwrap();
+    // Tool and single-effect presets, as the app keeps them: left as they
+    // are at revision 2, and counted (#1126).
+    std::fs::create_dir_all(config.join("presets/color/wheels")).unwrap();
+    std::fs::write(config.join("presets/color/wheels/Lift.json"), json!({ "name": "Lift", "tool": "Wheels", "params": { "exposure": 0.3 } }).to_string()).unwrap();
+    std::fs::create_dir_all(config.join("effect_presets/gaussian_blur")).unwrap();
+    std::fs::write(config.join("effect_presets/gaussian_blur/Soft.json"), json!({ "name": "Soft", "description": "", "effect_key": "gaussian_blur" }).to_string()).unwrap();
+    let kept = |c: &Path| (std::fs::read(c.join("presets/color/wheels/Lift.json")).unwrap(), std::fs::read(c.join("effect_presets/gaussian_blur/Soft.json")).unwrap());
+    let kept_before = kept(&config);
+    let found = klipp_convert::scan::presets_in(&config);
+    assert_eq!((found.colour, found.tool, found.effect), (2, 1, 1), "an effect's presets are counted in its folder");
     let before = snapshot(&config);
     let mut s = settings(&r, Vec::new());
     s.config_dir = Some(config.clone());
     let report = run(&s, &ok, &ok_parity, &Hooks::NONE).unwrap();
     assert_eq!(report.presets_converted, 1, "{report:?}");
+    assert_eq!((report.tool_presets_unchanged, report.effect_presets_unchanged), (1, 1));
+    assert_eq!(kept(&config), kept_before, "tool and effect presets unchanged");
     assert_eq!(report.presets_stopped, vec![(config.join("presets/color/broken.json"), "doesn't parse as JSON; left as it is".to_string())]);
     assert_eq!(revision_of(&config.join("presets/color/Warm.json")), 2);
     assert_eq!(std::fs::read(config.join("presets/color/broken.json")).unwrap(), b"{ not json", "a file that won't parse is kept and named");

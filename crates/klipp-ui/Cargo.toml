@@ -80,6 +80,9 @@ libc = "0.2"
 expect-test = "1.5"
 # Blocks on wgpu adapter and device requests in the viewer LUT GPU test.
 pollster = { workspace = true }
+# The one-time conversion, run over presets the app saved, in a test that
+# its readers load them after it (#1126). A test dependency only.
+klipp-convert = { path = "../klipp-convert" }
 
 [lints]
 workspace = true

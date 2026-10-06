@@ -46,15 +46,19 @@ pub fn user_presets_dir() -> Option<PathBuf> {
 }
 
 pub fn tool_presets_dir(tool: &ToolScope) -> Option<PathBuf> {
-    let subdir = match tool {
+    Some(user_presets_dir()?.join(tool_dir_name(tool)))
+}
+
+/// The folder under `presets/color` a tool's presets are kept in.
+fn tool_dir_name(tool: &ToolScope) -> &'static str {
+    match tool {
         ToolScope::Wheels => "wheels",
         ToolScope::Curves => "curves",
         ToolScope::HueSat => "huesat",
         ToolScope::Warper => "warper",
         ToolScope::Color => "color_basic",
         ToolScope::FullGrade => "full",
-    };
-    Some(user_presets_dir()?.join(subdir))
+    }
 }
 
 fn sanitize_filename(name: &str) -> String {
@@ -108,7 +112,11 @@ fn save_tool_preset_in(dir: &Path, preset: &ToolPreset) -> Result<(), String> {
 
 pub fn load_tool_presets(tool: &ToolScope) -> Vec<ToolPreset> {
     let Some(dir) = tool_presets_dir(tool) else { return vec![] };
-    let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };
+    load_tool_presets_in(&dir)
+}
+
+fn load_tool_presets_in(dir: &Path) -> Vec<ToolPreset> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
     let mut presets: Vec<ToolPreset> = entries
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
@@ -422,5 +430,56 @@ mod overwrite_tests {
         std::fs::write(&path, serde_json::to_string(&NodeGraph::default()).unwrap()).unwrap();
         assert!(save_preset_in(&dir, "Teal", &NodeGraph::default()).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod conversion_tests {
+    use super::*;
+    use crate::effect_presets::{builtin_effect_key, EffectPreset, PresetManager};
+
+    fn ok_parity(_: &serde_json::Value, _: klipp_convert::StoreKind) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Tool and single-effect presets saved by the app read back the same
+    /// after the one-time conversion has run over the config folder: it
+    /// leaves them at revision 2 as they are (#1126), beside a colour
+    /// preset it converts.
+    #[test]
+    fn tool_and_effect_presets_read_the_same_after_the_conversion() {
+        let root = std::env::temp_dir().join(format!("klipp-ui-presets-conversion-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let config = root.join("klipp");
+        let colour = config.join("presets").join("color");
+        let tool = ToolPreset { name: "Warm lift".into(), tool: ToolScope::Wheels, params: NodeParams { exposure: Some(0.3), ..Default::default() } };
+        let tool_dir = colour.join(tool_dir_name(&ToolScope::Wheels));
+        save_tool_preset_in(&tool_dir, &tool).unwrap();
+        let effect = klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 };
+        let key = builtin_effect_key(&effect);
+        let saved = EffectPreset { name: "Soft".into(), description: "a soft blur".into(), effect_key: key.into(), builtin: Some(effect), ofx_params: None, is_builtin: false };
+        PresetManager::with_user_dir(config.join("effect_presets")).save_user_preset(saved.clone());
+        let mut graph = NodeGraph::default();
+        graph.ensure_corrector();
+        std::fs::write(colour.join("Look.json"), serde_json::to_string(&graph).unwrap()).unwrap();
+        let user = |m: &PresetManager| m.presets_for(key).into_iter().filter(|p| !p.is_builtin).map(|p| serde_json::to_value(p).unwrap()).collect::<Vec<_>>();
+        let tool_before = serde_json::to_value(load_tool_presets_in(&tool_dir)).unwrap();
+        let effect_before = user(&PresetManager::with_user_dir(config.join("effect_presets")));
+        assert_eq!(effect_before, vec![serde_json::to_value(&saved).unwrap()]);
+
+        let s = klipp_convert::run::Settings {
+            projects: Vec::new(),
+            excluded: Default::default(),
+            config_dir: Some(config.clone()),
+            backup_root: root.join("backup"),
+            date: "2026-10-06".into(),
+        };
+        let report = klipp_convert::run::run(&s, &|| Ok(()), &ok_parity, &klipp_convert::run::Hooks::NONE).unwrap();
+        assert_eq!((report.presets_converted, report.tool_presets_unchanged, report.effect_presets_unchanged), (1, 1, 1), "{report:?}");
+
+        assert_eq!(serde_json::to_value(load_tool_presets_in(&tool_dir)).unwrap(), tool_before);
+        assert_eq!(load_tool_presets_in(&tool_dir).len(), 1);
+        assert_eq!(user(&PresetManager::with_user_dir(config.join("effect_presets"))), effect_before);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

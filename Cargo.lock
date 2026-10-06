@@ -3415,6 +3415,7 @@ dependencies = [
  "klipp-audio-search",
  "klipp-color",
  "klipp-compose",
+ "klipp-convert",
  "klipp-core",
  "klipp-document",
  "klipp-effects",

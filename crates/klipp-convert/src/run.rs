@@ -159,6 +159,11 @@ pub struct Report {
     /// Colour presets converted, and those that stopped.
     pub presets_converted: usize,
     pub presets_stopped: Vec<(PathBuf, String)>,
+    /// Tool and single-effect presets found, left unchanged: revision 2
+    /// keeps their form (they hold no picture), and a later revision
+    /// moves them.
+    pub tool_presets_unchanged: usize,
+    pub effect_presets_unchanged: usize,
 }
 
 /// Why a run didn't happen or ended early.
@@ -930,6 +935,9 @@ pub fn run(s: &Settings, preconditions: &dyn Fn() -> Result<(), String>, parity:
         convert_one(s, &dir, hooks, &mut report)?;
     }
     if let Some(config) = &s.config_dir {
+        let found = scan::presets_in(config);
+        report.tool_presets_unchanged = found.tool;
+        report.effect_presets_unchanged = found.effect;
         convert_presets(s, config, &mut report)?;
     }
     Ok(report)

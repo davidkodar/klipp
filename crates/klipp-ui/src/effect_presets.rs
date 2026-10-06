@@ -39,11 +39,11 @@ impl Default for PresetManager {
 
 impl PresetManager {
     pub fn new() -> Self {
-        let user_presets_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("klipp")
-            .join("effect_presets");
+        Self::with_user_dir(dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("klipp").join("effect_presets"))
+    }
 
+    /// The built-in presets and the user's, kept in `user_presets_dir`.
+    pub(crate) fn with_user_dir(user_presets_dir: PathBuf) -> Self {
         let mut mgr = Self {
             presets: Vec::new(),
             user_presets_dir,
