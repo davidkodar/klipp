@@ -17,6 +17,7 @@ pub mod revision2;
 pub mod splice;
 pub mod to_v1;
 pub mod to_v2;
+pub mod unlift;
 
 #[cfg(test)]
 mod lift_tests;
