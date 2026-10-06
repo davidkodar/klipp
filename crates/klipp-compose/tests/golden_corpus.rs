@@ -293,6 +293,20 @@ fn graph_of(kind: NodeKind, params: NodeParams) -> NodeGraph {
     NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions, working_space_override: None, frames: vec![], sticky_notes: vec![] }
 }
 
+/// Source → a Corrector desaturating fully, gated on its port 1 by a
+/// `kind` matte producer → Output.
+fn gated_by(kind: NodeKind, params: NodeParams) -> NodeGraph {
+    let mut g = graph_of(NodeKind::Corrector, NodeParams { saturation: Some(0.0), ..Default::default() });
+    let matte = Node { id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![] };
+    if kind != NodeKind::ExternalMatte {
+        g.edges.push(Edge { from_node: g.nodes[0].id, from_port: 0, to_node: matte.id, to_port: 0 });
+    }
+    g.edges.push(Edge { from_node: matte.id, from_port: 0, to_node: g.nodes[1].id, to_port: 1 });
+    g.node_positions.insert(matte.id, NodePos { x: 100.0, y: 100.0 });
+    g.nodes.insert(2, matte);
+    g
+}
+
 fn exposure(stops: f32) -> NodeGraph {
     graph_of(NodeKind::Exposure, NodeParams { exposure: Some(stops), ..Default::default() })
 }
@@ -694,6 +708,26 @@ fn grade_cases() -> Vec<Case> {
     seq.grade_groups = vec![group];
     seq.timeline_graph = Some(exposure(0.2));
     out.push(Case::new("grade/group stages and timeline grade", seq, f));
+
+    // A matte producer with nothing chosen selects the whole frame
+    // (#1039): the correction it gates grades everything, opaque, as with
+    // no key at all.
+    let missing = std::env::temp_dir().join("klipp-corpus-1039-no-such-image.png");
+    for (name, kind, params) in [
+        ("difference key, no plate", NodeKind::DifferenceKey, NodeParams { difference_key: Some(klipp_core::color_grade::DifferenceKeySettings { enabled: true, ..Default::default() }), ..Default::default() }),
+        ("difference key, off", NodeKind::DifferenceKey, NodeParams { difference_key: Some(klipp_core::color_grade::DifferenceKeySettings { enabled: false, plate_path: Some(missing.clone()), ..Default::default() }), ..Default::default() }),
+        ("external matte, no image", NodeKind::ExternalMatte, NodeParams::default()),
+        ("external matte, a missing image", NodeKind::ExternalMatte, NodeParams { matte_image_path: Some(missing.clone()), ..Default::default() }),
+    ] {
+        let mut c = media(0.0, 4.0);
+        c.node_graph = gated_by(kind, params);
+        let f = Frames::default().with(&c, 0);
+        let mut case = Case::new(format!("grade/nothing chosen, {name}"), sequence(vec![track("V1", TrackKind::Video, vec![c])]), f);
+        // A gated correction whose matte producer runs per node: the
+        // export's GPU path declines it, and the CPU export renders it.
+        case.declines = Some(vec![Path::Export]);
+        out.push(case);
+    }
 
     // Key nodes whose matte used to differ between the paths (#1037): a
     // qualifier that is switched off selects the whole frame, and a luma

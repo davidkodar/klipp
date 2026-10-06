@@ -18,6 +18,20 @@ fn frame() -> Vec<u8> {
     [220u8, 30, 30, 255].repeat((W * H) as usize)
 }
 
+/// Source → a Corrector desaturating fully → Output, with no matte.
+fn ungated() -> NodeGraph {
+    let node = |kind, params| Node { id: NodeId::new_v4(), kind, label: String::new(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: Vec::new() };
+    let src = node(NodeKind::Source, NodeParams::default());
+    let corr = node(NodeKind::Corrector, NodeParams { saturation: Some(0.0), ..Default::default() });
+    let out = node(NodeKind::Output, NodeParams::default());
+    let edges = vec![
+        Edge { from_node: src.id, from_port: 0, to_node: corr.id, to_port: 0 },
+        Edge { from_node: corr.id, from_port: 0, to_node: out.id, to_port: 0 },
+    ];
+    let output_node_id = out.id;
+    NodeGraph { nodes: vec![src, corr, out], edges, output_node_id, ..Default::default() }
+}
+
 /// Source → a Corrector desaturating fully, gated on its port 1 by a
 /// matte node of `kind` with `params` → Output.
 fn gated(kind: NodeKind, params: NodeParams) -> NodeGraph {
@@ -55,8 +69,14 @@ fn every_matte_producer_with_nothing_chosen_selects_the_whole_frame() {
     for (what, kind, params) in cases {
         for (path, mut ex) in [("cpu", GraphExecutor::new_cpu_only()), ("default", GraphExecutor::new())] {
             let out = ex.execute(&frame(), &gated(kind, params.clone()), W, H, 0.0, 0, None, None).unwrap().0;
-            for px in out.chunks_exact(4) {
-                assert!(px[0].abs_diff(px[1]) <= 2 && px[1].abs_diff(px[2]) <= 2, "{what} ({path}): the whole frame is graded, got {px:?}");
+            // As the same correction with no matte at all: graded grey,
+            // opaque. A matte of 0 would leave the red, one that cut the
+            // alpha would leave it transparent.
+            let plain = ex.execute(&frame(), &ungated(), W, H, 0.0, 0, None, None).unwrap().0;
+            assert!(plain.chunks_exact(4).all(|p| p[0].abs_diff(p[1]) <= 2 && p[0] < 200), "{path}: the ungraded check is not grey");
+            for (px, want) in out.chunks_exact(4).zip(plain.chunks_exact(4)) {
+                assert!(px.iter().zip(want).all(|(a, b)| a.abs_diff(*b) <= 1), "{what} ({path}): {px:?}, not the ungated correction's {want:?}");
+                assert_eq!(px[3], 255, "{what} ({path}): the alpha stays whole");
             }
         }
     }

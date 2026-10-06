@@ -136,8 +136,8 @@ fn the_matte_selects_what_differs_from_the_plate() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Invert flips the selection, and a disabled node selects nothing —
-/// both through the real node rather than the algorithm alone.
+/// Invert flips the selection, and a disabled node selects everything
+/// (#1039) — both through the real node rather than the algorithm alone.
 #[test]
 fn invert_and_disabled_go_through_the_node() {
     let dir = std::env::temp_dir().join(format!("klipp-dk-inv-{}", std::process::id()));
