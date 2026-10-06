@@ -701,10 +701,10 @@ fn check_spliced(dir: &Path, scratch: &Path, from_file: bool) -> Result<Checked,
     for (((((ca, fa), (cb, _)), (c2, _)), grade), k) in a.iter().zip(&b).zip(&a2).zip(&grades).zip(&track_fx) {
         let mut cb = (*cb).clone();
         if *k > 0 {
-            let own = cb.builtin_effects.len().saturating_sub(*k);
+            let own = cb.builtin_effects().len().saturating_sub(*k);
             cb.own_effects = Some(Box::new(klipp_timeline::OwnEffects {
-                builtin_effects: cb.builtin_effects[..own].to_vec(),
-                builtin_effects_enabled: cb.builtin_effects_enabled.iter().copied().take(own).collect(),
+                builtin_effects: cb.builtin_effects()[..own].to_vec(),
+                builtin_effects_enabled: cb.builtin_effects_enabled().iter().copied().take(own).collect(),
                 audio_effects: cb.audio_effects.clone(),
             }));
         }
