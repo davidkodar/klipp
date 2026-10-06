@@ -1209,12 +1209,65 @@ impl Renderers {
     }
 }
 
-/// Every path at every time of `case`, against cpu.
-fn draw(case: &Case, renderers: &mut Renderers) -> (Vec<String>, Vec<(f64, Path, Took)>) {
+/// What one path drew of one frame, in the form it is compared in.
+#[derive(Clone)]
+enum Drawn {
+    /// Display bytes, RGBA; alpha isn't compared.
+    Rgba(Vec<u8>),
+    /// An export's 8-bit planes (Y, then Cb and Cr), compared byte by byte.
+    Planes(Vec<u8>),
+    /// An HDR export's ten-bit luma.
+    Luma10(Vec<u16>),
+}
+
+impl Drawn {
+    fn kind(&self) -> &'static str {
+        match self {
+            Drawn::Rgba(_) => "rgba",
+            Drawn::Planes(_) => "planes",
+            Drawn::Luma10(_) => "luma10",
+        }
+    }
+
+    /// The bytes stored for it: a ten-bit sample as two bytes, little-endian.
+    fn bytes(&self) -> Vec<u8> {
+        match self {
+            Drawn::Rgba(b) | Drawn::Planes(b) => b.clone(),
+            Drawn::Luma10(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+        }
+    }
+
+    fn from_bytes(kind: &str, b: &[u8]) -> Option<Drawn> {
+        match kind {
+            "rgba" => Some(Drawn::Rgba(b.to_vec())),
+            "planes" => Some(Drawn::Planes(b.to_vec())),
+            "luma10" => Some(Drawn::Luma10(b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect())),
+            _ => None,
+        }
+    }
+
+    /// Its worst difference from `other`, and how many samples differ by
+    /// more than [`TOLERANCE`]; `None` when they aren't the same kind or size.
+    fn against(&self, other: &Drawn) -> Option<(i32, usize)> {
+        match (self, other) {
+            (Drawn::Rgba(a), Drawn::Rgba(b)) if a.len() == b.len() => Some(compare(a, b, 4)),
+            (Drawn::Planes(a), Drawn::Planes(b)) if a.len() == b.len() => Some(compare(a, b, 1)),
+            (Drawn::Luma10(a), Drawn::Luma10(b)) if a.len() == b.len() => {
+                let d: Vec<i32> = a.iter().zip(b).map(|(x, y)| (*x as i32 - *y as i32).abs()).collect();
+                Some((d.iter().copied().max().unwrap_or(0), d.iter().filter(|x| **x > TOLERANCE).count()))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Every frame of `case` on every path: cpu, then the other three (`None`
+/// where a path declined it), at each of its times.
+fn frames_of(case: &Case, renderers: &mut Renderers) -> (Vec<String>, Vec<(f64, Option<Path>, Option<Drawn>)>) {
     let seq = klipp_timeline::flatten::flatten_sequence(&case.project[0], &case.project);
     let ws = case.working;
     let mut problems = Vec::new();
-    let mut results = Vec::new();
+    let mut out = Vec::new();
     for &t in &case.times {
         let mut frames = case.frames.clone();
         let (cpu_r, gpu_r) = renderers.get(ws);
@@ -1224,13 +1277,13 @@ fn draw(case: &Case, renderers: &mut Renderers) -> (Vec<String>, Vec<(f64, Path,
         if cpu_linear != again {
             problems.push(format!("{} @{t}: cpu gave two different frames", case.name));
         }
-        let cpu = display(&cpu_linear, ws);
+        out.push((t, None, Some(Drawn::Rgba(display(&cpu_linear, ws)))));
 
         let with_gpu = display(&gpu_r.render(&seq, tc(t), W, H, &mut frames, opts), ws);
-        results.push((t, Path::CpuWithGpu, judge(compare(&cpu, &with_gpu, 4))));
+        out.push((t, Some(Path::CpuWithGpu), Some(Drawn::Rgba(with_gpu))));
 
         let stack = gpu_r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut frames, opts);
-        results.push((t, Path::Stack, stack.map_or(Took::Declined, |(px, _)| judge(compare(&cpu, &px, 4)))));
+        out.push((t, Some(Path::Stack), stack.map(|(px, _)| Drawn::Rgba(px))));
 
         let peak = opts.hdr_peak_nits;
         let target = match peak {
@@ -1241,22 +1294,59 @@ fn draw(case: &Case, renderers: &mut Renderers) -> (Vec<String>, Vec<(f64, Path,
             let mut on_gpu = Frames { on_gpu: true, ..case.frames.clone() };
             gpu_r.render_yuv420_on_gpu(&seq, tc(t), W, H, &mut on_gpu, opts, target)
         });
-        let took = match (export, peak) {
-            (None, _) => Took::Declined,
+        let drawn = match (export, peak) {
+            (None, _) => None,
             (Some((planes, _)), None) => {
-                let want = planes_of(&cpu_linear, ws);
-                judge(compare(&want, &planes[..want.len()], 1))
+                let n = planes_of(&cpu_linear, ws).len();
+                Some(Drawn::Planes(planes[..n].to_vec()))
             }
             // Ten-bit luma, P010: each sample's ten bits at the top of a
-            // little-endian u16. Held to one ten-bit level.
+            // little-endian u16.
             (Some((planes, _)), Some(p)) => {
-                let want = pq_luma_of(&cpu_linear, ws, p);
-                let got: Vec<u16> = planes[..want.len() * 2].chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]]) >> 6).collect();
-                let diffs: Vec<i32> = got.iter().zip(&want).map(|(g, w)| (*g as i32 - *w as i32).abs()).collect();
-                judge((diffs.iter().copied().max().unwrap_or(0), diffs.iter().filter(|d| **d > TOLERANCE).count()))
+                let n = pq_luma_of(&cpu_linear, ws, p).len();
+                Some(Drawn::Luma10(planes[..n * 2].chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]]) >> 6).collect()))
             }
         };
-        results.push((t, Path::Export, took));
+        out.push((t, Some(Path::Export), drawn));
+    }
+    (problems, out)
+}
+
+/// What cpu's frame of `case` at `t` is held to on each path: its own
+/// display bytes, or the export's planes or ten-bit luma made from it.
+fn cpu_reference(case: &Case, cpu: &Drawn, path: Path, renderers: &mut Renderers, t: f64) -> Drawn {
+    if path != Path::Export {
+        return cpu.clone();
+    }
+    let seq = klipp_timeline::flatten::flatten_sequence(&case.project[0], &case.project);
+    let mut frames = case.frames.clone();
+    let (cpu_r, _) = renderers.get(case.working);
+    let linear = cpu_r.render(&seq, tc(t), W, H, &mut frames, case.opts);
+    match case.opts.hdr_peak_nits {
+        Some(p) => Drawn::Luma10(pq_luma_of(&linear, case.working, p)),
+        None => Drawn::Planes(planes_of(&linear, case.working)),
+    }
+}
+
+/// Every path at every time of `case`, against cpu.
+fn draw(case: &Case, renderers: &mut Renderers) -> (Vec<String>, Vec<(f64, Path, Took)>) {
+    let (problems, frames) = frames_of(case, renderers);
+    let mut results = Vec::new();
+    let mut cpu = None;
+    for (t, path, drawn) in frames {
+        let Some(path) = path else {
+            cpu = drawn;
+            continue;
+        };
+        let took = match (drawn, &cpu) {
+            (None, _) => Took::Declined,
+            (Some(d), Some(c)) => {
+                let want = cpu_reference(case, c, path, renderers, t);
+                judge(d.against(&want).expect("a frame of the same kind and size as cpu's"))
+            }
+            (Some(_), None) => unreachable!("cpu comes first"),
+        };
+        results.push((t, path, took));
     }
     (problems, results)
 }
@@ -1311,6 +1401,124 @@ fn every_path_draws_the_corpus_alike() {
         }
     }
     assert!(failures.is_empty(), "{} problems:\n{}", failures.len(), failures.join("\n"));
+}
+
+// ── Stored frames ───────────────────────────────────────────────────────
+//
+// Every path's frame of every case and time, recorded on main and stored in
+// `tests/goldens/`: `corpus.png` holds the frames' bytes end to end as one
+// grey image (PNG compresses them), and `corpus.json` says where each one
+// is, with the commit and the reason they were recorded. The paths are held
+// to them within the corpus's one-level tolerance, as they are to cpu: the
+// node-graph switch (#1089) must draw what main drew.
+//
+// To record them again, on main, with a reason for the commit message:
+//
+//     KLIPP_RECORD_GOLDENS="<why>" cargo test -p klipp-compose --test golden_corpus every_path_draws_its_recorded_frames
+//
+// A re-recording is reviewed like code: its commit says why each frame may
+// change.
+
+const GOLDENS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/goldens");
+/// One row of the stored image is one row of a frame (64 RGBA pixels), so
+/// PNG's row filters see the pictures' own structure and compress them.
+const GOLDEN_WIDTH: u32 = W * 4;
+
+fn path_name(path: Option<Path>) -> String {
+    path.map_or("cpu".into(), |p| format!("{p:?}"))
+}
+
+/// Every frame the corpus draws, keyed by case, time and path, in order.
+fn all_frames() -> (Vec<String>, Vec<((String, String, String), Option<Drawn>)>) {
+    let mut renderers = Renderers::default();
+    let (mut problems, mut out) = (Vec::new(), Vec::new());
+    for case in corpus() {
+        let (p, frames) = frames_of(&case, &mut renderers);
+        problems.extend(p);
+        for (t, path, drawn) in frames {
+            out.push(((case.name.clone(), format!("{t}"), path_name(path)), drawn));
+        }
+    }
+    (problems, out)
+}
+
+fn record(frames: &[((String, String, String), Option<Drawn>)], reason: &str) {
+    let mut data = Vec::new();
+    let mut index = Vec::new();
+    for ((case, t, path), drawn) in frames {
+        let Some(d) = drawn else {
+            index.push(serde_json::json!({ "case": case, "t": t, "path": path, "declined": true }));
+            continue;
+        };
+        let b = d.bytes();
+        index.push(serde_json::json!({ "case": case, "t": t, "path": path, "kind": d.kind(), "offset": data.len(), "len": b.len() }));
+        data.extend(b);
+    }
+    let rows = (data.len() as u32).div_ceil(GOLDEN_WIDTH).max(1);
+    data.resize((GOLDEN_WIDTH * rows) as usize, 0);
+    std::fs::create_dir_all(GOLDENS).unwrap();
+    let file = std::fs::File::create(format!("{GOLDENS}/corpus.png")).unwrap();
+    let png = image::codecs::png::PngEncoder::new_with_quality(std::io::BufWriter::new(file), image::codecs::png::CompressionType::Best, image::codecs::png::FilterType::Adaptive);
+    image::ImageEncoder::write_image(png, &data, GOLDEN_WIDTH, rows, image::ExtendedColorType::L8).unwrap();
+    let commit = std::process::Command::new("git").args(["rev-parse", "--short=8", "HEAD"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
+    // One frame a line, so a re-recording's diff reads frame by frame.
+    let lines: Vec<String> = index.iter().map(|f| format!("  {f}")).collect();
+    let head = serde_json::json!({ "recorded_on": commit, "reason": reason });
+    let text = format!("{{\n  \"recorded_on\": {},\n  \"reason\": {},\n  \"frames\": [\n{}\n  ]\n}}\n", head["recorded_on"], head["reason"], lines.join(",\n"));
+    std::fs::write(format!("{GOLDENS}/corpus.json"), text).unwrap();
+}
+
+/// The stored frames: each key's kind and bytes, `None` for a declined one.
+fn stored() -> std::collections::BTreeMap<(String, String, String), Option<Drawn>> {
+    let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(format!("{GOLDENS}/corpus.json")).expect("tests/goldens/corpus.json")).unwrap();
+    let data = image::open(format!("{GOLDENS}/corpus.png")).expect("tests/goldens/corpus.png").to_luma8().into_raw();
+    let s = |v: &serde_json::Value, k: &str| v[k].as_str().unwrap_or_default().to_owned();
+    doc["frames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            let key = (s(f, "case"), s(f, "t"), s(f, "path"));
+            if f["declined"] == true {
+                return (key, None);
+            }
+            let (o, n) = (f["offset"].as_u64().unwrap() as usize, f["len"].as_u64().unwrap() as usize);
+            (key, Drawn::from_bytes(&s(f, "kind"), &data[o..o + n]))
+        })
+        .collect()
+}
+
+/// Every path draws each case as main drew it when the frames were stored,
+/// within the corpus's tolerance; a path declines where it declined then.
+#[test]
+fn every_path_draws_its_recorded_frames() {
+    let (problems, frames) = all_frames();
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+    if let Ok(reason) = std::env::var("KLIPP_RECORD_GOLDENS") {
+        assert!(!reason.trim().is_empty(), "say why the frames are recorded again");
+        record(&frames, &reason);
+        return;
+    }
+    let mut want = stored();
+    let mut failures = Vec::new();
+    for (key, drawn) in &frames {
+        let (case, t, path) = key;
+        match (want.remove(key), drawn) {
+            (None, _) => failures.push(format!("{case} @{t} {path}: no stored frame (a new case: record them again)")),
+            (Some(None), None) => {}
+            (Some(None), Some(_)) => failures.push(format!("{case} @{t} {path}: declined when recorded, draws now")),
+            (Some(Some(_)), None) => failures.push(format!("{case} @{t} {path}: drew when recorded, declines now")),
+            (Some(Some(w)), Some(d)) => match d.against(&w) {
+                None => failures.push(format!("{case} @{t} {path}: not the kind or size recorded")),
+                Some((worst, n)) if worst > TOLERANCE => failures.push(format!("{case} @{t} {path}: differs from its recorded frame by up to {worst} levels in {n} samples")),
+                Some(_) => {}
+            },
+        }
+    }
+    for (case, t, path) in want.keys() {
+        failures.push(format!("{case} @{t} {path}: stored, but the corpus no longer draws it"));
+    }
+    assert!(failures.is_empty(), "{} frames differ from the stored ones:\n{}", failures.len(), failures.join("\n"));
 }
 
 /// Every effect variant is in the corpus, or listed with a reason.
