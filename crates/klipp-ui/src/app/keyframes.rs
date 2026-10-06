@@ -498,9 +498,9 @@ impl KlippApp {
                             // An index past the list names no effect: no track
                             // is started there.
                             if let Some(id) = clip.effect_id_at(*effect_index) {
-                                if let Some(keyframes) = clip.effect_keyframes_mut(id, param_name) {
+                                clip.edit_effect_keyframes_of(id, param_name, |keyframes| {
                                     klipp_core::keyframe::upsert_keyframe(keyframes, *time_secs, *value);
-                                }
+                                });
                             }
                             break;
                         }
@@ -531,11 +531,12 @@ impl KlippApp {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             if let Some(id) = clip.effect_id_at(*effect_index) {
-                                if let Some(keyframes) = clip.existing_effect_keyframes_mut(id, param_name) {
+                                let emptied = clip.edit_existing_effect_keyframes(id, param_name, |keyframes| {
                                     klipp_core::keyframe::remove_keyframe_at(keyframes, *time_secs);
-                                    if keyframes.is_empty() {
-                                        clip.remove_effect_keyframes(id, param_name);
-                                    }
+                                    keyframes.is_empty()
+                                });
+                                if emptied == Some(true) {
+                                    clip.remove_effect_keyframes(id, param_name);
                                 }
                             }
                             break;
@@ -564,12 +565,14 @@ impl KlippApp {
                 AppCommand::MoveEffectKeyframe { clip_id, effect_index, param_name, keyframe_index, new_time_secs, new_value } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            if let Some(keyframes) = clip.effect_id_at(*effect_index).and_then(|id| clip.existing_effect_keyframes_mut(id, param_name)) {
-                                if let Some(kf) = keyframes.get_mut(*keyframe_index) {
-                                    kf.time_secs = *new_time_secs;
-                                    kf.value = *new_value;
-                                }
-                                keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            if let Some(id) = clip.effect_id_at(*effect_index) {
+                                clip.edit_existing_effect_keyframes(id, param_name, |keyframes| {
+                                    if let Some(kf) = keyframes.get_mut(*keyframe_index) {
+                                        kf.time_secs = *new_time_secs;
+                                        kf.value = *new_value;
+                                    }
+                                    keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                                });
                             }
                             break;
                         }
@@ -584,31 +587,33 @@ impl KlippApp {
                         .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            if let Some(keyframes) = clip.effect_id_at(*effect_index).and_then(|id| clip.existing_effect_keyframes_mut(id, param_name)) {
-                                let ki = *keyframe_index;
-                                let len = keyframes.len();
-                                if ki < len {
-                                    keyframes[ki].interpolation = *interpolation;
-                                }
-                                if ki > 0 {
-                                    keyframes[ki - 1].interpolation = *interpolation;
-                                }
-                                if *interpolation == klipp_core::Interpolation::Bezier {
-                                    for idx in [ki.saturating_sub(1), ki] {
-                                        if idx >= len { continue; }
-                                        let prev_t = if idx > 0 { keyframes[idx - 1].time_secs } else { keyframes[idx].time_secs - 1.0 };
-                                        let next_t = if idx + 1 < len { keyframes[idx + 1].time_secs } else { keyframes[idx].time_secs + 1.0 };
-                                        let span_out = (next_t - keyframes[idx].time_secs).abs() * 0.33;
-                                        let span_in = (keyframes[idx].time_secs - prev_t).abs() * 0.33;
-                                        let kf = &mut keyframes[idx];
-                                        if kf.tangent_out == (0.0, 0.0) || kf.tangent_out.0.abs() < 0.5 {
-                                            kf.tangent_out = (span_out, 0.0);
-                                        }
-                                        if kf.tangent_in == (0.0, 0.0) || kf.tangent_in.0.abs() < 0.5 {
-                                            kf.tangent_in = (-span_in, 0.0);
+                            if let Some(id) = clip.effect_id_at(*effect_index) {
+                                clip.edit_existing_effect_keyframes(id, param_name, |keyframes| {
+                                    let ki = *keyframe_index;
+                                    let len = keyframes.len();
+                                    if ki < len {
+                                        keyframes[ki].interpolation = *interpolation;
+                                    }
+                                    if ki > 0 {
+                                        keyframes[ki - 1].interpolation = *interpolation;
+                                    }
+                                    if *interpolation == klipp_core::Interpolation::Bezier {
+                                        for idx in [ki.saturating_sub(1), ki] {
+                                            if idx >= len { continue; }
+                                            let prev_t = if idx > 0 { keyframes[idx - 1].time_secs } else { keyframes[idx].time_secs - 1.0 };
+                                            let next_t = if idx + 1 < len { keyframes[idx + 1].time_secs } else { keyframes[idx].time_secs + 1.0 };
+                                            let span_out = (next_t - keyframes[idx].time_secs).abs() * 0.33;
+                                            let span_in = (keyframes[idx].time_secs - prev_t).abs() * 0.33;
+                                            let kf = &mut keyframes[idx];
+                                            if kf.tangent_out == (0.0, 0.0) || kf.tangent_out.0.abs() < 0.5 {
+                                                kf.tangent_out = (span_out, 0.0);
+                                            }
+                                            if kf.tangent_in == (0.0, 0.0) || kf.tangent_in.0.abs() < 0.5 {
+                                                kf.tangent_in = (-span_in, 0.0);
+                                            }
                                         }
                                     }
-                                }
+                                });
                             }
                             break;
                         }

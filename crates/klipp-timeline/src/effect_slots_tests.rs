@@ -349,13 +349,15 @@ fn access_by_id_keys_as_the_saved_form() {
     let b = c.push_effect(blur(2.0));
     assert_eq!(c.effect_id_at(1), Some(b));
     assert_eq!(c.effect_id_at(2), None);
-    if let Some(BuiltinEffect::GaussianBlur { radius }) = c.effect_mut(b) {
-        *radius = 5.0;
-    }
+    c.edit_effect(b, |e| {
+        if let BuiltinEffect::GaussianBlur { radius } = e {
+            *radius = 5.0;
+        }
+    });
     assert_eq!(c.effect_list.builtin_effects[1], blur(5.0));
-    c.effect_keyframes_mut(b, "radius").unwrap().push(key(3.0));
+    c.edit_effect_keyframes_of(b, "radius", |v| v.push(key(3.0))).unwrap();
     assert_eq!(c.effect_keyframes.0["1:radius"], vec![key(3.0)]);
-    c.effect_modifiers_mut(b, "radius").unwrap().modifiers.extend(stack(0.5).modifiers);
+    c.edit_effect_modifiers(b, "radius", |v| v.modifiers.extend(stack(0.5).modifiers)).unwrap();
     let at = ParamId::Effect { effect_index: 1, param_name: "radius".into() };
     assert_eq!(amplitude(&c.param_modifiers.0[&at]), 0.5);
     assert_eq!(c.remove_effect_keyframes(b, "radius"), Some(vec![key(3.0)]));
@@ -363,7 +365,7 @@ fn access_by_id_keys_as_the_saved_form() {
     assert!(c.effect_keyframes().is_empty() && !c.param_modifiers().contains_key(&at));
     // An id no longer on the list reaches nothing.
     c.remove_effect(b);
-    assert!(c.effect_mut(b).is_none() && c.effect_keyframes_mut(b, "radius").is_none() && c.effect_modifiers_mut(b, "radius").is_none());
+    assert!(c.edit_effect(b, |_| ()).is_none() && c.edit_effect_keyframes_of(b, "radius", |_| ()).is_none() && c.edit_effect_modifiers(b, "radius", |_| ()).is_none());
 }
 
 /// Any mix of list operations and edits by id keeps each effect's keys on
@@ -386,8 +388,8 @@ fn keys_stay_on_their_effect_through_any_mix_of_operations() {
             match next(5) {
                 0 | 1 => {
                     let id = c.insert_effect(next(len + 1), blur(tag)).unwrap();
-                    c.effect_keyframes_mut(id, "radius").unwrap().push(key(tag));
-                    c.effect_modifiers_mut(id, "radius").unwrap().modifiers.extend(stack(tag).modifiers);
+                    c.edit_effect_keyframes_of(id, "radius", |v| v.push(key(tag))).unwrap();
+                    c.edit_effect_modifiers(id, "radius", |v| v.modifiers.extend(stack(tag).modifiers)).unwrap();
                     tag += 1.0;
                 }
                 2 if len > 0 => {
@@ -433,8 +435,8 @@ fn a_restored_snapshot_is_the_snapshot_ids_and_all() {
     let mut c = clip();
     let a = c.push_effect(blur(1.0));
     let b = c.push_effect(blur(2.0));
-    c.effect_keyframes_mut(b, "radius").unwrap().push(key(2.0));
-    c.effect_modifiers_mut(a, "radius").unwrap().modifiers.extend(stack(1.0).modifiers);
+    c.edit_effect_keyframes_of(b, "radius", |v| v.push(key(2.0))).unwrap();
+    c.edit_effect_modifiers(a, "radius", |v| v.modifiers.extend(stack(1.0).modifiers)).unwrap();
     c.set_effect_enabled(a, false);
     c.edit_param_modifiers(|v| v.insert(ParamId::Opacity, stack(9.0)));
     let saved = effect_view(&c);
@@ -442,7 +444,7 @@ fn a_restored_snapshot_is_the_snapshot_ids_and_all() {
 
     c.remove_effect(a);
     c.push_effect(blur(7.0));
-    c.effect_keyframes_mut(b, "radius").unwrap().push(key(9.0));
+    c.edit_effect_keyframes_of(b, "radius", |v| v.push(key(9.0))).unwrap();
     c.edit_param_modifiers(|v| v.insert(ParamId::Opacity, stack(9.0)));
     c.restore_effects_state(state);
 
@@ -469,11 +471,11 @@ fn a_snapshot_and_a_clone_keep_ids() {
 fn existing_access_creates_nothing() {
     let mut c = clip();
     let a = c.push_effect(blur(1.0));
-    assert!(c.existing_effect_keyframes_mut(a, "radius").is_none());
-    assert!(c.existing_effect_modifiers_mut(a, "radius").is_none());
+    assert!(c.edit_existing_effect_keyframes(a, "radius", |_| ()).is_none());
+    assert!(c.edit_existing_effect_modifiers(a, "radius", |_| ()).is_none());
     assert!(c.effect_keyframes().is_empty() && c.param_modifiers().is_empty(), "asking created nothing");
-    c.effect_keyframes_mut(a, "radius").unwrap().push(key(1.0));
-    c.existing_effect_keyframes_mut(a, "radius").unwrap().push(key(2.0));
+    c.edit_effect_keyframes_of(a, "radius", |v| v.push(key(1.0))).unwrap();
+    c.edit_existing_effect_keyframes(a, "radius", |v| v.push(key(2.0))).unwrap();
     assert_eq!(c.effect_keyframes.0["0:radius"].len(), 2);
 }
 
@@ -483,7 +485,7 @@ fn existing_access_creates_nothing() {
 fn a_fresh_state_brings_values_with_new_ids() {
     let mut src = clip();
     let a = src.push_effect(blur(4.0));
-    src.effect_keyframes_mut(a, "radius").unwrap().push(key(4.0));
+    src.edit_effect_keyframes_of(a, "radius", |v| v.push(key(4.0))).unwrap();
     let mut dst = clip();
     let old = dst.push_effect(blur(1.0));
     dst.edit_param_modifiers(|v| v.insert(ParamId::Opacity, stack(2.0)));

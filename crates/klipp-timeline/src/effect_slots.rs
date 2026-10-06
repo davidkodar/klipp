@@ -504,24 +504,26 @@ impl Clip {
         self.effect_list.effect_ids.ids.get(index).copied()
     }
 
-    /// The effect's value, to edit in place: the counterpart of
+    /// Change the effect's value in `f`, in place: the counterpart of
     /// [`Clip::replace_effect`]. Its id, flag and animation stay put.
-    pub fn effect_mut(&mut self, id: EffectId) -> Option<&mut BuiltinEffect> {
+    /// `None` when `id` names no effect of the clip.
+    pub fn edit_effect<R>(&mut self, id: EffectId, f: impl FnOnce(&mut BuiltinEffect) -> R) -> Option<R> {
         let index = self.index_of(id)?;
-        self.effect_list.builtin_effects.get_mut(index)
+        self.effect_list.builtin_effects.get_mut(index).map(f)
     }
 
-    /// The keyframes of the effect's `param`, created empty when it has
-    /// none. Stored under `"{index}:{param}"`.
-    pub fn effect_keyframes_mut(&mut self, id: EffectId, param: &str) -> Option<&mut Vec<klipp_core::Keyframe>> {
+    /// Change the keyframes of the effect's `param` in `f`, created empty
+    /// when it has none. Stored under `"{index}:{param}"`.
+    pub fn edit_effect_keyframes_of<R>(&mut self, id: EffectId, param: &str, f: impl FnOnce(&mut Vec<klipp_core::Keyframe>) -> R) -> Option<R> {
         let index = self.index_of(id)?;
-        Some(self.effect_keyframes.0.entry(format!("{index}:{param}")).or_default())
+        Some(f(self.effect_keyframes.0.entry(format!("{index}:{param}")).or_default()))
     }
 
-    /// The keyframes of the effect's `param`, if it has any; creates none.
-    pub fn existing_effect_keyframes_mut(&mut self, id: EffectId, param: &str) -> Option<&mut Vec<klipp_core::Keyframe>> {
+    /// Change the keyframes of the effect's `param` in `f`, if it has any;
+    /// creates none.
+    pub fn edit_existing_effect_keyframes<R>(&mut self, id: EffectId, param: &str, f: impl FnOnce(&mut Vec<klipp_core::Keyframe>) -> R) -> Option<R> {
         let index = self.index_of(id)?;
-        self.effect_keyframes.0.get_mut(&format!("{index}:{param}"))
+        self.effect_keyframes.0.get_mut(&format!("{index}:{param}")).map(f)
     }
 
     /// Take the keyframes of the effect's `param` away.
@@ -530,19 +532,20 @@ impl Clip {
         self.effect_keyframes.0.remove(&format!("{index}:{param}"))
     }
 
-    /// The modifier stack of the effect's `param`, created empty when it
-    /// has none. Stored under `ParamId::Effect { effect_index, param_name }`.
-    pub fn effect_modifiers_mut(&mut self, id: EffectId, param: &str) -> Option<&mut klipp_core::ModifierStack> {
+    /// Change the modifier stack of the effect's `param` in `f`, created
+    /// empty when it has none. Stored under `ParamId::Effect { effect_index,
+    /// param_name }`.
+    pub fn edit_effect_modifiers<R>(&mut self, id: EffectId, param: &str, f: impl FnOnce(&mut klipp_core::ModifierStack) -> R) -> Option<R> {
         let index = self.index_of(id)?;
         let key = ParamId::Effect { effect_index: index, param_name: param.to_owned() };
-        Some(self.param_modifiers.0.entry(key).or_default())
+        Some(f(self.param_modifiers.0.entry(key).or_default()))
     }
 
-    /// The modifier stack of the effect's `param`, if it has one; creates
-    /// none.
-    pub fn existing_effect_modifiers_mut(&mut self, id: EffectId, param: &str) -> Option<&mut klipp_core::ModifierStack> {
+    /// Change the modifier stack of the effect's `param` in `f`, if it has
+    /// one; creates none.
+    pub fn edit_existing_effect_modifiers<R>(&mut self, id: EffectId, param: &str, f: impl FnOnce(&mut klipp_core::ModifierStack) -> R) -> Option<R> {
         let index = self.index_of(id)?;
-        self.param_modifiers.0.get_mut(&ParamId::Effect { effect_index: index, param_name: param.to_owned() })
+        self.param_modifiers.0.get_mut(&ParamId::Effect { effect_index: index, param_name: param.to_owned() }).map(f)
     }
 
     /// Take the modifier stack of the effect's `param` away.

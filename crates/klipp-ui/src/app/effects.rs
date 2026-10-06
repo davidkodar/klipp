@@ -128,10 +128,10 @@ impl KlippApp {
                 let mut old_enabled: Option<bool> = None;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(effect) = clip.ofx_effect_mut(*effect_index) {
+                        clip.edit_ofx_effect(*effect_index, |effect| {
                             old_enabled = Some(effect.enabled);
                             effect.enabled = *enabled;
-                        }
+                        });
                         break;
                     }
                 }
@@ -169,9 +169,9 @@ impl KlippApp {
             AppCommand::SetEffectParam { clip_id, effect_index, ref param_name, ref value } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(effect) = clip.ofx_effect_mut(*effect_index) {
+                        clip.edit_ofx_effect(*effect_index, |effect| {
                             effect.param_values.insert(param_name.clone(), value.clone());
-                        }
+                        });
                         break;
                     }
                 }
@@ -380,9 +380,11 @@ impl KlippApp {
                         if retracted {
                             changed = clip.remove_builtin_effect(*effect_index).is_some();
                         } else if let Some(old) = old_effect {
-                            if let Some(fx) = clip.effect_id_at(*effect_index).and_then(|id| clip.effect_mut(id)) {
-                                changed = *fx != old;
-                                *fx = old;
+                            if let Some(id) = clip.effect_id_at(*effect_index) {
+                                clip.edit_effect(id, |fx| {
+                                    changed = *fx != old;
+                                    *fx = old;
+                                });
                             }
                         }
                         break;
@@ -1030,9 +1032,9 @@ fn with_modifiers<R>(clip: &mut klipp_timeline::Clip, param: &klipp_core::ParamI
             // to animate whichever effect lands at it later.
             let id = clip.effect_id_at(*effect_index)?;
             if create {
-                clip.effect_modifiers_mut(id, param_name).map(f)
+                clip.edit_effect_modifiers(id, param_name, f)
             } else {
-                clip.existing_effect_modifiers_mut(id, param_name).map(f)
+                clip.edit_existing_effect_modifiers(id, param_name, f)
             }
         }
         _ if create => Some(clip.edit_param_modifiers(|v| f(v.entry(param.clone()).or_default()))),
@@ -1112,7 +1114,7 @@ mod modifier_target_tests {
             c.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 1.0 });
         }
         let id = c.effect_id_at(3).unwrap();
-        assert!(c.existing_effect_modifiers_mut(id, "radius").is_none());
+        assert!(c.edit_existing_effect_modifiers(id, "radius", |_| ()).is_none());
         let _: Option<()> = with_modifiers(&mut c, &effect_param(3), false, |_: &mut ModifierStack| ());
         assert!(c.param_modifiers().is_empty());
     }

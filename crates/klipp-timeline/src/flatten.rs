@@ -368,12 +368,14 @@ fn reidentify(seq: &mut Sequence, ids: &HashMap<ClipId, ClipId>) {
             }
             let ids: Vec<crate::EffectId> = c.effect_entries().map(|(id, _, _)| id).collect();
             for id in ids {
-                if let Some(klipp_effects::BuiltinEffect::Transform { focal_ref: Some(f), .. }) = c.effect_mut(id) {
-                    match f {
-                        klipp_effects::FocalRef::Glyph { title_clip_id, .. } => *title_clip_id = renamed(ClipId(*title_clip_id)).0,
-                        klipp_effects::FocalRef::Tracker { clip_id, .. } => *clip_id = renamed(ClipId(*clip_id)).0,
+                c.edit_effect(id, |e| {
+                    if let klipp_effects::BuiltinEffect::Transform { focal_ref: Some(f), .. } = e {
+                        match f {
+                            klipp_effects::FocalRef::Glyph { title_clip_id, .. } => *title_clip_id = renamed(ClipId(*title_clip_id)).0,
+                            klipp_effects::FocalRef::Tracker { clip_id, .. } => *clip_id = renamed(ClipId(*clip_id)).0,
+                        }
                     }
-                }
+                });
             }
         }
         for tr in &mut track.transitions {

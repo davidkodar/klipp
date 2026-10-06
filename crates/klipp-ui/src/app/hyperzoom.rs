@@ -271,9 +271,9 @@ fn find_or_push(
     let found = clip.effect_entries().find(|(_, e, _)| kind(e)).map(|(id, _, _)| id);
     match found {
         Some(id) => {
-            if let Some(e) = clip.effect_mut(id) {
+            clip.edit_effect(id, |e| {
                 edit(e);
-            }
+            });
             id
         }
         None => clip.push_effect(fresh()),
@@ -283,9 +283,9 @@ fn find_or_push(
 /// Replace the keyframes of the effect's `param` with `keys`, so applying
 /// again gives the same ramp.
 fn set_keyframes(clip: &mut klipp_timeline::Clip, id: klipp_timeline::EffectId, param: &str, keys: &[klipp_core::keyframe::Keyframe]) {
-    if let Some(k) = clip.effect_keyframes_mut(id, param) {
+    clip.edit_effect_keyframes_of(id, param, |k| {
         *k = keys.to_vec();
-    }
+    });
 }
 
 #[cfg(test)]
