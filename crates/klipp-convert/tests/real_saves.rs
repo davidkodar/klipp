@@ -109,6 +109,7 @@ fn saving_a_converted_real_project_changes_nothing_it_shouldnt() {
     let mut once_only: BTreeMap<String, usize> = BTreeMap::new();
     let mut picture_changes: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut lut_rewrites = 0;
+    let mut worst_conversion = (0.0_f64, String::new());
     let (mut t_v1, mut t_v2) = (Vec::new(), Vec::new());
     for (n, line) in paths.lines().filter(|l| !l.is_empty()).enumerate() {
         let src = Path::new(line).parent().unwrap();
@@ -159,6 +160,21 @@ fn saving_a_converted_real_project_changes_nothing_it_shouldnt() {
         t_v2.push(t.elapsed().as_secs_f64());
         assert_eq!(strip_metadata(read(&dir)), strip_metadata(first), "{line}: the second save changed the file");
 
+        // The budget for stage A (#1089): what a save adds, the conversion
+        // of the whole project, in memory, median of seven runs.
+        let mut runs: Vec<f64> = (0..7)
+            .map(|_| {
+                let t = Instant::now();
+                std::hint::black_box(klipp_graph_lift::revision2::project(std::hint::black_box(&v1)).unwrap());
+                t.elapsed().as_secs_f64()
+            })
+            .collect();
+        runs.sort_by(f64::total_cmp);
+        let conversion = runs[runs.len() / 2];
+        if conversion > worst_conversion.0 {
+            worst_conversion = (conversion, line.to_string());
+        }
+
         // Today's save of the same model, for the cost.
         let v1_dir = dir.with_file_name("v1.klipp");
         std::fs::create_dir_all(v1_dir.join("media")).unwrap();
@@ -189,6 +205,13 @@ fn saving_a_converted_real_project_changes_nothing_it_shouldnt() {
     println!("fields the first save rewrites outside the pictures (once only), by projects:");
     for (f, n) in &once_only {
         println!("  {f}: {n}");
+    }
+    // 10 ms keeps the slowest save inside one 60 fps frame; stage B retires
+    // the per-save conversion, and this budget with it. Held only in a
+    // release build: a debug build's timing says nothing about it.
+    println!("conversion on save, slowest project (median of 7): {:.2} ms ({})", worst_conversion.0 * 1e3, worst_conversion.1);
+    if !cfg!(debug_assertions) {
+        assert!(worst_conversion.0 < 0.010, "a save's conversion takes {:.2} ms on {}, over the 10 ms budget", worst_conversion.0 * 1e3, worst_conversion.1);
     }
     assert!(picture_changes.is_empty(), "the first save changed picture stores: {:?}", picture_changes.keys().collect::<Vec<_>>());
 }
