@@ -632,3 +632,25 @@ fn collect_walks_compound_graphs_and_brings_the_stills() {
         let _ = std::fs::remove_dir_all(d);
     }
 }
+
+/// A global LUT that is not on disk when the project is collected stays
+/// named in the collected project, so it can be relinked there; it used
+/// to be dropped, the same loss #1019 fixed on open.
+#[test]
+fn collect_keeps_a_missing_global_luts_path() {
+    let source_dir = tmp_path("lut_src");
+    let dest = tmp_path("lut_dst");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    let missing = source_dir.join("gone").join("look.cube");
+    let color = ColorSettings { global_lut_path: Some(missing.clone()), ..Default::default() };
+    let seq = Sequence::new_default();
+    save_project_with_color(&source_dir, std::slice::from_ref(&seq), &MediaPool::new(), &color, None, None, "").unwrap();
+    let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new() };
+    let result = consolidate_project(&source_dir, &MediaPool::new(), std::slice::from_ref(&seq), &color, options, None).unwrap();
+    assert!(result.warnings.iter().any(|w| w.contains("look.cube")), "the missing LUT is warned about: {:?}", result.warnings);
+    let (_seqs, _pool, loaded_color, ..) = load_project(&dest).unwrap();
+    assert_eq!(loaded_color.global_lut_path.as_deref(), Some(missing.as_path()), "the collected project still names the LUT");
+    for d in [&source_dir, &dest] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}

@@ -725,7 +725,11 @@ pub fn consolidate_project(
         None => new_pool,
     };
     let mut new_color = color_settings.clone();
-    new_color.global_lut_path = plan.lut_new_path.clone();
+    // A global LUT that was copied is read from its copy. One that could
+    // not be (not on disk, or refused as a symlink) keeps the path the
+    // project names, so it can be relinked rather than lost: the open
+    // path keeps a missing LUT for the same reason (#1019).
+    new_color.global_lut_path = plan.lut_new_path.clone().or_else(|| color_settings.global_lut_path.clone());
 
     // Save the consolidated project in the destination directory. The
     // existing save_project_with_color_and_backups automatically relativises
