@@ -144,11 +144,22 @@ fn as_v1(value: &ParamValue) -> Option<Value> {
 fn set_param(n: &mut Node, key: &ParamKey, value: &ParamValue) -> Result<(), String> {
     let t = n.type_id.as_str().to_owned();
     let Some(legacy) = n.legacy.as_mut().filter(|_| t.starts_with("klipp.legacy.") || t == lt::MERGE) else {
+        // A placement's mode is one of its two.
+        if t == lt::PLACEMENT && key.as_str() == "mode" && !matches!(value, ParamValue::Enum(m) if *m == lt::PLACEMENT_FIXED || *m == lt::PLACEMENT_AUTO) {
+            return Err(format!("a placement's mode is Fixed or Auto, not {value:?}"));
+        }
         n.params.insert(key.clone(), value.clone());
         return Ok(());
     };
+    // What the entry is, not a setting of it.
+    if matches!(key.as_str(), "kind" | "type") {
+        return Err(format!("{key} names what the node is, and isn't set"));
+    }
     let v = as_v1(value).ok_or_else(|| format!("{key} is set through the effect's own editor until effects become nodes"))?;
     let mut entry = legacy.payload.clone();
+    if !entry.is_object() {
+        return Err(format!("the node's stored entry isn't an object, so {key} has nowhere to go"));
+    }
     let grade_node = t == types::LEGACY_NODE || t == lt::MERGE;
     let target = if grade_node { entry.get_mut("params").filter(|p| p.is_object()) } else { Some(&mut entry) };
     let target = match target {
@@ -158,7 +169,7 @@ fn set_param(n: &mut Node, key: &ParamKey, value: &ParamValue) -> Result<(), Str
             &mut entry["params"]
         }
     };
-    target[key.as_str()] = v;
+    target.as_object_mut().ok_or_else(|| format!("the node's stored entry isn't an object, so {key} has nowhere to go"))?.insert(key.as_str().to_owned(), v);
     let reads = if grade_node {
         serde_json::from_value::<crate::v1::params::NodeParams>(entry["params"].clone()).is_ok()
     } else if t == types::LEGACY_OFX {
@@ -247,6 +258,25 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId) -> Result<(), String
     Ok(())
 }
 
+/// The entry types a track's effect list holds.
+const TRACK_ENTRY_TYPES: [&str; 6] =
+    [types::LEGACY_EFFECT, types::LEGACY_OPACITY, types::LEGACY_TRANSFORM, types::LEGACY_SPEED_RAMP, types::LEGACY_TEMPORAL_DENOISE, types::LEGACY_OFX];
+
+/// A track's effect list as an op may leave it: effect and plug-in entries
+/// only, each once, none a graph's end, a group or a spliced node.
+fn check_track_list(list: &[Node]) -> Result<(), String> {
+    let mut ids = std::collections::BTreeSet::new();
+    for n in list {
+        if !ids.insert(n.id) {
+            return Err(format!("{} is on the track twice", n.id));
+        }
+        if is_end(n) || n.group.is_some() || n.origin.is_some() || !TRACK_ENTRY_TYPES.contains(&n.type_id.as_str()) {
+            return Err(format!("a track's effects hold effect and plug-in entries, not a {} like {}", n.type_id.as_str(), n.id));
+        }
+    }
+    Ok(())
+}
+
 /// The edits on a track's effect list, which has no edges.
 fn apply_list(list: &mut Vec<Node>, op: &GraphOp, target: NodeId) -> Result<(), String> {
     let find = |l: &Vec<Node>, id: NodeId| l.iter().position(|n| n.id == id).ok_or_else(|| format!("{id} isn't on the track"));
@@ -308,6 +338,7 @@ pub fn apply(docs: &mut Documents, op: &GraphOp) -> Result<GraphEdit, String> {
                 return Err("a track effect has no inside to reach into".into());
             }
             apply_list(&mut list, op, last)?;
+            check_track_list(&list).map_err(|e| format!("that would leave the track's effects invalid: {e}"))?;
             serde_json::to_value(list).map_err(err)?
         }
         Root::Clip { .. } => {

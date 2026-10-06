@@ -208,3 +208,45 @@ fn a_masked_node_moves_with_its_mask() {
     let body = &d.clips[&u(CLIP)].graph.nodes.iter().find(|n| n.id == g).unwrap().group.as_ref().unwrap().graph;
     assert!(body.edges.iter().any(|e| e.from.0 == u(SAT) && e.to.0 == u(E) && e.to.1.as_str() == "in"), "and reads Saturation now");
 }
+
+/// Every op on a track's effect list is checked before it lands: no end,
+/// group, spliced node or non-effect entry gets in (#1102 review, 7).
+#[test]
+fn a_track_list_takes_effect_entries_only() {
+    let mut d = docs();
+    let before = snapshot(&d);
+    let first = d.track_effects[&u(TRACK)][0].id;
+    let tp = |id| NodePath::new(Root::Track { track: u(TRACK), part: TrackPart::Effects }, [id]);
+    // A grade node isn't an effect entry.
+    let r = apply(&mut d, &GraphOp::AddNode { after: tp(first), node: grade_node(0x61, "Saturation") });
+    assert!(r.unwrap_err().contains("effect and plug-in entries"));
+    // Nor is a node that came from a splice.
+    let mut spliced = d.track_effects[&u(TRACK)][0].clone();
+    spliced.id = Uuid::from_u128(0x62);
+    spliced.origin = Some(klipp_graph_format::lifted::Origin::Track { track: u(TRACK) });
+    let r = apply(&mut d, &GraphOp::AddNode { after: tp(first), node: Box::new(spliced) });
+    assert!(r.unwrap_err().contains("effect and plug-in entries"));
+    assert_eq!(snapshot(&d), before, "nothing landed");
+}
+
+/// A malformed stored entry is an error, not a panic; what a node is isn't
+/// a setting; a placement's mode is one of its two (#1102 review, 8).
+#[test]
+fn set_param_refuses_what_it_cant_set() {
+    let mut d = docs();
+    let fx = effect(&d);
+    let r = apply(&mut d, &GraphOp::SetParam { path: clip_path([fx]), key: "type".into(), value: ParamValue::Text("vignette".into()) });
+    assert!(r.unwrap_err().contains("names what the node is"));
+    let g = group(&d);
+    let r = apply(&mut d, &GraphOp::SetParam { path: clip_path([g, u(E)]), key: "kind".into(), value: ParamValue::Text("Saturation".into()) });
+    assert!(r.unwrap_err().contains("names what the node is"));
+    // A stored entry that isn't an object.
+    let clip = d.clips.get_mut(&u(CLIP)).unwrap();
+    clip.graph.nodes.iter_mut().find(|n| n.id == fx).unwrap().legacy.as_mut().unwrap().payload = json!("broken");
+    let r = apply(&mut d, &GraphOp::SetParam { path: clip_path([fx]), key: "radius".into(), value: ParamValue::Float(1.0) });
+    assert!(r.unwrap_err().contains("isn't an object"));
+    // A placement's mode.
+    let place = d.clips[&u(CLIP)].graph.nodes.iter().find(|n| n.type_id.as_str() == lt::PLACEMENT).unwrap().id;
+    let r = apply(&mut d, &GraphOp::SetParam { path: clip_path([place]), key: "mode".into(), value: ParamValue::Enum(7) });
+    assert!(r.unwrap_err().contains("Fixed or Auto"));
+}
