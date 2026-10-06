@@ -25,6 +25,11 @@ pub mod types {
     pub const GROUP: &str = "klipp.group";
     pub const GROUP_INPUT: &str = "klipp.group.input";
     pub const GROUP_OUTPUT: &str = "klipp.group.output";
+    /// A Grade group's second input: the picture entering the grade, which
+    /// an unwired input reads today wherever its node sits. The group's
+    /// main input carries the picture its stages hand on; unspliced the
+    /// two are the same.
+    pub const GROUP_FRAME: &str = "klipp.group.frame";
     /// v1's `Layer`, `Blend` and `LayerMixer`, with their legacy op in the
     /// `op` parameter ([`MERGE_OPS`]).
     pub const MERGE: &str = "klipp.merge";
@@ -209,7 +214,11 @@ fn kind(n: &crate::Node) -> &str {
 fn required_inputs(n: &crate::Node) -> Vec<crate::PortKey> {
     use crate::ports::input_key;
     match n.type_id.as_str() {
-        types::SOURCE | types::GROUP_INPUT => Vec::new(),
+        types::SOURCE | types::GROUP_INPUT | types::GROUP_FRAME => Vec::new(),
+        types::GROUP => {
+            let frame = n.group.as_ref().is_some_and(|b| b.graph.nodes.iter().any(|x| x.type_id.as_str() == types::GROUP_FRAME));
+            if frame { vec!["in".into(), "frame".into()] } else { vec!["in".into()] }
+        }
         crate::types::LEGACY_NODE | types::MERGE | types::GROUP_OUTPUT => match kind(n) {
             "Source" | "ExternalMatte" => Vec::new(),
             "Layer" => vec![input_key("Layer", 0), input_key("Layer", 1)],
@@ -231,6 +240,10 @@ fn check_level(g: &Graph, level: &str, body: bool, render_copy: bool) -> Result<
         if count != 1 {
             return Err(LiftedError::Ends { level: level.to_owned(), what, count });
         }
+    }
+    let frames = g.nodes.iter().filter(|n| n.type_id.as_str() == types::GROUP_FRAME).count();
+    if frames > usize::from(body) {
+        return Err(LiftedError::Ends { level: level.to_owned(), what: "frame", count: frames });
     }
     if g.nodes.iter().find(|n| n.type_id.as_str() == end).map(|n| n.id) != Some(g.output) {
         return Err(LiftedError::Output { level: level.to_owned() });

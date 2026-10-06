@@ -50,6 +50,11 @@ fn find<'a>(g: &'a Graph, s: &str) -> &'a Node {
     g.nodes.iter().find(|n| n.id == id(s)).unwrap()
 }
 
+/// The body's `frame` input: what an unwired input reads.
+fn frame(g: &Graph) -> Uuid {
+    g.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP_FRAME).map(|n| n.id).expect("a frame input")
+}
+
 fn has_edge(g: &Graph, from: Uuid, to: Uuid, port: &str) -> bool {
     g.edges.iter().any(|e| e.from.0 == from && e.to.0 == to && e.to.1.as_str() == port)
 }
@@ -89,11 +94,11 @@ fn the_grade_group_decides_gates_first_then_makes_reads_explicit() {
     // Only then implicit reads: Saturation's empty primary and the layer's
     // empty background read the frame, now as edges from the input. The
     // parked gate didn't make Saturation's port 0 count as wired.
-    assert!(has_edge(b, id(SRC), id(SAT), "in"));
-    assert!(has_edge(b, id(SRC), id(LAY), "bg"));
+    assert!(has_edge(b, frame(b), id(SAT), "in"));
+    assert!(has_edge(b, frame(b), id(LAY), "bg"));
     assert!(has_edge(b, id(COR), id(LAY), "fg"), "the wired foreground stays");
-    assert!(!has_edge(b, id(SRC), id(LAY), "fg"));
-    assert!(has_edge(b, id(SRC), id(KEY), "in"), "the qualifier's empty input reads the frame");
+    assert!(!has_edge(b, frame(b), id(LAY), "fg"));
+    assert!(has_edge(b, frame(b), id(KEY), "in"), "the qualifier's empty input reads the frame");
     // The layer is a merge with its legacy op.
     let lay = find(b, LAY);
     assert_eq!(lay.type_id.as_str(), lt::MERGE);
@@ -113,7 +118,7 @@ fn a_wireless_link_is_wiring() {
     // Saturation's port 0 is now wired wirelessly, so its gate is real.
     assert!(find(b, SAT).legacy_flags.as_ref().unwrap().alpha_one);
     assert!(has_edge(b, id(KEY), id(SAT), "mask"));
-    assert!(!has_edge(b, id(SRC), id(SAT), "in"), "no implicit read over a wireless one");
+    assert!(!has_edge(b, frame(b), id(SAT), "in"), "no implicit read over a wireless one");
     assert!(!notes.iter().any(|n| matches!(n, LiftNote::ParkedEdge { .. })));
 }
 
@@ -349,7 +354,7 @@ fn odd_edges_read_as_today() {
     // The missing output is made with its saved id; the frame now feeds
     // Saturation explicitly, as today's executor read it.
     assert_eq!(find(b, OUT).type_id.as_str(), lt::GROUP_OUTPUT);
-    assert!(has_edge(b, id(SRC), id(SAT), "in"));
+    assert!(has_edge(b, frame(b), id(SAT), "in"));
     assert!(has_edge(b, id(SAT), id(OUT), "in"));
 }
 
@@ -399,7 +404,7 @@ fn filled_inputs_become_edges() {
     let b = body(&p);
     assert!(has_edge(b, id(COR), id(BLEND), "b"), "B reads A");
     assert!(has_edge(b, id(BLEND), id(RGB), "g") && has_edge(b, id(BLEND), id(RGB), "b"), "G and B read R");
-    assert!(has_edge(b, id(SRC), id(AM), "pregrade"), "the pre-grade reads the frame");
+    assert!(has_edge(b, frame(b), id(AM), "pregrade"), "the pre-grade reads the frame");
 }
 
 /// Reads of the primary's picture become edges from what feeds the
@@ -428,7 +433,7 @@ fn reads_of_the_primary_become_edges_from_its_feed() {
         assert!(has_edge(b, id(EXP), id(CMB), key("RGBCombiner", port).as_str()), "the combiner's {port} reads its wireless primary");
     }
     assert!(!b.edges.iter().any(|e| e.to.0 == id(CMB) && e.to.1 == key("RGBCombiner", 0)), "the wireless primary stays wireless");
-    assert!(has_edge(b, id(SRC), id(APM), key("ApplyMatte", 2).as_str()), "ApplyMatte's ungraded input reads the frame");
+    assert!(has_edge(b, frame(b), id(APM), key("ApplyMatte", 2).as_str()), "ApplyMatte's ungraded input reads the frame");
 }
 
 #[test]
@@ -447,4 +452,17 @@ fn every_clip_kind_the_app_writes_is_known() {
     ] {
         assert_eq!(ClipKind::from_json(Some(&json!({"type": tag}))), Ok(kind), "{tag}");
     }
+}
+
+/// Explicit Source edges stay on the group's input; only implicit reads
+/// take the frame, and the clip feeds the frame what enters the grade.
+#[test]
+fn the_frame_carries_only_implicit_reads() {
+    let (p, _) = lift(clip(json!({"node_graph": grade(), "builtin_effects": [{"type": "temporal_denoise", "strength": 0.5, "threshold": 0.1}]})), ClipKind::Media);
+    let b = body(&p);
+    assert!(has_edge(b, id(SRC), id(COR), "in"), "the saved Source edge stays on the input");
+    assert!(!has_edge(b, frame(b), id(COR), "in"));
+    let group = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP).unwrap();
+    let tnr = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::TEMPORAL_DENOISE).unwrap();
+    assert!(has_edge(&p.graph, tnr.id, group.id, "frame"), "the frame is the picture entering the grade, after the head");
 }

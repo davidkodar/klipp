@@ -140,7 +140,8 @@ fn stage_nodes_keep_their_ids() {
     let c = lifted(&clip_with(&own), ClipKind::Media);
     let s = splice(&c, ClipKind::Media, &inputs(&own, Some(pre.clone()), None, json!([]), None));
     let nested = s.graph.nodes[1].group.as_ref().unwrap();
-    let ids: Vec<String> = nested.graph.nodes.iter().map(|n| n.id.to_string()).collect();
+    // The stage's own nodes keep their ids (its `frame` input is the lift's).
+    let ids: Vec<String> = nested.graph.nodes.iter().filter(|n| n.type_id.as_str() != lt::GROUP_FRAME).map(|n| n.id.to_string()).collect();
     let saved: Vec<String> = pre["nodes"].as_array().unwrap().iter().map(|n| n["id"].as_str().unwrap().to_owned()).collect();
     assert_eq!(ids, saved);
 }

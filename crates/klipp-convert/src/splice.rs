@@ -17,7 +17,7 @@
 //! with today's own functions, and arrives here as `None`.
 
 use klipp_graph_format::lifted::{types as lt, ClipPicture, Origin, Stage};
-use klipp_graph_format::{types, Edge, Graph, GroupBody, Node, NodeId, NodeTypeId};
+use klipp_graph_format::{types, Graph, GroupBody, Node, NodeId, NodeTypeId};
 use uuid::Uuid;
 
 use crate::ids::{entry_id, RootKind};
@@ -89,7 +89,7 @@ fn group_node(id: NodeId, body: &Graph, origin: Origin) -> Node {
 
 /// The chain's edges, `out → in` between neighbours.
 fn chained(mut picture: ClipPicture) -> ClipPicture {
-    picture.graph.edges = picture.graph.nodes.windows(2).map(|w| Edge { from: (w[0].id, "out".into()), to: (w[1].id, "in".into()) }).collect();
+    picture.graph.edges = crate::lift::chain_edges(&picture.graph.nodes);
     picture.graph.output = picture.graph.nodes.last().map(|n| n.id).unwrap_or_default();
     picture
 }

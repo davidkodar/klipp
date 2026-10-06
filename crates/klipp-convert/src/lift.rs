@@ -248,6 +248,13 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
         id
     });
 
+    // The picture entering the grade, which an unwired input reads today
+    // wherever its node sits; explicit edges from the v1 Source stay on the
+    // group's input, which a splice reroutes as today's bakes do.
+    let frame_id = Uuid::new_v5(&group.id, b"group.frame");
+    let at = body.nodes.iter().position(|n| n.id == input_id).map_or(0, |i| i + 1);
+    body.nodes.insert(at, node(frame_id, lt::GROUP_FRAME, true, None));
+
     // 2b. Odd edges read as today's executor reads them: an output named
     // but missing is made; an edge to a missing node, into a port the kind
     // never reads (`p<n>`), or after another into the same port is never
@@ -280,7 +287,7 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
         if !kinds.contains_key(&e.from.0) {
             let primary = *port == *input_port(to_kind, 0).as_str() || (to_kind == "Layer" && *port == *input_port("Layer", 1).as_str());
             if primary {
-                e.from = (input_id, "out".into());
+                e.from = (frame_id, "out".into());
                 notes.push(LiftNote::EdgeRewired { group: group.id, edge: value.clone() });
             }
         }
@@ -294,7 +301,7 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
     let mut added = Vec::new();
     for n in &body.nodes {
         let kind = kind_of(n);
-        if n.id == input_id || matches!(kind, "Source" | "ExternalMatte") {
+        if n.id == input_id || n.id == frame_id || matches!(kind, "Source" | "ExternalMatte") {
             continue;
         }
         let mut ports = vec![input_port(kind, 0)];
@@ -303,7 +310,7 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
         }
         for p in ports {
             if !connected(&body, n, &p) {
-                added.push(Edge { from: (input_id, "out".into()), to: (n.id, p) });
+                added.push(Edge { from: (frame_id, "out".into()), to: (n.id, p) });
             }
         }
     }
@@ -337,7 +344,7 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
             }
             let from = match from_port {
                 Some(fp) => source_of(&body, n, &input_port(kind, fp)),
-                None => Some((input_id, "out".into())),
+                None => Some((frame_id, "out".into())),
             };
             if let Some(from) = from {
                 filled.push(Edge { from, to: (n.id, p) });
@@ -554,6 +561,22 @@ fn placement(record: &ClipRecordV2, transforms: &[&Node], notes: &mut Vec<LiftNo
     (p, anim)
 }
 
+/// A clip chain's edges: `out → in` between neighbours, and every group
+/// with a `frame` input fed the picture entering the grade (what the node
+/// before the first group hands on: the source, or the head nodes after it).
+pub fn chain_edges(chain: &[Node]) -> Vec<Edge> {
+    let mut edges: Vec<Edge> = chain.windows(2).map(|w| Edge { from: (w[0].id, "out".into()), to: (w[1].id, "in".into()) }).collect();
+    let first = chain.iter().position(|n| n.type_id.as_str() == lt::GROUP);
+    if let Some(feed) = first.and_then(|i| i.checked_sub(1)).map(|i| chain[i].id) {
+        for g in chain.iter().filter(|n| n.type_id.as_str() == lt::GROUP) {
+            if g.group.as_ref().is_some_and(|b| b.graph.nodes.iter().any(|x| x.type_id.as_str() == lt::GROUP_FRAME)) {
+                edges.push(Edge { from: (feed, "out".into()), to: (g.id, "frame".into()) });
+            }
+        }
+    }
+    edges
+}
+
 /// Lift one clip's record.
 pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, Vec<LiftNote>), String> {
     let mut notes = Vec::new();
@@ -684,7 +707,7 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
         flags(&mut chain[0]).orphan_keys = clip_orphans;
     }
 
-    let edges = chain.windows(2).map(|w| Edge { from: (w[0].id, "out".into()), to: (w[1].id, "in".into()) }).collect();
+    let edges = chain_edges(&chain);
     let output = chain.last().map(|n| n.id).unwrap_or_default();
     let graph = Graph { graph_version: GRAPH_VERSION, nodes: chain, edges, output, ui: GraphUi::default(), working_space_override: None };
     Ok((ClipPicture { graph, placement, placement_anim, opacity, opacity_anim }, notes))

@@ -64,7 +64,9 @@ fn shape_lifted(g: &Graph) -> (Vec<String>, Vec<(String, u8, String, u8)>) {
     // The fixtures wire every primary, so the lift adds no implicit-read
     // edge and every edge compares one for one.
     let edges = g.edges.iter().map(|e| (k(e.from.0), port(e.from.0, &e.from.1, false), k(e.to.0), port(e.to.0, &e.to.1, true)));
-    (g.nodes.iter().map(kind).collect(), edges.collect())
+    // The lifted body's `frame` input has no node in today's graph.
+    let nodes = g.nodes.iter().filter(|n| n.type_id.as_str() != lt::GROUP_FRAME).map(kind).collect();
+    (nodes, edges.collect())
 }
 
 fn legacy_chain() -> Value {
