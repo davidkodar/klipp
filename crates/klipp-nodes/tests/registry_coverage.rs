@@ -3,23 +3,22 @@
 //!
 //! Every variant of `NodeKind`, read from its source, is either described
 //! or on [`NOT_YET_DESCRIBED`]. A description is checked against the code:
-//! its keyframable parameters against `NodeParams::accepts` (what a
-//! keyframe track can drive today), and its ports against the kind's port
-//! counts.
+//! its parameters against `NodeParams`' fields and their defaults, its
+//! keyframable parameters against the names `NodeParams::apply_override`
+//! takes (both ways), and its ports against the kind's port counts and
+//! roles and against which corrections a matte can limit.
 
 use std::collections::BTreeSet;
 
+use klipp_effects::registry::{ParamKind, PortType};
+use klipp_nodes::graph::{Edge, Node, NodeGraph, NodeId};
 use klipp_nodes::registry::node_types;
-use klipp_nodes::NodeParams;
+use klipp_nodes::{NodeKind, NodeParams, PortRole};
+use serde_json::Value;
 
-/// Node kinds with no description yet: all of them until #1009.
-const NOT_YET_DESCRIBED: &[&str] = &[
-    "Source", "Output", "InputTransform", "Corrector", "Exposure", "Contrast", "Saturation", "ToneControls",
-    "ColorWheels", "WheelSatBri", "RGBCurves", "HueSatCurves", "ColorBalance", "Qualifier", "LumaKey", "SoftClip",
-    "Mask", "CombineMattes", "ExternalMatte", "DifferenceKey", "Layer", "Blend", "ApplyMatte", "LayerMixer", "Lut3D",
-    "FilmGrain", "ColorMatch", "ColorWarper", "Denoise", "Compound", "RGBSplitter", "RGBCombiner", "PrimariesMatrix",
-    "MaskCutout", "Reroute",
-];
+/// Node kinds with no description yet: none since #1009. A new kind goes
+/// here until it is described.
+const NOT_YET_DESCRIBED: &[&str] = &[];
 
 /// The variant names of `pub enum NodeKind`, without the catch-all
 /// `Unknown`, read from the source so a new kind cannot go undescribed.
@@ -93,4 +92,265 @@ fn ids_are_unique_grade_ids() {
         assert!(t.desc.id.starts_with("klipp.grade."), "{}: a grade node's id starts with klipp.grade.", t.desc.id);
         assert!(ids.insert(t.desc.id), "{} is described twice", t.desc.id);
     }
+}
+
+/// Names `apply_override` takes that the executor never applies, so no
+/// description carries them (#1040).
+const TAKEN_BUT_UNUSED: &[&str] = &["qual_exposure", "qual_saturation", "qual_hue_shift", "qual_temperature"];
+
+/// Every name `apply_override` takes, read from its match arms: the plain
+/// names, the qualifier's and luma key's prefixed ones, and the warper's
+/// indexed ones. Each is confirmed by `NodeParams::accepts`, so a misread
+/// arm cannot pass.
+fn override_names() -> BTreeSet<String> {
+    let src = include_str!("../src/params.rs");
+    let start = src.find("pub fn apply_override").expect("apply_override");
+    let end = start + src[start..].find("pub fn accepts").expect("accepts");
+    let mut prefix = "";
+    let mut names = BTreeSet::new();
+    for line in src[start..end].lines() {
+        let t = line.trim_start();
+        if let Some(i) = t.find("p if p.starts_with(\"") {
+            let rest = &t[i + "p if p.starts_with(\"".len()..];
+            prefix = if rest.starts_with("qual_") { "qual_" } else if rest.starts_with("luma_key_") { "luma_key_" } else { "" };
+            continue;
+        }
+        let Some(rest) = t.strip_prefix('"') else { continue };
+        let Some(close) = rest.find('"') else { continue };
+        if !rest[close + 1..].trim_start().starts_with("=>") {
+            continue;
+        }
+        let indent = line.len() - t.len();
+        let name = if indent > 12 { format!("{prefix}{}", &rest[..close]) } else { rest[..close].to_string() };
+        names.insert(name);
+    }
+    for i in 0..12 {
+        names.insert(format!("warper_hue_{i}"));
+        names.insert(format!("warper_sat_{i}"));
+    }
+    for n in &names {
+        assert!(NodeParams::accepts(n), "{n} was read as a name apply_override takes, and it does not");
+    }
+    assert!(names.len() > 100, "the name scan found only {names:?}");
+    names
+}
+
+#[test]
+fn every_name_a_keyframe_track_can_drive_is_a_described_parameter() {
+    let described: BTreeSet<&str> = node_types().flat_map(|t| t.desc.params.iter()).filter(|p| p.keyframable).map(|p| p.key).collect();
+    for name in override_names() {
+        if TAKEN_BUT_UNUSED.contains(&name.as_str()) {
+            assert!(!described.contains(name.as_str()), "{name} is described: take it off TAKEN_BUT_UNUSED");
+            continue;
+        }
+        assert!(described.contains(name.as_str()), "apply_override takes {name}, and no description makes it keyframable");
+    }
+}
+
+/// `NodeParams` with every struct-valued field at its own default, as
+/// saved: what a described `struct.field` and its default are read from.
+fn saved_with_structs() -> serde_json::Map<String, Value> {
+    let p = NodeParams {
+        qualifier: Some(Default::default()),
+        luma_key: Some(Default::default()),
+        difference_key: Some(Default::default()),
+        soft_clip: Some(Default::default()),
+        grain: Some(Default::default()),
+        warper_params: Some(Default::default()),
+        color_match: Some(Default::default()),
+        ..Default::default()
+    };
+    match serde_json::to_value(p).unwrap() {
+        Value::Object(m) => m,
+        other => panic!("NodeParams saved as {other}"),
+    }
+}
+
+/// The field names of `pub struct NodeParams`, read from its source
+/// (unset fields are not saved, so serde alone cannot list them).
+fn node_params_fields() -> BTreeSet<String> {
+    let src = include_str!("../src/params.rs");
+    let start = src.find("pub struct NodeParams {").expect("NodeParams");
+    let body = &src[start..start + src[start..].find("\n}").expect("its end")];
+    body.lines()
+        .filter_map(|l| l.trim_start().strip_prefix("pub ")?.split(':').next().map(str::to_string))
+        .filter(|n| !n.contains(' '))
+        .collect()
+}
+
+#[test]
+fn parameters_are_node_params_fields_with_their_defaults() {
+    let fields = node_params_fields();
+    assert!(fields.len() > 60, "the field scan found only {fields:?}");
+    let saved = saved_with_structs();
+    for t in node_types() {
+        for p in t.desc.params {
+            let at = format!("{}.{}", t.desc.id, p.key);
+            let (top, sub) = match p.field.split_once('.') {
+                Some((a, b)) => (a, Some(b)),
+                None => (p.field, None),
+            };
+            assert!(fields.contains(top), "{at}: {top} is not a field of NodeParams");
+            let Some(sub) = sub else { continue };
+            // An unset optional field inside the struct (a plate's path)
+            // is not saved; only `Other` parameters are optional.
+            let Some(value) = saved.get(top).and_then(|v| v.get(sub)) else {
+                assert_eq!(p.kind, ParamKind::Other, "{at}: {top} has no field {sub}");
+                continue;
+            };
+            let value = match (p.index, value) {
+                (Some(i), Value::Array(a)) => &a[i],
+                (Some(_), v) => panic!("{at}: indexed, but {v} is not an array"),
+                (None, v) => v,
+            };
+            match (p.kind, value) {
+                (ParamKind::Bool, Value::Bool(b)) => assert_eq!(p.default, *b as u8 as f32, "{at}: default"),
+                (ParamKind::Float | ParamKind::Whole, Value::Number(n)) => {
+                    assert!((p.default as f64 - n.as_f64().unwrap()).abs() < 1e-6, "{at}: default {} but the struct's is {n}", p.default)
+                }
+                (ParamKind::Choice(names), Value::String(s)) => {
+                    let i = p.default as usize;
+                    assert!(names.len() > i, "{at}: default {i} is past its choices");
+                    assert_eq!(names[i].replace(['.', ' '], "").to_lowercase(), s.to_lowercase(), "{at}: default choice")
+                }
+                (ParamKind::Other, _) => {}
+                (k, v) => panic!("{at}: described as {k:?}, saved as {v}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn defaults_lie_on_their_sliders() {
+    for t in node_types() {
+        for p in t.desc.params {
+            assert!(p.range.is_none(), "{}.{}: no grade parameter refuses a value", t.desc.id, p.key);
+            if let Some((lo, hi)) = p.soft {
+                assert!(lo < hi, "{}.{}: slider range", t.desc.id, p.key);
+                assert!((lo..=hi).contains(&p.default), "{}.{}: default {} off its slider {lo}..{hi}", t.desc.id, p.key, p.default);
+            }
+        }
+    }
+}
+
+#[test]
+fn port_types_agree_with_the_kinds_port_roles() {
+    for t in node_types() {
+        for (i, port) in t.desc.outputs.iter().enumerate() {
+            let matte = t.kind.output_port_role(i as u8) == PortRole::Matte;
+            assert_eq!(port.ty == PortType::Matte, matte, "{}: output {}", t.desc.id, port.key);
+        }
+        for (i, port) in t.desc.inputs.iter().enumerate().filter(|(_, p)| p.key != "mask") {
+            let matte = t.kind.input_port_role(i as u8) == PortRole::Matte;
+            assert_eq!(port.ty == PortType::Matte, matte, "{}: input {}", t.desc.id, port.key);
+        }
+    }
+}
+
+/// A correction a matte limits has the optional `mask` input, and only
+/// those: asked of `with_gates_applied` itself, with a matte wired to the
+/// kind's port 1.
+#[test]
+fn a_mask_input_is_described_exactly_where_a_matte_limits_the_node() {
+    for t in node_types() {
+        if matches!(t.kind, NodeKind::Source | NodeKind::Output) {
+            continue;
+        }
+        let node = |kind| Node { id: NodeId::new_v4(), kind, label: String::new(), enabled: true, params: NodeParams::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() };
+        let (src, n, matte) = (node(NodeKind::Source), node(t.kind), node(NodeKind::Mask));
+        let edges = vec![
+            Edge { from_node: src.id, from_port: 0, to_node: n.id, to_port: 0 },
+            Edge { from_node: matte.id, from_port: 0, to_node: n.id, to_port: 1 },
+        ];
+        let g = NodeGraph { nodes: vec![src, n, matte], edges, ..Default::default() };
+        let gated = g.with_gates_applied().is_some();
+        let has_mask = t.desc.inputs.iter().any(|p| p.key == "mask" && p.ty == PortType::Matte && p.optional);
+        assert_eq!(has_mask, gated, "{}: a matte on port 1 {} it", t.desc.id, if gated { "limits" } else { "does not limit" });
+    }
+}
+
+/// Source → one node of `kind` with `params` → Output.
+fn one_node(kind: NodeKind, params: NodeParams) -> NodeGraph {
+    let node = |kind, params| Node {
+        id: NodeId::new_v4(),
+        kind,
+        label: String::new(),
+        enabled: true,
+        params,
+        keyframes: Default::default(),
+        output_link: None,
+        input_links: Vec::new(),
+    };
+    let nodes = vec![node(NodeKind::Source, NodeParams::default()), node(kind, params), node(NodeKind::Output, NodeParams::default())];
+    let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
+    let output_node_id = nodes[2].id;
+    NodeGraph { nodes, edges, output_node_id, ..Default::default() }
+}
+
+/// The largest difference between two renders.
+fn worst(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len());
+    a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
+}
+
+/// The node's output on the CPU for a colourful, opaque ramp.
+fn rendered(kind: NodeKind, params: NodeParams) -> Vec<f32> {
+    const W: u32 = 16;
+    const H: u32 = 8;
+    let frame: Vec<f32> = (0..W * H)
+        .flat_map(|i| {
+            let (x, y) = ((i % W) as f32 / (W - 1) as f32, (i / W) as f32 / (H - 1) as f32);
+            [0.05 + 0.9 * x, 0.1 + 0.8 * y, 0.9 - 0.7 * x, 1.0]
+        })
+        .collect();
+    klipp_nodes::GraphExecutor::new_cpu_only()
+        .execute_linear(&frame, &one_node(kind, params), W, H, 0.0, 0, None, None)
+        .expect("the graph runs")
+        .0
+}
+
+/// A top-level parameter's described default is the executor's own: a
+/// node with the parameter unset renders exactly as one with it set to the
+/// default (#1100, klipp-e1's review). The struct-field defaults are
+/// checked against the saved struct above; the top-level ones are an
+/// `Option` the executor reads with `unwrap_or(…)`, so only a render can
+/// tell. A value off the default must change the render for most of them,
+/// so the check can't pass because nothing is drawn.
+#[test]
+fn top_level_defaults_render_as_the_unset_parameter() {
+    let (mut checked, mut moved) = (0, 0);
+    for t in node_types() {
+        for p in t.desc.params {
+            if p.field.contains('.') || matches!(p.kind, ParamKind::Other) {
+                continue;
+            }
+            let name = [p.key, p.field].into_iter().find(|n| NodeParams::accepts(n));
+            let Some(name) = name else { continue };
+            let at = format!("{}.{}", t.desc.id, p.key);
+            let unset = rendered(t.kind, NodeParams::default());
+            let mut set = NodeParams::default();
+            assert!(set.apply_override(name, p.default), "{at}: apply_override refused {name}");
+            // Setting a parameter can route the frame through an equal but
+            // differently ordered computation (an explicit off switch, a
+            // fused stage split), which moves the last float bits only. A
+            // wrong default moves a level or more; 1e-4 is a fortieth of
+            // one 8-bit level.
+            let d = worst(&rendered(t.kind, set), &unset);
+            assert!(d <= 1e-4, "{at}: described default {} renders {d} away from the unset parameter", p.default);
+            checked += 1;
+            let off = match p.kind {
+                ParamKind::Bool => 1.0 - p.default,
+                ParamKind::Choice(names) if names.len() > 1 => ((p.default as usize + 1) % names.len()) as f32,
+                _ => p.default + p.soft.map_or(0.37, |(lo, hi)| (hi - lo) * 0.37),
+            };
+            let mut other = NodeParams::default();
+            other.apply_override(name, off);
+            if worst(&rendered(t.kind, other), &unset) > 1e-3 {
+                moved += 1;
+            }
+        }
+    }
+    assert!(checked > 40, "only {checked} top-level parameters were checked");
+    assert!(moved * 2 > checked, "only {moved} of {checked} top-level parameters change the render off their default");
+    eprintln!("top-level defaults: {checked} checked, {moved} change the render off their default");
 }

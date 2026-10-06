@@ -279,7 +279,8 @@ pub(crate) fn respond(
     }
 }
 
-/// The node types the registry describes (#1086): id, name and category,
+/// The node types the registries describe (#1086): the built-in effects and
+/// the grade nodes (#1009), each with its id, name and category,
 /// ports, and each parameter with the name its keyframes are stored under,
 /// its unit, default and ranges. `category` (any case, as the registry
 /// names it: Colour, BlurDetail, LightGlow, Geometry, …) narrows the list.
@@ -289,11 +290,15 @@ pub fn node_types(category: Option<&str>) -> serde_json::Value {
     let ports = |ps: &[klipp_effects::registry::PortDesc]| -> Vec<serde_json::Value> {
         ps.iter().map(|p| json!({ "key": p.key, "type": format!("{:?}", p.ty), "optional": p.optional })).collect()
     };
-    let types: Vec<serde_json::Value> = effect_types()
-        .filter(|t| wanted(&format!("{:?}", t.desc.category)))
-        .map(|t| {
-            let params: Vec<serde_json::Value> = t
-                .desc
+    // The built-in effects, by their saved tag, and the grade nodes, by
+    // their saved kind.
+    let all = effect_types()
+        .map(|t| (&t.desc, t.tag.to_owned()))
+        .chain(klipp_nodes::registry::node_types().map(|t| (&t.desc, format!("{:?}", t.kind))));
+    let types: Vec<serde_json::Value> = all
+        .filter(|(desc, _)| wanted(&format!("{:?}", desc.category)))
+        .map(|(desc, tag)| {
+            let params: Vec<serde_json::Value> = desc
                 .params
                 .iter()
                 .filter(|p| !p.derived)
@@ -313,12 +318,12 @@ pub fn node_types(category: Option<&str>) -> serde_json::Value {
                 })
                 .collect();
             json!({
-                "id": t.desc.id,
-                "tag": t.tag,
-                "name": t.desc.name,
-                "category": format!("{:?}", t.desc.category),
-                "inputs": ports(t.desc.inputs),
-                "outputs": ports(t.desc.outputs),
+                "id": desc.id,
+                "tag": tag,
+                "name": desc.name,
+                "category": format!("{:?}", desc.category),
+                "inputs": ports(desc.inputs),
+                "outputs": ports(desc.outputs),
                 "params": params,
             })
         })
@@ -341,7 +346,7 @@ mod node_types_tests {
     fn every_registered_type_is_listed_and_a_category_narrows() {
         let all = node_types(None);
         let types = all["types"].as_array().unwrap();
-        assert_eq!(types.len(), klipp_effects::registry::effect_types().count());
+        assert_eq!(types.len(), klipp_effects::registry::effect_types().count() + klipp_nodes::registry::node_types().count());
         let gamma = types.iter().find(|t| t["tag"] == "gamma").expect("gamma is listed");
         let param = gamma["params"].as_array().unwrap().iter().find(|p| p["key"] == "gamma").expect("its gamma");
         assert_eq!(param["default"], 1.0);
@@ -354,5 +359,11 @@ mod node_types_tests {
         assert!(!colour.is_empty() && colour.len() < types.len());
         assert!(colour.iter().all(|t| t["category"] == "Colour"));
         assert!(node_types(Some("no such category"))["types"].as_array().unwrap().is_empty());
+        // The grade nodes are listed under Grade, by their saved kind.
+        let grade = node_types(Some("grade"));
+        let grade = grade["types"].as_array().unwrap();
+        assert_eq!(grade.len(), klipp_nodes::registry::node_types().count());
+        let corrector = grade.iter().find(|t| t["tag"] == "Corrector").expect("the Corrector is listed");
+        assert!(corrector["params"].as_array().unwrap().iter().any(|p| p["key"] == "exposure"));
     }
 }
