@@ -21,7 +21,7 @@ class ScratchGateTests(unittest.TestCase):
         (self.root / "scripts").mkdir()
         shutil.copy(Path(__file__).resolve().parents[1] / "pre-push.sh", self.root / "scripts/pre-push.sh")
         self.script(self.root / "scripts/check-signoff.sh", "exit 0")
-        self.script(self.bin / "git", 'case "$*" in\n "rev-parse --show-toplevel") printf "%s\\n" "$TEST_ROOT";;\n "rev-parse --path-format=absolute --git-common-dir") [ -n "$TEST_GITDIR" ] && printf "%s\\n" "$TEST_GITDIR";;\n "rev-parse --short HEAD") echo abc1234;;\n "symbolic-ref --short -q HEAD") echo fix/scratch;;\nesac')
+        self.script(self.bin / "git", 'case "$*" in\n "rev-parse --show-toplevel") printf "%s\\n" "$TEST_ROOT";;\n "rev-parse --path-format=absolute --git-common-dir") [ -n "$TEST_GITDIR" ] && printf "%s\\n" "$TEST_GITDIR";;\n "rev-parse --verify HEAD") echo abc1234;;\n "rev-parse --short HEAD") echo abc1234;;\n "symbolic-ref --short -q HEAD") echo fix/scratch;;\nesac')
         self.gitdir = self.root / "gitdir"
         self.gitdir.mkdir()
         self.script(self.bin / "pgrep", "exit 1")
@@ -503,6 +503,53 @@ class PushedCommitIsCheckedOutTests(RealGitGate):
         self.assertNotIn("#1118", result.stderr)
 
 
+class RefStabilityTests(RealGitGate):
+    """The original checkout, not the gate checkout, must stay at its head."""
+
+    run_gate_with = PushedCommitIsCheckedOutTests.run_gate_with
+
+    def mutate_during_gate(self, command):
+        self.env["TEST_PUSH_ROOT"] = str(self.root)
+        self.script(self.bin / "cargo",
+                    'if [ "$1" = clippy ]; then\n'
+                    '  cd "$TEST_PUSH_ROOT" || exit 1\n'
+                    + command + '\nfi\nexit 0')
+
+    def test_commit_during_gate_refuses_push(self):
+        head = self.git(self.root, "rev-parse", "HEAD").strip()
+        self.mutate_during_gate('git commit -q --allow-empty -m "during gate" || exit 1')
+        result = self.run_gate_with(f"refs/heads/fix/branch {head} refs/heads/fix/branch {'0' * 40}\n")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("HEAD moved during the gate", result.stderr)
+        self.assertNotEqual(self.git(self.root, "rev-parse", "HEAD").strip(), head)
+
+    def test_second_ref_moving_is_refused_even_when_head_stays(self):
+        head = self.git(self.root, "rev-parse", "HEAD").strip()
+        self.git(self.root, "branch", "also-pushed", head)
+        self.mutate_during_gate('new=$(git commit-tree HEAD^{tree} -p HEAD -m "other ref") || exit 1\n'
+                                'git update-ref refs/heads/also-pushed "$new" || exit 1')
+        refs = ''.join(f"refs/heads/{name} {head} refs/heads/{name} {'0' * 40}\n"
+                       for name in ("fix/branch", "also-pushed"))
+        result = self.run_gate_with(refs)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("refs/heads/also-pushed moved during the gate", result.stderr)
+        self.assertEqual(self.git(self.root, "rev-parse", "HEAD").strip(), head)
+
+    def test_deleted_pushed_ref_is_refused(self):
+        head = self.git(self.root, "rev-parse", "HEAD").strip()
+        self.git(self.root, "branch", "also-pushed", head)
+        self.mutate_during_gate('git update-ref -d refs/heads/also-pushed || exit 1')
+        result = self.run_gate_with(f"refs/heads/also-pushed {head} refs/heads/also-pushed {'0' * 40}\n")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("refs/heads/also-pushed moved during the gate", result.stderr)
+
+    def test_manual_gate_checks_original_head_too(self):
+        self.mutate_during_gate('git commit -q --allow-empty -m "during manual gate" || exit 1')
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("HEAD moved during the gate", result.stderr)
+
+
 class MergeWithMainTests(RealGitGate):
     """The gate tests a branch merged with current main, and refuses one that
     cannot merge before building anything (#866)."""
@@ -668,6 +715,20 @@ class TestScopeTests(RealGitGate):
         result = self.run_gate()
         self.assertEqual(self.tests_run(), ["test --workspace --no-run", "test --workspace"])
         self.assertIn("Cargo.lock is shared", result.stdout)
+
+    def test_documentation_gate_rechecks_head_before_success(self):
+        self.full_mark.write_text(str(int(time.time())))
+        self.change("README.md")
+        self.env["TEST_PUSH_ROOT"] = str(self.root)
+        cargo = self.bin / "cargo"
+        cargo.write_text(cargo.read_text().replace(
+            ' doc) echo',
+            ' doc) git -C "$TEST_PUSH_ROOT" commit -q --allow-empty -m "during docs" || exit 1; echo'))
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("no tests to run", result.stdout)
+        self.assertIn("HEAD moved during the gate", result.stderr)
+        self.assertEqual(self.tests_run(), [])
 
     def logged(self, name):
         path = Path(self.temp.name) / name
