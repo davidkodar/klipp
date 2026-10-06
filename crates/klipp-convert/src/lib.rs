@@ -4,7 +4,12 @@
 //! no app crate, and the application must never depend on it: it reads
 //! and writes the files as they are on disk.
 pub mod document;
+pub mod old_fields;
+pub mod revision;
 pub mod running;
 pub mod scan;
 pub mod v1;
 pub use document::{Document, Picture, PictureField, StoreKind};
+
+#[cfg(test)]
+mod tests;
