@@ -3083,6 +3083,11 @@ pub fn clip_effects(
 
     let mut opacity = 1.0f32;
     let mut have_opacity = false;
+    // A render copy carries its track's effects after the clip's own
+    // (`bake_track_effects`); a track's Opacity weighs the clip's resolved
+    // opacity rather than standing in for it (#1078).
+    let own = clip.own_effects.as_ref().map_or(clip.builtin_effects.len(), |o| o.builtin_effects.len());
+    let mut track_opacity = 1.0f32;
     let mut pinned = false;
     for (i, effect) in fx.iter_mut() {
         let param = |name: &str, v: f32| {
@@ -3117,6 +3122,9 @@ pub fn clip_effects(
                 let q = pin.unwrap_or_default();
                 (*tl, *tr, *br, *bl) = (q[0], q[1], q[2], q[3]);
                 pinned = true;
+            }
+            BuiltinEffect::Opacity { value } if *i >= own => {
+                track_opacity *= param("value", *value).clamp(0.0, 1.0);
             }
             BuiltinEffect::Opacity { value } => {
                 // Clip opacity keyframes / modifiers first, then the
@@ -3194,7 +3202,7 @@ pub fn clip_effects(
         fx.insert(at, transform_effect(xf, three_d));
     }
     fx.retain(|e| !klipp_effects::is_identity_effect(e));
-    (fx, opacity.clamp(0.0, 1.0))
+    (fx, opacity.clamp(0.0, 1.0) * track_opacity)
 }
 
 /// A clip's 3D tilt and perspective at clip time `t`: the tilt tracks,
@@ -3817,6 +3825,39 @@ mod temporal_denoise_placement_tests {
             builtin_effects: effects,
             ..Clip::gap(tc(0), tc(48))
         }
+    }
+
+    /// #1078: a track's Opacity weighs the clip's resolved opacity, still
+    /// value and keys alike, rather than replacing it; one of the clip's
+    /// own still replaces an earlier one of its own.
+    #[test]
+    fn a_tracks_opacity_multiplies_the_clips() {
+        use klipp_timeline::{Track, TrackKind};
+        let baked = |own: Vec<BuiltinEffect>, keys: Vec<klipp_core::Keyframe>, track_fx: Vec<BuiltinEffect>| {
+            let mut c = clip_with(own);
+            c.kind = klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() };
+            c.opacity_keyframes = keys;
+            let mut t = Track::new("V1", TrackKind::Video);
+            t.effects.video = track_fx;
+            t.clips.push(c);
+            let mut seq = klipp_timeline::Sequence::new_default();
+            seq.tracks = vec![t];
+            seq.baked_for_render().tracks[0].clips[0].clone()
+        };
+        let opacity = |c: &Clip, frame: i64| clip_effects(c, tc(frame), 24.0, None, None).1;
+        let half = || vec![BuiltinEffect::Opacity { value: 0.5 }];
+        assert!((opacity(&baked(half(), vec![], half()), 0) - 0.25).abs() < 1e-6, "0.5 on the clip and 0.5 on the track");
+        assert!((opacity(&baked(vec![], vec![], half()), 0) - 0.5).abs() < 1e-6, "the track's alone");
+        let mut keys = Vec::new();
+        klipp_core::keyframe::upsert_keyframe(&mut keys, 0.0, 0.2);
+        klipp_core::keyframe::upsert_keyframe(&mut keys, 1.0, 0.6);
+        assert!((opacity(&baked(half(), keys.clone(), half()), 24) - 0.3).abs() < 1e-6, "the clip's keys still count");
+        assert!((opacity(&baked(vec![], keys, half()), 24) - 0.3).abs() < 1e-6, "keys with no Opacity effect of the clip's");
+        // Two of the clip's own: the last still sets it, as before.
+        let own = vec![BuiltinEffect::Opacity { value: 0.2 }, BuiltinEffect::Opacity { value: 0.8 }];
+        assert!((opacity(&baked(own, vec![], half()), 0) - 0.4).abs() < 1e-6);
+        // A track Opacity above 1 can't brighten the clip.
+        assert!((opacity(&baked(half(), vec![], vec![BuiltinEffect::Opacity { value: 1.5 }]), 0) - 0.5).abs() < 1e-6);
     }
 
     /// #995: the clip's transform is applied once, where its first
