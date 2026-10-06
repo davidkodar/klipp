@@ -1621,8 +1621,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "clip_id": { "type": "string" } }), vec!["clip_id"]),
         tool("klipp_add_node",
              "Add a colour node to a clip's grade graph. Kind is a NodeKind name, \
-              e.g. ColorBalance, Corrector, Curves, Qualifier, Mask, MaskCutout, \
-              LayerMixer. A new node is unconnected — wire it with klipp_connect_nodes.",
+              e.g. ColorBalance, Corrector, RGBCurves, Qualifier, Mask, MaskCutout, \
+              LayerMixer; an unknown one is refused with the list. Replies with the \
+              new node's node_id. A new node is unconnected — wire it with klipp_connect_nodes.",
              json!({
                  "clip_id": { "type": "string" },
                  "kind": { "type": "string", "description": "NodeKind name, e.g. ColorBalance" },
@@ -1695,7 +1696,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              vec![]),
         tool("klipp_perf",
              "Frame timings: decode, grade, composite, total, drops, plus GPU->CPU \
-              readback counters. Use it to tell whether a change actually made \
+              readback counters, and presented_fps, the pictures shown per second \
+              over the last 2 s (null when nothing is playing). Use it to tell whether a change actually made \
               playback faster.",
              json!({}), vec![]),
         tool("klipp_log_tail",

@@ -398,10 +398,18 @@ pub(crate) fn respond(
             if in_batch {
                 return read_in_batch("perf");
             }
+            // Measured over the last two seconds of published pictures, so
+            // a reader sees the rate played, not only the rate asked for.
+            let presented_fps = ctx
+                .frame_buffer
+                .lock()
+                .map_err(|_| "frame buffer lock poisoned")?
+                .presented_fps(std::time::Instant::now(), std::time::Duration::from_secs(2));
             let ring = ctx.perf_ring.lock().map_err(|_| "perf ring lock poisoned")?;
             let latest = ring.latest().cloned();
             let avg = ring.averages(60);
             Ok(json!({
+                "presented_fps": presented_fps,
                 "latest": latest.map(|p| json!({
                     "width": p.width,
                     "height": p.height,
