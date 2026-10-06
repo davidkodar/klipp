@@ -56,6 +56,12 @@ impl KlippApp {
                     }
                 }
             }
+            if refused.is_none() {
+                let active = &self.state.sequences[self.state.active_sequence_idx];
+                if let Some(clip) = param_write_outside(active, &env.commands) {
+                    refused = Some(format!("clip {} is inside a compound, not on this sequence's own tracks: open its sequence to grade it", clip.0));
+                }
+            }
             let mut sought = None;
             if refused.is_none() && !env.commands.is_empty() {
                 sought = last_seek(&env.commands);
@@ -372,6 +378,18 @@ pub fn expand_control_commands(commands: Vec<AppCommand>, batch: bool) -> Vec<Ap
     out
 }
 
+/// The first parameter write in `cmds` whose clip isn't one of `seq`'s own.
+/// The socket checks a clip id against the engine's flattened copy, where
+/// a compound's clips sit under their own ids, but a write applies only to
+/// the active sequence's own clips: it would be acknowledged and change
+/// nothing (#1082).
+pub(super) fn param_write_outside(seq: &klipp_timeline::Sequence, cmds: &[AppCommand]) -> Option<klipp_core::ClipId> {
+    cmds.iter().find_map(|c| match c {
+        AppCommand::SetNodeParam { clip_id, .. } if !seq.tracks.iter().any(|t| t.clips.iter().any(|x| x.id == *clip_id)) => Some(*clip_id),
+        _ => None,
+    })
+}
+
 /// The last absolute seek among a control envelope's commands: where the
 /// playhead is headed once they are applied.
 pub(super) fn last_seek(cmds: &[AppCommand]) -> Option<klipp_core::Timecode> {
@@ -433,6 +451,40 @@ mod control_envelope_tests {
         h.end_batch();
         assert!(h.undo().is_some());
         assert!(h.undo().is_none(), "two pushes inside a batch are one undo step");
+    }
+}
+
+#[cfg(test)]
+mod param_write_outside_tests {
+    use super::{param_write_outside, AppCommand};
+    use klipp_core::{ClipId, MediaId, RationalTime};
+    use klipp_timeline::{flatten::flatten_sequence, Clip, ClipKind, Sequence, Track, TrackKind};
+
+    /// The socket accepts a compound's clip, since the engine's flattened
+    /// copy holds it; the write is refused here, where the document says
+    /// it isn't the sequence's own (#1082).
+    #[test]
+    fn a_write_to_a_clip_inside_a_compound_is_named() {
+        let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+        let mut scene = Sequence::new_default();
+        let inner = Clip::media(MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
+        let inner_id = inner.id;
+        scene.tracks = vec![Track::new("V1", TrackKind::Video)];
+        scene.tracks[0].clips = vec![inner];
+        let mut active = Sequence::new_default();
+        let own = Clip::media(MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
+        let own_id = own.id;
+        let mut compound = Clip::gap(t(2.0), t(4.0));
+        compound.kind = ClipKind::Sequence { sequence_id: scene.id };
+        active.tracks = vec![Track::new("V1", TrackKind::Video)];
+        active.tracks[0].clips = vec![own, compound];
+        let flat = flatten_sequence(&active, &[active.clone(), scene.clone()]);
+        assert!(flat.all_clips().any(|c| c.id == inner_id), "the engine's copy holds the compound's clip");
+
+        let write = |clip_id| AppCommand::SetNodeParam { clip_id, node_id: klipp_nodes::NodeId::new_v4(), param: "exposure".into(), value: 0.5 };
+        assert_eq!(param_write_outside(&active, &[write(own_id)]), None, "the sequence's own clip is written");
+        assert_eq!(param_write_outside(&active, &[AppCommand::Play, write(inner_id)]), Some(inner_id));
+        assert!(param_write_outside(&active, &[write(ClipId::new())]).is_some(), "and one that's nowhere");
     }
 }
 
