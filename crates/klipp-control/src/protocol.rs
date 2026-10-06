@@ -784,6 +784,12 @@ pub enum ControlCommand {
     /// The font families titles can be set in: bundled with Klipp, and
     /// installed on this machine (#738).
     Fonts,
+    /// The node types the registry describes, with their ports and
+    /// parameters, optionally of one category (#1086).
+    NodeTypes {
+        #[serde(default)]
+        category: Option<String>,
+    },
     /// The bundled looks (3D LUTs) an agent can apply, by category, so it
     /// knows what names `look` will take.
     Looks {

@@ -32,6 +32,7 @@ klipp-audio-search = { workspace = true }
 klipp-engine = { workspace = true }
 klipp-analysis = { workspace = true }
 klipp-nodes = { workspace = true }
+klipp-effects = { workspace = true }
 klipp-compose = { workspace = true }
 klipp-render = { workspace = true }
 klipp-title = { workspace = true }

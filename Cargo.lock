@@ -2937,6 +2937,7 @@ dependencies = [
  "klipp-compose",
  "klipp-core",
  "klipp-document",
+ "klipp-effects",
  "klipp-engine",
  "klipp-media",
  "klipp-ml",
