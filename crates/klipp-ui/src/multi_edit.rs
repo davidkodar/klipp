@@ -65,11 +65,9 @@ pub fn copy_to(cmd: &AppCommand, primary: &Clip, other: &mut Clip) -> bool {
             // The same kind of effect on the other clip, wherever it sits
             // in its chain.
             let kind = std::mem::discriminant(effect);
-            match other.builtin_effects.iter().position(|e| std::mem::discriminant(e) == kind) {
-                Some(i) => {
-                    other.builtin_effects[i] = effect.clone();
-                    true
-                }
+            let same = other.effect_entries().find(|(_, e, _)| std::mem::discriminant(*e) == kind).map(|(id, _, _)| id);
+            match same {
+                Some(id) => other.replace_effect(id, effect.clone()),
                 None => false,
             }
         }

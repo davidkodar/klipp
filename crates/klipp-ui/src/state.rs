@@ -3648,24 +3648,27 @@ impl AttributesClipboard {
     /// is the footage's, not part of the grade. A clip without one (a
     /// Rec.709 shot, audio, a title, the timeline grade's stand-in) gets
     /// the grade alone.
-    /// Replace `clip`'s effect modifiers (`effects`) or its other
-    /// modifiers — opacity, position and the rest — with these, leaving
-    /// the other kind alone.
-    fn paste_modifiers(&self, clip: &mut klipp_timeline::Clip, effects: bool) {
-        let ours = |id: &klipp_core::ParamId| matches!(id, klipp_core::ParamId::Effect { .. }) == effects;
-        clip.param_modifiers.retain(|id, _| !ours(id));
-        clip.param_modifiers.extend(self.param_modifiers.iter().filter(|(id, _)| ours(id)).map(|(id, m)| (id.clone(), m.clone())));
+    /// Replace `clip`'s own modifiers (opacity, position and the rest)
+    /// with these, leaving its effects' alone: those travel with the
+    /// effects (`restore_effects_state`).
+    fn paste_clip_modifiers(&self, clip: &mut klipp_timeline::Clip) {
+        let own = |id: &klipp_core::ParamId| !matches!(id, klipp_core::ParamId::Effect { .. });
+        clip.param_modifiers.retain(|id, _| !own(id));
+        clip.param_modifiers.extend(self.param_modifiers.iter().filter(|(id, _)| own(id)).map(|(id, m)| (id.clone(), m.clone())));
     }
 
     pub fn paste_onto(&self, clip: &mut klipp_timeline::Clip, what: PasteChoice) {
         if what.effects {
-            clip.builtin_effects = self.builtin_effects.clone();
-            clip.builtin_effects_enabled = self.builtin_effects_enabled.clone();
+            // The effects with their flags, keyframes and modifiers, as new
+            // entries on this clip. An effect's modifiers go with it, as its
+            // keyframes do: a pasted wiggle was lost (#992).
+            clip.restore_effects_state(klipp_timeline::EffectsState::fresh(
+                self.builtin_effects.clone(),
+                self.builtin_effects_enabled.clone(),
+                self.effect_keyframes.clone(),
+                self.param_modifiers.iter().map(|(id, m)| (id.clone(), m.clone())),
+            ));
             clip.effects = self.effects.clone();
-            clip.effect_keyframes = self.effect_keyframes.clone();
-            // An effect's modifiers go with it, as its keyframes do: a
-            // pasted wiggle was lost (#992).
-            self.paste_modifiers(clip, true);
         }
         if what.color_grade {
             clip.node_graph = clip.node_graph.with_grade_of(&self.node_graph);
@@ -3690,7 +3693,7 @@ impl AttributesClipboard {
             clip.transform_pos_y_keyframes = self.transform_pos_y_keyframes.clone();
             clip.transform_scale_keyframes = self.transform_scale_keyframes.clone();
             clip.transform_rotation_keyframes = self.transform_rotation_keyframes.clone();
-            self.paste_modifiers(clip, false);
+            self.paste_clip_modifiers(clip);
         }
         if what.speed {
             // The ramp as well as the rate: copied with the clip, it

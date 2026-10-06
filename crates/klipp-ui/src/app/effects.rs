@@ -183,12 +183,7 @@ impl KlippApp {
                 let mut is_speed_ramp = false;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.builtin_effects.push(effect.clone());
-                        // Its enabled flag with it, where the clip keeps
-                        // flags for the effects before it.
-                        if clip.builtin_effects_enabled.len() + 1 == clip.builtin_effects.len() {
-                            clip.builtin_effects_enabled.push(true);
-                        }
+                        clip.push_effect(effect.clone());
                         // SpeedRamp: apply speed change on add
                         if let klipp_effects::BuiltinEffect::SpeedRamp { speed, freeze, .. } = effect {
                             is_speed_ramp = true;
@@ -271,13 +266,9 @@ impl KlippApp {
                 let mut flipped = false;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        // Grow enabled vec if needed (default = all enabled)
-                        while clip.builtin_effects_enabled.len() < clip.builtin_effects.len() {
-                            clip.builtin_effects_enabled.push(true);
-                        }
-                        if let Some(val) = clip.builtin_effects_enabled.get_mut(*index) {
-                            *val = !*val;
-                            flipped = true;
+                        if let Some(id) = clip.effect_id_at(*index) {
+                            let on = clip.effect_entries().nth(*index).is_some_and(|(_, _, on)| on);
+                            flipped = clip.set_effect_enabled(id, !on);
                         }
                         break;
                     }
@@ -297,9 +288,9 @@ impl KlippApp {
                 let mut is_speed_ramp = false;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(fx) = clip.builtin_effects.get_mut(*index) {
-                            old_effect = Some(fx.clone());
-                            *fx = effect.clone();
+                        if let Some(id) = clip.effect_id_at(*index) {
+                            old_effect = clip.effect(id).cloned();
+                            clip.replace_effect(id, effect.clone());
                         }
                         // SpeedRamp: use the same logic as SetClipSpeed
                         if let klipp_effects::BuiltinEffect::SpeedRamp { speed, reverse, freeze, .. } = effect {
@@ -387,7 +378,7 @@ impl KlippApp {
                         if retracted {
                             changed = clip.remove_builtin_effect(*effect_index).is_some();
                         } else if let Some(old) = old_effect {
-                            if let Some(fx) = clip.builtin_effects.get_mut(*effect_index) {
+                            if let Some(fx) = clip.effect_id_at(*effect_index).and_then(|id| clip.effect_mut(id)) {
                                 changed = *fx != old;
                                 *fx = old;
                             }
@@ -715,7 +706,9 @@ impl KlippApp {
             AppCommand::AddModifier { clip_id, ref param, ref modifier } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.param_modifiers.entry(param.clone()).or_default().modifiers.push(modifier.clone());
+                        if let Some(stack) = modifiers_mut(clip, param, true) {
+                            stack.modifiers.push(modifier.clone());
+                        }
                         break;
                     }
                 }
@@ -727,12 +720,12 @@ impl KlippApp {
             AppCommand::RemoveModifier { clip_id, ref param, modifier_index } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(stack) = clip.param_modifiers.get_mut(param) {
+                        if let Some(stack) = modifiers_mut(clip, param, false) {
                             if *modifier_index < stack.modifiers.len() {
                                 stack.modifiers.remove(*modifier_index);
                             }
                             if stack.modifiers.is_empty() {
-                                clip.param_modifiers.remove(param);
+                                remove_modifiers(clip, param);
                             }
                         }
                         break;
@@ -746,7 +739,7 @@ impl KlippApp {
             AppCommand::UpdateModifier { clip_id, ref param, modifier_index, ref modifier } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(stack) = clip.param_modifiers.get_mut(param) {
+                        if let Some(stack) = modifiers_mut(clip, param, false) {
                             if let Some(m) = stack.modifiers.get_mut(*modifier_index) {
                                 *m = modifier.clone();
                             }
@@ -762,7 +755,7 @@ impl KlippApp {
             AppCommand::ToggleModifier { clip_id, ref param, modifier_index } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(stack) = clip.param_modifiers.get_mut(param) {
+                        if let Some(stack) = modifiers_mut(clip, param, false) {
                             if let Some(m) = stack.modifiers.get_mut(*modifier_index) {
                                 match m {
                                     klipp_core::Modifier::Oscillate { enabled, .. } |
@@ -1019,5 +1012,39 @@ mod effects_undo_tests {
         assert!(!fold_drag_into_add(&mut last.clone(), klipp_core::ClipId::new(), 0, &crop(0.3), &crop(0.5)));
         assert!(!fold_drag_into_add(&mut last.clone(), id, 1, &crop(0.3), &crop(0.5)));
         assert!(!fold_drag_into_add(&mut last.clone(), id, 0, &crop(0.9), &crop(0.5)));
+    }
+}
+
+/// The modifier stack of `param` on `clip`: an effect parameter's through
+/// the effect's id (keyed as the saved form), the clip's own directly.
+/// `create` makes an empty one where there is none. `None` for an effect
+/// index past the list.
+fn modifiers_mut<'c>(clip: &'c mut klipp_timeline::Clip, param: &klipp_core::ParamId, create: bool) -> Option<&'c mut klipp_core::ModifierStack> {
+    match param {
+        klipp_core::ParamId::Effect { effect_index, param_name } => match clip.effect_id_at(*effect_index) {
+            Some(id) if create => clip.effect_modifiers_mut(id, param_name),
+            Some(id) => clip.existing_effect_modifiers_mut(id, param_name),
+            // An index past the list, as today: the stack is kept there.
+            None if create => Some(clip.param_modifiers.entry(param.clone()).or_default()),
+            None => clip.param_modifiers.get_mut(param),
+        },
+        _ if create => Some(clip.param_modifiers.entry(param.clone()).or_default()),
+        _ => clip.param_modifiers.get_mut(param),
+    }
+}
+
+/// Take `param`'s modifier stack off `clip`, as [`modifiers_mut`] finds it.
+fn remove_modifiers(clip: &mut klipp_timeline::Clip, param: &klipp_core::ParamId) {
+    match param {
+        klipp_core::ParamId::Effect { effect_index, param_name } => {
+            if let Some(id) = clip.effect_id_at(*effect_index) {
+                clip.remove_effect_modifiers(id, param_name);
+            } else {
+                clip.param_modifiers.remove(param);
+            }
+        }
+        _ => {
+            clip.param_modifiers.remove(param);
+        }
     }
 }
