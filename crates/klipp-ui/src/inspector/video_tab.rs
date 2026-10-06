@@ -153,7 +153,7 @@ fn show_bin_media_video(
         timeline_out: media.duration,
         source_in: Timecode { value: 0, rate: media.duration.rate },
         source_out: media.duration,
-        node_graph: klipp_nodes::NodeGraph::default(),
+        node_graph: Default::default(),
         effects: Vec::new(),
         effect_list: Default::default(),
         linked_clip_id: None,

@@ -34,21 +34,21 @@ fn exposure(g: &NodeGraph, id: NodeId) -> Option<f32> {
 fn each_always_graded_owner_reads_and_writes_its_own_field() {
     let (g, id) = graded();
     let mut clip = Clip::media(MediaId::new(), t(0.0), t(1.0), t(0.0), t(1.0));
-    let mut version = GradeVersion { name: "A".into(), node_graph: NodeGraph::default() };
+    let mut version = GradeVersion { name: "A".into(), node_graph: Default::default() };
     let mut look = Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: NodeGraph::default() };
 
     clip.set_grade(g.clone());
     version.set_grade(g.clone());
     look.set_grade(g.clone());
-    assert_eq!(clip.node_graph, g);
-    assert_eq!(version.node_graph, g);
+    assert_eq!(clip.node_graph.0, g);
+    assert_eq!(version.node_graph.0, g);
     assert_eq!(look.node_graph, g);
 
     assert!(clip.set_grade_param(id, "exposure", 0.5));
     assert!(version.set_grade_param(id, "exposure", 0.25));
     assert!(look.set_grade_param(id, "exposure", 0.125));
-    assert_eq!(exposure(&clip.node_graph, id), Some(0.5));
-    assert_eq!(exposure(&version.node_graph, id), Some(0.25));
+    assert_eq!(exposure(&clip.node_graph.0, id), Some(0.5));
+    assert_eq!(exposure(&version.node_graph.0, id), Some(0.25));
     assert_eq!(exposure(&look.node_graph, id), Some(0.125));
     assert_eq!((exposure(clip.grade(), id), exposure(version.grade(), id), exposure(look.grade(), id)), (Some(0.5), Some(0.25), Some(0.125)));
 }
@@ -63,9 +63,9 @@ fn each_slot_reads_and_writes_its_own_field() {
     seq.timeline_grade_slot().set(Some(g.clone()));
     group.stage_slot(GradeStage::Pre).set(Some(g.clone()));
     fx.grade_slot().set(Some(g.clone()));
-    assert_eq!(seq.timeline_graph.as_ref(), Some(&g));
-    assert_eq!((group.pre.as_ref(), group.post.as_ref()), (Some(&g), None), "the pre stage, not the post");
-    assert_eq!(fx.grade.as_ref(), Some(&g));
+    assert_eq!(seq.timeline_graph.as_ref().map(|g| &g.0), Some(&g));
+    assert_eq!((group.pre.as_ref().map(|g| &g.0), group.post.as_ref().map(|g| &g.0)), (Some(&g), None), "the pre stage, not the post");
+    assert_eq!(fx.grade.as_ref().map(|g| &g.0), Some(&g));
 
     assert!(seq.timeline_grade_slot().set_param(id, "exposure", 0.5));
     assert!(group.stage_slot(GradeStage::Pre).set_param(id, "exposure", 0.25));
@@ -76,7 +76,7 @@ fn each_slot_reads_and_writes_its_own_field() {
 
     group.stage_slot(GradeStage::Post).set(Some(g.clone()));
     group.stage_slot(GradeStage::Pre).set(None);
-    assert_eq!((group.pre.as_ref(), group.post.as_ref()), (None, Some(&g)));
+    assert_eq!((group.pre.as_ref().map(|g| &g.0), group.post.as_ref().map(|g| &g.0)), (None, Some(&g)));
 }
 
 #[test]
@@ -112,9 +112,9 @@ fn edit_grade_gives_its_closures_result_back() {
         g.nodes.push(node(NodeKind::Exposure));
         g.nodes.len()
     });
-    assert_eq!(n, clip.node_graph.nodes.len());
-    let mut fx = TrackEffects { grade: Some(NodeGraph::default()), ..Default::default() };
-    assert_eq!(fx.grade_slot().edit(|g| g.output_node_id), Some(fx.grade.as_ref().unwrap().output_node_id));
+    assert_eq!(n, clip.node_graph.0.nodes.len());
+    let mut fx = TrackEffects { grade: Some(Default::default()), ..Default::default() };
+    assert_eq!(fx.grade_slot().edit(|g| g.output_node_id), Some(fx.grade.as_ref().map(|g| &g.0).unwrap().output_node_id));
 }
 
 #[test]
@@ -123,9 +123,9 @@ fn a_param_is_found_inside_a_compound_as_the_drain_finds_it() {
     let mut compound = node(NodeKind::Compound);
     compound.params.compound_subgraph = Some(inner);
     let mut clip = Clip::gap(t(0.0), t(1.0));
-    clip.node_graph.nodes.push(compound);
+    clip.node_graph.0.nodes.push(compound);
     assert!(clip.set_grade_param(id, "exposure", 0.5));
-    let sub = clip.node_graph.nodes.iter().find_map(|n| n.params.compound_subgraph.as_ref()).unwrap();
+    let sub = clip.node_graph.0.nodes.iter().find_map(|n| n.params.compound_subgraph.as_ref()).unwrap();
     assert_eq!(exposure(sub, id), Some(0.5));
     assert!(!clip.set_grade_param(NodeId::new_v4(), "exposure", 0.5), "no such node");
 }
@@ -133,7 +133,7 @@ fn a_param_is_found_inside_a_compound_as_the_drain_finds_it() {
 #[test]
 fn a_node_inserted_after_another_takes_over_what_it_fed() {
     let mut clip = Clip::gap(t(0.0), t(1.0));
-    let g = &clip.node_graph;
+    let g = &clip.node_graph.0;
     let (source, out) = (g.nodes[0].id, g.output_node_id);
     let feeding_out = g.input_of(out, 0).unwrap();
     let new = node(NodeKind::Saturation);
@@ -176,7 +176,7 @@ fn a_removed_node_takes_its_wires_place_and_empty_frames() {
 #[test]
 fn a_wire_replaces_the_ports_old_one_and_a_loop_is_refused() {
     let (g, id) = graded();
-    let mut version = GradeVersion { name: "A".into(), node_graph: g };
+    let mut version = GradeVersion { name: "A".into(), node_graph: g.into() };
     let source = version.grade().nodes[0].id;
     let out = version.grade().output_node_id;
     let sat = node(NodeKind::Saturation);
@@ -204,4 +204,17 @@ fn a_layer_mixer_grows_to_the_port_it_is_wired_on() {
     assert!(clip.connect_grade(source, 0, mid, 3));
     let n = clip.grade().nodes.iter().find(|n| n.id == mid).unwrap();
     assert_eq!(n.params.layer_mixer.as_ref().map(|m| m.inputs.len()), Some(4));
+}
+
+/// A grade is saved as the graph itself, alone and as an optional grade,
+/// and read back from what the graph saved: files are as they were (#1106).
+#[test]
+fn a_grade_saves_and_reads_as_its_graph() {
+    let mut g = NodeGraph::default();
+    g.ensure_corrector();
+    let graph_json = serde_json::to_string(&g).unwrap();
+    assert_eq!(serde_json::to_string(&crate::Grade::new(g.clone())).unwrap(), graph_json);
+    assert_eq!(serde_json::to_string(&Some(crate::Grade::new(g.clone()))).unwrap(), serde_json::to_string(&Some(&g)).unwrap());
+    let back: crate::Grade = serde_json::from_str(&graph_json).unwrap();
+    assert_eq!(back, crate::Grade::new(g));
 }

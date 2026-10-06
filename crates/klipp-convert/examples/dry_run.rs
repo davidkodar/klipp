@@ -82,7 +82,7 @@ fn splice_inputs(clip: &Value, seq: &Value, track: &Value) -> Result<SpliceInput
         let typed: klipp_timeline::GradeGroup = serde_json::from_value(group.clone()).map_err(|e| e.to_string())?;
         if typed.grades() {
             let (pre, post) = to_v2::stages_to_v2(group.as_object().ok_or("group")?).map_err(|e| e.to_string())?;
-            let mut take = |stage: &Option<klipp_nodes::NodeGraph>, conv: Option<klipp_graph_format::Graph>, prepend: bool| -> Result<Option<klipp_graph_format::Graph>, String> {
+            let mut take = |stage: Option<&klipp_nodes::NodeGraph>, conv: Option<klipp_graph_format::Graph>, prepend: bool| -> Result<Option<klipp_graph_format::Graph>, String> {
                 match (stage, conv) {
                     (Some(s), Some(c)) if applies(&g, s, prepend) => {
                         if prepend { g.prepend_keeping_ids(s) } else { g.append_keeping_ids(s) }.map_err(|e| format!("{e:?}"))?;
@@ -91,8 +91,8 @@ fn splice_inputs(clip: &Value, seq: &Value, track: &Value) -> Result<SpliceInput
                     _ => Ok(None),
                 }
             };
-            let pre = take(&typed.pre, pre, true)?;
-            let post = take(&typed.post, post, false)?;
+            let pre = take(typed.stage(klipp_timeline::GradeStage::Pre), pre, true)?;
+            let post = take(typed.stage(klipp_timeline::GradeStage::Post), post, false)?;
             inputs.stages = Some(StageInputs { group: typed.id.0, pre, post });
         }
     }
@@ -103,7 +103,7 @@ fn splice_inputs(clip: &Value, seq: &Value, track: &Value) -> Result<SpliceInput
         if !typed.is_empty() && picture_track && typed.touches_picture() && !matches!(kind, Some("gap" | "adjustment_layer")) {
             let structural = to_v2::track_to_v2(track.as_object().ok_or("track")?).map_err(|e| e.to_string())?;
             let (effects, grade) = track_parts(&structural)?;
-            let grade = grade.filter(|_| typed.grade.as_ref().is_some_and(|t| applies(&g, t, false)));
+            let grade = grade.filter(|_| typed.track_grade().is_some_and(|t| applies(&g, t, false)));
             let id = uuid::Uuid::parse_str(track.get("id").and_then(Value::as_str).unwrap_or_default()).map_err(|e| e.to_string())?;
             inputs.track = Some(TrackInputs { track: id, effects, grade });
         }

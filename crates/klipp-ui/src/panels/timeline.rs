@@ -19363,7 +19363,7 @@ fn track_effects_menu(ui: &mut egui::Ui, track: &klipp_timeline::Track, cmds: &m
     if !picture && !sound {
         return;
     }
-    let title = if fx.is_empty() { "Track Effects".to_string() } else { format!("Track Effects ({})", fx.video.len() + fx.audio.len() + usize::from(fx.grade.as_ref().is_some_and(|g| !g.is_identity()))) };
+    let title = if fx.is_empty() { "Track Effects".to_string() } else { format!("Track Effects ({})", fx.video.len() + fx.audio.len() + usize::from(fx.track_grade().is_some_and(|g| !g.is_identity()))) };
     ui.menu_button(title, |ui| {
         ui.set_min_width(220.0);
         if fx.is_empty() {
@@ -19384,7 +19384,7 @@ fn track_effects_menu(ui: &mut egui::Ui, track: &klipp_timeline::Track, cmds: &m
             let name = format!("{e:?}").split(['{', '(', ' ']).next().unwrap_or("").to_string();
             row(ui, name, fx.video_enabled.get(k).copied().unwrap_or(true), false, k, cmds);
         }
-        if fx.grade.as_ref().is_some_and(|g| !g.is_identity()) {
+        if fx.track_grade().is_some_and(|g| !g.is_identity()) {
             ui.label("Grade, after each clip's own");
         }
         for (k, e) in fx.audio.iter().enumerate() {

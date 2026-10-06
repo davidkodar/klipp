@@ -91,7 +91,7 @@ pub struct Sequence {
     /// the overall look of a piece goes, rather than into every clip.
     /// `None` is no timeline grade, as every sequence made before this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeline_graph: Option<klipp_nodes::NodeGraph>,
+    pub timeline_graph: Option<crate::Grade>,
     /// Grade groups (#237): clips that share a pre-clip grade, run before
     /// each member's own, and a post-clip grade, run after it. Change a
     /// group's grade once and every member follows. Empty for every
@@ -235,9 +235,9 @@ pub struct GradeGroup {
     pub id: GradeGroupId,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pre: Option<klipp_nodes::NodeGraph>,
+    pub pre: Option<crate::Grade>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub post: Option<klipp_nodes::NodeGraph>,
+    pub post: Option<crate::Grade>,
     /// The look this group's shots are graded and judged to instead of
     /// the brief's: a film warm in the south and cool in the north is two
     /// looks, and one target pulled every shot toward its own (#793).
@@ -256,14 +256,14 @@ impl GradeGroup {
 
     pub fn stage(&self, stage: GradeStage) -> Option<&klipp_nodes::NodeGraph> {
         match stage {
-            GradeStage::Pre => self.pre.as_ref(),
-            GradeStage::Post => self.post.as_ref(),
+            GradeStage::Pre => self.pre.as_ref().map(|g| &g.0),
+            GradeStage::Post => self.post.as_ref().map(|g| &g.0),
         }
     }
 
     /// Only for [`GradeGroup::stage_slot`]: callers change a stage through
     /// the slot, which stage B's storage can keep.
-    pub(crate) fn stage_mut(&mut self, stage: GradeStage) -> &mut Option<klipp_nodes::NodeGraph> {
+    pub(crate) fn stage_mut(&mut self, stage: GradeStage) -> &mut Option<crate::Grade> {
         match stage {
             GradeStage::Pre => &mut self.pre,
             GradeStage::Post => &mut self.post,
@@ -287,10 +287,10 @@ impl GradeGroup {
     /// changes nothing).
     pub fn wrap(&self, clip_graph: &klipp_nodes::NodeGraph) -> klipp_nodes::NodeGraph {
         let mut g = clip_graph.clone();
-        if let Some(pre) = self.pre.as_ref().filter(|p| !p.is_identity()) {
+        if let Some(pre) = self.stage(GradeStage::Pre).filter(|p| !p.is_identity()) {
             let _ = g.prepend_keeping_ids(pre);
         }
-        if let Some(post) = self.post.as_ref().filter(|p| !p.is_identity()) {
+        if let Some(post) = self.stage(GradeStage::Post).filter(|p| !p.is_identity()) {
             let _ = g.append_keeping_ids(post);
         }
         g
@@ -298,7 +298,7 @@ impl GradeGroup {
 
     /// Whether this group grades anything.
     pub fn grades(&self) -> bool {
-        self.pre.as_ref().is_some_and(|g| !g.is_identity()) || self.post.as_ref().is_some_and(|g| !g.is_identity())
+        self.stage(GradeStage::Pre).is_some_and(|g| !g.is_identity()) || self.stage(GradeStage::Post).is_some_and(|g| !g.is_identity())
     }
 }
 
@@ -377,8 +377,8 @@ impl Sequence {
                     continue;
                 }
                 if let Some(group) = clip.grade_group.and_then(|id| groups.get(&id)) {
-                    let wrapped = group.wrap(&clip.node_graph);
-                    let own = std::mem::replace(&mut clip.node_graph, wrapped);
+                    let wrapped = group.wrap(&clip.node_graph.0);
+                    let own = std::mem::replace(&mut clip.node_graph.0, wrapped);
                     clip.own_node_graph = Some(Box::new(own));
                 }
             }
@@ -443,9 +443,9 @@ impl Sequence {
                     }
                     if let Some(grade) = fx.grade_onto(track.kind, clip) {
                         if clip.own_node_graph.is_none() {
-                            clip.own_node_graph = Some(Box::new(clip.node_graph.clone()));
+                            clip.own_node_graph = Some(Box::new(clip.node_graph.0.clone()));
                         }
-                        let _ = clip.node_graph.append_keeping_ids(grade);
+                        let _ = clip.node_graph.0.append_keeping_ids(grade);
                     }
                 }
                 clip.audio_effects.extend(fx.audio.iter().cloned());
@@ -462,8 +462,8 @@ impl Sequence {
     pub fn render_grade(&self, clip_id: ClipId) -> Option<std::borrow::Cow<'_, klipp_nodes::NodeGraph>> {
         let (track, clip) = self.tracks.iter().find_map(|t| t.clips.iter().find(|c| c.id == clip_id).map(|c| (t, c)))?;
         let mut graph = match clip.grade_group.and_then(|g| self.grade_group(g)).filter(|g| g.grades()) {
-            Some(group) => std::borrow::Cow::Owned(group.wrap(&clip.node_graph)),
-            None => std::borrow::Cow::Borrowed(&clip.node_graph),
+            Some(group) => std::borrow::Cow::Owned(group.wrap(&clip.node_graph.0)),
+            None => std::borrow::Cow::Borrowed(&clip.node_graph.0),
         };
         if let Some(grade) = track.effects.grade_onto(track.kind, clip) {
             let _ = graph.to_mut().append_keeping_ids(grade);
@@ -484,7 +484,7 @@ impl Sequence {
         let mut seq = self.clone();
         for clip in seq.all_clips_mut() {
             if let Some(own) = clip.own_node_graph.take() {
-                clip.node_graph = *own;
+                clip.node_graph = crate::Grade(*own);
             }
             if let Some(own) = clip.own_effects.take() {
                 clip.set_effect_list(own.builtin_effects, own.builtin_effects_enabled);
@@ -1214,7 +1214,7 @@ pub struct TrackEffects {
     /// A grade on every picture of the track, after each clip's own grade
     /// and its grade group's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub grade: Option<klipp_nodes::NodeGraph>,
+    pub grade: Option<crate::Grade>,
     /// An audio chain on every sound of the track, after each clip's own
     /// chain. Each effect carries its own bypass.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1224,12 +1224,12 @@ pub struct TrackEffects {
 impl TrackEffects {
     /// Whether the track changes nothing.
     pub fn is_empty(&self) -> bool {
-        self.video.is_empty() && self.grade.as_ref().is_none_or(|g| g.is_identity()) && self.audio.is_empty()
+        self.video.is_empty() && self.track_grade().is_none_or(|g| g.is_identity()) && self.audio.is_empty()
     }
 
     /// Whether the track changes anything about a picture.
     pub fn touches_picture(&self) -> bool {
-        !self.video.is_empty() || self.grade.as_ref().is_some_and(|g| !g.is_identity())
+        !self.video.is_empty() || self.track_grade().is_some_and(|g| !g.is_identity())
     }
 
     /// The grade a render copy appends to `clip`'s on a track of `kind`
@@ -1240,7 +1240,7 @@ impl TrackEffects {
         if !matches!(kind, TrackKind::Video | TrackKind::Text) || matches!(clip.kind, ClipKind::Gap | ClipKind::AdjustmentLayer) {
             return None;
         }
-        self.grade.as_ref().filter(|g| !g.is_identity())
+        self.track_grade().filter(|g| !g.is_identity())
     }
 }
 
@@ -1381,7 +1381,7 @@ impl Track {
             timeline_out,
             source_in: Timecode { value: 0, rate: source_duration.rate },
             source_out: source_duration,
-            node_graph: klipp_nodes::NodeGraph::default(),
+            node_graph: crate::Grade::default(),
             effects: Vec::new(),
             effect_list: Default::default(),
             linked_clip_id: None,
@@ -1861,7 +1861,7 @@ pub enum TrackKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GradeVersion {
     pub name: String,
-    pub node_graph: klipp_nodes::NodeGraph,
+    pub node_graph: crate::Grade,
 }
 
 /// A project-level reusable colour grade. The user saves the current
@@ -2160,7 +2160,7 @@ pub struct Clip {
     pub source_in: Timecode,
     pub source_out: Timecode,
     #[serde(default)]
-    pub node_graph: klipp_nodes::NodeGraph,
+    pub node_graph: crate::Grade,
     #[serde(default)]
     pub effects: Vec<klipp_plugin::AppliedEffect>,
     /// Built-in effect storage; use the effect-list API to read or edit it.
@@ -2659,7 +2659,8 @@ impl Clip {
         if format == klipp_core::LogFormat::Srgb {
             return;
         }
-        if let Some(node) = self.node_graph.nodes.iter_mut()
+        let graph = &mut self.node_graph.0;
+        if let Some(node) = graph.nodes.iter_mut()
             .find(|n| n.kind == klipp_nodes::NodeKind::InputTransform)
         {
             node.params.log_format = Some(format);
@@ -2668,7 +2669,7 @@ impl Clip {
         // No IDT — splice one in after the Source node. We need the
         // existing Source → next-node edge so we can re-route it
         // through the new IDT.
-        let source_id = match self.node_graph.nodes.iter()
+        let source_id = match graph.nodes.iter()
             .find(|n| n.kind == klipp_nodes::NodeKind::Source)
             .map(|n| n.id)
         {
@@ -2691,12 +2692,12 @@ impl Clip {
         // new IDT instead, then add the Source → IDT bridge. Keeps
         // every downstream consumer wired exactly as before, just
         // with one extra node in front.
-        for edge in self.node_graph.edges.iter_mut() {
+        for edge in graph.edges.iter_mut() {
             if edge.from_node == source_id {
                 edge.from_node = new_idt_id;
             }
         }
-        self.node_graph.edges.push(klipp_nodes::Edge {
+        graph.edges.push(klipp_nodes::Edge {
             from_node: source_id,
             from_port: 0,
             to_node: new_idt_id,
@@ -2706,17 +2707,17 @@ impl Clip {
         // reads top-to-bottom in the expected order. Position it
         // halfway between Source and the next node so the V2 editor
         // doesn't draw it on top of an existing node.
-        let source_idx = self.node_graph.nodes.iter()
+        let source_idx = graph.nodes.iter()
             .position(|n| n.id == source_id)
             .unwrap_or(0);
-        self.node_graph.nodes.insert(source_idx + 1, idt_node);
+        graph.nodes.insert(source_idx + 1, idt_node);
         // Position the new node 110 px right of Source — same step
         // size the default graph layout uses.
-        let source_pos = self.node_graph.node_positions
+        let source_pos = graph.node_positions
             .get(&source_id)
             .copied()
             .unwrap_or(klipp_nodes::NodePos { x: 0.0, y: 0.0 });
-        self.node_graph.node_positions.insert(
+        graph.node_positions.insert(
             new_idt_id,
             klipp_nodes::NodePos { x: source_pos.x + 110.0, y: source_pos.y },
         );
@@ -2737,7 +2738,7 @@ impl Clip {
             timeline_out,
             source_in: Timecode { value: 0, rate: timeline_in.rate },
             source_out: timeline_out - timeline_in,
-            node_graph: klipp_nodes::NodeGraph::default(),
+            node_graph: crate::Grade::default(),
             effects: Vec::new(),
             effect_list: Default::default(),
             linked_clip_id: None,
@@ -2804,21 +2805,20 @@ impl Clip {
         }
     }
 
-    /// Create a media clip with the given source and timeline extents.
+    /// The clip's own grade: on a render copy with grade groups baked in,
+    /// without its group's (see [`Clip::own_node_graph`]).
+    pub fn own_grade(&self) -> &klipp_nodes::NodeGraph {
+        self.own_node_graph.as_deref().unwrap_or(&self.node_graph.0)
+    }
+
     /// The sequence's timeline grade as the clip the grade stages already
     /// run: an adjustment layer over the whole sequence holding the
     /// graph, its time the sequence's own. Its id is fixed for the
     /// sequence (see [`Sequence::timeline_grade_clip_id`]), so per-clip
     /// caches keyed on it hold from frame to frame. `None` when there is
     /// no timeline grade, or it changes nothing.
-    /// The clip's own grade: on a render copy with grade groups baked in,
-    /// without its group's (see [`Clip::own_node_graph`]).
-    pub fn own_grade(&self) -> &klipp_nodes::NodeGraph {
-        self.own_node_graph.as_deref().unwrap_or(&self.node_graph)
-    }
-
     pub fn timeline_grade_of(seq: &Sequence) -> Option<Self> {
-        seq.timeline_graph.as_ref().filter(|g| !g.is_identity())?;
+        seq.timeline_grade().filter(|g| !g.is_identity())?;
         Some(Self::timeline_grade_proxy(seq))
     }
 
@@ -2836,6 +2836,7 @@ impl Clip {
         clip
     }
 
+    /// Create a media clip with the given source and timeline extents.
     pub fn media(
         media_id: MediaId,
         timeline_in: Timecode,
@@ -2850,7 +2851,7 @@ impl Clip {
             timeline_out,
             source_in,
             source_out,
-            node_graph: klipp_nodes::NodeGraph::default(),
+            node_graph: crate::Grade::default(),
             effects: Vec::new(),
             effect_list: Default::default(),
             linked_clip_id: None,
@@ -2952,7 +2953,7 @@ impl Clip {
             timeline_out,
             source_in: Timecode { value: 0, rate: timeline_in.rate },
             source_out: dur,
-            node_graph: klipp_nodes::NodeGraph::default(),
+            node_graph: crate::Grade::default(),
             effects: Vec::new(),
             effect_list: Default::default(),
             linked_clip_id: None,

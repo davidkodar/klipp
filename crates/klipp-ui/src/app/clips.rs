@@ -818,7 +818,7 @@ impl KlippApp {
                             timeline_out: timeline_in + dur,
                             source_in: clip.source_in,
                             source_out: clip.source_out,
-                            node_graph: klipp_nodes::NodeGraph::default(),
+                            node_graph: Default::default(),
                             effects: clip.effects.clone(),
                             effect_list: klipp_timeline::EffectList::new(clip.builtin_effects().to_vec(), clip.builtin_effects_enabled().to_vec()),
                             linked_clip_id: None,

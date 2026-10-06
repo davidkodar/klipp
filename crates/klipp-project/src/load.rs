@@ -627,7 +627,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
         }
     }
     let mut sequence = Sequence {
-        timeline_graph: seq_json.timeline_graph.clone(),
+        timeline_graph: seq_json.timeline_graph.clone().map(Into::into),
         grade_groups: seq_json.grade_groups.clone(),
         id: SequenceId(parse_uuid(&seq_json.id)?),
         name: seq_json.name.clone(),
@@ -681,7 +681,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     video_enabled: fx.video_enabled.clone(),
                     grade: fx.grade.clone().map(|mut g| {
                         migrate_graph(&mut g);
-                        g
+                        g.into()
                     }),
                     audio: fx.audio.clone(),
                 };
@@ -713,7 +713,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     node_graph: {
                         let mut g = c.node_graph.clone().unwrap_or_default();
                         migrate_graph(&mut g);
-                        g
+                        g.into()
                     },
                     effect_list: klipp_timeline::EffectList::new(effects_by_clip.get(c.id.as_str()).cloned().unwrap_or_default(), c.builtin_effects_enabled.clone()),
                     effects: c.effects.iter().map(|e| {
@@ -816,7 +816,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                         migrate_graph(&mut g);
                         klipp_timeline::GradeVersion {
                             name: gv.name.clone(),
-                            node_graph: g,
+                            node_graph: g.into(),
                         }
                     }).collect(),
                     active_grade_version: c.active_grade_version,

@@ -1,11 +1,12 @@
 //! The grade accessor (#1103): the one way to reach a grade graph, on
 //! every owner of one, as the effect-list API (#1064) is for effect lists.
 //!
-//! Additive for now: the fields stay public and no caller has moved. The
-//! switch's stage B swaps the storage to the revision-2 model under these
-//! methods, and `edit_grade`'s body becomes "apply as graph ops by path,
-//! check, snapshot", so the callers that move onto it (#1104, #1105) don't
-//! move again.
+//! Every caller is on it (#1104, #1105), and the graphs are kept in a
+//! [`Grade`], whose contents only this module reaches (#1106), so the
+//! compiler keeps it that way. The switch's stage B swaps the storage to
+//! the revision-2 model under these methods, and `edit_grade`'s body
+//! becomes "apply as graph ops by path, check, snapshot", so the callers
+//! don't move again.
 //!
 //! The owners:
 //! - always graded, by [`GradeAccess`]: a clip's own grade, a grade
@@ -20,8 +21,56 @@
 //! Colour page's commands do.
 
 use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind};
+use serde::{Deserialize, Serialize};
 
 use crate::{Clip, GradeGroup, GradeStage, GradeVersion, Look, Sequence, TrackEffects};
+
+/// A grade graph as its owner keeps it: a clip's grade, a grade version's,
+/// the timeline grade, a grade group's stage, a track's grade. The field
+/// that holds it stays public, so whole-struct literals and struct update
+/// still build owners in any crate; its contents are private, so it is read
+/// and changed only through [`GradeAccess`] and [`GradeSlot`]. Saved as the
+/// graph itself, so files are as they were.
+///
+/// Read and changed through the accessors:
+/// ```
+/// use klipp_timeline::GradeAccess;
+/// fn nodes(clip: &klipp_timeline::Clip) -> usize {
+///     clip.grade().nodes.len()
+/// }
+/// fn clear(seq: &mut klipp_timeline::Sequence) {
+///     seq.timeline_grade_slot().edit(|g| g.nodes.clear());
+/// }
+/// ```
+/// and not around them:
+/// ```compile_fail
+/// fn nodes(clip: &klipp_timeline::Clip) -> usize {
+///     clip.node_graph.0.nodes.len()
+/// }
+/// ```
+/// ```compile_fail
+/// fn clear(seq: &mut klipp_timeline::Sequence) {
+///     if let Some(g) = seq.timeline_graph.as_mut() {
+///         g.0.nodes.clear();
+///     }
+/// }
+/// ```
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Grade(pub(crate) NodeGraph);
+
+impl Grade {
+    /// A grade holding `graph`, for an owner being built.
+    pub fn new(graph: NodeGraph) -> Self {
+        Self(graph)
+    }
+}
+
+impl From<NodeGraph> for Grade {
+    fn from(graph: NodeGraph) -> Self {
+        Self(graph)
+    }
+}
 
 /// How deep a parameter set looks into Compound sub-graphs, as the
 /// engine's drain does (`COMPOUND_MAX_DEPTH_ENGINE`).
@@ -144,17 +193,17 @@ pub trait GradeAccess {
 
 impl GradeAccess for Clip {
     fn grade(&self) -> &NodeGraph {
-        &self.node_graph
+        &self.node_graph.0
     }
     fn edit_grade<R>(&mut self, f: impl FnOnce(&mut NodeGraph) -> R) -> R {
-        f(&mut self.node_graph)
+        f(&mut self.node_graph.0)
     }
 }
 
 impl GradeVersion {
     /// A grade version named `name`, holding `grade`.
     pub fn new(name: impl Into<String>, grade: NodeGraph) -> Self {
-        Self { name: name.into(), node_graph: grade }
+        Self { name: name.into(), node_graph: Grade(grade) }
     }
 }
 
@@ -167,10 +216,10 @@ impl Look {
 
 impl GradeAccess for GradeVersion {
     fn grade(&self) -> &NodeGraph {
-        &self.node_graph
+        &self.node_graph.0
     }
     fn edit_grade<R>(&mut self, f: impl FnOnce(&mut NodeGraph) -> R) -> R {
-        f(&mut self.node_graph)
+        f(&mut self.node_graph.0)
     }
 }
 
@@ -186,29 +235,29 @@ impl GradeAccess for Look {
 /// A grade that may be absent: the timeline grade, a grade group's stage,
 /// a track's grade. The named edits change nothing, and say so, where
 /// there is no grade.
-pub struct GradeSlot<'a>(&'a mut Option<NodeGraph>);
+pub struct GradeSlot<'a>(&'a mut Option<Grade>);
 
 impl GradeSlot<'_> {
     /// The grade, if there is one.
     pub fn get(&self) -> Option<&NodeGraph> {
-        self.0.as_ref()
+        self.0.as_ref().map(|g| &g.0)
     }
 
     /// Put `grade` in place, or take the grade away with `None`.
     pub fn set(&mut self, grade: Option<NodeGraph>) {
-        *self.0 = grade;
+        *self.0 = grade.map(Grade);
     }
 
     /// Change the grade in `f`, if there is one, and give back what `f`
     /// returns.
     pub fn edit<R>(&mut self, f: impl FnOnce(&mut NodeGraph) -> R) -> Option<R> {
-        self.0.as_mut().map(f)
+        self.0.as_mut().map(|g| f(&mut g.0))
     }
 
     /// Change the grade in `f`, starting an empty one if there is none,
     /// as the engine's drain starts the timeline grade on a first drag.
     pub fn edit_or_insert<R>(&mut self, f: impl FnOnce(&mut NodeGraph) -> R) -> R {
-        f(self.0.get_or_insert_with(Default::default))
+        f(&mut self.0.get_or_insert_with(Default::default).0)
     }
 
     /// Set `param` of `node` to `value`: whether there is a grade and the
@@ -243,15 +292,15 @@ impl Sequence {
     /// two stages, each track's grade, and each clip's grade and its saved
     /// versions.
     pub fn grades(&self) -> Vec<&NodeGraph> {
-        let mut out: Vec<&NodeGraph> = self.timeline_graph.iter().collect();
+        let mut out: Vec<&NodeGraph> = self.timeline_graph.iter().map(|g| &g.0).collect();
         for g in &self.grade_groups {
-            out.extend(g.pre.iter().chain(g.post.iter()));
+            out.extend(g.pre.iter().chain(g.post.iter()).map(|g| &g.0));
         }
         for track in &self.tracks {
-            out.extend(track.effects.grade.iter());
+            out.extend(track.effects.grade.iter().map(|g| &g.0));
             for clip in &track.clips {
-                out.push(&clip.node_graph);
-                out.extend(clip.grade_versions.iter().map(|v| &v.node_graph));
+                out.push(&clip.node_graph.0);
+                out.extend(clip.grade_versions.iter().map(|v| &v.node_graph.0));
             }
         }
         out
@@ -259,22 +308,22 @@ impl Sequence {
 
     /// Change every grade of [`Sequence::grades`] in `f`, in that order.
     pub fn edit_each_grade(&mut self, mut f: impl FnMut(&mut NodeGraph)) {
-        self.timeline_graph.iter_mut().for_each(&mut f);
+        self.timeline_graph.iter_mut().for_each(|g| f(&mut g.0));
         for g in &mut self.grade_groups {
-            g.pre.iter_mut().chain(g.post.iter_mut()).for_each(&mut f);
+            g.pre.iter_mut().chain(g.post.iter_mut()).for_each(|g| f(&mut g.0));
         }
         for track in &mut self.tracks {
-            track.effects.grade.iter_mut().for_each(&mut f);
+            track.effects.grade.iter_mut().for_each(|g| f(&mut g.0));
             for clip in &mut track.clips {
-                f(&mut clip.node_graph);
-                clip.grade_versions.iter_mut().for_each(|v| f(&mut v.node_graph));
+                f(&mut clip.node_graph.0);
+                clip.grade_versions.iter_mut().for_each(|v| f(&mut v.node_graph.0));
             }
         }
     }
 
     /// The timeline grade, if the sequence has one.
     pub fn timeline_grade(&self) -> Option<&NodeGraph> {
-        self.timeline_graph.as_ref()
+        self.timeline_graph.as_ref().map(|g| &g.0)
     }
 
     /// The timeline grade, to change.
@@ -293,7 +342,7 @@ impl GradeGroup {
 impl TrackEffects {
     /// The track's grade, if it has one.
     pub fn track_grade(&self) -> Option<&NodeGraph> {
-        self.grade.as_ref()
+        self.grade.as_ref().map(|g| &g.0)
     }
 
     /// The track's grade, to change.

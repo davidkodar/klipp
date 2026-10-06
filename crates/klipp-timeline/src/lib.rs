@@ -47,7 +47,7 @@ mod brief;
 mod edit_plan;
 mod effect_slots;
 mod grade_access;
-pub use grade_access::{GradeAccess, GradeSlot};
+pub use grade_access::{Grade, GradeAccess, GradeSlot};
 mod render_gates;
 pub use effect_slots::{EffectId, EffectList, EffectsState};
 mod clip_kind;
