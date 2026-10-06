@@ -49,7 +49,7 @@ mod effect_slots;
 mod grade_access;
 pub use grade_access::{GradeAccess, GradeSlot};
 mod render_gates;
-pub use effect_slots::{EffectId, EffectIds, EffectsState};
+pub use effect_slots::{EffectId, EffectList, EffectsState};
 mod clip_kind;
 pub mod crossfade;
 pub mod flatten;

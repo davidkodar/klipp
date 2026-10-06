@@ -3049,7 +3049,7 @@ impl TimelinePanel {
                                     // Two paths: pure built-in effects clone
                                     // out of the registry's prototype; frei0r
                                     // plugins (also marked is_builtin so they
-                                    // land in `clip.builtin_effects`) need a
+                                    // land in `clip.builtin_effects()`) need a
                                     // fresh `BuiltinEffect::Frei0r { type_id,
                                     // params }` constructed against the
                                     // plugin's default param values. The drag
@@ -5690,7 +5690,7 @@ impl TimelinePanel {
         // FX badge — show if clip has non-Transform effects applied
         if clip_rect.width() > 40.0 {
             let has_fx = !clip.effects.is_empty()
-                || clip.builtin_effects.iter().any(|e| !matches!(e, klipp_effects::BuiltinEffect::Transform { .. }));
+                || clip.builtin_effects().iter().any(|e| !matches!(e, klipp_effects::BuiltinEffect::Transform { .. }));
             if has_fx {
                 let fx_font = egui::FontId::proportional(10.0);
                 let fx_galley = painter.layout_no_wrap(
@@ -12040,10 +12040,10 @@ impl TimelinePanel {
             vrb_clip_id,
         ) = {
             let clip = &state.sequence().tracks[track_idx].clips[clip_index];
-            let opacity_static = clip.builtin_effects.iter()
+            let opacity_static = clip.builtin_effects().iter()
                 .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
                 .unwrap_or(1.0);
-            let transform = clip.builtin_effects.iter()
+            let transform = clip.builtin_effects().iter()
                 .find_map(|e| match e {
                     klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
                         Some((*position_x, *position_y, *scale_x, *rotation)),
@@ -15566,10 +15566,10 @@ impl TimelinePanel {
                             let clip_dur_secs = clip.duration().to_secs_f64();
 
                             // Read keyframes for the dragged video parameter
-                            let vrb_opacity_static = clip.builtin_effects.iter()
+                            let vrb_opacity_static = clip.builtin_effects().iter()
                                 .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
                                 .unwrap_or(1.0);
-                            let vrb_transform = clip.builtin_effects.iter()
+                            let vrb_transform = clip.builtin_effects().iter()
                                 .find_map(|e| match e {
                                     klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
                                         Some((*position_x, *position_y, *scale_x, *rotation)),
@@ -15841,12 +15841,12 @@ impl TimelinePanel {
                                 // Map Y to param value using auto-scaled range
                                 let base_val = match drag_kf.param {
                                     klipp_core::VideoParam::Opacity => {
-                                        clip.builtin_effects.iter()
+                                        clip.builtin_effects().iter()
                                             .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
                                             .unwrap_or(1.0)
                                     }
                                     _ => {
-                                        let t = clip.builtin_effects.iter()
+                                        let t = clip.builtin_effects().iter()
                                             .find_map(|e| match e {
                                                 klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
                                                     Some((*position_x, *position_y, *scale_x, *rotation)),

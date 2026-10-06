@@ -4316,7 +4316,7 @@ impl ViewerPanel {
 
         let transform = get_transform(clip);
         let effect_index = find_transform_index(clip);
-        let n_builtin_effects = clip.builtin_effects.len();
+        let n_builtin_effects = clip.builtin_effects().len();
 
         // Coordinate mapping: frame pixels -> screen pixels
         let scale_to_screen_x = image_rect.width() / frame_w;
@@ -4886,8 +4886,8 @@ impl ViewerPanel {
         if clip.surface_pin.is_some() {
             return;
         }
-        let Some(effect_index) = clip.builtin_effects.iter().position(|e| matches!(e, klipp_effects::BuiltinEffect::CornerPin { .. })) else { return };
-        let Some(base) = corners(&clip.builtin_effects[effect_index]) else { return };
+        let Some(effect_index) = clip.builtin_effects().iter().position(|e| matches!(e, klipp_effects::BuiltinEffect::CornerPin { .. })) else { return };
+        let Some(base) = corners(&clip.builtin_effects()[effect_index]) else { return };
         let clip_time = (state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
         let keys_of = |name: &str| clip.effect_keyframes.get(&format!("{effect_index}:{name}")).filter(|k| !k.is_empty());
         let mut shown = base;
@@ -4898,7 +4898,7 @@ impl ViewerPanel {
                 }
             }
         }
-        let old_effect = clip.builtin_effects[effect_index].clone();
+        let old_effect = clip.builtin_effects()[effect_index].clone();
         let keyed: [[bool; 2]; 4] = std::array::from_fn(|i| [keys_of(PARAMS[i][0]).is_some(), keys_of(PARAMS[i][1]).is_some()]);
 
         let screen: [egui::Pos2; 4] = std::array::from_fn(|i| viewer_norm_to_screen(image_rect, shown[i][0], shown[i][1]));

@@ -4671,12 +4671,12 @@ fn pin(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, media
 }
 
 fn set_builtin_effects(clip: &Clip, new: Vec<klipp_effects::BuiltinEffect>) -> EditCommand {
-    let mut new_enabled = clip.builtin_effects_enabled.clone();
+    let mut new_enabled = clip.builtin_effects_enabled().to_vec();
     new_enabled.resize(new.len(), true);
     EditCommand::SetBuiltinEffects {
         clip_id: clip.id,
-        old_effects: clip.builtin_effects.clone(),
-        old_enabled: clip.builtin_effects_enabled.clone(),
+        old_effects: clip.builtin_effects().to_vec(),
+        old_enabled: clip.builtin_effects_enabled().to_vec(),
         new_effects: new,
         new_enabled,
     }
@@ -4753,7 +4753,7 @@ fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &
     use klipp_effects::BuiltinEffect as E;
     // The same kind of effect replaces the one that is there.
     let same_kind = |e: &E| std::mem::discriminant(e) == std::mem::discriminant(&fx);
-    let mut effects: Vec<E> = clip.builtin_effects.iter().filter(|e| !same_kind(e)).cloned().collect();
+    let mut effects: Vec<E> = clip.builtin_effects().iter().filter(|e| !same_kind(e)).cloned().collect();
     effects.push(fx);
     let what = format!("{} {a:.2} on {}", kind.to_lowercase(), clip_name(seq, pool, clip));
     let edit = set_builtin_effects(clip, effects);
@@ -5055,7 +5055,7 @@ fn reframe(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, s
     // What is not given stays as the clip has it: its scale, and its pan
     // as a share of how far that scale lets it go (#727).
     let (w, h) = (seq.resolution.width as f32, seq.resolution.height as f32);
-    let (now_scale, now_x, now_y) = clip.builtin_effects.iter().find_map(|e| match e {
+    let (now_scale, now_x, now_y) = clip.builtin_effects().iter().find_map(|e| match e {
         klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, .. } => {
             let share = |pos: f32, dim: f32| { let r = reach(*scale_x, dim); if r > 0.0 { (-pos / r).clamp(-1.0, 1.0) } else { 0.0 } };
             Some((*scale_x, share(*position_x, w), share(*position_y, h)))
@@ -5082,7 +5082,7 @@ fn reframe(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, s
     // share of how far it can: at 1 the picture's edge meets the
     // frame's. Moving the frame right moves the picture left.
     let fx = E::Transform { position_x: -x * reach(scale, w), position_y: -y * reach(scale, h), scale_x: scale, scale_y: scale, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
-    let mut effects: Vec<E> = clip.builtin_effects.iter().filter(|e| !matches!(e, E::Transform { .. })).cloned().collect();
+    let mut effects: Vec<E> = clip.builtin_effects().iter().filter(|e| !matches!(e, E::Transform { .. })).cloned().collect();
     // Transform goes first, so a crop or effect after it sees the reframed picture.
     effects.insert(0, fx);
     let what = format!("reframe {}: scale {scale:.2}, pan {x:.2}, {y:.2}", clip_name(seq, pool, clip));
@@ -5105,10 +5105,10 @@ fn crop(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, side
         return Err(refuse(i, "the crop leaves nothing", "take less off opposite sides than the whole picture"));
     }
     use klipp_effects::BuiltinEffect as E;
-    let mut effects: Vec<E> = clip.builtin_effects.iter().filter(|e| !matches!(e, E::Crop { .. })).cloned().collect();
+    let mut effects: Vec<E> = clip.builtin_effects().iter().filter(|e| !matches!(e, E::Crop { .. })).cloned().collect();
     let off = sides.iter().all(|v| *v <= 0.0);
     let what = if off {
-        if effects.len() == clip.builtin_effects.len() {
+        if effects.len() == clip.builtin_effects().len() {
             return Err(refuse(i, "there is no crop to take off", "give a side to crop"));
         }
         format!("take the crop off {}", clip_name(seq, pool, clip))
@@ -5172,7 +5172,7 @@ fn camera(seq: &Sequence, i: usize, keys: &[CameraKey]) -> Result<(String, EditC
 /// drawn — so a window cropped out of a desktop recording is placed by
 /// the window, not by the desktop around it. `(0, 0)` with no crop.
 fn cropped_centre(clip: &Clip, pool: &MediaPool, w: f32, h: f32) -> (f32, f32) {
-    let Some((left, right, top, bottom)) = clip.builtin_effects.iter().find_map(|e| match e {
+    let Some((left, right, top, bottom)) = clip.builtin_effects().iter().find_map(|e| match e {
         klipp_effects::BuiltinEffect::Crop { left, right, top, bottom, .. } => Some((*left, *right, *top, *bottom)),
         _ => None,
     }) else {
@@ -5211,7 +5211,7 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
     // Where the clip is now at each pose's time, in the units the keyframes
     // hold: its compose keyframes if it has them, else its static
     // transform (a reframe's scale and pan), else full frame and centred.
-    let (still_x, still_y, still_scale, still_turn, still_tx, still_ty) = clip.builtin_effects.iter().find_map(|e| match e {
+    let (still_x, still_y, still_scale, still_turn, still_tx, still_ty) = clip.builtin_effects().iter().find_map(|e| match e {
         klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, rotation_x, rotation_y, .. } => Some((*position_x, *position_y, *scale_x, *rotation, *rotation_x, *rotation_y)),
         _ => None,
     }).unwrap_or((0.0, 0.0, 1.0, 0.0, 0.0, 0.0));
@@ -6139,7 +6139,7 @@ fn stabilize(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip,
     }
     use klipp_effects::BuiltinEffect as E;
     let fx = E::VideoStabilization { smoothing, crop_ratio: 0.05 + smoothing * 0.05, zoom: true };
-    let mut effects: Vec<E> = clip.builtin_effects.iter().filter(|e| !matches!(e, E::VideoStabilization { .. })).cloned().collect();
+    let mut effects: Vec<E> = clip.builtin_effects().iter().filter(|e| !matches!(e, E::VideoStabilization { .. })).cloned().collect();
     effects.push(fx);
     let what = format!("stabilise {} at {smoothing:.2}", clip_name(seq, pool, clip));
     Ok((what, set_builtin_effects(clip, effects), vec![clip.id]))
@@ -8665,7 +8665,7 @@ mod tests {
         assert_eq!((secs(picture.timeline_in), secs(picture.timeline_out)), (1.0, 4.0));
         // The logo is 1920x1080 as the test media is: the surface's shape, so it stretches straight onto the corners.
         assert_eq!(picture.surface_pin, Some(klipp_timeline::SurfacePin { host: a, surface: id, picture_size: Some([1920, 1080]), fit: klipp_timeline::PinFit::Stretch, inset: 0.0 }));
-        assert!(matches!(picture.builtin_effects.as_slice(), [klipp_effects::BuiltinEffect::CornerPin { tl, br, .. }] if *tl == corners[0] && *br == corners[2]), "{:?}", picture.builtin_effects);
+        assert!(matches!(picture.builtin_effects(), [klipp_effects::BuiltinEffect::CornerPin { tl, br, .. }] if *tl == corners[0] && *br == corners[2]), "{:?}", picture.builtin_effects());
 
         // A square picture keeps its shape: it fits, inside the surface.
         let mut square = klipp_media::MediaItem::synthetic_for_test("/tmp/square.png".into(), None);
@@ -8705,7 +8705,7 @@ mod tests {
         assert_eq!(*track, 0);
         assert_eq!((secs(cover.timeline_in), secs(cover.timeline_out), secs(cover.source_in), secs(cover.source_out)), (1.0, 3.0, 1.0, 3.0));
         assert_eq!(cover.volume, 0.0);
-        assert!(matches!(cover.builtin_effects.as_slice(), [klipp_effects::BuiltinEffect::Mosaic { .. }, klipp_effects::BuiltinEffect::Crop { left, top, .. }] if (*left - 0.194).abs() < 1e-3 && (*top - 0.594).abs() < 1e-3), "{:?}", cover.builtin_effects);
+        assert!(matches!(cover.builtin_effects(), [klipp_effects::BuiltinEffect::Mosaic { .. }, klipp_effects::BuiltinEffect::Crop { left, top, .. }] if (*left - 0.194).abs() < 1e-3 && (*top - 0.594).abs() < 1e-3), "{:?}", cover.builtin_effects());
         assert_eq!((step.after[0].timeline_in_secs, step.after[0].timeline_out_secs), (1.0, 3.0));
 
         // With a video track above that has room, it goes there and no track is made.
@@ -8797,7 +8797,10 @@ mod tests {
         assert_eq!(plan.steps[0].what, "vignette 0.30 on 1 clip of group \"Night\"");
 
         // A second time replaces each clip's vignette rather than adding one.
-        seq.tracks[0].clips[1].builtin_effects.push(E::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.7 });
+        {
+            let effect_clip = &mut seq.tracks[0].clips[1];
+            effect_clip.set_effect_list(effect_clip.builtin_effects().iter().cloned().chain(std::iter::once(E::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.7 })).collect(), effect_clip.builtin_effects_enabled().to_vec());
+        }
         let plan = resolve(&seq, &pool, &[effect(GradeOn::Group { group: "Night".into(), stage: None }, 0.1)]).unwrap();
         assert_eq!(vignetted(&plan), vec![b]);
 
@@ -10186,9 +10189,9 @@ mod tests {
         let mut fps = seq.fps;
         let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
         view.apply_forward(&plan.steps[0].edit);
-        assert!(view.sequences[0].tracks[0].clips[0].builtin_effects.iter().any(|e| matches!(e, E::VideoStabilization { .. })));
+        assert!(view.sequences[0].tracks[0].clips[0].builtin_effects().iter().any(|e| matches!(e, E::VideoStabilization { .. })));
         view.apply_inverse(&plan.steps[0].edit);
-        assert!(view.sequences[0].tracks[0].clips[0].builtin_effects.is_empty());
+        assert!(view.sequences[0].tracks[0].clips[0].builtin_effects().is_empty());
 
         // Retime to 2x halves the clip (clip a is 0-4, clip b starts at 4;
         // 2x makes a 0-2, a gap opens), its linked sound with it.
@@ -10271,7 +10274,7 @@ mod tests {
         let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
         view.apply_forward(&plan.steps[0].edit);
         let reframed = view.sequences[0].tracks[0].clips[0].clone();
-        let Some(klipp_effects::BuiltinEffect::Transform { position_y, scale_x, .. }) = reframed.builtin_effects.first().cloned() else { panic!("reframed") };
+        let Some(klipp_effects::BuiltinEffect::Transform { position_y, scale_x, .. }) = reframed.builtin_effects().first().cloned() else { panic!("reframed") };
         let ops: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"compose","clip_id":"{}","poses":[{{"secs":0,"opacity":0}},{{"secs":1.2,"opacity":1}}]}}]"#, a.0)).unwrap();
         let plan = resolve(&view.sequences[0], view.media_pool, &ops).unwrap();
         assert!(plan.steps[0].what.contains("3.17 of the frame where it is"), "{}", plan.steps[0].what);
@@ -10365,7 +10368,7 @@ mod tests {
             let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
             view.apply_inverse(&plan.steps[0].edit);
         }
-        assert!(seqs[0].tracks[0].clips[0].builtin_effects.is_empty(), "undo clears the reframe");
+        assert!(seqs[0].tracks[0].clips[0].builtin_effects().is_empty(), "undo clears the reframe");
 
         // Out of range and a no-op reframe are refused.
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();

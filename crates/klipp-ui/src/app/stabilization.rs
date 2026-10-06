@@ -25,7 +25,7 @@ impl KlippApp {
                         let frames = (item.duration.to_secs_f64() * fps).round() as usize;
                         // The window the effect is set to, so the gains
                         // that come back match what the user sees.
-                        let window = c.builtin_effects.iter().find_map(|e| match e {
+                        let window = c.builtin_effects().iter().find_map(|e| match e {
                             klipp_effects::BuiltinEffect::Deflicker { window_secs, .. } => Some(*window_secs as f64),
                             _ => None,
                         }).unwrap_or(1.0);
@@ -99,7 +99,7 @@ impl KlippApp {
                 // re-smooth is.
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 if let Some(clip) = seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
-                    let window = clip.builtin_effects.iter().find_map(|e| match e {
+                    let window = clip.builtin_effects().iter().find_map(|e| match e {
                         klipp_effects::BuiltinEffect::Deflicker { window_secs, .. } => Some(*window_secs as f64),
                         _ => None,
                     }).unwrap_or(1.0);
@@ -128,7 +128,7 @@ impl KlippApp {
                         // Pull the smoothing slider's current value off the effect
                         // so the initial smooth uses what the user already set,
                         // not a hardcoded 0.5.
-                        let smoothing = c.builtin_effects.iter().find_map(|e| {
+                        let smoothing = c.builtin_effects().iter().find_map(|e| {
                             if let klipp_effects::BuiltinEffect::VideoStabilization { smoothing, .. } = e {
                                 Some(*smoothing as f64)
                             } else {
@@ -550,7 +550,7 @@ impl KlippApp {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 if let Some(clip) = seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
                     // Find the current smoothing value from the VideoStabilization effect.
-                    let smoothing = clip.builtin_effects.iter().find_map(|e| {
+                    let smoothing = clip.builtin_effects().iter().find_map(|e| {
                         if let klipp_effects::BuiltinEffect::VideoStabilization { smoothing, .. } = e {
                             Some(*smoothing as f64)
                         } else {

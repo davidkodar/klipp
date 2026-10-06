@@ -3061,16 +3061,16 @@ pub fn clip_effects(
 ) -> (Vec<BuiltinEffect>, f32) {
     let t = eval_clip_time(clip, time);
     let ctx = eval::eval_context(clip, time, fps);
-    let enabled = |i: usize| clip.builtin_effects_enabled.get(i).copied().unwrap_or(true);
+    let enabled = |i: usize| clip.builtin_effects_enabled().get(i).copied().unwrap_or(true);
     let mut fx: Vec<(usize, BuiltinEffect)> =
-        clip.builtin_effects.iter().cloned().enumerate().filter(|(i, _)| enabled(*i)).collect();
+        clip.builtin_effects().iter().cloned().enumerate().filter(|(i, _)| enabled(*i)).collect();
 
     let mut opacity = 1.0f32;
     let mut have_opacity = false;
     // A render copy carries its track's effects after the clip's own
     // (`bake_track_effects`); a track's Opacity weighs the clip's resolved
     // opacity rather than standing in for it (#1078).
-    let own = clip.own_effects.as_ref().map_or(clip.builtin_effects.len(), |o| o.builtin_effects.len());
+    let own = clip.own_effects.as_ref().map_or(clip.builtin_effects().len(), |o| o.builtin_effects.len());
     let mut track_opacity = 1.0f32;
     let mut pinned = false;
     for (i, effect) in fx.iter_mut() {
@@ -3537,9 +3537,9 @@ fn to_linear(f: SourceFrame, width: u32, height: u32) -> (Arc<Vec<f32>>, Option<
 /// The temporal noise reduction settings on `clip` at `time`, keyframes
 /// applied, if it has any enabled and they would do something there.
 pub fn temporal_denoise_of(clip: &Clip, time: Timecode, fps: f64) -> Option<(f32, f32)> {
-    let enabled = |i: usize| clip.builtin_effects_enabled.get(i).copied().unwrap_or(true);
+    let enabled = |i: usize| clip.builtin_effects_enabled().get(i).copied().unwrap_or(true);
     let (i, mut tnr) = clip
-        .builtin_effects
+        .builtin_effects()
         .iter()
         .enumerate()
         .find(|(i, e)| enabled(*i) && matches!(e, BuiltinEffect::TemporalDenoise { .. }))

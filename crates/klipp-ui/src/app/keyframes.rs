@@ -334,7 +334,7 @@ impl KlippApp {
                             clip.transform_pos_y_keyframes.clear();
 
                             // Ensure a Transform builtin effect exists
-                            if !clip.builtin_effects.iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::Transform { .. })) {
+                            if !clip.builtin_effects().iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::Transform { .. })) {
                                 clip.push_effect(klipp_effects::BuiltinEffect::Transform {
                                     position_x: 0.0, position_y: 0.0,
                                     scale_x: *start_scale, scale_y: *start_scale,

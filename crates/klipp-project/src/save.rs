@@ -352,12 +352,12 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         node_graph: Some(c.node_graph.clone()),
                         color_grade: None,
                         effects: c.effects.iter().map(effect_to_json).collect(),
-                        builtin_effects: if c.builtin_effects.is_empty() {
+                        builtin_effects: if c.builtin_effects().is_empty() {
                             None
                         } else {
-                            serde_json::to_value(&c.builtin_effects).ok()
+                            serde_json::to_value(c.builtin_effects()).ok()
                         },
-                        builtin_effects_enabled: c.builtin_effects_enabled.clone(),
+                        builtin_effects_enabled: c.builtin_effects_enabled().to_vec(),
                         magnetic_anchor: c.magnetic_anchor.clone(),
                         linked_clip_id: c.linked_clip_id.map(|id| id.to_string()),
                         linked_title_asset_id: c.linked_title_asset_id.map(|id| id.to_string()),

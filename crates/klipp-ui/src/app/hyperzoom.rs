@@ -329,7 +329,7 @@ mod hyperzoom_handler_tests {
         let mut seq = seq_with_clips(vec![c]);
         apply_hyperzoom_plan_to_clip(&mut seq, cid, (0.3, 0.7), &[kf(0.0, 1.0), kf(0.5, 50.0)]);
         let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
-        let xform = clip.builtin_effects.iter().find_map(|e| match e {
+        let xform = clip.builtin_effects().iter().find_map(|e| match e {
             BuiltinEffect::Transform { anchor_x, anchor_y, scale_x, .. } => Some((*anchor_x, *anchor_y, *scale_x)),
             _ => None,
         }).expect("Transform builtin should have been inserted");
@@ -345,7 +345,7 @@ mod hyperzoom_handler_tests {
         // values must survive (re-applying hyperzoom shouldn't blow
         // away a baseline rotation, for example).
         let mut c = fresh_clip();
-        c.builtin_effects.push(BuiltinEffect::Transform {
+        c.push_effect(BuiltinEffect::Transform {
             position_x: 10.0, position_y: 20.0,
             scale_x: 1.5, scale_y: 1.5,
             rotation: 45.0,
@@ -353,12 +353,11 @@ mod hyperzoom_handler_tests {
             rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
             focal_ref: None,
         });
-        c.builtin_effects_enabled.push(true);
         let cid = c.id;
         let mut seq = seq_with_clips(vec![c]);
         apply_hyperzoom_plan_to_clip(&mut seq, cid, (0.2, 0.8), &[kf(0.0, 1.0), kf(0.5, 50.0)]);
         let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
-        let xform = clip.builtin_effects.iter().find_map(|e| match e {
+        let xform = clip.builtin_effects().iter().find_map(|e| match e {
             BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, anchor_x, anchor_y, .. } =>
                 Some((*position_x, *position_y, *scale_x, *rotation, *anchor_x, *anchor_y)),
             _ => None,
@@ -402,7 +401,7 @@ mod hyperzoom_handler_tests {
         // Original clip untouched.
         let same = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|x| x.id == c.id).unwrap();
         assert!(same.transform_scale_keyframes.is_empty());
-        assert!(same.builtin_effects.iter().all(|e| !matches!(e, BuiltinEffect::Transform { .. })));
+        assert!(same.builtin_effects().iter().all(|e| !matches!(e, BuiltinEffect::Transform { .. })));
     }
 
     use super::apply_hyperzoom_radial_blur_to_clip;
@@ -419,7 +418,7 @@ mod hyperzoom_handler_tests {
         let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
         // RadialBlur builtin inserted with focal-point center +
         // peak amount + canonical defaults (samples=12, mode=0).
-        let (idx, cx, cy, amt, samples, mode) = clip.builtin_effects.iter().enumerate().find_map(|(i, e)| match e {
+        let (idx, cx, cy, amt, samples, mode) = clip.builtin_effects().iter().enumerate().find_map(|(i, e)| match e {
             BuiltinEffect::RadialBlur { center_x, center_y, amount, samples, mode } =>
                 Some((i, *center_x, *center_y, *amount, *samples, *mode)),
             _ => None,
@@ -445,13 +444,12 @@ mod hyperzoom_handler_tests {
         // preserve samples/mode — re-applying must not clobber the
         // user's tweaks.
         let mut c = fresh_clip();
-        c.builtin_effects.push(BuiltinEffect::RadialBlur {
+        c.push_effect(BuiltinEffect::RadialBlur {
             center_x: 0.0, center_y: 0.0,
             amount: 0.0,
             samples: 24,
             mode: 1, // spin
         });
-        c.builtin_effects_enabled.push(true);
         let cid = c.id;
         let mut seq = seq_with_clips(vec![c]);
         apply_hyperzoom_radial_blur_to_clip(
@@ -459,7 +457,7 @@ mod hyperzoom_handler_tests {
             &[kf(0.0, 0.0), kf(0.5, 22.0)],
         );
         let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
-        let (cx, cy, amt, samples, mode) = clip.builtin_effects.iter().find_map(|e| match e {
+        let (cx, cy, amt, samples, mode) = clip.builtin_effects().iter().find_map(|e| match e {
             BuiltinEffect::RadialBlur { center_x, center_y, amount, samples, mode } =>
                 Some((*center_x, *center_y, *amount, *samples, *mode)),
             _ => None,
@@ -482,7 +480,7 @@ mod hyperzoom_handler_tests {
         // touch other Transform fields — same in-place-update
         // contract as the matte / radial-blur helpers.
         let mut c = fresh_clip();
-        c.builtin_effects.push(BuiltinEffect::Transform {
+        c.push_effect(BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0,
             scale_x: 1.0, scale_y: 1.0,
             rotation: 30.0,  // baseline rotation
@@ -490,7 +488,6 @@ mod hyperzoom_handler_tests {
             rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
             focal_ref: None,
         });
-        c.builtin_effects_enabled.push(true);
         let cid = c.id;
         let title_uuid = ClipId::new().0;
         let mut seq = seq_with_clips(vec![c]);
@@ -503,7 +500,7 @@ mod hyperzoom_handler_tests {
         apply_focal_ref_to_clip_transform(&mut seq, cid, fr);
 
         let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
-        let (rotation, fr_out) = clip.builtin_effects.iter().find_map(|e| match e {
+        let (rotation, fr_out) = clip.builtin_effects().iter().find_map(|e| match e {
             BuiltinEffect::Transform { rotation, focal_ref, .. } => Some((*rotation, *focal_ref)),
             _ => None,
         }).unwrap();
@@ -531,7 +528,7 @@ mod hyperzoom_handler_tests {
         };
         apply_focal_ref_to_clip_transform(&mut seq, cid, fr);
         let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
-        let has_focal_ref = clip.builtin_effects.iter().any(|e| matches!(
+        let has_focal_ref = clip.builtin_effects().iter().any(|e| matches!(
             e,
             BuiltinEffect::Transform { focal_ref: Some(_), .. }
         ));
@@ -547,7 +544,7 @@ mod hyperzoom_handler_tests {
         // worth pinning.)
         let mut c = fresh_clip();
         let old_uuid = ClipId::new().0;
-        c.builtin_effects.push(BuiltinEffect::Transform {
+        c.push_effect(BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0,
             rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5,
             rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
@@ -557,7 +554,6 @@ mod hyperzoom_handler_tests {
                 fallback_xy: (0.0, 0.0),
             }),
         });
-        c.builtin_effects_enabled.push(true);
         let cid = c.id;
         let mut seq = seq_with_clips(vec![c]);
         let new_uuid = ClipId::new().0;
@@ -565,7 +561,7 @@ mod hyperzoom_handler_tests {
             title_clip_id: new_uuid, char_index: 9, fallback_xy: (0.7, 0.3),
         });
         let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
-        let fr = clip.builtin_effects.iter().find_map(|e| match e {
+        let fr = clip.builtin_effects().iter().find_map(|e| match e {
             BuiltinEffect::Transform { focal_ref, .. } => *focal_ref,
             _ => None,
         }).unwrap();
@@ -590,7 +586,7 @@ mod hyperzoom_handler_tests {
             title_clip_id: ClipId::new().0, char_index: 0, fallback_xy: (0.5, 0.5),
         });
         let same = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|x| x.id == c.id).unwrap();
-        assert!(same.builtin_effects.iter().all(|e| !matches!(e, BuiltinEffect::Transform { .. })));
+        assert!(same.builtin_effects().iter().all(|e| !matches!(e, BuiltinEffect::Transform { .. })));
     }
 
     // ────── Chromatic-aberration handler ──────
@@ -598,7 +594,7 @@ mod hyperzoom_handler_tests {
     use super::apply_hyperzoom_chromatic_aberration_to_clip;
 
     fn read_chromatic(clip: &Clip) -> Option<(f32, f32, f32, f32)> {
-        clip.builtin_effects.iter().find_map(|e| match e {
+        clip.builtin_effects().iter().find_map(|e| match e {
             BuiltinEffect::ChromaticAberration { red_shift, blue_shift, center_x, center_y } => {
                 Some((*red_shift, *blue_shift, *center_x, *center_y))
             }
@@ -633,10 +629,9 @@ mod hyperzoom_handler_tests {
         // first-match-wins disambiguation behaviour pinned in the
         // doc comment.
         let mut c = fresh_clip();
-        c.builtin_effects.push(BuiltinEffect::ChromaticAberration {
+        c.push_effect(BuiltinEffect::ChromaticAberration {
             red_shift: -2.0, blue_shift: 2.0, center_x: 0.1, center_y: 0.1,
         });
-        c.builtin_effects_enabled.push(true);
         let cid = c.id;
         let mut seq = seq_with_clips(vec![c]);
         let red = vec![kf(0.0, 0.0), kf(0.5, -10.0)];
@@ -650,7 +645,7 @@ mod hyperzoom_handler_tests {
         assert!((cy - 0.4).abs() < 1e-6, "center_y updated to new focal");
         // Pool count stays at 1 — handler updated in place,
         // didn't append a duplicate.
-        let n = clip.builtin_effects.iter().filter(|e| matches!(e, BuiltinEffect::ChromaticAberration { .. })).count();
+        let n = clip.builtin_effects().iter().filter(|e| matches!(e, BuiltinEffect::ChromaticAberration { .. })).count();
         assert_eq!(n, 1);
     }
 
@@ -739,7 +734,7 @@ mod hyperzoom_handler_tests {
     use super::apply_hyperzoom_light_leak_to_clip;
 
     fn read_halation(clip: &Clip) -> Option<(f32, f32, f32, f32)> {
-        clip.builtin_effects.iter().find_map(|e| match e {
+        clip.builtin_effects().iter().find_map(|e| match e {
             BuiltinEffect::FilmHalation { threshold, radius, intensity, hue } => {
                 Some((*threshold, *radius, *intensity, *hue))
             }
@@ -772,10 +767,9 @@ mod hyperzoom_handler_tests {
         // hue. Handler rewrites ONLY intensity; secondaries
         // survive (user-tweaked tunings preserved).
         let mut c = fresh_clip();
-        c.builtin_effects.push(BuiltinEffect::FilmHalation {
+        c.push_effect(BuiltinEffect::FilmHalation {
             threshold: 0.5, radius: 25.0, intensity: 0.1, hue: 0.7,
         });
-        c.builtin_effects_enabled.push(true);
         let cid = c.id;
         let mut seq = seq_with_clips(vec![c]);
         let kfs = vec![kf(0.0, 0.0), kf(0.5, 0.6)];

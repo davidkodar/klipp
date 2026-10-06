@@ -1070,10 +1070,10 @@ impl KlippApp {
                                 }
                             } else {
                                 let param = self.state.video_rubber_band_param;
-                                let opacity_static = clip.builtin_effects.iter()
+                                let opacity_static = clip.builtin_effects().iter()
                                     .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
                                     .unwrap_or(1.0);
-                                let transform = clip.builtin_effects.iter()
+                                let transform = clip.builtin_effects().iter()
                                     .find_map(|e| match e {
                                         klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
                                             Some((*position_x, *position_y, *scale_x, *rotation)),

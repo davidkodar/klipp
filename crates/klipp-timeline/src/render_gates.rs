@@ -7,7 +7,7 @@ use klipp_effects::{BuiltinEffect, FocalRef};
 impl Clip {
     /// Any raw built-in entry, including disabled and identity entries.
     pub fn has_effect_entries(&self) -> bool {
-        !self.builtin_effects.is_empty()
+        !self.builtin_effects().is_empty()
     }
 
     /// Any raw OFX entry. Render gates that ignore disabled plug-ins must
@@ -19,7 +19,7 @@ impl Clip {
     /// Capability of the raw list, including disabled entries. In particular,
     /// a disabled frei0r entry still keeps this gate off the GPU stack.
     pub fn effect_chain_gpu_capable(&self) -> bool {
-        klipp_effects::chain_supports_gpu(&self.builtin_effects)
+        klipp_effects::chain_supports_gpu(self.builtin_effects())
     }
 
     pub fn grade_is_identity(&self) -> bool {
@@ -82,7 +82,7 @@ impl Clip {
 
     /// `sits_unmoved` considers raw placement entries, even disabled ones.
     pub fn has_nonidentity_placement_entries(&self) -> bool {
-        self.builtin_effects.iter().any(|e| {
+        self.builtin_effects().iter().any(|e| {
             matches!(
                 e,
                 BuiltinEffect::Transform { .. } | BuiltinEffect::CornerPin { .. }
@@ -93,8 +93,8 @@ impl Clip {
     /// An enabled, non-frozen SpeedRamp requesting frame blending. The caller
     /// separately checks playback direction and speed at the current time.
     pub fn has_frame_blend_entry(&self) -> bool {
-        self.builtin_effects.iter().enumerate().any(|(i, e)| {
-            self.builtin_effects_enabled.get(i).copied().unwrap_or(true)
+        self.builtin_effects().iter().enumerate().any(|(i, e)| {
+            self.builtin_effects_enabled().get(i).copied().unwrap_or(true)
                 && matches!(
                     e,
                     BuiltinEffect::SpeedRamp {
@@ -124,7 +124,7 @@ impl Clip {
                 TransformLinkTarget::Tracker { clip_id, .. } => refs.push(*clip_id),
             }
         }
-        for e in &self.builtin_effects {
+        for e in self.builtin_effects() {
             if let BuiltinEffect::Transform {
                 focal_ref: Some(f), ..
             } = e
@@ -247,8 +247,7 @@ mod tests {
         ] {
             let mut c = clip();
             let present = entry.is_some();
-            c.builtin_effects.extend(entry);
-            c.builtin_effects_enabled = vec![enabled];
+            c.set_effect_list(c.builtin_effects().iter().cloned().chain(entry).collect(), vec![enabled]);
             assert_eq!(c.has_effect_entries(), present, "{name}");
             assert_eq!(c.effect_chain_gpu_capable(), gpu, "{name}");
             assert_eq!(c.has_nonidentity_placement_entries(), placement, "{name}");
@@ -397,7 +396,7 @@ mod tests {
             (0, false, Some(true), false),
         ] {
             let mut c = clip();
-            c.builtin_effects.push(BuiltinEffect::SpeedRamp {
+            c.set_effect_list(c.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::SpeedRamp {
                 speed: 0.5,
                 ramp_curve: 0,
                 ramp_start: 0.0,
@@ -406,8 +405,7 @@ mod tests {
                 freeze_at: 0.0,
                 freeze,
                 blend_mode: mode,
-            });
-            c.builtin_effects_enabled.extend(enabled);
+            })).collect(), c.builtin_effects_enabled().iter().cloned().chain(enabled).collect());
             assert_eq!(c.has_frame_blend_entry(), expected);
         }
     }
@@ -434,8 +432,7 @@ mod tests {
             if let BuiltinEffect::Transform { focal_ref, .. } = &mut effect {
                 *focal_ref = Some(focal);
             }
-            c.builtin_effects.push(effect);
-            c.builtin_effects_enabled.push(false);
+            c.set_effect_list(c.builtin_effects().iter().cloned().chain(std::iter::once(effect)).collect(), c.builtin_effects_enabled().iter().cloned().chain(std::iter::once(false)).collect());
             assert_eq!(c.picture_references(), vec![host, host]);
         }
     }

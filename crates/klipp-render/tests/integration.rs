@@ -507,7 +507,7 @@ fn export_with_keyframed_opacity() {
         export_range: None,
         video: {
             let mut c = clip(ClipKind::Title(title_data), 0, 24, 24);
-            c.builtin_effects = vec![klipp_effects::BuiltinEffect::Opacity { value: 1.0 }];
+            c.set_effect_list(vec![klipp_effects::BuiltinEffect::Opacity { value: 1.0 }], c.builtin_effects_enabled().to_vec());
             c.effect_keyframes = effect_keyframes;
             c.opacity_keyframes = vec![kf_start, kf_end];
             one_track(24, vec![c])

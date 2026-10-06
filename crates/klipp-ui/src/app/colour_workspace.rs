@@ -874,8 +874,8 @@ impl KlippApp {
                         c.speed,
                         klipp_engine::render_cache::compute_grade_hash(
                             c.grade(),
-                            &c.builtin_effects,
-                            &c.builtin_effects_enabled,
+                            c.builtin_effects(),
+                            c.builtin_effects_enabled(),
                         ),
                     )));
                 if let Some((Some(media_id), src_in_secs, tl_in, speed, grade_hash)) = clip_info {
