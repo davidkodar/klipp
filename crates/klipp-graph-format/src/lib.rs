@@ -289,10 +289,16 @@ pub struct ClipRecordV2 {
 pub struct LegacyClipAnim {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub fields: BTreeMap<String, Value>,
-    /// The picture entries of the clip's modifier stacks (opacity,
-    /// position, scale, rotation and effect parameters), keyed as stored.
+    /// The clip's picture modifier stacks that belong to no effect node:
+    /// opacity, position, scale and rotation, keys today's reader doesn't
+    /// know, and effect keys that name no slot. Keyed as stored. (Audio
+    /// stacks stay clip fields.)
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub param_modifiers: BTreeMap<String, Value>,
+    /// Effect keyframes that claim no effect: a key that doesn't read as
+    /// `"<slot>:<param>"`, or names a slot past the list. Keyed as stored.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub effect_keyframes: BTreeMap<String, Value>,
 }
 
 impl LegacyClipAnim {
@@ -308,7 +314,7 @@ impl LegacyClipAnim {
     ];
 
     pub fn is_empty(&self) -> bool {
-        self.fields.is_empty() && self.param_modifiers.is_empty()
+        self.fields.is_empty() && self.param_modifiers.is_empty() && self.effect_keyframes.is_empty()
     }
 }
 
@@ -345,6 +351,29 @@ impl fmt::Display for FormatError {
 impl std::error::Error for FormatError {}
 
 impl Graph {
+    /// A graph with nothing in it: no nodes, no edges, and the nil id as
+    /// its output. A store with no picture of its own is written so.
+    pub fn empty() -> Self {
+        Self {
+            graph_version: GRAPH_VERSION,
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            output: Uuid::nil(),
+            ui: GraphUi::default(),
+            working_space_override: None,
+        }
+    }
+
+    /// Whether this is [`Graph::empty`], the one converter-built shape
+    /// whose output names no node.
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+            && self.edges.is_empty()
+            && self.output.is_nil()
+            && self.ui.is_empty()
+            && self.working_space_override.is_none()
+    }
+
     /// Check the graph is a valid revision-1 graph, its grade bodies too.
     ///
     /// A graph the converter builds is checked strictly: the version,
@@ -362,6 +391,9 @@ impl Graph {
     fn check_level(&self, grade_body: bool) -> Result<(), FormatError> {
         if self.graph_version != GRAPH_VERSION {
             return Err(FormatError::WrongGraphVersion(self.graph_version));
+        }
+        if !grade_body && self.is_empty() {
+            return Ok(());
         }
         let mut ids = BTreeSet::new();
         for node in &self.nodes {
