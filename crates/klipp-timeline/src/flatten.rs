@@ -313,7 +313,12 @@ fn take_sound_settings(clip: &mut Clip, picture: &Clip) {
     clip.volume_keyframes = picture.volume_keyframes.clone();
     clip.gain_keyframes = picture.gain_keyframes.clone();
     clip.pan_keyframes = picture.pan_keyframes.clone();
-    clip.param_modifiers = picture.param_modifiers.clone();
+    // The picture's clip-level modifiers are its sound settings too; its
+    // effect-targeted ones animate the picture's effects, which a sound
+    // clip doesn't carry (#1074).
+    let effect = |id: &klipp_core::ParamId| matches!(id, klipp_core::ParamId::Effect { .. });
+    clip.param_modifiers.retain(|id, _| effect(id));
+    clip.param_modifiers.extend(picture.param_modifiers.iter().filter(|(id, _)| !effect(id)).map(|(id, m)| (id.clone(), m.clone())));
 }
 
 /// Sound automation is written in seconds from the clip's start; a slice
@@ -1274,6 +1279,11 @@ mod tests {
         let mut ac = media_clip(0, 96, 0, 96);
         vc.linked_clip_id = Some(ac.id);
         ac.linked_clip_id = Some(vc.id);
+        // The picture's sound modifier goes with its sound; its effect's
+        // modifier animates a picture the sound clip doesn't draw (#1074).
+        let modifier = klipp_core::ModifierStack::default();
+        vc.param_modifiers.insert(klipp_core::ParamId::Volume, modifier.clone());
+        vc.param_modifiers.insert(klipp_core::ParamId::Effect { effect_index: 0, param_name: "radius".into() }, modifier);
         v.clips.push(vc);
         a.clips.push(ac);
         scene.tracks = vec![v, a];
@@ -1291,6 +1301,8 @@ mod tests {
         let audio_half = &instance.tracks[1].clips[0];
         assert_eq!(sound.clips[0].id, audio_half.id, "at the instance's id");
         assert_eq!(sound.clips[0].timeline_out, t(24), "sliced to the precomposition's window");
+        let keys: Vec<&klipp_core::ParamId> = sound.clips[0].param_modifiers.keys().collect();
+        assert_eq!(keys, [&klipp_core::ParamId::Volume], "the picture's sound modifier, not its effect's");
     }
 
     /// A scene that contains itself, at any remove, is refused where the
