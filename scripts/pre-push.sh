@@ -77,9 +77,11 @@ if [ ! -t 0 ]; then
     # has another one out (`git push origin <other-branch>`) was never
     # built: the gate tested this checkout's own branch, found nothing in
     # it to test, and let the push through. Deletions and tags carry no
-    # code of their own.
+    # code of their own. What is updated is the remote ref (the third
+    # field), so that is what decides a tag: a tag pushed onto a branch
+    # still brings its commit into that branch (#1120).
     _head=$(git rev-parse HEAD 2>/dev/null)
-    _other=$(printf '%s\n' "$_refs" | awk -v head="$_head" '$2 !~ /^0+$/ && $1 !~ /^refs\/tags\// && $2 != head { print $1; exit }')
+    _other=$(printf '%s\n' "$_refs" | awk -v head="$_head" '$2 !~ /^0+$/ && $3 !~ /^refs\/tags\// && $2 != head { print $1; exit }')
     if [ -n "$_other" ]; then
         _where=$(git worktree list --porcelain 2>/dev/null | awk -v ref="$_other" '/^worktree / { w = substr($0, 10) } $0 == "branch " ref { print w; exit }')
         printf '\n  pre-push: %s is not the commit checked out here (%s), and the gate\n' "$_other" "$(git rev-parse --short HEAD)" >&2

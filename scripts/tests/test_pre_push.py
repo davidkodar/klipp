@@ -484,6 +484,24 @@ class PushedCommitIsCheckedOutTests(RealGitGate):
         result = self.run_gate_with(f"refs/tags/v0 {main} refs/tags/v0 {'0' * 40}\n")
         self.assertNotIn("#1118", result.stderr)
 
+    def test_a_tag_pushed_onto_a_branch_is_held_to_the_checkout(self):
+        # The remote ref decides: an old tag pushed to a branch brings its
+        # untested commit into that branch.
+        main = self.git(self.root, "rev-parse", "origin/main").strip()
+        (self.root / "shared.txt").write_text("one\nbranch\n")
+        self.commit(self.root, "the branch's change")
+        result = self.run_gate_with(f"refs/tags/old {main} refs/heads/release {'0' * 40}\n")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("#1118", result.stderr)
+        self.assertEqual(self.built(), [], "nothing built")
+
+    def test_a_branch_pushed_as_a_tag_is_not_held_to_the_checkout(self):
+        main = self.git(self.root, "rev-parse", "origin/main").strip()
+        (self.root / "shared.txt").write_text("one\nbranch\n")
+        self.commit(self.root, "the branch's change")
+        result = self.run_gate_with(f"refs/heads/main {main} refs/tags/snapshot {'0' * 40}\n")
+        self.assertNotIn("#1118", result.stderr)
+
 
 class MergeWithMainTests(RealGitGate):
     """The gate tests a branch merged with current main, and refuses one that
