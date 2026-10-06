@@ -22,6 +22,10 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("scan") => scan(&args[1..]),
+        Some("run") => {
+            eprintln!("klipp-convert: the conversion runs as `cargo run --release -p klipp-convert --example run -- --confirm-real-run`, which links today's reader for the dry run's comparison (#1087)");
+            ExitCode::from(2)
+        }
         Some(_) => match inspect(&args) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {

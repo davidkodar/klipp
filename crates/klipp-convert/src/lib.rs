@@ -9,6 +9,7 @@ pub mod document;
 pub mod dry_run;
 pub mod installed;
 pub mod ops;
+pub mod run;
 pub mod running;
 pub mod scan;
 pub mod v1;
