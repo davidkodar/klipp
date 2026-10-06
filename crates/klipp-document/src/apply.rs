@@ -651,8 +651,8 @@ impl DocumentView<'_> {
             EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(fx) = clip.builtin_effects.get_mut(*effect_index) {
-                            *fx = old_effect.clone();
+                        if let Some(id) = clip.effect_id_at(*effect_index) {
+                            clip.replace_effect(id, old_effect.clone());
                         }
                         break;
                     }
@@ -664,12 +664,7 @@ impl DocumentView<'_> {
                 // missing-entry state still works.
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        while clip.builtin_effects_enabled.len() < clip.builtin_effects.len() {
-                            clip.builtin_effects_enabled.push(true);
-                        }
-                        if let Some(val) = clip.builtin_effects_enabled.get_mut(*index) {
-                            *val = !*val;
-                        }
+                        toggle_effect(clip, *index);
                         break;
                     }
                 }
@@ -728,8 +723,7 @@ impl DocumentView<'_> {
             EditCommand::SetBuiltinEffects { clip_id, old_effects, old_enabled, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.builtin_effects = old_effects.clone();
-                        clip.builtin_effects_enabled = old_enabled.clone();
+                        clip.set_effect_list(old_effects.clone(), old_enabled.clone());
                         break;
                     }
                 }
@@ -1339,8 +1333,8 @@ impl DocumentView<'_> {
             EditCommand::EditBuiltinEffect { clip_id, effect_index, new_effect, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(fx) = clip.builtin_effects.get_mut(*effect_index) {
-                            *fx = new_effect.clone();
+                        if let Some(id) = clip.effect_id_at(*effect_index) {
+                            clip.replace_effect(id, new_effect.clone());
                         }
                         break;
                     }
@@ -1351,12 +1345,7 @@ impl DocumentView<'_> {
                 // user originally produced.
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        while clip.builtin_effects_enabled.len() < clip.builtin_effects.len() {
-                            clip.builtin_effects_enabled.push(true);
-                        }
-                        if let Some(val) = clip.builtin_effects_enabled.get_mut(*index) {
-                            *val = !*val;
-                        }
+                        toggle_effect(clip, *index);
                         break;
                     }
                 }
@@ -1415,8 +1404,7 @@ impl DocumentView<'_> {
             EditCommand::SetBuiltinEffects { clip_id, new_effects, new_enabled, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.builtin_effects = new_effects.clone();
-                        clip.builtin_effects_enabled = new_enabled.clone();
+                        clip.set_effect_list(new_effects.clone(), new_enabled.clone());
                         break;
                     }
                 }
@@ -1476,6 +1464,15 @@ impl DocumentView<'_> {
             }
             track.sort_clips();
         }
+    }
+}
+
+/// Flip a built-in effect's enabled flag, the effect named by its place:
+/// what `ToggleBuiltinEffectEnabled` does, forward and back alike.
+fn toggle_effect(clip: &mut klipp_timeline::Clip, index: usize) {
+    if let Some(id) = clip.effect_id_at(index) {
+        let on = clip.effect_entries().nth(index).is_none_or(|(_, _, on)| on);
+        clip.set_effect_enabled(id, !on);
     }
 }
 
@@ -1609,5 +1606,134 @@ mod track_settings_tests {
         let b = &view.sequences[0].tracks[1];
         assert_eq!(b.volume, 0.5, "the level is pasted");
         assert_eq!(b.effects.audio[0].effect_type, "limiter", "the track's own chain stays");
+    }
+}
+
+#[cfg(test)]
+mod effect_writer_tests {
+    //! The effect-list writers undo and redo through the clip's effect API
+    //! (#1074): each keeps every keyframe and modifier on the effect it
+    //! animates, and an edit, a toggle or a keyframe edit keeps the ids.
+    use super::*;
+    use klipp_core::{Keyframe, ModifierStack, ParamId, Timecode};
+    use klipp_effects::BuiltinEffect;
+
+    fn blur(radius: f32) -> BuiltinEffect {
+        BuiltinEffect::GaussianBlur { radius }
+    }
+
+    fn vignette(amount: f32) -> BuiltinEffect {
+        BuiltinEffect::Vignette { amount, size: 0.5, softness: 0.5, roundness: 0.5 }
+    }
+
+    /// A clip with a blur and a vignette, each with keyframes, and a
+    /// modifier on the vignette.
+    fn doc() -> (Vec<Sequence>, ClipId) {
+        let mut seq = Sequence::new_default();
+        let mut clip = klipp_timeline::Clip::media(MediaId::new(), Timecode::zero(), Timecode { value: 48, rate: 24 }, Timecode::zero(), Timecode { value: 48, rate: 24 });
+        clip.set_effects(vec![blur(2.0), vignette(0.4)]);
+        let key = |v: f32| vec![Keyframe { time_secs: 0.0, value: v, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }];
+        clip.effect_keyframes.insert("0:radius".into(), key(3.0));
+        clip.effect_keyframes.insert("1:amount".into(), key(0.7));
+        clip.param_modifiers.insert(ParamId::Effect { effect_index: 1, param_name: "amount".into() }, ModifierStack::default());
+        let id = clip.id;
+        seq.tracks[0].clips.push(clip);
+        (vec![seq], id)
+    }
+
+    fn clip(seqs: &mut [Sequence], id: ClipId) -> &mut klipp_timeline::Clip {
+        seqs[0].all_clips_mut().find(|c| c.id == id).unwrap()
+    }
+
+    /// Each effect's own animation, read through its id: the blur's radius
+    /// keys, the vignette's amount keys and whether it has its modifier.
+    fn animation(c: &mut klipp_timeline::Clip) -> (Option<f32>, Option<f32>, bool) {
+        let (b, v) = (c.effect_id_at(0).unwrap(), c.effect_id_at(1).unwrap());
+        let radius = c.existing_effect_keyframes_mut(b, "radius").map(|k| k[0].value);
+        let amount = c.existing_effect_keyframes_mut(v, "amount").map(|k| k[0].value);
+        let modifier = c.existing_effect_modifiers_mut(v, "amount").is_some();
+        (radius, amount, modifier)
+    }
+
+    const ALL: (Option<f32>, Option<f32>, bool) = (Some(3.0), Some(0.7), true);
+
+    #[test]
+    fn an_effect_edit_keeps_its_id_and_animation() {
+        let (mut seqs, id) = doc();
+        let before = clip(&mut seqs, id).effect_id_at(1);
+        let edit = EditCommand::EditBuiltinEffect { clip_id: id, effect_index: 1, old_effect: vignette(0.4), new_effect: vignette(0.9) };
+        let mut pool = MediaPool::new();
+        let mut fps = seqs[0].fps;
+        let mut view = DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        for (forward, want) in [(true, vignette(0.9)), (false, vignette(0.4)), (true, vignette(0.9))] {
+            if forward { view.apply_forward(&edit) } else { view.apply_inverse(&edit) };
+            let c = clip(view.sequences, id);
+            assert_eq!(c.builtin_effects[1], want);
+            assert_eq!(animation(c), ALL);
+            assert_eq!(c.effect_id_at(1), before, "the same effect, edited");
+        }
+    }
+
+    #[test]
+    fn a_toggle_flips_one_flag_and_keeps_the_animation() {
+        let (mut seqs, id) = doc();
+        let before = clip(&mut seqs, id).effect_id_at(1);
+        let edit = EditCommand::ToggleBuiltinEffectEnabled { clip_id: id, index: 1 };
+        let mut pool = MediaPool::new();
+        let mut fps = seqs[0].fps;
+        let mut view = DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        let flags = |c: &mut klipp_timeline::Clip| c.effect_entries().map(|(_, _, on)| on).collect::<Vec<_>>();
+        for (forward, want) in [(true, [true, false]), (false, [true, true]), (true, [true, false])] {
+            if forward { view.apply_forward(&edit) } else { view.apply_inverse(&edit) };
+            let c = clip(view.sequences, id);
+            assert_eq!(flags(c), want);
+            assert_eq!(animation(c), ALL);
+            assert_eq!(c.effect_id_at(1), before);
+        }
+    }
+
+    #[test]
+    fn a_whole_list_set_leaves_the_animation_by_place() {
+        // As it always has: the keys stay at their places, whatever comes
+        // to stand there.
+        let (mut seqs, id) = doc();
+        let edit = EditCommand::SetBuiltinEffects {
+            clip_id: id,
+            old_effects: vec![blur(2.0), vignette(0.4)],
+            old_enabled: vec![true, true],
+            new_effects: vec![blur(5.0), vignette(0.4), blur(1.0)],
+            new_enabled: vec![true, false, true],
+        };
+        let mut pool = MediaPool::new();
+        let mut fps = seqs[0].fps;
+        let mut view = DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        view.apply_forward(&edit);
+        let c = clip(view.sequences, id);
+        assert_eq!((c.builtin_effects.len(), c.builtin_effects_enabled.clone()), (3, vec![true, false, true]));
+        assert_eq!(animation(c), ALL);
+        view.apply_inverse(&edit);
+        let c = clip(view.sequences, id);
+        assert_eq!(c.builtin_effects, vec![blur(2.0), vignette(0.4)]);
+        assert_eq!(animation(c), ALL);
+    }
+
+    #[test]
+    fn a_keyframe_edit_restores_the_effect_keys_and_keeps_the_ids() {
+        let (mut seqs, id) = doc();
+        let c = clip(&mut seqs, id);
+        let ids = (c.effect_id_at(0), c.effect_id_at(1));
+        let old_state = crate::history::KeyframeSnapshot::from_clip(c);
+        let mut new_state = old_state.clone();
+        new_state.effect_keyframes.remove("0:radius");
+        let edit = EditCommand::EditKeyframes { clip_id: id, linked_clip_id: None, description: "Keys", old_state, new_state, old_linked_state: None, new_linked_state: None };
+        let mut pool = MediaPool::new();
+        let mut fps = seqs[0].fps;
+        let mut view = DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        view.apply_forward(&edit);
+        let c = clip(view.sequences, id);
+        assert_eq!(animation(c), (None, Some(0.7), true));
+        assert_eq!((c.effect_id_at(0), c.effect_id_at(1)), ids, "a keyframe edit is no new effect");
+        view.apply_inverse(&edit);
+        assert_eq!(animation(clip(view.sequences, id)), ALL);
     }
 }

@@ -101,7 +101,7 @@ impl KeyframeSnapshot {
         clip.transform_rotation_keyframes = self.transform_rotation_keyframes.clone();
         clip.transform_tilt_x_keyframes = self.transform_tilt_x_keyframes.clone();
         clip.transform_tilt_y_keyframes = self.transform_tilt_y_keyframes.clone();
-        clip.effect_keyframes = self.effect_keyframes.clone();
+        clip.restore_effect_keyframes(self.effect_keyframes.clone());
         clip.audio_effect_keyframes = self.audio_effect_keyframes.clone();
         clip.speed_keyframes = self.speed_keyframes.clone();
     }
