@@ -2957,6 +2957,7 @@ dependencies = [
 name = "klipp-convert"
 version = "0.1.0"
 dependencies = [
+ "klipp-compose",
  "klipp-core",
  "klipp-effects",
  "klipp-graph-format",

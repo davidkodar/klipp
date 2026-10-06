@@ -3,6 +3,7 @@
 //! (#997, phase 1): read-only preparation, and its dry run. It depends on
 //! no app crate, and the application must never depend on it: it reads
 //! and writes the files as they are on disk.
+pub mod adapter;
 pub mod assemble;
 pub mod canon;
 pub mod document;
