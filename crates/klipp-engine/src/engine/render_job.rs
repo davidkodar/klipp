@@ -92,7 +92,7 @@ impl PlaybackEngine {
                 let layers = klipp_compose::active_layers(&seq, at);
                 let [layer] = layers.as_slice() else { return None };
                 let [clip] = layer.clips.as_slice() else { return None };
-                let graded = !(clip.node_graph.is_identity() && clip.builtin_effects.is_empty());
+                let graded = clip.needs_grade_or_builtin_processing();
                 (!layer.transition && graded && clip.media_id().is_some() && !clip.is_reversed()).then_some(clip.id)
             },
             |t, clip| {

@@ -799,12 +799,8 @@ fn sits_unmoved(clip: &klipp_timeline::Clip, seq: &klipp_timeline::Sequence, at:
     let near = |a: f32, b: f32| (a - b).abs() < 1e-4;
     near(px, 0.0) && near(py, 0.0) && near(sx, 1.0) && near(sy, 1.0) && near(rot, 0.0)
         && clip.transform_link.is_none()
-        && clip.builtin_effects.iter().all(|e| {
-            !matches!(e, klipp_effects::BuiltinEffect::Transform { .. } | klipp_effects::BuiltinEffect::CornerPin { .. })
-                || klipp_effects::is_identity_effect(e)
-        })
-        && clip.transform_tilt_x_keyframes.is_empty()
-        && clip.transform_tilt_y_keyframes.is_empty()
+        && !clip.has_nonidentity_placement_entries()
+        && !clip.has_tilt_keyframes()
         && (seq.camera.is_still() || clip.depth <= 0.0)
 }
 
@@ -4814,7 +4810,7 @@ impl PlaybackEngine {
             .and_then(|t| t.clips.get(self.current_clip_index))
         {
             self.speed_keyframes = clip.speed_keyframes.clone();
-            self.speed_ramp_enabled = !clip.speed_keyframes.is_empty();
+            self.speed_ramp_enabled = clip.has_speed_keyframes();
         } else {
             self.speed_keyframes.clear();
             self.speed_ramp_enabled = false;
@@ -6984,7 +6980,7 @@ impl PlaybackEngine {
             seq.tracks
                 .get(self.current_track_index)
                 .and_then(|t| t.clips.get(self.current_clip_index))
-                .filter(|c| !(c.node_graph.is_identity() && c.builtin_effects.is_empty()))
+                .filter(|c| c.needs_grade_or_builtin_processing())
                 .map(|c| (c.timeline_in.value, c.timeline_out.value))
         };
         let Some((clip_start, clip_end)) = clip_range else { return };
@@ -7020,7 +7016,7 @@ impl PlaybackEngine {
 
         for track in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
             for clip in &track.clips {
-                if clip.node_graph.is_identity() && clip.builtin_effects.is_empty() {
+                if !clip.needs_grade_or_builtin_processing() {
                     continue;
                 }
                 let grade_hash = self.render_key_hash(&seq, clip, track.opacity);
@@ -7663,7 +7659,7 @@ impl PlaybackEngine {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             self.v1_clip_id(&seq)
                 .and_then(|id| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id))
-                .is_some_and(|c| klipp_effects::chain_supports_gpu(&c.builtin_effects))
+                .is_some_and(|c| c.effect_chain_gpu_capable())
         };
         blockers.iter().all(|b| {
             matches!(
@@ -7713,17 +7709,10 @@ impl PlaybackEngine {
                     // Laid over as drawn, so only where the camera does
                     // not move it.
                     && (seq.camera.is_still() || c.depth == 0.0)
-                    && c.node_graph.is_identity()
+                    && c.grade_is_identity()
                     && !c.has_enabled_plugins()
-                    && c.builtin_effects.is_empty()
-                    && c.param_modifiers.is_empty()
-                    && c.opacity_keyframes.is_empty()
-                    && c.transform_pos_x_keyframes.is_empty()
-                    && c.transform_pos_y_keyframes.is_empty()
-                    && c.transform_scale_keyframes.is_empty()
-                    && c.transform_rotation_keyframes.is_empty()
-                    && c.transform_tilt_x_keyframes.is_empty()
-                    && c.transform_tilt_y_keyframes.is_empty()
+                    && !c.has_effect_entries()
+                    && !c.has_animation()
                     && matches!(c.blend_mode, klipp_core::BlendMode::Normal)
                     && c.matte_source.is_none()
                     && c.matte_stencil.is_none()
@@ -8017,25 +8006,19 @@ impl PlaybackEngine {
         if clip.consumed_as_matte {
             blockers.push("clip is a matte source");
         }
-        if !clip.node_graph.is_identity() {
+        if !clip.grade_is_identity() {
             blockers.push("grade graph is not an identity");
         }
         if clip.has_enabled_plugins() {
             blockers.push("plugin effects on clip");
         }
-        if !clip.builtin_effects.is_empty() {
+        if clip.has_effect_entries() {
             blockers.push("builtin effects on clip");
         }
-        if !clip.param_modifiers.is_empty() {
+        if clip.has_param_modifiers() {
             blockers.push("param modifiers on clip");
         }
-        if !clip.opacity_keyframes.is_empty()
-            || !clip.transform_pos_x_keyframes.is_empty()
-            || !clip.transform_pos_y_keyframes.is_empty()
-            || !clip.transform_scale_keyframes.is_empty()
-            || !clip.transform_rotation_keyframes.is_empty()
-            || !clip.transform_tilt_x_keyframes.is_empty()
-            || !clip.transform_tilt_y_keyframes.is_empty()
+        if clip.has_render_keyframes()
         {
             blockers.push("render keyframes on clip");
         }

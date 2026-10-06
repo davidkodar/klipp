@@ -46,6 +46,7 @@
 mod brief;
 mod edit_plan;
 mod effect_slots;
+mod render_gates;
 mod clip_kind;
 pub mod crossfade;
 pub mod flatten;
