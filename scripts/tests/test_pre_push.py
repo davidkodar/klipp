@@ -452,6 +452,39 @@ class RealGitGate(unittest.TestCase):
         return path.read_text().splitlines() if path.exists() else []
 
 
+class PushedCommitIsCheckedOutTests(RealGitGate):
+    """The gate tests what is checked out, so a branch pushed from a checkout
+    that has another one out would go up untested: it is refused (#1118)."""
+
+    def run_gate_with(self, refs):
+        return subprocess.run(["sh", str(self.root / "scripts/pre-push.sh")], cwd=self.root, env=self.env, text=True, capture_output=True, input=refs)
+
+    def test_a_branch_that_is_not_checked_out_is_refused_before_anything_is_built(self):
+        (self.root / "shared.txt").write_text("one\nbranch\n")
+        self.commit(self.root, "the branch's change")
+        main = self.git(self.root, "rev-parse", "origin/main").strip()
+        result = self.run_gate_with(f"refs/heads/main {main} refs/heads/main {'0' * 40}\n")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("refs/heads/main is not the commit checked out here", result.stderr)
+        self.assertIn("#1118", result.stderr)
+        self.assertEqual(self.built(), [], "nothing built")
+
+    def test_the_checked_out_branch_goes_through(self):
+        (self.root / "shared.txt").write_text("one\nbranch\n")
+        self.commit(self.root, "the branch's change")
+        head = self.git(self.root, "rev-parse", "HEAD").strip()
+        result = self.run_gate_with(f"refs/heads/fix/branch {head} refs/heads/fix/branch {'0' * 40}\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.built()), 1, "built once")
+
+    def test_a_tag_is_not_held_to_the_checkout(self):
+        main = self.git(self.root, "rev-parse", "origin/main").strip()
+        (self.root / "shared.txt").write_text("one\nbranch\n")
+        self.commit(self.root, "the branch's change")
+        result = self.run_gate_with(f"refs/tags/v0 {main} refs/tags/v0 {'0' * 40}\n")
+        self.assertNotIn("#1118", result.stderr)
+
+
 class MergeWithMainTests(RealGitGate):
     """The gate tests a branch merged with current main, and refuses one that
     cannot merge before building anything (#866)."""
