@@ -557,7 +557,7 @@ fn an_overridden_link_goes_with_its_dropped_wire() {
     assert!(notes.iter().any(|n| matches!(n, LiftNote::EdgeDropped { why, .. } if why.contains("wireless"))));
 }
 
-/// Codex's case: S -> A -> B -> O, plus a wire from B into A's port 9.
+/// A loop through an unread port: S -> A -> B -> O, plus a wire from B into A's port 9.
 /// A's kind never reads port 9, but today's ordering counts every drawn
 /// edge, so it refuses the graph and the grade never ran.
 fn looping_through_an_unread_port() -> Value {

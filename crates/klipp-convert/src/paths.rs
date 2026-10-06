@@ -20,7 +20,7 @@
 //! renamed ids, `uuid v5(instance, clip)`; [`instance_sources`] turns them
 //! back into their document clips, so they are found too, where today's
 //! drain reaches none. Both are deliberate changes from today, pinned by
-//! klipp-25's `a_live_drag_reaches` test.
+//! the `a_live_drag_reaches` test (#1080).
 
 use std::collections::BTreeMap;
 
