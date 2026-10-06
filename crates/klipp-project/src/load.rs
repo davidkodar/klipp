@@ -390,7 +390,7 @@ fn load_project_as(dir: &Path, form: crate::FileForm) -> Result<LoadResult, Stri
     // Revision 2 only (#1089): a file from before it is refused, naming the
     // tool that converts it, and a converted one is read back into today's
     // model through `unlift`.
-    let stored = match form {
+    let mut stored = match form {
         crate::FileForm::Revision2 => stored_pictures(&value),
         #[cfg(feature = "v1-oracle")]
         crate::FileForm::V1 => HashMap::new(),
@@ -578,8 +578,11 @@ fn load_project_as(dir: &Path, form: crate::FileForm) -> Result<LoadResult, Stri
     }
 
     // Reconstruct all sequences
+    // Clips a load step rewrites on purpose (an old title's animation),
+    // which keep no stored picture: theirs is lifted again when saved.
+    let mut rewritten = std::collections::HashSet::new();
     let mut sequences: Vec<Sequence> = project.sequences.iter()
-        .filter_map(|seq_json| load_sequence_from_json(seq_json, dir).ok())
+        .filter_map(|seq_json| load_sequence_from_json(seq_json, dir, &mut rewritten).ok())
         .collect();
 
     if sequences.is_empty() {
@@ -672,6 +675,7 @@ fn load_project_as(dir: &Path, form: crate::FileForm) -> Result<LoadResult, Stri
         );
     }
 
+    stored.retain(|id, _| !rewritten.contains(id));
     adopt_stored_pictures(&mut sequences, stored);
 
     info!(
@@ -695,7 +699,13 @@ fn load_project_as(dir: &Path, form: crate::FileForm) -> Result<LoadResult, Stri
 }
 
 
-fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Result<Sequence, String> {
+/// A sequence from its record, adding to `rewritten` the id of each clip
+/// whose picture a load step changed from what the file holds.
+fn load_sequence_from_json(
+    seq_json: &SequenceJson,
+    project_dir: &Path,
+    rewritten: &mut std::collections::HashSet<String>,
+) -> Result<Sequence, String> {
     // Refuse an effect this reader does not know, by name, before any
     // clip is built. The effects are stored as one tagged array; read as
     // a whole and swallowed, one unknown tag — a project written by a
@@ -939,6 +949,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     }
                     let m = td.migrate_legacy_animation();
                     if m.clear_clip_keyframes {
+                        rewritten.insert(clip.id.0.to_string());
                         clip.edit_opacity_keyframes(|v| v.clear());
                         clip.edit_transform_pos_x_keyframes(|v| v.clear());
                         clip.edit_transform_pos_y_keyframes(|v| v.clear());
