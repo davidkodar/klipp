@@ -909,10 +909,8 @@ fn generated_spliced_project(dir: &Path, seed: u64, n: usize) {
         }
     }
     if r.chance(70) {
-        // No Opacity on the track: today's bake lets a track's Opacity
-        // override the clip's, own keys and all, which the lifted opacity
-        // can't carry (an open question on #1002).
-        let video: Vec<Value> = (0..r.below(3)).map(|_| effect(&mut r, &samples)).filter(|e| e["type"] != "opacity").collect();
+        // Opacity among them: a track's weighs the clip's (#1078).
+        let video: Vec<Value> = (0..r.below(3)).map(|_| effect(&mut r, &samples)).collect();
         let flags: Vec<Value> = (0..r.below(video.len() as u64 + 1)).map(|_| json!(r.chance(75))).collect();
         let mut fx = json!({ "video": video, "video_enabled": flags });
         if r.chance(60) {
