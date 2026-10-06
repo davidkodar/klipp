@@ -68,7 +68,7 @@ fn only_klipp_projects_outside_git_trees_and_build_folders_are_found() {
     project(&home.join("Videos/Trip.klipp.klipp-v1"));
     project(&home.join(".local/share/Trash/files/Old.klipp"));
 
-    assert_eq!(discover(&home).0, vec![kept]);
+    assert_eq!(discover(&home).projects, vec![kept]);
     let _ = std::fs::remove_dir_all(&home);
 }
 
@@ -80,7 +80,7 @@ fn a_collected_project_is_found() {
     let seq = vec![klipp_timeline::Sequence::new_default()];
     let options = klipp_project::consolidate::ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new() };
     klipp_project::consolidate::consolidate_project(&source, &klipp_media::MediaPool::new(), &seq, &Default::default(), options, None).unwrap();
-    assert!(discover(&home).0.contains(&dest), "the Collect Project destination is found: {:?}", discover(&home));
+    assert!(discover(&home).projects.contains(&dest), "the Collect Project destination is found: {:?}", discover(&home));
     let _ = std::fs::remove_dir_all(&home);
 }
 
@@ -114,6 +114,61 @@ fn a_pending_recovery_counts_only_when_the_pair_is_not_whole() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// A pair from two saves with no recovery mark is reported apart: the app
+/// mends it from the backups beside the pair, which a converted copy
+/// doesn't carry (#1054 review).
+#[test]
+fn a_pair_from_two_saves_without_a_mark_is_reported() {
+    let home = temp("pair");
+    let dir = project(&home.join("Trip.klipp"));
+    assert!(!scan_project(&dir, false, None).pair_mismatch, "a whole pair");
+    std::fs::write(dir.join("project.json"), PROJECT.replace("g1", "g2")).unwrap();
+    let s = scan_project(&dir, false, None);
+    assert!(s.pair_mismatch && !s.pending_recovery, "two saves, no mark");
+    std::fs::create_dir_all(dir.join(".recovery")).unwrap();
+    std::fs::write(dir.join(".recovery/pending"), "g2").unwrap();
+    let s = scan_project(&dir, false, None);
+    assert!(!s.pair_mismatch && s.pending_recovery, "with the mark it is a stopped save");
+    let config = home.join(".config");
+    std::fs::remove_dir_all(dir.join(".recovery")).unwrap();
+    assert_eq!(scan(&home, &config).counts().pair_mismatches, 1);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// A folder the walk can't list is counted and named, never passed over
+/// in silence: it may hold projects.
+#[test]
+fn a_folder_that_cannot_be_read_is_counted() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = temp("unreadable");
+    project(&home.join("Videos/Trip.klipp"));
+    let locked = home.join("Locked");
+    project(&locked.join("Hidden.klipp"));
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let d = discover(&home);
+    let report = scan(&home, &home.join(".config"));
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(d.unreadable, vec![locked.clone()]);
+    assert_eq!(report.counts().unreadable_dirs, 1);
+    assert!(report.text().contains("couldn't be read"), "{}", report.text());
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Whether Klipp runs can't be told from a process folder that can't be
+/// listed, or a runtime folder that can't: an error, never "nothing runs".
+#[test]
+fn not_being_able_to_tell_is_an_error() {
+    use std::os::unix::fs::PermissionsExt;
+    assert!(app_processes(Path::new("/nonexistent/klipp-proc")).is_err());
+    let run = temp("runtime");
+    assert_eq!(answering_sockets(Some(&run.join("gone")), None), Ok(Vec::new()), "a runtime folder that isn't there holds none");
+    std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let r = answering_sockets(Some(&run), None);
+    std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(r.is_err());
+    let _ = std::fs::remove_dir_all(&run);
+}
+
 #[test]
 fn links_are_reported_and_not_followed() {
     let home = temp("links");
@@ -121,7 +176,7 @@ fn links_are_reported_and_not_followed() {
     std::os::unix::fs::symlink(&real, home.join("Linked.klipp")).unwrap();
     std::fs::create_dir_all(home.join("Shared")).unwrap();
     std::os::unix::fs::symlink(home.join("Shared"), real.join("media/shared")).unwrap();
-    let found = discover(&home).0;
+    let found = discover(&home).projects;
     assert_eq!(found, vec![real.clone()], "the linked folder is not walked into, so the project is listed once");
     let s = scan_project(&real, false, None);
     assert_eq!(s.symlinks, vec![PathBuf::from("media/shared")]);
@@ -195,7 +250,7 @@ fn a_klipp_process_is_found_by_its_executable_or_its_name() {
         }
     }
     std::fs::create_dir_all(proc.join("self")).unwrap();
-    assert_eq!(app_processes(&proc), vec![100, 300]);
+    assert_eq!(app_processes(&proc), Ok(vec![100, 300]));
     let _ = std::fs::remove_dir_all(&proc);
 }
 
@@ -209,10 +264,10 @@ fn only_a_control_socket_that_answers_counts() {
     drop(std::os::unix::net::UnixListener::bind(&stale).unwrap());
     let other = run.join("pipewire-0");
     let _p = std::os::unix::net::UnixListener::bind(&other).unwrap();
-    assert_eq!(answering_sockets(Some(&run), None), vec![live.clone()]);
+    assert_eq!(answering_sockets(Some(&run), None), Ok(vec![live.clone()]));
     let custom = run.join("custom.sock");
     let _c = std::os::unix::net::UnixListener::bind(&custom).unwrap();
-    assert_eq!(answering_sockets(Some(&run), Some(&custom)), vec![custom.clone(), live]);
+    assert_eq!(answering_sockets(Some(&run), Some(&custom)), Ok(vec![custom.clone(), live]));
     let _ = std::fs::remove_dir_all(&run);
 }
 
@@ -224,9 +279,9 @@ fn projects_in_a_test_runs_scratch_are_counted_not_listed() {
     project(&home.join("Work/tmp-build/run2/b.klipp"));
     project(&home.join(".claude/jobs/abc/tmp/c.klipp"));
     project(&home.join("Work/tmp_de/d.klipp"));
-    let (found, scratch) = discover(&home);
-    assert_eq!(found, vec![kept]);
-    assert_eq!(scratch, 4, "every scratch project is counted");
+    let d = discover(&home);
+    assert_eq!(d.projects, vec![kept]);
+    assert_eq!(d.scratch, 4, "every scratch project is counted");
     // In the recent list too: a project in a session's tmp folder.
     let away = std::env::temp_dir().join(format!("klipp_scratch_recent_{}", std::process::id()));
     let outside = project(&away.join("tmp/Session.klipp"));

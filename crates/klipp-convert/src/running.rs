@@ -32,8 +32,10 @@ impl Running {
 
 /// The app's processes among those in `proc_dir` (`/proc`): each whose
 /// executable's name, or failing that its `comm`, is one of [`APP_NAMES`].
-pub fn app_processes(proc_dir: &Path) -> Vec<u32> {
-    let Ok(es) = std::fs::read_dir(proc_dir) else { return Vec::new() };
+/// A `proc_dir` that can't be listed is an error, never "none running": the
+/// conversion must refuse when it can't tell.
+pub fn app_processes(proc_dir: &Path) -> Result<Vec<u32>, String> {
+    let es = std::fs::read_dir(proc_dir).map_err(|e| format!("listing {}: {e}", proc_dir.display()))?;
     let mut out: Vec<u32> = es
         .flatten()
         .filter_map(|e| {
@@ -49,31 +51,35 @@ pub fn app_processes(proc_dir: &Path) -> Vec<u32> {
         })
         .collect();
     out.sort_unstable();
-    out
+    Ok(out)
 }
 
 /// The control sockets in `runtime_dir` that answer: `klipp*.sock`, the
 /// app's own and the per-instance ones a second app binds, plus
-/// `override_path` (`KLIPP_CONTROL_SOCKET`).
-pub fn answering_sockets(runtime_dir: Option<&Path>, override_path: Option<&Path>) -> Vec<PathBuf> {
+/// `override_path` (`KLIPP_CONTROL_SOCKET`). A runtime folder that isn't
+/// there holds no socket; one that can't be listed is an error.
+pub fn answering_sockets(runtime_dir: Option<&Path>, override_path: Option<&Path>) -> Result<Vec<PathBuf>, String> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(dir) = runtime_dir {
-        if let Ok(es) = std::fs::read_dir(dir) {
-            candidates.extend(es.flatten().map(|e| e.path()).filter(|p| {
+        match std::fs::read_dir(dir) {
+            Ok(es) => candidates.extend(es.flatten().map(|e| e.path()).filter(|p| {
                 let n = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 n.starts_with("klipp") && n.ends_with(".sock")
-            }));
+            })),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("listing {}: {e}", dir.display())),
         }
     }
     candidates.extend(override_path.map(Path::to_path_buf));
     candidates.sort();
     candidates.dedup();
-    candidates.into_iter().filter(|p| UnixStream::connect(p).is_ok()).collect()
+    Ok(candidates.into_iter().filter(|p| UnixStream::connect(p).is_ok()).collect())
 }
 
-/// Whether Klipp is running on this machine, for this user.
-pub fn running() -> Running {
+/// Whether Klipp is running on this machine, for this user: an error when
+/// it can't be told.
+pub fn running() -> Result<Running, String> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
     let over = std::env::var_os("KLIPP_CONTROL_SOCKET").map(PathBuf::from);
-    Running { processes: app_processes(Path::new("/proc")), sockets: answering_sockets(runtime.as_deref(), over.as_deref()) }
+    Ok(Running { processes: app_processes(Path::new("/proc"))?, sockets: answering_sockets(runtime.as_deref(), over.as_deref())? })
 }

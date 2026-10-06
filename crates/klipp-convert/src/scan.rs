@@ -80,11 +80,24 @@ pub fn is_klipp_project(dir: &Path) -> bool {
     project_shape && manifest_shape
 }
 
+/// What a walk of the home folder found.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Discovered {
+    /// Every Klipp project folder, sorted.
+    pub projects: Vec<PathBuf>,
+    /// Projects in test runs' scratch ([`is_scratch`]), counted only.
+    pub scratch: usize,
+    /// Folders that couldn't be listed, which may hold projects the walk
+    /// never saw.
+    pub unreadable: Vec<PathBuf>,
+}
+
 /// Every Klipp project folder under `home`, not following symbolic links,
-/// sorted, and how many more sit in test runs' scratch ([`is_scratch`]).
-pub fn discover(home: &Path) -> (Vec<PathBuf>, usize) {
+/// and the folders it couldn't list.
+pub fn discover(home: &Path) -> Discovered {
     let mut found = BTreeSet::new();
     let mut scratch = 0;
+    let mut unreadable = Vec::new();
     let mut stack = vec![(home.to_path_buf(), false)];
     while let Some((dir, in_scratch)) = stack.pop() {
         if dir != home && skipped(&dir, home) {
@@ -98,7 +111,15 @@ pub fn discover(home: &Path) -> (Vec<PathBuf>, usize) {
                 found.insert(dir.clone());
             }
         }
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(es) => es,
+            // Gone since it was listed: nothing in it to miss.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                unreadable.push(dir);
+                continue;
+            }
+        };
         for e in entries.flatten() {
             // Not through links: a link into another tree would list its
             // projects twice, or a whole other disk.
@@ -107,7 +128,8 @@ pub fn discover(home: &Path) -> (Vec<PathBuf>, usize) {
             }
         }
     }
-    (found.into_iter().collect(), scratch)
+    unreadable.sort();
+    Discovered { projects: found.into_iter().collect(), scratch, unreadable }
 }
 
 /// The app's preferences file, which holds the recent-projects list.
@@ -169,6 +191,18 @@ pub fn has_pending_recovery(dir: &Path) -> bool {
     generation_of(&project) != generation_of(&manifest)
 }
 
+/// Whether the pair is from different saves with no `pending` mark: the
+/// app then mends it from the backups beside the pair, which the converted
+/// copy doesn't carry, so the conversion stops on it.
+pub fn pair_mismatch(dir: &Path) -> bool {
+    if dir.join(".recovery").join("pending").exists() {
+        return false;
+    }
+    let read = |p: PathBuf| std::fs::read_to_string(p).unwrap_or_default();
+    let (project, manifest) = (read(dir.join("project.json")), read(dir.join("media").join("manifest.json")));
+    generation_of(&project) != generation_of(&manifest)
+}
+
 /// The project's side stores.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct SideStores {
@@ -215,6 +249,10 @@ pub struct ProjectScan {
     pub autosave: bool,
     pub newer_autosave: bool,
     pub pending_recovery: bool,
+    /// The pair is from different saves with no `pending` mark.
+    pub pair_mismatch: bool,
+    /// Folders inside the project that couldn't be listed.
+    pub unreadable_dirs: usize,
     pub side_stores: SideStores,
     /// Symbolic links inside the project, relative to it.
     pub symlinks: Vec<PathBuf>,
@@ -267,9 +305,17 @@ pub fn scan_project(dir: &Path, from_recent_list: bool, backup_device: Option<u6
     let media = media_files(dir);
     let mut symlinks = Vec::new();
     let mut backup_bytes = 0;
+    let mut unreadable_dirs = 0;
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(es) = std::fs::read_dir(&d) else { continue };
+        let es = match std::fs::read_dir(&d) {
+            Ok(es) => es,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                unreadable_dirs += 1;
+                continue;
+            }
+        };
         for e in es.flatten() {
             let p = e.path();
             let Ok(t) = e.file_type() else { continue };
@@ -295,6 +341,8 @@ pub fn scan_project(dir: &Path, from_recent_list: bool, backup_device: Option<u6
         autosave: autosave_path(dir).exists(),
         newer_autosave: has_newer_autosave(dir),
         pending_recovery: has_pending_recovery(dir),
+        pair_mismatch: pair_mismatch(dir),
+        unreadable_dirs,
         side_stores: SideStores { looks, stills_index: dir.join("media").join("stills.json").exists(), stills_dir: dir.join("media").join("stills").is_dir() },
         symlinks,
         is_symlink: std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()),
@@ -319,8 +367,11 @@ pub struct Report {
     /// Projects in test runs' scratch, under the home directory or in the
     /// recent list, left out: counted, never listed.
     pub scratch_skipped: usize,
+    /// Folders the walk couldn't list, which may hold projects it never saw.
+    pub unreadable_dirs: Vec<PathBuf>,
     pub presets: Presets,
-    pub running: crate::running::Running,
+    /// What runs, or why it couldn't be told.
+    pub running: Result<crate::running::Running, String>,
     pub scanned_at: u64,
 }
 
@@ -334,6 +385,9 @@ pub struct Counts {
     pub newer_autosaves: usize,
     pub orphan_autosaves: usize,
     pub pending_recoveries: usize,
+    pub pair_mismatches: usize,
+    /// Folders that couldn't be listed: in the walk, and inside projects.
+    pub unreadable_dirs: usize,
     pub looks: usize,
     pub stills_indexes: usize,
     pub presets: usize,
@@ -356,6 +410,8 @@ impl Report {
             newer_autosaves: n(|s| s.newer_autosave),
             orphan_autosaves: n(|s| s.orphan_autosave),
             pending_recoveries: n(|s| s.pending_recovery),
+            pair_mismatches: n(|s| s.pair_mismatch),
+            unreadable_dirs: self.unreadable_dirs.len() + p.iter().map(|s| s.unreadable_dirs).sum::<usize>(),
             looks: p.iter().map(|s| s.side_stores.looks).sum(),
             stills_indexes: n(|s| s.side_stores.stills_index),
             presets: self.presets.colour + self.presets.tool + self.presets.effect,
@@ -373,20 +429,27 @@ impl Report {
     pub fn text(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("Klipp conversion dry run\nhome: {}\nrecent list: {}\nbackups go to: {}\n\n", self.home.display(), self.prefs.display(), self.backup_root.display()));
-        if self.running.is_running() {
-            out.push_str(&format!("KLIPP IS RUNNING: {:?}\n\n", self.running));
+        match &self.running {
+            Ok(r) if r.is_running() => out.push_str(&format!("KLIPP IS RUNNING: {r:?}\n\n")),
+            Ok(_) => {}
+            Err(e) => out.push_str(&format!("COULD NOT TELL WHETHER KLIPP IS RUNNING: {e}\n\n")),
         }
         for s in &self.projects {
             let mut notes = Vec::new();
             if s.newer_autosave { notes.push("newer auto-save".to_string()) }
             if s.orphan_autosave { notes.push("auto-save whose project is gone".to_string()) }
             if s.pending_recovery { notes.push("a save stopped part way".to_string()) }
+            if s.pair_mismatch { notes.push("the pair is from different saves, with no recovery mark".to_string()) }
+            if s.unreadable_dirs > 0 { notes.push(format!("{} folders inside it couldn't be read", s.unreadable_dirs)) }
             if s.is_symlink { notes.push("the folder is a link".to_string()) }
             if !s.symlinks.is_empty() { notes.push(format!("{} links inside", s.symlinks.len())) }
             if s.other_filesystem { notes.push("another filesystem".to_string()) }
             if s.from_recent_list { notes.push("found only in the recent list".to_string()) }
             let tag = if notes.is_empty() { "ok".to_string() } else { notes.join("; ") };
             out.push_str(&format!("{}  [{}]\n", s.path.display(), tag));
+        }
+        for d in &self.unreadable_dirs {
+            out.push_str(&format!("{}  [couldn't be read: projects in it would be missed]\n", d.display()));
         }
         for m in &self.recent_missing {
             out.push_str(&format!("{}  [in the recent list, not a project]\n", m.display()));
@@ -402,7 +465,7 @@ impl Report {
 pub fn scan(home: &Path, config_dir: &Path) -> Report {
     let backup = backup_root(home);
     let device = std::fs::metadata(&backup).or_else(|_| std::fs::metadata(home)).map(|m| m.dev()).ok();
-    let (walked, mut scratch_skipped) = discover(home);
+    let Discovered { projects: walked, scratch: mut scratch_skipped, unreadable: unreadable_dirs } = discover(home);
     let prefs = prefs_path(config_dir);
     let mut projects: Vec<ProjectScan> = walked.iter().map(|d| scan_project(d, false, device)).collect();
     let mut recent_missing = Vec::new();
@@ -431,6 +494,7 @@ pub fn scan(home: &Path, config_dir: &Path) -> Report {
         projects,
         recent_missing,
         scratch_skipped,
+        unreadable_dirs,
         presets: presets(config_dir),
         running: crate::running::running(),
         scanned_at,
