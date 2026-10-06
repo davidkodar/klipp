@@ -80,7 +80,7 @@ fn group_node(id: NodeId, body: &Graph, origin: Origin) -> Node {
         anim: Default::default(),
         mix: None,
         wireless: Default::default(),
-        group: Some(Box::new(GroupBody { graph: body.clone(), ports: Vec::new() })),
+        group: Some(Box::new(GroupBody { graph: body.clone(), ports: Vec::new(), interface: Vec::new() })),
         legacy: None,
         legacy_flags: None,
         origin: Some(origin),

@@ -28,7 +28,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -223,13 +223,127 @@ pub struct Animation {
     pub modifiers: Option<Value>,
 }
 
-/// What a group node holds: its graph and the ports it shows outside.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// A connection's value type, independent of rendering crates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PortType {
+    Image,
+    Matte,
+}
+
+/// Whether a published port receives or produces a value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PortDirection {
+    Input,
+    Output,
+}
+
+/// A port on a direct child of a group, addressed independently of order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PortBinding {
+    pub node: NodeId,
+    pub port: PortKey,
+}
+
+/// A group's stable public port and the child endpoint it exposes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroupPort {
+    pub key: PortKey,
+    pub direction: PortDirection,
+    pub ty: PortType,
+    pub binding: PortBinding,
+    /// Display-only: changing this never changes connections.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+}
+
+/// Capability required to interpret a nonempty typed group interface.
+pub const GROUP_INTERFACE_CAPABILITY: &str = "group-interface-1";
+
+/// What a group node holds: its graph and the ports it shows outside.
+#[derive(Clone, Debug, PartialEq)]
 pub struct GroupBody {
     pub graph: Graph,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Legacy names, kept byte-for-byte; not reinterpreted as bindings.
     pub ports: Vec<PortKey>,
+    pub interface: Vec<GroupPort>,
+}
+
+impl Serialize for GroupBody {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            graph: &'a Graph,
+            #[serde(skip_serializing_if = "Vec::is_empty")]
+            ports: &'a Vec<PortKey>,
+            #[serde(skip_serializing_if = "Vec::is_empty")]
+            interface: &'a Vec<GroupPort>,
+            #[serde(skip_serializing_if = "Vec::is_empty")]
+            requires: Vec<&'static str>,
+        }
+        Wire {
+            graph: &self.graph,
+            ports: &self.ports,
+            interface: &self.interface,
+            requires: if self.interface.is_empty() { Vec::new() } else { vec![GROUP_INTERFACE_CAPABILITY] },
+        }.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for GroupBody {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            graph: Graph,
+            #[serde(default)]
+            ports: Vec<PortKey>,
+            #[serde(default)]
+            interface: Vec<GroupPort>,
+            #[serde(default)]
+            requires: Vec<String>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        for capability in &wire.requires {
+            if capability != GROUP_INTERFACE_CAPABILITY {
+                return Err(serde::de::Error::custom(format!("unsupported graph capability: {capability}")));
+            }
+        }
+        if !wire.interface.is_empty() && !wire.requires.iter().any(|r| r == GROUP_INTERFACE_CAPABILITY) {
+            return Err(serde::de::Error::custom("typed group interface requires group-interface-1"));
+        }
+        Ok(Self { graph: wire.graph, ports: wire.ports, interface: wire.interface })
+    }
+}
+
+/// Registry information passed into format validation, without renderer dependencies.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortSpec {
+    pub key: String,
+    pub ty: PortType,
+    pub optional: bool,
+    /// Port setting key and its allowed text values (for example channel).
+    pub params: Vec<(String, Vec<String>)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NodeSpec {
+    pub inputs: Vec<PortSpec>,
+    pub outputs: Vec<PortSpec>,
+    pub mixable: bool,
+}
+
+/// Resolve registered types. Unknown types retain structural validation.
+pub trait PortCatalog {
+    fn node(&self, type_id: &str) -> Option<NodeSpec>;
+
+    /// Adapters may resolve a legacy payload's kind without changing its saved type id.
+    fn node_spec(&self, node: &Node) -> Option<NodeSpec> {
+        self.node(node.type_id.as_str())
+    }
 }
 
 /// An old entry, exactly as it was read. Each part is JSON so that no
@@ -335,6 +449,7 @@ pub enum FormatError {
     NotStructural { node: NodeId, type_id: String },
     MissingLegacy(NodeId),
     MissingGroupBody(NodeId),
+    UnsupportedGroupInterface(NodeId),
     UnknownClipField(String),
 }
 
@@ -350,6 +465,7 @@ impl fmt::Display for FormatError {
             }
             Self::MissingLegacy(id) => write!(f, "legacy node {id} carries no old entry"),
             Self::MissingGroupBody(id) => write!(f, "group node {id} has no body"),
+            Self::UnsupportedGroupInterface(id) => write!(f, "legacy group {id} cannot hold a typed interface"),
             Self::UnknownClipField(name) => write!(f, "{name} isn't a clip animation field"),
         }
     }
@@ -416,7 +532,10 @@ impl Graph {
                 return Err(FormatError::MissingLegacy(node.id));
             }
             match (&node.group, type_id == types::LEGACY_GRADE) {
-                (Some(body), true) => body.graph.check_level(true)?,
+                (Some(body), true) => {
+                    if !body.interface.is_empty() { return Err(FormatError::UnsupportedGroupInterface(node.id)); }
+                    body.graph.check_level(true)?;
+                },
                 (None, true) => return Err(FormatError::MissingGroupBody(node.id)),
                 (Some(_), false) => return Err(FormatError::NotStructural { node: node.id, type_id: node.type_id.0.clone() }),
                 (None, false) => {}

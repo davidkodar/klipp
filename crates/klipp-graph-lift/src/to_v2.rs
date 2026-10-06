@@ -235,7 +235,7 @@ fn grade_group(root: Root, g: &Map<String, Value>, what: &'static str) -> Result
         keyframes: None,
         modifiers: BTreeMap::new(),
     });
-    node.group = Some(Box::new(GroupBody { graph: grade_body(g, what)?, ports: Vec::new() }));
+    node.group = Some(Box::new(GroupBody { graph: grade_body(g, what)?, ports: Vec::new(), interface: Vec::new() }));
     Ok(node)
 }
 

@@ -812,7 +812,7 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
             notes.push(LiftNote::NeverRan { node: g.id, why: "its grade graph loops, so today's renderer never ran it".into() });
         }
         let mut group = node(g.id, lt::GROUP, runs, g.legacy.clone());
-        group.group = Some(Box::new(GroupBody { graph: body, ports: Vec::new() }));
+        group.group = Some(Box::new(GroupBody { graph: body, ports: Vec::new(), interface: Vec::new() }));
         if !group_flags.is_empty() {
             group.legacy_flags = Some(group_flags);
         }
