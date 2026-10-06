@@ -1,4 +1,4 @@
-use crate::lift::{lift_clip, ClipKind, LiftCtx, KEYFRAME_ALIASES};
+use crate::lift::{auto_placement_index, lift_clip, ClipKind, LiftCtx, DRAWS_OUTSIDE, KEYFRAME_ALIASES};
 use crate::to_v2::clip_to_v2;
 use klipp_graph_format::lifted::{types as lt, ClipPicture, LiftNote};
 use klipp_graph_format::{types, Graph, Node, ParamValue};
@@ -278,4 +278,38 @@ fn the_keyframe_aliases_are_the_registrys() {
     let mut ours = KEYFRAME_ALIASES.to_vec();
     ours.sort();
     assert_eq!(ours, registry);
+}
+
+/// An Auto placement goes before the first effect that draws outside the
+/// picture, over the chain with the track's effects spliced in.
+#[test]
+fn auto_placement_goes_before_the_first_effect_drawing_outside() {
+    let blur = json!({"type": "gaussian_blur", "radius": 2.0});
+    let shadow = json!({"type": "drop_shadow"});
+    let glow = json!({"type": "outer_glow"});
+    assert_eq!(auto_placement_index(&[&blur, &blur]), 2, "none draws outside: at the end");
+    assert_eq!(auto_placement_index(&[&blur, &shadow, &glow]), 1);
+    // A clip's own blur, then its track's shadow: the shadow, spliced after
+    // the clip's effects, still runs after the transform.
+    assert_eq!(auto_placement_index(&[&blur, &blur, &shadow]), 2);
+}
+
+/// The copied list is today's function, for every effect the registry has.
+#[test]
+fn the_draws_outside_list_is_todays() {
+    for t in klipp_effects::registry::effect_types() {
+        let sample = (t.sample)();
+        assert_eq!(DRAWS_OUTSIDE.contains(&t.tag), klipp_effects::draws_outside_the_picture(&sample), "{}", t.tag);
+    }
+}
+
+/// A transform whose two scales differ loses the vertical one, as the
+/// renderer ignores it, and says so.
+#[test]
+fn a_dropped_vertical_scale_is_reported() {
+    let tf = json!({"type": "transform", "position_x": 0.0, "position_y": 0.0, "scale_x": 1.0, "scale_y": 2.0, "rotation": 0.0,
+                    "anchor_x": 0.5, "anchor_y": 0.5, "rotation_x": 0.0, "rotation_y": 0.0, "perspective": 0.0});
+    let (p, notes) = lift(clip(json!({"builtin_effects": [tf]})), ClipKind::Media);
+    assert_eq!(p.placement.scale, Some(1.0));
+    assert!(notes.iter().any(|n| matches!(n, LiftNote::DroppedField { field, .. } if field == "scale_y")));
 }

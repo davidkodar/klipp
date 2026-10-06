@@ -69,6 +69,23 @@ const GATEABLE: [&str; 8] = ["Corrector", "ColorBalance", "Exposure", "Contrast"
 /// the registry's keyframe aliases by a test.
 pub const KEYFRAME_ALIASES: [(&str, &str, &str); 1] = [("chroma_key", "spill", "soft_edge")];
 
+/// The effects that draw outside the picture, in the margin a transform
+/// leaves (`klipp_effects::draws_outside_the_picture`). Kept in step with
+/// it by a test.
+pub const DRAWS_OUTSIDE: [&str; 3] = ["drop_shadow", "outer_glow", "fill_bars"];
+
+/// Where an `Auto` placement takes effect in a clip's chain as it renders:
+/// the enabled effects with the track's spliced after the clip's own, and
+/// Opacity, SpeedRamp and TemporalDenoise already gone. It goes before the
+/// first that draws outside the picture, else at the end
+/// (`render.rs` `clip_effects`). An identity placement is skipped there.
+pub fn auto_placement_index(enabled_effects: &[&Value]) -> usize {
+    enabled_effects
+        .iter()
+        .position(|e| e.get("type").and_then(Value::as_str).is_some_and(|t| DRAWS_OUTSIDE.contains(&t)))
+        .unwrap_or(enabled_effects.len())
+}
+
 /// The modifier types that remap time rather than change a value.
 const TIME_MODIFIERS: [&str; 2] = ["loop", "ping_pong"];
 
