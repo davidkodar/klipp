@@ -410,7 +410,7 @@ impl OfxHostRuntime {
 
     fn load_plugin(&self, binary: &Path) -> Result<Vec<OfxPlugin>, PluginError> {
         let lib = Arc::new(
-            unsafe { libloading::Library::new(binary) }
+            klipp_load_lock::while_loading(|| unsafe { libloading::Library::new(binary) })
                 .map_err(|e| PluginError::LoadFailed(e.to_string()))?,
         );
 

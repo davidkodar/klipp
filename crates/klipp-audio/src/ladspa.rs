@@ -471,7 +471,7 @@ pub fn scan_ladspa_library(path: &Path) -> Vec<LadspaPluginInfo> {
     // SAFETY: loading an arbitrary .so is inherently unsafe — if the library
     // runs side effects in its constructor we have no defence. This mirrors
     // how the OFX host loads bundles.
-    let lib = match unsafe { libloading::Library::new(path) } {
+    let lib = match klipp_load_lock::while_loading(|| unsafe { libloading::Library::new(path) }) {
         Ok(l) => l,
         Err(e) => {
             tracing::debug!("LADSPA: dlopen failed for {}: {}", path.display(), e);
@@ -653,7 +653,7 @@ impl LadspaEffect {
     /// it at the given sample rate. Connects all ports and calls `activate`.
     pub fn new(path: &Path, label: &str, sample_rate: u32) -> Result<Self, String> {
         // SAFETY: same caveat as discovery — loading arbitrary libraries.
-        let lib = unsafe { libloading::Library::new(path) }
+        let lib = klipp_load_lock::while_loading(|| unsafe { libloading::Library::new(path) })
             .map_err(|e| format!("dlopen failed: {e}"))?;
 
         let descriptor_fn: libloading::Symbol<LadspaDescriptorFunction> =

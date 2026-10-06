@@ -9,6 +9,7 @@ name = "klipp-plugin-test-host"
 path = "tests/runner/host.rs"
 
 [dependencies]
+klipp-load-lock = { workspace = true }
 klipp-core = { workspace = true }
 libloading = { workspace = true }
 tracing = { workspace = true }

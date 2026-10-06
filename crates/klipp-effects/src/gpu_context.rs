@@ -57,6 +57,10 @@ impl GpuContext {
             }
         }
 
+        // Starting the driver must not overlap a plug-in's library
+        // loading on another thread: the two deadlock inside NVIDIA's
+        // driver (#1032). Held until the device is made.
+        let _loading = klipp_load_lock::library_loading();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             flags: wgpu::InstanceFlags::from_build_config() & !wgpu::InstanceFlags::VALIDATION,
@@ -82,6 +86,7 @@ impl GpuContext {
             None,
         ))
         .ok()?;
+        drop(_loading);
 
         let device_lost = register_device_callbacks(&device);
 

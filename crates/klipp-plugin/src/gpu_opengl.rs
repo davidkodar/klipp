@@ -187,10 +187,13 @@ impl EglApi {
         // the `?` propagates None. The returned Library outlives every
         // Symbol derived from it because we immediately wrap it in an
         // Arc that's stored on Self._lib.
-        let lib = unsafe {
-            libloading::Library::new("libEGL.so.1")
-                .or_else(|_| libloading::Library::new("libEGL.so"))
-                .ok()?
+        let lib = {
+            let _loading = klipp_load_lock::library_loading();
+            unsafe {
+                libloading::Library::new("libEGL.so.1")
+                    .or_else(|_| libloading::Library::new("libEGL.so"))
+                    .ok()?
+            }
         };
         let lib = std::sync::Arc::new(lib);
 
@@ -238,10 +241,13 @@ impl GlApi {
         // SAFETY: same dlopen rationale as EglApi::load — the returned
         // Library is wrapped in an Arc that's held for the process
         // lifetime by every derived function pointer.
-        let lib = unsafe {
-            libloading::Library::new("libGL.so.1")
-                .or_else(|_| libloading::Library::new("libGL.so"))
-                .ok()?
+        let lib = {
+            let _loading = klipp_load_lock::library_loading();
+            unsafe {
+                libloading::Library::new("libGL.so.1")
+                    .or_else(|_| libloading::Library::new("libGL.so"))
+                    .ok()?
+            }
         };
         let lib = std::sync::Arc::new(lib);
 

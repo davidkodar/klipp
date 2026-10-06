@@ -5,6 +5,7 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
+klipp-load-lock = { workspace = true }
 klipp-grade-model = { workspace = true }
 serde = { workspace = true }
 wgpu = { workspace = true }

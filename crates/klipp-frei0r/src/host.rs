@@ -295,15 +295,15 @@ pub fn discover_frei0r_plugins_cached(cache_dir: Option<&Path>) -> Vec<Frei0rPlu
 /// Broken libraries are silently skipped at debug level — same policy
 /// as the LADSPA + OFX hosts.
 pub fn scan_library(path: &Path) -> Vec<Frei0rPluginInfo> {
-    // SAFETY: dlopen of an arbitrary .so is inherently unsafe. Same
-    // contract OFX + LADSPA hosts already accept.
-    let lib = match unsafe { libloading::Library::new(path) } {
+    // Opened and, on every way out, closed under the load lock (#1032).
+    let guarded = match crate::library::GuardedLibrary::open(path) {
         Ok(l) => l,
         Err(e) => {
             tracing::debug!("frei0r: dlopen failed for {}: {e}", path.display());
             return Vec::new();
         }
     };
+    let lib = guarded.get();
 
     // Resolve every required symbol up front — if any are missing,
     // this is not a frei0r plugin.

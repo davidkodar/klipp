@@ -30,6 +30,7 @@
 pub mod ffi;
 pub mod host;
 pub mod instance;
+mod library;
 pub mod tile;
 
 pub use host::{

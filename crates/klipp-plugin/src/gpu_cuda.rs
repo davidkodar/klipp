@@ -102,10 +102,13 @@ unsafe impl Sync for CudaApi {}
 impl CudaApi {
     /// Load libcuda.so and resolve all required symbols.
     fn load() -> Option<Self> {
-        let lib = unsafe {
-            libloading::Library::new("libcuda.so.1")
-                .or_else(|_| libloading::Library::new("libcuda.so"))
-                .ok()?
+        let lib = {
+            let _loading = klipp_load_lock::library_loading();
+            unsafe {
+                libloading::Library::new("libcuda.so.1")
+                    .or_else(|_| libloading::Library::new("libcuda.so"))
+                    .ok()?
+            }
         };
         let lib = Arc::new(lib);
 

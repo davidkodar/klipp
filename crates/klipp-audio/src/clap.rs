@@ -227,7 +227,7 @@ pub fn discover_clap_plugins_cached(cache_dir: Option<&Path>) -> Vec<ClapPluginI
 
 /// Scan a `.clap` bundle and return every plugin descriptor it declares.
 pub fn scan_bundle(path: &Path) -> Vec<ClapPluginInfo> {
-    let entry = match unsafe { PluginEntry::load(path) } {
+    let entry = match klipp_load_lock::while_loading(|| unsafe { PluginEntry::load(path) }) {
         Ok(e) => e,
         Err(e) => {
             tracing::debug!("CLAP: load failed for {}: {e}", path.display());
@@ -304,7 +304,7 @@ fn probe_plugin_metadata(
     bundle_path: &Path,
     plugin_id: &std::ffi::CStr,
 ) -> Result<(usize, usize, Vec<ClapParamInfo>), String> {
-    let entry = unsafe { PluginEntry::load(bundle_path) }
+    let entry = klipp_load_lock::while_loading(|| unsafe { PluginEntry::load(bundle_path) })
         .map_err(|e| format!("PluginEntry::load: {e}"))?;
     let host_info = HostInfo::new(
         "Klipp",
@@ -651,7 +651,7 @@ fn build_slot(
 ) -> Result<(InstanceSlot, u32), String> {
     let plugin_id_cstr =
         CString::new(info.id.as_str()).map_err(|_| "CLAP plugin id contains NUL".to_string())?;
-    let entry = unsafe { PluginEntry::load(&info.bundle_path) }
+    let entry = klipp_load_lock::while_loading(|| unsafe { PluginEntry::load(&info.bundle_path) })
         .map_err(|e| format!("CLAP load failed: {e}"))?;
     let host_info = HostInfo::new(
         "Klipp",

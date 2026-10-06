@@ -79,13 +79,13 @@ pub fn registry_snapshot() -> Vec<Lv2PluginInfo> {
 
 fn world() -> &'static Mutex<Arc<livi::World>> {
     static WORLD: OnceLock<Mutex<Arc<livi::World>>> = OnceLock::new();
-    WORLD.get_or_init(|| Mutex::new(Arc::new(livi::World::new())))
+    WORLD.get_or_init(|| Mutex::new(klipp_load_lock::while_loading(|| Arc::new(livi::World::new()))))
 }
 
 #[allow(dead_code)]
 pub(crate) fn reset_world() {
     if let Ok(mut w) = world().lock() {
-        *w = Arc::new(livi::World::new());
+        *w = klipp_load_lock::while_loading(|| Arc::new(livi::World::new()));
     }
 }
 
@@ -404,7 +404,7 @@ impl Lv2Effect {
         };
         let mut instances = Vec::with_capacity(count);
         for _ in 0..count {
-            let inst = unsafe { plugin.instantiate(features.clone(), sample_rate as f64) }
+            let inst = klipp_load_lock::while_loading(|| unsafe { plugin.instantiate(features.clone(), sample_rate as f64) })
                 .map_err(|e| format!("LV2 instantiate failed: {e}"))?;
             instances.push(inst);
         }
@@ -641,7 +641,7 @@ impl AudioEffect for Lv2Effect {
         // (state is leaked but the chain keeps producing audio).
         let mut fresh = Vec::with_capacity(count);
         for _ in 0..count {
-            match unsafe { plugin.instantiate(features.clone(), 48_000.0) } {
+            match klipp_load_lock::while_loading(|| unsafe { plugin.instantiate(features.clone(), 48_000.0) }) {
                 Ok(i) => fresh.push(i),
                 Err(_) => return,
             }

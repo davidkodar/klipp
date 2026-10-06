@@ -75,8 +75,9 @@ pub struct Frei0rPlugin {
     // Drop order matters: instances drop first, then the Library. We
     // don't allow instances to outlive the plugin (Frei0rEffect holds
     // an Arc<Frei0rPlugin>), so the explicit Drop on this struct can
-    // safely call f0r_deinit and let `_lib` drop after.
-    _lib: libloading::Library,
+    // safely call f0r_deinit and close `_lib` after.
+    /// Closes under the load lock when it drops (#1032).
+    _lib: crate::library::GuardedLibrary,
     pub info: Frei0rPluginInfo,
     construct: F0rConstructFn,
     destruct: F0rDestructFn,
@@ -96,8 +97,10 @@ impl Frei0rPlugin {
     /// Open a `.so` and resolve every required symbol. Returns `Err`
     /// if the file isn't a frei0r plugin.
     pub fn open(path: &Path, info: Frei0rPluginInfo) -> Result<Self, String> {
-        let lib = unsafe { libloading::Library::new(path) }
-            .map_err(|e| format!("dlopen failed: {e}"))?;
+        // Opened, and closed on every way out of here that fails (a
+        // missing symbol, a failed `f0r_init`), under the load lock.
+        let guarded = crate::library::GuardedLibrary::open(path).map_err(|e| format!("dlopen failed: {e}"))?;
+        let lib = guarded.get();
 
         macro_rules! sym {
             ($name:literal, $ty:ty) => {{
@@ -129,7 +132,7 @@ impl Frei0rPlugin {
         }
 
         Ok(Self {
-            _lib: lib,
+            _lib: guarded,
             info,
             construct,
             destruct,
@@ -144,6 +147,7 @@ impl Drop for Frei0rPlugin {
     fn drop(&mut self) {
         let deinit = self.deinit;
         let _ = frei0r_guard!({ unsafe { deinit() } });
+        // `_lib` drops after this, closing under the load lock.
     }
 }
 
