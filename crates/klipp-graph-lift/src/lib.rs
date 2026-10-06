@@ -9,6 +9,7 @@
 pub mod canon;
 pub mod delift;
 pub mod ids;
+pub mod journal;
 pub mod lift;
 pub mod old_fields;
 pub mod paths;

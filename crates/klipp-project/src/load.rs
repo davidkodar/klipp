@@ -253,6 +253,22 @@ fn refuse_unconverted(value: &serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Refuse a project the one-time conversion (`klipp-convert run`) hasn't
+/// finished (#1089): its staging copy or set-aside original is beside it,
+/// or its journal entry hasn't reached the last step. Opening it could read
+/// either half and save over it; the run finishes or rolls it back from
+/// the journal.
+fn refuse_half_converted(dir: &Path) -> Result<(), String> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    let root = klipp_graph_lift::journal::backup_root(&home);
+    match klipp_graph_lift::journal::unfinished(&root, dir) {
+        Some(why) => Err(format!(
+            "This project's conversion to the node-graph format isn't finished: {why}. Run `klipp-convert run` again; it finishes or rolls back each project from its journal."
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Refuse a project holding grade nodes or settings this Klipp would lose
 /// by reading it (#993): a node kind it does not know, or a setting it
 /// would drop. Found on the saved JSON, wherever a graph is stored.
@@ -282,6 +298,9 @@ pub fn load_project_v1(dir: &Path) -> Result<LoadResult, String> {
 }
 
 fn load_project_as(dir: &Path, form: crate::FileForm) -> Result<LoadResult, String> {
+    if matches!(form, crate::FileForm::Revision2) {
+        refuse_half_converted(dir)?;
+    }
     // The pair a save left whole, from its recovery copy if it stopped (#840).
     let (project_str, manifest_str, interrupted) = pair_to_open(dir)?;
 
