@@ -786,9 +786,10 @@ fi
 # tests too. Now the changed files (this branch against the main it
 # leaves from) pick the crates: those changed, every crate built on them,
 # and every crate whose tests use one of those, decided by
-# scripts/affected_crates.py from cargo's own metadata. A change to a
-# file the whole workspace shares (Cargo.lock, assets/, vendor/, this
-# script), or to a path it does not know, runs everything; documentation
+# scripts/affected_crates.py from cargo's own metadata. A change to the
+# root Cargo.toml or Cargo.lock is read for what it touches (#1124); one
+# to a file the whole workspace shares (assets/, vendor/, this script),
+# or to a path it does not know, runs everything; documentation
 # alone runs no tests. rustdoc documents the same crates; clippy always
 # covers the whole workspace. And the whole suite runs anyway when it has not passed in
 # KLIPP_GATE_FULL_HOURS (12) hours, so what a narrower run could miss is
@@ -811,7 +812,7 @@ if [ "${KLIPP_GATE_FULL:-}" != "1" ]; then
         && _meta=$(cargo metadata --no-deps --format-version 1 --offline 2>/dev/null 9>&-) \
         && _metafile=$(mktemp) && printf '%s' "$_meta" >"$_metafile" \
         && _changed=$(git diff --name-only "$_fork" HEAD) \
-        && _decision=$(printf '%s\n' "$_changed" | python3 "$ROOT/scripts/affected_crates.py" "$_metafile" 2>/dev/null); then
+        && _decision=$(printf '%s\n' "$_changed" | python3 "$ROOT/scripts/affected_crates.py" "$_metafile" --git "$_fork" HEAD 2>/dev/null); then
         rm -f "$_metafile"
         case "$_decision" in
             packages\ *)
