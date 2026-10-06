@@ -71,21 +71,21 @@ impl TrackEffectList {
 
 impl Clip {
     pub fn ofx_effects(&self) -> &[AppliedEffect] {
-        &self.effects.0
+        &self.picture.effects.0
     }
 
     /// Edit one entry without changing the list's order.
     pub fn edit_ofx_effect<R>(&mut self, index: usize, f: impl FnOnce(&mut AppliedEffect) -> R) -> Option<R> {
-        self.effects.0.get_mut(index).map(f)
+        self.picture.effects.0.get_mut(index).map(f)
     }
 
     /// Edit the list without changing its existing ordering or parameters.
     pub fn edit_ofx_effects<R>(&mut self, edit: impl FnOnce(&mut Vec<AppliedEffect>) -> R) -> R {
-        edit(&mut self.effects.0)
+        edit(&mut self.picture.effects.0)
     }
 
     pub fn set_ofx_effects(&mut self, effects: Vec<AppliedEffect>) {
-        self.effects = effects.into();
+        self.picture.effects = effects.into();
     }
 }
 
@@ -117,8 +117,12 @@ mod tests {
     use klipp_core::Timecode;
 
     /// These full-owner fixtures were serialized before #1131. In particular,
-    /// flattening the track store must not add a wrapper key, reorder fields,
-    /// or normalize the saved enabled flags.
+    /// flattening the track store must not add a wrapper key, drop or add a
+    /// field, or normalize the saved enabled flags. Compared as JSON values:
+    /// since a clip's picture fields were gathered into one flattened struct
+    /// (#1089, M1b 2a) they are written together, so the order of a clip's
+    /// keys moved, which nothing reading this JSON depends on (the project
+    /// file has its own writer; the render key sorts every map).
     #[test]
     fn legacy_owner_bytes_are_unchanged() {
         for (bytes, flags) in [
@@ -128,7 +132,8 @@ mod tests {
             (include_str!("../tests/fixtures/effect-access-v1/surplus-flags.json"), &[false, true, false][..]),
         ] {
             let seq: Sequence = serde_json::from_str(bytes).unwrap();
-            assert_eq!(serde_json::to_string(&seq).unwrap(), bytes);
+            let written: serde_json::Value = serde_json::from_str(&serde_json::to_string(&seq).unwrap()).unwrap();
+            assert_eq!(written, serde_json::from_str::<serde_json::Value>(bytes).unwrap());
             let track = &seq.tracks[0];
             assert_eq!(track.effects.video_effects_enabled(), flags);
             let clip = &track.clips[0];

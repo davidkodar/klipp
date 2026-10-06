@@ -3689,11 +3689,11 @@ impl AttributesClipboard {
             clip.audio_effect_keyframes = self.audio_effect_keyframes.clone();
         }
         if what.transform {
-            clip.opacity_keyframes = (self.opacity_keyframes.clone()).into();
-            clip.transform_pos_x_keyframes = (self.transform_pos_x_keyframes.clone()).into();
-            clip.transform_pos_y_keyframes = (self.transform_pos_y_keyframes.clone()).into();
-            clip.transform_scale_keyframes = (self.transform_scale_keyframes.clone()).into();
-            clip.transform_rotation_keyframes = (self.transform_rotation_keyframes.clone()).into();
+            clip.edit_opacity_keyframes(|v| *v = self.opacity_keyframes.clone());
+            clip.edit_transform_pos_x_keyframes(|v| *v = self.transform_pos_x_keyframes.clone());
+            clip.edit_transform_pos_y_keyframes(|v| *v = self.transform_pos_y_keyframes.clone());
+            clip.edit_transform_scale_keyframes(|v| *v = self.transform_scale_keyframes.clone());
+            clip.edit_transform_rotation_keyframes(|v| *v = self.transform_rotation_keyframes.clone());
             self.paste_clip_modifiers(clip);
         }
         if what.speed {

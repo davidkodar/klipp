@@ -381,15 +381,20 @@ impl KlippApp {
                     adj_out_secs - adj_in_secs,
                     rate,
                 ),
-                effect_list: klipp_timeline::EffectList::new(snap.builtin_effects, snap.builtin_effects_enabled),
-                effects: snap.effects.into(),
-                effect_keyframes: (snap.effect_keyframes).into(),
-                opacity_keyframes: (snap.opacity_keyframes).into(),
-                transform_pos_x_keyframes: (snap.transform_pos_x_keyframes).into(),
-                transform_pos_y_keyframes: (snap.transform_pos_y_keyframes).into(),
-                transform_scale_keyframes: (snap.transform_scale_keyframes).into(),
-                transform_rotation_keyframes: (snap.transform_rotation_keyframes).into(),
-                param_modifiers: (snap.param_modifiers).into(),
+                picture: klipp_timeline::ClipPictureParts {
+                    builtin_effects: snap.builtin_effects,
+                    builtin_effects_enabled: snap.builtin_effects_enabled,
+                    ofx_effects: snap.effects,
+                    effect_keyframes: snap.effect_keyframes,
+                    opacity_keyframes: snap.opacity_keyframes,
+                    transform_pos_x_keyframes: snap.transform_pos_x_keyframes,
+                    transform_pos_y_keyframes: snap.transform_pos_y_keyframes,
+                    transform_scale_keyframes: snap.transform_scale_keyframes,
+                    transform_rotation_keyframes: snap.transform_rotation_keyframes,
+                    param_modifiers: snap.param_modifiers,
+                    ..Default::default()
+                }
+                .into(),
                 ..klipp_timeline::Clip::gap(adj_in, adj_out)
             };
 

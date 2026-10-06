@@ -1011,10 +1011,9 @@ impl KlippApp {
                 let clip_id = *clip_id;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(clip_id) {
-                        if let Some(idx) = clip.active_grade_version {
+                        if let Some(idx) = clip.active_grade_version() {
                             let grade = clip.grade().clone();
-                            if let Some(v) = clip.grade_versions.get_mut(idx) {
-                                v.set_grade(grade);
+                            if clip.edit_grade_versions(|vs| vs.get_mut(idx).map(|v| v.set_grade(grade))).is_some() {
                                 self.state.dirty = true;
                             }
                         }
@@ -2527,8 +2526,11 @@ impl KlippApp {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
                     let version = klipp_timeline::GradeVersion::new(name.clone(), clip.grade().clone());
-                    clip.grade_versions.push(version);
-                    clip.active_grade_version = Some(clip.grade_versions.len() - 1);
+                    let index = clip.edit_grade_versions(|vs| {
+                        vs.push(version);
+                        vs.len() - 1
+                    });
+                    clip.set_active_grade_version(Some(index));
                 }
                 self.state.dirty = true;
                 true
@@ -2537,16 +2539,16 @@ impl KlippApp {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
                     // Save current graph back to active version slot before switching
-                    if let Some(active_idx) = clip.active_grade_version {
-                        if active_idx < clip.grade_versions.len() {
+                    if let Some(active_idx) = clip.active_grade_version() {
+                        if active_idx < clip.grade_versions().len() {
                             let grade = clip.grade().clone();
-                            clip.grade_versions[active_idx].set_grade(grade);
+                            clip.edit_grade_versions(|vs| vs[active_idx].set_grade(grade));
                         }
                     }
                     // Load the target version
-                    if let Some(version) = clip.grade_versions.get(*version_index) {
-                        clip.set_grade(version.grade().clone());
-                        clip.active_grade_version = Some(*version_index);
+                    if let Some(grade) = clip.grade_versions().get(*version_index).map(|v| v.grade().clone()) {
+                        clip.set_grade(grade);
+                        clip.set_active_grade_version(Some(*version_index));
                     }
                 }
                 self.state.dirty = true;
@@ -2557,11 +2559,11 @@ impl KlippApp {
             AppCommand::DeleteGradeVersion { clip_id, version_index } => {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
-                    if *version_index < clip.grade_versions.len() {
-                        clip.grade_versions.remove(*version_index);
-                        match clip.active_grade_version {
-                            Some(idx) if idx == *version_index => clip.active_grade_version = None,
-                            Some(idx) if idx > *version_index => clip.active_grade_version = Some(idx - 1),
+                    if *version_index < clip.grade_versions().len() {
+                        clip.edit_grade_versions(|vs| vs.remove(*version_index));
+                        match clip.active_grade_version() {
+                            Some(idx) if idx == *version_index => clip.set_active_grade_version(None),
+                            Some(idx) if idx > *version_index => clip.set_active_grade_version(Some(idx - 1)),
                             _ => {}
                         }
                     }
@@ -2572,9 +2574,11 @@ impl KlippApp {
             AppCommand::RenameGradeVersion { clip_id, version_index, name } => {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
-                    if let Some(version) = clip.grade_versions.get_mut(*version_index) {
-                        version.name = name.clone();
-                    }
+                    clip.edit_grade_versions(|vs| {
+                        if let Some(version) = vs.get_mut(*version_index) {
+                            version.name = name.clone();
+                        }
+                    });
                 }
                 self.state.dirty = true;
                 true

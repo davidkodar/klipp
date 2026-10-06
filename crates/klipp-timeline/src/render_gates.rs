@@ -23,7 +23,7 @@ impl Clip {
     }
 
     pub fn grade_is_identity(&self) -> bool {
-        self.node_graph.0.is_identity()
+        self.picture.node_graph.0.is_identity()
     }
 
     /// The render-cache/grade-job gate. Plug-ins and animation are deliberately
@@ -284,33 +284,33 @@ mod tests {
     fn animation_gates_pin_each_included_and_excluded_track() {
         type Track = fn(&mut Clip) -> &mut Vec<Keyframe>;
         let tracks: [(&str, Track, bool, bool, bool); 13] = [
-            ("opacity", |c| &mut c.opacity_keyframes.0, true, false, false),
-            ("x", |c| &mut c.transform_pos_x_keyframes.0, true, false, true),
-            ("y", |c| &mut c.transform_pos_y_keyframes.0, true, false, true),
+            ("opacity", |c| &mut c.picture.opacity_keyframes.0, true, false, false),
+            ("x", |c| &mut c.picture.transform_pos_x_keyframes.0, true, false, true),
+            ("y", |c| &mut c.picture.transform_pos_y_keyframes.0, true, false, true),
             (
                 "scale",
-                |c| &mut c.transform_scale_keyframes.0,
+                |c| &mut c.picture.transform_scale_keyframes.0,
                 true,
                 false,
                 true,
             ),
             (
                 "rotation",
-                |c| &mut c.transform_rotation_keyframes.0,
+                |c| &mut c.picture.transform_rotation_keyframes.0,
                 true,
                 false,
                 true,
             ),
             (
                 "tilt x",
-                |c| &mut c.transform_tilt_x_keyframes.0,
+                |c| &mut c.picture.transform_tilt_x_keyframes.0,
                 true,
                 true,
                 true,
             ),
             (
                 "tilt y",
-                |c| &mut c.transform_tilt_y_keyframes.0,
+                |c| &mut c.picture.transform_tilt_y_keyframes.0,
                 true,
                 true,
                 true,
@@ -374,7 +374,7 @@ mod tests {
     fn grade_gate_keeps_identity_and_nonidentity_separate() {
         for exposure in [None, Some(0.0), Some(1.0)] {
             let mut c = clip();
-            c.node_graph
+            c.picture.node_graph
                 .0
                 .nodes
                 .iter_mut()

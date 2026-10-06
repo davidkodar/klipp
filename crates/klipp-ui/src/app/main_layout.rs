@@ -1000,9 +1000,9 @@ impl KlippApp {
                     // one section above the tabs, collapsible like any
                     // other section.
                     let version_badge = clip
-                        .active_grade_version
+                        .active_grade_version()
                         .map(|i| {
-                            let name = &clip.grade_versions[i].name;
+                            let name = &clip.grade_versions()[i].name;
                             if name.is_empty() { format!("V{}", i + 1) } else { name.clone() }
                         });
                     let caption_row = |ui: &mut egui::Ui, label: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
@@ -1024,19 +1024,19 @@ impl KlippApp {
                     crate::widgets::inspector_group::section_card(ui, "GRADE", version_badge, &theme, |ui| {
                         caption_row(ui, "Versions", &mut |ui| {
                             let row = ui.add_enabled_ui(!grading_timeline, |ui| {
-                                let num_versions = clip.grade_versions.len();
-                                let active = clip.active_grade_version;
+                                let num_versions = clip.grade_versions().len();
+                                let active = clip.active_grade_version();
                                 for i in 0..num_versions {
                                     let is_active = active == Some(i);
                                     let label = {
-                                        let name = &clip.grade_versions[i].name;
+                                        let name = &clip.grade_versions()[i].name;
                                         if name.is_empty() { format!("V{}", i + 1) } else { name.clone() }
                                     };
                                     let resp = ui.selectable_label(is_active, egui::RichText::new(&label).size(crate::theme::type_scale::CAPTION));
                                     if resp.clicked() && !is_active {
                                         all_cmds.push(AppCommand::SwitchGradeVersion { clip_id, version_index: i });
                                     }
-                                    let current_name = clip.grade_versions[i].name.clone();
+                                    let current_name = clip.grade_versions()[i].name.clone();
                                     resp.context_menu(|ui| {
                                         // The version's name, typed (#902): Rename used
                                         // to write a fixed "Version N".

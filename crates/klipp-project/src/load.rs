@@ -741,35 +741,61 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     timeline_out: RationalTime { value: c.timeline_out, rate: c.rate },
                     source_in: RationalTime { value: c.source_in, rate: c.rate },
                     source_out: RationalTime { value: c.source_out, rate: c.rate },
-                    node_graph: {
-                        let mut g = c.node_graph.clone().unwrap_or_default();
-                        migrate_graph(&mut g);
-                        g.into()
-                    },
-                    effect_list: klipp_timeline::EffectList::new(effects_by_clip.get(c.id.as_str()).cloned().unwrap_or_default(), c.builtin_effects_enabled.clone()),
-                    effects: c.effects.iter().map(|e| {
-                        klipp_plugin::AppliedEffect {
-                            plugin_name: e.plugin_name.clone(),
-                            enabled: e.enabled,
-                            param_values: e.param_values.iter().map(|(k, v)| {
-                                let val = match v {
-                                    OfxValueJson::Double(d) => klipp_plugin::OfxValue::Double(*d),
-                                    OfxValueJson::Double2([a, b]) => klipp_plugin::OfxValue::Double2(*a, *b),
-                                    OfxValueJson::Double3([a, b, c]) => klipp_plugin::OfxValue::Double3(*a, *b, *c),
-                                    OfxValueJson::Int(i) => klipp_plugin::OfxValue::Int(*i),
-                                    OfxValueJson::Int2([a, b]) => klipp_plugin::OfxValue::Int2(*a, *b),
-                                    OfxValueJson::Int3([a, b, c]) => klipp_plugin::OfxValue::Int3(*a, *b, *c),
-                                    OfxValueJson::Bool(b) => klipp_plugin::OfxValue::Bool(*b),
-                                    OfxValueJson::Choice(c) => klipp_plugin::OfxValue::Choice(*c),
-                                    OfxValueJson::String(s) => klipp_plugin::OfxValue::String(s.clone()),
-                                    OfxValueJson::Rgba([r, g, b, a]) => klipp_plugin::OfxValue::Rgba(*r, *g, *b, *a),
-                                    OfxValueJson::Rgb([r, g, b]) => klipp_plugin::OfxValue::Rgb(*r, *g, *b),
-                                };
-                                (k.clone(), val)
-                            }).collect::<HashMap<_, _>>(),
-                        ..Default::default()
-                        }
-                    }).collect::<Vec<_>>().into(),
+                    picture: klipp_timeline::ClipPictureParts {
+                        grade: {
+                            let mut g = c.node_graph.clone().unwrap_or_default();
+                            migrate_graph(&mut g);
+                            g
+                        },
+                        builtin_effects: effects_by_clip.get(c.id.as_str()).cloned().unwrap_or_default(),
+                        builtin_effects_enabled: c.builtin_effects_enabled.clone(),
+                        ofx_effects: c.effects.iter().map(|e| {
+                            klipp_plugin::AppliedEffect {
+                                plugin_name: e.plugin_name.clone(),
+                                enabled: e.enabled,
+                                param_values: e.param_values.iter().map(|(k, v)| {
+                                    let val = match v {
+                                        OfxValueJson::Double(d) => klipp_plugin::OfxValue::Double(*d),
+                                        OfxValueJson::Double2([a, b]) => klipp_plugin::OfxValue::Double2(*a, *b),
+                                        OfxValueJson::Double3([a, b, c]) => klipp_plugin::OfxValue::Double3(*a, *b, *c),
+                                        OfxValueJson::Int(i) => klipp_plugin::OfxValue::Int(*i),
+                                        OfxValueJson::Int2([a, b]) => klipp_plugin::OfxValue::Int2(*a, *b),
+                                        OfxValueJson::Int3([a, b, c]) => klipp_plugin::OfxValue::Int3(*a, *b, *c),
+                                        OfxValueJson::Bool(b) => klipp_plugin::OfxValue::Bool(*b),
+                                        OfxValueJson::Choice(c) => klipp_plugin::OfxValue::Choice(*c),
+                                        OfxValueJson::String(s) => klipp_plugin::OfxValue::String(s.clone()),
+                                        OfxValueJson::Rgba([r, g, b, a]) => klipp_plugin::OfxValue::Rgba(*r, *g, *b, *a),
+                                        OfxValueJson::Rgb([r, g, b]) => klipp_plugin::OfxValue::Rgb(*r, *g, *b),
+                                    };
+                                    (k.clone(), val)
+                                }).collect::<HashMap<_, _>>(),
+                            ..Default::default()
+                            }
+                        }).collect::<Vec<_>>(),
+                        opacity_keyframes: c.opacity_keyframes.clone().unwrap_or_default(),
+                        transform_pos_x_keyframes: c.transform_pos_x_keyframes.clone().unwrap_or_default(),
+                        transform_pos_y_keyframes: c.transform_pos_y_keyframes.clone().unwrap_or_default(),
+                        transform_scale_keyframes: c.transform_scale_keyframes.clone().unwrap_or_default(),
+                        transform_rotation_keyframes: c.transform_rotation_keyframes.clone().unwrap_or_default(),
+                        transform_tilt_x_keyframes: c.transform_tilt_x_keyframes.clone().unwrap_or_default(),
+                        transform_tilt_y_keyframes: c.transform_tilt_y_keyframes.clone().unwrap_or_default(),
+                        effect_keyframes: c.effect_keyframes.clone().unwrap_or_default(),
+                        param_modifiers: c.param_modifiers.as_ref().map(|m| {
+                            m.iter().filter_map(|(k, v)| {
+                                klipp_core::ParamId::from_key(k).map(|pid| (pid, v.clone()))
+                            }).collect::<std::collections::HashMap<_, _>>()
+                        }).unwrap_or_default(),
+                        grade_versions: c.grade_versions.iter().map(|gv| {
+                            let mut g = gv.node_graph.clone();
+                            migrate_graph(&mut g);
+                            klipp_timeline::GradeVersion {
+                                name: gv.name.clone(),
+                                node_graph: g.into(),
+                            }
+                        }).collect(),
+                        active_grade_version: c.active_grade_version,
+                    }
+                    .into(),
                     linked_clip_id: c.linked_clip_id.as_ref().and_then(|s| {
                         parse_uuid(s).ok().map(ClipId)
                     }),
@@ -780,8 +806,6 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                         parse_uuid(s).ok().map(GroupId)
                     }),
                     grade_group: c.grade_group.as_ref().and_then(|s| parse_uuid(s).ok().map(klipp_core::GradeGroupId)),
-                    own_node_graph: None,
-                    own_effects: None,
                     magnetic_anchor: c.magnetic_anchor.clone(),
                     gain: c.gain.unwrap_or(1.0),
                     volume: c.volume.unwrap_or(1.0),
@@ -794,13 +818,6 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     volume_keyframes: c.volume_keyframes.clone().unwrap_or_default(),
                     pan_keyframes: c.pan_keyframes.clone().unwrap_or_default(),
                     gain_keyframes: c.gain_keyframes.clone().unwrap_or_default(),
-                    opacity_keyframes: c.opacity_keyframes.clone().unwrap_or_default().into(),
-                    transform_pos_x_keyframes: c.transform_pos_x_keyframes.clone().unwrap_or_default().into(),
-                    transform_pos_y_keyframes: c.transform_pos_y_keyframes.clone().unwrap_or_default().into(),
-                    transform_scale_keyframes: c.transform_scale_keyframes.clone().unwrap_or_default().into(),
-                    transform_rotation_keyframes: c.transform_rotation_keyframes.clone().unwrap_or_default().into(),
-                    transform_tilt_x_keyframes: c.transform_tilt_x_keyframes.clone().unwrap_or_default().into(),
-                    transform_tilt_y_keyframes: c.transform_tilt_y_keyframes.clone().unwrap_or_default().into(),
                     matte_feather_keyframes: c.matte_feather_keyframes.clone().unwrap_or_default(),
                     matte_choke_keyframes: c.matte_choke_keyframes.clone().unwrap_or_default(),
                     clip_markers: c.clip_markers.as_ref().map(|markers| {
@@ -818,13 +835,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                             comment: m.comment.clone(),
                         }).collect()
                     }).unwrap_or_default(),
-                    effect_keyframes: (c.effect_keyframes.clone().unwrap_or_default()).into(),
                     role: c.role.unwrap_or_default(),
-                    param_modifiers: c.param_modifiers.as_ref().map(|m| {
-                        m.iter().filter_map(|(k, v)| {
-                            klipp_core::ParamId::from_key(k).map(|pid| (pid, v.clone()))
-                        }).collect::<std::collections::HashMap<_, _>>().into()
-                    }).unwrap_or_default(),
                     speed: c.speed.unwrap_or(1.0),
                     speed_keyframes: c.speed_keyframes.clone().unwrap_or_default(),
                     keep_pitch: c.keep_pitch.unwrap_or(false),
@@ -842,15 +853,6 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     }),
                     consumed_as_matte: c.consumed_as_matte.unwrap_or(false),
                     transform_link: c.transform_link.as_ref().and_then(load_transform_link),
-                    grade_versions: c.grade_versions.iter().map(|gv| {
-                        let mut g = gv.node_graph.clone();
-                        migrate_graph(&mut g);
-                        klipp_timeline::GradeVersion {
-                            name: gv.name.clone(),
-                            node_graph: g.into(),
-                        }
-                    }).collect(),
-                    active_grade_version: c.active_grade_version,
                     audio_effects: c.audio_effects.clone().unwrap_or_default(),
                     audio_effect_keyframes: c.audio_effect_keyframes.clone(),
                     multicam_group: c.multicam_group.as_ref().and_then(|s| parse_uuid(s).ok().map(klipp_core::GroupId)),
@@ -902,7 +904,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                 // Untrack button lives inside the missing mask's
                 // inspector row. Drop them at load time.
                 let mask_counts: std::collections::HashMap<uuid::Uuid, usize> = clip
-                    .grade_versions.iter()
+                    .grade_versions().iter()
                     .flat_map(|gv| gv.grade().nodes.iter())
                     .filter(|n| n.kind == klipp_nodes::NodeKind::Mask)
                     .map(|n| {

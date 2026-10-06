@@ -373,13 +373,13 @@ impl Sequence {
         for track in &mut self.tracks {
             for clip in &mut track.clips {
                 // Already baked (its own grade kept aside): once is all.
-                if clip.own_node_graph.is_some() {
+                if clip.picture.own_node_graph.is_some() {
                     continue;
                 }
                 if let Some(group) = clip.grade_group.and_then(|id| groups.get(&id)) {
-                    let wrapped = group.wrap(&clip.node_graph.0);
-                    let own = std::mem::replace(&mut clip.node_graph.0, wrapped);
-                    clip.own_node_graph = Some(Box::new(own));
+                    let wrapped = group.wrap(&clip.picture.node_graph.0);
+                    let own = std::mem::replace(&mut clip.picture.node_graph.0, wrapped);
+                    clip.picture.own_node_graph = Some(Box::new(own));
                 }
             }
         }
@@ -424,10 +424,10 @@ impl Sequence {
             let fx = &track.effects;
             let picture = fx.touches_picture() && matches!(track.kind, TrackKind::Video | TrackKind::Text);
             for clip in &mut track.clips {
-                if clip.own_effects.is_some() || matches!(clip.kind, ClipKind::Gap | ClipKind::AdjustmentLayer) {
+                if clip.picture.own_effects.is_some() || matches!(clip.kind, ClipKind::Gap | ClipKind::AdjustmentLayer) {
                     continue;
                 }
-                clip.own_effects = Some(Box::new(OwnEffects {
+                clip.picture.own_effects = Some(Box::new(OwnEffects {
                     builtin_effects: clip.builtin_effects().to_vec(),
                     builtin_effects_enabled: clip.builtin_effects_enabled().to_vec(),
                     audio_effects: clip.audio_effects.clone(),
@@ -442,10 +442,10 @@ impl Sequence {
                         }
                     }
                     if let Some(grade) = fx.grade_onto(track.kind, clip) {
-                        if clip.own_node_graph.is_none() {
-                            clip.own_node_graph = Some(Box::new(clip.node_graph.0.clone()));
+                        if clip.picture.own_node_graph.is_none() {
+                            clip.picture.own_node_graph = Some(Box::new(clip.picture.node_graph.0.clone()));
                         }
-                        let _ = clip.node_graph.0.append_keeping_ids(grade);
+                        let _ = clip.picture.node_graph.0.append_keeping_ids(grade);
                     }
                 }
                 clip.audio_effects.extend(fx.audio.iter().cloned());
@@ -462,8 +462,8 @@ impl Sequence {
     pub fn render_grade(&self, clip_id: ClipId) -> Option<std::borrow::Cow<'_, klipp_nodes::NodeGraph>> {
         let (track, clip) = self.tracks.iter().find_map(|t| t.clips.iter().find(|c| c.id == clip_id).map(|c| (t, c)))?;
         let mut graph = match clip.grade_group.and_then(|g| self.grade_group(g)).filter(|g| g.grades()) {
-            Some(group) => std::borrow::Cow::Owned(group.wrap(&clip.node_graph.0)),
-            None => std::borrow::Cow::Borrowed(&clip.node_graph.0),
+            Some(group) => std::borrow::Cow::Owned(group.wrap(&clip.picture.node_graph.0)),
+            None => std::borrow::Cow::Borrowed(&clip.picture.node_graph.0),
         };
         if let Some(grade) = track.effects.grade_onto(track.kind, clip) {
             let _ = graph.to_mut().append_keeping_ids(grade);
@@ -478,15 +478,15 @@ impl Sequence {
     /// [`Sequence::bake_track_effects`]). A copy only when there is
     /// something to take back out.
     pub fn with_own_grades(&self) -> std::borrow::Cow<'_, Sequence> {
-        if !self.all_clips().any(|c| c.own_node_graph.is_some() || c.own_effects.is_some()) {
+        if !self.all_clips().any(|c| c.picture.own_node_graph.is_some() || c.picture.own_effects.is_some()) {
             return std::borrow::Cow::Borrowed(self);
         }
         let mut seq = self.clone();
         for clip in seq.all_clips_mut() {
-            if let Some(own) = clip.own_node_graph.take() {
-                clip.node_graph = crate::Grade(*own);
+            if let Some(own) = clip.picture.own_node_graph.take() {
+                clip.picture.node_graph = crate::Grade(*own);
             }
-            if let Some(own) = clip.own_effects.take() {
+            if let Some(own) = clip.picture.own_effects.take() {
                 clip.set_effect_list(own.builtin_effects, own.builtin_effects_enabled);
                 clip.audio_effects = own.audio_effects;
             }
@@ -1377,15 +1377,28 @@ impl Track {
             timeline_out,
             source_in: Timecode { value: 0, rate: source_duration.rate },
             source_out: source_duration,
-            node_graph: crate::Grade::default(),
-            effects: Default::default(),
-            effect_list: Default::default(),
+            picture: crate::ClipPictureFields {
+                node_graph: crate::Grade::default(),
+                effects: Default::default(),
+                effect_list: Default::default(),
+                own_node_graph: None,
+                own_effects: None,
+                opacity_keyframes: (Vec::new()).into(),
+                transform_pos_x_keyframes: (Vec::new()).into(),
+                transform_pos_y_keyframes: (Vec::new()).into(),
+                transform_scale_keyframes: (Vec::new()).into(),
+                transform_rotation_keyframes: (Vec::new()).into(),
+                transform_tilt_x_keyframes: (Vec::new()).into(),
+                transform_tilt_y_keyframes: (Vec::new()).into(),
+                effect_keyframes: (std::collections::HashMap::new()).into(),
+                param_modifiers: (HashMap::new()).into(),
+                grade_versions: Vec::new(),
+                active_grade_version: None,
+            },
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
             grade_group: None,
-            own_node_graph: None,
-            own_effects: None,
             magnetic_anchor: None,
             gain: 1.0,
             volume: 1.0,
@@ -1398,19 +1411,10 @@ impl Track {
             volume_keyframes: Vec::new(),
             pan_keyframes: Vec::new(),
             gain_keyframes: Vec::new(),
-            opacity_keyframes: (Vec::new()).into(),
-            transform_pos_x_keyframes: (Vec::new()).into(),
-            transform_pos_y_keyframes: (Vec::new()).into(),
-            transform_scale_keyframes: (Vec::new()).into(),
-            transform_rotation_keyframes: (Vec::new()).into(),
-            transform_tilt_x_keyframes: (Vec::new()).into(),
-            transform_tilt_y_keyframes: (Vec::new()).into(),
             matte_feather_keyframes: Vec::new(),
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
-            effect_keyframes: (std::collections::HashMap::new()).into(),
             role: ClipRole::default(),
-            param_modifiers: (HashMap::new()).into(),
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
@@ -1425,8 +1429,6 @@ impl Track {
             matte_stencil: None,
             consumed_as_matte: false,
             transform_link: None,
-            grade_versions: Vec::new(),
-            active_grade_version: None,
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
@@ -1675,15 +1677,28 @@ impl Track {
             timeline_out: cut_at,
             source_in: a_in,
             source_out: a_out,
-            node_graph: clip.node_graph.clone(),
-            effects: clip.effects.clone(),
-            effect_list: crate::EffectList::new(clip.builtin_effects().to_vec(), clip.builtin_effects_enabled().to_vec()),
+            picture: crate::ClipPictureFields {
+                node_graph: clip.picture.node_graph.clone(),
+                effects: clip.picture.effects.clone(),
+                effect_list: crate::EffectList::new(clip.builtin_effects().to_vec(), clip.builtin_effects_enabled().to_vec()),
+                own_node_graph: None,
+                own_effects: None,
+                opacity_keyframes: (opacity_a).into(),
+                transform_pos_x_keyframes: (pos_x_a).into(),
+                transform_pos_y_keyframes: (pos_y_a).into(),
+                transform_scale_keyframes: (scale_a).into(),
+                transform_rotation_keyframes: (rot_a).into(),
+                transform_tilt_x_keyframes: (tilt_x_a).into(),
+                transform_tilt_y_keyframes: (tilt_y_a).into(),
+                effect_keyframes: (effect_kfs_a).into(),
+                param_modifiers: (clip.param_modifiers().clone()).into(),
+                grade_versions: clip.picture.grade_versions.clone(),
+                active_grade_version: clip.picture.active_grade_version,
+            },
             linked_clip_id: clip.linked_clip_id,
             linked_title_asset_id: clip.linked_title_asset_id,
             group_id: clip.group_id,
             grade_group: clip.grade_group,
-            own_node_graph: None,
-            own_effects: None,
             magnetic_anchor: clip.magnetic_anchor.clone(),
             gain: clip.gain,
             volume: clip.volume,
@@ -1698,19 +1713,10 @@ impl Track {
             volume_keyframes: vol_a,
             pan_keyframes: pan_a,
             gain_keyframes: gain_a,
-            opacity_keyframes: (opacity_a).into(),
-            transform_pos_x_keyframes: (pos_x_a).into(),
-            transform_pos_y_keyframes: (pos_y_a).into(),
-            transform_scale_keyframes: (scale_a).into(),
-            transform_rotation_keyframes: (rot_a).into(),
-            transform_tilt_x_keyframes: (tilt_x_a).into(),
-            transform_tilt_y_keyframes: (tilt_y_a).into(),
             matte_feather_keyframes: mfeath_a,
             matte_choke_keyframes: mchoke_a,
             clip_markers: markers_a,
-            effect_keyframes: (effect_kfs_a).into(),
             role: clip.role,
-            param_modifiers: (clip.param_modifiers().clone()).into(),
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
             keep_pitch: clip.keep_pitch,
@@ -1723,8 +1729,6 @@ impl Track {
             matte_stencil: clip.matte_stencil.clone(),
             consumed_as_matte: clip.consumed_as_matte,
             transform_link: None,
-            grade_versions: clip.grade_versions.clone(),
-            active_grade_version: clip.active_grade_version,
             multicam_group: clip.multicam_group,
             multicam_angle: clip.multicam_angle,
             multicam_cuts: clip.multicam_cuts.clone(),
@@ -1750,15 +1754,28 @@ impl Track {
             timeline_out: clip.timeline_out,
             source_in: b_in,
             source_out: b_out,
-            node_graph: clip.node_graph.clone(),
-            effects: clip.effects.clone(),
-            effect_list: crate::EffectList::new(clip.builtin_effects().to_vec(), clip.builtin_effects_enabled().to_vec()),
+            picture: crate::ClipPictureFields {
+                node_graph: clip.picture.node_graph.clone(),
+                effects: clip.picture.effects.clone(),
+                effect_list: crate::EffectList::new(clip.builtin_effects().to_vec(), clip.builtin_effects_enabled().to_vec()),
+                own_node_graph: None,
+                own_effects: None,
+                opacity_keyframes: (opacity_b).into(),
+                transform_pos_x_keyframes: (pos_x_b).into(),
+                transform_pos_y_keyframes: (pos_y_b).into(),
+                transform_scale_keyframes: (scale_b).into(),
+                transform_rotation_keyframes: (rot_b).into(),
+                transform_tilt_x_keyframes: (tilt_x_b).into(),
+                transform_tilt_y_keyframes: (tilt_y_b).into(),
+                effect_keyframes: (effect_kfs_b).into(),
+                param_modifiers: (clip.param_modifiers().clone()).into(),
+                grade_versions: clip.picture.grade_versions.clone(),
+                active_grade_version: clip.picture.active_grade_version,
+            },
             linked_clip_id: clip.linked_clip_id,
             linked_title_asset_id: clip.linked_title_asset_id,
             group_id: clip.group_id,
             grade_group: clip.grade_group,
-            own_node_graph: None,
-            own_effects: None,
             magnetic_anchor: None, // right half gets no anchor
             gain: clip.gain,
             volume: clip.volume,
@@ -1772,19 +1789,10 @@ impl Track {
             volume_keyframes: vol_b,
             pan_keyframes: pan_b,
             gain_keyframes: gain_b,
-            opacity_keyframes: (opacity_b).into(),
-            transform_pos_x_keyframes: (pos_x_b).into(),
-            transform_pos_y_keyframes: (pos_y_b).into(),
-            transform_scale_keyframes: (scale_b).into(),
-            transform_rotation_keyframes: (rot_b).into(),
-            transform_tilt_x_keyframes: (tilt_x_b).into(),
-            transform_tilt_y_keyframes: (tilt_y_b).into(),
             matte_feather_keyframes: mfeath_b,
             matte_choke_keyframes: mchoke_b,
             clip_markers: markers_b,
-            effect_keyframes: (effect_kfs_b).into(),
             role: clip.role,
-            param_modifiers: (clip.param_modifiers().clone()).into(),
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
             keep_pitch: clip.keep_pitch,
@@ -1797,8 +1805,6 @@ impl Track {
             matte_stencil: clip.matte_stencil.clone(),
             consumed_as_matte: clip.consumed_as_matte,
             transform_link: None,
-            grade_versions: clip.grade_versions.clone(),
-            active_grade_version: clip.active_grade_version,
             multicam_group: clip.multicam_group,
             multicam_angle: clip.multicam_angle,
             multicam_cuts: clip.multicam_cuts.clone(),
@@ -2155,14 +2161,12 @@ pub struct Clip {
     pub timeline_out: Timecode,
     pub source_in: Timecode,
     pub source_out: Timecode,
-    #[serde(default)]
-    pub node_graph: crate::Grade,
-    #[serde(default)]
-    pub effects: crate::OfxEffects,
-    /// Built-in effect storage; use the effect-list API to read or edit it.
-    /// Flattening preserves the existing top-level saved keys.
+    /// The clip's picture: its grade, effects, picture animation and grade
+    /// versions (#1089, M1b). Its fields are reached only through the
+    /// clip's methods, so nothing outside can change one part of it
+    /// behind the rest.
     #[serde(flatten)]
-    pub effect_list: crate::EffectList,
+    pub picture: ClipPictureFields,
     #[serde(default)]
     pub linked_clip_id: Option<ClipId>,
     /// If `Some`, this clip is a *linked instance* of a project-scoped
@@ -2183,20 +2187,6 @@ pub struct Clip {
     /// `group_id`, which moves clips together on the timeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grade_group: Option<GradeGroupId>,
-    /// On a render copy whose grade groups are baked in (see
-    /// [`Sequence::bake_grade_groups`]), this clip's own grade, with
-    /// `node_graph` its grade inside its group's. Never saved, and `None`
-    /// on the document. What reads the render copy to describe or change
-    /// a clip's grade reads [`Clip::own_grade`], or a group's nodes would
-    /// be copied into the clip's own grade.
-    #[serde(skip)]
-    pub own_node_graph: Option<Box<klipp_nodes::NodeGraph>>,
-    /// On a render copy carrying its track's effects (see
-    /// [`Sequence::bake_track_effects`]), this clip's own effects and
-    /// audio chain. Never saved, `None` on the document; `Some` marks the
-    /// clip as carrying them, so they are never put on twice.
-    #[serde(skip)]
-    pub own_effects: Option<Box<OwnEffects>>,
     /// If Some, this clip is connected to an anchor on the primary storyline.
     #[serde(default)]
     pub magnetic_anchor: Option<MagneticAnchor>,
@@ -2222,25 +2212,6 @@ pub struct Clip {
     pub pan_keyframes: Vec<klipp_core::Keyframe>,
     #[serde(default)]
     pub gain_keyframes: Vec<klipp_core::Keyframe>,
-    #[serde(default)]
-    pub opacity_keyframes: crate::Keyframes,
-    #[serde(default)]
-    pub transform_pos_x_keyframes: crate::Keyframes,
-    #[serde(default)]
-    pub transform_pos_y_keyframes: crate::Keyframes,
-    #[serde(default)]
-    pub transform_scale_keyframes: crate::Keyframes,
-    #[serde(default)]
-    pub transform_rotation_keyframes: crate::Keyframes,
-    /// Tilt about the picture's horizontal axis, in degrees, in
-    /// perspective: the card leans back or forward like a screen on a
-    /// desk. Empty for a flat picture.
-    #[serde(default, skip_serializing_if = "crate::Keyframes::is_empty")]
-    pub transform_tilt_x_keyframes: crate::Keyframes,
-    /// Tilt about the picture's vertical axis, in degrees, in
-    /// perspective: the card swings like a door.
-    #[serde(default, skip_serializing_if = "crate::Keyframes::is_empty")]
-    pub transform_tilt_y_keyframes: crate::Keyframes,
     /// Phase 4D — track-matte feather radius keyframes (px). Empty
     /// for the common case (constant feather); evaluated against
     /// `matte_source.feather_px` as the fallback.
@@ -2253,15 +2224,9 @@ pub struct Clip {
     /// Per-clip markers at specific times within the clip.
     #[serde(default)]
     pub clip_markers: Vec<ClipMarker>,
-    /// Per-effect keyframes: maps "{effect_index}:{param_name}" to keyframe track.
-    #[serde(default)]
-    pub effect_keyframes: crate::EffectKeyframes,
     /// Content role — determines timeline color coding.
     #[serde(default)]
     pub role: ClipRole,
-    /// Per-parameter modifier stacks (behaviors like Oscillate, Wiggle, etc.)
-    #[serde(default, skip_serializing_if = "crate::ParamModifiers::is_empty")]
-    pub param_modifiers: crate::ParamModifiers,
     /// Playback speed multiplier (1.0 = normal, 2.0 = 2x fast, 0.5 = half speed)
     #[serde(default = "default_speed")]
     pub speed: f64,
@@ -2328,13 +2293,6 @@ pub struct Clip {
     /// the target's lifetime.
     #[serde(default)]
     pub transform_link: Option<TransformLink>,
-    /// Named grade versions. Each is a complete NodeGraph snapshot.
-    /// The active grade is always `node_graph` — versions are stored copies.
-    #[serde(default)]
-    pub grade_versions: Vec<GradeVersion>,
-    /// Index of the currently active grade version in grade_versions (None = working grade, not saved as version yet).
-    #[serde(default)]
-    pub active_grade_version: Option<usize>,
     /// Multicam group ID: clips sharing this ID are different angles of the same event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multicam_group: Option<GroupId>,
@@ -2396,6 +2354,81 @@ pub struct Clip {
     /// the `sequence_id` and nothing else.
     #[serde(skip)]
     pub precomp: Option<std::sync::Arc<Sequence>>,
+}
+
+/// A clip's picture fields (#1089, M1b): private to klipp-timeline, read
+/// and changed through [`Clip`]'s methods. Saved flat into the clip, as
+/// the fields were before they were gathered here.
+///
+/// ```compile_fail,E0616
+/// fn replace(clip: &mut klipp_timeline::Clip, other: &klipp_timeline::Clip) {
+///     clip.picture.node_graph = other.picture.node_graph.clone();
+/// }
+/// ```
+///
+/// Replacing the whole picture, which keeps its parts together, does compile.
+///
+/// ```
+/// fn replace(clip: &mut klipp_timeline::Clip, other: &klipp_timeline::Clip) {
+///     clip.picture = other.picture.clone();
+/// }
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ClipPictureFields {
+    #[serde(default)]
+    pub(crate) node_graph: crate::Grade,
+    #[serde(default)]
+    pub(crate) effects: crate::OfxEffects,
+    /// Built-in effect storage; use the effect-list API to read or edit it.
+    /// Flattening preserves the existing top-level saved keys.
+    #[serde(flatten)]
+    pub(crate) effect_list: crate::EffectList,
+    /// On a render copy whose grade groups are baked in (see
+    /// [`Sequence::bake_grade_groups`]), this clip's own grade, with
+    /// `node_graph` its grade inside its group's. Never saved, and `None`
+    /// on the document. What reads the render copy to describe or change
+    /// a clip's grade reads [`Clip::own_grade`], or a group's nodes would
+    /// be copied into the clip's own grade.
+    #[serde(skip)]
+    pub(crate) own_node_graph: Option<Box<klipp_nodes::NodeGraph>>,
+    /// On a render copy carrying its track's effects (see
+    /// [`Sequence::bake_track_effects`]), this clip's own effects and
+    /// audio chain. Never saved, `None` on the document; `Some` marks the
+    /// clip as carrying them, so they are never put on twice.
+    #[serde(skip)]
+    pub(crate) own_effects: Option<Box<OwnEffects>>,
+    #[serde(default)]
+    pub(crate) opacity_keyframes: crate::Keyframes,
+    #[serde(default)]
+    pub(crate) transform_pos_x_keyframes: crate::Keyframes,
+    #[serde(default)]
+    pub(crate) transform_pos_y_keyframes: crate::Keyframes,
+    #[serde(default)]
+    pub(crate) transform_scale_keyframes: crate::Keyframes,
+    #[serde(default)]
+    pub(crate) transform_rotation_keyframes: crate::Keyframes,
+    /// Tilt about the picture's horizontal axis, in degrees, in
+    /// perspective: the card leans back or forward like a screen on a
+    /// desk. Empty for a flat picture.
+    #[serde(default, skip_serializing_if = "crate::Keyframes::is_empty")]
+    pub(crate) transform_tilt_x_keyframes: crate::Keyframes,
+    /// Tilt about the picture's vertical axis, in degrees, in
+    /// perspective: the card swings like a door.
+    #[serde(default, skip_serializing_if = "crate::Keyframes::is_empty")]
+    pub(crate) transform_tilt_y_keyframes: crate::Keyframes,
+    /// Per-effect keyframes: maps "{effect_index}:{param_name}" to keyframe track.
+    #[serde(default)]
+    pub(crate) effect_keyframes: crate::EffectKeyframes,
+    /// Per-parameter modifier stacks (behaviors like Oscillate, Wiggle, etc.)
+    #[serde(default, skip_serializing_if = "crate::ParamModifiers::is_empty")]
+    pub(crate) param_modifiers: crate::ParamModifiers,
+    /// Named grade versions. Each is a complete NodeGraph snapshot.
+    /// The active grade is always `node_graph` — versions are stored copies.
+    #[serde(default)]
+    pub(crate) grade_versions: Vec<GradeVersion>,
+    /// Index of the currently active grade version in grade_versions (None = working grade, not saved as version yet).
+    #[serde(default)]
+    pub(crate) active_grade_version: Option<usize>,
 }
 
 /// A clip's own name and colour label (#920), as one value: what a
@@ -2655,7 +2688,7 @@ impl Clip {
         if format == klipp_core::LogFormat::Srgb {
             return;
         }
-        let graph = &mut self.node_graph.0;
+        let graph = &mut self.picture.node_graph.0;
         if let Some(node) = graph.nodes.iter_mut()
             .find(|n| n.kind == klipp_nodes::NodeKind::InputTransform)
         {
@@ -2734,15 +2767,28 @@ impl Clip {
             timeline_out,
             source_in: Timecode { value: 0, rate: timeline_in.rate },
             source_out: timeline_out - timeline_in,
-            node_graph: crate::Grade::default(),
-            effects: Default::default(),
-            effect_list: Default::default(),
+            picture: crate::ClipPictureFields {
+                node_graph: crate::Grade::default(),
+                effects: Default::default(),
+                effect_list: Default::default(),
+                own_node_graph: None,
+                own_effects: None,
+                opacity_keyframes: (Vec::new()).into(),
+                transform_pos_x_keyframes: (Vec::new()).into(),
+                transform_pos_y_keyframes: (Vec::new()).into(),
+                transform_scale_keyframes: (Vec::new()).into(),
+                transform_rotation_keyframes: (Vec::new()).into(),
+                transform_tilt_x_keyframes: (Vec::new()).into(),
+                transform_tilt_y_keyframes: (Vec::new()).into(),
+                effect_keyframes: (std::collections::HashMap::new()).into(),
+                param_modifiers: (HashMap::new()).into(),
+                grade_versions: Vec::new(),
+                active_grade_version: None,
+            },
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
             grade_group: None,
-            own_node_graph: None,
-            own_effects: None,
             magnetic_anchor: None,
             gain: 1.0,
             volume: 1.0,
@@ -2755,19 +2801,10 @@ impl Clip {
             volume_keyframes: Vec::new(),
             pan_keyframes: Vec::new(),
             gain_keyframes: Vec::new(),
-            opacity_keyframes: (Vec::new()).into(),
-            transform_pos_x_keyframes: (Vec::new()).into(),
-            transform_pos_y_keyframes: (Vec::new()).into(),
-            transform_scale_keyframes: (Vec::new()).into(),
-            transform_rotation_keyframes: (Vec::new()).into(),
-            transform_tilt_x_keyframes: (Vec::new()).into(),
-            transform_tilt_y_keyframes: (Vec::new()).into(),
             matte_feather_keyframes: Vec::new(),
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
-            effect_keyframes: (std::collections::HashMap::new()).into(),
             role: ClipRole::default(),
-            param_modifiers: (HashMap::new()).into(),
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
@@ -2780,8 +2817,6 @@ impl Clip {
             matte_stencil: None,
             consumed_as_matte: false,
             transform_link: None,
-            grade_versions: Vec::new(),
-            active_grade_version: None,
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
@@ -2802,9 +2837,9 @@ impl Clip {
     }
 
     /// The clip's own grade: on a render copy with grade groups baked in,
-    /// without its group's (see [`Clip::own_node_graph`]).
+    /// without its group's (see [`Sequence::bake_grade_groups`]).
     pub fn own_grade(&self) -> &klipp_nodes::NodeGraph {
-        self.own_node_graph.as_deref().unwrap_or(&self.node_graph.0)
+        self.picture.own_node_graph.as_deref().unwrap_or(&self.picture.node_graph.0)
     }
 
     /// The sequence's timeline grade as the clip the grade stages already
@@ -2828,7 +2863,7 @@ impl Clip {
         let mut clip = Self::media(MediaId::nil(), zero, end, zero, end);
         clip.id = seq.timeline_grade_clip_id();
         clip.kind = ClipKind::AdjustmentLayer;
-        clip.node_graph = seq.timeline_graph.clone().unwrap_or_default();
+        clip.picture.node_graph = seq.timeline_graph.clone().unwrap_or_default();
         clip
     }
 
@@ -2847,15 +2882,28 @@ impl Clip {
             timeline_out,
             source_in,
             source_out,
-            node_graph: crate::Grade::default(),
-            effects: Default::default(),
-            effect_list: Default::default(),
+            picture: crate::ClipPictureFields {
+                node_graph: crate::Grade::default(),
+                effects: Default::default(),
+                effect_list: Default::default(),
+                own_node_graph: None,
+                own_effects: None,
+                opacity_keyframes: (Vec::new()).into(),
+                transform_pos_x_keyframes: (Vec::new()).into(),
+                transform_pos_y_keyframes: (Vec::new()).into(),
+                transform_scale_keyframes: (Vec::new()).into(),
+                transform_rotation_keyframes: (Vec::new()).into(),
+                transform_tilt_x_keyframes: (Vec::new()).into(),
+                transform_tilt_y_keyframes: (Vec::new()).into(),
+                effect_keyframes: (std::collections::HashMap::new()).into(),
+                param_modifiers: (HashMap::new()).into(),
+                grade_versions: Vec::new(),
+                active_grade_version: None,
+            },
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
             grade_group: None,
-            own_node_graph: None,
-            own_effects: None,
             magnetic_anchor: None,
             gain: 1.0,
             volume: 1.0,
@@ -2868,19 +2916,10 @@ impl Clip {
             volume_keyframes: Vec::new(),
             pan_keyframes: Vec::new(),
             gain_keyframes: Vec::new(),
-            opacity_keyframes: (Vec::new()).into(),
-            transform_pos_x_keyframes: (Vec::new()).into(),
-            transform_pos_y_keyframes: (Vec::new()).into(),
-            transform_scale_keyframes: (Vec::new()).into(),
-            transform_rotation_keyframes: (Vec::new()).into(),
-            transform_tilt_x_keyframes: (Vec::new()).into(),
-            transform_tilt_y_keyframes: (Vec::new()).into(),
             matte_feather_keyframes: Vec::new(),
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
-            effect_keyframes: (std::collections::HashMap::new()).into(),
             role: ClipRole::default(),
-            param_modifiers: (HashMap::new()).into(),
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
@@ -2893,8 +2932,6 @@ impl Clip {
             matte_stencil: None,
             consumed_as_matte: false,
             transform_link: None,
-            grade_versions: Vec::new(),
-            active_grade_version: None,
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
@@ -2949,15 +2986,28 @@ impl Clip {
             timeline_out,
             source_in: Timecode { value: 0, rate: timeline_in.rate },
             source_out: dur,
-            node_graph: crate::Grade::default(),
-            effects: Default::default(),
-            effect_list: Default::default(),
+            picture: crate::ClipPictureFields {
+                node_graph: crate::Grade::default(),
+                effects: Default::default(),
+                effect_list: Default::default(),
+                own_node_graph: None,
+                own_effects: None,
+                opacity_keyframes: (Vec::new()).into(),
+                transform_pos_x_keyframes: (Vec::new()).into(),
+                transform_pos_y_keyframes: (Vec::new()).into(),
+                transform_scale_keyframes: (Vec::new()).into(),
+                transform_rotation_keyframes: (Vec::new()).into(),
+                transform_tilt_x_keyframes: (Vec::new()).into(),
+                transform_tilt_y_keyframes: (Vec::new()).into(),
+                effect_keyframes: (std::collections::HashMap::new()).into(),
+                param_modifiers: (HashMap::new()).into(),
+                grade_versions: Vec::new(),
+                active_grade_version: None,
+            },
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
             grade_group: None,
-            own_node_graph: None,
-            own_effects: None,
             magnetic_anchor: None,
             gain: 1.0,
             volume: 1.0,
@@ -2970,19 +3020,10 @@ impl Clip {
             volume_keyframes: Vec::new(),
             pan_keyframes: Vec::new(),
             gain_keyframes: Vec::new(),
-            opacity_keyframes: (Vec::new()).into(),
-            transform_pos_x_keyframes: (Vec::new()).into(),
-            transform_pos_y_keyframes: (Vec::new()).into(),
-            transform_scale_keyframes: (Vec::new()).into(),
-            transform_rotation_keyframes: (Vec::new()).into(),
-            transform_tilt_x_keyframes: (Vec::new()).into(),
-            transform_tilt_y_keyframes: (Vec::new()).into(),
             matte_feather_keyframes: Vec::new(),
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
-            effect_keyframes: (std::collections::HashMap::new()).into(),
             role: ClipRole::default(),
-            param_modifiers: (HashMap::new()).into(),
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
@@ -2995,8 +3036,6 @@ impl Clip {
             matte_stencil: None,
             consumed_as_matte: false,
             transform_link: None,
-            grade_versions: Vec::new(),
-            active_grade_version: None,
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),

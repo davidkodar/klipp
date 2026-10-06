@@ -318,7 +318,7 @@ fn take_sound_settings(clip: &mut Clip, picture: &Clip) {
     // clip doesn't carry (#1074).
     let effect = |id: &klipp_core::ParamId| matches!(id, klipp_core::ParamId::Effect { .. });
     clip.edit_param_modifiers(|v| v.retain(|id, _| effect(id)));
-    clip.edit_param_modifiers(|v| v.extend(picture.param_modifiers.0.iter().filter(|(id, _)| !effect(id)).map(|(id, m)| (id.clone(), m.clone()))));
+    clip.edit_param_modifiers(|v| v.extend(picture.picture.param_modifiers.0.iter().filter(|(id, _)| !effect(id)).map(|(id, m)| (id.clone(), m.clone()))));
 }
 
 /// Sound automation is written in seconds from the clip's start; a slice
@@ -670,7 +670,7 @@ mod tests {
         a.edit_effect_keyframes(|v| v.insert("0:value".into(), vec![klipp_core::Keyframe { time_secs: 0.0, value: 0.2, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }]));
         a.edit_param_modifiers(|v| v.insert(klipp_core::ParamId::Effect { effect_index: 0, param_name: "value".into() }, klipp_core::ModifierStack::default()));
         a.grade_group = Some(group.id);
-        let own_node = corrector(&a.node_graph.0);
+        let own_node = corrector(&a.picture.node_graph.0);
         let mut adjustment = Clip::media(MediaId::new(), t(24), t(48), t(0), t(24));
         adjustment.kind = ClipKind::AdjustmentLayer;
         v.clips = vec![a, adjustment];
@@ -697,9 +697,9 @@ mod tests {
             (keys, mods)
         };
         assert_eq!(animation(a), animation(own), "the clip's own animation stays on its own effect");
-        let order: Vec<_> = a.node_graph.0.topo_sort().unwrap().into_iter().filter(|id| [own_node, group_node, track_node].contains(id)).collect();
+        let order: Vec<_> = a.picture.node_graph.0.topo_sort().unwrap().into_iter().filter(|id| [own_node, group_node, track_node].contains(id)).collect();
         assert_eq!(order, vec![own_node, group_node, track_node], "own grade, then the group's, then the track's");
-        assert!(flat.tracks[0].clips[1].builtin_effects().is_empty() && flat.tracks[0].clips[1].own_effects.is_none(), "an adjustment layer takes nothing");
+        assert!(flat.tracks[0].clips[1].builtin_effects().is_empty() && flat.tracks[0].clips[1].picture.own_effects.is_none(), "an adjustment layer takes nothing");
         let chain: Vec<&str> = flat.tracks[1].clips[0].audio_effects.iter().map(|e| e.effect_type.as_str()).collect();
         assert_eq!(chain, vec!["eq", "compressor"], "the clip's chain, then the track's");
 
@@ -707,7 +707,7 @@ mod tests {
         let mut again = flat.clone();
         again.bake_grade_groups();
         again.bake_track_effects();
-        let effects = |s: &Sequence| s.all_clips().map(|c| (c.builtin_effects().to_vec(), c.audio_effects.clone(), c.node_graph.clone())).collect::<Vec<_>>();
+        let effects = |s: &Sequence| s.all_clips().map(|c| (c.builtin_effects().to_vec(), c.audio_effects.clone(), c.picture.node_graph.clone())).collect::<Vec<_>>();
         assert!(effects(&again) == effects(&flat), "baked once, however often it is baked");
 
         // The document keeps its own, and the render copy gives them back.
@@ -749,7 +749,7 @@ mod tests {
                 if let Some(k) = clip_kind {
                     c.kind = k;
                 }
-                c.node_graph = exposed(0.1).into();
+                c.picture.node_graph = exposed(0.1).into();
                 c.grade_group = in_group.then_some(group.id);
                 track.clips.push(c);
             }
@@ -763,7 +763,7 @@ mod tests {
         for (track, baked_track) in seq.tracks.iter().zip(&baked.tracks) {
             for (clip, baked_clip) in track.clips.iter().zip(&baked_track.clips) {
                 let grade = seq.render_grade(clip.id).expect("the clip is on a track");
-                assert!(*grade == baked_clip.node_graph.0, "{:?} {:?} in group {}", track.kind, clip.kind, clip.grade_group.is_some());
+                assert!(*grade == baked_clip.picture.node_graph.0, "{:?} {:?} in group {}", track.kind, clip.kind, clip.grade_group.is_some());
                 checked += 1;
             }
         }
@@ -791,7 +791,7 @@ mod tests {
         let mut v = Track::new("V1", TrackKind::Video);
         let mut member = Clip::media(MediaId::new(), t(0), t(24), t(0), t(24));
         member.grade_group = Some(group.id);
-        let own_node = member.node_graph.0.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
+        let own_node = member.picture.node_graph.0.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
         let outsider = Clip::media(MediaId::new(), t(24), t(48), t(0), t(24));
         v.clips = vec![member, outsider];
         seq.tracks = vec![v];
@@ -799,15 +799,15 @@ mod tests {
         let before = seq.clone();
 
         let flat = flatten_sequence(&seq, std::slice::from_ref(&seq));
-        let ids = |c: &Clip| c.node_graph.0.topo_sort().unwrap().into_iter().filter(|id| [pre_node, own_node, post_node].contains(id)).collect::<Vec<_>>();
+        let ids = |c: &Clip| c.picture.node_graph.0.topo_sort().unwrap().into_iter().filter(|id| [pre_node, own_node, post_node].contains(id)).collect::<Vec<_>>();
         assert_eq!(ids(&flat.tracks[0].clips[0]), vec![pre_node, own_node, post_node], "pre, own, post in that order");
-        assert!(flat.tracks[0].clips[1].node_graph.0.is_identity(), "a clip outside the group is not graded by it");
-        let graphs = |s: &Sequence| s.all_clips().map(|c| c.node_graph.clone()).collect::<Vec<_>>();
+        assert!(flat.tracks[0].clips[1].picture.node_graph.0.is_identity(), "a clip outside the group is not graded by it");
+        let graphs = |s: &Sequence| s.all_clips().map(|c| c.picture.node_graph.clone()).collect::<Vec<_>>();
         assert!(graphs(&seq) == graphs(&before) && seq.grade_groups == before.grade_groups, "the document is untouched");
         // What reads the render copy to change a clip's grade reads the
         // clip's own: the group's nodes never travel into it.
         assert!(graphs(&flat.with_own_grades()) == graphs(&seq), "the render copy gives back each clip's own grade");
-        assert_eq!(flat.tracks[0].clips[0].own_grade(), &seq.tracks[0].clips[0].node_graph.0);
+        assert_eq!(flat.tracks[0].clips[0].own_grade(), &seq.tracks[0].clips[0].picture.node_graph.0);
 
         // The same scene as a graded compound's content: its member still
         // runs inside its group.

@@ -45,7 +45,9 @@
 
 mod brief;
 mod clip_anim;
+mod picture_fields;
 pub use clip_anim::{EffectKeyframes, Keyframes, ParamModifiers};
+pub use picture_fields::ClipPictureParts;
 mod edit_plan;
 mod effect_slots;
 mod other_effect_slots;
@@ -86,7 +88,7 @@ pub use marker::Marker;
 pub use klipp_core::MulticamSound;
 pub use sequence::{
     effective_timeline_duration_for_keyframes, one_frame, speed_at_keyframes, speed_integral_keyframes,
-    AnchorAlignment, Camera, CaptionStyle, ChannelConfig, Clip, ClipLabel, ClipMarker, ClipRole, FadeCurve, GradeVersion, LinkMode,
+    AnchorAlignment, Camera, CaptionStyle, ChannelConfig, Clip, ClipLabel, ClipPictureFields, ClipMarker, ClipRole, FadeCurve, GradeVersion, LinkMode,
     FirstClipAutoSet, GradeGroup, GradeStage, Look, MagneticAnchor, MatteBinding, Sequence, StencilSettings, Track, TrackEffects, TrackPaste, TrackSettings, OwnEffects, TrackKind, TrackRole,
     Transition, TransitionKind, TransformLink, TransformLinkTarget, SPEED_MAX, SPEED_MIN,
 };

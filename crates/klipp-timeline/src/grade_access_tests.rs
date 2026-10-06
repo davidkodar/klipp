@@ -40,14 +40,14 @@ fn each_always_graded_owner_reads_and_writes_its_own_field() {
     clip.set_grade(g.clone());
     version.set_grade(g.clone());
     look.set_grade(g.clone());
-    assert_eq!(clip.node_graph.0, g);
+    assert_eq!(clip.picture.node_graph.0, g);
     assert_eq!(version.node_graph.0, g);
     assert_eq!(look.node_graph, g);
 
     assert!(clip.set_grade_param(id, "exposure", 0.5));
     assert!(version.set_grade_param(id, "exposure", 0.25));
     assert!(look.set_grade_param(id, "exposure", 0.125));
-    assert_eq!(exposure(&clip.node_graph.0, id), Some(0.5));
+    assert_eq!(exposure(&clip.picture.node_graph.0, id), Some(0.5));
     assert_eq!(exposure(&version.node_graph.0, id), Some(0.25));
     assert_eq!(exposure(&look.node_graph, id), Some(0.125));
     assert_eq!((exposure(clip.grade(), id), exposure(version.grade(), id), exposure(look.grade(), id)), (Some(0.5), Some(0.25), Some(0.125)));
@@ -112,7 +112,7 @@ fn edit_grade_gives_its_closures_result_back() {
         g.nodes.push(node(NodeKind::Exposure));
         g.nodes.len()
     });
-    assert_eq!(n, clip.node_graph.0.nodes.len());
+    assert_eq!(n, clip.picture.node_graph.0.nodes.len());
     let mut fx = TrackEffects { grade: Some(Default::default()), ..Default::default() };
     assert_eq!(fx.grade_slot().edit(|g| g.output_node_id), Some(fx.grade.as_ref().map(|g| &g.0).unwrap().output_node_id));
 }
@@ -123,9 +123,9 @@ fn a_param_is_found_inside_a_compound_as_the_drain_finds_it() {
     let mut compound = node(NodeKind::Compound);
     compound.params.compound_subgraph = Some(inner);
     let mut clip = Clip::gap(t(0.0), t(1.0));
-    clip.node_graph.0.nodes.push(compound);
+    clip.picture.node_graph.0.nodes.push(compound);
     assert!(clip.set_grade_param(id, "exposure", 0.5));
-    let sub = clip.node_graph.0.nodes.iter().find_map(|n| n.params.compound_subgraph.as_ref()).unwrap();
+    let sub = clip.picture.node_graph.0.nodes.iter().find_map(|n| n.params.compound_subgraph.as_ref()).unwrap();
     assert_eq!(exposure(sub, id), Some(0.5));
     assert!(!clip.set_grade_param(NodeId::new_v4(), "exposure", 0.5), "no such node");
 }
@@ -133,7 +133,7 @@ fn a_param_is_found_inside_a_compound_as_the_drain_finds_it() {
 #[test]
 fn a_node_inserted_after_another_takes_over_what_it_fed() {
     let mut clip = Clip::gap(t(0.0), t(1.0));
-    let g = &clip.node_graph.0;
+    let g = &clip.picture.node_graph.0;
     let (source, out) = (g.nodes[0].id, g.output_node_id);
     let feeding_out = g.input_of(out, 0).unwrap();
     let new = node(NodeKind::Saturation);

@@ -114,7 +114,10 @@ fn kind(e: &E) -> String {
 }
 
 fn clip_with(effect: E) -> Clip {
-    Clip { effect_list: klipp_timeline::EffectList::new(vec![effect], vec![]), ..Clip::gap(tc(0.0), tc(4.0)) }
+    Clip {
+        picture: klipp_timeline::ClipPictureParts { builtin_effects: vec![effect], ..Default::default() }.into(),
+        ..Clip::gap(tc(0.0), tc(4.0))
+    }
 }
 
 /// What the render takes from the clip at `t`: the effect chain and
@@ -166,7 +169,11 @@ fn a_keyframed_effect_ramps_between_its_keys() {
 #[test]
 fn keys_address_their_own_effect() {
     let mut clip = Clip {
-        effect_list: klipp_timeline::EffectList::new(vec![E::Bloom { threshold: 0.7, radius: 6.0, intensity: 0.8 }, E::Vibrance { amount: 0.3 }], vec![]),
+        picture: klipp_timeline::ClipPictureParts {
+            builtin_effects: vec![E::Bloom { threshold: 0.7, radius: 6.0, intensity: 0.8 }, E::Vibrance { amount: 0.3 }],
+            ..Default::default()
+        }
+        .into(),
         ..Clip::gap(tc(0.0), tc(4.0))
     };
     clip.edit_effect_keyframes(|v| v.insert("1:amount".into(), vec![key(0.0, 0.9)]));
