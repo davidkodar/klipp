@@ -139,6 +139,16 @@ pub enum LiftNote {
     /// A clip with no grade graph in its file, which today loads as the
     /// default pipeline; the conversion writes it out.
     DefaultPipeline { group: NodeId },
+    /// An old grade graph's output named a node that isn't there; it is
+    /// made, with that id, so the edges into it read as today.
+    MissingOutput { group: NodeId },
+    /// An edge today's executor never reads (to a missing node, into a
+    /// port the kind doesn't read, or after another into the same port),
+    /// kept here for the record.
+    EdgeDropped { group: NodeId, edge: Value, why: String },
+    /// An edge from a missing node into a primary input, which today reads
+    /// the frame: now an edge from the group's input.
+    EdgeRewired { group: NodeId, edge: Value },
 }
 
 /// Where a node spliced into a clip's render copy came from. The clip's
@@ -157,4 +167,126 @@ pub enum Origin {
 pub enum Stage {
     Pre,
     Post,
+}
+
+/// Why a graph isn't a valid lifted graph.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LiftedError {
+    /// Not exactly one start or end node at a level.
+    Ends { level: String, what: &'static str, count: usize },
+    /// The graph's `output` isn't its end node.
+    Output { level: String },
+    DuplicateNode(NodeId),
+    DanglingEdge(NodeId),
+    /// A required input with no edge or wireless link: an implicit read,
+    /// which the lifted model doesn't have.
+    Unwired { node: NodeId, port: String },
+    /// Two edges into one port.
+    TwoInputs { node: NodeId, port: String },
+    /// A `mask` edge into a node that isn't a gateable correction.
+    MaskNotGateable(NodeId),
+    UnknownMergeOp(NodeId),
+    TwoPlacements,
+    /// An origin on a graph that isn't a render copy.
+    Origin(NodeId),
+}
+
+impl std::fmt::Display for LiftedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+impl std::error::Error for LiftedError {}
+
+fn kind(n: &crate::Node) -> &str {
+    n.legacy.as_ref().and_then(|l| l.payload.get("kind")).and_then(Value::as_str).unwrap_or("")
+}
+
+/// The inputs a node must have wired, by its type and kind.
+fn required_inputs(n: &crate::Node) -> Vec<crate::PortKey> {
+    use crate::ports::input_key;
+    match n.type_id.as_str() {
+        types::SOURCE | types::GROUP_INPUT => Vec::new(),
+        crate::types::LEGACY_NODE | types::MERGE | types::GROUP_OUTPUT => match kind(n) {
+            "Source" | "ExternalMatte" => Vec::new(),
+            "Layer" => vec![input_key("Layer", 0), input_key("Layer", 1)],
+            k => vec![input_key(k, 0)],
+        },
+        _ => vec!["in".into()],
+    }
+}
+
+fn check_level(g: &Graph, level: &str, body: bool, render_copy: bool) -> Result<(), LiftedError> {
+    let (start, end) = if body { (types::GROUP_INPUT, types::GROUP_OUTPUT) } else { (types::SOURCE, types::OUTPUT) };
+    for (what, t) in [("start", start), ("end", end)] {
+        let count = g.nodes.iter().filter(|n| n.type_id.as_str() == t).count();
+        if count != 1 {
+            return Err(LiftedError::Ends { level: level.to_owned(), what, count });
+        }
+    }
+    if g.nodes.iter().find(|n| n.type_id.as_str() == end).map(|n| n.id) != Some(g.output) {
+        return Err(LiftedError::Output { level: level.to_owned() });
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    for n in &g.nodes {
+        if !ids.insert(n.id) {
+            return Err(LiftedError::DuplicateNode(n.id));
+        }
+        if n.origin.is_some() && !render_copy {
+            return Err(LiftedError::Origin(n.id));
+        }
+    }
+    let mut into = std::collections::BTreeSet::new();
+    for e in &g.edges {
+        for id in [e.from.0, e.to.0] {
+            if !ids.contains(&id) {
+                return Err(LiftedError::DanglingEdge(id));
+            }
+        }
+        if !into.insert((e.to.0, e.to.1.clone())) {
+            return Err(LiftedError::TwoInputs { node: e.to.0, port: e.to.1.to_string() });
+        }
+        if e.to.1.as_str() == "mask" {
+            let target = g.nodes.iter().find(|n| n.id == e.to.0);
+            if !target.is_some_and(|n| crate::ports::GATEABLE.contains(&kind(n))) {
+                return Err(LiftedError::MaskNotGateable(e.to.0));
+            }
+        }
+    }
+    let sender = |name: &str, me: NodeId| g.nodes.iter().any(|o| o.id != me && o.wireless.output_link.as_deref() == Some(name));
+    for n in &g.nodes {
+        for port in required_inputs(n) {
+            let wired = into.contains(&(n.id, port.clone())) || n.wireless.input_links.get(&port).is_some_and(|name| sender(name, n.id));
+            if !wired {
+                return Err(LiftedError::Unwired { node: n.id, port: port.to_string() });
+            }
+        }
+        if n.type_id.as_str() == types::MERGE {
+            let known = matches!(n.params.get(&crate::ParamKey::from("op")), Some(crate::ParamValue::Text(op)) if types::MERGE_OPS.iter().any(|(_, o)| o == op));
+            if !known {
+                return Err(LiftedError::UnknownMergeOp(n.id));
+            }
+        }
+        if n.type_id.as_str() == types::GROUP {
+            if let Some(b) = &n.group {
+                check_level(&b.graph, &format!("{level}/{}", n.id), true, render_copy)?;
+            }
+        }
+    }
+    if !body && g.nodes.iter().filter(|n| n.type_id.as_str() == types::PLACEMENT).count() > 1 {
+        return Err(LiftedError::TwoPlacements);
+    }
+    Ok(())
+}
+
+impl Graph {
+    /// Check a lifted clip graph (§5.3): one source and one output at each
+    /// level, every edge naming nodes of its level, one edge at most into a
+    /// port, **no unwired required input** (the lifted model has no
+    /// implicit reads), `mask` edges only into gateable corrections, known
+    /// merge ops, at most one placement, and origins only on a render copy.
+    pub fn check_lifted(&self, render_copy: bool) -> Result<(), LiftedError> {
+        check_level(self, "clip", false, render_copy)
+    }
 }

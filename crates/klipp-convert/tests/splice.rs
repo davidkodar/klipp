@@ -100,6 +100,8 @@ fn splice_and_unsplice_invert_and_splicing_twice_is_once() {
     let i = inputs(&own, Some(grade(2, "Saturation", json!({"saturation": 1.3}))), Some(grade(3, "Contrast", json!({"contrast": 1.2}))),
                    json!([{"type": "drop_shadow"}]), Some(grade(4, "Exposure", json!({"exposure": -0.1}))));
     let s = splice(&c, ClipKind::Media, &i);
+    s.graph.check_lifted(true).unwrap();
+    assert!(s.graph.check_lifted(false).is_err(), "origins belong on render copies only");
     assert_eq!(unsplice(&s), c, "un-splicing gives the clip back");
     assert_eq!(splice(&s, ClipKind::Media, &i), s, "splicing a spliced copy changes nothing");
     assert_eq!(splice(&c, ClipKind::Media, &SpliceInputs::default()), c, "nothing to splice: the clip itself");

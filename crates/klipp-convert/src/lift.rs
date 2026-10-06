@@ -245,6 +245,46 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
         id
     });
 
+    // 2b. Odd edges read as today's executor reads them: an output named
+    // but missing is made; an edge to a missing node, into a port the kind
+    // never reads (`p<n>`), or after another into the same port is never
+    // read and goes; an edge from a missing node into a primary input reads
+    // the frame there (`unwrap_or(source)`), so it comes from the input.
+    // Anything less certain stays as saved, and `check_lifted` stops it.
+    if !body.nodes.iter().any(|n| n.id == body.output) {
+        body.nodes.push(node(body.output, lt::GROUP_OUTPUT, true, None));
+        notes.push(LiftNote::MissingOutput { group: group.id });
+    }
+    let kinds: BTreeMap<NodeId, String> = body.nodes.iter().rev().map(|n| (n.id, kind_of(n).to_owned())).collect();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut kept = Vec::with_capacity(body.edges.len());
+    for mut e in std::mem::take(&mut body.edges) {
+        let value = serde_json::to_value(&e).unwrap_or(Value::Null);
+        let drop = |why: &str, notes: &mut Vec<LiftNote>| notes.push(LiftNote::EdgeDropped { group: group.id, edge: value.clone(), why: why.into() });
+        let Some(to_kind) = kinds.get(&e.to.0) else {
+            drop("to a node that isn't there", notes);
+            continue;
+        };
+        let port = e.to.1.as_str();
+        if port.strip_prefix('p').is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())) {
+            drop("into a port the kind doesn't read", notes);
+            continue;
+        }
+        if !seen.insert((e.to.0, e.to.1.clone())) {
+            drop("after another edge into the same port", notes);
+            continue;
+        }
+        if !kinds.contains_key(&e.from.0) {
+            let primary = *port == *input_port(to_kind, 0).as_str() || (to_kind == "Layer" && *port == *input_port("Layer", 1).as_str());
+            if primary {
+                e.from = (input_id, "out".into());
+                notes.push(LiftNote::EdgeRewired { group: group.id, edge: value.clone() });
+            }
+        }
+        kept.push(e);
+    }
+    body.edges = kept;
+
     // 3. Implicit reads become explicit edges from the group's input: an
     // unwired primary reads the frame (`executor.rs`, `unwrap_or(source)`),
     // and so does Layer's unwired background.

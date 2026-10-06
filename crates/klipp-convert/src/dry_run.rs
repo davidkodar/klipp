@@ -195,12 +195,15 @@ fn lift_one(clip: &Value) -> Result<((ClipPicture, lift::ClipKind), Vec<LiftNote
     let record = to_v2::clip_to_v2(o).map_err(|e| e.to_string())?;
     let clip_id = uuid::Uuid::parse_str(o.get("id").and_then(Value::as_str).unwrap_or_default()).map_err(|e| e.to_string())?;
     let kind = lift::ClipKind::from_json(o.get("kind"))?;
-    lift::lift_clip(&record, &lift::LiftCtx { clip_id, kind }).map(|(p, notes)| ((p, kind), notes))
+    let (p, notes) = lift::lift_clip(&record, &lift::LiftCtx { clip_id, kind })?;
+    p.graph.check_lifted(false).map_err(|e| format!("the lifted graph isn't valid: {e}"))?;
+    Ok(((p, kind), notes))
 }
 
-/// Both properties of the splice on one clip.
+/// Both properties of the splice on one clip, and the spliced copy valid.
 fn splice_properties(picture: &ClipPicture, kind: lift::ClipKind, inputs: &splice::SpliceInputs) -> Result<(), String> {
     let spliced = splice::splice(picture, kind, inputs);
+    spliced.graph.check_lifted(true).map_err(|e| format!("the spliced copy isn't valid: {e}"))?;
     if &splice::unsplice(&spliced) != picture {
         return Err("unsplice(splice(c)) isn't c".into());
     }

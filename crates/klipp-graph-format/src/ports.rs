@@ -8,7 +8,7 @@ use crate::PortKey;
 
 /// The corrections whose port 1 is the matte that gates them, though their
 /// own input count says one.
-const GATEABLE: [&str; 8] = [
+pub const GATEABLE: [&str; 8] = [
     "Corrector",
     "ColorBalance",
     "Exposure",

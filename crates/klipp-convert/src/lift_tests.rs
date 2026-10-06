@@ -27,7 +27,9 @@ fn edge(from: &str, fp: u8, to: &str, tp: u8) -> Value {
 
 fn lift(clip: Value, kind: ClipKind) -> (ClipPicture, Vec<LiftNote>) {
     let record = clip_to_v2(clip.as_object().unwrap()).unwrap();
-    lift_clip(&record, &LiftCtx { clip_id: id(CLIP), kind }).unwrap()
+    let lifted = lift_clip(&record, &LiftCtx { clip_id: id(CLIP), kind }).unwrap();
+    lifted.0.graph.check_lifted(false).unwrap_or_else(|e| panic!("not a valid lifted graph: {e}"));
+    lifted
 }
 
 fn clip(extra: Value) -> Value {
@@ -312,4 +314,35 @@ fn a_dropped_vertical_scale_is_reported() {
     let (p, notes) = lift(clip(json!({"builtin_effects": [tf]})), ClipKind::Media);
     assert_eq!(p.placement.scale, Some(1.0));
     assert!(notes.iter().any(|n| matches!(n, LiftNote::DroppedField { field, .. } if field == "scale_y")));
+}
+
+/// Odd edges an old grade graph keeps get today's reading, each with its
+/// note, and the result is a valid lifted graph.
+#[test]
+fn odd_edges_read_as_today() {
+    const GONE: &str = "00000000-0000-0000-0000-0000000000ff";
+    const NOWHERE: &str = "00000000-0000-0000-0000-0000000000ee";
+    let g = json!({
+        "nodes": [gn(SRC, "Source"), gn(COR, "Corrector"), gn(SAT, "Saturation")],
+        "edges": [
+            edge(SRC, 0, COR, 0),
+            edge(SRC, 0, COR, 0),          // a second edge into the same port
+            edge(COR, 0, NOWHERE, 0),      // to a node that isn't there
+            edge(SRC, 0, SAT, 4),          // into a port Saturation doesn't read
+            edge(GONE, 0, SAT, 0),         // from a node that isn't there, into a primary
+            edge(SAT, 0, OUT, 0)           // into the output, which is missing
+        ],
+        "output_node_id": OUT
+    });
+    let (p, notes) = lift(clip(json!({"node_graph": g})), ClipKind::Media);
+    let b = body(&p);
+    let why: Vec<&str> = notes.iter().filter_map(|n| match n { LiftNote::EdgeDropped { why, .. } => Some(why.as_str()), _ => None }).collect();
+    assert_eq!(why, ["after another edge into the same port", "to a node that isn't there", "into a port the kind doesn't read"]);
+    assert!(notes.iter().any(|n| matches!(n, LiftNote::EdgeRewired { .. })));
+    assert!(notes.iter().any(|n| matches!(n, LiftNote::MissingOutput { .. })));
+    // The missing output is made with its saved id; the frame now feeds
+    // Saturation explicitly, as today's executor read it.
+    assert_eq!(find(b, OUT).type_id.as_str(), lt::GROUP_OUTPUT);
+    assert!(has_edge(b, id(SRC), id(SAT), "in"));
+    assert!(has_edge(b, id(SAT), id(OUT), "in"));
 }
