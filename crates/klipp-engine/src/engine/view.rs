@@ -1313,12 +1313,18 @@ mod playback_quality_tests {
 }
 
 /// [`clip_render_hash`]'s value for `clip`. A clip that won't serialise
-/// gets a key no other has had in this process, made afresh after each
-/// change, so a frame of one state of it is never taken for another.
+/// gets a key no other has had, made afresh after each change, so a frame
+/// of one state of it is never taken for another: salted per process, so
+/// it doesn't meet a file the disk cache kept from another run either.
 fn clip_render_hash_of(clip: &Clip) -> u64 {
     crate::canonical_hash::canonical_hash(clip).unwrap_or_else(|e| {
         tracing::warn!("render cache: clip {} can't be hashed ({e}); its frames are kept for this state only", clip.id.0);
+        static SALT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
         static UNHASHABLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        UNHASHABLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed) ^ 0x9e37_79b9_7f4a_7c15
+        let salt = *SALT.get_or_init(|| {
+            use std::hash::BuildHasher;
+            std::hash::RandomState::new().hash_one(std::process::id())
+        });
+        salt ^ UNHASHABLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     })
 }

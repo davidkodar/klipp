@@ -381,6 +381,21 @@ mod tests {
                     g.node_positions.insert(ids[i], klipp_nodes::NodePos { x: i as f32, y: 0.0 });
                 }
             });
+            // A node frame with several members: a set, hashed in an
+            // order that doesn't depend on how it was built.
+            let mut members: Vec<klipp_nodes::NodeId> = ids[..6].to_vec();
+            if !forward {
+                members.reverse();
+            }
+            c.edit_grade(|g| {
+                g.frames = vec![klipp_nodes::NodeFrame {
+                    id: uuid::Uuid::from_u128(99),
+                    label: "group".into(),
+                    description: String::new(),
+                    color_rgba: 0,
+                    contained_node_ids: members.into_iter().collect(),
+                }];
+            });
             let mut p: Vec<&ParamId> = params.iter().collect();
             if !forward {
                 p.reverse();
