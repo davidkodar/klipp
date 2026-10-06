@@ -1,4 +1,4 @@
-//! The recorded effects (colour, geometry, blur) go into one encoder (node-graph M2 step
+//! The recorded effects (colour, geometry, blur, film) go into one encoder (node-graph M2 step
 //! 7): a run of them is one submit, whatever its length, and gives the
 //! same picture as each effect run on its own. The counts include the
 //! one submit `apply_effects`'s download makes.
@@ -58,9 +58,21 @@ fn blur() -> Vec<E> {
     ]
 }
 
+fn film() -> Vec<E> {
+    vec![
+        E::ChromaKey { key_color: [20, 200, 40], tolerance: 0.3, soft_edge: 0.1, spill_method: Default::default(), spill_strength: 0.5 },
+        E::Deflicker { strength: 0.5, window_secs: 1.0, gain: 1.1 },
+        E::FilmGrain { amount: 0.3, size: 1.0, color: 0, shadows: 0.5, seed: 7 },
+        E::NoiseGenerator { amount: 0.2, monochrome: 1, seed: 3 },
+        E::OldFilm { flicker: 0.2, scratches: 0.3, dust: 0.2, weave: 0.1, sepia: 0.4, seed: 5 },
+        E::Vhs { tracking: 0.2, bleed: 0.3, noise: 0.2, scanlines: 0.4, seed: 9 },
+        E::CornerPin { tl: [0.02, 0.01], tr: [0.97, 0.0], br: [1.0, 0.98], bl: [0.0, 1.0] },
+    ]
+}
+
 /// Every family recorded so far, in one list.
 fn recorded() -> Vec<E> {
-    colour().into_iter().chain(geometry()).chain(blur()).collect()
+    colour().into_iter().chain(geometry()).chain(blur()).chain(film()).collect()
 }
 
 fn pipeline() -> Option<GpuEffectsPipeline> {
@@ -91,6 +103,7 @@ fn a_run_of_recorded_effects_is_one_submit() {
     assert_eq!(run(&mut g, &colour()).0, 2, "nine effects, one run");
     assert_eq!(run(&mut g, &geometry()).0, 2, "the geometry effects, one run");
     assert_eq!(run(&mut g, &blur()).0, 2, "the blur effects, several passes some of them, one run");
+    assert_eq!(run(&mut g, &film()).0, 2, "the film effects, one run");
     assert_eq!(run(&mut g, &recorded()).0, 2, "every recorded effect, one run");
     // Identities record nothing, and a run of only identities submits nothing.
     let idle = [
@@ -103,6 +116,8 @@ fn a_run_of_recorded_effects_is_one_submit() {
         E::GaussianBlur { radius: 0.2 },
         E::TiltShift { center: 0.5, width: 0.2, softness: 0.3, radius: 0.0 },
         E::FocusBlur { radius: 2.0, vertical: false, band: 1.0 },
+        // No motion data uploaded: the frame passes through.
+        E::RollingShutterCorrection { strength: 0.5, readout_ratio: 0.9 },
     ];
     assert_eq!(run(&mut g, &idle).0, 1, "only the download");
     // Seventy passes overflow the 64 slots once: two runs.
