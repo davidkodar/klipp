@@ -386,6 +386,13 @@ fn side_stores(dir: &Path, parity: Parity, stores: &mut BTreeMap<&'static str, u
 /// The colour presets in a config folder (`presets/color/*.json`): parity,
 /// then both properties. Returns how many were checked and the stops.
 pub fn check_colour_presets(config_dir: &Path, parity: Parity) -> (usize, Vec<String>) {
+    let (n, stops, _) = check_colour_presets_noted(config_dir, parity);
+    (n, stops)
+}
+
+/// [`check_colour_presets`], and the lift notes of their revision-2 form.
+pub fn check_colour_presets_noted(config_dir: &Path, parity: Parity) -> (usize, Vec<String>, BTreeMap<String, usize>) {
+    let mut notes: BTreeMap<String, usize> = BTreeMap::new();
     let (mut n, mut stops) = (0, Vec::new());
     let files = list_optional(&config_dir.join("presets/color")).unwrap_or_else(|e| {
         stops.push(format!("presets/color/: {e}"));
@@ -397,14 +404,21 @@ pub fn check_colour_presets(config_dir: &Path, parity: Parity) -> (usize, Vec<St
             let raw: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
             Document::parse(&text, StoreKind::GradePreset)?;
             parity(&raw, StoreKind::GradePreset)?;
-            verify::check_store("colour preset", &raw, &|g| g, &verify::conv_preset)
+            verify::check_store("colour preset", &raw, &|g| g, &verify::conv_preset)?;
+            // Revision 2, as the real run writes the preset: built, written,
+            // proven; its notes are counted with the projects'.
+            let (c, n) = crate::revision2::colour_preset_noted(&name, &raw)?;
+            for x in &n {
+                *notes.entry(note_kind(x)).or_default() += 1;
+            }
+            crate::revision2::verify_side(&crate::revision2::colour_preset(&name, &raw)?, &serde_json::to_string(&c).map_err(|e| e.to_string())?)
         });
         n += 1;
         if let Err(e) = checked {
             stops.push(format!("presets/color/{name}: {e}"));
         }
     }
-    (n, stops)
+    (n, stops, notes)
 }
 
 #[cfg(test)]
@@ -426,6 +440,25 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("klipp-dry-run-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    /// A colour preset is checked through revision 2 as well, and a broken
+    /// one is a stop, not skipped.
+    #[test]
+    fn colour_presets_go_through_revision_2() {
+        let dir = scratch("presets");
+        std::fs::create_dir_all(dir.join("presets/color")).unwrap();
+        let s = "00000000-0000-0000-0000-0000000000a0";
+        let o = "00000000-0000-0000-0000-0000000000a1";
+        let g = json!({"nodes": [{"id": s, "kind": "Source", "label": "S", "enabled": true}, {"id": o, "kind": "Output", "label": "O", "enabled": true}],
+                       "edges": [{"from_node": s, "from_port": 0, "to_node": o, "to_port": 0}], "output_node_id": o});
+        std::fs::write(dir.join("presets/color/Plain.json"), g.to_string()).unwrap();
+        let (n, stops, _) = check_colour_presets_noted(&dir, &ok);
+        assert_eq!((n, stops.len()), (1, 0), "{stops:?}");
+        std::fs::write(dir.join("presets/color/Broken.json"), "{ not json").unwrap();
+        let (n, stops, _) = check_colour_presets_noted(&dir, &ok);
+        assert_eq!((n, stops.len()), (2, 1));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

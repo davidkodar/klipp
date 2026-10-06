@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use klipp_convert::dry_run::{check_colour_presets, check_project_with, ProjectReport};
+use klipp_convert::dry_run::{check_colour_presets_noted, check_project_with, ProjectReport};
 use klipp_convert::splice::{stage_body, track_parts, SpliceInputs, StageInputs, TrackInputs};
 use klipp_convert::{installed, to_v2, StoreKind};
 use serde_json::{json, Value};
@@ -124,7 +124,7 @@ fn main() {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .map(|c| c.join("klipp"));
-    let (presets, preset_stops) = config.as_deref().map(|c| check_colour_presets(c, &parity)).unwrap_or_default();
+    let (presets, preset_stops, preset_notes) = config.as_deref().map(|c| check_colour_presets_noted(c, &parity)).unwrap_or_default();
     let total = started.elapsed();
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let installed = installed::check(&repo);
@@ -148,10 +148,8 @@ fn main() {
     println!("  colour presets: {presets}");
     println!("picture on tracks or groups with no clip: {no_clip}");
     let mut notes: BTreeMap<&str, usize> = BTreeMap::new();
-    for r in &reports {
-        for (k, n) in &r.lift_notes {
-            *notes.entry(k).or_default() += n;
-        }
+    for (k, n) in reports.iter().flat_map(|r| r.lift_notes.iter()).chain(preset_notes.iter()) {
+        *notes.entry(k).or_default() += n;
     }
     println!("lift notes: {}", if notes.is_empty() { "none".to_owned() } else { notes.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(", ") });
     println!("time: {:.1} s in total, slowest project {:.2} s", total.as_secs_f64(), slowest.as_secs_f64());
