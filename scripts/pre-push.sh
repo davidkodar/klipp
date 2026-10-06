@@ -72,6 +72,27 @@ if [ ! -t 0 ]; then
         printf '\n  pre-push: only deleting refs, nothing to check.\n\n' >&2
         exit 0
     fi
+    # Every commit pushed has to be the one checked out here (#1118). The
+    # gate builds and tests HEAD, so a branch pushed from a checkout that
+    # has another one out (`git push origin <other-branch>`) was never
+    # built: the gate tested this checkout's own branch, found nothing in
+    # it to test, and let the push through. Deletions and tags carry no
+    # code of their own. What is updated is the remote ref (the third
+    # field), so that is what decides a tag: a tag pushed onto a branch
+    # still brings its commit into that branch (#1120).
+    _head=$(git rev-parse HEAD 2>/dev/null)
+    _other=$(printf '%s\n' "$_refs" | awk -v head="$_head" '$2 !~ /^0+$/ && $3 !~ /^refs\/tags\// && $2 != head { print $1; exit }')
+    if [ -n "$_other" ]; then
+        _where=$(git worktree list --porcelain 2>/dev/null | awk -v ref="$_other" '/^worktree / { w = substr($0, 10) } $0 == "branch " ref { print w; exit }')
+        printf '\n  pre-push: %s is not the commit checked out here (%s), and the gate\n' "$_other" "$(git rev-parse --short HEAD)" >&2
+        printf '            tests what is checked out, so it would go up untested (#1118).\n' >&2
+        if [ -n "$_where" ]; then
+            printf '            Push it from %s, where it is checked out.\n\n' "$_where" >&2
+        else
+            printf '            Check it out, or add a worktree for it, and push from there.\n\n' >&2
+        fi
+        exit 1
+    fi
 fi
 
 if ! command -v cargo >/dev/null 2>&1; then
