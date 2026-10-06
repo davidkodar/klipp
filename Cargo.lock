@@ -3105,6 +3105,16 @@ name = "klipp-grade-model"
 version = "0.1.0"
 
 [[package]]
+name = "klipp-graph-format"
+version = "0.1.0"
+dependencies = [
+ "klipp-nodes",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "klipp-hdr-out"
 version = "0.1.0"
 dependencies = [
