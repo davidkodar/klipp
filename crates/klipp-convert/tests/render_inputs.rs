@@ -83,12 +83,30 @@ const GATEABLE: [NodeKind; 8] = [
     NodeKind::RGBCurves,
 ];
 
-/// The grade the executor runs, with each port's source resolved.
+/// The grade the executor runs, with each port's source resolved, or
+/// `"passthrough"` where it refuses to run it: today's `topo_sort` finds a
+/// loop in the gated graph, or nothing that ran feeds the output
+/// (`NoOutputConnection`, `MissingNodeOutput`). The renderer then shows
+/// the frame ungraded (`grade`'s error path in klipp-compose).
+///
+/// A Source node and the Output node do nothing themselves: what reads a
+/// Source is listed as reading `"source"`, and what feeds the Output is
+/// the `result`. They are left out of the list, so a graph the lift gave
+/// an input or an output it lacked lists as the one it came from.
 fn grade(g: &NodeGraph) -> Value {
     let g = g.with_gates_applied().unwrap_or_else(|| g.clone());
+    if g.topo_sort().is_err() {
+        return json!("passthrough");
+    }
+    let result = match g.input_of(g.output_node_id, 0).and_then(|id| g.nodes.iter().find(|m| m.id == id)) {
+        None => return json!("passthrough"),
+        Some(m) if m.kind == NodeKind::Source => json!("source"),
+        Some(m) => json!(m.id),
+    };
     let nodes: Vec<Value> = g
         .nodes
         .iter()
+        .filter(|n| n.kind != NodeKind::Source && !(n.kind == NodeKind::Output && n.id == g.output_node_id))
         .map(|n| {
             let ports = n.dynamic_input_port_count().max(3);
             let mut inputs: Vec<Value> = (0..ports)
@@ -113,7 +131,7 @@ fn grade(g: &NodeGraph) -> Value {
             json!({ "id": n.id, "kind": n.kind, "enabled": n.enabled, "params": n.params, "keyframes": n.keyframes, "inputs": inputs })
         })
         .collect();
-    json!({ "nodes": nodes, "output": g.output_node_id, "working_space_override": g.working_space_override })
+    json!({ "nodes": nodes, "output": g.output_node_id, "result": result, "working_space_override": g.working_space_override })
 }
 
 /// The times a clip is read at: its first two frames, a third and a half
@@ -197,6 +215,28 @@ fn round_trip(clip: &Value) -> Result<Value, String> {
     to_v1::clip(&serde_json::to_value(&record).map_err(|e| e.to_string())?)
 }
 
+/// The loop rule (decision 6): the lift switches a clip's own grade off
+/// exactly where today's renderer refuses to order it, the gated graph as
+/// the executor sorts it. The adapter gives a grade that's off back as one
+/// that loops whatever it holds, so the comparison alone would not see a
+/// loop the lift missed: this does.
+fn loop_rule(clip: &Value, picture: &klipp_graph_format::lifted::ClipPicture) -> Result<(), String> {
+    use klipp_graph_format::lifted::types as lt;
+    let Some(own) = picture.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP && n.origin.is_none()) else { return Ok(()) };
+    let refused = match clip.get("node_graph").filter(|g| !g.is_null()) {
+        Some(g) => {
+            let g: NodeGraph = serde_json::from_value(g.clone()).map_err(|e| format!("the stored grade: {e}"))?;
+            g.with_gates_applied().unwrap_or_else(|| g.clone()).topo_sort().is_err()
+        }
+        None => false,
+    };
+    match (refused, own.enabled) {
+        (true, true) => Err("today's renderer can't order the clip's grade, and the lift kept it on".into()),
+        (false, false) => Err("today's renderer orders the clip's grade, and the lift switched it off".into()),
+        _ => Ok(()),
+    }
+}
+
 /// A clip's picture through the lift and back by the adapter,
 /// `adapter(lift(to_v2(x)))`.
 fn lifted(clip: &Value) -> Result<Value, String> {
@@ -204,6 +244,7 @@ fn lifted(clip: &Value) -> Result<Value, String> {
     let clip_id = Uuid::parse_str(clip.get("id").and_then(Value::as_str).ok_or("a clip without an id")?).map_err(|e| e.to_string())?;
     let ctx = LiftCtx { clip_id, kind: ClipKind::from_json(clip.get("kind"))? };
     let (picture, _notes) = lift_clip(&record, &ctx).map_err(|e| format!("lift: {e}"))?;
+    loop_rule(clip, &picture)?;
     adapter::clip(&picture, &ctx).map_err(|e| format!("adapter: {e}"))
 }
 
@@ -260,10 +301,27 @@ fn write_beside(dir: &Path, out: &Path, project: &Value) -> Result<(), String> {
 /// it is, so those say nothing about it and are counted apart; the lift
 /// makes the rewrite once with ids it derives, so for it they are
 /// compared with the minted ids matched to the derived ones.
+///
+/// It also counts what the comparison reached, so a generator can be held
+/// to reaching it: clips that blend frames somewhere, and grades today's
+/// renderer refuses to run.
 #[derive(Default)]
 struct Checked {
     alike: usize,
     unstable_load: usize,
+    blending: usize,
+    passthrough: usize,
+}
+
+impl Checked {
+    fn reached(&mut self, r: &Value) {
+        if r["samples"].as_array().is_some_and(|s| s.iter().any(|x| x["frame_blends"] == true)) {
+            self.blending += 1;
+        }
+        if r["grade"] == "passthrough" {
+            self.passthrough += 1;
+        }
+    }
 }
 
 /// Today's renderer consumes every clip of the project in `dir` the same
@@ -282,6 +340,7 @@ fn check_project(dir: &Path, scratch: &Path, through: fn(&Value) -> Result<Value
     let mut checked = Checked::default();
     for (((ca, fa), (cb, _)), (c2, _)) in a.iter().zip(&b).zip(&a2) {
         let (mut ra, rb) = (render_inputs(ca, *fa), render_inputs(cb, *fa));
+        checked.reached(&ra);
         if ra != render_inputs(c2, *fa) {
             checked.unstable_load += 1;
             if !align {
@@ -303,10 +362,14 @@ fn check_project(dir: &Path, scratch: &Path, through: fn(&Value) -> Result<Value
 /// kind in the same place.
 fn align_minted(ra: &Value, rb: &Value, file: &str) -> Value {
     let (Some(na), Some(nb)) = (ra["grade"]["nodes"].as_array(), rb["grade"]["nodes"].as_array()) else { return ra.clone() };
+    // The listed nodes, and the Output, which is not listed.
+    let output = (&ra["grade"]["output"], &rb["grade"]["output"]);
     let swaps: Vec<(String, String)> = na
         .iter()
         .zip(nb)
-        .filter_map(|(a, b)| Some((a["id"].as_str()?.to_owned(), b["id"].as_str()?.to_owned(), a["kind"] == b["kind"])))
+        .map(|(a, b)| (&a["id"], &b["id"], a["kind"] == b["kind"]))
+        .chain(std::iter::once((output.0, output.1, true)))
+        .filter_map(|(a, b, same)| Some((a.as_str()?.to_owned(), b.as_str()?.to_owned(), same)))
         .filter(|(ia, ib, same)| ia != ib && *same && !file.contains(ia.as_str()))
         .map(|(ia, ib, _)| (ia, ib))
         .collect();
@@ -592,6 +655,7 @@ fn check_spliced(dir: &Path, scratch: &Path, from_file: bool) -> Result<Checked,
                         lift_clip(&record, &ctx).map_err(|e| format!("lift: {e}"))?.0
                     }
                 };
+                loop_rule(raw_clip, &picture).map_err(|e| format!("clip {id}: {e}"))?;
                 let inputs = splice_inputs(seq, track, clip, &raw_view, &track_view, v2_seq.zip(v2_track)).map_err(|e| format!("clip {id}: {e}"))?;
                 let adapted = adapter::clip(&splice(&picture, ctx.kind, &inputs), &ctx).map_err(|e| format!("clip {id}: adapter: {e}"))?;
                 grades.push(adapted.get("node_graph").cloned().unwrap_or(Value::Null));
@@ -631,6 +695,7 @@ fn check_spliced(dir: &Path, scratch: &Path, from_file: bool) -> Result<Checked,
             cb.node_graph = serde_json::from_value(grade.clone()).map_err(|e| format!("clip {}: the flattened grade: {e}", cb.id.0))?;
         }
         let (mut ra, rb) = (render_inputs(ca, *fa), render_inputs(&cb, *fa));
+        checked.reached(&ra);
         if ra != render_inputs(c2, *fa) {
             checked.unstable_load += 1;
             ra = align_minted(&ra, &rb, &file);
@@ -851,8 +916,18 @@ fn generated_project(dir: &Path, seed: u64, n: usize) {
     klipp_project::save_project(dir, &[seq], &klipp_media::MediaPool::new()).expect("save");
     let path = dir.join("project.json");
     let mut project: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    // The speeds a frame blend needs to show, from a stream of their own so
+    // the pictures stay the ones generated before: slower than 1, keyed
+    // across 1, and reversed (which blends nothing).
+    let mut speeds = Rng(0x5EED_5BEE ^ (seed + 3));
     for clip in project["sequences"][0]["tracks"][0]["clips"].as_array_mut().unwrap() {
         *clip = with_picture(clip, &picture(&mut r, &samples));
+        match speeds.below(5) {
+            0 => clip["speed"] = json!(0.25 + speeds.unit() * 0.7),
+            1 => clip["speed_keyframes"] = keys(&mut speeds, 1.6),
+            2 => clip["speed"] = json!(-(0.25 + speeds.unit())),
+            _ => {}
+        }
     }
     std::fs::write(&path, project.to_string()).unwrap();
 }
@@ -928,7 +1003,7 @@ fn generated_spliced_project(dir: &Path, seed: u64, n: usize) {
 #[test]
 fn the_renderer_consumes_every_generated_render_copy_alike_after_the_splice() {
     for from_file in [false, true] {
-        let (mut clips, mut migrated) = (0, 0);
+        let (mut clips, mut migrated, mut blending, mut passthrough) = (0, 0, 0, 0);
         let mut failures = Vec::new();
         for seed in 0..40 {
             let (dir, scratch) = (temp("spl"), temp("spl_out"));
@@ -937,6 +1012,8 @@ fn the_renderer_consumes_every_generated_render_copy_alike_after_the_splice() {
                 Ok(c) => {
                     clips += c.alike + c.unstable_load;
                     migrated += c.unstable_load;
+                    blending += c.blending;
+                    passthrough += c.passthrough;
                 }
                 Err(e) => failures.push(format!("seed {seed}: {e}")),
             }
@@ -944,9 +1021,9 @@ fn the_renderer_consumes_every_generated_render_copy_alike_after_the_splice() {
             let _ = std::fs::remove_dir_all(&scratch);
         }
         let how = if from_file { "read from the revision-2 file" } else { "lifted" };
-        eprintln!("spliced, {how}: {clips} render copies alike, {migrated} of them rewritten on load");
+        eprintln!("spliced, {how}: {clips} render copies alike, {migrated} of them rewritten on load, {blending} blending frames, {passthrough} not graded");
         assert!(failures.is_empty(), "{how}: {} failures:\n{}", failures.len(), failures.join("\n"));
-        assert!(clips >= 700, "the generator reached too little: {clips} clips");
+        assert!(clips >= 700 && blending > 0 && passthrough > 0, "the generator reached too little: {clips} clips, {blending} blending, {passthrough} not graded");
     }
 }
 
@@ -954,7 +1031,7 @@ fn the_renderer_consumes_every_generated_render_copy_alike_after_the_splice() {
 /// over generated clips.
 #[test]
 fn the_renderer_consumes_every_generated_clip_alike_after_the_lift() {
-    let (mut clips, mut migrated) = (0, 0);
+    let (mut clips, mut migrated, mut blending, mut passthrough) = (0, 0, 0, 0);
     let mut failures = Vec::new();
     for seed in 0..40 {
         let (dir, scratch) = (temp("gen"), temp("gen_out"));
@@ -963,15 +1040,17 @@ fn the_renderer_consumes_every_generated_clip_alike_after_the_lift() {
             Ok(c) => {
                 clips += c.alike + c.unstable_load;
                 migrated += c.unstable_load;
+                blending += c.blending;
+                passthrough += c.passthrough;
             }
             Err(e) => failures.push(format!("seed {seed}: {e}")),
         }
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&scratch);
     }
-    eprintln!("generated: {clips} clips alike after the lift, {migrated} of them rewritten on load");
+    eprintln!("generated: {clips} clips alike after the lift, {migrated} of them rewritten on load, {blending} blending frames, {passthrough} not graded");
     assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
-    assert!(clips >= 900 && migrated > 0, "the generator reached too little: {clips} clips, {migrated} migrated");
+    assert!(clips >= 900 && migrated > 0 && blending > 0 && passthrough > 0, "the generator reached too little: {clips} clips, {migrated} migrated, {blending} blending, {passthrough} not graded");
 }
 
 /// A clip's picture lifted and brought back by `delift`, as v1 fields:
