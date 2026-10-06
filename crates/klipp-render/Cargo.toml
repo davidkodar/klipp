@@ -35,6 +35,13 @@ klipp-media    = { workspace = true }
 klipp-nodes    = { workspace = true }
 serial_test    = "3"
 serde_json     = { workspace = true }
+# The real-project pixel check writes its frames as PNG (#1089).
+image          = { version = "0.25", default-features = false, features = ["png"] }
+
+# Its tests guard the reference it records: run them with the crate's.
+[[example]]
+name = "pixel_check"
+test = true
 
 [lints]
 workspace = true

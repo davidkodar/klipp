@@ -131,7 +131,7 @@ impl ClipStream {
     }
 }
 
-pub(crate) struct ExportFrameSource<'a> {
+pub struct ExportFrameSource<'a> {
     media: &'a HashMap<MediaId, MediaFile>,
     fps: f64,
     working: WorkingColorspace,
@@ -161,7 +161,7 @@ pub(crate) struct ExportFrameSource<'a> {
 }
 
 impl<'a> ExportFrameSource<'a> {
-    pub(crate) fn new(media: &'a HashMap<MediaId, MediaFile>, fps: f64, working: WorkingColorspace) -> Self {
+    pub fn new(media: &'a HashMap<MediaId, MediaFile>, fps: f64, working: WorkingColorspace) -> Self {
         Self {
             media,
             fps,
@@ -175,7 +175,6 @@ impl<'a> ExportFrameSource<'a> {
         }
     }
 
-    /// Close the decoders of clips the frame just rendered did not use.
     /// The decoders' own breakdown: download plus colour conversion, and
     /// rotation, summed over every stream this export has opened.
     pub(crate) fn decoder_stage_times(&self) -> (std::time::Duration, std::time::Duration) {
@@ -188,10 +187,11 @@ impl<'a> ExportFrameSource<'a> {
         )
     }
 
+    /// Close the decoders of clips the frame just rendered did not use.
     ///
     /// Fails if any decoder the frame used has failed: the export stops
     /// there instead of freezing that clip's last good frame to its end.
-    pub(crate) fn end_frame(&mut self) -> Result<(), crate::error::RenderError> {
+    pub fn end_frame(&mut self) -> Result<(), crate::error::RenderError> {
         let used = std::mem::take(&mut self.used);
         self.streams.retain(|id, _| used.contains(id));
         self.reversed.retain(|id, _| used.contains(id));
