@@ -327,10 +327,26 @@ fn check_level(g: &Graph, level: &str, body: bool, render_copy: bool, catalog: O
     check_level_running(g, level, body, render_copy, true, catalog, &[])
 }
 
+fn structural_direction(n: &crate::Node) -> Option<PortDirection> {
+    match n.type_id.as_str() {
+        types::SOURCE | types::GROUP_INPUT | types::GROUP_FRAME => Some(PortDirection::Output),
+        types::OUTPUT | types::GROUP_OUTPUT => Some(PortDirection::Input),
+        _ => None,
+    }
+}
+
 fn port_spec(n: &crate::Node, port: &crate::PortKey, input: bool, catalog: Option<&dyn PortCatalog>) -> Option<PortSpec> {
+    if let Some(direction) = structural_direction(n) {
+        return ((direction == PortDirection::Input) == input && port.as_str() == if input { "in" } else { "out" }).then(|| PortSpec {
+            key: port.to_string(), ty: PortType::Image, optional: false, params: Vec::new(),
+        });
+    }
     if n.type_id.as_str() == types::GROUP {
         if let Some(p) = n.group.as_ref()?.interface.iter().find(|p| &p.key == port && (p.direction == PortDirection::Input) == input) {
-            return Some(PortSpec { key: p.key.to_string(), ty: p.ty, optional: p.ty == PortType::Matte, params: Vec::new() });
+            let optional = input && n.group.as_ref().and_then(|b| b.graph.nodes.iter().find(|n| n.id == p.binding.node))
+                .and_then(|child| port_spec(child, &p.binding.port, true, catalog))
+                .map_or(p.ty == PortType::Matte, |bound| bound.optional);
+            return Some(PortSpec { key: p.key.to_string(), ty: p.ty, optional, params: Vec::new() });
         }
         if matches!((input, port.as_str()), (true, "in" | "frame") | (false, "out")) {
             return Some(PortSpec { key: port.to_string(), ty: PortType::Image, optional: false, params: Vec::new() });
@@ -342,7 +358,7 @@ fn port_spec(n: &crate::Node, port: &crate::PortKey, input: bool, catalog: Optio
 }
 
 fn port_exists(n: &crate::Node, port: &crate::PortKey, input: bool, catalog: Option<&dyn PortCatalog>) -> bool {
-    if n.type_id.as_str() == types::GROUP || catalog.is_some_and(|c| c.node_spec(n).is_some()) {
+    if structural_direction(n).is_some() || n.type_id.as_str() == types::GROUP || catalog.is_some_and(|c| c.node_spec(n).is_some()) {
         port_spec(n, port, input, catalog).is_some()
     } else {
         has_port(n, port, input)
@@ -355,7 +371,7 @@ fn inputs_required(n: &crate::Node, catalog: Option<&dyn PortCatalog>) -> Vec<cr
     }
     let mut required = required_inputs(n);
     if let Some(body) = &n.group {
-        required.extend(body.interface.iter().filter(|p| p.direction == PortDirection::Input && p.ty == PortType::Image).map(|p| p.key.clone()));
+        required.extend(body.interface.iter().filter(|p| p.direction == PortDirection::Input && port_spec(n, &p.key, true, catalog).is_some_and(|s| !s.optional)).map(|p| p.key.clone()));
     }
     required
 }
