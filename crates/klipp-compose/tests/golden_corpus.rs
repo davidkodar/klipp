@@ -667,6 +667,20 @@ fn grade_cases() -> Vec<Case> {
         out.push(Case::new(format!("grade/track effects and grade, {name}"), sequence(vec![t, track("V1", TrackKind::Video, vec![base])]), f));
     }
 
+    // A track's Opacity weighs each clip's own, still or keyed (#1078).
+    for (name, keyed) in [("still", false), ("keyed", true)] {
+        let base = media(0.0, 4.0);
+        let mut top = media(0.0, 4.0);
+        top.builtin_effects = vec![BuiltinEffect::Opacity { value: 0.8 }];
+        if keyed {
+            top.opacity_keyframes = vec![key(0.0, 0.3), key(2.0, 0.9)];
+        }
+        let mut t = track("V2", TrackKind::Video, vec![top.clone()]);
+        t.effects.video = vec![BuiltinEffect::Opacity { value: 0.5 }];
+        let f = Frames::default().with(&base, 90).with(&top, 0);
+        out.push(Case::new(format!("grade/track opacity over a clip's, {name}"), sequence(vec![t, track("V1", TrackKind::Video, vec![base])]), f));
+    }
+
     // A grade group's pre and post stages around a member's grade, and a
     // timeline grade over the composite.
     let mut c = media(0.0, 4.0);
