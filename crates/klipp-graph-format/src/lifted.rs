@@ -325,7 +325,12 @@ fn has_cycle(g: &Graph) -> bool {
     use std::collections::{BTreeMap, VecDeque};
     let mut deps: Vec<(NodeId, NodeId)> = g.edges.iter().map(|e| (e.from.0, e.to.0)).collect();
     for r in &g.nodes {
-        for name in r.wireless.input_links.values() {
+        for (port, name) in &r.wireless.input_links {
+            // A wired port reads its wire, and its wireless link is no
+            // dependency, as today's `iter_dependencies` has it.
+            if g.edges.iter().any(|e| e.to.0 == r.id && &e.to.1 == port) {
+                continue;
+            }
             if let Some(s) = g.nodes.iter().find(|s| s.id != r.id && s.wireless.output_link.as_deref() == Some(name.as_str())) {
                 deps.push((s.id, r.id));
             }

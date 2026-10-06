@@ -506,3 +506,48 @@ fn a_looping_grade_is_kept_off() {
     assert!(group.group.as_ref().unwrap().graph.has_cycle(), "kept as saved");
     assert!(notes.iter().any(|n| matches!(n, LiftNote::NeverRan { node, .. } if *node == group.id)));
 }
+
+/// A wireless link on a port that also has a wire is no dependency, as
+/// today's ordering has it: the wire wins, so no loop, and the grade runs.
+#[test]
+fn a_wired_port_ignores_its_wireless_link() {
+    let mut a = gn(COR, "Exposure");
+    a["input_links"] = json!(["bus"]);
+    let mut b = gn(SAT, "Saturation");
+    b["output_link"] = json!("bus");
+    let g = json!({
+        "nodes": [gn(SRC, "Source"), a, b, gn(OUT, "Output")],
+        "edges": [edge(SRC, 0, COR, 0), edge(COR, 0, SAT, 0), edge(SAT, 0, OUT, 0)],
+        "output_node_id": OUT
+    });
+    let typed: klipp_nodes::NodeGraph = serde_json::from_value(g.clone()).unwrap();
+    assert!(typed.topo_sort().is_ok(), "today orders it");
+    let (p, notes) = lift(clip(json!({"node_graph": g})), ClipKind::Media);
+    let group = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP).unwrap();
+    assert!(group.enabled, "it runs");
+    assert!(!notes.iter().any(|n| matches!(n, LiftNote::NeverRan { .. })));
+}
+
+/// A wire into a port the kind doesn't read overrides a wireless link on
+/// that port, so today's ordering never counted the link. Dropping the
+/// wire drops the link too, or it would become a loop it never was.
+#[test]
+fn an_overridden_link_goes_with_its_dropped_wire() {
+    // A LUT reads one input; its port 1 is not read. B sends "bus".
+    let mut a = gn(COR, "Lut3D");
+    a["input_links"] = json!([null, "bus"]);
+    let mut b = gn(SAT, "Saturation");
+    b["output_link"] = json!("bus");
+    let g = json!({
+        "nodes": [gn(SRC, "Source"), a, b, gn(OUT, "Output")],
+        "edges": [edge(SRC, 0, COR, 0), edge(SRC, 0, COR, 1), edge(COR, 0, SAT, 0), edge(SAT, 0, OUT, 0)],
+        "output_node_id": OUT
+    });
+    let typed: klipp_nodes::NodeGraph = serde_json::from_value(g.clone()).unwrap();
+    assert!(typed.topo_sort().is_ok(), "today orders it: the wire overrides the link");
+    let (p, notes) = lift(clip(json!({"node_graph": g})), ClipKind::Media);
+    let group = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP).unwrap();
+    assert!(group.enabled, "no loop, so it runs");
+    assert!(find(body(&p), COR).wireless.input_links.is_empty(), "the overridden link went with its wire");
+    assert!(notes.iter().any(|n| matches!(n, LiftNote::EdgeDropped { why, .. } if why.contains("wireless"))));
+}

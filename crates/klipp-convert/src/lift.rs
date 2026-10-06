@@ -268,6 +268,7 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
     }
     let kinds: BTreeMap<NodeId, String> = body.nodes.iter().rev().map(|n| (n.id, kind_of(n).to_owned())).collect();
     let mut seen = std::collections::BTreeSet::new();
+    let mut overridden: Vec<(NodeId, PortKey)> = Vec::new();
     let mut kept = Vec::with_capacity(body.edges.len());
     for mut e in std::mem::take(&mut body.edges) {
         let value = serde_json::to_value(&e).unwrap_or(Value::Null);
@@ -279,6 +280,10 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
         let port = e.to.1.as_str();
         if port.strip_prefix('p').is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())) {
             drop("into a port the kind doesn't read", notes);
+            // A wireless link on that port was overridden by the wire, so
+            // today's ordering never counted it; it goes with the wire,
+            // or it would become a dependency (even a loop) it never was.
+            overridden.push((e.to.0, e.to.1.clone()));
             continue;
         }
         if !seen.insert((e.to.0, e.to.1.clone())) {
@@ -295,6 +300,14 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
         kept.push(e);
     }
     body.edges = kept;
+    for (id, port) in overridden {
+        let still_wired = body.edges.iter().any(|e| e.to.0 == id && e.to.1 == port);
+        if let Some(n) = body.nodes.iter_mut().find(|n| n.id == id).filter(|_| !still_wired) {
+            if let Some(name) = n.wireless.input_links.remove(&port) {
+                notes.push(LiftNote::EdgeDropped { group: group.id, edge: json!({ "wireless": name, "to": [id, port] }), why: "a wireless link a dropped wire overrode".into() });
+            }
+        }
+    }
 
     // 3. Implicit reads become explicit edges from the group's input: an
     // unwired primary reads the frame (`executor.rs`, `unwrap_or(source)`),
