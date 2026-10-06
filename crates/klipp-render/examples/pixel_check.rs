@@ -228,6 +228,9 @@ struct Rendered {
     /// chooses between them.
     export_gpu: usize,
     export_cpu: usize,
+    /// Export frames whose picture didn't fill the output even at the
+    /// export size chosen for it, so went the letterbox way (on the CPU).
+    export_letterboxed: usize,
 }
 
 impl Rendered {
@@ -338,12 +341,29 @@ fn stack_frames(snapshot: &SequenceSnapshot, frames: &[u64], h: u32, seq_dir: &P
 /// through the encoder's display transform (`-export`). The encoder opens
 /// at the check's size on `probe`, which is removed again.
 fn export_frames(snapshot: &SequenceSnapshot, frames: &[u64], h: u32, seq_dir: &Path, probe: &Path, done: &mut Rendered) -> Result<(), String> {
-    use klipp_render::export_frames::{ExportFrame, ExportFrameMaker};
+    use klipp_render::export_frames::{fit_in, ExportFrame, ExportFrameMaker};
+    // The export's size: about the check's, with exactly the sequence's
+    // aspect, so the picture fills it as it fills a full-size export (not
+    // letterboxed, which the export pads on the CPU, nor a clip a pixel
+    // short of the frame, which the GPU conversion declines) and an odd
+    // aspect takes the path a full-size export of it takes. Failing that,
+    // the size the export's own fit settles on.
+    let (mut ew, mut eh) = exact_aspect_size(snapshot.width, snapshot.height).unwrap_or((WIDTH, h));
+    for _ in 0..4 {
+        let (fw, fh, _, _) = fit_in(snapshot.width, snapshot.height, ew, eh);
+        if (fw, fh) == (ew, eh) {
+            break;
+        }
+        (ew, eh) = (fw, fh);
+    }
     let mut out = settings();
-    out.resolution = Some(klipp_core::Resolution { width: WIDTH, height: h });
+    out.resolution = Some(klipp_core::Resolution { width: ew, height: eh });
     let opened = klipp_render::Encoder::open(probe, &out, snapshot).map(|encoder| ExportFrameMaker::new(&out, snapshot, &encoder, "pixel check"));
     let _ = std::fs::remove_file(probe);
     let mut maker = opened.map_err(|e| format!("opening the export's encoder: {e}"))?;
+    if maker.letterboxed() {
+        done.export_letterboxed += frames.len();
+    }
     let display = klipp_render::encoder::export_display(&out, snapshot.working_colorspace);
     let mut r = renderer(snapshot, true);
     let mut source = ExportFrameSource::new(&snapshot.video.media, snapshot.fps, snapshot.working_colorspace);
@@ -352,14 +372,14 @@ fn export_frames(snapshot: &SequenceSnapshot, frames: &[u64], h: u32, seq_dir: &
         let made = maker.frame(&mut r, &snapshot.video.sequence, time, &mut source).map_err(|e| format!("frame {f} (export): {e}"))?;
         match made {
             ExportFrame::Planes { planes, .. } => {
-                if !planes.len().is_multiple_of(WIDTH as usize) {
-                    return Err(format!("frame {f} (export): {} bytes of planes don't fill rows of {WIDTH}", planes.len()));
+                if !planes.len().is_multiple_of(ew as usize) {
+                    return Err(format!("frame {f} (export): {} bytes of planes don't fill rows of {ew}", planes.len()));
                 }
-                let rows = (planes.len() / WIDTH as usize) as u32;
-                image::save_buffer(seq_dir.join(format!("{f}-export-yuv.png")), &planes, WIDTH, rows, image::ExtendedColorType::L8).map_err(|e| e.to_string())?;
+                let rows = (planes.len() / ew as usize) as u32;
+                image::save_buffer(seq_dir.join(format!("{f}-export-yuv.png")), &planes, ew, rows, image::ExtendedColorType::L8).map_err(|e| e.to_string())?;
                 // Flat when its luma plane is one value; a sample is two
                 // bytes when the planes are deeper than eight bits.
-                let luma_len = (WIDTH * h) as usize;
+                let luma_len = (ew * eh) as usize;
                 let sample = (planes.len() * 2 / 3 / luma_len).max(1);
                 let luma = &planes[..luma_len * sample];
                 done.frames += 1;
@@ -368,7 +388,7 @@ fn export_frames(snapshot: &SequenceSnapshot, frames: &[u64], h: u32, seq_dir: &
             }
             ExportFrame::Linear(linear) => {
                 let px = display.frame(&linear, |v, n| klipp_color::display::quantise(v, n, 255.0) as u8);
-                image::save_buffer(seq_dir.join(format!("{f}-export.png")), &px, WIDTH, h, image::ExtendedColorType::Rgba8).map_err(|e| e.to_string())?;
+                image::save_buffer(seq_dir.join(format!("{f}-export.png")), &px, ew, eh, image::ExtendedColorType::Rgba8).map_err(|e| e.to_string())?;
                 done.frames += 1;
                 done.flat += usize::from(is_flat(&px));
                 done.export_cpu += 1;
@@ -376,6 +396,27 @@ fn export_frames(snapshot: &SequenceSnapshot, frames: &[u64], h: u32, seq_dir: &
         }
     }
     Ok(())
+}
+
+/// The size nearest the check's width with exactly `w`:`h`'s aspect and
+/// both sides even: a whole multiple of the reduced ratio. `None` when the
+/// smallest such size is more than four times the check's width (an aspect
+/// with no small exact size).
+fn exact_aspect_size(w: u32, h: u32) -> Option<(u32, u32)> {
+    fn gcd(a: u32, b: u32) -> u32 {
+        if b == 0 { a } else { gcd(b, a % b) }
+    }
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let g = gcd(w, h);
+    let (aw, ah) = (w / g, h / g);
+    let even = |k: u32| (aw * k).is_multiple_of(2) && (ah * k).is_multiple_of(2);
+    (1..)
+        .take_while(|k| aw * k <= WIDTH * 4)
+        .filter(|&k| even(k))
+        .map(|k| (aw * k, ah * k))
+        .min_by_key(|&(sw, _)| sw.abs_diff(WIDTH))
 }
 
 /// The worst difference and the count of samples over one level, between
@@ -516,7 +557,7 @@ fn run_in(args: &[String], scratch: &Path) -> i32 {
         .unwrap_or_default();
     let (mut rendered, mut failed, mut frames, mut graded_on_gpu) = (0, Vec::new(), 0, 0);
     let (mut covered, mut real_frames, mut not_covered, mut lost) = (0, 0, Vec::new(), Vec::new());
-    let (mut stack_drawn, mut stack_declined, mut export_gpu, mut export_cpu) = (0, 0, 0, 0);
+    let (mut stack_drawn, mut stack_declined, mut export_gpu, mut export_cpu, mut export_letterboxed) = (0, 0, 0, 0, 0);
     let mut index = Vec::new();
     for (i, dir) in list.iter().enumerate() {
         let r = match render_project(dir, &out.join(format!("{i}")), scratch) {
@@ -545,9 +586,10 @@ fn run_in(args: &[String], scratch: &Path) -> i32 {
         stack_declined += r.stack_declined;
         export_gpu += r.export_gpu;
         export_cpu += r.export_cpu;
+        export_letterboxed += r.export_letterboxed;
         index.push(json!({
             "project": i, "path": dir, "grade_on_gpu": r.grade_on_gpu, "frames": r.frames, "flat": r.flat, "offline": r.offline, "missing": r.missing, "covered": r.covered(),
-            "stack": r.stack, "stack_declined": r.stack_declined, "export_gpu": r.export_gpu, "export_cpu": r.export_cpu,
+            "stack": r.stack, "stack_declined": r.stack_declined, "export_gpu": r.export_gpu, "export_cpu": r.export_cpu, "export_letterboxed": r.export_letterboxed,
         }));
     }
     let text = serde_json::to_string_pretty(&json!({ "projects": index, "failed": failed })).unwrap_or_default();
@@ -560,7 +602,7 @@ fn run_in(args: &[String], scratch: &Path) -> i32 {
         failed.len(),
         started.elapsed().as_secs_f64()
     );
-    println!("paths: GPU stack drew {stack_drawn} frames and declined {stack_declined}; export converted {export_gpu} on the GPU and {export_cpu} on the CPU");
+    println!("paths: GPU stack drew {stack_drawn} frames and declined {stack_declined}; export converted {export_gpu} on the GPU and {export_cpu} on the CPU ({export_letterboxed} letterboxed)");
     let list_of = |v: &[usize]| v.iter().map(usize::to_string).collect::<Vec<_>>().join(", ");
     println!(
         "coverage: {covered} of {rendered} projects show pictures, {real_frames} of {frames} frames; not covered (media offline, a file missing, or every frame flat; never counted as passed): {}",
@@ -649,12 +691,17 @@ mod tests {
     /// (`../../src/clip.avi`); with `gone`, the clip isn't there. None
     /// without ffmpeg.
     fn relative_project(root: &Path, name: &str, gone: bool) -> Option<PathBuf> {
+        sized_project(root, name, gone, (64, 36))
+    }
+
+    /// [`relative_project`] with a clip and sequence of `size`.
+    fn sized_project(root: &Path, name: &str, gone: bool, (w, h): (u32, u32)) -> Option<PathBuf> {
         use klipp_core::{Fps, MediaId, Resolution};
         let src = root.join("src");
         std::fs::create_dir_all(&src).unwrap();
         let clip = src.join(format!("{name}.avi"));
         let made = std::process::Command::new("ffmpeg")
-            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x36:rate=25:duration=1", "-c:v", "ffv1"])
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", &format!("testsrc=size={w}x{h}:rate=25:duration=1"), "-c:v", "ffv1"])
             .arg(&clip)
             .status();
         if !made.is_ok_and(|s| s.success()) {
@@ -669,11 +716,11 @@ mod tests {
         pool.add(klipp_media::MediaItem {
             path: clip.clone(),
             kind: klipp_media::MediaItemKind::File,
-            resolution: Resolution { width: 64, height: 36 },
+            resolution: Resolution { width: w, height: h },
             ..klipp_media::MediaItem::new_synthetic_title(id, format!("{name}.avi"), Timecode::from_frames(25, 25), fps)
         });
         let mut seq = klipp_timeline::Sequence::new_default();
-        (seq.fps, seq.resolution) = (fps, Resolution { width: 64, height: 36 });
+        (seq.fps, seq.resolution) = (fps, Resolution { width: w, height: h });
         let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
         v1.clips = vec![klipp_timeline::Clip {
             kind: klipp_timeline::ClipKind::Media { media_id: id },
@@ -857,6 +904,27 @@ mod tests {
         let img = image::open(root.join("rec").join(yuv)).unwrap();
         assert_eq!((img.width(), img.height()), (WIDTH, 180 * 3 / 2));
         assert_eq!(run_in(&args(&[Path::new("compare"), &list, &root.join("rec"), &root.join("cmp")]), &root), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A sequence of an odd aspect (64x27, about 2.37:1) at the check's
+    /// 320 wide would come out 320x134, which the export letterboxes and
+    /// renders on the CPU. The export's size is chosen so the picture fills
+    /// it, so the export converts on the GPU as a full-size export of it
+    /// would, and nothing is letterboxed (#1160 review).
+    #[test]
+    fn an_odd_aspect_exports_the_way_a_full_size_export_does() {
+        let root = std::env::temp_dir().join(format!("klipp-pixel-check-test-aspect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let Some(project) = sized_project(&root, "wide", false, (64, 27)) else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let list = root.join("list.txt");
+        std::fs::write(&list, format!("{}\n", project.display())).unwrap();
+        assert_eq!(run_in(&args(&[Path::new("record"), &list, &root.join("rec")]), &root), 0);
+        let p = &index_of(&root.join("rec"))["projects"][0];
+        assert_eq!((p["export_gpu"].as_u64(), p["export_cpu"].as_u64(), p["export_letterboxed"].as_u64()), (Some(5), Some(0), Some(0)), "{p}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

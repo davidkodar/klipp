@@ -104,26 +104,44 @@ fn an_exports_frames_are_the_shared_decisions_frames() {
     let probe = tmp("probe.mp4");
     let encoder = Encoder::open(&probe, &s, &snap).unwrap();
     assert_eq!(encoder.video_format(), ffmpeg_next::format::Pixel::YUV420P10LE, "the software encoder's planar 10-bit");
-    let mut maker = ExportFrameMaker::new(&s, &snap, &encoder, "test");
+    let maker = ExportFrameMaker::new(&s, &snap, &encoder, "test");
     drop(encoder);
     let _ = std::fs::remove_file(&probe);
-    assert!(maker.converts_on_gpu(), "a one-clip export is converted on the GPU");
-    let mut renderer = export_renderer(&snap, "test");
-    let mut source = ExportFrameSource::new(&snap.video.media, snap.fps, snap.working_colorspace);
-    let mut worst = 0;
-    for f in 0..FRAMES {
-        let time = RationalTime { value: f as i64, rate: 25 };
-        let ExportFrame::Planes { planes, .. } = maker.frame(&mut renderer, &snap.video.sequence, time, &mut source).unwrap() else {
-            panic!("frame {f} came back on the CPU");
-        };
-        assert_eq!(planes.len(), size, "frame {f}: the encoder's planes");
-        let job = samples(&decoded.stdout[f as usize * size..(f as usize + 1) * size]);
-        let made = samples(&planes);
-        let d = job.iter().zip(&made).map(|(a, b)| (i32::from(*a) - i32::from(*b)).abs()).max().unwrap();
-        worst = worst.max(d);
-    }
-    // CRF 1 at ten bits: measured at 2 levels of codec error. A different
-    // picture is well past 6: the frame one step later on this drifting,
-    // graded gradient is already 15 levels off.
-    assert!(worst <= 6, "the job's frames differ from the shared decision's by up to {worst} ten-bit levels");
+    // Klipp requires a GPU, and the frames this holds the job to are the
+    // ones the GPU converts: without one there is nothing to check.
+    assert!(
+        maker.converts_on_gpu(),
+        "this test needs a GPU (Klipp requires one): the export of a one-clip project converts its frames on it, and none was found"
+    );
+
+    // The maker's planes at `times`, as the job makes them.
+    let made = |times: std::ops::Range<u64>| -> Vec<Vec<u16>> {
+        let mut maker = ExportFrameMaker::new(&s, &snap, &Encoder::open(&probe, &s, &snap).unwrap(), "test");
+        let _ = std::fs::remove_file(&probe);
+        let mut renderer = export_renderer(&snap, "test");
+        let mut source = ExportFrameSource::new(&snap.video.media, snap.fps, snap.working_colorspace);
+        times
+            .map(|f| {
+                let time = RationalTime { value: f as i64, rate: 25 };
+                let ExportFrame::Planes { planes, .. } = maker.frame(&mut renderer, &snap.video.sequence, time, &mut source).unwrap() else {
+                    panic!("frame {f} came back on the CPU");
+                };
+                assert_eq!(planes.len(), size, "frame {f}: the encoder's planes");
+                samples(&planes)
+            })
+            .collect()
+    };
+    let job = |f: usize| samples(&decoded.stdout[f * size..(f + 1) * size]);
+    let worst = |pairs: Vec<(Vec<u16>, Vec<u16>)>| {
+        pairs.iter().flat_map(|(a, b)| a.iter().zip(b).map(|(x, y)| (i32::from(*x) - i32::from(*y)).abs())).max().unwrap()
+    };
+    // CRF 1 at ten bits: a couple of levels of codec error (2, measured).
+    let same = worst(made(0..FRAMES).into_iter().enumerate().map(|(f, m)| (job(f), m)).collect());
+    assert!(same <= 6, "the job's frames differ from the shared decision's by up to {same} ten-bit levels");
+    // The control: the job's frames against the maker's one step later,
+    // a different picture on this drifting, graded gradient (15 levels
+    // off, measured), must fail the same bound, or the bound proves
+    // nothing.
+    let shifted = worst(made(1..FRAMES).into_iter().enumerate().map(|(f, m)| (job(f), m)).collect());
+    assert!(shifted > 6, "a frame one step off in time is only {shifted} levels off: the bound wouldn't tell a different picture apart");
 }
