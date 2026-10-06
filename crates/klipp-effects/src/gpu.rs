@@ -161,6 +161,7 @@ pub struct GpuEffectsPipeline {
     opacity_pipeline: wgpu::ComputePipeline,
     color_fade_pipeline: wgpu::ComputePipeline,
     layer_gpu: layer::LayerGpu,
+    mask_mix_gpu: mask_mix::MaskMixGpu,
     blur_h_pipeline: wgpu::ComputePipeline,
     blur_v_pipeline: wgpu::ComputePipeline,
     sharpen_pipeline: wgpu::ComputePipeline,
@@ -1296,6 +1297,7 @@ impl GpuEffectsPipeline {
             &device, &pipeline_layout, "hdr_nit_map", SHADER_HDR_NIT_MAP,
         );
 
+        let mask_mix_gpu = mask_mix::MaskMixGpu::new(&device);
         let layer_gpu = layer::LayerGpu::new(&device, &pipeline_layout, &transition_pl);
         let pipeline_count = 68;
         info!(
@@ -1345,6 +1347,7 @@ impl GpuEffectsPipeline {
 
         Some(Self {
             layer_gpu,
+            mask_mix_gpu,
             device,
             queue,
             opacity_pipeline,
@@ -9130,6 +9133,7 @@ fn hue_rotate_hsl(c: vec3<f32>, degrees: f32) -> vec3<f32> {
 // the sRGB u8 version multiplied gamma-encoded bytes, which
 // produced visibly darker-than-half output.
 mod layer;
+mod mask_mix;
 
 const SHADER_OPACITY: &str = concat!(
     "
@@ -16681,6 +16685,7 @@ mod bridge_u8_tests {
 /// add new ones as they are written.
 pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
     vec![
+        ("SHADER_MASK_MIX", mask_mix::SHADER_MASK_MIX),
         ("LAYER_ROWS", layer::ROWS),
         ("LAYER_BOUNDS", layer::BOUNDS),
         ("LAYER_CAST", layer::CAST),
