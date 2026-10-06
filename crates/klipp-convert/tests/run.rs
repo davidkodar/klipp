@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use klipp_convert::run::{recover, run, Hooks, Report, RunError, Settings, Step};
+use klipp_convert::run::{recover, run, Hooks, MovePoint, Report, RunError, Settings, Step};
 use klipp_convert::StoreKind;
 use serde_json::{json, Value};
 
@@ -169,7 +169,7 @@ fn a_crash_at_any_step_ends_rolled_back_or_converted() {
             let before = snapshot(&dir);
             let s = settings(&r, vec![dir.clone()]);
             let crash = move |at: Step, rec: bool| at == step && rec == recorded;
-            let hooks = Hooks { crash: &crash, render_check: &|_| Ok(()) };
+            let hooks = Hooks { crash: &crash, crash_in_move: &|_, _| false, render_check: &|_| Ok(()) };
             assert_eq!(run(&s, &ok, &ok_parity, &hooks).unwrap_err(), RunError::Crashed(step));
             let mut report = Report::default();
             recover(&s, &mut report).unwrap();
@@ -261,13 +261,31 @@ fn a_newer_autosave_or_a_stopped_save_is_a_stop() {
     let _ = std::fs::remove_dir_all(&r);
 }
 
+/// A pair from two saves, mark or no mark, is a stop: the app would mend it
+/// from backups the converted copy doesn't carry.
+#[test]
+fn a_pair_from_two_saves_is_a_stop() {
+    let r = root("pair");
+    let dir = project(&r, "Film");
+    let path = dir.join("media/manifest.json");
+    let mut m: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    m["generation"] = json!("another-save");
+    std::fs::write(&path, m.to_string()).unwrap();
+    let before = snapshot(&dir);
+    let s = settings(&r, vec![dir.clone()]);
+    let report = run(&s, &ok, &ok_parity, &Hooks::NONE).unwrap();
+    assert!(report.stopped.iter().any(|(d, why)| d == &dir && why.contains("different saves")), "{report:?}");
+    assert_eq!(snapshot(&dir), before);
+    let _ = std::fs::remove_dir_all(&r);
+}
+
 #[test]
 fn the_render_check_stops_a_project_rolled_back() {
     let r = root("render");
     let dir = project(&r, "Film");
     let before = snapshot(&dir);
     let s = settings(&r, vec![dir.clone()]);
-    let hooks = Hooks { crash: &|_, _| false, render_check: &|_| Err("a frame differs".into()) };
+    let hooks = Hooks { crash: &|_, _| false, crash_in_move: &|_, _| false, render_check: &|_| Err("a frame differs".into()) };
     let report = run(&s, &ok, &ok_parity, &hooks).unwrap();
     assert!(report.stopped.iter().any(|(d, why)| d == &dir && why.contains("a frame differs")), "{report:?}");
     assert_eq!(snapshot(&dir), before);
@@ -356,5 +374,60 @@ fn a_backup_on_another_file_system_is_copied_and_checked() {
     assert_eq!(report.converted, vec![dir.clone()]);
     assert_converted(&s, &dir, &before);
     let _ = std::fs::remove_dir_all(&backup);
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// A crash inside a move across file systems, after the copy is in place
+/// and part way through removing the source, of the project and of its
+/// auto-save: recovery keeps the whole backup and finishes the removal
+/// (#1087 review).
+#[test]
+fn a_crash_inside_a_move_across_file_systems_keeps_the_whole_backup() {
+    let shm = Path::new("/dev/shm");
+    let dev = |p: &Path| std::fs::metadata(p).map(|m| m.dev()).ok();
+    let probe = root("otherfs-probe");
+    if dev(shm).is_none() || dev(shm) == dev(&probe) || std::fs::create_dir_all(shm.join("klipp-run-test")).is_err() {
+        eprintln!("skipped: no second writable file system (/dev/shm) beside {}", probe.display());
+        return;
+    }
+    for autosave in [false, true] {
+        for point in [MovePoint::InPlace, MovePoint::PartRemoved] {
+            let r = root(&format!("movecrash-{autosave}-{point:?}"));
+            let dir = project(&r, "Film");
+            let before = snapshot(&dir);
+            let auto = r.join("Film_autosave.klipp");
+            let auto_before = snapshot(&auto);
+            let mut s = settings(&r, vec![dir.clone()]);
+            s.backup_root = shm.join(format!("klipp-run-test/{}-{autosave}-{point:?}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&s.backup_root);
+            let crash = move |at: MovePoint, to: &Path| at == point && to.to_string_lossy().contains("_autosave") == autosave;
+            let hooks = Hooks { crash: &|_, _| false, crash_in_move: &crash, render_check: &|_| Ok(()) };
+            assert_eq!(run(&s, &ok, &ok_parity, &hooks).unwrap_err(), RunError::CrashedInMove(point));
+            let mut report = Report::default();
+            recover(&s, &mut report).unwrap();
+            assert_converted(&s, &dir, &before);
+            assert_eq!(snapshot(&in_backup(&s, &auto)), auto_before, "{autosave}/{point:?}: the auto-save's backup is whole");
+            assert!(!auto.exists(), "and what was left of it is gone");
+            let _ = std::fs::remove_dir_all(&s.backup_root);
+            let _ = std::fs::remove_dir_all(&r);
+        }
+    }
+    let _ = std::fs::remove_dir_all(&probe);
+}
+
+/// An exclusion names the folder however it is written: a trailing slash
+/// or a link to it.
+#[test]
+fn an_exclusion_matches_the_folder_it_names() {
+    let r = root("exclude");
+    let dir = project(&r, "Film");
+    let link = r.join("Link.klipp");
+    std::os::unix::fs::symlink(&dir, &link).unwrap();
+    let before = snapshot(&dir);
+    let mut s = settings(&r, vec![dir.clone()]);
+    s.excluded.insert(PathBuf::from(format!("{}/", link.display())));
+    let report = run(&s, &ok, &ok_parity, &Hooks::NONE).unwrap();
+    assert_eq!(report.excluded, vec![dir.clone()]);
+    assert_eq!(snapshot(&dir), before);
     let _ = std::fs::remove_dir_all(&r);
 }

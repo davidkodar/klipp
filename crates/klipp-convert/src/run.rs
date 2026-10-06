@@ -24,6 +24,11 @@
 //! the journal, so a crash between a rename and its journal entry is found
 //! either way.
 //!
+//! The media a converted project shares with its backup is hard-linked:
+//! that is safe because every writer under `media/` renames a new file into
+//! place (the manifest's and the stills' atomic writes), never writes one
+//! in place. A writer that did would edit the backup too.
+//!
 //! The run is never pointed at real data by its tests: every path comes in
 //! through [`Settings`], and the command line refuses to start without
 //! `--confirm-real-run`.
@@ -63,6 +68,9 @@ pub struct Hooks<'a> {
     /// after (`true`) the journal records it; `true` stops the run there as
     /// a crash would, leaving the disk as it is.
     pub crash: &'a dyn Fn(Step, bool) -> bool,
+    /// Called inside a move across file systems (to the folder it moves
+    /// to); `true` stops the run there as a crash would.
+    pub crash_in_move: &'a dyn Fn(MovePoint, &Path) -> bool,
     /// Checks the converted copy before the swap; an error stops the
     /// project, rolled back.
     pub render_check: &'a dyn Fn(&Path) -> Result<(), String>,
@@ -70,7 +78,17 @@ pub struct Hooks<'a> {
 
 impl Hooks<'_> {
     /// No crash, no render check: the real run until the check exists.
-    pub const NONE: Hooks<'static> = Hooks { crash: &|_, _| false, render_check: &|_| Ok(()) };
+    pub const NONE: Hooks<'static> = Hooks { crash: &|_, _| false, crash_in_move: &|_, _| false, render_check: &|_| Ok(()) };
+}
+
+/// The points inside a move across file systems where a crash leaves the
+/// most to recover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MovePoint {
+    /// The copy is whole and in place; the source not yet touched.
+    InPlace,
+    /// Part of the source removed.
+    PartRemoved,
 }
 
 /// A project's step in the journal, in order.
@@ -141,6 +159,8 @@ pub enum RunError {
     Refused(String),
     /// The crash hook stopped the run (tests only).
     Crashed(Step),
+    /// The crash hook stopped the run inside a move (tests only).
+    CrashedInMove(MovePoint),
     /// The disk refused something the run must not leave half done.
     Io(String),
 }
@@ -150,6 +170,7 @@ impl std::fmt::Display for RunError {
         match self {
             RunError::Refused(why) => write!(f, "refused: {why}"),
             RunError::Crashed(step) => write!(f, "stopped as a crash would, at {step:?}"),
+            RunError::CrashedInMove(point) => write!(f, "stopped as a crash would, inside a move at {point:?}"),
             RunError::Io(e) => write!(f, "{e}"),
         }
     }
@@ -162,7 +183,7 @@ fn io_err(what: &str, path: &Path, e: io::Error) -> String {
 /// The real run's preconditions: no Klipp running, and an installed
 /// package that refuses converted files (#1066).
 pub fn real_preconditions(repo: &Path) -> Result<(), String> {
-    let r = crate::running::running();
+    let r = crate::running::running().map_err(|e| format!("can't tell whether a Klipp is running: {e}"))?;
     if r.is_running() {
         return Err(format!("a Klipp is running: {r:?}"));
     }
@@ -186,8 +207,14 @@ impl Lock {
             if alive {
                 return Err(format!("another run holds {} (process {})", path.display(), text.trim()));
             }
+            // Stale: its process is gone.
+            std::fs::remove_file(&path).map_err(|e| io_err("clearing the stale", &path, e))?;
         }
-        std::fs::write(&path, std::process::id().to_string()).map_err(|e| io_err("writing", &path, e))?;
+        // Made only if it isn't there: two runs starting together can't
+        // both take it.
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e| format!("another run took {} first: {e}", path.display()))?;
+        f.write_all(std::process::id().to_string().as_bytes()).map_err(|e| io_err("writing", &path, e))?;
         Ok(Lock(path))
     }
 }
@@ -334,24 +361,47 @@ fn same_tree(a: &Path, b: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Move a folder to `to`: a rename, or on another file system a copy,
-/// checked byte for byte, then the original removed.
-fn move_tree(from: &Path, to: &Path) -> Result<(), String> {
+/// Move a folder to `to`: a rename, or on another file system a copy made
+/// beside it, checked byte for byte, renamed into place, and only then the
+/// source removed. So a `to` that is there is whole, whatever stopped the
+/// move: a rerun only finishes removing what is left of the source, and
+/// never touches `to`.
+fn move_tree(from: &Path, to: &Path, crash: &dyn Fn(MovePoint, &Path) -> bool) -> Result<(), RunError> {
+    let io = RunError::Io;
+    if to.exists() {
+        if from.exists() {
+            std::fs::remove_dir_all(from).map_err(|e| io(io_err("removing what is left of", from, e)))?;
+        }
+        return Ok(());
+    }
     if let Some(parent) = to.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| io_err("making", parent, e))?;
+        std::fs::create_dir_all(parent).map_err(|e| io(io_err("making", parent, e)))?;
     }
     match std::fs::rename(from, to) {
         Ok(()) => Ok(()),
-        Err(e) if e.raw_os_error() == Some(18) => {
-            // EXDEV: another file system.
-            if to.exists() {
-                std::fs::remove_dir_all(to).map_err(|e| io_err("clearing", to, e))?;
+        Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
+            let partial = with_suffix(to, ".partial");
+            if partial.exists() {
+                std::fs::remove_dir_all(&partial).map_err(|e| io(io_err("clearing", &partial, e)))?;
             }
-            copy_tree(from, to, Path::new(""), false)?;
-            same_tree(from, to)?;
-            std::fs::remove_dir_all(from).map_err(|e| io_err("removing", from, e))
+            copy_tree(from, &partial, Path::new(""), false).map_err(io)?;
+            same_tree(from, &partial).map_err(io)?;
+            std::fs::rename(&partial, to).map_err(|e| io(io_err("moving into place", to, e)))?;
+            if crash(MovePoint::InPlace, to) {
+                return Err(RunError::CrashedInMove(MovePoint::InPlace));
+            }
+            // One entry first, so a test can stop it part way.
+            if let Some(first) = std::fs::read_dir(from).ok().and_then(|mut es| es.next()).and_then(Result::ok) {
+                let p = first.path();
+                let r = if first.file_type().is_ok_and(|t| t.is_dir()) { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+                r.map_err(|e| io(io_err("removing", &p, e)))?;
+            }
+            if crash(MovePoint::PartRemoved, to) {
+                return Err(RunError::CrashedInMove(MovePoint::PartRemoved));
+            }
+            std::fs::remove_dir_all(from).map_err(|e| io(io_err("removing", from, e)))
         }
-        Err(e) => Err(io_err("moving", from, e)),
+        Err(e) => Err(io(io_err("moving", from, e))),
     }
 }
 
@@ -414,7 +464,10 @@ fn settle_from_disk(e: &mut Entry) {
     if e.step == Step::OriginalAside && e.dir.exists() && !e.copy.exists() {
         e.step = Step::Swapped;
     }
-    if e.step == Step::Swapped && !e.aside.exists() && e.backup.exists() {
+    // A backup that is there is whole (see `move_tree`), even with what is
+    // left of the original beside it: the move only has its removal to
+    // finish, which the next step's `move_tree` does first.
+    if e.step == Step::Swapped && e.backup.exists() && !e.aside.exists() {
         e.step = Step::BackedUp;
     }
     if e.step == Step::BackedUp && !e.autosave.exists() {
@@ -461,12 +514,12 @@ fn advance(s: &Settings, e: &mut Entry, hooks: &Hooks) -> Result<(), RunError> {
                 Step::Swapped
             }
             Step::Swapped => {
-                move_tree(&e.aside, &e.backup).map_err(RunError::Io)?;
+                move_tree(&e.aside, &e.backup, hooks.crash_in_move)?;
                 Step::BackedUp
             }
             Step::BackedUp => {
                 if e.autosave.exists() {
-                    move_tree(&e.autosave, &e.autosave_backup).map_err(RunError::Io)?;
+                    move_tree(&e.autosave, &e.autosave_backup, hooks.crash_in_move)?;
                 }
                 Step::AutosaveMoved
             }
@@ -559,7 +612,15 @@ fn convert_one(s: &Settings, dir: &Path, hooks: &Hooks, report: &mut Report) -> 
         report.stopped.push((dir.to_path_buf(), format!("{} is already there, and no journal names it", copy.display())));
         return Ok(());
     }
+    // A backup that is there is taken as whole by recovery, so the run
+    // never starts one where another already stands.
     let autosave = scan::autosave_path(dir);
+    for held in [in_backup(s, dir), in_backup(s, &autosave)] {
+        if held.exists() {
+            report.stopped.push((dir.to_path_buf(), format!("{} is already in the backup", held.display())));
+            return Ok(());
+        }
+    }
     let mut e = Entry {
         dir: dir.to_path_buf(),
         aside: with_suffix(dir, ".klipp-v1"),
@@ -661,11 +722,10 @@ pub fn run(s: &Settings, preconditions: &dyn Fn() -> Result<(), String>, parity:
     // run before anything is touched.
     let mut todo = Vec::new();
     let mut refusals = Vec::new();
+    // Matched as the folders they name: a trailing slash or a link to the
+    // project still excludes it.
+    let excluded: BTreeSet<PathBuf> = s.excluded.iter().map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone())).collect();
     for p in &s.projects {
-        if s.excluded.contains(p) {
-            report.excluded.push(p.clone());
-            continue;
-        }
         let dir = match std::fs::canonicalize(p) {
             Ok(d) => d,
             Err(e) => {
@@ -673,6 +733,10 @@ pub fn run(s: &Settings, preconditions: &dyn Fn() -> Result<(), String>, parity:
                 continue;
             }
         };
+        if excluded.contains(&dir) || excluded.contains(p) {
+            report.excluded.push(p.clone());
+            continue;
+        }
         match standing(&dir) {
             Ok(Standing::Converted) => report.skipped.push(dir),
             Ok(Standing::Mixed(why)) => report.stopped.push((dir, format!("mixed: {why}; left as it is"))),
@@ -683,6 +747,8 @@ pub fn run(s: &Settings, preconditions: &dyn Fn() -> Result<(), String>, parity:
                     report.stopped.push((dir, "an auto-save newer than the project: open it in Klipp and keep or discard it first".into()));
                 } else if scan::has_pending_recovery(&dir) {
                     report.stopped.push((dir, "a save that stopped part way: open it in Klipp first".into()));
+                } else if scan::pair_mismatch(&dir) {
+                    report.stopped.push((dir, "project.json and its manifest are from different saves: open it in Klipp and save first".into()));
                 } else if !checked.passed() {
                     refusals.push(format!("{}: {}", dir.display(), checked.stops.join("; ")));
                 } else {
@@ -750,16 +816,21 @@ pub fn date_of(secs: u64) -> String {
 
 /// The real run's settings: every project a scan of `home` finds (test
 /// runs' scratch projects never among them), the config folder, and the
-/// backup root, dated today.
-pub fn real_settings(home: &Path, config_dir: &Path, excluded: BTreeSet<PathBuf>) -> Settings {
+/// backup root, dated today. A folder the scan couldn't read may hide
+/// projects, so it refuses.
+pub fn real_settings(home: &Path, config_dir: &Path, excluded: BTreeSet<PathBuf>) -> Result<Settings, String> {
     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    Settings {
-        projects: scan::discover(home).0,
+    let found = scan::discover(home);
+    if !found.unreadable.is_empty() {
+        return Err(format!("folders the scan couldn't read, which may hold projects: {:?}", found.unreadable));
+    }
+    Ok(Settings {
+        projects: found.projects,
         excluded,
         config_dir: Some(config_dir.to_path_buf()),
         backup_root: scan::backup_root(home),
         date: date_of(now),
-    }
+    })
 }
 
 #[cfg(test)]

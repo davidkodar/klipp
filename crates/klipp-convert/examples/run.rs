@@ -37,7 +37,13 @@ fn main() {
     };
     let home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
     let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".config")).join("klipp");
-    let settings = real_settings(&home, &config, args.excluded);
+    let settings = match real_settings(&home, &config, args.excluded) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("klipp-convert run: refused: {e}");
+            std::process::exit(1);
+        }
+    };
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     match run(&settings, &|| real_preconditions(&repo), &parity, &Hooks::NONE) {
         Ok(report) => {
