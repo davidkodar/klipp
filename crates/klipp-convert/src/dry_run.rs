@@ -201,7 +201,7 @@ fn check_into(dir: &Path, parity: Parity, splicer: Option<SpliceDecider>, report
         }
         Err(e) => report.stops.push(format!("revision 2: {e}")),
     }
-    side_stores(dir, parity, &mut stores, &mut report.stops);
+    side_stores(dir, parity, &mut stores, &mut report.stops, &mut report.lift_notes);
     report.stores = stores;
 }
 
@@ -315,7 +315,7 @@ fn list_optional(dir: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 /// The project's grade stills and Looks: parity, then both properties.
-fn side_stores(dir: &Path, parity: Parity, stores: &mut BTreeMap<&'static str, usize>, stops: &mut Vec<String>) {
+fn side_stores(dir: &Path, parity: Parity, stores: &mut BTreeMap<&'static str, usize>, stops: &mut Vec<String>, notes: &mut BTreeMap<String, usize>) {
     let stills = match read_optional(&dir.join("media/stills.json")) {
         Ok(text) => text,
         Err(e) => {
@@ -344,7 +344,10 @@ fn side_stores(dir: &Path, parity: Parity, stores: &mut BTreeMap<&'static str, u
                         }
                     }
                 }
-                let r2 = crate::revision2::stills(&raw).and_then(|c| {
+                let r2 = crate::revision2::stills_noted(&raw).and_then(|(c, n)| {
+                    for x in &n {
+                        *notes.entry(note_kind(x)).or_default() += 1;
+                    }
                     let text = serde_json::to_string(&c).map_err(|e| e.to_string())?;
                     crate::revision2::verify_side(&crate::revision2::stills(&raw)?, &text)
                 });
@@ -367,7 +370,10 @@ fn side_stores(dir: &Path, parity: Parity, stores: &mut BTreeMap<&'static str, u
             let id = raw.get("id").and_then(Value::as_str).ok_or("a Look without an id")?;
             let g = raw.get("node_graph").ok_or("a Look without a graph")?;
             verify::check_store("look", g, &verify::look(id), &verify::conv_look)?;
-            let c = crate::revision2::look(&raw)?;
+            let (c, n) = crate::revision2::look_noted(&raw)?;
+            for x in &n {
+                *notes.entry(note_kind(x)).or_default() += 1;
+            }
             crate::revision2::verify_side(&crate::revision2::look(&raw)?, &serde_json::to_string(&c).map_err(|e| e.to_string())?)
         });
         *stores.entry("looks").or_default() += 1;

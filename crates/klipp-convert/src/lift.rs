@@ -205,7 +205,8 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
     // port 0 and port 1 are both connected. A port-1 edge with port 0
     // unwired was never a gate: it is parked, outside the graph.
     let mut gated = Vec::new();
-    let mut parked = Vec::new();
+    // A set: repeated saved ids can name one edge twice.
+    let mut parked = std::collections::BTreeSet::new();
     for n in &body.nodes {
         let kind = kind_of(n);
         if !GATEABLE.contains(&kind) {
@@ -352,6 +353,15 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
         }
     }
     body.edges.extend(filled);
+
+    // Parked edges are kept for the record on the body's own input, so a
+    // body standing alone (a track or timeline grade, a stage, a version)
+    // keeps them as a clip's does.
+    if !group_flags.parked_edges.is_empty() {
+        if let Some(input) = body.nodes.iter_mut().find(|n| n.id == input_id) {
+            flags(input).parked_edges = std::mem::take(&mut group_flags.parked_edges);
+        }
+    }
 
     // 4. Layer, Blend and LayerMixer become merges with their legacy op.
     for n in &mut body.nodes {

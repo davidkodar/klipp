@@ -163,18 +163,30 @@ pub fn project(raw: &Value) -> Result<(Value, Vec<LiftNote>), String> {
 
 /// A Look in revision 2: its graph lifted, `node_graph` gone.
 pub fn look(raw: &Value) -> Result<Value, String> {
+    look_noted(raw).map(|(v, _)| v)
+}
+
+/// [`look`], and the lift's notes for the report.
+pub fn look_noted(raw: &Value) -> Result<(Value, Vec<LiftNote>), String> {
+    let mut notes = Vec::new();
     let o = raw.as_object().ok_or("a Look isn't an object")?;
     let g = to_v2::look_to_v2(o).map_err(err)?;
     let mut out = o.clone();
     out.remove("node_graph");
     out.insert("format_revision".into(), REVISION.into());
-    out.insert(V2_FIELD.into(), body(&g, false, &mut Vec::new())?);
-    Ok(Value::Object(out))
+    out.insert(V2_FIELD.into(), body(&g, false, &mut notes)?);
+    Ok((Value::Object(out), notes))
 }
 
 /// The stills index in revision 2: a wrapper with its revision, each
 /// still's grade lifted into `graph_v2` and its `grade` gone.
 pub fn stills(raw: &Value) -> Result<Value, String> {
+    stills_noted(raw).map(|(v, _)| v)
+}
+
+/// [`stills`], and the lift's notes for the report.
+pub fn stills_noted(raw: &Value) -> Result<(Value, Vec<LiftNote>), String> {
+    let mut notes = Vec::new();
     let list = raw.as_array().ok_or("the stills index isn't a list")?;
     let mut out = Vec::with_capacity(list.len());
     for s in list {
@@ -182,17 +194,24 @@ pub fn stills(raw: &Value) -> Result<Value, String> {
         let mut entry = o.clone();
         entry.remove("grade");
         if let Some(g) = to_v2::still_to_v2(o).map_err(err)? {
-            entry.insert(V2_FIELD.into(), body(&g, false, &mut Vec::new())?);
+            entry.insert(V2_FIELD.into(), body(&g, false, &mut notes)?);
         }
         out.push(Value::Object(entry));
     }
-    Ok(json!({ "format_revision": REVISION, "stills": out }))
+    Ok((json!({ "format_revision": REVISION, "stills": out }), notes))
 }
 
 /// A colour preset in revision 2: `{format_revision, graph_v2}`.
 pub fn colour_preset(file_name: &str, raw: &Value) -> Result<Value, String> {
+    colour_preset_noted(file_name, raw).map(|(v, _)| v)
+}
+
+/// [`colour_preset`], and the lift's notes for the report.
+pub fn colour_preset_noted(file_name: &str, raw: &Value) -> Result<(Value, Vec<LiftNote>), String> {
     let g = to_v2::colour_preset_to_v2(file_name, raw.as_object().ok_or("a preset isn't an object")?).map_err(err)?;
-    Ok(json!({ "format_revision": REVISION, V2_FIELD: body(&g, false, &mut Vec::new())? }))
+    let mut notes = Vec::new();
+    let v = json!({ "format_revision": REVISION, V2_FIELD: body(&g, false, &mut notes)? });
+    Ok((v, notes))
 }
 
 /// Prove a written revision-2 project: it reads back at revision 2, its

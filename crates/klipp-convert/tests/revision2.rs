@@ -159,3 +159,34 @@ fn an_empty_project_is_revision_2_too() {
     assert_eq!(out["format_revision"], REVISION);
     revision2::verify_project(&p, &serde_json::to_string(&out).unwrap()).unwrap();
 }
+
+/// A body standing alone keeps its parked edges: a track grade whose
+/// correction has a port-1 edge and no picture writes it on the body's own
+/// input, kept for the record as a clip's is.
+#[test]
+fn a_bare_body_keeps_its_parked_edges() {
+    let s = "00000000-0000-0000-0000-0000000000b0";
+    let c = "00000000-0000-0000-0000-0000000000b1";
+    let k = "00000000-0000-0000-0000-0000000000b2";
+    let o = "00000000-0000-0000-0000-0000000000b3";
+    let g = json!({
+        "nodes": [
+            {"id": s, "kind": "Source", "label": "Source", "enabled": true},
+            {"id": c, "kind": "Corrector", "label": "C", "enabled": true},
+            {"id": k, "kind": "Qualifier", "label": "Q", "enabled": true},
+            {"id": o, "kind": "Output", "label": "Output", "enabled": true}
+        ],
+        "edges": [
+            {"from_node": k, "from_port": 0, "to_node": c, "to_port": 1},
+            {"from_node": c, "from_port": 0, "to_node": o, "to_port": 0}
+        ],
+        "output_node_id": o
+    });
+    let mut p = project();
+    p["sequences"][0]["tracks"][0]["effects"]["grade"] = g;
+    let (out, notes) = revision2::project(&p).unwrap();
+    let body: Graph = serde_json::from_value(out["sequences"][0]["tracks"][0]["effects"]["graph_v2"]["grade"].clone()).unwrap();
+    let input = body.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::GROUP_INPUT).unwrap();
+    assert_eq!(input.legacy_flags.as_ref().unwrap().parked_edges.len(), 1);
+    assert!(notes.iter().any(|n| matches!(n, klipp_graph_format::lifted::LiftNote::ParkedEdge { .. })), "and reported");
+}

@@ -89,7 +89,9 @@ fn the_grade_group_decides_gates_first_then_makes_reads_explicit() {
     assert!(!has_edge(b, id(KEY), id(SAT), "mask"));
     assert!(find(b, SAT).legacy_flags.is_none());
     let group = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP).unwrap();
-    assert_eq!(group.legacy_flags.as_ref().unwrap().parked_edges.len(), 1);
+    let _ = group;
+    let input = b.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP_INPUT).unwrap();
+    assert_eq!(input.legacy_flags.as_ref().unwrap().parked_edges.len(), 1, "kept on the body's input");
     assert!(notes.iter().any(|n| matches!(n, LiftNote::ParkedEdge { .. })));
     // Only then implicit reads: Saturation's empty primary and the layer's
     // empty background read the frame, now as edges from the input. The
@@ -465,4 +467,21 @@ fn the_frame_carries_only_implicit_reads() {
     let group = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP).unwrap();
     let tnr = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::TEMPORAL_DENOISE).unwrap();
     assert!(has_edge(&p.graph, tnr.id, group.id, "frame"), "the frame is the picture entering the grade, after the head");
+}
+
+/// Two saved nodes sharing an id, one with a port-1 edge and no port-0
+/// edge, used to queue the same parked edge for removal twice and panic.
+/// The lift now returns a graph, and check_lifted refuses the repeated id:
+/// a stop for that project, never an abort of the run.
+#[test]
+fn repeated_ids_with_a_parked_edge_stop_instead_of_panicking() {
+    let g = json!({
+        "nodes": [gn(SRC, "Source"), gn(COR, "Corrector"), gn(COR, "Corrector"), gn(KEY, "Qualifier"), gn(OUT, "Output")],
+        "edges": [edge(KEY, 0, COR, 1), edge(COR, 0, OUT, 0)],
+        "output_node_id": OUT
+    });
+    let record = clip_to_v2(clip(json!({"node_graph": g})).as_object().unwrap()).unwrap();
+    let (p, notes) = lift_clip(&record, &LiftCtx { clip_id: id(CLIP), kind: ClipKind::Media }).unwrap();
+    assert_eq!(notes.iter().filter(|n| matches!(n, LiftNote::ParkedEdge { .. })).count(), 1, "one edge, parked once");
+    assert!(p.graph.check_lifted(false).is_err(), "the repeated id is refused by the check");
 }
