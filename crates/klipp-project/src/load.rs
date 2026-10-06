@@ -372,16 +372,25 @@ fn load_project_as(dir: &Path, form: crate::FileForm) -> Result<LoadResult, Stri
     // Reconstruct media pool — resolve stored paths (relative or absolute) to absolute
     let mut media_pool = MediaPool::new();
     for item_json in &manifest.items {
+        // Older manifests omitted the kind even for reusable title assets.
+        // The project-owned asset with the same id is their discriminator.
+        let kind = item_json.kind.clone().unwrap_or_else(|| {
+            if project.title_assets.iter().any(|asset| asset.id == item_json.id) {
+                MediaItemKind::SyntheticTitle
+            } else {
+                MediaItemKind::File
+            }
+        });
         let stored_path = Path::new(&item_json.path);
-        let path = resolve_media_path(dir, stored_path);
-        let offline = !path.exists();
+        let path = if kind == MediaItemKind::File { resolve_media_path(dir, stored_path) } else { stored_path.to_path_buf() };
+        let offline = kind == MediaItemKind::File && !path.exists();
         if offline {
             warn!("Media file not found, marking offline: {:?}", path);
         }
         let mut media_item = MediaItem {
             id: MediaId(parse_uuid(&item_json.id)?),
             path,
-            kind: MediaItemKind::File,
+            kind,
             filename: item_json.filename.clone(),
             duration: RationalTime { value: item_json.duration_frames, rate: item_json.duration_rate },
             fps: sanitize_fps(item_json.fps.num, item_json.fps.den),
