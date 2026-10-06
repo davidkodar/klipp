@@ -11,12 +11,8 @@ klipp-effects = { workspace = true }
 klipp-nodes = { workspace = true }
 klipp-plugin = { workspace = true }
 serde = { workspace = true }
-uuid = { workspace = true }
-
-[dev-dependencies]
-# serde_json is used only by the marker round-trip tests in
-# src/marker.rs.
 serde_json = { workspace = true }
+uuid = { workspace = true }
 
 [lints]
 workspace = true

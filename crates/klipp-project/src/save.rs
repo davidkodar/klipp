@@ -1,7 +1,8 @@
 use crate::format::*;
 use crate::path_util::{atomic_write, to_project_relative};
 use klipp_media::{MediaItem, MediaPool};
-use klipp_timeline::{ClipKind, GradeAccess, Look, Sequence, TrackKind};
+use klipp_timeline::picture_v1::ClipPictureV1;
+use klipp_timeline::{ClipKind, Look, Sequence, TrackKind};
 use std::path::Path;
 use tracing::{info, warn};
 
@@ -381,6 +382,26 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                     }
                 }).collect(),
                 clips: t.clips.iter().map(|c| {
+                    // The picture fields come from the one mapping the
+                    // picture store lifts too (#1089, M1b).
+                    let ClipPictureV1 {
+                        node_graph,
+                        color_grade,
+                        effects,
+                        builtin_effects,
+                        builtin_effects_enabled,
+                        opacity_keyframes,
+                        transform_pos_x_keyframes,
+                        transform_pos_y_keyframes,
+                        transform_scale_keyframes,
+                        transform_rotation_keyframes,
+                        transform_tilt_x_keyframes,
+                        transform_tilt_y_keyframes,
+                        effect_keyframes,
+                        param_modifiers,
+                        grade_versions,
+                        active_grade_version,
+                    } = ClipPictureV1::of(c);
                     ClipJson {
                         id: c.id.to_string(),
                         media_id: c.media_id().map(|mid| mid.to_string()),
@@ -390,15 +411,11 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         source_in: c.source_in.value,
                         source_out: c.source_out.value,
                         rate: c.timeline_in.rate,
-                        node_graph: Some(c.grade().clone()),
-                        color_grade: None,
-                        effects: c.ofx_effects().iter().map(effect_to_json).collect(),
-                        builtin_effects: if c.builtin_effects().is_empty() {
-                            None
-                        } else {
-                            serde_json::to_value(c.builtin_effects()).ok()
-                        },
-                        builtin_effects_enabled: c.builtin_effects_enabled().to_vec(),
+                        node_graph,
+                        color_grade,
+                        effects,
+                        builtin_effects,
+                        builtin_effects_enabled,
                         magnetic_anchor: c.magnetic_anchor.clone(),
                         linked_clip_id: c.linked_clip_id.map(|id| id.to_string()),
                         linked_title_asset_id: c.linked_title_asset_id.map(|id| id.to_string()),
@@ -415,13 +432,13 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         volume_keyframes: if c.volume_keyframes.is_empty() { None } else { Some(c.volume_keyframes.clone()) },
                         pan_keyframes: if c.pan_keyframes.is_empty() { None } else { Some(c.pan_keyframes.clone()) },
                         gain_keyframes: if c.gain_keyframes.is_empty() { None } else { Some(c.gain_keyframes.clone()) },
-                        opacity_keyframes: if c.opacity_keyframes.is_empty() { None } else { Some(c.opacity_keyframes().to_vec()) },
-                        transform_pos_x_keyframes: if c.transform_pos_x_keyframes.is_empty() { None } else { Some(c.transform_pos_x_keyframes().to_vec()) },
-                        transform_pos_y_keyframes: if c.transform_pos_y_keyframes.is_empty() { None } else { Some(c.transform_pos_y_keyframes().to_vec()) },
-                        transform_scale_keyframes: if c.transform_scale_keyframes.is_empty() { None } else { Some(c.transform_scale_keyframes().to_vec()) },
-                        transform_rotation_keyframes: if c.transform_rotation_keyframes.is_empty() { None } else { Some(c.transform_rotation_keyframes().to_vec()) },
-                        transform_tilt_x_keyframes: (!c.transform_tilt_x_keyframes.is_empty()).then(|| c.transform_tilt_x_keyframes().to_vec()),
-                        transform_tilt_y_keyframes: (!c.transform_tilt_y_keyframes.is_empty()).then(|| c.transform_tilt_y_keyframes().to_vec()),
+                        opacity_keyframes,
+                        transform_pos_x_keyframes,
+                        transform_pos_y_keyframes,
+                        transform_scale_keyframes,
+                        transform_rotation_keyframes,
+                        transform_tilt_x_keyframes,
+                        transform_tilt_y_keyframes,
                         matte_feather_keyframes: if c.matte_feather_keyframes.is_empty() { None } else { Some(c.matte_feather_keyframes.clone()) },
                         matte_choke_keyframes: if c.matte_choke_keyframes.is_empty() { None } else { Some(c.matte_choke_keyframes.clone()) },
                         clip_markers: if c.clip_markers.is_empty() { None } else {
@@ -432,13 +449,9 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                                 comment: m.comment.clone(),
                             }).collect())
                         },
-                        effect_keyframes: if c.effect_keyframes().is_empty() { None } else { Some(c.effect_keyframes().clone()) },
+                        effect_keyframes,
                         role: if c.role == klipp_core::ClipRole::default() { None } else { Some(c.role) },
-                        param_modifiers: if c.param_modifiers().is_empty() {
-                            None
-                        } else {
-                            Some(c.param_modifiers().iter().map(|(k, v)| (k.to_key(), v.clone())).collect())
-                        },
+                        param_modifiers,
                         speed: if (c.speed - 1.0).abs() < f64::EPSILON { None } else { Some(c.speed) },
                         speed_keyframes: if c.speed_keyframes.is_empty() { None } else { Some(c.speed_keyframes.clone()) },
                         keep_pitch: c.keep_pitch.then_some(true),
@@ -479,11 +492,8 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                             inherit_rotation: tl.inherit_rotation,
                             inherit_anchor: tl.inherit_anchor,
                         }),
-                        grade_versions: c.grade_versions.iter().map(|gv| GradeVersionJson {
-                            name: gv.name.clone(),
-                            node_graph: gv.grade().clone(),
-                        }).collect(),
-                        active_grade_version: c.active_grade_version,
+                        grade_versions,
+                        active_grade_version,
                         track_points: c.track_points.clone(),
                         surfaces: c.surfaces.clone(),
                         surface_pin: c.surface_pin,
@@ -492,29 +502,6 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                     }
                 }).collect(),
             }
-        }).collect(),
-    }
-}
-
-fn effect_to_json(effect: &klipp_plugin::AppliedEffect) -> EffectJson {
-    EffectJson {
-        plugin_name: effect.plugin_name.clone(),
-        enabled: effect.enabled,
-        param_values: effect.param_values.iter().map(|(k, v): (&String, &klipp_plugin::OfxValue)| {
-            let json_val = match v {
-                klipp_plugin::OfxValue::Double(d) => OfxValueJson::Double(*d),
-                klipp_plugin::OfxValue::Double2(a, b) => OfxValueJson::Double2([*a, *b]),
-                klipp_plugin::OfxValue::Double3(a, b, c) => OfxValueJson::Double3([*a, *b, *c]),
-                klipp_plugin::OfxValue::Int(i) => OfxValueJson::Int(*i),
-                klipp_plugin::OfxValue::Int2(a, b) => OfxValueJson::Int2([*a, *b]),
-                klipp_plugin::OfxValue::Int3(a, b, c) => OfxValueJson::Int3([*a, *b, *c]),
-                klipp_plugin::OfxValue::Bool(b) => OfxValueJson::Bool(*b),
-                klipp_plugin::OfxValue::Choice(c) => OfxValueJson::Choice(*c),
-                klipp_plugin::OfxValue::String(s) => OfxValueJson::String(s.clone()),
-                klipp_plugin::OfxValue::Rgba(r, g, b, a) => OfxValueJson::Rgba([*r, *g, *b, *a]),
-                klipp_plugin::OfxValue::Rgb(r, g, b) => OfxValueJson::Rgb([*r, *g, *b]),
-            };
-            (k.clone(), json_val)
         }).collect(),
     }
 }

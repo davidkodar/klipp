@@ -1238,7 +1238,7 @@ mod effect_comparison_tests {
             .map(|(id, stack)| (format!("{id:?}"), serde_json::to_value(stack).unwrap()))
             .collect();
         serde_json::json!({ "effects": clip.builtin_effects(), "enabled": clip.builtin_effects_enabled(),
-            "keyframes": clip.effect_keyframes, "modifiers": modifiers })
+            "keyframes": clip.effect_keyframes(), "modifiers": modifiers })
     }
 
     #[test]
