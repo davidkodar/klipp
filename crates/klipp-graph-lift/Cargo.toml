@@ -1,0 +1,21 @@
+[package]
+name = "klipp-graph-lift"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+description = "Klipp's pictures in revision 2 and back, as pure functions: the lift, delift, the splice, paths and the revision-2 conversion (#997, #1089)"
+
+[lints]
+workspace = true
+
+# Pure functions over the files' JSON and the graph format. The app may
+# depend on this crate; it depends on no app crate itself.
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+klipp-graph-format = { workspace = true }
+
+[dev-dependencies]
+klipp-effects = { path = "../klipp-effects" }
+klipp-nodes = { path = "../klipp-nodes" }

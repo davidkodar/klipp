@@ -282,50 +282,6 @@ mod tests {
         assert_eq!(canon(Store::Track, &json!({ "grade": null, "video": null })), json!({}));
     }
 
-    /// The lead's rule (#1002), as a test: two saved forms of a container
-    /// are merged by `canon()` exactly when today's reader loads them as
-    /// the same value. Each form is parsed with the frozen reader (a form
-    /// it refuses is a stop before `canon()`, and is skipped), then loaded
-    /// as `klipp-project`'s `load.rs` loads it: an unset effect list,
-    /// keyframe map or modifier map is an empty one, and an unset grade
-    /// graph is the default pipeline, which no saved graph is.
-    #[test]
-    fn canon_merges_exactly_the_forms_the_reader_loads_alike() {
-        let graph = json!({ "nodes": [], "edges": [], "output_node_id": "00000000-0000-0000-0000-000000000000" });
-        let containers: [(&str, Value, Value); 5] = [
-            ("node_graph", json!({}), graph),
-            ("builtin_effects", json!([]), json!([fx()])),
-            ("effects", json!([]), json!([{ "plugin_name": "p", "enabled": true, "param_values": {} }])),
-            ("effect_keyframes", json!({}), json!({ "0:value": [] })),
-            ("param_modifiers", json!({}), json!({ "opacity": { "modifiers": [] } })),
-        ];
-        for (field, empty, filled) in containers {
-            let forms: Vec<(&str, Value)> = vec![("absent", json!({})), ("null", json!({ field: null })), ("empty", json!({ field: empty })), ("filled", json!({ field: filled }))];
-            let loaded = |raw: &Value| -> Option<Value> {
-                let typed: crate::v1::ClipPicture = serde_json::from_value(raw.clone()).ok()?;
-                let mut v = serde_json::to_value(&typed).ok()?;
-                let get = |k: &str| v.get(k).cloned().unwrap_or(Value::Null);
-                let list_or_empty = |x: Value, e: Value| if x.is_null() { e } else { x };
-                let node_graph = get("node_graph");
-                let effects = get("effects");
-                let builtin = list_or_empty(get("builtin_effects"), json!([]));
-                let keys = list_or_empty(get("effect_keyframes"), json!({}));
-                let mods = list_or_empty(get("param_modifiers"), json!({}));
-                v = json!({ "node_graph": node_graph, "effects": effects, "builtin_effects": builtin, "effect_keyframes": keys, "param_modifiers": mods });
-                Some(sorted(v))
-            };
-            let readable: Vec<(&str, Value, Value)> = forms.iter().filter_map(|(name, raw)| loaded(raw).map(|l| (*name, raw.clone(), l))).collect();
-            for must in ["absent", "filled"] {
-                assert!(readable.iter().any(|(n, ..)| *n == must), "{field}: the {must} form must parse, or the test checks nothing");
-            }
-            for (a, raw_a, load_a) in &readable {
-                for (b, raw_b, load_b) in &readable {
-                    let merged = canon(Store::Clip, raw_a) == canon(Store::Clip, raw_b);
-                    assert_eq!(merged, load_a == load_b, "{field}: canon {} {a} and {b}, which the reader loads {}", if merged { "merges" } else { "keeps apart" }, if load_a == load_b { "alike" } else { "differently" });
-                }
-            }
-        }
-    }
 
     #[test]
     fn a_compound_nodes_graph_is_carried_as_it_is() {

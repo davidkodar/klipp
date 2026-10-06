@@ -5,32 +5,18 @@
 //! and writes the files as they are on disk.
 pub mod adapter;
 pub mod assemble;
-pub mod canon;
-pub mod delift;
 pub mod document;
 pub mod dry_run;
-pub mod ids;
 pub mod installed;
-pub mod lift;
-pub mod old_fields;
 pub mod ops;
-pub mod paths;
-pub mod revision2;
-pub mod revision;
 pub mod running;
 pub mod scan;
-pub mod splice;
-pub mod to_v1;
-pub mod to_v2;
 pub mod v1;
 pub mod verify;
+/// The pure conversion, in its own crate so the app can use it.
+pub use klipp_graph_lift::{canon, delift, ids, lift, old_fields, paths, revision, splice, to_v1, to_v2};
+pub mod revision2;
 pub use document::{Document, Picture, PictureField, StoreKind};
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod to_v2_tests;
-
-#[cfg(test)]
-mod lift_tests;
