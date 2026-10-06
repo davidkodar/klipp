@@ -63,7 +63,7 @@ fn main() {
             let path = settings.backup_root.join(format!("run-report-{}.json", settings.date));
             let written = serde_json::to_string_pretty(&report).map_err(|e| e.to_string()).and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
             println!(
-                "converted {}, skipped {}, stopped {}, excluded {}, recovered {}, damaged journal entries {}; presets converted {}, stopped {}",
+                "converted {}, skipped {}, stopped {}, excluded {}, recovered {}, damaged journal entries {}; colour presets converted {}, stopped {}; tool presets {} and effect presets {} unchanged at revision 2",
                 report.converted.len(),
                 report.skipped.len(),
                 report.stopped.len(),
@@ -72,6 +72,8 @@ fn main() {
                 report.damaged_journals.len(),
                 report.presets_converted,
                 report.presets_stopped.len(),
+                report.tool_presets_unchanged,
+                report.effect_presets_unchanged,
             );
             match written {
                 Ok(()) => println!("report in {}", path.display()),

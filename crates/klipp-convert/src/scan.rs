@@ -218,23 +218,37 @@ fn json_files_in(dir: &Path) -> usize {
         .unwrap_or(0)
 }
 
-/// The presets the app keeps in its config folder, which the conversion
-/// rewrites with the projects.
+/// The folders under `presets/color` that hold tool presets, one per tool
+/// (`klipp-ui` `tool_presets_dir`).
+pub const TOOL_PRESET_DIRS: [&str; 6] = ["wheels", "curves", "huesat", "warper", "color_basic", "full"];
+
+/// The presets the app keeps in its config folder. The run converts the
+/// colour presets; tool and single-effect presets stay unchanged at
+/// revision 2 (they hold no picture), and move at a later revision.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Presets {
     /// `presets/color/*.json`.
     pub colour: usize,
     /// One per tool, in `presets/color/<tool>/`.
     pub tool: usize,
-    /// `effect_presets/*.json`.
+    /// One per effect, in `effect_presets/<effect key>/`.
     pub effect: usize,
 }
 
 /// The presets under `config_dir/klipp`.
 pub fn presets(config_dir: &Path) -> Presets {
-    let colour = config_dir.join("klipp").join("presets").join("color");
-    let tool = ["wheels", "curves", "huesat", "warper", "color_basic", "full"].iter().map(|t| json_files_in(&colour.join(t))).sum();
-    Presets { colour: json_files_in(&colour), tool, effect: json_files_in(&config_dir.join("klipp").join("effect_presets")) }
+    presets_in(&config_dir.join("klipp"))
+}
+
+/// The presets in the app's config folder `klipp` (`~/.config/klipp`).
+pub fn presets_in(klipp: &Path) -> Presets {
+    let colour = klipp.join("presets").join("color");
+    let tool = TOOL_PRESET_DIRS.iter().map(|t| json_files_in(&colour.join(t))).sum();
+    // Each effect's presets are in a folder named by its key.
+    let effect = std::fs::read_dir(klipp.join("effect_presets"))
+        .map(|es| es.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| json_files_in(&e.path())).sum())
+        .unwrap_or(0);
+    Presets { colour: json_files_in(&colour), tool, effect }
 }
 
 /// Everything the dry run says of one project.
@@ -454,6 +468,11 @@ impl Report {
         for m in &self.recent_missing {
             out.push_str(&format!("{}  [in the recent list, not a project]\n", m.display()));
         }
+        let p = &self.presets;
+        out.push_str(&format!(
+            "\npresets: {} colour (converted to revision 2); {} tool and {} effect (unchanged at revision 2)\n",
+            p.colour, p.tool, p.effect
+        ));
         let c = self.counts();
         out.push_str(&format!("\n{}\n", serde_json::to_string_pretty(&c).unwrap_or_default()));
         out
