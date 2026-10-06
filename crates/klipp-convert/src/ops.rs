@@ -14,7 +14,7 @@
 //! v1 types read it, which is the range check there is before the
 //! registry takes over.
 
-use klipp_graph_format::lifted::types as lt;
+use klipp_graph_format::lifted::{types as lt, LegacyFlags};
 use klipp_graph_format::path::{NodePath, Root, TrackPart};
 use klipp_graph_format::{ports, types, Edge, Graph, Node, NodeId, ParamKey, ParamValue, PortKey};
 use serde_json::Value;
@@ -210,13 +210,37 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId) -> Result<(), String
             let port = primary(&g.nodes[at]);
             let feed = g.edges.iter().find(|e| e.to == (target, port.clone())).map(|e| e.from.clone());
             g.edges.retain(|e| e.to.0 != target);
-            match feed {
-                Some(feed) => {
-                    for e in g.edges.iter_mut().filter(|e| e.from.0 == target) {
+            // Its readers' pictures take its input back; anything else it fed
+            // (a gate's matte, a merge's second picture) is disconnected,
+            // not handed a picture it never was.
+            let primaries: Vec<(NodeId, PortKey)> = g.nodes.iter().map(|n| (n.id, primary(n))).collect();
+            let reads_picture = |e: &Edge| primaries.iter().any(|(id, p)| *id == e.to.0 && *p == e.to.1);
+            let mut unmasked = Vec::new();
+            g.edges.retain_mut(|e| {
+                if e.from.0 != target {
+                    return true;
+                }
+                match &feed {
+                    Some(feed) if reads_picture(e) => {
                         e.from = feed.clone();
+                        true
+                    }
+                    _ => {
+                        if e.to.1.as_str() == "mask" {
+                            unmasked.push(e.to.0);
+                        }
+                        false
                     }
                 }
-                None => g.edges.retain(|e| e.from.0 != target),
+            });
+            // A correction that lost its matte isn't gated any more.
+            for n in g.nodes.iter_mut().filter(|n| unmasked.contains(&n.id)) {
+                if let Some(f) = n.legacy_flags.as_mut() {
+                    f.alpha_one = false;
+                    if *f == LegacyFlags::default() {
+                        n.legacy_flags = None;
+                    }
+                }
             }
             g.nodes.remove(at);
         }
@@ -250,9 +274,20 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId) -> Result<(), String
             // is refused by the check that follows every op.
             let port = primary(&node);
             let others: Vec<Edge> = g.edges.iter().filter(|e| e.to.0 == target && e.to.1 != port).cloned().collect();
+            // And what it feeds other than a picture (its matte into a gate)
+            // stays its own, where the removal would disconnect it.
+            let primaries: Vec<(NodeId, PortKey)> = g.nodes.iter().map(|n| (n.id, primary(n))).collect();
+            let outs: Vec<Edge> = g.edges.iter().filter(|e| e.from.0 == target && !primaries.iter().any(|(id, p)| *id == e.to.0 && *p == e.to.1)).cloned().collect();
+            let gated: Vec<(NodeId, Option<LegacyFlags>)> = outs.iter().filter_map(|e| g.nodes.iter().find(|n| n.id == e.to.0)).map(|n| (n.id, n.legacy_flags.clone())).collect();
             apply_graph(g, &GraphOp::RemoveNode { path: NodePath::new(Root::Clip { clip: uuid::Uuid::nil() }, [target]) }, target)?;
             apply_graph(g, &GraphOp::AddNode { after: NodePath::new(Root::Clip { clip: uuid::Uuid::nil() }, [*after]), node: Box::new(node) }, *after)?;
             g.edges.extend(others);
+            g.edges.extend(outs);
+            for (id, flags) in gated {
+                if let Some(n) = g.nodes.iter_mut().find(|n| n.id == id) {
+                    n.legacy_flags = flags;
+                }
+            }
         }
     }
     Ok(())

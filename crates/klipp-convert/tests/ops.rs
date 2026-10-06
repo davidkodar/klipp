@@ -293,3 +293,78 @@ fn ops_reach_every_root_and_undo_keeps_to_its_own() {
     apply(&mut d, &GraphOp::SetEnabled { path: track, enabled: true }).unwrap();
     assert_eq!(serde_json::to_value((&d.timeline, d.stages.iter().collect::<Vec<_>>(), &d.track_grades)).unwrap(), start, "every root as it was");
 }
+
+/// A track's effects take no end node and no group, refused whole
+/// (#1102 re-review).
+#[test]
+fn a_track_list_refuses_an_end_and_a_group() {
+    let mut d = docs();
+    let before = snapshot(&d);
+    let first = d.track_effects[&u(TRACK)][0].id;
+    let tp = |id| NodePath::new(Root::Track { track: u(TRACK), part: TrackPart::Effects }, [id]);
+    let mut end = (*grade_node(0x81, "Output")).clone();
+    end.type_id = lt::OUTPUT.into();
+    end.legacy = None;
+    assert!(apply(&mut d, &GraphOp::AddNode { after: tp(first), node: Box::new(end) }).unwrap_err().contains("effect and plug-in entries"));
+    let group = d.clips[&u(CLIP)].graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP).unwrap().clone();
+    let mut group = group;
+    group.id = Uuid::from_u128(0x82);
+    assert!(apply(&mut d, &GraphOp::AddNode { after: tp(first), node: Box::new(group) }).unwrap_err().contains("effect and plug-in entries"));
+    assert_eq!(snapshot(&d), before);
+}
+
+/// A move that would make a loop is refused whole: a key moved after the
+/// correction its matte gates would feed itself (#1102 re-review).
+#[test]
+fn a_move_that_would_loop_is_refused() {
+    const K: &str = "00000000-0000-0000-0000-0000000000a3";
+    const SAT: &str = "00000000-0000-0000-0000-0000000000a4";
+    let grade = json!({
+        "nodes": [{"id": S, "kind": "Source", "label": "S", "enabled": true}, {"id": K, "kind": "LumaKey", "label": "K", "enabled": true},
+                  {"id": E, "kind": "Exposure", "label": "E", "enabled": true}, {"id": SAT, "kind": "Saturation", "label": "Sat", "enabled": true},
+                  {"id": O, "kind": "Output", "label": "O", "enabled": true}],
+        "edges": [{"from_node": S, "from_port": 0, "to_node": K, "to_port": 0}, {"from_node": S, "from_port": 0, "to_node": E, "to_port": 0},
+                  {"from_node": K, "from_port": 0, "to_node": E, "to_port": 1}, {"from_node": E, "from_port": 0, "to_node": SAT, "to_port": 0},
+                  {"from_node": SAT, "from_port": 0, "to_node": O, "to_port": 0}],
+        "output_node_id": O
+    });
+    let p = json!({"version": "1.0.0", "sequences": [{"id": "00000000-0000-0000-0000-000000000501", "name": "S", "tracks": [{
+        "id": TRACK, "name": "V1", "kind": "Video",
+        "clips": [{"id": CLIP, "kind": {"type": "media", "media_id": "00000000-0000-0000-0000-0000000000d1"}, "node_graph": grade}]
+    }]}]});
+    let mut d = Documents::of(&revision2::project(&p).unwrap().0).unwrap();
+    let before = snapshot(&d);
+    let g = group(&d);
+    let r = apply(&mut d, &GraphOp::MoveAfter { path: clip_path([g, u(K)]), after: u(E) });
+    assert!(r.unwrap_err().contains("Cycle"), "the key would read Exposure, whose mask it feeds");
+    assert_eq!(snapshot(&d), before, "nothing moved");
+}
+
+/// Removing a key that gates a correction disconnects the matte and the
+/// gate with it; the correction isn't handed the key's input as a matte
+/// (#1102 re-review).
+#[test]
+fn removing_a_gating_key_ungates_the_correction() {
+    const K: &str = "00000000-0000-0000-0000-0000000000a3";
+    const SAT: &str = "00000000-0000-0000-0000-0000000000a4";
+    let grade = json!({
+        "nodes": [{"id": S, "kind": "Source", "label": "S", "enabled": true}, {"id": K, "kind": "LumaKey", "label": "K", "enabled": true},
+                  {"id": E, "kind": "Exposure", "label": "E", "enabled": true}, {"id": SAT, "kind": "Saturation", "label": "Sat", "enabled": true},
+                  {"id": O, "kind": "Output", "label": "O", "enabled": true}],
+        "edges": [{"from_node": S, "from_port": 0, "to_node": K, "to_port": 0}, {"from_node": S, "from_port": 0, "to_node": E, "to_port": 0},
+                  {"from_node": K, "from_port": 0, "to_node": E, "to_port": 1}, {"from_node": E, "from_port": 0, "to_node": SAT, "to_port": 0},
+                  {"from_node": SAT, "from_port": 0, "to_node": O, "to_port": 0}],
+        "output_node_id": O
+    });
+    let p = json!({"version": "1.0.0", "sequences": [{"id": "00000000-0000-0000-0000-000000000501", "name": "S", "tracks": [{
+        "id": TRACK, "name": "V1", "kind": "Video",
+        "clips": [{"id": CLIP, "kind": {"type": "media", "media_id": "00000000-0000-0000-0000-0000000000d1"}, "node_graph": grade}]
+    }]}]});
+    let mut d = Documents::of(&revision2::project(&p).unwrap().0).unwrap();
+    let g = group(&d);
+    apply(&mut d, &GraphOp::RemoveNode { path: clip_path([g, u(K)]) }).unwrap();
+    let body = &d.clips[&u(CLIP)].graph.nodes.iter().find(|n| n.id == g).unwrap().group.as_ref().unwrap().graph;
+    assert!(!body.edges.iter().any(|e| e.to.0 == u(E) && e.to.1.as_str() == "mask"), "no matte, not the source as one");
+    let e = body.nodes.iter().find(|n| n.id == u(E)).unwrap();
+    assert!(!e.legacy_flags.as_ref().is_some_and(|f| f.alpha_one), "and no gate");
+}
