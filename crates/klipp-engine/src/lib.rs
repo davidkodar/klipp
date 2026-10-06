@@ -60,6 +60,7 @@
 
 #[cfg(target_os = "linux")]
 pub mod alsa_quiet;
+pub mod canonical_hash;
 pub mod audio_decoder;
 pub mod audio_input;
 pub mod audio_output;
