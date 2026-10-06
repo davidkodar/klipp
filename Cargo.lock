@@ -3423,6 +3423,7 @@ dependencies = [
  "klipp-export",
  "klipp-frei0r",
  "klipp-grade-model",
+ "klipp-graph-lift",
  "klipp-jobs",
  "klipp-media",
  "klipp-ml",

@@ -46,6 +46,7 @@ klipp-ml-candle = { workspace = true, optional = true }
 klipp-ml-ort = { workspace = true, optional = true }
 klipp-title = { workspace = true }
 klipp-project = { workspace = true }
+klipp-graph-lift = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true }
 wgpu = { workspace = true }
