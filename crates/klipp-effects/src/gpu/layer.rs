@@ -1,5 +1,6 @@
 //! Resident layer effects. Every spill samples the unchanged layer, and
 //! reverse src-over stacking keeps the first spill nearest the picture.
+use super::record::EffectRecording;
 use super::{BlurParams, GpuEffectsPipeline, WORKGROUP_SIZE};
 
 pub(super) struct LayerGpu {
@@ -248,6 +249,158 @@ impl GpuEffectsPipeline {
         if drawn {
             self.write_params(&Params::new(width, height));
             self.dispatch_pair(&self.layer_gpu.over, input, under, output, wg);
+        }
+        drawn
+    }
+}
+
+/// The recorded forms of the layer passes (node-graph M2 step 7): the
+/// same passes in the same order, into the caller's encoder, each with a
+/// uniform slot of its own. The caller's `scratch` stands where `buf_c`
+/// stood, so a caller whose own frames live in `buf_c` is safe; the two
+/// layer buffers are this pipeline's and only these passes touch them.
+impl GpuEffectsPipeline {
+    /// Whether the layer passes' own buffers hold a `width` × `height`
+    /// frame: they are made by `run_effects_in_chain` (`ensure_buffers`).
+    pub(super) fn layer_ready(&self, width: u32, height: u32) -> bool {
+        self.layer_gpu.scratch.len() == 2 && self.layer_gpu.size >= u64::from(width) * u64::from(height) * 16
+    }
+
+    /// Slots `record_layer_fill` claims at most.
+    pub(super) const FILL_SLOTS: usize = 5;
+
+    /// [`Self::layer_fill`], recorded.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn record_layer_fill(
+        &self,
+        rec: &mut EffectRecording<'_>,
+        src: &wgpu::Buffer,
+        dst: &wgpu::Buffer,
+        bounds: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+        blur: f32,
+        zoom: f32,
+        darken: f32,
+    ) {
+        let q = &self.queue;
+        let (sw, sh) = crate::layer::fill_size(width, height);
+        let (small, spare) = (&self.layer_gpu.scratch[0], &self.layer_gpu.scratch[1]);
+        let frame = rec.slots.claim(q, &Params::new(width, height)).expect("slots checked");
+        self.record_pass_n(rec, &self.layer_gpu.rows, src, spare, frame, height.div_ceil(WORKGROUP_SIZE));
+        self.record_pass_n(rec, &self.layer_gpu.bounds, spare, bounds, frame, 1);
+        let fill = FillParams { width, height, small_w: sw, small_h: sh, zoom, darken: darken.clamp(0.0, 1.0), pad: [0; 2] };
+        let fill = rec.slots.claim(q, &fill).expect("slots checked");
+        self.record_pair_n(rec, &self.layer_gpu.fill_small, src, bounds, small, fill, (sw * sh).div_ceil(WORKGROUP_SIZE));
+        let sigma = blur.max(0.0) * sw as f32;
+        if sigma >= 0.5 {
+            for radius in crate::blur::boxes_for_gaussian(sigma) {
+                if radius == 0 {
+                    continue;
+                }
+                let slot = rec.slots.claim(q, &BlurParams { width: sw, height: sh, radius: radius as i32, _pad: 0 }).expect("slots checked");
+                self.record_pass_n(rec, &self.blur_h_pipeline, small, spare, slot, (sw * sh).div_ceil(WORKGROUP_SIZE));
+                self.record_pass_n(rec, &self.blur_v_pipeline, spare, small, slot, (sw * sh).div_ceil(WORKGROUP_SIZE));
+            }
+        }
+        self.record_pair_n(rec, &self.layer_gpu.fill_over, src, small, dst, fill, (width * height).div_ceil(WORKGROUP_SIZE));
+    }
+
+    /// [`Self::layer_corners`], recorded: one slot.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn record_layer_corners(
+        &self,
+        rec: &mut EffectRecording<'_>,
+        src: &wgpu::Buffer,
+        dst: &wgpu::Buffer,
+        bounds: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+        radius: f32,
+        feather: f32,
+    ) {
+        let mut params = Params::new(width, height);
+        params.radius = radius.clamp(0.0, 0.5);
+        params.feather = feather.max(0.0);
+        let slot = rec.slots.claim(&self.queue, &params).expect("slots checked");
+        let rows = &self.layer_gpu.scratch[0];
+        self.record_pass_n(rec, &self.layer_gpu.rows, src, rows, slot, height.div_ceil(WORKGROUP_SIZE));
+        self.record_pass_n(rec, &self.layer_gpu.bounds, rows, bounds, slot, 1);
+        self.record_pair_n(rec, &self.layer_gpu.corners, src, bounds, dst, slot, (width * height).div_ceil(WORKGROUP_SIZE));
+    }
+
+    /// The spill's parameters at `width` × `height`, or `None` when it
+    /// lays nothing.
+    fn spill_params(spill: &crate::layer::Spill, width: u32, height: u32) -> Option<(Params, f32)> {
+        let mut params = Params::new(width, height);
+        params.opacity = spill.opacity.clamp(0.0, 1.0);
+        params.offset_x = (spill.offset_x * width as f32).round() as i32;
+        params.offset_y = (spill.offset_y * width as f32).round() as i32;
+        let sigma = spill.blur.max(0.0) * width as f32;
+        if params.opacity <= 0.001 || (params.offset_x == 0 && params.offset_y == 0 && sigma < 0.5) {
+            return None;
+        }
+        params.color = [
+            crate::cpu::decode(spill.color[0] as f32 / 255.0),
+            crate::cpu::decode(spill.color[1] as f32 / 255.0),
+            crate::cpu::decode(spill.color[2] as f32 / 255.0),
+            0.0,
+        ];
+        Some((params, sigma))
+    }
+
+    /// Slots `record_spills` claims for `run`: each spill's own and
+    /// its blur's, and the final layer's.
+    pub(super) fn spill_run_slots(run: &[crate::layer::Spill], width: u32, height: u32) -> usize {
+        let blurs = |sigma: f32| if sigma >= 0.5 { crate::blur::boxes_for_gaussian(sigma).iter().filter(|r| **r != 0).count() } else { 0 };
+        1 + run.iter().filter_map(|s| Self::spill_params(s, width, height)).map(|(_, sigma)| 1 + blurs(sigma)).sum::<usize>()
+    }
+
+    /// [`Self::layer_spills`], recorded: whether anything was laid (if
+    /// not, nothing was recorded and the picture is `src`). The caller's
+    /// `scratch` is the cast; `dst` serves as the blur's spare until the
+    /// last pass writes it.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn record_spills(
+        &self,
+        rec: &mut EffectRecording<'_>,
+        src: &wgpu::Buffer,
+        dst: &wgpu::Buffer,
+        cast: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+        run: &[crate::layer::Spill],
+    ) -> bool {
+        let q = &self.queue;
+        let wg = (width * height).div_ceil(WORKGROUP_SIZE);
+        let mut under = &self.layer_gpu.scratch[0];
+        let mut next = &self.layer_gpu.scratch[1];
+        let mut drawn = false;
+        for spill in run.iter().rev() {
+            let Some((params, sigma)) = Self::spill_params(spill, width, height) else { continue };
+            let slot = rec.slots.claim(q, &params).expect("slots checked");
+            self.record_pass_n(rec, &self.layer_gpu.cast, src, cast, slot, wg);
+            if sigma >= 0.5 {
+                for radius in crate::blur::boxes_for_gaussian(sigma) {
+                    if radius == 0 {
+                        continue;
+                    }
+                    let blur = rec.slots.claim(q, &BlurParams { width, height, radius: radius as i32, _pad: 0 }).expect("slots checked");
+                    self.record_pass_n(rec, &self.blur_h_pipeline, cast, dst, blur, wg);
+                    self.record_pass_n(rec, &self.blur_v_pipeline, dst, cast, blur, wg);
+                }
+            }
+            if drawn {
+                self.record_pair_n(rec, &self.layer_gpu.over, cast, under, next, slot, wg);
+                std::mem::swap(&mut under, &mut next);
+            } else {
+                rec.encoder.copy_buffer_to_buffer(cast, 0, under, 0, u64::from(width) * u64::from(height) * 16);
+                drawn = true;
+            }
+        }
+        if drawn {
+            let slot = rec.slots.claim(q, &Params::new(width, height)).expect("slots checked");
+            self.record_pair_n(rec, &self.layer_gpu.over, src, under, dst, slot, wg);
         }
         drawn
     }
