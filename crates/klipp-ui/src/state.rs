@@ -2063,7 +2063,7 @@ pub struct AppState {
     /// Per-effect split compare. `Some((clip_id, effect_index, is_ofx))`
     /// when a single effect is being A/B'd in the viewer — left half of
     /// the split renders that effect bypassed, right half renders it on.
-    /// `is_ofx` distinguishes `clip.effects[idx]` (true) from
+    /// `is_ofx` distinguishes `clip.ofx_effects()[idx]` (true) from
     /// `clip.builtin_effects()[idx]` (false). Mutually exclusive with
     /// before_after_active / stabilization_compare_active (handler sets
     /// only one at a time). None = inactive.
@@ -3616,7 +3616,7 @@ impl AttributesClipboard {
         Self {
             builtin_effects: clip.builtin_effects().to_vec(),
             builtin_effects_enabled: clip.builtin_effects_enabled().to_vec(),
-            effects: clip.effects.clone(),
+            effects: clip.ofx_effects().to_vec(),
             node_graph: clip.grade().clone(),
             volume: clip.volume,
             pan: clip.pan,
@@ -3669,7 +3669,7 @@ impl AttributesClipboard {
                 self.effect_keyframes.clone(),
                 self.param_modifiers.iter().map(|(id, m)| (id.clone(), m.clone())),
             ));
-            clip.effects = self.effects.clone();
+            clip.set_ofx_effects(self.effects.clone());
         }
         if what.color_grade {
             clip.set_grade(clip.grade().with_grade_of(&self.node_graph));

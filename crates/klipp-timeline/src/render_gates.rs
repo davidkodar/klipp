@@ -13,7 +13,7 @@ impl Clip {
     /// Any raw OFX entry. Render gates that ignore disabled plug-ins must
     /// continue to use [`Self::has_enabled_plugins`] instead.
     pub fn has_plugin_entries(&self) -> bool {
-        !self.effects.is_empty()
+        !self.ofx_effects().is_empty()
     }
 
     /// Capability of the raw list, including disabled entries. In particular,
@@ -108,7 +108,7 @@ impl Clip {
 
     /// Whether an enabled plug-in matches a render-path requirement.
     pub fn has_enabled_plugin_matching(&self, predicate: impl Fn(&str) -> bool) -> bool {
-        self.effects
+        self.ofx_effects()
             .iter()
             .any(|e| e.enabled && predicate(&e.plugin_name))
     }
@@ -260,14 +260,14 @@ mod tests {
         for (present, enabled) in [(false, false), (true, false), (true, true)] {
             let mut c = clip();
             if present {
-                c.effects.push(klipp_plugin::AppliedEffect {
+                c.edit_ofx_effects(|effects| effects.push(klipp_plugin::AppliedEffect {
                     plugin_name: "temporal".into(),
                     enabled,
                     param_values: Default::default(),
                     context: klipp_plugin::OfxCategory::Filter,
                     transition_input: None,
                     transition_amount: 0.0,
-                });
+                }));
             }
             assert_eq!(c.has_plugin_entries(), present);
             assert_eq!(c.has_enabled_plugins(), present && enabled);

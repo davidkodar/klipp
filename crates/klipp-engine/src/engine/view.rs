@@ -806,7 +806,7 @@ impl PlaybackEngine {
             let (index, is_ofx) = (self.compare_effect_index, self.compare_effect_is_ofx);
             alt_render(self, &|c: &mut Clip| {
                 if is_ofx {
-                    match c.effects.get_mut(index) {
+                    match c.ofx_effect_mut(index) {
                         Some(e) => {
                             e.enabled = !e.enabled;
                             true

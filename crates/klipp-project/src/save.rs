@@ -364,8 +364,8 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                 magnetic_role: Some(t.magnetic_role.clone()),
                 storyline_anchor: t.storyline_anchor.clone(),
                 effects: (!t.effects.is_empty()).then(|| crate::format::TrackEffectsJson {
-                    video: if t.effects.video.is_empty() { None } else { serde_json::to_value(&t.effects.video).ok() },
-                    video_enabled: t.effects.video_enabled.clone(),
+                    video: if t.effects.video_effects().is_empty() { None } else { serde_json::to_value(t.effects.video_effects()).ok() },
+                    video_enabled: t.effects.video_effects_enabled().to_vec(),
                     grade: t.effects.track_grade().filter(|g| !g.is_identity()).cloned(),
                     audio: t.effects.audio.clone(),
                 }),
@@ -392,7 +392,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         rate: c.timeline_in.rate,
                         node_graph: Some(c.grade().clone()),
                         color_grade: None,
-                        effects: c.effects.iter().map(effect_to_json).collect(),
+                        effects: c.ofx_effects().iter().map(effect_to_json).collect(),
                         builtin_effects: if c.builtin_effects().is_empty() {
                             None
                         } else {

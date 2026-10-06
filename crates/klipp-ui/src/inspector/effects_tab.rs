@@ -91,7 +91,7 @@ pub fn show(
 ) {
     let clip_id = clip.id;
 
-    let has_any = !clip.builtin_effects().is_empty() || !clip.effects.is_empty();
+    let has_any = !clip.builtin_effects().is_empty() || !clip.ofx_effects().is_empty();
 
     if !has_any {
         show_empty(ui, theme, cmds);
@@ -99,7 +99,7 @@ pub fn show(
     }
 
     let pad = 14.0;
-    let total_effects = clip.builtin_effects().len() + clip.effects.len();
+    let total_effects = clip.builtin_effects().len() + clip.ofx_effects().len();
 
     // ── "Drag to reorder" hint ──
     show_drag_hint(ui, theme, total_effects);
@@ -391,7 +391,7 @@ pub fn show(
     let mut ofx_remove = None;
     let mut ofx_move_to: Option<(usize, usize)> = None;
 
-    for (i, effect) in clip.effects.iter().enumerate() {
+    for (i, effect) in clip.ofx_effects().iter().enumerate() {
         let display_name = effect.plugin_name
             .rsplit_once('.')
             .map(|(_, name)| name)
@@ -642,7 +642,7 @@ pub fn show(
             });
             if total_drag < -15.0 && i > 0 {
                 ui.painter().hline(header_rect.x_range(), header_rect.min.y - 2.0, egui::Stroke::new(2.0_f32, theme.accent));
-            } else if total_drag > 15.0 && i + 1 < clip.effects.len() {
+            } else if total_drag > 15.0 && i + 1 < clip.ofx_effects().len() {
                 let line_y = if is_open { ui.cursor().min.y + 2.0 } else { header_rect.max.y + 2.0 };
                 ui.painter().hline(header_rect.x_range(), line_y, egui::Stroke::new(2.0_f32, theme.accent));
             }
@@ -658,7 +658,7 @@ pub fn show(
             let slot_h = 40.0_f32;
             let steps = (total_drag.abs() / slot_h).floor() as usize;
             if steps > 0 {
-                let max_idx = clip.effects.len() - 1;
+                let max_idx = clip.ofx_effects().len() - 1;
                 let target = if total_drag < 0.0 {
                     i.saturating_sub(steps)
                 } else {

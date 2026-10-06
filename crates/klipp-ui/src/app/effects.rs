@@ -81,12 +81,12 @@ impl KlippApp {
             AppCommand::AddEffect { clip_id, ref plugin_name } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.effects.push(klipp_plugin::AppliedEffect {
+                        clip.edit_ofx_effects(|effects| effects.push(klipp_plugin::AppliedEffect {
                             plugin_name: plugin_name.clone(),
                             enabled: true,
                             param_values: std::collections::HashMap::new(),
                             ..Default::default()
-                        });
+                        }));
                         break;
                     }
                 }
@@ -96,8 +96,8 @@ impl KlippApp {
             AppCommand::RemoveEffect { clip_id, effect_index } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if *effect_index < clip.effects.len() {
-                            clip.effects.remove(*effect_index);
+                        if *effect_index < clip.ofx_effects().len() {
+                            clip.edit_ofx_effects(|effects| effects.remove(*effect_index));
                         }
                         break;
                     }
@@ -128,7 +128,7 @@ impl KlippApp {
                 let mut old_enabled: Option<bool> = None;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(effect) = clip.effects.get_mut(*effect_index) {
+                        if let Some(effect) = clip.ofx_effect_mut(*effect_index) {
                             old_enabled = Some(effect.enabled);
                             effect.enabled = *enabled;
                         }
@@ -154,9 +154,11 @@ impl KlippApp {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         let from = *from_index;
                         let to = *to_index;
-                        if from < clip.effects.len() && to < clip.effects.len() {
-                            let effect = clip.effects.remove(from);
-                            clip.effects.insert(to, effect);
+                        if from < clip.ofx_effects().len() && to < clip.ofx_effects().len() {
+                            clip.edit_ofx_effects(|effects| {
+                                let effect = effects.remove(from);
+                                effects.insert(to, effect);
+                            });
                         }
                         break;
                     }
@@ -167,7 +169,7 @@ impl KlippApp {
             AppCommand::SetEffectParam { clip_id, effect_index, ref param_name, ref value } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(effect) = clip.effects.get_mut(*effect_index) {
+                        if let Some(effect) = clip.ofx_effect_mut(*effect_index) {
                             effect.param_values.insert(param_name.clone(), value.clone());
                         }
                         break;

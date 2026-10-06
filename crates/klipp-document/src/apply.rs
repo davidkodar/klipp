@@ -672,7 +672,7 @@ impl DocumentView<'_> {
             EditCommand::SetOFXEffectEnabled { clip_id, effect_index, old_enabled, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(effect) = clip.effects.get_mut(*effect_index) {
+                        if let Some(effect) = clip.ofx_effect_mut(*effect_index) {
                             effect.enabled = *old_enabled;
                         }
                         break;
@@ -1353,7 +1353,7 @@ impl DocumentView<'_> {
             EditCommand::SetOFXEffectEnabled { clip_id, effect_index, new_enabled, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(effect) = clip.effects.get_mut(*effect_index) {
+                        if let Some(effect) = clip.ofx_effect_mut(*effect_index) {
                             effect.enabled = *new_enabled;
                         }
                         break;

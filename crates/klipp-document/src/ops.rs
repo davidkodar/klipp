@@ -5002,18 +5002,19 @@ fn effect_on_many(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id:
             let old = t.settings();
             let mut new = old.clone();
             // One of a kind, as on a clip: a second vignette replaces the first.
-            let video = &mut new.effects.video;
-            new.effects.video_enabled.resize(video.len(), true);
-            match video.iter().position(|e| std::mem::discriminant(e) == std::mem::discriminant(&fx)) {
-                Some(k) => {
-                    video[k] = fx;
-                    new.effects.video_enabled[k] = true;
+            new.effects.edit_video_effects(|video, enabled| {
+                enabled.resize(video.len(), true);
+                match video.iter().position(|e| std::mem::discriminant(e) == std::mem::discriminant(&fx)) {
+                    Some(k) => {
+                        video[k] = fx;
+                        enabled[k] = true;
+                    }
+                    None => {
+                        video.push(fx);
+                        enabled.push(true);
+                    }
                 }
-                None => {
-                    video.push(fx);
-                    new.effects.video_enabled.push(true);
-                }
-            }
+            });
             let what = format!("{} {a:.2} on {}, after every clip's own", kind.to_lowercase(), target.name);
             return Ok((what, EditCommand::SetTrackSettings { changes: vec![(t.id, old, new)] }, Vec::new()));
         }
@@ -8888,12 +8889,12 @@ mod tests {
 
         let plan = resolve(&seq, &pool, &ops(r#"[{"op":"effect","on":{"track":0,"itself":true},"kind":"vignette","amount":0.5}]"#)).unwrap();
         let s = settings(&plan);
-        assert!(matches!(s.effects.video.as_slice(), [klipp_effects::BuiltinEffect::Vignette { .. }]), "{:?}", s.effects.video);
+        assert!(matches!(s.effects.video_effects(), [klipp_effects::BuiltinEffect::Vignette { .. }]), "{:?}", s.effects.video_effects());
         assert!(plan.steps[0].what.contains("track 0 \"V1\" itself"), "{}", plan.steps[0].what);
         // A second vignette replaces the first.
         let with = apply(&seq, &plan);
         let plan = resolve(&with, &pool, &ops(r#"[{"op":"effect","on":{"track":0,"itself":true},"kind":"vignette","amount":0.2}]"#)).unwrap();
-        assert_eq!(settings(&plan).effects.video.len(), 1);
+        assert_eq!(settings(&plan).effects.video_effects().len(), 1);
 
         let plan = resolve(&seq, &pool, &ops(r#"[{"op":"grade","on":{"track":0,"itself":true},"exposure":-0.5}]"#)).unwrap();
         let graded = settings(&plan).effects.track_grade().cloned().expect("a grade on the track");

@@ -629,7 +629,7 @@ mod tests {
             source_in,
             source_out,
             node_graph: Default::default(),
-            effects: Vec::new(),
+            effects: Default::default(),
             effect_list: Default::default(),
             linked_clip_id: None,
             linked_title_asset_id: None,

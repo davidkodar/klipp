@@ -835,7 +835,7 @@ fn a_tracks_effects_and_grade_export_as_the_viewer_shows_them() {
     }
     let mut t = timeline();
     let v1 = t.seq.tracks.iter_mut().find(|t| t.name == "V1").unwrap();
-    v1.effects.video = vec![BuiltinEffect::Vignette { amount: -0.8, size: 0.5, softness: 0.4, roundness: 0.7 }];
+    v1.effects.set_video_effect_list(vec![BuiltinEffect::Vignette { amount: -0.8, size: 0.5, softness: 0.4, roundness: 0.7 }], vec![]);
     v1.effects.grade_slot().set(Some(exposure(-0.8)));
     let mut shown = t.clone();
     shown.seq = klipp_timeline::flatten::flatten_sequence(&t.seq, std::slice::from_ref(&t.seq));

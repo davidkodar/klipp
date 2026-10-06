@@ -673,7 +673,7 @@ fn grade_cases() -> Vec<Case> {
         let mut top = media(0.0, 4.0);
         top.set_effect_list(own, top.builtin_effects_enabled().to_vec());
         let mut t = track("V2", TrackKind::Video, vec![top.clone()]);
-        t.effects.video = vec![BuiltinEffect::Vignette { amount: 0.6, size: 0.5, softness: 0.5, roundness: 0.5 }, BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.03, blur: 2.0, color: [0, 0, 0], opacity: 0.7 }];
+        t.effects.set_video_effect_list(vec![BuiltinEffect::Vignette { amount: 0.6, size: 0.5, softness: 0.5, roundness: 0.5 }, BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.03, blur: 2.0, color: [0, 0, 0], opacity: 0.7 }], vec![]);
         t.effects.grade_slot().set(Some(exposure(-0.5)));
         let f = Frames::default().with(&base, 90).with(&top, 0);
         out.push(Case::new(format!("grade/track effects and grade, {name}"), sequence(vec![t, track("V1", TrackKind::Video, vec![base])]), f));
@@ -688,7 +688,7 @@ fn grade_cases() -> Vec<Case> {
             top.opacity_keyframes = vec![key(0.0, 0.3), key(2.0, 0.9)];
         }
         let mut t = track("V2", TrackKind::Video, vec![top.clone()]);
-        t.effects.video = vec![BuiltinEffect::Opacity { value: 0.5 }];
+        t.effects.set_video_effect_list(vec![BuiltinEffect::Opacity { value: 0.5 }], vec![]);
         let f = Frames::default().with(&base, 90).with(&top, 0);
         out.push(Case::new(format!("grade/track opacity over a clip's, {name}"), sequence(vec![t, track("V1", TrackKind::Video, vec![base])]), f));
     }
@@ -767,7 +767,7 @@ fn compound_cases() -> Vec<Case> {
     for graded in [false, true] {
         let inner_clip = media(0.0, 4.0);
         let mut inner_track = track("Inner", TrackKind::Video, vec![inner_clip.clone()]);
-        inner_track.effects.video = vec![BuiltinEffect::Invert { mix: 0.6 }];
+        inner_track.effects.set_video_effect_list(vec![BuiltinEffect::Invert { mix: 0.6 }], vec![]);
         let mut inner = sequence(vec![inner_track]);
         if graded {
             inner.timeline_grade_slot().set(Some(exposure(0.6)));
@@ -925,7 +925,7 @@ fn multicam_cases() -> Vec<Case> {
     angle.multicam_angle = 1;
     angle.set_effect_list(vec![BuiltinEffect::GaussianBlur { radius: 2.0 }], angle.builtin_effects_enabled().to_vec());
     let mut angle_track = track("Angle 1", TrackKind::Video, vec![angle.clone()]);
-    angle_track.effects.video = vec![BuiltinEffect::Vignette { amount: 0.6, size: 0.5, softness: 0.5, roundness: 0.5 }];
+    angle_track.effects.set_video_effect_list(vec![BuiltinEffect::Vignette { amount: 0.6, size: 0.5, softness: 0.5, roundness: 0.5 }], vec![]);
     let f = Frames::default().with(&primary, 0).with(&angle, 120);
     vec![Case::new("multicam/angle track with effects", sequence(vec![angle_track, track("V1", TrackKind::Video, vec![primary])]), f)]
 }

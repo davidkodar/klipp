@@ -677,8 +677,10 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                 // Read once already, before anything was loaded: an effect
                 // this Klipp does not know refused the load there.
                 track.effects = klipp_timeline::TrackEffects {
-                    video: fx.video.as_ref().and_then(|v| read_builtin_effects(v, &format!("track \"{}\"", t.name)).ok()).unwrap_or_default(),
-                    video_enabled: fx.video_enabled.clone(),
+                    video_effect_list: klipp_timeline::TrackEffectList::new(
+                        fx.video.as_ref().and_then(|v| read_builtin_effects(v, &format!("track \"{}\"", t.name)).ok()).unwrap_or_default(),
+                        fx.video_enabled.clone(),
+                    ),
                     grade: fx.grade.clone().map(|mut g| {
                         migrate_graph(&mut g);
                         g.into()
@@ -738,7 +740,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                             }).collect::<HashMap<_, _>>(),
                         ..Default::default()
                         }
-                    }).collect(),
+                    }).collect::<Vec<_>>().into(),
                     linked_clip_id: c.linked_clip_id.as_ref().and_then(|s| {
                         parse_uuid(s).ok().map(ClipId)
                     }),

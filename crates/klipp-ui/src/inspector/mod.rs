@@ -350,7 +350,7 @@ impl NewInspectorPanel {
                             source_in: klipp_core::Timecode { value: 0, rate: bm.duration.rate },
                             source_out: bm.duration,
                             node_graph: Default::default(),
-                            effects: Vec::new(),
+                            effects: Default::default(),
                             effect_list: Default::default(),
                             linked_clip_id: None,
                             linked_title_asset_id: None,
