@@ -144,8 +144,10 @@ fn head_nodes_run_on_media_clips_only() {
     let c = clip(json!({"builtin_effects": [tnr(0.0), tnr(0.4), tnr(0.8), ramp]}));
     let (p, notes) = lift(c.clone(), ClipKind::Media);
     let head: Vec<(&str, bool)> = p.graph.nodes[1..5].iter().map(|n| (n.type_id.as_str(), n.enabled)).collect();
-    // The first enabled denoise with strength runs; the others are kept off.
-    assert_eq!(head, [(lt::TEMPORAL_DENOISE, false), (lt::TEMPORAL_DENOISE, true), (lt::TEMPORAL_DENOISE, false), (lt::FRAME_BLEND, true)]);
+    // The first enabled denoise is the clip's, at strength 0 too (today
+    // it reads that one and stops: this clip is never denoised); the
+    // others are kept off.
+    assert_eq!(head, [(lt::TEMPORAL_DENOISE, true), (lt::TEMPORAL_DENOISE, false), (lt::TEMPORAL_DENOISE, false), (lt::FRAME_BLEND, true)]);
     assert_eq!(notes.iter().filter(|n| matches!(n, LiftNote::NeverRan { .. })).count(), 2);
     assert!(!types_of(&p.graph).contains(&types::LEGACY_SPEED_RAMP), "a speed ramp is no node");
 
@@ -199,10 +201,14 @@ fn opacity_follows_todays_three_rules() {
         })),
         ClipKind::Media,
     );
-    assert_eq!(p.opacity, 1.0, "clamped as the renderer does");
+    assert_eq!(p.opacity, 1.7, "kept: the renderer clamps after the modifiers, not before");
     let mods = p.opacity_anim.unwrap().modifiers.unwrap();
     assert_eq!(mods["modifiers"].as_array().unwrap().len(), 2, "the clip's wiggle, then the effect's");
     assert!(notes.iter().any(|n| matches!(n, LiftNote::OrphanKeys { keys, .. } if keys.iter().any(|k| k.ends_with("#time")))));
+
+    // Still, it is clamped as the renderer clamps it.
+    let (p, _) = lift(clip(json!({"builtin_effects": [op(1.7)]})), ClipKind::Media);
+    assert_eq!((p.opacity, p.opacity_anim), (1.0, None));
 
     // Adjustment layers: the first effect's value, enabled or not.
     let mut first_off = clip(json!({"builtin_effects": [op(0.4), op(0.8)], "builtin_effects_enabled": [false, true]}));
@@ -345,4 +351,27 @@ fn odd_edges_read_as_today() {
     assert_eq!(find(b, OUT).type_id.as_str(), lt::GROUP_OUTPUT);
     assert!(has_edge(b, id(SRC), id(SAT), "in"));
     assert!(has_edge(b, id(SAT), id(OUT), "in"));
+}
+
+#[test]
+fn a_key_under_a_name_another_drives_is_kept_as_an_orphan() {
+    // ChromaKey's `soft_edge` is animated by keys saved as `spill`; one
+    // saved as `soft_edge` drove nothing, and must not become its
+    // animation.
+    let key = |v: f64| json!([{"time_secs": 0.0, "value": v}]);
+    let ck = json!({"type": "chroma_key", "key_color": [0, 255, 0], "tolerance": 0.2, "soft_edge": 0.1, "spill_method": "channel_clamp", "spill_strength": 0.6});
+    let (p, notes) = lift(
+        clip(json!({
+            "builtin_effects": [ck],
+            "effect_keyframes": {"0:soft_edge": key(0.8), "0:spill": key(0.3)},
+            "param_modifiers": {"effect:0:soft_edge": {"modifiers": []}}
+        })),
+        ClipKind::Media,
+    );
+    let n = p.graph.nodes.iter().find(|n| n.type_id.as_str() == types::LEGACY_EFFECT).unwrap();
+    let a = &n.anim[&klipp_graph_format::ParamKey::new("soft_edge")];
+    assert_eq!((a.keys.as_slice(), &a.modifiers), (key(0.3).as_array().unwrap().as_slice(), &None), "the spill keys, alone");
+    let orphans: Vec<&String> = n.legacy_flags.as_ref().unwrap().orphan_keys.keys().collect();
+    assert_eq!(orphans, ["0:soft_edge", "effect:0:soft_edge"]);
+    assert!(notes.iter().any(|x| matches!(x, LiftNote::OrphanKeys { node: Some(id), .. } if *id == n.id)));
 }

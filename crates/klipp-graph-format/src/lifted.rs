@@ -53,7 +53,9 @@ pub struct ClipPicture {
     pub placement: PlacementProps,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub placement_anim: BTreeMap<ParamKey, Animation>,
-    /// The static opacity, clamped to 0..1 as the renderer does.
+    /// The static opacity: clamped to 0..1 as the renderer does when
+    /// nothing animates it, and as stored under an animation, which the
+    /// renderer clamps only after its keys and modifiers.
     pub opacity: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity_anim: Option<Animation>,

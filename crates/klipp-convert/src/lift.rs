@@ -328,17 +328,25 @@ pub fn lift_grade_only(structural: &Graph, migrate: bool) -> Result<Graph, Strin
 }
 
 /// An effect's keyframes and modifiers by parameter name, its stored
-/// `"i:k"` and `effect:i:k` keys read once.
-fn effect_anim(n: &Node) -> BTreeMap<ParamKey, Animation> {
-    let Some(legacy) = &n.legacy else { return BTreeMap::new() };
+/// `"i:k"` and `effect:i:k` keys read once, and the stored keys that drive
+/// nothing: one under the name of a field another name animates (a
+/// ChromaKey key saved as `soft_edge`, which only `spill` drives).
+fn effect_anim(n: &Node) -> (BTreeMap<ParamKey, Animation>, BTreeMap<String, Value>) {
+    let mut orphans = BTreeMap::new();
+    let Some(legacy) = &n.legacy else { return (BTreeMap::new(), orphans) };
     let tag = legacy.payload.get("type").and_then(Value::as_str).unwrap_or("");
     let alias = |k: &str| {
         KEYFRAME_ALIASES.iter().find(|(t, from, _)| *t == tag && *from == k).map(|(_, _, to)| (*to).to_owned()).unwrap_or_else(|| k.to_owned())
     };
+    let aliased_away = |k: &str| KEYFRAME_ALIASES.iter().any(|(t, from, to)| *t == tag && *to == k && *from != k);
     let mut anim: BTreeMap<ParamKey, Animation> = BTreeMap::new();
     if let Some(keys) = legacy.keyframes.as_ref().and_then(Value::as_object) {
         for (k, v) in keys {
             if let Some((_, param)) = k.split_once(':') {
+                if aliased_away(param) {
+                    orphans.insert(k.clone(), v.clone());
+                    continue;
+                }
                 let a = anim.entry(ParamKey::new(alias(param))).or_insert(Animation { keys: Vec::new(), modifiers: None });
                 a.keys = v.as_array().cloned().unwrap_or_default();
             }
@@ -346,11 +354,33 @@ fn effect_anim(n: &Node) -> BTreeMap<ParamKey, Animation> {
     }
     for (k, stack) in &legacy.modifiers {
         if let Some(param) = k.splitn(3, ':').nth(2) {
+            if aliased_away(param) {
+                orphans.insert(k.clone(), stack.clone());
+                continue;
+            }
             let a = anim.entry(ParamKey::new(alias(param))).or_insert(Animation { keys: Vec::new(), modifiers: None });
             a.modifiers = Some(stack.clone());
         }
     }
-    anim
+    (anim, orphans)
+}
+
+/// Keys an effect holds that drive nothing, kept on its node and noted.
+fn keep_orphans(n: &mut Node, orphans: BTreeMap<String, Value>, notes: &mut Vec<LiftNote>) {
+    if !orphans.is_empty() {
+        notes.push(LiftNote::OrphanKeys { node: Some(n.id), keys: orphans.keys().cloned().collect() });
+        flags(n).orphan_keys.extend(orphans);
+    }
+}
+
+/// The opacity with its animation. A still opacity is clamped to 0..1 as
+/// the renderer clamps it; an animated one keeps its value, since the
+/// renderer clamps only after the keys and modifiers have run.
+fn settled(v: f32, anim: Option<Animation>) -> (f32, Option<Animation>) {
+    match anim {
+        None => (v.clamp(0.0, 1.0), None),
+        a => (v, a),
+    }
 }
 
 fn stack_modifiers(stack: Option<&Value>) -> Vec<Value> {
@@ -409,7 +439,7 @@ fn opacity(record: &ClipRecordV2, effects: &[&Node], ctx: &LiftCtx, notes: &mut 
         for n in &opacities {
             orphan(n, clip_orphans, notes);
         }
-        return (base.clamp(0.0, 1.0), animation(clip_keys, clip_mods));
+        return settled(base, animation(clip_keys, clip_mods));
     }
     let enabled: Vec<&&&Node> = opacities.iter().filter(|n| n.enabled).collect();
     for n in opacities.iter().filter(|n| !n.enabled || enabled.last().is_some_and(|l| l.id != n.id)) {
@@ -423,7 +453,7 @@ fn opacity(record: &ClipRecordV2, effects: &[&Node], ctx: &LiftCtx, notes: &mut 
             let v = value(last);
             if keys.as_ref().and_then(Value::as_array).is_some_and(|k| !k.is_empty()) {
                 // Its own keys, with its own modifiers.
-                (v.clamp(0.0, 1.0), animation(keys.as_ref(), stack_modifiers(mods.as_ref())))
+                settled(v, animation(keys.as_ref(), stack_modifiers(mods.as_ref())))
             } else {
                 // The clip's keys and modifiers, then its value modifiers on
                 // top; its time modifiers acted on no keys and never ran.
@@ -436,7 +466,7 @@ fn opacity(record: &ClipRecordV2, effects: &[&Node], ctx: &LiftCtx, notes: &mut 
                 }
                 let mut all = clip_mods;
                 all.extend(value_mods);
-                (v.clamp(0.0, 1.0), animation(clip_keys, all))
+                settled(v, animation(clip_keys, all))
             }
         }
     }
@@ -513,13 +543,18 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
     let mut head = Vec::new();
     let mut tnr_taken = false;
     for n in effects.iter().filter(|n| n.type_id.as_str() == types::LEGACY_TEMPORAL_DENOISE) {
-        let strong = num(payload(n), "strength").is_some_and(|s| s > 0.0);
-        let runs = media && n.enabled && strong && !tnr_taken;
+        // The first enabled one is the clip's, whatever its strength: it
+        // runs wherever its strength, keyframed or not, is above 0, and
+        // none after it is read (`render.rs` `temporal_denoise_of`).
+        let runs = media && n.enabled && !tnr_taken;
         tnr_taken |= runs;
         let mut h = node(n.id, lt::TEMPORAL_DENOISE, runs, n.legacy.clone());
         h.legacy_flags = n.legacy_flags.clone();
+        let (anim, orphans) = effect_anim(n);
+        h.anim = anim;
+        keep_orphans(&mut h, orphans, &mut notes);
         if !runs {
-            let why = if media { "a temporal denoise after the first that ran, or with no strength" } else { "temporal denoise runs on media clips only" };
+            let why = if media { "a temporal denoise after the first enabled one" } else { "temporal denoise runs on media clips only" };
             notes.push(LiftNote::NeverRan { node: n.id, why: why.into() });
         }
         head.push(h);
@@ -579,7 +614,9 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
             }
             _ => {
                 let mut e = (*n).clone();
-                e.anim = effect_anim(n);
+                let (anim, orphans) = effect_anim(n);
+                e.anim = anim;
+                keep_orphans(&mut e, orphans, &mut notes);
                 chain.push(e);
             }
         }
