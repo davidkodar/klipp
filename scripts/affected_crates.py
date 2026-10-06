@@ -22,8 +22,8 @@ what it touches instead of everything; each was a 25-minute run.
   every workspace crate that reaches it through the lockfile's own graph
   (which holds dev-dependencies too), then their dependents as for any
   change. An entry that reaches no workspace crate runs everything.
-- **The root `Cargo.toml`:** a change to `[workspace] members` is that
-  crate's own files. One more `[workspace.dependencies]` entry that is a
+- **The root `Cargo.toml`:** a member added is that crate (a member
+  removed runs everything). One more `[workspace.dependencies]` entry that is a
   path to a workspace member is the new crate, whose users' manifests
   change too. Any other change runs everything: a changed or removed
   dependency entry, `[patch]`, a profile, the lints, anything else.
@@ -34,7 +34,10 @@ what it touches instead of everything; each was a 25-minute run.
   alone, unless its own code includes from that folder, as a fixture
   `include_str!` does. Any other crate whose files name the folder
   (`klipp-project/tests/`) is held the same way: its tests if they name
-  it, the crate and what's built on it if its code does.
+  it, the crate and what's built on it if its code does. Only `//` and
+  `/*` lines are comments; `#[path = ...]` is code. A reader outside
+  every crate runs everything, unless it is documentation or the gate's
+  own `scripts/`, which no crate's tests run.
 - A path crate outside the workspace (`vendor/`) in the lockfile is
   walked through like any package; a change to `vendor/` itself still
   runs everything.
@@ -87,7 +90,10 @@ def _lock_entries(text):
         return key(cands[0])
 
     rest = {k: v for k, v in lock.items() if k != "package"}
-    return rest, {key(p): sorted(resolve(d) for d in p.get("dependencies", [])) for p in pkgs}
+    # The whole entry counts (checksum and any field to come), with its
+    # dependencies resolved; the walk uses only the dependencies.
+    entry = lambda p: {**{k: v for k, v in p.items() if k != "dependencies"}, "dependencies": sorted(resolve(d) for d in p.get("dependencies", []))}
+    return rest, {key(p): entry(p) for p in pkgs}
 
 
 def lock_hits(old, new, names, tests_only=frozenset()):
@@ -100,8 +106,8 @@ def lock_hits(old, new, names, tests_only=frozenset()):
     changed = {k for k in old_pkgs.keys() | new_pkgs.keys() if old_pkgs.get(k) != new_pkgs.get(k)}
     users = {}
     for pkgs in (old_pkgs, new_pkgs):
-        for k, deps in pkgs.items():
-            for d in deps:
+        for k, e in pkgs.items():
+            for d in e["dependencies"]:
                 users.setdefault(d, set()).add(k)
     hits = set()
     for start in changed:
@@ -122,12 +128,17 @@ def lock_hits(old, new, names, tests_only=frozenset()):
     return hits
 
 
-def root_manifest_ok(old, new, member_dirs):
-    """Whether a root `Cargo.toml` change is only members and new path
-    entries for workspace crates; raises when it isn't."""
+def root_manifest_hits(old, new, member_dirs):
+    """The crates a root `Cargo.toml` change touches: each member added.
+    Raises for anything else but new path entries for members."""
     old, new = tomllib.loads(old), tomllib.loads(new)
-    pop = lambda t: (t.get("workspace", {}).pop("members", None), t.get("workspace", {}).pop("dependencies", {}))
-    (_, old_deps), (_, new_deps) = pop(old), pop(new)
+    pop = lambda t: (t.get("workspace", {}).pop("members", None) or [], t.get("workspace", {}).pop("dependencies", {}))
+    (old_members, old_deps), (new_members, new_deps) = pop(old), pop(new)
+    if set(old_members) - set(new_members):
+        raise Unattributable("the root Cargo.toml removed a workspace member")
+    added = set(new_members) - set(old_members)
+    if any(m not in member_dirs for m in added):
+        raise Unattributable("the root Cargo.toml added a member cargo doesn't list")
     if old != new:
         raise Unattributable("the root Cargo.toml changed outside [workspace] members and dependencies")
     for name in old_deps.keys() | new_deps.keys():
@@ -136,7 +147,7 @@ def root_manifest_ok(old, new, member_dirs):
         entry = new_deps.get(name)
         if name in old_deps or not isinstance(entry, dict) or entry.get("path") not in member_dirs:
             raise Unattributable(f"the root Cargo.toml's [workspace.dependencies] {name} changed")
-    return True
+    return {member_dirs[m] for m in added}
 
 
 def dev_dependencies_only(old, new):
@@ -167,13 +178,19 @@ def _test_folder_readers(crate_dir, folder, member_dirs, mentions):
     held = {owner: False}
     crate_name = crate_dir.rsplit("/", 1)[-1]
     # A comment reads nothing: only lines of code naming the folder count.
-    code = lambda hits: {f for f, line in hits if not line.lstrip().startswith(("//", "#", "*", "/*"))}
+    code = lambda hits: {f for f, line in hits if not line.lstrip().startswith(("//", "/*"))}
     found = [(f, False) for f in code(mentions(f"{folder}/")) if f.startswith(crate_dir + "/")]
     found += [(f, True) for f in code(mentions(f"{crate_name}/{folder}/"))]
     for f, other in sorted(found):
         reader = next((n for d, n in sorted(member_dirs.items(), key=lambda kv: -len(kv[0])) if f.startswith(d + "/")), None)
         if reader is None:
-            return None
+            # Documentation reads nothing, and the gate's own scripts never
+            # run in a crate's tests (and a change to them runs everything).
+            # Anything else outside every crate is a reader the gate can't
+            # place.
+            if is_documentation(f) or f.startswith("scripts/"):
+                continue
+            raise Unattributable(f"{f}, outside every crate, reads {crate_dir}/{folder}/")
         rel = f[len(next(d for d, n in member_dirs.items() if n == reader)) + 1:]
         if reader == owner and not other:
             # The crate's own files naming the folder: only its code counts.
@@ -181,6 +198,12 @@ def _test_folder_readers(crate_dir, folder, member_dirs, mentions):
         else:
             held[reader] = held.get(reader, False) or is_code(rel)
     return held
+
+
+def is_documentation(path):
+    """Read by people, not by a build or a test."""
+    top = PurePosixPath(path)
+    return path.startswith(NONE_DIRS) or path.endswith(NONE_SUFFIXES) or (len(top.parts) == 1 and path in NONE_FILES)
 
 
 def is_manifest(path):
@@ -232,7 +255,7 @@ def _decide(changed, metadata, manifests, mentions):
             if path == "Cargo.lock":
                 hit |= lock_hits(old, new, names, tests_only)
             else:
-                root_manifest_ok(old, new, set(member_dirs))
+                hit |= root_manifest_hits(old, new, member_dirs)
             continue
         if path in FULL or path.startswith(FULL_DIRS):
             return f"full {path} is shared by the whole workspace"

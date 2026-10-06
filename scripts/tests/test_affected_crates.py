@@ -202,6 +202,28 @@ class ManifestScopeTests(unittest.TestCase):
         for why, root in cases.items():
             self.assertTrue(with_manifests(None, root).startswith("full "), why)
 
+    def test_a_member_added_in_the_manifest_alone_tests_that_crate(self):
+        # Review of #1125: only Cargo.toml in the change list must not read
+        # as documentation.
+        root = ROOT.replace('"crates/klipp-ui"]', '"crates/klipp-ui", "crates/klipp-new"]')
+        meta = {"workspace_root": "/w", "packages": METADATA["packages"] + [
+            {"name": "klipp-new", "manifest_path": "/w/crates/klipp-new/Cargo.toml", "dependencies": []}]}
+        self.assertEqual(decide(["Cargo.toml"], meta, {"Cargo.toml": (ROOT, root)}), "packages klipp-new")
+
+    def test_a_member_cargo_doesnt_list_runs_everything(self):
+        root = ROOT.replace('"crates/klipp-ui"]', '"crates/klipp-ui", "crates/klipp-ghost"]')
+        self.assertTrue(with_manifests(None, root).startswith("full "))
+
+    def test_a_member_removed_runs_everything(self):
+        root = ROOT.replace(', "crates/klipp-ui"]', "]")
+        self.assertTrue(with_manifests(None, root).startswith("full "))
+
+    def test_a_checksum_change_reaches_the_crates_built_on_it(self):
+        # Review of #1125: fields beside the dependencies were ignored.
+        lock = LOCK.replace('name = "serde_derive"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n',
+                            'name = "serde_derive"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "abc"\n')
+        self.assertEqual(with_manifests(lock), "packages klipp-core klipp-document klipp-timeline klipp-ui")
+
     def test_a_reordered_member_list_changes_nothing(self):
         root = ROOT.replace('"crates/klipp-core", "crates/klipp-timeline"', '"crates/klipp-timeline", "crates/klipp-core"')
         self.assertTrue(with_manifests(None, root).startswith("none "))
@@ -244,10 +266,23 @@ class TestFolderScopeTests(unittest.TestCase):
         got = decide(["crates/klipp-timeline/tests/a.rs"], METADATA, {}, mentions_in(files))
         self.assertEqual(got, "packages klipp-timeline")
 
-    def test_a_reader_outside_every_crate_falls_back(self):
-        files = {"tools/check.py": "klipp-timeline/tests/"}
+    def test_a_reader_outside_every_crate_runs_everything(self):
+        files = {"tools/check.py": 'open("crates/klipp-timeline/tests/a.rs")'}
         got = decide(["crates/klipp-timeline/tests/a.rs"], METADATA, {}, mentions_in(files))
-        self.assertEqual(got, "packages klipp-core klipp-document klipp-timeline klipp-ui")
+        self.assertTrue(got.startswith("full "), got)
+
+    def test_documentation_and_the_gates_scripts_read_nothing(self):
+        files = {"docs/src/effects.md": "see `crates/klipp-timeline/tests/a.rs`",
+                 "crates/klipp-timeline/README.md": "klipp-timeline/tests/a.rs",
+                 "scripts/affected_crates.py": '"""like `klipp-timeline/tests/`"""'}
+        got = decide(["crates/klipp-timeline/tests/a.rs"], METADATA, {}, mentions_in(files))
+        self.assertEqual(got, "packages klipp-timeline")
+
+    def test_a_path_attribute_is_code_not_a_comment(self):
+        # Review of #1125: `#[path]` starts with `#` and was read as a comment.
+        files = {"crates/klipp-media/tests/shared.rs": '#[path = "../../klipp-timeline/tests/a.rs"]\nmod a;'}
+        got = decide(["crates/klipp-timeline/tests/a.rs"], METADATA, {}, mentions_in(files))
+        self.assertEqual(got, "packages klipp-media klipp-timeline")
 
     def test_without_a_lookup_a_test_file_counts_as_its_crate(self):
         self.assertEqual(decide(["crates/klipp-timeline/tests/a.rs"], METADATA), "packages klipp-core klipp-document klipp-timeline klipp-ui")
