@@ -12,6 +12,7 @@
 //! evaluated the graph at source time — as the viewer's once did — would
 //! read the ramp's end, a stop brighter.
 
+use klipp_timeline::GradeAccess;
 use std::sync::Arc;
 
 use klipp_color::camera_log::primaries_to_working_matrix;
@@ -107,7 +108,7 @@ fn one_clip(node_graph: NodeGraph) -> (Sequence, Clip) {
     };
     clip.source_in = tc(10.0);
     clip.source_out = tc(16.0);
-    clip.node_graph = node_graph;
+    clip.set_grade(node_graph);
     let mut seq = Sequence::new_default();
     let mut track = Track::new("V1", TrackKind::Video);
     track.clips = vec![clip.clone()];
@@ -141,7 +142,7 @@ fn rendered(r: &mut Renderer, seq: &Sequence, t: f64, src: &mut Frame) -> Vec<u8
 fn fast(r: &mut Renderer, clip: &Clip, t: f64, seed: GpuSeed<'_>) -> Vec<u8> {
     let (clip_time, frame_number) = klipp_compose::render::grade_time(clip, tc(t), 24.0);
     let at = GradeAt {
-        graph: &clip.node_graph,
+        graph: clip.grade(),
         clip_time,
         frame_number,
         track_points: &clip.track_points,
@@ -160,7 +161,7 @@ fn fast(r: &mut Renderer, clip: &Clip, t: f64, seed: GpuSeed<'_>) -> Vec<u8> {
 fn fast_monitoring(r: &mut Renderer, clip: &Clip, t: f64, seed: GpuSeed<'_>, peak: f32) -> Vec<u8> {
     let (clip_time, frame_number) = klipp_compose::render::grade_time(clip, tc(t), 24.0);
     let at = GradeAt {
-        graph: &clip.node_graph,
+        graph: clip.grade(),
         clip_time,
         frame_number,
         track_points: &clip.track_points,
@@ -289,7 +290,7 @@ fn the_graded_fast_path_is_the_renderers_frame() {
     // a stop brighter.
     let (_, frame_number) = klipp_compose::render::grade_time(&clip, tc(4.0), 24.0);
     let at_source_time = GradeAt {
-        graph: &clip.node_graph,
+        graph: clip.grade(),
         clip_time: 12.0,
         frame_number,
         track_points: &[],
@@ -336,7 +337,7 @@ fn the_graded_fast_path_is_the_renderers_frame_in_a_bt2020_project() {
 
     let (clip_time, frame_number) = klipp_compose::render::grade_time(&clip, tc(4.0), 24.0);
     let at = GradeAt {
-        graph: &clip.node_graph,
+        graph: clip.grade(),
         clip_time,
         frame_number,
         track_points: &clip.track_points,
@@ -429,7 +430,7 @@ fn the_graded_fast_path_is_the_renderers_frame_in_an_aces_project() {
 
     let (clip_time, frame_number) = klipp_compose::render::grade_time(&clip, tc(4.0), 24.0);
     let at = GradeAt {
-        graph: &clip.node_graph,
+        graph: clip.grade(),
         clip_time,
         frame_number,
         track_points: &clip.track_points,

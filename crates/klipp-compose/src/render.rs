@@ -58,7 +58,7 @@ use std::time::Instant;
 use klipp_core::{BlendMode, ClipId, Timecode, WorkingColorspace};
 use klipp_effects::BuiltinEffect;
 use klipp_nodes::NodeId;
-use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
+use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, Track, TrackKind};
 
 use crate::eval::{self, ResolvedTransform};
 
@@ -366,7 +366,7 @@ pub fn frame_snapshot(seq: &Sequence, time: Timecode) -> Sequence {
         id: seq.id,
         name: seq.name.clone(),
         camera: seq.camera.clone(),
-        timeline_graph: seq.timeline_graph.clone(),
+        timeline_graph: seq.timeline_grade().cloned(),
         grade_groups: seq.grade_groups.clone(),
         drop_frame: seq.drop_frame,
         fps: seq.fps,
@@ -2404,7 +2404,7 @@ impl Renderer {
             };
         }
         let t = Instant::now();
-        self.executor.prepare_clip(&clip.node_graph);
+        self.executor.prepare_clip(clip.grade());
         self.executor.set_grade_encoding(self.grade_encoding);
         self.executor.set_working_colorspace(self.working);
         self.executor.set_render_scale(self.px_scale);
@@ -2477,12 +2477,12 @@ impl Renderer {
         if !inspecting {
             return self
                 .executor
-                .execute_linear(source, &clip.node_graph, width, height, clip_time, frame, None, None)
+                .execute_linear(source, clip.grade(), width, height, clip_time, frame, None, None)
                 .map(|(out, _)| out);
         }
         let thumbs = self.inspect.thumbs.take();
         let r = self.executor.execute_linear_with_thumbs(
-            source, &clip.node_graph, width, height, clip_time, frame, self.inspect.scope_tap, matte_view, thumbs.as_ref(),
+            source, clip.grade(), width, height, clip_time, frame, self.inspect.scope_tap, matte_view, thumbs.as_ref(),
         );
         self.inspect.thumbs = thumbs;
         r.map(|(out, tapped, thumbs)| {

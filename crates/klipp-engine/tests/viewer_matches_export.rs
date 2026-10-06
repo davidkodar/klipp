@@ -37,6 +37,7 @@
 //! difference there is the dissolve or the grade; the centre sees d over c
 //! over V1, so a difference only there is compositing.
 
+use klipp_timeline::GradeAccess;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -179,7 +180,7 @@ fn timeline() -> Timeline {
         (d, rgb_source("d.mkv", "210", "210", "210")),
     ]);
     let mut clip_a = media_clip(a, 0, 100, 0);
-    clip_a.node_graph = exposure(1.0);
+    clip_a.set_grade(exposure(1.0));
     let clip_b = media_clip(b, 100, LEN, 25);
     let mut clip_c = scaled(media_clip(c, 25, 175, 10), 0.6, 0.0, 0.0);
     clip_c.set_effect_list(clip_c.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::Opacity { value: 0.5 })).collect(), clip_c.builtin_effects_enabled().to_vec());
@@ -686,7 +687,7 @@ fn secondary_timeline() -> Timeline {
         rgb_source("grad.mkv", "170-40*X/W", "130+20*X/W", "95+110*X/W"),
     )]);
     let mut clip = media_clip(g, 0, 100, 0);
-    clip.node_graph = secondary_graph();
+    clip.set_grade(secondary_graph());
     let mut seq = Sequence::new_default();
     seq.fps = Fps::new(FPS as u32, 1);
     seq.resolution = Resolution { width: W, height: H };
@@ -730,11 +731,13 @@ fn the_secondary_changes_both_the_viewer_and_the_export() {
     // matte and passes the graded branch through, so every pixel gets the
     // secondary instead of the keyed ones.
     for clip in &mut without.seq.tracks[0].clips {
-        for node in &mut clip.node_graph.nodes {
-            if node.kind == klipp_nodes::NodeKind::Qualifier {
-                node.enabled = false;
+        clip.edit_grade(|g| {
+            for node in &mut g.nodes {
+                if node.kind == klipp_nodes::NodeKind::Qualifier {
+                    node.enabled = false;
+                }
             }
-        }
+        });
     }
     let b = exported(&without);
     let (fa, fb) = (exported_frame(a, 40), exported_frame(&b, 40));
@@ -761,7 +764,7 @@ fn a_timeline_grade_exports_as_the_viewer_shows_it() {
         return;
     }
     let mut t = timeline();
-    t.seq.timeline_graph = Some(exposure(-0.8));
+    t.seq.timeline_grade_slot().set(Some(exposure(-0.8)));
     let out = exported(&t);
     let viewer = Viewer::start(&t);
     let mut worst = 0;
@@ -792,7 +795,7 @@ fn a_grade_group_exports_as_the_viewer_shows_it() {
     }
     let mut t = timeline();
     let mut group = klipp_timeline::GradeGroup::new("Scene");
-    group.post = Some(exposure(-0.8));
+    group.stage_slot(klipp_timeline::GradeStage::Post).set(Some(exposure(-0.8)));
     let gid = group.id;
     t.seq.grade_groups = vec![group];
     // The two full-frame clips: a (with its own grade) and b.
@@ -833,7 +836,7 @@ fn a_tracks_effects_and_grade_export_as_the_viewer_shows_them() {
     let mut t = timeline();
     let v1 = t.seq.tracks.iter_mut().find(|t| t.name == "V1").unwrap();
     v1.effects.video = vec![BuiltinEffect::Vignette { amount: -0.8, size: 0.5, softness: 0.4, roundness: 0.7 }];
-    v1.effects.grade = Some(exposure(-0.8));
+    v1.effects.grade_slot().set(Some(exposure(-0.8)));
     let mut shown = t.clone();
     shown.seq = klipp_timeline::flatten::flatten_sequence(&t.seq, std::slice::from_ref(&t.seq));
     let out = exported(&shown);

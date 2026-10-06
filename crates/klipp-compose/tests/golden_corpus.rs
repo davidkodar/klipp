@@ -29,6 +29,7 @@
 //! with its issue, and fails the moment it goes away, so the list cannot
 //! outlive the bug.
 
+use klipp_timeline::GradeAccess;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -540,7 +541,7 @@ fn temporal_cases() -> Vec<Case> {
         ("HLG", HdrTransfer::Hlg),
     ] {
         let mut c = media(0.0, 4.0);
-        c.node_graph = exposure(0.3);
+        c.set_grade(exposure(0.3));
         c.set_effect_list(vec![BuiltinEffect::Glow { radius: 4.0, intensity: 0.5 }], c.builtin_effects_enabled().to_vec());
         let f = Frames::default().scene(&c, transfer);
         let mut case = Case::new(format!("scene/{name} graded with glow"), sequence(vec![track("V1", TrackKind::Video, vec![c])]), f);
@@ -553,7 +554,7 @@ fn temporal_cases() -> Vec<Case> {
 
     // An HDR delivery: an SDR clip and a PQ source, exported as PQ.
     let mut c = media(0.0, 4.0);
-    c.node_graph = exposure(0.5);
+    c.set_grade(exposure(0.5));
     let f = Frames::default().with(&c, 0);
     let mut case = Case::new("hdr/PQ delivery", sequence(vec![track("V1", TrackKind::Video, vec![c])]), f);
     case.opts = RenderOptions { hdr_peak_nits: Some(1000.0), ..Default::default() };
@@ -561,7 +562,7 @@ fn temporal_cases() -> Vec<Case> {
     case.declines = Some(vec![Path::Stack]);
     out.push(case);
     let mut c = media(0.0, 4.0);
-    c.node_graph = exposure(0.2);
+    c.set_grade(exposure(0.2));
     let f = Frames::default().scene(&c, HdrTransfer::Pq);
     let mut case = Case::new("hdr/PQ source in a PQ delivery", sequence(vec![track("V1", TrackKind::Video, vec![c])]), f);
     case.opts = RenderOptions { hdr_peak_nits: Some(1000.0), ..Default::default() };
@@ -660,7 +661,7 @@ fn grade_cases() -> Vec<Case> {
 
     // A clip's own grade, then an effect.
     let mut c = media(0.0, 4.0);
-    c.node_graph = exposure(0.7);
+    c.set_grade(exposure(0.7));
     c.set_effect_list(vec![BuiltinEffect::GaussianBlur { radius: 2.0 }], c.builtin_effects_enabled().to_vec());
     let f = Frames::default().with(&c, 0);
     out.push(Case::new("grade/clip grade then blur", sequence(vec![track("V1", TrackKind::Video, vec![c])]), f));
@@ -673,7 +674,7 @@ fn grade_cases() -> Vec<Case> {
         top.set_effect_list(own, top.builtin_effects_enabled().to_vec());
         let mut t = track("V2", TrackKind::Video, vec![top.clone()]);
         t.effects.video = vec![BuiltinEffect::Vignette { amount: 0.6, size: 0.5, softness: 0.5, roundness: 0.5 }, BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.03, blur: 2.0, color: [0, 0, 0], opacity: 0.7 }];
-        t.effects.grade = Some(exposure(-0.5));
+        t.effects.grade_slot().set(Some(exposure(-0.5)));
         let f = Frames::default().with(&base, 90).with(&top, 0);
         out.push(Case::new(format!("grade/track effects and grade, {name}"), sequence(vec![t, track("V1", TrackKind::Video, vec![base])]), f));
     }
@@ -695,15 +696,15 @@ fn grade_cases() -> Vec<Case> {
     // A grade group's pre and post stages around a member's grade, and a
     // timeline grade over the composite.
     let mut c = media(0.0, 4.0);
-    c.node_graph = exposure(0.4);
+    c.set_grade(exposure(0.4));
     let mut group = GradeGroup::new("Scene");
-    group.pre = Some(exposure(-0.3));
-    group.post = Some(graph_of(NodeKind::Saturation, NodeParams { saturation: Some(0.5), ..Default::default() }));
+    group.stage_slot(klipp_timeline::GradeStage::Pre).set(Some(exposure(-0.3)));
+    group.stage_slot(klipp_timeline::GradeStage::Post).set(Some(graph_of(NodeKind::Saturation, NodeParams { saturation: Some(0.5), ..Default::default() })));
     c.grade_group = Some(group.id);
     let f = Frames::default().with(&c, 0);
     let mut seq = sequence(vec![track("V1", TrackKind::Video, vec![c])]);
     seq.grade_groups = vec![group];
-    seq.timeline_graph = Some(exposure(0.2));
+    seq.timeline_grade_slot().set(Some(exposure(0.2)));
     out.push(Case::new("grade/group stages and timeline grade", seq, f));
 
     // A matte producer with nothing chosen selects the whole frame
@@ -717,7 +718,7 @@ fn grade_cases() -> Vec<Case> {
         ("external matte, a missing image", NodeKind::ExternalMatte, NodeParams { matte_image_path: Some(missing.clone()), ..Default::default() }),
     ] {
         let mut c = media(0.0, 4.0);
-        c.node_graph = gated_by(kind, params);
+        c.set_grade(gated_by(kind, params));
         let f = Frames::default().with(&c, 0);
         let mut case = Case::new(format!("grade/nothing chosen, {name}"), sequence(vec![track("V1", TrackKind::Video, vec![c])]), f);
         // A gated correction whose matte producer runs per node: the
@@ -731,7 +732,7 @@ fn grade_cases() -> Vec<Case> {
     // key's matte is opaque over a part-transparent title.
     let mut c = media(0.0, 4.0);
     let off = klipp_core::QualifierSettings { enabled: false, hue_center: 200.0, hue_width: 20.0, lum_low: 0.1, lum_high: 0.5, ..Default::default() };
-    c.node_graph = graph_of(NodeKind::Qualifier, NodeParams { qualifier: Some(off), ..Default::default() });
+    c.set_grade(graph_of(NodeKind::Qualifier, NodeParams { qualifier: Some(off), ..Default::default() }));
     let f = Frames::default().with(&c, 0);
     let mut case = Case::new("grade/qualifier switched off", sequence(vec![track("V1", TrackKind::Video, vec![c])]), f);
     // A lone qualifier runs per node, off the GPU chain, so the export's
@@ -741,14 +742,14 @@ fn grade_cases() -> Vec<Case> {
     let base = media(0.0, 4.0);
     let mut t = title("Key", 0.0, 4.0);
     let lk = klipp_core::LumaKeySettings { enabled: true, low: 0.2, high: 0.7, soft: 0.1, ..Default::default() };
-    t.node_graph = graph_of(NodeKind::LumaKey, NodeParams { luma_key: Some(lk), ..Default::default() });
+    t.set_grade(graph_of(NodeKind::LumaKey, NodeParams { luma_key: Some(lk), ..Default::default() }));
     let f = Frames::default().with(&base, 60);
     out.push(Case::new("grade/luma key on a title", sequence(vec![track("T1", TrackKind::Text, vec![t]), track("V1", TrackKind::Video, vec![base])]), f));
 
     // The same grade in each working space.
     for ws in [WorkingColorspace::AcesCG, WorkingColorspace::Bt2020Linear] {
         let mut c = media(0.0, 4.0);
-        c.node_graph = exposure(0.5);
+        c.set_grade(exposure(0.5));
         c.set_effect_list(vec![BuiltinEffect::Glow { radius: 4.0, intensity: 0.5 }, BuiltinEffect::ColorFade { color: [200, 40, 20, 255], duration_secs: 1.0, mode: ColorFadeMode::In, progress: 0.5 }], c.builtin_effects_enabled().to_vec());
         let f = Frames::default().with(&c, 0);
         let mut case = Case::new(format!("grade/working space {ws:?}"), sequence(vec![track("V1", TrackKind::Video, vec![c])]), f);
@@ -769,7 +770,7 @@ fn compound_cases() -> Vec<Case> {
         inner_track.effects.video = vec![BuiltinEffect::Invert { mix: 0.6 }];
         let mut inner = sequence(vec![inner_track]);
         if graded {
-            inner.timeline_graph = Some(exposure(0.6));
+            inner.timeline_grade_slot().set(Some(exposure(0.6)));
         }
         let mut compound = Clip { kind: ClipKind::Sequence { sequence_id: inner.id }, ..Clip::gap(tc(0.0), tc(4.0)) };
         compound.set_effect_list(vec![BuiltinEffect::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 }], compound.builtin_effects_enabled().to_vec());
@@ -884,10 +885,10 @@ fn transition_cases() -> Vec<Case> {
     for kind in [TransitionKind::CrossDissolve, TransitionKind::WipeLeft] {
         let mut a = media(0.0, 2.0);
         a.set_effect_list(vec![BuiltinEffect::Vignette { amount: 0.6, size: 0.5, softness: 0.5, roundness: 0.5 }], a.builtin_effects_enabled().to_vec());
-        a.node_graph = exposure(0.5);
+        a.set_grade(exposure(0.5));
         let mut b = media(2.0, 4.0);
         b.set_effect_list(vec![transform(0.8, 6.0, 0.0), BuiltinEffect::Invert { mix: 0.4 }], b.builtin_effects_enabled().to_vec());
-        b.node_graph = graph_of(NodeKind::Saturation, NodeParams { saturation: Some(0.4), ..Default::default() });
+        b.set_grade(graph_of(NodeKind::Saturation, NodeParams { saturation: Some(0.4), ..Default::default() }));
         let mut t = track("V1", TrackKind::Video, vec![a.clone(), b.clone()]);
         t.transitions.push(transition(kind, &a, &b));
         let f = Frames::default().with(&a, 0).with(&b, 120);
@@ -936,7 +937,7 @@ fn nesting_cases() -> Vec<Case> {
     // A graded compound nested one level inside an expanded compound.
     let inner_clip = media(0.0, 4.0);
     let mut graded = sequence(vec![track("Inner", TrackKind::Video, vec![inner_clip.clone()])]);
-    graded.timeline_graph = Some(exposure(0.6));
+    graded.timeline_grade_slot().set(Some(exposure(0.6)));
     let mut middle_clip = Clip::sequence(graded.id, tc(0.0), tc(4.0));
     middle_clip.set_effect_list(vec![BuiltinEffect::Invert { mix: 0.3 }], middle_clip.builtin_effects_enabled().to_vec());
     let middle = sequence(vec![track("Middle", TrackKind::Video, vec![middle_clip])]);
@@ -949,7 +950,7 @@ fn nesting_cases() -> Vec<Case> {
     // A graded compound on a Text track, over footage.
     let inner_clip = media(0.0, 4.0);
     let mut inner = sequence(vec![track("Inner", TrackKind::Video, vec![inner_clip.clone()])]);
-    inner.timeline_graph = Some(exposure(-0.4));
+    inner.timeline_grade_slot().set(Some(exposure(-0.4)));
     let mut compound = Clip::sequence(inner.id, tc(0.0), tc(4.0));
     compound.set_effect_list(vec![transform(0.5, 10.0, 5.0)], compound.builtin_effects_enabled().to_vec());
     let base = media(0.0, 4.0);
@@ -1052,15 +1053,15 @@ fn group_cases() -> Vec<Case> {
     let mut c = media(0.0, 4.0);
     let mut own = exposure(0.3);
     own.working_space_override = Some(WorkingColorspace::AcesCG);
-    c.node_graph = own;
+    c.set_grade(own);
     let mut group = GradeGroup::new("Mismatch");
     let mut pre = graph_of(NodeKind::Saturation, NodeParams { saturation: Some(1.4), ..Default::default() });
     pre.working_space_override = Some(WorkingColorspace::Bt2020Linear);
-    group.pre = Some(pre);
-    group.post = Some(exposure(-0.2));
+    group.stage_slot(klipp_timeline::GradeStage::Pre).set(Some(pre));
+    group.stage_slot(klipp_timeline::GradeStage::Post).set(Some(exposure(-0.2)));
     c.grade_group = Some(group.id);
     let mut t = track("V1", TrackKind::Video, vec![c.clone()]);
-    t.effects.grade = Some(exposure(0.25));
+    t.effects.grade_slot().set(Some(exposure(0.25)));
     let f = Frames::default().with(&c, 0);
     let mut seq = sequence(vec![t]);
     seq.grade_groups = vec![group];

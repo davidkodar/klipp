@@ -5,6 +5,7 @@
 //! Every test renders twice, CPU paths only and GPU where available, and
 //! both must give the answer.
 
+use klipp_timeline::GradeAccess;
 use std::collections::HashMap;
 
 use std::sync::Arc;
@@ -178,7 +179,7 @@ fn tracks_stack_bottom_to_top() {
 #[test]
 fn each_clip_gets_its_own_grade() {
     let mut v1 = media(0.0, 2.0);
-    v1.node_graph = exposure(1.0);
+    v1.set_grade(exposure(1.0));
     let mut v2 = media(0.0, 2.0);
     v2.set_effect_list(vec![BuiltinEffect::Transform {
         position_x: 0.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0,
@@ -264,7 +265,7 @@ fn a_fade_out_ends_with_the_clip_on_the_timeline() {
 fn a_transition_mixes_both_graded_clips() {
     let a = solid([255, 0, 0], 0.0, 2.0);
     let mut b = media(2.0, 4.0);
-    b.node_graph = exposure(1.0);
+    b.set_grade(exposure(1.0));
     let mut src = Flat::default().grey(&b, 0.25);
     let tr = Transition {
         id: TransitionId::new(),
@@ -296,7 +297,7 @@ fn a_log_clip_is_graded_scene_linear_then_tone_mapped() {
     for (i, img) in render(&sequence(vec![vec![c.clone()]]), 1.0, &mut src).iter().enumerate() {
         assert_px(&format!("ungraded, run {i}"), px(img, 16, 9), [tonemap(0.18); 3], 2e-3);
     }
-    c.node_graph = exposure(1.0);
+    c.set_grade(exposure(1.0));
     let mut src = Flat::default().slog3(&c, 420);
     for (i, img) in render(&sequence(vec![vec![c]]), 1.0, &mut src).iter().enumerate() {
         assert_px(&format!("+1 stop, run {i}"), px(img, 16, 9), [tonemap(0.36); 3], 2e-3);
@@ -379,7 +380,7 @@ fn temperature_and_tint_balance_every_exposure_alike() {
         let want = klipp_color::white_balance::white_balance_matrix(40.0, -15.0, Default::default()).unwrap();
         for grey in [0.0f32, 0.18, 0.72, 6.0] {
             let mut c = media(0.0, 2.0);
-            c.node_graph = graph(kind, p.clone(), Default::default());
+            c.set_grade(graph(kind, p.clone(), Default::default()));
             let mut src = Flat::default().grey(&c, grey);
             let expect = want.map(|row| (row[0] + row[1] + row[2]) * grey);
             for (i, img) in render(&sequence(vec![vec![c]]), 1.0, &mut src).iter().enumerate() {
@@ -397,7 +398,7 @@ fn temperature_and_tint_balance_every_exposure_alike() {
         // argument than the one this test is making.
         for rgb in [[0.8f32, 0.1, 0.1], [0.1, 0.8, 0.1], [0.1, 0.1, 0.8]] {
             let mut c = media(0.0, 2.0);
-            c.node_graph = graph(kind, p.clone(), Default::default());
+            c.set_grade(graph(kind, p.clone(), Default::default()));
             let mut src = Flat::default().linear(&c, rgb);
             // The real matrix multiply, not a row sum.
             let expect = want.map(|row| row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2]);
@@ -543,7 +544,7 @@ fn node_keyframes_use_clip_relative_time() {
     let mut c = media(0.0, 4.0);
     c.source_in = tc(10.0);
     c.source_out = tc(14.0);
-    c.node_graph = graph(NodeKind::Exposure, p, kf);
+    c.set_grade(graph(NodeKind::Exposure, p, kf));
     let mut src = Flat::default().grey(&c, 0.1);
     for (i, img) in render(&sequence(vec![vec![c]]), 1.0, &mut src).iter().enumerate() {
         assert_px(&format!("run {i}"), px(img, 16, 9), [0.2; 3], 0.005);
@@ -660,7 +661,7 @@ fn an_adjustment_layer_grades_what_is_below_it() {
     let base = media(0.0, 2.0);
     let mut src = Flat::default().grey(&base, 0.2);
     let mut adj = clip(ClipKind::AdjustmentLayer, 0.0, 2.0);
-    adj.node_graph = exposure(1.0);
+    adj.set_grade(exposure(1.0));
     let mut seq = sequence(vec![vec![adj], vec![base]]);
     for (i, img) in render(&seq, 1.0, &mut src).iter().enumerate() {
         assert_px(&format!("full, run {i}"), px(img, 16, 9), [0.4; 3], 0.005);
@@ -677,18 +678,18 @@ fn an_adjustment_layer_grades_what_is_below_it() {
 #[test]
 fn a_timeline_grade_grades_every_clip_after_its_own() {
     let mut graded = media(0.0, 2.0);
-    graded.node_graph = exposure(1.0);
+    graded.set_grade(exposure(1.0));
     let plain = media(2.0, 4.0);
     let mut src = Flat::default().grey(&graded, 0.2).grey(&plain, 0.3);
     let mut seq = sequence(vec![vec![graded, plain]]);
-    seq.timeline_graph = Some(exposure(-1.0));
+    seq.timeline_grade_slot().set(Some(exposure(-1.0)));
     for (t, want) in [(1.0, 0.2), (3.0, 0.15)] {
         for (i, img) in render(&seq, t, &mut src).iter().enumerate() {
             assert_px(&format!("t={t}, run {i}"), px(img, 16, 9), [want; 3], 0.005);
         }
     }
     // An identity timeline grade is no grade at all.
-    seq.timeline_graph = Some(NodeGraph::default());
+    seq.timeline_grade_slot().set(Some(NodeGraph::default()));
     for (i, img) in render(&seq, 3.0, &mut src).iter().enumerate() {
         assert_px(&format!("identity, run {i}"), px(img, 16, 9), [0.3; 3], 0.005);
     }
@@ -836,7 +837,7 @@ fn slow_motion_blends_the_frames_either_side() {
 #[test]
 fn inspecting_a_clip_returns_its_ungraded_picture() {
     let mut c = media(0.0, 2.0);
-    c.node_graph = exposure(1.0);
+    c.set_grade(exposure(1.0));
     let seq = sequence(vec![vec![c.clone()]]);
     let mut src = Flat::default().grey(&c, 0.2);
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
@@ -857,7 +858,7 @@ fn inspecting_a_clip_returns_its_ungraded_picture() {
 #[test]
 fn a_clip_rendered_alone_is_its_own_graded_picture() {
     let mut c = media(0.0, 2.0);
-    c.node_graph = exposure(1.0);
+    c.set_grade(exposure(1.0));
     let mut matte = solid([0, 0, 0], 0.0, 2.0);
     matte.consumed_as_matte = true;
     let mut binding = klipp_timeline::MatteBinding::new(matte.id);
@@ -914,7 +915,7 @@ fn active_layers_lists_what_a_render_needs() {
 fn a_frame_snapshot_renders_the_same_frame() {
     let a = solid([255, 0, 0], 0.0, 2.0);
     let mut b = media(2.0, 4.0);
-    b.node_graph = exposure(1.0);
+    b.set_grade(exposure(1.0));
     let far = solid([0, 0, 255], 10.0, 12.0);
     let mut follower = solid([0, 255, 0], 0.0, 4.0);
     follower.set_effect_list(vec![BuiltinEffect::Transform {
@@ -951,7 +952,7 @@ fn every_transition_renders_the_same_with_and_without_a_gpu() {
     for kind in [klipp_core::TransitionKind::WipeLeft, klipp_core::TransitionKind::FilmDissolve, klipp_core::TransitionKind::DipToBlack] {
         let a = solid([230, 40, 40], 0.0, 2.0);
         let mut b = media(2.0, 4.0);
-        b.node_graph = exposure(1.0);
+        b.set_grade(exposure(1.0));
         let mut src = Flat::default().grey(&b, 0.2);
         let tr = Transition {
             id: TransitionId::new(),
@@ -1213,7 +1214,7 @@ fn a_nested_sequence_keeps_its_timeline_grade() {
     };
     let plain = grey();
     let mut graded = grey();
-    graded.timeline_graph = Some(exposure(-1.0));
+    graded.timeline_grade_slot().set(Some(exposure(-1.0)));
     for (name, nest) in [
         ("a precomposition", Clip::precomposition as fn(_, _, _) -> Clip),
         ("a compound", Clip::sequence as fn(_, _, _) -> Clip),
@@ -1222,7 +1223,7 @@ fn a_nested_sequence_keeps_its_timeline_grade() {
         let ungraded = bright(&parent(&plain), std::slice::from_ref(&plain));
         let own = bright(&parent(&graded), &[graded.clone()]);
         let mut outer = parent(&graded);
-        outer.timeline_graph = Some(exposure(-1.0));
+        outer.timeline_grade_slot().set(Some(exposure(-1.0)));
         let both = bright(&outer, &[graded.clone()]);
         for run in 0..2 {
             assert!((own[run] - ungraded[run] * 0.5).abs() < 0.01, "{name}, run {run}: the scene's grade holds: {} of {}", own[run], ungraded[run]);
@@ -1853,8 +1854,8 @@ fn a_scope_tap_returns_the_input_a_qualifier_reads() {
     g.node_positions.insert(qualifier.id, NodePos { x: 150.0, y: 0.0 });
     let qualifier_id = qualifier.id;
     g.nodes.push(qualifier);
-    c.node_graph = g;
-    assert_eq!(c.node_graph.input_of(qualifier_id, 0), Some(exposure_node));
+    c.set_grade(g);
+    assert_eq!(c.grade().input_of(qualifier_id, 0), Some(exposure_node));
     let seq = sequence(vec![vec![c.clone()]]);
     for gpu in [false, true] {
         for (tap, want) in [(exposure_node, 0.4), (source, 0.2)] {

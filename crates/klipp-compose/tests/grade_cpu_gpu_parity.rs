@@ -6,6 +6,7 @@
 //! same frame and compares the display bytes. Each case must also change
 //! the frame: a control one side ignores would match an ignoring other side.
 
+use klipp_timeline::GradeAccess;
 use std::sync::Arc;
 
 use klipp_compose::{FrameSource, RenderOptions, Renderer, SourceFrame, SourcePixels};
@@ -59,7 +60,7 @@ fn render(kind: NodeKind, params: &NodeParams, gpu: bool) -> Vec<f32> {
         working_space_override: None, frames: vec![], sticky_notes: vec![],
     };
     let mut clip = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
-    clip.node_graph = graph;
+    clip.set_grade(graph);
     let mut seq = Sequence::new_default();
     let mut track = Track::new("V", TrackKind::Video);
     track.clips = vec![clip];
@@ -203,7 +204,7 @@ fn render_flat_node(value: [f32; 3], kind: NodeKind, params: &NodeParams, gpu: b
         working_space_override: None, frames: vec![], sticky_notes: vec![],
     };
     let mut clip = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
-    clip.node_graph = graph;
+    clip.set_grade(graph);
     let mut seq = Sequence::new_default();
     let mut track = Track::new("V", TrackKind::Video);
     track.clips = vec![clip];

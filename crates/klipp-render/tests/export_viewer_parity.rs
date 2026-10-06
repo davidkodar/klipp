@@ -5,6 +5,7 @@
 //! what the viewer shows for the same timeline. Sources are generated with
 //! the ffmpeg CLI; the tests skip without it.
 
+use klipp_timeline::GradeAccess;
 use klipp_core::*;
 use klipp_render::*;
 use std::path::{Path, PathBuf};
@@ -49,7 +50,7 @@ fn generated(data: GeneratorData) -> TestClip {
 
 impl TestClip {
     fn graded(mut self, graph: klipp_nodes::NodeGraph) -> Self {
-        self.clip.node_graph = graph;
+        self.clip.set_grade(graph);
         self
     }
 }

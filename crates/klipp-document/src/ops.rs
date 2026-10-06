@@ -34,7 +34,7 @@ fn strict_motion_spec<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<k
 use crate::history::{EditCommand, LinkedMovePartner};
 use klipp_core::{ClipId, Fps, MediaId, Timecode};
 use klipp_media::MediaPool;
-use klipp_timeline::{Clip, ClipKind, Sequence, TrackKind};
+use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, TrackKind};
 use serde::{Deserialize, Serialize};
 
 /// A level at a moment, for [`Op::Volume`].
@@ -2443,7 +2443,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (members, skipped) = on.members(seq, |t, c| takes_picture(pool, t, c));
             let whose = on.whose(members.len());
             on_each(i, &on, "pictures", members, skipped, |_, clip| {
-                apply_look(i, GradeTarget { id: clip.id, graph: clip.node_graph.clone(), name: whose.clone(), touched: vec![clip.id] }, lut_path, name.as_deref(), *opacity, *remove)
+                apply_look(i, GradeTarget { id: clip.id, graph: clip.grade().clone(), name: whose.clone(), touched: vec![clip.id] }, lut_path, name.as_deref(), *opacity, *remove)
             })
         }
         Op::Look { clip_id, on, lut_path, name, opacity, remove } => {
@@ -2499,7 +2499,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (members, skipped) = on.members(seq, |t, c| takes_picture(pool, t, c) && source.is_none_or(|s| s.id != c.id));
             let whose = on.whose(members.len());
             on_each(i, &on, "pictures", members, skipped, |_, clip| {
-                let target = GradeTarget { id: clip.id, graph: clip.node_graph.clone(), name: whose.clone(), touched: vec![clip.id] };
+                let target = GradeTarget { id: clip.id, graph: clip.grade().clone(), name: whose.clone(), touched: vec![clip.id] };
                 let one = Op::Grade { clip_id: None, on: None, exposure: *exposure, contrast: *contrast, saturation: *saturation, temperature: *temperature, tint: *tint, lift: *lift, gamma: *gamma, gain: *gain, highlights: *highlights, shadows: *shadows, vibrance: *vibrance, reset: *reset, from: from.clone() };
                 grade_op(seq, pool, fps, i, target, &one)
             })
@@ -4901,7 +4901,7 @@ fn track_grade_target(seq: &Sequence, fps: Fps, i: usize, track: &TrackRef, from
     }
     // The track's id stands in for a clip's: the edit is turned into the
     // track's settings before anything applies it.
-    let target = GradeTarget { id: ClipId(t.id.0), graph: t.effects.grade.clone().unwrap_or_default(), name: format!("{} itself", on.name), touched: Vec::new() };
+    let target = GradeTarget { id: ClipId(t.id.0), graph: t.effects.track_grade().cloned().unwrap_or_default(), name: format!("{} itself", on.name), touched: Vec::new() };
     Ok((on.ti, target))
 }
 
@@ -4915,7 +4915,7 @@ fn onto_track_grade(seq: &Sequence, i: usize, ti: usize, (what, edit, _): (Strin
     let t = &seq.tracks[ti];
     let old = t.settings();
     let mut new = old.clone();
-    new.effects.grade = (!new_graph.is_identity()).then_some(new_graph);
+    new.effects.grade_slot().set((!new_graph.is_identity()).then_some(new_graph));
     Ok((what, EditCommand::SetTrackSettings { changes: vec![(t.id, old, new)] }, Vec::new()))
 }
 
@@ -5646,7 +5646,7 @@ fn grade_op(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, target: GradeT
             return Err(refuse(i, "a clip's grade copied onto itself", "name another clip in from"));
         }
         let what = format!("grade {} as {} is graded", target.name, clip_name(seq, pool, source));
-        let edit = EditCommand::SetNodeGraph { clip_id: target.id, old_graph: target.graph, new_graph: source.node_graph.clone() };
+        let edit = EditCommand::SetNodeGraph { clip_id: target.id, old_graph: target.graph, new_graph: source.grade().clone() };
         return Ok((what, edit, target.touched));
     }
     let knobs: [(&str, &str, Option<f32>, f32, f32); 11] = [
@@ -5679,7 +5679,7 @@ fn grade_target(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: O
     match on {
         Some(GradeOn::Named(n)) if n.eq_ignore_ascii_case("timeline") => Ok(GradeTarget {
             id: seq.timeline_grade_clip_id(),
-            graph: stored(seq.timeline_graph.as_ref()),
+            graph: stored(seq.timeline_grade()),
             name: "the timeline".into(),
             touched: Vec::new(),
         }),
@@ -5701,7 +5701,7 @@ fn grade_target(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: O
             let clip_id = clip_id.ok_or_else(|| refuse(i, "no clip given", "give clip_id, or on: \"timeline\" or a grade group"))?;
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             require_picture(seq, pool, i, ti, clip, verb)?;
-            Ok(GradeTarget { id: clip.id, graph: clip.node_graph.clone(), name: clip_name(seq, pool, clip), touched: vec![clip.id] })
+            Ok(GradeTarget { id: clip.id, graph: clip.grade().clone(), name: clip_name(seq, pool, clip), touched: vec![clip.id] })
         }
     }
 }
@@ -5880,11 +5880,11 @@ fn qualifier_target(name: &str) -> Option<(f32, f32)> {
 fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a: QualifyArgs) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     require_picture(seq, pool, i, ti, clip, "grade a secondary on")?;
     if a.remove {
-        let has = clip.node_graph.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Qualifier && n.params.qualifier.as_ref().is_some_and(|q| q.enabled));
+        let has = clip.grade().nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Qualifier && n.params.qualifier.as_ref().is_some_and(|q| q.enabled));
         if !has {
             return Err(refuse(i, "no secondary to remove", "this clip has no qualifier on it"));
         }
-        let mut graph = clip.node_graph.clone();
+        let mut graph = clip.grade().clone();
         // The keyer off, and the corrections it gated back to neutral.
         let keyed: Vec<klipp_nodes::NodeId> = graph
             .nodes
@@ -5909,7 +5909,7 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
             }
         }
         let what = format!("clear the secondary on {}", clip_name(seq, pool, clip));
-        return Ok((what, EditCommand::SetNodeGraph { clip_id: clip.id, old_graph: clip.node_graph.clone(), new_graph: graph }, vec![clip.id]));
+        return Ok((what, EditCommand::SetNodeGraph { clip_id: clip.id, old_graph: clip.grade().clone(), new_graph: graph }, vec![clip.id]));
     }
 
     // Resolve a named target to a hue centre/width, unless one was given.
@@ -5950,7 +5950,7 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
         }
     }
 
-    let mut graph = clip.node_graph.clone();
+    let mut graph = clip.grade().clone();
     if graph.is_identity() {
         graph = klipp_nodes::defaults::default_graph();
     }
@@ -6035,7 +6035,7 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
         said.push(if window.len() > 1 { format!("inside a window tracked over {} samples", window.len()) } else { "inside a window".to_string() });
     }
     let what = format!("secondary on {}: key {}, {}", clip_name(seq, pool, clip), said.join(", "), corr.join(", "));
-    Ok((what, EditCommand::SetNodeGraph { clip_id: clip.id, old_graph: clip.node_graph.clone(), new_graph: graph }, vec![clip.id]))
+    Ok((what, EditCommand::SetNodeGraph { clip_id: clip.id, old_graph: clip.grade().clone(), new_graph: graph }, vec![clip.id]))
 }
 
 /// A rate as a fraction: the NTSC ones over 1001, the rest whole.
@@ -8233,7 +8233,7 @@ mod tests {
         assert!(plan.steps[0].what.contains(" as ") , "{}", plan.steps[0].what);
         view.apply_forward(&plan.steps[0].edit);
         let clips = &view.sequences[0].tracks[0].clips;
-        assert_eq!(clips[1].node_graph, clips[0].node_graph, "the same grade");
+        assert_eq!(clips[1].grade(), clips[0].grade(), "the same grade");
         let both: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"grade","clip_id":"{}","from":"{}","exposure":0.2}}]"#, b.0, a.0)).unwrap();
         assert!(resolve(&view.sequences[0], view.media_pool, &both).unwrap_err().why.contains("takes no knobs"));
     }
@@ -8896,10 +8896,10 @@ mod tests {
         assert_eq!(settings(&plan).effects.video.len(), 1);
 
         let plan = resolve(&seq, &pool, &ops(r#"[{"op":"grade","on":{"track":0,"itself":true},"exposure":-0.5}]"#)).unwrap();
-        let graded = settings(&plan).effects.grade.expect("a grade on the track");
+        let graded = settings(&plan).effects.track_grade().cloned().expect("a grade on the track");
         assert!(!graded.is_identity());
         let plan = resolve(&seq, &pool, &ops(r#"[{"op":"look","on":{"track":"video","itself":true},"lut_path":"/luts/kodak.cube","name":"Kodak"}]"#)).unwrap();
-        assert!(settings(&plan).effects.grade.is_some_and(|g| g.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Lut3D && n.params.lut_path.is_some())));
+        assert!(settings(&plan).effects.track_grade().is_some_and(|g| g.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Lut3D && n.params.lut_path.is_some())));
 
         let plan = resolve(&seq, &pool, &ops(r#"[{"op":"track_audio","track":"audio","effect":"compressor","params":{"threshold":-18}}]"#)).unwrap();
         let s = settings(&plan);
@@ -10442,13 +10442,13 @@ mod tests {
         let after = view.sequences[0].clone();
         let g = &after.grade_groups[0];
         let lut = |graph: Option<&klipp_nodes::NodeGraph>| graph.and_then(|g| g.nodes.iter().find_map(|n| n.params.lut_path.clone()));
-        assert_eq!(lut(g.post.as_ref()).unwrap().to_str(), Some("/luts/kodak.cube"));
-        assert!(g.pre.as_ref().unwrap().nodes.iter().any(|n| n.params.temperature == Some(10.0)));
-        assert_eq!(lut(after.timeline_graph.as_ref()).unwrap().to_str(), Some("/luts/show.cube"));
+        assert_eq!(lut(g.stage(klipp_timeline::GradeStage::Post)).unwrap().to_str(), Some("/luts/kodak.cube"));
+        assert!(g.stage(klipp_timeline::GradeStage::Pre).unwrap().nodes.iter().any(|n| n.params.temperature == Some(10.0)));
+        assert_eq!(lut(after.timeline_grade()).unwrap().to_str(), Some("/luts/show.cube"));
         for id in [a, b] {
             let c = after.all_clips().find(|c| c.id == id).unwrap();
             assert_eq!(c.grade_group, Some(g.id));
-            assert!(c.node_graph.is_identity(), "the clip's own grade is untouched");
+            assert!(c.grade().is_identity(), "the clip's own grade is untouched");
         }
 
         // Refusals: sound, an unknown group, a look with nowhere to go.
@@ -10621,9 +10621,9 @@ mod tests {
         let mut fps = seq.fps;
         let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
         view.apply_forward(&plan.steps[0].edit);
-        assert!(!view.sequences[0].tracks[0].clips[0].node_graph.is_identity());
+        assert!(!view.sequences[0].tracks[0].clips[0].grade().is_identity());
         view.apply_inverse(&plan.steps[0].edit);
-        assert!(view.sequences[0].tracks[0].clips[0].node_graph.is_identity(), "undo restores the ungraded clip");
+        assert!(view.sequences[0].tracks[0].clips[0].grade().is_identity(), "undo restores the ungraded clip");
 
         // Out of range, nothing to change, a title: refused.
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();

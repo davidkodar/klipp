@@ -42,7 +42,7 @@ use std::path::{Path, PathBuf};
 use klipp_core::MediaId;
 use klipp_media::{MediaItem, MediaPool};
 use klipp_nodes::NodeGraph;
-use klipp_timeline::{ClipKind, Look, Sequence};
+use klipp_timeline::{ClipKind, GradeAccess, Look, Sequence};
 
 use crate::save::{save_project_with_color_and_backups, ColorSettings};
 
@@ -421,7 +421,7 @@ fn build_copy_plan(
     let mut node_file_new_paths: HashMap<PathBuf, PathBuf> = HashMap::new();
     let mut used_grade: HashSet<String> = HashSet::new();
     let library = klipp_core::assets::bundled_luts_dir();
-    let graphs = sequences.iter().flat_map(sequence_graphs).chain(options.looks.iter().map(|l| &l.node_graph)).chain(still_grades.iter().copied());
+    let graphs = sequences.iter().flat_map(|s| s.grades()).chain(options.looks.iter().map(|l| l.grade())).chain(still_grades.iter().copied());
     for path in graphs.flat_map(node_files) {
         if node_file_new_paths.contains_key(path) || library.is_some_and(|lib| path.starts_with(lib)) {
             continue;
@@ -452,40 +452,6 @@ fn build_copy_plan(
         warnings,
         left_out,
     }
-}
-
-/// Every node graph a sequence keeps: the timeline's, each grade group's
-/// two stages, each track's grade, and each clip's grade and its saved
-/// versions.
-fn sequence_graphs(seq: &Sequence) -> Vec<&NodeGraph> {
-    let mut out: Vec<&NodeGraph> = seq.timeline_graph.iter().collect();
-    for g in &seq.grade_groups {
-        out.extend(g.pre.iter().chain(g.post.iter()));
-    }
-    for track in &seq.tracks {
-        out.extend(track.effects.grade.iter());
-        for clip in &track.clips {
-            out.push(&clip.node_graph);
-            out.extend(clip.grade_versions.iter().map(|v| &v.node_graph));
-        }
-    }
-    out
-}
-
-/// [`sequence_graphs`], to change.
-fn sequence_graphs_mut(seq: &mut Sequence) -> Vec<&mut NodeGraph> {
-    let mut out: Vec<&mut NodeGraph> = seq.timeline_graph.iter_mut().collect();
-    for g in &mut seq.grade_groups {
-        out.extend(g.pre.iter_mut().chain(g.post.iter_mut()));
-    }
-    for track in &mut seq.tracks {
-        out.extend(track.effects.grade.iter_mut());
-        for clip in &mut track.clips {
-            out.push(&mut clip.node_graph);
-            out.extend(clip.grade_versions.iter_mut().map(|v| &mut v.node_graph));
-        }
-    }
-    out
 }
 
 /// The files a graph's nodes read: LUTs, external mattes and
@@ -619,9 +585,7 @@ fn remap_media_pool(original: &MediaPool, plan: &CopyPlan) -> MediaPool {
 fn remap_sequences(original: &[Sequence], plan: &CopyPlan) -> Vec<Sequence> {
     let mut out = original.to_vec();
     for seq in &mut out {
-        for g in sequence_graphs_mut(seq) {
-            remap_node_files(g, &plan.node_file_new_paths);
-        }
+        seq.edit_each_grade(|g| remap_node_files(g, &plan.node_file_new_paths));
         for track in &mut seq.tracks {
             for clip in &mut track.clips {
                 if let ClipKind::Title(td) = &mut clip.kind {
@@ -753,7 +717,7 @@ pub fn consolidate_project(
     // The Looks, reading their files where they were copied to.
     let mut looks = options.looks.clone();
     for look in &mut looks {
-        remap_node_files(&mut look.node_graph, &plan.node_file_new_paths);
+        look.edit_grade(|g| remap_node_files(g, &plan.node_file_new_paths));
     }
     if let Err(e) = crate::save::save_looks(&options.dest_dir, &looks) {
         let _ = std::fs::remove_dir_all(&options.dest_dir);

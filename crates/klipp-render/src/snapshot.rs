@@ -1394,15 +1394,15 @@ mod tests {
             n.params.exposure = Some(-1.0);
             n.id
         }).unwrap();
-        group.post = Some(post);
+        group.stage_slot(klipp_timeline::GradeStage::Post).set(Some(post));
         let mut clip = media_clip(media_id, 0, 48);
         clip.grade_group = Some(group.id);
         seq.grade_groups = vec![group];
         seq.tracks[0].clips.push(clip);
         let snap = SequenceSnapshot::from_sequence(&seq, &pool, &make_settings(), None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
-        let graph = &snap.video.sequence.tracks[0].clips[0].node_graph;
+        let graph = klipp_timeline::GradeAccess::grade(&snap.video.sequence.tracks[0].clips[0]);
         assert!(graph.nodes.iter().any(|n| n.id == node), "the group's post-clip grade is in the exported clip's grade");
-        assert!(seq.tracks[0].clips[0].node_graph.nodes.iter().all(|n| n.id != node), "and not in the document's");
+        assert!(klipp_timeline::GradeAccess::grade(&seq.tracks[0].clips[0]).nodes.iter().all(|n| n.id != node), "and not in the document's");
     }
 
     /// The export decoder gets the same log format the viewer's decoder

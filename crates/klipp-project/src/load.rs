@@ -6,7 +6,7 @@ use crate::path_util::{
 use klipp_core::*;
 use klipp_media::{MediaItem, MediaItemKind, MediaPool};
 use klipp_timeline::{
-    Clip, ClipKind, FontStyle, Look, Sequence, TextAlignment, TitleBackground, TitlePosition,
+    Clip, ClipKind, FontStyle, GradeAccess, Look, Sequence, TextAlignment, TitleBackground, TitlePosition,
     TitleShadow, Track, TrackKind,
 };
 use klipp_nodes::{NodeGraph, NodeKind, NodeId};
@@ -809,7 +809,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                 // inspector row. Drop them at load time.
                 let mask_counts: std::collections::HashMap<uuid::Uuid, usize> = clip
                     .grade_versions.iter()
-                    .flat_map(|gv| gv.node_graph.nodes.iter())
+                    .flat_map(|gv| gv.grade().nodes.iter())
                     .filter(|n| n.kind == klipp_nodes::NodeKind::Mask)
                     .map(|n| {
                         let count = n.params.masks.as_ref()

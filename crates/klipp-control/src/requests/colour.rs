@@ -834,7 +834,7 @@ pub(crate) fn respond(
             // The timeline grade runs on every frame after the clip's own,
             // so what the viewer shows is both; say so, or a reader of this
             // graph alone would misjudge the picture.
-            let timeline = seq.timeline_graph.as_ref().filter(|g| !g.is_identity());
+            let timeline = seq.timeline_grade().filter(|g| !g.is_identity());
             // Likewise its grade group's grades, before and after its own (#237).
             let group = clip.grade_group.and_then(|g| seq.grade_group(g)).filter(|g| g.grades());
             Ok(json!({
@@ -844,8 +844,8 @@ pub(crate) fn respond(
                     .map_err(|e| format!("serialising graph: {e}"))?,
                 "grade_group": group.map(|g| json!({
                     "name": g.name,
-                    "pre": g.pre.as_ref().filter(|p| !p.is_identity()),
-                    "post": g.post.as_ref().filter(|p| !p.is_identity()),
+                    "pre": g.stage(klipp_timeline::GradeStage::Pre).filter(|p| !p.is_identity()),
+                    "post": g.stage(klipp_timeline::GradeStage::Post).filter(|p| !p.is_identity()),
                 })),
                 "timeline_graph": timeline
                     .map(serde_json::to_value)

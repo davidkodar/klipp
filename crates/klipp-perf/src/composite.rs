@@ -12,7 +12,7 @@ use klipp_compose::{FrameSource, RenderOptions, Renderer, SourceFrame, SourcePix
 use klipp_core::{ClipId, RationalTime, Timecode};
 use klipp_effects::gpu_context::GpuContext;
 use klipp_nodes::executor::GraphExecutor;
-use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
+use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, Track, TrackKind};
 
 use crate::stats::{summarise, ScenarioResult};
 
@@ -98,7 +98,7 @@ struct Build {
 fn add_media(b: &mut Build, track: usize, from: f64, to: f64, width: u32, height: u32, ctx: Option<&GpuContext>, graph: Option<klipp_nodes::NodeGraph>) -> ClipId {
     let mut c = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, from, to);
     if let Some(g) = graph {
-        c.node_graph = g;
+        c.set_grade(g);
     }
     let id = c.id;
     let bytes = picture(width, height);
