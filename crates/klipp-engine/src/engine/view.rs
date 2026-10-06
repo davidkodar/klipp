@@ -439,19 +439,16 @@ impl PlaybackEngine {
     }
 
     /// A hash of everything about a clip that its rendered frames depend
-    /// on, kept until the sequence changes.
+    /// on, kept until the sequence changes. The same in every session for
+    /// the same clip, whatever order its maps were built in, so the disk
+    /// cache is found again after a restart (#1132).
     fn clip_render_hash(&mut self, clip: &Clip) -> u64 {
         if self.current_grade_hash == 0 {
             // The sequence or a grade changed since the hashes were made.
             self.render_hashes.clear();
             self.current_grade_hash = 1;
         }
-        *self.render_hashes.entry(clip.id).or_insert_with(|| {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            serde_json::to_vec(clip).unwrap_or_default().hash(&mut h);
-            h.finish()
-        })
+        *self.render_hashes.entry(clip.id).or_insert_with(|| clip_render_hash_of(clip))
     }
 
     fn lut_hash(&self) -> u64 {
@@ -1313,4 +1310,21 @@ mod playback_quality_tests {
         let (w, h) = reduced_for_quality((2048, 858), 2);
         assert!(w % 2 == 0 && h % 2 == 0 && (w as f64 / h as f64 - 2048.0 / 858.0).abs() < 0.01, "{w}x{h}");
     }
+}
+
+/// [`clip_render_hash`]'s value for `clip`. A clip that won't serialise
+/// gets a key no other has had, made afresh after each change, so a frame
+/// of one state of it is never taken for another: salted per process, so
+/// it doesn't meet a file the disk cache kept from another run either.
+fn clip_render_hash_of(clip: &Clip) -> u64 {
+    crate::canonical_hash::canonical_hash(clip).unwrap_or_else(|e| {
+        tracing::warn!("render cache: clip {} can't be hashed ({e}); its frames are kept for this state only", clip.id.0);
+        static SALT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        static UNHASHABLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let salt = *SALT.get_or_init(|| {
+            use std::hash::BuildHasher;
+            std::hash::RandomState::new().hash_one(std::process::id())
+        });
+        salt ^ UNHASHABLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    })
 }

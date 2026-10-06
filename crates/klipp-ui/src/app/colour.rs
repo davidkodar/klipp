@@ -878,7 +878,7 @@ impl KlippApp {
                 let color_rgba = *color_rgba;
                 let ids = node_ids.clone();
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    let valid_ids: std::collections::HashSet<klipp_nodes::NodeId> = ids
+                    let valid_ids: std::collections::BTreeSet<klipp_nodes::NodeId> = ids
                         .into_iter()
                         .filter(|id| graph.nodes.iter().any(|n| n.id == *id))
                         .collect();

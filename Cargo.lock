@@ -3075,6 +3075,7 @@ dependencies = [
  "pollster 0.3.0",
  "rayon",
  "ringbuf 0.4.8",
+ "serde",
  "serde_json",
  "tracing",
  "uuid",

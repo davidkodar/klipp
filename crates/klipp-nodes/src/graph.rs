@@ -118,12 +118,12 @@ pub struct NodeFrame {
     /// here for serde simplicity — the UI converts to Color32
     /// per-frame).
     pub color_rgba: u32,
-    /// Members. Iteration order is unstable and irrelevant; the
-    /// HashSet shape rejects accidental duplicates and gives O(1)
-    /// `contains` for hit-tests. Cleanup invariant: when a node is
-    /// removed from the graph, its id is dropped from every frame's
-    /// set; frames that end up empty are pruned.
-    pub contained_node_ids: std::collections::HashSet<NodeId>,
+    /// Members. A set, so a node is in it at most once, and an ordered one,
+    /// so it serialises the same in every process: a clip's render-cache
+    /// key hashes it (#1132). Its order means nothing. Cleanup invariant:
+    /// when a node is removed from the graph, its id is dropped from every
+    /// frame's set; frames that end up empty are pruned.
+    pub contained_node_ids: std::collections::BTreeSet<NodeId>,
 }
 
 pub type NodeFrameId = uuid::Uuid;
