@@ -62,6 +62,7 @@ pub mod magnetic;
 pub mod magnetic_commands;
 mod marker;
 pub mod multicam;
+pub mod picture_v1;
 mod sequence;
 pub mod shared;
 pub mod surface;
