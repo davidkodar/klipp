@@ -24,6 +24,8 @@ fn clip_record(effects: &Value) -> Value {
             wireless: Default::default(),
             group: None,
             legacy: Some(Legacy { slot: Some(slot as u32), payload: fx.clone(), keyframes: None, modifiers: BTreeMap::new() }),
+            legacy_flags: None,
+        origin: None,
         })
         .collect();
     let output = nodes.last().map(|n| n.id).unwrap_or(uuid_n(1));

@@ -52,3 +52,10 @@ impl RootKind {
 pub fn entry_id(kind: RootKind, root: Uuid, list: &str, slot: usize) -> Uuid {
     Uuid::new_v5(&NAMESPACE, format!("{}/{}/{}/{}", kind.tag(), root, list, slot).as_bytes())
 }
+
+/// The id `to_v2` gives the `klipp.legacy.grade` node of a grade-only
+/// store: `prefix` is the store's (`"timeline/"`, `"pre/"`, `"post/"`,
+/// `"version/<n>/"`, or `""` for a track), `root` its owner's id.
+pub fn grade_id(kind: RootKind, root: Uuid, prefix: &str) -> Uuid {
+    entry_id(kind, root, &format!("{prefix}grade"), 0)
+}

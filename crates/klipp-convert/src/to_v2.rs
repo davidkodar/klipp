@@ -119,6 +119,8 @@ fn legacy_node(id: NodeId, type_id: &str, enabled: bool, legacy: Legacy) -> Node
         wireless: Default::default(),
         group: None,
         legacy: Some(legacy),
+        legacy_flags: None,
+        origin: None,
     }
 }
 

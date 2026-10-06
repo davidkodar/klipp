@@ -9,9 +9,10 @@
 
 use serde_json::Value;
 
-/// The newest revision this converter reads and writes: 1, the structural
-/// form (graphs holding only `klipp.legacy.*` nodes).
-pub const KNOWN_REVISION: u64 = 1;
+/// The newest revision this converter reads and writes: 2, the lifted
+/// form. Revision 1 (graphs holding only `klipp.legacy.*` nodes) exists in
+/// its tests and dry runs only.
+pub const KNOWN_REVISION: u64 = 2;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RevisionError {
@@ -49,25 +50,50 @@ pub fn read_revision(project: &Value) -> Result<u64, RevisionError> {
     Ok(r)
 }
 
-/// The lowest revision that holds `project`: 1 when any store carries a
-/// converted picture (`graph_v2` on a clip, a track's effects, a sequence,
-/// a grade group or a grade version), else 0.
+/// Whether a converted picture holds anything outside the legacy
+/// vocabulary: a lifted node (`klipp.source`, `klipp.group`, …).
+fn lifted(v: &Value) -> bool {
+    match v {
+        Value::Object(o) => {
+            o.get("type_id").and_then(Value::as_str).is_some_and(|t| !t.starts_with("klipp.legacy."))
+                || o.values().any(lifted)
+        }
+        Value::Array(a) => a.iter().any(lifted),
+        _ => false,
+    }
+}
+
+/// The lowest revision that holds `project`: 2 when any store's converted
+/// picture (`graph_v2` on a clip, a track's effects, a sequence, a grade
+/// group or a grade version) is lifted, 1 when they hold only the legacy
+/// vocabulary, else 0.
 pub fn needed_revision(project: &Value) -> u64 {
-    let converted = |o: &Value| o.get(crate::old_fields::V2_FIELD).is_some();
     let list = |v: &Value, key: &str| v.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
     let sequences = match project.get("sequences") {
         Some(_) => list(project, "sequences"),
         None => project.get("sequence").cloned().into_iter().collect(),
     };
-    let any = sequences.iter().any(|seq| {
-        converted(seq)
-            || list(seq, "grade_groups").iter().any(converted)
-            || list(seq, "tracks").iter().any(|track| {
-                track.get("effects").is_some_and(converted)
-                    || list(track, "clips").iter().any(|c| converted(c) || list(c, "grade_versions").iter().any(converted))
-            })
-    });
-    u64::from(any)
+    let mut pictures = Vec::new();
+    for seq in &sequences {
+        pictures.extend(seq.get(crate::old_fields::V2_FIELD).cloned());
+        for g in list(seq, "grade_groups") {
+            pictures.extend(g.get(crate::old_fields::V2_FIELD).cloned());
+        }
+        for track in list(seq, "tracks") {
+            pictures.extend(track.get("effects").and_then(|e| e.get(crate::old_fields::V2_FIELD)).cloned());
+            for c in list(&track, "clips") {
+                pictures.extend(c.get(crate::old_fields::V2_FIELD).cloned());
+                for v in list(&c, "grade_versions") {
+                    pictures.extend(v.get(crate::old_fields::V2_FIELD).cloned());
+                }
+            }
+        }
+    }
+    match (pictures.is_empty(), pictures.iter().any(lifted)) {
+        (true, _) => 0,
+        (false, true) => 2,
+        (false, false) => 1,
+    }
 }
 
 /// Set the project's `format_revision` to [`needed_revision`], leaving it

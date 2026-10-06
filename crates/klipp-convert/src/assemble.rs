@@ -140,7 +140,7 @@ const AUDIO_MODIFIERS: [&str; 3] = ["volume", "pan", "gain"];
 /// The project with every picture field removed, so what remains must be
 /// identical before and after conversion: names, timing, sound, markers,
 /// everything that isn't the picture.
-fn without_pictures(v: &Value) -> Value {
+pub(crate) fn without_pictures(v: &Value) -> Value {
     let mut v = v.clone();
     if let Some(o) = v.as_object_mut() {
         o.remove("format_revision");

@@ -64,6 +64,6 @@ pub use grade_stills::{adopt_still, adopt_temp_stills, delete_grade_still_file, 
 /// written so far.
 pub const FORMAT_REVISION: u32 = 0;
 
-pub use load::{load_looks, load_project};
+pub use load::{load_looks, load_project, migrate_graph};
 pub use made_media::{adopt_made_media, MediaAdoption};
 pub use save::{iso8601_now, save_looks, save_project, save_project_full, save_project_with_color, save_project_with_color_and_backups, ColorSettings};

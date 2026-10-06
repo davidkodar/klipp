@@ -183,9 +183,16 @@ pub struct Node {
     /// The body of a group node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<Box<GroupBody>>,
-    /// The old entry this node holds, on every `klipp.legacy.*` node.
+    /// The old entry this node holds, on every `klipp.legacy.*` node and
+    /// every node the lift made from one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy: Option<Legacy>,
+    /// v1 behaviours a lifted node keeps ([`lifted::LegacyFlags`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_flags: Option<lifted::LegacyFlags>,
+    /// Where a spliced node came from; `None` for the clip's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<lifted::Origin>,
 }
 
 /// Inputs and outputs joined by name instead of by a drawn edge.
@@ -463,6 +470,8 @@ fn is_yes(v: &bool) -> bool {
     *v
 }
 
+pub mod lifted;
+pub mod path;
 pub mod ports;
 
 #[cfg(test)]

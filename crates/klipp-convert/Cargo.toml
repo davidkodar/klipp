@@ -28,3 +28,4 @@ klipp-media = { path = "../klipp-media" }
 klipp-nodes = { path = "../klipp-nodes" }
 klipp-project = { path = "../klipp-project" }
 klipp-timeline = { path = "../klipp-timeline" }
+klipp-compose = { path = "../klipp-compose" }

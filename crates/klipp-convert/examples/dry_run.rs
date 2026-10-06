@@ -21,8 +21,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use klipp_convert::dry_run::{check_colour_presets, check_project, ProjectReport};
-use klipp_convert::{installed, StoreKind};
+use klipp_convert::dry_run::{check_colour_presets_noted, check_project_with, ProjectReport};
+use klipp_convert::splice::{stage_body, track_parts, SpliceInputs, StageInputs, TrackInputs};
+use klipp_convert::{installed, to_v2, StoreKind};
 use serde_json::{json, Value};
 
 /// The parity test's comparison, which asserts, turned into a result: a
@@ -35,6 +36,79 @@ fn parity(raw: &Value, kind: StoreKind) -> Result<(), String> {
     .map_err(|e| {
         e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_owned())).unwrap_or_else(|| "differs".into())
     })
+}
+
+/// Whether today's merge would add `stage` to `base` (`wrap`'s prepend
+/// or append, and the track grade's append): not an identity, and the
+/// merge neither refuses (a working space that doesn't match, no source)
+/// nor adds nothing.
+fn applies(base: &klipp_nodes::NodeGraph, stage: &klipp_nodes::NodeGraph, prepend: bool) -> bool {
+    if stage.is_identity() {
+        return false;
+    }
+    let mut g = base.clone();
+    let r = if prepend { g.prepend_keeping_ids(stage) } else { g.append_keeping_ids(stage) };
+    r.is_ok() && &g != base
+}
+
+fn graph(v: &Value) -> Result<klipp_nodes::NodeGraph, String> {
+    serde_json::from_value(v.clone()).map_err(|e| e.to_string())
+}
+
+/// A clip's splice inputs, decided with today's code: its grade group's
+/// stages as `wrap` takes them, then its track's grade as the bake appends
+/// it to the wrapped graph, and its track's effects when the track draws
+/// pictures and `touches_picture`.
+fn splice_inputs(clip: &Value, seq: &Value, track: &Value) -> Result<SpliceInputs, String> {
+    // The clip's graph as today's loader leaves it: migrated, or the
+    // default pipeline where none is saved.
+    let own = match clip.get("node_graph").filter(|g| !g.is_null()) {
+        Some(g) => {
+            let mut g = graph(g)?;
+            klipp_project::migrate_graph(&mut g);
+            g
+        }
+        None => klipp_nodes::NodeGraph::default(),
+    };
+    // One graph threaded through the bakes, as `render_inputs` proves the
+    // property: each stage and the track grade decided on the graph the
+    // one before it left, not on the clip's own.
+    let mut g = own;
+    let mut inputs = SpliceInputs::default();
+    let group = clip.get("grade_group").and_then(Value::as_str).and_then(|id| {
+        seq.get("grade_groups").and_then(Value::as_array).into_iter().flatten().find(|g| g.get("id").and_then(Value::as_str) == Some(id))
+    });
+    if let Some(group) = group {
+        let typed: klipp_timeline::GradeGroup = serde_json::from_value(group.clone()).map_err(|e| e.to_string())?;
+        if typed.grades() {
+            let (pre, post) = to_v2::stages_to_v2(group.as_object().ok_or("group")?).map_err(|e| e.to_string())?;
+            let mut take = |stage: &Option<klipp_nodes::NodeGraph>, conv: Option<klipp_graph_format::Graph>, prepend: bool| -> Result<Option<klipp_graph_format::Graph>, String> {
+                match (stage, conv) {
+                    (Some(s), Some(c)) if applies(&g, s, prepend) => {
+                        if prepend { g.prepend_keeping_ids(s) } else { g.append_keeping_ids(s) }.map_err(|e| format!("{e:?}"))?;
+                        stage_body(&c).map(Some)
+                    }
+                    _ => Ok(None),
+                }
+            };
+            let pre = take(&typed.pre, pre, true)?;
+            let post = take(&typed.post, post, false)?;
+            inputs.stages = Some(StageInputs { group: typed.id.0, pre, post });
+        }
+    }
+    let kind = clip.get("kind").and_then(|k| k.get("type")).and_then(Value::as_str);
+    if let Some(fx) = track.get("effects").filter(|e| !e.is_null()) {
+        let typed: klipp_timeline::TrackEffects = serde_json::from_value(fx.clone()).map_err(|e| e.to_string())?;
+        let picture_track = matches!(track.get("kind").and_then(Value::as_str), Some("Video" | "Text"));
+        if !typed.is_empty() && picture_track && typed.touches_picture() && !matches!(kind, Some("gap" | "adjustment_layer")) {
+            let structural = to_v2::track_to_v2(track.as_object().ok_or("track")?).map_err(|e| e.to_string())?;
+            let (effects, grade) = track_parts(&structural)?;
+            let grade = grade.filter(|_| typed.grade.as_ref().is_some_and(|t| applies(&g, t, false)));
+            let id = uuid::Uuid::parse_str(track.get("id").and_then(Value::as_str).unwrap_or_default()).map_err(|e| e.to_string())?;
+            inputs.track = Some(TrackInputs { track: id, effects, grade });
+        }
+    }
+    Ok(inputs)
 }
 
 fn project_dirs(scan: &str) -> Result<Vec<PathBuf>, String> {
@@ -61,19 +135,19 @@ fn main() {
     std::panic::set_hook(Box::new(|_| {}));
 
     let started = Instant::now();
-    let reports: Vec<ProjectReport> = dirs.iter().map(|d| check_project(d, &parity)).collect();
+    let reports: Vec<ProjectReport> = dirs.iter().map(|d| check_project_with(d, &parity, Some(&splice_inputs))).collect();
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .map(|c| c.join("klipp"));
-    let (presets, preset_stops) = config.as_deref().map(|c| check_colour_presets(c, &parity)).unwrap_or_default();
+    let (presets, preset_stops, preset_notes) = config.as_deref().map(|c| check_colour_presets_noted(c, &parity)).unwrap_or_default();
     let total = started.elapsed();
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let installed = installed::check(&repo);
 
     let mut stores: BTreeMap<&str, usize> = BTreeMap::new();
     for r in &reports {
-        for (k, n) in &r.stores {
+        for (k, n) in r.stores.iter().chain(&r.stores_extra) {
             *stores.entry(k).or_default() += n;
         }
     }
@@ -89,6 +163,11 @@ fn main() {
     }
     println!("  colour presets: {presets}");
     println!("picture on tracks or groups with no clip: {no_clip}");
+    let mut notes: BTreeMap<&str, usize> = BTreeMap::new();
+    for (k, n) in reports.iter().flat_map(|r| r.lift_notes.iter()).chain(preset_notes.iter()) {
+        *notes.entry(k).or_default() += n;
+    }
+    println!("lift notes: {}", if notes.is_empty() { "none".to_owned() } else { notes.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(", ") });
     println!("time: {:.1} s in total, slowest project {:.2} s", total.as_secs_f64(), slowest.as_secs_f64());
     println!(
         "installed package: {}",
@@ -108,6 +187,7 @@ fn main() {
             "stores": r.stores,
             "stops": r.stops,
             "picture_without_clips": r.picture_without_clips,
+            "lift_notes": r.lift_notes,
             "millis": r.elapsed.as_millis() as u64,
         })).collect::<Vec<_>>(),
         "colour_presets": {"checked": presets, "stops": preset_stops},

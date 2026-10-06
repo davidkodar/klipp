@@ -22,6 +22,8 @@ fn node(n: u128, type_id: &str) -> Node {
         wireless: Wireless::default(),
         group: None,
         legacy: legacy(json!({})),
+        legacy_flags: None,
+        origin: None,
     }
 }
 
@@ -363,4 +365,175 @@ fn unclaimed_effect_keyframes_round_trip() {
     record.legacy_clip.param_modifiers.insert("effect:7:left".into(), json!({"modifiers": []}));
     record.check().unwrap();
     round_trip(&record);
+}
+
+mod lifted_checks {
+    use super::*;
+    use crate::lifted::{types as lt, LiftedError, Origin};
+
+    fn plain(n: u128, type_id: &str) -> Node {
+        let mut x = node(n, type_id);
+        x.legacy = None;
+        x
+    }
+
+    fn legacy_node(n: u128, kind: &str) -> Node {
+        let mut x = node(n, types::LEGACY_NODE);
+        x.legacy = legacy(json!({"kind": kind}));
+        x
+    }
+
+    fn e(from: u128, to: u128, port: &str) -> Edge {
+        Edge { from: (id(from), "out".into()), to: (id(to), port.into()) }
+    }
+
+    /// source -> group(input -> Corrector -> output) -> tone map ->
+    /// placement -> output, every input wired.
+    fn valid() -> Graph {
+        let body = Graph {
+            graph_version: GRAPH_VERSION,
+            nodes: vec![plain(11, lt::GROUP_INPUT), legacy_node(12, "Corrector"), legacy_node(13, "Output")],
+            edges: vec![e(11, 12, "in"), e(12, 13, "in")],
+            output: id(13),
+            ui: GraphUi::default(),
+            working_space_override: None,
+        };
+        let mut body = body;
+        body.nodes[2].type_id = lt::GROUP_OUTPUT.into();
+        let mut group = plain(2, lt::GROUP);
+        group.group = Some(Box::new(GroupBody { graph: body, ports: Vec::new() }));
+        let nodes = vec![plain(1, lt::SOURCE), group, plain(3, lt::SCENE_TO_DISPLAY), plain(4, lt::PLACEMENT), plain(5, lt::OUTPUT)];
+        Graph {
+            graph_version: GRAPH_VERSION,
+            edges: nodes.windows(2).map(|w| Edge { from: (w[0].id, "out".into()), to: (w[1].id, "in".into()) }).collect(),
+            nodes,
+            output: id(5),
+            ui: GraphUi::default(),
+            working_space_override: None,
+        }
+    }
+
+    fn body(g: &mut Graph) -> &mut Graph {
+        &mut g.nodes[1].group.as_mut().unwrap().graph
+    }
+
+    #[test]
+    fn a_valid_lifted_graph_passes() {
+        valid().check_lifted(false).unwrap();
+    }
+
+    /// Every rule refuses what it exists to refuse.
+    #[test]
+    fn every_rule_refuses() {
+        let refuse = |f: &dyn Fn(&mut Graph), want: &dyn Fn(&LiftedError) -> bool| {
+            let mut g = valid();
+            f(&mut g);
+            let err = g.check_lifted(false).unwrap_err();
+            assert!(want(&err), "{err:?}");
+        };
+        refuse(&|g| { g.nodes.remove(0); g.edges.remove(0); }, &|e| matches!(e, LiftedError::Ends { what: "start", .. }));
+        refuse(&|g| g.nodes.push(plain(9, lt::OUTPUT)), &|e| matches!(e, LiftedError::Ends { what: "end", .. }));
+        refuse(&|g| g.output = id(3), &|e| matches!(e, LiftedError::Output { .. }));
+        refuse(&|g| g.nodes[3].id = id(3), &|e| matches!(e, LiftedError::DuplicateNode(_)));
+        refuse(&|g| g.edges.push(e(1, 99, "in")), &|e| matches!(e, LiftedError::DanglingEdge(_)));
+        refuse(&|g| { g.edges.remove(2); }, &|e| matches!(e, LiftedError::Unwired { .. }));
+        refuse(&|g| g.edges.push(e(1, 3, "in")), &|e| matches!(e, LiftedError::TwoInputs { .. }));
+        refuse(&|g| g.nodes.insert(4, plain(8, lt::PLACEMENT)), &|e| matches!(e, LiftedError::Unwired { .. } | LiftedError::TwoPlacements));
+        refuse(&|g| g.nodes[2].origin = Some(Origin::Track { track: id(7) }), &|e| matches!(e, LiftedError::Origin(_)));
+        // Inside the group body.
+        refuse(&|g| { body(g).edges.remove(0); }, &|e| matches!(e, LiftedError::Unwired { .. }));
+        refuse(&|g| { let b = body(g); b.nodes[1].legacy = legacy(json!({"kind": "Hue"})); b.edges.push(e(11, 12, "mask")); }, &|e| matches!(e, LiftedError::MaskNotGateable(_)));
+        refuse(&|g| { let b = body(g); b.nodes.remove(0); }, &|e| matches!(e, LiftedError::Ends { what: "start", .. }));
+        refuse(&|g| { let b = body(g); b.nodes[1].type_id = lt::MERGE.into(); b.nodes[1].legacy = legacy(json!({"kind": "Blend"})); }, &|e| matches!(e, LiftedError::UnknownMergeOp(_) | LiftedError::Unwired { .. } | LiftedError::UnknownPort { .. }));
+    }
+
+    /// The structure rules each refuse what they exist to refuse
+    /// (#1102 review): frames, group bodies, the other level's ends, ports.
+    #[test]
+    fn the_structure_rules_refuse() {
+        let refuse = |f: &dyn Fn(&mut Graph), want: &dyn Fn(&LiftedError) -> bool| {
+            let mut g = valid();
+            f(&mut g);
+            let err = g.check_lifted(false).unwrap_err();
+            assert!(want(&err), "{err:?}");
+        };
+        // Two frames in a body, and a frame at clip level.
+        refuse(&|g| { g.edges.push(e(1, 2, "frame")); let b = body(g); b.nodes.push(plain(14, lt::GROUP_FRAME)); b.nodes.push(plain(15, lt::GROUP_FRAME)); }, &|e| matches!(e, LiftedError::Ends { what: "frame", .. }));
+        refuse(&|g| g.nodes.push(plain(9, lt::GROUP_FRAME)), &|e| matches!(e, LiftedError::Ends { what: "frame", .. } | LiftedError::WrongLevel(_)));
+        // A body with a frame needs the group's frame input wired.
+        refuse(&|g| body(g).nodes.push(plain(14, lt::GROUP_FRAME)), &|e| matches!(e, LiftedError::Unwired { port, .. } if port == "frame"));
+        // A group without a body, and a body on a node that isn't a group.
+        refuse(&|g| g.nodes[1].group = None, &|e| matches!(e, LiftedError::GroupBody(_)));
+        refuse(&|g| { let b = g.nodes[1].group.clone(); g.nodes[3].group = b; }, &|e| matches!(e, LiftedError::GroupBody(_)));
+        // The other level's ends.
+        refuse(&|g| body(g).nodes.push(plain(16, lt::SOURCE)), &|e| matches!(e, LiftedError::WrongLevel(_) | LiftedError::Ends { .. }));
+        refuse(&|g| g.nodes.push(plain(9, lt::GROUP_INPUT)), &|e| matches!(e, LiftedError::WrongLevel(_)));
+        // A port the node doesn't have, and a kind's fallback `p<n>`.
+        refuse(&|g| { body(g).edges[1].to.1 = "matte".into(); }, &|e| matches!(e, LiftedError::UnknownPort { .. }));
+        refuse(&|g| { body(g).edges[1].to.1 = "p9".into(); }, &|e| matches!(e, LiftedError::UnknownPort { .. }));
+        // An origin is refused on a stored graph and taken on a render copy.
+        let mut g = valid();
+        g.nodes[2].origin = Some(Origin::Track { track: id(7) });
+        assert!(matches!(g.check_lifted(false), Err(LiftedError::Origin(_))));
+        g.check_lifted(true).unwrap();
+        // A body standing alone is held to the same rules.
+        let mut g = valid();
+        let mut b = body(&mut g).clone();
+        b.check_lifted_body().unwrap();
+        b.edges.remove(0);
+        assert!(matches!(b.check_lifted_body(), Err(LiftedError::Unwired { .. })));
+    }
+
+    /// Two placements alone, every input wired, is refused for the count.
+    #[test]
+    fn two_placements_are_refused() {
+        let mut g = valid();
+        g.nodes.insert(4, plain(8, lt::PLACEMENT));
+        g.edges = g.nodes.windows(2).map(|w| Edge { from: (w[0].id, "out".into()), to: (w[1].id, "in".into()) }).collect();
+        assert_eq!(g.check_lifted(false), Err(LiftedError::TwoPlacements));
+    }
+
+    /// A wireless link with a sender counts as wiring; one without doesn't.
+    #[test]
+    fn wireless_wiring_needs_a_sender() {
+        let mut g = valid();
+        body(&mut g).edges.remove(0);
+        body(&mut g).nodes[1].wireless.input_links.insert("in".into(), "plate".into());
+        assert!(matches!(g.check_lifted(false), Err(LiftedError::Unwired { .. })));
+        body(&mut g).nodes[0].wireless.output_link = Some("plate".into());
+        g.check_lifted(false).unwrap();
+    }
+
+    /// A loop is refused, through an edge or a wireless link.
+    #[test]
+    fn a_loop_is_refused() {
+        let mut g = valid();
+        // A gated correction: a mask without the gate is refused first.
+        let gated = || Some(crate::lifted::LegacyFlags { alpha_one: true, ..Default::default() });
+        body(&mut g).edges.push(e(12, 12, "mask"));
+        body(&mut g).nodes[1].legacy = legacy(json!({"kind": "Corrector"}));
+        body(&mut g).nodes[1].legacy_flags = gated();
+        assert!(matches!(g.check_lifted(false), Err(LiftedError::Cycle { .. })));
+        let mut g = valid();
+        let b = body(&mut g);
+        b.nodes[1].legacy = legacy(json!({"kind": "Corrector"}));
+        b.nodes[1].legacy_flags = gated();
+        b.nodes[2].wireless.output_link = Some("back".into());
+        b.nodes[1].wireless.input_links.insert("mask".into(), "back".into());
+        assert!(matches!(g.check_lifted(false), Err(LiftedError::Cycle { .. })));
+    }
+
+    /// A merge must name a known op.
+    #[test]
+    fn a_merge_needs_a_known_op() {
+        let mut g = valid();
+        let b = body(&mut g);
+        b.nodes[1].type_id = lt::MERGE.into();
+        b.nodes[1].legacy = legacy(json!({"kind": "Blend"}));
+        b.edges[0].to.1 = "a".into();
+        b.edges.push(e(11, 12, "b"));
+        assert_eq!(g.check_lifted(false), Err(LiftedError::UnknownMergeOp(id(12))));
+        body(&mut g).nodes[1].params.insert("op".into(), ParamValue::Text("blend_v1".into()));
+        g.check_lifted(false).unwrap();
+    }
 }

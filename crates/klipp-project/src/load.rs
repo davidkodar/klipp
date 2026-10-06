@@ -16,7 +16,8 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 /// Migrate old project graphs forward — insert nodes that were added in later versions.
-fn migrate_graph(graph: &mut NodeGraph) {
+/// Public for the converter's dry run, which decides as this loader leaves a graph.
+pub fn migrate_graph(graph: &mut NodeGraph) {
     // Skip the ColorWarper auto-insert when the graph already uses the
     // new Corrector default (or when the user has explicitly removed
     // the legacy primary chain). The ColorWarper migration was added
