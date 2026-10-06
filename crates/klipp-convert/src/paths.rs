@@ -134,8 +134,12 @@ pub fn resolve<'a>(docs: &'a Documents, path: &NodePath) -> Result<&'a Node, Pat
 
 /// The document clip each copy in a precomposition instance comes from:
 /// today's flatten names the copy of scene clip `c` in instance `instance`
-/// `uuid v5(instance, c)`, so recomputing that for the scene's clips
-/// inverts it. Copy id to document clip id.
+/// `uuid v5(instance, c)` (`flatten::instance_id`), so recomputing that for
+/// the scene's clips inverts it. Copy id to document clip id.
+///
+/// `scene_clips` are the scene's clips as flattened, compounds opened. A
+/// scene nested in another is renamed once per level, so its copies are
+/// mapped one step per level, innermost instance first.
 pub fn instance_sources(instance: Uuid, scene_clips: impl IntoIterator<Item = Uuid>) -> BTreeMap<Uuid, Uuid> {
     scene_clips.into_iter().map(|c| (Uuid::new_v5(&instance, c.as_bytes()), c)).collect()
 }

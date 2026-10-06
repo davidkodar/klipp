@@ -163,7 +163,8 @@ fn duplicate_compounds_and_precomposition_instances_are_reached() {
     let cs = copies(&d);
     let c1 = &cs.iter().find(|(c, _)| *c == u(C1)).unwrap().1;
     let instance = Uuid::from_u128(0x1_0000);
-    let renamed = Uuid::new_v5(&instance, u(C1).as_bytes());
+    // Today's own renaming, not a copy of it.
+    let renamed = klipp_timeline::flatten::instance_id(klipp_core::ClipId(instance), klipp_core::ClipId(u(C1))).0;
     let sources = instance_sources(instance, [u(C1), u(C2)]);
     assert_eq!(sources[&renamed], u(C1), "the instance copy maps back to its clip");
     // The caller keys every copy by its document clip.

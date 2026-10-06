@@ -135,7 +135,7 @@ pub fn splice(clip: &ClipPicture, kind: ClipKind, inputs: &SpliceInputs) -> Clip
         // The track's effects after the clip's own: before an Auto
         // placement that ends the chain (its place is computed over the
         // spliced list), else before the output.
-        let auto_last = nodes.len() >= 2 && nodes[nodes.len() - 2].type_id.as_str() == lt::PLACEMENT && nodes[nodes.len() - 2].legacy.is_none();
+        let auto_last = nodes.len() >= 2 && nodes[nodes.len() - 2].type_id.as_str() == lt::PLACEMENT && nodes[nodes.len() - 2].params.get(&klipp_graph_format::ParamKey::new("mode")) == Some(&klipp_graph_format::ParamValue::Enum(lt::PLACEMENT_AUTO));
         let at = if auto_last { nodes.len() - 2 } else { nodes.len().saturating_sub(1) };
         let spliced = t.effects.iter().map(|e| Node { origin: Some(Origin::Track { track: t.track }), ..e.clone() });
         nodes.splice(at..at, spliced);
