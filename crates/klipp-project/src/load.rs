@@ -685,6 +685,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
             track.targeted = t.targeted;
             track.source_patch = t.source_patch;
             track.caption_style = t.caption_style.clone();
+            track.source_file = t.source_file.as_ref().map(|p| resolve_media_path(project_dir, Path::new(p)));
             track.custom_height = t.custom_height;
             track.colour_label = t.colour_label;
             track.channel_waveforms = t.channel_waveforms;
