@@ -1697,7 +1697,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_perf",
              "Frame timings: decode, grade, composite, total, drops, plus GPU->CPU \
               readback counters, and presented_fps, the pictures shown per second \
-              over the last 2 s (null when nothing is playing). Use it to tell whether a change actually made \
+              over the last 2 s: it falls to null within 2 s of a pause, and stepping or \
+              scrubbing reads as a small rate. Use it to tell whether a change actually made \
               playback faster.",
              json!({}), vec![]),
         tool("klipp_log_tail",

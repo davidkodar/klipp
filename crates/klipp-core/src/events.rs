@@ -1617,8 +1617,10 @@ pub enum AppCommand {
     RemoveMediaTag { media_id: MediaId, tag_index: usize },
 
     // Node graph (color grading)
-    /// A grade node of `kind` (a name in `klipp_nodes::kinds::ADDABLE_NODE_KINDS`),
-    /// with the id `node_id` when the sender has to know it, else a new one.
+    /// A grade node of `kind` (a name in `klipp_nodes::kinds::ADDABLE_NODE_KINDS`).
+    /// With `node_id` (the sender has to know it: the control socket) it
+    /// has that id and goes into the clip's top-level graph; without, it
+    /// gets a new id and goes into the graph the node editor shows.
     AddNode { clip_id: ClipId, kind: String, node_id: Option<uuid::Uuid>, position: (f32, f32) },
     RemoveNode { clip_id: ClipId, node_id: uuid::Uuid },
     /// Collapse a multi-node selection into a single Compound node.

@@ -3480,53 +3480,7 @@ impl NodeGraphV2Panel {
         // wheel scroll for free; same pattern the Add Transition
         // submenu uses on the timeline side.
         let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
-        // Categories — display order top-to-bottom in the menu when
-        // search is empty. Source of truth for both the flat-search
-        // path AND the categorised path; entries the user can pick
-        // are exactly these.
-        const CATEGORIES: &[(&str, &[(&str, &str)])] = &[
-            ("Primary Grade", &[
-                ("Corrector (all-in-one)", "Corrector"),
-                ("Exposure", "Exposure"),
-                ("Contrast", "Contrast"),
-                ("Saturation", "Saturation"),
-                ("Tone Controls", "ToneControls"),
-                ("Colour Wheels", "ColorWheels"),
-                ("Wheel Sat/Bri", "WheelSatBri"),
-                ("Curves", "RGBCurves"),
-                ("Hue/Sat", "HueSatCurves"),
-                ("Colour Balance", "ColorBalance"),
-                ("Colour Match", "ColorMatch"),
-            ]),
-            ("Secondary", &[
-                ("Qualifier", "Qualifier"),
-                ("Luma Key", "LumaKey"),
-                ("Soft Clip", "SoftClip"),
-                ("Mask", "Mask"),
-                ("External Matte", "ExternalMatte"),
-                ("Difference Key", "DifferenceKey"),
-                ("Combine Mattes", "CombineMattes"),
-                ("Mask Cutout", "MaskCutout"),
-            ]),
-            ("Compositing", &[
-                ("Layer", "Layer"),
-                ("Layer Mixer", "LayerMixer"),
-                ("Blend", "Blend"),
-                ("Apply Matte", "ApplyMatte"),
-            ]),
-            ("Utilities", &[
-                ("3D LUT", "Lut3D"),
-                ("Film Grain", "FilmGrain"),
-                ("Colour Warper", "ColorWarper"),
-                ("Noise Reduction", "Denoise"),
-                ("RGB Splitter", "RGBSplitter"),
-                ("RGB Combiner", "RGBCombiner"),
-                ("Reroute", "Reroute"),
-            ]),
-            ("Structural", &[
-                ("Compound", "Compound"),
-            ]),
-        ];
+        const CATEGORIES: &[(&str, &[(&str, &str)])] = ADD_MENU_CATEGORIES;
 
         // Lookup helper — recents store kind_str; we want to render
         // them with their display label, so we walk CATEGORIES once.
@@ -4913,6 +4867,68 @@ mod dock_toolbar_tests {
                     assert!(clip.expand(1.0).contains_rect(*rect), "{width}: {label} clipped");
                     assert!(rect.bottom() < 100.0, "{width}: {label} creates an oversized toolbar: {rect:?}");
                 }
+            }
+        }
+    }
+}
+
+/// The add-node menu's categories — display order top-to-bottom in the menu when
+/// search is empty. Source of truth for both the flat-search
+/// path AND the categorised path; entries the user can pick
+/// are exactly these. Every kind is one `add_color_node` can make
+/// (`klipp_nodes::kinds::ADDABLE_NODE_KINDS`): a name outside it would
+/// add nothing, which the test below holds.
+const ADD_MENU_CATEGORIES: &[(&str, &[(&str, &str)])] = &[
+    ("Primary Grade", &[
+        ("Corrector (all-in-one)", "Corrector"),
+        ("Exposure", "Exposure"),
+        ("Contrast", "Contrast"),
+        ("Saturation", "Saturation"),
+        ("Tone Controls", "ToneControls"),
+        ("Colour Wheels", "ColorWheels"),
+        ("Wheel Sat/Bri", "WheelSatBri"),
+        ("Curves", "RGBCurves"),
+        ("Hue/Sat", "HueSatCurves"),
+        ("Colour Balance", "ColorBalance"),
+        ("Colour Match", "ColorMatch"),
+    ]),
+    ("Secondary", &[
+        ("Qualifier", "Qualifier"),
+        ("Luma Key", "LumaKey"),
+        ("Soft Clip", "SoftClip"),
+        ("Mask", "Mask"),
+        ("External Matte", "ExternalMatte"),
+        ("Difference Key", "DifferenceKey"),
+        ("Combine Mattes", "CombineMattes"),
+        ("Mask Cutout", "MaskCutout"),
+    ]),
+    ("Compositing", &[
+        ("Layer", "Layer"),
+        ("Layer Mixer", "LayerMixer"),
+        ("Blend", "Blend"),
+        ("Apply Matte", "ApplyMatte"),
+    ]),
+    ("Utilities", &[
+        ("3D LUT", "Lut3D"),
+        ("Film Grain", "FilmGrain"),
+        ("Colour Warper", "ColorWarper"),
+        ("Noise Reduction", "Denoise"),
+        ("RGB Splitter", "RGBSplitter"),
+        ("RGB Combiner", "RGBCombiner"),
+        ("Reroute", "Reroute"),
+    ]),
+    ("Structural", &[
+        ("Compound", "Compound"),
+    ]),
+];
+
+#[cfg(test)]
+mod add_menu_tests {
+    #[test]
+    fn every_kind_the_add_menu_offers_can_be_added() {
+        for (category, entries) in super::ADD_MENU_CATEGORIES {
+            for (label, kind) in *entries {
+                assert!(klipp_nodes::kinds::addable_node_kind(kind).is_some(), "{category} › {label}: {kind} is not an addable kind");
             }
         }
     }
