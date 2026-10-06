@@ -187,7 +187,8 @@ impl Clip {
     /// keeps its animation (an undo of a list edit, a render copy given its
     /// own effects back). Fresh ids, as [`Clip::set_effects`].
     pub fn set_effect_list(&mut self, effects: Vec<BuiltinEffect>, enabled: Vec<bool>) {
-        self.effect_ids.0 = (0..effects.len()).map(|_| EffectId::fresh()).collect();
+        self.reconcile_effect_ids();
+        self.effect_ids.ids = (0..effects.len()).map(|_| EffectId::fresh()).collect();
         self.builtin_effects = effects;
         self.builtin_effects_enabled = enabled;
     }
