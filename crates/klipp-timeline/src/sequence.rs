@@ -434,10 +434,10 @@ impl Sequence {
                     if !fx.video.is_empty() {
                         // The clip's flags padded to its own effects first: a
                         // missing flag is on, and the track's follow theirs.
-                        let n = clip.builtin_effects.len();
-                        clip.builtin_effects_enabled.resize(n, true);
-                        clip.builtin_effects.extend(fx.video.iter().cloned());
-                        clip.builtin_effects_enabled.extend((0..fx.video.len()).map(|k| fx.video_enabled.get(k).copied().unwrap_or(true)));
+                        for (k, e) in fx.video.iter().enumerate() {
+                            let id = clip.push_effect(e.clone());
+                            clip.set_effect_enabled(id, fx.video_enabled.get(k).copied().unwrap_or(true));
+                        }
                     }
                     if let Some(grade) = fx.grade_onto(track.kind, clip) {
                         if clip.own_node_graph.is_none() {
@@ -485,8 +485,7 @@ impl Sequence {
                 clip.node_graph = *own;
             }
             if let Some(own) = clip.own_effects.take() {
-                clip.builtin_effects = own.builtin_effects;
-                clip.builtin_effects_enabled = own.builtin_effects_enabled;
+                clip.set_effect_list(own.builtin_effects, own.builtin_effects_enabled);
                 clip.audio_effects = own.audio_effects;
             }
         }

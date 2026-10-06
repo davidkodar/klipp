@@ -4584,8 +4584,7 @@ fn redact(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip:
     // bleed the outside in.
     let mut cover = Clip::media(*media_id, a, b, src_in, src_out);
     cover.volume = 0.0;
-    cover.builtin_effects = vec![hide, E::Crop { left, right, top, bottom, feather: 0.0 }];
-    cover.builtin_effects_enabled = vec![true, true];
+    cover.set_effects(vec![hide, E::Crop { left, right, top, bottom, feather: 0.0 }]);
     // A video track above with room, else a new one on top.
     let above = (0..ti).rev().find(|k| seq.tracks[*k].kind == TrackKind::Video && !seq.tracks[*k].locked && overlapping(seq, *k, a, b, None).is_none());
     let (video, created) = match above {
@@ -4654,8 +4653,7 @@ fn pin(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, media
     let on_frame = klipp_timeline::surface::source_quad_in_frame(&s.corners, s.source_size, frame, None);
     let target = klipp_timeline::surface::pin_target(&on_frame, s.aspect(), picture_size, fit, inset).unwrap_or(on_frame);
     let [tl, tr, br, bl] = klipp_timeline::surface::pin_frame_corners(&target, picture_size, frame).unwrap_or(target);
-    picture.builtin_effects = vec![klipp_effects::BuiltinEffect::CornerPin { tl, tr, br, bl }];
-    picture.builtin_effects_enabled = vec![true];
+    picture.set_effects(vec![klipp_effects::BuiltinEffect::CornerPin { tl, tr, br, bl }]);
     picture.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id, picture_size, fit, inset });
     let above = (0..ti).rev().find(|k| seq.tracks[*k].kind == TrackKind::Video && !seq.tracks[*k].locked && overlapping(seq, *k, a, b, None).is_none());
     let (video, created) = match above {

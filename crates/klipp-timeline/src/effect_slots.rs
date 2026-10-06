@@ -182,6 +182,16 @@ impl Clip {
             .retain(|id, _| !matches!(id, ParamId::Effect { .. }));
     }
 
+    /// Replace the whole list and its flags as given, the effect keyframes
+    /// and modifiers left where they are, by place: a whole-list write that
+    /// keeps its animation (an undo of a list edit, a render copy given its
+    /// own effects back). Fresh ids, as [`Clip::set_effects`].
+    pub fn set_effect_list(&mut self, effects: Vec<BuiltinEffect>, enabled: Vec<bool>) {
+        self.effect_ids.0 = (0..effects.len()).map(|_| EffectId::fresh()).collect();
+        self.builtin_effects = effects;
+        self.builtin_effects_enabled = enabled;
+    }
+
     /// Remove built-in effect `index` with its enabled flag, keyframes
     /// and modifiers, and move those of the effects after it down one
     /// place with them.
@@ -499,6 +509,12 @@ impl Clip {
     pub fn remove_effect_modifiers(&mut self, id: EffectId, param: &str) -> Option<klipp_core::ModifierStack> {
         let index = self.index_of(id)?;
         self.param_modifiers.remove(&ParamId::Effect { effect_index: index, param_name: param.to_owned() })
+    }
+
+    /// Every effect keyframe at once, as a snapshot took them (a keyframe
+    /// edit's undo): the list, flags, ids and modifiers stay as they are.
+    pub fn restore_effect_keyframes(&mut self, keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>) {
+        self.effect_keyframes = keyframes;
     }
 
     /// The whole effect state, ids included, for an undo to restore.

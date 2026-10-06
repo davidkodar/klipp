@@ -361,8 +361,9 @@ fn reidentify(seq: &mut Sequence, ids: &HashMap<ClipId, ClipId>) {
             if let Some(pin) = &mut c.surface_pin {
                 pin.host = renamed(pin.host);
             }
-            for e in &mut c.builtin_effects {
-                if let klipp_effects::BuiltinEffect::Transform { focal_ref: Some(f), .. } = e {
+            let ids: Vec<crate::EffectId> = c.effect_entries().map(|(id, _, _)| id).collect();
+            for id in ids {
+                if let Some(klipp_effects::BuiltinEffect::Transform { focal_ref: Some(f), .. }) = c.effect_mut(id) {
                     match f {
                         klipp_effects::FocalRef::Glyph { title_clip_id, .. } => *title_clip_id = renamed(ClipId(*title_clip_id)).0,
                         klipp_effects::FocalRef::Tracker { clip_id, .. } => *clip_id = renamed(ClipId(*clip_id)).0,
@@ -660,6 +661,8 @@ mod tests {
         let mut a = Clip::media(MediaId::new(), t(0), t(24), t(0), t(24));
         a.builtin_effects = vec![E::Opacity { value: 0.5 }];
         a.builtin_effects_enabled = vec![false];
+        a.effect_keyframes.insert("0:value".into(), vec![klipp_core::Keyframe { time_secs: 0.0, value: 0.2, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }]);
+        a.param_modifiers.insert(klipp_core::ParamId::Effect { effect_index: 0, param_name: "value".into() }, klipp_core::ModifierStack::default());
         a.grade_group = Some(group.id);
         let own_node = corrector(&a.node_graph);
         let mut adjustment = Clip::media(MediaId::new(), t(24), t(48), t(0), t(24));
@@ -678,6 +681,16 @@ mod tests {
         let a = &flat.tracks[0].clips[0];
         assert!(matches!(a.builtin_effects.as_slice(), [E::Opacity { .. }, E::Vignette { .. }]), "{:?}", a.builtin_effects);
         assert_eq!(a.builtin_effects_enabled, vec![false, true], "the clip's own switch kept, the track's on");
+        let own = &before.tracks[0].clips[0];
+        // Effect keyframes by key with their values, and modifier keys.
+        let animation = |c: &Clip| {
+            let mut keys: Vec<(String, Vec<f32>)> = c.effect_keyframes.iter().map(|(k, v)| (k.clone(), v.iter().map(|f| f.value).collect())).collect();
+            keys.sort_by(|x, y| x.0.cmp(&y.0));
+            let mut mods: Vec<String> = c.param_modifiers.keys().map(|k| format!("{k:?}")).collect();
+            mods.sort();
+            (keys, mods)
+        };
+        assert_eq!(animation(a), animation(own), "the clip's own animation stays on its own effect");
         let order: Vec<_> = a.node_graph.topo_sort().unwrap().into_iter().filter(|id| [own_node, group_node, track_node].contains(id)).collect();
         assert_eq!(order, vec![own_node, group_node, track_node], "own grade, then the group's, then the track's");
         assert!(flat.tracks[0].clips[1].builtin_effects.is_empty() && flat.tracks[0].clips[1].own_effects.is_none(), "an adjustment layer takes nothing");
@@ -694,6 +707,9 @@ mod tests {
         // The document keeps its own, and the render copy gives them back.
         assert!(effects(&seq) == effects(&before), "the document is untouched");
         assert!(effects(&flat.with_own_grades()) == effects(&seq), "the render copy gives back each clip's own");
+        let back = flat.with_own_grades();
+        let back = &back.tracks[0].clips[0];
+        assert_eq!((&back.builtin_effects_enabled, animation(back)), (&own.builtin_effects_enabled, animation(own)), "and its flags and animation");
 
         // A clip added to the track later takes its effects too.
         seq.tracks[1].clips.push(Clip::media(MediaId::new(), t(24), t(48), t(0), t(24)));
