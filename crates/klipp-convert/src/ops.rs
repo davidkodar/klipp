@@ -234,8 +234,14 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId) -> Result<(), String
         }
         GraphOp::MoveAfter { after, .. } => {
             let node = g.nodes[find(g, target)?].clone();
+            // Its other inputs (a gate's mask, a merge's second picture)
+            // move with it; only the primary is rewired. A loop this makes
+            // is refused by the check that follows every op.
+            let port = primary(&node);
+            let others: Vec<Edge> = g.edges.iter().filter(|e| e.to.0 == target && e.to.1 != port).cloned().collect();
             apply_graph(g, &GraphOp::RemoveNode { path: NodePath::new(Root::Clip { clip: uuid::Uuid::nil() }, [target]) }, target)?;
             apply_graph(g, &GraphOp::AddNode { after: NodePath::new(Root::Clip { clip: uuid::Uuid::nil() }, [*after]), node: Box::new(node) }, *after)?;
+            g.edges.extend(others);
         }
     }
     Ok(())

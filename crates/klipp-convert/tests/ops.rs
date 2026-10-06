@@ -176,3 +176,35 @@ fn a_node_moves_within_a_grade() {
     assert_eq!(fed(u(E)), Some(sat), "Exposure reads Saturation");
     assert_eq!(fed(u(O)), Some(u(E)), "and the output reads Exposure");
 }
+
+/// Moving a gated correction keeps its mask: only its picture input is
+/// rewired (#1102 review, 5).
+#[test]
+fn a_masked_node_moves_with_its_mask() {
+    const K: &str = "00000000-0000-0000-0000-0000000000a3";
+    const SAT: &str = "00000000-0000-0000-0000-0000000000a4";
+    let grade = json!({
+        "nodes": [{"id": S, "kind": "Source", "label": "S", "enabled": true}, {"id": K, "kind": "LumaKey", "label": "K", "enabled": true},
+                  {"id": E, "kind": "Exposure", "label": "E", "enabled": true}, {"id": SAT, "kind": "Saturation", "label": "Sat", "enabled": true},
+                  {"id": O, "kind": "Output", "label": "O", "enabled": true}],
+        "edges": [{"from_node": S, "from_port": 0, "to_node": K, "to_port": 0}, {"from_node": S, "from_port": 0, "to_node": E, "to_port": 0},
+                  {"from_node": K, "from_port": 0, "to_node": E, "to_port": 1}, {"from_node": E, "from_port": 0, "to_node": SAT, "to_port": 0},
+                  {"from_node": SAT, "from_port": 0, "to_node": O, "to_port": 0}],
+        "output_node_id": O
+    });
+    let p = json!({"version": "1.0.0", "sequences": [{"id": "00000000-0000-0000-0000-000000000501", "name": "S", "tracks": [{
+        "id": TRACK, "name": "V1", "kind": "Video",
+        "clips": [{"id": CLIP, "kind": {"type": "media", "media_id": "00000000-0000-0000-0000-0000000000d1"}, "node_graph": grade}]
+    }]}]});
+    let mut d = Documents::of(&revision2::project(&p).unwrap().0).unwrap();
+    let g = group(&d);
+    let mask_of = |d: &Documents| {
+        let body = &d.clips[&u(CLIP)].graph.nodes.iter().find(|n| n.id == g).unwrap().group.as_ref().unwrap().graph;
+        body.edges.iter().find(|e| e.to.0 == u(E) && e.to.1.as_str() == "mask").map(|e| e.from.0)
+    };
+    assert_eq!(mask_of(&d), Some(u(K)), "gated as saved");
+    apply(&mut d, &GraphOp::MoveAfter { path: clip_path([g, u(E)]), after: u(SAT) }).unwrap();
+    assert_eq!(mask_of(&d), Some(u(K)), "the mask moved with it");
+    let body = &d.clips[&u(CLIP)].graph.nodes.iter().find(|n| n.id == g).unwrap().group.as_ref().unwrap().graph;
+    assert!(body.edges.iter().any(|e| e.from.0 == u(SAT) && e.to.0 == u(E) && e.to.1.as_str() == "in"), "and reads Saturation now");
+}
