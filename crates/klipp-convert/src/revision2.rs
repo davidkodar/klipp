@@ -125,11 +125,64 @@ fn lift_sequence(seq: &Map<String, Value>, notes: &mut Vec<LiftNote>) -> Result<
     Ok(Lifted { timeline, groups, tracks })
 }
 
+/// A v1 graph's wireless link names: those it sends, those it receives.
+fn link_names(g: &Value) -> (std::collections::BTreeSet<String>, std::collections::BTreeSet<String>) {
+    let (mut send, mut recv) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
+    for n in g.get("nodes").and_then(Value::as_array).into_iter().flatten() {
+        if let Some(name) = n.get("output_link").and_then(Value::as_str) {
+            send.insert(name.to_owned());
+        }
+        for name in n.get("input_links").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+            recv.insert(name.to_owned());
+        }
+    }
+    (send, recv)
+}
+
+/// Every clip of `seq` whose wireless link names meet those of a graph
+/// today's bake merges into its own (its grade group's stages, its track's
+/// grade), with a sender on either side (#1102 review): the merged graph is
+/// one namespace, so one side's sender can take over the other's receiver.
+/// In revision 2 each body keeps its own links. `group` is the clip's grade
+/// group, or nil where only the track's grade meets it.
+pub fn cross_group_wireless(seq: &Map<String, Value>) -> Vec<LiftNote> {
+    let mut notes = Vec::new();
+    let groups: Vec<&Value> = seq.get("grade_groups").and_then(Value::as_array).into_iter().flatten().collect();
+    let id = |v: &Value| v.get("id").and_then(Value::as_str).and_then(|s| Uuid::parse_str(s).ok()).unwrap_or_default();
+    for track in seq.get("tracks").and_then(Value::as_array).into_iter().flatten() {
+        let track_grade = track.get("effects").and_then(|e| e.get("grade")).filter(|g| !g.is_null());
+        for clip in track.get("clips").and_then(Value::as_array).into_iter().flatten() {
+            let group = clip.get("grade_group").and_then(Value::as_str).and_then(|gid| groups.iter().find(|g| g.get("id").and_then(Value::as_str) == Some(gid)));
+            let (mut os, mut or) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
+            let stages = group.into_iter().flat_map(|g| ["pre", "post"].into_iter().filter_map(move |k| g.get(k).filter(|s| !s.is_null())));
+            for g in stages.chain(track_grade) {
+                let (s, r) = link_names(g);
+                os.extend(s);
+                or.extend(r);
+            }
+            let (cs, cr) = clip.get("node_graph").filter(|g| !g.is_null()).map(link_names).unwrap_or_default();
+            let names: Vec<String> = os
+                .iter()
+                .filter(|n| cs.contains(*n) || cr.contains(*n))
+                .chain(cs.iter().filter(|n| os.contains(*n) || or.contains(*n)))
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if !names.is_empty() {
+                notes.push(LiftNote::CrossGroupWireless { clip: id(clip), group: group.map(|g| id(g)).unwrap_or_default(), names });
+            }
+        }
+    }
+    notes
+}
+
 /// The revision-2 project from a v1 project, and the lift's notes.
 pub fn project(raw: &Value) -> Result<(Value, Vec<LiftNote>), String> {
     let mut notes = Vec::new();
     let mut copy = raw.clone();
     for seq in sequences_mut(&mut copy).map_err(err)? {
+        notes.extend(cross_group_wireless(seq));
         let lifted = lift_sequence(seq, &mut notes)?;
         if let Some(t) = lifted.timeline {
             seq.insert(V2_FIELD.into(), t);

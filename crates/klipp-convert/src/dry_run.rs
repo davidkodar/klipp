@@ -188,7 +188,15 @@ fn check_into(dir: &Path, parity: Parity, splicer: Option<SpliceDecider>, report
     }
     // Revision 2, the switch's files: built, written, proven.
     match crate::revision2::project(&raw) {
-        Ok((out, _)) => {
+        Ok((out, notes)) => {
+            // A stage's wireless links meeting a clip's: the render could
+            // change, so the project stays on v1 (#1102 review).
+            for n in &notes {
+                if let LiftNote::CrossGroupWireless { clip, group, names } = n {
+                    *report.lift_notes.entry(note_kind(n)).or_default() += 1;
+                    report.stops.push(format!("clip {clip} and its grade group {group} share wireless link names {names:?}: today's bake can cross them, revision 2 keeps them apart"));
+                }
+            }
             let r = serde_json::to_string(&out).map_err(|e| e.to_string()).and_then(|text| crate::revision2::verify_project(&raw, &text));
             match r {
                 Ok(()) => *report.stores_extra.entry("revision 2 projects").or_default() += 1,

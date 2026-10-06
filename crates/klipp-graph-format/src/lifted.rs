@@ -191,6 +191,12 @@ pub enum LiftNote {
     /// An edge from a missing node into a primary input, which today reads
     /// the frame: now an edge from the group's input.
     EdgeRewired { group: NodeId, edge: Value },
+    /// A clip in a grading group whose wireless link names meet a stage's,
+    /// with a sender on either side. Today's bake merges the stage and the
+    /// clip into one graph, so a sender on one side can take over a
+    /// receiver on the other; in revision 2 links stay inside their group
+    /// body. The render could change, so the conversion stops the project.
+    CrossGroupWireless { clip: uuid::Uuid, group: uuid::Uuid, names: Vec<String> },
 }
 
 /// Where a node spliced into a clip's render copy came from. The clip's

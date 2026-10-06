@@ -3,7 +3,7 @@
 //! them alone, neither loading nor pruning nor overwriting them.
 
 use klipp_convert::revision2::{self, REVISION};
-use klipp_graph_format::lifted::ClipPicture;
+use klipp_graph_format::lifted::{ClipPicture, LiftNote};
 use klipp_graph_format::Graph;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -240,4 +240,46 @@ fn a_looping_track_grade_stops_the_project() {
     let mut p = project();
     p["sequences"][0]["tracks"][0]["effects"]["grade"] = g;
     assert!(revision2::project(&p).unwrap_err().contains("loops"));
+}
+
+/// A clip in a grading group whose wireless link names meet a stage's,
+/// with a sender on either side, is noted: today's bake can cross them,
+/// revision 2 keeps them apart (#1102 review).
+#[test]
+fn a_stage_and_a_clip_sharing_link_names_are_noted() {
+    let node = |id: &str, kind: &str, extra: Value| {
+        let mut n = json!({"id": id, "kind": kind, "label": kind, "enabled": true});
+        n.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        n
+    };
+    let g = |nodes: Vec<Value>, ids: [&str; 3]| json!({
+        "nodes": nodes,
+        "edges": [{"from_node": ids[0], "from_port": 0, "to_node": ids[1], "to_port": 0}, {"from_node": ids[1], "from_port": 0, "to_node": ids[2], "to_port": 0}],
+        "output_node_id": ids[2]
+    });
+    let (s1, e1, o1) = ("00000000-0000-0000-0000-0000000000b1", "00000000-0000-0000-0000-0000000000b2", "00000000-0000-0000-0000-0000000000b3");
+    let (s2, e2, o2) = ("00000000-0000-0000-0000-0000000000c1", "00000000-0000-0000-0000-0000000000c2", "00000000-0000-0000-0000-0000000000c3");
+    let project = |stage_link: &str| {
+        let pre = g(vec![node(s1, "Source", json!({})), node(e1, "Exposure", json!({"output_link": stage_link})), node(o1, "Output", json!({}))], [s1, e1, o1]);
+        let own = g(vec![node(s2, "Source", json!({})), node(e2, "Saturation", json!({"input_links": [null, "bus"]})), node(o2, "Output", json!({}))], [s2, e2, o2]);
+        json!({"version": "1.0.0", "sequences": [{"id": "00000000-0000-0000-0000-000000000501", "name": "S",
+            "grade_groups": [{"id": "00000000-0000-0000-0000-000000000601", "name": "G", "pre": pre}],
+            "tracks": [{"id": "00000000-0000-0000-0000-000000000701", "name": "V1", "kind": "Video",
+                "clips": [{"id": "00000000-0000-0000-0000-000000000c01", "kind": {"type": "media", "media_id": "00000000-0000-0000-0000-0000000000d1"}, "node_graph": own, "grade_group": "00000000-0000-0000-0000-000000000601"}]}]}]})
+    };
+    let (_, notes) = revision2::project(&project("bus")).unwrap();
+    let cross: Vec<&LiftNote> = notes.iter().filter(|n| matches!(n, LiftNote::CrossGroupWireless { .. })).collect();
+    assert_eq!(cross.len(), 1, "the stage sends what the clip receives");
+    assert!(matches!(cross[0], LiftNote::CrossGroupWireless { names, .. } if names == &["bus".to_owned()]));
+    let (_, notes) = revision2::project(&project("other")).unwrap();
+    assert!(!notes.iter().any(|n| matches!(n, LiftNote::CrossGroupWireless { .. })), "no shared name, no note");
+    // The track's grade merges into the same namespace, group or none.
+    let mut p = project("other");
+    let pre = p["sequences"][0]["grade_groups"][0]["pre"].clone();
+    let mut grade = pre;
+    grade["nodes"][1]["output_link"] = json!("bus");
+    p["sequences"][0]["tracks"][0]["effects"] = json!({"grade": grade});
+    p["sequences"][0]["tracks"][0]["clips"][0].as_object_mut().unwrap().remove("grade_group");
+    let (_, notes) = revision2::project(&p).unwrap();
+    assert!(notes.iter().any(|n| matches!(n, LiftNote::CrossGroupWireless { group, names, .. } if group.is_nil() && names == &["bus".to_owned()])), "the track's grade sends what the clip receives");
 }
