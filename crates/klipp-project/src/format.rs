@@ -704,6 +704,8 @@ pub struct BinJson {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MediaItemJson {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<klipp_media::MediaItemKind>,
     pub path: String,
     pub filename: String,
     pub duration_frames: i64,

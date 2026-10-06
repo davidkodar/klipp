@@ -674,6 +674,7 @@ pub fn iso8601_now() -> String {
 fn media_item_to_json(item: &MediaItem, project_dir: &Path) -> MediaItemJson {
     MediaItemJson {
         id: item.id.to_string(),
+        kind: (item.kind != klipp_media::MediaItemKind::File).then(|| item.kind.clone()),
         path: to_project_relative(project_dir, &item.path)
             .to_string_lossy()
             .to_string(),
