@@ -712,7 +712,7 @@ fn check_lifted_refuses_a_mask_without_the_gate() {
     let group = p.graph.nodes.iter_mut().find(|n| n.type_id.as_str() == lt::GROUP).unwrap();
     let b = &mut group.group.as_mut().unwrap().graph;
     b.nodes.iter_mut().find(|n| n.id == id(COR)).unwrap().wireless.input_links.clear();
-    b.edges.push(klipp_graph_format::Edge { from: (id(KEY), "matte".into()), to: (id(COR), "mask".into()) });
+    b.edges.push(klipp_graph_format::Edge { from: (id(KEY), klipp_graph_format::ports::output_key("LumaKey", 0)), to: (id(COR), "mask".into()) });
     let err = p.graph.check_lifted(false).unwrap_err();
     assert!(matches!(err, klipp_graph_format::lifted::LiftedError::MaskWithoutGate(n) if n == id(COR)), "{err:?}");
 }

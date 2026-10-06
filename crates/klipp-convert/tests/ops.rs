@@ -122,8 +122,8 @@ fn wiring_that_breaks_the_graph_is_refused() {
     let mut d = docs();
     let before = snapshot(&d);
     let g = group(&d);
-    // A loop: the output's picture back into Exposure.
-    let r = apply(&mut d, &GraphOp::Connect { from: clip_path([g, u(O)]), from_port: "out".into(), to: clip_path([g, u(E)]), to_port: "in".into() });
+    // A loop: Exposure's picture back into itself.
+    let r = apply(&mut d, &GraphOp::Connect { from: clip_path([g, u(E)]), from_port: "out".into(), to: clip_path([g, u(E)]), to_port: "in".into() });
     assert!(r.unwrap_err().contains("Cycle"));
     // An unwired required input.
     let r = apply(&mut d, &GraphOp::Disconnect { to: clip_path([g, u(E)]), port: "in".into() });

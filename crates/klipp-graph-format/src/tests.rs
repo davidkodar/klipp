@@ -444,7 +444,44 @@ mod lifted_checks {
         refuse(&|g| { body(g).edges.remove(0); }, &|e| matches!(e, LiftedError::Unwired { .. }));
         refuse(&|g| { let b = body(g); b.nodes[1].legacy = legacy(json!({"kind": "Hue"})); b.edges.push(e(11, 12, "mask")); }, &|e| matches!(e, LiftedError::MaskNotGateable(_)));
         refuse(&|g| { let b = body(g); b.nodes.remove(0); }, &|e| matches!(e, LiftedError::Ends { what: "start", .. }));
-        refuse(&|g| { let b = body(g); b.nodes[1].type_id = lt::MERGE.into(); b.nodes[1].legacy = legacy(json!({"kind": "Blend"})); }, &|e| matches!(e, LiftedError::UnknownMergeOp(_) | LiftedError::Unwired { .. }));
+        refuse(&|g| { let b = body(g); b.nodes[1].type_id = lt::MERGE.into(); b.nodes[1].legacy = legacy(json!({"kind": "Blend"})); }, &|e| matches!(e, LiftedError::UnknownMergeOp(_) | LiftedError::Unwired { .. } | LiftedError::UnknownPort { .. }));
+    }
+
+    /// The structure rules each refuse what they exist to refuse
+    /// (#1102 review): frames, group bodies, the other level's ends, ports.
+    #[test]
+    fn the_structure_rules_refuse() {
+        let refuse = |f: &dyn Fn(&mut Graph), want: &dyn Fn(&LiftedError) -> bool| {
+            let mut g = valid();
+            f(&mut g);
+            let err = g.check_lifted(false).unwrap_err();
+            assert!(want(&err), "{err:?}");
+        };
+        // Two frames in a body, and a frame at clip level.
+        refuse(&|g| { g.edges.push(e(1, 2, "frame")); let b = body(g); b.nodes.push(plain(14, lt::GROUP_FRAME)); b.nodes.push(plain(15, lt::GROUP_FRAME)); }, &|e| matches!(e, LiftedError::Ends { what: "frame", .. }));
+        refuse(&|g| g.nodes.push(plain(9, lt::GROUP_FRAME)), &|e| matches!(e, LiftedError::Ends { what: "frame", .. } | LiftedError::WrongLevel(_)));
+        // A body with a frame needs the group's frame input wired.
+        refuse(&|g| body(g).nodes.push(plain(14, lt::GROUP_FRAME)), &|e| matches!(e, LiftedError::Unwired { port, .. } if port == "frame"));
+        // A group without a body, and a body on a node that isn't a group.
+        refuse(&|g| g.nodes[1].group = None, &|e| matches!(e, LiftedError::GroupBody(_)));
+        refuse(&|g| { let b = g.nodes[1].group.clone(); g.nodes[3].group = b; }, &|e| matches!(e, LiftedError::GroupBody(_)));
+        // The other level's ends.
+        refuse(&|g| body(g).nodes.push(plain(16, lt::SOURCE)), &|e| matches!(e, LiftedError::WrongLevel(_) | LiftedError::Ends { .. }));
+        refuse(&|g| g.nodes.push(plain(9, lt::GROUP_INPUT)), &|e| matches!(e, LiftedError::WrongLevel(_)));
+        // A port the node doesn't have, and a kind's fallback `p<n>`.
+        refuse(&|g| { body(g).edges[1].to.1 = "matte".into(); }, &|e| matches!(e, LiftedError::UnknownPort { .. }));
+        refuse(&|g| { body(g).edges[1].to.1 = "p9".into(); }, &|e| matches!(e, LiftedError::UnknownPort { .. }));
+        // An origin is refused on a stored graph and taken on a render copy.
+        let mut g = valid();
+        g.nodes[2].origin = Some(Origin::Track { track: id(7) });
+        assert!(matches!(g.check_lifted(false), Err(LiftedError::Origin(_))));
+        g.check_lifted(true).unwrap();
+        // A body standing alone is held to the same rules.
+        let mut g = valid();
+        let mut b = body(&mut g).clone();
+        b.check_lifted_body().unwrap();
+        b.edges.remove(0);
+        assert!(matches!(b.check_lifted_body(), Err(LiftedError::Unwired { .. })));
     }
 
     /// Two placements alone, every input wired, is refused for the count.
@@ -473,7 +510,7 @@ mod lifted_checks {
         let mut g = valid();
         // A gated correction: a mask without the gate is refused first.
         let gated = || Some(crate::lifted::LegacyFlags { alpha_one: true, ..Default::default() });
-        body(&mut g).edges.push(e(13, 12, "mask"));
+        body(&mut g).edges.push(e(12, 12, "mask"));
         body(&mut g).nodes[1].legacy = legacy(json!({"kind": "Corrector"}));
         body(&mut g).nodes[1].legacy_flags = gated();
         assert!(matches!(g.check_lifted(false), Err(LiftedError::Cycle { .. })));

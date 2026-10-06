@@ -230,6 +230,13 @@ pub enum LiftedError {
     /// A matte on a correction's `mask`, drawn or wireless, without the
     /// gate's `alpha_one`: it would read as gated where today it isn't.
     MaskWithoutGate(NodeId),
+    /// A group without a body, or a body on a node that isn't a group.
+    GroupBody(NodeId),
+    /// The other level's end: a clip's source or output inside a body, a
+    /// body's input, output or frame at clip level.
+    WrongLevel(NodeId),
+    /// An edge from or into a port the node doesn't have.
+    UnknownPort { node: NodeId, port: String },
     UnknownMergeOp(NodeId),
     TwoPlacements,
     /// An origin on a graph that isn't a render copy.
@@ -274,6 +281,21 @@ fn required_inputs(n: &crate::Node) -> Vec<crate::PortKey> {
     }
 }
 
+/// Whether `n` has the port: a grade node its kind's ports, a group its
+/// picture and frame inputs, anything else `in` and `out`.
+fn has_port(n: &crate::Node, port: &crate::PortKey, input: bool) -> bool {
+    use crate::ports::{input_index, output_index};
+    match n.type_id.as_str() {
+        crate::types::LEGACY_NODE | types::MERGE | types::GROUP_INPUT | types::GROUP_OUTPUT => {
+            // A named port: the `p<n>` a kind falls back to is no port of it.
+            let index = if input { input_index(kind(n), port) } else { output_index(kind(n), port) };
+            index.is_some_and(|i| port.as_str() != format!("p{i}"))
+        }
+        types::GROUP if input => matches!(port.as_str(), "in" | "frame"),
+        _ => port.as_str() == if input { "in" } else { "out" },
+    }
+}
+
 /// A matte reaches `node`'s `mask`: only a gateable correction takes one,
 /// and only gated, with `alpha_one` as the lift sets it.
 fn check_mask(g: &Graph, node: NodeId) -> Result<(), LiftedError> {
@@ -310,9 +332,16 @@ fn check_level_running(g: &Graph, level: &str, body: bool, render_copy: bool, ru
         return Err(LiftedError::Output { level: level.to_owned() });
     }
     let mut ids = std::collections::BTreeSet::new();
+    let other_level: &[&str] = if body { &[types::SOURCE, types::OUTPUT] } else { &[types::GROUP_INPUT, types::GROUP_OUTPUT, types::GROUP_FRAME] };
     for n in &g.nodes {
         if !ids.insert(n.id) {
             return Err(LiftedError::DuplicateNode(n.id));
+        }
+        if (n.type_id.as_str() == types::GROUP) != n.group.is_some() {
+            return Err(LiftedError::GroupBody(n.id));
+        }
+        if other_level.contains(&n.type_id.as_str()) {
+            return Err(LiftedError::WrongLevel(n.id));
         }
         if n.origin.is_some() && !render_copy {
             return Err(LiftedError::Origin(n.id));
@@ -330,6 +359,12 @@ fn check_level_running(g: &Graph, level: &str, body: bool, render_copy: bool, ru
         }
         if e.to.1.as_str() == "mask" {
             check_mask(g, e.to.0)?;
+        }
+        for (id, port, input) in [(e.from.0, &e.from.1, false), (e.to.0, &e.to.1, true)] {
+            let n = g.nodes.iter().find(|n| n.id == id);
+            if !n.is_some_and(|n| has_port(n, port, input)) {
+                return Err(LiftedError::UnknownPort { node: id, port: port.to_string() });
+            }
         }
     }
     let sender = |name: &str, me: NodeId| g.nodes.iter().any(|o| o.id != me && o.wireless.output_link.as_deref() == Some(name));
