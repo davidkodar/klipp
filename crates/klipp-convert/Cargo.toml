@@ -3,10 +3,18 @@ name = "klipp-convert"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "The one-time conversion of Klipp projects to the node-graph format, and its dry run (#997)"
+
+[[bin]]
+name = "klipp-convert"
+path = "src/main.rs"
 
 [lints]
 workspace = true
 
+# The converter reads and writes project files itself; it depends on no
+# app crate, so what it reads is what is on disk, not what today's app
+# would make of it (#1054).
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -15,6 +23,7 @@ uuid.workspace = true
 [dev-dependencies]
 klipp-core = { path = "../klipp-core" }
 klipp-effects = { path = "../klipp-effects" }
+klipp-media = { path = "../klipp-media" }
 klipp-nodes = { path = "../klipp-nodes" }
 klipp-project = { path = "../klipp-project" }
 klipp-timeline = { path = "../klipp-timeline" }
