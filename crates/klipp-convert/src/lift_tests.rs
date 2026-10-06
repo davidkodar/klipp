@@ -196,7 +196,12 @@ fn opacity_follows_todays_three_rules() {
     assert_eq!(p.opacity, 0.6);
     assert_eq!(p.opacity_anim.as_ref().unwrap().keys, [json!({"time_secs": 0.0, "value": 0.9})]);
     assert!(notes.iter().any(|n| matches!(n, LiftNote::OrphanKeys { .. })), "the earlier effect's keys never ran");
-    assert!(!types_of(&p.graph).contains(&types::LEGACY_OPACITY), "no Opacity effect is a node");
+    // Every Opacity entry is kept off for the record (#1089): the property
+    // renders, and each entry keeps its slot and its stored enabled bit.
+    let kept: Vec<&Node> = p.graph.nodes.iter().filter(|n| n.type_id.as_str() == types::LEGACY_OPACITY).collect();
+    assert_eq!(kept.len(), 2);
+    assert!(kept.iter().all(|n| !n.enabled && n.legacy_flags.as_ref().and_then(|f| f.was_enabled) == Some(true)));
+    assert_eq!(kept.iter().map(|n| n.legacy.as_ref().unwrap().slot).collect::<Vec<_>>(), [Some(0), Some(1)]);
 
     // No keys of its own: the clip's keys and modifiers, then its value
     // modifiers; its time modifiers never ran.
@@ -606,4 +611,50 @@ fn a_bare_store_looping_through_a_dropped_edge_stops() {
     let (pre, _) = crate::to_v2::stages_to_v2(group.as_object().unwrap()).unwrap();
     let r = crate::lift::lift_grade_only(&pre.unwrap(), false);
     assert_eq!(r.unwrap_err(), "a grade graph that loops, which today's renderer never ran");
+}
+
+/// Every edge the lift takes out of a grade, and every wireless link that
+/// goes with one, comes back where it stood (#1089): a parked edge, one to
+/// a missing node, one into an unread port with the wireless link it
+/// overrode, a second into one port, one from a missing node the lift
+/// reads from the frame, and a port the lift fills from another. As a
+/// clip's grade and as a store standing alone.
+#[test]
+fn delift_puts_back_every_edge_the_lift_took_out() {
+    const BLEND: &str = "00000000-0000-0000-0000-000000000007";
+    const DEAD: &str = "00000000-0000-0000-0000-00000000dead";
+    const GONE: &str = "00000000-0000-0000-0000-00000000600e";
+    let mut cor = gn(COR, "Corrector");
+    cor["output_link"] = json!("bus");
+    let mut blend = gn(BLEND, "Blend");
+    blend["input_links"] = json!([null, null, null, null, null, null, null, null, null, "bus"]);
+    let g = json!({
+        "nodes": [gn(SRC, "Source"), cor, gn(SAT, "Saturation"), blend, gn(OUT, "Output")],
+        "edges": [
+            edge(SRC, 0, SAT, 0),
+            edge(SAT, 0, COR, 1),
+            edge(SAT, 0, DEAD, 0),
+            edge(SAT, 0, BLEND, 9),
+            edge(SAT, 0, BLEND, 0),
+            edge(GONE, 0, OUT, 0),
+            edge(BLEND, 0, OUT, 0)
+        ],
+        "output_node_id": OUT
+    });
+    let record = clip_to_v2(clip(json!({"node_graph": g.clone()})).as_object().unwrap()).unwrap();
+    let (p, notes) = lift_clip(&record, &LiftCtx { clip_id: id(CLIP), kind: ClipKind::Media }).unwrap();
+    for want in ["parked_edge", "edge_dropped", "edge_rewired"] {
+        assert!(notes.iter().any(|n| serde_json::to_value(n).unwrap()["note"] == want), "the case reaches {want}");
+    }
+    let input = body(&p).nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP_INPUT).unwrap();
+    let f = input.legacy_flags.as_ref().unwrap();
+    assert_eq!((f.parked_edges.len(), f.dropped_edges.len(), f.rewired.len(), f.filled.len(), f.dropped_wireless.len()), (1, 3, 1, 1, 1));
+    let back = crate::delift::clip(&p).unwrap();
+    assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&record).unwrap(), "delift(lift(r)) == r");
+
+    let seq = json!({"id": "00000000-0000-0000-0000-000000000501", "timeline_graph": g});
+    let structural = crate::to_v2::timeline_to_v2(seq.as_object().unwrap()).unwrap().unwrap();
+    let b = crate::lift::lift_grade_only(&structural, false).unwrap();
+    let back = crate::delift::grade_only(&b, structural.nodes[0].id).unwrap();
+    assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&structural).unwrap(), "and standing alone");
 }

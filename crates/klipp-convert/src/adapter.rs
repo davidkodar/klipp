@@ -104,6 +104,9 @@ pub fn clip(p: &ClipPicture, ctx: &LiftCtx) -> Result<Value, Refusal> {
             }
             // Kept off for the record: only the first Transform placed.
             types::LEGACY_TRANSFORM if !n.enabled => {}
+            // Kept off for the record: every Opacity entry (the clip's
+            // opacity property renders), a speed ramp that doesn't blend.
+            types::LEGACY_OPACITY | types::LEGACY_SPEED_RAMP if !n.enabled => {}
             types::LEGACY_EFFECT => fx.push(payload(n)?.clone(), n.enabled, &n.anim),
             other => return Err(format!("node {} is a {other}, which the lift does not put in a clip's chain", n.id)),
         }

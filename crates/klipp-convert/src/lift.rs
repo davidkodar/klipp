@@ -270,6 +270,7 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
         let value = serde_json::to_value(&edge).unwrap_or(Value::Null);
         notes.push(LiftNote::ParkedEdge { group: group.id, edge: value.clone() });
         group_flags.parked_edges.insert(0, value);
+        group_flags.parked_at.insert(0, *i as u32);
     }
     for n in body.nodes.iter_mut().filter(|n| gated.contains(&n.id)) {
         flags(n).alpha_one = true;
@@ -315,16 +316,19 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
     let mut seen = std::collections::BTreeSet::new();
     let mut overridden: Vec<(NodeId, PortKey)> = Vec::new();
     let mut kept = Vec::with_capacity(body.edges.len());
-    for mut e in std::mem::take(&mut body.edges) {
+    for (at, mut e) in std::mem::take(&mut body.edges).into_iter().enumerate() {
         let value = serde_json::to_value(&e).unwrap_or(Value::Null);
-        let drop = |why: &str, notes: &mut Vec<LiftNote>| notes.push(LiftNote::EdgeDropped { group: group.id, edge: value.clone(), why: why.into() });
+        let drop = |why: &str, notes: &mut Vec<LiftNote>, flags: &mut LegacyFlags| {
+            notes.push(LiftNote::EdgeDropped { group: group.id, edge: value.clone(), why: why.into() });
+            flags.dropped_edges.push(json!({ "at": at, "edge": value }));
+        };
         let Some(to_kind) = kinds.get(&e.to.0) else {
-            drop("to a node that isn't there", notes);
+            drop("to a node that isn't there", notes, &mut group_flags);
             continue;
         };
         let port = e.to.1.as_str();
         if port.strip_prefix('p').is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())) {
-            drop("into a port the kind doesn't read", notes);
+            drop("into a port the kind doesn't read", notes, &mut group_flags);
             // A wireless link on that port was overridden by the wire, so
             // today's ordering never counted it; it goes with the wire,
             // or it would become a dependency (even a loop) it never was.
@@ -332,12 +336,13 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
             continue;
         }
         if !seen.insert((e.to.0, e.to.1.clone())) {
-            drop("after another edge into the same port", notes);
+            drop("after another edge into the same port", notes, &mut group_flags);
             continue;
         }
         if !kinds.contains_key(&e.from.0) {
             let primary = *port == *input_port(to_kind, 0).as_str() || (to_kind == "Layer" && *port == *input_port("Layer", 1).as_str());
             if primary {
+                group_flags.rewired.push(json!({ "to": e.to, "from": e.from }));
                 e.from = (frame_id, "out".into());
                 notes.push(LiftNote::EdgeRewired { group: group.id, edge: value.clone() });
             }
@@ -349,6 +354,7 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
         let still_wired = body.edges.iter().any(|e| e.to.0 == id && e.to.1 == port);
         if let Some(n) = body.nodes.iter_mut().find(|n| n.id == id).filter(|_| !still_wired) {
             if let Some(name) = n.wireless.input_links.remove(&port) {
+                group_flags.dropped_wireless.push(json!({ "node": id, "port": port, "name": name }));
                 notes.push(LiftNote::EdgeDropped { group: group.id, edge: json!({ "wireless": name, "to": [id, port] }), why: "a wireless link a dropped wire overrode".into() });
             }
         }
@@ -406,6 +412,9 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
                 None => Some((frame_id, "out".into())),
             };
             if let Some(from) = from {
+                if from_port.is_some() {
+                    group_flags.filled.push(json!([n.id, p]));
+                }
                 filled.push(Edge { from, to: (n.id, p) });
             }
         }
@@ -415,9 +424,26 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
     // Parked edges are kept for the record on the body's own input, so a
     // body standing alone (a track or timeline grade, a stage, a version)
     // keeps them as a clip's does.
-    if !group_flags.parked_edges.is_empty() {
+    // So is everything else the lift took out of the saved edges, for
+    // `delift` to put back where it stood.
+    let record = LegacyFlags {
+        parked_edges: std::mem::take(&mut group_flags.parked_edges),
+        parked_at: std::mem::take(&mut group_flags.parked_at),
+        dropped_edges: std::mem::take(&mut group_flags.dropped_edges),
+        rewired: std::mem::take(&mut group_flags.rewired),
+        filled: std::mem::take(&mut group_flags.filled),
+        dropped_wireless: std::mem::take(&mut group_flags.dropped_wireless),
+        ..LegacyFlags::default()
+    };
+    if !record.is_empty() {
         if let Some(input) = body.nodes.iter_mut().find(|n| n.id == input_id) {
-            flags(input).parked_edges = std::mem::take(&mut group_flags.parked_edges);
+            let f = flags(input);
+            f.parked_edges = record.parked_edges;
+            f.parked_at = record.parked_at;
+            f.dropped_edges = record.dropped_edges;
+            f.rewired = record.rewired;
+            f.filled = record.filled;
+            f.dropped_wireless = record.dropped_wireless;
         }
     }
 
@@ -691,6 +717,9 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
         tnr_taken |= runs;
         let mut h = node(n.id, lt::TEMPORAL_DENOISE, runs, n.legacy.clone());
         h.legacy_flags = n.legacy_flags.clone();
+        if n.enabled != runs {
+            flags(&mut h).was_enabled = Some(n.enabled);
+        }
         let (anim, orphans) = effect_anim(n);
         h.anim = anim;
         keep_orphans(&mut h, orphans, &mut notes);
@@ -705,7 +734,11 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
         n.type_id.as_str() == types::LEGACY_SPEED_RAMP && n.enabled && v.get("blend_mode").and_then(Value::as_u64) == Some(1) && v.get("freeze") != Some(&Value::Bool(true))
     });
     if let Some(n) = blend {
-        head.push(node(n.id, lt::FRAME_BLEND, media, n.legacy.clone()));
+        let mut b = node(n.id, lt::FRAME_BLEND, media, n.legacy.clone());
+        if !media {
+            flags(&mut b).was_enabled = Some(true);
+        }
+        head.push(b);
         if !media {
             notes.push(LiftNote::NeverRan { node: n.id, why: "frame blending runs on media clips only".into() });
         }
@@ -748,7 +781,20 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
     chain.extend(ofx.iter().map(|n| (*n).clone()));
     for n in &effects {
         match n.type_id.as_str() {
-            types::LEGACY_OPACITY | types::LEGACY_SPEED_RAMP | types::LEGACY_TEMPORAL_DENOISE => {}
+            // In the head, above.
+            types::LEGACY_TEMPORAL_DENOISE => {}
+            types::LEGACY_SPEED_RAMP if blend.is_some_and(|b| b.id == n.id) => {}
+            // Kept off, for the record: every Opacity entry (the clip's
+            // opacity property is what renders) and a speed ramp that
+            // doesn't blend frames. The user put each in the list.
+            types::LEGACY_OPACITY | types::LEGACY_SPEED_RAMP => {
+                let mut k = (*n).clone();
+                k.enabled = false;
+                if n.enabled {
+                    flags(&mut k).was_enabled = Some(true);
+                }
+                chain.push(k);
+            }
             types::LEGACY_TRANSFORM if Some(n.id) == fixed_at => {
                 let mut p = node(n.id, lt::PLACEMENT, true, n.legacy.clone());
                 p.params.insert("mode".into(), ParamValue::Enum(lt::PLACEMENT_FIXED));
@@ -757,6 +803,9 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
             types::LEGACY_TRANSFORM => {
                 let mut t = (*n).clone();
                 t.enabled = false;
+                if n.enabled {
+                    flags(&mut t).was_enabled = Some(true);
+                }
                 notes.push(LiftNote::ExtraTransform { node: n.id });
                 chain.push(t);
             }
@@ -790,6 +839,9 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
     }
     if !clip_orphans.is_empty() {
         flags(&mut chain[0]).orphan_keys = clip_orphans;
+    }
+    if !lc.is_empty() {
+        flags(&mut chain[0]).clip_anim = Some(lc.clone());
     }
 
     let edges = chain_edges(&chain);

@@ -114,6 +114,35 @@ pub struct LegacyFlags {
     /// on a correction whose port 0 is unwired), kept outside the graph.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parked_edges: Vec<Value>,
+    /// Where each parked edge stood among the saved edges, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parked_at: Vec<u32>,
+    /// The stored enabled bit, where the lift set `enabled` otherwise (an
+    /// entry kept off for the record, a head entry that never ran).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub was_enabled: Option<bool>,
+    /// On a Grade group body's input: saved edges today never reads (to a
+    /// node that isn't there, into a port the kind doesn't read, a second
+    /// into one port), each `{"at": <index>, "edge": <edge>}`, the index
+    /// among the saved edges once the parked ones are out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dropped_edges: Vec<Value>,
+    /// On a Grade group body's input: saved edges from a node that isn't
+    /// there, which the lift reads from the frame, each `{"to": <port>,
+    /// "from": <the saved source>}`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rewired: Vec<Value>,
+    /// On a Grade group body's input: the ports the lift wired from
+    /// another input (Blend's B, RGBCombiner's G and B), each `[node, port]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filled: Vec<Value>,
+    /// On a Grade group body's input: wireless links that went with a
+    /// dropped wire, each `{"node": <id>, "port": <port>, "name": <name>}`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dropped_wireless: Vec<Value>,
+    /// On a clip's source: the clip's animation fields as stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip_anim: Option<crate::LegacyClipAnim>,
 }
 
 impl LegacyFlags {

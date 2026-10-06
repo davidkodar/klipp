@@ -25,7 +25,7 @@ use klipp_compose::render::{clip_effects, frame_blends, temporal_denoise_of};
 use klipp_convert::canon::{AUDIO_MODIFIERS, CLIP_FIELDS};
 use klipp_convert::lift::{lift_clip, ClipKind, LiftCtx};
 use klipp_convert::splice::{splice, stage_body, track_parts, SpliceInputs, StageInputs, TrackInputs};
-use klipp_convert::{adapter, to_v1, to_v2};
+use klipp_convert::{adapter, delift, to_v1, to_v2};
 use klipp_core::Timecode;
 use klipp_nodes::{NodeGraph, NodeKind};
 use klipp_timeline::{Clip, Sequence, Track};
@@ -974,6 +974,73 @@ fn the_renderer_consumes_every_generated_clip_alike_after_the_lift() {
     eprintln!("generated: {clips} clips alike after the lift, {migrated} of them rewritten on load");
     assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
     assert!(clips >= 900 && migrated > 0, "the generator reached too little: {clips} clips, {migrated} migrated");
+}
+
+/// A clip's picture lifted and brought back by `delift`, as v1 fields:
+/// `to_v1(delift(lift(to_v2(x))))`.
+fn delifted(clip: &Value) -> Result<Value, String> {
+    let record = to_v2::clip_to_v2(clip.as_object().ok_or("a clip")?).map_err(|e| format!("to_v2: {e:?}"))?;
+    let clip_id = Uuid::parse_str(clip.get("id").and_then(Value::as_str).ok_or("a clip without an id")?).map_err(|e| e.to_string())?;
+    let ctx = LiftCtx { clip_id, kind: ClipKind::from_json(clip.get("kind"))? };
+    let (picture, _notes) = lift_clip(&record, &ctx).map_err(|e| format!("lift: {e}"))?;
+    let back = delift::clip(&picture).map_err(|e| format!("delift: {e}"))?;
+    to_v1::clip(&serde_json::to_value(&back).map_err(|e| e.to_string())?)
+}
+
+/// The lift keeps everything (#1089): over generated clips, `delift` gives
+/// back the record the lift was given (where today's loader rewrote
+/// nothing), the re-lift of what it gives back is the same picture byte
+/// for byte, and the v1 picture it gives back renders as today.
+#[test]
+fn the_lift_keeps_everything_and_delift_gives_it_back() {
+    let (mut clips, mut exact, mut rewritten_on_load) = (0, 0, 0);
+    let mut failures = Vec::new();
+    for seed in 0..40 {
+        let (dir, scratch) = (temp("delift"), temp("delift_out"));
+        generated_project(&dir, seed, 25);
+        if let Err(e) = check_project(&dir, &scratch, delifted, true) {
+            failures.push(format!("seed {seed} render: {e}"));
+        }
+        let project: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("project.json")).unwrap()).unwrap();
+        for clip in project["sequences"].as_array().into_iter().flatten().flat_map(|s| s["tracks"].as_array().into_iter().flatten()).flat_map(|t| t["clips"].as_array().into_iter().flatten()) {
+            clips += 1;
+            let r = (|| -> Result<(), String> {
+                let record = to_v2::clip_to_v2(clip.as_object().ok_or("a clip")?).map_err(|e| format!("{e:?}"))?;
+                let ctx = LiftCtx { clip_id: Uuid::parse_str(clip["id"].as_str().unwrap()).unwrap(), kind: ClipKind::from_json(clip.get("kind"))? };
+                let (p, notes) = lift_clip(&record, &ctx)?;
+                let back = delift::clip(&p)?;
+                let loaded = notes.iter().any(|n| matches!(n, klipp_graph_format::lifted::LiftNote::LoadMigration { .. } | klipp_graph_format::lifted::LiftNote::DefaultPipeline { .. }));
+                if loaded {
+                    rewritten_on_load += 1;
+                } else {
+                    let d = first_diff(&serde_json::to_value(&record).unwrap(), &serde_json::to_value(&back).unwrap(), "record");
+                    if !d.is_empty() {
+                        return Err(format!("delift(lift(r)) != r: {d}"));
+                    }
+                    exact += 1;
+                }
+                let (again, _) = lift_clip(&back, &ctx)?;
+                let (a, b) = (serde_json::to_string(&p).unwrap(), serde_json::to_string(&again).unwrap());
+                if a != b {
+                    return Err(format!("lift(delift(p)) != p: {}", first_diff(&serde_json::to_value(&p).unwrap(), &serde_json::to_value(&again).unwrap(), "")));
+                }
+                Ok(())
+            })();
+            if let Err(e) = r {
+                failures.push(format!("seed {seed} clip {}: {e}", clip["id"]));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+    eprintln!("delift: {clips} clips, {exact} given back exactly, {rewritten_on_load} rewritten on load and re-lifted exactly");
+    if std::env::var_os("DELIFT_ALL").is_some() {
+        for f in &failures {
+            eprintln!("FAIL {f}");
+        }
+    }
+    let shown: Vec<String> = failures.iter().take(12).cloned().collect();
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), shown.join("\n"));
 }
 
 /// The structural round trip, and the lift with its adapter, change

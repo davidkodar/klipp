@@ -6,6 +6,7 @@
 pub mod adapter;
 pub mod assemble;
 pub mod canon;
+pub mod delift;
 pub mod document;
 pub mod dry_run;
 pub mod ids;
