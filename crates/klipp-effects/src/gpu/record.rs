@@ -56,7 +56,12 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         | BuiltinEffect::HSVAdjust { .. }
         | BuiltinEffect::Levels { .. }
         | BuiltinEffect::Vibrance { .. }
-        | BuiltinEffect::ColorFade { .. } => Some(1),
+        | BuiltinEffect::ColorFade { .. }
+        | BuiltinEffect::Crop { .. }
+        | BuiltinEffect::Transform { .. }
+        | BuiltinEffect::Mirror { .. }
+        | BuiltinEffect::LensDistortion { .. }
+        | BuiltinEffect::Letterbox { .. } => Some(1),
         _ => None,
     }
 }
@@ -191,6 +196,121 @@ impl GpuEffectsPipeline {
                     color: [lin(color[0]), lin(color[1]), lin(color[2]), color[3] as f32 / 255.0],
                 });
                 (&self.color_fade_pipeline, slot)
+            }
+            BuiltinEffect::Crop {
+                left,
+                right,
+                top,
+                bottom,
+                feather,
+            } => {
+                if *left <= 0.0 && *right <= 0.0 && *top <= 0.0 && *bottom <= 0.0 {
+                    return Recorded::Identity;
+                }
+                let slot = rec.slots.claim(q, &CropParams {
+                    width,
+                    height,
+                    crop_left: *left * width as f32,
+                    crop_right: (1.0 - *right) * width as f32,
+                    crop_top: *top * height as f32,
+                    crop_bottom: (1.0 - *bottom) * height as f32,
+                    feather: *feather,
+                    _pad: 0,
+                });
+                (&self.crop_pipeline, slot)
+            }
+            BuiltinEffect::Transform {
+                position_x,
+                position_y,
+                scale_x,
+                scale_y,
+                rotation,
+                anchor_x,
+                anchor_y,
+                rotation_x,
+                rotation_y,
+                perspective,
+                focal_ref: _,
+            } => {
+                if *position_x == 0.0
+                    && *position_y == 0.0
+                    && (*scale_x - 1.0).abs() < f32::EPSILON
+                    && (*scale_y - 1.0).abs() < f32::EPSILON
+                    && rotation.abs() < f32::EPSILON
+                    && rotation_x.abs() < f32::EPSILON
+                    && rotation_y.abs() < f32::EPSILON
+                {
+                    return Recorded::Identity;
+                }
+                let rot_rad = rotation.to_radians();
+                let cos_r = rot_rad.cos();
+                let sin_r = rot_rad.sin();
+                let inv_sx = if scale_x.abs() > f32::EPSILON {
+                    1.0 / scale_x
+                } else {
+                    1.0
+                };
+                let inv_sy = if scale_y.abs() > f32::EPSILON {
+                    1.0 / scale_y
+                } else {
+                    1.0
+                };
+                let rx_rad = rotation_x.to_radians();
+                let ry_rad = rotation_y.to_radians();
+                let focal = if *perspective > 0.001 { width as f32 / *perspective } else { 0.0 };
+                let slot = rec.slots.claim(q, &TransformParams {
+                    width,
+                    height,
+                    anchor_x: *anchor_x * width as f32,
+                    anchor_y: *anchor_y * height as f32,
+                    position_x: *position_x,
+                    position_y: *position_y,
+                    cos_r,
+                    sin_r,
+                    inv_sx,
+                    inv_sy,
+                    cos_rx: rx_rad.cos(),
+                    sin_rx: rx_rad.sin(),
+                    cos_ry: ry_rad.cos(),
+                    sin_ry: ry_rad.sin(),
+                    focal,
+                    _pad: [0; 3],
+                });
+                (&self.transform_pipeline, slot)
+            }
+            BuiltinEffect::Mirror { horizontal, vertical } => {
+                if *horizontal == 0 && *vertical == 0 {
+                    return Recorded::Identity;
+                }
+                let slot = rec.slots.claim(q, &MirrorParams {
+                    width, height,
+                    horizontal: *horizontal,
+                    vertical: *vertical,
+                });
+                (&self.mirror_pipeline, slot)
+            }
+            BuiltinEffect::LensDistortion { distortion, scale } => {
+                if distortion.abs() < f32::EPSILON && (*scale - 1.0).abs() < f32::EPSILON {
+                    return Recorded::Identity;
+                }
+                let slot = rec.slots.claim(q, &LensDistortionParams {
+                    width, height,
+                    distortion: *distortion,
+                    scale: *scale,
+                });
+                (&self.lens_distortion_pipeline, slot)
+            }
+            BuiltinEffect::Letterbox { aspect_ratio, bar_color, opacity } => {
+                let slot = rec.slots.claim(q, &LetterboxParams {
+                    width, height,
+                    aspect_ratio: *aspect_ratio,
+                    bar_color: *bar_color,
+                    opacity: *opacity,
+                    _pad0: 0,
+                    _pad1: 0,
+                    _pad2: 0,
+                });
+                (&self.letterbox_pipeline, slot)
             }
             _ => return Recorded::NotRecordable,
         };

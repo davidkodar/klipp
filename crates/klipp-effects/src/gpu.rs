@@ -5960,7 +5960,12 @@ impl GpuEffectsPipeline {
                 | BuiltinEffect::HSVAdjust { .. }
                 | BuiltinEffect::Levels { .. }
                 | BuiltinEffect::Vibrance { .. }
-                | BuiltinEffect::ColorFade { .. } => {}
+                | BuiltinEffect::ColorFade { .. }
+                | BuiltinEffect::Crop { .. }
+                | BuiltinEffect::Transform { .. }
+                | BuiltinEffect::Mirror { .. }
+                | BuiltinEffect::LensDistortion { .. }
+                | BuiltinEffect::Letterbox { .. } => {}
                 BuiltinEffect::GaussianBlur { radius } => {
                     if *radius < 0.5 {
                         continue;
@@ -6008,89 +6013,6 @@ impl GpuEffectsPipeline {
                         _pad: 0,
                     });
                     self.dispatch(&self.sharpen_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::Crop {
-                    left,
-                    right,
-                    top,
-                    bottom,
-                    feather,
-                } => {
-                    if *left <= 0.0 && *right <= 0.0 && *top <= 0.0 && *bottom <= 0.0 {
-                        continue;
-                    }
-                    self.write_params(&CropParams {
-                        width,
-                        height,
-                        crop_left: *left * width as f32,
-                        crop_right: (1.0 - *right) * width as f32,
-                        crop_top: *top * height as f32,
-                        crop_bottom: (1.0 - *bottom) * height as f32,
-                        feather: *feather,
-                        _pad: 0,
-                    });
-                    self.dispatch(&self.crop_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::Transform {
-                    position_x,
-                    position_y,
-                    scale_x,
-                    scale_y,
-                    rotation,
-                    anchor_x,
-                    anchor_y,
-                    rotation_x,
-                    rotation_y,
-                    perspective,
-                    focal_ref: _,
-                } => {
-                    if *position_x == 0.0
-                        && *position_y == 0.0
-                        && (*scale_x - 1.0).abs() < f32::EPSILON
-                        && (*scale_y - 1.0).abs() < f32::EPSILON
-                        && rotation.abs() < f32::EPSILON
-                        && rotation_x.abs() < f32::EPSILON
-                        && rotation_y.abs() < f32::EPSILON
-                    {
-                        continue;
-                    }
-                    let rot_rad = rotation.to_radians();
-                    let cos_r = rot_rad.cos();
-                    let sin_r = rot_rad.sin();
-                    let inv_sx = if scale_x.abs() > f32::EPSILON {
-                        1.0 / scale_x
-                    } else {
-                        1.0
-                    };
-                    let inv_sy = if scale_y.abs() > f32::EPSILON {
-                        1.0 / scale_y
-                    } else {
-                        1.0
-                    };
-                    let rx_rad = rotation_x.to_radians();
-                    let ry_rad = rotation_y.to_radians();
-                    let focal = if *perspective > 0.001 { width as f32 / *perspective } else { 0.0 };
-                    self.write_params(&TransformParams {
-                        width,
-                        height,
-                        anchor_x: *anchor_x * width as f32,
-                        anchor_y: *anchor_y * height as f32,
-                        position_x: *position_x,
-                        position_y: *position_y,
-                        cos_r,
-                        sin_r,
-                        inv_sx,
-                        inv_sy,
-                        cos_rx: rx_rad.cos(),
-                        sin_rx: rx_rad.sin(),
-                        cos_ry: ry_rad.cos(),
-                        sin_ry: ry_rad.sin(),
-                        focal,
-                        _pad: [0; 3],
-                    });
-                    self.dispatch(&self.transform_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
                 }
                 BuiltinEffect::CornerPin { tl, tr, br, bl } => {
@@ -6400,30 +6322,6 @@ impl GpuEffectsPipeline {
                     self.dispatch(&self.emboss_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
                 }
-                BuiltinEffect::Mirror { horizontal, vertical } => {
-                    if *horizontal == 0 && *vertical == 0 {
-                        continue;
-                    }
-                    self.write_params(&MirrorParams {
-                        width, height,
-                        horizontal: *horizontal,
-                        vertical: *vertical,
-                    });
-                    self.dispatch(&self.mirror_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::LensDistortion { distortion, scale } => {
-                    if distortion.abs() < f32::EPSILON && (*scale - 1.0).abs() < f32::EPSILON {
-                        continue;
-                    }
-                    self.write_params(&LensDistortionParams {
-                        width, height,
-                        distortion: *distortion,
-                        scale: *scale,
-                    });
-                    self.dispatch(&self.lens_distortion_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
                 BuiltinEffect::Dilate { radius } => {
                     self.write_params(&DilateErodeParams {
                         width, height,
@@ -6556,19 +6454,6 @@ impl GpuEffectsPipeline {
                     // queue drains between submits. See submit_chain for context.
                     self.device.poll(wgpu::Maintain::Poll);
 
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::Letterbox { aspect_ratio, bar_color, opacity } => {
-                    self.write_params(&LetterboxParams {
-                        width, height,
-                        aspect_ratio: *aspect_ratio,
-                        bar_color: *bar_color,
-                        opacity: *opacity,
-                        _pad0: 0,
-                        _pad1: 0,
-                        _pad2: 0,
-                    });
-                    self.dispatch(&self.letterbox_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
                 }
                 BuiltinEffect::FilmGrain { amount, size, color, shadows, seed } => {
