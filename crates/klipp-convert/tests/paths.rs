@@ -2,7 +2,7 @@
 //! every occurrence of a document node in the sequence's render copies.
 
 use klipp_convert::lift::ClipKind;
-use klipp_convert::paths::{occurrences, resolve, Documents, Occurrence, PathError};
+use klipp_convert::paths::{instance_sources, occurrences, resolve, Documents, Occurrence, PathError};
 use klipp_convert::revision2;
 use klipp_convert::splice::{splice, SpliceInputs, StageInputs, TrackInputs};
 use klipp_graph_format::lifted::{types as lt, ClipPicture, Stage};
@@ -151,4 +151,25 @@ fn occurrences_are_the_document_node() {
         let n = nodes.iter().find(|n| Some(n.id) == o.nodes.last().copied()).unwrap();
         assert_eq!(n.legacy, doc.legacy);
     }
+}
+
+/// Every copy is an occurrence, deliberately unlike today's drain: a clip
+/// laid in twice through an editorial compound (two copies, one document
+/// clip) gets both, and a precomposition instance's copy (renamed
+/// `uuid v5(instance, clip)`) is found through its document clip.
+#[test]
+fn duplicate_compounds_and_precomposition_instances_are_reached() {
+    let d = docs();
+    let cs = copies(&d);
+    let c1 = &cs.iter().find(|(c, _)| *c == u(C1)).unwrap().1;
+    let instance = Uuid::from_u128(0x1_0000);
+    let renamed = Uuid::new_v5(&instance, u(C1).as_bytes());
+    let sources = instance_sources(instance, [u(C1), u(C2)]);
+    assert_eq!(sources[&renamed], u(C1), "the instance copy maps back to its clip");
+    // The caller keys every copy by its document clip.
+    let keyed: Vec<(Uuid, &ClipPicture)> = vec![(u(C1), c1), (u(C1), c1), (sources[&renamed], c1)];
+    let own = NodePath::new(Root::Clip { clip: u(C1) }, [group_id(&d, C1), exposure(5)]);
+    assert_eq!(occurrences(&own, &keyed).len(), 3, "both compound copies and the instance copy");
+    let stage = NodePath::new(Root::GroupStage { group: u(GROUP), stage: Stage::Pre }, [exposure(2)]);
+    assert_eq!(occurrences(&stage, &keyed).len(), 3, "a stage reaches every copy of every member");
 }

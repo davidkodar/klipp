@@ -13,8 +13,14 @@
 //! - a timeline grade's node: none in clip copies (the timeline grade runs
 //!   on the sequence); the document node itself.
 //!
-//! Precomposition instances (a clip's copies inside a precomposition
-//! scene) follow the rule settled in #1081, added when it is.
+//! **Every** copy is an occurrence, by the document clip it comes from: the
+//! caller keys each render copy by that clip. An editorial compound laid in
+//! twice gives two copies with one key, and both are found; today's drain
+//! reaches only the first (#1080). A precomposition instance's copies carry
+//! renamed ids, `uuid v5(instance, clip)`; [`instance_sources`] turns them
+//! back into their document clips, so they are found too, where today's
+//! drain reaches none. Both are deliberate changes from today, pinned by
+//! klipp-25's `a_live_drag_reaches` test.
 
 use std::collections::BTreeMap;
 
@@ -126,16 +132,26 @@ pub fn resolve<'a>(docs: &'a Documents, path: &NodePath) -> Result<&'a Node, Pat
     }
 }
 
-/// One occurrence of a document node in a render copy: the clip whose copy
-/// holds it, and the node ids from that copy's graph down to it.
+/// The document clip each copy in a precomposition instance comes from:
+/// today's flatten names the copy of scene clip `c` in instance `instance`
+/// `uuid v5(instance, c)`, so recomputing that for the scene's clips
+/// inverts it. Copy id to document clip id.
+pub fn instance_sources(instance: Uuid, scene_clips: impl IntoIterator<Item = Uuid>) -> BTreeMap<Uuid, Uuid> {
+    scene_clips.into_iter().map(|c| (Uuid::new_v5(&instance, c.as_bytes()), c)).collect()
+}
+
+/// One occurrence of a document node in a render copy: the document clip
+/// the copy comes from, and the node ids from that copy's graph down to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Occurrence {
     pub clip: Uuid,
     pub nodes: Vec<NodeId>,
 }
 
-/// Every occurrence of the path's node in `copies` (each clip's spliced
-/// render copy), for the drain to write a live change into.
+/// Every occurrence of the path's node in `copies`: every spliced render
+/// copy, each keyed by the document clip it comes from (a duplicate
+/// compound's copies share a key; an instance's copies are keyed through
+/// [`instance_sources`]), for the drain to write a live change into.
 pub fn occurrences(path: &NodePath, copies: &[(Uuid, &ClipPicture)]) -> Vec<Occurrence> {
     let mut out = Vec::new();
     for (clip, copy) in copies {
