@@ -43,15 +43,27 @@ fn the_current_format_opens() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Every file so far is revision 0, and a save at revision 0 leaves the
-/// field out, so this change writes files exactly as before and older
-/// builds read them as before.
+/// Revision 2 is the node-graph format (#1089): a save writes it, and it
+/// opens again.
 #[test]
-fn revision_zero_is_not_written() {
-    assert_eq!(FORMAT_REVISION, 0, "raising the revision is a deliberate change: update this test with the reason");
-    let dir = saved("revision_zero");
-    let json = std::fs::read_to_string(dir.join("project.json")).unwrap();
-    assert!(!json.contains("format_revision"), "revision 0 is omitted: {json}");
+fn a_save_writes_revision_2() {
+    assert_eq!(FORMAT_REVISION, 2, "raising the revision is a deliberate change: update this test with the reason");
+    let dir = saved("revision_two");
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("project.json")).unwrap()).unwrap();
+    assert_eq!(v["format_revision"], 2);
     load_project(&dir).expect("and it opens");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A file from before revision 2 is refused with a sentence naming the
+/// tool that converts it, and left exactly as it was (#1089).
+#[test]
+fn a_file_from_before_revision_2_is_refused_naming_the_converter() {
+    let dir = saved("unconverted");
+    with_revision(&dir, 0);
+    let before = std::fs::read(dir.join("project.json")).unwrap();
+    let err = load_project(&dir).expect_err("an unconverted file is refused");
+    assert!(err.contains("klipp-convert run"), "names the tool: {err}");
+    assert_eq!(std::fs::read(dir.join("project.json")).unwrap(), before, "and the file is untouched");
     let _ = std::fs::remove_dir_all(&dir);
 }

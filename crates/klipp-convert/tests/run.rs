@@ -31,8 +31,10 @@ fn graph() -> klipp_nodes::NodeGraph {
     g
 }
 
-/// A v1 project as today's code saves it, with a Look, a still, media,
-/// and the files the copy must leave out or keep as they are.
+/// A v1 project as the build before the switch saved it (through the v1
+/// writer kept as the oracle, since the app now writes revision 2), with
+/// a Look, a still, media, and the files the copy must leave out or keep
+/// as they are.
 fn project(parent: &Path, name: &str) -> PathBuf {
     use klipp_core::{MediaId, RationalTime};
     let dir = parent.join(format!("{name}.klipp"));
@@ -42,8 +44,8 @@ fn project(parent: &Path, name: &str) -> PathBuf {
     clip.node_graph = graph();
     clip.set_effect_list(vec![klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 }], clip.builtin_effects_enabled().to_vec());
     seq.tracks[0].clips.push(clip);
-    klipp_project::save_project(&dir, &[seq], &klipp_media::MediaPool::new()).unwrap();
-    klipp_project::save_looks(&dir, &[klipp_timeline::Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: graph() }]).unwrap();
+    klipp_project::save_project_v1(&dir, &[seq], &klipp_media::MediaPool::new()).unwrap();
+    klipp_project::save_looks_v1(&dir, &[klipp_timeline::Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: graph() }]).unwrap();
     std::fs::write(dir.join("media/stills.json"), json!([{ "name": "s", "filename": "s.png", "grade": graph() }]).to_string()).unwrap();
     std::fs::create_dir_all(dir.join("media/stills")).unwrap();
     std::fs::write(dir.join("media/stills/s.png"), b"png bytes").unwrap();
@@ -451,11 +453,12 @@ fn an_exclusion_matches_the_folder_it_names() {
 }
 
 /// Make `<name>_autosave.klipp` beside `parent`'s project a whole project,
-/// as the app's auto-save is, so discovery finds it; its time `secs`.
+/// as the build before the switch saved it, so discovery finds it; its
+/// time `secs`.
 fn autosave(parent: &Path, name: &str, secs: u64) -> PathBuf {
     let auto = parent.join(format!("{name}_autosave.klipp"));
     let _ = std::fs::remove_dir_all(&auto);
-    klipp_project::save_project(&auto, &[klipp_timeline::Sequence::new_default()], &klipp_media::MediaPool::new()).unwrap();
+    klipp_project::save_project_v1(&auto, &[klipp_timeline::Sequence::new_default()], &klipp_media::MediaPool::new()).unwrap();
     assert!(klipp_convert::scan::is_klipp_project(&auto));
     set_time(&auto, secs);
     auto

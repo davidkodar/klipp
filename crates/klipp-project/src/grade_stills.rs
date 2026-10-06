@@ -153,24 +153,57 @@ fn stills_index_path(project_dir: &Path) -> PathBuf {
     project_dir.join("media").join("stills.json")
 }
 
+/// The stills index as this Klipp reads it (#1089): a revision-2 index,
+/// brought back through `unlift`, and only one this build reads in full
+/// (#993). An index from before revision 2 is refused, naming the
+/// converter. The one test a load and a save both ask, so an index that
+/// isn't loaded is never written over either.
+fn read_index(text: &str, form: crate::FileForm) -> Result<Vec<GradeStillMeta>, String> {
+    let v1_text = match form {
+        crate::FileForm::Revision2 => {
+            let v2: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
+            if v2.get("format_revision").and_then(serde_json::Value::as_u64) != Some(u64::from(crate::FORMAT_REVISION)) {
+                return Err("it is from before revision 2: convert it with `klipp-convert run`".into());
+            }
+            serde_json::to_string(&klipp_graph_lift::unlift::stills(&v2)?).map_err(|e| e.to_string())?
+        }
+        #[cfg(feature = "v1-oracle")]
+        crate::FileForm::V1 => text.to_owned(),
+    };
+    if !klipp_nodes::json_check::reads_in_full(&v1_text) {
+        return Err("they were saved by a newer Klipp (#993)".into());
+    }
+    serde_json::from_str(&v1_text).map_err(|e| format!("the index doesn't parse: {e}"))
+}
+
 /// Encode and write all stills into `<project>/media/stills/` plus an
 /// index file. Idempotent — safe to call repeatedly.
-pub fn save_grade_stills(
+pub fn save_grade_stills(project_dir: &Path, stills: &[GradeStillData]) -> Result<(), String> {
+    save_grade_stills_as(project_dir, stills, crate::FileForm::Revision2)
+}
+
+/// Today's v1 stills writer, kept only to prove the one-time conversion
+/// (#1089), behind `v1-oracle`.
+#[cfg(feature = "v1-oracle")]
+pub fn save_grade_stills_v1(project_dir: &Path, stills: &[GradeStillData]) -> Result<(), String> {
+    save_grade_stills_as(project_dir, stills, crate::FileForm::V1)
+}
+
+fn save_grade_stills_as(
     project_dir: &Path,
     stills: &[GradeStillData],
+    form: crate::FileForm,
 ) -> Result<(), String> {
     // An index this build cannot read in full was not loaded, so the
     // stills in memory are not all the project's stills: writing them
     // would delete the rest (#993). It is left as it is instead.
     let index_path = stills_index_path(project_dir);
     if index_path.exists() {
-        let readable = crate::path_util::read_to_string_capped(&index_path, crate::path_util::MAX_INPUT_FILE_BYTES)
-            .is_ok_and(|t| serde_json::from_str::<Vec<GradeStillMeta>>(&t).is_ok() && klipp_nodes::json_check::reads_in_full(&t));
-        if !readable {
-            return Err(format!(
-                "The grade stills in {} were saved by a newer Klipp or cannot be read, so they are left as they are and not overwritten",
-                index_path.display()
-            ));
+        let read = crate::path_util::read_to_string_capped(&index_path, crate::path_util::MAX_INPUT_FILE_BYTES)
+            .map_err(|e| e.to_string())
+            .and_then(|t| read_index(&t, form));
+        if let Err(why) = read {
+            return Err(format!("The grade stills in {} are left as they are and not overwritten: {why}", index_path.display()));
         }
     }
     let stills_dir = stills_dir(project_dir);
@@ -206,8 +239,20 @@ pub fn save_grade_stills(
             grade: s.grade.clone(),
         })
         .collect();
-    let index_json = serde_json::to_string_pretty(&metas)
-        .map_err(|e| format!("Failed to serialize stills index: {e}"))?;
+    let index_json = match form {
+        // Through text, as the project: an f32 keeps today's digits.
+        crate::FileForm::Revision2 => {
+            let text = serde_json::to_string(&metas).map_err(|e| format!("Failed to serialize stills index: {e}"))?;
+            let v1: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("Failed to serialize stills index: {e}"))?;
+            let (v2, notes) = klipp_graph_lift::revision2::stills_noted(&v1).map_err(|e| format!("Failed to write the stills index's revision-2 file: {e}"))?;
+            if let Some(n) = notes.iter().find(|n| klipp_graph_lift::revision2::is_lost(n)) {
+                return Err(format!("Saving the grade stills would lose part of them ({n:?}), so they were not saved"));
+            }
+            serde_json::to_string_pretty(&v2).map_err(|e| format!("Failed to serialize stills index: {e}"))?
+        }
+        #[cfg(feature = "v1-oracle")]
+        crate::FileForm::V1 => serde_json::to_string_pretty(&metas).map_err(|e| format!("Failed to serialize stills index: {e}"))?,
+    };
     atomic_write(&stills_index_path(project_dir), index_json.as_bytes())
         .map_err(|e| format!("Failed to write stills index: {e}"))?;
 
@@ -218,6 +263,17 @@ pub fn save_grade_stills(
 /// Read the stills index and decode every PNG. Missing files are skipped
 /// with a warning rather than failing the whole load.
 pub fn load_grade_stills(project_dir: &Path) -> Vec<GradeStillData> {
+    load_grade_stills_as(project_dir, crate::FileForm::Revision2)
+}
+
+/// Today's v1 stills reader, kept only to prove the one-time conversion
+/// (#1089), behind `v1-oracle`.
+#[cfg(feature = "v1-oracle")]
+pub fn load_grade_stills_v1(project_dir: &Path) -> Vec<GradeStillData> {
+    load_grade_stills_as(project_dir, crate::FileForm::V1)
+}
+
+fn load_grade_stills_as(project_dir: &Path, form: crate::FileForm) -> Vec<GradeStillData> {
     let index_path = stills_index_path(project_dir);
     if !index_path.exists() {
         return Vec::new();
@@ -230,14 +286,10 @@ pub fn load_grade_stills(project_dir: &Path) -> Vec<GradeStillData> {
             return Vec::new();
         }
     };
-    if !klipp_nodes::json_check::reads_in_full(&index_str) {
-        warn!("Leaving the grade stills as they are: they were saved by a newer Klipp (#993)");
-        return Vec::new();
-    }
-    let mut metas: Vec<GradeStillMeta> = match serde_json::from_str(&index_str) {
+    let mut metas: Vec<GradeStillMeta> = match read_index(&index_str, form) {
         Ok(v) => v,
-        Err(e) => {
-            warn!("Failed to parse stills index: {e}");
+        Err(why) => {
+            warn!("Leaving the grade stills as they are: {why}");
             return Vec::new();
         }
     };

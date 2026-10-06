@@ -261,3 +261,24 @@ pub fn colour_preset_noted(file_name: &str, raw: &Value) -> Result<(Value, Vec<L
     let v = json!({ "format_revision": REVISION, V2_FIELD: body(&g, false, &mut notes)? });
     Ok((v, notes))
 }
+
+/// Whether a lift note says something the revision-2 file can't bring
+/// back. With the complete lift (#1089) nothing is lost: every entry keeps
+/// a node and every removal is recorded, so `unlift` restores it. The
+/// match is exhaustive so that a new kind of note needs a decision; a save
+/// refuses to write a file over a lost note.
+pub fn is_lost(note: &LiftNote) -> bool {
+    match note {
+        LiftNote::NeverRan { .. }
+        | LiftNote::ParkedEdge { .. }
+        | LiftNote::OrphanKeys { .. }
+        | LiftNote::ExtraTransform { .. }
+        | LiftNote::DroppedField { .. }
+        | LiftNote::LoadMigration { .. }
+        | LiftNote::DefaultPipeline { .. }
+        | LiftNote::MissingOutput { .. }
+        | LiftNote::EdgeDropped { .. }
+        | LiftNote::EdgeRewired { .. }
+        | LiftNote::CrossGroupWireless { .. } => false,
+    }
+}

@@ -27,6 +27,6 @@ klipp-core = { path = "../klipp-core" }
 klipp-effects = { path = "../klipp-effects" }
 klipp-media = { path = "../klipp-media" }
 klipp-nodes = { path = "../klipp-nodes" }
-klipp-project = { path = "../klipp-project" }
+klipp-project = { path = "../klipp-project", features = ["v1-oracle"] }
 klipp-timeline = { path = "../klipp-timeline" }
 klipp-compose = { path = "../klipp-compose" }

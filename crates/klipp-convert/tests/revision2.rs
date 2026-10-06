@@ -154,8 +154,8 @@ fn todays_build_leaves_a_revision_2_look_alone() {
     std::fs::create_dir_all(dir.join("looks")).unwrap();
     let path = dir.join("looks").join(format!("{id}.json"));
     std::fs::write(&path, &text).unwrap();
-    assert!(klipp_project::load_looks(&dir).is_empty(), "not loaded");
-    klipp_project::save_looks(&dir, &[]).unwrap();
+    assert!(klipp_project::load_looks_v1(&dir).is_empty(), "not loaded");
+    klipp_project::save_looks_v1(&dir, &[]).unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "not pruned or rewritten");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -170,10 +170,10 @@ fn todays_build_leaves_a_revision_2_stills_index_alone() {
     std::fs::create_dir_all(dir.join("media")).unwrap();
     let path = dir.join("media/stills.json");
     std::fs::write(&path, &text).unwrap();
-    assert!(klipp_project::load_grade_stills(&dir).is_empty(), "not loaded");
+    assert!(klipp_project::load_grade_stills_v1(&dir).is_empty(), "not loaded");
     // A new still saved over it: today's save refuses rather than overwrite.
     let still = klipp_project::GradeStillData { name: "New".into(), filename: "new.png".into(), rgba: vec![255; 16], width: 2, height: 2, source: None, grade: None };
-    assert!(klipp_project::save_grade_stills(&dir, &[still]).is_err());
+    assert!(klipp_project::save_grade_stills_v1(&dir, &[still]).is_err());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "not overwritten");
     let _ = std::fs::remove_dir_all(&dir);
 }

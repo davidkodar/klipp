@@ -174,7 +174,7 @@ fn render_inputs(c: &Clip, fps: f64) -> Value {
 
 /// The sequences of the project in `dir`, as today's reader loads them.
 fn load(dir: &Path) -> Result<Vec<Sequence>, String> {
-    klipp_project::load_project(dir).map(|r| r.0)
+    klipp_project::load_project_v1(dir).map(|r| r.0)
 }
 
 /// Every clip of `seqs` by id, with its sequence's rate.
@@ -952,7 +952,7 @@ fn generated_project(dir: &Path, seed: u64, n: usize) {
         let id = klipp_core::ClipId(Uuid::from_u64_pair(seed + 1, i as u64 + 1));
         seq.tracks[0].clips.push(Clip { id, kind, ..Clip::gap(tc(i as f64 * 2.0), tc(i as f64 * 2.0 + 2.0)) });
     }
-    klipp_project::save_project(dir, &[seq], &klipp_media::MediaPool::new()).expect("save");
+    klipp_project::save_project_v1(dir, &[seq], &klipp_media::MediaPool::new()).expect("save");
     let path = dir.join("project.json");
     let mut project: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     // The speeds a frame blend needs to show, from a stream of their own so
@@ -1106,7 +1106,7 @@ fn a_looping_grade_in_a_group_grades_nothing_stages_included() {
         let id = klipp_core::ClipId(Uuid::from_u64_pair(0x100b, 1));
         let tc = |s: f64| Timecode::from_secs_f64(s, 24);
         seq.tracks[0].clips.push(Clip { id, kind: klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) });
-        klipp_project::save_project(&dir, &[seq], &klipp_media::MediaPool::new()).expect("save");
+        klipp_project::save_project_v1(&dir, &[seq], &klipp_media::MediaPool::new()).expect("save");
         let path = dir.join("project.json");
         let mut project: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let group = Uuid::from_u64_pair(0x100b, 2).to_string();

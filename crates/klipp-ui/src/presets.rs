@@ -80,8 +80,20 @@ fn tool_preset_reads_in_full(text: &str) -> bool {
 
 /// Whether the colour preset file `text` is one this build reads in full:
 /// the test `load_preset_file` applies before offering it.
-fn colour_preset_reads_in_full(text: &str) -> bool {
-    klipp_nodes::json_check::reads_in_full(text) && serde_json::from_str::<NodeGraph>(text).is_ok()
+/// A colour preset file (`<file_name>`, extension included) as this Klipp
+/// reads it (#1089): a revision-2 preset brought back through `unlift`, and
+/// only one this build reads in full (#993). A preset from before revision
+/// 2 is refused, naming the converter.
+fn read_colour_preset(file_name: &str, text: &str) -> Result<NodeGraph, String> {
+    let v2: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
+    if v2.get("format_revision").and_then(serde_json::Value::as_u64) != Some(u64::from(klipp_project::FORMAT_REVISION)) {
+        return Err("it is from before revision 2: convert it with `klipp-convert run`".into());
+    }
+    let v1 = serde_json::to_string(&klipp_graph_lift::unlift::colour_preset(file_name, &v2)?).map_err(|e| e.to_string())?;
+    if !klipp_nodes::json_check::reads_in_full(&v1) {
+        return Err("saved by a newer Klipp".into());
+    }
+    serde_json::from_str(&v1).map_err(|e| format!("corrupt: {e}"))
 }
 
 /// Refuses to write over `path` when it holds a preset this build cannot
@@ -349,10 +361,17 @@ fn save_preset_in(dir: &Path, name: &str, graph: &NodeGraph) -> Result<(), Strin
     let safe_name: String = name.chars()
         .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' })
         .collect();
-    let path = dir.join(format!("{safe_name}.json"));
-    refuse_unreadable(&path, colour_preset_reads_in_full)?;
-    let json = serde_json::to_string_pretty(graph)
-        .map_err(|e| format!("Serialize error: {e}"))?;
+    let file_name = format!("{safe_name}.json");
+    let path = dir.join(&file_name);
+    refuse_unreadable(&path, |t| read_colour_preset(&file_name, t).is_ok())?;
+    // Revision 2 (#1089), through text so an f32 keeps today's digits.
+    let text = serde_json::to_string(graph).map_err(|e| format!("Serialize error: {e}"))?;
+    let v1: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("Serialize error: {e}"))?;
+    let (v2, notes) = klipp_graph_lift::revision2::colour_preset_noted(&file_name, &v1).map_err(|e| format!("Revision 2 error: {e}"))?;
+    if let Some(n) = notes.iter().find(|n| klipp_graph_lift::revision2::is_lost(n)) {
+        return Err(format!("Saving the preset would lose part of it ({n:?}), so it was not saved"));
+    }
+    let json = serde_json::to_string_pretty(&v2).map_err(|e| format!("Serialize error: {e}"))?;
     std::fs::write(&path, json)
         .map_err(|e| format!("Write error: {e}"))?;
     Ok(())
@@ -377,13 +396,16 @@ fn load_user_presets() -> Vec<(String, NodeGraph)> {
 
 fn load_preset_file(path: &Path) -> Option<(String, NodeGraph)> {
     let text = std::fs::read_to_string(path).ok()?;
-    // A preset holding a grade node this build would lose is not offered:
-    // applied, the node would be a passthrough (#993). Left as it is.
-    if !klipp_nodes::json_check::reads_in_full(&text) {
-        tracing::warn!("Leaving colour preset {:?} as it is: saved by a newer Klipp", path);
-        return None;
-    }
-    let graph: NodeGraph = serde_json::from_str(&text).ok()?;
+    // A preset this build can't read in full, or from before revision 2, is
+    // not offered and is left as it is (#993, #1089).
+    let file_name = path.file_name()?.to_string_lossy().to_string();
+    let graph = match read_colour_preset(&file_name, &text) {
+        Ok(g) => g,
+        Err(why) => {
+            tracing::warn!("Leaving colour preset {:?} as it is: {why}", path);
+            return None;
+        }
+    };
     let name = path.file_stem()?.to_string_lossy().to_string();
     Some((name, graph))
 }
@@ -426,9 +448,44 @@ mod overwrite_tests {
         std::fs::write(&path, &saved).unwrap();
         assert!(save_preset_in(&dir, "Teal", &NodeGraph::default()).is_err(), "the save went through");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), saved, "the preset was overwritten");
-        // A readable one is replaced as before.
-        std::fs::write(&path, serde_json::to_string(&NodeGraph::default()).unwrap()).unwrap();
+        // A readable (revision-2) one is replaced as before.
+        std::fs::remove_file(&path).unwrap();
         assert!(save_preset_in(&dir, "Teal", &NodeGraph::default()).is_ok());
+        assert!(save_preset_in(&dir, "Teal", &NodeGraph::default()).is_ok(), "a revision-2 preset is replaced");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1089: a colour preset is written as revision 2 and read back as the
+    /// same graph.
+    #[test]
+    fn a_colour_preset_round_trips_through_revision_2() {
+        let dir = temp_dir("colour-rt");
+        let mut graph = NodeGraph::default();
+        graph.nodes.iter_mut().filter(|n| n.kind == NodeKind::Corrector).for_each(|n| n.params.exposure = Some(0.4));
+        save_preset_in(&dir, "Warm", &graph).unwrap();
+        let path = dir.join("Warm.json");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["format_revision"], serde_json::json!(klipp_project::FORMAT_REVISION), "written as revision 2");
+        let (name, back) = load_preset_file(&path).expect("read back");
+        assert_eq!(name, "Warm");
+        assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&graph).unwrap(), "the graph comes back unchanged");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1089: a colour preset from before revision 2 isn't offered, names
+    /// the converter, and is left as it is.
+    #[test]
+    fn a_colour_preset_from_before_revision_2_is_left_alone() {
+        let dir = temp_dir("colour-v1");
+        let path = dir.join("Old.json");
+        let v1 = serde_json::to_string(&NodeGraph::default()).unwrap();
+        std::fs::write(&path, &v1).unwrap();
+        assert!(load_preset_file(&path).is_none(), "an unconverted preset is not offered");
+        let why = read_colour_preset("Old.json", &v1).unwrap_err();
+        assert!(why.contains("klipp-convert run"), "{why}");
+        assert!(save_preset_in(&dir, "Old", &NodeGraph::default()).is_err(), "and not written over");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), v1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

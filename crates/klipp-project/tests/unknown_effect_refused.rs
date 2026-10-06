@@ -55,8 +55,10 @@ fn effects_that_are_not_a_list_refuse_the_project_too() {
     clip["builtin_effects"] = serde_json::json!(5);
     std::fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
 
+    // In a revision-2 file the old list holds only the sentinel: anything
+    // else there is a damaged file, refused by clip (#1089).
     let err = load_project(&dir).expect_err("a value that is no list of effects is refused");
-    assert!(err.contains(&clip_id) && err.contains("not a list"), "{err}");
+    assert!(err.contains(&clip_id) && err.contains("damaged"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

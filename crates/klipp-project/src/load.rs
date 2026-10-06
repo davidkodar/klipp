@@ -239,6 +239,36 @@ fn refuse_newer_format(value: &serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Refuse a project from before revision 2 (#1089): this Klipp reads only
+/// the node-graph format, and `klipp-convert run` converts every project
+/// once, with a backup.
+fn refuse_unconverted(value: &serde_json::Value) -> Result<(), String> {
+    let revision = value.get("format_revision").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    if revision < u64::from(crate::FORMAT_REVISION) {
+        return Err(format!(
+            "This project is from before project format {} (it is format {revision}). Convert it with `klipp-convert run`, which converts every project once and keeps a backup.",
+            crate::FORMAT_REVISION
+        ));
+    }
+    Ok(())
+}
+
+/// Refuse a project the one-time conversion (`klipp-convert run`) hasn't
+/// finished (#1089): its staging copy or set-aside original is beside it,
+/// or its journal entry hasn't reached the last step. Opening it could read
+/// either half and save over it; the run finishes or rolls it back from
+/// the journal.
+fn refuse_half_converted(dir: &Path) -> Result<(), String> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    let root = klipp_graph_lift::journal::backup_root(&home);
+    match klipp_graph_lift::journal::unfinished(&root, dir) {
+        Some(why) => Err(format!(
+            "This project's conversion to the node-graph format isn't finished: {why}. Run `klipp-convert run` again; it finishes or rolls back each project from its journal."
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Refuse a project holding grade nodes or settings this Klipp would lose
 /// by reading it (#993): a node kind it does not know, or a setting it
 /// would drop. Found on the saved JSON, wherever a graph is stored.
@@ -255,6 +285,22 @@ fn refuse_graph_losses(value: &serde_json::Value) -> Result<(), String> {
 }
 
 pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
+    load_project_as(dir, crate::FileForm::Revision2)
+}
+
+/// Today's v1 reader, kept only to prove the one-time conversion (#1089): a
+/// v1 file, read exactly as before revision 2, by the same loader without
+/// its revision-2 step. Behind `v1-oracle`, removed once the conversion has
+/// run and been verified.
+#[cfg(feature = "v1-oracle")]
+pub fn load_project_v1(dir: &Path) -> Result<LoadResult, String> {
+    load_project_as(dir, crate::FileForm::V1)
+}
+
+fn load_project_as(dir: &Path, form: crate::FileForm) -> Result<LoadResult, String> {
+    if matches!(form, crate::FileForm::Revision2) {
+        refuse_half_converted(dir)?;
+    }
     // The pair a save left whole, from its recovery copy if it stopped (#840).
     let (project_str, manifest_str, interrupted) = pair_to_open(dir)?;
 
@@ -276,6 +322,23 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     // says why, rather than failing somewhere inside with a parse error
     // or, worse, reading with something missing (#994).
     refuse_newer_format(&value)?;
+
+    // Revision 2 only (#1089): a file from before it is refused, naming the
+    // tool that converts it, and a converted one is read back into today's
+    // model through `unlift`.
+    let value = match form {
+        crate::FileForm::Revision2 => {
+            refuse_unconverted(&value)?;
+            klipp_graph_lift::unlift::project(&value).map_err(|e| format!("This project's revision-2 file can't be read: {e}"))?
+        }
+        #[cfg(feature = "v1-oracle")]
+        crate::FileForm::V1 => {
+            if value.get("format_revision").and_then(serde_json::Value::as_u64).unwrap_or(0) > 0 {
+                return Err("the v1 reader reads only a file from before revision 2".into());
+            }
+            value
+        }
+    };
 
     // A grade node or setting this Klipp does not know is refused by name,
     // as an unknown effect is (#993), before anything is read: read, it
@@ -1220,7 +1283,42 @@ fn load_transform_link(j: &crate::format::TransformLinkJson) -> Option<klipp_tim
 /// Read every `<dir>/looks/*.json` and deserialize as a Look. Files
 /// that fail to parse are logged and skipped — a single corrupt Look
 /// shouldn't block the rest of the project from loading.
+/// A Look file as this Klipp reads it (#1089): a revision-2 Look, brought
+/// back through `unlift`, and only one this build reads in full (#993). A
+/// Look from before revision 2 is refused, naming the converter. The one
+/// test both a load and a save's pruning ask, so a Look that isn't loaded
+/// is never removed either.
+pub(crate) fn read_look(text: &str, form: crate::FileForm) -> Result<Look, String> {
+    let v1_text = match form {
+        crate::FileForm::Revision2 => {
+            let v2: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
+            if v2.get("format_revision").and_then(serde_json::Value::as_u64) != Some(u64::from(crate::FORMAT_REVISION)) {
+                return Err("it is from before revision 2: convert it with `klipp-convert run`".into());
+            }
+            let v1 = klipp_graph_lift::unlift::look(&v2)?;
+            serde_json::to_string(&v1).map_err(|e| e.to_string())?
+        }
+        #[cfg(feature = "v1-oracle")]
+        crate::FileForm::V1 => text.to_owned(),
+    };
+    if !klipp_nodes::json_check::reads_in_full(&v1_text) {
+        return Err("it was saved by a newer Klipp, or cannot be read".into());
+    }
+    serde_json::from_str::<Look>(&v1_text).map_err(|e| format!("corrupt: {e}"))
+}
+
 pub fn load_looks(dir: &Path) -> Vec<Look> {
+    load_looks_as(dir, crate::FileForm::Revision2)
+}
+
+/// Today's v1 Look reader, kept only to prove the one-time conversion
+/// (#1089), behind `v1-oracle`.
+#[cfg(feature = "v1-oracle")]
+pub fn load_looks_v1(dir: &Path) -> Vec<Look> {
+    load_looks_as(dir, crate::FileForm::V1)
+}
+
+fn load_looks_as(dir: &Path, form: crate::FileForm) -> Vec<Look> {
     let looks_dir = dir.join("looks");
     if !looks_dir.exists() {
         return Vec::new();
@@ -1236,16 +1334,12 @@ pub fn load_looks(dir: &Path) -> Vec<Look> {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().is_none_or(|e| e != "json") { continue; }
+        // A Look this build can't read in full, or from before revision 2,
+        // is not read, and the file is left alone (#993, #1089).
         match read_to_string_capped(&path, MAX_INPUT_FILE_BYTES) {
-            // A Look holding a grade node this build would lose is not
-            // read: applied, the node would be a passthrough, and saved
-            // back it would be gone (#993). The file is left alone.
-            Ok(text) if !klipp_nodes::json_check::reads_in_full(&text) => {
-                warn!("Leaving Look {:?} as it is: it was saved by a newer Klipp, or cannot be read", path)
-            }
-            Ok(text) => match serde_json::from_str::<Look>(&text) {
+            Ok(text) => match read_look(&text, form) {
                 Ok(look) => out.push(look),
-                Err(e) => warn!("Skipping corrupt Look {:?}: {e}", path),
+                Err(why) => warn!("Leaving Look {:?} as it is: {why}", path),
             },
             Err(e) => warn!("Failed to read Look {:?}: {e}", path),
         }
