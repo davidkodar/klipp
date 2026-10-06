@@ -1018,16 +1018,19 @@ mod effects_undo_tests {
 /// The modifier stack of `param` on `clip`: an effect parameter's through
 /// the effect's id (keyed as the saved form), the clip's own directly.
 /// `create` makes an empty one where there is none. `None` for an effect
-/// index past the list.
+/// index past the list, which names no effect.
 fn modifiers_mut<'c>(clip: &'c mut klipp_timeline::Clip, param: &klipp_core::ParamId, create: bool) -> Option<&'c mut klipp_core::ModifierStack> {
     match param {
-        klipp_core::ParamId::Effect { effect_index, param_name } => match clip.effect_id_at(*effect_index) {
-            Some(id) if create => clip.effect_modifiers_mut(id, param_name),
-            Some(id) => clip.existing_effect_modifiers_mut(id, param_name),
-            // An index past the list, as today: the stack is kept there.
-            None if create => Some(clip.param_modifiers.entry(param.clone()).or_default()),
-            None => clip.param_modifiers.get_mut(param),
-        },
+        klipp_core::ParamId::Effect { effect_index, param_name } => {
+            // An index past the list names no effect: nothing is kept there
+            // to animate whichever effect lands at it later.
+            let id = clip.effect_id_at(*effect_index)?;
+            if create {
+                clip.effect_modifiers_mut(id, param_name)
+            } else {
+                clip.existing_effect_modifiers_mut(id, param_name)
+            }
+        }
         _ if create => Some(clip.param_modifiers.entry(param.clone()).or_default()),
         _ => clip.param_modifiers.get_mut(param),
     }
@@ -1039,12 +1042,61 @@ fn remove_modifiers(clip: &mut klipp_timeline::Clip, param: &klipp_core::ParamId
         klipp_core::ParamId::Effect { effect_index, param_name } => {
             if let Some(id) = clip.effect_id_at(*effect_index) {
                 clip.remove_effect_modifiers(id, param_name);
-            } else {
-                clip.param_modifiers.remove(param);
             }
         }
         _ => {
             clip.param_modifiers.remove(param);
         }
+    }
+}
+
+#[cfg(test)]
+mod modifier_target_tests {
+    use super::{modifiers_mut, remove_modifiers};
+    use klipp_core::{ModifierStack, ParamId};
+
+    fn clip() -> klipp_timeline::Clip {
+        let t = |n| klipp_core::RationalTime::from_frames(n, 24);
+        klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0), t(24), t(0), t(24))
+    }
+
+    fn effect_param(i: usize) -> ParamId {
+        ParamId::Effect { effect_index: i, param_name: "radius".into() }
+    }
+
+    /// An effect parameter's stack is the effect's, keyed as saved; the
+    /// clip's own stays direct.
+    #[test]
+    fn stacks_land_on_their_effect_or_the_clip() {
+        let mut c = clip();
+        c.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 });
+        assert!(modifiers_mut(&mut c, &effect_param(0), true).is_some());
+        assert!(c.param_modifiers.contains_key(&effect_param(0)));
+        assert!(modifiers_mut(&mut c, &ParamId::Opacity, true).is_some());
+        assert!(c.param_modifiers.contains_key(&ParamId::Opacity));
+        assert!(modifiers_mut(&mut c, &ParamId::Scale, false).is_none(), "asking without create makes nothing");
+        remove_modifiers(&mut c, &effect_param(0));
+        assert!(!c.param_modifiers.contains_key(&effect_param(0)));
+    }
+
+    /// An index past the list names no effect: no stack, and no keyframe
+    /// track, is started there, where it would animate whichever effect
+    /// lands at that index later (it used to be).
+    #[test]
+    fn an_index_past_the_list_starts_nothing() {
+        let mut c = clip();
+        c.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 });
+        assert!(modifiers_mut(&mut c, &effect_param(3), true).is_none());
+        assert!(c.param_modifiers.is_empty());
+        // The keyframe commands resolve the same way.
+        assert!(c.effect_id_at(3).is_none());
+        // Once an effect does land at that index, it starts clean.
+        for _ in 0..3 {
+            c.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 1.0 });
+        }
+        let id = c.effect_id_at(3).unwrap();
+        assert!(c.existing_effect_modifiers_mut(id, "radius").is_none());
+        let _: Option<&mut ModifierStack> = modifiers_mut(&mut c, &effect_param(3), false);
+        assert!(c.param_modifiers.is_empty());
     }
 }

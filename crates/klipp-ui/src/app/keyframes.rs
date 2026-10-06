@@ -588,13 +588,12 @@ impl KlippApp {
                         .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            let keyframes = match clip.effect_id_at(*effect_index) {
-                                Some(id) => clip.effect_keyframes_mut(id, param_name),
-                                // An index past the list, as today: kept there.
-                                None => Some(clip.effect_keyframes.entry(format!("{effect_index}:{param_name}")).or_default()),
-                            };
-                            if let Some(keyframes) = keyframes {
-                                klipp_core::keyframe::upsert_keyframe(keyframes, *time_secs, *value);
+                            // An index past the list names no effect: no track
+                            // is started there.
+                            if let Some(id) = clip.effect_id_at(*effect_index) {
+                                if let Some(keyframes) = clip.effect_keyframes_mut(id, param_name) {
+                                    klipp_core::keyframe::upsert_keyframe(keyframes, *time_secs, *value);
+                                }
                             }
                             break;
                         }
@@ -624,23 +623,11 @@ impl KlippApp {
                         .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            match clip.effect_id_at(*effect_index) {
-                                Some(id) => {
-                                    if let Some(keyframes) = clip.existing_effect_keyframes_mut(id, param_name) {
-                                        klipp_core::keyframe::remove_keyframe_at(keyframes, *time_secs);
-                                        if keyframes.is_empty() {
-                                            clip.remove_effect_keyframes(id, param_name);
-                                        }
-                                    }
-                                }
-                                // An index past the list, as today.
-                                None => {
-                                    let key = format!("{effect_index}:{param_name}");
-                                    if let Some(keyframes) = clip.effect_keyframes.get_mut(&key) {
-                                        klipp_core::keyframe::remove_keyframe_at(keyframes, *time_secs);
-                                        if keyframes.is_empty() {
-                                            clip.effect_keyframes.remove(&key);
-                                        }
+                            if let Some(id) = clip.effect_id_at(*effect_index) {
+                                if let Some(keyframes) = clip.existing_effect_keyframes_mut(id, param_name) {
+                                    klipp_core::keyframe::remove_keyframe_at(keyframes, *time_secs);
+                                    if keyframes.is_empty() {
+                                        clip.remove_effect_keyframes(id, param_name);
                                     }
                                 }
                             }
@@ -670,12 +657,7 @@ impl KlippApp {
                 AppCommand::MoveEffectKeyframe { clip_id, effect_index, param_name, keyframe_index, new_time_secs, new_value } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            let keyframes = match clip.effect_id_at(*effect_index) {
-                                Some(id) => clip.existing_effect_keyframes_mut(id, param_name),
-                                // An index past the list, as today.
-                                None => clip.effect_keyframes.get_mut(&format!("{effect_index}:{param_name}")),
-                            };
-                            if let Some(keyframes) = keyframes {
+                            if let Some(keyframes) = clip.effect_id_at(*effect_index).and_then(|id| clip.existing_effect_keyframes_mut(id, param_name)) {
                                 if let Some(kf) = keyframes.get_mut(*keyframe_index) {
                                     kf.time_secs = *new_time_secs;
                                     kf.value = *new_value;
@@ -695,12 +677,7 @@ impl KlippApp {
                         .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            let keyframes = match clip.effect_id_at(*effect_index) {
-                                Some(id) => clip.existing_effect_keyframes_mut(id, param_name),
-                                // An index past the list, as today.
-                                None => clip.effect_keyframes.get_mut(&format!("{effect_index}:{param_name}")),
-                            };
-                            if let Some(keyframes) = keyframes {
+                            if let Some(keyframes) = clip.effect_id_at(*effect_index).and_then(|id| clip.existing_effect_keyframes_mut(id, param_name)) {
                                 let ki = *keyframe_index;
                                 let len = keyframes.len();
                                 if ki < len {
