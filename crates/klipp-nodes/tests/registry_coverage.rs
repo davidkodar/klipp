@@ -268,3 +268,89 @@ fn a_mask_input_is_described_exactly_where_a_matte_limits_the_node() {
         assert_eq!(has_mask, gated, "{}: a matte on port 1 {} it", t.desc.id, if gated { "limits" } else { "does not limit" });
     }
 }
+
+/// Source → one node of `kind` with `params` → Output.
+fn one_node(kind: NodeKind, params: NodeParams) -> NodeGraph {
+    let node = |kind, params| Node {
+        id: NodeId::new_v4(),
+        kind,
+        label: String::new(),
+        enabled: true,
+        params,
+        keyframes: Default::default(),
+        output_link: None,
+        input_links: Vec::new(),
+    };
+    let nodes = vec![node(NodeKind::Source, NodeParams::default()), node(kind, params), node(NodeKind::Output, NodeParams::default())];
+    let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
+    let output_node_id = nodes[2].id;
+    NodeGraph { nodes, edges, output_node_id, ..Default::default() }
+}
+
+/// The largest difference between two renders.
+fn worst(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len());
+    a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
+}
+
+/// The node's output on the CPU for a colourful, opaque ramp.
+fn rendered(kind: NodeKind, params: NodeParams) -> Vec<f32> {
+    const W: u32 = 16;
+    const H: u32 = 8;
+    let frame: Vec<f32> = (0..W * H)
+        .flat_map(|i| {
+            let (x, y) = ((i % W) as f32 / (W - 1) as f32, (i / W) as f32 / (H - 1) as f32);
+            [0.05 + 0.9 * x, 0.1 + 0.8 * y, 0.9 - 0.7 * x, 1.0]
+        })
+        .collect();
+    klipp_nodes::GraphExecutor::new_cpu_only()
+        .execute_linear(&frame, &one_node(kind, params), W, H, 0.0, 0, None, None)
+        .expect("the graph runs")
+        .0
+}
+
+/// A top-level parameter's described default is the executor's own: a
+/// node with the parameter unset renders exactly as one with it set to the
+/// default (#1100, klipp-e1's review). The struct-field defaults are
+/// checked against the saved struct above; the top-level ones are an
+/// `Option` the executor reads with `unwrap_or(…)`, so only a render can
+/// tell. A value off the default must change the render for most of them,
+/// so the check can't pass because nothing is drawn.
+#[test]
+fn top_level_defaults_render_as_the_unset_parameter() {
+    let (mut checked, mut moved) = (0, 0);
+    for t in node_types() {
+        for p in t.desc.params {
+            if p.field.contains('.') || matches!(p.kind, ParamKind::Other) {
+                continue;
+            }
+            let name = [p.key, p.field].into_iter().find(|n| NodeParams::accepts(n));
+            let Some(name) = name else { continue };
+            let at = format!("{}.{}", t.desc.id, p.key);
+            let unset = rendered(t.kind, NodeParams::default());
+            let mut set = NodeParams::default();
+            assert!(set.apply_override(name, p.default), "{at}: apply_override refused {name}");
+            // Setting a parameter can route the frame through an equal but
+            // differently ordered computation (an explicit off switch, a
+            // fused stage split), which moves the last float bits only. A
+            // wrong default moves a level or more; 1e-4 is a fortieth of
+            // one 8-bit level.
+            let d = worst(&rendered(t.kind, set), &unset);
+            assert!(d <= 1e-4, "{at}: described default {} renders {d} away from the unset parameter", p.default);
+            checked += 1;
+            let off = match p.kind {
+                ParamKind::Bool => 1.0 - p.default,
+                ParamKind::Choice(names) if names.len() > 1 => ((p.default as usize + 1) % names.len()) as f32,
+                _ => p.default + p.soft.map_or(0.37, |(lo, hi)| (hi - lo) * 0.37),
+            };
+            let mut other = NodeParams::default();
+            other.apply_override(name, off);
+            if worst(&rendered(t.kind, other), &unset) > 1e-3 {
+                moved += 1;
+            }
+        }
+    }
+    assert!(checked > 40, "only {checked} top-level parameters were checked");
+    assert!(moved * 2 > checked, "only {moved} of {checked} top-level parameters change the render off their default");
+    eprintln!("top-level defaults: {checked} checked, {moved} change the render off their default");
+}
