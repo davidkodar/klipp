@@ -4,6 +4,10 @@ version.workspace = true
 edition = "2021"
 license.workspace = true
 
+[[bin]]
+name = "klipp-plugin-test-host"
+path = "tests/runner/host.rs"
+
 [dependencies]
 klipp-core = { workspace = true }
 libloading = { workspace = true }

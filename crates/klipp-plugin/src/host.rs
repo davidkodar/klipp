@@ -355,8 +355,14 @@ impl OfxHostRuntime {
             }
         }
 
+        self.discover_plugins_in(&paths)
+    }
+
+    /// Discover using only these directories, without consulting environment or
+    /// system paths. Uses the same loader and initialization as normal discovery.
+    pub fn discover_plugins_in(&mut self, paths: &[PathBuf]) -> usize {
         let mut count = 0;
-        for search_path in &paths {
+        for search_path in paths {
             let Ok(entries) = std::fs::read_dir(search_path) else {
                 continue;
             };
