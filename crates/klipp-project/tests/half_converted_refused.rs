@@ -41,4 +41,12 @@ fn a_half_converted_project_is_refused() {
     // Done: no longer refused for being half-converted (the empty folder
     // then fails to load for its own reason).
     assert!(refused(&dir).is_none(), "a finished conversion opens");
+
+    // The run journals the canonical path (#1135): the same project named
+    // through a link, or with a trailing slash, is refused too.
+    std::fs::write(&entry, serde_json::json!({ "step": Step::Swapped }).to_string()).unwrap();
+    let link = dir.parent().unwrap().join("Linked.klipp");
+    std::os::unix::fs::symlink(&dir, &link).unwrap();
+    assert!(refused(&link).is_some(), "named through a link");
+    assert!(refused(Path::new(&format!("{}/", dir.display()))).is_some(), "with a trailing slash");
 }

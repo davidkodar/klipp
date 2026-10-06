@@ -162,8 +162,8 @@ fn read_index(text: &str, form: crate::FileForm) -> Result<Vec<GradeStillMeta>, 
     let v1_text = match form {
         crate::FileForm::Revision2 => {
             let v2: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
-            if v2.get("format_revision").and_then(serde_json::Value::as_u64) != Some(u64::from(crate::FORMAT_REVISION)) {
-                return Err("it is from before revision 2: convert it with `klipp-convert run`".into());
+            if let Some(why) = crate::side_store_revision_refusal(&v2) {
+                return Err(why);
             }
             serde_json::to_string(&klipp_graph_lift::unlift::stills(&v2)?).map_err(|e| e.to_string())?
         }

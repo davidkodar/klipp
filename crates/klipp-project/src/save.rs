@@ -790,7 +790,23 @@ fn save_looks_as(dir: &Path, looks: &[Look], form: crate::FileForm) -> Result<()
     }
     std::fs::create_dir_all(&looks_dir)
         .map_err(|e| format!("Failed to create looks dir: {e}"))?;
+    // Every Look is written, and every failure reported (#1135): one that
+    // can't be saved used to stop the rest unwritten. A failed Look keeps
+    // its file from the last save, not pruned below.
+    let mut failed = Vec::new();
     for look in looks {
+        if let Err(e) = write_look(&looks_dir, look, form) {
+            failed.push(e);
+        }
+    }
+    let kept_ids: Vec<String> = looks.iter().map(|l| l.id.to_string()).collect();
+    prune_stale_looks(&looks_dir, &kept_ids, form);
+    if failed.is_empty() { Ok(()) } else { Err(failed.join("; ")) }
+}
+
+/// Write one Look's file in `form`.
+fn write_look(looks_dir: &Path, look: &Look, form: crate::FileForm) -> Result<(), String> {
+    {
         let json = match form {
             // Through text, as the project: an f32 keeps today's digits.
             crate::FileForm::Revision2 => {
@@ -809,8 +825,6 @@ fn save_looks_as(dir: &Path, looks: &[Look], form: crate::FileForm) -> Result<()
         atomic_write(&path, json.as_bytes())
             .map_err(|e| format!("Failed to write Look {}: {e}", look.name))?;
     }
-    let kept_ids: Vec<String> = looks.iter().map(|l| l.id.to_string()).collect();
-    prune_stale_looks(&looks_dir, &kept_ids, form);
     Ok(())
 }
 

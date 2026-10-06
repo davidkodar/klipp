@@ -225,6 +225,20 @@ fn unmendable(dir: &Path) -> String {
     )
 }
 
+/// Why a side store's file (a Look, a stills index, a colour preset) isn't
+/// read, by its `format_revision`, or `None` when it is this build's: one
+/// from a newer Klipp says so, as a project does (#1135), and one from
+/// before revision 2 names the converter.
+pub fn side_store_revision_refusal(v: &serde_json::Value) -> Option<String> {
+    match v.get("format_revision").and_then(serde_json::Value::as_u64) {
+        Some(r) if r == u64::from(crate::FORMAT_REVISION) => None,
+        Some(r) if r > u64::from(crate::FORMAT_REVISION) => {
+            Some(format!("it was saved by a newer Klipp (format {r}; this Klipp reads up to {})", crate::FORMAT_REVISION))
+        }
+        _ => Some("it is from before revision 2: convert it with `klipp-convert run`".into()),
+    }
+}
+
 /// Refuse a project whose `format_revision` is newer than this Klipp
 /// reads (#994). Read from the raw JSON, so the refusal does not depend on
 /// the rest of the file parsing as this Klipp expects.
@@ -261,6 +275,9 @@ fn refuse_unconverted(value: &serde_json::Value) -> Result<(), String> {
 fn refuse_half_converted(dir: &Path) -> Result<(), String> {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
     let root = klipp_graph_lift::journal::backup_root(&home);
+    // The run journals the canonical path (#1135): a relative, linked or
+    // trailing-slash path names the same project.
+    let dir = &std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     match klipp_graph_lift::journal::unfinished(&root, dir) {
         Some(why) => Err(format!(
             "This project's conversion to the node-graph format isn't finished: {why}. Run `klipp-convert run` again; it finishes or rolls back each project from its journal."
@@ -1292,8 +1309,8 @@ pub(crate) fn read_look(text: &str, form: crate::FileForm) -> Result<Look, Strin
     let v1_text = match form {
         crate::FileForm::Revision2 => {
             let v2: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
-            if v2.get("format_revision").and_then(serde_json::Value::as_u64) != Some(u64::from(crate::FORMAT_REVISION)) {
-                return Err("it is from before revision 2: convert it with `klipp-convert run`".into());
+            if let Some(why) = crate::side_store_revision_refusal(&v2) {
+                return Err(why);
             }
             let v1 = klipp_graph_lift::unlift::look(&v2)?;
             serde_json::to_string(&v1).map_err(|e| e.to_string())?

@@ -86,8 +86,8 @@ fn tool_preset_reads_in_full(text: &str) -> bool {
 /// 2 is refused, naming the converter.
 fn read_colour_preset(file_name: &str, text: &str) -> Result<NodeGraph, String> {
     let v2: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
-    if v2.get("format_revision").and_then(serde_json::Value::as_u64) != Some(u64::from(klipp_project::FORMAT_REVISION)) {
-        return Err("it is from before revision 2: convert it with `klipp-convert run`".into());
+    if let Some(why) = klipp_project::side_store_revision_refusal(&v2) {
+        return Err(why);
     }
     let v1 = serde_json::to_string(&klipp_graph_lift::unlift::colour_preset(file_name, &v2)?).map_err(|e| e.to_string())?;
     if !klipp_nodes::json_check::reads_in_full(&v1) {

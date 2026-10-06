@@ -440,7 +440,10 @@ impl KlippApp {
         match klipp_project::save_project_full(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x), Some(self.state.timeline_track_scale), &self.state.title_assets) {
             Ok(()) => {
                 if let Err(e) = klipp_project::save_looks(path, &self.state.looks) {
+                    // Said, not only logged: a Look that isn't saved is
+                    // lost on close (#1135).
                     tracing::warn!("Failed to persist Looks library: {e}");
+                    self.state.toast.show(format!("The project saved, but not every Look did: {e}"));
                 }
                 // A first save has just made the folder there is to lock.
                 if self.lock_keeper.is_none() && self.read_only_project.is_none() {

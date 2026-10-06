@@ -1099,11 +1099,18 @@ impl KlippApp {
                 let node_id = *node_id;
                 let label = label.clone();
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    let before = graph.clone();
                     if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
                         node.output_link = label.as_ref().and_then(|s| {
                             let t = s.trim();
                             if t.is_empty() { None } else { Some(t.to_string()) }
                         });
+                    }
+                    // A wireless link closes a loop as an edge does, and
+                    // a looping grade can't be saved (#1135): roll back,
+                    // as ConnectNodes does.
+                    if graph.topo_sort().is_err() {
+                        *graph = before;
                     }
                 });
                 true
@@ -1113,6 +1120,7 @@ impl KlippApp {
                 let port = *port as usize;
                 let label = label.clone();
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    let before = graph.clone();
                     if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
                         if node.input_links.len() <= port {
                             node.input_links.resize(port + 1, None);
@@ -1124,6 +1132,11 @@ impl KlippApp {
                         while node.input_links.last().is_some_and(|l| l.is_none()) {
                             node.input_links.pop();
                         }
+                    }
+                    // As for an output link: a loop through a wireless
+                    // link is refused, rolled back (#1135).
+                    if graph.topo_sort().is_err() {
+                        *graph = before;
                     }
                 });
                 true
