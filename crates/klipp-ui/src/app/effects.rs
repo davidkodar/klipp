@@ -1064,6 +1064,20 @@ mod modifier_target_tests {
         ParamId::Effect { effect_index: i, param_name: "radius".into() }
     }
 
+    /// An effect added to a clip whose flag list runs past its effects (an
+    /// old file can hold that) arrives on. Today's push added no flag, so
+    /// the new effect took the stale one at its index and could arrive
+    /// switched off; a latent bug, fixed by the effect-list API (#1073).
+    #[test]
+    fn an_added_effect_arrives_on_past_stale_flags() {
+        let mut c = clip();
+        c.builtin_effects = vec![klipp_effects::BuiltinEffect::Gamma { gamma: 1.0 }];
+        c.builtin_effects_enabled = vec![true, false, false];
+        c.push_effect(klipp_effects::BuiltinEffect::Gamma { gamma: 2.0 });
+        assert_eq!(c.builtin_effects.len(), 2);
+        assert_eq!(c.builtin_effects_enabled, [true, true], "the stale flags go and the new effect is on");
+    }
+
     /// An effect parameter's stack is the effect's, keyed as saved; the
     /// clip's own stays direct.
     #[test]
