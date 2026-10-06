@@ -183,7 +183,9 @@ impl KlippApp {
                 true
             }
             AppCommand::OpenProjectNow { path } => {
-                self.do_open_project_inner(path);
+                // As OpenProject resolves it: the control socket's open
+                // names a project.json as readily as its folder (#1143).
+                self.do_open_project_inner(&crate::project_paths::project_dir_of(path));
                 true
             }
             AppCommand::OpenProject { path } => {
