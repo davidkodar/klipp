@@ -722,11 +722,32 @@ fn standing(dir: &Path) -> Result<Standing, String> {
     }
 }
 
-/// Count the media items of a project whose file isn't there.
+/// Count the media items of a project whose file isn't there, each path
+/// resolved as the app's loader resolves it (see [`media_path`]).
 fn offline_media(dir: &Path) -> usize {
     let Ok(text) = std::fs::read_to_string(dir.join("media/manifest.json")) else { return 0 };
     let Ok(m) = serde_json::from_str::<Value>(&text) else { return 0 };
-    m.get("items").and_then(Value::as_array).into_iter().flatten().filter_map(|i| i.get("path").and_then(Value::as_str)).filter(|p| !Path::new(p).exists()).count()
+    m.get("items").and_then(Value::as_array).into_iter().flatten().filter_map(|i| i.get("path").and_then(Value::as_str)).filter(|p| !media_path(dir, Path::new(p)).exists()).count()
+}
+
+/// Where a stored media path points, by the loader's rule
+/// (`klipp_project::path_util::resolve_media_path`, which this crate can't
+/// link): a relative path joined onto the project folder, then `..` and
+/// `.` taken out by the text alone (#1136).
+pub fn media_path(project_dir: &Path, stored: &Path) -> PathBuf {
+    use std::path::Component;
+    let joined = if stored.is_absolute() { stored.to_path_buf() } else { project_dir.join(stored) };
+    let mut parts: Vec<Component<'_>> = Vec::new();
+    for part in joined.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir if matches!(parts.last(), Some(Component::Normal(_))) => {
+                parts.pop();
+            }
+            _ => parts.push(part),
+        }
+    }
+    parts.iter().collect()
 }
 
 fn convert_one(s: &Settings, dir: &Path, hooks: &Hooks, report: &mut Report) -> Result<(), RunError> {
@@ -1022,6 +1043,38 @@ pub fn real_settings(home: &Path, config_dir: &Path, excluded: BTreeSet<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The run's copy of the loader's rule gives what the loader gives.
+    #[test]
+    fn media_paths_resolve_as_the_loader_resolves_them() {
+        let dir = Path::new("/home/u/Films/Trip.klipp");
+        for stored in ["/abs/clip.mov", "media/clip.mov", "./media/clip.mov", "../Footage/a.mov", "../../x/../y.mov", "a/./b/../c.mov", "../../../../../../z.mov"] {
+            let stored = Path::new(stored);
+            assert_eq!(media_path(dir, stored), klipp_project::path_util::resolve_media_path(dir, stored), "{}", stored.display());
+        }
+    }
+
+    /// Media stored relative to the project counts as offline only when
+    /// its file isn't beside the project as the path says (#1136).
+    #[test]
+    fn relative_media_is_found_beside_the_project() {
+        let root = std::env::temp_dir().join(format!("klipp-run-offline-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("Film.klipp");
+        std::fs::create_dir_all(dir.join("media")).unwrap();
+        std::fs::create_dir_all(root.join("Footage")).unwrap();
+        std::fs::write(root.join("Footage/a.mov"), b"a").unwrap();
+        std::fs::write(dir.join("media/b.mov"), b"b").unwrap();
+        let manifest = serde_json::json!({ "items": [
+            { "path": "../Footage/a.mov" },
+            { "path": "media/b.mov" },
+            { "path": root.join("Footage/a.mov") },
+            { "path": "../Footage/gone.mov" },
+        ] });
+        std::fs::write(dir.join("media/manifest.json"), manifest.to_string()).unwrap();
+        assert_eq!(offline_media(&dir), 1, "only the missing one");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn the_run_refuses_without_its_confirmation() {
