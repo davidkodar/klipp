@@ -878,6 +878,22 @@ pub struct MediaItemJson {
     /// a non-default `log_format` there was necessarily a choice.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub log_format_user_set: bool,
+    #[serde(default, skip_serializing_if = "klipp_core::ClipLog::is_empty")]
+    pub log: klipp_core::ClipLog,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<klipp_core::MediaMarker>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synced_audio: Option<klipp_core::SyncedAudio>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<klipp_core::ClipSpan>,
+    // Keep analysis/probe results for offline media too. Their existing
+    // re-probe paths refresh them when the source changes.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub screen_text: String,
+    #[serde(default, skip_serializing_if = "klipp_core::ShotMetadata::is_empty")]
+    pub shot: klipp_core::ShotMetadata,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated_from_secs: Option<f64>,
 }
 
 fn is_default_log_format(f: &klipp_core::LogFormat) -> bool {
