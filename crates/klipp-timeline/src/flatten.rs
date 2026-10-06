@@ -701,6 +701,54 @@ mod tests {
         assert_eq!(flat.tracks[1].clips[1].audio_effects.iter().map(|e| e.effect_type.as_str()).collect::<Vec<_>>(), vec!["compressor"]);
     }
 
+    /// #1060: a clip's grade for a one-picture preview (the scopes) is
+    /// the one the render copy runs: inside its group's, then its track's,
+    /// for each kind of clip and track, with and without either.
+    #[test]
+    fn a_clips_render_grade_is_the_render_copys() {
+        let exposed = |ev: f32| {
+            let mut g = klipp_nodes::NodeGraph::default();
+            g.nodes.iter_mut().filter(|n| n.kind == klipp_nodes::NodeKind::Corrector).for_each(|n| n.params.exposure = Some(ev));
+            g
+        };
+        let mut seq = make_seq("scene");
+        let mut group = GradeGroup::new("Night");
+        group.pre = Some(exposed(0.5));
+        group.post = Some(exposed(-1.0));
+        let mut tracks = Vec::new();
+        for (kind, track_grade) in [(TrackKind::Video, true), (TrackKind::Video, false), (TrackKind::Text, true), (TrackKind::Audio, true)] {
+            let mut track = Track::new("T", kind);
+            if track_grade {
+                track.effects.grade = Some(exposed(0.3));
+            }
+            for (in_group, clip_kind) in [(true, None), (false, None), (true, Some(ClipKind::AdjustmentLayer)), (false, Some(ClipKind::Gap))] {
+                let start = track.clips.len() as i64 * 24;
+                let mut c = Clip::media(MediaId::new(), t(start), t(start + 24), t(0), t(24));
+                if let Some(k) = clip_kind {
+                    c.kind = k;
+                }
+                c.node_graph = exposed(0.1);
+                c.grade_group = in_group.then_some(group.id);
+                track.clips.push(c);
+            }
+            tracks.push(track);
+        }
+        seq.tracks = tracks;
+        seq.grade_groups = vec![group];
+
+        let baked = seq.baked_for_render();
+        let mut checked = 0;
+        for (track, baked_track) in seq.tracks.iter().zip(&baked.tracks) {
+            for (clip, baked_clip) in track.clips.iter().zip(&baked_track.clips) {
+                let grade = seq.render_grade(clip.id).expect("the clip is on a track");
+                assert!(*grade == baked_clip.node_graph, "{:?} {:?} in group {}", track.kind, clip.kind, clip.grade_group.is_some());
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 16);
+        assert!(seq.render_grade(ClipId::new()).is_none(), "no clip, no grade");
+    }
+
     /// #237: the render copy grades a group's members pre-clip, own,
     /// post-clip; a clip outside the group, and the document itself, are
     /// left as they were; a member inside a compound is wrapped by its own

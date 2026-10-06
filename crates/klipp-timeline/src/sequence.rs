@@ -439,7 +439,7 @@ impl Sequence {
                         clip.builtin_effects.extend(fx.video.iter().cloned());
                         clip.builtin_effects_enabled.extend((0..fx.video.len()).map(|k| fx.video_enabled.get(k).copied().unwrap_or(true)));
                     }
-                    if let Some(grade) = fx.grade.as_ref().filter(|g| !g.is_identity()) {
+                    if let Some(grade) = fx.grade_onto(track.kind, clip) {
                         if clip.own_node_graph.is_none() {
                             clip.own_node_graph = Some(Box::new(clip.node_graph.clone()));
                         }
@@ -449,6 +449,24 @@ impl Sequence {
                 clip.audio_effects.extend(fx.audio.iter().cloned());
             }
         }
+    }
+
+    /// `clip_id`'s grade as a render copy runs it (see
+    /// [`Sequence::baked_for_render`]): inside its grade group's when the
+    /// group grades, then followed by its track's grade. Built for the one
+    /// clip, for a preview that grades a single picture (the scopes), so
+    /// it cannot drift from the bakes: each step is theirs (#1060). `None`
+    /// when no top-level track holds the clip.
+    pub fn render_grade(&self, clip_id: ClipId) -> Option<std::borrow::Cow<'_, klipp_nodes::NodeGraph>> {
+        let (track, clip) = self.tracks.iter().find_map(|t| t.clips.iter().find(|c| c.id == clip_id).map(|c| (t, c)))?;
+        let mut graph = match clip.grade_group.and_then(|g| self.grade_group(g)).filter(|g| g.grades()) {
+            Some(group) => std::borrow::Cow::Owned(group.wrap(&clip.node_graph)),
+            None => std::borrow::Cow::Borrowed(&clip.node_graph),
+        };
+        if let Some(grade) = track.effects.grade_onto(track.kind, clip) {
+            let _ = graph.to_mut().append_keeping_ids(grade);
+        }
+        Some(graph)
     }
 
     /// This sequence as the document has it, from a render copy: each
@@ -1211,6 +1229,17 @@ impl TrackEffects {
     /// Whether the track changes anything about a picture.
     pub fn touches_picture(&self) -> bool {
         !self.video.is_empty() || self.grade.as_ref().is_some_and(|g| !g.is_identity())
+    }
+
+    /// The grade a render copy appends to `clip`'s on a track of `kind`
+    /// (see [`Sequence::bake_track_effects`]): a grade that changes
+    /// something, on a picture track, for a clip that is a picture of it
+    /// (not a gap or an adjustment layer).
+    pub fn grade_onto(&self, kind: TrackKind, clip: &Clip) -> Option<&klipp_nodes::NodeGraph> {
+        if !matches!(kind, TrackKind::Video | TrackKind::Text) || matches!(clip.kind, ClipKind::Gap | ClipKind::AdjustmentLayer) {
+            return None;
+        }
+        self.grade.as_ref().filter(|g| !g.is_identity())
     }
 }
 
