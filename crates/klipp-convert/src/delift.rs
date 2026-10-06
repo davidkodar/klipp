@@ -92,7 +92,7 @@ pub fn body(lifted: &Graph) -> Result<Graph, Refusal> {
         }
         g.edges.insert(at, e);
     }
-    for w in &record.dropped_wireless {
+    for w in record.dropped_wireless.iter().chain(&record.parked_links) {
         let (node, port, name) = (w.get("node"), w.get("port"), w.get("name").and_then(Value::as_str));
         let (Some(node), Some(port), Some(name)) = (node, port, name) else { return Err("a dropped wireless link, incomplete".into()) };
         let node: NodeId = serde_json::from_value(node.clone()).map_err(|e| e.to_string())?;

@@ -658,3 +658,61 @@ fn delift_puts_back_every_edge_the_lift_took_out() {
     let back = crate::delift::grade_only(&b, structural.nodes[0].id).unwrap();
     assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&structural).unwrap(), "and standing alone");
 }
+
+/// A matte reaching a correction's port 1 by a wireless link, with the
+/// picture port unwired, was never a gate: the link is parked like a drawn
+/// port-1 edge, `delift` puts it back, and the lifted node carries no mask.
+#[test]
+fn a_wireless_matte_on_an_ungated_correction_is_parked() {
+    let mut cor = gn(COR, "Corrector");
+    cor["input_links"] = json!([null, "matte"]);
+    let mut key = gn(KEY, "LumaKey");
+    key["output_link"] = json!("matte");
+    let g = json!({
+        "nodes": [gn(SRC, "Source"), key, cor, gn(OUT, "Output")],
+        "edges": [edge(SRC, 0, KEY, 0), edge(COR, 0, OUT, 0)],
+        "output_node_id": OUT
+    });
+    let record = clip_to_v2(clip(json!({"node_graph": g})).as_object().unwrap()).unwrap();
+    let (p, _) = lift_clip(&record, &LiftCtx { clip_id: id(CLIP), kind: ClipKind::Media }).unwrap();
+    p.graph.check_lifted(false).unwrap();
+    let b = body(&p);
+    let c = b.nodes.iter().find(|n| n.id == id(COR)).unwrap();
+    assert!(c.wireless.input_links.is_empty(), "the link is parked, not live");
+    assert!(!c.legacy_flags.as_ref().is_some_and(|f| f.alpha_one), "and the correction isn't gated");
+    let input = b.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP_INPUT).unwrap();
+    assert_eq!(input.legacy_flags.as_ref().unwrap().parked_links.len(), 1);
+    let back = crate::delift::clip(&p).unwrap();
+    assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&record).unwrap(), "delift puts it back");
+}
+
+/// A mask on a correction without the gate is refused, drawn or wireless:
+/// it would read as gated where today it isn't.
+#[test]
+fn check_lifted_refuses_a_mask_without_the_gate() {
+    let mut cor = gn(COR, "Corrector");
+    cor["input_links"] = json!([null, "matte"]);
+    let mut key = gn(KEY, "LumaKey");
+    key["output_link"] = json!("matte");
+    // Gated as saved: picture and matte both wired.
+    let g = json!({
+        "nodes": [gn(SRC, "Source"), key, cor, gn(OUT, "Output")],
+        "edges": [edge(SRC, 0, KEY, 0), edge(SRC, 0, COR, 0), edge(COR, 0, OUT, 0)],
+        "output_node_id": OUT
+    });
+    let (mut p, _) = lift(clip(json!({"node_graph": g})), ClipKind::Media);
+    let group = p.graph.nodes.iter_mut().find(|n| n.type_id.as_str() == lt::GROUP).unwrap();
+    let b = &mut group.group.as_mut().unwrap().graph;
+    // Take the gate off: the wireless mask is refused.
+    let c = b.nodes.iter_mut().find(|n| n.id == id(COR)).unwrap();
+    c.legacy_flags = None;
+    let err = p.graph.check_lifted(false).unwrap_err();
+    assert!(matches!(err, klipp_graph_format::lifted::LiftedError::MaskWithoutGate(n) if n == id(COR)), "{err:?}");
+    // A drawn mask edge without the gate is refused the same way.
+    let group = p.graph.nodes.iter_mut().find(|n| n.type_id.as_str() == lt::GROUP).unwrap();
+    let b = &mut group.group.as_mut().unwrap().graph;
+    b.nodes.iter_mut().find(|n| n.id == id(COR)).unwrap().wireless.input_links.clear();
+    b.edges.push(klipp_graph_format::Edge { from: (id(KEY), "matte".into()), to: (id(COR), "mask".into()) });
+    let err = p.graph.check_lifted(false).unwrap_err();
+    assert!(matches!(err, klipp_graph_format::lifted::LiftedError::MaskWithoutGate(n) if n == id(COR)), "{err:?}");
+}

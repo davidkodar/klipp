@@ -471,11 +471,16 @@ mod lifted_checks {
     #[test]
     fn a_loop_is_refused() {
         let mut g = valid();
+        // A gated correction: a mask without the gate is refused first.
+        let gated = || Some(crate::lifted::LegacyFlags { alpha_one: true, ..Default::default() });
         body(&mut g).edges.push(e(13, 12, "mask"));
         body(&mut g).nodes[1].legacy = legacy(json!({"kind": "Corrector"}));
+        body(&mut g).nodes[1].legacy_flags = gated();
         assert!(matches!(g.check_lifted(false), Err(LiftedError::Cycle { .. })));
         let mut g = valid();
         let b = body(&mut g);
+        b.nodes[1].legacy = legacy(json!({"kind": "Corrector"}));
+        b.nodes[1].legacy_flags = gated();
         b.nodes[2].wireless.output_link = Some("back".into());
         b.nodes[1].wireless.input_links.insert("mask".into(), "back".into());
         assert!(matches!(g.check_lifted(false), Err(LiftedError::Cycle { .. })));

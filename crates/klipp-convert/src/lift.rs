@@ -252,6 +252,8 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
     let mut gated = Vec::new();
     // A set: repeated saved ids can name one edge twice.
     let mut parked = std::collections::BTreeSet::new();
+    // A wireless link on such a port is parked too: never a gate either.
+    let mut parked_links: Vec<(NodeId, PortKey)> = Vec::new();
     for n in &body.nodes {
         let kind = kind_of(n);
         if !GATEABLE.contains(&kind) {
@@ -263,6 +265,11 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
             gated.push(n.id);
         } else if has1 {
             parked.extend(body.edges.iter().enumerate().filter(|(_, e)| e.to.0 == n.id && e.to.1 == p1).map(|(i, _)| i));
+            // With a wire there, the link was overridden; either way it
+            // goes with the port, or it would turn live once the wire is out.
+            if n.wireless.input_links.contains_key(&p1) {
+                parked_links.push((n.id, p1.clone()));
+            }
         }
     }
     for i in parked.iter().rev() {
@@ -271,6 +278,15 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
         notes.push(LiftNote::ParkedEdge { group: group.id, edge: value.clone() });
         group_flags.parked_edges.insert(0, value);
         group_flags.parked_at.insert(0, *i as u32);
+    }
+    for (id, port) in parked_links {
+        if let Some(n) = body.nodes.iter_mut().find(|n| n.id == id) {
+            if let Some(name) = n.wireless.input_links.remove(&port) {
+                let link = json!({ "node": id, "port": port, "name": name });
+                notes.push(LiftNote::ParkedEdge { group: group.id, edge: link.clone() });
+                group_flags.parked_links.push(link);
+            }
+        }
     }
     for n in body.nodes.iter_mut().filter(|n| gated.contains(&n.id)) {
         flags(n).alpha_one = true;
@@ -429,6 +445,7 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
     let record = LegacyFlags {
         parked_edges: std::mem::take(&mut group_flags.parked_edges),
         parked_at: std::mem::take(&mut group_flags.parked_at),
+        parked_links: std::mem::take(&mut group_flags.parked_links),
         dropped_edges: std::mem::take(&mut group_flags.dropped_edges),
         rewired: std::mem::take(&mut group_flags.rewired),
         filled: std::mem::take(&mut group_flags.filled),
@@ -440,6 +457,7 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
             let f = flags(input);
             f.parked_edges = record.parked_edges;
             f.parked_at = record.parked_at;
+            f.parked_links = record.parked_links;
             f.dropped_edges = record.dropped_edges;
             f.rewired = record.rewired;
             f.filled = record.filled;

@@ -117,6 +117,12 @@ pub struct LegacyFlags {
     /// Where each parked edge stood among the saved edges, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parked_at: Vec<u32>,
+    /// On a Grade group body's input: wireless links on a correction's
+    /// matte port where its picture port is unwired, never a gate, kept
+    /// outside the graph as a parked edge is; each `{"node": <id>, "port":
+    /// <port>, "name": <name>}`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parked_links: Vec<Value>,
     /// The stored enabled bit, where the lift set `enabled` otherwise (an
     /// entry kept off for the record, a head entry that never ran).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -221,6 +227,9 @@ pub enum LiftedError {
     TwoInputs { node: NodeId, port: String },
     /// A `mask` edge into a node that isn't a gateable correction.
     MaskNotGateable(NodeId),
+    /// A matte on a correction's `mask`, drawn or wireless, without the
+    /// gate's `alpha_one`: it would read as gated where today it isn't.
+    MaskWithoutGate(NodeId),
     UnknownMergeOp(NodeId),
     TwoPlacements,
     /// An origin on a graph that isn't a render copy.
@@ -265,6 +274,19 @@ fn required_inputs(n: &crate::Node) -> Vec<crate::PortKey> {
     }
 }
 
+/// A matte reaches `node`'s `mask`: only a gateable correction takes one,
+/// and only gated, with `alpha_one` as the lift sets it.
+fn check_mask(g: &Graph, node: NodeId) -> Result<(), LiftedError> {
+    let target = g.nodes.iter().find(|n| n.id == node);
+    if !target.is_some_and(|n| crate::ports::GATEABLE.contains(&kind(n))) {
+        return Err(LiftedError::MaskNotGateable(node));
+    }
+    if !target.is_some_and(|n| n.legacy_flags.as_ref().is_some_and(|f| f.alpha_one)) {
+        return Err(LiftedError::MaskWithoutGate(node));
+    }
+    Ok(())
+}
+
 fn check_level(g: &Graph, level: &str, body: bool, render_copy: bool) -> Result<(), LiftedError> {
     check_level_running(g, level, body, render_copy, true)
 }
@@ -307,13 +329,15 @@ fn check_level_running(g: &Graph, level: &str, body: bool, render_copy: bool, ru
             return Err(LiftedError::TwoInputs { node: e.to.0, port: e.to.1.to_string() });
         }
         if e.to.1.as_str() == "mask" {
-            let target = g.nodes.iter().find(|n| n.id == e.to.0);
-            if !target.is_some_and(|n| crate::ports::GATEABLE.contains(&kind(n))) {
-                return Err(LiftedError::MaskNotGateable(e.to.0));
-            }
+            check_mask(g, e.to.0)?;
         }
     }
     let sender = |name: &str, me: NodeId| g.nodes.iter().any(|o| o.id != me && o.wireless.output_link.as_deref() == Some(name));
+    for n in &g.nodes {
+        if n.wireless.input_links.get(&crate::PortKey::from("mask")).is_some_and(|name| sender(name, n.id)) {
+            check_mask(g, n.id)?;
+        }
+    }
     for n in &g.nodes {
         for port in required_inputs(n) {
             let wired = into.contains(&(n.id, port.clone())) || n.wireless.input_links.get(&port).is_some_and(|name| sender(name, n.id));
