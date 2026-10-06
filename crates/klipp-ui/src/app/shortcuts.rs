@@ -115,13 +115,7 @@ impl KlippApp {
             }
             // Ctrl+O — Open Project
             if kb.is_action_pressed("open_project", i) {
-                crate::file_dialog::spawn(move || {
-                    rfd::FileDialog::new()
-                        .set_title("Open Project")
-                        .pick_folder()
-                        .map(|path| vec![AppCommand::OpenProject { path }])
-                        .unwrap_or_default()
-                });
+                crate::file_dialog::spawn(crate::project_paths::pick_project_commands);
             }
             // Ctrl+I — Import Media
             if kb.is_action_pressed("import_media", i) {

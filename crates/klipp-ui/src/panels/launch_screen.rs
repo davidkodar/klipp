@@ -103,6 +103,15 @@ pub struct LaunchScreen {
     /// thread (as the FILES browser reads directories) and a new one is
     /// not started while one is still out.
     autosave_rx: Option<std::sync::mpsc::Receiver<HashMap<PathBuf, bool>>>,
+    /// The grid shows the projects in the projects folder, not the recent
+    /// ones (#1143).
+    folder_view: bool,
+    /// The projects folder's projects, re-read every few seconds on a
+    /// thread of their own, as the auto-save check is: the folder may be
+    /// on a mount that blocks.
+    folder_projects: Vec<RecentProject>,
+    folder_scanned: Option<(PathBuf, std::time::Instant)>,
+    folder_rx: Option<std::sync::mpsc::Receiver<(PathBuf, Vec<RecentProject>)>>,
 }
 
 impl LaunchScreen {
@@ -145,6 +154,44 @@ impl LaunchScreen {
         }
     }
 
+    /// Take the last scan of the projects folder `dir`, and start the next
+    /// one every few seconds, or at once when the folder changed.
+    fn refresh_folder_projects(&mut self, ctx: &egui::Context, dir: &std::path::Path) {
+        if let Some(rx) = &self.folder_rx {
+            match rx.try_recv() {
+                Ok((scanned, found)) => {
+                    if scanned == dir {
+                        self.folder_projects = found;
+                    }
+                    self.folder_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.folder_rx = None,
+            }
+        }
+        let fresh = self.folder_scanned.as_ref().is_some_and(|(d, t)| d == dir && t.elapsed().as_secs() < 3);
+        if fresh {
+            return;
+        }
+        if self.folder_scanned.as_ref().is_some_and(|(d, _)| d != dir) {
+            self.folder_projects.clear();
+        }
+        self.folder_scanned = Some((dir.to_path_buf(), std::time::Instant::now()));
+        let dir = dir.to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("launch-projects-folder".into())
+            .spawn(move || {
+                let found = crate::project_paths::projects_in(&dir);
+                let _ = tx.send((dir, found));
+                ctx.request_repaint();
+            });
+        if spawned.is_ok() {
+            self.folder_rx = Some(rx);
+        }
+    }
+
     fn ensure_logo_texture(&mut self, ctx: &egui::Context) -> &egui::TextureHandle {
         self.logo_texture.get_or_insert_with(|| {
             let png_bytes = include_bytes!("../../../../assets/branding/klipp-refined/klipp-icon-128.png");
@@ -153,16 +200,24 @@ impl LaunchScreen {
         })
     }
 
+    /// `projects_folder` is the folder the grid can list projects from
+    /// instead of the recent ones (#1143).
     pub fn show(
         &mut self,
         ctx: &egui::Context,
         ui: &mut egui::Ui,
         recent: &[RecentProject],
+        projects_folder: Option<&std::path::Path>,
         theme: &KlippTheme,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         self.ensure_logo_texture(ctx);
-        self.refresh_newer_autosaves(ctx, recent);
+        if let Some(dir) = projects_folder.filter(|_| self.folder_view) {
+            self.refresh_folder_projects(ctx, dir);
+        }
+        let in_folder = self.folder_view && projects_folder.is_some();
+        let shown: Vec<RecentProject> = if in_folder { self.folder_projects.clone() } else { recent.to_vec() };
+        self.refresh_newer_autosaves(ctx, &shown);
         let full_rect = ui.max_rect();
 
         // Fill background
@@ -196,7 +251,7 @@ impl LaunchScreen {
 
         // Draw main area with project grid
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(main_rect), |ui| {
-            self.draw_main_area(ctx, ui, recent, theme, &mut cmds);
+            self.draw_main_area(ctx, ui, &shown, projects_folder, theme, &mut cmds);
         });
 
         // Rename project popup
@@ -332,13 +387,7 @@ impl LaunchScreen {
             theme.text_primary,
         );
         if open_resp.clicked() {
-            crate::file_dialog::spawn(move || {
-                rfd::FileDialog::new()
-                    .set_title("Open Project")
-                    .pick_folder()
-                    .map(|p| vec![AppCommand::OpenProject { path: p }])
-                    .unwrap_or_default()
-            });
+            crate::file_dialog::spawn(crate::project_paths::pick_project_commands);
         }
 
         // No "Import Media" here.
@@ -485,6 +534,7 @@ impl LaunchScreen {
         ctx: &egui::Context,
         ui: &mut egui::Ui,
         recent: &[RecentProject],
+        projects_folder: Option<&std::path::Path>,
         theme: &KlippTheme,
         cmds: &mut Vec<AppCommand>,
     ) {
@@ -507,6 +557,37 @@ impl LaunchScreen {
             .and_then(|rp| rp.last_saved.as_deref())
             .map(relative_time)
             .unwrap_or_default();
+        // Which projects the grid shows: the recent ones, or those in the
+        // projects folder, one click each to open (#1143).
+        let tabs_rect = egui::Rect::from_min_size(
+            egui::pos2(area.min.x + pad + 150.0, area.min.y + pad + 4.0),
+            egui::vec2((area.width() - pad * 2.0 - 150.0).max(0.0), 24.0),
+        );
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tabs_rect), |ui| {
+            ui.horizontal(|ui| {
+                if ui.selectable_label(!self.folder_view, "Recent").clicked() {
+                    self.folder_view = false;
+                }
+                if let Some(dir) = projects_folder {
+                    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.display().to_string());
+                    if ui.selectable_label(self.folder_view, format!("In {name}")).on_hover_text(dir.display().to_string()).clicked() {
+                        self.folder_view = true;
+                    }
+                }
+                let choose = if projects_folder.is_some() { "Change folder\u{2026}" } else { "Choose projects folder\u{2026}" };
+                if ui.small_button(choose).clicked() {
+                    self.folder_view = true;
+                    crate::file_dialog::spawn(|| {
+                        rfd::FileDialog::new()
+                            .set_title("Projects Folder")
+                            .pick_folder()
+                            .map(|path| vec![AppCommand::SetProjectsFolder { path }])
+                            .unwrap_or_default()
+                    });
+                }
+            });
+        });
+
         let summary = if recent.is_empty() {
             "No projects".to_string()
         } else {

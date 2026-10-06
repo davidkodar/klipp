@@ -153,13 +153,7 @@ impl ToolbarPanel {
             if ui.add(egui::Button::new("New Project...").shortcut_text(kb.display_for("new_project"))).clicked() { cmds.push(AppCommand::NewProject); ui.close_menu(); }
             if ui.add(egui::Button::new("Open Project...").shortcut_text(kb.display_for("open_project"))).clicked() {
                 ui.close_menu();
-                crate::file_dialog::spawn(move || {
-                    rfd::FileDialog::new()
-                        .set_title("Open Project")
-                        .pick_folder()
-                        .map(|p| vec![AppCommand::OpenProject { path: p }])
-                        .unwrap_or_default()
-                });
+                crate::file_dialog::spawn(crate::project_paths::pick_project_commands);
             }
             if !recent.is_empty() {
                 ui.menu_button("Open Recent", |ui| {
