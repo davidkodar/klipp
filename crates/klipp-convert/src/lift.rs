@@ -31,6 +31,8 @@ pub enum ClipKind {
     Title,
     Generator,
     Precomposition,
+    /// An editorial compound: a sequence placed as a clip.
+    Compound,
     Adjustment,
     /// An empty stretch of a track: it draws nothing.
     Gap,
@@ -47,7 +49,8 @@ impl ClipKind {
             "media" => Self::Media,
             "title" | "title_v2" | "vector_title" => Self::Title,
             "generator" => Self::Generator,
-            "sequence" => Self::Precomposition,
+            "sequence" => Self::Compound,
+            "precomposition" | "template_precomposition" => Self::Precomposition,
             "adjustment_layer" => Self::Adjustment,
             "gap" => Self::Gap,
             other => return Err(format!("a clip kind the lift doesn't know: {other:?}")),
@@ -305,6 +308,43 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
         }
     }
     body.edges.extend(added);
+
+    // Secondary inputs today fills from another: Blend's unwired B reads
+    // its A, RGBCombiner's unwired G and B read its R (`executor.rs`,
+    // `unwrap_or(primary_input)`), and ApplyMatte's unwired pre-grade
+    // reads the frame. Each becomes an edge from what it read.
+    let source_of = |body: &Graph, n: &Node, port: &PortKey| -> Option<(NodeId, PortKey)> {
+        if let Some(e) = body.edges.iter().find(|e| e.to.0 == n.id && &e.to.1 == port) {
+            return Some(e.from.clone());
+        }
+        let name = n.wireless.input_links.get(port)?;
+        let sender = body.nodes.iter().find(|o| o.id != n.id && o.wireless.output_link.as_deref() == Some(name.as_str()))?;
+        Some((sender.id, klipp_graph_format::ports::output_key(kind_of(sender), 0)))
+    };
+    let mut filled = Vec::new();
+    for n in &body.nodes {
+        let kind = kind_of(n);
+        let fills: Vec<(u8, Option<u8>)> = match kind {
+            "Blend" => vec![(1, Some(0))],
+            "RGBCombiner" => vec![(1, Some(0)), (2, Some(0))],
+            "ApplyMatte" => vec![(2, None)],
+            _ => continue,
+        };
+        for (port, from_port) in fills {
+            let p = input_port(kind, port);
+            if connected(&body, n, &p) {
+                continue;
+            }
+            let from = match from_port {
+                Some(fp) => source_of(&body, n, &input_port(kind, fp)),
+                None => Some((input_id, "out".into())),
+            };
+            if let Some(from) = from {
+                filled.push(Edge { from, to: (n.id, p) });
+            }
+        }
+    }
+    body.edges.extend(filled);
 
     // 4. Layer, Blend and LayerMixer become merges with their legacy op.
     for n in &mut body.nodes {

@@ -213,6 +213,11 @@ fn required_inputs(n: &crate::Node) -> Vec<crate::PortKey> {
         crate::types::LEGACY_NODE | types::MERGE | types::GROUP_OUTPUT => match kind(n) {
             "Source" | "ExternalMatte" => Vec::new(),
             "Layer" => vec![input_key("Layer", 0), input_key("Layer", 1)],
+            // Inputs today fills from another when unwired, which the lift
+            // makes explicit.
+            "Blend" => vec![input_key("Blend", 0), input_key("Blend", 1)],
+            "RGBCombiner" => (0..3).map(|p| input_key("RGBCombiner", p)).collect(),
+            "ApplyMatte" => vec![input_key("ApplyMatte", 0), input_key("ApplyMatte", 2)],
             k => vec![input_key(k, 0)],
         },
         _ => vec!["in".into()],

@@ -375,3 +375,29 @@ fn a_key_under_a_name_another_drives_is_kept_as_an_orphan() {
     assert_eq!(orphans, ["0:soft_edge", "effect:0:soft_edge"]);
     assert!(notes.iter().any(|x| matches!(x, LiftNote::OrphanKeys { node: Some(id), .. } if *id == n.id)));
 }
+
+/// The inputs today fills from another when they're unwired become edges
+/// from what they read: Blend's B from its A, RGBCombiner's G and B from
+/// its R, ApplyMatte's pre-grade from the frame.
+#[test]
+fn filled_inputs_become_edges() {
+    const BLEND: &str = "00000000-0000-0000-0000-000000000010";
+    const RGB: &str = "00000000-0000-0000-0000-000000000011";
+    const AM: &str = "00000000-0000-0000-0000-000000000012";
+    let g = json!({
+        "nodes": [gn(SRC, "Source"), gn(COR, "Corrector"), gn(BLEND, "Blend"), gn(RGB, "RGBCombiner"), gn(AM, "ApplyMatte"), gn(KEY, "Qualifier"), gn(OUT, "Output")],
+        "edges": [
+            edge(SRC, 0, COR, 0),
+            edge(COR, 0, BLEND, 0),
+            edge(BLEND, 0, RGB, 0),
+            edge(RGB, 0, AM, 0), edge(KEY, 0, AM, 1),
+            edge(AM, 0, OUT, 0)
+        ],
+        "output_node_id": OUT
+    });
+    let (p, _) = lift(clip(json!({"node_graph": g})), ClipKind::Media);
+    let b = body(&p);
+    assert!(has_edge(b, id(COR), id(BLEND), "b"), "B reads A");
+    assert!(has_edge(b, id(BLEND), id(RGB), "g") && has_edge(b, id(BLEND), id(RGB), "b"), "G and B read R");
+    assert!(has_edge(b, id(SRC), id(AM), "pregrade"), "the pre-grade reads the frame");
+}
