@@ -395,3 +395,126 @@ mod tests {
 #[cfg(test)]
 #[path = "effect_slots_tests.rs"]
 mod api_tests;
+
+/// A clip's whole effect state, for undo: the list, its flags, its session
+/// ids, the effect keyframes and the effect-targeted modifiers, together.
+/// Unlike cloning a [`Clip`], which starts a new identity domain, a
+/// snapshot keeps the ids, so restoring it gives every effect back the
+/// identity it had.
+#[derive(Debug, Clone)]
+pub struct EffectsState {
+    effects: Vec<BuiltinEffect>,
+    enabled: Vec<bool>,
+    ids: Vec<EffectId>,
+    keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+    modifiers: Vec<(ParamId, klipp_core::ModifierStack)>,
+}
+
+impl EffectsState {
+    /// A state from values taken elsewhere (a copied clip's effects, to
+    /// paste), with fresh ids: the entries are new to the clip it lands on.
+    /// `modifiers` keeps only effect-targeted stacks.
+    pub fn fresh(
+        effects: Vec<BuiltinEffect>,
+        enabled: Vec<bool>,
+        keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+        modifiers: impl IntoIterator<Item = (ParamId, klipp_core::ModifierStack)>,
+    ) -> Self {
+        let ids = (0..effects.len()).map(|_| EffectId::fresh()).collect();
+        let modifiers = modifiers.into_iter().filter(|(id, _)| matches!(id, ParamId::Effect { .. })).collect();
+        Self { effects, enabled, ids, keyframes, modifiers }
+    }
+}
+
+/// Access by [`EffectId`] to what callers otherwise address by a place they
+/// computed: an effect's value, a parameter's keyframes and modifier stack.
+/// Each keys exactly as the saved form does (`"{index}:{param}"`,
+/// `ParamId::Effect { effect_index, param_name }`), so a caller moved onto
+/// these behaves as before.
+impl Clip {
+    /// The id of the entry at `index`, for an index a list widget holds:
+    /// resolve it once, at the edge, and address the effect by id after.
+    pub fn effect_id_at(&mut self, index: usize) -> Option<EffectId> {
+        self.reconcile_effect_ids();
+        self.effect_ids.0.get(index).copied()
+    }
+
+    /// The effect's value, to edit in place: the counterpart of
+    /// [`Clip::replace_effect`]. Its id, flag and animation stay put.
+    pub fn effect_mut(&mut self, id: EffectId) -> Option<&mut BuiltinEffect> {
+        let index = self.index_of(id)?;
+        self.builtin_effects.get_mut(index)
+    }
+
+    /// The keyframes of the effect's `param`, created empty when it has
+    /// none. Stored under `"{index}:{param}"`.
+    pub fn effect_keyframes_mut(&mut self, id: EffectId, param: &str) -> Option<&mut Vec<klipp_core::Keyframe>> {
+        let index = self.index_of(id)?;
+        Some(self.effect_keyframes.entry(format!("{index}:{param}")).or_default())
+    }
+
+    /// The keyframes of the effect's `param`, if it has any; creates none.
+    pub fn existing_effect_keyframes_mut(&mut self, id: EffectId, param: &str) -> Option<&mut Vec<klipp_core::Keyframe>> {
+        let index = self.index_of(id)?;
+        self.effect_keyframes.get_mut(&format!("{index}:{param}"))
+    }
+
+    /// Take the keyframes of the effect's `param` away.
+    pub fn remove_effect_keyframes(&mut self, id: EffectId, param: &str) -> Option<Vec<klipp_core::Keyframe>> {
+        let index = self.index_of(id)?;
+        self.effect_keyframes.remove(&format!("{index}:{param}"))
+    }
+
+    /// The modifier stack of the effect's `param`, created empty when it
+    /// has none. Stored under `ParamId::Effect { effect_index, param_name }`.
+    pub fn effect_modifiers_mut(&mut self, id: EffectId, param: &str) -> Option<&mut klipp_core::ModifierStack> {
+        let index = self.index_of(id)?;
+        let key = ParamId::Effect { effect_index: index, param_name: param.to_owned() };
+        Some(self.param_modifiers.entry(key).or_default())
+    }
+
+    /// The modifier stack of the effect's `param`, if it has one; creates
+    /// none.
+    pub fn existing_effect_modifiers_mut(&mut self, id: EffectId, param: &str) -> Option<&mut klipp_core::ModifierStack> {
+        let index = self.index_of(id)?;
+        self.param_modifiers.get_mut(&ParamId::Effect { effect_index: index, param_name: param.to_owned() })
+    }
+
+    /// Take the modifier stack of the effect's `param` away.
+    pub fn remove_effect_modifiers(&mut self, id: EffectId, param: &str) -> Option<klipp_core::ModifierStack> {
+        let index = self.index_of(id)?;
+        self.param_modifiers.remove(&ParamId::Effect { effect_index: index, param_name: param.to_owned() })
+    }
+
+    /// The whole effect state, ids included, for an undo to restore.
+    pub fn effects_state(&mut self) -> EffectsState {
+        self.reconcile_effect_ids();
+        EffectsState {
+            effects: self.builtin_effects.clone(),
+            enabled: self.builtin_effects_enabled.clone(),
+            // The id vector itself, not `EffectIds::clone`, which starts a
+            // new identity domain on purpose.
+            ids: self.effect_ids.0.clone(),
+            keyframes: self.effect_keyframes.clone(),
+            modifiers: self
+                .param_modifiers
+                .iter()
+                .filter(|(id, _)| matches!(id, ParamId::Effect { .. }))
+                .map(|(id, m)| (id.clone(), m.clone()))
+                .collect(),
+        }
+    }
+
+    /// Put back exactly what [`Clip::effects_state`] took: list, flags, ids,
+    /// effect keyframes and effect modifiers. Clip-level modifiers
+    /// (opacity, transform, audio) are not part of it and stay as they are.
+    pub fn restore_effects_state(&mut self, state: EffectsState) {
+        self.builtin_effects = state.effects;
+        self.builtin_effects_enabled = state.enabled;
+        self.effect_ids.0 = state.ids;
+        self.effect_keyframes = state.keyframes;
+        self.param_modifiers.retain(|id, _| !matches!(id, ParamId::Effect { .. }));
+        self.param_modifiers.extend(state.modifiers);
+    }
+}
+

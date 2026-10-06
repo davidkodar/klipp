@@ -328,3 +328,171 @@ fn insertion_refuses_unshiftable_animation_without_partial_edits() {
         }
     }
 }
+
+// ── #1076: access by id, and the undo snapshot ──
+
+fn stack(amplitude: f32) -> ModifierStack {
+    ModifierStack { modifiers: vec![Modifier::Wiggle { amplitude, frequency: 1.0, blend: Default::default(), enabled: true }] }
+}
+
+fn amplitude(s: &ModifierStack) -> f32 {
+    match s.modifiers.first() {
+        Some(Modifier::Wiggle { amplitude, .. }) => *amplitude,
+        _ => f32::NAN,
+    }
+}
+
+#[test]
+fn access_by_id_keys_as_the_saved_form() {
+    let mut c = clip();
+    c.push_effect(blur(1.0));
+    let b = c.push_effect(blur(2.0));
+    assert_eq!(c.effect_id_at(1), Some(b));
+    assert_eq!(c.effect_id_at(2), None);
+    if let Some(BuiltinEffect::GaussianBlur { radius }) = c.effect_mut(b) {
+        *radius = 5.0;
+    }
+    assert_eq!(c.builtin_effects[1], blur(5.0));
+    c.effect_keyframes_mut(b, "radius").unwrap().push(key(3.0));
+    assert_eq!(c.effect_keyframes["1:radius"], vec![key(3.0)]);
+    c.effect_modifiers_mut(b, "radius").unwrap().modifiers.extend(stack(0.5).modifiers);
+    let at = ParamId::Effect { effect_index: 1, param_name: "radius".into() };
+    assert_eq!(amplitude(&c.param_modifiers[&at]), 0.5);
+    assert_eq!(c.remove_effect_keyframes(b, "radius"), Some(vec![key(3.0)]));
+    assert!(c.remove_effect_modifiers(b, "radius").is_some());
+    assert!(c.effect_keyframes.is_empty() && !c.param_modifiers.contains_key(&at));
+    // An id no longer on the list reaches nothing.
+    c.remove_effect(b);
+    assert!(c.effect_mut(b).is_none() && c.effect_keyframes_mut(b, "radius").is_none() && c.effect_modifiers_mut(b, "radius").is_none());
+}
+
+/// Any mix of list operations and edits by id keeps each effect's keys on
+/// it: every effect is tagged by its radius, and its keyframe and modifier
+/// carry the same number.
+#[test]
+fn keys_stay_on_their_effect_through_any_mix_of_operations() {
+    let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut next = |n: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % n as u64) as usize
+    };
+    for _round in 0..200 {
+        let mut c = clip();
+        let mut tag = 1.0_f32;
+        for _ in 0..12 {
+            let len = c.builtin_effects.len();
+            match next(5) {
+                0 | 1 => {
+                    let id = c.insert_effect(next(len + 1), blur(tag)).unwrap();
+                    c.effect_keyframes_mut(id, "radius").unwrap().push(key(tag));
+                    c.effect_modifiers_mut(id, "radius").unwrap().modifiers.extend(stack(tag).modifiers);
+                    tag += 1.0;
+                }
+                2 if len > 0 => {
+                    let id = c.effect_id_at(next(len)).unwrap();
+                    c.remove_effect(id);
+                }
+                3 if len > 1 => {
+                    let id = c.effect_id_at(next(len)).unwrap();
+                    c.move_effect(id, next(len));
+                }
+                4 if len > 0 => {
+                    let id = c.effect_id_at(next(len)).unwrap();
+                    let on = next(2) == 0;
+                    c.set_effect_enabled(id, on);
+                }
+                _ => {}
+            }
+        }
+        for (i, fx) in c.builtin_effects.iter().enumerate() {
+            let BuiltinEffect::GaussianBlur { radius } = fx else { unreachable!() };
+            assert_eq!(c.effect_keyframes[&format!("{i}:radius")], vec![key(*radius)], "keyframe on effect {i}");
+            let m = &c.param_modifiers[&ParamId::Effect { effect_index: i, param_name: "radius".into() }];
+            assert_eq!(amplitude(m), *radius, "modifier on effect {i}");
+        }
+        assert_eq!(c.effect_keyframes.len(), c.builtin_effects.len(), "no key left behind");
+    }
+}
+
+/// Everything a clip holds about its effects, plus its own modifiers, as
+/// one comparable string (modifier stacks have no equality of their own).
+fn effect_view(c: &Clip) -> String {
+    let mut keys: Vec<_> = c.effect_keyframes.iter().collect();
+    keys.sort_by(|a, b| a.0.cmp(b.0));
+    let mut mods: Vec<String> = c.param_modifiers.iter().map(|(k, v)| format!("{k:?}={v:?}")).collect();
+    mods.sort();
+    format!("{:?}|{:?}|{:?}|{:?}", c.builtin_effects, c.builtin_effects_enabled, keys, mods)
+}
+
+/// A snapshot, any edits, a restore: exactly the snapshot, ids included,
+/// with the clip's own modifiers left as they were.
+#[test]
+fn a_restored_snapshot_is_the_snapshot_ids_and_all() {
+    let mut c = clip();
+    let a = c.push_effect(blur(1.0));
+    let b = c.push_effect(blur(2.0));
+    c.effect_keyframes_mut(b, "radius").unwrap().push(key(2.0));
+    c.effect_modifiers_mut(a, "radius").unwrap().modifiers.extend(stack(1.0).modifiers);
+    c.set_effect_enabled(a, false);
+    c.param_modifiers.insert(ParamId::Opacity, stack(9.0));
+    let saved = effect_view(&c);
+    let state = c.effects_state();
+
+    c.remove_effect(a);
+    c.push_effect(blur(7.0));
+    c.effect_keyframes_mut(b, "radius").unwrap().push(key(9.0));
+    c.param_modifiers.insert(ParamId::Opacity, stack(9.0));
+    c.restore_effects_state(state);
+
+    assert_eq!(effect_view(&c), saved);
+    assert_eq!(ids(&mut c), vec![a, b], "the same identities, not fresh ones");
+    assert_eq!(c.index_of(b), Some(1));
+}
+
+/// Cloning a clip starts a new identity domain; a snapshot doesn't.
+#[test]
+fn a_snapshot_keeps_ids_where_a_clone_does_not() {
+    let mut c = clip();
+    let a = c.push_effect(blur(1.0));
+    let mut copy = c.clone();
+    assert_ne!(copy.effect_id_at(0), Some(a), "a clone's ids are its own");
+    let state = c.effects_state();
+    let mut other = clip();
+    other.restore_effects_state(state);
+    assert_eq!(other.effect_id_at(0), Some(a), "a restored snapshot carries them");
+}
+
+#[test]
+fn existing_access_creates_nothing() {
+    let mut c = clip();
+    let a = c.push_effect(blur(1.0));
+    assert!(c.existing_effect_keyframes_mut(a, "radius").is_none());
+    assert!(c.existing_effect_modifiers_mut(a, "radius").is_none());
+    assert!(c.effect_keyframes.is_empty() && c.param_modifiers.is_empty(), "asking created nothing");
+    c.effect_keyframes_mut(a, "radius").unwrap().push(key(1.0));
+    c.existing_effect_keyframes_mut(a, "radius").unwrap().push(key(2.0));
+    assert_eq!(c.effect_keyframes["0:radius"].len(), 2);
+}
+
+/// A fresh state restored onto a clip takes the values, effect modifiers
+/// only, and new ids; the clip's own modifiers stay.
+#[test]
+fn a_fresh_state_brings_values_with_new_ids() {
+    let mut src = clip();
+    let a = src.push_effect(blur(4.0));
+    src.effect_keyframes_mut(a, "radius").unwrap().push(key(4.0));
+    let mut dst = clip();
+    let old = dst.push_effect(blur(1.0));
+    dst.param_modifiers.insert(ParamId::Opacity, stack(2.0));
+    let mods = vec![(ParamId::Effect { effect_index: 0, param_name: "radius".into() }, stack(4.0)), (ParamId::Scale, stack(8.0))];
+    dst.restore_effects_state(EffectsState::fresh(src.builtin_effects.clone(), src.builtin_effects_enabled.clone(), src.effect_keyframes.clone(), mods));
+    assert_eq!(dst.builtin_effects, vec![blur(4.0)]);
+    assert_eq!(dst.effect_keyframes["0:radius"], vec![key(4.0)]);
+    assert!(dst.param_modifiers.contains_key(&ParamId::Opacity), "the clip's own modifier stays");
+    assert!(!dst.param_modifiers.contains_key(&ParamId::Scale), "a non-effect modifier isn't part of the state");
+    let new = dst.effect_id_at(0).unwrap();
+    assert_ne!(new, old);
+    assert_ne!(new, a);
+}
