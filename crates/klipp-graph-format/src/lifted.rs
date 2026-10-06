@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{Animation, Graph, NodeId, ParamKey};
+use crate::{Animation, Graph, NodeId, ParamKey, PortCatalog, PortDirection, PortType, PortSpec};
 
 /// The node types the lift adds to the legacy vocabulary.
 pub mod types {
@@ -245,6 +245,14 @@ pub enum LiftedError {
     UnknownPort { node: NodeId, port: String },
     UnknownMergeOp(NodeId),
     TwoPlacements,
+    NonFiniteMix(NodeId),
+    MixNotSupported(NodeId),
+    InvalidMaskChannel(NodeId),
+    DuplicateInterfaceKey { group: NodeId, key: String },
+    ReservedInterfaceKey { group: NodeId, key: String },
+    InterfaceEndpoint { group: NodeId, key: String },
+    InterfaceType { group: NodeId, key: String },
+    PortTypeMismatch { node: NodeId, port: String },
     /// An origin on a graph that isn't a render copy.
     Origin(NodeId),
     /// The graph feeds back into itself (wireless links count, as they do
@@ -315,14 +323,96 @@ fn check_mask(g: &Graph, node: NodeId) -> Result<(), LiftedError> {
     Ok(())
 }
 
-fn check_level(g: &Graph, level: &str, body: bool, render_copy: bool) -> Result<(), LiftedError> {
-    check_level_running(g, level, body, render_copy, true)
+fn check_level(g: &Graph, level: &str, body: bool, render_copy: bool, catalog: Option<&dyn PortCatalog>) -> Result<(), LiftedError> {
+    check_level_running(g, level, body, render_copy, true, catalog, &[])
+}
+
+fn port_spec(n: &crate::Node, port: &crate::PortKey, input: bool, catalog: Option<&dyn PortCatalog>) -> Option<PortSpec> {
+    if n.type_id.as_str() == types::GROUP {
+        if let Some(p) = n.group.as_ref()?.interface.iter().find(|p| &p.key == port && (p.direction == PortDirection::Input) == input) {
+            return Some(PortSpec { key: p.key.to_string(), ty: p.ty, optional: p.ty == PortType::Matte, params: Vec::new() });
+        }
+        if matches!((input, port.as_str()), (true, "in" | "frame") | (false, "out")) {
+            return Some(PortSpec { key: port.to_string(), ty: PortType::Image, optional: false, params: Vec::new() });
+        }
+        return None;
+    }
+    let spec = catalog?.node_spec(n)?;
+    (if input { spec.inputs } else { spec.outputs }).into_iter().find(|p| p.key == port.as_str())
+}
+
+fn port_exists(n: &crate::Node, port: &crate::PortKey, input: bool, catalog: Option<&dyn PortCatalog>) -> bool {
+    if n.type_id.as_str() == types::GROUP || catalog.is_some_and(|c| c.node_spec(n).is_some()) {
+        port_spec(n, port, input, catalog).is_some()
+    } else {
+        has_port(n, port, input)
+    }
+}
+
+fn inputs_required(n: &crate::Node, catalog: Option<&dyn PortCatalog>) -> Vec<crate::PortKey> {
+    if let Some(spec) = catalog.and_then(|c| c.node_spec(n)) {
+        return spec.inputs.into_iter().filter(|p| !p.optional).map(|p| crate::PortKey::new(p.key)).collect();
+    }
+    let mut required = required_inputs(n);
+    if let Some(body) = &n.group {
+        required.extend(body.interface.iter().filter(|p| p.direction == PortDirection::Input && p.ty == PortType::Image).map(|p| p.key.clone()));
+    }
+    required
+}
+
+fn check_settings(n: &crate::Node, catalog: Option<&dyn PortCatalog>) -> Result<(), LiftedError> {
+    if n.mix.is_some_and(|m| !m.is_finite()) { return Err(LiftedError::NonFiniteMix(n.id)); }
+    let channel = n.params.get(&ParamKey::from("mask.channel"));
+    if channel.is_some_and(|v| !matches!(v, crate::ParamValue::Text(s) if matches!(s.as_str(), "red" | "luminance" | "alpha"))) {
+        return Err(LiftedError::InvalidMaskChannel(n.id));
+    }
+    if let Some(spec) = catalog.and_then(|c| c.node_spec(n)) {
+        if n.mix.is_some() && !spec.mixable { return Err(LiftedError::MixNotSupported(n.id)); }
+        if let Some(crate::ParamValue::Text(value)) = channel {
+            let valid = spec.inputs.iter().find(|p| p.key == "mask").is_some_and(|p| p.params.iter().any(|(key, values)| key == "channel" && values.contains(value)));
+            if !valid { return Err(LiftedError::InvalidMaskChannel(n.id)); }
+        }
+    }
+    Ok(())
+}
+
+fn check_interface(n: &crate::Node, catalog: Option<&dyn PortCatalog>) -> Result<(), LiftedError> {
+    let Some(body) = &n.group else { return Ok(()) };
+    let mut keys = std::collections::BTreeSet::new();
+    let mut input_bindings = std::collections::BTreeSet::new();
+    for p in &body.interface {
+        if p.key.as_str().is_empty() || matches!(p.key.as_str(), "in" | "out" | "frame") || body.ports.contains(&p.key) {
+            return Err(LiftedError::ReservedInterfaceKey { group: n.id, key: p.key.to_string() });
+        }
+        if !keys.insert(&p.key) { return Err(LiftedError::DuplicateInterfaceKey { group: n.id, key: p.key.to_string() }); }
+        let input = p.direction == PortDirection::Input;
+        let endpoint_error = || LiftedError::InterfaceEndpoint { group: n.id, key: p.key.to_string() };
+        let child = body.graph.nodes.iter().find(|c| c.id == p.binding.node).ok_or_else(endpoint_error)?;
+        if !port_exists(child, &p.binding.port, input, catalog) { return Err(endpoint_error()); }
+        if port_spec(child, &p.binding.port, input, catalog).is_some_and(|s| s.ty != p.ty) {
+            return Err(LiftedError::InterfaceType { group: n.id, key: p.key.to_string() });
+        }
+        if input && !input_bindings.insert((p.binding.node, &p.binding.port)) { return Err(endpoint_error()); }
+    }
+    Ok(())
+}
+
+fn check_mask_with_catalog(g: &Graph, node: NodeId, catalog: Option<&dyn PortCatalog>) -> Result<(), LiftedError> {
+    if let Some(n) = g.nodes.iter().find(|n| n.id == node) {
+        // A published group input named mask is a typed interface port,
+        // not an effect's implicit mask/mix control.
+        if n.type_id.as_str() == types::GROUP && port_spec(n, &"mask".into(), true, catalog).is_some() { return Ok(()); }
+        if let Some(spec) = catalog.and_then(|c| c.node_spec(n)) {
+            return if spec.mixable && spec.inputs.iter().any(|p| p.key == "mask") { Ok(()) } else { Err(LiftedError::MaskNotGateable(node)) };
+        }
+    }
+    check_mask(g, node)
 }
 
 /// `running` is false inside a disabled group, which never runs: a loop
 /// there is kept as saved (today's renderer refused it and passed the
 /// picture through), so only there is it allowed.
-fn check_level_running(g: &Graph, level: &str, body: bool, render_copy: bool, running: bool) -> Result<(), LiftedError> {
+fn check_level_running(g: &Graph, level: &str, body: bool, render_copy: bool, running: bool, catalog: Option<&dyn PortCatalog>, supplied: &[(NodeId, crate::PortKey)]) -> Result<(), LiftedError> {
     let (start, end) = if body { (types::GROUP_INPUT, types::GROUP_OUTPUT) } else { (types::SOURCE, types::OUTPUT) };
     for (what, t) in [("start", start), ("end", end)] {
         let count = g.nodes.iter().filter(|n| n.type_id.as_str() == t).count();
@@ -340,6 +430,8 @@ fn check_level_running(g: &Graph, level: &str, body: bool, render_copy: bool, ru
     let mut ids = std::collections::BTreeSet::new();
     let other_level: &[&str] = if body { &[types::SOURCE, types::OUTPUT] } else { &[types::GROUP_INPUT, types::GROUP_OUTPUT, types::GROUP_FRAME] };
     for n in &g.nodes {
+        check_settings(n, catalog)?;
+        check_interface(n, catalog)?;
         if !ids.insert(n.id) {
             return Err(LiftedError::DuplicateNode(n.id));
         }
@@ -353,7 +445,7 @@ fn check_level_running(g: &Graph, level: &str, body: bool, render_copy: bool, ru
             return Err(LiftedError::Origin(n.id));
         }
     }
-    let mut into = std::collections::BTreeSet::new();
+    let mut into: std::collections::BTreeSet<_> = supplied.iter().cloned().collect();
     for e in &g.edges {
         for id in [e.from.0, e.to.0] {
             if !ids.contains(&id) {
@@ -364,23 +456,46 @@ fn check_level_running(g: &Graph, level: &str, body: bool, render_copy: bool, ru
             return Err(LiftedError::TwoInputs { node: e.to.0, port: e.to.1.to_string() });
         }
         if e.to.1.as_str() == "mask" {
-            check_mask(g, e.to.0)?;
+            check_mask_with_catalog(g, e.to.0, catalog)?;
         }
         for (id, port, input) in [(e.from.0, &e.from.1, false), (e.to.0, &e.to.1, true)] {
             let n = g.nodes.iter().find(|n| n.id == id);
-            if !n.is_some_and(|n| has_port(n, port, input)) {
+            if !n.is_some_and(|n| port_exists(n, port, input, catalog)) {
                 return Err(LiftedError::UnknownPort { node: id, port: port.to_string() });
+            }
+        }
+        let from = g.nodes.iter().find(|n| n.id == e.from.0).and_then(|n| port_spec(n, &e.from.1, false, catalog));
+        let to = g.nodes.iter().find(|n| n.id == e.to.0).and_then(|n| port_spec(n, &e.to.1, true, catalog));
+        if let (Some(from), Some(to)) = (from, to) {
+            // Image masks deliberately extract coverage; other ports are exact typed connections.
+            let extracts_mask = e.to.1.as_str() == "mask" && g.nodes.iter().any(|n| n.id == e.to.0 && n.type_id.as_str() != types::GROUP);
+            if from.ty != to.ty && !extracts_mask {
+                return Err(LiftedError::PortTypeMismatch { node: e.to.0, port: e.to.1.to_string() });
             }
         }
     }
     let sender = |name: &str, me: NodeId| g.nodes.iter().any(|o| o.id != me && o.wireless.output_link.as_deref() == Some(name));
     for n in &g.nodes {
         if n.wireless.input_links.get(&crate::PortKey::from("mask")).is_some_and(|name| sender(name, n.id)) {
-            check_mask(g, n.id)?;
+            check_mask_with_catalog(g, n.id, catalog)?;
         }
     }
     for n in &g.nodes {
-        for port in required_inputs(n) {
+        // Wired inputs take precedence; validate only wireless dependencies
+        // that actually supply a registered or published port.
+        if n.type_id.as_str() == types::GROUP || catalog.is_some_and(|c| c.node_spec(n).is_some()) {
+            for (port, name) in &n.wireless.input_links {
+                if into.contains(&(n.id, port.clone())) { continue; }
+                let Some(source) = g.nodes.iter().find(|s| s.id != n.id && s.wireless.output_link.as_deref() == Some(name)) else { continue };
+                let Some(target) = port_spec(n, port, true, catalog) else {
+                    return Err(LiftedError::UnknownPort { node: n.id, port: port.to_string() });
+                };
+                if port_spec(source, &"out".into(), false, catalog).is_some_and(|s| s.ty != target.ty) && (port.as_str() != "mask" || n.type_id.as_str() == types::GROUP) {
+                    return Err(LiftedError::PortTypeMismatch { node: n.id, port: port.to_string() });
+                }
+            }
+        }
+        for port in inputs_required(n, catalog) {
             let wired = into.contains(&(n.id, port.clone())) || n.wireless.input_links.get(&port).is_some_and(|name| sender(name, n.id));
             if !wired {
                 return Err(LiftedError::Unwired { node: n.id, port: port.to_string() });
@@ -394,7 +509,8 @@ fn check_level_running(g: &Graph, level: &str, body: bool, render_copy: bool, ru
         }
         if n.type_id.as_str() == types::GROUP {
             if let Some(b) = &n.group {
-                check_level_running(&b.graph, &format!("{level}/{}", n.id), true, render_copy, running && n.enabled)?;
+                let supplied: Vec<_> = b.interface.iter().filter(|p| p.direction == PortDirection::Input).map(|p| (p.binding.node, p.binding.port.clone())).collect();
+                check_level_running(&b.graph, &format!("{level}/{}", n.id), true, render_copy, running && n.enabled, catalog, &supplied)?;
             }
         }
     }
@@ -457,13 +573,25 @@ impl Graph {
     /// implicit reads), `mask` edges only into gateable corrections, known
     /// merge ops, at most one placement, and origins only on a render copy.
     pub fn check_lifted(&self, render_copy: bool) -> Result<(), LiftedError> {
-        check_level(self, "clip", false, render_copy)
+        check_level(self, "clip", false, render_copy, None)
     }
 
     /// [`Graph::check_lifted`] for a Grade group body standing alone (a
     /// track or timeline grade, a group stage, a version, a Look): it runs
     /// from `group.input` to `group.output`.
     pub fn check_lifted_body(&self) -> Result<(), LiftedError> {
-        check_level(self, "body", true, false)
+        check_level(self, "body", true, false, None)
+    }
+}
+
+impl Graph {
+    /// Validate registry-defined ports, settings and mixability as well as structure.
+    pub fn check_lifted_with_catalog(&self, render_copy: bool, catalog: &dyn PortCatalog) -> Result<(), LiftedError> {
+        check_level(self, "clip", false, render_copy, Some(catalog))
+    }
+
+    /// Validate a standalone group body against registry metadata.
+    pub fn check_lifted_body_with_catalog(&self, catalog: &dyn PortCatalog) -> Result<(), LiftedError> {
+        check_level(self, "body", true, false, Some(catalog))
     }
 }

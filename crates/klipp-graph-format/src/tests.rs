@@ -57,7 +57,7 @@ fn clip_graph() -> Graph {
         working_space_override: Some(json!("Rec709")),
     };
     let mut group = node(1, types::LEGACY_GRADE);
-    group.group = Some(Box::new(GroupBody { graph: grade, ports: vec!["in".into(), "out".into()] }));
+    group.group = Some(Box::new(GroupBody { graph: grade, ports: vec!["in".into(), "out".into()], interface: Vec::new() }));
     let mut ofx = node(2, types::LEGACY_OFX);
     ofx.legacy.as_mut().unwrap().slot = Some(0);
     let mut blur = node(3, types::LEGACY_EFFECT);
@@ -209,7 +209,7 @@ fn check_refuses_what_revision_one_cannot_hold() {
     assert_eq!(g.check(), Err(FormatError::MissingGroupBody(id(1))));
 
     let mut g = clip_graph();
-    g.nodes[1].group = Some(Box::new(GroupBody { graph: clip_graph(), ports: Vec::new() }));
+    g.nodes[1].group = Some(Box::new(GroupBody { graph: clip_graph(), ports: Vec::new(), interface: Vec::new() }));
     assert!(matches!(g.check(), Err(FormatError::NotStructural { .. })));
 
     // Inside a grade body only old grade nodes belong, each with its entry.
@@ -401,7 +401,7 @@ mod lifted_checks {
         let mut body = body;
         body.nodes[2].type_id = lt::GROUP_OUTPUT.into();
         let mut group = plain(2, lt::GROUP);
-        group.group = Some(Box::new(GroupBody { graph: body, ports: Vec::new() }));
+        group.group = Some(Box::new(GroupBody { graph: body, ports: Vec::new(), interface: Vec::new() }));
         let nodes = vec![plain(1, lt::SOURCE), group, plain(3, lt::SCENE_TO_DISPLAY), plain(4, lt::PLACEMENT), plain(5, lt::OUTPUT)];
         Graph {
             graph_version: GRAPH_VERSION,
@@ -536,4 +536,170 @@ mod lifted_checks {
         body(&mut g).nodes[1].params.insert("op".into(), ParamValue::Text("blend_v1".into()));
         g.check_lifted(false).unwrap();
     }
+    struct Catalog;
+    impl PortCatalog for Catalog {
+        fn node_spec(&self, node: &Node) -> Option<NodeSpec> {
+            if node.type_id.as_str() == types::LEGACY_NODE {
+                return match node.legacy.as_ref()?.payload.get("kind")?.as_str()? {
+                    "Corrector" => self.node("test.fx"),
+                    "ExternalMatte" => self.node("test.matte"),
+                    _ => None,
+                };
+            }
+            self.node(node.type_id.as_str())
+        }
+        fn node(&self, type_id: &str) -> Option<NodeSpec> {
+            let port = |key: &str, ty, optional| PortSpec { key: key.into(), ty, optional, params: Vec::new() };
+            match type_id {
+                "test.fx" => {
+                    let mut mask = port("mask", PortType::Matte, true);
+                    mask.params.push(("channel".into(), vec!["red".into(), "luminance".into(), "alpha".into()]));
+                    Some(NodeSpec { inputs: vec![port("in", PortType::Image, false), mask], outputs: vec![port("out", PortType::Image, false)], mixable: true })
+                }
+                "test.matte" => Some(NodeSpec { inputs: Vec::new(), outputs: vec![port("out", PortType::Matte, false)], mixable: false }),
+                _ => None,
+            }
+        }
+    }
+
+    fn published() -> Graph {
+        let mut g = valid();
+        let b = g.nodes[1].group.as_mut().unwrap();
+        b.graph.nodes[1] = plain(12, "test.fx");
+        b.graph.nodes.push(plain(14, "test.matte"));
+        b.interface.push(GroupPort {
+            key: "matte_selection".into(), direction: PortDirection::Output, ty: PortType::Matte,
+            binding: PortBinding { node: id(14), port: "out".into() }, label: "Selection".into(),
+        });
+        g
+    }
+
+    #[test]
+    fn group_interface_validation_refuses_bad_graphs() {
+        published().check_lifted_with_catalog(false, &Catalog).unwrap();
+        let refuse = |edit: &dyn Fn(&mut Graph), matches: &dyn Fn(&LiftedError) -> bool| {
+            let mut g = published();
+            edit(&mut g);
+            let before = serde_json::to_value(&g).unwrap();
+            let err = g.check_lifted_with_catalog(false, &Catalog).unwrap_err();
+            assert!(matches(&err), "{err:?}");
+            assert_eq!(serde_json::to_value(&g).unwrap(), before);
+        };
+        refuse(&|g| g.nodes[1].group.as_mut().unwrap().interface[0].binding.node = id(99), &|e| matches!(e, LiftedError::InterfaceEndpoint { .. }));
+        refuse(&|g| { let b = g.nodes[1].group.as_mut().unwrap(); b.interface.push(b.interface[0].clone()); }, &|e| matches!(e, LiftedError::DuplicateInterfaceKey { .. }));
+        refuse(&|g| g.nodes[1].group.as_mut().unwrap().interface[0].ty = PortType::Image, &|e| matches!(e, LiftedError::InterfaceType { .. }));
+        refuse(&|g| g.nodes[1].group.as_mut().unwrap().interface[0].binding = PortBinding { node: id(12), port: "in".into() }, &|e| matches!(e, LiftedError::InterfaceEndpoint { .. }));
+        refuse(&|g| { body(g).edges.remove(0); }, &|e| matches!(e, LiftedError::Unwired { .. }));
+        for key in ["in", "out", "frame", ""] {
+            refuse(&|g| g.nodes[1].group.as_mut().unwrap().interface[0].key = key.into(), &|e| matches!(e, LiftedError::ReservedInterfaceKey { .. }));
+        }
+        refuse(&|g| { body(g).nodes[1].mix = Some(f32::NAN); }, &|e| matches!(e, LiftedError::NonFiniteMix(_)));
+        refuse(&|g| { body(g).nodes[3].mix = Some(0.5); }, &|e| matches!(e, LiftedError::MixNotSupported(_)));
+        refuse(&|g| { body(g).nodes[1].params.insert("mask.channel".into(), ParamValue::Text("green".into())); }, &|e| matches!(e, LiftedError::InvalidMaskChannel(_)));
+        refuse(&|g| { body(g).nodes[3].params.insert("mask.channel".into(), ParamValue::Text("red".into())); }, &|e| matches!(e, LiftedError::InvalidMaskChannel(_)));
+    }
+
+    #[test]
+    fn published_inputs_supply_children_but_need_their_parent_connection() {
+        let mut g = published();
+        let b = g.nodes[1].group.as_mut().unwrap();
+        b.interface.push(GroupPort {
+            key: "picture_extra".into(), direction: PortDirection::Input, ty: PortType::Image,
+            binding: PortBinding { node: id(12), port: "in".into() }, label: String::new(),
+        });
+        b.graph.edges.remove(0);
+        assert!(matches!(g.check_lifted_with_catalog(false, &Catalog), Err(LiftedError::Unwired { node, port }) if node == id(2) && port == "picture_extra"));
+        g.edges.push(e(1, 2, "picture_extra"));
+        g.check_lifted_with_catalog(false, &Catalog).unwrap();
+        body(&mut g).edges.push(e(11, 12, "in"));
+        assert!(matches!(g.check_lifted_with_catalog(false, &Catalog), Err(LiftedError::TwoInputs { .. })));
+    }
+
+    #[test]
+    fn published_output_can_feed_a_mask_with_saved_channel() {
+        let mut g = published();
+        g.nodes[2] = plain(3, "test.fx");
+        g.edges.push(Edge { from: (id(2), "matte_selection".into()), to: (id(3), "mask".into()) });
+        for channel in [None, Some("red"), Some("luminance"), Some("alpha")] {
+            g.nodes[2].params.clear();
+            if let Some(channel) = channel { g.nodes[2].params.insert("mask.channel".into(), ParamValue::Text(channel.into())); }
+            g.check_lifted_with_catalog(false, &Catalog).unwrap();
+        }
+        g.edges.last_mut().unwrap().from.1 = "missing".into();
+        assert!(matches!(g.check_lifted_with_catalog(false, &Catalog), Err(LiftedError::UnknownPort { .. })));
+    }
+
+    #[test]
+    fn interface_capability_is_explicit_and_legacy_bytes_stay_unchanged() {
+        let empty = valid();
+        let b = empty.nodes[1].group.as_ref().unwrap();
+        assert_eq!(serde_json::to_value(b).unwrap(), json!({ "graph": b.graph }));
+        let mut g = published();
+        let b = g.nodes[1].group.as_mut().unwrap();
+        b.interface.push(GroupPort { key: "matte_other".into(), label: String::new(), ..b.interface[0].clone() });
+        let value = serde_json::to_value(&g).unwrap();
+        let body = &value["nodes"][1]["group"];
+        assert_eq!(body["requires"], json!([GROUP_INTERFACE_CAPABILITY]));
+        assert!(body["interface"][1].get("label").is_none());
+        assert_eq!(serde_json::from_value::<Graph>(value.clone()).unwrap(), g);
+        let mut no_marker = value.clone();
+        no_marker["nodes"][1]["group"].as_object_mut().unwrap().remove("requires");
+        assert!(serde_json::from_value::<Graph>(no_marker).is_err());
+        let mut unknown = value;
+        unknown["nodes"][1]["group"]["requires"] = json!([GROUP_INTERFACE_CAPABILITY, "future-capability"]);
+        assert!(serde_json::from_value::<Graph>(unknown).is_err());
+        let mut empty_unknown = serde_json::to_value(g.nodes[1].group.as_ref().unwrap()).unwrap();
+        empty_unknown["interface"] = json!([]);
+        empty_unknown["requires"] = json!(["future-capability"]);
+        assert!(serde_json::from_value::<GroupBody>(empty_unknown).is_err());
+    }
+
+    #[test]
+    fn nested_exports_resolve_through_each_declared_interface() {
+        let mut g = published();
+        let nested = g.nodes[1].group.clone();
+        let child = &mut body(&mut g).nodes[1];
+        *child = plain(12, lt::GROUP);
+        child.group = nested;
+        let p = &mut g.nodes[1].group.as_mut().unwrap().interface[0];
+        p.binding = PortBinding { node: id(12), port: "matte_selection".into() };
+        g.check_lifted_with_catalog(false, &Catalog).unwrap();
+        g.nodes[1].group.as_mut().unwrap().interface[0].label = "Renamed display label".into();
+        g.check_lifted_with_catalog(false, &Catalog).unwrap();
+        g.nodes[1].group.as_mut().unwrap().interface[0].ty = PortType::Image;
+        assert!(matches!(g.check_lifted_with_catalog(false, &Catalog), Err(LiftedError::InterfaceType { .. })));
+    }
+
+    #[test]
+    fn typed_connections_refuse_matte_as_required_image_drawn_or_wireless() {
+        for wireless in [false, true] {
+            let mut g = published();
+            let b = body(&mut g);
+            b.edges.remove(0);
+            if wireless {
+                b.nodes[3].wireless.output_link = Some("selection".into());
+                b.nodes[1].wireless.input_links.insert("in".into(), "selection".into());
+            } else {
+                b.edges.push(e(14, 12, "in"));
+            }
+            assert!(matches!(g.check_lifted_with_catalog(false, &Catalog), Err(LiftedError::PortTypeMismatch { .. })));
+        }
+    }
+
+    #[test]
+    fn legacy_endpoint_typing_uses_the_catalog_without_rewriting_ids() {
+        let mut g = published();
+        body(&mut g).nodes[3] = legacy_node(14, "ExternalMatte");
+        let before = g.clone();
+        g.check_lifted_with_catalog(false, &Catalog).unwrap();
+        assert_eq!(g, before);
+        g.nodes[1].group.as_mut().unwrap().interface[0].ty = PortType::Image;
+        assert!(matches!(g.check_lifted_with_catalog(false, &Catalog), Err(LiftedError::InterfaceType { .. })));
+        // Unknown legacy kinds still get structural checks rather than a
+        // fabricated registry description or a new unknown-type refusal.
+        let mut g = valid();
+        body(&mut g).nodes[1].legacy = legacy(json!({"kind": "UnknownSavedKind"}));
+        g.check_lifted_with_catalog(false, &Catalog).unwrap();
+    }
+
 }

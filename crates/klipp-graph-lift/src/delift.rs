@@ -143,7 +143,7 @@ pub fn clip(p: &ClipPicture) -> Result<ClipRecordV2, Refusal> {
                 // The structural grade group is always on: a looping grade
                 // the lift kept off was on as stored.
                 g.enabled = true;
-                g.group = Some(Box::new(GroupBody { graph: body(lifted)?, ports: Vec::new() }));
+                g.group = Some(Box::new(GroupBody { graph: body(lifted)?, ports: Vec::new(), interface: Vec::new() }));
                 grade = Some(g);
             }
             types::LEGACY_OFX => ofx.push(n.clone()),
@@ -181,7 +181,7 @@ pub fn grade_only(lifted: &Graph, group: NodeId) -> Result<Graph, Refusal> {
         anim: Default::default(),
         mix: None,
         wireless: Default::default(),
-        group: Some(Box::new(GroupBody { graph: body(lifted)?, ports: Vec::new() })),
+        group: Some(Box::new(GroupBody { graph: body(lifted)?, ports: Vec::new(), interface: Vec::new() })),
         legacy: Some(klipp_graph_format::Legacy { slot: None, payload: Value::Null, keyframes: None, modifiers: Default::default() }),
         legacy_flags: None,
         origin: None,
