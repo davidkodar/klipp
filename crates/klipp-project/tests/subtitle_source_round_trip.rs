@@ -54,7 +54,7 @@ fn subtitle_source_uses_project_relative_paths_and_survives_relocation() {
     track.source_file = Some(root.0.join("external.vtt"));
     save_project(&moved, &seqs, &media).unwrap();
     assert_eq!(stored_source(&moved), "../external.vtt");
-    let (seqs, _, ..) = load_project(&moved).unwrap();
+    let (seqs, ..) = load_project(&moved).unwrap();
     assert_eq!(
         seqs[0]
             .tracks
