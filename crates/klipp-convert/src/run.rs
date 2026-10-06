@@ -269,9 +269,15 @@ fn sync_parent(path: &Path) -> Result<(), String> {
     }
 }
 
-/// Make `dir` and any folder above it that is missing, each synced into
-/// the folder it is in: a new folder whose own entry isn't on disk could
-/// vanish with everything under it.
+/// The folders this process has seen made durable: each one's entry
+/// synced into the folder above it.
+static DURABLE: std::sync::Mutex<BTreeSet<PathBuf>> = std::sync::Mutex::new(BTreeSet::new());
+
+/// Make `dir` and any folder above it that is missing, and make every
+/// folder of the path durable: its entry synced into the folder above it.
+/// That includes folders already there, which an earlier run may have made
+/// and then failed (or died) before syncing: a folder whose entry isn't on
+/// disk could vanish with everything under it.
 fn make_dirs(dir: &Path) -> Result<(), String> {
     let mut missing = Vec::new();
     let mut at = Some(dir);
@@ -279,14 +285,24 @@ fn make_dirs(dir: &Path) -> Result<(), String> {
         missing.push(d);
         at = d.parent();
     }
+    let mut durable = DURABLE.lock().unwrap_or_else(|e| e.into_inner());
     for d in missing.into_iter().rev() {
         match std::fs::create_dir(d) {
             Ok(()) => {}
-            // Made by someone else meanwhile: still synced below.
+            // Made by someone else meanwhile: synced below all the same.
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists && d.is_dir() => {}
             Err(e) => return Err(io_err("making", d, e)),
         }
-        sync_parent(d)?;
+        // A new entry, whatever was known of the path before.
+        durable.remove(d);
+    }
+    let mut path = PathBuf::new();
+    for part in dir.components() {
+        path.push(part);
+        if path.parent().is_some_and(|p| !p.as_os_str().is_empty()) && !durable.contains(&path) {
+            sync_parent(&path)?;
+            durable.insert(path.clone());
+        }
     }
     Ok(())
 }

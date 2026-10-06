@@ -717,5 +717,12 @@ fn a_new_folder_that_cannot_be_synced_stops_the_run() {
     assert!(matches!(&result, Err(RunError::Refused(why)) if why.contains("syncing")), "{result:?}");
     assert_eq!(snapshot(&dir), before);
     assert!(!PathBuf::from(format!("{}.klipp-convert", dir.display())).exists());
+    // A rerun finds the folders the first one made, and syncs them all the
+    // same: still refused (#1121 review).
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o300)).unwrap();
+    let again = run(&s, &ok, &ok_parity, &Hooks::NONE);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(matches!(&again, Err(RunError::Refused(why)) if why.contains("syncing")), "{again:?}");
+    assert_eq!(snapshot(&dir), before);
     let _ = std::fs::remove_dir_all(&r);
 }
