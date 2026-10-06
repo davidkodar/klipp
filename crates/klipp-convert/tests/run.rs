@@ -150,7 +150,8 @@ fn a_full_run_converts_and_backs_up() {
     assert!(!auto.exists() && in_backup(&s, &auto).join("project.json").is_file());
     assert_eq!(std::fs::metadata(&dir).unwrap().modified().unwrap(), time_before);
     assert_eq!(klipp_convert::scan::has_newer_autosave(&dir), auto_newer_before);
-    assert!(!s.backup_root.join("run.lock").exists() && std::fs::read_dir(s.backup_root.join("journal")).unwrap().next().is_none());
+    assert!(std::fs::File::open(s.backup_root.join("run.lock")).unwrap().try_lock().is_ok(), "the lock released");
+    assert!(std::fs::read_dir(s.backup_root.join("journal")).unwrap().next().is_none());
     let _ = std::fs::remove_dir_all(&r);
 }
 
@@ -301,12 +302,16 @@ fn preconditions_and_the_lock_refuse_before_anything_is_touched() {
     let s = settings(&r, vec![dir.clone()]);
     let running = || Err("a Klipp is running".to_string());
     assert!(matches!(run(&s, &running, &ok_parity, &Hooks::NONE), Err(RunError::Refused(_))));
-    // A lock held by a process that is alive refuses; a stale one is taken.
+    // The lock is the system's, not the file's words: held, even with the
+    // file still empty (a run that has only just taken it), it refuses;
+    // a file naming a live process but not held is no lock.
     std::fs::create_dir_all(&s.backup_root).unwrap();
-    std::fs::write(s.backup_root.join("run.lock"), std::process::id().to_string()).unwrap();
+    let held = std::fs::File::create(s.backup_root.join("run.lock")).unwrap();
+    held.try_lock().unwrap();
     assert!(matches!(run(&s, &ok, &ok_parity, &Hooks::NONE), Err(RunError::Refused(_))));
     assert_eq!(snapshot(&dir), before);
-    std::fs::write(s.backup_root.join("run.lock"), "4294967294").unwrap();
+    drop(held);
+    std::fs::write(s.backup_root.join("run.lock"), std::process::id().to_string()).unwrap();
     assert_eq!(run(&s, &ok, &ok_parity, &Hooks::NONE).unwrap().converted, vec![dir]);
     let _ = std::fs::remove_dir_all(&r);
 }
@@ -652,5 +657,65 @@ fn a_sync_refused_after_a_rename_goes_forward() {
     recover(&s, &mut report).unwrap();
     assert_eq!(report.recovered, vec![(dir.clone(), "finished".to_string())]);
     assert_converted(&s, &dir, &before);
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// Two runs at once: while one holds the lock part way through a project,
+/// the other is refused before touching anything, and the first finishes
+/// (#1121 review).
+#[test]
+fn a_second_run_is_refused_while_the_first_holds_the_lock() {
+    let r = root("contention");
+    let (dir, other) = (project(&r, "Film"), project(&r.join("b"), "Other"));
+    let before = snapshot(&dir);
+    let other_before = snapshot(&other);
+    let s = settings(&r, vec![dir.clone()]);
+    let (inside, release) = (std::sync::mpsc::channel::<()>(), std::sync::mpsc::channel::<()>());
+    let first = {
+        let s = s.clone();
+        let (tell, wait) = (inside.0, release.1);
+        std::thread::spawn(move || {
+            // Holds the lock in its render check until told to go on.
+            let check = move |_: &Path| -> Result<(), String> {
+                tell.send(()).unwrap();
+                wait.recv().unwrap();
+                Ok(())
+            };
+            run(&s, &ok, &ok_parity, &Hooks { render_check: &check, ..Hooks::NONE })
+        })
+    };
+    inside.1.recv().unwrap();
+    let second = settings(&r, vec![other.clone()]);
+    match run(&second, &ok, &ok_parity, &Hooks::NONE) {
+        Err(RunError::Refused(why)) => assert!(why.contains("another run holds"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(snapshot(&other), other_before, "the second run touched nothing");
+    release.0.send(()).unwrap();
+    assert_eq!(first.join().unwrap().unwrap().converted, vec![dir.clone()]);
+    assert_converted(&s, &dir, &before);
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// Every folder the run makes is synced into the folder above it, so one
+/// above that can't be synced stops the run before anything is moved
+/// (#1121 review).
+#[test]
+fn a_new_folder_that_cannot_be_synced_stops_the_run() {
+    let r = root("ancestor-sync");
+    let dir = project(&r, "Film");
+    let before = snapshot(&dir);
+    let locked = r.join("locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    // Writable and enterable, not readable: a folder can be made in it,
+    // but it can't be opened to sync the new entry.
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o300)).unwrap();
+    let mut s = settings(&r, vec![dir.clone()]);
+    s.backup_root = locked.join("backup/pre-v2");
+    let result = run(&s, &ok, &ok_parity, &Hooks::NONE);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(matches!(&result, Err(RunError::Refused(why)) if why.contains("syncing")), "{result:?}");
+    assert_eq!(snapshot(&dir), before);
+    assert!(!PathBuf::from(format!("{}.klipp-convert", dir.display())).exists());
     let _ = std::fs::remove_dir_all(&r);
 }

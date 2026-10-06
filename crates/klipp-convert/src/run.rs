@@ -210,36 +210,34 @@ pub fn no_klipp_running() -> Result<(), String> {
     Ok(())
 }
 
-/// The run's lock: a file holding the process id, removed when the run
-/// ends. A lock whose process is gone is stale and taken over.
-struct Lock(PathBuf);
+/// The run's lock: an exclusive lock the system holds on `run.lock` for
+/// as long as the run has it open, released when the run ends or its
+/// process dies. The file stays: removing it could let a run waiting on
+/// the old file and one making a new file both hold "the" lock. It names
+/// the process holding it, for the person reading it.
+struct Lock {
+    _held: std::fs::File,
+}
 
 impl Lock {
     fn take(root: &Path) -> Result<Lock, String> {
-        std::fs::create_dir_all(root).map_err(|e| io_err("making", root, e))?;
+        make_dirs(root)?;
         let path = root.join("run.lock");
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            let alive = text.trim().parse::<u32>().is_ok_and(|pid| Path::new(&format!("/proc/{pid}")).exists());
-            if alive {
-                return Err(format!("another run holds {} (process {})", path.display(), text.trim()));
+        let mut f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&path).map_err(|e| io_err("opening", &path, e))?;
+        match f.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                let holder = std::fs::read_to_string(&path).unwrap_or_default();
+                return Err(format!("another run holds {} (process {})", path.display(), holder.trim()));
             }
-            // Stale: its process is gone.
-            std::fs::remove_file(&path).map_err(|e| io_err("clearing the stale", &path, e))?;
+            Err(std::fs::TryLockError::Error(e)) => return Err(io_err("locking", &path, e)),
         }
-        // Made only if it isn't there: two runs starting together can't
-        // both take it.
-        use std::io::Write;
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e| format!("another run took {} first: {e}", path.display()))?;
-        f.write_all(std::process::id().to_string().as_bytes()).map_err(|e| io_err("writing", &path, e))?;
-        Ok(Lock(path))
+        use std::io::{Seek, Write};
+        f.set_len(0).and_then(|()| f.rewind()).and_then(|()| f.write_all(std::process::id().to_string().as_bytes())).map_err(|e| io_err("writing", &path, e))?;
+        Ok(Lock { _held: f })
     }
 }
 
-impl Drop for Lock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
 
 fn journal_dir(s: &Settings) -> PathBuf {
     s.backup_root.join("journal")
@@ -271,6 +269,28 @@ fn sync_parent(path: &Path) -> Result<(), String> {
     }
 }
 
+/// Make `dir` and any folder above it that is missing, each synced into
+/// the folder it is in: a new folder whose own entry isn't on disk could
+/// vanish with everything under it.
+fn make_dirs(dir: &Path) -> Result<(), String> {
+    let mut missing = Vec::new();
+    let mut at = Some(dir);
+    while let Some(d) = at.filter(|d| !d.as_os_str().is_empty() && !d.is_dir()) {
+        missing.push(d);
+        at = d.parent();
+    }
+    for d in missing.into_iter().rev() {
+        match std::fs::create_dir(d) {
+            Ok(()) => {}
+            // Made by someone else meanwhile: still synced below.
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && d.is_dir() => {}
+            Err(e) => return Err(io_err("making", d, e)),
+        }
+        sync_parent(d)?;
+    }
+    Ok(())
+}
+
 /// Rename, then sync the folders of both names.
 fn rename_synced(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::rename(from, to)?;
@@ -296,10 +316,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 fn record(s: &Settings, e: &Entry) -> Result<(), String> {
     let dir = journal_dir(s);
-    if !dir.is_dir() {
-        std::fs::create_dir_all(&dir).map_err(|err| io_err("making", &dir, err))?;
-        sync_parent(&dir)?;
-    }
+    make_dirs(&dir)?;
     let text = serde_json::to_vec_pretty(e).map_err(|err| err.to_string())?;
     write_atomic(&journal_path(s, &e.dir), &text)
 }
@@ -446,7 +463,7 @@ fn move_tree(from: &Path, to: &Path, crash: &dyn Fn(MovePoint, &Path) -> bool) -
         return Ok(());
     }
     if let Some(parent) = to.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| io(io_err("making", parent, e)))?;
+        make_dirs(parent).map_err(io)?;
     }
     match rename_synced(from, to) {
         Ok(()) => Ok(()),
@@ -631,7 +648,7 @@ pub fn recover(s: &Settings, report: &mut Report) -> Result<(), RunError> {
             // Empty or torn: set aside and named, so it stops neither this
             // run nor every run after it.
             let damaged = journal_dir(s).join("damaged");
-            std::fs::create_dir_all(&damaged).map_err(|err| RunError::Io(io_err("making", &damaged, err)))?;
+            make_dirs(&damaged).map_err(RunError::Io)?;
             let to = damaged.join(path.file_name().unwrap_or_default());
             rename_synced(&path, &to).map_err(|err| RunError::Io(io_err("setting aside", &path, err)))?;
             report.damaged_journals.push(to);
@@ -762,7 +779,7 @@ fn convert_presets(s: &Settings, config: &Path, report: &mut Report) -> Result<(
         // Made aside, checked, then renamed: a backup that is there is
         // whole, even after a crash part way through making it.
         if let Some(parent) = backup.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| RunError::Io(io_err("making", parent, e)))?;
+            make_dirs(parent).map_err(RunError::Io)?;
         }
         let partial = with_suffix(&backup, ".partial");
         if partial.exists() {
