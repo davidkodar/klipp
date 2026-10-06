@@ -5,7 +5,7 @@
 //! stay at the old place and animate whichever effect lands there.
 
 use crate::sequence::Clip;
-use klipp_core::ParamId;
+use klipp_core::{ClipId, ParamId};
 use klipp_effects::BuiltinEffect;
 
 /// An effect entry's identity within this editing session. Never persisted.
@@ -23,15 +23,19 @@ impl EffectId {
 }
 
 /// Ephemeral sidecar for the raw effect list. Access it through `Clip`'s API.
-/// Loading starts empty, and cloning starts a new identity domain. Both
-/// reconcile lazily, so merely cloning a render snapshot allocates no ids.
-#[derive(Debug, Default)]
-pub struct EffectIds(Vec<EffectId>);
-
-impl Clone for EffectIds {
-    fn clone(&self) -> Self {
-        Self::default()
-    }
+///
+/// The ids belong to the clip they were made for, named by its `ClipId`. A
+/// clone keeps them: the same clip, edited and written back, keeps every
+/// effect's identity. A clip that becomes a new clip takes a new `ClipId`
+/// (a duplicate, a paste, a split's halves, an instance), and its effects
+/// then get fresh ids the next time they are read, without each of those
+/// places having to ask; [`Clip::refresh_effect_ids`] asks explicitly.
+/// Loading starts empty and reconciles lazily.
+#[derive(Debug, Default, Clone)]
+pub struct EffectIds {
+    /// The clip the ids were made for.
+    owner: Option<ClipId>,
+    ids: Vec<EffectId>,
 }
 
 impl Clip {
@@ -39,9 +43,13 @@ impl Clip {
     /// new tail entries get fresh ids. Same-length raw edits cannot be detected
     /// during this transition and must move to the id API before relying on ids.
     fn reconcile_effect_ids(&mut self) {
+        if self.effect_ids.owner != Some(self.id) {
+            // A new clip: its effects are new effects.
+            self.effect_ids = EffectIds { owner: Some(self.id), ids: Vec::new() };
+        }
         let len = self.builtin_effects.len();
-        self.effect_ids.0.truncate(len);
-        self.effect_ids.0.resize_with(len, EffectId::fresh);
+        self.effect_ids.ids.truncate(len);
+        self.effect_ids.ids.resize_with(len, EffectId::fresh);
     }
 
     /// Effect identities, values and effective enabled flags in list order.
@@ -52,7 +60,7 @@ impl Clip {
     ) -> impl ExactSizeIterator<Item = (EffectId, &BuiltinEffect, bool)> {
         self.reconcile_effect_ids();
         self.effect_ids
-            .0
+            .ids
             .iter()
             .copied()
             .zip(&self.builtin_effects)
@@ -66,9 +74,16 @@ impl Clip {
             })
     }
 
+    /// Give every effect a fresh id: for a caller that makes a new clip of
+    /// this one without giving it a new `ClipId`.
+    pub fn refresh_effect_ids(&mut self) {
+        self.effect_ids = EffectIds::default();
+        self.reconcile_effect_ids();
+    }
+
     pub fn index_of(&mut self, id: EffectId) -> Option<usize> {
         self.reconcile_effect_ids();
-        self.effect_ids.0.iter().position(|current| *current == id)
+        self.effect_ids.ids.iter().position(|current| *current == id)
     }
 
     pub fn effect(&mut self, id: EffectId) -> Option<&BuiltinEffect> {
@@ -110,7 +125,7 @@ impl Clip {
         }
         let id = EffectId::fresh();
         self.builtin_effects.insert(at, effect);
-        self.effect_ids.0.insert(at, id);
+        self.effect_ids.ids.insert(at, id);
         self.builtin_effects_enabled.resize(len, true);
         self.builtin_effects_enabled.insert(at, true);
         // Move orphan indices too: leaving one at the old end would collide
@@ -159,7 +174,7 @@ impl Clip {
     /// modifiers (opacity, transform, audio) are unrelated and remain.
     pub fn set_effects(&mut self, effects: Vec<BuiltinEffect>) {
         self.reconcile_effect_ids();
-        self.effect_ids.0 = (0..effects.len()).map(|_| EffectId::fresh()).collect();
+        self.effect_ids.ids = (0..effects.len()).map(|_| EffectId::fresh()).collect();
         self.builtin_effects_enabled = vec![true; effects.len()];
         self.builtin_effects = effects;
         self.effect_keyframes.clear();
@@ -176,7 +191,7 @@ impl Clip {
             return None;
         }
         let effect = self.builtin_effects.remove(index);
-        self.effect_ids.0.remove(index);
+        self.effect_ids.ids.remove(index);
         if index < self.builtin_effects_enabled.len() {
             self.builtin_effects_enabled.remove(index);
         }
@@ -199,8 +214,8 @@ impl Clip {
         }
         let effect = self.builtin_effects.remove(from);
         self.builtin_effects.insert(to, effect);
-        let id = self.effect_ids.0.remove(from);
-        self.effect_ids.0.insert(to, id);
+        let id = self.effect_ids.ids.remove(from);
+        self.effect_ids.ids.insert(to, id);
         // A missing flag reads as enabled; fill them in so the moved
         // effect's flag has a place to go.
         if self.builtin_effects_enabled.len() < n {
@@ -436,7 +451,7 @@ impl Clip {
     /// resolve it once, at the edge, and address the effect by id after.
     pub fn effect_id_at(&mut self, index: usize) -> Option<EffectId> {
         self.reconcile_effect_ids();
-        self.effect_ids.0.get(index).copied()
+        self.effect_ids.ids.get(index).copied()
     }
 
     /// The effect's value, to edit in place: the counterpart of
@@ -492,9 +507,7 @@ impl Clip {
         EffectsState {
             effects: self.builtin_effects.clone(),
             enabled: self.builtin_effects_enabled.clone(),
-            // The id vector itself, not `EffectIds::clone`, which starts a
-            // new identity domain on purpose.
-            ids: self.effect_ids.0.clone(),
+            ids: self.effect_ids.ids.clone(),
             keyframes: self.effect_keyframes.clone(),
             modifiers: self
                 .param_modifiers
@@ -511,7 +524,8 @@ impl Clip {
     pub fn restore_effects_state(&mut self, state: EffectsState) {
         self.builtin_effects = state.effects;
         self.builtin_effects_enabled = state.enabled;
-        self.effect_ids.0 = state.ids;
+        // The ids belong to this clip, whose snapshot they were.
+        self.effect_ids = EffectIds { owner: Some(self.id), ids: state.ids };
         self.effect_keyframes = state.keyframes;
         self.param_modifiers.retain(|id, _| !matches!(id, ParamId::Effect { .. }));
         self.param_modifiers.extend(state.modifiers);
