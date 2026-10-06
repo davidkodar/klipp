@@ -261,7 +261,9 @@ impl GradeGroup {
         }
     }
 
-    pub fn stage_mut(&mut self, stage: GradeStage) -> &mut Option<klipp_nodes::NodeGraph> {
+    /// Only for [`GradeGroup::stage_slot`]: callers change a stage through
+    /// the slot, which stage B's storage can keep.
+    pub(crate) fn stage_mut(&mut self, stage: GradeStage) -> &mut Option<klipp_nodes::NodeGraph> {
         match stage {
             GradeStage::Pre => &mut self.pre,
             GradeStage::Post => &mut self.post,

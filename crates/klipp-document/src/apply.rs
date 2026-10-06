@@ -63,7 +63,7 @@ fn set_node_graph(seq: &mut klipp_timeline::Sequence, clip_id: ClipId, graph: &k
     // editing id (#237).
     if let Some((group, stage)) = seq.grade_group_stage_of(clip_id) {
         if let Some(g) = seq.grade_groups.iter_mut().find(|g| g.id == group) {
-            *g.stage_mut(stage) = Some(graph.clone());
+            g.stage_slot(stage).set(Some(graph.clone()));
         }
     }
 }

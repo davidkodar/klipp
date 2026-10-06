@@ -26,6 +26,7 @@ use klipp_core::{
 };
 use klipp_render::snapshot::SequenceSnapshot;
 use klipp_render::ExportJob;
+use klipp_timeline::GradeAccess;
 
 fn main() {
     // The export logs what it chose — encoder, decoder, hardware — at
@@ -217,7 +218,7 @@ fn describe(
     println!("{w}x{h} @ {fps} fps, {working:?}, frames {first}..{last}");
     for track in &seq.tracks {
         for clip in &track.clips {
-            let graph = &clip.node_graph;
+            let graph = clip.grade();
             let graded: Vec<String> = graph
                 .nodes
                 .iter()
