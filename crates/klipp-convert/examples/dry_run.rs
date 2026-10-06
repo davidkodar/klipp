@@ -60,34 +60,50 @@ fn graph(v: &Value) -> Result<klipp_nodes::NodeGraph, String> {
 /// it to the wrapped graph, and its track's effects when the track draws
 /// pictures and `touches_picture`.
 fn splice_inputs(clip: &Value, seq: &Value, track: &Value) -> Result<SpliceInputs, String> {
+    // The clip's graph as today's loader leaves it: migrated, or the
+    // default pipeline where none is saved.
     let own = match clip.get("node_graph").filter(|g| !g.is_null()) {
-        Some(g) => graph(g)?,
+        Some(g) => {
+            let mut g = graph(g)?;
+            klipp_project::migrate_graph(&mut g);
+            g
+        }
         None => klipp_nodes::NodeGraph::default(),
     };
-    let mut wrapped = own.clone();
+    // One graph threaded through the bakes, as `render_inputs` proves the
+    // property: each stage and the track grade decided on the graph the
+    // one before it left, not on the clip's own.
+    let mut g = own;
     let mut inputs = SpliceInputs::default();
     let group = clip.get("grade_group").and_then(Value::as_str).and_then(|id| {
         seq.get("grade_groups").and_then(Value::as_array).into_iter().flatten().find(|g| g.get("id").and_then(Value::as_str) == Some(id))
     });
     if let Some(group) = group {
         let typed: klipp_timeline::GradeGroup = serde_json::from_value(group.clone()).map_err(|e| e.to_string())?;
-        let (pre, post) = to_v2::stages_to_v2(group.as_object().ok_or("group")?).map_err(|e| e.to_string())?;
-        let take = |stage: &Option<klipp_nodes::NodeGraph>, conv: Option<klipp_graph_format::Graph>, prepend: bool| -> Result<Option<klipp_graph_format::Graph>, String> {
-            match (stage, conv) {
-                (Some(s), Some(c)) if applies(&own, s, prepend) => stage_body(&c).map(Some),
-                _ => Ok(None),
-            }
-        };
-        inputs.stages = Some(StageInputs { group: typed.id.0, pre: take(&typed.pre, pre, true)?, post: take(&typed.post, post, false)? });
-        wrapped = typed.wrap(&own);
+        if typed.grades() {
+            let (pre, post) = to_v2::stages_to_v2(group.as_object().ok_or("group")?).map_err(|e| e.to_string())?;
+            let mut take = |stage: &Option<klipp_nodes::NodeGraph>, conv: Option<klipp_graph_format::Graph>, prepend: bool| -> Result<Option<klipp_graph_format::Graph>, String> {
+                match (stage, conv) {
+                    (Some(s), Some(c)) if applies(&g, s, prepend) => {
+                        if prepend { g.prepend_keeping_ids(s) } else { g.append_keeping_ids(s) }.map_err(|e| format!("{e:?}"))?;
+                        stage_body(&c).map(Some)
+                    }
+                    _ => Ok(None),
+                }
+            };
+            let pre = take(&typed.pre, pre, true)?;
+            let post = take(&typed.post, post, false)?;
+            inputs.stages = Some(StageInputs { group: typed.id.0, pre, post });
+        }
     }
+    let kind = clip.get("kind").and_then(|k| k.get("type")).and_then(Value::as_str);
     if let Some(fx) = track.get("effects").filter(|e| !e.is_null()) {
         let typed: klipp_timeline::TrackEffects = serde_json::from_value(fx.clone()).map_err(|e| e.to_string())?;
         let picture_track = matches!(track.get("kind").and_then(Value::as_str), Some("Video" | "Text"));
-        if picture_track && typed.touches_picture() {
+        if !typed.is_empty() && picture_track && typed.touches_picture() && !matches!(kind, Some("gap" | "adjustment_layer")) {
             let structural = to_v2::track_to_v2(track.as_object().ok_or("track")?).map_err(|e| e.to_string())?;
             let (effects, grade) = track_parts(&structural)?;
-            let grade = grade.filter(|_| typed.grade.as_ref().is_some_and(|g| applies(&wrapped, g, false)));
+            let grade = grade.filter(|_| typed.grade.as_ref().is_some_and(|t| applies(&g, t, false)));
             let id = uuid::Uuid::parse_str(track.get("id").and_then(Value::as_str).unwrap_or_default()).map_err(|e| e.to_string())?;
             inputs.track = Some(TrackInputs { track: id, effects, grade });
         }
