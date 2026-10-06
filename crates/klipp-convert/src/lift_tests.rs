@@ -551,3 +551,59 @@ fn an_overridden_link_goes_with_its_dropped_wire() {
     assert!(find(body(&p), COR).wireless.input_links.is_empty(), "the overridden link went with its wire");
     assert!(notes.iter().any(|n| matches!(n, LiftNote::EdgeDropped { why, .. } if why.contains("wireless"))));
 }
+
+/// Codex's case: S -> A -> B -> O, plus a wire from B into A's port 9.
+/// A's kind never reads port 9, but today's ordering counts every drawn
+/// edge, so it refuses the graph and the grade never ran.
+fn looping_through_an_unread_port() -> Value {
+    json!({
+        "nodes": [gn(SRC, "Source"), gn(COR, "Exposure"), gn(SAT, "Saturation"), gn(OUT, "Output")],
+        "edges": [edge(SRC, 0, COR, 0), edge(COR, 0, SAT, 0), edge(SAT, 0, OUT, 0), edge(SAT, 0, COR, 9)],
+        "output_node_id": OUT
+    })
+}
+
+/// Whether a lifted clip's grade group is on.
+fn grade_runs(g: &Value) -> bool {
+    let (p, _) = lift(clip(json!({"node_graph": g})), ClipKind::Media);
+    p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP).unwrap().enabled
+}
+
+/// A loop only an edge the lift drops makes still never ran: the grade
+/// stays off, decided before anything is dropped.
+#[test]
+fn a_loop_through_an_edge_the_lift_drops_stays_off() {
+    let g = looping_through_an_unread_port();
+    let typed: klipp_nodes::NodeGraph = serde_json::from_value(g.clone()).unwrap();
+    assert!(typed.topo_sort().is_err(), "today refuses it");
+    assert!(!grade_runs(&g), "so it stays off");
+    // Without the unread wire, it runs.
+    let mut ordered = g.clone();
+    ordered["edges"].as_array_mut().unwrap().pop();
+    assert!(serde_json::from_value::<klipp_nodes::NodeGraph>(ordered.clone()).unwrap().topo_sort().is_ok());
+    assert!(grade_runs(&ordered));
+}
+
+/// An edge from a node that isn't there holds its target back forever in
+/// today's ordering, so that grade never ran either.
+#[test]
+fn an_edge_from_a_missing_node_means_the_grade_never_ran() {
+    let g = json!({
+        "nodes": [gn(SRC, "Source"), gn(COR, "Exposure"), gn(OUT, "Output")],
+        "edges": [edge("00000000-0000-0000-0000-00000000dead", 0, COR, 0), edge(COR, 0, OUT, 0)],
+        "output_node_id": OUT
+    });
+    let typed: klipp_nodes::NodeGraph = serde_json::from_value(g.clone()).unwrap();
+    assert_eq!(typed.topo_sort().is_err(), !grade_runs(&g), "the lift agrees with today");
+}
+
+/// A bare grade store (a group stage, a track or timeline grade, a
+/// version) that loops the same way stops, as any looping store does,
+/// rather than start rendering.
+#[test]
+fn a_bare_store_looping_through_a_dropped_edge_stops() {
+    let group = json!({"id": CLIP, "pre": looping_through_an_unread_port()});
+    let (pre, _) = crate::to_v2::stages_to_v2(group.as_object().unwrap()).unwrap();
+    let r = crate::lift::lift_grade_only(&pre.unwrap(), false);
+    assert_eq!(r.unwrap_err(), "a grade graph that loops, which today's renderer never ran");
+}

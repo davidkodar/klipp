@@ -191,13 +191,58 @@ pub fn default_pipeline(clip_id: Uuid) -> Value {
 
 /// The Grade group's body, lifted: gates decided on the graph as saved,
 /// then implicit source reads made explicit, then the merges named.
-fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (Graph, LegacyFlags) {
+/// Whether today's renderer refuses to order `body`, the grade graph as its
+/// loader leaves it: `NodeGraph::topo_sort` followed line for line, over
+/// every drawn edge (a wire into a port its kind never reads, from or to a
+/// node that isn't there, repeated) and every wireless link no wire
+/// overrides, as `iter_dependencies` counts them. Decided before the lift
+/// drops or parks anything, so a loop only those edges made still never
+/// ran.
+fn today_loops(body: &Graph) -> bool {
+    let node_ids: Vec<NodeId> = body.nodes.iter().map(|n| n.id).collect();
+    let mut deps: Vec<(NodeId, NodeId)> = body.edges.iter().map(|e| (e.from.0, e.to.0)).collect();
+    for recv in &body.nodes {
+        for (port, label) in &recv.wireless.input_links {
+            if body.edges.iter().any(|e| e.to.0 == recv.id && &e.to.1 == port) {
+                continue;
+            }
+            if let Some(sender) = body.nodes.iter().find(|s| s.wireless.output_link.as_deref() == Some(label.as_str()) && s.id != recv.id) {
+                deps.push((sender.id, recv.id));
+            }
+        }
+    }
+    let mut in_degree: BTreeMap<NodeId, usize> = node_ids.iter().map(|id| (*id, 0)).collect();
+    for (_, to) in &deps {
+        *in_degree.entry(*to).or_insert(0) += 1;
+    }
+    let mut queue: Vec<NodeId> = node_ids.iter().filter(|id| in_degree.get(id).copied().unwrap_or(0) == 0).copied().collect();
+    let mut ordered = 0;
+    while let Some(node_id) = queue.pop() {
+        ordered += 1;
+        for (from, to) in &deps {
+            if *from == node_id {
+                if let Some(deg) = in_degree.get_mut(to) {
+                    *deg -= 1;
+                    if *deg == 0 {
+                        queue.push(*to);
+                    }
+                }
+            }
+        }
+    }
+    ordered != node_ids.len()
+}
+
+/// A grade group's body lifted, its legacy flags, and whether today's
+/// renderer refused to order it ([`today_loops`]).
+fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (Graph, LegacyFlags, bool) {
     let mut body = group.group.as_ref().map(|g| g.graph.clone()).unwrap_or_else(Graph::empty);
     // The graph as today's loader leaves it: migrated first, on the graphs
     // it migrates (a clip's, a track's, a grade version's).
     if migrate && migrate_color_warper(&mut body, group.id) {
         notes.push(LiftNote::LoadMigration { group: group.id, what: "color warper".into() });
     }
+    let loops = today_loops(&body);
     let mut group_flags = LegacyFlags::default();
     let input_port = |kind: &str, port: u8| klipp_graph_format::ports::input_key(kind, port);
 
@@ -383,7 +428,7 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
             n.params.insert("op".into(), ParamValue::Text((*op).to_owned()));
         }
     }
-    (body, group_flags)
+    (body, group_flags, loops)
 }
 
 /// A grade-only revision-1 graph (one `klipp.legacy.grade` node: a group
@@ -397,7 +442,12 @@ pub fn lift_grade_only(structural: &Graph, migrate: bool) -> Result<Graph, Strin
 /// [`lift_grade_only`], keeping its notes.
 pub fn lift_grade_only_noted(structural: &Graph, migrate: bool, notes: &mut Vec<LiftNote>) -> Result<Graph, String> {
     match structural.nodes.as_slice() {
-        [g] if g.type_id.as_str() == types::LEGACY_GRADE => Ok(lift_grade_body(g, migrate, notes).0),
+        [g] if g.type_id.as_str() == types::LEGACY_GRADE => match lift_grade_body(g, migrate, notes) {
+            // Today it never ran; standing alone there is no group to keep
+            // it off in, so it stops rather than start rendering.
+            (_, _, true) => Err("a grade graph that loops, which today's renderer never ran".into()),
+            (body, _, false) => Ok(body),
+        },
         _ => Err(format!("a grade-only graph holds {} nodes, not one grade group", structural.nodes.len())),
     }
 }
@@ -679,11 +729,11 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
     let mut chain = vec![node(id("source"), lt::SOURCE, true, None)];
     chain.extend(head);
     if let Some(g) = grade {
-        let (body, group_flags) = lift_grade_body(g, true, &mut notes);
+        let (body, group_flags, loops) = lift_grade_body(g, true, &mut notes);
         // A grade graph that loops never ran: today's ordering refuses it
-        // and the picture passes through. Kept as saved, in a group that
-        // is off, which renders the same.
-        let runs = !body.has_cycle();
+        // and the picture passes through. Kept in a group that is off,
+        // which renders the same.
+        let runs = !loops;
         if !runs {
             notes.push(LiftNote::NeverRan { node: g.id, why: "its grade graph loops, so today's renderer never ran it".into() });
         }

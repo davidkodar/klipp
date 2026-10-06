@@ -213,5 +213,5 @@ fn a_looping_track_grade_stops_the_project() {
     });
     let mut p = project();
     p["sequences"][0]["tracks"][0]["effects"]["grade"] = g;
-    assert!(revision2::project(&p).unwrap_err().contains("Cycle"));
+    assert!(revision2::project(&p).unwrap_err().contains("loops"));
 }
