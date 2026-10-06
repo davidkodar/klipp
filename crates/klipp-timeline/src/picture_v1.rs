@@ -88,11 +88,11 @@ impl ClipPictureV1 {
             param_modifiers: (!c.param_modifiers().is_empty())
                 .then(|| c.param_modifiers().iter().map(|(k, v)| (k.to_key(), v.clone())).collect()),
             grade_versions: c
-                .picture.grade_versions
+                .picture.view().grade_versions
                 .iter()
                 .map(|gv| GradeVersionJson { name: gv.name.clone(), node_graph: gv.grade().clone() })
                 .collect(),
-            active_grade_version: c.picture.active_grade_version,
+            active_grade_version: c.picture.view().active_grade_version,
         }
     }
 }

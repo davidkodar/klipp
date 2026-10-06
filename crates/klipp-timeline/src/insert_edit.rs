@@ -495,14 +495,14 @@ mod tests {
     #[test]
     fn keyframes_and_markers_stay_with_their_half() {
         let mut c = clip(0, 100);
-        klipp_core::keyframe::upsert_keyframe(&mut c.picture.opacity_keyframes.0, 0.4, 0.2);
-        klipp_core::keyframe::upsert_keyframe(&mut c.picture.opacity_keyframes.0, 2.4, 0.8);
+        klipp_core::keyframe::upsert_keyframe(&mut c.picture.view_mut().opacity_keyframes.0, 0.4, 0.2);
+        klipp_core::keyframe::upsert_keyframe(&mut c.picture.view_mut().opacity_keyframes.0, 2.4, 0.8);
         let mut s = seq(vec![(TrackKind::Video, vec![c])]);
         s.insert_edit(0, clip(0, 10), tc(40)).expect("insert");
         let (left, right) = (&s.tracks[0].clips[0], &s.tracks[0].clips[2]);
         assert_eq!(left.opacity_keyframes().len(), 1);
         assert_eq!(right.opacity_keyframes().len(), 1);
         // The right half's keyframe is re-timed from its own start.
-        assert!((right.picture.opacity_keyframes.0[0].time_secs - (2.4 - 1.6)).abs() < 1e-9);
+        assert!((right.picture.view().opacity_keyframes.0[0].time_secs - (2.4 - 1.6)).abs() < 1e-9);
     }
 }

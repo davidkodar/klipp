@@ -71,21 +71,21 @@ impl TrackEffectList {
 
 impl Clip {
     pub fn ofx_effects(&self) -> &[AppliedEffect] {
-        &self.picture.effects.0
+        &self.picture.view().effects.0
     }
 
     /// Edit one entry without changing the list's order.
     pub fn edit_ofx_effect<R>(&mut self, index: usize, f: impl FnOnce(&mut AppliedEffect) -> R) -> Option<R> {
-        self.picture.effects.0.get_mut(index).map(f)
+        self.picture.view_mut().effects.0.get_mut(index).map(f)
     }
 
     /// Edit the list without changing its existing ordering or parameters.
     pub fn edit_ofx_effects<R>(&mut self, edit: impl FnOnce(&mut Vec<AppliedEffect>) -> R) -> R {
-        edit(&mut self.picture.effects.0)
+        edit(&mut self.picture.view_mut().effects.0)
     }
 
     pub fn set_ofx_effects(&mut self, effects: Vec<AppliedEffect>) {
-        self.picture.effects = effects.into();
+        self.picture.view_mut().effects = effects.into();
     }
 }
 

@@ -56,6 +56,19 @@ struct Lifted {
     tracks: Vec<(Option<Value>, Vec<(ClipPicture, Vec<Value>)>)>,
 }
 
+/// One clip's picture lifted, as [`project`] lifts it, and its versions'
+/// bodies: `clip` is the clip's saved record, of which only the picture
+/// fields, `id` and the kind's `type` are read. A lift that would lose
+/// something is refused, naming what.
+pub fn lift_picture(clip: &Map<String, Value>) -> Result<(ClipPicture, Vec<Value>), String> {
+    let mut notes = Vec::new();
+    let lifted = lift_clip_store(clip, &mut notes)?;
+    match notes.iter().find(|n| is_lost(n)) {
+        Some(n) => Err(format!("lifting it would lose part of it ({n:?})")),
+        None => Ok(lifted),
+    }
+}
+
 /// A clip's lifted picture and its versions' bodies.
 fn lift_clip_store(clip: &Map<String, Value>, notes: &mut Vec<LiftNote>) -> Result<(ClipPicture, Vec<Value>), String> {
     let record = to_v2::clip_to_v2(clip).map_err(err)?;
@@ -95,7 +108,7 @@ fn lift_track_store(track: &Map<String, Value>, notes: &mut Vec<LiftNote>) -> Re
     Ok(Some(out))
 }
 
-fn lift_sequence(seq: &Map<String, Value>, notes: &mut Vec<LiftNote>) -> Result<Lifted, String> {
+fn lift_sequence(seq: &Map<String, Value>, notes: &mut Vec<LiftNote>, stored: StoredPictures<'_>) -> Result<Lifted, String> {
     let timeline = match to_v2::timeline_to_v2(seq).map_err(err)? {
         Some(g) => Some(body(&g, false, notes)?),
         None => None,
@@ -118,7 +131,12 @@ fn lift_sequence(seq: &Map<String, Value>, notes: &mut Vec<LiftNote>) -> Result<
         let picture = lift_track_store(t, notes)?;
         let mut clips = Vec::new();
         for c in t.get("clips").and_then(Value::as_array).into_iter().flatten() {
-            clips.push(lift_clip_store(c.as_object().ok_or("a clip isn't an object")?, notes)?);
+            let c = c.as_object().ok_or("a clip isn't an object")?;
+            let seq_id = seq.get("id").and_then(Value::as_str).unwrap_or_default();
+            match c.get("id").and_then(Value::as_str).and_then(|id| stored(seq_id, id)) {
+                Some(picture) => clips.push(picture),
+                None => clips.push(lift_clip_store(c, notes)?),
+            }
         }
         tracks.push((picture, clips));
     }
@@ -177,11 +195,21 @@ pub fn cross_group_wireless(seq: &Map<String, Value>) -> Vec<LiftNote> {
 
 /// The revision-2 project from a v1 project, and the lift's notes.
 pub fn project(raw: &Value) -> Result<(Value, Vec<LiftNote>), String> {
+    project_with(raw, &|_, _| None)
+}
+
+/// A clip's picture already lifted, by sequence id and clip id: the app's
+/// cache (#1089, M1b 2b), used in place of lifting that clip again. By
+/// both, because a duplicated sequence keeps its clips' ids.
+pub type StoredPictures<'a> = &'a dyn Fn(&str, &str) -> Option<(ClipPicture, Vec<Value>)>;
+
+/// [`project`], taking each clip's picture from `stored` where it has one.
+pub fn project_with(raw: &Value, stored: StoredPictures<'_>) -> Result<(Value, Vec<LiftNote>), String> {
     let mut notes = Vec::new();
     let mut copy = raw.clone();
     for seq in sequences_mut(&mut copy).map_err(err)? {
         notes.extend(cross_group_wireless(seq));
-        let lifted = lift_sequence(seq, &mut notes)?;
+        let lifted = lift_sequence(seq, &mut notes, stored)?;
         if let Some(t) = lifted.timeline {
             seq.insert(V2_FIELD.into(), t);
         }

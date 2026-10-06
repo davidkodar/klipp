@@ -3376,6 +3376,8 @@ dependencies = [
  "klipp-color",
  "klipp-core",
  "klipp-effects",
+ "klipp-graph-format",
+ "klipp-graph-lift",
  "klipp-nodes",
  "klipp-plugin",
  "serde",

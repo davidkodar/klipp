@@ -115,12 +115,12 @@ macro_rules! lanes {
             $(
                 #[doc = concat!("The clip's `", stringify!($field), "`, in time order.")]
                 pub fn $field(&self) -> &[Keyframe] {
-                    &self.picture.$field.0
+                    &self.picture.view().$field.0
                 }
 
                 #[doc = concat!("Change the clip's `", stringify!($field), "` in `f`, and give back what `f` returns.")]
                 pub fn $edit<R>(&mut self, f: impl FnOnce(&mut Vec<Keyframe>) -> R) -> R {
-                    f(&mut self.picture.$field.0)
+                    f(&mut self.picture.view_mut().$field.0)
                 }
             )*
         }
@@ -140,26 +140,26 @@ lanes! {
 impl Clip {
     /// The per-effect keyframes, keyed `"{effect index}:{param}"`.
     pub fn effect_keyframes(&self) -> &HashMap<String, Vec<Keyframe>> {
-        &self.picture.effect_keyframes.0
+        &self.picture.view().effect_keyframes.0
     }
 
     /// Change the per-effect keyframes in `f`, and give back what `f`
     /// returns. Prefer the effect-list API, which keeps them with their
     /// effect when it moves.
     pub fn edit_effect_keyframes<R>(&mut self, f: impl FnOnce(&mut HashMap<String, Vec<Keyframe>>) -> R) -> R {
-        f(&mut self.picture.effect_keyframes.0)
+        f(&mut self.picture.view_mut().effect_keyframes.0)
     }
 
     /// The parameter modifier stacks: the picture's, and the sound's
     /// (`volume`, `pan`, `gain`), which stay with the clip.
     pub fn param_modifiers(&self) -> &HashMap<ParamId, ModifierStack> {
-        &self.picture.param_modifiers.0
+        &self.picture.view().param_modifiers.0
     }
 
     /// Change the parameter modifier stacks in `f`, and give back what `f`
     /// returns.
     pub fn edit_param_modifiers<R>(&mut self, f: impl FnOnce(&mut HashMap<ParamId, ModifierStack>) -> R) -> R {
-        f(&mut self.picture.param_modifiers.0)
+        f(&mut self.picture.view_mut().param_modifiers.0)
     }
 }
 
@@ -170,13 +170,13 @@ impl Clip {
     pub fn video_param_keyframes(&self, param: klipp_core::VideoParam) -> &[Keyframe] {
         use klipp_core::VideoParam as P;
         match param {
-            P::Opacity => &self.picture.opacity_keyframes.0,
-            P::PositionX => &self.picture.transform_pos_x_keyframes.0,
-            P::PositionY => &self.picture.transform_pos_y_keyframes.0,
-            P::Scale => &self.picture.transform_scale_keyframes.0,
-            P::Rotation => &self.picture.transform_rotation_keyframes.0,
-            P::TiltX => &self.picture.transform_tilt_x_keyframes.0,
-            P::TiltY => &self.picture.transform_tilt_y_keyframes.0,
+            P::Opacity => &self.picture.view().opacity_keyframes.0,
+            P::PositionX => &self.picture.view().transform_pos_x_keyframes.0,
+            P::PositionY => &self.picture.view().transform_pos_y_keyframes.0,
+            P::Scale => &self.picture.view().transform_scale_keyframes.0,
+            P::Rotation => &self.picture.view().transform_rotation_keyframes.0,
+            P::TiltX => &self.picture.view().transform_tilt_x_keyframes.0,
+            P::TiltY => &self.picture.view().transform_tilt_y_keyframes.0,
             P::MatteFeather => &self.matte_feather_keyframes,
             P::MatteChoke => &self.matte_choke_keyframes,
         }
@@ -187,13 +187,13 @@ impl Clip {
     pub fn edit_video_param_keyframes<R>(&mut self, param: klipp_core::VideoParam, f: impl FnOnce(&mut Vec<Keyframe>) -> R) -> R {
         use klipp_core::VideoParam as P;
         f(match param {
-            P::Opacity => &mut self.picture.opacity_keyframes.0,
-            P::PositionX => &mut self.picture.transform_pos_x_keyframes.0,
-            P::PositionY => &mut self.picture.transform_pos_y_keyframes.0,
-            P::Scale => &mut self.picture.transform_scale_keyframes.0,
-            P::Rotation => &mut self.picture.transform_rotation_keyframes.0,
-            P::TiltX => &mut self.picture.transform_tilt_x_keyframes.0,
-            P::TiltY => &mut self.picture.transform_tilt_y_keyframes.0,
+            P::Opacity => &mut self.picture.view_mut().opacity_keyframes.0,
+            P::PositionX => &mut self.picture.view_mut().transform_pos_x_keyframes.0,
+            P::PositionY => &mut self.picture.view_mut().transform_pos_y_keyframes.0,
+            P::Scale => &mut self.picture.view_mut().transform_scale_keyframes.0,
+            P::Rotation => &mut self.picture.view_mut().transform_rotation_keyframes.0,
+            P::TiltX => &mut self.picture.view_mut().transform_tilt_x_keyframes.0,
+            P::TiltY => &mut self.picture.view_mut().transform_tilt_y_keyframes.0,
             P::MatteFeather => &mut self.matte_feather_keyframes,
             P::MatteChoke => &mut self.matte_choke_keyframes,
         })

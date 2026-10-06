@@ -182,7 +182,7 @@ fn save_project_full_as(
     };
 
     let project_json = match form {
-        crate::FileForm::Revision2 => revision2_text(&project)?,
+        crate::FileForm::Revision2 => revision2_text(&project, sequences)?,
         #[cfg(feature = "v1-oracle")]
         crate::FileForm::V1 => {
             let mut project = project;
@@ -859,13 +859,39 @@ fn prune_stale_looks(looks_dir: &Path, kept_ids: &[String], form: crate::FileFor
 /// widens an f32 field to f64 and changes the digits today's writer prints.
 /// A conversion that would lose something refuses the save rather than
 /// write a changed file.
-fn revision2_text(project: &ProjectJson) -> Result<String, String> {
+fn revision2_text(project: &ProjectJson, sequences: &[Sequence]) -> Result<String, String> {
+    // Each clip's picture as the clip keeps it lifted (#1089, M1b 2b): as
+    // read from the file if the clip hasn't changed, so it is written back
+    // exactly, otherwise lifted now. A clip that can't be lifted refuses
+    // the save, by name.
+    // By sequence and clip: a duplicated sequence keeps its clips' ids. A
+    // clip id twice in one sequence takes no cached picture (each is
+    // lifted from its own record) rather than one taking the other's.
+    let mut pictures = std::collections::HashMap::new();
+    let mut repeated = std::collections::HashSet::new();
+    for seq in sequences {
+        for track in &seq.tracks {
+            for clip in &track.clips {
+                let picture = clip.picture_v2().map_err(|e| {
+                    format!("Saving would lose part of clip {} on track \"{}\" ({e}), so it was not saved", clip.id.0, track.name)
+                })?;
+                let key = (seq.id.to_string(), clip.id.0.to_string());
+                if pictures.insert(key.clone(), picture).is_some() {
+                    repeated.insert(key);
+                }
+            }
+        }
+    }
+    for key in &repeated {
+        pictures.remove(key);
+    }
+    let stored = |seq: &str, id: &str| pictures.get(&(seq.to_string(), id.to_string())).map(|p| (p.picture.clone(), p.versions.clone()));
     let text = serde_json::to_string(project).map_err(|e| format!("Failed to serialize project: {e}"))?;
     let mut v1: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("Failed to serialize project: {e}"))?;
     if let Some(o) = v1.as_object_mut() {
         o.remove("format_revision");
     }
-    let (v2, notes) = klipp_graph_lift::revision2::project(&v1).map_err(|e| format!("Failed to write the project's revision-2 file: {e}"))?;
+    let (v2, notes) = klipp_graph_lift::revision2::project_with(&v1, &stored).map_err(|e| format!("Failed to write the project's revision-2 file: {e}"))?;
     if let Some(n) = notes.iter().find(|n| klipp_graph_lift::revision2::is_lost(n)) {
         return Err(format!("Saving would lose part of the project ({n:?}), so it was not saved"));
     }
