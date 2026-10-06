@@ -5965,56 +5965,20 @@ impl GpuEffectsPipeline {
                 | BuiltinEffect::Transform { .. }
                 | BuiltinEffect::Mirror { .. }
                 | BuiltinEffect::LensDistortion { .. }
-                | BuiltinEffect::Letterbox { .. } => {}
-                BuiltinEffect::GaussianBlur { radius } => {
-                    if *radius < 0.5 {
-                        continue;
-                    }
-                    // 3-pass box blur to approximate Gaussian
-                    let boxes = boxes_for_gaussian(*radius);
-                    for &box_r in &boxes {
-                        if box_r == 0 {
-                            continue;
-                        }
-                        let (inp, out) = if current_in_a {
-                            (buf_a, buf_b)
-                        } else {
-                            (buf_b, buf_a)
-                        };
-                        // Horizontal pass
-                        self.write_params(&BlurParams {
-                            width,
-                            height,
-                            radius: box_r as i32,
-                            _pad: 0,
-                        });
-                        self.dispatch(&self.blur_h_pipeline, inp, out, workgroups);
-                        current_in_a = !current_in_a;
-
-                        // Vertical pass
-                        let (inp, out) = if current_in_a {
-                            (buf_a, buf_b)
-                        } else {
-                            (buf_b, buf_a)
-                        };
-                        self.dispatch(&self.blur_v_pipeline, inp, out, workgroups);
-                        current_in_a = !current_in_a;
-                    }
-                }
-                BuiltinEffect::Sharpen { amount } => {
-                    if amount.abs() < f32::EPSILON {
-                        continue;
-                    }
-                    // Single-pass 3x3 unsharp mask — the shader samples neighbors directly
-                    self.write_params(&SharpenParams {
-                        width,
-                        height,
-                        amount: *amount,
-                        _pad: 0,
-                    });
-                    self.dispatch(&self.sharpen_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
+                | BuiltinEffect::Letterbox { .. }
+                | BuiltinEffect::Dilate { .. }
+                | BuiltinEffect::DirectionalBlur { .. }
+                | BuiltinEffect::EdgeDetect { .. }
+                | BuiltinEffect::Emboss { .. }
+                | BuiltinEffect::Erode { .. }
+                | BuiltinEffect::Mosaic { .. }
+                | BuiltinEffect::RadialBlur { .. }
+                | BuiltinEffect::Sharpen { .. }
+                | BuiltinEffect::MedianFilter { .. }
+                | BuiltinEffect::GaussianBlur { .. }
+                | BuiltinEffect::Denoise { .. }
+                | BuiltinEffect::TiltShift { .. }
+                | BuiltinEffect::FocusBlur { .. } => {}
                 BuiltinEffect::CornerPin { tl, tr, br, bl } => {
                     let corners = [*tl, *tr, *br, *bl];
                     if crate::corner_pin::is_still(&corners) {
@@ -6271,97 +6235,6 @@ impl GpuEffectsPipeline {
                     self.device.poll(wgpu::Maintain::Poll);
                     current_in_a = !current_in_a;
                 }
-                BuiltinEffect::Mosaic { block_size } => {
-                    if *block_size <= 1.0 {
-                        continue;
-                    }
-                    self.write_params(&MosaicParams {
-                        width, height,
-                        block_size: *block_size,
-                        _pad: 0,
-                    });
-                    self.dispatch(&self.mosaic_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::EdgeDetect { strength, mix } => {
-                    self.write_params(&EdgeDetectParams {
-                        width, height,
-                        strength: *strength,
-                        mix: *mix,
-                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
-                    });
-                    self.dispatch(&self.edge_detect_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::DirectionalBlur { angle, distance, samples } => {
-                    if *distance < 0.5 {
-                        continue;
-                    }
-                    let samples_clamped = (*samples).clamp(3, 32);
-                    let angle_rad = angle.to_radians();
-                    self.write_params(&DirectionalBlurParams {
-                        width, height,
-                        dx: angle_rad.cos() * *distance / samples_clamped as f32,
-                        dy: angle_rad.sin() * *distance / samples_clamped as f32,
-                        samples: samples_clamped,
-                        _pad: 0, _pad2: 0, _pad3: 0,
-                    });
-                    self.dispatch(&self.directional_blur_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::Emboss { angle, strength, mix } => {
-                    let angle_rad = angle.to_radians();
-                    self.write_params(&EmbossParams {
-                        width, height,
-                        dx: angle_rad.cos(),
-                        dy: angle_rad.sin(),
-                        strength: *strength,
-                        mix: *mix,
-                        _pad0: 0, _pad1: 0,
-                    });
-                    self.dispatch(&self.emboss_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::Dilate { radius } => {
-                    self.write_params(&DilateErodeParams {
-                        width, height,
-                        radius: (*radius).clamp(1, 10),
-                        _pad: 0,
-                    });
-                    self.dispatch(&self.dilate_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::Erode { radius } => {
-                    self.write_params(&DilateErodeParams {
-                        width, height,
-                        radius: (*radius).clamp(1, 10),
-                        _pad: 0,
-                    });
-                    self.dispatch(&self.erode_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::Denoise { spatial_sigma, color_sigma, iterations } => {
-                    let iters = (*iterations).clamp(1, 3);
-                    self.write_params(&DenoiseParams {
-                        width, height,
-                        spatial_sigma: *spatial_sigma,
-                        color_sigma: *color_sigma,
-                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2],
-                        // The effect's sigma is scaled with the render
-                        // size; its kernel keeps the cap it always had.
-                        max_kernel: 10,
-                    });
-                    // Multi-pass: ping-pong between buffers
-                    for _iter in 0..iters {
-                        let (inp, out) = if current_in_a {
-                            (buf_a, buf_b)
-                        } else {
-                            (buf_b, buf_a)
-                        };
-                        self.dispatch(&self.denoise_pipeline, inp, out, workgroups);
-                        current_in_a = !current_in_a;
-                    }
-                }
                 BuiltinEffect::NoiseGenerator { amount, monochrome, seed } => {
                     if *amount < f32::EPSILON {
                         continue;
@@ -6374,33 +6247,6 @@ impl GpuEffectsPipeline {
                         _pad: 0, _pad2: 0, _pad3: 0,
                     });
                     self.dispatch(&self.noise_generator_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::MedianFilter { radius } => {
-                    let r = (*radius).clamp(1, 2); // clamp to 2 on GPU for performance
-                    self.write_params(&MedianFilterParams {
-                        width, height,
-                        radius: r,
-                        _pad: 0,
-                    });
-                    self.dispatch(&self.median_filter_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::RadialBlur { center_x, center_y, amount, samples, mode } => {
-                    if *amount < 0.01 {
-                        continue;
-                    }
-                    let s = (*samples).clamp(4, 32);
-                    self.write_params(&RadialBlurParams {
-                        width, height,
-                        center_x: *center_x,
-                        center_y: *center_y,
-                        amount: *amount,
-                        samples: s,
-                        mode: *mode,
-                        _pad: 0,
-                    });
-                    self.dispatch(&self.radial_blur_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
                 }
                 BuiltinEffect::Equalize { strength } => {
@@ -6467,57 +6313,6 @@ impl GpuEffectsPipeline {
                         _pad: 0, _pad2: 0,
                     });
                     self.dispatch(&self.film_grain_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::TiltShift { center, width: band, softness, radius } => {
-                    if *radius < 0.5 {
-                        continue;
-                    }
-                    // The blurred frame into buf_c, then the band mask
-                    // blends the original back over it.
-                    let buf_c = self.buf_c.as_ref().unwrap();
-                    let boxes = crate::blur::boxes_for_gaussian(*radius);
-                    let mut first = true;
-                    for &box_r in &boxes {
-                        if box_r == 0 {
-                            continue;
-                        }
-                        let src = if first { input } else { buf_c };
-                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
-                        self.dispatch(&self.blur_h_pipeline, src, output, workgroups);
-                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
-                        self.dispatch(&self.blur_v_pipeline, output, buf_c, workgroups);
-                        first = false;
-                    }
-                    if first {
-                        continue;
-                    }
-                    self.write_params(&TiltShiftParams { width, height, center: *center, band: *band, softness: *softness, _pad: 0, _pad2: 0, _pad3: 0 });
-                    self.dispatch_pair(&self.tilt_shift_blend_pipeline, input, buf_c, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::FocusBlur { radius, vertical, band } => {
-                    if *radius < 0.5 || *band >= 0.999 {
-                        continue;
-                    }
-                    // The layer premultiplied into buf_c and blurred there,
-                    // so nothing bleeds from colour under no alpha; then
-                    // the band's mix of it over the original, alpha too.
-                    let buf_c = self.buf_c.as_ref().unwrap();
-                    let boxes: Vec<usize> = crate::blur::boxes_for_gaussian(*radius).into_iter().filter(|r| *r != 0).collect();
-                    if boxes.is_empty() {
-                        continue;
-                    }
-                    self.write_params(&BlurParams { width, height, radius: 0, _pad: 0 });
-                    self.dispatch(&self.focus_blur_premultiply_pipeline, input, buf_c, workgroups);
-                    for &box_r in &boxes {
-                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
-                        self.dispatch(&self.blur_h_pipeline, buf_c, output, workgroups);
-                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
-                        self.dispatch(&self.blur_v_pipeline, output, buf_c, workgroups);
-                    }
-                    self.write_params(&FocusBlurParams { width, height, vertical: u32::from(*vertical), band: *band });
-                    self.dispatch_pair(&self.focus_blur_blend_pipeline, input, buf_c, output, workgroups);
                     current_in_a = !current_in_a;
                 }
                 BuiltinEffect::OldFilm { flicker, scratches, dust, weave, sepia, seed } => {
@@ -6673,7 +6468,9 @@ impl GpuEffectsPipeline {
         let encoder = run.encoder.get_or_insert_with(|| {
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("recorded_effects") })
         });
-        let outcome = self.record_effect(effect, src, dst, None, width, height, &mut EffectRecording { encoder, slots });
+        // `buf_c` is the third buffer an effect of several passes needs.
+        let scratch = self.buf_c.as_ref();
+        let outcome = self.record_effect(effect, src, dst, scratch, width, height, &mut EffectRecording { encoder, slots });
         if outcome == Recorded::Done {
             run.passes += 1;
         }
