@@ -20,20 +20,16 @@ pub(super) fn apply_hyperzoom_plan_to_clip(
     // the focal point. Other Transform fields keep their existing
     // values when one is already present — the user might have a
     // baseline rotation or perspective they want preserved.
-    let mut found = false;
-    for fx in clip.builtin_effects.iter_mut() {
-        if let klipp_effects::BuiltinEffect::Transform {
-            anchor_x, anchor_y, ..
-        } = fx
-        {
-            *anchor_x = anchor.0;
-            *anchor_y = anchor.1;
-            found = true;
-            break;
-        }
-    }
-    if !found {
-        clip.builtin_effects.push(klipp_effects::BuiltinEffect::Transform {
+    find_or_push(
+        clip,
+        |e| matches!(e, klipp_effects::BuiltinEffect::Transform { .. }),
+        |e| {
+            if let klipp_effects::BuiltinEffect::Transform { anchor_x, anchor_y, .. } = e {
+                *anchor_x = anchor.0;
+                *anchor_y = anchor.1;
+            }
+        },
+        || klipp_effects::BuiltinEffect::Transform {
             position_x: 0.0,
             position_y: 0.0,
             scale_x: 1.0,
@@ -45,9 +41,8 @@ pub(super) fn apply_hyperzoom_plan_to_clip(
             rotation_y: 0.0,
             perspective: 0.0,
             focal_ref: None,
-        });
-        clip.builtin_effects_enabled.push(true);
-    }
+        },
+    );
 
     clip.transform_scale_keyframes = scale_kfs.to_vec();
 }
@@ -81,38 +76,30 @@ pub(super) fn apply_hyperzoom_radial_blur_to_clip(
     };
 
     // Update existing RadialBlur if present, else append a fresh one.
-    let mut found_idx: Option<usize> = None;
-    for (i, fx) in clip.builtin_effects.iter_mut().enumerate() {
-        if let klipp_effects::BuiltinEffect::RadialBlur { center_x, center_y, amount, .. } = fx {
-            *center_x = center.0;
-            *center_y = center.1;
-            *amount = peak_amount;
-            found_idx = Some(i);
-            break;
-        }
-    }
-    let idx = match found_idx {
-        Some(i) => i,
-        None => {
-            clip.builtin_effects.push(klipp_effects::BuiltinEffect::RadialBlur {
-                center_x: center.0,
-                center_y: center.1,
-                amount: peak_amount,
-                // Sample count of 12 matches the "Subtle Zoom" preset
-                // and is the engine's standard sweet-spot trade-off
-                // between quality and per-pixel cost. Mode 0 = zoom
-                // (the canonical hyperzoom blur direction; spin
-                // would feel wrong at the cut).
-                samples: 12,
-                mode: 0,
-            });
-            clip.builtin_effects_enabled.push(true);
-            clip.builtin_effects.len() - 1
-        }
-    };
-
-    let key = format!("{}:amount", idx);
-    clip.effect_keyframes.insert(key, amount_kfs.to_vec());
+    let id = find_or_push(
+        clip,
+        |e| matches!(e, klipp_effects::BuiltinEffect::RadialBlur { .. }),
+        |e| {
+            if let klipp_effects::BuiltinEffect::RadialBlur { center_x, center_y, amount, .. } = e {
+                *center_x = center.0;
+                *center_y = center.1;
+                *amount = peak_amount;
+            }
+        },
+        || klipp_effects::BuiltinEffect::RadialBlur {
+            center_x: center.0,
+            center_y: center.1,
+            amount: peak_amount,
+            // Sample count of 12 matches the "Subtle Zoom" preset
+            // and is the engine's standard sweet-spot trade-off
+            // between quality and per-pixel cost. Mode 0 = zoom
+            // (the canonical hyperzoom blur direction; spin
+            // would feel wrong at the cut).
+            samples: 12,
+            mode: 0,
+        },
+    );
+    set_keyframes(clip, id, "amount", amount_kfs);
 }
 
 /// Mirror of [`apply_hyperzoom_radial_blur_to_clip`] for the
@@ -154,40 +141,31 @@ pub(super) fn apply_hyperzoom_chromatic_aberration_to_clip(
         tracing::debug!("apply_hyperzoom_chromatic_aberration_to_clip: clip {clip_id:?} no longer in sequence");
         return;
     };
-    let mut found_idx: Option<usize> = None;
-    for (i, fx) in clip.builtin_effects.iter_mut().enumerate() {
-        if let klipp_effects::BuiltinEffect::ChromaticAberration {
-            red_shift, blue_shift, center_x, center_y,
-        } = fx
-        {
-            *center_x = center.0;
-            *center_y = center.1;
-            // Static fallback values mirror the keyframes' peak —
-            // red converges, blue diverges.
-            *red_shift = -peak_amount;
-            *blue_shift = peak_amount;
-            found_idx = Some(i);
-            break;
-        }
-    }
-    let idx = match found_idx {
-        Some(i) => i,
-        None => {
-            clip.builtin_effects.push(klipp_effects::BuiltinEffect::ChromaticAberration {
-                red_shift: -peak_amount,
-                blue_shift: peak_amount,
-                center_x: center.0,
-                center_y: center.1,
-            });
-            clip.builtin_effects_enabled.push(true);
-            clip.builtin_effects.len() - 1
-        }
-    };
+    let id = find_or_push(
+        clip,
+        |e| matches!(e, klipp_effects::BuiltinEffect::ChromaticAberration { .. }),
+        |e| {
+            if let klipp_effects::BuiltinEffect::ChromaticAberration { red_shift, blue_shift, center_x, center_y } = e {
+                *center_x = center.0;
+                *center_y = center.1;
+                // Static fallback values mirror the keyframes' peak —
+                // red converges, blue diverges.
+                *red_shift = -peak_amount;
+                *blue_shift = peak_amount;
+            }
+        },
+        || klipp_effects::BuiltinEffect::ChromaticAberration {
+            red_shift: -peak_amount,
+            blue_shift: peak_amount,
+            center_x: center.0,
+            center_y: center.1,
+        },
+    );
     // Pin: red before blue. If an audit changes this order, the
     // ordering test will flag it before snapshot tests start
     // diffing nondeterministically.
-    clip.effect_keyframes.insert(format!("{}:red_shift", idx), red_kfs.to_vec());
-    clip.effect_keyframes.insert(format!("{}:blue_shift", idx), blue_kfs.to_vec());
+    set_keyframes(clip, id, "red_shift", red_kfs);
+    set_keyframes(clip, id, "blue_shift", blue_kfs);
 }
 
 /// Mirror of [`apply_hyperzoom_radial_blur_to_clip`] for the
@@ -218,32 +196,26 @@ pub(super) fn apply_hyperzoom_light_leak_to_clip(
         tracing::debug!("apply_hyperzoom_light_leak_to_clip: clip {clip_id:?} no longer in sequence");
         return;
     };
-    let mut found_idx: Option<usize> = None;
-    for (i, fx) in clip.builtin_effects.iter_mut().enumerate() {
-        if let klipp_effects::BuiltinEffect::FilmHalation { intensity, .. } = fx {
-            *intensity = peak_intensity;
-            found_idx = Some(i);
-            break;
-        }
-    }
-    let idx = match found_idx {
-        Some(i) => i,
-        None => {
-            clip.builtin_effects.push(klipp_effects::BuiltinEffect::FilmHalation {
-                threshold: 0.75,
-                radius: 15.0,
-                intensity: peak_intensity,
-                // Hue 0.15 ≈ warm orange-yellow — the
-                // canonical trailer-light-leak colour. Power
-                // users tweak via the standalone effect's
-                // params after applying.
-                hue: 0.15,
-            });
-            clip.builtin_effects_enabled.push(true);
-            clip.builtin_effects.len() - 1
-        }
-    };
-    clip.effect_keyframes.insert(format!("{}:intensity", idx), intensity_kfs.to_vec());
+    let id = find_or_push(
+        clip,
+        |e| matches!(e, klipp_effects::BuiltinEffect::FilmHalation { .. }),
+        |e| {
+            if let klipp_effects::BuiltinEffect::FilmHalation { intensity, .. } = e {
+                *intensity = peak_intensity;
+            }
+        },
+        || klipp_effects::BuiltinEffect::FilmHalation {
+            threshold: 0.75,
+            radius: 15.0,
+            intensity: peak_intensity,
+            // Hue 0.15 ≈ warm orange-yellow — the
+            // canonical trailer-light-leak colour. Power
+            // users tweak via the standalone effect's
+            // params after applying.
+            hue: 0.15,
+        },
+    );
+    set_keyframes(clip, id, "intensity", intensity_kfs);
 }
 
 /// Write a `FocalRef` onto the clip's `BuiltinEffect::Transform`.
@@ -269,24 +241,50 @@ pub(super) fn apply_focal_ref_to_clip_transform(
         return;
     };
 
-    let mut found = false;
-    for fx in clip.builtin_effects.iter_mut() {
-        if let klipp_effects::BuiltinEffect::Transform { focal_ref: existing, .. } = fx {
-            *existing = Some(focal_ref);
-            found = true;
-            break;
-        }
-    }
-    if !found {
-        clip.builtin_effects.push(klipp_effects::BuiltinEffect::Transform {
+    find_or_push(
+        clip,
+        |e| matches!(e, klipp_effects::BuiltinEffect::Transform { .. }),
+        |e| {
+            if let klipp_effects::BuiltinEffect::Transform { focal_ref: existing, .. } = e {
+                *existing = Some(focal_ref);
+            }
+        },
+        || klipp_effects::BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0,
             scale_x: 1.0, scale_y: 1.0,
             rotation: 0.0,
             anchor_x: 0.5, anchor_y: 0.5,
             rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
             focal_ref: Some(focal_ref),
-        });
-        clip.builtin_effects_enabled.push(true);
+        },
+    );
+}
+
+/// The first effect on `clip` that `kind` picks, edited by `edit`; with
+/// none, `fresh` appended. Its id either way.
+fn find_or_push(
+    clip: &mut klipp_timeline::Clip,
+    kind: impl Fn(&klipp_effects::BuiltinEffect) -> bool,
+    edit: impl FnOnce(&mut klipp_effects::BuiltinEffect),
+    fresh: impl FnOnce() -> klipp_effects::BuiltinEffect,
+) -> klipp_timeline::EffectId {
+    let found = clip.effect_entries().find(|(_, e, _)| kind(e)).map(|(id, _, _)| id);
+    match found {
+        Some(id) => {
+            if let Some(e) = clip.effect_mut(id) {
+                edit(e);
+            }
+            id
+        }
+        None => clip.push_effect(fresh()),
+    }
+}
+
+/// Replace the keyframes of the effect's `param` with `keys`, so applying
+/// again gives the same ramp.
+fn set_keyframes(clip: &mut klipp_timeline::Clip, id: klipp_timeline::EffectId, param: &str, keys: &[klipp_core::keyframe::Keyframe]) {
+    if let Some(k) = clip.effect_keyframes_mut(id, param) {
+        *k = keys.to_vec();
     }
 }
 
