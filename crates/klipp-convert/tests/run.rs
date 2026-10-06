@@ -605,3 +605,52 @@ fn a_klipp_started_mid_run_ends_it_before_the_swap() {
     assert!(std::fs::read_dir(s.backup_root.join("journal")).unwrap().next().is_none(), "the journal entry is gone");
     let _ = std::fs::remove_dir_all(&r);
 }
+
+/// A project whose looks folder is a link to one outside it is a stop: the
+/// converted Looks would otherwise be written through the link into the
+/// folder it names before any swap or backup (#1121 review).
+#[test]
+fn a_linked_folder_the_conversion_writes_into_is_a_stop() {
+    for linked in ["looks", "media"] {
+        let r = root(&format!("linked-{linked}"));
+        let dir = project(&r, "Film");
+        let outside = r.join(format!("shared-{linked}"));
+        std::fs::rename(dir.join(linked), &outside).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join(linked)).unwrap();
+        let (before, outside_before) = (snapshot(&dir), snapshot(&outside));
+        let s = settings(&r, vec![dir.clone()]);
+        let report = run(&s, &ok, &ok_parity, &Hooks::NONE).unwrap();
+        assert!(report.stopped.iter().any(|(d, why)| d == &dir && why.contains("is a link")), "{linked}: {report:?}");
+        assert_eq!((snapshot(&dir), snapshot(&outside)), (before, outside_before), "{linked}: nothing written through the link");
+        assert!(!PathBuf::from(format!("{}.klipp-convert", dir.display())).exists());
+        let _ = std::fs::remove_dir_all(&r);
+    }
+}
+
+/// The original renamed aside, then the sync after the rename refused:
+/// the run doesn't roll back as if the rename never happened, it keeps the
+/// journal, and recovery finishes the project (#1121 review).
+#[test]
+fn a_sync_refused_after_a_rename_goes_forward() {
+    let r = root("sync-after-rename");
+    let dir = project(&r, "Film");
+    let before = snapshot(&dir);
+    let s = settings(&r, vec![dir.clone()]);
+    // Writable and enterable, not readable: the rename works, opening the
+    // folder to sync it doesn't.
+    let swap_allowed = || {
+        std::fs::set_permissions(&r, std::fs::Permissions::from_mode(0o300)).unwrap();
+        Ok(())
+    };
+    let hooks = Hooks { swap_allowed: &swap_allowed, ..Hooks::NONE };
+    let result = run(&s, &ok, &ok_parity, &hooks);
+    std::fs::set_permissions(&r, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(matches!(result, Err(RunError::Io(_))), "{result:?}");
+    assert!(!dir.exists() && PathBuf::from(format!("{}.klipp-v1", dir.display())).is_dir(), "the original went aside");
+    assert_eq!(std::fs::read_dir(s.backup_root.join("journal")).unwrap().count(), 1, "the journal kept");
+    let mut report = Report::default();
+    recover(&s, &mut report).unwrap();
+    assert_eq!(report.recovered, vec![(dir.clone(), "finished".to_string())]);
+    assert_converted(&s, &dir, &before);
+    let _ = std::fs::remove_dir_all(&r);
+}

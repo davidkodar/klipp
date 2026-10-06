@@ -349,6 +349,11 @@ fn rewritten(rel: &Path) -> bool {
     rel == Path::new("project.json") || rel == Path::new("media/stills.json") || rel.starts_with("looks")
 }
 
+/// The folders of a project the conversion writes files into.
+fn writes_into(rel: &Path) -> bool {
+    rel == Path::new("media") || rel == Path::new("looks")
+}
+
 /// Copy `src` into the new folder `dst` as step 2 describes.
 fn copy_project(src: &Path, dst: &Path) -> Result<(), String> {
     copy_tree(src, dst, Path::new(""), true)
@@ -369,6 +374,12 @@ fn copy_tree(src: &Path, dst: &Path, rel: &Path, project: bool) -> Result<(), St
             continue;
         }
         let kind = entry.file_type().map_err(|e| io_err("reading", &from, e))?;
+        if project && kind.is_symlink() && writes_into(&rel) {
+            // Kept as a link, the converted files written into it would
+            // land in the folder it names: the original's, or one it shares.
+            let target = std::fs::read_link(&from).map_err(|e| io_err("reading the link", &from, e))?;
+            return Err(format!("{} is a link to {}, and the conversion writes into it: make it a folder of the project first", from.display(), target.display()));
+        }
         if kind.is_symlink() {
             let target = std::fs::read_link(&from).map_err(|e| io_err("reading the link", &from, e))?;
             std::os::unix::fs::symlink(&target, &to).map_err(|e| io_err("linking", &to, e))?;
@@ -712,7 +723,14 @@ fn convert_one(s: &Settings, dir: &Path, hooks: &Hooks, report: &mut Report) -> 
     if (hooks.crash)(Step::Started, true) {
         return Err(RunError::Crashed(Step::Started));
     }
-    match advance(s, &mut e, hooks) {
+    let advanced = advance(s, &mut e, hooks);
+    // A step can fail after its work is on disk (a rename done, the sync
+    // after it refused): what to do next goes by the disk, not the step
+    // last recorded.
+    if advanced.is_err() {
+        settle_from_disk(&mut e);
+    }
+    match advanced {
         Ok(()) => {
             std::fs::remove_file(journal_path(s, dir)).map_err(|err| RunError::Io(io_err("removing the journal of", dir, err)))?;
             report.media_offline.push((dir.to_path_buf(), offline_media(dir)));
