@@ -265,13 +265,13 @@ impl KlippApp {
                             }
                             crate::state::KeyframeParamKind::Video(param) => {
                                 let kfs = match param {
-                                    klipp_core::VideoParam::Opacity => &clip.opacity_keyframes,
-                                    klipp_core::VideoParam::PositionX => &clip.transform_pos_x_keyframes,
-                                    klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
-                                    klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
-                                    klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
-                                    klipp_core::VideoParam::TiltX => &clip.transform_tilt_x_keyframes,
-                                    klipp_core::VideoParam::TiltY => &clip.transform_tilt_y_keyframes,
+                                    klipp_core::VideoParam::Opacity => clip.opacity_keyframes(),
+                                    klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes(),
+                                    klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes(),
+                                    klipp_core::VideoParam::Scale => clip.transform_scale_keyframes(),
+                                    klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes(),
+                                    klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes(),
+                                    klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes(),
                                     klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
                                     klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                 };
@@ -1075,13 +1075,13 @@ impl KlippApp {
                                     })
                                     .unwrap_or((0.0, 0.0, 1.0, 0.0));
                                 let keyframes = match param {
-                                    klipp_core::VideoParam::Opacity => &clip.opacity_keyframes,
-                                    klipp_core::VideoParam::PositionX => &clip.transform_pos_x_keyframes,
-                                    klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
-                                    klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
-                                    klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
-                                    klipp_core::VideoParam::TiltX => &clip.transform_tilt_x_keyframes,
-                                    klipp_core::VideoParam::TiltY => &clip.transform_tilt_y_keyframes,
+                                    klipp_core::VideoParam::Opacity => clip.opacity_keyframes(),
+                                    klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes(),
+                                    klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes(),
+                                    klipp_core::VideoParam::Scale => clip.transform_scale_keyframes(),
+                                    klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes(),
+                                    klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes(),
+                                    klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes(),
                                     klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
                                     klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                 };
@@ -1135,7 +1135,7 @@ impl KlippApp {
                     if let Some((clip, track_kind)) = clip_and_kind {
                         let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
                         let empty_kfs: Vec<klipp_core::Keyframe> = Vec::new();
-                        let keyframes: &Vec<klipp_core::Keyframe> = if track_kind == klipp_timeline::TrackKind::Audio {
+                        let keyframes: &[klipp_core::Keyframe] = if track_kind == klipp_timeline::TrackKind::Audio {
                             match &self.state.rubber_band_param {
                                 crate::state::RubberBandParam::ClipParam(param) => match param {
                                     klipp_core::AudioParam::Volume => &clip.volume_keyframes,
@@ -1150,13 +1150,13 @@ impl KlippApp {
                             }
                         } else {
                             match self.state.video_rubber_band_param {
-                                klipp_core::VideoParam::Opacity => &clip.opacity_keyframes,
-                                klipp_core::VideoParam::PositionX => &clip.transform_pos_x_keyframes,
-                                klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
-                                klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
-                                klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
-                                klipp_core::VideoParam::TiltX => &clip.transform_tilt_x_keyframes,
-                                klipp_core::VideoParam::TiltY => &clip.transform_tilt_y_keyframes,
+                                klipp_core::VideoParam::Opacity => clip.opacity_keyframes(),
+                                klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes(),
+                                klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes(),
+                                klipp_core::VideoParam::Scale => clip.transform_scale_keyframes(),
+                                klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes(),
+                                klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes(),
+                                klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes(),
                                 klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
                                 klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                             }
@@ -1183,7 +1183,7 @@ impl KlippApp {
                     if let Some((clip, track_kind)) = clip_and_kind {
                         let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
                         let empty_kfs: Vec<klipp_core::Keyframe> = Vec::new();
-                        let keyframes: &Vec<klipp_core::Keyframe> = if track_kind == klipp_timeline::TrackKind::Audio {
+                        let keyframes: &[klipp_core::Keyframe] = if track_kind == klipp_timeline::TrackKind::Audio {
                             match &self.state.rubber_band_param {
                                 crate::state::RubberBandParam::ClipParam(param) => match param {
                                     klipp_core::AudioParam::Volume => &clip.volume_keyframes,
@@ -1198,13 +1198,13 @@ impl KlippApp {
                             }
                         } else {
                             match self.state.video_rubber_band_param {
-                                klipp_core::VideoParam::Opacity => &clip.opacity_keyframes,
-                                klipp_core::VideoParam::PositionX => &clip.transform_pos_x_keyframes,
-                                klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
-                                klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
-                                klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
-                                klipp_core::VideoParam::TiltX => &clip.transform_tilt_x_keyframes,
-                                klipp_core::VideoParam::TiltY => &clip.transform_tilt_y_keyframes,
+                                klipp_core::VideoParam::Opacity => clip.opacity_keyframes(),
+                                klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes(),
+                                klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes(),
+                                klipp_core::VideoParam::Scale => clip.transform_scale_keyframes(),
+                                klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes(),
+                                klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes(),
+                                klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes(),
                                 klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
                                 klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                             }

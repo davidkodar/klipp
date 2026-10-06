@@ -75,8 +75,8 @@ impl Clip {
     }
 
     /// Edit one entry without changing the list's order.
-    pub fn ofx_effect_mut(&mut self, index: usize) -> Option<&mut AppliedEffect> {
-        self.effects.0.get_mut(index)
+    pub fn edit_ofx_effect<R>(&mut self, index: usize, f: impl FnOnce(&mut AppliedEffect) -> R) -> Option<R> {
+        self.effects.0.get_mut(index).map(f)
     }
 
     /// Edit the list without changing its existing ordering or parameters.
@@ -147,8 +147,8 @@ mod tests {
         let a = AppliedEffect { plugin_name: "A".into(), enabled: true, ..Default::default() };
         let b = AppliedEffect { plugin_name: "B".into(), ..Default::default() };
         clip.set_ofx_effects(vec![a, b]);
-        clip.ofx_effect_mut(0).unwrap().param_values.insert("amount".into(), klipp_plugin::OfxValue::Double(0.25));
-        assert!(clip.ofx_effect_mut(2).is_none());
+        clip.edit_ofx_effect(0, |v| v.param_values.insert("amount".into(), klipp_plugin::OfxValue::Double(0.25))).unwrap();
+        assert!(clip.edit_ofx_effect(2, |_| ()).is_none());
         let removed = clip.edit_ofx_effects(|effects| {
             effects.swap(0, 1);
             effects.remove(0)

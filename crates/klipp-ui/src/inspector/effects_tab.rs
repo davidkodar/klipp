@@ -1360,7 +1360,7 @@ fn builtin_effect_is_default(effect: &klipp_effects::BuiltinEffect) -> bool {
 /// Compute KeyframeState for a given effect param keyframe vec at a given clip-relative time.
 fn effect_keyframe_state(clip: &Clip, effect_index: usize, param_name: &str, clip_time_secs: f64, keyframe_tolerance: f64) -> KeyframeState {
     let key = format!("{}:{}", effect_index, param_name);
-    let kfs = clip.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
+    let kfs = clip.effect_keyframes().get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
     crate::inspector::keyframe_selection::state(kfs, clip_time_secs, keyframe_tolerance)
 }
 
@@ -1375,7 +1375,7 @@ fn keyframe_state_if(animatable: &[&str], clip: &Clip, effect_index: usize, para
 /// Evaluate effect keyframes for a param, returning the keyframed value or the static default.
 fn eval_effect_kf(clip: &Clip, effect_index: usize, param_name: &str, clip_time_secs: f64, default: f32, tolerance: f64) -> f32 {
     let key = format!("{}:{}", effect_index, param_name);
-    if let Some(kfs) = clip.effect_keyframes.get(&key) {
+    if let Some(kfs) = clip.effect_keyframes().get(&key) {
         if !kfs.is_empty() {
             return crate::inspector::keyframe_selection::editable_value(kfs, clip_time_secs, default, tolerance);
         }
@@ -1386,7 +1386,7 @@ fn eval_effect_kf(clip: &Clip, effect_index: usize, param_name: &str, clip_time_
 /// Check if any keyframes exist for a given effect param.
 fn has_effect_kfs(clip: &Clip, effect_index: usize, param_name: &str) -> bool {
     let key = format!("{}:{}", effect_index, param_name);
-    clip.effect_keyframes.get(&key).is_some_and(|kfs| !kfs.is_empty())
+    clip.effect_keyframes().get(&key).is_some_and(|kfs| !kfs.is_empty())
 }
 
 fn show_builtin_effect_params(
@@ -2746,7 +2746,7 @@ fn show_builtin_effect_params(
         // Toggle keyframe on diamond click
         if resp.keyframe_toggled {
             let key = format!("{}:{}", effect_index, param_name);
-            let has_at_playhead = clip.effect_keyframes.get(&key)
+            let has_at_playhead = clip.effect_keyframes().get(&key)
                 .is_some_and(|kfs| crate::inspector::keyframe_selection::nearest(kfs, clip_time_secs, kf_tolerance).is_some());
             if has_at_playhead {
                 cmds.push(AppCommand::RemoveEffectKeyframe {

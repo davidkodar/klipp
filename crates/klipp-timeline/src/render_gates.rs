@@ -34,13 +34,13 @@ impl Clip {
 
     /// A modifier entry counts even when its stack is empty or targets audio.
     pub fn has_param_modifiers(&self) -> bool {
-        !self.param_modifiers.is_empty()
+        !self.param_modifiers().is_empty()
     }
 
     /// The seven clip tracks used by direct-present and title-overlay gates.
     /// A single constant key counts; audio, effect, speed and matte keys do not.
     pub fn has_render_keyframes(&self) -> bool {
-        !self.opacity_keyframes.is_empty()
+        !self.opacity_keyframes().is_empty()
             || self
                 .transform_keyframe_tracks()
                 .iter()
@@ -54,7 +54,7 @@ impl Clip {
     }
 
     pub fn has_tilt_keyframes(&self) -> bool {
-        !self.transform_tilt_x_keyframes.is_empty() || !self.transform_tilt_y_keyframes.is_empty()
+        !self.transform_tilt_x_keyframes().is_empty() || !self.transform_tilt_y_keyframes().is_empty()
     }
 
     /// Playback's speed-ramp gate; separate from the picture-present tracks.
@@ -71,12 +71,12 @@ impl Clip {
 
     fn transform_keyframe_tracks(&self) -> [&[Keyframe]; 6] {
         [
-            &self.transform_pos_x_keyframes,
-            &self.transform_pos_y_keyframes,
-            &self.transform_scale_keyframes,
-            &self.transform_rotation_keyframes,
-            &self.transform_tilt_x_keyframes,
-            &self.transform_tilt_y_keyframes,
+            self.transform_pos_x_keyframes(),
+            self.transform_pos_y_keyframes(),
+            self.transform_scale_keyframes(),
+            self.transform_rotation_keyframes(),
+            self.transform_tilt_x_keyframes(),
+            self.transform_tilt_y_keyframes(),
         ]
     }
 
@@ -284,33 +284,33 @@ mod tests {
     fn animation_gates_pin_each_included_and_excluded_track() {
         type Track = fn(&mut Clip) -> &mut Vec<Keyframe>;
         let tracks: [(&str, Track, bool, bool, bool); 13] = [
-            ("opacity", |c| &mut c.opacity_keyframes, true, false, false),
-            ("x", |c| &mut c.transform_pos_x_keyframes, true, false, true),
-            ("y", |c| &mut c.transform_pos_y_keyframes, true, false, true),
+            ("opacity", |c| &mut c.opacity_keyframes.0, true, false, false),
+            ("x", |c| &mut c.transform_pos_x_keyframes.0, true, false, true),
+            ("y", |c| &mut c.transform_pos_y_keyframes.0, true, false, true),
             (
                 "scale",
-                |c| &mut c.transform_scale_keyframes,
+                |c| &mut c.transform_scale_keyframes.0,
                 true,
                 false,
                 true,
             ),
             (
                 "rotation",
-                |c| &mut c.transform_rotation_keyframes,
+                |c| &mut c.transform_rotation_keyframes.0,
                 true,
                 false,
                 true,
             ),
             (
                 "tilt x",
-                |c| &mut c.transform_tilt_x_keyframes,
+                |c| &mut c.transform_tilt_x_keyframes.0,
                 true,
                 true,
                 true,
             ),
             (
                 "tilt y",
-                |c| &mut c.transform_tilt_y_keyframes,
+                |c| &mut c.transform_tilt_y_keyframes.0,
                 true,
                 true,
                 true,
@@ -349,7 +349,7 @@ mod tests {
             assert_eq!(c.has_changing_transform_keys(), transform, "{name}");
         }
         let mut c = clip();
-        c.effect_keyframes.insert("0:radius".into(), vec![key(1.0)]);
+        c.edit_effect_keyframes(|v| v.insert("0:radius".into(), vec![key(1.0)]));
         assert!(
             !c.has_animation(),
             "effect keys were never part of this gate"
@@ -364,7 +364,7 @@ mod tests {
         ] {
             let mut c = clip();
             assert!(!c.has_param_modifiers());
-            c.param_modifiers.insert(target, ModifierStack::default());
+            c.edit_param_modifiers(|v| v.insert(target, ModifierStack::default()));
             assert!(c.has_param_modifiers(), "an empty stack is still an entry");
             assert!(c.has_animation());
         }

@@ -802,7 +802,7 @@ fn apply_producer_filters(
                 // property alongside `rect`. Degrees, same time-key format.
                 if let Some(raw) = get_property(filter, "rotation") {
                     match parse_scalar_keyframes(raw, fps) {
-                        Ok(kfs) => clip.transform_rotation_keyframes = kfs,
+                        Ok(kfs) => clip.transform_rotation_keyframes = kfs.into(),
                         Err(e) => warnings.push(format!(
                             "Filter 'qtblend' rotation parse failed: {e} — rotation dropped",
                         )),
@@ -856,10 +856,10 @@ fn apply_geometry_filter(
                 opacity = gk.opacity.len(),
                 "geometry keyframes imported"
             );
-            clip.transform_pos_x_keyframes = gk.pos_x;
-            clip.transform_pos_y_keyframes = gk.pos_y;
-            clip.transform_scale_keyframes = gk.scale;
-            clip.opacity_keyframes = gk.opacity;
+            clip.edit_transform_pos_x_keyframes(|v| *v = gk.pos_x);
+            clip.edit_transform_pos_y_keyframes(|v| *v = gk.pos_y);
+            clip.edit_transform_scale_keyframes(|v| *v = gk.scale);
+            clip.edit_opacity_keyframes(|v| *v = gk.opacity);
             for msg in gk.scale_warnings {
                 warnings.push(format!("Filter '{service}': {msg}"));
             }
@@ -2243,17 +2243,17 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
 
         let clip = &result.sequence.tracks[0].clips[0];
-        assert_eq!(clip.transform_pos_x_keyframes.len(), 3);
-        assert_eq!(clip.transform_pos_y_keyframes.len(), 3);
-        assert_eq!(clip.transform_scale_keyframes.len(), 3);
-        assert_eq!(clip.opacity_keyframes.len(), 3);
+        assert_eq!(clip.transform_pos_x_keyframes().len(), 3);
+        assert_eq!(clip.transform_pos_y_keyframes().len(), 3);
+        assert_eq!(clip.transform_scale_keyframes().len(), 3);
+        assert_eq!(clip.opacity_keyframes().len(), 3);
 
         // Middle stop at frame 25 / 25fps = 1.0s: zoomed-in half size,
         // centered offset (480, 270).
-        assert!((clip.transform_pos_x_keyframes[1].time_secs - 1.0).abs() < 1e-9);
-        assert!((clip.transform_pos_x_keyframes[1].value - 480.0).abs() < 1e-4);
-        assert!((clip.transform_pos_y_keyframes[1].value - 270.0).abs() < 1e-4);
-        assert!((clip.transform_scale_keyframes[1].value - 0.5).abs() < 1e-6);
+        assert!((clip.transform_pos_x_keyframes()[1].time_secs - 1.0).abs() < 1e-9);
+        assert!((clip.transform_pos_x_keyframes()[1].value - 480.0).abs() < 1e-4);
+        assert!((clip.transform_pos_y_keyframes()[1].value - 270.0).abs() < 1e-4);
+        assert!((clip.transform_scale_keyframes()[1].value - 0.5).abs() < 1e-6);
 
         // Uniform scale — no non-uniform warnings expected.
         let non_uniform: Vec<&String> = result
@@ -2275,9 +2275,9 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
 
         let clip = &result.sequence.tracks[0].clips[0];
-        assert_eq!(clip.transform_scale_keyframes.len(), 2);
+        assert_eq!(clip.transform_scale_keyframes().len(), 2);
         // Width-axis: 1920/1920 = 1.0 (height-axis would give 0.5).
-        assert!((clip.transform_scale_keyframes[0].value - 1.0).abs() < 1e-6);
+        assert!((clip.transform_scale_keyframes()[0].value - 1.0).abs() < 1e-6);
 
         let warning = result
             .warnings

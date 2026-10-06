@@ -803,13 +803,7 @@ impl PlaybackEngine {
             let (index, is_ofx) = (self.compare_effect_index, self.compare_effect_is_ofx);
             alt_render(self, &|c: &mut Clip| {
                 if is_ofx {
-                    match c.ofx_effect_mut(index) {
-                        Some(e) => {
-                            e.enabled = !e.enabled;
-                            true
-                        }
-                        None => false,
-                    }
+                    c.edit_ofx_effect(index, |e| e.enabled = !e.enabled).is_some()
                 } else {
                     toggle_builtin_effect(c, index)
                 }
@@ -1222,8 +1216,8 @@ mod effect_comparison_tests {
         let ids: Vec<_> = clip.effect_entries().map(|(id, _, _)| id).collect();
         for (i, id) in ids.into_iter().enumerate() {
             let param = if i == 1 { "radius" } else { "crop_ratio" };
-            klipp_core::keyframe::upsert_keyframe(clip.effect_keyframes_mut(id, param).unwrap(), 0.5, i as f32);
-            clip.effect_modifiers_mut(id, param).unwrap().modifiers.push(klipp_core::Modifier::Clamp { min: 0.0, max: 5.0, enabled: true });
+            clip.edit_effect_keyframes_of(id, param, |k| klipp_core::keyframe::upsert_keyframe(k, 0.5, i as f32)).unwrap();
+            clip.edit_effect_modifiers(id, param, |v| v.modifiers.push(klipp_core::Modifier::Clamp { min: 0.0, max: 5.0, enabled: true })).unwrap();
         }
         clip
     }
@@ -1240,7 +1234,7 @@ mod effect_comparison_tests {
     fn state(clip: &Clip) -> serde_json::Value {
         // ParamId is an enum key; the project writer supplies its string
         // encoding, so inspect the stacks separately from Clip's serde.
-        let modifiers: std::collections::BTreeMap<_, _> = clip.param_modifiers.iter()
+        let modifiers: std::collections::BTreeMap<_, _> = clip.param_modifiers().iter()
             .map(|(id, stack)| (format!("{id:?}"), serde_json::to_value(stack).unwrap()))
             .collect();
         serde_json::json!({ "effects": clip.builtin_effects(), "enabled": clip.builtin_effects_enabled(),

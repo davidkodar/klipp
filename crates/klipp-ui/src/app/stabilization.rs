@@ -888,27 +888,27 @@ impl KlippApp {
 
                         match target {
                             klipp_core::TrackTarget::TransformPosition => {
-                                clip.transform_pos_x_keyframes.clear();
-                                clip.transform_pos_y_keyframes.clear();
+                                clip.edit_transform_pos_x_keyframes(|v| v.clear());
+                                clip.edit_transform_pos_y_keyframes(|v| v.clear());
                                 for (i, &(nx, ny)) in positions.iter().enumerate() {
                                     let frame_idx = start_frame + i;
                                     let t = frame_idx as f64 / fps;
                                     let pos_x = (nx - 0.5) as f32;
                                     let pos_y = (ny - 0.5) as f32;
-                                    clip.transform_pos_x_keyframes.push(klipp_core::Keyframe {
+                                    clip.edit_transform_pos_x_keyframes(|v| v.push(klipp_core::Keyframe {
                                         time_secs: t,
                                         value: pos_x,
                                         interpolation: klipp_core::Interpolation::Linear,
                                         tangent_in: (0.0, 0.0),
                                         tangent_out: (0.0, 0.0),
-                                    });
-                                    clip.transform_pos_y_keyframes.push(klipp_core::Keyframe {
+                                    }));
+                                    clip.edit_transform_pos_y_keyframes(|v| v.push(klipp_core::Keyframe {
                                         time_secs: t,
                                         value: pos_y,
                                         interpolation: klipp_core::Interpolation::Linear,
                                         tangent_in: (0.0, 0.0),
                                         tangent_out: (0.0, 0.0),
-                                    });
+                                    }));
                                 }
                                 self.state.toast.show("Generated transform keyframes from tracker");
                             }

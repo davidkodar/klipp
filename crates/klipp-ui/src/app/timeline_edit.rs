@@ -410,26 +410,26 @@ impl KlippApp {
                         let dur = clip.duration().to_secs_f64();
                         match preset.as_str() {
                             "ken_burns_zoom_in" => {
-                                clip.transform_scale_keyframes = vec![
+                                clip.transform_scale_keyframes = (vec![
                                     klipp_core::Keyframe { time_secs: 0.0, value: 1.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
                                     klipp_core::Keyframe { time_secs: dur, value: 1.4, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                ];
+                                ]).into();
                             }
                             "ken_burns_zoom_out" => {
-                                clip.transform_scale_keyframes = vec![
+                                clip.transform_scale_keyframes = (vec![
                                     klipp_core::Keyframe { time_secs: 0.0, value: 1.4, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
                                     klipp_core::Keyframe { time_secs: dur, value: 1.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                ];
+                                ]).into();
                             }
                             "ken_burns_pan_left" => {
-                                clip.transform_scale_keyframes = vec![
+                                clip.transform_scale_keyframes = (vec![
                                     klipp_core::Keyframe { time_secs: 0.0, value: 1.3, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
                                     klipp_core::Keyframe { time_secs: dur, value: 1.3, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                ];
-                                clip.transform_pos_x_keyframes = vec![
+                                ]).into();
+                                clip.transform_pos_x_keyframes = (vec![
                                     klipp_core::Keyframe { time_secs: 0.0, value: 100.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
                                     klipp_core::Keyframe { time_secs: dur, value: -100.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                ];
+                                ]).into();
                             }
                             // PiP corners. Resolution-aware so the
                             // clip lands roughly the same distance
@@ -449,15 +449,15 @@ impl KlippApp {
                             | "pip_bottom_left"
                             | "pip_bottom_right" => {
                                 let (px, py) = pip_offsets_for_corner(res, preset.as_str());
-                                clip.transform_scale_keyframes = vec![
+                                clip.transform_scale_keyframes = (vec![
                                     klipp_core::Keyframe { time_secs: 0.0, value: 0.3, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                ];
-                                clip.transform_pos_x_keyframes = vec![
+                                ]).into();
+                                clip.transform_pos_x_keyframes = (vec![
                                     klipp_core::Keyframe { time_secs: 0.0, value: px, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                ];
-                                clip.transform_pos_y_keyframes = vec![
+                                ]).into();
+                                clip.transform_pos_y_keyframes = (vec![
                                     klipp_core::Keyframe { time_secs: 0.0, value: py, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                ];
+                                ]).into();
                             }
                             _ => {}
                         }

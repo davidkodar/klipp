@@ -97,10 +97,10 @@ pub fn evaluate_clip_own_transform(
             _ => None,
         })
         .unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5));
-    let px = eval_with_modifiers(&clip.transform_pos_x_keyframes, &clip.param_modifiers, &klipp_core::ParamId::PositionX, clip_time_secs, tdef.0, eval_ctx);
-    let py = eval_with_modifiers(&clip.transform_pos_y_keyframes, &clip.param_modifiers, &klipp_core::ParamId::PositionY, clip_time_secs, tdef.1, eval_ctx);
-    let sc = eval_with_modifiers(&clip.transform_scale_keyframes, &clip.param_modifiers, &klipp_core::ParamId::Scale, clip_time_secs, tdef.2, eval_ctx);
-    let ro = eval_with_modifiers(&clip.transform_rotation_keyframes, &clip.param_modifiers, &klipp_core::ParamId::Rotation, clip_time_secs, tdef.4, eval_ctx);
+    let px = eval_with_modifiers(clip.transform_pos_x_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::PositionX, clip_time_secs, tdef.0, eval_ctx);
+    let py = eval_with_modifiers(clip.transform_pos_y_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::PositionY, clip_time_secs, tdef.1, eval_ctx);
+    let sc = eval_with_modifiers(clip.transform_scale_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::Scale, clip_time_secs, tdef.2, eval_ctx);
+    let ro = eval_with_modifiers(clip.transform_rotation_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::Rotation, clip_time_secs, tdef.4, eval_ctx);
     // Scale is single-axis in our model — same value on x and y.
     (px, py, sc, sc, ro, tdef.5, tdef.6)
 }
@@ -558,8 +558,8 @@ pub fn evaluate_clip_opacity(
         seed: clip.id.0.as_u64_pair().0,
     };
     eval_with_modifiers(
-        &clip.opacity_keyframes,
-        &clip.param_modifiers,
+        clip.opacity_keyframes(),
+        clip.param_modifiers(),
         &klipp_core::ParamId::Opacity,
         clip_relative_secs,
         opacity_default,

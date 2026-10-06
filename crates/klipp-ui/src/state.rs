@@ -3630,13 +3630,13 @@ impl AttributesClipboard {
             gain_keyframes: clip.gain_keyframes.clone(),
             audio_effects: clip.audio_effects.clone(),
             audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
-            opacity_keyframes: clip.opacity_keyframes.clone(),
-            transform_pos_x_keyframes: clip.transform_pos_x_keyframes.clone(),
-            transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
-            transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
-            transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
-            effect_keyframes: clip.effect_keyframes.clone(),
-            param_modifiers: clip.param_modifiers.clone(),
+            opacity_keyframes: clip.opacity_keyframes().to_vec(),
+            transform_pos_x_keyframes: clip.transform_pos_x_keyframes().to_vec(),
+            transform_pos_y_keyframes: clip.transform_pos_y_keyframes().to_vec(),
+            transform_scale_keyframes: clip.transform_scale_keyframes().to_vec(),
+            transform_rotation_keyframes: clip.transform_rotation_keyframes().to_vec(),
+            effect_keyframes: clip.effect_keyframes().clone(),
+            param_modifiers: clip.param_modifiers().clone(),
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
         }
@@ -3654,8 +3654,8 @@ impl AttributesClipboard {
     /// effects (`restore_effects_state`).
     fn paste_clip_modifiers(&self, clip: &mut klipp_timeline::Clip) {
         let own = |id: &klipp_core::ParamId| !matches!(id, klipp_core::ParamId::Effect { .. });
-        clip.param_modifiers.retain(|id, _| !own(id));
-        clip.param_modifiers.extend(self.param_modifiers.iter().filter(|(id, _)| own(id)).map(|(id, m)| (id.clone(), m.clone())));
+        clip.edit_param_modifiers(|v| v.retain(|id, _| !own(id)));
+        clip.edit_param_modifiers(|v| v.extend(self.param_modifiers.iter().filter(|(id, _)| own(id)).map(|(id, m)| (id.clone(), m.clone()))));
     }
 
     pub fn paste_onto(&self, clip: &mut klipp_timeline::Clip, what: PasteChoice) {
@@ -3689,11 +3689,11 @@ impl AttributesClipboard {
             clip.audio_effect_keyframes = self.audio_effect_keyframes.clone();
         }
         if what.transform {
-            clip.opacity_keyframes = self.opacity_keyframes.clone();
-            clip.transform_pos_x_keyframes = self.transform_pos_x_keyframes.clone();
-            clip.transform_pos_y_keyframes = self.transform_pos_y_keyframes.clone();
-            clip.transform_scale_keyframes = self.transform_scale_keyframes.clone();
-            clip.transform_rotation_keyframes = self.transform_rotation_keyframes.clone();
+            clip.opacity_keyframes = (self.opacity_keyframes.clone()).into();
+            clip.transform_pos_x_keyframes = (self.transform_pos_x_keyframes.clone()).into();
+            clip.transform_pos_y_keyframes = (self.transform_pos_y_keyframes.clone()).into();
+            clip.transform_scale_keyframes = (self.transform_scale_keyframes.clone()).into();
+            clip.transform_rotation_keyframes = (self.transform_rotation_keyframes.clone()).into();
             self.paste_clip_modifiers(clip);
         }
         if what.speed {
@@ -5639,21 +5639,21 @@ mod paste_speed_tests {
         let wiggle = ParamId::Effect { effect_index: 0, param_name: "amount".into() };
         let mut source = klipp_timeline::Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
         source.set_effect_list(vec![klipp_effects::BuiltinEffect::Vibrance { amount: 0.3 }], source.builtin_effects_enabled().to_vec());
-        source.param_modifiers.insert(wiggle.clone(), ModifierStack::default());
-        source.param_modifiers.insert(ParamId::Scale, ModifierStack::default());
+        source.edit_param_modifiers(|v| v.insert(wiggle.clone(), ModifierStack::default()));
+        source.edit_param_modifiers(|v| v.insert(ParamId::Scale, ModifierStack::default()));
         let copied = AttributesClipboard::of(&source);
         let none = PasteChoice { effects: false, color_grade: false, audio: false, transform: false, speed: false };
 
         let mut target = klipp_timeline::Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
-        target.param_modifiers.insert(ParamId::Opacity, ModifierStack::default());
+        target.edit_param_modifiers(|v| v.insert(ParamId::Opacity, ModifierStack::default()));
         copied.paste_onto(&mut target, PasteChoice { effects: true, ..none });
-        assert!(target.param_modifiers.contains_key(&wiggle), "the effect's modifier was lost");
-        assert!(target.param_modifiers.contains_key(&ParamId::Opacity), "the clip's own modifier was replaced");
-        assert!(!target.param_modifiers.contains_key(&ParamId::Scale), "a transform modifier came with the effects");
+        assert!(target.param_modifiers().contains_key(&wiggle), "the effect's modifier was lost");
+        assert!(target.param_modifiers().contains_key(&ParamId::Opacity), "the clip's own modifier was replaced");
+        assert!(!target.param_modifiers().contains_key(&ParamId::Scale), "a transform modifier came with the effects");
 
         let mut target = klipp_timeline::Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
         copied.paste_onto(&mut target, PasteChoice { transform: true, ..none });
-        assert!(target.param_modifiers.contains_key(&ParamId::Scale));
-        assert!(!target.param_modifiers.contains_key(&wiggle), "an effect modifier came without its effect");
+        assert!(target.param_modifiers().contains_key(&ParamId::Scale));
+        assert!(!target.param_modifiers().contains_key(&wiggle), "an effect modifier came without its effect");
     }
 }

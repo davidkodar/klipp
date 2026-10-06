@@ -5218,12 +5218,12 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
     }).unwrap_or((0.0, 0.0, 1.0, 0.0, 0.0, 0.0));
     let at = |kf: &[klipp_core::Keyframe], t: f64, still: f32| if kf.is_empty() { still } else { klipp_core::keyframe::evaluate(kf, t, still) };
     let now_at = |t: f64| -> (f32, f32, f32) {
-        (at(&clip.transform_pos_x_keyframes, t, still_x), at(&clip.transform_pos_y_keyframes, t, still_y), at(&clip.transform_scale_keyframes, t, still_scale))
+        (at(clip.transform_pos_x_keyframes(), t, still_x), at(clip.transform_pos_y_keyframes(), t, still_y), at(clip.transform_scale_keyframes(), t, still_scale))
     };
     // Its turn and tilt, which a pose with no geometry keeps too: an
     // opacity ramp does not straighten a turned clip (#751 review).
     let turn_at = |t: f64| -> (f32, f32, f32) {
-        (at(&clip.transform_rotation_keyframes, t, still_turn), at(&clip.transform_tilt_x_keyframes, t, still_tx), at(&clip.transform_tilt_y_keyframes, t, still_ty))
+        (at(clip.transform_rotation_keyframes(), t, still_turn), at(clip.transform_tilt_x_keyframes(), t, still_tx), at(clip.transform_tilt_y_keyframes(), t, still_ty))
     };
     // Each pose with its size settled: what it gives, else what the clip has.
     // A pose that gives no geometry keeps the clip's (an opacity ramp
@@ -5543,7 +5543,7 @@ fn highlight(seq: &Sequence, fps: Fps, i: usize, at: Timecode, hold: f64, region
     klipp_core::keyframe::upsert_keyframe(&mut op, fade, 1.0);
     klipp_core::keyframe::upsert_keyframe(&mut op, hold - fade, 1.0);
     klipp_core::keyframe::upsert_keyframe(&mut op, hold, 0.0);
-    clip.opacity_keyframes = op;
+    clip.edit_opacity_keyframes(|v| *v = op);
     let id = clip.id;
     let what = format!("{kind} highlight at {x:.2},{y:.2} ({w:.2}\u{00d7}{h:.2}) {:.2}-{:.2} s on {}", secs(tl_in), secs(tl_out), match existing { Some(ti) => format!("track {ti}"), None => "a new text track 0".to_string() });
     let edit = EditCommand::AddTitleClip { clip, track_index: existing.unwrap_or(0), created_track: existing.is_none() };
@@ -8061,7 +8061,7 @@ mod tests {
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
         let ClipKind::Title(td) = &clip.kind else { panic!() };
         assert_eq!(td.objects.len(), 4, "four dim panels round the region");
-        assert_eq!(clip.opacity_keyframes.len(), 4, "faded in and out");
+        assert_eq!(clip.opacity_keyframes().len(), 4, "faded in and out");
         let plan = resolve(&seq, &pool, &[Op::Highlight { at: Anchor::Secs(1.0), secs: 2.0, x: 0.3, y: 0.3, w: 0.2, h: 0.1, kind: "ring".into(), color: Some("#00ff00".into()), stroke: Some(4.0), track: None }]).unwrap();
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
         let ClipKind::Title(td) = &clip.kind else { panic!() };
@@ -10058,7 +10058,7 @@ mod tests {
             view.apply_forward(&plan.steps[0].edit);
             let saved = serde_json::to_string(&sequences[0]).unwrap();
             let loaded: Sequence = serde_json::from_str(&saved).unwrap();
-            let keys = &loaded.all_clips().find(|c| c.id == clip_id).unwrap().transform_pos_x_keyframes;
+            let keys = loaded.all_clips().find(|c| c.id == clip_id).unwrap().transform_pos_x_keyframes();
             assert_eq!(keys.len(), 3, "dense compose at {rate} fps");
             for (frame, expected) in [-480.0, 0.0, 480.0].into_iter().enumerate() {
                 assert!((evaluate(keys, frame as f64 / rate, 99.0) - expected).abs() < 1e-3);
@@ -10105,9 +10105,9 @@ mod tests {
         let mut fps = seq.fps;
         let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
         view.apply_forward(&plan.steps[0].edit);
-        assert_eq!(view.sequences[0].tracks[0].clips[0].transform_pos_x_keyframes.len(), 2);
+        assert_eq!(view.sequences[0].tracks[0].clips[0].transform_pos_x_keyframes().len(), 2);
         view.apply_inverse(&plan.steps[0].edit);
-        assert!(view.sequences[0].tracks[0].clips[0].transform_pos_x_keyframes.is_empty());
+        assert!(view.sequences[0].tracks[0].clips[0].transform_pos_x_keyframes().is_empty());
 
         // Refusals: no pose at all, a stretch the engine cannot make, a
         // pose after the clip has ended, a fade outside 0 to 1.
@@ -10282,9 +10282,9 @@ mod tests {
         view.apply_forward(&plan.steps[0].edit);
         let c = &view.sequences[0].tracks[0].clips[0];
         let at = |kf: &[klipp_core::Keyframe], t: f64| klipp_core::keyframe::evaluate(kf, t, f32::NAN);
-        assert!((at(&c.transform_scale_keyframes, 0.6) - scale_x).abs() < 1e-4, "the scale holds");
-        assert!((at(&c.transform_pos_y_keyframes, 0.6) - position_y).abs() < 1e-3, "the pan holds");
-        assert!(at(&c.opacity_keyframes, 0.0) < 1e-4 && (at(&c.opacity_keyframes, 1.2) - 1.0).abs() < 1e-4, "and it fades in");
+        assert!((at(c.transform_scale_keyframes(), 0.6) - scale_x).abs() < 1e-4, "the scale holds");
+        assert!((at(c.transform_pos_y_keyframes(), 0.6) - position_y).abs() < 1e-3, "the pan holds");
+        assert!(at(c.opacity_keyframes(), 0.0) < 1e-4 && (at(c.opacity_keyframes(), 1.2) - 1.0).abs() < 1e-4, "and it fades in");
 
         // A colour card fades in the same way.
         let (mut seq, pool, _, _, _) = fixture();
@@ -10315,9 +10315,9 @@ mod tests {
         view.apply_forward(&plan.steps[0].edit);
         let c = &view.sequences[0].tracks[0].clips[0];
         let at = |kf: &[klipp_core::Keyframe]| klipp_core::keyframe::evaluate(kf, 0.5, f32::NAN);
-        assert!((at(&c.transform_rotation_keyframes) - 15.0).abs() < 1e-3, "the turn holds");
-        assert!((at(&c.transform_tilt_y_keyframes) - 20.0).abs() < 1e-3, "the tilt holds");
-        assert!((at(&c.transform_scale_keyframes) - 0.6).abs() < 1e-4, "and the size");
+        assert!((at(c.transform_rotation_keyframes()) - 15.0).abs() < 1e-3, "the turn holds");
+        assert!((at(c.transform_tilt_y_keyframes()) - 20.0).abs() < 1e-3, "the tilt holds");
+        assert!((at(c.transform_scale_keyframes()) - 0.6).abs() < 1e-4, "and the size");
     }
 
     /// #727: a re-pan keeps what it does not name. Reframed at 3.17 and

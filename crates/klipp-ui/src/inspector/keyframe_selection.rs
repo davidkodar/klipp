@@ -112,13 +112,13 @@ fn resolve_with<'a>(
         } => {
             let Some(c) = clip_for(*clip_id) else { return };
             let keys = match param {
-                VideoParam::Opacity => &c.opacity_keyframes,
-                VideoParam::PositionX => &c.transform_pos_x_keyframes,
-                VideoParam::PositionY => &c.transform_pos_y_keyframes,
-                VideoParam::Scale => &c.transform_scale_keyframes,
-                VideoParam::Rotation => &c.transform_rotation_keyframes,
-                VideoParam::TiltX => &c.transform_tilt_x_keyframes,
-                VideoParam::TiltY => &c.transform_tilt_y_keyframes,
+                VideoParam::Opacity => c.opacity_keyframes(),
+                VideoParam::PositionX => c.transform_pos_x_keyframes(),
+                VideoParam::PositionY => c.transform_pos_y_keyframes(),
+                VideoParam::Scale => c.transform_scale_keyframes(),
+                VideoParam::Rotation => c.transform_rotation_keyframes(),
+                VideoParam::TiltX => c.transform_tilt_x_keyframes(),
+                VideoParam::TiltY => c.transform_tilt_y_keyframes(),
                 VideoParam::MatteFeather => &c.matte_feather_keyframes,
                 VideoParam::MatteChoke => &c.matte_choke_keyframes,
             };
@@ -160,7 +160,7 @@ fn resolve_with<'a>(
         } => {
             let Some(c) = clip_for(*clip_id) else { return };
             (
-                c.effect_keyframes
+                c.effect_keyframes()
                     .get(&format!("{effect_index}:{param_name}"))
                     .map(Vec::as_slice)
                     .unwrap_or(&[]),
@@ -271,10 +271,9 @@ mod tests {
             Timecode::from_secs_f64(0.0, 24),
             Timecode::from_secs_f64(5.0, 24),
         );
-        c.opacity_keyframes = keys(&[0.7, 1.0]);
-        c.volume_keyframes = c.opacity_keyframes.clone();
-        c.effect_keyframes
-            .insert("0:radius".into(), keys(&[0.7, 1.0]));
+        c.edit_opacity_keyframes(|v| *v = keys(&[0.7, 1.0]));
+        c.volume_keyframes = c.opacity_keyframes().to_vec();
+        c.edit_effect_keyframes(|m| m.insert("0:radius".into(), keys(&[0.7, 1.0])));
         c.audio_effect_keyframes
             .insert("0:gain".into(), keys(&[0.7, 1.0]));
         let mut title = TitleData::default();
@@ -393,7 +392,7 @@ mod tests {
             let mut seq = fixture();
             seq.fps = fps;
             let c = &mut seq.tracks[0].clips[0];
-            c.opacity_keyframes = keys(&[0.0, dt, 2.0 * dt]);
+            c.edit_opacity_keyframes(|v| *v = keys(&[0.0, dt, 2.0 * dt]));
             let mut cmd = AppCommand::RemoveVideoKeyframe {
                 clip_id: c.id,
                 param: VideoParam::Opacity,
@@ -404,16 +403,16 @@ mod tests {
                 unreachable!()
             };
             assert_eq!(time_secs, dt);
-            let track = &mut seq.tracks[0].clips[0].opacity_keyframes;
-            klipp_core::keyframe::remove_keyframe_at(track, time_secs);
-            assert_eq!(*track, keys(&[0.0, 2.0 * dt]));
+            let clip = &mut seq.tracks[0].clips[0];
+            clip.edit_opacity_keyframes(|track| klipp_core::keyframe::remove_keyframe_at(track, time_secs));
+            assert_eq!(clip.opacity_keyframes(), keys(&[0.0, 2.0 * dt]));
         }
     }
 
     #[test]
     fn nearby_subframe_keys_select_the_closest_without_retiming_others() {
         let mut seq = fixture();
-        seq.tracks[0].clips[0].opacity_keyframes = keys(&[0.695, 0.707]);
+        seq.tracks[0].clips[0].edit_opacity_keyframes(|v| *v = keys(&[0.695, 0.707]));
         let c = &seq.tracks[0].clips[0];
         let mut cmd = AppCommand::AddVideoKeyframe {
             clip_id: c.id,
@@ -422,7 +421,7 @@ mod tests {
             value: 0.9,
         };
         assert_eq!(
-            nearest(&c.opacity_keyframes, 17.0 / 24.0, 0.5 / 24.0),
+            nearest(c.opacity_keyframes(), 17.0 / 24.0, 0.5 / 24.0),
             Some(1)
         );
         resolve_command(&seq, &mut cmd);
@@ -432,8 +431,9 @@ mod tests {
         else {
             unreachable!()
         };
-        let track = &mut seq.tracks[0].clips[0].opacity_keyframes;
-        klipp_core::keyframe::upsert_keyframe(track, time_secs, value);
+        let clip = &mut seq.tracks[0].clips[0];
+        clip.edit_opacity_keyframes(|track| klipp_core::keyframe::upsert_keyframe(track, time_secs, value));
+        let track = clip.opacity_keyframes();
         assert_eq!(track.len(), 2);
         assert_eq!(track[0], keys(&[0.695])[0]);
         assert_eq!(track[1].time_secs, 0.707);
@@ -460,10 +460,10 @@ mod tests {
         let mut seq = fixture();
         seq.fps = Fps { num: 32, den: 1 };
         let halfway = 1.0 / 64.0;
-        seq.tracks[0].clips[0].opacity_keyframes = keys(&[halfway]);
+        seq.tracks[0].clips[0].edit_opacity_keyframes(|v| *v = keys(&[halfway]));
         for frame in [0.0, 1.0 / 32.0] {
             let clip = &seq.tracks[0].clips[0];
-            assert_eq!(nearest(&clip.opacity_keyframes, frame, halfway), Some(0));
+            assert_eq!(nearest(clip.opacity_keyframes(), frame, halfway), Some(0));
             let mut cmd = AppCommand::RemoveVideoKeyframe {
                 clip_id: clip.id,
                 param: VideoParam::Opacity,
@@ -512,16 +512,18 @@ mod tests {
     fn editing_an_off_grid_bezier_key_preserves_its_curve_shape() {
         let mut seq = fixture();
         let clip = &mut seq.tracks[0].clips[0];
-        clip.opacity_keyframes[0].interpolation = Interpolation::Bezier;
-        clip.opacity_keyframes[0].tangent_in = (-0.2, -0.3);
-        clip.opacity_keyframes[0].tangent_out = (0.1, 0.4);
-        let mut expected = clip.opacity_keyframes.clone();
+        clip.edit_opacity_keyframes(|k| {
+            k[0].interpolation = Interpolation::Bezier;
+            k[0].tangent_in = (-0.2, -0.3);
+            k[0].tangent_out = (0.1, 0.4);
+        });
+        let mut expected = clip.opacity_keyframes().to_vec();
         expected[0].value = 0.9;
         let mut cmd = AppCommand::AddVideoKeyframe { clip_id: clip.id, param: VideoParam::Opacity, time_secs: 17.0 / 24.0, value: 0.9 };
         resolve_command(&seq, &mut cmd);
         let AppCommand::AddVideoKeyframe { time_secs, value, .. } = cmd else { unreachable!() };
-        klipp_core::keyframe::upsert_keyframe(&mut seq.tracks[0].clips[0].opacity_keyframes, time_secs, value);
-        assert_eq!(seq.tracks[0].clips[0].opacity_keyframes, expected);
+        seq.tracks[0].clips[0].edit_opacity_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, time_secs, value));
+        assert_eq!(seq.tracks[0].clips[0].opacity_keyframes(), expected);
     }
 
     #[test]

@@ -672,9 +672,9 @@ impl DocumentView<'_> {
             EditCommand::SetOFXEffectEnabled { clip_id, effect_index, old_enabled, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(effect) = clip.ofx_effect_mut(*effect_index) {
+                        clip.edit_ofx_effect(*effect_index, |effect| {
                             effect.enabled = *old_enabled;
-                        }
+                        });
                         break;
                     }
                 }
@@ -1353,9 +1353,9 @@ impl DocumentView<'_> {
             EditCommand::SetOFXEffectEnabled { clip_id, effect_index, new_enabled, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(effect) = clip.ofx_effect_mut(*effect_index) {
+                        clip.edit_ofx_effect(*effect_index, |effect| {
                             effect.enabled = *new_enabled;
-                        }
+                        });
                         break;
                     }
                 }
@@ -1633,9 +1633,9 @@ mod effect_writer_tests {
         let mut clip = klipp_timeline::Clip::media(MediaId::new(), Timecode::zero(), Timecode { value: 48, rate: 24 }, Timecode::zero(), Timecode { value: 48, rate: 24 });
         clip.set_effects(vec![blur(2.0), vignette(0.4)]);
         let key = |v: f32| vec![Keyframe { time_secs: 0.0, value: v, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }];
-        clip.effect_keyframes.insert("0:radius".into(), key(3.0));
-        clip.effect_keyframes.insert("1:amount".into(), key(0.7));
-        clip.param_modifiers.insert(ParamId::Effect { effect_index: 1, param_name: "amount".into() }, ModifierStack::default());
+        clip.edit_effect_keyframes(|v| v.insert("0:radius".into(), key(3.0)));
+        clip.edit_effect_keyframes(|v| v.insert("1:amount".into(), key(0.7)));
+        clip.edit_param_modifiers(|v| v.insert(ParamId::Effect { effect_index: 1, param_name: "amount".into() }, ModifierStack::default()));
         let id = clip.id;
         seq.tracks[0].clips.push(clip);
         (vec![seq], id)
@@ -1649,9 +1649,9 @@ mod effect_writer_tests {
     /// keys, the vignette's amount keys and whether it has its modifier.
     fn animation(c: &mut klipp_timeline::Clip) -> (Option<f32>, Option<f32>, bool) {
         let (b, v) = (c.effect_id_at(0).unwrap(), c.effect_id_at(1).unwrap());
-        let radius = c.existing_effect_keyframes_mut(b, "radius").map(|k| k[0].value);
-        let amount = c.existing_effect_keyframes_mut(v, "amount").map(|k| k[0].value);
-        let modifier = c.existing_effect_modifiers_mut(v, "amount").is_some();
+        let radius = c.edit_existing_effect_keyframes(b, "radius", |k| k[0].value);
+        let amount = c.edit_existing_effect_keyframes(v, "amount", |k| k[0].value);
+        let modifier = c.edit_existing_effect_modifiers(v, "amount", |_| ()).is_some();
         (radius, amount, modifier)
     }
 
