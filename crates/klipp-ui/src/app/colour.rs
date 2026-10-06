@@ -483,6 +483,14 @@ impl KlippApp {
         self.with_clip_graph_mut_at(clip_id, &path, needs_refresh, mutate);
     }
 
+    /// The graph a command naming `nodes` on `clip_id` edits; see
+    /// [`graph_path_for`].
+    fn graph_holding(&self, clip_id: klipp_core::ClipId, nodes: &[klipp_nodes::NodeId]) -> Option<Vec<klipp_nodes::NodeId>> {
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let root = seq.tracks.iter().find_map(|t| t.clips.iter().find(|c| c.id == clip_id))?.grade();
+        graph_path_for(root, nodes, &self.state.graph_descent_path)
+    }
+
     /// [`Self::with_current_clip_graph_mut`] at `path` instead of the
     /// editor's descent: an empty path is the clip's top-level graph.
     fn with_clip_graph_mut_at<F>(
@@ -828,7 +836,8 @@ impl KlippApp {
             }
             AppCommand::RemoveNode { clip_id, node_id } => {
                 let node_id = *node_id;
-                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                let Some(path) = self.graph_holding(*clip_id, &[node_id]) else { return true };
+                self.with_clip_graph_mut_at(*clip_id, &path, needs_refresh, |graph| {
                     graph.nodes.retain(|n| n.id != node_id);
                     graph.edges.retain(|e| e.from_node != node_id && e.to_node != node_id);
                     graph.node_positions.remove(&node_id);
@@ -1026,7 +1035,8 @@ impl KlippApp {
             }
             AppCommand::ConnectNodes { clip_id, from, from_port, to, to_port } => {
                 let (from_node, from_port, to_node, to_port) = (*from, *from_port, *to, *to_port);
-                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                let Some(path) = self.graph_holding(*clip_id, &[from_node, to_node]) else { return true };
+                self.with_clip_graph_mut_at(*clip_id, &path, needs_refresh, |graph| {
                     let pre_connect = graph.clone();
                     // Remove existing edge to this input port — one
                     // edge per (node, port) pair.
@@ -1134,7 +1144,8 @@ impl KlippApp {
             }
             AppCommand::ToggleNodeEnabled { clip_id, node_id } => {
                 let node_id = *node_id;
-                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                let Some(path) = self.graph_holding(*clip_id, &[node_id]) else { return true };
+                self.with_clip_graph_mut_at(*clip_id, &path, needs_refresh, |graph| {
                     if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
                         node.enabled = !node.enabled;
                     }
@@ -1268,7 +1279,8 @@ impl KlippApp {
             AppCommand::RenameNode { clip_id, node_id, ref label } => {
                 let node_id = *node_id;
                 let label = label.clone();
-                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                let Some(path) = self.graph_holding(*clip_id, &[node_id]) else { return true };
+                self.with_clip_graph_mut_at(*clip_id, &path, needs_refresh, |graph| {
                     if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
                         node.label = label;
                     }
@@ -3336,5 +3348,57 @@ mod add_node_tests {
         push_node(KlippApp::resolve_graph_at_path_mut(&mut root, &path).unwrap(), NodeKind::Exposure, id, (0.0, 0.0));
         assert!(!ids(&root).contains(&id));
         assert!(ids(inside(&root, compound)).contains(&id));
+    }
+}
+
+/// The graph a command naming `nodes` edits, as a path from the clip's
+/// top-level graph: the one that holds them, found by id however deep in
+/// Compounds, whatever graph the editor shows. The editor only names
+/// nodes it shows, so for its commands that is where it is; a socket's
+/// lands where the node is (#1179). Nodes in no graph at all (an id gone
+/// stale) keep the editor's descent, where they change nothing. Nodes in
+/// different graphs: `None`, no graph holds them all.
+fn graph_path_for(root: &klipp_nodes::NodeGraph, nodes: &[klipp_nodes::NodeId], descent: &[klipp_nodes::NodeId]) -> Option<Vec<klipp_nodes::NodeId>> {
+    let mut paths = nodes.iter().filter_map(|id| root.path_to_node(*id));
+    let Some(first) = paths.next() else { return Some(descent.to_vec()) };
+    paths.all(|p| p == first).then_some(first)
+}
+
+#[cfg(test)]
+mod graph_path_tests {
+    use super::graph_path_for;
+    use klipp_nodes::{Node, NodeGraph, NodeId, NodeKind};
+
+    fn node(kind: NodeKind) -> Node {
+        Node { id: NodeId::new_v4(), kind, label: String::new(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: vec![] }
+    }
+
+    /// A top-level node, a Compound holding two more, and their ids.
+    fn graph() -> (NodeGraph, NodeId, NodeId, NodeId, NodeId) {
+        let (top, a, b) = (node(NodeKind::Exposure), node(NodeKind::Contrast), node(NodeKind::Saturation));
+        let (top_id, a_id, b_id) = (top.id, a.id, b.id);
+        let mut inner = NodeGraph::default();
+        inner.nodes.extend([a, b]);
+        let mut compound = node(NodeKind::Compound);
+        compound.params.compound_subgraph = Some(inner);
+        let compound_id = compound.id;
+        let mut root = NodeGraph::default();
+        root.nodes.extend([top, compound]);
+        (root, top_id, compound_id, a_id, b_id)
+    }
+
+    #[test]
+    fn a_command_edits_the_graph_that_holds_its_nodes_whatever_the_editor_shows() {
+        let (root, top, compound, a, b) = graph();
+        // The editor at the top level, a node inside the Compound named.
+        assert_eq!(graph_path_for(&root, &[a], &[]), Some(vec![compound]));
+        // The editor inside the Compound, a top-level node named.
+        assert_eq!(graph_path_for(&root, &[top], &[compound]), Some(vec![]));
+        // Two nodes in the same graph: that graph.
+        assert_eq!(graph_path_for(&root, &[a, b], &[]), Some(vec![compound]));
+        // Two nodes in different graphs: no graph holds both.
+        assert_eq!(graph_path_for(&root, &[top, a], &[]), None);
+        // A stale id keeps the editor where it is, and changes nothing there.
+        assert_eq!(graph_path_for(&root, &[NodeId::new_v4()], &[compound]), Some(vec![compound]));
     }
 }

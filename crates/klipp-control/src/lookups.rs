@@ -146,6 +146,28 @@ pub(crate) fn existing_node_id(
     ))
 }
 
+/// `Ok` when nodes `a` and `b` of `clip` are in one graph, the top-level
+/// one or the same Compound's: an edge can only join nodes of one graph,
+/// and the app edits the graph that holds them (#1179).
+pub(crate) fn in_one_graph(ctx: &ControlContext, clip: klipp_core::ClipId, a: uuid::Uuid, b: uuid::Uuid) -> Result<(), String> {
+    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+    let graph = seq
+        .tracks
+        .iter()
+        .flat_map(|t| t.clips.iter())
+        .find(|c| c.id == clip)
+        .map(|c| c.own_grade())
+        .ok_or_else(|| format!("no clip with id {} on the timeline", clip.0))?;
+    let where_is = |id| graph.path_to_node(id).map_or_else(|| "nowhere".to_string(), |p| match p.last() {
+        None => "the top-level graph".to_string(),
+        Some(compound) => format!("Compound {compound}'s graph"),
+    });
+    if graph.path_to_node(a) == graph.path_to_node(b) {
+        return Ok(());
+    }
+    Err(format!("an edge joins nodes of one graph: {a} is in {}, {b} in {}", where_is(a), where_is(b)))
+}
+
 /// Whether `id` is anywhere in `graph`, including inside a Compound.
 pub(crate) fn find_node(graph: &klipp_nodes::NodeGraph, id: uuid::Uuid) -> bool {
     graph.nodes.iter().any(|n| {

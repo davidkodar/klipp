@@ -2088,3 +2088,23 @@ fn perf_reports_the_presented_rate_only_while_pictures_change() {
     let fps = h.ok(json!({ "method": "perf" }))["presented_fps"].as_f64().expect("a rate while pictures change");
     assert!(fps.is_finite() && fps > 0.0, "{fps}");
 }
+
+/// An edge joins nodes of one graph: a top-level node and one inside a
+/// Compound are refused, with where each is, and nothing reaches the
+/// app (#1179). Two nodes of one graph, top-level or inside the same
+/// Compound, are sent.
+#[test]
+fn connect_nodes_refuses_nodes_of_different_graphs() {
+    let mut h = harness();
+    let (clip, top, nested) = (h.ids.clip_a.clone(), h.ids.corrector_a.clone(), h.ids.nested_in_a.clone());
+    let reply = h.call(json!({ "method": "connect_nodes", "clip_id": clip, "from": top, "to": nested, "to_port": 0 }));
+    assert_eq!(reply["ok"], json!(false), "{reply}");
+    let error = reply["error"].as_str().unwrap_or_default();
+    assert!(error.contains("one graph") && error.contains("top-level") && error.contains("Compound"), "{error}");
+    assert!(h.cmd_rx.try_recv().is_err(), "a refused edge sends nothing");
+    h.ok(json!({ "method": "connect_nodes", "clip_id": clip, "from": top, "to": top, "to_port": 1 }));
+    assert!(matches!(h.cmd_rx.try_recv(), Ok(klipp_core::AppCommand::ConnectNodes { .. })));
+    // Inside the same Compound: one graph, sent (the app edits that graph).
+    h.ok(json!({ "method": "connect_nodes", "clip_id": clip, "from": nested, "to": nested, "to_port": 1 }));
+    assert!(matches!(h.cmd_rx.try_recv(), Ok(klipp_core::AppCommand::ConnectNodes { .. })));
+}
