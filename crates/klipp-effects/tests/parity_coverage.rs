@@ -108,6 +108,7 @@ const EFFECTS: &[(&str, Cover)] = &[
 ];
 
 const SHADERS: &[(&str, Cover)] = &[
+    ("SHADER_MASK_MIX", Test("klipp-effects/tests/mask_mix.rs", "gpu_mask_mix_matches_the_independent_oracle")),
     ("LAYER_ROWS", Test(LAYER, "rounded_and_grouped_spills_match_cpu_on_gpu")),
     ("LAYER_BOUNDS", Test(LAYER, "rounded_and_grouped_spills_match_cpu_on_gpu")),
     ("LAYER_CAST", Test(LAYER, "rounded_and_grouped_spills_match_cpu_on_gpu")),

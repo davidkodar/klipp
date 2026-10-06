@@ -52,6 +52,7 @@ pub mod gpu_context;
 pub mod gpu_scopes;
 pub mod homography;
 pub mod light;
+pub mod mask_mix;
 pub mod nv12_gpu;
 pub mod p010_gpu;
 pub mod registry;
