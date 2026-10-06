@@ -239,6 +239,39 @@ impl GradeSlot<'_> {
 }
 
 impl Sequence {
+    /// Every grade the sequence keeps: the timeline's, each grade group's
+    /// two stages, each track's grade, and each clip's grade and its saved
+    /// versions.
+    pub fn grades(&self) -> Vec<&NodeGraph> {
+        let mut out: Vec<&NodeGraph> = self.timeline_graph.iter().collect();
+        for g in &self.grade_groups {
+            out.extend(g.pre.iter().chain(g.post.iter()));
+        }
+        for track in &self.tracks {
+            out.extend(track.effects.grade.iter());
+            for clip in &track.clips {
+                out.push(&clip.node_graph);
+                out.extend(clip.grade_versions.iter().map(|v| &v.node_graph));
+            }
+        }
+        out
+    }
+
+    /// Change every grade of [`Sequence::grades`] in `f`, in that order.
+    pub fn edit_each_grade(&mut self, mut f: impl FnMut(&mut NodeGraph)) {
+        self.timeline_graph.iter_mut().for_each(&mut f);
+        for g in &mut self.grade_groups {
+            g.pre.iter_mut().chain(g.post.iter_mut()).for_each(&mut f);
+        }
+        for track in &mut self.tracks {
+            track.effects.grade.iter_mut().for_each(&mut f);
+            for clip in &mut track.clips {
+                f(&mut clip.node_graph);
+                clip.grade_versions.iter_mut().for_each(|v| f(&mut v.node_graph));
+            }
+        }
+    }
+
     /// The timeline grade, if the sequence has one.
     pub fn timeline_grade(&self) -> Option<&NodeGraph> {
         self.timeline_graph.as_ref()

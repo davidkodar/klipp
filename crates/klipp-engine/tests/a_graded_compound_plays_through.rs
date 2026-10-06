@@ -51,7 +51,7 @@ fn furthest_played(graded: bool) -> f64 {
                 n.params.exposure = Some(-1.0);
             }
         });
-        inner.timeline_graph = Some(g);
+        inner.timeline_grade_slot().set(Some(g));
     }
 
     let mut outer = Sequence::new_default();

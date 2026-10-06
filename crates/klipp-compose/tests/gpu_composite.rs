@@ -1,6 +1,7 @@
 //! The GPU stack's frame is the CPU renderer's frame: the same layers,
 //! blends and opacities, encoded to display bytes, within a level.
 
+use klipp_timeline::GradeAccess;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -184,7 +185,7 @@ fn an_adjustment_layer_with_a_grade_and_an_effect_matches() {
     let (mut seq, mut src) = stack();
     let mut adj = Track::new("Adj", TrackKind::Video);
     let mut a = clip(ClipKind::AdjustmentLayer, 0.0, 5.0);
-    a.node_graph = {
+    a.set_grade({
         use klipp_nodes::{graph::{Edge, Node, NodeGraph, NodeId, NodePos}, kinds::NodeKind, params::NodeParams};
         let node = |kind: NodeKind, params: NodeParams| Node {
             id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![],
@@ -197,7 +198,7 @@ fn an_adjustment_layer_with_a_grade_and_an_effect_matches() {
         let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
         let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
         NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions, working_space_override: None, frames: vec![], sticky_notes: vec![] }
-    };
+    });
     a.set_effect_list(vec![klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 }, klipp_effects::BuiltinEffect::Opacity { value: 0.7 }], a.builtin_effects_enabled().to_vec());
     adj.clips = vec![a];
     seq.tracks.insert(1, adj);
@@ -220,7 +221,7 @@ fn a_title_with_an_effect_and_a_faded_layer_match() {
 #[test]
 fn a_timeline_grade_over_the_stack_matches() {
     let (mut seq, mut src) = stack();
-    seq.timeline_graph = Some({
+    seq.timeline_grade_slot().set(Some({
         use klipp_nodes::{graph::{Edge, Node, NodeGraph, NodeId, NodePos}, kinds::NodeKind, params::NodeParams};
         let node = |kind: NodeKind, params: NodeParams| Node {
             id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![],
@@ -233,7 +234,7 @@ fn a_timeline_grade_over_the_stack_matches() {
         let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
         let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
         NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions, working_space_override: None, frames: vec![], sticky_notes: vec![] }
-    });
+    }));
     assert_match("timeline grade", &seq, &mut src);
 }
 
@@ -480,7 +481,7 @@ fn a_graded_clip_with_a_gpu_effect_stays_on_the_stack() {
     seq.resolution = klipp_core::Resolution { width: W, height: H };
     let mut v = Track::new("V1", TrackKind::Video);
     let mut c = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 10.0);
-    c.node_graph = {
+    c.set_grade({
         use klipp_nodes::{graph::{Edge, Node, NodeGraph, NodeId, NodePos}, kinds::NodeKind, params::NodeParams};
         let node = |kind: NodeKind, params: NodeParams| Node {
             id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![],
@@ -493,7 +494,7 @@ fn a_graded_clip_with_a_gpu_effect_stays_on_the_stack() {
         let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
         let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
         NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions, working_space_override: None, frames: vec![], sticky_notes: vec![] }
-    };
+    });
     c.set_effect_list(vec![klipp_effects::BuiltinEffect::Transform {
         position_x: 12.0,
         position_y: -8.0,

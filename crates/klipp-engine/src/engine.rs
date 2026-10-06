@@ -1,4 +1,5 @@
 use crate::audio_decoder::AudioDecoder;
+use klipp_timeline::GradeAccess;
 use crate::audio_output::AudioOutput;
 use crate::audio_source::AudioSource;
 use crate::mix_thread::MixThread;
@@ -1041,8 +1042,7 @@ pub fn apply_param_changes(
         if change.clip_id == timeline_id {
             // The first drag after the toggle can arrive before any command
             // has settled a graph into the engine's copy: it starts one.
-            let graph = seq.timeline_graph.get_or_insert_with(Default::default);
-            if apply_override_recursive(graph, change.node_id, &change.param, change.value) {
+            if seq.timeline_grade_slot().edit_or_insert(|graph| apply_override_recursive(graph, change.node_id, &change.param, change.value)) {
                 applied += 1;
             }
             continue;
@@ -1051,11 +1051,11 @@ pub fn apply_param_changes(
         // engine's copy runs each member with its group's grade baked in,
         // node ids kept, so the node is found in every member's graph.
         if let Some((group, stage)) = seq.grade_group_stage_of(change.clip_id) {
-            if let Some(graph) = seq.grade_groups.iter_mut().find(|g| g.id == group).and_then(|g| g.stage_mut(stage).as_mut()) {
-                apply_override_recursive(graph, change.node_id, &change.param, change.value);
+            if let Some(g) = seq.grade_groups.iter_mut().find(|g| g.id == group) {
+                g.stage_slot(stage).edit(|graph| apply_override_recursive(graph, change.node_id, &change.param, change.value));
             }
             for clip in seq.all_clips_mut().filter(|c| c.grade_group == Some(group)) {
-                if apply_override_recursive(&mut clip.node_graph, change.node_id, &change.param, change.value) {
+                if clip.edit_grade(|graph| apply_override_recursive(graph, change.node_id, &change.param, change.value)) {
                     applied += 1;
                 }
             }
@@ -1067,12 +1067,7 @@ pub fn apply_param_changes(
             if let Some(own) = clip.own_node_graph.as_deref_mut() {
                 apply_override_recursive(own, change.node_id, &change.param, change.value);
             }
-            if apply_override_recursive(
-                &mut clip.node_graph,
-                change.node_id,
-                &change.param,
-                change.value,
-            ) {
+            if clip.edit_grade(|graph| apply_override_recursive(graph, change.node_id, &change.param, change.value)) {
                 applied += 1;
             }
         }
@@ -7476,7 +7471,7 @@ impl PlaybackEngine {
             let found = seq.tracks.iter().find_map(|track| {
                 track.clips.iter().find(|c| c.id == clip_id).map(|c| {
                     let clip_t = c.source_secs_at((playhead - c.timeline_in).to_secs_f64(), self.fps.as_f64());
-                    (c.node_graph.clone(), c.track_points.clone(), clip_t.max(0.0))
+                    (c.grade().clone(), c.track_points.clone(), clip_t.max(0.0))
                 })
             });
             match found {
@@ -8090,7 +8085,7 @@ impl PlaybackEngine {
         let graph = match cached {
             Some(arc) => arc,
             None => {
-                let arc = Arc::new(clip.node_graph.clone());
+                let arc = Arc::new(clip.grade().clone());
                 self.current_graph_arc = Some(Arc::clone(&arc));
                 self.current_grade_clip_id = Some(clip.id);
                 arc
@@ -8570,7 +8565,7 @@ impl PlaybackEngine {
                 drop(seq);
                 return answer(self, Err(klipp_core::NodeSampleRefusal::Placed));
             }
-            clip.node_graph.input_of(node_id, 0)
+            clip.grade().input_of(node_id, 0)
         };
         let Some(tap) = tap else {
             return answer(self, why("the node has no input to read"));
@@ -12051,7 +12046,7 @@ mod param_change_queue_tests {
     //! queue lets us batch per-frame with a single write-lock acquisition.
     use super::{apply_param_changes, ArrayQueue, PARAM_CHANGE_QUEUE_CAPACITY};
     use klipp_core::{MediaId, ParamChange, RationalTime};
-    use klipp_timeline::Sequence;
+    use klipp_timeline::{GradeAccess, Sequence};
     use std::sync::Arc;
 
     /// Build a Sequence with a single clip and an Exposure node added
@@ -12068,7 +12063,7 @@ mod param_change_queue_tests {
         let exposure_id = klipp_nodes::NodeId::new_v4();
         for t in &mut seq.tracks {
             if let Some(c) = t.find_clip_mut(clip_id) {
-                c.node_graph.nodes.push(klipp_nodes::Node {
+                c.edit_grade(|g| g.nodes.push(klipp_nodes::Node {
                     id: exposure_id,
                     kind: klipp_nodes::NodeKind::Exposure,
                     label: "Exposure".into(),
@@ -12077,7 +12072,7 @@ mod param_change_queue_tests {
                     keyframes: klipp_nodes::NodeKeyframeTracks::default(),
                     output_link: None,
                     input_links: vec![],
-                });
+                }));
                 break;
             }
         }
@@ -12099,7 +12094,7 @@ mod param_change_queue_tests {
         }
         let mut grade_hash = 0xdead_beef_dead_beefu64;
         let mut graph_arc: Option<Arc<klipp_nodes::NodeGraph>> = Some(Arc::new(
-            seq.read().unwrap().all_clips().next().unwrap().node_graph.clone()
+            seq.read().unwrap().all_clips().next().unwrap().grade().clone()
         ));
 
         let applied = apply_param_changes(&seq, &queue, &mut grade_hash, &mut graph_arc);
@@ -12113,7 +12108,7 @@ mod param_change_queue_tests {
         // Final value wins.
         let seq_r = seq.read().unwrap();
         let clip = seq_r.all_clips().find(|c| c.id == clip_id).unwrap();
-        let node = clip.node_graph.nodes.iter().find(|n| n.id == node_id).unwrap();
+        let node = clip.grade().nodes.iter().find(|n| n.id == node_id).unwrap();
         let exposure = node.params.exposure.expect("exposure set");
         assert!((exposure - 0.75).abs() < 1e-5, "last-write-wins: got {}", exposure);
     }

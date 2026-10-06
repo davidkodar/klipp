@@ -12,6 +12,7 @@
 //! scaled grade has to be clearly closer to the shrunk full render than
 //! that, and close in its own right.
 
+use klipp_timeline::GradeAccess;
 use std::sync::Arc;
 
 use klipp_compose::{FrameSource, RenderOptions, Renderer, SourceFrame, SourcePixels};
@@ -79,7 +80,7 @@ fn graph(kind: NodeKind, params: NodeParams) -> NodeGraph {
 /// rendered `w` by `h`.
 fn render(graph: &NodeGraph, seq: (u32, u32), w: u32, h: u32, gpu: bool) -> Vec<f32> {
     let mut clip = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
-    clip.node_graph = graph.clone();
+    clip.set_grade(graph.clone());
     let mut s = Sequence::new_default();
     s.resolution = Resolution { width: seq.0, height: seq.1 };
     let mut track = Track::new("V", TrackKind::Video);

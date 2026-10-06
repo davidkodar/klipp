@@ -17,6 +17,7 @@
 //! *does* refuse — and for the one it accepts, assert the planes carry
 //! the same picture the ordinary render does.
 
+use klipp_timeline::GradeAccess;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -110,7 +111,7 @@ fn graded(from: f64, to: f64, stops: f32) -> Clip {
         .collect();
     let node_positions =
         nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
-    c.node_graph = NodeGraph {
+    c.set_grade(NodeGraph {
         output_node_id: nodes[2].id,
         nodes,
         edges,
@@ -118,7 +119,7 @@ fn graded(from: f64, to: f64, stops: f32) -> Clip {
         working_space_override: None,
         frames: vec![],
         sticky_notes: vec![],
-    };
+    });
     c
 }
 
@@ -363,7 +364,7 @@ fn a_plain_single_clip_agrees_with_the_renderer() {
 #[test]
 fn an_ungraded_clip_agrees_with_the_renderer() {
     let c = media(0.0, 1.0);
-    assert!(c.node_graph.is_identity(), "the fixture must be ungraded");
+    assert!(c.grade().is_identity(), "the fixture must be ungraded");
     let seq = sequence(vec![vec![c.clone()]]);
     let mut src = Flat::default().with(&c, [46, 128, 230]).on_gpu();
 
@@ -618,7 +619,7 @@ fn a_global_lut_over_a_composite_agrees_with_the_renderer() {
 fn a_timeline_grade_over_a_single_clip_agrees_with_the_renderer() {
     let a = graded(0.0, 1.0, 0.3);
     let mut seq = sequence(vec![vec![a.clone()]]);
-    seq.timeline_graph = Some(graded(0.0, 1.0, -1.0).node_graph);
+    seq.timeline_grade_slot().set(Some(graded(0.0, 1.0, -1.0).grade().clone()));
     let mut src = Flat::default().with(&a, [190, 110, 70]).on_gpu();
     let Some(got) = gpu_planes(&seq, 0.5, &mut src) else {
         eprintln!("skipping: the GPU path declined (no usable GPU?)");
@@ -627,7 +628,7 @@ fn a_timeline_grade_over_a_single_clip_agrees_with_the_renderer() {
     let want = cpu_luma(&seq, 0.5, &mut src);
     let worst = got[..want.len()].iter().zip(want.iter()).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
     assert!(worst <= 1, "the timeline-graded frame differs from the renderer by {worst} levels");
-    seq.timeline_graph = None;
+    seq.timeline_grade_slot().set(None);
     let ungraded = gpu_planes(&seq, 0.5, &mut src).expect("the same clip without a timeline grade");
     let d = got.iter().zip(ungraded.iter()).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
     assert!(d > 20, "only {d}: the timeline grade is not reaching the export");

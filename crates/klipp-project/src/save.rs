@@ -1,7 +1,7 @@
 use crate::format::*;
 use crate::path_util::{atomic_write, to_project_relative};
 use klipp_media::{MediaItem, MediaPool};
-use klipp_timeline::{ClipKind, Look, Sequence, TrackKind};
+use klipp_timeline::{ClipKind, GradeAccess, Look, Sequence, TrackKind};
 use std::path::Path;
 use tracing::{info, warn};
 
@@ -275,7 +275,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
         brief: seq.brief.clone(),
         edit_plan: seq.edit_plan.clone(),
         camera: seq.camera.clone(),
-        timeline_graph: seq.timeline_graph.clone(),
+        timeline_graph: seq.timeline_grade().cloned(),
         grade_groups: seq.grade_groups.clone(),
         drop_frame: Some(seq.drop_frame),
         last_playhead: seq.last_playhead.map(|rt| TimecodeJson { value: rt.value, rate: rt.rate }),
@@ -325,7 +325,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                 effects: (!t.effects.is_empty()).then(|| crate::format::TrackEffectsJson {
                     video: if t.effects.video.is_empty() { None } else { serde_json::to_value(&t.effects.video).ok() },
                     video_enabled: t.effects.video_enabled.clone(),
-                    grade: t.effects.grade.clone().filter(|g| !g.is_identity()),
+                    grade: t.effects.track_grade().filter(|g| !g.is_identity()).cloned(),
                     audio: t.effects.audio.clone(),
                 }),
                 transitions: t.transitions.iter().map(|tr| {
@@ -349,7 +349,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         source_in: c.source_in.value,
                         source_out: c.source_out.value,
                         rate: c.timeline_in.rate,
-                        node_graph: Some(c.node_graph.clone()),
+                        node_graph: Some(c.grade().clone()),
                         color_grade: None,
                         effects: c.effects.iter().map(effect_to_json).collect(),
                         builtin_effects: if c.builtin_effects().is_empty() {
@@ -440,7 +440,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         }),
                         grade_versions: c.grade_versions.iter().map(|gv| GradeVersionJson {
                             name: gv.name.clone(),
-                            node_graph: gv.node_graph.clone(),
+                            node_graph: gv.grade().clone(),
                         }).collect(),
                         active_grade_version: c.active_grade_version,
                         track_points: c.track_points.clone(),

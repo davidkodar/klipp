@@ -5,6 +5,7 @@
 //! `consolidate_project`, and verifies the destination contents plus the
 //! re-loadability of the consolidated project.
 
+use klipp_timeline::GradeAccess;
 use std::path::PathBuf;
 
 use klipp_core::{Fps, MediaId, RationalTime};
@@ -562,7 +563,7 @@ fn collect_brings_the_files_grades_read_and_the_looks() {
 
     let mut seq = Sequence::new_default();
     let mut clip = klipp_timeline::Clip::gap(RationalTime::from_frames(0, 24), RationalTime::from_frames(24, 24));
-    clip.node_graph = clip_graph;
+    clip.set_grade(clip_graph);
     seq.tracks[0].clips.push(clip);
     save_project_with_color(&source_dir, std::slice::from_ref(&seq), &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
 
@@ -573,8 +574,8 @@ fn collect_brings_the_files_grades_read_and_the_looks() {
     let looks = klipp_project::load_looks(&dest);
     assert_eq!(looks.len(), 1, "the Looks are in the collected project");
     let (seqs, ..) = load_project(&dest).unwrap();
-    let clip_files = read(&seqs[0].tracks[0].clips[0].node_graph);
-    let look_files = read(&looks[0].node_graph);
+    let clip_files = read(seqs[0].tracks[0].clips[0].grade());
+    let look_files = read(looks[0].grade());
     assert_eq!((clip_files.len(), look_files.len()), (2, 1));
     for f in clip_files.iter().chain(&look_files) {
         assert!(f.starts_with(&dest), "{} is read from the collected folder", f.display());
@@ -609,7 +610,7 @@ fn collect_walks_compound_graphs_and_brings_the_stills() {
 
     let mut seq = Sequence::new_default();
     let mut clip = klipp_timeline::Clip::gap(RationalTime::from_frames(0, 24), RationalTime::from_frames(24, 24));
-    clip.node_graph = clip_graph;
+    clip.set_grade(clip_graph);
     seq.tracks[0].clips.push(clip);
     save_project_with_color(&source_dir, std::slice::from_ref(&seq), &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
     let still = klipp_project::GradeStillData { name: "Hero".into(), filename: "hero.png".into(), rgba: vec![255; 2 * 2 * 4], width: 2, height: 2, source: None, grade: Some(still_grade) };
@@ -619,7 +620,7 @@ fn collect_walks_compound_graphs_and_brings_the_stills() {
     consolidate_project(&source_dir, &MediaPool::new(), std::slice::from_ref(&seq), &ColorSettings::default(), options, None).unwrap();
 
     let (seqs, ..) = load_project(&dest).unwrap();
-    let compound = &seqs[0].tracks[0].clips[0].node_graph.nodes.iter().find(|n| n.kind == NodeKind::Compound).unwrap().params;
+    let compound = &seqs[0].tracks[0].clips[0].grade().nodes.iter().find(|n| n.kind == NodeKind::Compound).unwrap().params;
     let inner_read = compound.compound_subgraph.as_ref().unwrap().nodes.iter().find_map(|n| n.params.lut_path.clone()).unwrap();
     let stills = klipp_project::load_grade_stills(&dest);
     assert_eq!(stills.len(), 1, "the still came along");

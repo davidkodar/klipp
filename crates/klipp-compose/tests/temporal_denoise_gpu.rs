@@ -5,6 +5,7 @@
 //! single-clip path both did. They hand such a clip to the CPU now, and
 //! these hold them to the CPU's picture.
 
+use klipp_timeline::GradeAccess;
 use std::sync::Arc;
 
 use klipp_compose::{FrameSource, LinearFrameProviderFn, RenderOptions, Renderer, SourceFrame, SourcePixels};
@@ -69,7 +70,7 @@ fn clip(denoise: bool) -> Clip {
     ];
     let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
     let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
-    c.node_graph = NodeGraph {
+    c.set_grade(NodeGraph {
         output_node_id: nodes[2].id,
         nodes,
         edges,
@@ -77,7 +78,7 @@ fn clip(denoise: bool) -> Clip {
         working_space_override: None,
         frames: vec![],
         sticky_notes: vec![],
-    };
+    });
     if denoise {
         c.set_effect_list(vec![BuiltinEffect::TemporalDenoise { strength: 1.0, threshold: 0.2 }], c.builtin_effects_enabled().to_vec());
     }

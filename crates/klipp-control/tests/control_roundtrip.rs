@@ -6,6 +6,7 @@
 //! independently: reads must reflect the shared state, and writes must
 //! actually reach the `AppCommand` channel.
 
+use klipp_timeline::GradeAccess;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex, RwLock};
@@ -261,7 +262,7 @@ fn sequence_with_two_clips() -> (klipp_timeline::Sequence, Ids) {
             klipp_core::RationalTime::from_secs_f64(0.0, 24),
             klipp_core::RationalTime::from_secs_f64(4.0, 24),
         );
-        c.node_graph = graph;
+        c.set_grade(graph);
         (c, corrector.to_string(), nested.to_string())
     };
 

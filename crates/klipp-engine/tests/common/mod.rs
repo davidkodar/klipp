@@ -3,6 +3,7 @@
 
 #![allow(dead_code)]
 
+use klipp_timeline::GradeAccess;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -139,8 +140,8 @@ impl Parked {
         let mut clip = Clip { kind: ClipKind::Media { media_id: id }, ..Clip::gap(tc(0), tc(50)) };
         clip.source_in = tc(0);
         clip.source_out = tc(50);
-        clip.node_graph = exposure_graph(if graded { 0.5 } else { 0.0 });
-        let (clip_id, source_node, exposure_node) = (clip.id, clip.node_graph.nodes[0].id, clip.node_graph.nodes[1].id);
+        clip.set_grade(exposure_graph(if graded { 0.5 } else { 0.0 }));
+        let (clip_id, source_node, exposure_node) = (clip.id, clip.grade().nodes[0].id, clip.grade().nodes[1].id);
         let mut seq = Sequence::new_default();
         seq.fps = fps;
         seq.resolution = Resolution { width, height };

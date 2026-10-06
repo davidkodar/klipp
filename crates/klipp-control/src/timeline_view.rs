@@ -84,7 +84,7 @@ pub(crate) fn timeline_text(
                 let d = format!("{e:?}");
                 d.split(['{', '(', ' ']).next().unwrap_or("").to_string()
             }).collect();
-            if fx.grade.as_ref().is_some_and(|g| !g.is_identity()) {
+            if fx.track_grade().is_some_and(|g| !g.is_identity()) {
                 said.push("grade".into());
             }
             said.extend(fx.audio.iter().map(|e| if e.enabled { e.effect_type.clone() } else { format!("{} (bypassed)", e.effect_type) }));

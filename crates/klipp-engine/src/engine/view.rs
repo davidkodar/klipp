@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use klipp_compose::{FrameSource, Inspect, Inspection, RenderOptions, RenderStats, SourceFrame};
 use klipp_core::{AppEvent, ClipId};
 use klipp_media::MediaPool;
-use klipp_timeline::{Clip, Sequence};
+use klipp_timeline::{Clip, GradeAccess, Sequence};
 
 use super::streams::{ClipStreams, HeldFrame, Want};
 use super::{PlaybackEngine, PlaybackState};
@@ -323,7 +323,7 @@ impl PlaybackEngine {
         let clip = self.inspect_clip.filter(|id| find(*id).is_some()).or(primary);
         let matte_view = if self.matte_preview {
             self.matte_preview_node.or_else(|| {
-                let graph = &find(clip?)?.node_graph;
+                let graph = find(clip?)?.grade();
                 graph
                     .nodes
                     .iter()

@@ -26,6 +26,7 @@
 //! scene is graded by opening it. The phase-2a drain redesign has to keep
 //! these answers, or change them on purpose.
 
+use klipp_timeline::GradeAccess;
 use std::sync::Arc;
 
 use crossbeam_queue::ArrayQueue;
@@ -49,7 +50,7 @@ fn graded(stops: f32) -> (NodeGraph, NodeId) {
 
 fn media(from: f64, to: f64, grade: NodeGraph) -> Clip {
     let mut c = Clip::media(MediaId::new(), t(from), t(to), t(0.0), t(to - from));
-    c.node_graph = grade;
+    c.set_grade(grade);
     c
 }
 
@@ -83,7 +84,7 @@ fn project() -> Project {
     let mut scene = media(0.0, 4.0, scene_grade);
     let mut b_group = GradeGroup::new("Scene");
     let (pre, pre_node) = graded(0.2);
-    b_group.pre = Some(pre);
+    b_group.stage_slot(klipp_timeline::GradeStage::Pre).set(Some(pre));
     scene.grade_group = Some(b_group.id);
     let scene_clip = scene.id;
     let b_pre_id = b_group.stage_clip_id(GradeStage::Pre);
@@ -96,13 +97,13 @@ fn project() -> Project {
     let mut own = media(0.0, 4.0, own_grade);
     let mut a_group = GradeGroup::new("Shot");
     let (post, post_node) = graded(0.4);
-    a_group.post = Some(post);
+    a_group.stage_slot(klipp_timeline::GradeStage::Post).set(Some(post));
     own.grade_group = Some(a_group.id);
     let own_clip = own.id;
     let a_post_id = a_group.stage_clip_id(GradeStage::Post);
     a.grade_groups = vec![a_group];
     let (timeline_graph, timeline_node) = graded(0.5);
-    a.timeline_graph = Some(timeline_graph);
+    a.timeline_grade_slot().set(Some(timeline_graph));
     let timeline_id = a.timeline_grade_clip_id();
     let mut v1 = Track::new("V1", TrackKind::Video);
     v1.clips = vec![own];
@@ -135,18 +136,18 @@ fn occurrences(copy: &Sequence, node: NodeId) -> Vec<(&'static str, f32)> {
     let mut out = Vec::new();
     let exposure = |g: &NodeGraph| g.nodes.iter().find(|n| n.id == node).map(|n| n.params.exposure.unwrap_or(0.0));
     for c in copy.tracks.iter().filter(|t| t.kind != TrackKind::Audio).flat_map(|t| t.clips.iter()) {
-        if let Some(v) = exposure(&c.node_graph) {
+        if let Some(v) = exposure(c.grade()) {
             out.push(("top", v));
         }
         if let Some(scene) = &c.precomp {
             for inner in scene.all_clips() {
-                if let Some(v) = exposure(&inner.node_graph) {
+                if let Some(v) = exposure(inner.grade()) {
                     out.push(("precomp", v));
                 }
             }
         }
     }
-    if let Some(v) = copy.timeline_graph.as_ref().and_then(exposure) {
+    if let Some(v) = copy.timeline_grade().and_then(exposure) {
         out.push(("timeline", v));
     }
     out

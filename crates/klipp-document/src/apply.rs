@@ -9,7 +9,7 @@
 use crate::history::EditCommand;
 use klipp_core::{ClipId, Fps, MediaId};
 use klipp_media::MediaPool;
-use klipp_timeline::Sequence;
+use klipp_timeline::{GradeAccess, Sequence};
 
 /// The document as a command runs against it: the sequences, which one
 /// is active, the media pool, and the project frame rate (which an
@@ -51,12 +51,12 @@ impl Effects {
 fn set_node_graph(seq: &mut klipp_timeline::Sequence, clip_id: ClipId, graph: &klipp_nodes::NodeGraph) {
     for track in &mut seq.tracks {
         if let Some(clip) = track.find_clip_mut(clip_id) {
-            clip.node_graph = graph.clone();
+            clip.set_grade(graph.clone());
             return;
         }
     }
     if clip_id == seq.timeline_grade_clip_id() {
-        seq.timeline_graph = Some(graph.clone());
+        seq.timeline_grade_slot().set(Some(graph.clone()));
         return;
     }
     // A grade group's pre-clip or post-clip grade, under its stage's
@@ -1491,7 +1491,7 @@ mod timeline_grade_tests {
         let mut fps = sequences[0].fps;
         let mut view = DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
         view.apply_forward(&edit);
-        let len = |s: &Sequence| s.timeline_graph.as_ref().map(|g| g.nodes.len());
+        let len = |s: &Sequence| s.timeline_grade().map(|g| g.nodes.len());
         assert_eq!(len(&view.sequences[0]), Some(new_graph.nodes.len()));
         view.apply_inverse(&edit);
         assert_eq!(len(&view.sequences[0]), Some(klipp_nodes::NodeGraph::default().nodes.len()));
@@ -1551,12 +1551,12 @@ mod grade_group_tests {
             view.apply_forward(e);
         }
         let seq = &view.sequences[0];
-        assert_eq!(seq.grade_groups[0].post.as_ref(), Some(&look), "the post-clip grade landed on the group");
+        assert_eq!(seq.grade_groups[0].stage(klipp_timeline::GradeStage::Post), Some(&look), "the post-clip grade landed on the group");
         assert_eq!(seq.all_clips().find(|c| c.id == clip_id).unwrap().grade_group, Some(gid));
         assert_eq!(seq.grade_group_stage_of(post_id), Some((gid, GradeStage::Post)));
 
         view.apply_inverse(&grade);
-        assert_eq!(view.sequences[0].grade_groups[0].post.as_ref(), Some(&empty));
+        assert_eq!(view.sequences[0].grade_groups[0].stage(klipp_timeline::GradeStage::Post), Some(&empty));
         view.apply_inverse(&join);
         assert_eq!(view.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap().grade_group, None);
         view.apply_inverse(&make);

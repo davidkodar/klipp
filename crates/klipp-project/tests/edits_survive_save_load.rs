@@ -175,14 +175,14 @@ fn a_timeline_grade_comes_back() {
     if let Some(n) = graph.nodes.iter_mut().find(|n| n.id == corrector) {
         n.label = "Show look".into();
     }
-    seq.timeline_graph = Some(graph.clone());
+    seq.timeline_grade_slot().set(Some(graph.clone()));
     let back = round_trip("timeline-grade", seq);
-    let got = back.timeline_graph.expect("the timeline grade");
+    let got = back.timeline_grade().cloned().expect("the timeline grade");
     let ids = |g: &klipp_nodes::NodeGraph| g.nodes.iter().map(|n| (n.id, n.label.clone())).collect::<Vec<_>>();
     assert_eq!(ids(&got), ids(&graph));
 
     let none = round_trip("no-timeline-grade", Sequence::new_default());
-    assert!(none.timeline_graph.is_none(), "a sequence with none reads back with none");
+    assert!(none.timeline_grade().is_none(), "a sequence with none reads back with none");
 }
 
 /// #237: a grade group, its two grades and its members come back.
@@ -192,8 +192,8 @@ fn a_grade_group_comes_back() {
     let mut group = klipp_timeline::GradeGroup::new("Day exterior");
     let mut post = klipp_nodes::NodeGraph::default();
     post.ensure_lut3d();
-    group.post = Some(post);
-    group.pre = Some(klipp_nodes::NodeGraph::default());
+    group.stage_slot(klipp_timeline::GradeStage::Post).set(Some(post));
+    group.stage_slot(klipp_timeline::GradeStage::Pre).set(Some(klipp_nodes::NodeGraph::default()));
     let mut member = media_clip(0, 48);
     member.grade_group = Some(group.id);
     let outsider = media_clip(48, 96);
