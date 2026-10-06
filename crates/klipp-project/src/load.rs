@@ -239,6 +239,20 @@ fn refuse_newer_format(value: &serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Refuse a project from before revision 2 (#1089): this Klipp reads only
+/// the node-graph format, and `klipp-convert run` converts every project
+/// once, with a backup.
+fn refuse_unconverted(value: &serde_json::Value) -> Result<(), String> {
+    let revision = value.get("format_revision").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    if revision < u64::from(crate::FORMAT_REVISION) {
+        return Err(format!(
+            "This project is from before project format {} (it is format {revision}). Convert it with `klipp-convert run`, which converts every project once and keeps a backup.",
+            crate::FORMAT_REVISION
+        ));
+    }
+    Ok(())
+}
+
 /// Refuse a project holding grade nodes or settings this Klipp would lose
 /// by reading it (#993): a node kind it does not know, or a setting it
 /// would drop. Found on the saved JSON, wherever a graph is stored.
@@ -255,6 +269,17 @@ fn refuse_graph_losses(value: &serde_json::Value) -> Result<(), String> {
 }
 
 pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
+    load_project_as(dir, crate::FileForm::Revision2)
+}
+
+/// Today's v1 reader, for the converter's proofs only (#1089): a v1 file,
+/// read exactly as before revision 2.
+#[cfg(feature = "v1-oracle")]
+pub fn load_project_v1(dir: &Path) -> Result<LoadResult, String> {
+    load_project_as(dir, crate::FileForm::V1)
+}
+
+fn load_project_as(dir: &Path, form: crate::FileForm) -> Result<LoadResult, String> {
     // The pair a save left whole, from its recovery copy if it stopped (#840).
     let (project_str, manifest_str, interrupted) = pair_to_open(dir)?;
 
@@ -276,6 +301,23 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     // says why, rather than failing somewhere inside with a parse error
     // or, worse, reading with something missing (#994).
     refuse_newer_format(&value)?;
+
+    // Revision 2 only (#1089): a file from before it is refused, naming the
+    // tool that converts it, and a converted one is read back into today's
+    // model through `unlift`.
+    let value = match form {
+        crate::FileForm::Revision2 => {
+            refuse_unconverted(&value)?;
+            klipp_graph_lift::unlift::project(&value).map_err(|e| format!("This project's revision-2 file can't be read: {e}"))?
+        }
+        #[cfg(feature = "v1-oracle")]
+        crate::FileForm::V1 => {
+            if value.get("format_revision").and_then(serde_json::Value::as_u64).unwrap_or(0) > 0 {
+                return Err("the v1 reader reads only a file from before revision 2".into());
+            }
+            value
+        }
+    };
 
     // A grade node or setting this Klipp does not know is refused by name,
     // as an unknown effect is (#993), before anything is read: read, it

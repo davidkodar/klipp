@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 klipp-core = { workspace = true }
+klipp-graph-lift = { workspace = true }
 klipp-effects = { workspace = true }
 klipp-nodes = { workspace = true }
 klipp-timeline = { workspace = true }
@@ -23,3 +24,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 
 [lints]
 workspace = true
+
+[features]
+# Today's v1 reader and writer, for the converter's proofs only (#1089): the
+# app reads and writes revision 2, and never builds with this.
+v1-oracle = []

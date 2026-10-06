@@ -37,12 +37,40 @@ fn id_of(m: &Map<String, Value>) -> Result<Uuid, Refusal> {
     m.get("id").and_then(Value::as_str).and_then(|s| Uuid::parse_str(s).ok()).ok_or_else(|| "a store without an id".into())
 }
 
+/// Every converted clip's `builtin_effects` and every converted track's
+/// `effects.video` must be the sentinel alone.
+fn refuse_without_sentinel(p: &Value) -> Result<(), Refusal> {
+    let sentinel = serde_json::json!([{ "type": old_fields::SENTINEL_TYPE }]);
+    let seqs: Vec<&Value> = match p.get("sequences") {
+        Some(Value::Array(s)) => s.iter().collect(),
+        _ => p.get("sequence").into_iter().collect(),
+    };
+    for seq in seqs {
+        for track in seq.get("tracks").and_then(Value::as_array).into_iter().flatten() {
+            let fx = track.get("effects");
+            if fx.and_then(|e| e.get(V2_FIELD)).is_some() && fx.and_then(|e| e.get("video")) != Some(&sentinel) {
+                return Err(format!("track {}: a converted track whose old effect list isn't the sentinel, a damaged file", track.get("id").and_then(Value::as_str).unwrap_or("?")));
+            }
+            for clip in track.get("clips").and_then(Value::as_array).into_iter().flatten() {
+                if clip.get(V2_FIELD).is_some() && clip.get("builtin_effects") != Some(&sentinel) {
+                    return Err(format!("clip {}: a converted clip whose old effect list isn't the sentinel, a damaged file", clip.get("id").and_then(Value::as_str).unwrap_or("?")));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A revision-2 project as the v1 project today's reader loads: every
 /// stored picture back in the fields it came from, the sentinels and the
 /// revision gone.
 pub fn project(v2: &Value) -> Result<Value, Refusal> {
     let mut p = v2.clone();
     p.as_object_mut().ok_or("not a project")?.remove("format_revision");
+    // A converted clip or track carries exactly the sentinel in its old
+    // effect list: anything else there is a damaged or foreign file, refused
+    // rather than half trusted.
+    refuse_without_sentinel(&p)?;
     // The sentinels checked and gone: one without a picture refuses.
     old_fields::strip_sentinels(&mut p).map_err(|e| format!("{e:?}"))?;
     for seq in old_fields::sequences_mut(&mut p).map_err(|e| format!("{e:?}"))? {

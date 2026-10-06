@@ -60,10 +60,26 @@ pub use grade_stills::{adopt_still, adopt_temp_stills, delete_grade_still_file, 
 /// `format_revision` a save writes, and the highest a load accepts. It
 /// goes up only when a change to the file would be *misread* by a build
 /// that knows the previous revision (data moved or removed, not merely
-/// added), and that change's PR raises it and says why. 0 is every file
-/// written so far.
-pub const FORMAT_REVISION: u32 = 0;
+/// added), and that change's PR raises it and says why. 2 is the node-graph
+/// format (#997, #1089): the pictures in `graph_v2`, read back into this
+/// model through `klipp_graph_lift::unlift` and written through
+/// `revision2`. A file from before it is refused, naming the tool that
+/// converts it.
+pub const FORMAT_REVISION: u32 = 2;
+
+/// Which form of the project file a load reads or a save writes: revision 2,
+/// the app's, or today's v1 form, kept only for the converter's proofs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FileForm {
+    Revision2,
+    #[cfg(feature = "v1-oracle")]
+    V1,
+}
 
 pub use load::{load_looks, load_project, migrate_graph};
+#[cfg(feature = "v1-oracle")]
+pub use load::load_project_v1;
+#[cfg(feature = "v1-oracle")]
+pub use save::save_project_v1;
 pub use made_media::{adopt_made_media, MediaAdoption};
 pub use save::{iso8601_now, save_looks, save_project, save_project_full, save_project_with_color, save_project_with_color_and_backups, ColorSettings};

@@ -105,6 +105,38 @@ pub fn save_project_full(
     timeline_track_scale: Option<f32>,
     title_assets: &std::collections::HashMap<klipp_core::MediaId, klipp_timeline::TitleAsset>,
 ) -> Result<(), String> {
+    save_project_full_as(
+        dir, sequences, media_pool, color, active_sequence_id, created_at, notes, backup_count,
+        timeline_zoom, timeline_scroll_x, timeline_track_scale, title_assets, crate::FileForm::Revision2,
+    )
+}
+
+/// Today's v1 writer, for the converter's proofs only (#1089): the project
+/// as it was written before revision 2.
+#[cfg(feature = "v1-oracle")]
+pub fn save_project_v1(dir: &Path, sequences: &[Sequence], media_pool: &MediaPool) -> Result<(), String> {
+    save_project_full_as(
+        dir, sequences, media_pool, &ColorSettings::default(), None, None, "", 5,
+        None, None, None, &std::collections::HashMap::new(), crate::FileForm::V1,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn save_project_full_as(
+    dir: &Path,
+    sequences: &[Sequence],
+    media_pool: &MediaPool,
+    color: &ColorSettings,
+    active_sequence_id: Option<&str>,
+    created_at: Option<&str>,
+    notes: &str,
+    backup_count: u32,
+    timeline_zoom: Option<f32>,
+    timeline_scroll_x: Option<f32>,
+    timeline_track_scale: Option<f32>,
+    title_assets: &std::collections::HashMap<klipp_core::MediaId, klipp_timeline::TitleAsset>,
+    form: crate::FileForm,
+) -> Result<(), String> {
     // Create directory structure
     std::fs::create_dir_all(dir.join("media"))
         .map_err(|e| format!("Failed to create project directory: {e}"))?;
@@ -146,8 +178,15 @@ pub fn save_project_full(
         title_assets: title_assets_json,
     };
 
-    let project_json = serde_json::to_string_pretty(&project)
-        .map_err(|e| format!("Failed to serialize project: {e}"))?;
+    let project_json = match form {
+        crate::FileForm::Revision2 => revision2_text(&project)?,
+        #[cfg(feature = "v1-oracle")]
+        crate::FileForm::V1 => {
+            let mut project = project;
+            project.format_revision = 0;
+            serde_json::to_string_pretty(&project).map_err(|e| format!("Failed to serialize project: {e}"))?
+        }
+    };
 
     // Build media/manifest.json — store paths relative to project dir
     let manifest = MediaManifestJson {
@@ -777,4 +816,22 @@ fn prune_stale_looks(looks_dir: &Path, kept_ids: &[String]) {
             }
         }
     }
+}
+
+/// A project as its revision-2 file (#1089): today's model as its v1 JSON,
+/// then the conversion. The value is built from text, not `to_value`, which
+/// widens an f32 field to f64 and changes the digits today's writer prints.
+/// A conversion that would lose something refuses the save rather than
+/// write a changed file.
+fn revision2_text(project: &ProjectJson) -> Result<String, String> {
+    let text = serde_json::to_string(project).map_err(|e| format!("Failed to serialize project: {e}"))?;
+    let mut v1: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("Failed to serialize project: {e}"))?;
+    if let Some(o) = v1.as_object_mut() {
+        o.remove("format_revision");
+    }
+    let (v2, notes) = klipp_graph_lift::revision2::project(&v1).map_err(|e| format!("Failed to write the project's revision-2 file: {e}"))?;
+    if let Some(n) = notes.iter().find(|n| klipp_graph_lift::revision2::is_lost(n)) {
+        return Err(format!("Saving would lose part of the project ({n:?}), so it was not saved"));
+    }
+    serde_json::to_string_pretty(&v2).map_err(|e| format!("Failed to serialize project: {e}"))
 }

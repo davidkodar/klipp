@@ -3284,6 +3284,7 @@ dependencies = [
  "image",
  "klipp-core",
  "klipp-effects",
+ "klipp-graph-lift",
  "klipp-media",
  "klipp-nodes",
  "klipp-plugin",

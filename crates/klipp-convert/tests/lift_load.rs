@@ -31,7 +31,7 @@ fn loaded(node_graph: Option<Value>, tag: &str) -> (klipp_nodes::NodeGraph, Valu
     std::fs::create_dir_all(dir.join("media")).unwrap();
     std::fs::write(dir.join("project.json"), p.to_string()).unwrap();
     std::fs::write(dir.join("media/manifest.json"), r#"{"version":"1.0.0","items":[],"bins":[]}"#).unwrap();
-    let (seqs, ..) = klipp_project::load_project(&dir).unwrap();
+    let (seqs, ..) = klipp_project::load_project_v1(&dir).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
     (seqs[0].tracks[0].clips[0].node_graph.clone(), clip)
 }
