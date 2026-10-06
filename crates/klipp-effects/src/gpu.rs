@@ -19,6 +19,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
+mod params;
+pub use params::ParamSlots;
+mod record;
+pub use record::{converts_inside, slots_needed, EffectRecording, Recorded};
 mod thumbs;
 pub use thumbs::{ChainThumbs, MAX_CHAIN_THUMBS};
 
@@ -436,7 +440,11 @@ pub struct GpuEffectsPipeline {
     /// in the same submit — wgpu orders `write_buffer` calls against the
     /// NEXT submit, so naively batching N dispatches against the single
     /// `params_buf` would have all N read whichever write landed last.
-    params_ring: Vec<wgpu::Buffer>,
+    chain_params: ParamSlots,
+    /// The uniform slots of `run_effects_in_chain`'s recorded runs, apart
+    /// from the chain's. Taken out while a run records (`record_effect`
+    /// borrows the pipeline), so `None` only inside it.
+    effect_params: Option<ParamSlots>,
     /// Pre-allocated bind groups for the 3-binding chain layout
     /// (`bind_group_layout`). Indexed by `slot * 4 + config_idx` where
     /// `config_idx` picks one of the four (input, output) buffer pairs
@@ -477,8 +485,6 @@ pub struct GpuEffectsPipeline {
     /// segment. ~2-5 ms of NVIDIA Vulkan submit overhead per node
     /// otherwise.
     chain_encoder: Option<wgpu::CommandEncoder>,
-    /// Next ring slot to claim. Reset to 0 in `begin_chain`.
-    chain_slot_idx: u32,
     current_buf_size: u64,
     /// Set by wgpu callbacks when the device is lost or an uncaptured
     /// error fires. Every `apply_*` / `render_*` entry short-circuits
@@ -530,7 +536,18 @@ const PARAMS_SIZE: u64 = 256;
 /// grade (~13 active nodes in the default graph) plus multi-pass nodes
 /// like clarity (3 slots) fits comfortably. Bump if a future graph ever
 /// asserts in `next_params_slot`.
+/// The encoder a run of recorded effects is going into, and how many
+/// passes it holds.
+#[derive(Default)]
+struct RecordedRun {
+    encoder: Option<wgpu::CommandEncoder>,
+    passes: u32,
+}
+
 const CHAIN_PARAMS_RING_SIZE: usize = 32;
+/// Uniform slots of one recorded run of effects: one per pass, so a run
+/// longer than this is submitted in parts.
+const EFFECT_PARAMS_RING_SIZE: usize = 64;
 /// Params slots a stack frame may use before its passes so far are
 /// handed to the queue and the ring starts over.
 const STACK_PARAMS_RING_SIZE: usize = 64;
@@ -1334,16 +1351,8 @@ impl GpuEffectsPipeline {
                 })
             })
             .collect();
-        let params_ring: Vec<wgpu::Buffer> = (0..CHAIN_PARAMS_RING_SIZE)
-            .map(|i| {
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some(&format!("chain_params_{i}")),
-                    size: PARAMS_SIZE,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                })
-            })
-            .collect();
+        let chain_params = ParamSlots::new(&device, CHAIN_PARAMS_RING_SIZE, PARAMS_SIZE, "chain_params");
+        let effect_params = Some(ParamSlots::new(&device, EFFECT_PARAMS_RING_SIZE, PARAMS_SIZE, "effect_params"));
 
         info!("GPU effects pipeline initialized");
 
@@ -1499,7 +1508,8 @@ impl GpuEffectsPipeline {
             mask_points_buf: None,
             staging_read: None,
             params_buf,
-            params_ring,
+            chain_params,
+            effect_params,
             // Start empty; populated by `rebuild_chain_bind_group_pools`
             // after the first `ensure_buffers` call (buf_a/b/c don't
             // exist until then).
@@ -1510,7 +1520,6 @@ impl GpuEffectsPipeline {
             chain_bg_mask_cutout: (0..CHAIN_PARAMS_RING_SIZE * 2).map(|_| None).collect(),
             chain_bg_build_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             chain_encoder: None,
-            chain_slot_idx: 0,
             current_buf_size: 0,
             device_lost,
             submit_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -1668,7 +1677,7 @@ impl GpuEffectsPipeline {
                         wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
                         wgpu::BindGroupEntry {
                             binding: 2,
-                            resource: self.params_ring[slot].as_entire_binding(),
+                            resource: self.chain_params.buffer(slot).as_entire_binding(),
                         },
                     ],
                 });
@@ -1685,7 +1694,7 @@ impl GpuEffectsPipeline {
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 3, resource: self.huesat_lut_buf.as_entire_binding() },
                     ],
                 });
@@ -1698,7 +1707,7 @@ impl GpuEffectsPipeline {
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 3, resource: self.rgb_curves_lut_buf.as_entire_binding() },
                     ],
                 });
@@ -1711,7 +1720,7 @@ impl GpuEffectsPipeline {
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 3, resource: buf_c.as_entire_binding() },
                     ],
                 });
@@ -1724,7 +1733,7 @@ impl GpuEffectsPipeline {
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 3, resource: matte_buf.as_entire_binding() },
                     ],
                 });
@@ -3983,7 +3992,7 @@ impl GpuEffectsPipeline {
     // `write_buffer(params_A); pass_A; write_buffer(params_B); pass_B`
     // into one encoder and submitted once, both passes would observe
     // `params_B`. Each `*_chain` therefore claims its own slot from
-    // `params_ring` via `next_params_slot`, and the pass binds THAT slot
+    // `chain_params` via `next_params_slot`, and the pass binds THAT slot
     // rather than the shared `params_buf`.
 
     /// Start a new chain segment. Resets the slot ring and opens a fresh
@@ -3996,7 +4005,7 @@ impl GpuEffectsPipeline {
             // in well-formed callers.
             self.submit(enc);
         }
-        self.chain_slot_idx = 0;
+        self.chain_params.reset();
         // A stack frame's passes so far go first: the chain reads what
         // they wrote, and its own ring starts over.
         self.flush();
@@ -4053,20 +4062,16 @@ impl GpuEffectsPipeline {
     /// per pass). If this ever fires in the wild, bump
     /// `CHAIN_PARAMS_RING_SIZE` rather than masking with wraparound.
     fn next_params_slot(&mut self) -> usize {
-        let idx = self.chain_slot_idx as usize;
-        assert!(
-            idx < CHAIN_PARAMS_RING_SIZE,
-            "chain params ring exhausted ({idx} >= {CHAIN_PARAMS_RING_SIZE}); bump CHAIN_PARAMS_RING_SIZE",
-        );
-        self.chain_slot_idx += 1;
-        idx
+        self.chain_params.claim_index().unwrap_or_else(|| {
+            panic!("chain params ring exhausted ({CHAIN_PARAMS_RING_SIZE} slots); bump CHAIN_PARAMS_RING_SIZE")
+        })
     }
 
     /// Write `data` to the params-ring slot at `slot_idx`. Paired with
     /// `next_params_slot` by every `*_chain` entry.
     fn write_chain_params<T: bytemuck::Pod>(&self, slot_idx: usize, data: &T) {
         let bytes = bytemuck::bytes_of(data);
-        self.queue.write_buffer(&self.params_ring[slot_idx], 0, bytes);
+        self.queue.write_buffer(self.chain_params.buffer(slot_idx), 0, bytes);
     }
 
     /// Record a single compute dispatch into the supplied encoder.
@@ -4489,7 +4494,7 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: kept.as_entire_binding() },
             ],
         });
@@ -4597,7 +4602,7 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: other.as_entire_binding() },
             ],
         });
@@ -4669,7 +4674,7 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: matte.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
             ],
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
@@ -4765,7 +4770,7 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: matte.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: plate.as_entire_binding() },
             ],
         });
@@ -4803,7 +4808,7 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: matte.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
             ],
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
@@ -4837,7 +4842,7 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: kept.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: matte.as_entire_binding() },
             ],
@@ -4956,7 +4961,7 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: lut_buf.as_entire_binding() },
             ],
         });
@@ -5915,6 +5920,11 @@ impl GpuEffectsPipeline {
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
 
+        // Runs of recordable effects go into one encoder and one submit;
+        // anything else submits what was recorded first, so the order on
+        // the GPU is the list's.
+        let mut slots = self.effect_params.take().expect("effect slots are only taken inside a run");
+        let mut recorded = RecordedRun::default();
         let mut effects = effects.iter().peekable();
         while let Some(effect) = effects.next() {
             let (input, output) = if current_in_a {
@@ -5923,20 +5933,34 @@ impl GpuEffectsPipeline {
                 (buf_b, buf_a)
             };
 
-            match effect {
-                BuiltinEffect::Opacity { value } => {
-                    if (*value - 1.0).abs() < f32::EPSILON {
+            if record::slots_needed(effect).is_some() {
+                let mut outcome = self.record_into(&mut recorded, &mut slots, effect, input, output, width, height);
+                if outcome == Recorded::OutOfSlots {
+                    self.submit_recorded(&mut recorded, &mut slots);
+                    outcome = self.record_into(&mut recorded, &mut slots, effect, input, output, width, height);
+                }
+                match outcome {
+                    Recorded::Done => {
+                        current_in_a = !current_in_a;
                         continue;
                     }
-                    self.write_params(&OpacityParams {
-                        width,
-                        height,
-                        value: *value,
-                        _pad: 0,
-                    });
-                    self.dispatch(&self.opacity_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
+                    Recorded::Identity => continue,
+                    Recorded::NotRecordable | Recorded::OutOfSlots => {}
                 }
+            }
+            self.submit_recorded(&mut recorded, &mut slots);
+
+            match effect {
+                // Recorded above (`record_effect`).
+                BuiltinEffect::Opacity { .. }
+                | BuiltinEffect::Invert { .. }
+                | BuiltinEffect::Posterize { .. }
+                | BuiltinEffect::ChannelMixer { .. }
+                | BuiltinEffect::Gamma { .. }
+                | BuiltinEffect::HSVAdjust { .. }
+                | BuiltinEffect::Levels { .. }
+                | BuiltinEffect::Vibrance { .. }
+                | BuiltinEffect::ColorFade { .. } => {}
                 BuiltinEffect::GaussianBlur { radius } => {
                     if *radius < 0.5 {
                         continue;
@@ -6325,28 +6349,6 @@ impl GpuEffectsPipeline {
                     self.device.poll(wgpu::Maintain::Poll);
                     current_in_a = !current_in_a;
                 }
-                BuiltinEffect::Invert { mix } => {
-                    if (*mix).abs() < f32::EPSILON {
-                        continue;
-                    }
-                    self.write_params(&InvertParams {
-                        width, height,
-                        mix: *mix,
-                        _pad: 0,
-                    });
-                    self.dispatch(&self.invert_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::Posterize { levels } => {
-                    self.write_params(&PosterizeParams {
-                        width, height,
-                        // At least two, as on the CPU (#1020).
-                        levels: levels.max(2.0),
-                        _pad: 0,
-                    });
-                    self.dispatch(&self.posterize_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
                 BuiltinEffect::Mosaic { block_size } => {
                     if *block_size <= 1.0 {
                         continue;
@@ -6367,21 +6369,6 @@ impl GpuEffectsPipeline {
                         luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
                     });
                     self.dispatch(&self.edge_detect_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::ChannelMixer {
-                    red_red, red_green, red_blue,
-                    green_red, green_green, green_blue,
-                    blue_red, blue_green, blue_blue,
-                } => {
-                    self.write_params(&ChannelMixerParams {
-                        width, height,
-                        rr: *red_red, rg: *red_green, rb: *red_blue,
-                        gr: *green_red, gg: *green_green, gb: *green_blue,
-                        br: *blue_red, bg: *blue_green, bb: *blue_blue,
-                        _pad: 0,
-                    });
-                    self.dispatch(&self.channel_mixer_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
                 }
                 BuiltinEffect::DirectionalBlur { angle, distance, samples } => {
@@ -6477,32 +6464,6 @@ impl GpuEffectsPipeline {
                         current_in_a = !current_in_a;
                     }
                 }
-                BuiltinEffect::Gamma { gamma } => {
-                    if (*gamma - 1.0).abs() < f32::EPSILON {
-                        continue;
-                    }
-                    self.write_params(&GammaParams {
-                        width, height,
-                        inv_gamma: 1.0 / *gamma,
-                        _pad: 0,
-                    });
-                    self.dispatch(&self.gamma_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::HSVAdjust { hue_shift, saturation, value } => {
-                    if hue_shift.abs() < f32::EPSILON && (*saturation - 1.0).abs() < f32::EPSILON && (*value - 1.0).abs() < f32::EPSILON {
-                        continue;
-                    }
-                    self.write_params(&HSVAdjustParams {
-                        width, height,
-                        hue_shift: *hue_shift,
-                        saturation: *saturation,
-                        value: *value,
-                        _pad: 0, _pad2: 0, _pad3: 0,
-                    });
-                    self.dispatch(&self.hsv_adjust_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
                 BuiltinEffect::NoiseGenerator { amount, monochrome, seed } => {
                     if *amount < f32::EPSILON {
                         continue;
@@ -6542,24 +6503,6 @@ impl GpuEffectsPipeline {
                         _pad: 0,
                     });
                     self.dispatch(&self.radial_blur_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::Levels { in_black, in_white, gamma, out_black, out_white } => {
-                    if *in_black <= 0.0 && (*in_white - 1.0).abs() < f32::EPSILON
-                        && (*gamma - 1.0).abs() < f32::EPSILON
-                        && *out_black <= 0.0 && (*out_white - 1.0).abs() < f32::EPSILON {
-                        continue;
-                    }
-                    self.write_params(&LevelsParams {
-                        width, height,
-                        in_black: *in_black,
-                        in_white: *in_white,
-                        inv_gamma: if gamma.abs() > f32::EPSILON { 1.0 / *gamma } else { 1.0 },
-                        out_black: *out_black,
-                        out_white: *out_white,
-                        _pad: 0,
-                    });
-                    self.dispatch(&self.levels_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
                 }
                 BuiltinEffect::Equalize { strength } => {
@@ -6788,11 +6731,6 @@ impl GpuEffectsPipeline {
                     self.device.poll(wgpu::Maintain::Poll);
                     current_in_a = !current_in_a;
                 }
-                BuiltinEffect::Vibrance { amount } => {
-                    self.write_params(&GpuVibranceParams { width, height, amount: *amount, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad1: 0 });
-                    self.dispatch(&self.vibrance_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
                 BuiltinEffect::SpeedRamp { .. } => {
                     // SpeedRamp is handled at the engine level (frame queue + GPU blend),
                     // not in the per-frame GPU effects chain. Pass through.
@@ -6801,19 +6739,6 @@ impl GpuEffectsPipeline {
                     // Ran at the head of the clip's pipeline, before
                     // the grade — the compositor lifts it out and the
                     // chain never normally sees it. Pass through.
-                }
-                BuiltinEffect::ColorFade { color, progress, .. } => {
-                    let t = progress.clamp(0.0, 1.0);
-                    if t >= 0.9999 {
-                        continue;
-                    }
-                    let lin = |c: u8| crate::cpu::decode(c as f32 / 255.0);
-                    self.write_params(&ColorFadeParams {
-                        width, height, progress: t, _pad: 0,
-                        color: [lin(color[0]), lin(color[1]), lin(color[2]), color[3] as f32 / 255.0],
-                    });
-                    self.dispatch(&self.color_fade_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
                 }
                 BuiltinEffect::Frei0r { .. } => {
                     // Frei0r 1.x has no GPU surface; chain_supports_gpu returns
@@ -6842,8 +6767,48 @@ impl GpuEffectsPipeline {
                 }
             }
         }
+        self.submit_recorded(&mut recorded, &mut slots);
+        self.effect_params = Some(slots);
 
         current_in_a
+    }
+
+    /// Record `effect` into `run`'s encoder, opening one if none is.
+    #[allow(clippy::too_many_arguments)]
+    fn record_into(
+        &self,
+        run: &mut RecordedRun,
+        slots: &mut ParamSlots,
+        effect: &BuiltinEffect,
+        src: &wgpu::Buffer,
+        dst: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+    ) -> Recorded {
+        let encoder = run.encoder.get_or_insert_with(|| {
+            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("recorded_effects") })
+        });
+        let outcome = self.record_effect(effect, src, dst, None, width, height, &mut EffectRecording { encoder, slots });
+        if outcome == Recorded::Done {
+            run.passes += 1;
+        }
+        outcome
+    }
+
+    /// Hand the queue what `run` recorded, and start the slots over. It
+    /// goes through `submit` and then `flush`: inside a stack frame
+    /// `submit` holds an encoder back, and slots rewritten before it went
+    /// would change what its passes read. A run that recorded nothing
+    /// submits nothing.
+    fn submit_recorded(&self, run: &mut RecordedRun, slots: &mut ParamSlots) {
+        if let Some(encoder) = run.encoder.take() {
+            if run.passes > 0 {
+                self.submit(encoder);
+                self.flush();
+            }
+        }
+        run.passes = 0;
+        slots.reset();
     }
 
     /// Blur an alpha mask on the GPU. Input/output are single-channel u8 buffers.
