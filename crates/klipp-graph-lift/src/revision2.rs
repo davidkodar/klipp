@@ -132,7 +132,8 @@ fn lift_sequence(seq: &Map<String, Value>, notes: &mut Vec<LiftNote>, stored: St
         let mut clips = Vec::new();
         for c in t.get("clips").and_then(Value::as_array).into_iter().flatten() {
             let c = c.as_object().ok_or("a clip isn't an object")?;
-            match c.get("id").and_then(Value::as_str).and_then(stored) {
+            let seq_id = seq.get("id").and_then(Value::as_str).unwrap_or_default();
+            match c.get("id").and_then(Value::as_str).and_then(|id| stored(seq_id, id)) {
                 Some(picture) => clips.push(picture),
                 None => clips.push(lift_clip_store(c, notes)?),
             }
@@ -194,12 +195,13 @@ pub fn cross_group_wireless(seq: &Map<String, Value>) -> Vec<LiftNote> {
 
 /// The revision-2 project from a v1 project, and the lift's notes.
 pub fn project(raw: &Value) -> Result<(Value, Vec<LiftNote>), String> {
-    project_with(raw, &|_| None)
+    project_with(raw, &|_, _| None)
 }
 
-/// A clip's picture already lifted, by clip id: the app's cache (#1089, M1b
-/// 2b), used in place of lifting that clip again.
-pub type StoredPictures<'a> = &'a dyn Fn(&str) -> Option<(ClipPicture, Vec<Value>)>;
+/// A clip's picture already lifted, by sequence id and clip id: the app's
+/// cache (#1089, M1b 2b), used in place of lifting that clip again. By
+/// both, because a duplicated sequence keeps its clips' ids.
+pub type StoredPictures<'a> = &'a dyn Fn(&str, &str) -> Option<(ClipPicture, Vec<Value>)>;
 
 /// [`project`], taking each clip's picture from `stored` where it has one.
 pub fn project_with(raw: &Value, stored: StoredPictures<'_>) -> Result<(Value, Vec<LiftNote>), String> {

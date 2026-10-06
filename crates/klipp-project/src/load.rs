@@ -126,10 +126,13 @@ fn read_builtin_effects(value: &serde_json::Value, whose: &str) -> Result<Vec<kl
 }
 
 /// Each clip's lifted picture as the file holds it, with its grade
-/// versions' bodies, by clip id (#1089, M1b 2b). A clip whose stored form
-/// doesn't read is left out and lifted again when it's needed.
-fn stored_pictures(v2: &serde_json::Value) -> HashMap<String, klipp_timeline::LiftedPicture> {
+/// versions' bodies, by sequence id and clip id (#1089, M1b 2b): a
+/// duplicated sequence keeps its clips' ids. A clip whose stored form
+/// doesn't read, or whose key appears twice, is left out and lifted again
+/// when it's needed.
+fn stored_pictures(v2: &serde_json::Value) -> HashMap<(String, String), klipp_timeline::LiftedPicture> {
     let mut out = HashMap::new();
+    let mut repeated = std::collections::HashSet::new();
     let all = |v: Option<&serde_json::Value>| v.and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
     for seq in all(v2.get("sequences")) {
         for track in all(seq.get("tracks")) {
@@ -142,11 +145,15 @@ fn stored_pictures(v2: &serde_json::Value) -> HashMap<String, klipp_timeline::Li
                 };
                 let versions: Option<Vec<_>> = all(clip.get("grade_versions")).iter().map(|v| v.get("graph_v2").cloned()).collect();
                 if let Some(versions) = versions {
-                    out.insert(id.to_string(), klipp_timeline::LiftedPicture { picture, versions });
+                    let key = (seq.get("id").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(), id.to_string());
+                    if out.insert(key.clone(), klipp_timeline::LiftedPicture { picture, versions }).is_some() {
+                        repeated.insert(key);
+                    }
                 }
             }
         }
     }
+    out.retain(|key, _| !repeated.contains(key));
     out
 }
 
@@ -155,12 +162,13 @@ fn stored_pictures(v2: &serde_json::Value) -> HashMap<String, klipp_timeline::Li
 /// disagrees keeps none and is lifted again at the next save. In a debug
 /// build and in tests that disagreement stops the load: it means the
 /// first edit of that clip would write something else than it read.
-fn adopt_stored_pictures(sequences: &mut [Sequence], mut stored: HashMap<String, klipp_timeline::LiftedPicture>) {
+fn adopt_stored_pictures(sequences: &mut [Sequence], mut stored: HashMap<(String, String), klipp_timeline::LiftedPicture>) {
     for seq in sequences.iter_mut() {
+        let seq_id = seq.id.to_string();
         for track in &mut seq.tracks {
             let track_name = track.name.clone();
             for clip in &mut track.clips {
-                let Some(picture) = stored.remove(&clip.id.0.to_string()) else {
+                let Some(picture) = stored.remove(&(seq_id.clone(), clip.id.0.to_string())) else {
                     continue;
                 };
                 if let Err(e) = clip.adopt_stored_picture(picture) {
@@ -675,7 +683,7 @@ fn load_project_as(dir: &Path, form: crate::FileForm) -> Result<LoadResult, Stri
         );
     }
 
-    stored.retain(|id, _| !rewritten.contains(id));
+    stored.retain(|(_, id), _| !rewritten.contains(id));
     adopt_stored_pictures(&mut sequences, stored);
 
     info!(

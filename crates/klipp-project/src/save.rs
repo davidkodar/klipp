@@ -864,18 +864,28 @@ fn revision2_text(project: &ProjectJson, sequences: &[Sequence]) -> Result<Strin
     // read from the file if the clip hasn't changed, so it is written back
     // exactly, otherwise lifted now. A clip that can't be lifted refuses
     // the save, by name.
+    // By sequence and clip: a duplicated sequence keeps its clips' ids. A
+    // clip id twice in one sequence takes no cached picture (each is
+    // lifted from its own record) rather than one taking the other's.
     let mut pictures = std::collections::HashMap::new();
+    let mut repeated = std::collections::HashSet::new();
     for seq in sequences {
         for track in &seq.tracks {
             for clip in &track.clips {
                 let picture = clip.picture_v2().map_err(|e| {
                     format!("Saving would lose part of clip {} on track \"{}\" ({e}), so it was not saved", clip.id.0, track.name)
                 })?;
-                pictures.insert(clip.id.0.to_string(), picture);
+                let key = (seq.id.to_string(), clip.id.0.to_string());
+                if pictures.insert(key.clone(), picture).is_some() {
+                    repeated.insert(key);
+                }
             }
         }
     }
-    let stored = |id: &str| pictures.get(id).map(|p| (p.picture.clone(), p.versions.clone()));
+    for key in &repeated {
+        pictures.remove(key);
+    }
+    let stored = |seq: &str, id: &str| pictures.get(&(seq.to_string(), id.to_string())).map(|p| (p.picture.clone(), p.versions.clone()));
     let text = serde_json::to_string(project).map_err(|e| format!("Failed to serialize project: {e}"))?;
     let mut v1: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("Failed to serialize project: {e}"))?;
     if let Some(o) = v1.as_object_mut() {

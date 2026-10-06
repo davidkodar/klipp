@@ -47,29 +47,42 @@ fn shows(name: &str, mut clip: Clip, change: impl FnOnce(&mut Clip)) {
 }
 
 #[test]
-fn a_whole_picture_replaced_brings_its_own_lifted_picture() {
+fn a_whole_picture_replaced_never_reads_a_picture_lifted_for_another_clip() {
     let mut a = clip();
-    let mut b = clip();
-    b.edit_opacity_keyframes(|v| v.push(key(0.5)));
-    let (pa, pb) = (a.picture_v2().unwrap(), b.picture_v2().unwrap());
-    assert_ne!(*pa, *pb);
+    let backup = a.picture.clone();
+    let own = a.picture_v2().unwrap();
+    a.edit_opacity_keyframes(|v| v.push(key(0.5)));
+    // Its own earlier picture put back (as undo does) brings its own lift.
+    a.picture = backup.clone();
+    let restored = a.picture_v2().unwrap();
+    assert!(Arc::ptr_eq(&restored, &own), "the backup shares the cell its clip filled");
+    let mut clean = a.clone();
+    clean.edit_opacity_keyframes(|_| ()); // empties the cache
+    assert_eq!(*restored, *clean.picture_v2().unwrap());
 
+    // Another clip's picture, lifted for that clip's id: never read as this
+    // clip's; the next read lifts this clip as it now is.
+    let mut b = clip();
+    b.edit_opacity_keyframes(|v| v.push(key(0.25)));
+    let theirs = b.picture_v2().unwrap();
     let mut replaced = a.clone();
     replaced.picture = b.picture.clone();
-    assert!(Arc::ptr_eq(&replaced.picture_v2().unwrap(), &pb), "a replace carries the new content's own picture");
+    assert!(!replaced.has_lifted_picture());
+    let ours = replaced.picture_v2().unwrap();
+    assert!(!Arc::ptr_eq(&ours, &theirs));
+    assert_eq!(ours.picture.opacity_anim, theirs.picture.opacity_anim, "with that picture's content");
+    assert_ne!(*ours, *theirs, "under this clip's own ids");
 
     std::mem::swap(&mut a.picture, &mut b.picture);
-    assert_eq!(*a.picture_v2().unwrap(), *pb);
-    assert_eq!(*b.picture_v2().unwrap(), *pa);
+    assert_eq!(a.picture_v2().unwrap().picture.opacity_anim, theirs.picture.opacity_anim, "a swap moves the content");
 
     let mut taken = b.clone();
     let _ = std::mem::take(&mut taken.picture);
     assert!(!taken.has_lifted_picture(), "a taken picture leaves an empty one");
-    assert_ne!(*taken.picture_v2().unwrap(), *pa);
 
     let read: Clip = serde_json::from_str(&serde_json::to_string(&b).unwrap()).unwrap();
     assert!(!read.has_lifted_picture(), "a clip read from JSON starts with none");
-    assert_eq!(read.picture_v2().unwrap().versions, pa.versions);
+    assert_eq!(*read.picture_v2().unwrap(), *b.picture_v2().unwrap(), "and lifts to the same picture");
 }
 
 #[test]
@@ -182,4 +195,23 @@ fn every_effect_list_change_shows() {
     shows("edit_param_modifiers", base(), |c| {
         c.edit_param_modifiers(|m| m.insert(klipp_core::ParamId::Opacity, ModifierStack::default()));
     });
+}
+
+/// A clone given a new id (a split's half, a duplicate) never reads the
+/// picture lifted for the clip it came from: the lift derives node ids
+/// from the clip's id, which isn't in the view (#1172 review, B2).
+#[test]
+fn a_clone_given_a_new_id_lifts_its_own_picture() {
+    let original = clip();
+    let theirs = original.picture_v2().unwrap();
+    let mut half = original.clone();
+    half.id = klipp_core::ClipId::new();
+    assert!(!half.has_lifted_picture(), "the copied cache was lifted for another clip");
+    let ours = half.picture_v2().unwrap();
+    assert!(!Arc::ptr_eq(&theirs, &ours));
+    assert_ne!(*theirs, *ours, "its node ids are its own");
+    let mut fresh = half.clone();
+    fresh.edit_opacity_keyframes(|_| ()); // empties the cache
+    assert_eq!(*ours, *fresh.picture_v2().unwrap(), "the same as a clean lift of the new clip");
+    assert!(Arc::ptr_eq(&theirs, &original.picture_v2().unwrap()), "the original keeps its own");
 }

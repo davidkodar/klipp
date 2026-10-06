@@ -105,7 +105,7 @@ impl Clip {
     /// otherwise lifted once and kept until the picture next changes.
     /// Works on a shared clip; two readers get the same picture.
     pub fn picture_v2(&self) -> Result<std::sync::Arc<LiftedPicture>, String> {
-        self.picture.lifted().get_or_lift(|| self.lift_picture())
+        self.picture.lifted().get_or_lift(self.lift_key(), || self.lift_picture())
     }
 
     /// Take `stored`, the clip's picture as its file holds it, as the
@@ -118,14 +118,18 @@ impl Clip {
             let which = if lifted.picture != stored.picture { "picture" } else { "grade versions" };
             return Err(format!("the file's lifted {which} differs from the clip's own"));
         }
-        self.picture.adopt(stored);
+        self.picture.adopt(self.lift_key(), stored);
         Ok(())
     }
 
     /// Whether the clip holds its lifted picture now, from the file or a
-    /// lift since its last change.
+    /// lift since its last change, lifted for this clip as it is.
     pub fn has_lifted_picture(&self) -> bool {
-        self.picture.lifted().is_filled()
+        self.picture.lifted().holds(self.lift_key())
+    }
+
+    fn lift_key(&self) -> crate::picture_store::LiftKey {
+        crate::picture_store::LiftKey { clip: self.id, kind: lift_kind_tag(&self.kind) }
     }
 
     fn lift_picture(&self) -> Result<LiftedPicture, String> {

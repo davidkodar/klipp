@@ -58,8 +58,8 @@ impl ClipPictureFields {
 
     /// Keep `picture` as the lifted picture; the caller has checked it is
     /// what lifting the view gives.
-    pub(crate) fn adopt(&mut self, picture: LiftedPicture) {
-        self.lifted = Lifted::holding(picture);
+    pub(crate) fn adopt(&mut self, key: LiftKey, picture: LiftedPicture) {
+        self.lifted = Lifted::holding(key, picture);
     }
 }
 
@@ -136,30 +136,53 @@ pub struct LiftedPicture {
     pub versions: Vec<serde_json::Value>,
 }
 
+/// What a lifted picture was lifted for: the clip's id and its kind's
+/// family, which the lift reads beside the view (derived node ids come
+/// from the id). Neither is in the view, so a clone given a new id (a
+/// split's half, a duplicate) or a new kind could otherwise read a
+/// picture lifted for the clip it came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LiftKey {
+    pub(crate) clip: klipp_core::ClipId,
+    pub(crate) kind: &'static str,
+}
+
 /// The lifted picture, filled once; shared by clones until one changes.
 #[derive(Clone, Default)]
-pub(crate) struct Lifted(Arc<OnceLock<Result<Arc<LiftedPicture>, String>>>);
+pub(crate) struct Lifted(Arc<OnceLock<(LiftKey, Result<Arc<LiftedPicture>, String>)>>);
 
 impl Lifted {
     /// A cache already holding `picture`, as read from the file.
-    pub(crate) fn holding(picture: LiftedPicture) -> Self {
+    pub(crate) fn holding(key: LiftKey, picture: LiftedPicture) -> Self {
         let cell = OnceLock::new();
-        let _ = cell.set(Ok(Arc::new(picture)));
+        let _ = cell.set((key, Ok(Arc::new(picture))));
         Self(Arc::new(cell))
     }
 
-    pub(crate) fn get_or_lift(&self, lift: impl FnOnce() -> Result<LiftedPicture, String>) -> Result<Arc<LiftedPicture>, String> {
-        self.0.get_or_init(|| lift().map(Arc::new)).clone()
+    /// The picture lifted for `key`: the one held if it was lifted for
+    /// `key`, otherwise lifted now. One lifted for another clip is never
+    /// returned; it is left as it is (the cell is filled once) and the
+    /// lift is not kept, until the next change empties the cell.
+    pub(crate) fn get_or_lift(&self, key: LiftKey, lift: impl FnOnce() -> Result<LiftedPicture, String>) -> Result<Arc<LiftedPicture>, String> {
+        let mut lift = Some(lift);
+        let (held, picture) = self.0.get_or_init(|| (key, (lift.take().unwrap())().map(Arc::new)));
+        if *held == key {
+            return picture.clone();
+        }
+        match lift.take() {
+            Some(lift) => lift().map(Arc::new),
+            None => unreachable!("the cell was filled by this call, for this key"),
+        }
     }
 
-    /// Whether the picture has been lifted or read, for tests.
-    pub(crate) fn is_filled(&self) -> bool {
-        self.0.get().is_some()
+    /// Whether it holds a picture lifted for `key`.
+    pub(crate) fn holds(&self, key: LiftKey) -> bool {
+        self.0.get().is_some_and(|(held, _)| *held == key)
     }
 }
 
 impl std::fmt::Debug for Lifted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(if self.is_filled() { "Lifted(filled)" } else { "Lifted(empty)" })
+        f.write_str(if self.0.get().is_some() { "Lifted(filled)" } else { "Lifted(empty)" })
     }
 }
