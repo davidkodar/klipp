@@ -488,7 +488,8 @@ impl FrameBuffer {
 
     /// Pictures published per second over the `window` before `now`:
     /// new picture times only, so a paused frame rendered again does not
-    /// count. `None` with fewer than two in the window — nothing playing.
+    /// count. After a pause it falls to `None` within the window. Stepping
+    /// or scrubbing publishes new times too, so it reads as a small rate.
     pub fn presented_fps(&self, now: std::time::Instant, window: std::time::Duration) -> Option<f64> {
         rate_in_window(self.presented_times.iter().map(|&(t, _)| t), now, window)
     }
@@ -598,17 +599,18 @@ pub type SharedFrameBuffer = Arc<Mutex<FrameBuffer>>;
 const PRESENTED_TIMES: usize = 256;
 
 /// Events per second among `times` (oldest first) inside the `window`
-/// before `now`: the intervals between the first and the last of them
-/// over the time they span. `None` with fewer than two.
+/// before `now`: the intervals after the first of them, over the time
+/// from it to `now`. Measured to `now` rather than to the last event, so
+/// the rate falls once they stop, and is `None` once fewer than two are
+/// left in the window.
 fn rate_in_window(times: impl Iterator<Item = std::time::Instant>, now: std::time::Instant, window: std::time::Duration) -> Option<f64> {
     let start = now.checked_sub(window)?;
-    let (mut first, mut last, mut n) = (None, None, 0u32);
+    let (mut first, mut n) = (None, 0u32);
     for t in times.filter(|&t| t >= start && t <= now) {
         first.get_or_insert(t);
-        last = Some(t);
         n += 1;
     }
-    let span = last?.duration_since(first?).as_secs_f64();
+    let span = now.duration_since(first?).as_secs_f64();
     (n >= 2 && span > 0.0).then(|| f64::from(n - 1) / span)
 }
 
@@ -621,11 +623,18 @@ mod tests {
         use std::time::{Duration, Instant};
         let t0 = Instant::now();
         let at = |ms: u64| t0 + Duration::from_millis(ms);
-        // 25 fps for 3 s; the last 2 s hold 50 intervals over 1.96 s.
+        // 25 fps for 3 s: the window's first frame is 2 s back, then 50
+        // intervals.
         let times: Vec<Instant> = (0..75).map(|i| at(i * 40)).collect();
         let now = at(74 * 40);
         let fps = super::rate_in_window(times.iter().copied(), now, Duration::from_secs(2)).unwrap();
         assert!((fps - 25.0).abs() < 1e-9, "{fps}");
+        // Half a second after the last frame the rate has fallen: the
+        // window's first frame is at 1.48 s, then 37 intervals, over the
+        // 1.98 s from it to now.
+        let late = super::rate_in_window(times.iter().copied(), now + Duration::from_millis(500), Duration::from_secs(2)).unwrap();
+        assert!((late - 37.0 / 1.98).abs() < 1e-9, "{late}");
+        assert!(late < 25.0);
         // Nothing for 5 s: stale, no rate.
         assert_eq!(super::rate_in_window(times.iter().copied(), at(10_000), Duration::from_secs(2)), None);
         // One frame alone is no rate.

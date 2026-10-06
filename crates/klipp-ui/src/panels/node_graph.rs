@@ -233,22 +233,7 @@ impl NodeGraphPanel {
                             .id_salt("strip_add_node_scroll")
                             .max_height(max_h)
                             .show(ui, |ui| {
-                                for (label, kind_str) in [
-                                    ("Exposure", "Exposure"),
-                                    ("Contrast", "Contrast"),
-                                    ("Saturation", "Saturation"),
-                                    ("Tone Controls", "ToneControls"),
-                                    ("Colour Wheels", "ColorWheels"),
-                                    ("Curves", "RGBCurves"),
-                                    ("Hue/Sat", "HueSatCurves"),
-                                    ("Colour Balance", "ColorBalance"),
-                                    ("Colour Match", "ColorMatch"),
-                                    ("Qualifier", "Qualifier"),
-                                    ("Film Grain", "FilmGrain"),
-                                    ("Colour Warper", "ColorWarper"),
-                                    ("Noise Reduction", "Denoise"),
-                                    ("3D LUT", "Lut3D"),
-                                ] {
+                                for &(label, kind_str) in STRIP_ADD_MENU {
                                     if ui.button(label).clicked() {
                                         cmds.push(AppCommand::AddNode {
                                             clip_id,
@@ -269,5 +254,35 @@ impl NodeGraphPanel {
         }
 
         cmds
+    }
+}
+
+/// The strip's add-node menu: label and kind. Every kind is one
+/// `add_color_node` can make (`klipp_nodes::kinds::ADDABLE_NODE_KINDS`):
+/// a name outside it would add nothing, which the test below holds.
+const STRIP_ADD_MENU: &[(&str, &str)] = &[
+    ("Exposure", "Exposure"),
+    ("Contrast", "Contrast"),
+    ("Saturation", "Saturation"),
+    ("Tone Controls", "ToneControls"),
+    ("Colour Wheels", "ColorWheels"),
+    ("Curves", "RGBCurves"),
+    ("Hue/Sat", "HueSatCurves"),
+    ("Colour Balance", "ColorBalance"),
+    ("Colour Match", "ColorMatch"),
+    ("Qualifier", "Qualifier"),
+    ("Film Grain", "FilmGrain"),
+    ("Colour Warper", "ColorWarper"),
+    ("Noise Reduction", "Denoise"),
+    ("3D LUT", "Lut3D"),
+];
+
+#[cfg(test)]
+mod strip_add_menu_tests {
+    #[test]
+    fn every_kind_the_strip_menu_offers_can_be_added() {
+        for (label, kind) in super::STRIP_ADD_MENU {
+            assert!(klipp_nodes::kinds::addable_node_kind(kind).is_some(), "{label}: {kind} is not an addable kind");
+        }
     }
 }

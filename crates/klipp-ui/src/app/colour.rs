@@ -298,23 +298,13 @@ impl KlippApp {
 
     fn add_color_node(&mut self, clip_id: klipp_core::ClipId, kind: &str, node_id: Option<uuid::Uuid>, position: (f32, f32), needs_refresh: &mut bool) {
         let Some(node_kind) = klipp_nodes::kinds::addable_node_kind(kind) else { return };
-        self.with_current_clip_graph_mut(clip_id, needs_refresh, |graph| {
-            let new_id = node_id.unwrap_or_else(klipp_nodes::NodeId::new_v4);
-            graph.nodes.push(klipp_nodes::Node {
-                id: new_id,
-                kind: node_kind,
-                label: node_kind.display_name().to_string(),
-                enabled: true,
-                params: klipp_nodes::NodeParams::default(),
-                keyframes: klipp_nodes::NodeKeyframeTracks::default(),
-                output_link: None,
-                input_links: Vec::new(),
-            });
-            graph.node_positions.insert(
-                new_id,
-                klipp_nodes::NodePos { x: position.0, y: position.1 },
-            );
-        });
+        // A node the sender names (the control socket) goes into the
+        // clip's top-level graph, the one `get_grade` reports, whatever
+        // the editor has descended into, and whichever clip that is.
+        // The editor's own adds go where the editor is.
+        let path = add_node_path(node_id, &self.state.graph_descent_path);
+        let new_id = node_id.unwrap_or_else(klipp_nodes::NodeId::new_v4);
+        self.with_clip_graph_mut_at(clip_id, &path, needs_refresh, |graph| push_node(graph, node_kind, new_id, position));
     }
 
     /// Collapse a multi-node selection into a single Compound node.
@@ -490,6 +480,20 @@ impl KlippApp {
         F: FnOnce(&mut klipp_nodes::NodeGraph),
     {
         let path = self.state.graph_descent_path.clone();
+        self.with_clip_graph_mut_at(clip_id, &path, needs_refresh, mutate);
+    }
+
+    /// [`Self::with_current_clip_graph_mut`] at `path` instead of the
+    /// editor's descent: an empty path is the clip's top-level graph.
+    fn with_clip_graph_mut_at<F>(
+        &mut self,
+        clip_id: klipp_core::ClipId,
+        path: &[klipp_nodes::NodeId],
+        needs_refresh: &mut bool,
+        mutate: F,
+    ) where
+        F: FnOnce(&mut klipp_nodes::NodeGraph),
+    {
         let seq_idx = self.state.active_sequence_idx;
         let mut applied = false;
         let mut old_top_graph: Option<klipp_nodes::NodeGraph> = None;
@@ -498,7 +502,7 @@ impl KlippApp {
         for track in &mut self.state.sequences[seq_idx].tracks {
             if let Some(clip) = track.find_clip_mut(clip_id) {
                 let old = clip.grade().clone();
-                let resolve = clip.edit_grade(|root| Self::resolve_graph_at_path_mut(root, &path).map(mutate));
+                let resolve = clip.edit_grade(|root| Self::resolve_graph_at_path_mut(root, path).map(mutate));
                 match resolve {
                     Ok(()) => {}
                     Err(_e) => {
@@ -3260,5 +3264,77 @@ mod colour_seek_tests {
     #[test]
     fn a_remembered_frame_outside_a_trimmed_clip_is_ignored() {
         assert_eq!(colour_seek_on_select(&clip(10, 20), t(3), Some(t(25))), Some(t(10)));
+    }
+}
+
+/// The graph an added node goes into: the clip's top-level one when the
+/// sender names the node (the control socket, whose reply says the id
+/// `get_grade` will show), else the one the editor has descended into.
+fn add_node_path(node_id: Option<uuid::Uuid>, descent: &[klipp_nodes::NodeId]) -> Vec<klipp_nodes::NodeId> {
+    if node_id.is_some() { Vec::new() } else { descent.to_vec() }
+}
+
+/// A new, unwired node of `kind` with id `id` at `position`.
+fn push_node(graph: &mut klipp_nodes::NodeGraph, kind: klipp_nodes::NodeKind, id: klipp_nodes::NodeId, position: (f32, f32)) {
+    graph.nodes.push(klipp_nodes::Node {
+        id,
+        kind,
+        label: kind.display_name().to_string(),
+        enabled: true,
+        params: klipp_nodes::NodeParams::default(),
+        keyframes: klipp_nodes::NodeKeyframeTracks::default(),
+        output_link: None,
+        input_links: Vec::new(),
+    });
+    graph.node_positions.insert(id, klipp_nodes::NodePos { x: position.0, y: position.1 });
+}
+
+#[cfg(test)]
+mod add_node_tests {
+    use super::{add_node_path, push_node, KlippApp};
+    use klipp_nodes::{Node, NodeGraph, NodeId, NodeKind};
+
+    /// A top-level graph holding a Compound, and the Compound's id.
+    fn with_compound() -> (NodeGraph, NodeId) {
+        let mut root = NodeGraph::default();
+        let compound = NodeId::new_v4();
+        let params = klipp_nodes::NodeParams { compound_subgraph: Some(NodeGraph::default()), ..Default::default() };
+        root.nodes.push(Node {
+            id: compound, kind: NodeKind::Compound, label: "Compound".into(), enabled: true, params,
+            keyframes: Default::default(), output_link: None, input_links: vec![],
+        });
+        (root, compound)
+    }
+
+    fn ids(g: &NodeGraph) -> Vec<NodeId> {
+        g.nodes.iter().map(|n| n.id).collect()
+    }
+
+    fn inside(root: &NodeGraph, compound: NodeId) -> &NodeGraph {
+        root.nodes.iter().find(|n| n.id == compound).and_then(|n| n.params.compound_subgraph.as_ref()).expect("the compound's graph")
+    }
+
+    /// The socket's id is the node's, in the top-level graph `get_grade`
+    /// reports, even while the editor is inside a Compound (#1168).
+    #[test]
+    fn a_named_node_goes_to_the_top_level_graph_with_its_id() {
+        let (mut root, compound) = with_compound();
+        let id = NodeId::new_v4();
+        let path = add_node_path(Some(id), &[compound]);
+        push_node(KlippApp::resolve_graph_at_path_mut(&mut root, &path).unwrap(), NodeKind::LumaKey, id, (10.0, 0.0));
+        let added = root.nodes.iter().find(|n| n.id == id).expect("in the top-level graph");
+        assert_eq!(added.kind, NodeKind::LumaKey);
+        assert!(!ids(inside(&root, compound)).contains(&id));
+    }
+
+    /// The editor's own add goes where the editor is.
+    #[test]
+    fn an_editor_add_goes_into_the_compound_it_shows() {
+        let (mut root, compound) = with_compound();
+        let id = NodeId::new_v4();
+        let path = add_node_path(None, &[compound]);
+        push_node(KlippApp::resolve_graph_at_path_mut(&mut root, &path).unwrap(), NodeKind::Exposure, id, (0.0, 0.0));
+        assert!(!ids(&root).contains(&id));
+        assert!(ids(inside(&root, compound)).contains(&id));
     }
 }
