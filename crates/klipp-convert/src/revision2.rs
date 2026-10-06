@@ -139,13 +139,16 @@ fn link_names(g: &Value) -> (std::collections::BTreeSet<String>, std::collection
     (send, recv)
 }
 
-/// Every clip of `seq` whose wireless link names meet those of a graph
-/// today's bake merges into its own (its grade group's stages, its track's
-/// grade), with a sender on either side (#1102 review): the merged graph is
-/// one namespace, so one side's sender can take over the other's receiver.
-/// In revision 2 each body keeps its own links. `group` is the clip's grade
-/// group, or nil where only the track's grade meets it.
+/// Every clip of `seq` whose baked graph would let one part's wireless
+/// sender take over another part's link (#1102 review). Today's bake merges
+/// the group's pre stage, the clip's own grade, the post stage and the
+/// track's grade into one graph, one namespace; in revision 2 each body
+/// keeps its links to itself. Any two of those parts sharing a name, with a
+/// sender on either side (a sender and a receiver, or two senders), is
+/// noted. `group` is the clip's grade group, or nil where only the clip and
+/// its track's grade are merged.
 pub fn cross_group_wireless(seq: &Map<String, Value>) -> Vec<LiftNote> {
+    use std::collections::BTreeSet;
     let mut notes = Vec::new();
     let groups: Vec<&Value> = seq.get("grade_groups").and_then(Value::as_array).into_iter().flatten().collect();
     let id = |v: &Value| v.get("id").and_then(Value::as_str).and_then(|s| Uuid::parse_str(s).ok()).unwrap_or_default();
@@ -153,24 +156,19 @@ pub fn cross_group_wireless(seq: &Map<String, Value>) -> Vec<LiftNote> {
         let track_grade = track.get("effects").and_then(|e| e.get("grade")).filter(|g| !g.is_null());
         for clip in track.get("clips").and_then(Value::as_array).into_iter().flatten() {
             let group = clip.get("grade_group").and_then(Value::as_str).and_then(|gid| groups.iter().find(|g| g.get("id").and_then(Value::as_str) == Some(gid)));
-            let (mut os, mut or) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
-            let stages = group.into_iter().flat_map(|g| ["pre", "post"].into_iter().filter_map(move |k| g.get(k).filter(|s| !s.is_null())));
-            for g in stages.chain(track_grade) {
-                let (s, r) = link_names(g);
-                os.extend(s);
-                or.extend(r);
+            let stage = |k: &str| group.and_then(|g| g.get(k)).filter(|s| !s.is_null());
+            // The parts the bake merges, each with what it sends and receives.
+            let parts: Vec<(BTreeSet<String>, BTreeSet<String>)> =
+                [stage("pre"), clip.get("node_graph").filter(|g| !g.is_null()), stage("post"), track_grade].into_iter().flatten().map(link_names).collect();
+            let mut names = BTreeSet::new();
+            for (i, (si, ri)) in parts.iter().enumerate() {
+                for (sj, rj) in &parts[i + 1..] {
+                    names.extend(si.iter().filter(|n| sj.contains(*n) || rj.contains(*n)).cloned());
+                    names.extend(sj.iter().filter(|n| ri.contains(*n)).cloned());
+                }
             }
-            let (cs, cr) = clip.get("node_graph").filter(|g| !g.is_null()).map(link_names).unwrap_or_default();
-            let names: Vec<String> = os
-                .iter()
-                .filter(|n| cs.contains(*n) || cr.contains(*n))
-                .chain(cs.iter().filter(|n| os.contains(*n) || or.contains(*n)))
-                .cloned()
-                .collect::<std::collections::BTreeSet<_>>()
-                .into_iter()
-                .collect();
             if !names.is_empty() {
-                notes.push(LiftNote::CrossGroupWireless { clip: id(clip), group: group.map(|g| id(g)).unwrap_or_default(), names });
+                notes.push(LiftNote::CrossGroupWireless { clip: id(clip), group: group.map(|g| id(g)).unwrap_or_default(), names: names.into_iter().collect() });
             }
         }
     }

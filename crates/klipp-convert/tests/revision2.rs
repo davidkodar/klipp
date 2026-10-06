@@ -284,4 +284,21 @@ fn a_stage_and_a_clip_sharing_link_names_are_noted() {
     p["sequences"][0]["tracks"][0]["clips"][0].as_object_mut().unwrap().remove("grade_group");
     let (_, notes) = revision2::project(&p).unwrap();
     assert!(notes.iter().any(|n| matches!(n, LiftNote::CrossGroupWireless { group, names, .. } if group.is_nil() && names == &["bus".to_owned()])), "the track's grade sends what the clip receives");
+
+    // Any two of the four merged parts, not only the clip's: pre and post,
+    let mut p = project("other");
+    let mut post = p["sequences"][0]["grade_groups"][0]["pre"].clone();
+    post["nodes"][1]["output_link"] = Value::Null;
+    post["nodes"][1]["input_links"] = json!([null, "other"]);
+    p["sequences"][0]["grade_groups"][0]["post"] = post;
+    let (_, notes) = revision2::project(&p).unwrap();
+    assert!(notes.iter().any(|n| matches!(n, LiftNote::CrossGroupWireless { names, .. } if names == &["other".to_owned()])), "pre sends what post receives");
+    // and a stage and the track's grade.
+    let mut p = project("other");
+    let mut grade = p["sequences"][0]["grade_groups"][0]["pre"].clone();
+    grade["nodes"][1]["output_link"] = Value::Null;
+    grade["nodes"][1]["input_links"] = json!([null, "other"]);
+    p["sequences"][0]["tracks"][0]["effects"] = json!({"grade": grade});
+    let (_, notes) = revision2::project(&p).unwrap();
+    assert!(notes.iter().any(|n| matches!(n, LiftNote::CrossGroupWireless { names, .. } if names == &["other".to_owned()])), "pre sends what the track's grade receives");
 }
