@@ -21,9 +21,19 @@ use crate::Clip;
 /// methods (`opacity_keyframes()`, `edit_opacity_keyframes(..)`, ...).
 /// Saved as the list itself, so files are as they were.
 ///
-/// ```compile_fail
+/// The contents are private: reaching into them doesn't compile.
+///
+/// ```compile_fail,E0616
 /// fn add(clip: &mut klipp_timeline::Clip, k: klipp_core::Keyframe) {
 ///     clip.opacity_keyframes.0.push(k);
+/// }
+/// ```
+///
+/// The same change through the method does.
+///
+/// ```
+/// fn add(clip: &mut klipp_timeline::Clip, k: klipp_core::Keyframe) {
+///     clip.edit_opacity_keyframes(|v| v.push(k));
 /// }
 /// ```
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -45,6 +55,18 @@ impl Keyframes {
 
 /// A clip's per-effect keyframes, keyed `"{effect index}:{param}"`, behind
 /// the clip's methods as [`Keyframes`] is.
+///
+/// ```compile_fail,E0616
+/// fn clear(clip: &mut klipp_timeline::Clip) {
+///     clip.effect_keyframes.0.clear();
+/// }
+/// ```
+///
+/// ```
+/// fn clear(clip: &mut klipp_timeline::Clip) {
+///     clip.edit_effect_keyframes(|m| m.clear());
+/// }
+/// ```
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct EffectKeyframes(pub(crate) HashMap<String, Vec<Keyframe>>);
@@ -57,6 +79,18 @@ impl From<HashMap<String, Vec<Keyframe>>> for EffectKeyframes {
 
 /// A clip's parameter modifier stacks, behind the clip's methods as
 /// [`Keyframes`] is.
+///
+/// ```compile_fail,E0616
+/// fn clear(clip: &mut klipp_timeline::Clip) {
+///     clip.param_modifiers.0.clear();
+/// }
+/// ```
+///
+/// ```
+/// fn clear(clip: &mut klipp_timeline::Clip) {
+///     clip.edit_param_modifiers(|m| m.clear());
+/// }
+/// ```
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ParamModifiers(pub(crate) HashMap<ParamId, ModifierStack>);

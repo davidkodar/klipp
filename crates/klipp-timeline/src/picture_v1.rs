@@ -222,3 +222,45 @@ pub struct GradeVersionJson {
     pub name: String,
     pub node_graph: klipp_nodes::NodeGraph,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use klipp_core::{Interpolation, Keyframe, MediaId, ModifierStack, ParamId, RationalTime};
+
+    fn key(time_secs: f64, value: f32) -> Keyframe {
+        Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+    }
+
+    /// The bytes the three private lane types save as: each the plain
+    /// list or map it holds, with empty lanes `null` or left out exactly
+    /// as the file has always had them.
+    #[test]
+    fn the_picture_fields_save_as_the_file_has_them() {
+        let t = |n| RationalTime::from_frames(n, 24);
+        let mut clip = Clip::media(MediaId::new(), t(0), t(48), t(0), t(48));
+        clip.edit_opacity_keyframes(|v| v.extend([key(0.0, 1.0), key(1.5, 0.25)]));
+        clip.edit_effect_keyframes(|m| m.insert("0:radius".into(), vec![key(0.5, 2.0)]));
+        clip.edit_param_modifiers(|m| m.insert(ParamId::Opacity, ModifierStack::default()));
+        let v = serde_json::to_value(ClipPictureV1::of(&clip)).unwrap();
+        let lanes = serde_json::json!({
+            "opacity_keyframes": v["opacity_keyframes"],
+            "transform_pos_x_keyframes": v["transform_pos_x_keyframes"],
+            "transform_tilt_x_keyframes": v.get("transform_tilt_x_keyframes"),
+            "effect_keyframes": v["effect_keyframes"],
+            "param_modifiers": v["param_modifiers"],
+        });
+        assert_eq!(
+            serde_json::to_string(&lanes).unwrap(),
+            concat!(
+                r#"{"effect_keyframes":{"0:radius":[{"interpolation":"Linear","tangent_in":[0.0,0.0],"tangent_out":[0.0,0.0],"time_secs":0.5,"value":2.0}]},"#,
+                r#""opacity_keyframes":[{"interpolation":"Linear","tangent_in":[0.0,0.0],"tangent_out":[0.0,0.0],"time_secs":0.0,"value":1.0},"#,
+                r#"{"interpolation":"Linear","tangent_in":[0.0,0.0],"tangent_out":[0.0,0.0],"time_secs":1.5,"value":0.25}],"#,
+                r#""param_modifiers":{"opacity":{"modifiers":[]}},"#,
+                r#""transform_pos_x_keyframes":null,"transform_tilt_x_keyframes":null}"#,
+            )
+        );
+        // An empty tilt lane is left out of the record, not written as null.
+        assert!(v.get("transform_tilt_x_keyframes").is_none());
+    }
+}

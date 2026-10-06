@@ -6,9 +6,8 @@
 //! effect. Every reader takes a missing flag as enabled and ignores a
 //! surplus one (`render_gates.rs`, `effect_slots.rs`), so an absent or
 //! short list is filled with `true` and a long one is cut, and nothing
-//! renders differently. The v1 bytes of the same save are
-//! pinned in `klipp-convert`'s `effect_list_saved_bytes`, through the v1
-//! writer kept as the conversion's oracle.
+//! renders differently. The bytes a clip's picture fields save as are
+//! pinned in klipp-timeline's `picture_v1` tests.
 
 use klipp_media::MediaPool;
 use klipp_project::{load_project, save_project};
