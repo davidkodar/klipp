@@ -1792,8 +1792,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue
-            .write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -1860,8 +1859,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue
-            .write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -1895,8 +1893,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue
-            .write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -1935,8 +1932,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue
-            .write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
 
         // Upload curve LUT data
         self.upload(&self.rgb_curves_lut_buf, 0, bytemuck::cast_slice(lut_data));
@@ -4531,7 +4527,7 @@ impl GpuEffectsPipeline {
             }));
         }
         let dst = self.composite_src.as_ref().unwrap();
-        self.queue.write_buffer(dst, 0, bytemuck::cast_slice(px));
+        self.upload_frame(dst, bytemuck::cast_slice(px));
         true
     }
 

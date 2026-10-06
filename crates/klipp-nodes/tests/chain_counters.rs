@@ -78,3 +78,32 @@ fn the_cpu_executor_neither_submits_nor_uploads() {
         assert_eq!(counts(s), (0, 0), "{s:?}");
     }
 }
+
+/// `Source ─► Exposure ─► Blend.0`, and `Source ─► Exposure (identity) ─► Blend.1`:
+/// the identity node stays off the chain, so port 1's picture is on the
+/// CPU and the composite uploads it: two frames up, the chain's input
+/// and port 1, in one submit (#1173).
+#[test]
+fn a_composite_with_a_cpu_made_port_1_uploads_it_too() {
+    let (src, graded, idle, blend, out) = (
+        node(NodeKind::Source, Default::default()),
+        exposure(),
+        node(NodeKind::Exposure, Default::default()),
+        node(NodeKind::Blend, NodeParams { mix: Some(0.5), ..Default::default() }),
+        node(NodeKind::Output, Default::default()),
+    );
+    let e = |a: &Node, b: &Node, port: u8| Edge { from_node: a.id, from_port: 0, to_node: b.id, to_port: port };
+    let edges = vec![e(&src, &graded, 0), e(&src, &idle, 0), e(&graded, &blend, 0), e(&idle, &blend, 1), e(&blend, &out, 0)];
+    let nodes = vec![src, graded, idle, blend, out];
+    let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
+    let g = NodeGraph { output_node_id: nodes[4].id, nodes, edges, node_positions, working_space_override: None, frames: vec![], sticky_notes: vec![] };
+    let stats = runs(&g, true);
+    if stats[0].flushes == 0 {
+        assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none_or(|v| v != "1"), "required but no GPU chain ran: {:?}", stats[0]);
+        eprintln!("UNVERIFIED: no GPU chain ran ({:?})", stats[0]);
+        return;
+    }
+    for s in &stats {
+        assert_eq!(counts(s), (1, 2), "the chain's input and port 1: {s:?}");
+    }
+}

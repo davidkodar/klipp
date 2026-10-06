@@ -2599,7 +2599,10 @@ pub struct ChainStats {
     /// themselves.
     pub submits: u32,
     /// Whole frames uploaded from the CPU to the GPU during the run: the
-    /// chain's input, a CPU-made value fed back in, a key's plate.
+    /// chain's input, a CPU-made value fed back in (a composite's port
+    /// 1, a per-node grade's input), a key's plate. A source seeded on
+    /// the GPU before the run (`upload_seed`) is the input arriving, not
+    /// the run's work, and is not counted.
     pub uploads: u32,
 }
 
