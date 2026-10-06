@@ -1487,7 +1487,7 @@ fn the_runs_render_check_holds_the_written_copy_to_the_original() {
         std::fs::create_dir_all(&base).unwrap();
         generated_spliced_project(&dir, seed, 12);
         let s = Settings { projects: vec![dir.clone()], excluded: Default::default(), config_dir: None, backup_root: base.join("backup"), date: "2026-10-06".into() };
-        let hooks = Hooks { crash: &|_, _| false, crash_in_move: &|_, _| false, render_check: &render_check };
+        let hooks = Hooks { crash: &|_, _| false, crash_in_move: &|_, _| false, render_check: &render_check, ..Hooks::NONE };
         let report = run(&s, &|| Ok(()), &ok_parity, &hooks).unwrap();
         assert_eq!(report.converted, vec![std::fs::canonicalize(&dir).unwrap()], "seed {seed}: {:?}", report.stopped);
         let _ = std::fs::remove_dir_all(&base);
@@ -1505,7 +1505,7 @@ fn the_runs_render_check_holds_the_written_copy_to_the_original() {
         render_check(copy)
     };
     let s = Settings { projects: vec![dir.clone()], excluded: Default::default(), config_dir: None, backup_root: base.join("backup"), date: "2026-10-06".into() };
-    let hooks = Hooks { crash: &|_, _| false, crash_in_move: &|_, _| false, render_check: &sabotage };
+    let hooks = Hooks { crash: &|_, _| false, crash_in_move: &|_, _| false, render_check: &sabotage, ..Hooks::NONE };
     let report = run(&s, &|| Ok(()), &ok_parity, &hooks).unwrap();
     assert!(report.converted.is_empty() && report.stopped.len() == 1, "{report:?}");
     assert!(!dir.with_file_name("Film.klipp.klipp-convert").exists(), "rolled back");

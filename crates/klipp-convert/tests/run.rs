@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use klipp_convert::run::{recover, run, Hooks, MovePoint, Report, RunError, Settings, Step};
+use klipp_convert::run::{real_settings, recover, run, Hooks, MovePoint, Report, RunError, Settings, Step};
 use klipp_convert::StoreKind;
 use serde_json::{json, Value};
 
@@ -169,7 +169,7 @@ fn a_crash_at_any_step_ends_rolled_back_or_converted() {
             let before = snapshot(&dir);
             let s = settings(&r, vec![dir.clone()]);
             let crash = move |at: Step, rec: bool| at == step && rec == recorded;
-            let hooks = Hooks { crash: &crash, crash_in_move: &|_, _| false, render_check: &|_| Ok(()) };
+            let hooks = Hooks { crash: &crash, crash_in_move: &|_, _| false, render_check: &|_| Ok(()), ..Hooks::NONE };
             assert_eq!(run(&s, &ok, &ok_parity, &hooks).unwrap_err(), RunError::Crashed(step));
             let mut report = Report::default();
             recover(&s, &mut report).unwrap();
@@ -285,7 +285,7 @@ fn the_render_check_stops_a_project_rolled_back() {
     let dir = project(&r, "Film");
     let before = snapshot(&dir);
     let s = settings(&r, vec![dir.clone()]);
-    let hooks = Hooks { crash: &|_, _| false, crash_in_move: &|_, _| false, render_check: &|_| Err("a frame differs".into()) };
+    let hooks = Hooks { crash: &|_, _| false, crash_in_move: &|_, _| false, render_check: &|_| Err("a frame differs".into()), ..Hooks::NONE };
     let report = run(&s, &ok, &ok_parity, &hooks).unwrap();
     assert!(report.stopped.iter().any(|(d, why)| d == &dir && why.contains("a frame differs")), "{report:?}");
     assert_eq!(snapshot(&dir), before);
@@ -345,9 +345,10 @@ fn colour_presets_are_backed_up_then_converted() {
     let mut s = settings(&r, Vec::new());
     s.config_dir = Some(config.clone());
     let report = run(&s, &ok, &ok_parity, &Hooks::NONE).unwrap();
-    assert_eq!((report.presets_converted, report.presets_stopped.len()), (1, 0), "{report:?}");
+    assert_eq!(report.presets_converted, 1, "{report:?}");
+    assert_eq!(report.presets_stopped, vec![(config.join("presets/color/broken.json"), "doesn't parse as JSON; left as it is".to_string())]);
     assert_eq!(revision_of(&config.join("presets/color/Warm.json")), 2);
-    assert!(!config.join("presets/color/broken.json").exists(), "a file today's reader skips goes, once backed up");
+    assert_eq!(std::fs::read(config.join("presets/color/broken.json")).unwrap(), b"{ not json", "a file that won't parse is kept and named");
     assert_eq!(snapshot(&s.backup_root.join(&s.date).join("config")), before, "the whole folder backed up first");
     // A rerun converts nothing again.
     assert_eq!(run(&s, &ok, &ok_parity, &Hooks::NONE).unwrap().presets_converted, 0);
@@ -401,7 +402,7 @@ fn a_crash_inside_a_move_across_file_systems_keeps_the_whole_backup() {
             s.backup_root = shm.join(format!("klipp-run-test/{}-{autosave}-{point:?}", std::process::id()));
             let _ = std::fs::remove_dir_all(&s.backup_root);
             let crash = move |at: MovePoint, to: &Path| at == point && to.to_string_lossy().contains("_autosave") == autosave;
-            let hooks = Hooks { crash: &|_, _| false, crash_in_move: &crash, render_check: &|_| Ok(()) };
+            let hooks = Hooks { crash: &|_, _| false, crash_in_move: &crash, render_check: &|_| Ok(()), ..Hooks::NONE };
             assert_eq!(run(&s, &ok, &ok_parity, &hooks).unwrap_err(), RunError::CrashedInMove(point));
             let mut report = Report::default();
             recover(&s, &mut report).unwrap();
@@ -429,5 +430,178 @@ fn an_exclusion_matches_the_folder_it_names() {
     let report = run(&s, &ok, &ok_parity, &Hooks::NONE).unwrap();
     assert_eq!(report.excluded, vec![dir.clone()]);
     assert_eq!(snapshot(&dir), before);
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// Make `<name>_autosave.klipp` beside `parent`'s project a whole project,
+/// as the app's auto-save is, so discovery finds it; its time `secs`.
+fn autosave(parent: &Path, name: &str, secs: u64) -> PathBuf {
+    let auto = parent.join(format!("{name}_autosave.klipp"));
+    let _ = std::fs::remove_dir_all(&auto);
+    klipp_project::save_project(&auto, &[klipp_timeline::Sequence::new_default()], &klipp_media::MediaPool::new()).unwrap();
+    assert!(klipp_convert::scan::is_klipp_project(&auto));
+    set_time(&auto, secs);
+    auto
+}
+
+/// An auto-save in the run's list goes with its project: into the backup
+/// when the project is converted, left as it is when the project is
+/// stopped or excluded, and never converted on its own (#1087 review).
+#[test]
+fn an_autosave_goes_with_its_project() {
+    for case in ["converted", "stopped", "excluded"] {
+        let r = root(&format!("autosave-with-{case}"));
+        let dir = project(&r, "Film");
+        let newer = case == "stopped";
+        let auto = autosave(&r, "Film", if newer { 1_200_000_000 } else { 1_000_000_000 });
+        let (before, auto_before) = (snapshot(&dir), snapshot(&auto));
+        let mut s = settings(&r, vec![auto.clone(), dir.clone()]);
+        if case == "excluded" {
+            s.excluded.insert(dir.clone());
+        }
+        let report = run(&s, &ok, &ok_parity, &Hooks::NONE).unwrap();
+        assert!(!report.converted.contains(&auto) && !report.stopped.iter().any(|(d, _)| d == &auto), "{case}: {report:?}");
+        match case {
+            "converted" => {
+                assert_eq!(report.converted, vec![dir.clone()]);
+                assert_converted(&s, &dir, &before);
+                assert!(!auto.exists());
+                assert_eq!(snapshot(&in_backup(&s, &auto)), auto_before, "the auto-save backed up as it was");
+            }
+            _ => {
+                assert!(report.converted.is_empty(), "{case}: {report:?}");
+                if case == "excluded" {
+                    assert_eq!(report.excluded, vec![auto.clone(), dir.clone()]);
+                }
+                assert_eq!((snapshot(&dir), snapshot(&auto)), (before, auto_before), "{case}: both left as they are");
+                assert_eq!(revision_of(&auto.join("project.json")), 0);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&r);
+    }
+}
+
+/// An auto-save whose project isn't in the run is a stop, left as it is.
+#[test]
+fn an_autosave_without_its_project_is_a_stop() {
+    let r = root("orphan-autosave");
+    let auto = autosave(&r, "Gone", 1_000_000_000);
+    let before = snapshot(&auto);
+    let s = settings(&r, vec![auto.clone()]);
+    let report = run(&s, &ok, &ok_parity, &Hooks::NONE).unwrap();
+    assert!(report.stopped.iter().any(|(d, why)| d == &auto && why.contains("auto-save")), "{report:?}");
+    assert_eq!(snapshot(&auto), before);
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// The real run's list, end to end on a made-up home: the projects under
+/// it with their auto-saves, and a recent project outside it, each once.
+#[test]
+fn the_real_settings_find_every_project_once() {
+    let r = root("real-settings");
+    let home = r.join("home");
+    let videos = home.join("Videos");
+    std::fs::create_dir_all(&videos).unwrap();
+    let film = project(&videos, "Film");
+    let auto = autosave(&videos, "Film", 1_000_000_000);
+    let out = project(&r.join("outside"), "Out");
+    std::os::unix::fs::symlink(&film, home.join("Film-link.klipp")).unwrap();
+    let config = home.join(".config/klipp");
+    std::fs::create_dir_all(&config).unwrap();
+    let recent = json!({ "general": { "recent_projects": [{ "path": out }, { "path": film }, { "path": home.join("Film-link.klipp") }] } });
+    std::fs::write(config.join("preferences.json"), recent.to_string()).unwrap();
+    let (film_before, out_before) = (snapshot(&film), snapshot(&out));
+
+    let s = real_settings(&home, &config, BTreeSet::new()).unwrap();
+    assert!(s.projects.contains(&film) && s.projects.contains(&auto) && s.projects.contains(&out), "{:?}", s.projects);
+    assert_eq!(s.backup_root, home.join(".local/share/klipp/pre-v2"));
+    let report = run(&s, &ok, &ok_parity, &Hooks::NONE).unwrap();
+    let mut converted = report.converted.clone();
+    converted.sort();
+    assert_eq!(converted, vec![film.clone(), out.clone()], "{report:?}");
+    assert!(report.stopped.is_empty(), "{report:?}");
+    assert_converted(&s, &film, &film_before);
+    assert_converted(&s, &out, &out_before);
+    assert!(!auto.exists() && in_backup(&s, &auto).join("project.json").is_file());
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// A journal entry that is empty or torn is set aside and named; it stops
+/// neither this run nor the next (#1087 review).
+#[test]
+fn a_damaged_journal_entry_is_set_aside_and_named() {
+    let r = root("damaged-journal");
+    let dir = project(&r, "Film");
+    let before = snapshot(&dir);
+    let s = settings(&r, vec![dir.clone()]);
+    let journal = s.backup_root.join("journal");
+    std::fs::create_dir_all(&journal).unwrap();
+    std::fs::write(journal.join("empty.json"), b"").unwrap();
+    std::fs::write(journal.join("torn.json"), b"{ \"dir\": \"/x").unwrap();
+    let report = run(&s, &ok, &ok_parity, &Hooks::NONE).unwrap();
+    let mut damaged = report.damaged_journals.clone();
+    damaged.sort();
+    assert_eq!(damaged, vec![journal.join("damaged/empty.json"), journal.join("damaged/torn.json")]);
+    assert_eq!(std::fs::read(journal.join("damaged/torn.json")).unwrap(), b"{ \"dir\": \"/x", "kept as it was");
+    assert_eq!(report.converted, vec![dir.clone()]);
+    assert_converted(&s, &dir, &before);
+    assert!(run(&s, &ok, &ok_parity, &Hooks::NONE).unwrap().damaged_journals.is_empty(), "the next run isn't stopped by them");
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// An exclusion that names no project in the run refuses it: a typo would
+/// otherwise convert the project the user meant to protect.
+#[test]
+fn an_exclusion_that_names_no_project_refuses() {
+    let r = root("exclude-typo");
+    let dir = project(&r, "Film");
+    let before = snapshot(&dir);
+    let mut s = settings(&r, vec![dir.clone()]);
+    s.excluded.insert(r.join("Flim.klipp"));
+    match run(&s, &ok, &ok_parity, &Hooks::NONE) {
+        Err(RunError::Refused(why)) => assert!(why.contains("Flim.klipp"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(snapshot(&dir), before);
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// Both renames of the swap done while the journal still says Verified:
+/// recovery goes by the disk and finishes the project, rather than
+/// calling it rolled back with the converted folder in place.
+#[test]
+fn recovery_goes_by_the_disk_when_both_renames_are_unrecorded() {
+    let r = root("both-renames");
+    let dir = project(&r, "Film");
+    let before = snapshot(&dir);
+    let s = settings(&r, vec![dir.clone()]);
+    let crash = |at: Step, recorded: bool| at == Step::OriginalAside && !recorded;
+    let hooks = Hooks { crash: &crash, ..Hooks::NONE };
+    assert_eq!(run(&s, &ok, &ok_parity, &hooks).unwrap_err(), RunError::Crashed(Step::OriginalAside));
+    // The second rename, as a crash after it and before its record leaves it.
+    std::fs::rename(format!("{}.klipp-convert", dir.display()), &dir).unwrap();
+    let mut report = Report::default();
+    recover(&s, &mut report).unwrap();
+    assert_eq!(report.recovered, vec![(dir.clone(), "finished".to_string())]);
+    assert_converted(&s, &dir, &before);
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// A Klipp started after the run began ends the run before the next swap,
+/// that project rolled back.
+#[test]
+fn a_klipp_started_mid_run_ends_it_before_the_swap() {
+    let r = root("swap-refused");
+    let dir = project(&r, "Film");
+    let before = snapshot(&dir);
+    let s = settings(&r, vec![dir.clone()]);
+    let hooks = Hooks { swap_allowed: &|| Err("a Klipp is running".into()), ..Hooks::NONE };
+    match run(&s, &ok, &ok_parity, &hooks) {
+        Err(RunError::Refused(why)) => assert!(why.contains("a Klipp is running"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(snapshot(&dir), before);
+    assert!(!PathBuf::from(format!("{}.klipp-convert", dir.display())).exists());
+    assert!(std::fs::read_dir(s.backup_root.join("journal")).unwrap().next().is_none(), "the journal entry is gone");
     let _ = std::fs::remove_dir_all(&r);
 }

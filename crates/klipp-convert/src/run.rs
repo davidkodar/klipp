@@ -74,11 +74,15 @@ pub struct Hooks<'a> {
     /// Checks the converted copy before the swap; an error stops the
     /// project, rolled back.
     pub render_check: &'a dyn Fn(&Path) -> Result<(), String>,
+    /// Asked again just before each swap (the real run: that no Klipp has
+    /// started since the run began); an error ends the run there, that
+    /// project rolled back.
+    pub swap_allowed: &'a dyn Fn() -> Result<(), String>,
 }
 
 impl Hooks<'_> {
-    /// No crash, no render check: the real run until the check exists.
-    pub const NONE: Hooks<'static> = Hooks { crash: &|_, _| false, crash_in_move: &|_, _| false, render_check: &|_| Ok(()) };
+    /// No crash, no render check, every swap allowed.
+    pub const NONE: Hooks<'static> = Hooks { crash: &|_, _| false, crash_in_move: &|_, _| false, render_check: &|_| Ok(()), swap_allowed: &|| Ok(()) };
 }
 
 /// The points inside a move across file systems where a crash leaves the
@@ -145,6 +149,11 @@ pub struct Report {
     pub excluded: Vec<PathBuf>,
     /// Journal entries finished from an earlier run that stopped.
     pub recovered: Vec<(PathBuf, String)>,
+    /// Journal entries that were empty or wouldn't parse, moved into
+    /// `journal/damaged`. The project each belonged to can't be known from
+    /// it; the run's own checks stop any project a step left part way
+    /// (a copy, an original aside or a backup already there).
+    pub damaged_journals: Vec<PathBuf>,
     /// Media items whose file isn't there, per converted project.
     pub media_offline: Vec<(PathBuf, usize)>,
     /// Colour presets converted, and those that stopped.
@@ -183,13 +192,20 @@ fn io_err(what: &str, path: &Path, e: io::Error) -> String {
 /// The real run's preconditions: no Klipp running, and an installed
 /// package that refuses converted files (#1066).
 pub fn real_preconditions(repo: &Path) -> Result<(), String> {
-    let r = crate::running::running().map_err(|e| format!("can't tell whether a Klipp is running: {e}"))?;
-    if r.is_running() {
-        return Err(format!("a Klipp is running: {r:?}"));
-    }
+    no_klipp_running()?;
     let installed = crate::installed::check(repo);
     if !installed.allows_conversion() {
         return Err(format!("the installed package doesn't refuse converted files: {installed:?}"));
+    }
+    Ok(())
+}
+
+/// That no Klipp is running: checked at the start and again before each
+/// swap.
+pub fn no_klipp_running() -> Result<(), String> {
+    let r = crate::running::running().map_err(|e| format!("can't tell whether a Klipp is running: {e}"))?;
+    if r.is_running() {
+        return Err(format!("a Klipp is running: {r:?}"));
     }
     Ok(())
 }
@@ -234,17 +250,56 @@ fn journal_path(s: &Settings, dir: &Path) -> PathBuf {
     journal_dir(s).join(format!("{id}.json"))
 }
 
-/// Write `bytes` to `path` whole or not at all: beside it, then renamed.
+// ── On disk, durably ────────────────────────────────────────────────────
+//
+// Every step the journal records must be on disk before the record is, and
+// a source is removed only once its copy is: a file's data is synced before
+// it is renamed into place, a folder after a name in it changes, and a
+// whole copied tree before its source goes. Otherwise a power cut could
+// keep the renames and the removal but lose the data they point at.
+
+/// Sync a file's data, or a folder's list of names, to the disk.
+fn sync(path: &Path) -> Result<(), String> {
+    std::fs::File::open(path).and_then(|f| f.sync_all()).map_err(|e| io_err("syncing", path, e))
+}
+
+/// Sync the folder a path is in, after the path was made, renamed or removed.
+fn sync_parent(path: &Path) -> Result<(), String> {
+    match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => sync(p),
+        _ => Ok(()),
+    }
+}
+
+/// Rename, then sync the folders of both names.
+fn rename_synced(from: &Path, to: &Path) -> io::Result<()> {
+    std::fs::rename(from, to)?;
+    let sync_dir = |p: &Path| p.parent().filter(|d| !d.as_os_str().is_empty()).map_or(Ok(()), |d| std::fs::File::open(d).and_then(|f| f.sync_all()));
+    sync_dir(to)?;
+    if from.parent() != to.parent() {
+        sync_dir(from)?;
+    }
+    Ok(())
+}
+
+/// Write `bytes` to `path` whole or not at all: beside it, synced, then
+/// renamed.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let tmp = path.with_file_name(format!(".{name}.tmp.{}", std::process::id()));
-    std::fs::write(&tmp, bytes).map_err(|e| io_err("writing", &tmp, e))?;
-    std::fs::rename(&tmp, path).map_err(|e| io_err("renaming into", path, e))
+    let mut f = std::fs::File::create(&tmp).map_err(|e| io_err("writing", &tmp, e))?;
+    f.write_all(bytes).and_then(|()| f.sync_all()).map_err(|e| io_err("writing", &tmp, e))?;
+    drop(f);
+    rename_synced(&tmp, path).map_err(|e| io_err("renaming into", path, e))
 }
 
 fn record(s: &Settings, e: &Entry) -> Result<(), String> {
     let dir = journal_dir(s);
-    std::fs::create_dir_all(&dir).map_err(|err| io_err("making", &dir, err))?;
+    if !dir.is_dir() {
+        std::fs::create_dir_all(&dir).map_err(|err| io_err("making", &dir, err))?;
+        sync_parent(&dir)?;
+    }
     let text = serde_json::to_vec_pretty(e).map_err(|err| err.to_string())?;
     write_atomic(&journal_path(s, &e.dir), &text)
 }
@@ -257,7 +312,7 @@ fn modified(path: &Path) -> Option<(u64, u32)> {
 
 fn set_modified(path: &Path, (secs, nanos): (u64, u32)) -> Result<(), String> {
     let t = SystemTime::UNIX_EPOCH + std::time::Duration::new(secs, nanos);
-    std::fs::File::open(path).and_then(|f| f.set_modified(t)).map_err(|e| io_err("setting the time of", path, e))
+    std::fs::File::open(path).and_then(|f| f.set_modified(t).and_then(|()| f.sync_all())).map_err(|e| io_err("setting the time of", path, e))
 }
 
 /// A path's place in the backup: the backup root, the run's day, then the
@@ -301,7 +356,8 @@ fn copy_project(src: &Path, dst: &Path) -> Result<(), String> {
 
 /// Copy a folder. `project` applies the project's rules: what is left out,
 /// and media hard-linked; without it every file is copied (a backup across
-/// file systems).
+/// file systems). Every copied file and every folder is synced, so the
+/// whole tree is on disk when this returns.
 fn copy_tree(src: &Path, dst: &Path, rel: &Path, project: bool) -> Result<(), String> {
     std::fs::create_dir(dst).map_err(|e| io_err("making", dst, e))?;
     let perms = std::fs::metadata(src).map_err(|e| io_err("reading", src, e))?.permissions();
@@ -323,12 +379,16 @@ fn copy_tree(src: &Path, dst: &Path, rel: &Path, project: bool) -> Result<(), St
             // media is never written, so one copy of it serves both.
             if std::fs::hard_link(&from, &to).is_err() {
                 std::fs::copy(&from, &to).map_err(|e| io_err("copying", &from, e))?;
+                sync(&to)?;
             }
         } else {
             std::fs::copy(&from, &to).map_err(|e| io_err("copying", &from, e))?;
+            sync(&to)?;
         }
     }
-    std::fs::set_permissions(dst, perms).map_err(|e| io_err("setting the mode of", dst, e))
+    std::fs::set_permissions(dst, perms).map_err(|e| io_err("setting the mode of", dst, e))?;
+    sync(dst)?;
+    sync_parent(dst)
 }
 
 /// Whether two trees hold the same files, byte for byte, and the same links.
@@ -377,16 +437,17 @@ fn move_tree(from: &Path, to: &Path, crash: &dyn Fn(MovePoint, &Path) -> bool) -
     if let Some(parent) = to.parent() {
         std::fs::create_dir_all(parent).map_err(|e| io(io_err("making", parent, e)))?;
     }
-    match std::fs::rename(from, to) {
+    match rename_synced(from, to) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
             let partial = with_suffix(to, ".partial");
             if partial.exists() {
                 std::fs::remove_dir_all(&partial).map_err(|e| io(io_err("clearing", &partial, e)))?;
             }
+            // Synced whole by `copy_tree`, before the source is touched.
             copy_tree(from, &partial, Path::new(""), false).map_err(io)?;
             same_tree(from, &partial).map_err(io)?;
-            std::fs::rename(&partial, to).map_err(|e| io(io_err("moving into place", to, e)))?;
+            rename_synced(&partial, to).map_err(|e| io(io_err("moving into place", to, e)))?;
             if crash(MovePoint::InPlace, to) {
                 return Err(RunError::CrashedInMove(MovePoint::InPlace));
             }
@@ -458,7 +519,10 @@ fn verify_copy(original: &Path, copy: &Path) -> Result<(), String> {
 /// Where a project's journal entry stands, as the disk shows it: a rename
 /// done but not yet recorded is counted done.
 fn settle_from_disk(e: &mut Entry) {
-    if e.step == Step::Verified && e.aside.exists() && !e.dir.exists() {
+    // The aside appears only by renaming the original, so with it there
+    // the original went aside, whether or not the copy has since taken its
+    // place (both renames done, neither recorded).
+    if e.step == Step::Verified && e.aside.exists() && (!e.dir.exists() || !e.copy.exists()) {
         e.step = Step::OriginalAside;
     }
     if e.step == Step::OriginalAside && e.dir.exists() && !e.copy.exists() {
@@ -506,11 +570,12 @@ fn advance(s: &Settings, e: &mut Entry, hooks: &Hooks) -> Result<(), RunError> {
                 Step::Verified
             }
             Step::Verified => {
-                std::fs::rename(&e.dir, &e.aside).map_err(|err| RunError::Io(io_err("moving aside", &e.dir, err)))?;
+                (hooks.swap_allowed)().map_err(RunError::Refused)?;
+                rename_synced(&e.dir, &e.aside).map_err(|err| RunError::Io(io_err("moving aside", &e.dir, err)))?;
                 Step::OriginalAside
             }
             Step::OriginalAside => {
-                std::fs::rename(&e.copy, &e.dir).map_err(|err| RunError::Io(io_err("moving into place", &e.copy, err)))?;
+                rename_synced(&e.copy, &e.dir).map_err(|err| RunError::Io(io_err("moving into place", &e.copy, err)))?;
                 Step::Swapped
             }
             Step::Swapped => {
@@ -551,7 +616,16 @@ pub fn recover(s: &Settings, report: &mut Report) -> Result<(), RunError> {
     let Ok(entries) = std::fs::read_dir(journal_dir(s)) else { return Ok(()) };
     for path in entries.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "json")) {
         let text = std::fs::read_to_string(&path).map_err(|e| RunError::Io(io_err("reading", &path, e)))?;
-        let mut e: Entry = serde_json::from_str(&text).map_err(|err| RunError::Io(format!("{}: {err}", path.display())))?;
+        let Ok(mut e) = serde_json::from_str::<Entry>(&text) else {
+            // Empty or torn: set aside and named, so it stops neither this
+            // run nor every run after it.
+            let damaged = journal_dir(s).join("damaged");
+            std::fs::create_dir_all(&damaged).map_err(|err| RunError::Io(io_err("making", &damaged, err)))?;
+            let to = damaged.join(path.file_name().unwrap_or_default());
+            rename_synced(&path, &to).map_err(|err| RunError::Io(io_err("setting aside", &path, err)))?;
+            report.damaged_journals.push(to);
+            continue;
+        };
         settle_from_disk(&mut e);
         if e.step == Step::Done {
             std::fs::remove_file(&path).map_err(|err| RunError::Io(io_err("removing", &path, err)))?;
@@ -608,9 +682,12 @@ fn offline_media(dir: &Path) -> usize {
 
 fn convert_one(s: &Settings, dir: &Path, hooks: &Hooks, report: &mut Report) -> Result<(), RunError> {
     let copy = with_suffix(dir, ".klipp-convert");
-    if copy.exists() {
-        report.stopped.push((dir.to_path_buf(), format!("{} is already there, and no journal names it", copy.display())));
-        return Ok(());
+    let aside = with_suffix(dir, ".klipp-v1");
+    for there in [&copy, &aside] {
+        if there.exists() {
+            report.stopped.push((dir.to_path_buf(), format!("{} is already there, and no journal names it", there.display())));
+            return Ok(());
+        }
     }
     // A backup that is there is taken as whole by recovery, so the run
     // never starts one where another already stands.
@@ -623,7 +700,7 @@ fn convert_one(s: &Settings, dir: &Path, hooks: &Hooks, report: &mut Report) -> 
     }
     let mut e = Entry {
         dir: dir.to_path_buf(),
-        aside: with_suffix(dir, ".klipp-v1"),
+        aside,
         backup: in_backup(s, dir),
         autosave_backup: in_backup(s, &autosave),
         autosave,
@@ -646,6 +723,10 @@ fn convert_one(s: &Settings, dir: &Path, hooks: &Hooks, report: &mut Report) -> 
             roll_back(s, &e).map_err(RunError::Io)?;
             report.stopped.push((dir.to_path_buf(), why));
             Ok(())
+        }
+        Err(RunError::Refused(why)) if e.step < Step::OriginalAside => {
+            roll_back(s, &e).map_err(RunError::Io)?;
+            Err(RunError::Refused(format!("before swapping {}: {why}", dir.display())))
         }
         Err(other) => Err(other),
     }
@@ -671,7 +752,7 @@ fn convert_presets(s: &Settings, config: &Path, report: &mut Report) -> Result<(
         }
         copy_tree(config, &partial, Path::new(""), false).map_err(RunError::Io)?;
         same_tree(config, &partial).map_err(RunError::Io)?;
-        std::fs::rename(&partial, &backup).map_err(|e| RunError::Io(io_err("moving into place", &backup, e)))?;
+        rename_synced(&partial, &backup).map_err(|e| RunError::Io(io_err("moving into place", &backup, e)))?;
     }
     let mut files: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "json")).collect();
     files.sort();
@@ -684,8 +765,9 @@ fn convert_presets(s: &Settings, config: &Path, report: &mut Report) -> Result<(
         }
         let text = std::fs::read_to_string(&path).map_err(|e| RunError::Io(io_err("reading", &path, e)))?;
         let Ok(raw) = serde_json::from_str::<Value>(&text) else {
-            // Today's reader skips a file it can't parse; the backup holds it.
-            std::fs::remove_file(&path).map_err(|e| RunError::Io(io_err("removing", &path, e)))?;
+            // Today's reader skips a file it can't parse, and so will the
+            // next: kept as it is, and named.
+            report.presets_stopped.push((path, "doesn't parse as JSON; left as it is".into()));
             continue;
         };
         if raw.get("format_revision").and_then(Value::as_u64) == Some(revision2::REVISION) {
@@ -725,6 +807,19 @@ pub fn run(s: &Settings, preconditions: &dyn Fn() -> Result<(), String>, parity:
     // Matched as the folders they name: a trailing slash or a link to the
     // project still excludes it.
     let excluded: BTreeSet<PathBuf> = s.excluded.iter().map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone())).collect();
+    let listed: BTreeSet<PathBuf> = s.projects.iter().filter_map(|p| std::fs::canonicalize(p).ok()).collect();
+    // An exclusion that names no project in the run is most likely a typo
+    // for one the user meant to protect.
+    let unmatched: Vec<String> = s
+        .excluded
+        .iter()
+        .filter(|raw| !s.projects.contains(raw) && !listed.contains(&std::fs::canonicalize(raw).unwrap_or_else(|_| (*raw).clone())))
+        .map(|raw| raw.display().to_string())
+        .collect();
+    if !unmatched.is_empty() {
+        return Err(RunError::Refused(format!("--exclude names no project in the run: {}", unmatched.join(", "))));
+    }
+    let mut seen = BTreeSet::new();
     for p in &s.projects {
         let dir = match std::fs::canonicalize(p) {
             Ok(d) => d,
@@ -733,8 +828,28 @@ pub fn run(s: &Settings, preconditions: &dyn Fn() -> Result<(), String>, parity:
                 continue;
             }
         };
+        // The same folder named twice (a link, the recent list) is one
+        // project.
+        if !seen.insert(dir.clone()) {
+            continue;
+        }
         if excluded.contains(&dir) || excluded.contains(p) {
             report.excluded.push(p.clone());
+            continue;
+        }
+        // An auto-save is never converted on its own. Beside a project in
+        // the run, it goes with that project: into the backup when the
+        // project is converted, left as it is when the project is stopped
+        // or excluded. Any other is a stop.
+        if scan::is_autosave(&dir) {
+            match scan::project_of_autosave(&dir) {
+                Some(main) if listed.contains(&main) => {
+                    if excluded.contains(&main) {
+                        report.excluded.push(p.clone());
+                    }
+                }
+                _ => report.stopped.push((dir, "an auto-save whose project isn't in the run: open it in Klipp and save it as a project, or remove it; left as it is".into())),
+            }
             continue;
         }
         match standing(&dir) {
@@ -814,18 +929,30 @@ pub fn date_of(secs: u64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-/// The real run's settings: every project a scan of `home` finds (test
-/// runs' scratch projects never among them), the config folder, and the
-/// backup root, dated today. A folder the scan couldn't read may hide
-/// projects, so it refuses.
+/// The real run's settings: the projects the scan lists, those under
+/// `home` and those of the app's recent list (test runs' scratch projects
+/// never among them), the config folder `config_dir` (`~/.config/klipp`),
+/// and the backup root, dated today. A folder the scan couldn't read may
+/// hide projects, so it refuses. Auto-saves stay in the list: the run
+/// decides each with its project.
 pub fn real_settings(home: &Path, config_dir: &Path, excluded: BTreeSet<PathBuf>) -> Result<Settings, String> {
     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let found = scan::discover(home);
     if !found.unreadable.is_empty() {
         return Err(format!("folders the scan couldn't read, which may hold projects: {:?}", found.unreadable));
     }
+    let mut projects: BTreeSet<PathBuf> = found.projects.into_iter().collect();
+    // As `scan::scan` reads it: the preferences under the config folder's
+    // parent.
+    if let Some(config_root) = config_dir.parent() {
+        for r in scan::recent_projects(&scan::prefs_path(config_root)) {
+            if !scan::is_scratch(&r, home) && scan::is_klipp_project(&r) {
+                projects.insert(r);
+            }
+        }
+    }
     Ok(Settings {
-        projects: found.projects,
+        projects: projects.into_iter().collect(),
         excluded,
         config_dir: Some(config_dir.to_path_buf()),
         backup_root: scan::backup_root(home),

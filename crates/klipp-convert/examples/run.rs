@@ -23,7 +23,7 @@ mod render_inputs;
 
 use std::path::PathBuf;
 
-use klipp_convert::run::{parse_args, real_preconditions, real_settings, run, Hooks};
+use klipp_convert::run::{no_klipp_running, parse_args, real_preconditions, real_settings, run, Hooks};
 use klipp_convert::StoreKind;
 use serde_json::Value;
 
@@ -44,7 +44,10 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        eprintln!("klipp-convert run: refused: HOME isn't set");
+        std::process::exit(1);
+    };
     let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".config")).join("klipp");
     let settings = match real_settings(&home, &config, args.excluded) {
         Ok(s) => s,
@@ -54,22 +57,32 @@ fn main() {
         }
     };
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let hooks = Hooks { render_check: &render_inputs::render_check, ..Hooks::NONE };
+    let hooks = Hooks { render_check: &render_inputs::render_check, swap_allowed: &no_klipp_running, ..Hooks::NONE };
     match run(&settings, &|| real_preconditions(&repo), &parity, &hooks) {
         Ok(report) => {
             let path = settings.backup_root.join(format!("run-report-{}.json", settings.date));
-            let _ = std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap_or_default());
+            let written = serde_json::to_string_pretty(&report).map_err(|e| e.to_string()).and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
             println!(
-                "converted {}, skipped {}, stopped {}, excluded {}, recovered {}; presets converted {}, stopped {}; report in {}",
+                "converted {}, skipped {}, stopped {}, excluded {}, recovered {}, damaged journal entries {}; presets converted {}, stopped {}",
                 report.converted.len(),
                 report.skipped.len(),
                 report.stopped.len(),
                 report.excluded.len(),
                 report.recovered.len(),
+                report.damaged_journals.len(),
                 report.presets_converted,
                 report.presets_stopped.len(),
-                path.display()
             );
+            match written {
+                Ok(()) => println!("report in {}", path.display()),
+                Err(e) => {
+                    // The run is done; only its report is missing, so it
+                    // goes to the terminal instead.
+                    eprintln!("klipp-convert run: writing the report to {}: {e}", path.display());
+                    println!("{report:#?}");
+                    std::process::exit(1);
+                }
+            }
         }
         Err(e) => {
             eprintln!("klipp-convert run: {e}");
