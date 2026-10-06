@@ -1235,3 +1235,66 @@ fn the_renderer_consumes_every_real_clip_alike() {
     }
     assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.iter().take(20).cloned().collect::<Vec<_>>().join("\n"));
 }
+
+/// A graph with every node id replaced by its place in the node list, in
+/// its edges, output and layout: the shape, whoever minted the ids.
+fn by_place(g: &Value) -> Value {
+    let ids: Vec<String> = g["nodes"].as_array().into_iter().flatten().filter_map(|n| n["id"].as_str().map(str::to_owned)).collect();
+    let place = |v: &Value| -> Value { v.as_str().and_then(|s| ids.iter().position(|i| i == s)).map(|i| json!(i)).unwrap_or(v.clone()) };
+    let mut g = g.clone();
+    for n in g["nodes"].as_array_mut().into_iter().flatten() {
+        let p = place(&n["id"]);
+        n["id"] = p;
+    }
+    for e in g["edges"].as_array_mut().into_iter().flatten() {
+        let (f, t) = (place(&e["from_node"]), place(&e["to_node"]));
+        e["from_node"] = f;
+        e["to_node"] = t;
+    }
+    let out = place(&g["output_node_id"]);
+    g["output_node_id"] = out;
+    if let Some(pos) = g.get("node_positions").and_then(Value::as_object).cloned() {
+        g["node_positions"] = Value::Object(pos.into_iter().map(|(k, v)| (place(&json!(k)).to_string(), v)).collect());
+    }
+    g
+}
+
+/// Where today's loader rewrites a grade (a Color Warper migration, a
+/// default pipeline), `delift(lift(r))` gives the graph today's loader
+/// holds, node for node and edge for edge; only the ids it mints differ,
+/// which are random today and derived in the lift (#1102 review).
+#[test]
+fn a_rewritten_load_delifts_to_todays_loaded_graph() {
+    let (mut rewritten, mut failures) = (0, Vec::new());
+    for seed in 0..40 {
+        let dir = temp("rewritten");
+        generated_project(&dir, seed, 25);
+        let raw: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("project.json")).unwrap()).unwrap();
+        let seqs = load(&dir).unwrap();
+        let today: std::collections::BTreeMap<String, &Clip> = clips(&seqs).into_iter().map(|(c, _)| (c.id.0.to_string(), c)).collect();
+        for clip in raw["sequences"].as_array().into_iter().flatten().flat_map(|s| s["tracks"].as_array().into_iter().flatten()).flat_map(|t| t["clips"].as_array().into_iter().flatten()) {
+            let record = to_v2::clip_to_v2(clip.as_object().unwrap()).unwrap();
+            let ctx = LiftCtx { clip_id: Uuid::parse_str(clip["id"].as_str().unwrap()).unwrap(), kind: ClipKind::from_json(clip.get("kind")).unwrap() };
+            let (p, notes) = lift_clip(&record, &ctx).unwrap();
+            if !notes.iter().any(|n| matches!(n, klipp_graph_format::lifted::LiftNote::LoadMigration { .. } | klipp_graph_format::lifted::LiftNote::DefaultPipeline { .. })) {
+                continue;
+            }
+            rewritten += 1;
+            let ours = to_v1::clip(&serde_json::to_value(delift::clip(&p).unwrap()).unwrap()).unwrap();
+            let theirs = serde_json::to_value(&today[clip["id"].as_str().unwrap()].node_graph).unwrap();
+            // Today's typed graph saves defaults the stored form leaves out:
+            // both go through today's own type before they're compared.
+            let ours: klipp_nodes::NodeGraph = serde_json::from_value(ours["node_graph"].clone()).unwrap();
+            let (a, b) = (by_place(&serde_json::to_value(&ours).unwrap()), by_place(&theirs));
+            let d = first_diff(&a, &b, "node_graph");
+            if !d.is_empty() {
+                failures.push(format!("seed {seed} clip {}: {d}", clip["id"]));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    eprintln!("rewritten loads: {rewritten} clips held to today's loaded graph");
+    assert!(rewritten > 100, "the generator reached too few rewritten loads: {rewritten}");
+    let shown: Vec<String> = failures.iter().take(8).cloned().collect();
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), shown.join("\n"));
+}
