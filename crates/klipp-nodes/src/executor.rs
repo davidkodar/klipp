@@ -1524,6 +1524,8 @@ impl GraphExecutor {
         let gpu_counts = |this: &Self| this.gpu.as_ref().map_or((0, 0), |g| (g.submit_count(), g.frame_upload_count()));
         let (submits_before, uploads_before) = gpu_counts(self);
         let mut chain_flush_count: u32 = 0;
+        // Nodes the run evaluated (each node once: the walk visits it once).
+        let mut evaluations: u32 = 0;
         let mut chain_extend_count: u32 = 0;
         let mut chain_start_count: u32 = 0;
         let mut bypass_tunnel_count: u32 = 0;
@@ -1585,7 +1587,7 @@ impl GraphExecutor {
 
         // 2. Map: NodeId → linear-light output buffer (Arc-shared for zero-copy
         //    passthrough of bypassed / default-param nodes).
-        let mut node_outputs: HashMap<NodeId, Arc<Vec<f32>>> = HashMap::new();
+        let mut node_outputs = plan.values();
         let mut tapped_output: Option<Arc<Vec<f32>>> = None;
 
         // ── GPU chain state ────────────────────────────────────────────
@@ -1614,6 +1616,7 @@ impl GraphExecutor {
             if !feeding.contains(&node_id) && !matches!(node.kind, NodeKind::Source | NodeKind::Output) {
                 continue;
             }
+            evaluations += 1;
             let node_kind_name = format!("{:?}", node.kind);
 
             // Bypassed nodes — and single-input filter nodes whose params
@@ -2311,6 +2314,8 @@ impl GraphExecutor {
             cpu_nodes: cpu_fallback_count,
             submits: u32::try_from(submits_after.saturating_sub(submits_before)).unwrap_or(u32::MAX),
             uploads: u32::try_from(uploads_after.saturating_sub(uploads_before)).unwrap_or(u32::MAX),
+            copies: node_outputs.copies,
+            evaluations,
         };
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
         if total_ms > 5.0 {
@@ -2639,6 +2644,12 @@ pub struct ChainStats {
     /// the GPU before the run (`upload_seed`) is the input arriving, not
     /// the run's work, and is not counted.
     pub uploads: u32,
+    /// Whole images copied from one value to another during the run (a
+    /// value passed through is shared, not copied) (#1089, M2).
+    pub copies: u32,
+    /// Nodes the run evaluated: a node shared by several readers counts
+    /// once (#1089, M2).
+    pub evaluations: u32,
 }
 
 /// Whether `node` keyframes any of a qualifier's matte refinements. The
@@ -3453,7 +3464,7 @@ impl GraphExecutor {
         slot_a: bool,
         width: u32,
         height: u32,
-        node_outputs: &mut HashMap<NodeId, Arc<Vec<f32>>>,
+        node_outputs: &mut crate::plan::Values<'_>,
         matte_tap: Option<NodeId>,
         tapped_output: &mut Option<Arc<Vec<f32>>>,
     ) {

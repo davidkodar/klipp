@@ -37,7 +37,14 @@ pub(crate) struct ExecPlan {
     pub(crate) secondaries: Vec<SecondaryChain>,
     /// Each producer feeding a composite's port 1, to the composite.
     pub(crate) composite_port1: HashMap<NodeId, NodeId>,
+    /// Every output the run can produce, numbered: a node's output port
+    /// to its slot in [`Values`]. Grade nodes have one output, port 0.
+    values: HashMap<(NodeId, u8), ValueId>,
 }
+
+/// An output's slot in a run's [`Values`], numbered by the plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ValueId(u32);
 
 impl ExecPlan {
     /// Work out the plan for `graph` with these inspection roots.
@@ -66,7 +73,18 @@ impl ExecPlan {
             .filter(|n| n.enabled && matches!(n.kind, NodeKind::Blend | NodeKind::Layer))
             .filter_map(|n| g.input_of(n.id, 1).map(|src| (src, n.id)))
             .collect();
-        Ok(Self { gated, order, feeding, fan_out, secondaries, composite_port1 })
+        let values = g.nodes.iter().enumerate().map(|(i, n)| ((n.id, 0u8), ValueId(i as u32))).collect();
+        Ok(Self { gated, order, feeding, fan_out, secondaries, composite_port1, values })
+    }
+
+    /// The slot of `node`'s output `port`, if the plan has that output.
+    pub(crate) fn value(&self, node: NodeId, port: u8) -> Option<ValueId> {
+        self.values.get(&(node, port)).copied()
+    }
+
+    /// An empty value table for one run of this plan.
+    pub(crate) fn values(&self) -> Values<'_> {
+        Values { plan: self, slots: vec![None; self.values.len()], copies: 0 }
     }
 
     /// Bring the kept gated graph's values up to `live`'s: every node it
@@ -90,6 +108,48 @@ impl ExecPlan {
     /// The graph a run walks: the gated one, refreshed, or `live`.
     pub(crate) fn graph<'a>(&'a self, live: &'a NodeGraph) -> &'a NodeGraph {
         self.gated.as_ref().unwrap_or(live)
+    }
+}
+
+/// The outputs a run has produced, by the plan's [`ValueId`]s: a node's
+/// image, on the CPU (an empty vector when it is on the GPU chain or
+/// kept there). Addressed by node, for the outputs every grade node has
+/// (port 0), or by node and port.
+pub(crate) struct Values<'p> {
+    plan: &'p ExecPlan,
+    slots: Vec<Option<std::sync::Arc<Vec<f32>>>>,
+    /// Whole images copied between values in the run (none yet: a value
+    /// passed through is shared).
+    pub(crate) copies: u32,
+}
+
+impl Values<'_> {
+    /// `node`'s output, if the run has made it.
+    pub(crate) fn get(&self, node: &NodeId) -> Option<&std::sync::Arc<Vec<f32>>> {
+        self.get_port(*node, 0)
+    }
+
+    pub(crate) fn get_port(&self, node: NodeId, port: u8) -> Option<&std::sync::Arc<Vec<f32>>> {
+        self.plan.value(node, port).and_then(|v| self.slots[v.0 as usize].as_ref())
+    }
+
+    pub(crate) fn contains_key(&self, node: &NodeId) -> bool {
+        self.get(node).is_some()
+    }
+
+    /// Take `node`'s output out of the table.
+    pub(crate) fn remove(&mut self, node: &NodeId) -> Option<std::sync::Arc<Vec<f32>>> {
+        self.plan.value(*node, 0).and_then(|v| self.slots[v.0 as usize].take())
+    }
+
+    /// Store `node`'s output. A node outside the plan has no output to
+    /// keep: the run walks only the plan's nodes.
+    pub(crate) fn insert(&mut self, node: NodeId, value: std::sync::Arc<Vec<f32>>) {
+        if let Some(v) = self.plan.value(node, 0) {
+            self.slots[v.0 as usize] = Some(value);
+        } else {
+            debug_assert!(false, "an output of a node the plan does not have: {node}");
+        }
     }
 }
 

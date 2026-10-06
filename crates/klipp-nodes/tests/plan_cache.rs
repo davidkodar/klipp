@@ -203,3 +203,20 @@ fn the_cache_never_serves_another_clips_plan() {
         assert_eq!(ex.plan_counts(), (2, 2), "the shared shape hits; the other compiles its own");
     }
 }
+
+/// The run's outputs are addressed by the plan's value ids (step 9a): each
+/// node on the way to the output is evaluated once, and a value passed
+/// through is shared, never copied.
+#[test]
+fn each_node_is_evaluated_once_and_nothing_is_copied() {
+    let (g, _) = gated_graph();
+    // The gated graph as the run walks it: the correction becomes a blend.
+    let walked = g.with_gates_applied().unwrap();
+    let feeding = walked.nodes_feeding_output().len() as u32;
+    for (mut ex, _) in executors() {
+        ex.execute(&frame(), &g, W, H, 0.0, 0, None, None).unwrap();
+        let stats = ex.last_run_chain_stats();
+        assert_eq!(stats.evaluations, feeding, "{stats:?}");
+        assert_eq!(stats.copies, 0);
+    }
+}
