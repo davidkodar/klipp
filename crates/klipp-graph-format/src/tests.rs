@@ -338,3 +338,29 @@ fn port_keys_go_back_to_their_numbers() {
     assert_eq!(input_index("Layer", &"in".into()), None);
     assert_eq!(output_index("RGBSplitter", &"out".into()), None);
 }
+
+/// A store with no picture is the empty graph, and only that exact shape
+/// may lack an output node.
+#[test]
+fn the_empty_graph_is_the_one_without_an_output() {
+    let empty = Graph::empty();
+    assert!(empty.is_empty());
+    empty.check().unwrap();
+    round_trip(&empty);
+    let mut not_quite = Graph::empty();
+    not_quite.output = id(1);
+    assert_eq!(not_quite.check(), Err(FormatError::MissingOutput(id(1))));
+    let mut edged = Graph::empty();
+    edged.edges.push(edge(1, 2, "in"));
+    assert!(edged.check().is_err());
+}
+
+#[test]
+fn unclaimed_effect_keyframes_round_trip() {
+    let mut record = ClipRecordV2 { graph: Graph::empty(), legacy_clip: LegacyClipAnim::default() };
+    record.legacy_clip.effect_keyframes.insert("9:radius".into(), json!([]));
+    record.legacy_clip.effect_keyframes.insert("not a key".into(), json!([{"time_secs": 0.0, "value": 1.0}]));
+    record.legacy_clip.param_modifiers.insert("effect:7:left".into(), json!({"modifiers": []}));
+    record.check().unwrap();
+    round_trip(&record);
+}
