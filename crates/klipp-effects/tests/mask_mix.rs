@@ -23,7 +23,7 @@ impl Case {
         MaskMix::new(self.mix, self.channel, self.luma).unwrap()
     }
     // Independent f64 arithmetic: no production normalization or mixing calls.
-    fn oracle(self) -> [f32; 4] {
+    fn weight(self) -> f64 {
         let coverage = self.mask.map_or(1.0, |m| {
             let x = match self.channel {
                 MaskChannel::Red => f64::from(m[0]),
@@ -32,13 +32,18 @@ impl Case {
                     .map(|c| f64::from(m[c]) * f64::from(self.luma[c]))
                     .sum(),
             };
-            if x.is_finite() {
+            // Coverage is extracted into f32 storage. A mathematically
+            // finite dot product can overflow that representation.
+            if (x as f32).is_finite() {
                 x.clamp(0.0, 1.0)
             } else {
                 0.0
             }
         });
-        let w = f64::from(self.mix).clamp(0.0, 1.0) * coverage;
+        f64::from(self.mix).clamp(0.0, 1.0) * coverage
+    }
+    fn oracle(self) -> [f32; 4] {
+        let w = self.weight();
         let mut out = if w == 0.0 {
             self.input
         } else if w == 1.0 {
@@ -128,6 +133,30 @@ fn cases() -> Vec<Case> {
         effect: [f32::NAN; 4],
         ..example()
     });
+    for channel in [MaskChannel::Red, MaskChannel::Luminance, MaskChannel::Alpha] {
+        cases.push(Case {
+            mix: 1.0,
+            channel,
+            luma: [1.0, 0.0, 0.0],
+            mask: Some([1.0; 4]),
+            input: [f32::NAN; 4],
+            effect: [-0.0, 8.0, -0.05, 0.0],
+            ..example()
+        });
+    }
+    for mask in [
+        [1e38, 1e38, 1e38, 1.0],
+        [f32::INFINITY, f32::NEG_INFINITY, 1.0, 1.0],
+    ] {
+        cases.push(Case {
+            mix: 1.0,
+            channel: MaskChannel::Luminance,
+            luma: [2.0; 3],
+            mask: Some(mask),
+            effect: [f32::NAN; 4],
+            ..example()
+        });
+    }
     cases
 }
 fn at_pixel(mut c: Case, index: usize) -> Case {
@@ -136,7 +165,7 @@ fn at_pixel(mut c: Case, index: usize) -> Case {
     if c.input != example().input {
         c.input.rotate_left(index % 4);
         c.effect.rotate_left((index / 3) % 4);
-        if index % 2 == 1 {
+        if index % 2 == 1 && c.input.iter().all(|v| v.is_finite()) {
             c.mask = c.mask.map(|mut m| {
                 m[0] = -m[0];
                 m
@@ -148,8 +177,12 @@ fn at_pixel(mut c: Case, index: usize) -> Case {
 
 fn close(actual: [f32; 4], expected: [f32; 4]) {
     for c in 0..4 {
+        // Allow a few f32 rounding steps at HDR magnitudes. The unit-scale
+        // floor covers cancellation near zero without loosening HDR to a
+        // fixed absolute error independent of its representable precision.
+        let tolerance = 4.0 * f32::EPSILON * expected[c].abs().max(1.0);
         assert!(
-            (actual[c] - expected[c]).abs() <= 1e-6,
+            (actual[c] - expected[c]).abs() <= tolerance,
             "channel {c}: {actual:?} != {expected:?}"
         );
     }
@@ -172,15 +205,10 @@ fn mask_mix_matches_the_oracle_on_the_grid() {
             c.settings().pixel(c.input, c.effect, c.mask)
         };
         close(actual, c.oracle());
-        if !c.legacy
-            && (c.mix <= 0.0
-                || c.mask.is_some_and(|m| {
-                    c.channel == MaskChannel::Red && (!m[0].is_finite() || m[0] <= 0.0)
-                }))
-        {
+        if !c.legacy && c.weight() == 0.0 {
             assert_eq!(actual.map(f32::to_bits), c.input.map(f32::to_bits));
         }
-        if c.mix >= 1.0 && c.mask.is_none() {
+        if !c.legacy && c.weight() == 1.0 {
             assert_eq!(actual.map(f32::to_bits), c.effect.map(f32::to_bits));
         }
     }
@@ -306,13 +334,11 @@ fn gpu_mask_mix_matches_the_independent_oracle() {
                 {
                     let c = at_pixel(c, index);
                     close(*p, c.oracle());
-                    if !c.legacy
-                        && (c.mix <= 0.0
-                            || c.mask.is_some_and(|m| {
-                                c.channel == MaskChannel::Red && (!m[0].is_finite() || m[0] <= 0.0)
-                            }))
-                    {
+                    if !c.legacy && c.weight() == 0.0 {
                         assert_eq!(p.map(f32::to_bits), c.input.map(f32::to_bits));
+                    }
+                    if !c.legacy && c.weight() == 1.0 {
+                        assert_eq!(p.map(f32::to_bits), c.effect.map(f32::to_bits));
                     }
                 }
                 drop(mapped);
