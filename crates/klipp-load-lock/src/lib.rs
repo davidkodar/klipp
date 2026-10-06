@@ -16,11 +16,16 @@
 //! does so holding [`library_loading`], so the two never overlap. The UI's
 //! own GPU is started by the windowing toolkit before any plug-in loads.
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 static LOCK: Mutex<()> = Mutex::new(());
 static TAKEN: AtomicUsize = AtomicUsize::new(0);
+
+thread_local! {
+    static TAKEN_HERE: Cell<usize> = const { Cell::new(0) };
+}
 
 /// Hold this while opening or closing a plug-in or driver library (closing
 /// runs its destructors with the linker's lock held, as opening runs its
@@ -30,7 +35,14 @@ static TAKEN: AtomicUsize = AtomicUsize::new(0);
 pub fn library_loading() -> MutexGuard<'static, ()> {
     let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     TAKEN.fetch_add(1, Ordering::Relaxed);
+    TAKEN_HERE.with(|n| n.set(n.get() + 1));
     guard
+}
+
+/// How many times this thread has taken the lock, so a test can tell
+/// that an operation it ran itself took it, whatever other threads do.
+pub fn times_taken_here() -> usize {
+    TAKEN_HERE.with(Cell::get)
 }
 
 /// How many times the lock has been taken in this process, so a test can

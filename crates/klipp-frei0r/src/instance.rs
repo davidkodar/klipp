@@ -75,11 +75,9 @@ pub struct Frei0rPlugin {
     // Drop order matters: instances drop first, then the Library. We
     // don't allow instances to outlive the plugin (Frei0rEffect holds
     // an Arc<Frei0rPlugin>), so the explicit Drop on this struct can
-    // safely call f0r_deinit and close `lib` after.
-    /// Taken in `Drop`, so the library closes holding the load lock: its
-    /// destructors run with the linker's lock held, as its initialisers do
-    /// (#1032).
-    lib: Option<libloading::Library>,
+    // safely call f0r_deinit and close `_lib` after.
+    /// Closes under the load lock when it drops (#1032).
+    _lib: crate::library::GuardedLibrary,
     pub info: Frei0rPluginInfo,
     construct: F0rConstructFn,
     destruct: F0rDestructFn,
@@ -99,8 +97,10 @@ impl Frei0rPlugin {
     /// Open a `.so` and resolve every required symbol. Returns `Err`
     /// if the file isn't a frei0r plugin.
     pub fn open(path: &Path, info: Frei0rPluginInfo) -> Result<Self, String> {
-        let lib = klipp_load_lock::while_loading(|| unsafe { libloading::Library::new(path) })
-            .map_err(|e| format!("dlopen failed: {e}"))?;
+        // Opened, and closed on every way out of here that fails (a
+        // missing symbol, a failed `f0r_init`), under the load lock.
+        let guarded = crate::library::GuardedLibrary::open(path).map_err(|e| format!("dlopen failed: {e}"))?;
+        let lib = guarded.get();
 
         macro_rules! sym {
             ($name:literal, $ty:ty) => {{
@@ -132,7 +132,7 @@ impl Frei0rPlugin {
         }
 
         Ok(Self {
-            lib: Some(lib),
+            _lib: guarded,
             info,
             construct,
             destruct,
@@ -147,10 +147,7 @@ impl Drop for Frei0rPlugin {
     fn drop(&mut self) {
         let deinit = self.deinit;
         let _ = frei0r_guard!({ unsafe { deinit() } });
-        if let Some(lib) = self.lib.take() {
-            let _closing = klipp_load_lock::library_loading();
-            drop(lib);
-        }
+        // `_lib` drops after this, closing under the load lock.
     }
 }
 
