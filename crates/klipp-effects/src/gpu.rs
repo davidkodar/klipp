@@ -5063,6 +5063,17 @@ impl GpuEffectsPipeline {
     /// overhead beyond the actual GPU work. Merging the submits is a
     /// pure win — the chain dispatch was always going to fence on the
     /// readback's `device.poll(Wait)` anyway.
+    /// The frame in chain slot A (`slot_a`) or B, read back as linear
+    /// RGBA, after whatever has been submitted against it.
+    #[doc(hidden)]
+    pub fn download_chain_slot_linear(&self, slot_a: bool, pixel_count: usize) -> Vec<f32> {
+        if self.is_device_lost() {
+            return vec![0.0f32; pixel_count * 4];
+        }
+        let buf = if slot_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() };
+        self.download_linear_rgba_f32(buf.expect("chain buffers must be initialized"), pixel_count)
+    }
+
     pub fn flush_chain_and_download_linear(&mut self, slot_a: bool, pixel_count: usize) -> Vec<f32> {
         if self.is_device_lost() {
             return vec![0.0f32; pixel_count * 4];
@@ -5922,12 +5933,20 @@ impl GpuEffectsPipeline {
     /// `apply_effects` wraps this in an upload and a download; the layer
     /// stack runs it on a resident layer.
     pub fn run_effects_in_chain(&mut self, effects: &[BuiltinEffect], width: u32, height: u32) -> bool {
+        self.run_effects_in_chain_from(effects, true, width, height)
+    }
+
+    /// [`Self::run_effects_in_chain`] on the frame in chain slot A
+    /// (`start_in_a`) or B: where a grade run left its result on the GPU
+    /// (#1089, M2 step 10). Returns whether the result sits in slot A.
+    #[doc(hidden)]
+    pub fn run_effects_in_chain_from(&mut self, effects: &[BuiltinEffect], start_in_a: bool, width: u32, height: u32) -> bool {
         // A lost device runs none of them, so every effect is missing;
         // set before the early return, or a caller would read the last
         // run's answer.
         self.effects_incomplete.set(self.is_device_lost() && !effects.is_empty());
         if self.is_device_lost() || effects.is_empty() {
-            return true;
+            return start_in_a;
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -5937,7 +5956,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        let mut current_in_a = true;
+        let mut current_in_a = start_in_a;
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
 

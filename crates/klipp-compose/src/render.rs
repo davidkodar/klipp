@@ -263,6 +263,9 @@ pub struct RenderStats {
     /// Layers the GPU stack had no seed for, rendered on the CPU and
     /// uploaded: the slow way in.
     pub cpu_layers: u32,
+    /// Clips whose effects took the grade's result on the GPU, with no
+    /// download and upload between them (#1089, M2 step 10).
+    pub effects_followed_grade: u32,
 }
 
 /// One entry of the stack [`Renderer::render`] composites.
@@ -429,6 +432,10 @@ pub struct Renderer {
     gpu: Option<klipp_effects::gpu::GpuEffectsPipeline>,
     gpu_tried: bool,
     allow_gpu: bool,
+    /// The effects take the grade's result as before, through a download
+    /// and an upload, instead of on the GPU (#1089, M2 step 10): the
+    /// fallback until M2's effect families are native.
+    legacy_effects: bool,
     ofx: klipp_plugin::OfxHost,
     titles: klipp_title::TitleRenderer,
     /// The warm-up thread's ends: titles to render ahead go out, their
@@ -533,6 +540,7 @@ impl Renderer {
             gpu: None,
             gpu_tried: false,
             allow_gpu: true,
+            legacy_effects: std::env::var_os("KLIPP_LEGACY_EFFECTS").is_some_and(|v| v == "1"),
             ofx,
             titles,
             warm_tx: None,
@@ -570,6 +578,12 @@ impl Renderer {
 
     /// The GPU effects pipeline, built on first use; `None` without a
     /// usable GPU or with the GPU disabled.
+    /// Run the effects after the grade the legacy way, through a
+    /// download and an upload (#1089, M2 step 10's fallback).
+    pub fn set_legacy_effects(&mut self, legacy: bool) {
+        self.legacy_effects = legacy;
+    }
+
     pub fn gpu_pipeline(&mut self) -> Option<&mut klipp_effects::gpu::GpuEffectsPipeline> {
         self.gpu()
     }
@@ -2067,14 +2081,34 @@ impl Renderer {
             }
             self.found.ungraded = Some(before);
         }
-        let mut pixels = self.grade(clip, input, clip_time, fps, width, height);
-        if let Some(t) = hdr {
-            self.display_render(&mut pixels, t);
-        }
         let (mut fx, opacity) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied());
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
         self.prepare_temporal_effects(clip, &fx, time, fps, height, src);
+        // The grade's result goes on into the effects on the GPU, with no
+        // download and upload between them, when nothing in between needs
+        // the picture on the CPU (#1089, M2 step 10).
+        let on_gpu = self.effects_follow_grade_on_gpu(clip, hdr.is_some(), &fx);
+        if on_gpu {
+            self.executor.request_output_on_gpu();
+        }
+        let mut pixels = self.grade(clip, input, clip_time, fps, width, height);
+        if on_gpu {
+            if pixels.is_empty() {
+                let t = Instant::now();
+                if let Some(out) = self.executor.effects_on_output(&fx, width, height) {
+                    self.found.stats.effects_ms += ms_since(t);
+                    self.found.stats.effects_followed_grade += 1;
+                    return Some((out, opacity));
+                }
+            }
+            // Came back on the CPU (a node with no GPU dispatch), or the
+            // grade never ran: the effects take the picture as before.
+            self.executor.cancel_output_on_gpu();
+        }
+        if let Some(t) = hdr {
+            self.display_render(&mut pixels, t);
+        }
         let provider = if clip.has_enabled_plugin_matching(is_temporal_plugin) {
             src.temporal_frames(clip)
         } else {
@@ -2097,6 +2131,28 @@ impl Renderer {
             (None, None) => self.effects(&fx, pixels, clip_time, width, height),
         };
         Some((pixels, opacity))
+    }
+
+    /// Whether `clip`'s effects can take the grade's result where it sits
+    /// on the GPU: the grade runs (no shortcut, nothing inspected), and
+    /// nothing between the grade and the effects needs the picture on the
+    /// CPU (an HDR source's display render, a plug-in, a shutter or a
+    /// title's own motion blur), and every effect runs on the GPU. The
+    /// legacy route, a download and an upload between them, stays
+    /// selectable ([`Self::set_legacy_effects`], or `KLIPP_LEGACY_EFFECTS=1`)
+    /// until M2's effect families are native.
+    fn effects_follow_grade_on_gpu(&self, clip: &Clip, hdr: bool, fx: &[BuiltinEffect]) -> bool {
+        !self.legacy_effects
+            && self.allow_gpu
+            && has_active_effects(fx)
+            && klipp_effects::chain_supports_gpu(fx)
+            && !hdr
+            && !clip.grade_is_identity()
+            && self.inspect.clip != Some(clip.id)
+            && !clip.has_enabled_plugins()
+            && title_motion_blur(clip).is_none()
+            && !self.shutter.contains_key(&clip.id)
+            && !self.title_shutter.contains_key(&clip.id)
     }
 
     /// A title as working-space linear pixels at one instant: rasterised

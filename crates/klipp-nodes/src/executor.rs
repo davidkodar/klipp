@@ -1212,6 +1212,27 @@ impl GraphExecutor {
         self.output_on_gpu
     }
 
+    /// Withdraw a [`Self::request_output_on_gpu`] that no run took up (the
+    /// grade was skipped, or the run stopped before it), so it can't apply
+    /// to the next, unrelated run.
+    pub fn cancel_output_on_gpu(&mut self) {
+        self.keep_output_on_gpu = false;
+    }
+
+    /// Run built-in `effects` on the last run's result where it sits on
+    /// the GPU, and read the result back (#1089, M2 step 10): the grade's
+    /// output goes on into the effects without a download and an upload
+    /// between them. `None` if the last run did not keep its output on
+    /// the GPU. The effects run as `run_effects_in_chain` runs them
+    /// anywhere: recorded arms batched, the rest each in its own pass.
+    pub fn effects_on_output(&mut self, effects: &[klipp_effects::BuiltinEffect], width: u32, height: u32) -> Option<Vec<f32>> {
+        let slot_a = self.output_on_gpu.take()?;
+        self.last_chain_final_slot = None;
+        let gpu = self.gpu.as_mut()?;
+        let in_a = gpu.run_effects_in_chain_from(effects, slot_a, width, height);
+        Some(gpu.download_chain_slot_linear(in_a, (width as usize) * (height as usize)))
+    }
+
     /// Encode the last run's GPU-resident result to display sRGB u8 and
     /// read that back — see `GpuEffectsPipeline::encode_chain_to_display_u8`.
     /// `tonemap_exposure` applies the display tone map first. `None` if the
