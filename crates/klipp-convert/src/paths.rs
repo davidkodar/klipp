@@ -140,10 +140,13 @@ pub fn instance_sources(instance: Uuid, scene_clips: impl IntoIterator<Item = Uu
     scene_clips.into_iter().map(|c| (Uuid::new_v5(&instance, c.as_bytes()), c)).collect()
 }
 
-/// One occurrence of a document node in a render copy: the document clip
-/// the copy comes from, and the node ids from that copy's graph down to it.
+/// One occurrence of a document node in a render copy: which copy (its
+/// index in the copies given, the one thing that tells two copies of one
+/// document clip apart), the document clip it comes from, and the node ids
+/// from that copy's graph down to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Occurrence {
+    pub copy: usize,
     pub clip: Uuid,
     pub nodes: Vec<NodeId>,
 }
@@ -154,7 +157,7 @@ pub struct Occurrence {
 /// [`instance_sources`]), for the drain to write a live change into.
 pub fn occurrences(path: &NodePath, copies: &[(Uuid, &ClipPicture)]) -> Vec<Occurrence> {
     let mut out = Vec::new();
-    for (clip, copy) in copies {
+    for (index, (clip, copy)) in copies.iter().enumerate() {
         let nodes = &copy.graph.nodes;
         let found: Option<Vec<NodeId>> = match path.root {
             Root::Clip { clip: c } if c == *clip => {
@@ -172,7 +175,7 @@ pub fn occurrences(path: &NodePath, copies: &[(Uuid, &ClipPicture)]) -> Vec<Occu
                 .map(|n| vec![n.id]),
         };
         if let Some(nodes) = found {
-            out.push(Occurrence { clip: *clip, nodes });
+            out.push(Occurrence { copy: index, clip: *clip, nodes });
         }
     }
     out

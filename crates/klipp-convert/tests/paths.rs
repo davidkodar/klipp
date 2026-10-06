@@ -110,7 +110,7 @@ fn a_change_reaches_every_occurrence_and_no_other() {
 
     // A clip's own node: that clip only, never a stage node of the same id.
     let own = NodePath::new(Root::Clip { clip: u(C1) }, [group_id(&d, C1), exposure(5)]);
-    assert_eq!(occurrences(&own, &refs), vec![Occurrence { clip: u(C1), nodes: own.nodes.clone() }]);
+    assert_eq!(occurrences(&own, &refs), vec![Occurrence { copy: 0, clip: u(C1), nodes: own.nodes.clone() }]);
 
     // A group stage's node: in every member, inside the nested stage.
     for stage in [Stage::Pre, Stage::Post] {
@@ -170,6 +170,8 @@ fn duplicate_compounds_and_precomposition_instances_are_reached() {
     let keyed: Vec<(Uuid, &ClipPicture)> = vec![(u(C1), c1), (u(C1), c1), (sources[&renamed], c1)];
     let own = NodePath::new(Root::Clip { clip: u(C1) }, [group_id(&d, C1), exposure(5)]);
     assert_eq!(occurrences(&own, &keyed).len(), 3, "both compound copies and the instance copy");
+    let copies: Vec<usize> = occurrences(&own, &keyed).iter().map(|o| o.copy).collect();
+    assert_eq!(copies, [0, 1, 2], "each copy by its index, though two share a key");
     let stage = NodePath::new(Root::GroupStage { group: u(GROUP), stage: Stage::Pre }, [exposure(2)]);
     assert_eq!(occurrences(&stage, &keyed).len(), 3, "a stage reaches every copy of every member");
 }
