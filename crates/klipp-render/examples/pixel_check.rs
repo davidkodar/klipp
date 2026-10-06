@@ -29,9 +29,10 @@
 //!
 //! **Coverage.** A frame of one flat colour shows nothing, and a project
 //! with media offline renders placeholders, so a check of those proves
-//! nothing. Each project's offline media and flat frames are counted in
-//! `index.json`. A project is **covered** when all its media is online and
-//! at least one frame is a picture. The summary says how many projects and
+//! nothing; a missing LUT, title image or texture is drawn without, just as
+//! silently. Each project's offline media, missing files and flat frames are
+//! counted in `index.json`. A project is **covered** when all its media and
+//! files are there and at least one frame is a picture. The summary says how many projects and
 //! frames are covered, and lists the ones that aren't: they are never
 //! counted as passed, and a project covered in the recording must be
 //! covered in the compare.
@@ -61,22 +62,36 @@ fn projects(list: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 /// A temporary copy of a project: its JSON files copied, everything else
-/// linked, so nothing of the original can be written.
+/// linked, so nothing of the original can be written. A JSON file, or the
+/// `media` or `looks` folder, that is itself a link is copied as what it
+/// points to: the copy owns every file and folder the check writes.
 fn temp_copy(dir: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for e in std::fs::read_dir(dir)? {
         let e = e?;
         let (from, dest) = (e.path(), to.join(e.file_name()));
-        let kind = e.file_type()?;
-        if kind.is_dir() && !kind.is_symlink() && (e.file_name() == "media" || e.file_name() == "looks") {
+        // Through a link: what it points to.
+        let target = std::fs::metadata(&from);
+        let is_dir = target.as_ref().is_ok_and(|m| m.is_dir());
+        let is_file = target.as_ref().is_ok_and(|m| m.is_file());
+        if is_dir && (e.file_name() == "media" || e.file_name() == "looks") {
             temp_copy(&from, &dest)?;
-        } else if from.extension().is_some_and(|x| x == "json") && kind.is_file() {
+        } else if from.extension().is_some_and(|x| x == "json") && is_file {
             std::fs::copy(&from, &dest)?;
         } else {
             std::os::unix::fs::symlink(&from, &dest)?;
         }
     }
     Ok(())
+}
+
+/// Write a file of the copy, refusing a link: what the check writes must
+/// never reach the original.
+fn write_owned(path: &Path, text: &str) -> Result<(), String> {
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(format!("{} is a link into the original: not written", path.display()));
+    }
+    std::fs::write(path, text).map_err(|e| format!("writing {}: {e}", path.display()))
 }
 
 /// Keys whose string value the loader resolves against the project folder:
@@ -119,11 +134,42 @@ fn resolve_against(copy: &Path, original: &Path) -> Result<(), String> {
         let Ok(text) = std::fs::read_to_string(&file) else { continue };
         let mut v: Value = serde_json::from_str(&text).map_err(|e| format!("parsing {}: {e}", file.display()))?;
         if absolutize(&mut v, original) > 0 {
-            // Copies, never links (temp_copy).
-            std::fs::write(&file, serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            write_owned(&file, &serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?)?;
         }
     }
     Ok(())
+}
+
+/// Files the copy's `project.json` names that aren't there: a LUT, a title
+/// image or texture, a grade LUT. The renderer draws without them and says
+/// nothing, so a project missing one isn't covered. Paths are absolute by
+/// now (`resolve_against`); a grade LUT resolves through the library.
+fn missing_assets(copy: &Path) -> Result<usize, String> {
+    let text = std::fs::read_to_string(copy.join("project.json")).map_err(|e| format!("reading: {e}"))?;
+    let v: Value = serde_json::from_str(&text).map_err(|e| format!("parsing: {e}"))?;
+    let library = klipp_core::assets::bundled_luts_dir();
+    fn walk(v: &Value, library: Option<&Path>, n: &mut usize) {
+        match v {
+            Value::Object(o) => {
+                for (k, x) in o {
+                    match x {
+                        Value::String(s) if !s.is_empty() && PATH_KEYS.contains(&k.as_str()) => {
+                            *n += usize::from(!Path::new(s).exists());
+                        }
+                        Value::String(s) if !s.is_empty() && k == "lut_path" => {
+                            *n += usize::from(!klipp_core::assets::resolve_lut_path(s, library).exists());
+                        }
+                        _ => walk(x, library, n),
+                    }
+                }
+            }
+            Value::Array(a) => a.iter().for_each(|x| walk(x, library, n)),
+            _ => {}
+        }
+    }
+    let mut n = 0;
+    walk(&v, library, &mut n);
+    Ok(n)
 }
 
 /// Whether an RGBA frame is one colour throughout (alpha aside).
@@ -133,18 +179,20 @@ fn is_flat(px: &[u8]) -> bool {
 }
 
 /// What a project rendered: frames written and how many were flat, its
-/// media offline, and whether a grade ran on the GPU for its `-gpu` frames.
+/// media offline and other files missing (a LUT, a title image or texture),
+/// and whether a grade ran on the GPU for its `-gpu` frames.
 #[derive(Default)]
 struct Rendered {
     frames: usize,
     flat: usize,
     offline: usize,
+    missing: usize,
     grade_on_gpu: bool,
 }
 
 impl Rendered {
     fn covered(&self) -> bool {
-        self.offline == 0 && self.flat < self.frames
+        self.offline == 0 && self.missing == 0 && self.flat < self.frames
     }
 }
 
@@ -183,9 +231,10 @@ fn render_project(dir: &Path, out: &Path, scratch: &Path) -> Result<Rendered, St
         return Err("not there".into());
     }
     temp_copy(dir, &tmp).map_err(|e| format!("copying: {e}"))?;
-    let loaded = resolve_against(&tmp, dir).and_then(|()| klipp_project::load_project(&tmp).map_err(|e| format!("loading: {e}")));
-    let result = loaded.and_then(|(sequences, pool, colour, ..)| {
-        let mut done = Rendered { offline: pool.all().filter(|m| m.offline).count(), ..Rendered::default() };
+    let missing = resolve_against(&tmp, dir).and_then(|()| missing_assets(&tmp));
+    let loaded = missing.and_then(|missing| klipp_project::load_project(&tmp).map(|l| (missing, l)).map_err(|e| format!("loading: {e}")));
+    let result = loaded.and_then(|(missing, (sequences, pool, colour, ..))| {
+        let mut done = Rendered { offline: pool.all().filter(|m| m.offline).count(), missing, ..Rendered::default() };
         for (si, seq) in sequences.iter().enumerate() {
             let snapshot = SequenceSnapshot::from_sequence_with_all(seq, &sequences, &pool, &settings(), colour.global_lut_path.clone(), false, colour.working_colorspace).map_err(|e| format!("snapshot: {e:?}"))?;
             let (first, last) = (snapshot.start_frame(), snapshot.end_frame());
@@ -390,7 +439,7 @@ fn run_in(args: &[String], scratch: &Path) -> i32 {
         if recorded_covered.get(i) == Some(&true) && !r.covered() {
             lost.push(i);
         }
-        index.push(json!({ "project": i, "path": dir, "grade_on_gpu": r.grade_on_gpu, "frames": r.frames, "flat": r.flat, "offline": r.offline, "covered": r.covered() }));
+        index.push(json!({ "project": i, "path": dir, "grade_on_gpu": r.grade_on_gpu, "frames": r.frames, "flat": r.flat, "offline": r.offline, "missing": r.missing, "covered": r.covered() }));
     }
     let text = serde_json::to_string_pretty(&json!({ "projects": index, "failed": failed })).unwrap_or_default();
     if let Err(e) = std::fs::create_dir_all(&out).and_then(|()| std::fs::write(out.join("index.json"), text)) {
@@ -404,7 +453,7 @@ fn run_in(args: &[String], scratch: &Path) -> i32 {
     );
     let list_of = |v: &[usize]| v.iter().map(usize::to_string).collect::<Vec<_>>().join(", ");
     println!(
-        "coverage: {covered} of {rendered} projects show pictures, {real_frames} of {frames} frames; not covered (media offline or every frame flat, never counted as passed): {}",
+        "coverage: {covered} of {rendered} projects show pictures, {real_frames} of {frames} frames; not covered (media offline, a file missing, or every frame flat; never counted as passed): {}",
         not_covered.len()
     );
     if !not_covered.is_empty() {
@@ -592,6 +641,78 @@ mod tests {
         std::fs::remove_file(root.join("src/here.avi")).unwrap();
         assert_eq!(run_in(&args(&[Path::new("compare"), &list, &root.join("rec"), &root.join("cmp")]), &root), 1);
         assert_eq!(index_of(&root.join("cmp"))["projects"][1]["covered"], false);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Review of #1127: a project whose `manifest.json`, `project.json` or
+    /// `media` folder is a link is checked without writing through the
+    /// link. The originals are byte for byte what they were, and the
+    /// project is still covered (its relative media still resolves).
+    #[test]
+    fn a_linked_json_or_media_folder_is_never_written_through() {
+        let root = std::env::temp_dir().join(format!("klipp-pixel-check-test-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let Some(project) = relative_project(&root, "linked", false) else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        // Three projects: a linked manifest, a linked project.json, a linked media folder.
+        let mut cases = Vec::new();
+        for (n, what) in ["manifest", "project", "media"].into_iter().enumerate() {
+            let dir = root.join("projects").join(format!("{what}.klipp"));
+            std::fs::create_dir_all(dir.join("media")).unwrap();
+            std::fs::copy(project.join("project.json"), dir.join("project.json")).unwrap();
+            std::fs::copy(project.join("media/manifest.json"), dir.join("media/manifest.json")).unwrap();
+            let (inside, real) = match what {
+                "manifest" => (dir.join("media/manifest.json"), elsewhere.join(format!("{n}-manifest.json"))),
+                "project" => (dir.join("project.json"), elsewhere.join(format!("{n}-project.json"))),
+                _ => (dir.join("media"), elsewhere.join(format!("{n}-media"))),
+            };
+            std::fs::rename(&inside, &real).unwrap();
+            std::os::unix::fs::symlink(&real, &inside).unwrap();
+            let file = if what == "media" { real.join("manifest.json") } else { real.clone() };
+            cases.push((dir, file.clone(), std::fs::read(&file).unwrap()));
+        }
+        let list = root.join("list.txt");
+        std::fs::write(&list, cases.iter().map(|(d, ..)| format!("{}\n", d.display())).collect::<String>()).unwrap();
+        assert_eq!(run_in(&args(&[Path::new("record"), &list, &root.join("rec")]), &root.join("projects")), 0);
+        for (i, (dir, file, before)) in cases.iter().enumerate() {
+            assert_eq!(&std::fs::read(file).unwrap(), before, "{}: the original is untouched", dir.display());
+            assert_eq!(index_of(&root.join("rec"))["projects"][i]["covered"], true, "{}", dir.display());
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Review of #1127: a file the project names that isn't there (a LUT,
+    /// a title image) is drawn without, silently, so the project isn't
+    /// covered even though its media is.
+    #[test]
+    fn a_missing_lut_or_title_image_is_not_covered() {
+        let root = std::env::temp_dir().join(format!("klipp-pixel-check-test-assets-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let Some(project) = relative_project(&root, "lut", false) else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let path = project.join("project.json");
+        let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        v["sequences"][0]["global_lut_path"] = json!("luts/not-there.cube");
+        std::fs::write(&path, v.to_string()).unwrap();
+        let list = root.join("list.txt");
+        std::fs::write(&list, format!("{}\n", project.display())).unwrap();
+        assert_eq!(run_in(&args(&[Path::new("record"), &list, &root.join("rec")]), &root), 0);
+        let p = &index_of(&root.join("rec"))["projects"][0];
+        assert_eq!((p["offline"].as_u64(), p["missing"].as_u64(), p["covered"].as_bool()), (Some(0), Some(1), Some(false)), "{p}");
+
+        // A title image layer's file, the same way.
+        let copy = root.join("copy.klipp");
+        std::fs::create_dir_all(&copy).unwrap();
+        std::fs::write(copy.join("project.json"), json!({ "o": [{ "content": { "Image": { "path": "/not/there.png" } } }] }).to_string()).unwrap();
+        assert_eq!(missing_assets(&copy).unwrap(), 1);
+        std::fs::write(copy.join("project.json"), json!({ "o": [{ "content": { "Image": { "path": path } } }] }).to_string()).unwrap();
+        assert_eq!(missing_assets(&copy).unwrap(), 0);
         let _ = std::fs::remove_dir_all(&root);
     }
 
