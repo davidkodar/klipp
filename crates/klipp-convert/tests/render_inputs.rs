@@ -721,14 +721,15 @@ fn check_spliced_against(dir: &Path, scratch: &Path, converted: Option<Value>) -
         let mut cb = (*cb).clone();
         if *k > 0 {
             let own = cb.builtin_effects().len().saturating_sub(*k);
-            cb.own_effects = Some(Box::new(klipp_timeline::OwnEffects {
+            cb.set_own_effects(Some(klipp_timeline::OwnEffects {
                 builtin_effects: cb.builtin_effects()[..own].to_vec(),
                 builtin_effects_enabled: cb.builtin_effects_enabled().iter().copied().take(own).collect(),
                 audio_effects: cb.audio_effects.clone(),
             }));
         }
         if !grade.is_null() {
-            cb.node_graph = serde_json::from_value(grade.clone()).map_err(|e| format!("clip {}: the flattened grade: {e}", cb.id.0))?;
+            let flattened = serde_json::from_value(grade.clone()).map_err(|e| format!("clip {}: the flattened grade: {e}", cb.id.0))?;
+            cb.edit_grade(|g| *g = flattened);
         }
         if crossed.contains(&ca.id.0) {
             checked.crossed += 1;
@@ -1325,7 +1326,7 @@ fn a_rewritten_load_delifts_to_todays_loaded_graph() {
             }
             rewritten += 1;
             let ours = to_v1::clip(&serde_json::to_value(delift::clip(&p).unwrap()).unwrap()).unwrap();
-            let theirs = serde_json::to_value(&today[clip["id"].as_str().unwrap()].node_graph).unwrap();
+            let theirs = serde_json::to_value(today[clip["id"].as_str().unwrap()].grade()).unwrap();
             // Today's typed graph saves defaults the stored form leaves out:
             // both go through today's own type before they're compared.
             let ours: klipp_nodes::NodeGraph = serde_json::from_value(ours["node_graph"].clone()).unwrap();

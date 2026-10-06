@@ -3070,7 +3070,7 @@ pub fn clip_effects(
     // A render copy carries its track's effects after the clip's own
     // (`bake_track_effects`); a track's Opacity weighs the clip's resolved
     // opacity rather than standing in for it (#1078).
-    let own = clip.own_effects.as_ref().map_or(clip.builtin_effects().len(), |o| o.builtin_effects.len());
+    let own = clip.own_effects().map_or(clip.builtin_effects().len(), |o| o.builtin_effects.len());
     let mut track_opacity = 1.0f32;
     let mut pinned = false;
     for (i, effect) in fx.iter_mut() {

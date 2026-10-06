@@ -1064,9 +1064,7 @@ pub fn apply_param_changes(
         if let Some(clip) = seq.all_clips_mut().find(|c| c.id == change.clip_id) {
             // A member of a grade group keeps its own grade beside the one
             // it runs; both take the drag (#237).
-            if let Some(own) = clip.own_node_graph.as_deref_mut() {
-                apply_override_recursive(own, change.node_id, &change.param, change.value);
-            }
+            clip.edit_own_grade(|own| apply_override_recursive(own, change.node_id, &change.param, change.value));
             if clip.edit_grade(|graph| apply_override_recursive(graph, change.node_id, &change.param, change.value)) {
                 applied += 1;
             }

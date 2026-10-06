@@ -53,8 +53,9 @@ fn write_the_fixture() {
     clip.edit_param_modifiers(|m| {
         m.insert(ParamId::Opacity, ModifierStack::default());
     });
-    clip.grade_versions.push(klipp_timeline::GradeVersion::new("Warm", clip.grade().clone()));
-    clip.active_grade_version = Some(0);
+    let warm = klipp_timeline::GradeVersion::new("Warm", clip.grade().clone());
+    clip.edit_grade_versions(|vs| vs.push(warm));
+    clip.set_active_grade_version(Some(0));
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     // Through text and back, so the fixture is the form that reads in.
     let json = serde_json::to_string_pretty(&clip).unwrap();

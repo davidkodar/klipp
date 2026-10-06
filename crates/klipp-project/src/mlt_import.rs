@@ -802,7 +802,7 @@ fn apply_producer_filters(
                 // property alongside `rect`. Degrees, same time-key format.
                 if let Some(raw) = get_property(filter, "rotation") {
                     match parse_scalar_keyframes(raw, fps) {
-                        Ok(kfs) => clip.transform_rotation_keyframes = kfs.into(),
+                        Ok(kfs) => clip.edit_transform_rotation_keyframes(|v| *v = kfs),
                         Err(e) => warnings.push(format!(
                             "Filter 'qtblend' rotation parse failed: {e} — rotation dropped",
                         )),

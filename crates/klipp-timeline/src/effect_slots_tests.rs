@@ -25,8 +25,8 @@ fn ids(c: &mut Clip) -> Vec<EffectId> {
 #[test]
 fn reads_reconcile_direct_tail_edits_without_changing_saved_fields() {
     let mut c = clip();
-    c.effect_list.builtin_effects = vec![blur(1.0), blur(2.0)];
-    c.effect_list.builtin_effects_enabled = vec![false];
+    c.picture.effect_list.builtin_effects = vec![blur(1.0), blur(2.0)];
+    c.picture.effect_list.builtin_effects_enabled = vec![false];
     let before = serde_json::to_value(&c).unwrap();
     let old = ids(&mut c);
     assert_eq!(serde_json::to_value(&c).unwrap(), before);
@@ -35,14 +35,14 @@ fn reads_reconcile_direct_tail_edits_without_changing_saved_fields() {
         vec![false, true]
     );
     assert_eq!(ids(&mut c), old);
-    c.effect_list.builtin_effects.push(blur(3.0));
+    c.picture.effect_list.builtin_effects.push(blur(3.0));
     let grown = ids(&mut c);
     assert_eq!(&grown[..2], &old);
     assert!(!old.contains(&grown[2]));
-    c.effect_list.builtin_effects.truncate(1);
+    c.picture.effect_list.builtin_effects.truncate(1);
     assert_eq!(c.index_of(old[1]), None);
     assert_eq!(ids(&mut c), vec![old[0]]);
-    c.effect_list.builtin_effects.push(blur(4.0));
+    c.picture.effect_list.builtin_effects.push(blur(4.0));
     let fresh = ids(&mut c);
     assert_ne!(fresh[1], old[1]);
     assert_ne!(fresh[1], grown[2]);
@@ -75,8 +75,8 @@ fn a_clone_keeps_ids_a_load_rebuilds_them_and_ids_never_reach_json() {
 #[test]
 fn invalid_operations_and_old_short_flags_keep_their_meaning() {
     let mut c = clip();
-    c.effect_list.builtin_effects = vec![blur(1.0), blur(2.0), blur(3.0)];
-    c.effect_list.builtin_effects_enabled = vec![false];
+    c.picture.effect_list.builtin_effects = vec![blur(1.0), blur(2.0), blur(3.0)];
+    c.picture.effect_list.builtin_effects_enabled = vec![false];
     let original = ids(&mut c);
     let missing = EffectId::fresh();
     let before = serde_json::to_value(&c).unwrap();
@@ -91,13 +91,13 @@ fn invalid_operations_and_old_short_flags_keep_their_meaning() {
     assert_eq!(serde_json::to_value(&c).unwrap(), before);
     assert!(c.remove_builtin_effect(2).is_some());
     assert_eq!(
-        c.effect_list.builtin_effects_enabled,
+        c.picture.effect_list.builtin_effects_enabled,
         vec![false],
         "old remove must not pad persisted flags"
     );
     assert!(c.move_builtin_effect(0, 1));
     assert_eq!(ids(&mut c), vec![original[1], original[0]]);
-    assert_eq!(c.effect_list.builtin_effects_enabled, vec![true, false]);
+    assert_eq!(c.picture.effect_list.builtin_effects_enabled, vec![true, false]);
 }
 
 #[derive(Clone, Debug)]
@@ -110,9 +110,9 @@ struct Entry {
 
 fn attach(c: &mut Clip, id: EffectId, marker: f32) {
     let i = c.index_of(id).unwrap();
-    c.effect_keyframes.0
+    c.picture.effect_keyframes.0
         .insert(format!("{i}:radius"), vec![key(marker)]);
-    c.param_modifiers.0.insert(
+    c.picture.param_modifiers.0.insert(
         ParamId::Effect {
             effect_index: i,
             param_name: "radius".into(),
@@ -140,10 +140,10 @@ fn check(c: &mut Clip, expected: &[Entry]) {
         assert_eq!(c.index_of(row.id), Some(i));
         assert_eq!(c.effect(row.id), Some(&blur(row.radius)));
         assert_eq!(
-            c.effect_keyframes.0[&format!("{i}:radius")][0].value,
+            c.picture.effect_keyframes.0[&format!("{i}:radius")][0].value,
             row.marker
         );
-        let stack = &c.param_modifiers.0[&ParamId::Effect {
+        let stack = &c.picture.param_modifiers.0[&ParamId::Effect {
             effect_index: i,
             param_name: "radius".into(),
         }];
@@ -167,7 +167,7 @@ fn random_edits_keep_values_flags_and_animation_with_their_ids() {
     for seed in 1..=32 {
         let mut random = seed;
         let mut c = clip();
-        c.param_modifiers.0
+        c.picture.param_modifiers.0
             .insert(ParamId::Opacity, ModifierStack::default());
         let mut rows: Vec<Entry> = vec![];
         let mut seen = HashSet::new();
@@ -265,9 +265,9 @@ fn insertion_preserves_occupied_and_orphan_animation_without_collisions() {
     let mut c = clip();
     let old = c.push_effect(blur(1.0));
     attach(&mut c, old, 10.0);
-    c.effect_keyframes.0
+    c.picture.effect_keyframes.0
         .insert("1:radius".into(), vec![key(20.0)]);
-    c.param_modifiers.0.insert(
+    c.picture.param_modifiers.0.insert(
         ParamId::Effect {
             effect_index: 1,
             param_name: "radius".into(),
@@ -276,8 +276,8 @@ fn insertion_preserves_occupied_and_orphan_animation_without_collisions() {
     );
     c.insert_effect(0, blur(2.0)).unwrap();
     assert_eq!(c.index_of(old), Some(1));
-    assert_eq!(c.effect_keyframes.0["1:radius"][0].value, 10.0);
-    assert_eq!(c.effect_keyframes.0["2:radius"][0].value, 20.0);
+    assert_eq!(c.picture.effect_keyframes.0["1:radius"][0].value, 10.0);
+    assert_eq!(c.picture.effect_keyframes.0["2:radius"][0].value, 20.0);
     assert_eq!(c.param_modifiers().len(), 2);
     assert!(c.param_modifiers().contains_key(&ParamId::Effect {
         effect_index: 2,
@@ -291,7 +291,7 @@ fn insertion_refuses_unshiftable_animation_without_partial_edits() {
         let mut c = clip();
         let old = c.push_effect(blur(1.0));
         if modifier {
-            c.param_modifiers.0.insert(
+            c.picture.param_modifiers.0.insert(
                 ParamId::Effect {
                     effect_index: usize::MAX,
                     param_name: "radius".into(),
@@ -299,20 +299,20 @@ fn insertion_refuses_unshiftable_animation_without_partial_edits() {
                 ModifierStack::default(),
             );
         } else {
-            c.effect_keyframes.0
+            c.picture.effect_keyframes.0
                 .insert(format!("{}:radius", usize::MAX), vec![key(20.0)]);
         }
         let keys = c.effect_keyframes().clone();
         let modifiers = c.param_modifiers().clone();
         assert_eq!(c.insert_effect(0, blur(2.0)), None);
         assert_eq!(ids(&mut c), vec![old]);
-        assert_eq!(c.effect_list.builtin_effects, vec![blur(1.0)]);
-        assert_eq!(c.effect_list.builtin_effects_enabled, vec![true]);
+        assert_eq!(c.picture.effect_list.builtin_effects, vec![blur(1.0)]);
+        assert_eq!(c.picture.effect_list.builtin_effects_enabled, vec![true]);
         assert_eq!(c.effect_keyframes(), &keys);
         assert_eq!(c.param_modifiers().len(), modifiers.len());
         for (id, stack) in &modifiers {
             assert_eq!(
-                serde_json::to_value(&c.param_modifiers.0[id]).unwrap(),
+                serde_json::to_value(&c.picture.param_modifiers.0[id]).unwrap(),
                 serde_json::to_value(stack).unwrap()
             );
         }
@@ -322,7 +322,7 @@ fn insertion_refuses_unshiftable_animation_without_partial_edits() {
         assert_eq!(c.param_modifiers().len(), modifiers.len());
         for (id, stack) in &modifiers {
             assert_eq!(
-                serde_json::to_value(&c.param_modifiers.0[id]).unwrap(),
+                serde_json::to_value(&c.picture.param_modifiers.0[id]).unwrap(),
                 serde_json::to_value(stack).unwrap()
             );
         }
@@ -354,12 +354,12 @@ fn access_by_id_keys_as_the_saved_form() {
             *radius = 5.0;
         }
     });
-    assert_eq!(c.effect_list.builtin_effects[1], blur(5.0));
+    assert_eq!(c.picture.effect_list.builtin_effects[1], blur(5.0));
     c.edit_effect_keyframes_of(b, "radius", |v| v.push(key(3.0))).unwrap();
-    assert_eq!(c.effect_keyframes.0["1:radius"], vec![key(3.0)]);
+    assert_eq!(c.picture.effect_keyframes.0["1:radius"], vec![key(3.0)]);
     c.edit_effect_modifiers(b, "radius", |v| v.modifiers.extend(stack(0.5).modifiers)).unwrap();
     let at = ParamId::Effect { effect_index: 1, param_name: "radius".into() };
-    assert_eq!(amplitude(&c.param_modifiers.0[&at]), 0.5);
+    assert_eq!(amplitude(&c.picture.param_modifiers.0[&at]), 0.5);
     assert_eq!(c.remove_effect_keyframes(b, "radius"), Some(vec![key(3.0)]));
     assert!(c.remove_effect_modifiers(b, "radius").is_some());
     assert!(c.effect_keyframes().is_empty() && !c.param_modifiers().contains_key(&at));
@@ -384,7 +384,7 @@ fn keys_stay_on_their_effect_through_any_mix_of_operations() {
         let mut c = clip();
         let mut tag = 1.0_f32;
         for _ in 0..12 {
-            let len = c.effect_list.builtin_effects.len();
+            let len = c.picture.effect_list.builtin_effects.len();
             match next(5) {
                 0 | 1 => {
                     let id = c.insert_effect(next(len + 1), blur(tag)).unwrap();
@@ -408,13 +408,13 @@ fn keys_stay_on_their_effect_through_any_mix_of_operations() {
                 _ => {}
             }
         }
-        for (i, fx) in c.effect_list.builtin_effects.iter().enumerate() {
+        for (i, fx) in c.picture.effect_list.builtin_effects.iter().enumerate() {
             let BuiltinEffect::GaussianBlur { radius } = fx else { unreachable!() };
-            assert_eq!(c.effect_keyframes.0[&format!("{i}:radius")], vec![key(*radius)], "keyframe on effect {i}");
-            let m = &c.param_modifiers.0[&ParamId::Effect { effect_index: i, param_name: "radius".into() }];
+            assert_eq!(c.picture.effect_keyframes.0[&format!("{i}:radius")], vec![key(*radius)], "keyframe on effect {i}");
+            let m = &c.picture.param_modifiers.0[&ParamId::Effect { effect_index: i, param_name: "radius".into() }];
             assert_eq!(amplitude(m), *radius, "modifier on effect {i}");
         }
-        assert_eq!(c.effect_keyframes().len(), c.effect_list.builtin_effects.len(), "no key left behind");
+        assert_eq!(c.effect_keyframes().len(), c.picture.effect_list.builtin_effects.len(), "no key left behind");
     }
 }
 
@@ -425,7 +425,7 @@ fn effect_view(c: &Clip) -> String {
     keys.sort_by(|a, b| a.0.cmp(b.0));
     let mut mods: Vec<String> = c.param_modifiers().iter().map(|(k, v)| format!("{k:?}={v:?}")).collect();
     mods.sort();
-    format!("{:?}|{:?}|{:?}|{:?}", c.effect_list.builtin_effects, c.effect_list.builtin_effects_enabled, keys, mods)
+    format!("{:?}|{:?}|{:?}|{:?}", c.picture.effect_list.builtin_effects, c.picture.effect_list.builtin_effects_enabled, keys, mods)
 }
 
 /// A snapshot, any edits, a restore: exactly the snapshot, ids included,
@@ -476,7 +476,7 @@ fn existing_access_creates_nothing() {
     assert!(c.effect_keyframes().is_empty() && c.param_modifiers().is_empty(), "asking created nothing");
     c.edit_effect_keyframes_of(a, "radius", |v| v.push(key(1.0))).unwrap();
     c.edit_existing_effect_keyframes(a, "radius", |v| v.push(key(2.0))).unwrap();
-    assert_eq!(c.effect_keyframes.0["0:radius"].len(), 2);
+    assert_eq!(c.picture.effect_keyframes.0["0:radius"].len(), 2);
 }
 
 /// A fresh state restored onto a clip takes the values, effect modifiers
@@ -490,9 +490,9 @@ fn a_fresh_state_brings_values_with_new_ids() {
     let old = dst.push_effect(blur(1.0));
     dst.edit_param_modifiers(|v| v.insert(ParamId::Opacity, stack(2.0)));
     let mods = vec![(ParamId::Effect { effect_index: 0, param_name: "radius".into() }, stack(4.0)), (ParamId::Scale, stack(8.0))];
-    dst.restore_effects_state(EffectsState::fresh(src.effect_list.builtin_effects.clone(), src.effect_list.builtin_effects_enabled.clone(), src.effect_keyframes().clone(), mods));
-    assert_eq!(dst.effect_list.builtin_effects, vec![blur(4.0)]);
-    assert_eq!(dst.effect_keyframes.0["0:radius"], vec![key(4.0)]);
+    dst.restore_effects_state(EffectsState::fresh(src.picture.effect_list.builtin_effects.clone(), src.picture.effect_list.builtin_effects_enabled.clone(), src.effect_keyframes().clone(), mods));
+    assert_eq!(dst.picture.effect_list.builtin_effects, vec![blur(4.0)]);
+    assert_eq!(dst.picture.effect_keyframes.0["0:radius"], vec![key(4.0)]);
     assert!(dst.param_modifiers().contains_key(&ParamId::Opacity), "the clip's own modifier stays");
     assert!(!dst.param_modifiers().contains_key(&ParamId::Scale), "a non-effect modifier isn't part of the state");
     let new = dst.effect_id_at(0).unwrap();
@@ -536,7 +536,7 @@ fn a_new_clip_gives_its_effects_fresh_ids() {
     let fresh: HashSet<EffectId> = ids(&mut dup).into_iter().collect();
     assert_eq!(fresh.len(), 2);
     assert!(fresh.is_disjoint(&original), "a duplicate's effects are new effects");
-    assert_eq!(dup.effect_list.builtin_effects, c.effect_list.builtin_effects, "with the same values");
+    assert_eq!(dup.picture.effect_list.builtin_effects, c.picture.effect_list.builtin_effects, "with the same values");
     let again: HashSet<EffectId> = ids(&mut dup).into_iter().collect();
     assert_eq!(again, fresh, "and they last");
     c.refresh_effect_ids();

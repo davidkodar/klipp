@@ -761,11 +761,11 @@ impl KlippApp {
                         // (which would be expensive to clone per
                         // render).
                         let grade_version_names: Vec<String> = clip
-                            .grade_versions
+                            .grade_versions()
                             .iter()
                             .map(|v| v.name.clone())
                             .collect();
-                        let active_grade_version = clip.active_grade_version;
+                        let active_grade_version = clip.active_grade_version();
                         let clip_time_secs = (self.state.playhead.to_secs_f64()
                             - clip.timeline_in.to_secs_f64())
                         .max(0.0);

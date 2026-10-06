@@ -193,10 +193,10 @@ pub trait GradeAccess {
 
 impl GradeAccess for Clip {
     fn grade(&self) -> &NodeGraph {
-        &self.node_graph.0
+        &self.picture.node_graph.0
     }
     fn edit_grade<R>(&mut self, f: impl FnOnce(&mut NodeGraph) -> R) -> R {
-        f(&mut self.node_graph.0)
+        f(&mut self.picture.node_graph.0)
     }
 }
 
@@ -299,8 +299,8 @@ impl Sequence {
         for track in &self.tracks {
             out.extend(track.effects.grade.iter().map(|g| &g.0));
             for clip in &track.clips {
-                out.push(&clip.node_graph.0);
-                out.extend(clip.grade_versions.iter().map(|v| &v.node_graph.0));
+                out.push(&clip.picture.node_graph.0);
+                out.extend(clip.picture.grade_versions.iter().map(|v| &v.node_graph.0));
             }
         }
         out
@@ -315,8 +315,8 @@ impl Sequence {
         for track in &mut self.tracks {
             track.effects.grade.iter_mut().for_each(|g| f(&mut g.0));
             for clip in &mut track.clips {
-                f(&mut clip.node_graph.0);
-                clip.grade_versions.iter_mut().for_each(|v| f(&mut v.node_graph.0));
+                f(&mut clip.picture.node_graph.0);
+                clip.picture.grade_versions.iter_mut().for_each(|v| f(&mut v.node_graph.0));
             }
         }
     }
