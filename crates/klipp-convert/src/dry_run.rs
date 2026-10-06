@@ -194,11 +194,63 @@ fn check_into(dir: &Path, parity: Parity, splicer: Option<SpliceDecider>, report
                 Ok(()) => *report.stores_extra.entry("revision 2 projects").or_default() += 1,
                 Err(e) => report.stops.push(format!("revision 2: {e}")),
             }
+            match paths_resolve(&out) {
+                Ok(n) => *report.stores_extra.entry("node paths resolved").or_default() += n,
+                Err(e) => report.stops.push(format!("node paths: {e}")),
+            }
         }
         Err(e) => report.stops.push(format!("revision 2: {e}")),
     }
     side_stores(dir, parity, &mut stores, &mut report.stops);
     report.stores = stores;
+}
+
+/// Every node of every grade in a converted project, addressed by its
+/// path and resolved back to itself: clips' Grade groups (one level of
+/// nesting), stages, timeline grades, track grades and track effects.
+fn paths_resolve(converted: &Value) -> Result<usize, String> {
+    use crate::paths::{resolve, Documents};
+    use klipp_graph_format::lifted::types as lt;
+    use klipp_graph_format::path::{NodePath, Root, TrackPart};
+    let d = Documents::of(converted)?;
+    let mut n = 0;
+    let mut check = |p: NodePath| -> Result<(), String> {
+        let want = p.node();
+        let got = resolve(&d, &p).map_err(|e| format!("{p:?}: {e}"))?.id;
+        if Some(got) != want {
+            return Err(format!("{p:?} resolved to {got}"));
+        }
+        n += 1;
+        Ok(())
+    };
+    for (clip, picture) in &d.clips {
+        for g in picture.graph.nodes.iter().filter(|x| x.type_id.as_str() == lt::GROUP) {
+            for inner in &g.group.as_ref().ok_or("a group without a body")?.graph.nodes {
+                check(NodePath::new(Root::Clip { clip: *clip }, [g.id, inner.id]))?;
+            }
+        }
+    }
+    for ((group, stage), body) in &d.stages {
+        for x in &body.nodes {
+            check(NodePath::new(Root::GroupStage { group: *group, stage: *stage }, [x.id]))?;
+        }
+    }
+    for (seq, body) in &d.timeline {
+        for x in &body.nodes {
+            check(NodePath::new(Root::TimelineGrade { sequence: *seq }, [x.id]))?;
+        }
+    }
+    for (track, body) in &d.track_grades {
+        for x in &body.nodes {
+            check(NodePath::new(Root::Track { track: *track, part: TrackPart::Grade }, [x.id]))?;
+        }
+    }
+    for (track, effects) in &d.track_effects {
+        for x in effects {
+            check(NodePath::new(Root::Track { track: *track, part: TrackPart::Effects }, [x.id]))?;
+        }
+    }
+    Ok(n)
 }
 
 /// Lift one clip: its picture and kind, and its notes.

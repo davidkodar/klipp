@@ -471,6 +471,7 @@ fn is_yes(v: &bool) -> bool {
 }
 
 pub mod lifted;
+pub mod path;
 pub mod ports;
 
 #[cfg(test)]
