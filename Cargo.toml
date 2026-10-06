@@ -36,6 +36,7 @@ members = [
     "crates/klipp-mcp",
     "crates/klipp-audio-search",
     "crates/klipp-graph-format",
+    "crates/klipp-graph-lift",
 ]
 resolver = "2"
 
@@ -225,6 +226,7 @@ klipp-core    = { path = "crates/klipp-core" }
 klipp-project = { path = "crates/klipp-project" }
 klipp-timeline = { path = "crates/klipp-timeline" }
 klipp-graph-format = { path = "crates/klipp-graph-format" }
+klipp-graph-lift = { path = "crates/klipp-graph-lift" }
 klipp-transitions = { path = "crates/klipp-transitions" }
 klipp-validation  = { path = "crates/klipp-validation" }
 klipp-media   = { path = "crates/klipp-media" }

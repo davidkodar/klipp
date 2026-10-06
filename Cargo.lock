@@ -2961,6 +2961,7 @@ dependencies = [
  "klipp-core",
  "klipp-effects",
  "klipp-graph-format",
+ "klipp-graph-lift",
  "klipp-media",
  "klipp-nodes",
  "klipp-project",
@@ -3112,6 +3113,18 @@ version = "0.1.0"
 name = "klipp-graph-format"
 version = "0.1.0"
 dependencies = [
+ "klipp-nodes",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "klipp-graph-lift"
+version = "0.1.0"
+dependencies = [
+ "klipp-effects",
+ "klipp-graph-format",
  "klipp-nodes",
  "serde",
  "serde_json",
