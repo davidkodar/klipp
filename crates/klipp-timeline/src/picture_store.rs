@@ -37,6 +37,10 @@ pub struct ClipPictureFields {
     /// serde, which is the view's.
     #[serde(skip)]
     lifted: Lifted,
+    /// The built-in effects' ids for this session: not picture data, so
+    /// keeping them current leaves the lifted picture as it is.
+    #[serde(skip)]
+    effect_ids: crate::effect_slots::EffectIds,
 }
 
 impl ClipPictureFields {
@@ -52,6 +56,14 @@ impl ClipPictureFields {
         &mut self.view
     }
 
+    pub(crate) fn effect_ids(&self) -> &crate::effect_slots::EffectIds {
+        &self.effect_ids
+    }
+
+    pub(crate) fn effect_ids_mut(&mut self) -> &mut crate::effect_slots::EffectIds {
+        &mut self.effect_ids
+    }
+
     pub(crate) fn lifted(&self) -> &Lifted {
         &self.lifted
     }
@@ -65,7 +77,7 @@ impl ClipPictureFields {
 
 impl From<PictureView> for ClipPictureFields {
     fn from(view: PictureView) -> Self {
-        Self { view, lifted: Lifted::default() }
+        Self { view, lifted: Lifted::default(), effect_ids: Default::default() }
     }
 }
 

@@ -215,3 +215,24 @@ fn a_clone_given_a_new_id_lifts_its_own_picture() {
     assert_eq!(*ours, *fresh.picture_v2().unwrap(), "the same as a clean lift of the new clip");
     assert!(Arc::ptr_eq(&theirs, &original.picture_v2().unwrap()), "the original keeps its own");
 }
+
+/// Effect ids are this session's names for the effects, not picture data:
+/// looking one up, or making them anew, keeps the lifted picture.
+#[test]
+fn an_effect_id_lookup_keeps_the_lifted_picture() {
+    let mut c = clip();
+    c.push_effect(BuiltinEffect::GaussianBlur { radius: 2.0 });
+    c.push_effect(BuiltinEffect::Invert { mix: 0.5 });
+    let before = c.picture_v2().unwrap();
+    let id = c.effect_id_at(1).unwrap();
+    assert_eq!(c.index_of(id), Some(1));
+    assert_eq!(c.effect_entries().count(), 2);
+    let _ = c.effects_state();
+    c.refresh_effect_ids();
+    assert!(Arc::ptr_eq(&before, &c.picture_v2().unwrap()), "the same lifted picture, not a new lift");
+    // A copy that becomes a new clip names its effects anew (and, being
+    // another clip, lifts its own picture: see the test above).
+    let mut copy = c.clone();
+    copy.id = klipp_core::ClipId::new();
+    assert_ne!(copy.effect_id_at(0), c.effect_id_at(0));
+}
