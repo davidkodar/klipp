@@ -378,8 +378,6 @@ pub fn expand_control_commands(commands: Vec<AppCommand>, batch: bool) -> Vec<Ap
     out
 }
 
-/// The last absolute seek among a control envelope's commands: where the
-/// playhead is headed once they are applied.
 /// The first parameter write in `cmds` whose clip isn't one of `seq`'s own.
 /// The socket checks a clip id against the engine's flattened copy, where
 /// a compound's clips sit under their own ids, but a write applies only to
@@ -392,6 +390,8 @@ pub(super) fn param_write_outside(seq: &klipp_timeline::Sequence, cmds: &[AppCom
     })
 }
 
+/// The last absolute seek among a control envelope's commands: where the
+/// playhead is headed once they are applied.
 pub(super) fn last_seek(cmds: &[AppCommand]) -> Option<klipp_core::Timecode> {
     cmds.iter().rev().find_map(|c| match c {
         AppCommand::SeekTo(t) => Some(*t),
