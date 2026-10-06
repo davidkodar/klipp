@@ -256,8 +256,8 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
     // transform is applied once, at the first, and the render drops the
     // rest, which used to move, scale and turn the clip again.
     for (_, c) in pictures.iter().filter(|(_, c)| c.enabled) {
-        let on = |i: usize| c.builtin_effects_enabled.get(i).copied().unwrap_or(true);
-        let transforms = c.builtin_effects.iter().enumerate().filter(|(i, e)| on(*i) && matches!(e, klipp_effects::BuiltinEffect::Transform { .. })).count();
+        let on = |i: usize| c.builtin_effects_enabled().get(i).copied().unwrap_or(true);
+        let transforms = c.builtin_effects().iter().enumerate().filter(|(i, e)| on(*i) && matches!(e, klipp_effects::BuiltinEffect::Transform { .. })).count();
         if transforms > 1 {
             add(
                 Severity::Warning,
@@ -1037,14 +1037,23 @@ mod tests {
     fn a_second_transform_effect_is_reported() {
         let (mut seq, pool, talk, _) = piece();
         let t = || klipp_effects::BuiltinEffect::Transform { position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
-        seq.tracks[0].clips[0].builtin_effects = vec![t()];
+        {
+            let effect_clip = &mut seq.tracks[0].clips[0];
+            effect_clip.set_effect_list(vec![t()], effect_clip.builtin_effects_enabled().to_vec());
+        }
         assert!(!rules(&check(&seq, &pool, &Spoken(talk))).contains(&"extra_transform"));
-        seq.tracks[0].clips[0].builtin_effects.push(t());
+        {
+            let effect_clip = &mut seq.tracks[0].clips[0];
+            effect_clip.set_effect_list(effect_clip.builtin_effects().iter().cloned().chain(std::iter::once(t())).collect(), effect_clip.builtin_effects_enabled().to_vec());
+        }
         let r = check(&seq, &pool, &Spoken(talk));
         let f = r.findings.iter().find(|f| f.rule == "extra_transform").unwrap_or_else(|| panic!("{}", r.text()));
         assert_eq!((f.severity, f.at_secs), (Severity::Warning, Some(0.0)));
         // Switched off, the second is no finding.
-        seq.tracks[0].clips[0].builtin_effects_enabled = vec![true, false];
+        {
+            let effect_clip = &mut seq.tracks[0].clips[0];
+            effect_clip.set_effect_list(effect_clip.builtin_effects().to_vec(), vec![true, false]);
+        }
         assert!(!rules(&check(&seq, &pool, &Spoken(talk))).contains(&"extra_transform"));
     }
 

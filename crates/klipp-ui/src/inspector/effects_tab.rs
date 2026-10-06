@@ -91,7 +91,7 @@ pub fn show(
 ) {
     let clip_id = clip.id;
 
-    let has_any = !clip.builtin_effects.is_empty() || !clip.effects.is_empty();
+    let has_any = !clip.builtin_effects().is_empty() || !clip.effects.is_empty();
 
     if !has_any {
         show_empty(ui, theme, cmds);
@@ -99,7 +99,7 @@ pub fn show(
     }
 
     let pad = 14.0;
-    let total_effects = clip.builtin_effects.len() + clip.effects.len();
+    let total_effects = clip.builtin_effects().len() + clip.effects.len();
 
     // ── "Drag to reorder" hint ──
     show_drag_hint(ui, theme, total_effects);
@@ -122,7 +122,7 @@ pub fn show(
     let badge_green = theme.marker_success;
     let badge_gray = theme.text_dim;
 
-    for (i, effect) in clip.builtin_effects.iter().enumerate() {
+    for (i, effect) in clip.builtin_effects().iter().enumerate() {
         let name = builtin_effect_name(effect).into_owned();
         let header_id = ui.make_persistent_id(format!("bfx_{clip_id:?}_{i}"));
         let mut col_state = egui::collapsing_header::CollapsingState::load_with_default_open(
@@ -205,7 +205,7 @@ pub fn show(
         // in the timeline (panels/timeline.rs:2639): Icon::Eye when enabled,
         // Icon::EyeSlash when disabled, with a muted neutral tint that dims
         // further when off.
-        let is_enabled = clip.builtin_effects_enabled.get(i).copied().unwrap_or(true);
+        let is_enabled = clip.builtin_effects_enabled().get(i).copied().unwrap_or(true);
         let toggle_rect = egui::Rect::from_min_size(
             egui::pos2(remove_x - 26.0, header_rect.center().y - 8.0),
             egui::vec2(16.0, 16.0),
@@ -329,7 +329,7 @@ pub fn show(
             let slot_h = 40.0_f32;
             let steps = (total_drag.abs() / slot_h).floor() as usize;
             if steps > 0 {
-                let max_idx = clip.builtin_effects.len() - 1;
+                let max_idx = clip.builtin_effects().len() - 1;
                 let target = if total_drag < 0.0 { i.saturating_sub(steps) } else { (i + steps).min(max_idx) };
                 if target != i { builtin_move_to = Some((i, target)); }
             }
@@ -356,7 +356,7 @@ pub fn show(
         let slot_h = 40.0_f32;
         let steps = (total_drag.abs() / slot_h).floor() as usize;
         if steps > 0 {
-            let max_idx = clip.builtin_effects.len().saturating_sub(1);
+            let max_idx = clip.builtin_effects().len().saturating_sub(1);
             let target = if total_drag < 0.0 { from_idx.saturating_sub(steps) } else { (from_idx + steps).min(max_idx) };
             if target != from_idx {
                 // Draw indicator line at target card position

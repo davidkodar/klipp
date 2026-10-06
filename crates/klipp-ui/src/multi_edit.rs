@@ -61,7 +61,7 @@ pub fn copy_to(cmd: &AppCommand, primary: &Clip, other: &mut Clip) -> bool {
             true
         }
         AppCommand::UpdateBuiltinEffect { index, .. } | AppCommand::EndEffectDrag { effect_index: index, .. } => {
-            let Some(effect) = primary.builtin_effects.get(*index) else { return false };
+            let Some(effect) = primary.builtin_effects().get(*index) else { return false };
             // The same kind of effect on the other clip, wherever it sits
             // in its chain.
             let kind = std::mem::discriminant(effect);
@@ -166,17 +166,17 @@ mod tests {
     #[test]
     fn an_effect_lands_on_the_same_kind_of_effect_wherever_it_sits() {
         let mut primary = clip();
-        primary.builtin_effects = vec![BuiltinEffect::Opacity { value: 0.4 }];
+        primary.set_effect_list(vec![BuiltinEffect::Opacity { value: 0.4 }], primary.builtin_effects_enabled().to_vec());
         let mut other = clip();
-        other.builtin_effects = vec![BuiltinEffect::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.5 }, BuiltinEffect::Opacity { value: 1.0 }];
+        other.set_effect_list(vec![BuiltinEffect::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.5 }, BuiltinEffect::Opacity { value: 1.0 }], other.builtin_effects_enabled().to_vec());
         let cmd = AppCommand::UpdateBuiltinEffect { clip_id: primary.id, index: 0, effect: BuiltinEffect::Opacity { value: 0.4 } };
         assert!(copy_to(&cmd, &primary, &mut other));
-        assert!(matches!(other.builtin_effects[1], BuiltinEffect::Opacity { value } if (value - 0.4).abs() < 1e-6));
-        assert!(matches!(other.builtin_effects[0], BuiltinEffect::Vignette { .. }), "the rest of its chain untouched");
+        assert!(matches!(other.builtin_effects()[1], BuiltinEffect::Opacity { value } if (value - 0.4).abs() < 1e-6));
+        assert!(matches!(other.builtin_effects()[0], BuiltinEffect::Vignette { .. }), "the rest of its chain untouched");
         // A clip without that effect is left alone and says so.
         let mut bare = clip();
         assert!(!copy_to(&cmd, &primary, &mut bare));
-        assert!(bare.builtin_effects.is_empty());
+        assert!(bare.builtin_effects().is_empty());
     }
 
     /// The undo step the app records for a change on three clips: the

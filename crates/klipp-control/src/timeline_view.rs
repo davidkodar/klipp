@@ -146,9 +146,9 @@ pub(crate) fn timeline_text(
             if let Some(g) = c.grade_group.and_then(|g| seq.grade_group(g)) {
                 let _ = write!(line, " in group \"{}\"", g.name);
             }
-            if !c.builtin_effects.is_empty() {
+            if !c.builtin_effects().is_empty() {
                 let names: Vec<String> = c
-                    .builtin_effects
+                    .builtin_effects()
                     .iter()
                     .map(|e| {
                         let d = format!("{e:?}");
@@ -336,7 +336,7 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
         if !c.own_grade().is_identity() || c.grade_group.is_some() {
             v["graded"] = json!(true);
         }
-        let fx = c.builtin_effects.len() + c.effects.len();
+        let fx = c.builtin_effects().len() + c.effects.len();
         if fx > 0 {
             v["effects"] = json!(fx);
         }

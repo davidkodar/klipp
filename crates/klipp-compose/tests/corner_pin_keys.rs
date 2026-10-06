@@ -18,7 +18,7 @@ fn a_keyed_corner_is_where_its_keys_say_at_that_frame() {
     let tc = |s: f64| Timecode::from_secs_f64(s, 24);
     let scene = Sequence::new_default();
     let mut clip = Clip::sequence(scene.id, tc(0.0), tc(4.0));
-    clip.builtin_effects.push(BuiltinEffect::CornerPin { tl: [0.0, 0.0], tr: [0.9, 0.0], br: [1.0, 1.0], bl: [0.0, 1.0] });
+    clip.set_effect_list(clip.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::CornerPin { tl: [0.0, 0.0], tr: [0.9, 0.0], br: [1.0, 1.0], bl: [0.0, 1.0] })).collect(), clip.builtin_effects_enabled().to_vec());
     clip.effect_keyframes.insert("0:tr_x".into(), vec![key(0.0, 0.9), key(2.0, 0.5)]);
     clip.effect_keyframes.insert("0:bl_y".into(), vec![key(0.0, 1.0), key(2.0, 0.6)]);
 
@@ -34,7 +34,7 @@ fn a_still_pin_is_not_in_the_chain() {
     let tc = |s: f64| Timecode::from_secs_f64(s, 24);
     let scene = Sequence::new_default();
     let mut clip = Clip::sequence(scene.id, tc(0.0), tc(4.0));
-    clip.builtin_effects.push(corner_pin::still());
+    clip.set_effect_list(clip.builtin_effects().iter().cloned().chain(std::iter::once(corner_pin::still())).collect(), clip.builtin_effects_enabled().to_vec());
     let (fx, _) = clip_effects(&clip, tc(1.0), 24.0, None, None);
     assert!(!fx.iter().any(|e| matches!(e, BuiltinEffect::CornerPin { .. })));
 }

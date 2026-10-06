@@ -131,10 +131,10 @@ fn media_clip(id: MediaId, from: i64, to: i64, source_in: i64) -> Clip {
 }
 
 fn scaled(mut c: Clip, scale: f32, x: f32, y: f32) -> Clip {
-    c.builtin_effects.push(BuiltinEffect::Transform {
+    c.set_effect_list(c.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::Transform {
         position_x: x, position_y: y, scale_x: scale, scale_y: scale, rotation: 0.0,
         anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
-    });
+    })).collect(), c.builtin_effects_enabled().to_vec());
     c
 }
 
@@ -182,7 +182,7 @@ fn timeline() -> Timeline {
     clip_a.node_graph = exposure(1.0);
     let clip_b = media_clip(b, 100, LEN, 25);
     let mut clip_c = scaled(media_clip(c, 25, 175, 10), 0.6, 0.0, 0.0);
-    clip_c.builtin_effects.push(BuiltinEffect::Opacity { value: 0.5 });
+    clip_c.set_effect_list(clip_c.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::Opacity { value: 0.5 })).collect(), clip_c.builtin_effects_enabled().to_vec());
     let clip_d = scaled(media_clip(d, 50, 150, 0), 0.3, 0.0, 0.0);
     let dissolve = Transition {
         id: klipp_core::TransitionId::new(),
@@ -731,7 +731,7 @@ fn a_grade_group_exports_as_the_viewer_shows_it() {
     let gid = group.id;
     t.seq.grade_groups = vec![group];
     // The two full-frame clips: a (with its own grade) and b.
-    for c in t.seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.builtin_effects.is_empty() && c.transform_scale_keyframes.is_empty()) {
+    for c in t.seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.builtin_effects().is_empty() && c.transform_scale_keyframes.is_empty()) {
         c.grade_group = Some(gid);
     }
     let mut shown = t.clone();

@@ -1668,7 +1668,7 @@ mod effect_writer_tests {
         for (forward, want) in [(true, vignette(0.9)), (false, vignette(0.4)), (true, vignette(0.9))] {
             if forward { view.apply_forward(&edit) } else { view.apply_inverse(&edit) };
             let c = clip(view.sequences, id);
-            assert_eq!(c.builtin_effects[1], want);
+            assert_eq!(c.builtin_effects()[1], want);
             assert_eq!(animation(c), ALL);
             assert_eq!(c.effect_id_at(1), before, "the same effect, edited");
         }
@@ -1709,11 +1709,11 @@ mod effect_writer_tests {
         let mut view = DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
         view.apply_forward(&edit);
         let c = clip(view.sequences, id);
-        assert_eq!((c.builtin_effects.len(), c.builtin_effects_enabled.clone()), (3, vec![true, false, true]));
+        assert_eq!((c.builtin_effects().len(), c.builtin_effects_enabled().to_vec()), (3, vec![true, false, true]));
         assert_eq!(animation(c), ALL);
         view.apply_inverse(&edit);
         let c = clip(view.sequences, id);
-        assert_eq!(c.builtin_effects, vec![blur(2.0), vignette(0.4)]);
+        assert_eq!(c.builtin_effects(), vec![blur(2.0), vignette(0.4)]);
         assert_eq!(animation(c), ALL);
     }
 

@@ -603,7 +603,7 @@ pub fn show(
                                             EffectSource::Ofx(id) => (false, id.clone()),
                                             // frei0r is a "builtin" effect from the
                                             // drop-target's POV (lands in
-                                            // clip.builtin_effects), but plugin_id
+                                            // clip.builtin_effects()), but plugin_id
                                             // carries the type_id so the drop handler
                                             // can construct the Frei0r variant with
                                             // proper params.

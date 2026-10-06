@@ -79,7 +79,7 @@ fn clip(denoise: bool) -> Clip {
         sticky_notes: vec![],
     };
     if denoise {
-        c.builtin_effects = vec![BuiltinEffect::TemporalDenoise { strength: 1.0, threshold: 0.2 }];
+        c.set_effect_list(vec![BuiltinEffect::TemporalDenoise { strength: 1.0, threshold: 0.2 }], c.builtin_effects_enabled().to_vec());
     }
     c
 }

@@ -426,8 +426,8 @@ impl Sequence {
                     continue;
                 }
                 clip.own_effects = Some(Box::new(OwnEffects {
-                    builtin_effects: clip.builtin_effects.clone(),
-                    builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
+                    builtin_effects: clip.builtin_effects().to_vec(),
+                    builtin_effects_enabled: clip.builtin_effects_enabled().to_vec(),
                     audio_effects: clip.audio_effects.clone(),
                 }));
                 if picture {
@@ -1381,9 +1381,7 @@ impl Track {
             source_out: source_duration,
             node_graph: klipp_nodes::NodeGraph::default(),
             effects: Vec::new(),
-            builtin_effects: Vec::new(),
-            builtin_effects_enabled: Vec::new(),
-            effect_ids: Default::default(),
+            effect_list: Default::default(),
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
@@ -1681,9 +1679,7 @@ impl Track {
             source_out: a_out,
             node_graph: clip.node_graph.clone(),
             effects: clip.effects.clone(),
-            builtin_effects: clip.builtin_effects.clone(),
-            builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
-            effect_ids: Default::default(),
+            effect_list: crate::EffectList::new(clip.builtin_effects().to_vec(), clip.builtin_effects_enabled().to_vec()),
             linked_clip_id: clip.linked_clip_id,
             linked_title_asset_id: clip.linked_title_asset_id,
             group_id: clip.group_id,
@@ -1758,9 +1754,7 @@ impl Track {
             source_out: b_out,
             node_graph: clip.node_graph.clone(),
             effects: clip.effects.clone(),
-            builtin_effects: clip.builtin_effects.clone(),
-            builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
-            effect_ids: Default::default(),
+            effect_list: crate::EffectList::new(clip.builtin_effects().to_vec(), clip.builtin_effects_enabled().to_vec()),
             linked_clip_id: clip.linked_clip_id,
             linked_title_asset_id: clip.linked_title_asset_id,
             group_id: clip.group_id,
@@ -2167,14 +2161,10 @@ pub struct Clip {
     pub node_graph: klipp_nodes::NodeGraph,
     #[serde(default)]
     pub effects: Vec<klipp_plugin::AppliedEffect>,
-    #[serde(default)]
-    pub builtin_effects: Vec<klipp_effects::BuiltinEffect>,
-    /// Per-index enabled state for builtin effects (true = enabled). Grows lazily.
-    #[serde(default)]
-    pub builtin_effects_enabled: Vec<bool>,
-    /// Session-only effect handles; lazily reconciled by the effect-list API.
-    #[serde(skip)]
-    pub effect_ids: crate::EffectIds,
+    /// Built-in effect storage; use the effect-list API to read or edit it.
+    /// Flattening preserves the existing top-level saved keys.
+    #[serde(flatten)]
+    pub effect_list: crate::EffectList,
     #[serde(default)]
     pub linked_clip_id: Option<ClipId>,
     /// If `Some`, this clip is a *linked instance* of a project-scoped
@@ -2747,9 +2737,7 @@ impl Clip {
             source_out: timeline_out - timeline_in,
             node_graph: klipp_nodes::NodeGraph::default(),
             effects: Vec::new(),
-            builtin_effects: Vec::new(),
-            builtin_effects_enabled: Vec::new(),
-            effect_ids: Default::default(),
+            effect_list: Default::default(),
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
@@ -2862,9 +2850,7 @@ impl Clip {
             source_out,
             node_graph: klipp_nodes::NodeGraph::default(),
             effects: Vec::new(),
-            builtin_effects: Vec::new(),
-            builtin_effects_enabled: Vec::new(),
-            effect_ids: Default::default(),
+            effect_list: Default::default(),
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
@@ -2966,9 +2952,7 @@ impl Clip {
             source_out: dur,
             node_graph: klipp_nodes::NodeGraph::default(),
             effects: Vec::new(),
-            builtin_effects: Vec::new(),
-            builtin_effects_enabled: Vec::new(),
-            effect_ids: Default::default(),
+            effect_list: Default::default(),
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,

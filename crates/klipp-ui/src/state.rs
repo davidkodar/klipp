@@ -2064,7 +2064,7 @@ pub struct AppState {
     /// when a single effect is being A/B'd in the viewer — left half of
     /// the split renders that effect bypassed, right half renders it on.
     /// `is_ofx` distinguishes `clip.effects[idx]` (true) from
-    /// `clip.builtin_effects[idx]` (false). Mutually exclusive with
+    /// `clip.builtin_effects()[idx]` (false). Mutually exclusive with
     /// before_after_active / stabilization_compare_active (handler sets
     /// only one at a time). None = inactive.
     pub split_compare_effect: Option<(ClipId, usize, bool)>,
@@ -3614,8 +3614,8 @@ impl AttributesClipboard {
     /// What Copy Attributes takes from `clip`.
     pub fn of(clip: &klipp_timeline::Clip) -> Self {
         Self {
-            builtin_effects: clip.builtin_effects.clone(),
-            builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
+            builtin_effects: clip.builtin_effects().to_vec(),
+            builtin_effects_enabled: clip.builtin_effects_enabled().to_vec(),
             effects: clip.effects.clone(),
             node_graph: clip.grade().clone(),
             volume: clip.volume,
@@ -5638,7 +5638,7 @@ mod paste_speed_tests {
         let tc = |f| RationalTime::from_frames(f, 24);
         let wiggle = ParamId::Effect { effect_index: 0, param_name: "amount".into() };
         let mut source = klipp_timeline::Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
-        source.builtin_effects = vec![klipp_effects::BuiltinEffect::Vibrance { amount: 0.3 }];
+        source.set_effect_list(vec![klipp_effects::BuiltinEffect::Vibrance { amount: 0.3 }], source.builtin_effects_enabled().to_vec());
         source.param_modifiers.insert(wiggle.clone(), ModifierStack::default());
         source.param_modifiers.insert(ParamId::Scale, ModifierStack::default());
         let copied = AttributesClipboard::of(&source);

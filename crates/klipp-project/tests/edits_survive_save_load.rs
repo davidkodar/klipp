@@ -62,14 +62,13 @@ fn a_transitions_alignment_and_settings_come_back() {
 fn a_disabled_builtin_effect_stays_disabled() {
     let mut seq = Sequence::new_default();
     let mut c = media_clip(0, 48);
-    c.builtin_effects.push(klipp_effects::BuiltinEffect::Opacity { value: 0.5 });
-    c.builtin_effects_enabled = vec![false];
+    c.set_effect_list(c.builtin_effects().iter().cloned().chain(std::iter::once(klipp_effects::BuiltinEffect::Opacity { value: 0.5 })).collect(), vec![false]);
     seq.tracks[0].clips = vec![c];
 
     let back = round_trip("effect-enabled", seq);
     let c = &back.tracks[0].clips[0];
-    assert_eq!(c.builtin_effects.len(), 1);
-    assert_eq!(c.builtin_effects_enabled, vec![false], "the effect came back enabled");
+    assert_eq!(c.builtin_effects().len(), 1);
+    assert_eq!(c.builtin_effects_enabled(), vec![false], "the effect came back enabled");
 }
 
 #[test]

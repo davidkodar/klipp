@@ -11,7 +11,7 @@ use klipp_timeline::{Clip, TrackKind};
 /// Extracts transform params from a clip's builtin effects.
 /// Returns identity defaults if no Transform effect exists.
 pub fn get_transform(clip: &Clip) -> TransformParams {
-    clip.builtin_effects
+    clip.builtin_effects()
         .iter()
         .find_map(|e| match e {
             BuiltinEffect::Transform {
@@ -45,13 +45,13 @@ pub fn get_transform(clip: &Clip) -> TransformParams {
 
 /// Extracts the index of the Transform effect in builtin_effects, if any.
 pub fn find_transform_index(clip: &Clip) -> Option<usize> {
-    clip.builtin_effects.iter().position(|e| matches!(e, BuiltinEffect::Transform { .. }))
+    clip.builtin_effects().iter().position(|e| matches!(e, BuiltinEffect::Transform { .. }))
 }
 
 /// Extracts opacity value from a clip's builtin effects.
 /// Returns 1.0 (fully opaque) if no Opacity effect exists.
 pub fn get_opacity(clip: &Clip) -> f32 {
-    clip.builtin_effects
+    clip.builtin_effects()
         .iter()
         .find_map(|e| match e {
             BuiltinEffect::Opacity { value } => Some(*value),
@@ -62,7 +62,7 @@ pub fn get_opacity(clip: &Clip) -> f32 {
 
 /// Extracts the index of the Opacity effect in builtin_effects, if any.
 pub fn find_opacity_index(clip: &Clip) -> Option<usize> {
-    clip.builtin_effects.iter().position(|e| matches!(e, BuiltinEffect::Opacity { .. }))
+    clip.builtin_effects().iter().position(|e| matches!(e, BuiltinEffect::Opacity { .. }))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -155,9 +155,7 @@ fn show_bin_media_video(
         source_out: media.duration,
         node_graph: klipp_nodes::NodeGraph::default(),
         effects: Vec::new(),
-        builtin_effects: Vec::new(),
-        builtin_effects_enabled: Vec::new(),
-        effect_ids: Default::default(),
+        effect_list: Default::default(),
         linked_clip_id: None,
         linked_title_asset_id: None,
         group_id: None,
@@ -3631,7 +3629,7 @@ fn color_fade_row(
     label: &str,
 ) {
     use klipp_effects::BuiltinEffect;
-    let existing = clip.builtin_effects.iter().enumerate().find_map(|(i, e)| match e {
+    let existing = clip.builtin_effects().iter().enumerate().find_map(|(i, e)| match e {
         BuiltinEffect::ColorFade { color, duration_secs, mode: m, .. } if *m == mode => {
             Some((i, *color, *duration_secs))
         }
@@ -4337,7 +4335,7 @@ mod tilt_tests {
 
     fn clip_with(effect: BuiltinEffect) -> Clip {
         let mut c = Clip::gap(Timecode::from_secs_f64(0.0, 24), Timecode::from_secs_f64(2.0, 24));
-        c.builtin_effects = vec![effect];
+        c.set_effect_list(vec![effect], c.builtin_effects_enabled().to_vec());
         c
     }
 

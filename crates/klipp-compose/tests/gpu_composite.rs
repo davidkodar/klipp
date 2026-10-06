@@ -63,12 +63,12 @@ fn stack() -> (Sequence, Flat) {
     let mut gen = Track::new("Gen", TrackKind::Video);
     let mut g = clip(ClipKind::Generator(klipp_core::GeneratorData::SolidColor { color: [255, 80, 20, 255] }), 0.0, 5.0);
     g.blend_mode = klipp_core::BlendMode::Multiply;
-    g.builtin_effects = vec![klipp_effects::BuiltinEffect::Opacity { value: 0.4 }];
+    g.set_effect_list(vec![klipp_effects::BuiltinEffect::Opacity { value: 0.4 }], g.builtin_effects_enabled().to_vec());
     gen.clips = vec![g];
     let mut top = Track::new("V2", TrackKind::Video);
     let mut t = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 10.0);
     t.blend_mode = klipp_core::BlendMode::Screen;
-    t.builtin_effects = vec![klipp_effects::BuiltinEffect::Opacity { value: 0.5 }];
+    t.set_effect_list(vec![klipp_effects::BuiltinEffect::Opacity { value: 0.5 }], t.builtin_effects_enabled().to_vec());
     let mut base = Track::new("V1", TrackKind::Video);
     let b = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 10.0);
     let mut src = Flat::default();
@@ -198,7 +198,7 @@ fn an_adjustment_layer_with_a_grade_and_an_effect_matches() {
         let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
         NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions, working_space_override: None, frames: vec![], sticky_notes: vec![] }
     };
-    a.builtin_effects = vec![klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 }, klipp_effects::BuiltinEffect::Opacity { value: 0.7 }];
+    a.set_effect_list(vec![klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 }, klipp_effects::BuiltinEffect::Opacity { value: 0.7 }], a.builtin_effects_enabled().to_vec());
     adj.clips = vec![a];
     seq.tracks.insert(1, adj);
     assert_match("adjustment layer", &seq, &mut src);
@@ -207,7 +207,10 @@ fn an_adjustment_layer_with_a_grade_and_an_effect_matches() {
 #[test]
 fn a_title_with_an_effect_and_a_faded_layer_match() {
     let (mut seq, mut src) = stack();
-    seq.tracks[0].clips[0].builtin_effects = vec![klipp_effects::BuiltinEffect::GaussianBlur { radius: 1.5 }];
+    {
+        let effect_clip = &mut seq.tracks[0].clips[0];
+        effect_clip.set_effect_list(vec![klipp_effects::BuiltinEffect::GaussianBlur { radius: 1.5 }], effect_clip.builtin_effects_enabled().to_vec());
+    }
     seq.tracks[2].opacity = 0.6;
     assert_match("title effect", &seq, &mut src);
 }
@@ -491,7 +494,7 @@ fn a_graded_clip_with_a_gpu_effect_stays_on_the_stack() {
         let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
         NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions, working_space_override: None, frames: vec![], sticky_notes: vec![] }
     };
-    c.builtin_effects = vec![klipp_effects::BuiltinEffect::Transform {
+    c.set_effect_list(vec![klipp_effects::BuiltinEffect::Transform {
         position_x: 12.0,
         position_y: -8.0,
         scale_x: 1.25,
@@ -503,7 +506,7 @@ fn a_graded_clip_with_a_gpu_effect_stays_on_the_stack() {
         rotation_y: 0.0,
         perspective: 0.0,
         focal_ref: None,
-    }];
+    }], c.builtin_effects_enabled().to_vec());
     let id = c.id;
     v.clips = vec![c];
     seq.tracks = vec![v];

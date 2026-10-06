@@ -180,10 +180,10 @@ fn each_clip_gets_its_own_grade() {
     let mut v1 = media(0.0, 2.0);
     v1.node_graph = exposure(1.0);
     let mut v2 = media(0.0, 2.0);
-    v2.builtin_effects = vec![BuiltinEffect::Transform {
+    v2.set_effect_list(vec![BuiltinEffect::Transform {
         position_x: 0.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0,
         anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
-    }];
+    }], v2.builtin_effects_enabled().to_vec());
     let mut src = Flat::default().grey(&v1, 0.2).grey(&v2, 0.2);
     let seq = sequence(vec![vec![v2], vec![v1]]);
     for (i, img) in render(&seq, 1.0, &mut src).iter().enumerate() {
@@ -202,7 +202,7 @@ fn opacity_is_applied_once() {
     let with = |effect: Option<f32>, track: f32| {
         let mut top = solid([255, 255, 255], 0.0, 2.0);
         if let Some(v) = effect {
-            top.builtin_effects = vec![BuiltinEffect::Opacity { value: v }];
+            top.set_effect_list(vec![BuiltinEffect::Opacity { value: v }], top.builtin_effects_enabled().to_vec());
         }
         let mut seq = sequence(vec![vec![top], vec![solid([0, 0, 0], 0.0, 2.0)]]);
         seq.tracks[0].opacity = track;
@@ -220,7 +220,7 @@ fn opacity_is_applied_once() {
     // Alone on the timeline, a half-transparent clip is flattened over
     // black: the export and the viewer see the same 0.5.
     let mut only = solid([255, 255, 255], 0.0, 2.0);
-    only.builtin_effects = vec![BuiltinEffect::Opacity { value: 0.5 }];
+    only.set_effect_list(vec![BuiltinEffect::Opacity { value: 0.5 }], only.builtin_effects_enabled().to_vec());
     for (i, img) in render(&sequence(vec![vec![only]]), 1.0, &mut Flat::default()).iter().enumerate() {
         assert_px(&format!("alone, run {i}"), px(img, 16, 9), [0.5; 3], 1e-3);
         assert_eq!(img[3], 1.0);
@@ -238,12 +238,12 @@ fn a_fade_out_ends_with_the_clip_on_the_timeline() {
         let mut c = solid([255, 255, 255], 0.0, 2.0);
         c.source_in = tc(0.0);
         c.source_out = tc(4.0);
-        c.builtin_effects = vec![BuiltinEffect::ColorFade {
+        c.set_effect_list(vec![BuiltinEffect::ColorFade {
             color: [0, 0, 0, 255],
             duration_secs: 1.0,
             mode: klipp_effects::ColorFadeMode::Out,
             progress: 1.0,
-        }];
+        }], c.builtin_effects_enabled().to_vec());
         render(&sequence(vec![vec![c]]), t, &mut Flat::default()).map(|img| px(&img, 16, 9)[0])
     };
     for (i, v) in at(0.5).iter().enumerate() {
@@ -501,13 +501,13 @@ fn an_authored_colour_is_the_same_colour_in_any_working_space() {
 fn a_chroma_key_keys_its_colour_in_any_working_space() {
     use klipp_core::WorkingColorspace::*;
     let mut green = solid([0, 255, 0], 0.0, 2.0);
-    green.builtin_effects = vec![BuiltinEffect::ChromaKey {
+    green.set_effect_list(vec![BuiltinEffect::ChromaKey {
         key_color: [0, 255, 0],
         tolerance: 0.15,
         soft_edge: 0.05,
         spill_method: klipp_effects::SpillMethod::None,
         spill_strength: 0.0,
-    }];
+    }], green.builtin_effects_enabled().to_vec());
     let seq = sequence(vec![vec![green]]);
     for (ws, name) in [(Rec709Linear, "BT.709"), (Bt2020Linear, "BT.2020"), (AcesCG, "ACEScg")] {
         for gpu in [false, true] {
@@ -814,7 +814,7 @@ fn slow_motion_blends_the_frames_either_side() {
     for blend_mode in [1, 0] {
         let mut c = media(0.0, 4.0);
         c.speed = 0.5;
-        c.builtin_effects = vec![ramp(blend_mode)];
+        c.set_effect_list(vec![ramp(blend_mode)], c.builtin_effects_enabled().to_vec());
         // Where the source time falls between the frames, through the
         // clip's speed: about half.
         let weight = klipp_compose::render::source_secs(&c, tc(1.0 / 24.0), 24.0) as f32 * 24.0;
@@ -917,10 +917,10 @@ fn a_frame_snapshot_renders_the_same_frame() {
     b.node_graph = exposure(1.0);
     let far = solid([0, 0, 255], 10.0, 12.0);
     let mut follower = solid([0, 255, 0], 0.0, 4.0);
-    follower.builtin_effects = vec![BuiltinEffect::Transform {
+    follower.set_effect_list(vec![BuiltinEffect::Transform {
         position_x: 0.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0,
         anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
-    }];
+    }], follower.builtin_effects_enabled().to_vec());
     follower.transform_link = Some(klipp_timeline::TransformLink::new(far.id));
     let tr = Transition {
         id: TransitionId::new(),
@@ -1240,10 +1240,10 @@ fn a_precomposition_is_transformed_as_one_picture() {
     klipp_core::keyframe::upsert_keyframe(&mut red.opacity_keyframes, 0.0, 0.5);
     let scene = sequence(vec![vec![red], vec![solid([0, 255, 0], 0.0, 4.0)]]);
     let mut pre = Clip::precomposition(scene.id, tc(0.0), tc(4.0));
-    pre.builtin_effects = vec![BuiltinEffect::Transform {
+    pre.set_effect_list(vec![BuiltinEffect::Transform {
         position_x: 0.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0,
         anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
-    }];
+    }], pre.builtin_effects_enabled().to_vec());
     let outer = sequence(vec![vec![pre]]);
     let flat = klipp_timeline::flatten::flatten_sequence(&outer, &[outer.clone(), scene.clone()]);
     for (i, img) in render(&flat, 1.0, &mut Flat::default()).iter().enumerate() {
@@ -1262,10 +1262,10 @@ fn a_precomposition_is_transformed_as_one_picture() {
 fn a_scenes_camera_looks_at_the_scene_not_the_parent() {
     let card = || {
         let mut c = solid([0, 255, 0], 0.0, 4.0);
-        c.builtin_effects = vec![BuiltinEffect::Transform {
+        c.set_effect_list(vec![BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0, scale_x: 0.25, scale_y: 0.25, rotation: 0.0,
             anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
-        }];
+        }], c.builtin_effects_enabled().to_vec());
         c
     };
     let lit_area = |zoom: Option<f32>| {
@@ -1434,13 +1434,13 @@ fn a_shadow_on_a_placed_layer_falls_on_the_track_below() {
     // Placed at two fifths of the frame by keyframes, as `compose`
     // writes it — so the transform is the one the renderer pushes.
     klipp_core::keyframe::upsert_keyframe(&mut top.transform_scale_keyframes, 0.0, 0.4);
-    top.builtin_effects = vec![BuiltinEffect::DropShadow {
+    top.set_effect_list(vec![BuiltinEffect::DropShadow {
         offset_x: 0.0,
         offset_y: 0.06,
         blur: 0.05,
         color: [0, 0, 0],
         opacity: 1.0,
-    }];
+    }], top.builtin_effects_enabled().to_vec());
     let under = solid([255, 0, 0], 0.0, 1.0);
     let seq = sequence(vec![vec![top.clone()], vec![under]]);
     let mut src = Flat::default().linear(&top, [1.0, 1.0, 1.0]);
@@ -1579,10 +1579,10 @@ fn a_tilted_card_is_drawn_in_perspective_the_way_its_tilt_says() {
     // A tilt set still, on the clip's own Transform with no perspective
     // given, is drawn in perspective too, not squashed flat.
     let mut card = media(0.0, 1.0);
-    card.builtin_effects = vec![BuiltinEffect::Transform {
+    card.set_effect_list(vec![BuiltinEffect::Transform {
         position_x: 0.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5,
         rotation_x: 0.0, rotation_y: 40.0, perspective: 0.0, focal_ref: None,
-    }];
+    }], card.builtin_effects_enabled().to_vec());
     let seq = sequence(vec![vec![card]]);
     for gpu in [false, true] {
         let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
@@ -1776,8 +1776,7 @@ fn a_moved_clip_lands_at_the_same_place_at_half_the_sequence_size() {
 #[test]
 fn a_blur_covers_the_same_share_of_the_picture_at_half_size() {
     let mut card = media(0.0, 1.0);
-    card.builtin_effects.push(BuiltinEffect::GaussianBlur { radius: 8.0 });
-    card.builtin_effects_enabled.push(true);
+    card.set_effect_list(card.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::GaussianBlur { radius: 8.0 })).collect(), card.builtin_effects_enabled().iter().cloned().chain(std::iter::once(true)).collect());
     let mut seq = sequence(vec![vec![card.clone()]]);
     seq.resolution = klipp_core::Resolution { width: 2 * W, height: 2 * H };
     // Red on the left half of the picture, black on the right: one edge.
@@ -1806,8 +1805,7 @@ fn a_blur_covers_the_same_share_of_the_picture_at_half_size() {
 #[test]
 fn a_precomposition_does_not_resize_the_blur_above_it() {
     let mut card = media(0.0, 1.0);
-    card.builtin_effects.push(BuiltinEffect::GaussianBlur { radius: 8.0 });
-    card.builtin_effects_enabled.push(true);
+    card.set_effect_list(card.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::GaussianBlur { radius: 8.0 })).collect(), card.builtin_effects_enabled().iter().cloned().chain(std::iter::once(true)).collect());
     // The scene at the size it is rendered at, the parent at twice that.
     let mut scene = sequence(vec![vec![solid([0, 255, 0], 0.0, 4.0)]]);
     scene.resolution = klipp_core::Resolution { width: W, height: H };
@@ -1882,7 +1880,7 @@ fn a_stabilised_clip_is_stabilised_with_or_without_the_gpu() {
     use klipp_effects::homography::Homography;
     use klipp_effects::stabilization::SmoothedTrajectory;
     let mut c = media(0.0, 2.0);
-    c.builtin_effects = vec![BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.0, zoom: false }];
+    c.set_effect_list(vec![BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.0, zoom: false }], c.builtin_effects_enabled().to_vec());
     // Every frame's correction a shift of 3.5 px to the left.
     let shift = Homography { h: [[1.0, 0.0, 3.5], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
     c.smoothed_trajectory = Some(SmoothedTrajectory {
@@ -1893,7 +1891,7 @@ fn a_stabilised_clip_is_stabilised_with_or_without_the_gpu() {
         smoothed_jitter_px: 0.1,
     });
     let mut plain = c.clone();
-    plain.builtin_effects.clear();
+    plain.set_effect_list(Vec::new(), plain.builtin_effects_enabled().to_vec());
     let mut src = Flat::default().ramp(&c).ramp(&plain);
     let [cpu, gpu] = render(&sequence(vec![vec![c]]), 0.5, &mut src);
     let [unwarped, _] = render(&sequence(vec![vec![plain]]), 0.5, &mut src);
@@ -1914,7 +1912,7 @@ fn an_adjustment_layers_stabilisation_does_not_borrow_the_clip_below() {
     use klipp_effects::homography::Homography;
     use klipp_effects::stabilization::SmoothedTrajectory;
     let mut c = media(0.0, 2.0);
-    c.builtin_effects = vec![BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.0, zoom: false }];
+    c.set_effect_list(vec![BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.0, zoom: false }], c.builtin_effects_enabled().to_vec());
     let shift = Homography { h: [[1.0, 0.0, 3.5], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
     c.smoothed_trajectory = Some(SmoothedTrajectory {
         smoothed: Vec::new(),
@@ -1924,7 +1922,7 @@ fn an_adjustment_layers_stabilisation_does_not_borrow_the_clip_below() {
         smoothed_jitter_px: 0.1,
     });
     let mut adj = clip(ClipKind::AdjustmentLayer, 0.0, 2.0);
-    adj.builtin_effects = c.builtin_effects.clone();
+    adj.set_effect_list(c.builtin_effects().to_vec(), adj.builtin_effects_enabled().to_vec());
     let mut src = Flat::default().ramp(&c);
     let alone = render(&sequence(vec![vec![c.clone()]]), 0.5, &mut src);
     let under = render(&sequence(vec![vec![adj], vec![c]]), 0.5, &mut src);
@@ -2026,7 +2024,7 @@ fn keyframed_effects_ramp_in_the_picture() {
         (BuiltinEffect::Vignette { amount: 0.0, size: 0.5, softness: 0.5, roundness: 0.5 }, "amount", 0.0, 1.0),
     ] {
         let mut c = media(0.0, 2.0);
-        c.builtin_effects = vec![effect.clone()];
+        c.set_effect_list(vec![effect.clone()], c.builtin_effects_enabled().to_vec());
         c.effect_keyframes.insert(format!("0:{name}"), vec![key(0.0, from), key(1.0, to)]);
         let seq = sequence(vec![vec![c.clone()]]);
         let mut src = Flat::default().ramp(&c);
@@ -2065,10 +2063,10 @@ fn a_disabled_plugin_leaves_the_picture_untouched() {
 fn an_adjustment_layer_and_a_clip_agree_on_an_effect_colour() {
     let fade = || BuiltinEffect::ColorFade { color: [255, 0, 0, 255], duration_secs: 2.0, mode: klipp_effects::ColorFadeMode::In, progress: 0.0 };
     let mut on_clip = media(0.0, 2.0);
-    on_clip.builtin_effects = vec![fade()];
+    on_clip.set_effect_list(vec![fade()], on_clip.builtin_effects_enabled().to_vec());
     let base = media(0.0, 2.0);
     let mut adj = clip(ClipKind::AdjustmentLayer, 0.0, 2.0);
-    adj.builtin_effects = vec![fade()];
+    adj.set_effect_list(vec![fade()], adj.builtin_effects_enabled().to_vec());
     let mut src = Flat::default().grey(&on_clip, 0.2).grey(&base, 0.2);
     let clip_seq = sequence(vec![vec![on_clip]]);
     let adj_seq = sequence(vec![vec![adj], vec![base]]);
@@ -2108,11 +2106,11 @@ fn a_still_title_renders_the_same_with_its_motion_blur_on() {
             position_x: 480.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0,
             anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
         };
-        card.builtin_effects = if crop {
+        card.set_effect_list(if crop {
             vec![BuiltinEffect::Crop { left: 0.0, right: 0.6, top: 0.0, bottom: 0.0, feather: 0.0 }, transform]
         } else {
             vec![transform]
-        };
+        }, card.builtin_effects_enabled().to_vec());
         let mut seq = sequence(vec![vec![card]]);
         if let Some(x) = camera_x {
             klipp_core::keyframe::upsert_keyframe(&mut seq.camera.x_keyframes, 0.0, x);
@@ -2149,10 +2147,13 @@ fn a_blur_entrance_is_the_same_on_cpu_and_gpu_under_an_effect() {
         anchor: None,
     };
     let (mut seq, title) = entering_title(blur_in, None, [20, 20, 20, 255]);
-    seq.tracks[0].clips[0].builtin_effects = vec![BuiltinEffect::Transform {
+    {
+        let effect_clip = &mut seq.tracks[0].clips[0];
+        effect_clip.set_effect_list(vec![BuiltinEffect::Transform {
         position_x: 0.0, position_y: 0.0, scale_x: 2.0, scale_y: 2.0, rotation: 0.0,
         anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
-    }];
+    }], effect_clip.builtin_effects_enabled().to_vec());
+    }
     let _ = title;
     // The viewer's GPU stack, which places the title as a sprite, in
     // display bytes; the CPU render brought to the same bytes.

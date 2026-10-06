@@ -483,12 +483,12 @@ fn the_stack_takes_what_the_single_clip_path_refuses() {
 
     // An opacity effect on the clip.
     let mut f = graded(0.0, 1.0, 0.5);
-    f.builtin_effects = vec![BuiltinEffect::Opacity { value: 0.5 }];
+    f.set_effect_list(vec![BuiltinEffect::Opacity { value: 0.5 }], f.builtin_effects_enabled().to_vec());
     let faded_clip = sequence(vec![vec![f.clone()]]);
 
     // A builtin effect that is not opacity.
     let mut g = graded(0.0, 1.0, 0.5);
-    g.builtin_effects = vec![BuiltinEffect::GaussianBlur { radius: 3.0 }];
+    g.set_effect_list(vec![BuiltinEffect::GaussianBlur { radius: 3.0 }], g.builtin_effects_enabled().to_vec());
     let blurred = sequence(vec![vec![g.clone()]]);
 
     // A blend mode other than Normal, over a second layer.
@@ -505,7 +505,7 @@ fn the_stack_takes_what_the_single_clip_path_refuses() {
 
     // A transform: a zoom resamples the frame after the grade.
     let mut j = graded(0.0, 1.0, 0.5);
-    j.builtin_effects = vec![BuiltinEffect::Transform {
+    j.set_effect_list(vec![BuiltinEffect::Transform {
         position_x: 0.0,
         position_y: 0.0,
         scale_x: 1.5,
@@ -517,7 +517,7 @@ fn the_stack_takes_what_the_single_clip_path_refuses() {
         rotation_y: 0.0,
         perspective: 0.0,
         focal_ref: None,
-    }];
+    }], j.builtin_effects_enabled().to_vec());
     let zoomed = sequence(vec![vec![j.clone()]]);
 
     // A generator, which is not a media clip at all.
@@ -570,7 +570,7 @@ fn a_global_lut_over_a_composite_agrees_with_the_renderer() {
     let (a, b) = (graded(0.0, 1.0, 0.3), graded(0.0, 1.0, -0.2));
     let mut b = b;
     b.blend_mode = BlendMode::Screen;
-    b.builtin_effects = vec![BuiltinEffect::Opacity { value: 0.6 }];
+    b.set_effect_list(vec![BuiltinEffect::Opacity { value: 0.6 }], b.builtin_effects_enabled().to_vec());
     let seq = sequence(vec![vec![a.clone()], vec![b.clone()]]);
     let mut src = Flat::default().with(&a, [190, 110, 70]).with(&b, [40, 160, 220]).on_gpu();
     let lut = strong_lut();

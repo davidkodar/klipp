@@ -664,8 +664,7 @@ mod tests {
         v.effects.video = vec![E::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.7 }];
         v.effects.grade = Some(track_grade);
         let mut a = Clip::media(MediaId::new(), t(0), t(24), t(0), t(24));
-        a.builtin_effects = vec![E::Opacity { value: 0.5 }];
-        a.builtin_effects_enabled = vec![false];
+        a.set_effect_list(vec![E::Opacity { value: 0.5 }], vec![false]);
         a.effect_keyframes.insert("0:value".into(), vec![klipp_core::Keyframe { time_secs: 0.0, value: 0.2, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }]);
         a.param_modifiers.insert(klipp_core::ParamId::Effect { effect_index: 0, param_name: "value".into() }, klipp_core::ModifierStack::default());
         a.grade_group = Some(group.id);
@@ -684,8 +683,8 @@ mod tests {
 
         let flat = flatten_sequence(&seq, std::slice::from_ref(&seq));
         let a = &flat.tracks[0].clips[0];
-        assert!(matches!(a.builtin_effects.as_slice(), [E::Opacity { .. }, E::Vignette { .. }]), "{:?}", a.builtin_effects);
-        assert_eq!(a.builtin_effects_enabled, vec![false, true], "the clip's own switch kept, the track's on");
+        assert!(matches!(a.builtin_effects(), [E::Opacity { .. }, E::Vignette { .. }]), "{:?}", a.builtin_effects());
+        assert_eq!(a.builtin_effects_enabled(), vec![false, true], "the clip's own switch kept, the track's on");
         let own = &before.tracks[0].clips[0];
         // Effect keyframes by key with their values, and modifier keys.
         let animation = |c: &Clip| {
@@ -698,7 +697,7 @@ mod tests {
         assert_eq!(animation(a), animation(own), "the clip's own animation stays on its own effect");
         let order: Vec<_> = a.node_graph.topo_sort().unwrap().into_iter().filter(|id| [own_node, group_node, track_node].contains(id)).collect();
         assert_eq!(order, vec![own_node, group_node, track_node], "own grade, then the group's, then the track's");
-        assert!(flat.tracks[0].clips[1].builtin_effects.is_empty() && flat.tracks[0].clips[1].own_effects.is_none(), "an adjustment layer takes nothing");
+        assert!(flat.tracks[0].clips[1].builtin_effects().is_empty() && flat.tracks[0].clips[1].own_effects.is_none(), "an adjustment layer takes nothing");
         let chain: Vec<&str> = flat.tracks[1].clips[0].audio_effects.iter().map(|e| e.effect_type.as_str()).collect();
         assert_eq!(chain, vec!["eq", "compressor"], "the clip's chain, then the track's");
 
@@ -706,7 +705,7 @@ mod tests {
         let mut again = flat.clone();
         again.bake_grade_groups();
         again.bake_track_effects();
-        let effects = |s: &Sequence| s.all_clips().map(|c| (c.builtin_effects.clone(), c.audio_effects.clone(), c.node_graph.clone())).collect::<Vec<_>>();
+        let effects = |s: &Sequence| s.all_clips().map(|c| (c.builtin_effects().to_vec(), c.audio_effects.clone(), c.node_graph.clone())).collect::<Vec<_>>();
         assert!(effects(&again) == effects(&flat), "baked once, however often it is baked");
 
         // The document keeps its own, and the render copy gives them back.
@@ -714,7 +713,7 @@ mod tests {
         assert!(effects(&flat.with_own_grades()) == effects(&seq), "the render copy gives back each clip's own");
         let back = flat.with_own_grades();
         let back = &back.tracks[0].clips[0];
-        assert_eq!((&back.builtin_effects_enabled, animation(back)), (&own.builtin_effects_enabled, animation(own)), "and its flags and animation");
+        assert_eq!((back.builtin_effects_enabled(), animation(back)), (own.builtin_effects_enabled(), animation(own)), "and its flags and animation");
 
         // A clip added to the track later takes its effects too.
         seq.tracks[1].clips.push(Clip::media(MediaId::new(), t(24), t(48), t(0), t(24)));

@@ -64,7 +64,7 @@ impl KlippApp {
         let now = self.state.sequences[self.state.active_sequence_idx]
             .all_clips()
             .find(|c| c.id == clip_id)
-            .and_then(|c| c.builtin_effects.get(effect_index).cloned());
+            .and_then(|c| c.builtin_effects().get(effect_index).cloned());
         match now {
             Some(new_effect) if new_effect != old_effect => {
                 self.state.active_history_mut().end_drag(HistoryEntry {
@@ -212,9 +212,9 @@ impl KlippApp {
                 let mut removed = false;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if *index < clip.builtin_effects.len() {
+                        if *index < clip.builtin_effects().len() {
                             // Check if we're removing a SpeedRamp — need to reset speed
-                            if matches!(clip.builtin_effects[*index], klipp_effects::BuiltinEffect::SpeedRamp { .. }) {
+                            if matches!(clip.builtin_effects()[*index], klipp_effects::BuiltinEffect::SpeedRamp { .. }) {
                                 was_speed_ramp = true;
                             }
                             // Its enabled flag, keyframes and modifiers
@@ -223,7 +223,7 @@ impl KlippApp {
                             removed = clip.remove_builtin_effect(*index).is_some();
                         }
                         // Reset clip speed if SpeedRamp was removed and no other SpeedRamp remains
-                        if was_speed_ramp && !clip.builtin_effects.iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::SpeedRamp { .. })) {
+                        if was_speed_ramp && !clip.builtin_effects().iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::SpeedRamp { .. })) {
                             clip.speed = 1.0;
                             let source_dur_secs = clip.source_duration().to_secs_f64();
                             let new_duration = klipp_core::RationalTime::from_secs_f64(source_dur_secs, clip.timeline_in.rate);
@@ -821,8 +821,8 @@ pub(super) struct ClipEffectsState {
 impl ClipEffectsState {
     pub(super) fn of(clip: &klipp_timeline::Clip) -> Self {
         Self {
-            effects: clip.builtin_effects.clone(),
-            enabled: clip.builtin_effects_enabled.clone(),
+            effects: clip.builtin_effects().to_vec(),
+            enabled: clip.builtin_effects_enabled().to_vec(),
             speed: clip.speed,
             timeline_out: clip.timeline_out,
         }
@@ -1071,11 +1071,10 @@ mod modifier_target_tests {
     #[test]
     fn an_added_effect_arrives_on_past_stale_flags() {
         let mut c = clip();
-        c.builtin_effects = vec![klipp_effects::BuiltinEffect::Gamma { gamma: 1.0 }];
-        c.builtin_effects_enabled = vec![true, false, false];
+        c.set_effect_list(vec![klipp_effects::BuiltinEffect::Gamma { gamma: 1.0 }], vec![true, false, false]);
         c.push_effect(klipp_effects::BuiltinEffect::Gamma { gamma: 2.0 });
-        assert_eq!(c.builtin_effects.len(), 2);
-        assert_eq!(c.builtin_effects_enabled, [true, true], "the stale flags go and the new effect is on");
+        assert_eq!(c.builtin_effects().len(), 2);
+        assert_eq!(c.builtin_effects_enabled(), [true, true], "the stale flags go and the new effect is on");
     }
 
     /// An effect parameter's stack is the effect's, keyed as saved; the

@@ -621,7 +621,7 @@ fn scan_project(state: &AppState) -> Vec<Finding> {
     if let Some(seq) = active {
         for track in &seq.tracks {
             for clip in &track.clips {
-                for (effect_index, fx) in clip.builtin_effects.iter().enumerate() {
+                for (effect_index, fx) in clip.builtin_effects().iter().enumerate() {
                     if let klipp_effects::BuiltinEffect::Frei0r { type_id, .. } = fx {
                         if installed_frei0r.contains(type_id) {
                             continue;

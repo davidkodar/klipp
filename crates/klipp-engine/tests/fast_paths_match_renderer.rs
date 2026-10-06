@@ -547,7 +547,7 @@ fn a_gpu_resident_frame_is_graded_where_it_is() {
         kind: ClipKind::Generator(klipp_core::GeneratorData::SolidColor { color: [255, 255, 255, 255] }),
         ..Clip::gap(tc(0.0), tc(10.0))
     };
-    title.builtin_effects = vec![klipp_effects::BuiltinEffect::Opacity { value: 0.25 }];
+    title.set_effect_list(vec![klipp_effects::BuiltinEffect::Opacity { value: 0.25 }], title.builtin_effects_enabled().to_vec());
     let mut top = Track::new("V2", TrackKind::Video);
     top.clips = vec![title];
     seq.tracks.insert(0, top);

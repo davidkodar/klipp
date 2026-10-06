@@ -23,8 +23,8 @@ fn saved_with_two_effects(tag: &str) -> (std::path::PathBuf, String) {
     let scene = Sequence::new_default();
     let mut outer = Sequence::new_default();
     let mut clip = Clip::sequence(scene.id, tc(0.0), tc(4.0));
-    clip.builtin_effects.push(BuiltinEffect::Crop { left: 0.1, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 });
-    clip.builtin_effects.push(BuiltinEffect::GaussianBlur { radius: 3.0 });
+    clip.set_effect_list(clip.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::Crop { left: 0.1, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 })).collect(), clip.builtin_effects_enabled().to_vec());
+    clip.set_effect_list(clip.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::GaussianBlur { radius: 3.0 })).collect(), clip.builtin_effects_enabled().to_vec());
     let clip_id = clip.id.to_string();
     outer.tracks[0].clips = vec![clip];
     save_project(&dir, &[outer, scene], &MediaPool::new()).unwrap();
@@ -65,7 +65,7 @@ fn the_effects_this_klipp_knows_still_read() {
     let (dir, clip_id) = saved_with_two_effects("known_effects");
     let (sequences, ..) = load_project(&dir).unwrap();
     let clip = sequences[0].tracks[0].clips.iter().find(|c| c.id.to_string() == clip_id).unwrap();
-    assert_eq!(clip.builtin_effects.len(), 2);
-    assert!(matches!(clip.builtin_effects[1], BuiltinEffect::GaussianBlur { radius } if radius == 3.0));
+    assert_eq!(clip.builtin_effects().len(), 2);
+    assert!(matches!(clip.builtin_effects()[1], BuiltinEffect::GaussianBlur { radius } if radius == 3.0));
     let _ = std::fs::remove_dir_all(&dir);
 }

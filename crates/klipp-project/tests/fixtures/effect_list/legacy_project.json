@@ -1,0 +1,497 @@
+{
+  "version": "1.0.0",
+  "klipp_version_min": "0.1.0",
+  "generation": "generation",
+  "klipp_version": "klipp_version",
+  "saved_at": "saved_at",
+  "created_at": null,
+  "platform": "platform",
+  "sequences": [
+    {
+      "id": "8e9cdee7-cff7-49b1-9fc5-f3fb71db312d",
+      "name": "Main Sequence",
+      "fps": {
+        "num": 24,
+        "den": 1
+      },
+      "resolution": {
+        "width": 1920,
+        "height": 1080
+      },
+      "first_clip_autoset": {
+        "resolution": true,
+        "fps": true
+      },
+      "tracks": [
+        {
+          "id": "810ed7bb-11c1-4622-b3e9-19ce29e3cbbb",
+          "name": "Video 1",
+          "kind": "Video",
+          "clips": [
+            {
+              "id": "c34bb2e5-4973-4199-bdef-fea74679d13c",
+              "media_id": null,
+              "kind": {
+                "type": "gap"
+              },
+              "timeline_in": 0,
+              "timeline_out": 24,
+              "source_in": 0,
+              "source_out": 24,
+              "rate": 24,
+              "node_graph": {
+                "nodes": [
+                  {
+                    "id": "e5ceeaf6-5c88-4702-b1fc-50bf848ecfb9",
+                    "kind": "Source",
+                    "label": "Source",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "a263a6d5-240e-40d1-a259-0da305402136",
+                    "kind": "Corrector",
+                    "label": "Corrector",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "b0f5787c-d4d1-4c6e-b6b9-09604b54a1b8",
+                    "kind": "Output",
+                    "label": "Output",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  }
+                ],
+                "edges": [
+                  {
+                    "from_node": "e5ceeaf6-5c88-4702-b1fc-50bf848ecfb9",
+                    "from_port": 0,
+                    "to_node": "a263a6d5-240e-40d1-a259-0da305402136",
+                    "to_port": 0
+                  },
+                  {
+                    "from_node": "a263a6d5-240e-40d1-a259-0da305402136",
+                    "from_port": 0,
+                    "to_node": "b0f5787c-d4d1-4c6e-b6b9-09604b54a1b8",
+                    "to_port": 0
+                  }
+                ],
+                "output_node_id": "b0f5787c-d4d1-4c6e-b6b9-09604b54a1b8",
+                "node_positions": {}
+              },
+              "color_grade": null,
+              "effects": [],
+              "builtin_effects": [
+                {
+                  "type": "opacity",
+                  "value": 0.5
+                },
+                {
+                  "radius": 2.0,
+                  "type": "gaussian_blur"
+                }
+              ],
+              "linked_clip_id": null,
+              "linked_title_asset_id": null,
+              "group_id": null,
+              "gain": null,
+              "volume": null,
+              "pan": null,
+              "fade_in_secs": null,
+              "fade_out_secs": null,
+              "fade_in_curve": null,
+              "fade_out_curve": null,
+              "channel_config": null,
+              "volume_keyframes": null,
+              "pan_keyframes": null,
+              "gain_keyframes": null,
+              "opacity_keyframes": null,
+              "transform_pos_x_keyframes": null,
+              "transform_pos_y_keyframes": null,
+              "transform_scale_keyframes": null,
+              "transform_rotation_keyframes": null,
+              "clip_markers": null,
+              "solo": null,
+              "grade_versions": [],
+              "active_grade_version": null,
+              "track_points": []
+            },
+            {
+              "id": "e4f59e9e-a5ce-4ea3-8cbf-02e1aea507bb",
+              "media_id": null,
+              "kind": {
+                "type": "gap"
+              },
+              "timeline_in": 24,
+              "timeline_out": 48,
+              "source_in": 0,
+              "source_out": 24,
+              "rate": 24,
+              "node_graph": {
+                "nodes": [
+                  {
+                    "id": "813b16f6-8018-436a-af8e-93c8f541c7d2",
+                    "kind": "Source",
+                    "label": "Source",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "33f850d3-e2b3-4de7-85f7-a00c5b9e42ab",
+                    "kind": "Corrector",
+                    "label": "Corrector",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "ef82da6a-ffbd-4d37-873d-20fdea4b6eff",
+                    "kind": "Output",
+                    "label": "Output",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  }
+                ],
+                "edges": [
+                  {
+                    "from_node": "813b16f6-8018-436a-af8e-93c8f541c7d2",
+                    "from_port": 0,
+                    "to_node": "33f850d3-e2b3-4de7-85f7-a00c5b9e42ab",
+                    "to_port": 0
+                  },
+                  {
+                    "from_node": "33f850d3-e2b3-4de7-85f7-a00c5b9e42ab",
+                    "from_port": 0,
+                    "to_node": "ef82da6a-ffbd-4d37-873d-20fdea4b6eff",
+                    "to_port": 0
+                  }
+                ],
+                "output_node_id": "ef82da6a-ffbd-4d37-873d-20fdea4b6eff",
+                "node_positions": {}
+              },
+              "color_grade": null,
+              "effects": [],
+              "builtin_effects": [
+                {
+                  "type": "opacity",
+                  "value": 0.5
+                },
+                {
+                  "radius": 2.0,
+                  "type": "gaussian_blur"
+                }
+              ],
+              "linked_clip_id": null,
+              "linked_title_asset_id": null,
+              "group_id": null,
+              "gain": null,
+              "volume": null,
+              "pan": null,
+              "fade_in_secs": null,
+              "fade_out_secs": null,
+              "fade_in_curve": null,
+              "fade_out_curve": null,
+              "channel_config": null,
+              "volume_keyframes": null,
+              "pan_keyframes": null,
+              "gain_keyframes": null,
+              "opacity_keyframes": null,
+              "transform_pos_x_keyframes": null,
+              "transform_pos_y_keyframes": null,
+              "transform_scale_keyframes": null,
+              "transform_rotation_keyframes": null,
+              "clip_markers": null,
+              "solo": null,
+              "grade_versions": [],
+              "active_grade_version": null,
+              "track_points": []
+            },
+            {
+              "id": "9623afec-6c89-47fe-9617-25e91803abd0",
+              "media_id": null,
+              "kind": {
+                "type": "gap"
+              },
+              "timeline_in": 48,
+              "timeline_out": 72,
+              "source_in": 0,
+              "source_out": 24,
+              "rate": 24,
+              "node_graph": {
+                "nodes": [
+                  {
+                    "id": "ba7b3450-dd65-41ee-83be-3bbe00f1a064",
+                    "kind": "Source",
+                    "label": "Source",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "f058764f-13da-487b-9c94-3d01057a4fd6",
+                    "kind": "Corrector",
+                    "label": "Corrector",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "48695b4f-52bd-4ef6-9907-5e63fabe9c78",
+                    "kind": "Output",
+                    "label": "Output",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  }
+                ],
+                "edges": [
+                  {
+                    "from_node": "ba7b3450-dd65-41ee-83be-3bbe00f1a064",
+                    "from_port": 0,
+                    "to_node": "f058764f-13da-487b-9c94-3d01057a4fd6",
+                    "to_port": 0
+                  },
+                  {
+                    "from_node": "f058764f-13da-487b-9c94-3d01057a4fd6",
+                    "from_port": 0,
+                    "to_node": "48695b4f-52bd-4ef6-9907-5e63fabe9c78",
+                    "to_port": 0
+                  }
+                ],
+                "output_node_id": "48695b4f-52bd-4ef6-9907-5e63fabe9c78",
+                "node_positions": {}
+              },
+              "color_grade": null,
+              "effects": [],
+              "builtin_effects": [
+                {
+                  "type": "opacity",
+                  "value": 0.5
+                },
+                {
+                  "radius": 2.0,
+                  "type": "gaussian_blur"
+                }
+              ],
+              "builtin_effects_enabled": [
+                false
+              ],
+              "linked_clip_id": null,
+              "linked_title_asset_id": null,
+              "group_id": null,
+              "gain": null,
+              "volume": null,
+              "pan": null,
+              "fade_in_secs": null,
+              "fade_out_secs": null,
+              "fade_in_curve": null,
+              "fade_out_curve": null,
+              "channel_config": null,
+              "volume_keyframes": null,
+              "pan_keyframes": null,
+              "gain_keyframes": null,
+              "opacity_keyframes": null,
+              "transform_pos_x_keyframes": null,
+              "transform_pos_y_keyframes": null,
+              "transform_scale_keyframes": null,
+              "transform_rotation_keyframes": null,
+              "clip_markers": null,
+              "solo": null,
+              "grade_versions": [],
+              "active_grade_version": null,
+              "track_points": []
+            },
+            {
+              "id": "82f5bc6d-f61d-4dc7-8601-5077c5fa6abc",
+              "media_id": null,
+              "kind": {
+                "type": "gap"
+              },
+              "timeline_in": 72,
+              "timeline_out": 96,
+              "source_in": 0,
+              "source_out": 24,
+              "rate": 24,
+              "node_graph": {
+                "nodes": [
+                  {
+                    "id": "1eeafc15-cd9a-4089-b642-d166defe2e14",
+                    "kind": "Source",
+                    "label": "Source",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "199e44d5-b678-4ca6-8c8e-3c16c0f166ca",
+                    "kind": "Corrector",
+                    "label": "Corrector",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  },
+                  {
+                    "id": "ff43fa48-94ad-44f9-9aea-6ceb0518c054",
+                    "kind": "Output",
+                    "label": "Output",
+                    "enabled": true,
+                    "params": {},
+                    "keyframes": {
+                      "tracks": []
+                    },
+                    "output_link": null,
+                    "input_links": []
+                  }
+                ],
+                "edges": [
+                  {
+                    "from_node": "1eeafc15-cd9a-4089-b642-d166defe2e14",
+                    "from_port": 0,
+                    "to_node": "199e44d5-b678-4ca6-8c8e-3c16c0f166ca",
+                    "to_port": 0
+                  },
+                  {
+                    "from_node": "199e44d5-b678-4ca6-8c8e-3c16c0f166ca",
+                    "from_port": 0,
+                    "to_node": "ff43fa48-94ad-44f9-9aea-6ceb0518c054",
+                    "to_port": 0
+                  }
+                ],
+                "output_node_id": "ff43fa48-94ad-44f9-9aea-6ceb0518c054",
+                "node_positions": {}
+              },
+              "color_grade": null,
+              "effects": [],
+              "builtin_effects": [
+                {
+                  "type": "opacity",
+                  "value": 0.5
+                },
+                {
+                  "radius": 2.0,
+                  "type": "gaussian_blur"
+                }
+              ],
+              "builtin_effects_enabled": [
+                true,
+                false,
+                true
+              ],
+              "linked_clip_id": null,
+              "linked_title_asset_id": null,
+              "group_id": null,
+              "gain": null,
+              "volume": null,
+              "pan": null,
+              "fade_in_secs": null,
+              "fade_out_secs": null,
+              "fade_in_curve": null,
+              "fade_out_curve": null,
+              "channel_config": null,
+              "volume_keyframes": null,
+              "pan_keyframes": null,
+              "gain_keyframes": null,
+              "opacity_keyframes": null,
+              "transform_pos_x_keyframes": null,
+              "transform_pos_y_keyframes": null,
+              "transform_scale_keyframes": null,
+              "transform_rotation_keyframes": null,
+              "clip_markers": null,
+              "solo": null,
+              "grade_versions": [],
+              "active_grade_version": null,
+              "track_points": []
+            }
+          ],
+          "transitions": [],
+          "opacity": 1.0,
+          "volume": 1.0,
+          "muted": false,
+          "solo": false,
+          "visible": true,
+          "pan": 0.0,
+          "locked": false,
+          "magnetic_role": "Primary"
+        },
+        {
+          "id": "e38e1919-1d36-46a2-b186-b190f4817b85",
+          "name": "Audio 1",
+          "kind": "Audio",
+          "clips": [],
+          "transitions": [],
+          "opacity": 1.0,
+          "volume": 1.0,
+          "muted": false,
+          "solo": false,
+          "visible": true,
+          "pan": 0.0,
+          "locked": false,
+          "magnetic_role": "Connected"
+        }
+      ],
+      "in_point": null,
+      "out_point": null,
+      "global_lut_path": null,
+      "global_lut_opacity": 1.0,
+      "global_lut_enabled": true,
+      "markers": [],
+      "track_header_width": 160.0,
+      "last_playhead": null,
+      "drop_frame": false
+    }
+  ],
+  "active_sequence_id": null,
+  "notes": "",
+  "working_colorspace": "Rec709Linear",
+  "grade_encoding": "bt1886"
+}

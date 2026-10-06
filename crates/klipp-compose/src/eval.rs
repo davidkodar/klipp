@@ -89,7 +89,7 @@ pub fn evaluate_clip_own_transform(
     clip_time_secs: f64,
     eval_ctx: &klipp_core::EvalContext,
 ) -> ResolvedTransform {
-    let tdef = clip.builtin_effects.iter()
+    let tdef = clip.builtin_effects().iter()
         .find_map(|e| match e {
             klipp_effects::BuiltinEffect::Transform {
                 position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, ..
@@ -274,7 +274,7 @@ pub fn resolve_clip_transform_depth(
     // `(focal_x, focal_y)` via the title's glyph layout + the
     // title's own resolved transform. Failed resolution falls back
     // to the static `anchor_x` / `anchor_y` (already in `own.5/6`).
-    let focal_ref = clip.builtin_effects.iter().find_map(|e| match e {
+    let focal_ref = clip.builtin_effects().iter().find_map(|e| match e {
         klipp_effects::BuiltinEffect::Transform { focal_ref, .. } => focal_ref.as_ref().copied(),
         _ => None,
     });
@@ -542,7 +542,7 @@ pub fn evaluate_clip_opacity(
     fps: f64,
 ) -> f32 {
     let opacity_default = clip
-        .builtin_effects
+        .builtin_effects()
         .iter()
         .find_map(|e| match e {
             klipp_effects::BuiltinEffect::Opacity { value } => Some(*value),
