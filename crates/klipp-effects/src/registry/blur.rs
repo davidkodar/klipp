@@ -18,6 +18,7 @@
 //!   title layer from its roll's focus band, so it has no slider ranges.
 
 use super::{
+    mixable,
     Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling, Spatial, Temporal, Unit, IMAGE_IN,
     IMAGE_OUT,
 };
@@ -38,6 +39,7 @@ const fn blur(id: &'static str, name: &'static str, params: &'static [ParamDesc]
         draws_outside: false,
         gpu: true,
         cpu: true,
+        mixable: false,
     }
 }
 
@@ -68,16 +70,16 @@ const fn unslid(mut p: ParamDesc) -> ParamDesc {
 
 pub(super) static TYPES: &[EffectType] = &[
     EffectType {
-        desc: blur(
+        desc: mixable(blur(
             "klipp.fx.gaussian_blur",
             "Gaussian Blur",
             &[ParamDesc::float("radius", "Radius", 0.0, (0.0, 100.0), Unit::CanvasPx)],
-        ),
+        )),
         tag: "gaussian_blur",
         sample: || BuiltinEffect::GaussianBlur { radius: 0.0 },
     },
     EffectType {
-        desc: blur(
+        desc: mixable(blur(
             "klipp.fx.focus_blur",
             "Focus Blur",
             &[
@@ -98,17 +100,17 @@ pub(super) static TYPES: &[EffectType] = &[
                 },
                 unslid(ParamDesc::float("band", "Band", 0.3, (0.0, 0.0), Unit::Normalised).fixed()),
             ],
-        ),
+        )),
         tag: "focus_blur",
         sample: || BuiltinEffect::FocusBlur { radius: 8.0, vertical: true, band: 0.3 },
     },
     EffectType {
-        desc: blur("klipp.fx.sharpen", "Sharpen", &[ParamDesc::float("amount", "Amount", 0.0, (0.0, 2.0), Unit::Ratio)]),
+        desc: mixable(blur("klipp.fx.sharpen", "Sharpen", &[ParamDesc::float("amount", "Amount", 0.0, (0.0, 2.0), Unit::Ratio)])),
         tag: "sharpen",
         sample: || BuiltinEffect::Sharpen { amount: 0.0 },
     },
     EffectType {
-        desc: blur(
+        desc: mixable(blur(
             "klipp.fx.directional_blur",
             "Directional Blur",
             &[
@@ -116,12 +118,12 @@ pub(super) static TYPES: &[EffectType] = &[
                 ParamDesc::float("distance", "Distance", 20.0, (0.0, 100.0), Unit::CanvasPx),
                 whole("samples", "Samples", 8.0, Some((3.0, 32.0)), Unit::Count, true),
             ],
-        ),
+        )),
         tag: "directional_blur",
         sample: || BuiltinEffect::DirectionalBlur { angle: 0.0, distance: 20.0, samples: 8 },
     },
     EffectType {
-        desc: blur(
+        desc: mixable(blur(
             "klipp.fx.radial_blur",
             "Radial Blur",
             &[
@@ -146,12 +148,12 @@ pub(super) static TYPES: &[EffectType] = &[
                     derived: false,
                 },
             ],
-        ),
+        )),
         tag: "radial_blur",
         sample: || BuiltinEffect::RadialBlur { center_x: 0.5, center_y: 0.5, amount: 10.0, samples: 12, mode: 0 },
     },
     EffectType {
-        desc: blur(
+        desc: mixable(blur(
             "klipp.fx.tilt_shift",
             "Tilt-Shift",
             &[
@@ -160,12 +162,12 @@ pub(super) static TYPES: &[EffectType] = &[
                 ParamDesc::float("softness", "Softness", 0.2, (0.01, 0.5), Unit::Normalised),
                 ParamDesc::float("radius", "Blur", 12.0, (0.0, 60.0), Unit::CanvasPx),
             ],
-        ),
+        )),
         tag: "tilt_shift",
         sample: || BuiltinEffect::TiltShift { center: 0.5, width: 0.3, softness: 0.2, radius: 12.0 },
     },
     EffectType {
-        desc: blur(
+        desc: mixable(blur(
             "klipp.fx.denoise",
             "Denoise",
             &[
@@ -173,26 +175,26 @@ pub(super) static TYPES: &[EffectType] = &[
                 ParamDesc::float("color_sigma", "Colour Sigma", 0.1, (0.01, 1.0), Unit::Ratio),
                 whole("iterations", "Iterations", 1.0, Some((1.0, 3.0)), Unit::Count, true),
             ],
-        ),
+        )),
         tag: "denoise",
         sample: || BuiltinEffect::Denoise { spatial_sigma: 5.0, color_sigma: 0.1, iterations: 1 },
     },
     EffectType {
-        desc: blur(
+        desc: mixable(blur(
             "klipp.fx.median_filter",
             "Median Filter",
             &[whole("radius", "Radius", 1.0, Some((1.0, 5.0)), Unit::CanvasPx, false)],
-        ),
+        )),
         tag: "median_filter",
         sample: || BuiltinEffect::MedianFilter { radius: 1 },
     },
     EffectType {
-        desc: blur("klipp.fx.dilate", "Dilate", &[whole("radius", "Radius", 1.0, Some((1.0, 10.0)), Unit::CanvasPx, false)]),
+        desc: mixable(blur("klipp.fx.dilate", "Dilate", &[whole("radius", "Radius", 1.0, Some((1.0, 10.0)), Unit::CanvasPx, false)])),
         tag: "dilate",
         sample: || BuiltinEffect::Dilate { radius: 1 },
     },
     EffectType {
-        desc: blur("klipp.fx.erode", "Erode", &[whole("radius", "Radius", 1.0, Some((1.0, 10.0)), Unit::CanvasPx, false)]),
+        desc: mixable(blur("klipp.fx.erode", "Erode", &[whole("radius", "Radius", 1.0, Some((1.0, 10.0)), Unit::CanvasPx, false)])),
         tag: "erode",
         sample: || BuiltinEffect::Erode { radius: 1 },
     },
@@ -222,7 +224,7 @@ pub(super) static TYPES: &[EffectType] = &[
         sample: || BuiltinEffect::EdgeDetect { strength: 1.0, mix: 1.0 },
     },
     EffectType {
-        desc: blur("klipp.fx.mosaic", "Mosaic", &[ParamDesc::float("block_size", "Block Size", 10.0, (1.0, 100.0), Unit::CanvasPx)]),
+        desc: mixable(blur("klipp.fx.mosaic", "Mosaic", &[ParamDesc::float("block_size", "Block Size", 10.0, (1.0, 100.0), Unit::CanvasPx)])),
         tag: "mosaic",
         sample: || BuiltinEffect::Mosaic { block_size: 10.0 },
     },

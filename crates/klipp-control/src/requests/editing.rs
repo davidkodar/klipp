@@ -288,7 +288,29 @@ pub fn node_types(category: Option<&str>) -> serde_json::Value {
     use klipp_effects::registry::effect_types;
     let wanted = |c: &str| category.is_none_or(|w| w.eq_ignore_ascii_case(c));
     let ports = |ps: &[klipp_effects::registry::PortDesc]| -> Vec<serde_json::Value> {
-        ps.iter().map(|p| json!({ "key": p.key, "type": format!("{:?}", p.ty), "optional": p.optional })).collect()
+        ps.iter()
+            .map(|p| {
+                let mut port = json!({ "key": p.key, "type": format!("{:?}", p.ty), "optional": p.optional });
+                if !p.params.is_empty() {
+                    // Each saved among the node's parameters under "<port>.<key>".
+                    port["params"] = p
+                        .params
+                        .iter()
+                        .map(|q| {
+                            json!({
+                                "key": q.key,
+                                "saved_as": klipp_effects::registry::port_param_key(p.key, q.key),
+                                "label": q.label,
+                                "options": q.options,
+                                "default": q.default,
+                                "migrated": q.migrated,
+                            })
+                        })
+                        .collect();
+                }
+                port
+            })
+            .collect()
     };
     // The built-in effects, by their saved tag, and the grade nodes, by
     // their saved kind.
@@ -322,6 +344,7 @@ pub fn node_types(category: Option<&str>) -> serde_json::Value {
                 "tag": tag,
                 "name": desc.name,
                 "category": format!("{:?}", desc.category),
+                "mixable": desc.mixable,
                 "inputs": ports(desc.inputs),
                 "outputs": ports(desc.outputs),
                 "params": params,
@@ -329,7 +352,7 @@ pub fn node_types(category: Option<&str>) -> serde_json::Value {
         })
         .collect();
     let text = format!(
-        "{} node types{}. Each lists its ports and parameters; a parameter's key is the name its keyframes are stored under.",
+        "{} node types{}. Each lists its ports and parameters; a parameter's key is the name its keyframes are stored under. A mixable type takes an optional mask input and a mix amount.",
         types.len(),
         category.map(|c| format!(" in {c}")).unwrap_or_default()
     );
@@ -365,5 +388,36 @@ mod node_types_tests {
         assert_eq!(grade.len(), klipp_nodes::registry::node_types().count());
         let corrector = grade.iter().find(|t| t["tag"] == "Corrector").expect("the Corrector is listed");
         assert!(corrector["params"].as_array().unwrap().iter().any(|p| p["key"] == "exposure"));
+    }
+
+    /// What an assistant learns about mixing (#1089, M2): which types are
+    /// mixable, and the mask input with its channel setting and where that
+    /// is saved. Pinned, so a change to it is a decision.
+    #[test]
+    fn mixable_types_and_their_mask_input_are_described() {
+        let all = node_types(None);
+        let types = all["types"].as_array().unwrap();
+        let find = |tag: &str| types.iter().find(|t| t["tag"] == tag).unwrap().clone();
+        let blur = find("gaussian_blur");
+        assert_eq!(blur["mixable"], true);
+        assert_eq!(
+            blur["inputs"],
+            serde_json::json!([
+                { "key": "in", "type": "Image", "optional": false },
+                { "key": "mask", "type": "Matte", "optional": true, "params": [
+                    { "key": "channel", "saved_as": "mask.channel", "label": "Channel",
+                      "options": ["red", "luminance", "alpha"], "default": "luminance", "migrated": "red" }
+                ] }
+            ])
+        );
+        let invert = find("invert");
+        assert_eq!(invert["mixable"], false);
+        assert_eq!(invert["inputs"], serde_json::json!([{ "key": "in", "type": "Image", "optional": false }]));
+        assert_eq!(types.iter().filter(|t| t["mixable"] == true).count(), 33);
+        // The grade nodes' own mask inputs keep their revision-1 meaning, with no setting.
+        let corrector = find("Corrector");
+        assert_eq!(corrector["mixable"], false);
+        assert_eq!(corrector["inputs"][1], serde_json::json!({ "key": "mask", "type": "Matte", "optional": true }));
+        assert!(types.iter().filter(|t| t["category"] == "Grade").all(|t| t["mixable"] == false));
     }
 }

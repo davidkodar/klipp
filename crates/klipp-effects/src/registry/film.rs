@@ -24,6 +24,7 @@
 //! per-frame results of an analysis of the clip.
 
 use super::{
+    mixable,
     Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling, Spatial, Temporal, Unit,
     IMAGE_IN, IMAGE_OUT,
 };
@@ -54,6 +55,7 @@ const fn effect(
         draws_outside: false,
         gpu,
         cpu: true,
+        mixable: false,
     }
 }
 
@@ -98,7 +100,7 @@ const UNIT: (f32, f32) = (0.0, 1.0);
 
 pub(super) static TYPES: &[EffectType] = &[
     EffectType {
-        desc: effect(
+        desc: mixable(effect(
             "klipp.fx.film_grain",
             "Film Grain",
             Category::FilmTemporal,
@@ -113,12 +115,12 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
             Temporal::None,
             true,
-        ),
+        )),
         tag: "film_grain",
         sample: || BuiltinEffect::FilmGrain { amount: 0.3, size: 1.5, color: 0, shadows: 0.6, seed: 0 },
     },
     EffectType {
-        desc: effect(
+        desc: mixable(effect(
             "klipp.fx.old_film",
             "Old Film",
             Category::FilmTemporal,
@@ -134,12 +136,12 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::Geometric,
             Temporal::None,
             true,
-        ),
+        )),
         tag: "old_film",
         sample: || BuiltinEffect::OldFilm { flicker: 0.4, scratches: 0.5, dust: 0.5, weave: 0.5, sepia: 0.6, seed: 0 },
     },
     EffectType {
-        desc: effect(
+        desc: mixable(effect(
             "klipp.fx.vhs",
             "VHS",
             Category::FilmTemporal,
@@ -154,12 +156,12 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::Neighbourhood,
             Temporal::None,
             true,
-        ),
+        )),
         tag: "vhs",
         sample: || BuiltinEffect::Vhs { tracking: 0.5, bleed: 0.5, noise: 0.4, scanlines: 0.5, seed: 0 },
     },
     EffectType {
-        desc: effect(
+        desc: mixable(effect(
             "klipp.fx.noise_generator",
             "Noise",
             Category::FilmTemporal,
@@ -168,7 +170,7 @@ pub(super) static TYPES: &[EffectType] = &[
             Spatial::PerPixel,
             Temporal::None,
             true,
-        ),
+        )),
         tag: "noise_generator",
         sample: || BuiltinEffect::NoiseGenerator { amount: 0.1, monochrome: 0, seed: 0 },
     },

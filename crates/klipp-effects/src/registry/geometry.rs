@@ -40,6 +40,7 @@ const fn geometry(
         draws_outside,
         gpu: true,
         cpu: true,
+        mixable: false,
     }
 }
 
