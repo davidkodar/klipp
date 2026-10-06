@@ -492,6 +492,8 @@ pub struct GpuEffectsPipeline {
     /// downstream-crate tests can observe it without coupling to this
     /// crate's test harness — an atomic counter is ~free in release.
     submit_count: Arc<std::sync::atomic::AtomicU64>,
+    /// Frames uploaded from the CPU (see [`Self::frame_upload_count`]).
+    frame_upload_count: Arc<std::sync::atomic::AtomicU64>,
     /// A stack frame's passes, recorded into one encoder and handed to
     /// the queue once ([`Self::encoder`] / [`Self::submit`]); `batching`
     /// while a stack frame is open. `stack_params_ring` gives each pass
@@ -1509,6 +1511,7 @@ impl GpuEffectsPipeline {
             current_buf_size: 0,
             device_lost,
             submit_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            frame_upload_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             batch: std::cell::RefCell::new(None),
             batching: std::cell::Cell::new(false),
             stack_params_ring,
@@ -2025,7 +2028,7 @@ impl GpuEffectsPipeline {
         let staging = self.bridge_u8_staging_buf.as_ref().expect("bridge_u8_staging_buf just created");
 
         // Upload input + write params.
-        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
         self.write_params(&BridgeU8Params { width, height, _pad0: 0, _pad1: 0 });
 
         // Bind group: input(buf_a, read), output(out_buf, write), params(uniform).
@@ -2154,7 +2157,7 @@ impl GpuEffectsPipeline {
         let byte_size = pixel_count * 16;
         self.ensure_buffers(byte_size);
         let buf_a = self.buf_a.as_ref().expect("ensure_buffers established buf_a");
-        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
         self.encode_grade_to_texture(true, width, height, target)
     }
 
@@ -3313,7 +3316,7 @@ impl GpuEffectsPipeline {
         self.ensure_buffers(byte_size);
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
-        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         self.write_params(&GpuVibranceParams { width, height, amount, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad1: 0 });
         self.dispatch(&self.vibrance_pipeline, buf_a, buf_b, workgroups);
@@ -3329,7 +3332,7 @@ impl GpuEffectsPipeline {
         self.ensure_buffers(byte_size);
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
-        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         self.write_params(&GpuColorWarperParams {
             width, height, _pad0: 0, _pad1: 0,
@@ -3361,7 +3364,7 @@ impl GpuEffectsPipeline {
         let buf_b = self.buf_b.as_ref().unwrap();
         let buf_c = self.buf_c.as_ref().unwrap();
 
-        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let radius = radius.max(1);
 
@@ -3417,7 +3420,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -3641,7 +3644,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
 
         // Upload LUT data
         self.upload(&self.huesat_lut_buf, 0, bytemuck::cast_slice(lut_data));
@@ -3713,7 +3716,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
 
         // (Re-)create LUT buffer if needed
         let lut_byte_size = (lut_data.len() * 4) as u64;
@@ -3786,7 +3789,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
 
         self.write_params(&GpuQualifierParams {
             width,
@@ -3843,7 +3846,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
 
         self.write_params(&GpuLumaKeyParams {
             width,
@@ -3885,7 +3888,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
 
         self.write_params(&GpuSoftClipParams {
             width,
@@ -3925,7 +3928,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
 
         self.write_params(&GpuGrainParams {
             width,
@@ -4025,6 +4028,15 @@ impl GpuEffectsPipeline {
     /// the chain path collapses per-node submits into one.
     pub fn submit_count(&self) -> u64 {
         self.submit_count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Count of whole frames uploaded from the CPU since pipeline
+    /// creation: a chain's input, a single-node pass's input, a key's
+    /// plate. Its change over a graph run is
+    /// `ChainStats::uploads`, so a test can tell a CPU-made value that was
+    /// uploaded into the chain from one that made the chain decline.
+    pub fn frame_upload_count(&self) -> u64 {
+        self.frame_upload_count.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Count of chain-bind-group `create_bind_group` calls since
@@ -4703,7 +4715,7 @@ impl GpuEffectsPipeline {
             return;
         }
         if let Some(buf) = self.plate_buf.as_ref() {
-            self.upload(buf, 0, bytemuck::cast_slice(plate_linear));
+            self.upload_frame(buf, bytemuck::cast_slice(plate_linear));
             self.plate_key = Some(key);
         }
     }
@@ -4999,7 +5011,7 @@ impl GpuEffectsPipeline {
             return;
         }
         let buf_a = self.buf_a.as_ref().expect("ensure_chain_buffers must be called first");
-        self.upload(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
     }
 
     /// Download the final linear-f32 RGBA frame. `slot_a` selects `buf_a`
@@ -5222,6 +5234,13 @@ impl GpuEffectsPipeline {
     fn upload(&self, buffer: &wgpu::Buffer, offset: u64, data: &[u8]) {
         self.flush();
         self.queue.write_buffer(buffer, offset, data);
+    }
+
+    /// [`Self::upload`] of a whole frame of pixels from the CPU, counted
+    /// in [`Self::frame_upload_count`]; tables and parameters are not.
+    fn upload_frame(&self, buffer: &wgpu::Buffer, data: &[u8]) {
+        self.upload(buffer, 0, data);
+        self.frame_upload_count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The uniform the next pass binds as its params: the slot

@@ -239,15 +239,15 @@ pub struct DisplayDelivery<'a> {
 /// What the single-clip export path made of a frame.
 enum Single {
     Planes((Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)),
-    /// Neither path can take it.
-    Refused,
+    /// Neither path can take it, and why.
+    Refused(&'static str),
     /// More than one clip's grade: the stack's frame.
     ForTheStack,
 }
 
 impl From<Option<(Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)>> for Single {
     fn from(planes: Option<(Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)>) -> Self {
-        planes.map_or(Single::Refused, Single::Planes)
+        planes.map_or(Single::Refused("the Y'CbCr encode failed"), Single::Planes)
     }
 }
 
@@ -260,6 +260,9 @@ pub struct RenderStats {
     pub lut_ms: f64,
     pub composite_ms: f64,
     pub total_ms: f64,
+    /// Layers the GPU stack had no seed for, rendered on the CPU and
+    /// uploaded: the slow way in.
+    pub cpu_layers: u32,
 }
 
 /// One entry of the stack [`Renderer::render`] composites.
@@ -453,6 +456,9 @@ pub struct Renderer {
     motion: klipp_effects::MotionData,
     /// Why the GPU stack last declined a frame, so the log says it once.
     last_gpu_stack_decline: Option<&'static str>,
+    /// Why the GPU declined the last frame asked of it, or `None` when it
+    /// took it; see [`Self::last_decline`].
+    frame_decline: Option<&'static str>,
     /// The clips the GPU stack had to render on the CPU, so the log says
     /// so once per clip and not per frame.
     cpu_layers_said: std::collections::HashSet<ClipId>,
@@ -540,6 +546,7 @@ impl Renderer {
             grade_encoding: klipp_core::grade_encoding(),
             motion: klipp_effects::MotionData::default(),
             last_gpu_stack_decline: None,
+            frame_decline: None,
             cpu_layers_said: std::collections::HashSet::new(),
             nesting: 0,
             stack_work_started: false,
@@ -768,11 +775,27 @@ impl Renderer {
         target: klipp_effects::gpu::Yuv420Target,
     ) -> Option<(Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)> {
         self.gpu_export_declined_after_work = false;
-        match self.render_yuv420_single(seq, time, width, height, src, opts, target) {
+        self.frame_decline = None;
+        let planes = match self.render_yuv420_single(seq, time, width, height, src, opts, target) {
             Single::Planes(planes) => Some(planes),
-            Single::Refused => None,
+            Single::Refused(why) => {
+                self.frame_decline = Some(why);
+                None
+            }
             Single::ForTheStack => self.render_yuv420_from_stack(seq, time, width, height, src, opts, target),
+        };
+        if planes.is_none() && self.frame_decline.is_none() {
+            self.frame_decline = Some("the GPU pipeline was unavailable");
         }
+        planes
+    }
+
+    /// Why the GPU declined the last frame [`Self::render_display_on_gpu`]
+    /// or [`Self::render_yuv420_on_gpu`] was asked for, or `None` when it
+    /// took it: the decline as data, for a test or a counter, where the log
+    /// says it once.
+    pub fn last_decline(&self) -> Option<&'static str> {
+        self.frame_decline
     }
 
     /// Whether the last [`Self::render_yuv420_on_gpu`] declined only
@@ -801,6 +824,7 @@ impl Renderer {
         target: klipp_effects::gpu::Yuv420Target,
     ) -> Option<(Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)> {
         if opts.hdr_peak_nits.is_some() || target.hdr_op != 0 {
+            self.frame_decline = Some("HDR delivery");
             return None;
         }
         let composited = self.composite_on_gpu(seq, time, width, height, src, opts).is_some();
@@ -815,6 +839,7 @@ impl Renderer {
         let planes = self.executor.encode_output_to_yuv420(width, height, target);
         if planes.is_none() {
             self.gpu_export_declined_after_work = true;
+            self.frame_decline = Some("the Y'CbCr encode failed");
         }
         planes
     }
@@ -851,7 +876,7 @@ impl Renderer {
         // timeline *without* its global LUT, silently.
         let global_lut_here = self.global_lut.is_some();
         if global_lut_here && opts.hdr_peak_nits.is_some() {
-            return Single::Refused;
+            return Single::Refused("global LUT with an HDR delivery");
         }
         // A timeline grade runs on the composite, which a single-clip
         // render does not have; the stack takes the frame instead.
@@ -866,7 +891,7 @@ impl Renderer {
         // picture, not an error, so it is checked rather than assumed.
         let hdr_delivery = opts.hdr_peak_nits.is_some();
         if (target.hdr_op != 0) != hdr_delivery {
-            return Single::Refused;
+            return Single::Refused("the render and the encode disagree on HDR");
         }
         // Set below when the source is scene-referred, which is the one
         // case with a step of its own after the grade.
@@ -925,7 +950,7 @@ impl Renderer {
             || i.matte_of.is_some()
             || i.only.is_some()
         {
-            return Single::Refused;
+            return Single::Refused("inspection");
         }
         // And the clip's own stack, answered by the code that builds it:
         // an empty effect list at full opacity means the grade's output is
@@ -951,9 +976,9 @@ impl Renderer {
         // the chain, and convert it there.
         let clip_time = eval_clip_time(clip, time);
         let at = source_secs(clip, time, fps);
-        let Some(f) = src.frame(clip, at, width, height) else { return Single::Refused };
+        let Some(f) = src.frame(clip, at, width, height) else { return Single::Refused("the source has no frame") };
         if (f.width, f.height) != (width, height) {
-            return Single::Refused;
+            return Single::Refused("the source frame is another size");
         }
         let input = match f.pixels {
             SourcePixels::Gpu(g) => GradeInput::Gpu(g),
@@ -972,7 +997,7 @@ impl Renderer {
                 // The LUT would have to follow this clip's display pass,
                 // and the fused writer runs that last.
                 if global_lut_here {
-                    return Single::Refused;
+                    return Single::Refused("global LUT after a scene-referred display pass");
                 }
                 scene_end = Some(klipp_effects::gpu::SceneReferredEnd {
                     display_light: hdr_delivery,
@@ -1000,11 +1025,11 @@ impl Renderer {
         self.executor.set_working_colorspace(self.working);
         self.executor.set_render_scale(self.px_scale);
         if clip.grade_is_identity() {
-            let GradeInput::Gpu(g) = &input else { return Single::Refused };
+            let GradeInput::Gpu(g) = &input else { return Single::Refused("an identity grade of a frame not on the GPU") };
             if !g.seed(&mut self.executor, width, height)
                 || !self.executor.take_seeded_input_as_output()
             {
-                return Single::Refused;
+                return Single::Refused("the source could not seed the chain");
             }
             let target = klipp_effects::gpu::Yuv420Target {
                 scene: scene_end,
@@ -1012,7 +1037,7 @@ impl Renderer {
                 ..target
             };
             if !self.global_lut_on_chain(width, height) {
-                return Single::Refused;
+                return Single::Refused("global LUT");
             }
             return Single::from(self.executor.encode_output_to_yuv420(width, height, target));
         }
@@ -1028,12 +1053,12 @@ impl Renderer {
         // pay it on every frame.
         if !pixels.is_empty() {
             self.gpu_export_declined_after_work = true;
-            return Single::Refused;
+            return Single::Refused("the grade came back on the CPU");
         }
         let target =
             klipp_effects::gpu::Yuv420Target { scene: scene_end, peak_nits: peak, ..target };
         if !self.global_lut_on_chain(width, height) {
-            return Single::Refused;
+            return Single::Refused("global LUT");
         }
         Single::from(self.executor.encode_output_to_yuv420(width, height, target))
     }
@@ -1083,7 +1108,11 @@ impl Renderer {
         opts: RenderOptions,
         out: DisplayDelivery<'_>,
     ) -> Option<(Option<Vec<u8>>, RenderStats)> {
+        self.frame_decline = None;
         let result = self.render_display_on_gpu_inner(seq, time, width, height, src, opts, out);
+        if result.is_none() && self.frame_decline.is_none() {
+            self.frame_decline = Some("the GPU pipeline was unavailable");
+        }
         // A frame's passes record into one encoder from `stack_begin`;
         // a decline part-way must not leave them waiting for the next
         // frame.
@@ -1108,7 +1137,9 @@ impl Renderer {
         let mut stats = self.composite_on_gpu(seq, time, width, height, src, opts)?;
         let t = Instant::now();
         let gpu = self.executor.gpu_pipeline_or_init()?;
-        let bytes = gpu.encode_chain_to_display(true, width, height, None, false, None, out.texture, out.bytes)?;
+        let Some(bytes) = gpu.encode_chain_to_display(true, width, height, None, false, None, out.texture, out.bytes) else {
+            return self.gpu_stack_declines("the display encode failed");
+        };
         stats.composite_ms += ms_since(t);
         stats.total_ms = ms_since(t0);
         Some((bytes, stats))
@@ -1592,6 +1623,7 @@ impl Renderer {
                 }
                 let Some((pixels, _)) = self.render_clip(c, time, fps, width, height, src, transforms) else { return Ok(None) };
                 effects_done = true;
+                stats.cpu_layers += 1;
                 self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(slot, &pixels))
             }
         };
@@ -1693,6 +1725,7 @@ impl Renderer {
     /// log once, until it changes.
     fn gpu_stack_declines<T>(&mut self, why: &'static str) -> Option<T> {
         self.gpu_export_declined_after_work = self.stack_work_started;
+        self.frame_decline = Some(why);
         if self.last_gpu_stack_decline != Some(why) {
             tracing::debug!("GPU stack declines the frame: {why}");
             self.last_gpu_stack_decline = Some(why);

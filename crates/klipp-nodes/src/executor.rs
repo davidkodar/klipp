@@ -1455,6 +1455,10 @@ impl GraphExecutor {
         self.last_chain_final_slot = None;
         let t_total = std::time::Instant::now();
         let mut per_node_ms: Vec<(String, f64)> = Vec::new();
+        // The GPU's counts before the run, for the run's own (a pipeline
+        // made during the run starts from 0).
+        let gpu_counts = |this: &Self| this.gpu.as_ref().map_or((0, 0), |g| (g.submit_count(), g.frame_upload_count()));
+        let (submits_before, uploads_before) = gpu_counts(self);
         let mut chain_flush_count: u32 = 0;
         let mut chain_extend_count: u32 = 0;
         let mut chain_start_count: u32 = 0;
@@ -2265,10 +2269,13 @@ impl GraphExecutor {
             chain_flush_count += 1;
         }
 
+        let (submits_after, uploads_after) = gpu_counts(self);
         self.last_run_chain_stats = ChainStats {
             extends: chain_extend_count,
             flushes: chain_flush_count,
             cpu_nodes: cpu_fallback_count,
+            submits: u32::try_from(submits_after.saturating_sub(submits_before)).unwrap_or(u32::MAX),
+            uploads: u32::try_from(uploads_after.saturating_sub(uploads_before)).unwrap_or(u32::MAX),
         };
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
         if total_ms > 5.0 {
@@ -2587,6 +2594,13 @@ pub struct ChainStats {
     pub flushes: u32,
     /// Nodes that ran through the per-node CPU path.
     pub cpu_nodes: u32,
+    /// Command buffers handed to the GPU queue during the run: one per
+    /// chain segment when the chain batches, more when passes submit
+    /// themselves.
+    pub submits: u32,
+    /// Whole frames uploaded from the CPU to the GPU during the run: the
+    /// chain's input, a CPU-made value fed back in, a key's plate.
+    pub uploads: u32,
 }
 
 /// Whether `node` keyframes any of a qualifier's matte refinements. The
