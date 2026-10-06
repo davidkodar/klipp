@@ -56,15 +56,17 @@ impl KlippApp {
                     one(track_id, &|s| {
                         // One of a kind: a second vignette replaces the first,
                         // and is on, as the op leaves it.
-                        let at = s.effects.video.iter().position(|e| std::mem::discriminant(e) == std::mem::discriminant(&fx));
-                        match at {
-                            Some(k) => {
-                                s.effects.video[k] = fx.clone();
-                                s.effects.video_enabled.resize(s.effects.video.len(), true);
-                                s.effects.video_enabled[k] = true;
+                        s.effects.edit_video_effects(|video, enabled| {
+                            let at = video.iter().position(|e| std::mem::discriminant(e) == std::mem::discriminant(&fx));
+                            match at {
+                                Some(k) => {
+                                    video[k] = fx.clone();
+                                    enabled.resize(video.len(), true);
+                                    enabled[k] = true;
+                                }
+                                None => video.push(fx.clone()),
                             }
-                            None => s.effects.video.push(fx.clone()),
-                        }
+                        });
                     }),
                     "Add Track Effect",
                 ),
@@ -90,9 +92,13 @@ impl KlippApp {
                         if let Some(e) = s.effects.audio.get_mut(*index) {
                             e.enabled = !e.enabled;
                         }
-                    } else if *index < s.effects.video.len() {
-                        s.effects.video_enabled.resize(s.effects.video.len(), true);
-                        s.effects.video_enabled[*index] = !s.effects.video_enabled[*index];
+                    } else {
+                        s.effects.edit_video_effects(|video, enabled| {
+                            if *index < video.len() {
+                                enabled.resize(video.len(), true);
+                                enabled[*index] = !enabled[*index];
+                            }
+                        });
                     }
                 }),
                 "Toggle Track Effect",
@@ -103,11 +109,15 @@ impl KlippApp {
                         if *index < s.effects.audio.len() {
                             s.effects.audio.remove(*index);
                         }
-                    } else if *index < s.effects.video.len() {
-                        s.effects.video.remove(*index);
-                        if *index < s.effects.video_enabled.len() {
-                            s.effects.video_enabled.remove(*index);
-                        }
+                    } else {
+                        s.effects.edit_video_effects(|video, enabled| {
+                            if *index < video.len() {
+                                video.remove(*index);
+                                if *index < enabled.len() {
+                                    enabled.remove(*index);
+                                }
+                            }
+                        });
                     }
                 }),
                 "Remove Track Effect",

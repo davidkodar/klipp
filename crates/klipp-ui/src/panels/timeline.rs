@@ -5689,7 +5689,7 @@ impl TimelinePanel {
 
         // FX badge — show if clip has non-Transform effects applied
         if clip_rect.width() > 40.0 {
-            let has_fx = !clip.effects.is_empty()
+            let has_fx = !clip.ofx_effects().is_empty()
                 || clip.builtin_effects().iter().any(|e| !matches!(e, klipp_effects::BuiltinEffect::Transform { .. }));
             if has_fx {
                 let fx_font = egui::FontId::proportional(10.0);
@@ -19363,7 +19363,7 @@ fn track_effects_menu(ui: &mut egui::Ui, track: &klipp_timeline::Track, cmds: &m
     if !picture && !sound {
         return;
     }
-    let title = if fx.is_empty() { "Track Effects".to_string() } else { format!("Track Effects ({})", fx.video.len() + fx.audio.len() + usize::from(fx.track_grade().is_some_and(|g| !g.is_identity()))) };
+    let title = if fx.is_empty() { "Track Effects".to_string() } else { format!("Track Effects ({})", fx.video_effects().len() + fx.audio.len() + usize::from(fx.track_grade().is_some_and(|g| !g.is_identity()))) };
     ui.menu_button(title, |ui| {
         ui.set_min_width(220.0);
         if fx.is_empty() {
@@ -19380,9 +19380,9 @@ fn track_effects_menu(ui: &mut egui::Ui, track: &klipp_timeline::Track, cmds: &m
                 }
             });
         };
-        for (k, e) in fx.video.iter().enumerate() {
+        for (k, e) in fx.video_effects().iter().enumerate() {
             let name = format!("{e:?}").split(['{', '(', ' ']).next().unwrap_or("").to_string();
-            row(ui, name, fx.video_enabled.get(k).copied().unwrap_or(true), false, k, cmds);
+            row(ui, name, fx.video_effects_enabled().get(k).copied().unwrap_or(true), false, k, cmds);
         }
         if fx.track_grade().is_some_and(|g| !g.is_identity()) {
             ui.label("Grade, after each clip's own");

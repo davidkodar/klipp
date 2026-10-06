@@ -661,7 +661,7 @@ mod tests {
         let track_node = corrector(&track_grade);
 
         let mut v = Track::new("V1", TrackKind::Video);
-        v.effects.video = vec![E::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.7 }];
+        v.effects.set_video_effect_list(vec![E::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.7 }], vec![]);
         v.effects.grade = Some(track_grade.into());
         let mut a = Clip::media(MediaId::new(), t(0), t(24), t(0), t(24));
         a.set_effect_list(vec![E::Opacity { value: 0.5 }], vec![false]);

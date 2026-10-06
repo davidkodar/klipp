@@ -46,10 +46,12 @@
 mod brief;
 mod edit_plan;
 mod effect_slots;
+mod other_effect_slots;
 mod grade_access;
 pub use grade_access::{Grade, GradeAccess, GradeSlot};
 mod render_gates;
 pub use effect_slots::{EffectId, EffectList, EffectsState};
+pub use other_effect_slots::{OfxEffects, TrackEffectList};
 mod clip_kind;
 pub mod crossfade;
 pub mod flatten;

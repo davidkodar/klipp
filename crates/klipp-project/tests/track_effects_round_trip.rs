@@ -26,8 +26,7 @@ fn exposed(ev: f32) -> klipp_nodes::NodeGraph {
 fn with_track_effects() -> Sequence {
     let mut seq = Sequence::new_default();
     let v = seq.tracks.iter_mut().find(|t| t.kind == TrackKind::Video).unwrap();
-    v.effects.video = vec![BuiltinEffect::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.7 }];
-    v.effects.video_enabled = vec![false];
+    v.effects.set_video_effect_list(vec![BuiltinEffect::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.7 }], vec![false]);
     v.effects.grade_slot().set(Some(exposed(-0.5)));
     let a = seq.tracks.iter_mut().find(|t| t.kind == TrackKind::Audio).unwrap();
     a.effects.audio = vec![AudioEffectInstance { effect_type: "compressor".into(), enabled: false, wet_dry: 0.8, params: vec![("threshold".into(), -18.0)] }];

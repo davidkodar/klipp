@@ -1177,7 +1177,7 @@ mod tests {
         let mut picture = clip();
         picture.set_effects(vec![E::Opacity { value: 0.9 }]);
         seq.tracks[0].clips.push(picture); // V1
-        seq.tracks[0].effects.video = vec![E::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.7 }];
+        seq.tracks[0].effects.set_video_effect_list(vec![E::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.7 }], vec![]);
         let mut sound = clip();
         sound.audio_effects = vec![fx("eq")];
         seq.tracks[1].clips.push(sound); // A1

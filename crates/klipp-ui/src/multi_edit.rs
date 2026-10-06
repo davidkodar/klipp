@@ -72,14 +72,14 @@ pub fn copy_to(cmd: &AppCommand, primary: &Clip, other: &mut Clip) -> bool {
             }
         }
         AppCommand::SetEffectParam { effect_index, param_name, value, .. } => {
-            let Some(plugin) = primary.effects.get(*effect_index).map(|e| e.plugin_name.clone()) else { return false };
-            match other.effects.iter_mut().find(|e| e.plugin_name == plugin) {
+            let Some(plugin) = primary.ofx_effects().get(*effect_index).map(|e| e.plugin_name.clone()) else { return false };
+            other.edit_ofx_effects(|effects| match effects.iter_mut().find(|e| e.plugin_name == plugin) {
                 Some(e) => {
                     e.param_values.insert(param_name.clone(), value.clone());
                     true
                 }
                 None => false,
-            }
+            })
         }
         AppCommand::UpdateAudioEffectParam { effect_index, param_name, value, .. } => {
             let Some(kind) = primary.audio_effects.get(*effect_index).map(|e| e.effect_type.clone()) else { return false };

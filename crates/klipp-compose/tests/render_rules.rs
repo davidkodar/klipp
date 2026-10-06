@@ -2047,7 +2047,7 @@ fn keyframed_effects_ramp_in_the_picture() {
 #[test]
 fn a_disabled_plugin_leaves_the_picture_untouched() {
     let mut c = media(0.0, 2.0);
-    c.effects = vec![klipp_plugin::AppliedEffect { plugin_name: "com.example.Off".into(), enabled: false, ..Default::default() }];
+    c.set_ofx_effects(vec![klipp_plugin::AppliedEffect { plugin_name: "com.example.Off".into(), enabled: false, ..Default::default() }]);
     let mut src = Flat::default().grey(&c, 2.5);
     let seq = sequence(vec![vec![c]]);
     for (i, img) in render(&seq, 1.0, &mut src).iter().enumerate() {

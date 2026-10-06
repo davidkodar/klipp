@@ -2514,8 +2514,8 @@ impl Renderer {
         self.working_to_authored(&mut as_709);
         let u8s = klipp_effects::linear_f32_rgba_to_srgb_u8(&as_709);
         let out = match frames {
-            Some(frames) => self.ofx.apply_effects_chain_temporal(&clip.effects, &u8s, width, height, clip_time, frames),
-            None => self.ofx.apply_effects_chain(&clip.effects, &u8s, width, height, clip_time),
+            Some(frames) => self.ofx.apply_effects_chain_temporal(clip.ofx_effects(), &u8s, width, height, clip_time, frames),
+            None => self.ofx.apply_effects_chain(clip.ofx_effects(), &u8s, width, height, clip_time),
         };
         let mut out = klipp_effects::srgb_u8_to_linear_f32_rgba(&out);
         self.authored_to_working(&mut out);
@@ -3811,7 +3811,7 @@ mod temporal_denoise_placement_tests {
             c.kind = klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() };
             c.opacity_keyframes = keys;
             let mut t = Track::new("V1", TrackKind::Video);
-            t.effects.video = track_fx;
+            t.effects.set_video_effect_list(track_fx, vec![]);
             t.clips.push(c);
             let mut seq = klipp_timeline::Sequence::new_default();
             seq.tracks = vec![t];

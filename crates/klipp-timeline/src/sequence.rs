@@ -433,12 +433,12 @@ impl Sequence {
                     audio_effects: clip.audio_effects.clone(),
                 }));
                 if picture {
-                    if !fx.video.is_empty() {
+                    if !fx.video_effects().is_empty() {
                         // The clip's flags padded to its own effects first: a
                         // missing flag is on, and the track's follow theirs.
-                        for (k, e) in fx.video.iter().enumerate() {
+                        for (k, e) in fx.video_effects().iter().enumerate() {
                             let id = clip.push_effect(e.clone());
-                            clip.set_effect_enabled(id, fx.video_enabled.get(k).copied().unwrap_or(true));
+                            clip.set_effect_enabled(id, fx.video_effects_enabled().get(k).copied().unwrap_or(true));
                         }
                     }
                     if let Some(grade) = fx.grade_onto(track.kind, clip) {
@@ -1206,11 +1206,8 @@ pub struct Track {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TrackEffects {
     /// Effects on every picture of the track, after each clip's own.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub video: Vec<klipp_effects::BuiltinEffect>,
-    /// Whether each of `video` is on; a missing entry is on.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub video_enabled: Vec<bool>,
+    #[serde(flatten)]
+    pub video_effect_list: crate::TrackEffectList,
     /// A grade on every picture of the track, after each clip's own grade
     /// and its grade group's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1224,12 +1221,12 @@ pub struct TrackEffects {
 impl TrackEffects {
     /// Whether the track changes nothing.
     pub fn is_empty(&self) -> bool {
-        self.video.is_empty() && self.track_grade().is_none_or(|g| g.is_identity()) && self.audio.is_empty()
+        self.video_effects().is_empty() && self.track_grade().is_none_or(|g| g.is_identity()) && self.audio.is_empty()
     }
 
     /// Whether the track changes anything about a picture.
     pub fn touches_picture(&self) -> bool {
-        !self.video.is_empty() || self.track_grade().is_some_and(|g| !g.is_identity())
+        !self.video_effects().is_empty() || self.track_grade().is_some_and(|g| !g.is_identity())
     }
 
     /// The grade a render copy appends to `clip`'s on a track of `kind`
@@ -1298,8 +1295,7 @@ impl Track {
             s.pan = from.pan;
         }
         if what.picture {
-            s.effects.video = from.effects.video.clone();
-            s.effects.video_enabled = from.effects.video_enabled.clone();
+            s.effects.set_video_effect_list(from.effects.video_effects().to_vec(), from.effects.video_effects_enabled().to_vec());
             s.effects.grade = from.effects.grade.clone();
         }
         if what.sound {
@@ -1382,7 +1378,7 @@ impl Track {
             source_in: Timecode { value: 0, rate: source_duration.rate },
             source_out: source_duration,
             node_graph: crate::Grade::default(),
-            effects: Vec::new(),
+            effects: Default::default(),
             effect_list: Default::default(),
             linked_clip_id: None,
             linked_title_asset_id: None,
@@ -2162,7 +2158,7 @@ pub struct Clip {
     #[serde(default)]
     pub node_graph: crate::Grade,
     #[serde(default)]
-    pub effects: Vec<klipp_plugin::AppliedEffect>,
+    pub effects: crate::OfxEffects,
     /// Built-in effect storage; use the effect-list API to read or edit it.
     /// Flattening preserves the existing top-level saved keys.
     #[serde(flatten)]
@@ -2416,7 +2412,7 @@ impl Clip {
     /// whose plug-ins are all off renders as one without any: no 8-bit
     /// round trip, and nothing keeps it off the GPU paths.
     pub fn has_enabled_plugins(&self) -> bool {
-        self.effects.iter().any(|e| e.enabled)
+        self.ofx_effects().iter().any(|e| e.enabled)
     }
 
     pub fn media_id(&self) -> Option<MediaId> {
@@ -2739,7 +2735,7 @@ impl Clip {
             source_in: Timecode { value: 0, rate: timeline_in.rate },
             source_out: timeline_out - timeline_in,
             node_graph: crate::Grade::default(),
-            effects: Vec::new(),
+            effects: Default::default(),
             effect_list: Default::default(),
             linked_clip_id: None,
             linked_title_asset_id: None,
@@ -2852,7 +2848,7 @@ impl Clip {
             source_in,
             source_out,
             node_graph: crate::Grade::default(),
-            effects: Vec::new(),
+            effects: Default::default(),
             effect_list: Default::default(),
             linked_clip_id: None,
             linked_title_asset_id: None,
@@ -2954,7 +2950,7 @@ impl Clip {
             source_in: Timecode { value: 0, rate: timeline_in.rate },
             source_out: dur,
             node_graph: crate::Grade::default(),
-            effects: Vec::new(),
+            effects: Default::default(),
             effect_list: Default::default(),
             linked_clip_id: None,
             linked_title_asset_id: None,

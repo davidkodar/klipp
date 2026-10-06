@@ -170,7 +170,7 @@ fn render_inputs(c: &Clip, fps: f64) -> Value {
             })
         })
         .collect();
-    json!({ "grade": grade(c.grade()), "ofx": c.effects.iter().map(|e| json!({"plugin": e.plugin_name, "enabled": e.enabled})).collect::<Vec<_>>(), "samples": samples })
+    json!({ "grade": grade(c.grade()), "ofx": c.ofx_effects().iter().map(|e| json!({"plugin": e.plugin_name, "enabled": e.enabled})).collect::<Vec<_>>(), "samples": samples })
 }
 
 /// The sequences of the project in `dir`, as today's reader loads them.
