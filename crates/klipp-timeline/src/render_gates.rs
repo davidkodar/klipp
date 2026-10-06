@@ -23,7 +23,7 @@ impl Clip {
     }
 
     pub fn grade_is_identity(&self) -> bool {
-        self.node_graph.is_identity()
+        self.node_graph.0.is_identity()
     }
 
     /// The render-cache/grade-job gate. Plug-ins and animation are deliberately
@@ -375,6 +375,7 @@ mod tests {
         for exposure in [None, Some(0.0), Some(1.0)] {
             let mut c = clip();
             c.node_graph
+                .0
                 .nodes
                 .iter_mut()
                 .find(|n| n.kind == klipp_nodes::NodeKind::Corrector)

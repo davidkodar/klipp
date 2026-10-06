@@ -31,6 +31,7 @@ use klipp_nodes::{NodeGraph, NodeKind};
 use klipp_timeline::{Clip, Sequence, Track};
 use uuid::Uuid;
 use serde_json::{json, Map, Value};
+use klipp_timeline::GradeAccess;
 
 /// Whether an unwired input `port` of a `kind` node reads the source
 /// frame rather than nothing.
@@ -169,7 +170,7 @@ fn render_inputs(c: &Clip, fps: f64) -> Value {
             })
         })
         .collect();
-    json!({ "grade": grade(&c.node_graph), "ofx": c.effects.iter().map(|e| json!({"plugin": e.plugin_name, "enabled": e.enabled})).collect::<Vec<_>>(), "samples": samples })
+    json!({ "grade": grade(c.grade()), "ofx": c.effects.iter().map(|e| json!({"plugin": e.plugin_name, "enabled": e.enabled})).collect::<Vec<_>>(), "samples": samples })
 }
 
 /// The sequences of the project in `dir`, as today's reader loads them.
@@ -570,7 +571,7 @@ fn an_ungated_correction_reads_nothing_on_port_1() {
 fn splice_inputs(seq: &Sequence, track: &Track, clip: &Clip, raw_seq: &Value, raw_track: &Value, v2: Option<(&Value, &Value)>) -> Result<SpliceInputs, String> {
     use klipp_timeline::{ClipKind as K, TrackKind};
     let mut inputs = SpliceInputs::default();
-    let mut g = clip.node_graph.clone();
+    let mut g = clip.grade().clone();
     let group = clip.grade_group.and_then(|id| seq.grade_group(id)).filter(|g| g.grades());
     if let Some(group) = group {
         let raw = raw_seq["grade_groups"].as_array().into_iter().flatten().find(|r| r["id"] == group.id.0.to_string()).ok_or("the group's entry")?;
@@ -581,8 +582,8 @@ fn splice_inputs(seq: &Sequence, track: &Track, clip: &Clip, raw_seq: &Value, ra
             let g = v2_seq["grade_groups"].as_array().into_iter().flatten().find(|r| r["id"] == group.id.0.to_string()).ok_or("the group's converted entry")?;
             g["graph_v2"].get(which).map(|b| serde_json::from_value(b.clone()).map_err(|e| e.to_string())).transpose()
         };
-        let mut take = |stage: &Option<klipp_nodes::NodeGraph>, structural: Option<klipp_graph_format::Graph>, prepend: bool| -> Result<Option<klipp_graph_format::Graph>, String> {
-            let Some(stage) = stage.as_ref().filter(|s| !s.is_identity()) else { return Ok(None) };
+        let mut take = |stage: Option<&klipp_nodes::NodeGraph>, structural: Option<klipp_graph_format::Graph>, prepend: bool| -> Result<Option<klipp_graph_format::Graph>, String> {
+            let Some(stage) = stage.filter(|s| !s.is_identity()) else { return Ok(None) };
             let mut h = g.clone();
             let ok = if prepend { h.prepend_keeping_ids(stage) } else { h.append_keeping_ids(stage) }.is_ok();
             if !ok || h == g {
@@ -594,8 +595,8 @@ fn splice_inputs(seq: &Sequence, track: &Track, clip: &Clip, raw_seq: &Value, ra
             }
             stage_body(&structural.ok_or("a stage with no structural graph")?).map(Some)
         };
-        let pre = take(&group.pre, pre, true)?;
-        let post = take(&group.post, post, false)?;
+        let pre = take(group.stage(klipp_timeline::GradeStage::Pre), pre, true)?;
+        let post = take(group.stage(klipp_timeline::GradeStage::Post), post, false)?;
         inputs.stages = Some(StageInputs { group: group.id.0, pre, post });
     }
     let picture = track.effects.touches_picture() && matches!(track.kind, TrackKind::Video | TrackKind::Text);
@@ -610,7 +611,7 @@ fn splice_inputs(seq: &Sequence, track: &Track, clip: &Clip, raw_seq: &Value, ra
             }
             None => track_parts(&to_v2::track_to_v2(raw_track.as_object().ok_or("a track")?).map_err(|e| format!("{e:?}"))?)?,
         };
-        let applies = track.effects.grade.as_ref().filter(|t| !t.is_identity()).is_some_and(|t| {
+        let applies = track.effects.track_grade().filter(|t| !t.is_identity()).is_some_and(|t| {
             let mut h = g.clone();
             h.append_keeping_ids(t).is_ok() && h != g
         });
@@ -1120,7 +1121,7 @@ fn a_looping_grade_in_a_group_grades_nothing_stages_included() {
         // Both stages reach the baked graph, and it still loops.
         let baked = load(&dir).unwrap()[0].baked_for_render().into_owned();
         let c = &baked.tracks[0].clips[0];
-        assert!(c.node_graph.nodes.len() > 4, "the stages are baked in");
+        assert!(c.grade().nodes.len() > 4, "the stages are baked in");
         assert_eq!(render_inputs(c, 24.0)["grade"], "passthrough", "today grades nothing");
         let checked = check_spliced(&dir, &scratch, from_file).unwrap_or_else(|e| panic!("from_file {from_file}: {e}"));
         assert_eq!((checked.alike + checked.unstable_load, checked.passthrough), (1, 1));

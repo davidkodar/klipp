@@ -1142,7 +1142,7 @@ fn a_shut_shutter_keeps_the_title_graded() {
     // Grey, so a stop of exposure visibly lifts it.
     let shot = |mb| {
         let (mut seq, title) = entering_title(rising_letters(), mb, [110, 110, 110, 255]);
-        let graded = Clip { node_graph: exposure(1.0), ..title };
+        let graded = Clip { node_graph: exposure(1.0).into(), ..title };
         seq.tracks[0].clips = vec![graded];
         entering_title_frame(&seq, |_| {})
     };

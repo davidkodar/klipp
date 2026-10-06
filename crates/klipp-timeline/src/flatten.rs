@@ -402,7 +402,7 @@ fn track_kinds_compatible(parent_kind: TrackKind, inner_kind: TrackKind) -> bool
 
 /// Whether a compound's inner sequence has a timeline grade of its own.
 fn has_timeline_grade(sequence_id: SequenceId, all_sequences: &[Sequence]) -> bool {
-    all_sequences.iter().find(|s| s.id == sequence_id).and_then(|s| s.timeline_graph.as_ref()).is_some_and(|g| !g.is_identity())
+    all_sequences.iter().find(|s| s.id == sequence_id).and_then(|s| s.timeline_grade()).is_some_and(|g| !g.is_identity())
 }
 
 /// `graded` collects the compounds on picture tracks whose inner sequence
@@ -655,20 +655,20 @@ mod tests {
         let fx = |kind: &str| klipp_core::AudioEffectInstance { effect_type: kind.into(), enabled: true, wet_dry: 1.0, params: vec![] };
         let mut seq = make_seq("scene");
         let mut group = GradeGroup::new("Night");
-        group.post = Some(exposed(-1.0));
-        let group_node = corrector(group.post.as_ref().unwrap());
+        group.post = Some(exposed(-1.0).into());
+        let group_node = corrector(group.post.as_ref().map(|g| &g.0).unwrap());
         let track_grade = exposed(0.3);
         let track_node = corrector(&track_grade);
 
         let mut v = Track::new("V1", TrackKind::Video);
         v.effects.video = vec![E::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.7 }];
-        v.effects.grade = Some(track_grade);
+        v.effects.grade = Some(track_grade.into());
         let mut a = Clip::media(MediaId::new(), t(0), t(24), t(0), t(24));
         a.set_effect_list(vec![E::Opacity { value: 0.5 }], vec![false]);
         a.effect_keyframes.insert("0:value".into(), vec![klipp_core::Keyframe { time_secs: 0.0, value: 0.2, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }]);
         a.param_modifiers.insert(klipp_core::ParamId::Effect { effect_index: 0, param_name: "value".into() }, klipp_core::ModifierStack::default());
         a.grade_group = Some(group.id);
-        let own_node = corrector(&a.node_graph);
+        let own_node = corrector(&a.node_graph.0);
         let mut adjustment = Clip::media(MediaId::new(), t(24), t(48), t(0), t(24));
         adjustment.kind = ClipKind::AdjustmentLayer;
         v.clips = vec![a, adjustment];
@@ -695,7 +695,7 @@ mod tests {
             (keys, mods)
         };
         assert_eq!(animation(a), animation(own), "the clip's own animation stays on its own effect");
-        let order: Vec<_> = a.node_graph.topo_sort().unwrap().into_iter().filter(|id| [own_node, group_node, track_node].contains(id)).collect();
+        let order: Vec<_> = a.node_graph.0.topo_sort().unwrap().into_iter().filter(|id| [own_node, group_node, track_node].contains(id)).collect();
         assert_eq!(order, vec![own_node, group_node, track_node], "own grade, then the group's, then the track's");
         assert!(flat.tracks[0].clips[1].builtin_effects().is_empty() && flat.tracks[0].clips[1].own_effects.is_none(), "an adjustment layer takes nothing");
         let chain: Vec<&str> = flat.tracks[1].clips[0].audio_effects.iter().map(|e| e.effect_type.as_str()).collect();
@@ -733,13 +733,13 @@ mod tests {
         };
         let mut seq = make_seq("scene");
         let mut group = GradeGroup::new("Night");
-        group.pre = Some(exposed(0.5));
-        group.post = Some(exposed(-1.0));
+        group.pre = Some(exposed(0.5).into());
+        group.post = Some(exposed(-1.0).into());
         let mut tracks = Vec::new();
         for (kind, track_grade) in [(TrackKind::Video, true), (TrackKind::Video, false), (TrackKind::Text, true), (TrackKind::Audio, true)] {
             let mut track = Track::new("T", kind);
             if track_grade {
-                track.effects.grade = Some(exposed(0.3));
+                track.effects.grade = Some(exposed(0.3).into());
             }
             for (in_group, clip_kind) in [(true, None), (false, None), (true, Some(ClipKind::AdjustmentLayer)), (false, Some(ClipKind::Gap))] {
                 let start = track.clips.len() as i64 * 24;
@@ -747,7 +747,7 @@ mod tests {
                 if let Some(k) = clip_kind {
                     c.kind = k;
                 }
-                c.node_graph = exposed(0.1);
+                c.node_graph = exposed(0.1).into();
                 c.grade_group = in_group.then_some(group.id);
                 track.clips.push(c);
             }
@@ -761,7 +761,7 @@ mod tests {
         for (track, baked_track) in seq.tracks.iter().zip(&baked.tracks) {
             for (clip, baked_clip) in track.clips.iter().zip(&baked_track.clips) {
                 let grade = seq.render_grade(clip.id).expect("the clip is on a track");
-                assert!(*grade == baked_clip.node_graph, "{:?} {:?} in group {}", track.kind, clip.kind, clip.grade_group.is_some());
+                assert!(*grade == baked_clip.node_graph.0, "{:?} {:?} in group {}", track.kind, clip.kind, clip.grade_group.is_some());
                 checked += 1;
             }
         }
@@ -782,14 +782,14 @@ mod tests {
         };
         let mut seq = make_seq("scene");
         let mut group = GradeGroup::new("Day exterior");
-        group.pre = Some(exposed(0.5));
-        group.post = Some(exposed(-1.0));
-        let pre_node = group.pre.as_ref().unwrap().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
-        let post_node = group.post.as_ref().unwrap().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
+        group.pre = Some(exposed(0.5).into());
+        group.post = Some(exposed(-1.0).into());
+        let pre_node = group.pre.as_ref().map(|g| &g.0).unwrap().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
+        let post_node = group.post.as_ref().map(|g| &g.0).unwrap().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
         let mut v = Track::new("V1", TrackKind::Video);
         let mut member = Clip::media(MediaId::new(), t(0), t(24), t(0), t(24));
         member.grade_group = Some(group.id);
-        let own_node = member.node_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
+        let own_node = member.node_graph.0.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
         let outsider = Clip::media(MediaId::new(), t(24), t(48), t(0), t(24));
         v.clips = vec![member, outsider];
         seq.tracks = vec![v];
@@ -797,15 +797,15 @@ mod tests {
         let before = seq.clone();
 
         let flat = flatten_sequence(&seq, std::slice::from_ref(&seq));
-        let ids = |c: &Clip| c.node_graph.topo_sort().unwrap().into_iter().filter(|id| [pre_node, own_node, post_node].contains(id)).collect::<Vec<_>>();
+        let ids = |c: &Clip| c.node_graph.0.topo_sort().unwrap().into_iter().filter(|id| [pre_node, own_node, post_node].contains(id)).collect::<Vec<_>>();
         assert_eq!(ids(&flat.tracks[0].clips[0]), vec![pre_node, own_node, post_node], "pre, own, post in that order");
-        assert!(flat.tracks[0].clips[1].node_graph.is_identity(), "a clip outside the group is not graded by it");
+        assert!(flat.tracks[0].clips[1].node_graph.0.is_identity(), "a clip outside the group is not graded by it");
         let graphs = |s: &Sequence| s.all_clips().map(|c| c.node_graph.clone()).collect::<Vec<_>>();
         assert!(graphs(&seq) == graphs(&before) && seq.grade_groups == before.grade_groups, "the document is untouched");
         // What reads the render copy to change a clip's grade reads the
         // clip's own: the group's nodes never travel into it.
         assert!(graphs(&flat.with_own_grades()) == graphs(&seq), "the render copy gives back each clip's own grade");
-        assert_eq!(flat.tracks[0].clips[0].own_grade(), &seq.tracks[0].clips[0].node_graph);
+        assert_eq!(flat.tracks[0].clips[0].own_grade(), &seq.tracks[0].clips[0].node_graph.0);
 
         // The same scene as a graded compound's content: its member still
         // runs inside its group.
@@ -872,7 +872,7 @@ mod tests {
                         n.params.exposure = Some(-1.0);
                     }
                 });
-                inner.timeline_graph = Some(g);
+                inner.timeline_graph = Some(g.into());
             }
             inner
         };

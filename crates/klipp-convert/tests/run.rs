@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use klipp_convert::run::{real_settings, recover, run, Hooks, MovePoint, Report, RunError, Settings, Step};
 use klipp_convert::StoreKind;
 use serde_json::{json, Value};
+use klipp_timeline::GradeAccess;
 
 fn ok_parity(_: &Value, _: StoreKind) -> Result<(), String> {
     Ok(())
@@ -41,7 +42,7 @@ fn project(parent: &Path, name: &str) -> PathBuf {
     let t = |s: f64| RationalTime::from_secs_f64(s, 24);
     let mut seq = klipp_timeline::Sequence::new_default();
     let mut clip = klipp_timeline::Clip::media(MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
-    clip.node_graph = graph();
+    clip.set_grade(graph());
     clip.set_effect_list(vec![klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 }], clip.builtin_effects_enabled().to_vec());
     seq.tracks[0].clips.push(clip);
     klipp_project::save_project_v1(&dir, &[seq], &klipp_media::MediaPool::new()).unwrap();

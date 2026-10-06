@@ -8,6 +8,7 @@ use klipp_graph_format::lifted::{types as lt, LiftNote};
 use klipp_graph_format::Graph;
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use klipp_timeline::GradeAccess;
 
 fn fixture() -> Value {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../klipp-project/tests/fixtures/pre_layer_fx/project.json");
@@ -33,7 +34,7 @@ fn loaded(node_graph: Option<Value>, tag: &str) -> (klipp_nodes::NodeGraph, Valu
     std::fs::write(dir.join("media/manifest.json"), r#"{"version":"1.0.0","items":[],"bins":[]}"#).unwrap();
     let (seqs, ..) = klipp_project::load_project_v1(&dir).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
-    (seqs[0].tracks[0].clips[0].node_graph.clone(), clip)
+    (seqs[0].tracks[0].clips[0].grade().clone(), clip)
 }
 
 fn lifted_body(clip: &Value) -> (Graph, Vec<LiftNote>) {
