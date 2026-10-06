@@ -268,6 +268,91 @@ pub(crate) fn respond(
             Ok(json!({ "text": text, "bundled": bundled, "installed": installed, "fallback": klipp_title::bundled::DEFAULT_FAMILY }))
         }
 
+        ControlCommand::NodeTypes { category } => {
+            if in_batch {
+                return read_in_batch("node_types");
+            }
+            Ok(node_types(category.as_deref()))
+        }
+
         _ => Err("internal: a request was routed to the wrong area".into()),
+    }
+}
+
+/// The node types the registry describes (#1086): id, name and category,
+/// ports, and each parameter with the name its keyframes are stored under,
+/// its unit, default and ranges. `category` (any case, as the registry
+/// names it: Colour, BlurDetail, LightGlow, Geometry, …) narrows the list.
+pub fn node_types(category: Option<&str>) -> serde_json::Value {
+    use klipp_effects::registry::effect_types;
+    let wanted = |c: &str| category.is_none_or(|w| w.eq_ignore_ascii_case(c));
+    let ports = |ps: &[klipp_effects::registry::PortDesc]| -> Vec<serde_json::Value> {
+        ps.iter().map(|p| json!({ "key": p.key, "type": format!("{:?}", p.ty), "optional": p.optional })).collect()
+    };
+    let types: Vec<serde_json::Value> = effect_types()
+        .filter(|t| wanted(&format!("{:?}", t.desc.category)))
+        .map(|t| {
+            let params: Vec<serde_json::Value> = t
+                .desc
+                .params
+                .iter()
+                .filter(|p| !p.derived)
+                .map(|p| {
+                    let num = |v: f32| if v.is_finite() { json!(v) } else { serde_json::Value::Null };
+                    json!({
+                        "key": p.key,
+                        "field": p.field,
+                        "label": p.label,
+                        "kind": format!("{:?}", p.kind),
+                        "unit": format!("{:?}", p.unit),
+                        "default": num(p.default),
+                        "range": p.range.map(|(a, b)| json!([a, b])),
+                        "slider": p.soft.map(|(a, b)| json!([a, b])),
+                        "keyframable": p.keyframable,
+                    })
+                })
+                .collect();
+            json!({
+                "id": t.desc.id,
+                "tag": t.tag,
+                "name": t.desc.name,
+                "category": format!("{:?}", t.desc.category),
+                "inputs": ports(t.desc.inputs),
+                "outputs": ports(t.desc.outputs),
+                "params": params,
+            })
+        })
+        .collect();
+    let text = format!(
+        "{} node types{}. Each lists its ports and parameters; a parameter's key is the name its keyframes are stored under.",
+        types.len(),
+        category.map(|c| format!(" in {c}")).unwrap_or_default()
+    );
+    json!({ "text": text, "types": types })
+}
+
+#[cfg(test)]
+mod node_types_tests {
+    use super::node_types;
+
+    /// Every registered effect type is listed, with its parameters, and a
+    /// category narrows the list to its own.
+    #[test]
+    fn every_registered_type_is_listed_and_a_category_narrows() {
+        let all = node_types(None);
+        let types = all["types"].as_array().unwrap();
+        assert_eq!(types.len(), klipp_effects::registry::effect_types().count());
+        let gamma = types.iter().find(|t| t["tag"] == "gamma").expect("gamma is listed");
+        let param = gamma["params"].as_array().unwrap().iter().find(|p| p["key"] == "gamma").expect("its gamma");
+        assert_eq!(param["default"], 1.0);
+        assert_eq!(param["slider"], serde_json::json!([0.1f32, 5.0]));
+        // ChromaKey's soft edge is keyed "spill": the key is what keyframes use.
+        let key = types.iter().find(|t| t["tag"] == "chroma_key").unwrap();
+        assert!(key["params"].as_array().unwrap().iter().any(|p| p["key"] == "spill" && p["field"] == "soft_edge"));
+        let colour = node_types(Some("colour"));
+        let colour = colour["types"].as_array().unwrap();
+        assert!(!colour.is_empty() && colour.len() < types.len());
+        assert!(colour.iter().all(|t| t["category"] == "Colour"));
+        assert!(node_types(Some("no such category"))["types"].as_array().unwrap().is_empty());
     }
 }

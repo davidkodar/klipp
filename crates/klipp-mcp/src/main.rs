@@ -992,6 +992,11 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_fonts" => json!({ "method": "fonts" }),
+        "klipp_node_types" => {
+            let mut v = json!({ "method": "node_types" });
+            if let Some(c) = args.get("category").and_then(|v| v.as_str()) { v["category"] = json!(c); }
+            v
+        }
         "klipp_looks" => {
             let mut v = json!({ "method": "looks" });
             if let Some(c) = args.get("category").and_then(|v| v.as_str()) { v["category"] = json!(c); }
@@ -2536,6 +2541,13 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               always there, and those installed on this machine. Any other name falls back to Inter; \
               set_brief, plan and apply warn when one is named.",
              json!({}), vec![]),
+        tool("klipp_node_types",
+             "The node types Klipp's registry describes: each effect's id, name and category, its \
+              ports, and its parameters with the key keyframes are stored under, the unit, the \
+              default and the accepted range. Read it to know what an effect takes before setting \
+              one; pass a category (Colour, BlurDetail, LightGlow, Geometry, FilmTemporal, Key, \
+              PlugIn, Grade) to narrow the list.",
+             json!({ "category": { "type": "string", "description": "a category to list, e.g. Colour" } }), vec![]),
         tool("klipp_looks",
              "The bundled looks — 3D LUTs — an agent can apply, by category: cinematic and film \
               emulations (B&W, slide, negative, print, instant, Fuji). Read it to see the names \

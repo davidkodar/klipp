@@ -681,6 +681,7 @@ fn handle(
             | ControlCommand::Plan { .. }
             | ControlCommand::Apply { .. }
             | ControlCommand::Fonts
+            | ControlCommand::NodeTypes { .. }
         ) => requests::editing::respond(ctx, cmd, collect),
         cmd @ (ControlCommand::Selects { .. }
             | ControlCommand::SearchMusic { .. }
