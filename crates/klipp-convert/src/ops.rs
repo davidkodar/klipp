@@ -359,6 +359,10 @@ pub fn apply(docs: &mut Documents, op: &GraphOp) -> Result<GraphEdit, String> {
 }
 
 /// Undo an edit: put the root's picture back as it was.
+///
+/// The undo stack is the caller's: edits on one root undo in the reverse
+/// order they were made, since each restores its root whole. An edit on
+/// another root is untouched by it.
 pub fn undo(docs: &mut Documents, edit: &GraphEdit) -> Result<(), String> {
     put(docs, edit.root, &edit.before)
 }

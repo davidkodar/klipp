@@ -250,3 +250,46 @@ fn set_param_refuses_what_it_cant_set() {
     let r = apply(&mut d, &GraphOp::SetParam { path: clip_path([place]), key: "mode".into(), value: ParamValue::Enum(7) });
     assert!(r.unwrap_err().contains("Fixed or Auto"));
 }
+
+/// Ops reach every root, not only a clip's graph: the timeline grade, a
+/// group stage and a track's grade, each checked as a body. Undo restores
+/// one root and leaves another root's edit alone (#1102 review).
+#[test]
+fn ops_reach_every_root_and_undo_keeps_to_its_own() {
+    let grade = |tag: u8| {
+        let n = |i: u8| format!("00000000-0000-0000-0000-0000000{tag:02x}{i:03}");
+        json!({
+            "nodes": [{"id": n(1), "kind": "Source", "label": "S", "enabled": true}, {"id": n(2), "kind": "Exposure", "label": "E", "enabled": true},
+                      {"id": n(3), "kind": "Output", "label": "O", "enabled": true}],
+            "edges": [{"from_node": n(1), "from_port": 0, "to_node": n(2), "to_port": 0}, {"from_node": n(2), "from_port": 0, "to_node": n(3), "to_port": 0}],
+            "output_node_id": n(3)
+        })
+    };
+    let ex = |tag: u8| u(&format!("00000000-0000-0000-0000-0000000{tag:02x}002"));
+    const SEQ: &str = "00000000-0000-0000-0000-000000000501";
+    const GROUP: &str = "00000000-0000-0000-0000-000000000601";
+    let p = json!({"version": "1.0.0", "sequences": [{"id": SEQ, "name": "S", "timeline_graph": grade(1),
+        "grade_groups": [{"id": GROUP, "name": "G", "pre": grade(2)}],
+        "tracks": [{"id": TRACK, "name": "V1", "kind": "Video", "effects": {"grade": grade(3)},
+            "clips": [{"id": CLIP, "kind": {"type": "media", "media_id": "00000000-0000-0000-0000-0000000000d1"}, "node_graph": grade(4), "grade_group": GROUP}]}]}]});
+    let mut d = Documents::of(&revision2::project(&p).unwrap().0).unwrap();
+    let start = serde_json::to_value((&d.timeline, d.stages.iter().collect::<Vec<_>>(), &d.track_grades)).unwrap();
+    let timeline = NodePath::new(Root::TimelineGrade { sequence: u(SEQ) }, [ex(1)]);
+    let stage = NodePath::new(Root::GroupStage { group: u(GROUP), stage: klipp_graph_format::lifted::Stage::Pre }, [ex(2)]);
+    let track = NodePath::new(Root::Track { track: u(TRACK), part: TrackPart::Grade }, [ex(3)]);
+    let a = apply(&mut d, &GraphOp::SetParam { path: timeline.clone(), key: "exposure".into(), value: ParamValue::Float(0.5) }).unwrap();
+    let b = apply(&mut d, &GraphOp::AddNode { after: stage.clone(), node: grade_node(0x71, "Saturation") }).unwrap();
+    apply(&mut d, &GraphOp::SetEnabled { path: track.clone(), enabled: false }).unwrap();
+    assert_eq!(resolve(&d, &timeline).unwrap().legacy.as_ref().unwrap().payload["params"]["exposure"], 0.5);
+    assert!(resolve(&d, &NodePath::new(stage.root, [Uuid::from_u128(0x71)])).is_ok());
+    assert!(!resolve(&d, &track).unwrap().enabled);
+    // A body's ends stay put at every root.
+    assert!(apply(&mut d, &GraphOp::RemoveNode { path: NodePath::new(timeline.root, [u("00000000-0000-0000-0000-000000001003")]) }).is_err());
+    // Undo the timeline's edit: the stage's and the track's stay.
+    undo(&mut d, &a).unwrap();
+    assert!(resolve(&d, &timeline).unwrap().legacy.as_ref().unwrap().payload["params"].get("exposure").is_none());
+    assert!(resolve(&d, &NodePath::new(stage.root, [Uuid::from_u128(0x71)])).is_ok(), "another root's edit is untouched");
+    undo(&mut d, &b).unwrap();
+    apply(&mut d, &GraphOp::SetEnabled { path: track, enabled: true }).unwrap();
+    assert_eq!(serde_json::to_value((&d.timeline, d.stages.iter().collect::<Vec<_>>(), &d.track_grades)).unwrap(), start, "every root as it was");
+}

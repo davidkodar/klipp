@@ -68,6 +68,8 @@ fn a_project_converts_to_revision_2_and_proves_itself() {
     assert!(seq["grade_groups"][0]["graph_v2"].get("pre").is_none(), "an absent stage stays absent");
     // Old fields as revision 1: the sentinel, placeholders, sound kept.
     assert_eq!(clip["builtin_effects"], json!([{"type": "graph_v2"}]));
+    assert_eq!(seq["tracks"][0]["effects"]["video"], json!([{"type": "graph_v2"}]), "the track's sentinel");
+    assert_eq!(clip["grade_versions"][0]["node_graph"], klipp_convert::old_fields::placeholder_graph(), "a version's placeholder");
     assert_eq!(seq["tracks"][0]["effects"]["audio"], json!([{"kind": "eq"}]));
     assert_eq!(clip["param_modifiers"], json!({"volume": {"modifiers": []}}));
 }

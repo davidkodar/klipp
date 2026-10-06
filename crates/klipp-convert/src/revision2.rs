@@ -207,9 +207,6 @@ pub fn project(raw: &Value) -> Result<(Value, Vec<LiftNote>), String> {
     old_fields::write_old_fields(&mut copy).map_err(err)?;
     // Every converted project says revision 2, an empty one too: after the
     // switch the app reads revision 2 only.
-    if revision::needed_revision(&copy) > REVISION {
-        return Err("the converted project needs a revision newer than 2".into());
-    }
     copy.as_object_mut().ok_or("not a project")?.insert("format_revision".into(), REVISION.into());
     Ok((copy, notes))
 }

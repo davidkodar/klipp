@@ -409,7 +409,7 @@ fn temp(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!("klipp_render_inputs_{label}_{}_{nanos}", std::process::id()))
 }
 
-/// The one re-derived rule, held to the executor: an unwired input that
+/// The first re-derived rule, held to the executor: an unwired input that
 /// `reads_source_when_unwired` says reads the source gives the same
 /// picture as an edge from the Source node.
 #[test]
