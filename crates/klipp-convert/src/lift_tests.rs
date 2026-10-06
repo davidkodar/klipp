@@ -485,3 +485,24 @@ fn repeated_ids_with_a_parked_edge_stop_instead_of_panicking() {
     assert_eq!(notes.iter().filter(|n| matches!(n, LiftNote::ParkedEdge { .. })).count(), 1, "one edge, parked once");
     assert!(p.graph.check_lifted(false).is_err(), "the repeated id is refused by the check");
 }
+
+/// A grade graph that loops never ran: today's ordering refuses it and the
+/// picture passes through. The lift keeps it as saved in a group that is
+/// off, which renders the same, and says so.
+#[test]
+fn a_looping_grade_is_kept_off() {
+    let mut exp = gn(COR, "Corrector");
+    exp["input_links"] = json!([null, "loop"]);
+    let mut sat = gn(SAT, "Saturation");
+    sat["output_link"] = json!("loop");
+    let g = json!({
+        "nodes": [gn(SRC, "Source"), exp, sat, gn(OUT, "Output")],
+        "edges": [edge(SRC, 0, COR, 0), edge(COR, 0, SAT, 0), edge(SAT, 0, OUT, 0)],
+        "output_node_id": OUT
+    });
+    let (p, notes) = lift(clip(json!({"node_graph": g})), ClipKind::Media);
+    let group = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP).unwrap();
+    assert!(!group.enabled, "off, as it never ran");
+    assert!(group.group.as_ref().unwrap().graph.has_cycle(), "kept as saved");
+    assert!(notes.iter().any(|n| matches!(n, LiftNote::NeverRan { node, .. } if *node == group.id)));
+}

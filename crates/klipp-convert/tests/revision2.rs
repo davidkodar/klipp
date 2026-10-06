@@ -190,3 +190,28 @@ fn a_bare_body_keeps_its_parked_edges() {
     assert_eq!(input.legacy_flags.as_ref().unwrap().parked_edges.len(), 1);
     assert!(notes.iter().any(|n| matches!(n, klipp_graph_format::lifted::LiftNote::ParkedEdge { .. })), "and reported");
 }
+
+/// A grade standing alone that loops (a track grade here) is a stop for
+/// that project: merged into a clip today it fails the clip's whole grade,
+/// which is for a person to settle, not for the conversion to guess.
+#[test]
+fn a_looping_track_grade_stops_the_project() {
+    let (s, a, b, o) = ("00000000-0000-0000-0000-0000000000c0", "00000000-0000-0000-0000-0000000000c1", "00000000-0000-0000-0000-0000000000c2", "00000000-0000-0000-0000-0000000000c3");
+    let g = json!({
+        "nodes": [
+            {"id": s, "kind": "Source", "label": "S", "enabled": true},
+            {"id": a, "kind": "Corrector", "label": "A", "enabled": true, "input_links": [null, "loop"]},
+            {"id": b, "kind": "Saturation", "label": "B", "enabled": true, "output_link": "loop"},
+            {"id": o, "kind": "Output", "label": "O", "enabled": true}
+        ],
+        "edges": [
+            {"from_node": s, "from_port": 0, "to_node": a, "to_port": 0},
+            {"from_node": a, "from_port": 0, "to_node": b, "to_port": 0},
+            {"from_node": b, "from_port": 0, "to_node": o, "to_port": 0}
+        ],
+        "output_node_id": o
+    });
+    let mut p = project();
+    p["sequences"][0]["tracks"][0]["effects"]["grade"] = g;
+    assert!(revision2::project(&p).unwrap_err().contains("Cycle"));
+}

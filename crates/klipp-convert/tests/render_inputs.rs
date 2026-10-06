@@ -861,6 +861,17 @@ fn generated_project(dir: &Path, seed: u64, n: usize) {
 /// a pre and a post stage (either may be absent, an identity, or have no
 /// Source) holding some of the clips, and the track's video effects and
 /// grade.
+/// A grade graph without its wireless links.
+fn without_bus(mut g: Value) -> Value {
+    for n in g["nodes"].as_array_mut().into_iter().flatten() {
+        if let Some(o) = n.as_object_mut() {
+            o.remove("output_link");
+            o.remove("input_links");
+        }
+    }
+    g
+}
+
 fn generated_spliced_project(dir: &Path, seed: u64, n: usize) {
     generated_project(dir, seed, n);
     let mut r = Rng(0x51CE_D00D ^ (seed + 7));
@@ -869,10 +880,13 @@ fn generated_spliced_project(dir: &Path, seed: u64, n: usize) {
     let mut project: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     let seq = &mut project["sequences"][0];
     let group = Uuid::from_u64_pair(0x0067_726f_7570, seed + 1).to_string();
+    // Stages and track grades without the wireless bus: a graph standing
+    // alone that loops is a conversion stop (today a loop merged into a
+    // clip fails that clip's whole grade), settled by hand, not generated.
     let stage = |r: &mut Rng| match r.below(6) {
         0 => Value::Null,
         1 => json!({ "nodes": [], "edges": [], "output_node_id": Uuid::nil() }),
-        _ => grade_graph(r),
+        _ => without_bus(grade_graph(r)),
     };
     let (pre, post) = (stage(&mut r), stage(&mut r));
     let mut g = json!({ "id": group, "name": "Night" });
@@ -896,7 +910,7 @@ fn generated_spliced_project(dir: &Path, seed: u64, n: usize) {
         let flags: Vec<Value> = (0..r.below(video.len() as u64 + 1)).map(|_| json!(r.chance(75))).collect();
         let mut fx = json!({ "video": video, "video_enabled": flags });
         if r.chance(60) {
-            fx["grade"] = grade_graph(&mut r);
+            fx["grade"] = without_bus(grade_graph(&mut r));
         }
         seq["tracks"][0]["effects"] = fx;
     }

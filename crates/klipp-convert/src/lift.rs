@@ -667,7 +667,14 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
     chain.extend(head);
     if let Some(g) = grade {
         let (body, group_flags) = lift_grade_body(g, true, &mut notes);
-        let mut group = node(g.id, lt::GROUP, true, g.legacy.clone());
+        // A grade graph that loops never ran: today's ordering refuses it
+        // and the picture passes through. Kept as saved, in a group that
+        // is off, which renders the same.
+        let runs = !body.has_cycle();
+        if !runs {
+            notes.push(LiftNote::NeverRan { node: g.id, why: "its grade graph loops, so today's renderer never ran it".into() });
+        }
+        let mut group = node(g.id, lt::GROUP, runs, g.legacy.clone());
         group.group = Some(Box::new(GroupBody { graph: body, ports: Vec::new() }));
         if !group_flags.is_empty() {
             group.legacy_flags = Some(group_flags);

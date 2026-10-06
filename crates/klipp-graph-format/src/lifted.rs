@@ -237,6 +237,13 @@ fn required_inputs(n: &crate::Node) -> Vec<crate::PortKey> {
 }
 
 fn check_level(g: &Graph, level: &str, body: bool, render_copy: bool) -> Result<(), LiftedError> {
+    check_level_running(g, level, body, render_copy, true)
+}
+
+/// `running` is false inside a disabled group, which never runs: a loop
+/// there is kept as saved (today's renderer refused it and passed the
+/// picture through), so only there is it allowed.
+fn check_level_running(g: &Graph, level: &str, body: bool, render_copy: bool, running: bool) -> Result<(), LiftedError> {
     let (start, end) = if body { (types::GROUP_INPUT, types::GROUP_OUTPUT) } else { (types::SOURCE, types::OUTPUT) };
     for (what, t) in [("start", start), ("end", end)] {
         let count = g.nodes.iter().filter(|n| n.type_id.as_str() == t).count();
@@ -293,11 +300,11 @@ fn check_level(g: &Graph, level: &str, body: bool, render_copy: bool) -> Result<
         }
         if n.type_id.as_str() == types::GROUP {
             if let Some(b) = &n.group {
-                check_level(&b.graph, &format!("{level}/{}", n.id), true, render_copy)?;
+                check_level_running(&b.graph, &format!("{level}/{}", n.id), true, render_copy, running && n.enabled)?;
             }
         }
     }
-    if has_cycle(g) {
+    if running && g.has_cycle() {
         return Err(LiftedError::Cycle { level: level.to_owned() });
     }
     if !body && g.nodes.iter().filter(|n| n.type_id.as_str() == types::PLACEMENT).count() > 1 {
@@ -306,7 +313,14 @@ fn check_level(g: &Graph, level: &str, body: bool, render_copy: bool) -> Result<
     Ok(())
 }
 
-/// Whether a level's edges and wireless links (receiver after sender) loop.
+impl Graph {
+    /// Whether this level's edges and wireless links (receiver after
+    /// sender, as today's ordering counts them) loop.
+    pub fn has_cycle(&self) -> bool {
+        has_cycle(self)
+    }
+}
+
 fn has_cycle(g: &Graph) -> bool {
     use std::collections::{BTreeMap, VecDeque};
     let mut deps: Vec<(NodeId, NodeId)> = g.edges.iter().map(|e| (e.from.0, e.to.0)).collect();
@@ -326,10 +340,11 @@ fn has_cycle(g: &Graph) -> bool {
     while let Some(id) = queue.pop_front() {
         seen += 1;
         for (_, to) in deps.iter().filter(|(from, _)| *from == id) {
-            let d = indeg.get_mut(to).expect("every edge's end is a node, checked above");
-            *d -= 1;
-            if *d == 0 {
-                queue.push_back(*to);
+            if let Some(d) = indeg.get_mut(to) {
+                *d -= 1;
+                if *d == 0 {
+                    queue.push_back(*to);
+                }
             }
         }
     }
