@@ -16,7 +16,7 @@
 
 use klipp_graph_format::lifted::{types as lt, LegacyFlags};
 use klipp_graph_format::path::{NodePath, Root, TrackPart};
-use klipp_graph_format::{ports, types, Edge, Graph, Node, NodeId, ParamKey, ParamValue, PortKey};
+use klipp_graph_format::{ports, types, Edge, Graph, Node, NodeId, ParamKey, ParamValue, PortKey, PortBinding, PortCatalog, PortDirection, PortType, GroupPort};
 use serde_json::Value;
 
 use crate::paths::Documents;
@@ -37,6 +37,12 @@ pub enum GraphOp {
     SetParam { path: NodePath, key: ParamKey, value: ParamValue },
     SetEnabled { path: NodePath, enabled: bool },
     SetMix { path: NodePath, mix: Option<f32> },
+    /// Expose a direct child's output under a stable public key.
+    PublishOutput { group: NodePath, endpoint: PortBinding, key: PortKey, label: String },
+    /// Remove an exported port; existing readers must be disconnected first.
+    Unpublish { group: NodePath, key: PortKey },
+    /// None clears the saved setting, restoring migrated red semantics.
+    SetMaskChannel { path: NodePath, channel: Option<String> },
     /// Move a node to just after another at its level.
     MoveAfter { path: NodePath, after: NodeId },
 }
@@ -57,8 +63,10 @@ fn path_of(op: &GraphOp) -> &NodePath {
         | GraphOp::SetParam { path, .. }
         | GraphOp::SetEnabled { path, .. }
         | GraphOp::SetMix { path, .. }
+        | GraphOp::SetMaskChannel { path, .. }
         | GraphOp::MoveAfter { path, .. } => path,
         GraphOp::Connect { to, .. } | GraphOp::Disconnect { to, .. } => to,
+        GraphOp::PublishOutput { group, .. } | GraphOp::Unpublish { group, .. } => group,
     }
 }
 
@@ -184,8 +192,37 @@ fn set_param(n: &mut Node, key: &ParamKey, value: &ParamValue) -> Result<(), Str
     Ok(())
 }
 
+fn set_mix(node: &mut Node, mix: Option<f32>, catalog: Option<&dyn PortCatalog>) -> Result<(), String> {
+    if mix.is_some_and(|v| !v.is_finite()) { return Err("mix must be finite".into()); }
+    if let Some(catalog) = catalog {
+        if !catalog.node_spec(node).is_some_and(|s| s.mixable) { return Err("this node type is not mixable".into()); }
+    }
+    node.mix = mix;
+    Ok(())
+}
+
+fn set_mask_channel(node: &mut Node, channel: Option<&str>, catalog: Option<&dyn PortCatalog>) -> Result<(), String> {
+    let spec = catalog.and_then(|c| c.node_spec(node)).ok_or("a mask channel needs a registered node description")?;
+    let mask = spec.inputs.iter().find(|p| p.key == "mask").ok_or("this node has no mask input")?;
+    let options = mask.params.iter().find(|(key, _)| key == "channel").ok_or("this mask input has no channel setting; it reads red")?;
+    if channel.is_some_and(|c| !options.1.iter().any(|v| v == c)) { return Err("unknown mask channel".into()); }
+    let key = ParamKey::from("mask.channel");
+    if let Some(value) = channel { node.params.insert(key, ParamValue::Text(value.into())); }
+    else { node.params.remove(&key); }
+    Ok(())
+}
+
+fn published_output_type(node: &Node, port: &PortKey, catalog: Option<&dyn PortCatalog>) -> Result<PortType, String> {
+    if node.type_id.as_str() == lt::GROUP {
+        if port.as_str() == "out" { return Ok(PortType::Image); }
+        return node.group.as_ref().and_then(|b| b.interface.iter().find(|p| &p.key == port && p.direction == PortDirection::Output)).map(|p| p.ty).ok_or_else(|| "the child group has no such output".into());
+    }
+    let spec = catalog.and_then(|c| c.node_spec(node)).ok_or("publishing this endpoint needs a registered node description")?;
+    spec.outputs.iter().find(|p| p.key == port.as_str()).map(|p| p.ty).ok_or_else(|| "the child has no such output".into())
+}
+
 /// The edits on a graph level.
-fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId) -> Result<(), String> {
+fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn PortCatalog>) -> Result<(), String> {
     let find = |g: &Graph, id: NodeId| g.nodes.iter().position(|n| n.id == id).ok_or_else(|| format!("{id} isn't in the graph"));
     match op {
         GraphOp::AddNode { node, .. } => {
@@ -247,13 +284,34 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId) -> Result<(), String
         GraphOp::Connect { from, from_port, to_port, .. } => {
             let from_id = from.node().ok_or("an empty path")?;
             find(g, from_id)?;
-            find(g, target)?;
+            let at = find(g, target)?;
+            if to_port.as_str() == "mask" && g.nodes[at].type_id.as_str() != lt::GROUP {
+                if let Some(catalog) = catalog {
+                    let spec = catalog.node_spec(&g.nodes[at]).ok_or("a mask connection needs a registered node description")?;
+                    let mask = spec.inputs.iter().find(|p| p.key == "mask" && p.ty == PortType::Matte).ok_or("this node has no mask input")?;
+                    if mask.params.iter().any(|(key, _)| key == "channel") {
+                        set_mask_channel(&mut g.nodes[at], Some("luminance"), Some(catalog))?;
+                    }
+                } else if !ports::GATEABLE.contains(&kind(&g.nodes[at])) {
+                    g.nodes[at].params.insert("mask.channel".into(), ParamValue::Text("luminance".into()));
+                }
+            }
+            if to_port.as_str() == "mask" && g.nodes[at].type_id.as_str() == types::LEGACY_NODE && ports::GATEABLE.contains(&kind(&g.nodes[at])) {
+                g.nodes[at].legacy_flags.get_or_insert_with(LegacyFlags::default).alpha_one = true;
+            }
             g.edges.retain(|e| e.to != (target, to_port.clone()));
             g.edges.push(Edge { from: (from_id, from_port.clone()), to: (target, to_port.clone()) });
         }
         GraphOp::Disconnect { port, .. } => {
-            find(g, target)?;
+            let at = find(g, target)?;
             g.edges.retain(|e| e.to != (target, port.clone()));
+            let wireless_mask = g.nodes[at].wireless.input_links.get(&PortKey::from("mask")).is_some_and(|name| g.nodes.iter().any(|n| n.id != target && n.wireless.output_link.as_deref() == Some(name)));
+            if port.as_str() == "mask" && !wireless_mask && g.nodes[at].type_id.as_str() == types::LEGACY_NODE {
+                if let Some(flags) = g.nodes[at].legacy_flags.as_mut() {
+                    flags.alpha_one = false;
+                    if *flags == LegacyFlags::default() { g.nodes[at].legacy_flags = None; }
+                }
+            }
         }
         GraphOp::SetParam { key, value, .. } => {
             let at = find(g, target)?;
@@ -265,7 +323,24 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId) -> Result<(), String
         }
         GraphOp::SetMix { mix, .. } => {
             let at = find(g, target)?;
-            g.nodes[at].mix = *mix;
+            set_mix(&mut g.nodes[at], *mix, catalog)?;
+        }
+        GraphOp::PublishOutput { endpoint, key, label, .. } => {
+            let at = find(g, target)?;
+            let body = g.nodes[at].group.as_mut().ok_or("the target is not a group")?;
+            let child = body.graph.nodes.iter().find(|n| n.id == endpoint.node).ok_or("the endpoint is not a direct child of this group")?;
+            let ty = published_output_type(child, &endpoint.port, catalog)?;
+            body.interface.push(GroupPort { key: key.clone(), direction: PortDirection::Output, ty, binding: endpoint.clone(), label: label.clone() });
+        }
+        GraphOp::Unpublish { key, .. } => {
+            let at = find(g, target)?;
+            let body = g.nodes[at].group.as_mut().ok_or("the target is not a group")?;
+            let index = body.interface.iter().position(|p| &p.key == key && p.direction == PortDirection::Output).ok_or("no such published output")?;
+            body.interface.remove(index);
+        }
+        GraphOp::SetMaskChannel { channel, .. } => {
+            let at = find(g, target)?;
+            set_mask_channel(&mut g.nodes[at], channel.as_deref(), catalog)?;
         }
         GraphOp::MoveAfter { after, .. } => {
             let node = g.nodes[find(g, target)?].clone();
@@ -279,8 +354,8 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId) -> Result<(), String
             let primaries: Vec<(NodeId, PortKey)> = g.nodes.iter().map(|n| (n.id, primary(n))).collect();
             let outs: Vec<Edge> = g.edges.iter().filter(|e| e.from.0 == target && !primaries.iter().any(|(id, p)| *id == e.to.0 && *p == e.to.1)).cloned().collect();
             let gated: Vec<(NodeId, Option<LegacyFlags>)> = outs.iter().filter_map(|e| g.nodes.iter().find(|n| n.id == e.to.0)).map(|n| (n.id, n.legacy_flags.clone())).collect();
-            apply_graph(g, &GraphOp::RemoveNode { path: NodePath::new(Root::Clip { clip: uuid::Uuid::nil() }, [target]) }, target)?;
-            apply_graph(g, &GraphOp::AddNode { after: NodePath::new(Root::Clip { clip: uuid::Uuid::nil() }, [*after]), node: Box::new(node) }, *after)?;
+            apply_graph(g, &GraphOp::RemoveNode { path: NodePath::new(Root::Clip { clip: uuid::Uuid::nil() }, [target]) }, target, catalog)?;
+            apply_graph(g, &GraphOp::AddNode { after: NodePath::new(Root::Clip { clip: uuid::Uuid::nil() }, [*after]), node: Box::new(node) }, *after, catalog)?;
             g.edges.extend(others);
             g.edges.extend(outs);
             for (id, flags) in gated {
@@ -313,7 +388,7 @@ fn check_track_list(list: &[Node]) -> Result<(), String> {
 }
 
 /// The edits on a track's effect list, which has no edges.
-fn apply_list(list: &mut Vec<Node>, op: &GraphOp, target: NodeId) -> Result<(), String> {
+fn apply_list(list: &mut Vec<Node>, op: &GraphOp, target: NodeId, catalog: Option<&dyn PortCatalog>) -> Result<(), String> {
     let find = |l: &Vec<Node>, id: NodeId| l.iter().position(|n| n.id == id).ok_or_else(|| format!("{id} isn't on the track"));
     match op {
         GraphOp::AddNode { node, .. } => {
@@ -337,7 +412,7 @@ fn apply_list(list: &mut Vec<Node>, op: &GraphOp, target: NodeId) -> Result<(), 
         }
         GraphOp::SetMix { mix, .. } => {
             let at = find(list, target)?;
-            list[at].mix = *mix;
+            set_mix(&mut list[at], *mix, catalog)?;
         }
         GraphOp::MoveAfter { after, .. } => {
             let at = find(list, target)?;
@@ -345,13 +420,22 @@ fn apply_list(list: &mut Vec<Node>, op: &GraphOp, target: NodeId) -> Result<(), 
             let to = find(list, *after)?;
             list.insert(to + 1, node);
         }
-        GraphOp::Connect { .. } | GraphOp::Disconnect { .. } => return Err("a track's effects are a list, with nothing to wire".into()),
+        GraphOp::Connect { .. } | GraphOp::Disconnect { .. } | GraphOp::PublishOutput { .. } | GraphOp::Unpublish { .. } | GraphOp::SetMaskChannel { .. } => return Err("a track's effects are a list, with nothing to wire".into()),
     }
     Ok(())
 }
 
 /// Apply `op` to `docs`, checked, and return the edit for undo.
 pub fn apply(docs: &mut Documents, op: &GraphOp) -> Result<GraphEdit, String> {
+    apply_inner(docs, op, None)
+}
+
+/// Apply with registry-defined type, mask and mix checks.
+pub fn apply_with_catalog(docs: &mut Documents, op: &GraphOp, catalog: &dyn PortCatalog) -> Result<GraphEdit, String> {
+    apply_inner(docs, op, Some(catalog))
+}
+
+fn apply_inner(docs: &mut Documents, op: &GraphOp, catalog: Option<&dyn PortCatalog>) -> Result<GraphEdit, String> {
     let path = path_of(op);
     let (through, last) = match path.nodes.split_last() {
         Some((last, through)) => (through, *last),
@@ -372,23 +456,45 @@ pub fn apply(docs: &mut Documents, op: &GraphOp) -> Result<GraphEdit, String> {
             if !through.is_empty() {
                 return Err("a track effect has no inside to reach into".into());
             }
-            apply_list(&mut list, op, last)?;
+            apply_list(&mut list, op, last, catalog)?;
             check_track_list(&list).map_err(|e| format!("that would leave the track's effects invalid: {e}"))?;
             serde_json::to_value(list).map_err(err)?
         }
         Root::Clip { .. } => {
             let mut picture: klipp_graph_format::lifted::ClipPicture = serde_json::from_value(copy).map_err(err)?;
-            apply_graph(level(&mut picture.graph, through)?, op, last)?;
-            picture.graph.check_lifted(false).map_err(|e| format!("that would leave the clip's graph invalid: {e}"))?;
+            apply_graph(level(&mut picture.graph, through)?, op, last, catalog)?;
+            (if let Some(catalog) = catalog { picture.graph.check_lifted_with_catalog(false, catalog) } else { picture.graph.check_lifted(false) }).map_err(|e| format!("that would leave the clip's graph invalid: {e}"))?;
             serde_json::to_value(picture).map_err(err)?
         }
         _ => {
             let mut body: Graph = serde_json::from_value(std::mem::take(&mut copy)).map_err(err)?;
-            apply_graph(level(&mut body, through)?, op, last)?;
-            body.check_lifted_body().map_err(|e| format!("that would leave the grade invalid: {e}"))?;
+            apply_graph(level(&mut body, through)?, op, last, catalog)?;
+            (if let Some(catalog) = catalog { body.check_lifted_body_with_catalog(catalog) } else { body.check_lifted_body() }).map_err(|e| format!("that would leave the grade invalid: {e}"))?;
             serde_json::to_value(body).map_err(err)?
         }
     };
+    put(docs, root, &after)?;
+    Ok(GraphEdit { root, before, after })
+}
+
+/// Apply edits to one root atomically, returning one undo record.
+pub fn apply_batch(docs: &mut Documents, ops: &[GraphOp]) -> Result<GraphEdit, String> {
+    apply_batch_inner(docs, ops, None)
+}
+
+/// Atomically publish and connect (or make other edits) with registry checks.
+pub fn apply_batch_with_catalog(docs: &mut Documents, ops: &[GraphOp], catalog: &dyn PortCatalog) -> Result<GraphEdit, String> {
+    apply_batch_inner(docs, ops, Some(catalog))
+}
+
+fn apply_batch_inner(docs: &mut Documents, ops: &[GraphOp], catalog: Option<&dyn PortCatalog>) -> Result<GraphEdit, String> {
+    let root = path_of(ops.first().ok_or("an empty batch has no edit")?).root;
+    if ops.iter().any(|op| path_of(op).root != root) { return Err("a batch edits one graph root".into()); }
+    let before = snapshot(docs, root)?;
+    let mut copy = Documents::default();
+    put(&mut copy, root, &before)?;
+    for op in ops { apply_inner(&mut copy, op, catalog)?; }
+    let after = snapshot(&copy, root)?;
     put(docs, root, &after)?;
     Ok(GraphEdit { root, before, after })
 }
