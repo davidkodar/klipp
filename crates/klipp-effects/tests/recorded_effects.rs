@@ -1,7 +1,11 @@
-//! The colour effects are recorded into one encoder (node-graph M2 step
+//! The recorded effects (colour, geometry) go into one encoder (node-graph M2 step
 //! 7): a run of them is one submit, whatever its length, and gives the
 //! same picture as each effect run on its own. The counts include the
 //! one submit `apply_effects`'s download makes.
+//!
+//! Both sides of the picture check go through the recorder, so it proves
+//! the slots and the run's order, not each effect's maths: that is
+//! `cpu_gpu_effect_parity`'s, which holds every recorded effect to the CPU.
 //!
 //! A missing GPU is reported as unverified; with `KLIPP_TEST_REQUIRE_GPU=1`
 //! it fails instead.
@@ -23,6 +27,24 @@ fn colour() -> Vec<E> {
         E::ColorFade { color: [20, 40, 60, 255], duration_secs: 1.0, mode: Default::default(), progress: 0.5 },
     ]
 }
+fn geometry() -> Vec<E> {
+    vec![
+        E::Crop { left: 0.05, right: 0.1, top: 0.0, bottom: 0.08, feather: 1.5 },
+        E::Transform {
+            position_x: 2.0, position_y: -1.0, scale_x: 1.1, scale_y: 0.95, rotation: 4.0,
+            anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 6.0, perspective: 1.2, focal_ref: None,
+        },
+        E::Mirror { horizontal: 1, vertical: 0 },
+        E::LensDistortion { distortion: 0.15, scale: 1.05 },
+        E::Letterbox { aspect_ratio: 2.39, bar_color: 0x102030, opacity: 0.9 },
+    ]
+}
+
+/// Every family recorded so far, in one list.
+fn recorded() -> Vec<E> {
+    colour().into_iter().chain(geometry()).collect()
+}
+
 fn pipeline() -> Option<GpuEffectsPipeline> {
     let g = GpuEffectsPipeline::new();
     if g.is_none() {
@@ -44,13 +66,22 @@ fn run(g: &mut GpuEffectsPipeline, fx: &[E]) -> (u64, Vec<f32>) {
 }
 
 #[test]
-fn a_run_of_colour_effects_is_one_submit() {
+fn a_run_of_recorded_effects_is_one_submit() {
     let Some(mut g) = pipeline() else { return };
     // One for the run, one for the download.
     assert_eq!(run(&mut g, &colour()[..1]).0, 2);
     assert_eq!(run(&mut g, &colour()).0, 2, "nine effects, one run");
+    assert_eq!(run(&mut g, &geometry()).0, 2, "the geometry effects, one run");
+    assert_eq!(run(&mut g, &recorded()).0, 2, "every recorded effect, one run");
     // Identities record nothing, and a run of only identities submits nothing.
-    let idle = [E::Opacity { value: 1.0 }, E::Gamma { gamma: 1.0 }, E::Invert { mix: 0.0 }];
+    let idle = [
+        E::Opacity { value: 1.0 },
+        E::Gamma { gamma: 1.0 },
+        E::Invert { mix: 0.0 },
+        E::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 },
+        E::Mirror { horizontal: 0, vertical: 0 },
+        E::LensDistortion { distortion: 0.0, scale: 1.0 },
+    ];
     assert_eq!(run(&mut g, &idle).0, 1, "only the download");
     // Seventy passes overflow the 64 slots once: two runs.
     let seventy: Vec<E> = colour().into_iter().cycle().take(70).collect();
@@ -70,8 +101,8 @@ fn a_recorded_run_draws_what_each_effect_alone_draws() {
     let one_by_one = |g: &mut GpuEffectsPipeline, fx: &[E]| {
         fx.iter().fold(picture(), |px, e| g.apply_effects(std::slice::from_ref(e), &px, W, H))
     };
-    let together = run(&mut g, &colour()).1;
-    assert_eq!(together, one_by_one(&mut g, &colour()), "nine in one run");
+    let together = run(&mut g, &recorded()).1;
+    assert_eq!(together, one_by_one(&mut g, &recorded()), "every recorded effect in one run");
     // Across the slots' overflow too.
     let seventy: Vec<E> = colour().into_iter().cycle().take(70).collect();
     assert_eq!(run(&mut g, &seventy).1, one_by_one(&mut g, &seventy), "seventy, across a refill");
