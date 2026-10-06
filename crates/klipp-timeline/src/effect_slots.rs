@@ -437,6 +437,12 @@ impl Clip {
         Some(self.effect_keyframes.entry(format!("{index}:{param}")).or_default())
     }
 
+    /// The keyframes of the effect's `param`, if it has any; creates none.
+    pub fn existing_effect_keyframes_mut(&mut self, id: EffectId, param: &str) -> Option<&mut Vec<klipp_core::Keyframe>> {
+        let index = self.index_of(id)?;
+        self.effect_keyframes.get_mut(&format!("{index}:{param}"))
+    }
+
     /// Take the keyframes of the effect's `param` away.
     pub fn remove_effect_keyframes(&mut self, id: EffectId, param: &str) -> Option<Vec<klipp_core::Keyframe>> {
         let index = self.index_of(id)?;
@@ -449,6 +455,13 @@ impl Clip {
         let index = self.index_of(id)?;
         let key = ParamId::Effect { effect_index: index, param_name: param.to_owned() };
         Some(self.param_modifiers.entry(key).or_default())
+    }
+
+    /// The modifier stack of the effect's `param`, if it has one; creates
+    /// none.
+    pub fn existing_effect_modifiers_mut(&mut self, id: EffectId, param: &str) -> Option<&mut klipp_core::ModifierStack> {
+        let index = self.index_of(id)?;
+        self.param_modifiers.get_mut(&ParamId::Effect { effect_index: index, param_name: param.to_owned() })
     }
 
     /// Take the modifier stack of the effect's `param` away.

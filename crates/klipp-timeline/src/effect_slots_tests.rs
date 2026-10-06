@@ -463,3 +463,15 @@ fn a_snapshot_keeps_ids_where_a_clone_does_not() {
     other.restore_effects_state(state);
     assert_eq!(other.effect_id_at(0), Some(a), "a restored snapshot carries them");
 }
+
+#[test]
+fn existing_access_creates_nothing() {
+    let mut c = clip();
+    let a = c.push_effect(blur(1.0));
+    assert!(c.existing_effect_keyframes_mut(a, "radius").is_none());
+    assert!(c.existing_effect_modifiers_mut(a, "radius").is_none());
+    assert!(c.effect_keyframes.is_empty() && c.param_modifiers.is_empty(), "asking created nothing");
+    c.effect_keyframes_mut(a, "radius").unwrap().push(key(1.0));
+    c.existing_effect_keyframes_mut(a, "radius").unwrap().push(key(2.0));
+    assert_eq!(c.effect_keyframes["0:radius"].len(), 2);
+}
