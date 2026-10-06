@@ -256,7 +256,10 @@ fn a_klipp_process_is_found_by_its_executable_or_its_name() {
 
 #[test]
 fn only_a_control_socket_that_answers_counts() {
-    let run = temp("run");
+    // The gate's TMPDIR can exceed Unix socket path limits. Keep just
+    // this socket fixture under a short, unique path, as the MCP tests do.
+    let run = PathBuf::from("/tmp").join(format!("klipp-scan-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&run).unwrap();
     let live = run.join("klipp-control.sock");
     let _listener = std::os::unix::net::UnixListener::bind(&live).unwrap();
     // A socket file left by an app that has quit: nothing answers.
