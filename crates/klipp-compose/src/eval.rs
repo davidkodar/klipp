@@ -988,7 +988,7 @@ mod transform_link_compose_tests {
 
     fn clip_with_transform(px: f32, py: f32, sc: f32, ro: f32, ax: f32, ay: f32) -> Clip {
         let mut c = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
-        c.builtin_effects.push(BuiltinEffect::Transform {
+        c.push_effect(BuiltinEffect::Transform {
             position_x: px, position_y: py,
             scale_x: sc, scale_y: sc,
             rotation: ro,
@@ -996,7 +996,7 @@ mod transform_link_compose_tests {
             rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
             focal_ref: None,
         });
-        c.builtin_effects_enabled.push(true);
+
         c
     }
 
