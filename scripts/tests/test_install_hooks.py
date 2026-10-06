@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -27,6 +28,9 @@ exit $klipp_lfs_status
 
 class InstallHooksTests(unittest.TestCase):
     def setUp(self):
+        # Git exports repository locations to hooks. Scratch commands must
+        # never inherit them, especially git init, which can rewrite config.
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith(("KLIPP_", "GIT_"))}
         (REPO / "target").mkdir(exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(dir=REPO / "target")
         self.addCleanup(self.temp.cleanup)
@@ -38,10 +42,9 @@ class InstallHooksTests(unittest.TestCase):
         self.hook = self.root / ".git/hooks/pre-push"
         self.hook.write_text(LFS_HOOK)
         self.hook.chmod(0o755)
-        self.env = {k: v for k, v in os.environ.items() if not k.startswith("KLIPP_")}
 
     def git(self, *args):
-        subprocess.run(["git", *args], cwd=self.root, check=True, capture_output=True)
+        subprocess.run(["git", *args], cwd=self.root, env=self.env, check=True, capture_output=True)
 
     def gate(self, body):
         path = self.root / "scripts/pre-push.sh"
@@ -314,6 +317,31 @@ class InstallHooksTests(unittest.TestCase):
         result = self.install()
         self.assertIn("nothing to do", result.stdout)
         self.assertIn("cargo install --locked cargo-deny", result.stdout, "said on a re-run too")
+
+
+class HookEnvironmentTests(unittest.TestCase):
+    def test_scratch_operations_leave_the_hook_repository_untouched(self):
+        (REPO / "target").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=REPO / "target") as tmp:
+            foreign = Path(tmp) / "foreign"
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("KLIPP_", "GIT_"))}
+            subprocess.run(["git", "init", "-q", str(foreign)], env=env, check=True, capture_output=True)
+            git_dir = foreign / ".git"
+            before = {name: (git_dir / name).read_bytes() for name in ("config", "HEAD")}
+            index = foreign / "hook-index"
+            index.write_bytes(b"must not be used by scratch commands")
+            env.update(GIT_DIR=str(git_dir), GIT_COMMON_DIR=str(git_dir),
+                       GIT_WORK_TREE=str(foreign), GIT_INDEX_FILE=str(index))
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve()),
+                 "InstallHooksTests.test_installs_once_and_keeps_the_lfs_lines"],
+                env=env, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            for name, content in before.items():
+                self.assertEqual((git_dir / name).read_bytes(), content, name)
+            self.assertEqual(index.read_bytes(), b"must not be used by scratch commands")
+            self.assertFalse((git_dir / "hooks/pre-push").exists())
 
 
 if __name__ == "__main__":
