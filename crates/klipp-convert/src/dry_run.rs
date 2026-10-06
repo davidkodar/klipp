@@ -349,7 +349,7 @@ fn side_stores(dir: &Path, parity: Parity, stores: &mut BTreeMap<&'static str, u
                         *notes.entry(note_kind(x)).or_default() += 1;
                     }
                     let text = serde_json::to_string(&c).map_err(|e| e.to_string())?;
-                    crate::revision2::verify_side(&crate::revision2::stills(&raw)?, &text)
+                    crate::revision2::verify_stills(&raw, &text)
                 });
                 if let Err(e) = r2 {
                     stops.push(format!("media/stills.json revision 2: {e}"));
@@ -374,7 +374,7 @@ fn side_stores(dir: &Path, parity: Parity, stores: &mut BTreeMap<&'static str, u
             for x in &n {
                 *notes.entry(note_kind(x)).or_default() += 1;
             }
-            crate::revision2::verify_side(&crate::revision2::look(&raw)?, &serde_json::to_string(&c).map_err(|e| e.to_string())?)
+            crate::revision2::verify_look(&raw, &serde_json::to_string(&c).map_err(|e| e.to_string())?)
         });
         *stores.entry("looks").or_default() += 1;
         if let Err(e) = checked {
@@ -411,7 +411,7 @@ pub fn check_colour_presets_noted(config_dir: &Path, parity: Parity) -> (usize, 
             for x in &n {
                 *notes.entry(note_kind(x)).or_default() += 1;
             }
-            crate::revision2::verify_side(&crate::revision2::colour_preset(&name, &raw)?, &serde_json::to_string(&c).map_err(|e| e.to_string())?)
+            crate::revision2::verify_colour_preset(&name, &raw, &serde_json::to_string(&c).map_err(|e| e.to_string())?)
         });
         n += 1;
         if let Err(e) = checked {

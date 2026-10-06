@@ -108,6 +108,32 @@ fn side_stores_take_their_own_revision_and_drop_their_old_graph() {
     assert!(revision2::verify_side(&c, &serde_json::to_string(&changed).unwrap()).is_err());
 }
 
+/// A written side store is held to the original outside its pictures: a
+/// Look's name or a still's source that changed or went is refused
+/// (#1102 review, 9).
+#[test]
+fn a_side_store_keeps_everything_outside_its_pictures() {
+    let original = json!({"id": "00000000-0000-0000-0000-00000000100c", "name": "Teal", "node_graph": grade()});
+    let written = revision2::look(&original).unwrap();
+    revision2::verify_look(&original, &serde_json::to_string(&written).unwrap()).unwrap();
+    let mut renamed = written.clone();
+    renamed["name"] = json!("Orange");
+    assert!(revision2::verify_look(&original, &serde_json::to_string(&renamed).unwrap()).is_err());
+
+    let original = json!([{"name": "Hero", "filename": "hero.png", "source": "clip-7", "grade": grade()}]);
+    let written = revision2::stills(&original).unwrap();
+    revision2::verify_stills(&original, &serde_json::to_string(&written).unwrap()).unwrap();
+    let mut lost = written.clone();
+    lost["stills"][0].as_object_mut().unwrap().remove("source");
+    assert!(revision2::verify_stills(&original, &serde_json::to_string(&lost).unwrap()).is_err());
+
+    let preset = revision2::colour_preset("Bleach.json", &grade()).unwrap();
+    revision2::verify_colour_preset("Bleach.json", &grade(), &serde_json::to_string(&preset).unwrap()).unwrap();
+    let mut extra = preset.clone();
+    extra["name"] = json!("Bleach");
+    assert!(revision2::verify_colour_preset("Bleach.json", &grade(), &serde_json::to_string(&extra).unwrap()).is_err());
+}
+
 fn scratch(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("klipp-rev2-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);

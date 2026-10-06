@@ -250,3 +250,57 @@ pub fn verify_side(converted_again: &Value, written: &str) -> Result<(), String>
     }
     Ok(())
 }
+
+/// `o` without the keys a conversion replaces.
+fn without(o: &Value, keys: &[&str]) -> Value {
+    let mut m = o.as_object().cloned().unwrap_or_default();
+    for k in keys {
+        m.remove(*k);
+    }
+    Value::Object(m)
+}
+
+/// The rest of a written store against the original, outside the picture
+/// fields: what no conversion may change.
+fn same_rest(original: &Value, written: &Value, picture: &str, what: &str) -> Result<(), String> {
+    let (o, w) = (without(original, &[picture]), without(written, &[V2_FIELD, "format_revision"]));
+    if o != w {
+        return Err(format!("{what}: outside the picture: {}", crate::verify::first_diff(&w, &o, "").unwrap_or_default()));
+    }
+    Ok(())
+}
+
+/// Prove a written revision-2 Look: the conversion of the original, and
+/// outside its graph the original itself.
+pub fn verify_look(original: &Value, written: &str) -> Result<(), String> {
+    verify_side(&look(original)?, written)?;
+    let back: Value = serde_json::from_str(written).map_err(err)?;
+    same_rest(original, &back, "node_graph", "the Look")
+}
+
+/// Prove a written revision-2 stills index: the conversion of the
+/// original, and every still, outside its grade, the original's.
+pub fn verify_stills(original: &Value, written: &str) -> Result<(), String> {
+    verify_side(&stills(original)?, written)?;
+    let back: Value = serde_json::from_str(written).map_err(err)?;
+    let (o, w) = (original.as_array().ok_or("the stills index isn't a list")?, back["stills"].as_array().ok_or("the written index has no list")?);
+    if o.len() != w.len() {
+        return Err(format!("{} stills written for {}", w.len(), o.len()));
+    }
+    for (i, (a, b)) in o.iter().zip(w).enumerate() {
+        same_rest(&without(a, &["grade"]), &without(b, &[V2_FIELD]), "grade", &format!("still {i}"))?;
+    }
+    Ok(())
+}
+
+/// Prove a written revision-2 colour preset: the conversion of the
+/// original, and nothing but its revision and its graph.
+pub fn verify_colour_preset(file_name: &str, original: &Value, written: &str) -> Result<(), String> {
+    verify_side(&colour_preset(file_name, original)?, written)?;
+    let back: Value = serde_json::from_str(written).map_err(err)?;
+    let extra: Vec<&String> = back.as_object().into_iter().flatten().map(|(k, _)| k).filter(|k| k.as_str() != V2_FIELD && k.as_str() != "format_revision").collect();
+    if !extra.is_empty() {
+        return Err(format!("the preset holds {extra:?} besides its graph"));
+    }
+    Ok(())
+}
