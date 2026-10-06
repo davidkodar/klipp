@@ -11729,7 +11729,7 @@ mod glyph_focal_resolution_tests {
 
     fn media_clip_with_anchor(anchor_x: f32, anchor_y: f32) -> Clip {
         let mut c = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
-        c.builtin_effects.push(BuiltinEffect::Transform {
+        c.push_effect(BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0,
             scale_x: 1.0, scale_y: 1.0,
             rotation: 0.0,
@@ -11737,7 +11737,7 @@ mod glyph_focal_resolution_tests {
             rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
             focal_ref: None,
         });
-        c.builtin_effects_enabled.push(true);
+
         c
     }
 
@@ -11780,7 +11780,7 @@ mod glyph_focal_resolution_tests {
         let title = title_clip("Hi");
         let title_id = title.id;
         let mut consumer = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
-        consumer.builtin_effects.push(BuiltinEffect::Transform {
+        consumer.push_effect(BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0,
             scale_x: 1.0, scale_y: 1.0,
             rotation: 0.0,
@@ -11792,7 +11792,7 @@ mod glyph_focal_resolution_tests {
                 fallback_xy,
             }),
         });
-        consumer.builtin_effects_enabled.push(true);
+
         let seq = seq_with(vec![consumer.clone(), title.clone()]);
         (consumer, title, seq)
     }
@@ -11825,7 +11825,7 @@ mod glyph_focal_resolution_tests {
         // FocalRef points at a uuid that's not in the sequence.
         let fallback = (0.25, 0.75);
         let mut consumer = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
-        consumer.builtin_effects.push(BuiltinEffect::Transform {
+        consumer.push_effect(BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0,
             scale_x: 1.0, scale_y: 1.0,
             rotation: 0.0,
@@ -11837,7 +11837,7 @@ mod glyph_focal_resolution_tests {
                 fallback_xy: fallback,
             }),
         });
-        consumer.builtin_effects_enabled.push(true);
+
         let seq = seq_with(vec![consumer.clone()]);
         let out = resolve(&consumer, &seq);
         assert!((out.5 - fallback.0).abs() < 1e-6, "fell back to anchor_x");
@@ -11851,7 +11851,7 @@ mod glyph_focal_resolution_tests {
         let non_title = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
         let non_title_id = non_title.id;
         let mut consumer = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
-        consumer.builtin_effects.push(BuiltinEffect::Transform {
+        consumer.push_effect(BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0,
             scale_x: 1.0, scale_y: 1.0,
             rotation: 0.0,
@@ -11863,7 +11863,7 @@ mod glyph_focal_resolution_tests {
                 fallback_xy: fallback,
             }),
         });
-        consumer.builtin_effects_enabled.push(true);
+
         let seq = seq_with(vec![consumer.clone(), non_title]);
         let out = resolve(&consumer, &seq);
         assert!((out.5 - fallback.0).abs() < 1e-6, "kind-changed → fall back to anchor_x");
@@ -11889,7 +11889,7 @@ mod glyph_focal_resolution_tests {
         // screen position should shift by the offset (in clip space).
         let fallback = (0.5, 0.5);
         let mut title = title_clip("Hi");
-        title.builtin_effects.push(BuiltinEffect::Transform {
+        title.push_effect(BuiltinEffect::Transform {
             position_x: 100.0, position_y: 50.0,  // offset 100 px right, 50 px down
             scale_x: 1.0, scale_y: 1.0,
             rotation: 0.0,
@@ -11897,10 +11897,10 @@ mod glyph_focal_resolution_tests {
             rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
             focal_ref: None,
         });
-        title.builtin_effects_enabled.push(true);
+
         let title_id = title.id;
         let mut consumer = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
-        consumer.builtin_effects.push(BuiltinEffect::Transform {
+        consumer.push_effect(BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0,
             rotation: 0.0,
             anchor_x: fallback.0, anchor_y: fallback.1,
@@ -11911,7 +11911,7 @@ mod glyph_focal_resolution_tests {
                 fallback_xy: fallback,
             }),
         });
-        consumer.builtin_effects_enabled.push(true);
+
         let seq = seq_with(vec![consumer.clone(), title]);
 
         // Reference resolution with no title offset.

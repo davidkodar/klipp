@@ -284,7 +284,7 @@ pub fn s12_uhd_two_layers_blend(cpu_only: bool) -> ScenarioResult {
         add_media(&mut b, 0, 0.0, 48.0, 2160, 3840, ctx, None);
         add_media(&mut b, 1, 0.0, 48.0, 2160, 3840, ctx, None);
         b.seq.tracks[0].clips[0].blend_mode = klipp_effects::BlendMode::Screen;
-        b.seq.tracks[0].clips[0].builtin_effects = vec![klipp_effects::BuiltinEffect::Opacity { value: 0.5 }];
+        b.seq.tracks[0].clips[0].set_effects(vec![klipp_effects::BuiltinEffect::Opacity { value: 0.5 }]);
         b
     })
 }
@@ -315,7 +315,7 @@ pub fn s14_hd_five_layers(cpu_only: bool) -> ScenarioResult {
         add_media(&mut b, 3, 0.0, 48.0, 1920, 1080, ctx, Some(grade3()));
         add_media(&mut b, 4, 0.0, 48.0, 1920, 1080, ctx, None);
         b.seq.tracks[2].clips[0].blend_mode = klipp_effects::BlendMode::Overlay;
-        b.seq.tracks[2].clips[0].builtin_effects = vec![klipp_effects::BuiltinEffect::Opacity { value: 0.6 }];
+        b.seq.tracks[2].clips[0].set_effects(vec![klipp_effects::BuiltinEffect::Opacity { value: 0.6 }]);
         b
     })
 }

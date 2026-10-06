@@ -1175,7 +1175,7 @@ mod tests {
         let fx = |kind: &str| klipp_core::AudioEffectInstance { effect_type: kind.into(), enabled: true, wet_dry: 1.0, params: vec![] };
         let mut seq = make_sequence();
         let mut picture = clip();
-        picture.builtin_effects = vec![E::Opacity { value: 0.9 }];
+        picture.set_effects(vec![E::Opacity { value: 0.9 }]);
         seq.tracks[0].clips.push(picture); // V1
         seq.tracks[0].effects.video = vec![E::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.7 }];
         let mut sound = clip();

@@ -797,19 +797,7 @@ impl PlaybackEngine {
         };
 
         let unstab = if self.compare_stabilization {
-            alt_render(self, &|c: &mut Clip| {
-                let stab: Vec<usize> = c
-                    .builtin_effects
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, e)| matches!(e, klipp_effects::BuiltinEffect::VideoStabilization { .. }))
-                    .map(|(i, _)| i)
-                    .collect();
-                for i in &stab {
-                    set_effect_enabled(c, *i, false);
-                }
-                !stab.is_empty()
-            }, inspected)
+            alt_render(self, &disable_stabilization, inspected)
         } else {
             Vec::new()
         };
@@ -825,12 +813,8 @@ impl PlaybackEngine {
                         }
                         None => false,
                     }
-                } else if index < c.builtin_effects.len() {
-                    let on = c.builtin_effects_enabled.get(index).copied().unwrap_or(true);
-                    set_effect_enabled(c, index, !on);
-                    true
                 } else {
-                    false
+                    toggle_builtin_effect(c, index)
                 }
             }, self.compare_effect_clip_id)
         } else {
@@ -1167,12 +1151,22 @@ impl PlaybackEngine {
     }
 }
 
-/// Turn effect `index` on or off, growing the enabled list as needed.
-fn set_effect_enabled(c: &mut Clip, index: usize, on: bool) {
-    if c.builtin_effects_enabled.len() <= index {
-        c.builtin_effects_enabled.resize(c.builtin_effects.len().max(index + 1), true);
+/// Disable stabilization in the comparison's render copy.
+fn disable_stabilization(c: &mut Clip) -> bool {
+    let ids: Vec<_> = c.effect_entries()
+        .filter(|(_, e, _)| matches!(e, klipp_effects::BuiltinEffect::VideoStabilization { .. }))
+        .map(|(id, _, _)| id)
+        .collect();
+    for id in &ids {
+        c.set_effect_enabled(*id, false);
     }
-    c.builtin_effects_enabled[index] = on;
+    !ids.is_empty()
+}
+
+/// Resolve the inspector's index once, then toggle that entry by identity.
+fn toggle_builtin_effect(c: &mut Clip, index: usize) -> bool {
+    let Some((id, _, enabled)) = c.effect_entries().nth(index) else { return false };
+    c.set_effect_enabled(id, !enabled)
 }
 
 /// The inspector's matte preview: the mask as a small grey tile.
@@ -1216,6 +1210,80 @@ fn matte_preview_event(consumer: ClipId, mask: &[f32], width: u32, height: u32) 
 /// of it.
 fn inspect_is_plain(i: &Inspect) -> bool {
     !i.ungraded && i.thumbs.is_none() && i.scope_tap.is_none() && i.matte_view.is_none() && i.solo.is_none() && i.matte_of.is_none() && i.only.is_none()
+}
+
+#[cfg(test)]
+mod effect_comparison_tests {
+    use super::*;
+    use klipp_core::Timecode;
+    use klipp_effects::BuiltinEffect as E;
+
+    fn fixture(flags: Vec<bool>) -> Clip {
+        let mut clip = Clip::gap(Timecode::from_frames(0, 24), Timecode::from_frames(48, 24));
+        let stabilization = E::VideoStabilization { smoothing: 0.5, crop_ratio: 0.1, zoom: true };
+        clip.set_effect_list(vec![stabilization.clone(), E::GaussianBlur { radius: 2.0 }, stabilization], flags);
+        let ids: Vec<_> = clip.effect_entries().map(|(id, _, _)| id).collect();
+        for (i, id) in ids.into_iter().enumerate() {
+            let param = if i == 1 { "radius" } else { "crop_ratio" };
+            klipp_core::keyframe::upsert_keyframe(clip.effect_keyframes_mut(id, param).unwrap(), 0.5, i as f32);
+            clip.effect_modifiers_mut(id, param).unwrap().modifiers.push(klipp_core::Modifier::Clamp { min: 0.0, max: 5.0, enabled: true });
+        }
+        clip
+    }
+
+    fn assert_only_flags_changed(before: &mut Clip, after: &mut Clip) {
+        assert_eq!(before.effect_entries().map(|(id, _, _)| id).collect::<Vec<_>>(), after.effect_entries().map(|(id, _, _)| id).collect::<Vec<_>>());
+        let mut a = state(before);
+        let mut b = state(after);
+        a.as_object_mut().unwrap().remove("enabled");
+        b.as_object_mut().unwrap().remove("enabled");
+        assert_eq!(a, b, "comparison must preserve values, keyframes and modifiers");
+    }
+
+    fn state(clip: &Clip) -> serde_json::Value {
+        // ParamId is an enum key; the project writer supplies its string
+        // encoding, so inspect the stacks separately from Clip's serde.
+        let modifiers: std::collections::BTreeMap<_, _> = clip.param_modifiers.iter()
+            .map(|(id, stack)| (format!("{id:?}"), serde_json::to_value(stack).unwrap()))
+            .collect();
+        serde_json::json!({ "effects": clip.builtin_effects, "enabled": clip.builtin_effects_enabled,
+            "keyframes": clip.effect_keyframes, "modifiers": modifiers })
+    }
+
+    #[test]
+    fn toggling_the_comparison_keeps_animation_on_its_effect() {
+        for flags in [vec![], vec![false], vec![true, false, true, false]] {
+            let mut original = fixture(flags);
+            for index in 0..3 {
+                let mut compared = original.clone();
+                let mut expected: Vec<_> = original.effect_entries().map(|(_, _, on)| on).collect();
+                expected[index] = !expected[index];
+                assert!(toggle_builtin_effect(&mut compared, index));
+                assert_eq!(compared.effect_entries().map(|(_, _, on)| on).collect::<Vec<_>>(), expected);
+                assert_only_flags_changed(&mut original, &mut compared);
+            }
+            let before = state(&original);
+            assert!(!toggle_builtin_effect(&mut original, 3));
+            assert_eq!(state(&original), before, "a stale inspector index is a no-op");
+        }
+    }
+
+    #[test]
+    fn stabilization_comparison_disables_only_stabilizers() {
+        for flags in [vec![], vec![false], vec![true, false, true, false]] {
+            let mut original = fixture(flags);
+            let blur_on = original.effect_entries().nth(1).unwrap().2;
+            let mut compared = original.clone();
+            assert!(disable_stabilization(&mut compared));
+            assert_eq!(compared.effect_entries().map(|(_, _, on)| on).collect::<Vec<_>>(), vec![false, blur_on, false]);
+            assert_only_flags_changed(&mut original, &mut compared);
+        }
+        let mut plain = Clip::gap(Timecode::from_frames(0, 24), Timecode::from_frames(48, 24));
+        plain.push_effect(E::GaussianBlur { radius: 2.0 });
+        let before = state(&plain);
+        assert!(!disable_stabilization(&mut plain));
+        assert_eq!(state(&plain), before);
+    }
 }
 
 #[cfg(test)]
