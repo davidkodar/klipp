@@ -49,7 +49,7 @@ fn reads_reconcile_direct_tail_edits_without_changing_saved_fields() {
 }
 
 #[test]
-fn clone_and_load_rebuild_ids_and_ids_never_reach_json() {
+fn a_clone_keeps_ids_a_load_rebuilds_them_and_ids_never_reach_json() {
     let mut c = clip();
     c.push_effect(blur(2.0));
     c.push_effect(blur(3.0));
@@ -62,7 +62,7 @@ fn clone_and_load_rebuild_ids_and_ids_never_reach_json() {
     }
     let mut copy = c.clone();
     assert_eq!(serde_json::to_value(&copy).unwrap(), value);
-    assert!(ids(&mut copy).iter().all(|id| !original.contains(id)));
+    assert_eq!(ids(&mut copy), original, "a clone is the same clip, with the same effects");
     let mut loaded: Clip = serde_json::from_value(value.clone()).unwrap();
     assert!(ids(&mut loaded).iter().all(|id| !original.contains(id)));
     assert_eq!(serde_json::to_value(&loaded).unwrap(), value);
@@ -451,13 +451,14 @@ fn a_restored_snapshot_is_the_snapshot_ids_and_all() {
     assert_eq!(c.index_of(b), Some(1));
 }
 
-/// Cloning a clip starts a new identity domain; a snapshot doesn't.
+/// A clone keeps its ids (the same clip), and so does a snapshot, restored
+/// even onto another clip.
 #[test]
-fn a_snapshot_keeps_ids_where_a_clone_does_not() {
+fn a_snapshot_and_a_clone_keep_ids() {
     let mut c = clip();
     let a = c.push_effect(blur(1.0));
     let mut copy = c.clone();
-    assert_ne!(copy.effect_id_at(0), Some(a), "a clone's ids are its own");
+    assert_eq!(copy.effect_id_at(0), Some(a), "a clone is the same clip");
     let state = c.effects_state();
     let mut other = clip();
     other.restore_effects_state(state);
@@ -495,4 +496,47 @@ fn a_fresh_state_brings_values_with_new_ids() {
     let new = dst.effect_id_at(0).unwrap();
     assert_ne!(new, old);
     assert_ne!(new, a);
+}
+
+/// A clone keeps every effect's id: a clip cloned, edited and written back
+/// is the same clip with the same effects (#1095 review).
+#[test]
+fn a_clone_edited_and_written_back_keeps_every_id() {
+    let mut c = clip();
+    for r in [1.0, 2.0, 3.0] {
+        c.push_effect(blur(r));
+    }
+    let before = ids(&mut c);
+    let mut copy = c.clone();
+    let middle = ids(&mut copy)[1];
+    copy.replace_effect(middle, blur(9.0));
+    copy.move_effect(before[0], 2);
+    c = copy;
+    let mut after = ids(&mut c);
+    after.sort_by_key(|i| i.as_uuid());
+    let mut want = before.clone();
+    want.sort_by_key(|i| i.as_uuid());
+    assert_eq!(after, want, "the same ids, moved");
+    assert_eq!(c.effect(middle), Some(&blur(9.0)));
+}
+
+/// A clip that becomes a new clip (a new `ClipId`: a duplicate, a paste, a
+/// split's half, an instance) gives its effects fresh ids, and so does an
+/// explicit refresh.
+#[test]
+fn a_new_clip_gives_its_effects_fresh_ids() {
+    let mut c = clip();
+    c.push_effect(blur(1.0));
+    c.push_effect(blur(2.0));
+    let original: HashSet<EffectId> = ids(&mut c).into_iter().collect();
+    let mut dup = c.clone();
+    dup.id = klipp_core::ClipId::new();
+    let fresh: HashSet<EffectId> = ids(&mut dup).into_iter().collect();
+    assert_eq!(fresh.len(), 2);
+    assert!(fresh.is_disjoint(&original), "a duplicate's effects are new effects");
+    assert_eq!(dup.builtin_effects, c.builtin_effects, "with the same values");
+    let again: HashSet<EffectId> = ids(&mut dup).into_iter().collect();
+    assert_eq!(again, fresh, "and they last");
+    c.refresh_effect_ids();
+    assert!(ids(&mut c).iter().all(|i| !original.contains(i)), "a refresh gives new ones");
 }
