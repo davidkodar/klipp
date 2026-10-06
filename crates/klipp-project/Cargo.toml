@@ -26,6 +26,10 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 workspace = true
 
 [features]
-# Today's v1 reader and writer, for the converter's proofs only (#1089): the
-# app reads and writes revision 2, and never builds with this.
+# Today's v1 reader and writer, kept only to prove the one-time conversion
+# (#1089): klipp-convert's tests compare the conversion with them. The app
+# reads and writes revision 2 and never builds with this; klipp-convert's
+# `oracle_feature` test fails if the app's normal build has it. A workspace
+# `cargo test` unifies features, so the app crates' own tests see it on,
+# which is harmless. Removed once the conversion has run and been verified.
 v1-oracle = []

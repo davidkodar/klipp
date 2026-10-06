@@ -272,8 +272,10 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     load_project_as(dir, crate::FileForm::Revision2)
 }
 
-/// Today's v1 reader, for the converter's proofs only (#1089): a v1 file,
-/// read exactly as before revision 2.
+/// Today's v1 reader, kept only to prove the one-time conversion (#1089): a
+/// v1 file, read exactly as before revision 2, by the same loader without
+/// its revision-2 step. Behind `v1-oracle`, removed once the conversion has
+/// run and been verified.
 #[cfg(feature = "v1-oracle")]
 pub fn load_project_v1(dir: &Path) -> Result<LoadResult, String> {
     load_project_as(dir, crate::FileForm::V1)

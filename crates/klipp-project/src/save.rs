@@ -111,8 +111,10 @@ pub fn save_project_full(
     )
 }
 
-/// Today's v1 writer, for the converter's proofs only (#1089): the project
-/// as it was written before revision 2.
+/// Today's v1 writer, kept only to prove the one-time conversion (#1089):
+/// the project as written before revision 2, by the same writer without its
+/// revision-2 step. Behind `v1-oracle`, removed once the conversion has run
+/// and been verified.
 #[cfg(feature = "v1-oracle")]
 pub fn save_project_v1(dir: &Path, sequences: &[Sequence], media_pool: &MediaPool) -> Result<(), String> {
     save_project_full_as(
