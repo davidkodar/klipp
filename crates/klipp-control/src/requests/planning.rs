@@ -324,7 +324,9 @@ pub(crate) fn respond(
             let (report, color_times, audio_media) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
-                let report = klipp_document::qc::check(&seq, &pool, &AnalysedTranscripts);
+                let mut report = klipp_document::qc::check(&seq, &pool, &AnalysedTranscripts);
+                let lut = ctx.shared.project.lock().ok().and_then(|p| p.global_lut.clone());
+                klipp_document::qc::note_missing_global_lut(&mut report, lut.as_deref());
                 // Each detected shot of each picture clip, read on its own
                 // — a clip holding a cut, or a long walk through changing
                 // light, is several shots, and one median across them all

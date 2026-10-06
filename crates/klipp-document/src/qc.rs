@@ -165,6 +165,21 @@ const JUMP_PLACE_SECS: f64 = 2.0;
 /// The motion analyser's mean YDIF from which a camera is moving.
 const MOVING_YDIF: f32 = 4.0;
 
+/// Add to `report` that the project's global LUT is missing, when it
+/// names one that is not on disk: the timeline renders without it until
+/// it is relinked (#1019).
+pub fn note_missing_global_lut(report: &mut Report, lut: Option<&std::path::Path>) {
+    let Some(lut) = lut.filter(|p| !p.exists()) else { return };
+    report.findings.insert(0, Finding {
+        severity: Severity::Error,
+        rule: "missing_lut",
+        at_secs: None,
+        what: format!("the project's LUT {} is missing", lut.display()),
+        hint: "Relink it in Project Doctor, or clear it, before delivering".into(),
+    });
+    report.errors += 1;
+}
+
 /// Check `seq` against its brief and the craft's rules.
 pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) -> Report {
     let mut f: Vec<Finding> = Vec::new();
@@ -617,6 +632,22 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
 
 #[cfg(test)]
 mod tests {
+
+    /// A global LUT that is not on disk is an error `check` names; one
+    /// that is there, or none at all, is nothing (#1019).
+    #[test]
+    fn a_missing_global_lut_is_an_error() {
+        let empty = || Report { duration_secs: 0.0, errors: 0, warnings: 0, findings: Vec::new() };
+        let mut r = empty();
+        note_missing_global_lut(&mut r, Some(std::path::Path::new("/nonexistent/klipp-1019/look.cube")));
+        assert_eq!(r.errors, 1);
+        assert_eq!(r.findings[0].rule, "missing_lut");
+        let mut r = empty();
+        note_missing_global_lut(&mut r, Some(&std::env::current_exe().unwrap()));
+        note_missing_global_lut(&mut r, None);
+        assert_eq!(r.errors, 0);
+        assert!(r.findings.is_empty());
+    }
     use super::*;
     use klipp_core::{Fps, RationalTime, Timecode};
     use klipp_timeline::{Brief, CastMember, Track};
