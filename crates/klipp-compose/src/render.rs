@@ -1702,6 +1702,9 @@ impl Renderer {
             let Some(g) = self.executor.gpu_pipeline_or_init() else { return Err("GPU gone") };
             g.stack_chain_to_slot_a(slot_a);
             slot_a = g.run_effects_in_chain(&fx, width, height);
+            if !g.last_effects_complete() {
+                return Err("an effect could not be recorded");
+            }
             stats.effects_ms += ms_since(t);
         }
         let t = Instant::now();

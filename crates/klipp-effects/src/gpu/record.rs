@@ -113,19 +113,17 @@ impl GpuEffectsPipeline {
         height: u32,
         rec: &mut EffectRecording<'_>,
     ) -> Recorded {
-        let Some(needed) = slots_needed(effect) else { return Recorded::NotRecordable };
-        if self.is_device_lost() {
+        if slots_needed(effect).is_none() || self.is_device_lost() || self.refuse_recording {
             return Recorded::NotRecordable;
         }
-        if rec.slots.remaining() < needed {
-            return Recorded::OutOfSlots;
-        }
+        // Each arm checks its identity before its slots, so an effect that
+        // records nothing never asks for a refill.
         let q = &self.queue;
         if let Some(outcome) = self.record_multi_pass(effect, src, dst, scratch, width, height, rec) {
             return outcome;
         }
         // One pass each: its pipeline, and its parameters in a slot of
-        // their own (`slots_needed` was checked, so the claim succeeds).
+        // their own, claimed before anything is recorded.
         let (pipeline, slot) = match effect {
             BuiltinEffect::Opacity { value } => {
                 if (*value - 1.0).abs() < f32::EPSILON {
@@ -434,7 +432,8 @@ impl GpuEffectsPipeline {
             }
             _ => return Recorded::NotRecordable,
         };
-        self.record_pass(rec, pipeline, src, dst, slot.expect("slots_needed was checked"), width, height);
+        let Some(slot) = slot else { return Recorded::OutOfSlots };
+        self.record_pass(rec, pipeline, src, dst, slot, width, height);
         Recorded::Done
     }
 
@@ -464,6 +463,9 @@ impl GpuEffectsPipeline {
                     return Some(Recorded::Identity);
                 }
                 let Some(scratch) = scratch else { return Some(Recorded::NotRecordable) };
+                if !has_room(rec, effect) {
+                    return Some(Recorded::OutOfSlots);
+                }
                 let passes = boxes.len() * 2;
                 let mut from = src;
                 for (i, box_r) in boxes.into_iter().enumerate() {
@@ -478,6 +480,9 @@ impl GpuEffectsPipeline {
             }
             BuiltinEffect::Denoise { spatial_sigma, color_sigma, iterations } => {
                 let Some(scratch) = scratch else { return Some(Recorded::NotRecordable) };
+                if !has_room(rec, effect) {
+                    return Some(Recorded::OutOfSlots);
+                }
                 let passes = (*iterations).clamp(1, 3) as usize;
                 let slot = rec.slots.claim(q, &DenoiseParams {
                     width, height,
@@ -504,6 +509,9 @@ impl GpuEffectsPipeline {
                     return Some(Recorded::Identity);
                 }
                 let Some(scratch) = scratch else { return Some(Recorded::NotRecordable) };
+                if !has_room(rec, effect) {
+                    return Some(Recorded::OutOfSlots);
+                }
                 let mut from = src;
                 for box_r in boxes {
                     let slot = rec.slots.claim(q, &blur(box_r)).expect("slots_needed was checked");
@@ -524,6 +532,9 @@ impl GpuEffectsPipeline {
                     return Some(Recorded::Identity);
                 }
                 let Some(scratch) = scratch else { return Some(Recorded::NotRecordable) };
+                if !has_room(rec, effect) {
+                    return Some(Recorded::OutOfSlots);
+                }
                 let slot = rec.slots.claim(q, &blur(0)).expect("slots_needed was checked");
                 self.record_pass(rec, &self.focus_blur_premultiply_pipeline, src, scratch, slot, width, height);
                 for box_r in boxes {
@@ -589,6 +600,12 @@ impl GpuEffectsPipeline {
         });
         Self::record_compute_dispatch(rec.encoder, pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
     }
+}
+
+/// Whether `rec` has the slots `effect` claims at most, checked by an
+/// arm of several passes before it records the first.
+fn has_room(rec: &EffectRecording<'_>, effect: &BuiltinEffect) -> bool {
+    rec.slots.remaining() >= slots_needed(effect).unwrap_or(0)
 }
 
 /// Where pass `i` of `passes` writes, ping-ponging between `dst` and

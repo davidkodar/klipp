@@ -177,3 +177,57 @@ fn a_recorded_effect_never_writes_its_source() {
         assert_eq!(read(&dst), g.apply_effects(std::slice::from_ref(&effect), &picture(), W, H), "{effect:?}: the result is in dst");
     }
 }
+
+/// An effect that is only ever recorded and could not be (a lost
+/// device; forced here) is never silently left out: `apply_effects`
+/// takes the CPU chain for the frame instead, and the in-place stack
+/// path refuses, which its renderer counts as a decline.
+#[test]
+fn an_effect_that_could_not_be_recorded_is_never_silently_dropped() {
+    let Some(mut g) = pipeline() else { return };
+    let fx = [E::Gamma { gamma: 1.4 }, E::GaussianBlur { radius: 2.0 }];
+    g.refuse_recording(true);
+    let got = g.apply_effects(&fx, &picture(), W, H);
+    assert!(!g.last_effects_complete(), "the run says an effect is missing");
+    assert_eq!(got, klipp_effects::apply_effects(&fx, picture(), W, H), "the CPU chain's picture, effects included");
+    assert!(g.stack_begin(W, H, 1));
+    assert!(g.stack_layer_from_linear(0, &picture()));
+    assert!(!g.stack_layer_apply_effects(0, &fx), "the stack's layer refuses rather than skip the effect");
+    g.stack_end();
+    g.refuse_recording(false);
+    let _ = g.apply_effects(&fx, &picture(), W, H);
+    assert!(g.last_effects_complete());
+}
+
+/// An identity answers `Identity` even with no slots left: only an
+/// effect that would record anything asks for a refill.
+#[test]
+fn an_identity_never_asks_for_slots() {
+    let Some(g) = pipeline() else { return };
+    let device = g.device();
+    let frame = |label| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: (W * H * 16) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    };
+    let (src, dst, scratch) = (frame("src"), frame("dst"), frame("scratch"));
+    let mut slots = klipp_effects::gpu::ParamSlots::new(&device, 1, 256, "full");
+    assert!(slots.claim_index().is_some());
+    assert_eq!(slots.remaining(), 0);
+    let mut enc = device.create_command_encoder(&Default::default());
+    let mut rec = klipp_effects::gpu::EffectRecording { encoder: &mut enc, slots: &mut slots };
+    use klipp_effects::gpu::Recorded;
+    for (effect, want) in [
+        (E::Opacity { value: 1.0 }, Recorded::Identity),
+        (E::Opacity { value: 0.5 }, Recorded::OutOfSlots),
+        (E::GaussianBlur { radius: 0.2 }, Recorded::Identity),
+        (E::GaussianBlur { radius: 3.0 }, Recorded::OutOfSlots),
+        (E::TiltShift { center: 0.5, width: 0.2, softness: 0.3, radius: 0.0 }, Recorded::Identity),
+        (E::Denoise { spatial_sigma: 2.0, color_sigma: 0.1, iterations: 1 }, Recorded::OutOfSlots),
+    ] {
+        assert_eq!(g.record_effect(&effect, &src, &dst, Some(&scratch), W, H, &mut rec), want, "{effect:?}");
+    }
+}

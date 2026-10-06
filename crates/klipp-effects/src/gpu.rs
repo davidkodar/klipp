@@ -445,6 +445,12 @@ pub struct GpuEffectsPipeline {
     /// from the chain's. Taken out while a run records (`record_effect`
     /// borrows the pipeline), so `None` only inside it.
     effect_params: Option<ParamSlots>,
+    /// Set when the last `run_effects_in_chain` left an effect out: one
+    /// that is only ever recorded, and could not be (a lost device). See
+    /// [`Self::last_effects_complete`].
+    effects_incomplete: std::cell::Cell<bool>,
+    /// A test's switch: every `record_effect` answers `NotRecordable`.
+    refuse_recording: bool,
     /// Pre-allocated bind groups for the 3-binding chain layout
     /// (`bind_group_layout`). Indexed by `slot * 4 + config_idx` where
     /// `config_idx` picks one of the four (input, output) buffer pairs
@@ -1510,6 +1516,8 @@ impl GpuEffectsPipeline {
             params_buf,
             chain_params,
             effect_params,
+            effects_incomplete: std::cell::Cell::new(false),
+            refuse_recording: false,
             // Start empty; populated by `rebuild_chain_bind_group_pools`
             // after the first `ensure_buffers` call (buf_a/b/c don't
             // exist until then).
@@ -5672,6 +5680,9 @@ impl GpuEffectsPipeline {
             return false;
         }
         let in_a = self.run_effects_in_chain(effects, width, height);
+        if !self.last_effects_complete() {
+            return false;
+        }
         let out = if in_a { self.buf_a.as_ref().unwrap() } else { self.buf_b.as_ref().unwrap() };
         self.stack_copy(out, &layer, "stack_chain_to_layer")
     }
@@ -5896,6 +5907,10 @@ impl GpuEffectsPipeline {
         self.ensure_buffers(byte_size);
         self.upload(self.buf_a.as_ref().unwrap(), 0, bytemuck::cast_slice(linear_rgba));
         let in_a = self.run_effects_in_chain(effects, width, height);
+        if !self.last_effects_complete() {
+            // An effect is missing from the GPU's picture: the CPU chain's.
+            return crate::apply_effects(effects, linear_rgba.to_vec(), width, height);
+        }
         let final_buf = if in_a { self.buf_a.as_ref().unwrap() } else { self.buf_b.as_ref().unwrap() };
         self.download_linear_rgba_f32(final_buf, (width * height) as usize)
     }
@@ -5923,6 +5938,7 @@ impl GpuEffectsPipeline {
         // Runs of recordable effects go into one encoder and one submit;
         // anything else submits what was recorded first, so the order on
         // the GPU is the list's.
+        self.effects_incomplete.set(false);
         let mut slots = self.effect_params.take().expect("effect slots are only taken inside a run");
         let mut recorded = RecordedRun::default();
         let mut effects = effects.iter().peekable();
@@ -5951,7 +5967,9 @@ impl GpuEffectsPipeline {
             self.submit_recorded(&mut recorded, &mut slots);
 
             match effect {
-                // Recorded above (`record_effect`).
+                // Recorded above (`record_effect`), and they have no other
+                // path: one that could not be recorded is missing from the
+                // picture, so the run says so (`last_effects_complete`).
                 BuiltinEffect::Opacity { .. }
                 | BuiltinEffect::Invert { .. }
                 | BuiltinEffect::Posterize { .. }
@@ -5978,7 +5996,7 @@ impl GpuEffectsPipeline {
                 | BuiltinEffect::GaussianBlur { .. }
                 | BuiltinEffect::Denoise { .. }
                 | BuiltinEffect::TiltShift { .. }
-                | BuiltinEffect::FocusBlur { .. } => {}
+                | BuiltinEffect::FocusBlur { .. } => self.effects_incomplete.set(true),
                 BuiltinEffect::CornerPin { tl, tr, br, bl } => {
                     let corners = [*tl, *tr, *br, *bl];
                     if crate::corner_pin::is_still(&corners) {
@@ -6451,6 +6469,21 @@ impl GpuEffectsPipeline {
         self.effect_params = Some(slots);
 
         current_in_a
+    }
+
+    /// Whether the last [`Self::run_effects_in_chain`] applied every
+    /// effect. `false` when one that is only ever recorded could not be
+    /// (a lost device): its picture is missing that effect, and the caller
+    /// takes another path or declines the frame, never shows it.
+    pub fn last_effects_complete(&self) -> bool {
+        !self.effects_incomplete.get()
+    }
+
+    /// For tests: make every `record_effect` answer `NotRecordable`, as a
+    /// lost device does, to prove a run reports what it left out.
+    #[doc(hidden)]
+    pub fn refuse_recording(&mut self, refuse: bool) {
+        self.refuse_recording = refuse;
     }
 
     /// Record `effect` into `run`'s encoder, opening one if none is.
