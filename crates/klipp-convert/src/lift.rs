@@ -132,10 +132,69 @@ fn connected(body: &Graph, n: &Node, port: &PortKey) -> bool {
         })
 }
 
+/// Today's `migrate_graph` (`load.rs`), made once on the structural body: a
+/// graph on the old legacy chain with no Corrector gets a Color Warper
+/// after its HueSat Curves (else before its Output), wired in after the
+/// first edge out of HueSat. Its id is derived from the group's.
+fn migrate_color_warper(body: &mut Graph, group: NodeId) -> bool {
+    let kinds: Vec<&str> = body.nodes.iter().map(kind_of).collect();
+    let legacy_chain = kinds.iter().any(|k| matches!(*k, "Exposure" | "Contrast" | "ColorWheels" | "HueSatCurves"));
+    if kinds.contains(&"Corrector") || !legacy_chain || kinds.contains(&"ColorWarper") {
+        return false;
+    }
+    let id = Uuid::new_v5(&group, b"migrate/color_warper");
+    let warper = node(
+        id,
+        types::LEGACY_NODE,
+        true,
+        Some(Legacy {
+            slot: None,
+            payload: json!({"kind": "ColorWarper", "label": "Color Warper", "params": {}}),
+            keyframes: Some(json!({"tracks": []})),
+            modifiers: BTreeMap::new(),
+        }),
+    );
+    let huesat = body.nodes.iter().find(|n| kind_of(n) == "HueSatCurves").map(|n| n.id);
+    let at = match body.nodes.iter().position(|n| kind_of(n) == "HueSatCurves") {
+        Some(i) => i + 1,
+        None => body.nodes.iter().position(|n| kind_of(n) == "Output").unwrap_or(body.nodes.len()),
+    };
+    body.nodes.insert(at, warper);
+    if let Some(h) = huesat {
+        if let Some(e) = body.edges.iter_mut().find(|e| e.from.0 == h) {
+            let old = std::mem::replace(&mut e.to, (id, klipp_graph_format::ports::input_key("ColorWarper", 0)));
+            body.edges.push(Edge { from: (id, klipp_graph_format::ports::output_key("ColorWarper", 0)), to: old });
+        }
+    }
+    true
+}
+
+/// Today's default pipeline (`NodeGraph::default()`: Source, Corrector,
+/// Output in a row), as its file form, with ids derived from the clip's.
+pub fn default_pipeline(clip_id: Uuid) -> Value {
+    let id = |what: &str| entry_id(RootKind::Clip, clip_id, &format!("lift/default/{what}"), 0).to_string();
+    let (s, c, o) = (id("source"), id("corrector"), id("output"));
+    let n = |id: &str, kind: &str| json!({"id": id, "kind": kind, "label": kind, "enabled": true, "params": {}, "keyframes": {"tracks": []}, "output_link": null, "input_links": []});
+    json!({
+        "nodes": [n(&s, "Source"), n(&c, "Corrector"), n(&o, "Output")],
+        "edges": [
+            {"from_node": s, "from_port": 0, "to_node": c, "to_port": 0},
+            {"from_node": c, "from_port": 0, "to_node": o, "to_port": 0}
+        ],
+        "output_node_id": o,
+        "node_positions": {s.as_str(): {"x": 0.0, "y": 0.0}, c.as_str(): {"x": 220.0, "y": 0.0}, o.as_str(): {"x": 440.0, "y": 0.0}}
+    })
+}
+
 /// The Grade group's body, lifted: gates decided on the graph as saved,
 /// then implicit source reads made explicit, then the merges named.
-fn lift_grade_body(group: &Node, notes: &mut Vec<LiftNote>) -> (Graph, LegacyFlags) {
+fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (Graph, LegacyFlags) {
     let mut body = group.group.as_ref().map(|g| g.graph.clone()).unwrap_or_else(Graph::empty);
+    // The graph as today's loader leaves it: migrated first, on the graphs
+    // it migrates (a clip's, a track's, a grade version's).
+    if migrate && migrate_color_warper(&mut body, group.id) {
+        notes.push(LiftNote::LoadMigration { group: group.id, what: "color warper".into() });
+    }
     let mut group_flags = LegacyFlags::default();
     let input_port = |kind: &str, port: u8| klipp_graph_format::ports::input_key(kind, port);
 
@@ -219,9 +278,11 @@ fn lift_grade_body(group: &Node, notes: &mut Vec<LiftNote>) -> (Graph, LegacyFla
 
 /// A grade-only revision-1 graph (one `klipp.legacy.grade` node: a group
 /// stage, a track grade, a version) as a lifted Grade group body.
-pub fn lift_grade_only(structural: &Graph) -> Result<Graph, String> {
+/// `migrate` as today's loader does it: on track grades and grade
+/// versions, not on group stages or timeline grades.
+pub fn lift_grade_only(structural: &Graph, migrate: bool) -> Result<Graph, String> {
     match structural.nodes.as_slice() {
-        [g] if g.type_id.as_str() == types::LEGACY_GRADE => Ok(lift_grade_body(g, &mut Vec::new()).0),
+        [g] if g.type_id.as_str() == types::LEGACY_GRADE => Ok(lift_grade_body(g, migrate, &mut Vec::new()).0),
         _ => Err(format!("a grade-only graph holds {} nodes, not one grade group", structural.nodes.len())),
     }
 }
@@ -389,7 +450,18 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
     let mut clip_orphans: BTreeMap<String, Value> = BTreeMap::new();
     let id = |list: &str| entry_id(RootKind::Clip, ctx.clip_id, &format!("lift/{list}"), 0);
     let nodes = &record.graph.nodes;
-    let grade = nodes.iter().find(|n| n.type_id.as_str() == types::LEGACY_GRADE);
+    // A clip whose file has no grade graph loads today as the default
+    // pipeline: written out here, with ids derived from the clip's.
+    let default_grade = if nodes.iter().any(|n| n.type_id.as_str() == types::LEGACY_GRADE) {
+        None
+    } else {
+        let with_default = json!({"id": ctx.clip_id.to_string(), "node_graph": default_pipeline(ctx.clip_id)});
+        let record = crate::to_v2::clip_to_v2(with_default.as_object().ok_or("default")?).map_err(|e| e.to_string())?;
+        let g = record.graph.nodes.into_iter().next().ok_or("no default grade")?;
+        notes.push(LiftNote::DefaultPipeline { group: g.id });
+        Some(g)
+    };
+    let grade = nodes.iter().find(|n| n.type_id.as_str() == types::LEGACY_GRADE).or(default_grade.as_ref());
     let ofx: Vec<&Node> = nodes.iter().filter(|n| n.type_id.as_str() == types::LEGACY_OFX).collect();
     let effects: Vec<&Node> = nodes
         .iter()
@@ -441,7 +513,7 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
     let mut chain = vec![node(id("source"), lt::SOURCE, true, None)];
     chain.extend(head);
     if let Some(g) = grade {
-        let (body, group_flags) = lift_grade_body(g, &mut notes);
+        let (body, group_flags) = lift_grade_body(g, true, &mut notes);
         let mut group = node(g.id, lt::GROUP, true, g.legacy.clone());
         group.group = Some(Box::new(GroupBody { graph: body, ports: Vec::new() }));
         if !group_flags.is_empty() {

@@ -132,6 +132,13 @@ pub enum LiftNote {
     ExtraTransform { node: NodeId },
     /// A stored value no reader used, with a non-default value.
     DroppedField { what: String, field: String },
+    /// A rewrite today's loader makes on every load, made once here so the
+    /// converted project shows what the user sees today (`migrate_graph`'s
+    /// Color Warper).
+    LoadMigration { group: NodeId, what: String },
+    /// A clip with no grade graph in its file, which today loads as the
+    /// default pipeline; the conversion writes it out.
+    DefaultPipeline { group: NodeId },
 }
 
 /// Where a node spliced into a clip's render copy came from. The clip's

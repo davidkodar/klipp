@@ -226,10 +226,10 @@ fn placement_takes_the_three_rules_and_one_position() {
     // is kept off, for the record.
     assert_eq!(
         types_of(&p.graph),
-        [lt::SOURCE, lt::SCENE_TO_DISPLAY, types::LEGACY_TRANSFORM, types::LEGACY_EFFECT, lt::PLACEMENT, lt::OUTPUT]
+        [lt::SOURCE, lt::GROUP, lt::SCENE_TO_DISPLAY, types::LEGACY_TRANSFORM, types::LEGACY_EFFECT, lt::PLACEMENT, lt::OUTPUT]
     );
-    assert!(!p.graph.nodes[2].enabled);
-    assert_eq!(p.graph.nodes[4].params[&klipp_graph_format::ParamKey::from("mode")], ParamValue::Enum(lt::PLACEMENT_FIXED));
+    assert!(!p.graph.nodes[3].enabled);
+    assert_eq!(p.graph.nodes[5].params[&klipp_graph_format::ParamKey::from("mode")], ParamValue::Enum(lt::PLACEMENT_FIXED));
     assert_eq!(notes.iter().filter(|n| matches!(n, LiftNote::ExtraTransform { .. })).count(), 1);
 
     // No Transform: nothing of its own, every field None.

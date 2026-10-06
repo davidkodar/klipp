@@ -50,7 +50,7 @@ pub struct SpliceInputs {
 /// A stage of a grade group as the splice takes it: the stage's
 /// revision-1 graph (one grade group node) lifted to a body.
 pub fn stage_body(structural: &Graph) -> Result<Graph, String> {
-    lift_grade_only(structural)
+    lift_grade_only(structural, false)
 }
 
 /// A track's revision-1 graph split into what the splice takes: its
@@ -61,7 +61,7 @@ pub fn track_parts(structural: &Graph) -> Result<(Vec<Node>, Option<Graph>), Str
     for n in &structural.nodes {
         if n.type_id.as_str() == types::LEGACY_GRADE {
             let only = Graph { nodes: vec![n.clone()], edges: Vec::new(), output: n.id, ..Graph::empty() };
-            grade = Some(lift_grade_only(&only)?);
+            grade = Some(lift_grade_only(&only, true)?);
         } else {
             effects.push(n.clone());
         }
