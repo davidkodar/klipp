@@ -47,6 +47,8 @@ mod brief;
 mod clip_anim;
 mod picture_fields;
 mod picture_store;
+#[cfg(test)]
+mod picture_cache_tests;
 pub use clip_anim::{EffectKeyframes, Keyframes, ParamModifiers};
 pub use picture_fields::ClipPictureParts;
 pub use picture_store::{ClipPictureFields, LiftedPicture};
