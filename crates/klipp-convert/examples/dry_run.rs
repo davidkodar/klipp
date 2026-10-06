@@ -131,7 +131,7 @@ fn main() {
 
     let mut stores: BTreeMap<&str, usize> = BTreeMap::new();
     for r in &reports {
-        for (k, n) in &r.stores {
+        for (k, n) in r.stores.iter().chain(&r.stores_extra) {
             *stores.entry(k).or_default() += n;
         }
     }

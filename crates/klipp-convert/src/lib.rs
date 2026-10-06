@@ -11,6 +11,7 @@ pub mod ids;
 pub mod installed;
 pub mod lift;
 pub mod old_fields;
+pub mod revision2;
 pub mod revision;
 pub mod running;
 pub mod scan;

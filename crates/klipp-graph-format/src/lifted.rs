@@ -309,4 +309,11 @@ impl Graph {
     pub fn check_lifted(&self, render_copy: bool) -> Result<(), LiftedError> {
         check_level(self, "clip", false, render_copy)
     }
+
+    /// [`Graph::check_lifted`] for a Grade group body standing alone (a
+    /// track or timeline grade, a group stage, a version, a Look): it runs
+    /// from `group.input` to `group.output`.
+    pub fn check_lifted_body(&self) -> Result<(), LiftedError> {
+        check_level(self, "body", true, false)
+    }
 }

@@ -44,6 +44,8 @@ pub struct ProjectReport {
     pub picture_without_clips: bool,
     /// What the lift reported, by kind of note (#1068).
     pub lift_notes: BTreeMap<String, usize>,
+    /// Counts added after the store walk (revision-2 files proven).
+    pub stores_extra: BTreeMap<&'static str, usize>,
     pub elapsed: Duration,
 }
 
@@ -184,6 +186,17 @@ fn check_into(dir: &Path, parity: Parity, splicer: Option<SpliceDecider>, report
     if let Err(e) = old_fields_round_trip(&raw) {
         report.stops.push(format!("old fields: {e}"));
     }
+    // Revision 2, the switch's files: built, written, proven.
+    match crate::revision2::project(&raw) {
+        Ok((out, _)) => {
+            let r = serde_json::to_string(&out).map_err(|e| e.to_string()).and_then(|text| crate::revision2::verify_project(&raw, &text));
+            match r {
+                Ok(()) => *report.stores_extra.entry("revision 2 projects").or_default() += 1,
+                Err(e) => report.stops.push(format!("revision 2: {e}")),
+            }
+        }
+        Err(e) => report.stops.push(format!("revision 2: {e}")),
+    }
     side_stores(dir, parity, &mut stores, &mut report.stops);
     report.stores = stores;
 }
@@ -279,6 +292,13 @@ fn side_stores(dir: &Path, parity: Parity, stores: &mut BTreeMap<&'static str, u
                         }
                     }
                 }
+                let r2 = crate::revision2::stills(&raw).and_then(|c| {
+                    let text = serde_json::to_string(&c).map_err(|e| e.to_string())?;
+                    crate::revision2::verify_side(&crate::revision2::stills(&raw)?, &text)
+                });
+                if let Err(e) = r2 {
+                    stops.push(format!("media/stills.json revision 2: {e}"));
+                }
             }
         }
     }
@@ -294,8 +314,9 @@ fn side_stores(dir: &Path, parity: Parity, stores: &mut BTreeMap<&'static str, u
             parity(&raw, StoreKind::Look)?;
             let id = raw.get("id").and_then(Value::as_str).ok_or("a Look without an id")?;
             let g = raw.get("node_graph").ok_or("a Look without a graph")?;
-            let checked = verify::check_store("look", g, &verify::look(id), &verify::conv_look);
-            checked
+            verify::check_store("look", g, &verify::look(id), &verify::conv_look)?;
+            let c = crate::revision2::look(&raw)?;
+            crate::revision2::verify_side(&crate::revision2::look(&raw)?, &serde_json::to_string(&c).map_err(|e| e.to_string())?)
         });
         *stores.entry("looks").or_default() += 1;
         if let Err(e) = checked {

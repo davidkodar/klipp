@@ -368,8 +368,13 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
 /// `migrate` as today's loader does it: on track grades and grade
 /// versions, not on group stages or timeline grades.
 pub fn lift_grade_only(structural: &Graph, migrate: bool) -> Result<Graph, String> {
+    lift_grade_only_noted(structural, migrate, &mut Vec::new())
+}
+
+/// [`lift_grade_only`], keeping its notes.
+pub fn lift_grade_only_noted(structural: &Graph, migrate: bool, notes: &mut Vec<LiftNote>) -> Result<Graph, String> {
     match structural.nodes.as_slice() {
-        [g] if g.type_id.as_str() == types::LEGACY_GRADE => Ok(lift_grade_body(g, migrate, &mut Vec::new()).0),
+        [g] if g.type_id.as_str() == types::LEGACY_GRADE => Ok(lift_grade_body(g, migrate, notes).0),
         _ => Err(format!("a grade-only graph holds {} nodes, not one grade group", structural.nodes.len())),
     }
 }
