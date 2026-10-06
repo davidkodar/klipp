@@ -476,8 +476,8 @@ fn the_frame_carries_only_implicit_reads() {
 
 /// Two saved nodes sharing an id, one with a port-1 edge and no port-0
 /// edge, used to queue the same parked edge for removal twice and panic.
-/// The lift now returns a graph, and check_lifted refuses the repeated id:
-/// a stop for that project, never an abort of the run.
+/// The lift refuses the repeated id before anything: a stop for that
+/// project, never an abort of the run.
 #[test]
 fn repeated_ids_with_a_parked_edge_stop_instead_of_panicking() {
     let g = json!({
@@ -486,9 +486,8 @@ fn repeated_ids_with_a_parked_edge_stop_instead_of_panicking() {
         "output_node_id": OUT
     });
     let record = clip_to_v2(clip(json!({"node_graph": g})).as_object().unwrap()).unwrap();
-    let (p, notes) = lift_clip(&record, &LiftCtx { clip_id: id(CLIP), kind: ClipKind::Media }).unwrap();
-    assert_eq!(notes.iter().filter(|n| matches!(n, LiftNote::ParkedEdge { .. })).count(), 1, "one edge, parked once");
-    assert!(p.graph.check_lifted(false).is_err(), "the repeated id is refused by the check");
+    let r = std::panic::catch_unwind(|| lift_clip(&record, &LiftCtx { clip_id: id(CLIP), kind: ClipKind::Media }));
+    assert!(r.expect("no panic").unwrap_err().contains("repeats node"));
 }
 
 /// A grade graph that loops never ran: today's ordering refuses it and the
@@ -717,9 +716,9 @@ fn check_lifted_refuses_a_mask_without_the_gate() {
     assert!(matches!(err, klipp_graph_format::lifted::LiftedError::MaskWithoutGate(n) if n == id(COR)), "{err:?}");
 }
 
-/// A grade with a repeated node id doesn't panic the lift: it is judged
-/// never to have run, and `check_lifted` stops it on the duplicate, so one
-/// project stops rather than the run (#1102 review).
+/// A grade with a repeated node id doesn't panic the lift: the lift
+/// refuses it, as a clip's grade and standing alone, so one project stops
+/// rather than the run (#1102 review).
 #[test]
 fn a_repeated_node_id_stops_the_project_without_a_panic() {
     let g = json!({
@@ -729,10 +728,11 @@ fn a_repeated_node_id_stops_the_project_without_a_panic() {
     });
     let record = clip_to_v2(clip(json!({"node_graph": g.clone()})).as_object().unwrap()).unwrap();
     let r = std::panic::catch_unwind(|| lift_clip(&record, &LiftCtx { clip_id: id(CLIP), kind: ClipKind::Media }));
-    let (p, _) = r.expect("no panic").expect("the lift itself goes through");
-    assert!(p.graph.check_lifted(false).is_err(), "the duplicate stops the project");
-    // Standing alone, the same graph stops too.
+    let err = r.expect("no panic").expect_err("a lift error, so the project stops");
+    assert!(err.contains("repeats node"), "{err}");
+    // Standing alone, the same graph stops the same way.
     let seq = json!({"id": "00000000-0000-0000-0000-000000000501", "timeline_graph": g});
     let structural = crate::to_v2::timeline_to_v2(seq.as_object().unwrap()).unwrap().unwrap();
-    assert!(crate::lift::lift_grade_only(&structural, false).is_err());
+    let r = std::panic::catch_unwind(|| crate::lift::lift_grade_only(&structural, false));
+    assert!(r.expect("no panic").unwrap_err().contains("repeats node"));
 }

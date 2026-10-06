@@ -491,7 +491,22 @@ pub fn lift_grade_only(structural: &Graph, migrate: bool) -> Result<Graph, Strin
 }
 
 /// [`lift_grade_only`], keeping its notes.
+/// A node id a grade graph repeats, which no ordering of it can finish:
+/// the lift refuses it, so its project stops (#1102 review).
+fn repeated_id(group: &Node) -> Result<(), String> {
+    let mut seen = std::collections::BTreeSet::new();
+    for n in group.group.iter().flat_map(|b| &b.graph.nodes) {
+        if !seen.insert(n.id) {
+            return Err(format!("the grade graph repeats node {}", n.id));
+        }
+    }
+    Ok(())
+}
+
 pub fn lift_grade_only_noted(structural: &Graph, migrate: bool, notes: &mut Vec<LiftNote>) -> Result<Graph, String> {
+    if let [g] = structural.nodes.as_slice() {
+        repeated_id(g)?;
+    }
     match structural.nodes.as_slice() {
         [g] if g.type_id.as_str() == types::LEGACY_GRADE => match lift_grade_body(g, migrate, notes) {
             // Today it never ran; standing alone there is no group to keep
@@ -787,6 +802,7 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
     let mut chain = vec![node(id("source"), lt::SOURCE, true, None)];
     chain.extend(head);
     if let Some(g) = grade {
+        repeated_id(g)?;
         let (body, group_flags, loops) = lift_grade_body(g, true, &mut notes);
         // A grade graph that loops never ran: today's ordering refuses it
         // and the picture passes through. Kept in a group that is off,

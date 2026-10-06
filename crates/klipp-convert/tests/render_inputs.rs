@@ -1323,3 +1323,100 @@ fn a_rewritten_load_delifts_to_todays_loaded_graph() {
     let shown: Vec<String> = failures.iter().take(8).cloned().collect();
     assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), shown.join("\n"));
 }
+
+/// One malformed change to a v1 project, as a damaged or hand-edited file
+/// can hold: a repeated node, made-up ports and ids, a missing output, values
+/// of the wrong type, odd effect lists and keys.
+fn damage(r: &mut Rng, project: &mut Value) {
+    let mut all: Vec<&mut Value> = project["sequences"].as_array_mut().into_iter().flatten().flat_map(|s| s["tracks"].as_array_mut().into_iter().flatten()).flat_map(|t| t["clips"].as_array_mut().into_iter().flatten()).collect();
+    if all.is_empty() {
+        return;
+    }
+    let i = r.below(all.len() as u64) as usize;
+    let clip = &mut *all[i];
+    let junk = || json!("00000000-0000-0000-0000-00000000beef");
+    match r.below(10) {
+        0 => {
+            if let Some(n) = clip["node_graph"]["nodes"].as_array().and_then(|ns| ns.first().cloned()) {
+                clip["node_graph"]["nodes"].as_array_mut().unwrap().push(n);
+            }
+        }
+        1 => {
+            for e in clip["node_graph"]["edges"].as_array_mut().into_iter().flatten() {
+                e["to_port"] = json!(r.below(16));
+                e["from_port"] = json!(r.below(4));
+            }
+        }
+        2 => {
+            if let Some(es) = clip["node_graph"]["edges"].as_array_mut() {
+                es.push(json!({"from_node": junk(), "from_port": 0, "to_node": junk(), "to_port": 3}));
+            }
+        }
+        3 => {
+            if clip["node_graph"].is_object() {
+                clip["node_graph"]["output_node_id"] = junk();
+            }
+        }
+        4 => {
+            for n in clip["node_graph"]["nodes"].as_array_mut().into_iter().flatten() {
+                n["params"] = json!(5);
+            }
+        }
+        5 => {
+            for n in clip["node_graph"]["nodes"].as_array_mut().into_iter().flatten() {
+                n["input_links"] = json!([null, 7, "x"]);
+                n["output_link"] = json!("x");
+            }
+        }
+        6 => clip["builtin_effects"] = json!([{"type": "gaussian_blur", "radius": "wide"}, 3, {"type": "opacity"}]),
+        7 => clip["builtin_effects_enabled"] = json!([true, "no", null, false, true, true]),
+        8 => clip["effect_keyframes"] = json!({"99:radius": [{"time_secs": 0.0, "value": 1.0}], "abc": [], "0:": 5}),
+        _ => clip["param_modifiers"] = json!({"effect:x:y": {"modifiers": 3}, "opacity": []}),
+    }
+}
+
+/// No file makes the conversion panic: over the generated projects, each
+/// damaged one way at a time, the conversion and the lift either work or
+/// return an error, which stops that project (#1102 review).
+#[test]
+fn a_damaged_file_never_panics_the_conversion() {
+    let mut r = Rng(0x00da_4a6e);
+    let (mut runs, mut refused) = (0, 0);
+    for seed in 0..20 {
+        let dir = temp("damage");
+        generated_project(&dir, seed, 10);
+        let clean: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("project.json")).unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        for _ in 0..30 {
+            let mut p = clean.clone();
+            for _ in 0..1 + r.below(3) {
+                damage(&mut r, &mut p);
+            }
+            runs += 1;
+            let outcome = std::panic::catch_unwind(|| {
+                let converted = klipp_convert::revision2::project(&p);
+                for clip in p["sequences"].as_array().into_iter().flatten().flat_map(|s| s["tracks"].as_array().into_iter().flatten()).flat_map(|t| t["clips"].as_array().into_iter().flatten()) {
+                    if let Ok(record) = to_v2::clip_to_v2(clip.as_object().unwrap()) {
+                        if let (Some(id), Ok(kind)) = (clip["id"].as_str().and_then(|s| Uuid::parse_str(s).ok()), ClipKind::from_json(clip.get("kind"))) {
+                            if let Ok((pic, _)) = lift_clip(&record, &LiftCtx { clip_id: id, kind }) {
+                                let _ = pic.graph.check_lifted(false);
+                                let _ = delift::clip(&pic).map(|b| to_v1::clip(&serde_json::to_value(b).unwrap()));
+                            }
+                        }
+                    }
+                }
+                converted.is_err()
+            });
+            match outcome {
+                Ok(true) => refused += 1,
+                Ok(false) => {}
+                Err(e) => {
+                    let why = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_owned())).unwrap_or_default();
+                    panic!("a damaged file panicked the conversion: {why}\n{}", serde_json::to_string(&p).unwrap());
+                }
+            }
+        }
+    }
+    eprintln!("damaged files: {runs} converted or refused without a panic ({refused} refused)");
+    assert!(refused > 0, "the damage reached nothing the conversion refuses");
+}
