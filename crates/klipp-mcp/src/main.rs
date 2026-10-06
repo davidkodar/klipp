@@ -1615,7 +1615,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              vec![]),
         tool("klipp_get_grade",
              "The clip's colour node graph as JSON, including every node id and its \
-              parameters. Read this before changing a grade — node ids come from here.",
+              parameters, and what runs with it on the picture: its grade group's \
+              stages, its track's grade and the timeline grade. Read this before \
+              changing a grade — node ids come from here.",
              json!({ "clip_id": { "type": "string" } }), vec!["clip_id"]),
         tool("klipp_add_node",
              "Add a colour node to a clip's grade graph. Kind is a NodeKind name, \

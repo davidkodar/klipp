@@ -931,6 +931,41 @@ fn a_transition_reads_back_in_the_timeline_and_list_clips() {
 
 /// The text view carries what a model needs to plan and respects its
 /// budget on a line boundary.
+/// `get_grade` names the track grade the render copy runs after the
+/// clip's own (#1072), where it runs: on a picture track, for a clip that
+/// is a picture of it, and not when it changes nothing.
+#[test]
+fn get_grade_reports_the_track_grade_where_it_runs() {
+    let mut h = harness();
+    let mut exposed = klipp_nodes::NodeGraph::default();
+    exposed.ensure_corrector();
+    if let Some(n) = exposed.nodes.iter_mut().find(|n| n.kind == klipp_nodes::NodeKind::Corrector) {
+        n.params.exposure = Some(0.4);
+    }
+    let set = |h: &Harness, kind: klipp_timeline::TrackKind, clip: klipp_timeline::ClipKind, grade: Option<klipp_nodes::NodeGraph>| {
+        let mut seq = h.sequence.write().unwrap();
+        let t = &mut seq.tracks[0];
+        t.kind = kind;
+        t.effects.grade_slot().set(grade);
+        for c in &mut t.clips {
+            c.kind = clip.clone();
+        }
+    };
+    let media = klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() };
+    let clip = h.ids.clip_a.clone();
+    let read = |h: &mut Harness| h.ok(json!({ "method": "get_grade", "clip_id": clip }))["track_grade"].clone();
+
+    set(&h, klipp_timeline::TrackKind::Video, media.clone(), Some(exposed.clone()));
+    let tg = read(&mut h);
+    assert_eq!(tg, serde_json::to_value(&exposed).unwrap(), "a graded video track's grade is reported");
+    set(&h, klipp_timeline::TrackKind::Audio, media.clone(), Some(exposed.clone()));
+    assert!(read(&mut h).is_null(), "a sound track grades no picture");
+    set(&h, klipp_timeline::TrackKind::Video, klipp_timeline::ClipKind::Gap, Some(exposed.clone()));
+    assert!(read(&mut h).is_null(), "a gap takes nothing of its track's");
+    set(&h, klipp_timeline::TrackKind::Video, media, Some(klipp_nodes::NodeGraph::default()));
+    assert!(read(&mut h).is_null(), "an identity track grade changes nothing");
+}
+
 #[test]
 fn the_timeline_reads_as_text_within_a_budget() {
     let mut h = harness();
