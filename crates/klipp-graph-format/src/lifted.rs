@@ -403,7 +403,7 @@ fn check_mask_with_catalog(g: &Graph, node: NodeId, catalog: Option<&dyn PortCat
         // not an effect's implicit mask/mix control.
         if n.type_id.as_str() == types::GROUP && port_spec(n, &"mask".into(), true, catalog).is_some() { return Ok(()); }
         if let Some(spec) = catalog.and_then(|c| c.node_spec(n)) {
-            return if spec.mixable && spec.inputs.iter().any(|p| p.key == "mask") { Ok(()) } else { Err(LiftedError::MaskNotGateable(node)) };
+            return if spec.inputs.iter().any(|p| p.key == "mask" && p.ty == PortType::Matte) { Ok(()) } else { Err(LiftedError::MaskNotGateable(node)) };
         }
     }
     check_mask(g, node)

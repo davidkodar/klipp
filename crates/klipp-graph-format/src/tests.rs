@@ -702,4 +702,31 @@ mod lifted_checks {
         g.check_lifted_with_catalog(false, &Catalog).unwrap();
     }
 
+    #[test]
+    fn a_grade_mask_port_does_not_imply_universal_mix_or_channel_settings() {
+        struct GradeCatalog;
+        impl PortCatalog for GradeCatalog {
+            fn node(&self, _type_id: &str) -> Option<NodeSpec> { None }
+            fn node_spec(&self, node: &Node) -> Option<NodeSpec> {
+                let mut spec = Catalog.node_spec(node)?;
+                if node.type_id.as_str() == types::LEGACY_NODE {
+                    spec.mixable = false;
+                    for port in &mut spec.inputs { port.params.clear(); }
+                }
+                Some(spec)
+            }
+        }
+        let mut g = valid();
+        let b = body(&mut g);
+        b.nodes.push(legacy_node(14, "ExternalMatte"));
+        b.edges.push(e(14, 12, "mask"));
+        b.nodes[1].legacy_flags = Some(crate::lifted::LegacyFlags { alpha_one: true, ..Default::default() });
+        g.check_lifted_with_catalog(false, &GradeCatalog).unwrap();
+        body(&mut g).nodes[1].mix = Some(0.5);
+        assert!(matches!(g.check_lifted_with_catalog(false, &GradeCatalog), Err(LiftedError::MixNotSupported(_))));
+        body(&mut g).nodes[1].mix = None;
+        body(&mut g).nodes[1].params.insert("mask.channel".into(), ParamValue::Text("luminance".into()));
+        assert!(matches!(g.check_lifted_with_catalog(false, &GradeCatalog), Err(LiftedError::InvalidMaskChannel(_))));
+    }
+
 }
