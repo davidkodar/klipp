@@ -716,3 +716,23 @@ fn check_lifted_refuses_a_mask_without_the_gate() {
     let err = p.graph.check_lifted(false).unwrap_err();
     assert!(matches!(err, klipp_graph_format::lifted::LiftedError::MaskWithoutGate(n) if n == id(COR)), "{err:?}");
 }
+
+/// A grade with a repeated node id doesn't panic the lift: it is judged
+/// never to have run, and `check_lifted` stops it on the duplicate, so one
+/// project stops rather than the run (#1102 review).
+#[test]
+fn a_repeated_node_id_stops_the_project_without_a_panic() {
+    let g = json!({
+        "nodes": [gn(SRC, "Source"), gn(SRC, "Source"), gn(COR, "Exposure"), gn(SAT, "Saturation"), gn(OUT, "Output")],
+        "edges": [edge(SRC, 0, COR, 0), edge(COR, 0, SAT, 0), edge(SAT, 0, OUT, 0)],
+        "output_node_id": OUT
+    });
+    let record = clip_to_v2(clip(json!({"node_graph": g.clone()})).as_object().unwrap()).unwrap();
+    let r = std::panic::catch_unwind(|| lift_clip(&record, &LiftCtx { clip_id: id(CLIP), kind: ClipKind::Media }));
+    let (p, _) = r.expect("no panic").expect("the lift itself goes through");
+    assert!(p.graph.check_lifted(false).is_err(), "the duplicate stops the project");
+    // Standing alone, the same graph stops too.
+    let seq = json!({"id": "00000000-0000-0000-0000-000000000501", "timeline_graph": g});
+    let structural = crate::to_v2::timeline_to_v2(seq.as_object().unwrap()).unwrap().unwrap();
+    assert!(crate::lift::lift_grade_only(&structural, false).is_err());
+}

@@ -200,6 +200,13 @@ pub fn default_pipeline(clip_id: Uuid) -> Value {
 /// ran.
 fn today_loops(body: &Graph) -> bool {
     let node_ids: Vec<NodeId> = body.nodes.iter().map(|n| n.id).collect();
+    // Repeated ids: a duplicate enters the queue twice and takes the same
+    // dependency off twice, which today's ordering never finishes. Refused
+    // here without ordering (no count can underflow), and `check_lifted`
+    // stops the project on the duplicate (#1102 review).
+    if node_ids.iter().collect::<std::collections::BTreeSet<_>>().len() != node_ids.len() {
+        return true;
+    }
     let mut deps: Vec<(NodeId, NodeId)> = body.edges.iter().map(|e| (e.from.0, e.to.0)).collect();
     for recv in &body.nodes {
         for (port, label) in &recv.wireless.input_links {
