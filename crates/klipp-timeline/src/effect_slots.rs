@@ -72,24 +72,24 @@ struct EffectIds {
 impl Clip {
     /// Built-in values in list order, including disabled entries.
     pub fn builtin_effects(&self) -> &[BuiltinEffect] {
-        &self.picture.effect_list.builtin_effects
+        &self.picture.view().effect_list.builtin_effects
     }
 
     /// The saved flags exactly as supplied. Missing entries mean enabled.
     pub fn builtin_effects_enabled(&self) -> &[bool] {
-        &self.picture.effect_list.builtin_effects_enabled
+        &self.picture.view().effect_list.builtin_effects_enabled
     }
 
     /// Allocate ids after construction/loading, and refresh them when a copied
     /// clip takes a new ClipId. Existing entries retain their session identity.
     fn reconcile_effect_ids(&mut self) {
-        if self.picture.effect_list.effect_ids.owner != Some(self.id) {
+        if self.picture.view().effect_list.effect_ids.owner != Some(self.id) {
             // A new clip: its effects are new effects.
-            self.picture.effect_list.effect_ids = EffectIds { owner: Some(self.id), ids: Vec::new() };
+            self.picture.view_mut().effect_list.effect_ids = EffectIds { owner: Some(self.id), ids: Vec::new() };
         }
-        let len = self.picture.effect_list.builtin_effects.len();
-        self.picture.effect_list.effect_ids.ids.truncate(len);
-        self.picture.effect_list.effect_ids.ids.resize_with(len, EffectId::fresh);
+        let len = self.picture.view().effect_list.builtin_effects.len();
+        self.picture.view_mut().effect_list.effect_ids.ids.truncate(len);
+        self.picture.view_mut().effect_list.effect_ids.ids.resize_with(len, EffectId::fresh);
     }
 
     /// Effect identities, values and effective enabled flags in list order.
@@ -99,17 +99,17 @@ impl Clip {
         &mut self,
     ) -> impl ExactSizeIterator<Item = (EffectId, &BuiltinEffect, bool)> {
         self.reconcile_effect_ids();
-        self.picture.effect_list.effect_ids
+        self.picture.view().effect_list.effect_ids
             .ids
             .iter()
             .copied()
-            .zip(&self.picture.effect_list.builtin_effects)
+            .zip(&self.picture.view().effect_list.builtin_effects)
             .enumerate()
             .map(|(i, (id, effect))| {
                 (
                     id,
                     effect,
-                    self.picture.effect_list.builtin_effects_enabled.get(i).copied().unwrap_or(true),
+                    self.picture.view().effect_list.builtin_effects_enabled.get(i).copied().unwrap_or(true),
                 )
             })
     }
@@ -117,23 +117,23 @@ impl Clip {
     /// Give every effect a fresh id: for a caller that makes a new clip of
     /// this one without giving it a new `ClipId`.
     pub fn refresh_effect_ids(&mut self) {
-        self.picture.effect_list.effect_ids = EffectIds::default();
+        self.picture.view_mut().effect_list.effect_ids = EffectIds::default();
         self.reconcile_effect_ids();
     }
 
     pub fn index_of(&mut self, id: EffectId) -> Option<usize> {
         self.reconcile_effect_ids();
-        self.picture.effect_list.effect_ids.ids.iter().position(|current| *current == id)
+        self.picture.view().effect_list.effect_ids.ids.iter().position(|current| *current == id)
     }
 
     pub fn effect(&mut self, id: EffectId) -> Option<&BuiltinEffect> {
         let index = self.index_of(id)?;
-        self.picture.effect_list.builtin_effects.get(index)
+        self.picture.view().effect_list.builtin_effects.get(index)
     }
 
     /// Append an enabled entry with a new id.
     pub fn push_effect(&mut self, effect: BuiltinEffect) -> EffectId {
-        self.insert_effect(self.picture.effect_list.builtin_effects.len(), effect)
+        self.insert_effect(self.picture.view().effect_list.builtin_effects.len(), effect)
             .expect("the list end is a valid insertion point")
     }
 
@@ -142,7 +142,7 @@ impl Clip {
     /// an index at `usize::MAX` cannot shift, so that insertion is refused.
     pub fn insert_effect(&mut self, at: usize, effect: BuiltinEffect) -> Option<EffectId> {
         self.reconcile_effect_ids();
-        let len = self.picture.effect_list.builtin_effects.len();
+        let len = self.picture.view().effect_list.builtin_effects.len();
         if at > len {
             return None;
         }
@@ -164,10 +164,10 @@ impl Clip {
             return None;
         }
         let id = EffectId::fresh();
-        self.picture.effect_list.builtin_effects.insert(at, effect);
-        self.picture.effect_list.effect_ids.ids.insert(at, id);
-        self.picture.effect_list.builtin_effects_enabled.resize(len, true);
-        self.picture.effect_list.builtin_effects_enabled.insert(at, true);
+        self.picture.view_mut().effect_list.builtin_effects.insert(at, effect);
+        self.picture.view_mut().effect_list.effect_ids.ids.insert(at, id);
+        self.picture.view_mut().effect_list.builtin_effects_enabled.resize(len, true);
+        self.picture.view_mut().effect_list.builtin_effects_enabled.insert(at, true);
         // Move orphan indices too: leaving one at the old end would collide
         // with the last occupied slot's animation as that slot moves up.
         if at < len {
@@ -194,9 +194,9 @@ impl Clip {
         let Some(index) = self.index_of(id) else {
             return false;
         };
-        self.picture.effect_list.builtin_effects_enabled
-            .resize(self.picture.effect_list.builtin_effects.len(), true);
-        self.picture.effect_list.builtin_effects_enabled[index] = enabled;
+        let list = &mut self.picture.view_mut().effect_list;
+        list.builtin_effects_enabled.resize(list.builtin_effects.len(), true);
+        list.builtin_effects_enabled[index] = enabled;
         true
     }
 
@@ -205,7 +205,7 @@ impl Clip {
         let Some(index) = self.index_of(id) else {
             return false;
         };
-        self.picture.effect_list.builtin_effects[index] = effect;
+        self.picture.view_mut().effect_list.builtin_effects[index] = effect;
         true
     }
 
@@ -214,11 +214,11 @@ impl Clip {
     /// modifiers (opacity, transform, audio) are unrelated and remain.
     pub fn set_effects(&mut self, effects: Vec<BuiltinEffect>) {
         self.reconcile_effect_ids();
-        self.picture.effect_list.effect_ids.ids = (0..effects.len()).map(|_| EffectId::fresh()).collect();
-        self.picture.effect_list.builtin_effects_enabled = vec![true; effects.len()];
-        self.picture.effect_list.builtin_effects = effects;
+        self.picture.view_mut().effect_list.effect_ids.ids = (0..effects.len()).map(|_| EffectId::fresh()).collect();
+        self.picture.view_mut().effect_list.builtin_effects_enabled = vec![true; effects.len()];
+        self.picture.view_mut().effect_list.builtin_effects = effects;
         self.edit_effect_keyframes(|v| v.clear());
-        self.picture.param_modifiers.0
+        self.picture.view_mut().param_modifiers.0
             .retain(|id, _| !matches!(id, ParamId::Effect { .. }));
     }
 
@@ -228,9 +228,9 @@ impl Clip {
     /// own effects back). Fresh ids, as [`Clip::set_effects`].
     pub fn set_effect_list(&mut self, effects: Vec<BuiltinEffect>, enabled: Vec<bool>) {
         self.reconcile_effect_ids();
-        self.picture.effect_list.effect_ids.ids = (0..effects.len()).map(|_| EffectId::fresh()).collect();
-        self.picture.effect_list.builtin_effects = effects;
-        self.picture.effect_list.builtin_effects_enabled = enabled;
+        self.picture.view_mut().effect_list.effect_ids.ids = (0..effects.len()).map(|_| EffectId::fresh()).collect();
+        self.picture.view_mut().effect_list.builtin_effects = effects;
+        self.picture.view_mut().effect_list.builtin_effects_enabled = enabled;
     }
 
     /// Remove built-in effect `index` with its enabled flag, keyframes
@@ -238,13 +238,13 @@ impl Clip {
     /// place with them.
     pub fn remove_builtin_effect(&mut self, index: usize) -> Option<BuiltinEffect> {
         self.reconcile_effect_ids();
-        if index >= self.picture.effect_list.builtin_effects.len() {
+        if index >= self.picture.view().effect_list.builtin_effects.len() {
             return None;
         }
-        let effect = self.picture.effect_list.builtin_effects.remove(index);
-        self.picture.effect_list.effect_ids.ids.remove(index);
-        if index < self.picture.effect_list.builtin_effects_enabled.len() {
-            self.picture.effect_list.builtin_effects_enabled.remove(index);
+        let effect = self.picture.view_mut().effect_list.builtin_effects.remove(index);
+        self.picture.view_mut().effect_list.effect_ids.ids.remove(index);
+        if index < self.picture.view().effect_list.builtin_effects_enabled.len() {
+            self.picture.view_mut().effect_list.builtin_effects_enabled.remove(index);
         }
         self.remap_effect_slots(|i| match i.cmp(&index) {
             std::cmp::Ordering::Less => Some(i),
@@ -259,21 +259,21 @@ impl Clip {
     /// of range or they are the same.
     pub fn move_builtin_effect(&mut self, from: usize, to: usize) -> bool {
         self.reconcile_effect_ids();
-        let n = self.picture.effect_list.builtin_effects.len();
+        let n = self.picture.view().effect_list.builtin_effects.len();
         if from >= n || to >= n || from == to {
             return false;
         }
-        let effect = self.picture.effect_list.builtin_effects.remove(from);
-        self.picture.effect_list.builtin_effects.insert(to, effect);
-        let id = self.picture.effect_list.effect_ids.ids.remove(from);
-        self.picture.effect_list.effect_ids.ids.insert(to, id);
+        let effect = self.picture.view_mut().effect_list.builtin_effects.remove(from);
+        self.picture.view_mut().effect_list.builtin_effects.insert(to, effect);
+        let id = self.picture.view_mut().effect_list.effect_ids.ids.remove(from);
+        self.picture.view_mut().effect_list.effect_ids.ids.insert(to, id);
         // A missing flag reads as enabled; fill them in so the moved
         // effect's flag has a place to go.
-        if self.picture.effect_list.builtin_effects_enabled.len() < n {
-            self.picture.effect_list.builtin_effects_enabled.resize(n, true);
+        if self.picture.view().effect_list.builtin_effects_enabled.len() < n {
+            self.picture.view_mut().effect_list.builtin_effects_enabled.resize(n, true);
         }
-        let on = self.picture.effect_list.builtin_effects_enabled.remove(from);
-        self.picture.effect_list.builtin_effects_enabled.insert(to, on);
+        let on = self.picture.view_mut().effect_list.builtin_effects_enabled.remove(from);
+        self.picture.view_mut().effect_list.builtin_effects_enabled.insert(to, on);
         self.remap_effect_slots(|i| Some(moved_place(i, from, to)));
         true
     }
@@ -281,7 +281,7 @@ impl Clip {
     /// Re-key effect keyframes and modifiers by `map` (old place to new,
     /// `None` to drop them). Keys that do not name a place are kept.
     fn remap_effect_slots(&mut self, map: impl Fn(usize) -> Option<usize>) {
-        self.picture.effect_keyframes.0 = std::mem::take(&mut self.picture.effect_keyframes.0)
+        self.picture.view_mut().effect_keyframes.0 = std::mem::take(&mut self.picture.view_mut().effect_keyframes.0)
             .into_iter()
             .filter_map(|(key, kfs)| {
                 match key
@@ -293,7 +293,7 @@ impl Clip {
                 }
             })
             .collect();
-        self.picture.param_modifiers.0 = std::mem::take(&mut self.picture.param_modifiers.0)
+        self.picture.view_mut().param_modifiers.0 = std::mem::take(&mut self.picture.view_mut().param_modifiers.0)
             .into_iter()
             .filter_map(|(id, stack)| match id {
                 ParamId::Effect {
@@ -335,14 +335,14 @@ mod tests {
     fn clip() -> Clip {
         let tc = |f| RationalTime::from_frames(f, 24);
         let mut c = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
-        c.picture.effect_list.builtin_effects = vec![
+        c.picture.view_mut().effect_list.builtin_effects = vec![
             BuiltinEffect::GaussianBlur { radius: 1.0 },
             BuiltinEffect::Sharpen { amount: 2.0 },
             BuiltinEffect::Vibrance { amount: 3.0 },
         ];
-        c.picture.effect_list.builtin_effects_enabled = vec![true, false, true];
+        c.picture.view_mut().effect_list.builtin_effects_enabled = vec![true, false, true];
         for (i, name) in [(0, "radius"), (1, "amount"), (2, "amount")] {
-            c.picture.effect_keyframes.0.insert(
+            c.picture.view_mut().effect_keyframes.0.insert(
                 format!("{i}:{name}"),
                 vec![Keyframe {
                     time_secs: 0.0,
@@ -352,7 +352,7 @@ mod tests {
                     tangent_in: (0.0, 0.0),
                 }],
             );
-            c.picture.param_modifiers.0.insert(
+            c.picture.view_mut().param_modifiers.0.insert(
                 ParamId::Effect {
                     effect_index: i,
                     param_name: name.into(),
@@ -360,14 +360,14 @@ mod tests {
                 ModifierStack::default(),
             );
         }
-        c.picture.param_modifiers.0
+        c.picture.view_mut().param_modifiers.0
             .insert(ParamId::Opacity, ModifierStack::default());
         c
     }
 
     /// The keyframe value each effect's own parameter carries, by place.
     fn keyed(c: &Clip) -> Vec<Option<f32>> {
-        c.picture.effect_list.builtin_effects
+        c.picture.view().effect_list.builtin_effects
             .iter()
             .enumerate()
             .map(|(i, e)| {
@@ -375,7 +375,7 @@ mod tests {
                     BuiltinEffect::GaussianBlur { .. } => "radius",
                     _ => "amount",
                 };
-                c.picture.effect_keyframes.0
+                c.picture.view().effect_keyframes.0
                     .get(&format!("{i}:{name}"))
                     .map(|k| k[0].value)
             })
@@ -384,7 +384,7 @@ mod tests {
 
     fn modified(c: &Clip) -> Vec<usize> {
         let mut v: Vec<usize> = c
-            .picture.param_modifiers.0
+            .picture.view().param_modifiers.0
             .keys()
             .filter_map(|p| match p {
                 ParamId::Effect { effect_index, .. } => Some(*effect_index),
@@ -402,7 +402,7 @@ mod tests {
             c.remove_builtin_effect(0),
             Some(BuiltinEffect::GaussianBlur { .. })
         ));
-        assert_eq!(c.picture.effect_list.builtin_effects_enabled, vec![false, true]);
+        assert_eq!(c.picture.view().effect_list.builtin_effects_enabled, vec![false, true]);
         assert_eq!(keyed(&c), vec![Some(10.0), Some(20.0)]);
         assert_eq!(
             c.effect_keyframes().len(),
@@ -427,9 +427,9 @@ mod tests {
             let moved = order.remove(from);
             order.insert(to, moved);
             for (now, &was) in order.iter().enumerate() {
-                assert_eq!(c.picture.effect_list.builtin_effects[now], before.picture.effect_list.builtin_effects[was]);
+                assert_eq!(c.picture.view().effect_list.builtin_effects[now], before.picture.view().effect_list.builtin_effects[was]);
                 assert_eq!(
-                    c.picture.effect_list.builtin_effects_enabled[now], before.picture.effect_list.builtin_effects_enabled[was],
+                    c.picture.view().effect_list.builtin_effects_enabled[now], before.picture.view().effect_list.builtin_effects_enabled[was],
                     "{from}->{to}"
                 );
                 assert_eq!(
@@ -441,7 +441,7 @@ mod tests {
             assert_eq!(modified(&c), vec![0, 1, 2]);
             // And back again restores the clip exactly.
             assert!(c.move_builtin_effect(to, from));
-            assert_eq!(c.picture.effect_keyframes, before.picture.effect_keyframes);
+            assert_eq!(c.picture.view().effect_keyframes, before.picture.view().effect_keyframes);
             assert_eq!(modified(&c), modified(&before));
         }
         let mut c = clip();
@@ -452,9 +452,9 @@ mod tests {
     #[test]
     fn a_missing_enabled_flag_still_moves_as_enabled() {
         let mut c = clip();
-        c.picture.effect_list.builtin_effects_enabled = vec![false];
+        c.picture.view_mut().effect_list.builtin_effects_enabled = vec![false];
         assert!(c.move_builtin_effect(0, 2));
-        assert_eq!(c.picture.effect_list.builtin_effects_enabled, vec![true, true, false]);
+        assert_eq!(c.picture.view().effect_list.builtin_effects_enabled, vec![true, true, false]);
     }
 }
 
@@ -501,7 +501,7 @@ impl Clip {
     /// resolve it once, at the edge, and address the effect by id after.
     pub fn effect_id_at(&mut self, index: usize) -> Option<EffectId> {
         self.reconcile_effect_ids();
-        self.picture.effect_list.effect_ids.ids.get(index).copied()
+        self.picture.view().effect_list.effect_ids.ids.get(index).copied()
     }
 
     /// Change the effect's value in `f`, in place: the counterpart of
@@ -509,27 +509,27 @@ impl Clip {
     /// `None` when `id` names no effect of the clip.
     pub fn edit_effect<R>(&mut self, id: EffectId, f: impl FnOnce(&mut BuiltinEffect) -> R) -> Option<R> {
         let index = self.index_of(id)?;
-        self.picture.effect_list.builtin_effects.get_mut(index).map(f)
+        self.picture.view_mut().effect_list.builtin_effects.get_mut(index).map(f)
     }
 
     /// Change the keyframes of the effect's `param` in `f`, created empty
     /// when it has none. Stored under `"{index}:{param}"`.
     pub fn edit_effect_keyframes_of<R>(&mut self, id: EffectId, param: &str, f: impl FnOnce(&mut Vec<klipp_core::Keyframe>) -> R) -> Option<R> {
         let index = self.index_of(id)?;
-        Some(f(self.picture.effect_keyframes.0.entry(format!("{index}:{param}")).or_default()))
+        Some(f(self.picture.view_mut().effect_keyframes.0.entry(format!("{index}:{param}")).or_default()))
     }
 
     /// Change the keyframes of the effect's `param` in `f`, if it has any;
     /// creates none.
     pub fn edit_existing_effect_keyframes<R>(&mut self, id: EffectId, param: &str, f: impl FnOnce(&mut Vec<klipp_core::Keyframe>) -> R) -> Option<R> {
         let index = self.index_of(id)?;
-        self.picture.effect_keyframes.0.get_mut(&format!("{index}:{param}")).map(f)
+        self.picture.view_mut().effect_keyframes.0.get_mut(&format!("{index}:{param}")).map(f)
     }
 
     /// Take the keyframes of the effect's `param` away.
     pub fn remove_effect_keyframes(&mut self, id: EffectId, param: &str) -> Option<Vec<klipp_core::Keyframe>> {
         let index = self.index_of(id)?;
-        self.picture.effect_keyframes.0.remove(&format!("{index}:{param}"))
+        self.picture.view_mut().effect_keyframes.0.remove(&format!("{index}:{param}"))
     }
 
     /// Change the modifier stack of the effect's `param` in `f`, created
@@ -538,20 +538,20 @@ impl Clip {
     pub fn edit_effect_modifiers<R>(&mut self, id: EffectId, param: &str, f: impl FnOnce(&mut klipp_core::ModifierStack) -> R) -> Option<R> {
         let index = self.index_of(id)?;
         let key = ParamId::Effect { effect_index: index, param_name: param.to_owned() };
-        Some(f(self.picture.param_modifiers.0.entry(key).or_default()))
+        Some(f(self.picture.view_mut().param_modifiers.0.entry(key).or_default()))
     }
 
     /// Change the modifier stack of the effect's `param` in `f`, if it has
     /// one; creates none.
     pub fn edit_existing_effect_modifiers<R>(&mut self, id: EffectId, param: &str, f: impl FnOnce(&mut klipp_core::ModifierStack) -> R) -> Option<R> {
         let index = self.index_of(id)?;
-        self.picture.param_modifiers.0.get_mut(&ParamId::Effect { effect_index: index, param_name: param.to_owned() }).map(f)
+        self.picture.view_mut().param_modifiers.0.get_mut(&ParamId::Effect { effect_index: index, param_name: param.to_owned() }).map(f)
     }
 
     /// Take the modifier stack of the effect's `param` away.
     pub fn remove_effect_modifiers(&mut self, id: EffectId, param: &str) -> Option<klipp_core::ModifierStack> {
         let index = self.index_of(id)?;
-        self.picture.param_modifiers.0.remove(&ParamId::Effect { effect_index: index, param_name: param.to_owned() })
+        self.picture.view_mut().param_modifiers.0.remove(&ParamId::Effect { effect_index: index, param_name: param.to_owned() })
     }
 
     /// Every effect keyframe at once, as a snapshot took them (a keyframe
@@ -564,12 +564,12 @@ impl Clip {
     pub fn effects_state(&mut self) -> EffectsState {
         self.reconcile_effect_ids();
         EffectsState {
-            effects: self.picture.effect_list.builtin_effects.clone(),
-            enabled: self.picture.effect_list.builtin_effects_enabled.clone(),
-            ids: self.picture.effect_list.effect_ids.ids.clone(),
+            effects: self.picture.view().effect_list.builtin_effects.clone(),
+            enabled: self.picture.view().effect_list.builtin_effects_enabled.clone(),
+            ids: self.picture.view().effect_list.effect_ids.ids.clone(),
             keyframes: self.effect_keyframes().clone(),
             modifiers: self
-                .picture.param_modifiers.0
+                .picture.view().param_modifiers.0
                 .iter()
                 .filter(|(id, _)| matches!(id, ParamId::Effect { .. }))
                 .map(|(id, m)| (id.clone(), m.clone()))
@@ -581,10 +581,10 @@ impl Clip {
     /// effect keyframes and effect modifiers. Clip-level modifiers
     /// (opacity, transform, audio) are not part of it and stay as they are.
     pub fn restore_effects_state(&mut self, state: EffectsState) {
-        self.picture.effect_list.builtin_effects = state.effects;
-        self.picture.effect_list.builtin_effects_enabled = state.enabled;
+        self.picture.view_mut().effect_list.builtin_effects = state.effects;
+        self.picture.view_mut().effect_list.builtin_effects_enabled = state.enabled;
         // The ids belong to this clip, whose snapshot they were.
-        self.picture.effect_list.effect_ids = EffectIds { owner: Some(self.id), ids: state.ids };
+        self.picture.view_mut().effect_list.effect_ids = EffectIds { owner: Some(self.id), ids: state.ids };
         self.edit_effect_keyframes(|v| *v = state.keyframes);
         self.edit_param_modifiers(|v| v.retain(|id, _| !matches!(id, ParamId::Effect { .. })));
         self.edit_param_modifiers(|v| v.extend(state.modifiers));

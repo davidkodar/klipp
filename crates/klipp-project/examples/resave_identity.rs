@@ -8,6 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
+static ADOPTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// The top-level lines a save stamps afresh every time.
 const STAMPS: [&str; 4] = ["  \"generation\":", "  \"saved_at\":", "  \"klipp_version\":", "  \"platform\":"];
 
@@ -45,6 +47,15 @@ fn resave(project: &Path, scratch: &Path) -> Result<Option<String>, String> {
     copy_dir(project, &copy).map_err(|e| format!("copy: {e}"))?;
     let (sequences, media_pool, color, active_id, created_at, notes, zoom, scroll_x, track_scale, title_assets) =
         klipp_project::load_project(&copy)?;
+    // Load keeps a clip's stored picture only if lifting the clip as
+    // loaded gives exactly that picture: every clip holding one is the
+    // lift(view) == stored proof for that clip.
+    let clips: Vec<_> = sequences.iter().flat_map(|s| s.tracks.iter().flat_map(|t| t.clips.iter())).collect();
+    let held = clips.iter().filter(|c| c.has_lifted_picture()).count();
+    if held != clips.len() {
+        return Err(format!("{held} of {} clips kept their stored picture", clips.len()));
+    }
+    ADOPTED.fetch_add(held, std::sync::atomic::Ordering::Relaxed);
     klipp_project::save_project_full(
         &copy,
         &sequences,
@@ -86,5 +97,6 @@ fn main() {
     }
     let _ = std::fs::remove_dir_all(&scratch);
     println!("{} of {} projects saved byte-identical", projects.len() - failed, projects.len());
+    println!("{} clips kept their stored picture (lift(view) == stored)", ADOPTED.load(std::sync::atomic::Ordering::Relaxed));
     std::process::exit(i32::from(failed > 0));
 }

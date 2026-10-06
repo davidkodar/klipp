@@ -22,6 +22,21 @@ fn a_populated_clip_serialises_and_hashes_as_before() {
     assert!(canonical_bytes(&clip).unwrap() == CANONICAL, "the clip's canonical bytes");
 }
 
+/// The lifted picture a clip may hold is no part of what it is: its JSON
+/// and its render key are the same whether or not it has been lifted.
+#[test]
+fn the_lifted_picture_changes_neither_json_nor_render_key() {
+    let clip: Clip = serde_json::from_str(JSON).unwrap();
+    let (json, key) = (serde_json::to_string(&clip).unwrap(), canonical_bytes(&clip).unwrap());
+    assert!(!clip.has_lifted_picture());
+    clip.picture_v2().unwrap();
+    assert!(clip.has_lifted_picture());
+    assert_eq!(serde_json::to_string(&clip).unwrap(), json);
+    assert!(canonical_bytes(&clip).unwrap() == key);
+    let copy = clip.clone();
+    assert!(canonical_bytes(&copy).unwrap() == key, "nor does a clone sharing it");
+}
+
 /// Writes the fixture from today's code: `KLIPP_WRITE_CLIP_FIXTURE=1 cargo
 /// test -p klipp-engine --test clip_serde_shape -- --ignored`.
 #[test]

@@ -2,6 +2,7 @@ use crate::clip_kind::ClipKind;
 use crate::marker::Marker;
 use klipp_core::{AudioEffectInstance, ClipId, Fps, GradeGroupId, GroupId, MarkerColor, MediaId, RationalTime, Resolution, SequenceId, Timecode, TrackId, TransitionId};
 use serde::{Deserialize, Serialize};
+use crate::picture_store::ClipPictureFields;
 use std::collections::HashMap;
 
 pub use klipp_core::types::{ChannelConfig, FadeCurve};
@@ -373,13 +374,13 @@ impl Sequence {
         for track in &mut self.tracks {
             for clip in &mut track.clips {
                 // Already baked (its own grade kept aside): once is all.
-                if clip.picture.own_node_graph.is_some() {
+                if clip.picture.view().own_node_graph.is_some() {
                     continue;
                 }
                 if let Some(group) = clip.grade_group.and_then(|id| groups.get(&id)) {
-                    let wrapped = group.wrap(&clip.picture.node_graph.0);
-                    let own = std::mem::replace(&mut clip.picture.node_graph.0, wrapped);
-                    clip.picture.own_node_graph = Some(Box::new(own));
+                    let wrapped = group.wrap(&clip.picture.view().node_graph.0);
+                    let own = std::mem::replace(&mut clip.picture.view_mut().node_graph.0, wrapped);
+                    clip.picture.view_mut().own_node_graph = Some(Box::new(own));
                 }
             }
         }
@@ -424,10 +425,10 @@ impl Sequence {
             let fx = &track.effects;
             let picture = fx.touches_picture() && matches!(track.kind, TrackKind::Video | TrackKind::Text);
             for clip in &mut track.clips {
-                if clip.picture.own_effects.is_some() || matches!(clip.kind, ClipKind::Gap | ClipKind::AdjustmentLayer) {
+                if clip.picture.view().own_effects.is_some() || matches!(clip.kind, ClipKind::Gap | ClipKind::AdjustmentLayer) {
                     continue;
                 }
-                clip.picture.own_effects = Some(Box::new(OwnEffects {
+                clip.picture.view_mut().own_effects = Some(Box::new(OwnEffects {
                     builtin_effects: clip.builtin_effects().to_vec(),
                     builtin_effects_enabled: clip.builtin_effects_enabled().to_vec(),
                     audio_effects: clip.audio_effects.clone(),
@@ -442,10 +443,10 @@ impl Sequence {
                         }
                     }
                     if let Some(grade) = fx.grade_onto(track.kind, clip) {
-                        if clip.picture.own_node_graph.is_none() {
-                            clip.picture.own_node_graph = Some(Box::new(clip.picture.node_graph.0.clone()));
+                        if clip.picture.view().own_node_graph.is_none() {
+                            clip.picture.view_mut().own_node_graph = Some(Box::new(clip.picture.view().node_graph.0.clone()));
                         }
-                        let _ = clip.picture.node_graph.0.append_keeping_ids(grade);
+                        let _ = clip.picture.view_mut().node_graph.0.append_keeping_ids(grade);
                     }
                 }
                 clip.audio_effects.extend(fx.audio.iter().cloned());
@@ -462,8 +463,8 @@ impl Sequence {
     pub fn render_grade(&self, clip_id: ClipId) -> Option<std::borrow::Cow<'_, klipp_nodes::NodeGraph>> {
         let (track, clip) = self.tracks.iter().find_map(|t| t.clips.iter().find(|c| c.id == clip_id).map(|c| (t, c)))?;
         let mut graph = match clip.grade_group.and_then(|g| self.grade_group(g)).filter(|g| g.grades()) {
-            Some(group) => std::borrow::Cow::Owned(group.wrap(&clip.picture.node_graph.0)),
-            None => std::borrow::Cow::Borrowed(&clip.picture.node_graph.0),
+            Some(group) => std::borrow::Cow::Owned(group.wrap(&clip.picture.view().node_graph.0)),
+            None => std::borrow::Cow::Borrowed(&clip.picture.view().node_graph.0),
         };
         if let Some(grade) = track.effects.grade_onto(track.kind, clip) {
             let _ = graph.to_mut().append_keeping_ids(grade);
@@ -478,15 +479,15 @@ impl Sequence {
     /// [`Sequence::bake_track_effects`]). A copy only when there is
     /// something to take back out.
     pub fn with_own_grades(&self) -> std::borrow::Cow<'_, Sequence> {
-        if !self.all_clips().any(|c| c.picture.own_node_graph.is_some() || c.picture.own_effects.is_some()) {
+        if !self.all_clips().any(|c| c.picture.view().own_node_graph.is_some() || c.picture.view().own_effects.is_some()) {
             return std::borrow::Cow::Borrowed(self);
         }
         let mut seq = self.clone();
         for clip in seq.all_clips_mut() {
-            if let Some(own) = clip.picture.own_node_graph.take() {
-                clip.picture.node_graph = crate::Grade(*own);
+            if let Some(own) = clip.picture.view_mut().own_node_graph.take() {
+                clip.picture.view_mut().node_graph = crate::Grade(*own);
             }
-            if let Some(own) = clip.picture.own_effects.take() {
+            if let Some(own) = clip.picture.view_mut().own_effects.take() {
                 clip.set_effect_list(own.builtin_effects, own.builtin_effects_enabled);
                 clip.audio_effects = own.audio_effects;
             }
@@ -1377,7 +1378,7 @@ impl Track {
             timeline_out,
             source_in: Timecode { value: 0, rate: source_duration.rate },
             source_out: source_duration,
-            picture: crate::ClipPictureFields {
+            picture: crate::picture_store::PictureView {
                 node_graph: crate::Grade::default(),
                 effects: Default::default(),
                 effect_list: Default::default(),
@@ -1394,7 +1395,7 @@ impl Track {
                 param_modifiers: (HashMap::new()).into(),
                 grade_versions: Vec::new(),
                 active_grade_version: None,
-            },
+            }.into(),
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
@@ -1677,9 +1678,9 @@ impl Track {
             timeline_out: cut_at,
             source_in: a_in,
             source_out: a_out,
-            picture: crate::ClipPictureFields {
-                node_graph: clip.picture.node_graph.clone(),
-                effects: clip.picture.effects.clone(),
+            picture: crate::picture_store::PictureView {
+                node_graph: clip.picture.view().node_graph.clone(),
+                effects: clip.picture.view().effects.clone(),
                 effect_list: crate::EffectList::new(clip.builtin_effects().to_vec(), clip.builtin_effects_enabled().to_vec()),
                 own_node_graph: None,
                 own_effects: None,
@@ -1692,9 +1693,9 @@ impl Track {
                 transform_tilt_y_keyframes: (tilt_y_a).into(),
                 effect_keyframes: (effect_kfs_a).into(),
                 param_modifiers: (clip.param_modifiers().clone()).into(),
-                grade_versions: clip.picture.grade_versions.clone(),
-                active_grade_version: clip.picture.active_grade_version,
-            },
+                grade_versions: clip.picture.view().grade_versions.clone(),
+                active_grade_version: clip.picture.view().active_grade_version,
+            }.into(),
             linked_clip_id: clip.linked_clip_id,
             linked_title_asset_id: clip.linked_title_asset_id,
             group_id: clip.group_id,
@@ -1754,9 +1755,9 @@ impl Track {
             timeline_out: clip.timeline_out,
             source_in: b_in,
             source_out: b_out,
-            picture: crate::ClipPictureFields {
-                node_graph: clip.picture.node_graph.clone(),
-                effects: clip.picture.effects.clone(),
+            picture: crate::picture_store::PictureView {
+                node_graph: clip.picture.view().node_graph.clone(),
+                effects: clip.picture.view().effects.clone(),
                 effect_list: crate::EffectList::new(clip.builtin_effects().to_vec(), clip.builtin_effects_enabled().to_vec()),
                 own_node_graph: None,
                 own_effects: None,
@@ -1769,9 +1770,9 @@ impl Track {
                 transform_tilt_y_keyframes: (tilt_y_b).into(),
                 effect_keyframes: (effect_kfs_b).into(),
                 param_modifiers: (clip.param_modifiers().clone()).into(),
-                grade_versions: clip.picture.grade_versions.clone(),
-                active_grade_version: clip.picture.active_grade_version,
-            },
+                grade_versions: clip.picture.view().grade_versions.clone(),
+                active_grade_version: clip.picture.view().active_grade_version,
+            }.into(),
             linked_clip_id: clip.linked_clip_id,
             linked_title_asset_id: clip.linked_title_asset_id,
             group_id: clip.group_id,
@@ -2356,81 +2357,6 @@ pub struct Clip {
     pub precomp: Option<std::sync::Arc<Sequence>>,
 }
 
-/// A clip's picture fields (#1089, M1b): private to klipp-timeline, read
-/// and changed through [`Clip`]'s methods. Saved flat into the clip, as
-/// the fields were before they were gathered here.
-///
-/// ```compile_fail,E0616
-/// fn replace(clip: &mut klipp_timeline::Clip, other: &klipp_timeline::Clip) {
-///     clip.picture.node_graph = other.picture.node_graph.clone();
-/// }
-/// ```
-///
-/// Replacing the whole picture, which keeps its parts together, does compile.
-///
-/// ```
-/// fn replace(clip: &mut klipp_timeline::Clip, other: &klipp_timeline::Clip) {
-///     clip.picture = other.picture.clone();
-/// }
-/// ```
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ClipPictureFields {
-    #[serde(default)]
-    pub(crate) node_graph: crate::Grade,
-    #[serde(default)]
-    pub(crate) effects: crate::OfxEffects,
-    /// Built-in effect storage; use the effect-list API to read or edit it.
-    /// Flattening preserves the existing top-level saved keys.
-    #[serde(flatten)]
-    pub(crate) effect_list: crate::EffectList,
-    /// On a render copy whose grade groups are baked in (see
-    /// [`Sequence::bake_grade_groups`]), this clip's own grade, with
-    /// `node_graph` its grade inside its group's. Never saved, and `None`
-    /// on the document. What reads the render copy to describe or change
-    /// a clip's grade reads [`Clip::own_grade`], or a group's nodes would
-    /// be copied into the clip's own grade.
-    #[serde(skip)]
-    pub(crate) own_node_graph: Option<Box<klipp_nodes::NodeGraph>>,
-    /// On a render copy carrying its track's effects (see
-    /// [`Sequence::bake_track_effects`]), this clip's own effects and
-    /// audio chain. Never saved, `None` on the document; `Some` marks the
-    /// clip as carrying them, so they are never put on twice.
-    #[serde(skip)]
-    pub(crate) own_effects: Option<Box<OwnEffects>>,
-    #[serde(default)]
-    pub(crate) opacity_keyframes: crate::Keyframes,
-    #[serde(default)]
-    pub(crate) transform_pos_x_keyframes: crate::Keyframes,
-    #[serde(default)]
-    pub(crate) transform_pos_y_keyframes: crate::Keyframes,
-    #[serde(default)]
-    pub(crate) transform_scale_keyframes: crate::Keyframes,
-    #[serde(default)]
-    pub(crate) transform_rotation_keyframes: crate::Keyframes,
-    /// Tilt about the picture's horizontal axis, in degrees, in
-    /// perspective: the card leans back or forward like a screen on a
-    /// desk. Empty for a flat picture.
-    #[serde(default, skip_serializing_if = "crate::Keyframes::is_empty")]
-    pub(crate) transform_tilt_x_keyframes: crate::Keyframes,
-    /// Tilt about the picture's vertical axis, in degrees, in
-    /// perspective: the card swings like a door.
-    #[serde(default, skip_serializing_if = "crate::Keyframes::is_empty")]
-    pub(crate) transform_tilt_y_keyframes: crate::Keyframes,
-    /// Per-effect keyframes: maps "{effect_index}:{param_name}" to keyframe track.
-    #[serde(default)]
-    pub(crate) effect_keyframes: crate::EffectKeyframes,
-    /// Per-parameter modifier stacks (behaviors like Oscillate, Wiggle, etc.)
-    #[serde(default, skip_serializing_if = "crate::ParamModifiers::is_empty")]
-    pub(crate) param_modifiers: crate::ParamModifiers,
-    /// Named grade versions. Each is a complete NodeGraph snapshot.
-    /// The active grade is always `node_graph` — versions are stored copies.
-    #[serde(default)]
-    pub(crate) grade_versions: Vec<GradeVersion>,
-    /// Index of the currently active grade version in grade_versions (None = working grade, not saved as version yet).
-    #[serde(default)]
-    pub(crate) active_grade_version: Option<usize>,
-}
-
 /// A clip's own name and colour label (#920), as one value: what a
 /// rename or a recolour changes, and what undo puts back.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -2688,7 +2614,7 @@ impl Clip {
         if format == klipp_core::LogFormat::Srgb {
             return;
         }
-        let graph = &mut self.picture.node_graph.0;
+        let graph = &mut self.picture.view_mut().node_graph.0;
         if let Some(node) = graph.nodes.iter_mut()
             .find(|n| n.kind == klipp_nodes::NodeKind::InputTransform)
         {
@@ -2767,7 +2693,7 @@ impl Clip {
             timeline_out,
             source_in: Timecode { value: 0, rate: timeline_in.rate },
             source_out: timeline_out - timeline_in,
-            picture: crate::ClipPictureFields {
+            picture: crate::picture_store::PictureView {
                 node_graph: crate::Grade::default(),
                 effects: Default::default(),
                 effect_list: Default::default(),
@@ -2784,7 +2710,7 @@ impl Clip {
                 param_modifiers: (HashMap::new()).into(),
                 grade_versions: Vec::new(),
                 active_grade_version: None,
-            },
+            }.into(),
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
@@ -2839,7 +2765,7 @@ impl Clip {
     /// The clip's own grade: on a render copy with grade groups baked in,
     /// without its group's (see [`Sequence::bake_grade_groups`]).
     pub fn own_grade(&self) -> &klipp_nodes::NodeGraph {
-        self.picture.own_node_graph.as_deref().unwrap_or(&self.picture.node_graph.0)
+        self.picture.view().own_node_graph.as_deref().unwrap_or(&self.picture.view().node_graph.0)
     }
 
     /// The sequence's timeline grade as the clip the grade stages already
@@ -2863,7 +2789,7 @@ impl Clip {
         let mut clip = Self::media(MediaId::nil(), zero, end, zero, end);
         clip.id = seq.timeline_grade_clip_id();
         clip.kind = ClipKind::AdjustmentLayer;
-        clip.picture.node_graph = seq.timeline_graph.clone().unwrap_or_default();
+        clip.picture.view_mut().node_graph = seq.timeline_graph.clone().unwrap_or_default();
         clip
     }
 
@@ -2882,7 +2808,7 @@ impl Clip {
             timeline_out,
             source_in,
             source_out,
-            picture: crate::ClipPictureFields {
+            picture: crate::picture_store::PictureView {
                 node_graph: crate::Grade::default(),
                 effects: Default::default(),
                 effect_list: Default::default(),
@@ -2899,7 +2825,7 @@ impl Clip {
                 param_modifiers: (HashMap::new()).into(),
                 grade_versions: Vec::new(),
                 active_grade_version: None,
-            },
+            }.into(),
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
@@ -2986,7 +2912,7 @@ impl Clip {
             timeline_out,
             source_in: Timecode { value: 0, rate: timeline_in.rate },
             source_out: dur,
-            picture: crate::ClipPictureFields {
+            picture: crate::picture_store::PictureView {
                 node_graph: crate::Grade::default(),
                 effects: Default::default(),
                 effect_list: Default::default(),
@@ -3003,7 +2929,7 @@ impl Clip {
                 param_modifiers: (HashMap::new()).into(),
                 grade_versions: Vec::new(),
                 active_grade_version: None,
-            },
+            }.into(),
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
