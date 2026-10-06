@@ -11,6 +11,7 @@ pub mod delift;
 pub mod ids;
 pub mod journal;
 pub mod lift;
+pub mod load_rewrites;
 pub mod old_fields;
 pub mod paths;
 pub mod revision;
