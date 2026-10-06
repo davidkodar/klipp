@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/klipp-core",
+    "crates/klipp-convert",
     "crates/klipp-project",
     "crates/klipp-timeline",
     "crates/klipp-media",

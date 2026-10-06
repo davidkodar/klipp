@@ -1,0 +1,20 @@
+[package]
+name = "klipp-convert"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+klipp-core = { path = "../klipp-core" }
+klipp-effects = { path = "../klipp-effects" }
+klipp-nodes = { path = "../klipp-nodes" }
+klipp-project = { path = "../klipp-project" }
+klipp-timeline = { path = "../klipp-timeline" }
