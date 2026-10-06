@@ -1,3 +1,4 @@
+use klipp_timeline::GradeAccess;
 use crate::icons::Icon;
 use crate::state::{AppState, PlayheadFollow};
 use crate::theme::KlippTheme;
@@ -6086,7 +6087,7 @@ impl TimelinePanel {
         }
 
         // Color grade indicator — bottom-right amber dot
-        if !clip.node_graph.is_identity() && clip_rect.width() > 20.0 {
+        if !clip.grade().is_identity() && clip_rect.width() > 20.0 {
             let dot_x = clip_rect.right() - 8.0;
             let dot_y = clip_rect.bottom() - 7.0;
             let dot_pos = egui::pos2(dot_x, dot_y);

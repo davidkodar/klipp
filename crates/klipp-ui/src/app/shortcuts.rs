@@ -2,6 +2,7 @@
 //! bindings and turned into commands; single keys wait while text is being
 //! typed, Ctrl combinations do not (#826).
 
+use klipp_timeline::GradeAccess;
 use super::*;
 
 impl KlippApp {
@@ -534,7 +535,7 @@ impl KlippApp {
                 if let Some(clip_id) = self.state.selected_clip {
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) {
-                        let nodes = &clip.node_graph.nodes;
+                        let nodes = &clip.grade().nodes;
                         if !nodes.is_empty() {
                             let current_idx = self.state.selected_node_id
                                 .and_then(|sel| nodes.iter().position(|n| n.id == sel));
@@ -566,9 +567,11 @@ impl KlippApp {
                     if let Some(clip_id) = self.state.selected_clip {
                         let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                         if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
-                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                                node.enabled = !node.enabled;
-                            }
+                            clip.edit_grade(|graph| {
+                                if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                                    node.enabled = !node.enabled;
+                                }
+                            });
                         }
                         self.sync_sequence_to_engine();
                     }
@@ -595,9 +598,11 @@ impl KlippApp {
                     if let Some(clip_id) = self.state.selected_clip {
                         let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                         if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
-                            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                                node.params = klipp_nodes::NodeParams::default();
-                            }
+                            clip.edit_grade(|graph| {
+                                if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                                    node.params = klipp_nodes::NodeParams::default();
+                                }
+                            });
                         }
                         self.sync_sequence_to_engine();
                     }

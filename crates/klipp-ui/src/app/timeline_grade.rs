@@ -1,6 +1,7 @@
 //! The timeline grade's stand-in: the proxy track that carries a grade on the
 //! whole timeline, settled, stood in and stood down (#890).
 
+use klipp_timeline::GradeAccess;
 #[allow(unused_imports)]
 use super::*;
 
@@ -29,13 +30,13 @@ pub(super) fn settle_timeline_grade_proxy(seq: &mut klipp_timeline::Sequence, fr
     let Some(proxy) = track.clips.into_iter().next() else { return false };
     let Some(target) = GradeStandIn::of(seq, proxy.id) else { return false };
     let unchanged = match fresh.or(target.stored(seq)) {
-        Some(given) => *given == proxy.node_graph,
-        None => proxy.node_graph.is_identity(),
+        Some(given) => given == proxy.grade(),
+        None => proxy.grade().is_identity(),
     };
     if unchanged {
         return false;
     }
-    target.store(seq, proxy.node_graph);
+    target.store(seq, proxy.grade().clone());
     true
 }
 
@@ -67,17 +68,17 @@ impl GradeStandIn {
 
     pub(super) fn stored(self, seq: &klipp_timeline::Sequence) -> Option<&klipp_nodes::NodeGraph> {
         match self {
-            Self::Timeline => seq.timeline_graph.as_ref(),
+            Self::Timeline => seq.timeline_grade(),
             Self::Group(g, s) => seq.grade_group(g).and_then(|g| g.stage(s)),
         }
     }
 
     pub(super) fn store(self, seq: &mut klipp_timeline::Sequence, graph: klipp_nodes::NodeGraph) {
         match self {
-            Self::Timeline => seq.timeline_graph = Some(graph),
+            Self::Timeline => seq.timeline_grade_slot().set(Some(graph)),
             Self::Group(g, s) => {
                 if let Some(g) = seq.grade_groups.iter_mut().find(|x| x.id == g) {
-                    *g.stage_mut(s) = Some(graph);
+                    g.stage_slot(s).set(Some(graph));
                 }
             }
         }
@@ -116,13 +117,13 @@ pub(super) fn stand_in_grade_on(
     let mut proxy = klipp_timeline::Clip::timeline_grade_proxy(seq);
     proxy.id = stand_in_id;
     match which.stored(seq) {
-        Some(g) => proxy.node_graph = g.clone(),
+        Some(g) => proxy.set_grade(g.clone()),
         None => {
             let given = match fresh {
                 Some((id, g)) if *id == stand_in_id => g,
                 _ => &fresh.insert((stand_in_id, klipp_nodes::NodeGraph::default())).1,
             };
-            proxy.node_graph = given.clone();
+            proxy.set_grade(given.clone());
         }
     }
     let id = proxy.id;
@@ -178,27 +179,29 @@ mod timeline_grade_stand_in_tests {
 
     /// The stand-in on its track, as [`KlippApp::stand_in_timeline_grade`]
     /// puts it there; the graph it was given comes back for the settle.
-    fn stand_in(seq: &mut klipp_timeline::Sequence) -> (klipp_nodes::NodeGraph, &mut klipp_nodes::NodeGraph) {
+    fn stand_in(seq: &mut klipp_timeline::Sequence) -> (klipp_nodes::NodeGraph, &mut klipp_timeline::Clip) {
         let proxy = klipp_timeline::Clip::timeline_grade_proxy(seq);
-        let given = proxy.node_graph.clone();
+        let given = proxy.grade().clone();
         let mut track = klipp_timeline::Track::new("Timeline Grade", klipp_timeline::TrackKind::Video);
         track.id = timeline_grade_proxy_track_id(seq);
         track.clips.push(proxy);
         seq.tracks.push(track);
-        (given, &mut seq.tracks.last_mut().unwrap().clips[0].node_graph)
+        (given, &mut seq.tracks.last_mut().unwrap().clips[0])
     }
 
     #[test]
     fn the_stand_in_track_never_outlives_its_graph() {
         let mut seq = klipp_timeline::Sequence::new_default();
         let tracks = seq.tracks.len();
-        let (given, graph) = stand_in(&mut seq);
-        let corrector = graph.ensure_corrector();
-        graph.nodes.iter_mut().find(|n| n.id == corrector).unwrap().params.exposure = Some(0.5);
-        let nodes = graph.nodes.len();
+        let (given, proxy) = stand_in(&mut seq);
+        let nodes = proxy.edit_grade(|graph| {
+            let corrector = graph.ensure_corrector();
+            graph.nodes.iter_mut().find(|n| n.id == corrector).unwrap().params.exposure = Some(0.5);
+            graph.nodes.len()
+        });
         assert!(settle_timeline_grade_proxy(&mut seq, Some(&given)));
         assert_eq!(seq.tracks.len(), tracks);
-        assert_eq!(seq.timeline_graph.map(|g| g.nodes.len()), Some(nodes));
+        assert_eq!(seq.timeline_grade().map(|g| g.nodes.len()), Some(nodes));
     }
 
     /// Opening the Timeline tab and looking is not an edit: the sequence
@@ -208,7 +211,7 @@ mod timeline_grade_stand_in_tests {
         let mut seq = klipp_timeline::Sequence::new_default();
         let (given, _) = stand_in(&mut seq);
         assert!(!settle_timeline_grade_proxy(&mut seq, Some(&given)));
-        assert!(seq.timeline_graph.is_none());
+        assert!(seq.timeline_grade().is_none());
         assert!(!seq.tracks.iter().any(|t| t.id == timeline_grade_proxy_track_id(&seq)));
     }
 
@@ -217,10 +220,10 @@ mod timeline_grade_stand_in_tests {
     #[test]
     fn a_node_added_at_its_defaults_is_kept() {
         let mut seq = klipp_timeline::Sequence::new_default();
-        let (given, graph) = stand_in(&mut seq);
-        graph.ensure_lut3d();
+        let (given, proxy) = stand_in(&mut seq);
+        proxy.edit_grade(|g| g.ensure_lut3d());
         assert!(settle_timeline_grade_proxy(&mut seq, Some(&given)));
-        assert!(seq.timeline_graph.is_some_and(|g| g.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Lut3D)));
+        assert!(seq.timeline_grade().is_some_and(|g| g.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Lut3D)));
     }
 
     /// With a grade already there, a visit that changes nothing changes
@@ -231,10 +234,10 @@ mod timeline_grade_stand_in_tests {
         let mut grade = klipp_nodes::NodeGraph::default();
         let corrector = grade.ensure_corrector();
         grade.nodes.iter_mut().find(|n| n.id == corrector).unwrap().params.exposure = Some(0.5);
-        seq.timeline_graph = Some(grade.clone());
+        seq.timeline_grade_slot().set(Some(grade.clone()));
         let (_, _) = stand_in(&mut seq);
         assert!(!settle_timeline_grade_proxy(&mut seq, None));
-        assert_eq!(seq.timeline_graph, Some(grade));
+        assert_eq!(seq.timeline_grade(), Some(&grade));
     }
 
     /// #237: a grade group's stage stands in the same way: graded through
@@ -253,15 +256,15 @@ mod timeline_grade_stand_in_tests {
         let id = stand_in_grade_on(&mut seq, which, &mut fresh).expect("stood in");
         assert_eq!(GradeStandIn::of(&seq, id), Some(which));
         assert_eq!(stand_down_timeline_grade_on(&mut seq, &mut fresh), TimelineGradeSettled::Unchanged, "a look is not an edit");
-        assert!(seq.grade_groups[0].post.is_none());
+        assert!(seq.grade_groups[0].stage(klipp_timeline::GradeStage::Post).is_none());
 
         stand_in_grade_on(&mut seq, which, &mut fresh).expect("stood in");
         let track_id = timeline_grade_proxy_track_id(&seq);
         let proxy = seq.tracks.iter_mut().find(|t| t.id == track_id).unwrap().clips.first_mut().unwrap();
-        let lut = proxy.node_graph.ensure_lut3d();
+        let lut = proxy.edit_grade(|g| g.ensure_lut3d());
         assert_eq!(stand_down_timeline_grade_on(&mut seq, &mut fresh), TimelineGradeSettled::Begun);
-        assert!(seq.grade_groups[0].post.as_ref().is_some_and(|g| g.nodes.iter().any(|n| n.id == lut)), "the edit landed on the group's post-clip grade");
-        assert!(seq.grade_groups[0].pre.is_none() && seq.timeline_graph.is_none(), "and nowhere else");
+        assert!(seq.grade_groups[0].stage(klipp_timeline::GradeStage::Post).is_some_and(|g| g.nodes.iter().any(|n| n.id == lut)), "the edit landed on the group's post-clip grade");
+        assert!(seq.grade_groups[0].stage(klipp_timeline::GradeStage::Pre).is_none() && seq.timeline_grade().is_none(), "and nowhere else");
         assert!(!seq.tracks.iter().any(|t| t.id == track_id), "the stand-in is gone");
     }
 
@@ -278,16 +281,17 @@ mod timeline_grade_stand_in_tests {
         let id = stand_in_grade_on(&mut seq, GradeStandIn::Timeline, &mut fresh).expect("stood in");
         assert!(fresh.as_ref().is_some_and(|(seq_id, _)| *seq_id == seq.timeline_grade_clip_id()));
         let track_id = timeline_grade_proxy_track_id(&seq);
-        let graph = &mut seq.tracks.iter_mut().find(|t| t.id == track_id).unwrap().clips[0].node_graph;
-        let corrector = graph.ensure_corrector();
-        graph.nodes.iter_mut().find(|n| n.id == corrector).unwrap().params.exposure = Some(0.5);
+        seq.tracks.iter_mut().find(|t| t.id == track_id).unwrap().clips[0].edit_grade(|graph| {
+            let corrector = graph.ensure_corrector();
+            graph.nodes.iter_mut().find(|n| n.id == corrector).unwrap().params.exposure = Some(0.5);
+        });
         assert_eq!(stand_down_timeline_grade_on(&mut seq, &mut fresh), TimelineGradeSettled::Begun);
-        let grade = seq.timeline_graph.clone().expect("the grade began");
+        let grade = seq.timeline_grade().cloned().expect("the grade began");
         assert!(fresh.is_none(), "the fresh graph is let go once the grade begins");
 
         assert_eq!(stand_in_grade_on(&mut seq, GradeStandIn::Timeline, &mut fresh), Some(id));
         assert_eq!(stand_down_timeline_grade_on(&mut seq, &mut fresh), TimelineGradeSettled::Unchanged);
-        assert_eq!(seq.timeline_graph, Some(grade), "the grade is as it was");
+        assert_eq!(seq.timeline_grade(), Some(&grade), "the grade is as it was");
         assert!(!seq.tracks.iter().any(|t| t.id == track_id));
     }
 
@@ -300,10 +304,10 @@ mod timeline_grade_stand_in_tests {
         let mut grade = klipp_nodes::NodeGraph::default();
         let corrector = grade.ensure_corrector();
         grade.nodes.iter_mut().find(|n| n.id == corrector).unwrap().params.exposure = Some(0.5);
-        seq.timeline_graph = Some(grade.clone());
+        seq.timeline_grade_slot().set(Some(grade.clone()));
         let mut fresh = Some((seq.timeline_grade_clip_id(), klipp_nodes::NodeGraph::default()));
         stand_in_grade_on(&mut seq, GradeStandIn::Timeline, &mut fresh).expect("stood in");
         assert_eq!(stand_down_timeline_grade_on(&mut seq, &mut fresh), TimelineGradeSettled::Unchanged);
-        assert_eq!(seq.timeline_graph, Some(grade));
+        assert_eq!(seq.timeline_grade(), Some(&grade));
     }
 }

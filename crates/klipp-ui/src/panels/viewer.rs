@@ -1,3 +1,4 @@
+use klipp_timeline::GradeAccess;
 use crate::icons::Icon;
 use crate::inspector::video_tab::{find_transform_index, get_transform, TransformParams};
 use crate::state::{AppState, TransformHandle, ViewerTransformDrag};
@@ -3223,10 +3224,10 @@ impl ViewerPanel {
             .find_map(|t| t.find_clip(clip_id))
             .and_then(|clip| {
                 let selected_match = selected_id.and_then(|sid| {
-                    clip.node_graph.nodes.iter().find(|n|
+                    clip.grade().nodes.iter().find(|n|
                         n.id == sid && n.kind == klipp_nodes::NodeKind::Mask)
                 });
-                let fallback = clip.node_graph.nodes.iter()
+                let fallback = clip.grade().nodes.iter()
                     .find(|n| n.kind == klipp_nodes::NodeKind::Mask);
                 selected_match.or(fallback).map(|n| (
                     n.id,

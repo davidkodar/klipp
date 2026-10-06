@@ -1,6 +1,7 @@
 //! Clips: the commands on a clip itself, its basic operations, selection and
 //! role, and the rest of its edits (#826).
 
+use klipp_timeline::GradeAccess;
 use super::*;
 
 impl KlippApp {
@@ -810,14 +811,14 @@ impl KlippApp {
                         let new_id = klipp_core::ClipId::new();
                         let timeline_in = clip.timeline_out;
                         let dur = clip.duration();
-                        let new_clip = klipp_timeline::Clip {
+                        let mut new_clip = klipp_timeline::Clip {
                             id: new_id,
                             kind: clip.kind.clone(),
                             timeline_in,
                             timeline_out: timeline_in + dur,
                             source_in: clip.source_in,
                             source_out: clip.source_out,
-                            node_graph: clip.node_graph.clone(),
+                            node_graph: klipp_nodes::NodeGraph::default(),
                             effects: clip.effects.clone(),
                             builtin_effects: clip.builtin_effects.clone(),
                             builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
@@ -884,6 +885,7 @@ impl KlippApp {
                             colour_label: clip.colour_label,
                             precomp: None,
                         };
+                        new_clip.set_grade(clip.grade().clone());
                         let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[track_index];
                         Self::overwrite_insert_clip_on_track(track, new_clip.clone());
                         self.state.push_history(EditCommand::LegacyPasteClip {

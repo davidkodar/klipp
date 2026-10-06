@@ -1,3 +1,4 @@
+use klipp_timeline::GradeAccess;
 use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -1465,7 +1466,7 @@ fn show_tracking_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState
                             }
 
                             // Mask center targets
-                            let mask_targets: Vec<(uuid::Uuid, usize, String)> = clip.node_graph.nodes.iter()
+                            let mask_targets: Vec<(uuid::Uuid, usize, String)> = clip.grade().nodes.iter()
                                 .flat_map(|n| {
                                     let masks = n.params.masks.as_ref()
                                         .map(|ms| ms.masks.as_slice())
@@ -1531,7 +1532,7 @@ fn show_color_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, c
             .show(ui, |ui| {
                 // Check if any color grading is applied
                 let has_lut = state.global_lut_path.is_some();
-                let node_count = clip.node_graph.nodes.len();
+                let node_count = clip.grade().nodes.len();
                 // Default graph has 12 nodes; extra nodes = user added grading
                 let has_custom_nodes = node_count > 12;
                 let grade_applied = has_lut || has_custom_nodes;

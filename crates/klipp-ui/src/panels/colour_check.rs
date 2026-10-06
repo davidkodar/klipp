@@ -15,6 +15,7 @@
 //! generation so a paused viewer measures once and not sixty times a
 //! second.
 
+use klipp_timeline::GradeAccess;
 use std::time::Instant;
 
 use klipp_color::measure::{self, FrameMeasure, LookTarget, Verdict};
@@ -368,7 +369,7 @@ impl ColourCheckPanel {
             return;
         };
         section(ui, theme, "THE GRADE'S ORDER");
-        let chain = clip.node_graph.chain();
+        let chain = clip.grade().chain();
         let shown: Vec<String> = chain
             .iter()
             .filter(|l| !matches!(l.stage, klipp_nodes::GradeStage::Plumbing))
@@ -379,7 +380,7 @@ impl ColourCheckPanel {
                 .small()
                 .color(theme.text_secondary),
         );
-        for fault in clip.node_graph.chain_out_of_order() {
+        for fault in clip.grade().chain_out_of_order() {
             ui.label(egui::RichText::new(fault).small().color(theme.marker_warning));
         }
     }
