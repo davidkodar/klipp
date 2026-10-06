@@ -18,9 +18,18 @@
 //! dir>` (outside the repository), and only counts are printed.
 //!
 //! Per sequence: five times across it (start, a third, a half, two thirds,
-//! the last frame), at 320 pixels wide, as display-referred RGBA PNGs named
-//! `<project #>/<sequence #>/<frame>-{cpu,gpu}.png`, with `index.json`
-//! naming the projects.
+//! the last frame), at 320 pixels wide, through every path a frame is drawn
+//! by, named `<project #>/<sequence #>/<frame>-<path>.png`:
+//! - `cpu`: the composite with the GPU off;
+//! - `gpu`: the composite with the GPU on for grades and effects;
+//! - `stack`: the viewer's GPU stack, display bytes as it draws them while
+//!   playing (a frame it declines is counted, and has no file);
+//! - `export` or `export-yuv`: the export's own frame, as `ExportJob`
+//!   makes it, the encoder's planes when the frame is converted on the GPU
+//!   (`-export-yuv`, the planes one after another as grey), else the
+//!   picture through the encoder's display transform (`-export`).
+//!
+//! `index.json` names the projects and counts each path's frames.
 //!
 //! The copy resolves stored paths as the original does: a relative media,
 //! proxy, LUT or texture path is made absolute against the original
@@ -202,7 +211,8 @@ fn is_flat(px: &[u8]) -> bool {
 
 /// What a project rendered: frames written and how many were flat, its
 /// media offline and other files missing (a LUT, a title image or texture),
-/// and whether a grade ran on the GPU for its `-gpu` frames.
+/// whether a grade ran on the GPU for its `-gpu` frames, and which way each
+/// of its stack and export frames went.
 #[derive(Default)]
 struct Rendered {
     frames: usize,
@@ -210,6 +220,14 @@ struct Rendered {
     offline: usize,
     missing: usize,
     grade_on_gpu: bool,
+    /// Frames the GPU stack drew (`-stack`), and those it declined.
+    stack: usize,
+    stack_declined: usize,
+    /// Export frames converted on the GPU (`-export-yuv`), and those
+    /// rendered and converted on the CPU (`-export`), as the export job
+    /// chooses between them.
+    export_gpu: usize,
+    export_cpu: usize,
 }
 
 impl Rendered {
@@ -292,11 +310,85 @@ fn render_project(dir: &Path, out: &Path, scratch: &Path) -> Result<Rendered, St
                 }
                 done.grade_on_gpu |= gpu && r.executor().has_gpu();
             }
+            stack_frames(&snapshot, &frames, h, &seq_dir, &mut done)?;
+            export_frames(&snapshot, &frames, h, &seq_dir, &tmp.with_extension("probe.mp4"), &mut done)?;
         }
         Ok(done)
     });
     let _ = std::fs::remove_dir_all(&tmp);
     result
+}
+
+/// The viewer's GPU stack: each frame's display bytes, as the viewer draws
+/// them while playing, or the stack declining the frame (`None`), which is
+/// counted and leaves no `-stack` file.
+fn stack_frames(snapshot: &SequenceSnapshot, frames: &[u64], h: u32, seq_dir: &Path, done: &mut Rendered) -> Result<(), String> {
+    let mut r = renderer(snapshot, true);
+    let mut source = ExportFrameSource::new(&snapshot.video.media, snapshot.fps, snapshot.working_colorspace);
+    for &f in frames {
+        let time = Timecode::from_frames(f as i64, snapshot.fps_num);
+        let stack = r.render_display_u8_on_gpu(&snapshot.video.sequence, time, WIDTH, h, &mut source, klipp_compose::RenderOptions::default());
+        source.end_frame().map_err(|e| format!("frame {f} (stack): {e}"))?;
+        match stack {
+            Some((px, _)) => {
+                image::save_buffer(seq_dir.join(format!("{f}-stack.png")), &px, WIDTH, h, image::ExtendedColorType::Rgba8).map_err(|e| e.to_string())?;
+                done.frames += 1;
+                done.flat += usize::from(is_flat(&px));
+                done.stack += 1;
+            }
+            None => done.stack_declined += 1,
+        }
+    }
+    Ok(())
+}
+
+/// The export's frames, as `ExportJob` makes them: the encoder for the
+/// check's size is asked whether a frame can be converted on the GPU
+/// (`gpu_yuv420_params`), and a frame goes that way when the renderer takes
+/// it (`render_yuv420_on_gpu`: the encoder's planes, `-export-yuv`, grey,
+/// the planes one after another); otherwise it is rendered and put through
+/// the encoder's display transform (`export_display`: `-export`, RGBA),
+/// and a miss after the work turns the GPU way off for the rest, as the job
+/// does. `probe` is where the encoder opens; it is removed again.
+fn export_frames(snapshot: &SequenceSnapshot, frames: &[u64], h: u32, seq_dir: &Path, probe: &Path, done: &mut Rendered) -> Result<(), String> {
+    let mut out = settings();
+    out.resolution = Some(klipp_core::Resolution { width: WIDTH, height: h });
+    let opened = klipp_render::Encoder::open(probe, &out, snapshot).map(|e| e.gpu_yuv420_params());
+    let _ = std::fs::remove_file(probe);
+    let mut target = opened.map_err(|e| format!("opening the export's encoder: {e}"))?;
+    let display = klipp_render::encoder::export_display(&out, snapshot.working_colorspace);
+    let mut r = renderer(snapshot, true);
+    let mut source = ExportFrameSource::new(&snapshot.video.media, snapshot.fps, snapshot.working_colorspace);
+    for &f in frames {
+        let time = Timecode::from_frames(f as i64, snapshot.fps_num);
+        let opts = klipp_compose::RenderOptions::default();
+        let planes = target.and_then(|t| r.render_yuv420_on_gpu(&snapshot.video.sequence, time, WIDTH, h, &mut source, opts, t).map(|(p, _)| (p, t)));
+        if let Some((planes, t)) = planes {
+            source.end_frame().map_err(|e| format!("frame {f} (export): {e}"))?;
+            if !planes.len().is_multiple_of(WIDTH as usize) {
+                return Err(format!("frame {f} (export): {} bytes of planes don't fill rows of {WIDTH}", planes.len()));
+            }
+            let rows = (planes.len() / WIDTH as usize) as u32;
+            image::save_buffer(seq_dir.join(format!("{f}-export-yuv.png")), &planes, WIDTH, rows, image::ExtendedColorType::L8).map_err(|e| e.to_string())?;
+            // Flat when its luma plane is one value.
+            let luma = &planes[..(WIDTH * h) as usize * if t.bits > 8 { 2 } else { 1 }];
+            done.frames += 1;
+            done.flat += usize::from(luma.chunks_exact(luma.len() / (WIDTH * h) as usize).all(|v| v == &luma[..v.len()]));
+            done.export_gpu += 1;
+            continue;
+        }
+        if target.is_some() && r.gpu_export_declined_after_work() {
+            target = None;
+        }
+        let linear = r.render(&snapshot.video.sequence, time, WIDTH, h, &mut source, opts);
+        source.end_frame().map_err(|e| format!("frame {f} (export): {e}"))?;
+        let px = display.frame(&linear, |v, n| klipp_color::display::quantise(v, n, 255.0) as u8);
+        image::save_buffer(seq_dir.join(format!("{f}-export.png")), &px, WIDTH, h, image::ExtendedColorType::Rgba8).map_err(|e| e.to_string())?;
+        done.frames += 1;
+        done.flat += usize::from(is_flat(&px));
+        done.export_cpu += 1;
+    }
+    Ok(())
 }
 
 /// The worst difference and the count of samples over one level, between
@@ -437,6 +529,7 @@ fn run_in(args: &[String], scratch: &Path) -> i32 {
         .unwrap_or_default();
     let (mut rendered, mut failed, mut frames, mut graded_on_gpu) = (0, Vec::new(), 0, 0);
     let (mut covered, mut real_frames, mut not_covered, mut lost) = (0, 0, Vec::new(), Vec::new());
+    let (mut stack_drawn, mut stack_declined, mut export_gpu, mut export_cpu) = (0, 0, 0, 0);
     let mut index = Vec::new();
     for (i, dir) in list.iter().enumerate() {
         let r = match render_project(dir, &out.join(format!("{i}")), scratch) {
@@ -461,7 +554,14 @@ fn run_in(args: &[String], scratch: &Path) -> i32 {
         if recorded_covered.get(i) == Some(&true) && !r.covered() {
             lost.push(i);
         }
-        index.push(json!({ "project": i, "path": dir, "grade_on_gpu": r.grade_on_gpu, "frames": r.frames, "flat": r.flat, "offline": r.offline, "missing": r.missing, "covered": r.covered() }));
+        stack_drawn += r.stack;
+        stack_declined += r.stack_declined;
+        export_gpu += r.export_gpu;
+        export_cpu += r.export_cpu;
+        index.push(json!({
+            "project": i, "path": dir, "grade_on_gpu": r.grade_on_gpu, "frames": r.frames, "flat": r.flat, "offline": r.offline, "missing": r.missing, "covered": r.covered(),
+            "stack": r.stack, "stack_declined": r.stack_declined, "export_gpu": r.export_gpu, "export_cpu": r.export_cpu,
+        }));
     }
     let text = serde_json::to_string_pretty(&json!({ "projects": index, "failed": failed })).unwrap_or_default();
     if let Err(e) = std::fs::create_dir_all(&out).and_then(|()| std::fs::write(out.join("index.json"), text)) {
@@ -473,6 +573,7 @@ fn run_in(args: &[String], scratch: &Path) -> i32 {
         failed.len(),
         started.elapsed().as_secs_f64()
     );
+    println!("paths: GPU stack drew {stack_drawn} frames and declined {stack_declined}; export converted {export_gpu} on the GPU and {export_cpu} on the CPU");
     let list_of = |v: &[usize]| v.iter().map(usize::to_string).collect::<Vec<_>>().join(", ");
     println!(
         "coverage: {covered} of {rendered} projects show pictures, {real_frames} of {frames} frames; not covered (media offline, a file missing, or every frame flat; never counted as passed): {}",
@@ -735,6 +836,40 @@ mod tests {
         assert_eq!(missing_assets(&copy).unwrap(), 1);
         std::fs::write(copy.join("project.json"), json!({ "o": [{ "content": { "Image": { "path": path } } }] }).to_string()).unwrap();
         assert_eq!(missing_assets(&copy).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Each frame is drawn by the path it is named for. A one-clip project
+    /// is one the GPU stack draws and the export converts on the GPU, as
+    /// `ExportJob` would: the counts say every frame went that way, each
+    /// path left one file per time, the export's planes have I420's shape,
+    /// and the recording compares clean against itself.
+    #[test]
+    fn every_path_draws_its_own_frames() {
+        let root = std::env::temp_dir().join(format!("klipp-pixel-check-test-paths-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let Some(project) = relative_project(&root, "paths", false) else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let list = root.join("list.txt");
+        std::fs::write(&list, format!("{}\n", project.display())).unwrap();
+        assert_eq!(run_in(&args(&[Path::new("record"), &list, &root.join("rec")]), &root), 0);
+        let p = &index_of(&root.join("rec"))["projects"][0];
+        // One sequence, five times, four paths.
+        assert_eq!((p["stack"].as_u64(), p["stack_declined"].as_u64()), (Some(5), Some(0)), "the GPU stack draws every frame: {p}");
+        assert_eq!((p["export_gpu"].as_u64(), p["export_cpu"].as_u64()), (Some(5), Some(0)), "the export converts every frame on the GPU: {p}");
+        assert_eq!((p["frames"].as_u64(), p["covered"].as_bool()), (Some(20), Some(true)), "{p}");
+        let names = files(&root.join("rec"));
+        for path in ["cpu", "gpu", "stack", "export-yuv"] {
+            let n = names.iter().filter(|f| f.to_string_lossy().ends_with(&format!("-{path}.png"))).count();
+            assert_eq!(n, 5, "{path}: {names:?}");
+        }
+        // 64x36 at 320 wide is 180 high: Y, then Cb and Cr at a quarter each.
+        let yuv = names.iter().find(|f| f.to_string_lossy().ends_with("-export-yuv.png")).unwrap();
+        let img = image::open(root.join("rec").join(yuv)).unwrap();
+        assert_eq!((img.width(), img.height()), (WIDTH, 180 * 3 / 2));
+        assert_eq!(run_in(&args(&[Path::new("compare"), &list, &root.join("rec"), &root.join("cmp")]), &root), 0);
         let _ = std::fs::remove_dir_all(&root);
     }
 
