@@ -253,6 +253,7 @@ impl NodeGraphPanel {
                                         cmds.push(AppCommand::AddNode {
                                             clip_id,
                                             kind: kind_str.to_string(),
+                                            node_id: None,
                                             position: (0.0, 0.0),
                                         });
                                         self.add_menu_open = false;

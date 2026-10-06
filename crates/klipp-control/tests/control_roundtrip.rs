@@ -2045,3 +2045,46 @@ fn beats_reads_music_sections_and_fits_a_track_to_a_length() {
     assert_eq!(placed, 2, "two clips placed: {v}");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn add_node_refuses_an_unknown_kind_and_names_the_node_it_adds() {
+    let mut h = harness();
+    let clip = h.ids.clip_a.clone();
+
+    // A kind no node has is refused with the kinds there are, and
+    // nothing reaches the app (#1167).
+    let reply = h.call(json!({ "method": "add_node", "clip_id": clip, "kind": "Glow" }));
+    assert_eq!(reply["ok"], json!(false), "{reply}");
+    let error = reply["error"].as_str().unwrap_or_default();
+    assert!(error.contains("\"Glow\"") && error.contains("Corrector") && error.contains("RGBCurves"), "{error}");
+    assert!(h.cmd_rx.try_recv().is_err(), "a refused add_node sends nothing");
+
+    // A known kind is sent with the id the reply names (#1168).
+    let result = h.ok(json!({ "method": "add_node", "clip_id": clip, "kind": "LumaKey", "x": 10.0 }));
+    let said = result["node_id"].as_str().expect("the reply names the node").to_string();
+    match h.cmd_rx.try_recv() {
+        Ok(klipp_core::AppCommand::AddNode { kind, node_id, position, .. }) => {
+            assert_eq!(kind, "LumaKey");
+            assert_eq!(node_id.map(|n| n.to_string()), Some(said));
+            assert_eq!(position, (10.0, 0.0));
+        }
+        other => panic!("expected AddNode, got {other:?}"),
+    }
+}
+
+#[test]
+fn perf_reports_the_presented_rate_only_while_pictures_change() {
+    let mut h = harness();
+    // The same picture time published again, as a paused viewer does:
+    // no rate (#1169).
+    for _ in 0..5 {
+        h.frame_buffer.lock().unwrap().set_presented(klipp_core::RationalTime::from_frames(7, 25), true);
+    }
+    assert_eq!(h.ok(json!({ "method": "perf" }))["presented_fps"], Value::Null);
+    for f in 8..20 {
+        h.frame_buffer.lock().unwrap().set_presented(klipp_core::RationalTime::from_frames(f, 25), true);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let fps = h.ok(json!({ "method": "perf" }))["presented_fps"].as_f64().expect("a rate while pictures change");
+    assert!(fps.is_finite() && fps > 0.0, "{fps}");
+}

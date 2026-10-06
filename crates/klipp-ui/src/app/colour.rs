@@ -296,44 +296,10 @@ impl KlippApp {
         false
     }
 
-    fn add_color_node(&mut self, clip_id: klipp_core::ClipId, kind: &str, position: (f32, f32), needs_refresh: &mut bool) {
-        let node_kind = match kind {
-            "Corrector" => klipp_nodes::NodeKind::Corrector,
-            "Exposure" => klipp_nodes::NodeKind::Exposure,
-            "Contrast" => klipp_nodes::NodeKind::Contrast,
-            "Saturation" => klipp_nodes::NodeKind::Saturation,
-            "ToneControls" => klipp_nodes::NodeKind::ToneControls,
-            "ColorWheels" => klipp_nodes::NodeKind::ColorWheels,
-            "WheelSatBri" => klipp_nodes::NodeKind::WheelSatBri,
-            "RGBCurves" => klipp_nodes::NodeKind::RGBCurves,
-            "HueSatCurves" => klipp_nodes::NodeKind::HueSatCurves,
-            "ColorBalance" => klipp_nodes::NodeKind::ColorBalance,
-            "InputTransform" => klipp_nodes::NodeKind::InputTransform,
-            "Qualifier" => klipp_nodes::NodeKind::Qualifier,
-            "LumaKey" => klipp_nodes::NodeKind::LumaKey,
-            "SoftClip" => klipp_nodes::NodeKind::SoftClip,
-            "Mask" => klipp_nodes::NodeKind::Mask,
-            "CombineMattes" => klipp_nodes::NodeKind::CombineMattes,
-            "ExternalMatte" => klipp_nodes::NodeKind::ExternalMatte,
-            "DifferenceKey" => klipp_nodes::NodeKind::DifferenceKey,
-            "ApplyMatte" => klipp_nodes::NodeKind::ApplyMatte,
-            "Blend" => klipp_nodes::NodeKind::Blend,
-            "Layer" => klipp_nodes::NodeKind::Layer,
-            "LayerMixer" => klipp_nodes::NodeKind::LayerMixer,
-            "Lut3D" => klipp_nodes::NodeKind::Lut3D,
-            "FilmGrain" => klipp_nodes::NodeKind::FilmGrain,
-            "ColorMatch" => klipp_nodes::NodeKind::ColorMatch,
-            "ColorWarper" => klipp_nodes::NodeKind::ColorWarper,
-            "Denoise" => klipp_nodes::NodeKind::Denoise,
-            "Compound" => klipp_nodes::NodeKind::Compound,
-            "RGBSplitter" => klipp_nodes::NodeKind::RGBSplitter,
-            "RGBCombiner" => klipp_nodes::NodeKind::RGBCombiner,
-            "MaskCutout" => klipp_nodes::NodeKind::MaskCutout,
-            "Reroute" => klipp_nodes::NodeKind::Reroute,
-            _ => { return; }
-        };
+    fn add_color_node(&mut self, clip_id: klipp_core::ClipId, kind: &str, node_id: Option<uuid::Uuid>, position: (f32, f32), needs_refresh: &mut bool) {
+        let Some(node_kind) = klipp_nodes::kinds::addable_node_kind(kind) else { return };
         self.with_current_clip_graph_mut(clip_id, needs_refresh, |graph| {
-            let new_id = klipp_nodes::NodeId::new_v4();
+            let new_id = node_id.unwrap_or_else(klipp_nodes::NodeId::new_v4);
             graph.nodes.push(klipp_nodes::Node {
                 id: new_id,
                 kind: node_kind,
@@ -852,8 +818,8 @@ impl KlippApp {
 
     fn handle_color_node_ops(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         match cmd {
-            AppCommand::AddNode { clip_id, ref kind, position } => {
-                self.add_color_node(*clip_id, kind, *position, needs_refresh);
+            AppCommand::AddNode { clip_id, ref kind, node_id, position } => {
+                self.add_color_node(*clip_id, kind, *node_id, *position, needs_refresh);
                 true
             }
             AppCommand::RemoveNode { clip_id, node_id } => {

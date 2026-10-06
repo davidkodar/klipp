@@ -248,6 +248,10 @@ pub struct FrameBuffer {
     /// naming them with its time paired a reader's bytes with another
     /// frame's position.
     gpu_presented: Option<klipp_core::RationalTime>,
+    /// When each new picture time was published, oldest first, at most
+    /// [`PRESENTED_TIMES`]: the measured rate of [`Self::presented_fps`].
+    /// A re-render of the time already shown (a paused slider) adds none.
+    presented_times: std::collections::VecDeque<(std::time::Instant, klipp_core::RationalTime)>,
     /// The device and queue `gpu_output` lives on, to read it back.
     gpu_output_queue: Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>,
 
@@ -312,6 +316,7 @@ impl FrameBuffer {
             gpu_output_generation: 0,
             gpu_output_live: false,
             gpu_presented: None,
+            presented_times: std::collections::VecDeque::new(),
             gpu_output_queue: None,
             gpu_output_frame: 0,
             node_thumbs: std::collections::HashMap::new(),
@@ -481,6 +486,13 @@ impl FrameBuffer {
         if self.pending_ready { self.pending_complete } else { self.complete }
     }
 
+    /// Pictures published per second over the `window` before `now`:
+    /// new picture times only, so a paused frame rendered again does not
+    /// count. `None` with fewer than two in the window — nothing playing.
+    pub fn presented_fps(&self, now: std::time::Instant, window: std::time::Duration) -> Option<f64> {
+        rate_in_window(self.presented_times.iter().map(|&(t, _)| t), now, window)
+    }
+
     /// Say which frame was just published. The engine calls this with
     /// every frame, right after writing it; a frame rendered before every
     /// clip's stream had its picture says so with `complete` false.
@@ -491,6 +503,12 @@ impl FrameBuffer {
     /// it was: naming older bytes with its time was how a reader waiting
     /// for "frame n" came away with another frame's picture.
     pub fn set_presented(&mut self, at: klipp_core::RationalTime, complete: bool) {
+        if self.presented_times.back().is_none_or(|&(_, last)| last != at) {
+            if self.presented_times.len() == PRESENTED_TIMES {
+                self.presented_times.pop_front();
+            }
+            self.presented_times.push_back((std::time::Instant::now(), at));
+        }
         if self.gpu_output_live {
             self.gpu_presented = Some(at);
             return;
@@ -575,9 +593,64 @@ impl FrameBuffer {
 
 pub type SharedFrameBuffer = Arc<Mutex<FrameBuffer>>;
 
+/// How many publish times [`FrameBuffer::presented_fps`] keeps: over
+/// two seconds of 120 fps.
+const PRESENTED_TIMES: usize = 256;
+
+/// Events per second among `times` (oldest first) inside the `window`
+/// before `now`: the intervals between the first and the last of them
+/// over the time they span. `None` with fewer than two.
+fn rate_in_window(times: impl Iterator<Item = std::time::Instant>, now: std::time::Instant, window: std::time::Duration) -> Option<f64> {
+    let start = now.checked_sub(window)?;
+    let (mut first, mut last, mut n) = (None, None, 0u32);
+    for t in times.filter(|&t| t >= start && t <= now) {
+        first.get_or_insert(t);
+        last = Some(t);
+        n += 1;
+    }
+    let span = last?.duration_since(first?).as_secs_f64();
+    (n >= 2 && span > 0.0).then(|| f64::from(n - 1) / span)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{render_spans, RenderSpan};
+
+    #[test]
+    fn the_rate_is_the_intervals_in_the_window_over_their_span() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        // 25 fps for 3 s; the last 2 s hold 50 intervals over 1.96 s.
+        let times: Vec<Instant> = (0..75).map(|i| at(i * 40)).collect();
+        let now = at(74 * 40);
+        let fps = super::rate_in_window(times.iter().copied(), now, Duration::from_secs(2)).unwrap();
+        assert!((fps - 25.0).abs() < 1e-9, "{fps}");
+        // Nothing for 5 s: stale, no rate.
+        assert_eq!(super::rate_in_window(times.iter().copied(), at(10_000), Duration::from_secs(2)), None);
+        // One frame alone is no rate.
+        assert_eq!(super::rate_in_window([now].into_iter(), now, Duration::from_secs(2)), None);
+        assert_eq!(super::rate_in_window(std::iter::empty(), now, Duration::from_secs(2)), None);
+    }
+
+    #[test]
+    fn a_paused_frame_published_again_adds_no_presented_time() {
+        use std::time::{Duration, Instant};
+        let at = |f: i64| klipp_core::RationalTime::from_frames(f, 25);
+        let mut fb = super::FrameBuffer::new(4, 4);
+        for _ in 0..10 {
+            fb.set_presented(at(3), true);
+        }
+        assert_eq!(fb.presented_times.len(), 1);
+        assert_eq!(fb.presented_fps(Instant::now(), Duration::from_secs(2)), None, "a paused frame is no playback");
+        fb.set_presented(at(4), true);
+        assert_eq!(fb.presented_times.len(), 2);
+        for f in 5..1000 {
+            fb.set_presented(at(f), true);
+        }
+        assert_eq!(fb.presented_times.len(), super::PRESENTED_TIMES, "the record is bounded");
+        assert_eq!(fb.presented_times.back().unwrap().1, at(999));
+    }
 
     fn span(from: i64, to: i64, cached: bool) -> RenderSpan {
         RenderSpan { from, to, cached }

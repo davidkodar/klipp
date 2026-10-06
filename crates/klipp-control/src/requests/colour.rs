@@ -860,7 +860,19 @@ pub(crate) fn respond(
         }
 
         ControlCommand::AddNode { clip_id: c, kind, x, y } => {
-            send(AppCommand::AddNode { clip_id: existing_clip_id(ctx, &c)?, kind, position: (x, y) })
+            let clip_id = existing_clip_id(ctx, &c)?;
+            if klipp_nodes::kinds::addable_node_kind(&kind).is_none() {
+                let valid: Vec<&str> = klipp_nodes::kinds::ADDABLE_NODE_KINDS.iter().map(|(n, _)| *n).collect();
+                return Err(format!("no node kind {kind:?}; the kinds are {}", valid.join(", ")));
+            }
+            // The id is chosen here so the reply can say it: the app
+            // makes the node with it.
+            let node_id = uuid::Uuid::new_v4();
+            let mut reply = send(AppCommand::AddNode { clip_id, kind, node_id: Some(node_id), position: (x, y) })?;
+            if let Some(r) = reply.as_object_mut() {
+                r.insert("node_id".into(), json!(node_id.to_string()));
+            }
+            Ok(reply)
         }
 
         ControlCommand::RemoveNode { clip_id: c, node_id } => {

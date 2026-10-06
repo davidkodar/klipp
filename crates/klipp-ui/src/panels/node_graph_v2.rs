@@ -3723,6 +3723,7 @@ impl NodeGraphV2Panel {
             cmds.push(AppCommand::AddNode {
                 clip_id,
                 kind: kind_str.to_string(),
+                node_id: None,
                 position: (self.add_menu_graph_pos.x, self.add_menu_graph_pos.y),
             });
             // Bump kind to the front of recents (dedupe + cap 6).
