@@ -653,6 +653,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     },
                     builtin_effects: effects_by_clip.get(c.id.as_str()).cloned().unwrap_or_default(),
                     builtin_effects_enabled: c.builtin_effects_enabled.clone(),
+                    effect_ids: Default::default(),
                     effects: c.effects.iter().map(|e| {
                         klipp_plugin::AppliedEffect {
                             plugin_name: e.plugin_name.clone(),

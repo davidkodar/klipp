@@ -1384,6 +1384,7 @@ impl Track {
             effects: Vec::new(),
             builtin_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
+            effect_ids: Default::default(),
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
@@ -1683,6 +1684,7 @@ impl Track {
             effects: clip.effects.clone(),
             builtin_effects: clip.builtin_effects.clone(),
             builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
+            effect_ids: Default::default(),
             linked_clip_id: clip.linked_clip_id,
             linked_title_asset_id: clip.linked_title_asset_id,
             group_id: clip.group_id,
@@ -1759,6 +1761,7 @@ impl Track {
             effects: clip.effects.clone(),
             builtin_effects: clip.builtin_effects.clone(),
             builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
+            effect_ids: Default::default(),
             linked_clip_id: clip.linked_clip_id,
             linked_title_asset_id: clip.linked_title_asset_id,
             group_id: clip.group_id,
@@ -2170,6 +2173,9 @@ pub struct Clip {
     /// Per-index enabled state for builtin effects (true = enabled). Grows lazily.
     #[serde(default)]
     pub builtin_effects_enabled: Vec<bool>,
+    /// Session-only effect handles; lazily reconciled by the effect-list API.
+    #[serde(skip)]
+    pub effect_ids: crate::EffectIds,
     #[serde(default)]
     pub linked_clip_id: Option<ClipId>,
     /// If `Some`, this clip is a *linked instance* of a project-scoped
@@ -2744,6 +2750,7 @@ impl Clip {
             effects: Vec::new(),
             builtin_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
+            effect_ids: Default::default(),
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
@@ -2858,6 +2865,7 @@ impl Clip {
             effects: Vec::new(),
             builtin_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
+            effect_ids: Default::default(),
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
@@ -2961,6 +2969,7 @@ impl Clip {
             effects: Vec::new(),
             builtin_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
+            effect_ids: Default::default(),
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
