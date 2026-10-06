@@ -196,6 +196,9 @@ pub enum LiftedError {
     TwoPlacements,
     /// An origin on a graph that isn't a render copy.
     Origin(NodeId),
+    /// The graph feeds back into itself (wireless links count, as they do
+    /// in today's ordering).
+    Cycle { level: String },
 }
 
 impl std::fmt::Display for LiftedError {
@@ -294,10 +297,43 @@ fn check_level(g: &Graph, level: &str, body: bool, render_copy: bool) -> Result<
             }
         }
     }
+    if has_cycle(g) {
+        return Err(LiftedError::Cycle { level: level.to_owned() });
+    }
     if !body && g.nodes.iter().filter(|n| n.type_id.as_str() == types::PLACEMENT).count() > 1 {
         return Err(LiftedError::TwoPlacements);
     }
     Ok(())
+}
+
+/// Whether a level's edges and wireless links (receiver after sender) loop.
+fn has_cycle(g: &Graph) -> bool {
+    use std::collections::{BTreeMap, VecDeque};
+    let mut deps: Vec<(NodeId, NodeId)> = g.edges.iter().map(|e| (e.from.0, e.to.0)).collect();
+    for r in &g.nodes {
+        for name in r.wireless.input_links.values() {
+            if let Some(s) = g.nodes.iter().find(|s| s.id != r.id && s.wireless.output_link.as_deref() == Some(name.as_str())) {
+                deps.push((s.id, r.id));
+            }
+        }
+    }
+    let mut indeg: BTreeMap<NodeId, usize> = g.nodes.iter().map(|n| (n.id, 0)).collect();
+    for (_, to) in &deps {
+        *indeg.entry(*to).or_default() += 1;
+    }
+    let mut queue: VecDeque<NodeId> = indeg.iter().filter(|(_, d)| **d == 0).map(|(id, _)| *id).collect();
+    let mut seen = 0;
+    while let Some(id) = queue.pop_front() {
+        seen += 1;
+        for (_, to) in deps.iter().filter(|(from, _)| *from == id) {
+            let d = indeg.get_mut(to).expect("every edge's end is a node, checked above");
+            *d -= 1;
+            if *d == 0 {
+                queue.push_back(*to);
+            }
+        }
+    }
+    seen < indeg.len()
 }
 
 impl Graph {

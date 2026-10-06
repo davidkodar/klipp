@@ -453,8 +453,22 @@ mod tests {
         let g = json!({"nodes": [{"id": s, "kind": "Source", "label": "S", "enabled": true}, {"id": o, "kind": "Output", "label": "O", "enabled": true}],
                        "edges": [{"from_node": s, "from_port": 0, "to_node": o, "to_port": 0}], "output_node_id": o});
         std::fs::write(dir.join("presets/color/Plain.json"), g.to_string()).unwrap();
-        let (n, stops, _) = check_colour_presets_noted(&dir, &ok);
+        let (n, stops, notes) = check_colour_presets_noted(&dir, &ok);
         assert_eq!((n, stops.len()), (1, 0), "{stops:?}");
+        assert!(notes.is_empty(), "a plain preset gives no notes");
+        // A correction with a matte on port 1 and no picture: its edge is
+        // parked, and the note reaches the run's count.
+        let (c, k) = ("00000000-0000-0000-0000-0000000000a2", "00000000-0000-0000-0000-0000000000a3");
+        let parked = json!({"nodes": [
+                {"id": s, "kind": "Source", "label": "S", "enabled": true}, {"id": c, "kind": "Corrector", "label": "C", "enabled": true},
+                {"id": k, "kind": "Qualifier", "label": "Q", "enabled": true}, {"id": o, "kind": "Output", "label": "O", "enabled": true}],
+            "edges": [{"from_node": k, "from_port": 0, "to_node": c, "to_port": 1}, {"from_node": c, "from_port": 0, "to_node": o, "to_port": 0}],
+            "output_node_id": o});
+        std::fs::write(dir.join("presets/color/Parked.json"), parked.to_string()).unwrap();
+        let (n, stops, notes) = check_colour_presets_noted(&dir, &ok);
+        assert_eq!((n, stops.len()), (2, 0), "{stops:?}");
+        assert_eq!(notes.get("parked_edge"), Some(&1), "{notes:?}");
+        std::fs::remove_file(dir.join("presets/color/Parked.json")).unwrap();
         std::fs::write(dir.join("presets/color/Broken.json"), "{ not json").unwrap();
         let (n, stops, _) = check_colour_presets_noted(&dir, &ok);
         assert_eq!((n, stops.len()), (2, 1));

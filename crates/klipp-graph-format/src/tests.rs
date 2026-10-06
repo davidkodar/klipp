@@ -467,6 +467,20 @@ mod lifted_checks {
         g.check_lifted(false).unwrap();
     }
 
+    /// A loop is refused, through an edge or a wireless link.
+    #[test]
+    fn a_loop_is_refused() {
+        let mut g = valid();
+        body(&mut g).edges.push(e(13, 12, "mask"));
+        body(&mut g).nodes[1].legacy = legacy(json!({"kind": "Corrector"}));
+        assert!(matches!(g.check_lifted(false), Err(LiftedError::Cycle { .. })));
+        let mut g = valid();
+        let b = body(&mut g);
+        b.nodes[2].wireless.output_link = Some("back".into());
+        b.nodes[1].wireless.input_links.insert("mask".into(), "back".into());
+        assert!(matches!(g.check_lifted(false), Err(LiftedError::Cycle { .. })));
+    }
+
     /// A merge must name a known op.
     #[test]
     fn a_merge_needs_a_known_op() {

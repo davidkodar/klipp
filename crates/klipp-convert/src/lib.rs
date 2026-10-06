@@ -12,6 +12,7 @@ pub mod ids;
 pub mod installed;
 pub mod lift;
 pub mod old_fields;
+pub mod ops;
 pub mod paths;
 pub mod revision2;
 pub mod revision;
