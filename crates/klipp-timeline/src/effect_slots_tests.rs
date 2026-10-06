@@ -475,3 +475,24 @@ fn existing_access_creates_nothing() {
     c.existing_effect_keyframes_mut(a, "radius").unwrap().push(key(2.0));
     assert_eq!(c.effect_keyframes["0:radius"].len(), 2);
 }
+
+/// A fresh state restored onto a clip takes the values, effect modifiers
+/// only, and new ids; the clip's own modifiers stay.
+#[test]
+fn a_fresh_state_brings_values_with_new_ids() {
+    let mut src = clip();
+    let a = src.push_effect(blur(4.0));
+    src.effect_keyframes_mut(a, "radius").unwrap().push(key(4.0));
+    let mut dst = clip();
+    let old = dst.push_effect(blur(1.0));
+    dst.param_modifiers.insert(ParamId::Opacity, stack(2.0));
+    let mods = vec![(ParamId::Effect { effect_index: 0, param_name: "radius".into() }, stack(4.0)), (ParamId::Scale, stack(8.0))];
+    dst.restore_effects_state(EffectsState::fresh(src.builtin_effects.clone(), src.builtin_effects_enabled.clone(), src.effect_keyframes.clone(), mods));
+    assert_eq!(dst.builtin_effects, vec![blur(4.0)]);
+    assert_eq!(dst.effect_keyframes["0:radius"], vec![key(4.0)]);
+    assert!(dst.param_modifiers.contains_key(&ParamId::Opacity), "the clip's own modifier stays");
+    assert!(!dst.param_modifiers.contains_key(&ParamId::Scale), "a non-effect modifier isn't part of the state");
+    let new = dst.effect_id_at(0).unwrap();
+    assert_ne!(new, old);
+    assert_ne!(new, a);
+}

@@ -410,6 +410,22 @@ pub struct EffectsState {
     modifiers: Vec<(ParamId, klipp_core::ModifierStack)>,
 }
 
+impl EffectsState {
+    /// A state from values taken elsewhere (a copied clip's effects, to
+    /// paste), with fresh ids: the entries are new to the clip it lands on.
+    /// `modifiers` keeps only effect-targeted stacks.
+    pub fn fresh(
+        effects: Vec<BuiltinEffect>,
+        enabled: Vec<bool>,
+        keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+        modifiers: impl IntoIterator<Item = (ParamId, klipp_core::ModifierStack)>,
+    ) -> Self {
+        let ids = (0..effects.len()).map(|_| EffectId::fresh()).collect();
+        let modifiers = modifiers.into_iter().filter(|(id, _)| matches!(id, ParamId::Effect { .. })).collect();
+        Self { effects, enabled, ids, keyframes, modifiers }
+    }
+}
+
 /// Access by [`EffectId`] to what callers otherwise address by a place they
 /// computed: an effect's value, a parameter's keyframes and modifier stack.
 /// Each keys exactly as the saved form does (`"{index}:{param}"`,
