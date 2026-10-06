@@ -298,6 +298,15 @@ fn default_pivot_encoded() -> f32 {
 }
 
 
+/// A matte that selects everything, R=G=B=A=1: what a matte producer
+/// gives with nothing chosen (no image, no plate, disabled), as a
+/// Qualifier with no settings and a LumaKey that is off already did. One
+/// is the identity wherever a matte is used: a correction it gates grades
+/// as if there were no key, and alpha it cuts stays whole (#1039).
+fn full_matte(pixel_count: usize) -> Vec<f32> {
+    vec![1.0; pixel_count * 4]
+}
+
 /// The unified grade doing nothing, in the working space `ws`.
 fn identity_grade(ws: klipp_core::WorkingColorspace, enc: klipp_color::grade_model::Encoding) -> klipp_effects::cpu_grade::ColorGrade {
     let zero = (0.0, 0.0, 0.0);
@@ -3827,22 +3836,22 @@ impl GraphExecutor {
                 // clean plate is loaded off disk via the same
                 // `matte_image_cache` ExternalMatte uses, then
                 // resized to live-frame dimensions via
-                // nearest-neighbour. Disabled or missing-plate
-                // ships an empty matte (selects nothing) — same
-                // safe-default shape as ExternalMatte.
+                // nearest-neighbour. Disabled, with no plate, or with
+                // one that will not load, it selects everything, as
+                // every matte producer does with nothing chosen (#1039).
                 let pixel_count = (width as usize) * (height as usize);
                 let Some(dk) = &params.difference_key else {
-                    return vec![0.0f32; pixel_count * 4];
+                    return full_matte(pixel_count);
                 };
                 if !dk.enabled {
-                    return vec![0.0f32; pixel_count * 4];
+                    return full_matte(pixel_count);
                 }
                 let Some(path) = dk.plate_path.as_ref() else {
-                    return vec![0.0f32; pixel_count * 4];
+                    return full_matte(pixel_count);
                 };
 
                 let Some(plate_resized) = self.resized_plate(path, width, height) else {
-                    return vec![0.0f32; pixel_count * 4];
+                    return full_matte(pixel_count);
                 };
 
                 let matte = klipp_color::difference_key::generate_difference_key_matte(
@@ -4007,20 +4016,16 @@ impl GraphExecutor {
                 // the per-frame cost is just a resize + channel pick.
                 let pixel_count = (width as usize) * (height as usize);
                 let Some(path) = params.matte_image_path.as_ref() else {
-                    // No image chosen — emit zero matte so a downstream
-                    // ApplyMatte reads this as "select nothing" (pass-through
-                    // of the ungraded path). Matches the mental model of
-                    // "I added the node but haven't pointed it at a file".
-                    let mut out = vec![0.0f32; pixel_count * 4];
-                    for i in 0..pixel_count { out[i * 4 + 3] = 1.0; }
-                    return out;
+                    // No image chosen: it selects everything, as every
+                    // matte producer does with nothing chosen (#1039).
+                    return full_matte(pixel_count);
                 };
                 let channel = params.matte_channel.unwrap_or_default();
                 let invert = params.matte_invert.unwrap_or(false);
 
-                // Decode + cache. An image that fails to load becomes a
-                // transparent-black matte (same as "no path") so a
-                // broken link doesn't crash the render.
+                // Decode + cache. An image that fails to load is read as
+                // no image (it selects everything), so a broken link
+                // neither crashes the render nor blanks the grade.
                 let cached = match self.matte_image_cache.get(path).cloned() {
                     Some(c) => c,
                     None => match image::open(path) {
@@ -4044,9 +4049,7 @@ impl GraphExecutor {
                             if self.unreadable_images.insert(path.clone()) {
                                 tracing::warn!("ExternalMatte: failed to load {:?}: {e}", path);
                             }
-                            let mut out = vec![0.0f32; pixel_count * 4];
-                            for i in 0..pixel_count { out[i * 4 + 3] = 1.0; }
-                            return out;
+                            return full_matte(pixel_count);
                         }
                     },
                 };

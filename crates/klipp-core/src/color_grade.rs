@@ -216,10 +216,11 @@ pub enum DifferenceKeyMatchSpace {
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct DifferenceKeySettings {
     pub enabled: bool,
-    /// Path to the clean-plate image on disk. `None` → matte is empty
-    /// (passthrough), so a freshly-added node doesn't black out the
-    /// viewer before the user picks a plate. Same fallback shape as
-    /// `ExternalMatte` with no path set.
+    /// Path to the clean-plate image on disk. `None`, or a plate that will
+    /// not load: the matte selects everything, as every matte producer
+    /// does with nothing chosen (#1039), so a freshly added node changes
+    /// nothing before the user picks a plate. As `ExternalMatte` with no
+    /// image.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plate_path: Option<std::path::PathBuf>,
     /// Distance threshold in normalised colour space (0–1). Pixels

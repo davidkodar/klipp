@@ -136,8 +136,8 @@ fn the_matte_selects_what_differs_from_the_plate() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Invert flips the selection, and a disabled node selects nothing —
-/// both through the real node rather than the algorithm alone.
+/// Invert flips the selection, and a disabled node selects everything
+/// (#1039) — both through the real node rather than the algorithm alone.
 #[test]
 fn invert_and_disabled_go_through_the_node() {
     let dir = std::env::temp_dir().join(format!("klipp-dk-inv-{}", std::process::id()));
@@ -164,10 +164,12 @@ fn invert_and_disabled_go_through_the_node() {
     assert_eq!(at(&inverted, 2), 1.0, "inverted: the matching half selects fully");
     assert_eq!(at(&inverted, 13), 0.0, "inverted: the differing half selects nothing");
 
+    // Off, it selects everything, as every matte producer does with
+    // nothing chosen (#1039): it used to select nothing.
     let off = with(&mut exec, false, false);
     assert!(
-        off.chunks_exact(4).all(|p| p[0] == 0.0),
-        "a disabled difference key must select nothing",
+        off.chunks_exact(4).all(|p| p[0] == 1.0 && p[3] == 1.0),
+        "a disabled difference key selects everything",
     );
 
     let _ = std::fs::remove_dir_all(&dir);
