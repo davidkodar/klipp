@@ -299,8 +299,9 @@ struct Grade {
 /// one. The frame entering the grade, and an input the lift added (v1 had
 /// no Source), are what an unwired port reads today: their edges come
 /// back as reads of the footage, from a Source made for them when v1 had
-/// none. An output the lift added is a bare Output. A correction's port-1
-/// edges where it is not gated, which v1 never read, are left out.
+/// none. An output the lift added is a bare Output. A correction's mask,
+/// drawn or wireless, without the gate is refused: v1 never read it, and
+/// the lift parks it.
 ///
 /// A group the lift switched off (its grade loops, so today's renderer
 /// never ran it) comes back as a graph today's renderer refuses to order,
@@ -361,7 +362,7 @@ fn grade(group: &Node) -> Result<Grade, Refusal> {
         for (key, name) in &n.wireless.input_links {
             let i = port(&kind, key, true).ok_or_else(|| format!("grade node {} ({kind}) has no input {key}", n.id))?;
             if i == 1 && GATEABLE.contains(&kind.as_str()) && !gated {
-                continue;
+                return Err(format!("grade node {} ({kind}) has a link into its mask without the gate, which the lift parks", n.id));
             }
             if links.len() <= usize::from(i) {
                 links.resize(usize::from(i) + 1, Value::Null);
@@ -381,7 +382,7 @@ fn grade(group: &Node) -> Result<Grade, Refusal> {
         let to_port = port(to_kind, &e.to.1, true).ok_or_else(|| format!("an edge enters {} by {}", e.to.0, e.to.1))?;
         let gated = body.nodes.iter().find(|n| n.id == e.to.0).and_then(|n| n.legacy_flags.as_ref()).is_some_and(|f| f.alpha_one);
         if to_port == 1 && GATEABLE.contains(&to_kind) && !gated {
-            continue;
+            return Err(format!("an edge into {}'s mask without the gate, which the lift parks", e.to.0));
         }
         if minted.contains(&e.from.0) {
             reads.push((e.to.0.to_string(), u64::from(to_port)));
