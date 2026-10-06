@@ -75,8 +75,11 @@ pub struct Frei0rPlugin {
     // Drop order matters: instances drop first, then the Library. We
     // don't allow instances to outlive the plugin (Frei0rEffect holds
     // an Arc<Frei0rPlugin>), so the explicit Drop on this struct can
-    // safely call f0r_deinit and let `_lib` drop after.
-    _lib: libloading::Library,
+    // safely call f0r_deinit and close `lib` after.
+    /// Taken in `Drop`, so the library closes holding the load lock: its
+    /// destructors run with the linker's lock held, as its initialisers do
+    /// (#1032).
+    lib: Option<libloading::Library>,
     pub info: Frei0rPluginInfo,
     construct: F0rConstructFn,
     destruct: F0rDestructFn,
@@ -129,7 +132,7 @@ impl Frei0rPlugin {
         }
 
         Ok(Self {
-            _lib: lib,
+            lib: Some(lib),
             info,
             construct,
             destruct,
@@ -144,6 +147,10 @@ impl Drop for Frei0rPlugin {
     fn drop(&mut self) {
         let deinit = self.deinit;
         let _ = frei0r_guard!({ unsafe { deinit() } });
+        if let Some(lib) = self.lib.take() {
+            let _closing = klipp_load_lock::library_loading();
+            drop(lib);
+        }
     }
 }
 
