@@ -51,6 +51,17 @@ pub fn export_renderer(snapshot: &SequenceSnapshot, label: &str) -> Renderer {
     renderer
 }
 
+/// Where a `width`×`height` picture sits in a `out_w`×`out_h` export, as
+/// the export places it: the picture's size and its offset (letterbox or
+/// pillarbox when the aspects differ).
+pub fn fit_in(width: u32, height: u32, out_w: u32, out_h: u32) -> (u32, u32, u32, u32) {
+    if (width, height) == (out_w, out_h) {
+        (out_w, out_h, 0, 0)
+    } else {
+        fit_to_target(width, height, out_w, out_h)
+    }
+}
+
 /// One export frame, as the encoder takes it.
 pub enum ExportFrame {
     /// Converted on the GPU: the encoder's planes, and the frame's light
@@ -84,7 +95,7 @@ impl ExportFrameMaker {
         // export resolution with another aspect is letterboxed or
         // pillarboxed, not stretched.
         let out = settings.output_size(snapshot.width, snapshot.height);
-        let fit = if out == (snapshot.width, snapshot.height) { (out.0, out.1, 0, 0) } else { fit_to_target(snapshot.width, snapshot.height, out.0, out.1) };
+        let fit = fit_in(snapshot.width, snapshot.height, out.0, out.1);
         // Whether a frame can be converted to the encoder's planes on the
         // GPU, and with what. Requires a delivery the shader can finish
         // and a picture that fills the output: a letterboxed export is
@@ -108,6 +119,12 @@ impl ExportFrameMaker {
     /// The output size frames come at.
     pub fn out_size(&self) -> (u32, u32) {
         self.out
+    }
+
+    /// Whether the picture is letterboxed or pillarboxed in the output
+    /// (padded on the CPU, so never converted on the GPU).
+    pub fn letterboxed(&self) -> bool {
+        (self.fit.0, self.fit.1) != self.out
     }
 
     /// Whether frames are still tried on the GPU.
