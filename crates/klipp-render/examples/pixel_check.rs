@@ -27,6 +27,12 @@
 //! folder, by the loader's own rule, so the frames don't depend on where
 //! the copy is (`TMPDIR`).
 //!
+//! A project from before revision 2 is converted on its temporary copy
+//! next, as `klipp-convert run` converts it (the lift, and the LUT paths
+//! made portable once), because a build from step A on (#1089) reads
+//! revision 2 only. So the same list records at a build before the switch
+//! and compares at one after it.
+//!
 //! **Coverage.** A frame of one flat colour shows nothing, and a project
 //! with media offline renders placeholders, so a check of those proves
 //! nothing; a missing LUT, title image or texture is drawn without, just as
@@ -140,6 +146,22 @@ fn resolve_against(copy: &Path, original: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Convert the copy's `project.json` to revision 2 when it is older, as
+/// `klipp-convert run` converts a real project (#1089).
+fn to_revision_2(copy: &Path) -> Result<(), String> {
+    let path = copy.join("project.json");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("reading: {e}"))?;
+    let mut raw: Value = serde_json::from_str(&text).map_err(|e| format!("parsing: {e}"))?;
+    if raw.get("format_revision").and_then(Value::as_u64).unwrap_or(0) >= u64::from(klipp_project::FORMAT_REVISION) {
+        return Ok(());
+    }
+    let library = klipp_core::assets::bundled_luts_dir();
+    let rule = |s: &str| klipp_core::assets::portable_lut_path(&klipp_core::assets::resolve_lut_path(s, library), library);
+    klipp_graph_lift::load_rewrites::portable_lut_paths(&mut raw, &rule);
+    let (converted, _notes) = klipp_graph_lift::revision2::project(&raw).map_err(|e| format!("converting: {e}"))?;
+    write_owned(&path, &serde_json::to_string_pretty(&converted).map_err(|e| e.to_string())?)
+}
+
 /// Files the copy's `project.json` names that aren't there: a LUT, a title
 /// image or texture, a grade LUT. The renderer draws without them and says
 /// nothing, so a project missing one isn't covered. Paths are absolute by
@@ -231,7 +253,7 @@ fn render_project(dir: &Path, out: &Path, scratch: &Path) -> Result<Rendered, St
         return Err("not there".into());
     }
     temp_copy(dir, &tmp).map_err(|e| format!("copying: {e}"))?;
-    let missing = resolve_against(&tmp, dir).and_then(|()| missing_assets(&tmp));
+    let missing = resolve_against(&tmp, dir).and_then(|()| to_revision_2(&tmp)).and_then(|()| missing_assets(&tmp));
     let loaded = missing.and_then(|missing| klipp_project::load_project(&tmp).map(|l| (missing, l)).map_err(|e| format!("loading: {e}")));
     let result = loaded.and_then(|(missing, (sequences, pool, colour, ..))| {
         let mut done = Rendered { offline: pool.all().filter(|m| m.offline).count(), missing, ..Rendered::default() };
