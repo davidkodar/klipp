@@ -2600,7 +2600,7 @@ impl Renderer {
                 continue;
             }
             let samples: Vec<(ResolvedTransform, f64)> = offsets.iter().map(|&o| self.shutter_sample(seq, c, time, o, fps, width, height)).collect();
-            let tilt_at = |t: f64| (klipp_core::keyframe::evaluate(&c.transform_tilt_x_keyframes, t, 0.0), klipp_core::keyframe::evaluate(&c.transform_tilt_y_keyframes, t, 0.0));
+            let tilt_at = |t: f64| (klipp_core::keyframe::evaluate(c.transform_tilt_x_keyframes(), t, 0.0), klipp_core::keyframe::evaluate(c.transform_tilt_y_keyframes(), t, 0.0));
             let (first, last) = (samples[0], samples[n - 1]);
             let moved = (first.0 .0 - last.0 .0).abs() > 0.05
                 || (first.0 .1 - last.0 .1).abs() > 0.05
@@ -3075,8 +3075,8 @@ pub fn clip_effects(
     let mut pinned = false;
     for (i, effect) in fx.iter_mut() {
         let param = |name: &str, v: f32| {
-            let kfs = clip.effect_keyframes.get(&format!("{i}:{name}")).map(|v| v.as_slice()).unwrap_or(&[]);
-            eval::eval_effect_with_modifiers(kfs, &clip.param_modifiers, *i, name, t, v, &ctx)
+            let kfs = clip.effect_keyframes().get(&format!("{i}:{name}")).map(|v| v.as_slice()).unwrap_or(&[]);
+            eval::eval_effect_with_modifiers(kfs, clip.param_modifiers(), *i, name, t, v, &ctx)
         };
         // Every keyframable parameter, from the one list the inspector
         // offers keyframes from. Opacity is the exception: the clip's
@@ -3114,7 +3114,7 @@ pub fn clip_effects(
                 // Clip opacity keyframes / modifiers first, then the
                 // effect's own parameter keyframes — the viewer's order.
                 let base = eval::eval_with_modifiers(
-                    &clip.opacity_keyframes, &clip.param_modifiers, &klipp_core::ParamId::Opacity, t, *value, &ctx,
+                    clip.opacity_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::Opacity, t, *value, &ctx,
                 );
                 opacity = param("value", base);
                 have_opacity = true;
@@ -3140,7 +3140,7 @@ pub fn clip_effects(
     }
     if !have_opacity {
         opacity = eval::eval_with_modifiers(
-            &clip.opacity_keyframes, &clip.param_modifiers, &klipp_core::ParamId::Opacity, t, 1.0, &ctx,
+            clip.opacity_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::Opacity, t, 1.0, &ctx,
         );
     }
     // Opacity is a compositing weight and SpeedRamp a matter of time and
@@ -3201,8 +3201,8 @@ fn tilt(clip: &Clip, fx: &[BuiltinEffect], t: f64) -> (f32, f32, f32) {
             _ => None,
         })
         .unwrap_or((0.0, 0.0, 0.0));
-    let rx = klipp_core::keyframe::evaluate(&clip.transform_tilt_x_keyframes, t, rx);
-    let ry = klipp_core::keyframe::evaluate(&clip.transform_tilt_y_keyframes, t, ry);
+    let rx = klipp_core::keyframe::evaluate(clip.transform_tilt_x_keyframes(), t, rx);
+    let ry = klipp_core::keyframe::evaluate(clip.transform_tilt_y_keyframes(), t, ry);
     // Keyframed, or set still in the inspector: either way a tilt.
     let tilted = rx != 0.0 || ry != 0.0 || clip.has_tilt_keyframes();
     (rx, ry, if tilted && persp <= 0.0 { 1.0 } else { persp })
@@ -3547,8 +3547,8 @@ pub fn temporal_denoise_of(clip: &Clip, time: Timecode, fps: f64) -> Option<(f32
     let t = eval_clip_time(clip, time);
     let ctx = eval::eval_context(clip, time, fps);
     tnr.animate(&mut |name, v| {
-        let kfs = clip.effect_keyframes.get(&format!("{i}:{name}")).map(|v| v.as_slice()).unwrap_or(&[]);
-        eval::eval_effect_with_modifiers(kfs, &clip.param_modifiers, i, name, t, v, &ctx)
+        let kfs = clip.effect_keyframes().get(&format!("{i}:{name}")).map(|v| v.as_slice()).unwrap_or(&[]);
+        eval::eval_effect_with_modifiers(kfs, clip.param_modifiers(), i, name, t, v, &ctx)
     });
     match tnr {
         BuiltinEffect::TemporalDenoise { strength, threshold } if strength > 0.0 => Some((strength, threshold)),
@@ -3809,7 +3809,7 @@ mod temporal_denoise_placement_tests {
         let baked = |own: Vec<BuiltinEffect>, keys: Vec<klipp_core::Keyframe>, track_fx: Vec<BuiltinEffect>| {
             let mut c = clip_with(own);
             c.kind = klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() };
-            c.opacity_keyframes = keys;
+            c.edit_opacity_keyframes(|v| *v = keys);
             let mut t = Track::new("V1", TrackKind::Video);
             t.effects.set_video_effect_list(track_fx, vec![]);
             t.clips.push(c);

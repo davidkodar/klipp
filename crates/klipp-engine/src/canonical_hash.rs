@@ -401,7 +401,7 @@ mod tests {
                 p.reverse();
             }
             for id in p {
-                c.param_modifiers.insert(id.clone(), Default::default());
+                c.edit_param_modifiers(|v| v.insert(id.clone(), Default::default()));
             }
             c
         };

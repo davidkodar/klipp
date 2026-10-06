@@ -317,8 +317,8 @@ fn take_sound_settings(clip: &mut Clip, picture: &Clip) {
     // effect-targeted ones animate the picture's effects, which a sound
     // clip doesn't carry (#1074).
     let effect = |id: &klipp_core::ParamId| matches!(id, klipp_core::ParamId::Effect { .. });
-    clip.param_modifiers.retain(|id, _| effect(id));
-    clip.param_modifiers.extend(picture.param_modifiers.iter().filter(|(id, _)| !effect(id)).map(|(id, m)| (id.clone(), m.clone())));
+    clip.edit_param_modifiers(|v| v.retain(|id, _| effect(id)));
+    clip.edit_param_modifiers(|v| v.extend(picture.param_modifiers.0.iter().filter(|(id, _)| !effect(id)).map(|(id, m)| (id.clone(), m.clone()))));
 }
 
 /// Sound automation is written in seconds from the clip's start; a slice
@@ -665,8 +665,8 @@ mod tests {
         v.effects.grade = Some(track_grade.into());
         let mut a = Clip::media(MediaId::new(), t(0), t(24), t(0), t(24));
         a.set_effect_list(vec![E::Opacity { value: 0.5 }], vec![false]);
-        a.effect_keyframes.insert("0:value".into(), vec![klipp_core::Keyframe { time_secs: 0.0, value: 0.2, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }]);
-        a.param_modifiers.insert(klipp_core::ParamId::Effect { effect_index: 0, param_name: "value".into() }, klipp_core::ModifierStack::default());
+        a.edit_effect_keyframes(|v| v.insert("0:value".into(), vec![klipp_core::Keyframe { time_secs: 0.0, value: 0.2, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }]));
+        a.edit_param_modifiers(|v| v.insert(klipp_core::ParamId::Effect { effect_index: 0, param_name: "value".into() }, klipp_core::ModifierStack::default()));
         a.grade_group = Some(group.id);
         let own_node = corrector(&a.node_graph.0);
         let mut adjustment = Clip::media(MediaId::new(), t(24), t(48), t(0), t(24));
@@ -688,9 +688,9 @@ mod tests {
         let own = &before.tracks[0].clips[0];
         // Effect keyframes by key with their values, and modifier keys.
         let animation = |c: &Clip| {
-            let mut keys: Vec<(String, Vec<f32>)> = c.effect_keyframes.iter().map(|(k, v)| (k.clone(), v.iter().map(|f| f.value).collect())).collect();
+            let mut keys: Vec<(String, Vec<f32>)> = c.effect_keyframes().iter().map(|(k, v)| (k.clone(), v.iter().map(|f| f.value).collect())).collect();
             keys.sort_by(|x, y| x.0.cmp(&y.0));
-            let mut mods: Vec<String> = c.param_modifiers.keys().map(|k| format!("{k:?}")).collect();
+            let mut mods: Vec<String> = c.param_modifiers().keys().map(|k| format!("{k:?}")).collect();
             mods.sort();
             (keys, mods)
         };
@@ -1281,8 +1281,8 @@ mod tests {
         // The picture's sound modifier goes with its sound; its effect's
         // modifier animates a picture the sound clip doesn't draw (#1074).
         let modifier = klipp_core::ModifierStack::default();
-        vc.param_modifiers.insert(klipp_core::ParamId::Volume, modifier.clone());
-        vc.param_modifiers.insert(klipp_core::ParamId::Effect { effect_index: 0, param_name: "radius".into() }, modifier);
+        vc.edit_param_modifiers(|v| v.insert(klipp_core::ParamId::Volume, modifier.clone()));
+        vc.edit_param_modifiers(|v| v.insert(klipp_core::ParamId::Effect { effect_index: 0, param_name: "radius".into() }, modifier));
         v.clips.push(vc);
         a.clips.push(ac);
         scene.tracks = vec![v, a];
@@ -1300,7 +1300,7 @@ mod tests {
         let audio_half = &instance.tracks[1].clips[0];
         assert_eq!(sound.clips[0].id, audio_half.id, "at the instance's id");
         assert_eq!(sound.clips[0].timeline_out, t(24), "sliced to the precomposition's window");
-        let keys: Vec<&klipp_core::ParamId> = sound.clips[0].param_modifiers.keys().collect();
+        let keys: Vec<&klipp_core::ParamId> = sound.clips[0].param_modifiers().keys().collect();
         assert_eq!(keys, [&klipp_core::ParamId::Volume], "the picture's sound modifier, not its effect's");
     }
 

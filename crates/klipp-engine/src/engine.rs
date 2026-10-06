@@ -3955,9 +3955,9 @@ impl PlaybackEngine {
                         seed: audio_clip.id.0.as_u64_pair().0,
                     };
 
-                    let mut clip_volume = eval_with_modifiers(&audio_clip.volume_keyframes, &audio_clip.param_modifiers, &klipp_core::ParamId::Volume, clip_time_secs, audio_clip.volume, &audio_eval_ctx);
-                    let mut clip_pan = eval_with_modifiers(&audio_clip.pan_keyframes, &audio_clip.param_modifiers, &klipp_core::ParamId::Pan, clip_time_secs, audio_clip.pan, &audio_eval_ctx);
-                    let mut clip_gain = eval_with_modifiers(&audio_clip.gain_keyframes, &audio_clip.param_modifiers, &klipp_core::ParamId::Gain, clip_time_secs, audio_clip.gain, &audio_eval_ctx);
+                    let mut clip_volume = eval_with_modifiers(&audio_clip.volume_keyframes, audio_clip.param_modifiers(), &klipp_core::ParamId::Volume, clip_time_secs, audio_clip.volume, &audio_eval_ctx);
+                    let mut clip_pan = eval_with_modifiers(&audio_clip.pan_keyframes, audio_clip.param_modifiers(), &klipp_core::ParamId::Pan, clip_time_secs, audio_clip.pan, &audio_eval_ctx);
+                    let mut clip_gain = eval_with_modifiers(&audio_clip.gain_keyframes, audio_clip.param_modifiers(), &klipp_core::ParamId::Gain, clip_time_secs, audio_clip.gain, &audio_eval_ctx);
                     let mut fade_in = audio_clip.fade_in_secs;
                     let mut fade_out = audio_clip.fade_out_secs;
                     let mut fi_curve = audio_clip.fade_in_curve;
@@ -3980,9 +3980,9 @@ impl PlaybackEngine {
                                     fps: self.fps.as_f64(),
                                     seed: video_clip.id.0.as_u64_pair().0,
                                 };
-                                clip_volume = eval_with_modifiers(&video_clip.volume_keyframes, &video_clip.param_modifiers, &klipp_core::ParamId::Volume, linked_clip_time, video_clip.volume, &linked_eval_ctx);
-                                clip_pan = eval_with_modifiers(&video_clip.pan_keyframes, &video_clip.param_modifiers, &klipp_core::ParamId::Pan, linked_clip_time, video_clip.pan, &linked_eval_ctx);
-                                clip_gain = eval_with_modifiers(&video_clip.gain_keyframes, &video_clip.param_modifiers, &klipp_core::ParamId::Gain, linked_clip_time, video_clip.gain, &linked_eval_ctx);
+                                clip_volume = eval_with_modifiers(&video_clip.volume_keyframes, video_clip.param_modifiers(), &klipp_core::ParamId::Volume, linked_clip_time, video_clip.volume, &linked_eval_ctx);
+                                clip_pan = eval_with_modifiers(&video_clip.pan_keyframes, video_clip.param_modifiers(), &klipp_core::ParamId::Pan, linked_clip_time, video_clip.pan, &linked_eval_ctx);
+                                clip_gain = eval_with_modifiers(&video_clip.gain_keyframes, video_clip.param_modifiers(), &klipp_core::ParamId::Gain, linked_clip_time, video_clip.gain, &linked_eval_ctx);
                                 fade_in = video_clip.fade_in_secs;
                                 fade_out = video_clip.fade_out_secs;
                                 fi_curve = video_clip.fade_in_curve;
@@ -4281,7 +4281,7 @@ fn envelope_of(seq: &klipp_timeline::Sequence, sounding: &klipp_timeline::crossf
         fps: seq.fps.as_f64(),
         seed: settings.id.0.as_u64_pair().0,
     };
-    let gain = eval_with_modifiers(&settings.gain_keyframes, &settings.param_modifiers, &klipp_core::ParamId::Gain, clip_time, settings.gain, &ctx);
+    let gain = eval_with_modifiers(&settings.gain_keyframes, settings.param_modifiers(), &klipp_core::ParamId::Gain, clip_time, settings.gain, &ctx);
     Envelope {
         source_in_secs: clip.source_in.to_secs_f64() - e.head_secs,
         duration_secs: e.head_secs + clip.duration().to_secs_f64() + e.tail_secs,

@@ -147,11 +147,11 @@ impl Clip {
             return None;
         }
         if at < len
-            && (self.effect_keyframes.keys().any(|key| {
+            && (self.effect_keyframes().keys().any(|key| {
                 key.split_once(':')
                     .and_then(|(i, _)| i.parse::<usize>().ok())
                     == Some(usize::MAX)
-            }) || self.param_modifiers.keys().any(|id| {
+            }) || self.param_modifiers().keys().any(|id| {
                 matches!(
                     id,
                     ParamId::Effect {
@@ -217,8 +217,8 @@ impl Clip {
         self.effect_list.effect_ids.ids = (0..effects.len()).map(|_| EffectId::fresh()).collect();
         self.effect_list.builtin_effects_enabled = vec![true; effects.len()];
         self.effect_list.builtin_effects = effects;
-        self.effect_keyframes.clear();
-        self.param_modifiers
+        self.edit_effect_keyframes(|v| v.clear());
+        self.param_modifiers.0
             .retain(|id, _| !matches!(id, ParamId::Effect { .. }));
     }
 
@@ -281,7 +281,7 @@ impl Clip {
     /// Re-key effect keyframes and modifiers by `map` (old place to new,
     /// `None` to drop them). Keys that do not name a place are kept.
     fn remap_effect_slots(&mut self, map: impl Fn(usize) -> Option<usize>) {
-        self.effect_keyframes = std::mem::take(&mut self.effect_keyframes)
+        self.effect_keyframes.0 = std::mem::take(&mut self.effect_keyframes.0)
             .into_iter()
             .filter_map(|(key, kfs)| {
                 match key
@@ -293,7 +293,7 @@ impl Clip {
                 }
             })
             .collect();
-        self.param_modifiers = std::mem::take(&mut self.param_modifiers)
+        self.param_modifiers.0 = std::mem::take(&mut self.param_modifiers.0)
             .into_iter()
             .filter_map(|(id, stack)| match id {
                 ParamId::Effect {
@@ -342,7 +342,7 @@ mod tests {
         ];
         c.effect_list.builtin_effects_enabled = vec![true, false, true];
         for (i, name) in [(0, "radius"), (1, "amount"), (2, "amount")] {
-            c.effect_keyframes.insert(
+            c.effect_keyframes.0.insert(
                 format!("{i}:{name}"),
                 vec![Keyframe {
                     time_secs: 0.0,
@@ -352,7 +352,7 @@ mod tests {
                     tangent_in: (0.0, 0.0),
                 }],
             );
-            c.param_modifiers.insert(
+            c.param_modifiers.0.insert(
                 ParamId::Effect {
                     effect_index: i,
                     param_name: name.into(),
@@ -360,7 +360,7 @@ mod tests {
                 ModifierStack::default(),
             );
         }
-        c.param_modifiers
+        c.param_modifiers.0
             .insert(ParamId::Opacity, ModifierStack::default());
         c
     }
@@ -375,7 +375,7 @@ mod tests {
                     BuiltinEffect::GaussianBlur { .. } => "radius",
                     _ => "amount",
                 };
-                c.effect_keyframes
+                c.effect_keyframes.0
                     .get(&format!("{i}:{name}"))
                     .map(|k| k[0].value)
             })
@@ -384,7 +384,7 @@ mod tests {
 
     fn modified(c: &Clip) -> Vec<usize> {
         let mut v: Vec<usize> = c
-            .param_modifiers
+            .param_modifiers.0
             .keys()
             .filter_map(|p| match p {
                 ParamId::Effect { effect_index, .. } => Some(*effect_index),
@@ -405,13 +405,13 @@ mod tests {
         assert_eq!(c.effect_list.builtin_effects_enabled, vec![false, true]);
         assert_eq!(keyed(&c), vec![Some(10.0), Some(20.0)]);
         assert_eq!(
-            c.effect_keyframes.len(),
+            c.effect_keyframes().len(),
             2,
             "the removed effect's keyframes stayed"
         );
         assert_eq!(modified(&c), vec![0, 1]);
         assert!(
-            c.param_modifiers.contains_key(&ParamId::Opacity),
+            c.param_modifiers().contains_key(&ParamId::Opacity),
             "a clip modifier was dropped"
         );
         assert_eq!(c.remove_builtin_effect(5), None);
@@ -515,19 +515,19 @@ impl Clip {
     /// none. Stored under `"{index}:{param}"`.
     pub fn effect_keyframes_mut(&mut self, id: EffectId, param: &str) -> Option<&mut Vec<klipp_core::Keyframe>> {
         let index = self.index_of(id)?;
-        Some(self.effect_keyframes.entry(format!("{index}:{param}")).or_default())
+        Some(self.effect_keyframes.0.entry(format!("{index}:{param}")).or_default())
     }
 
     /// The keyframes of the effect's `param`, if it has any; creates none.
     pub fn existing_effect_keyframes_mut(&mut self, id: EffectId, param: &str) -> Option<&mut Vec<klipp_core::Keyframe>> {
         let index = self.index_of(id)?;
-        self.effect_keyframes.get_mut(&format!("{index}:{param}"))
+        self.effect_keyframes.0.get_mut(&format!("{index}:{param}"))
     }
 
     /// Take the keyframes of the effect's `param` away.
     pub fn remove_effect_keyframes(&mut self, id: EffectId, param: &str) -> Option<Vec<klipp_core::Keyframe>> {
         let index = self.index_of(id)?;
-        self.effect_keyframes.remove(&format!("{index}:{param}"))
+        self.effect_keyframes.0.remove(&format!("{index}:{param}"))
     }
 
     /// The modifier stack of the effect's `param`, created empty when it
@@ -535,26 +535,26 @@ impl Clip {
     pub fn effect_modifiers_mut(&mut self, id: EffectId, param: &str) -> Option<&mut klipp_core::ModifierStack> {
         let index = self.index_of(id)?;
         let key = ParamId::Effect { effect_index: index, param_name: param.to_owned() };
-        Some(self.param_modifiers.entry(key).or_default())
+        Some(self.param_modifiers.0.entry(key).or_default())
     }
 
     /// The modifier stack of the effect's `param`, if it has one; creates
     /// none.
     pub fn existing_effect_modifiers_mut(&mut self, id: EffectId, param: &str) -> Option<&mut klipp_core::ModifierStack> {
         let index = self.index_of(id)?;
-        self.param_modifiers.get_mut(&ParamId::Effect { effect_index: index, param_name: param.to_owned() })
+        self.param_modifiers.0.get_mut(&ParamId::Effect { effect_index: index, param_name: param.to_owned() })
     }
 
     /// Take the modifier stack of the effect's `param` away.
     pub fn remove_effect_modifiers(&mut self, id: EffectId, param: &str) -> Option<klipp_core::ModifierStack> {
         let index = self.index_of(id)?;
-        self.param_modifiers.remove(&ParamId::Effect { effect_index: index, param_name: param.to_owned() })
+        self.param_modifiers.0.remove(&ParamId::Effect { effect_index: index, param_name: param.to_owned() })
     }
 
     /// Every effect keyframe at once, as a snapshot took them (a keyframe
     /// edit's undo): the list, flags, ids and modifiers stay as they are.
     pub fn restore_effect_keyframes(&mut self, keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>) {
-        self.effect_keyframes = keyframes;
+        self.edit_effect_keyframes(|v| *v = keyframes);
     }
 
     /// The whole effect state, ids included, for an undo to restore.
@@ -564,9 +564,9 @@ impl Clip {
             effects: self.effect_list.builtin_effects.clone(),
             enabled: self.effect_list.builtin_effects_enabled.clone(),
             ids: self.effect_list.effect_ids.ids.clone(),
-            keyframes: self.effect_keyframes.clone(),
+            keyframes: self.effect_keyframes().clone(),
             modifiers: self
-                .param_modifiers
+                .param_modifiers.0
                 .iter()
                 .filter(|(id, _)| matches!(id, ParamId::Effect { .. }))
                 .map(|(id, m)| (id.clone(), m.clone()))
@@ -582,8 +582,8 @@ impl Clip {
         self.effect_list.builtin_effects_enabled = state.enabled;
         // The ids belong to this clip, whose snapshot they were.
         self.effect_list.effect_ids = EffectIds { owner: Some(self.id), ids: state.ids };
-        self.effect_keyframes = state.keyframes;
-        self.param_modifiers.retain(|id, _| !matches!(id, ParamId::Effect { .. }));
-        self.param_modifiers.extend(state.modifiers);
+        self.edit_effect_keyframes(|v| *v = state.keyframes);
+        self.edit_param_modifiers(|v| v.retain(|id, _| !matches!(id, ParamId::Effect { .. })));
+        self.edit_param_modifiers(|v| v.extend(state.modifiers));
     }
 }

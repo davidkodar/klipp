@@ -782,13 +782,13 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     volume_keyframes: c.volume_keyframes.clone().unwrap_or_default(),
                     pan_keyframes: c.pan_keyframes.clone().unwrap_or_default(),
                     gain_keyframes: c.gain_keyframes.clone().unwrap_or_default(),
-                    opacity_keyframes: c.opacity_keyframes.clone().unwrap_or_default(),
-                    transform_pos_x_keyframes: c.transform_pos_x_keyframes.clone().unwrap_or_default(),
-                    transform_pos_y_keyframes: c.transform_pos_y_keyframes.clone().unwrap_or_default(),
-                    transform_scale_keyframes: c.transform_scale_keyframes.clone().unwrap_or_default(),
-                    transform_rotation_keyframes: c.transform_rotation_keyframes.clone().unwrap_or_default(),
-                    transform_tilt_x_keyframes: c.transform_tilt_x_keyframes.clone().unwrap_or_default(),
-                    transform_tilt_y_keyframes: c.transform_tilt_y_keyframes.clone().unwrap_or_default(),
+                    opacity_keyframes: c.opacity_keyframes.clone().unwrap_or_default().into(),
+                    transform_pos_x_keyframes: c.transform_pos_x_keyframes.clone().unwrap_or_default().into(),
+                    transform_pos_y_keyframes: c.transform_pos_y_keyframes.clone().unwrap_or_default().into(),
+                    transform_scale_keyframes: c.transform_scale_keyframes.clone().unwrap_or_default().into(),
+                    transform_rotation_keyframes: c.transform_rotation_keyframes.clone().unwrap_or_default().into(),
+                    transform_tilt_x_keyframes: c.transform_tilt_x_keyframes.clone().unwrap_or_default().into(),
+                    transform_tilt_y_keyframes: c.transform_tilt_y_keyframes.clone().unwrap_or_default().into(),
                     matte_feather_keyframes: c.matte_feather_keyframes.clone().unwrap_or_default(),
                     matte_choke_keyframes: c.matte_choke_keyframes.clone().unwrap_or_default(),
                     clip_markers: c.clip_markers.as_ref().map(|markers| {
@@ -806,12 +806,12 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                             comment: m.comment.clone(),
                         }).collect()
                     }).unwrap_or_default(),
-                    effect_keyframes: c.effect_keyframes.clone().unwrap_or_default(),
+                    effect_keyframes: (c.effect_keyframes.clone().unwrap_or_default()).into(),
                     role: c.role.unwrap_or_default(),
                     param_modifiers: c.param_modifiers.as_ref().map(|m| {
                         m.iter().filter_map(|(k, v)| {
                             klipp_core::ParamId::from_key(k).map(|pid| (pid, v.clone()))
-                        }).collect()
+                        }).collect::<std::collections::HashMap<_, _>>().into()
                     }).unwrap_or_default(),
                     speed: c.speed.unwrap_or(1.0),
                     speed_keyframes: c.speed_keyframes.clone().unwrap_or_default(),
@@ -871,11 +871,11 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     }
                     let m = td.migrate_legacy_animation();
                     if m.clear_clip_keyframes {
-                        clip.opacity_keyframes.clear();
-                        clip.transform_pos_x_keyframes.clear();
-                        clip.transform_pos_y_keyframes.clear();
-                        clip.transform_scale_keyframes.clear();
-                        clip.transform_rotation_keyframes.clear();
+                        clip.edit_opacity_keyframes(|v| v.clear());
+                        clip.edit_transform_pos_x_keyframes(|v| v.clear());
+                        clip.edit_transform_pos_y_keyframes(|v| v.clear());
+                        clip.edit_transform_scale_keyframes(|v| v.clear());
+                        clip.edit_transform_rotation_keyframes(|v| v.clear());
                     }
                 }
                 // Self-heal orphaned mask trackers from older

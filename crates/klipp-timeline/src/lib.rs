@@ -44,6 +44,8 @@
 //!   magnetic entry points for any new call.
 
 mod brief;
+mod clip_anim;
+pub use clip_anim::{EffectKeyframes, Keyframes, ParamModifiers};
 mod edit_plan;
 mod effect_slots;
 mod other_effect_slots;

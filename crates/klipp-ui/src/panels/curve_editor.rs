@@ -533,17 +533,17 @@ impl CurveEditorPanel {
                     CurveParam::Audio(AudioParam::Volume) => clip.volume_keyframes.clone(),
                     CurveParam::Audio(AudioParam::Pan) => clip.pan_keyframes.clone(),
                     CurveParam::Audio(AudioParam::Gain) => clip.gain_keyframes.clone(),
-                    CurveParam::Video(VideoParam::Opacity) => clip.opacity_keyframes.clone(),
-                    CurveParam::Video(VideoParam::PositionX) => clip.transform_pos_x_keyframes.clone(),
-                    CurveParam::Video(VideoParam::PositionY) => clip.transform_pos_y_keyframes.clone(),
-                    CurveParam::Video(VideoParam::Scale) => clip.transform_scale_keyframes.clone(),
-                    CurveParam::Video(VideoParam::Rotation) => clip.transform_rotation_keyframes.clone(),
-                    CurveParam::Video(VideoParam::TiltX) => clip.transform_tilt_x_keyframes.clone(),
-                    CurveParam::Video(VideoParam::TiltY) => clip.transform_tilt_y_keyframes.clone(),
+                    CurveParam::Video(VideoParam::Opacity) => clip.opacity_keyframes().to_vec(),
+                    CurveParam::Video(VideoParam::PositionX) => clip.transform_pos_x_keyframes().to_vec(),
+                    CurveParam::Video(VideoParam::PositionY) => clip.transform_pos_y_keyframes().to_vec(),
+                    CurveParam::Video(VideoParam::Scale) => clip.transform_scale_keyframes().to_vec(),
+                    CurveParam::Video(VideoParam::Rotation) => clip.transform_rotation_keyframes().to_vec(),
+                    CurveParam::Video(VideoParam::TiltX) => clip.transform_tilt_x_keyframes().to_vec(),
+                    CurveParam::Video(VideoParam::TiltY) => clip.transform_tilt_y_keyframes().to_vec(),
                     CurveParam::Video(VideoParam::MatteFeather) => clip.matte_feather_keyframes.clone(),
                     CurveParam::Video(VideoParam::MatteChoke) => clip.matte_choke_keyframes.clone(),
                     CurveParam::Speed => clip.speed_keyframes.clone(),
-                    CurveParam::Effect(key) => clip.effect_keyframes.get(key).cloned().unwrap_or_default(),
+                    CurveParam::Effect(key) => clip.effect_keyframes().get(key).cloned().unwrap_or_default(),
                     CurveParam::AudioEffect(key) => clip.audio_effect_keyframes.get(key).cloned().unwrap_or_default(),
                     CurveParam::Camera(_) => Vec::new(),
                 };
@@ -628,7 +628,7 @@ impl CurveEditorPanel {
         if let Some(cid) = state.selected_clip {
             let seq = &state.sequences[state.active_sequence_idx];
             if let Some(clip) = seq.all_clips().find(|c| c.id == cid) {
-                let mut effect_keys: Vec<String> = clip.effect_keyframes.keys().cloned().collect();
+                let mut effect_keys: Vec<String> = clip.effect_keyframes().keys().cloned().collect();
                 effect_keys.sort();
                 for key in effect_keys {
                     params.push(CurveParam::Effect(key));

@@ -1633,9 +1633,9 @@ mod effect_writer_tests {
         let mut clip = klipp_timeline::Clip::media(MediaId::new(), Timecode::zero(), Timecode { value: 48, rate: 24 }, Timecode::zero(), Timecode { value: 48, rate: 24 });
         clip.set_effects(vec![blur(2.0), vignette(0.4)]);
         let key = |v: f32| vec![Keyframe { time_secs: 0.0, value: v, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }];
-        clip.effect_keyframes.insert("0:radius".into(), key(3.0));
-        clip.effect_keyframes.insert("1:amount".into(), key(0.7));
-        clip.param_modifiers.insert(ParamId::Effect { effect_index: 1, param_name: "amount".into() }, ModifierStack::default());
+        clip.edit_effect_keyframes(|v| v.insert("0:radius".into(), key(3.0)));
+        clip.edit_effect_keyframes(|v| v.insert("1:amount".into(), key(0.7)));
+        clip.edit_param_modifiers(|v| v.insert(ParamId::Effect { effect_index: 1, param_name: "amount".into() }, ModifierStack::default()));
         let id = clip.id;
         seq.tracks[0].clips.push(clip);
         (vec![seq], id)

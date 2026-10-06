@@ -1240,7 +1240,7 @@ mod effect_comparison_tests {
     fn state(clip: &Clip) -> serde_json::Value {
         // ParamId is an enum key; the project writer supplies its string
         // encoding, so inspect the stacks separately from Clip's serde.
-        let modifiers: std::collections::BTreeMap<_, _> = clip.param_modifiers.iter()
+        let modifiers: std::collections::BTreeMap<_, _> = clip.param_modifiers().iter()
             .map(|(id, stack)| (format!("{id:?}"), serde_json::to_value(stack).unwrap()))
             .collect();
         serde_json::json!({ "effects": clip.builtin_effects(), "enabled": clip.builtin_effects_enabled(),

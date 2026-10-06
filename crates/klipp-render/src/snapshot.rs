@@ -273,7 +273,7 @@ impl AudioClipShape {
             volume_keyframes: clip.volume_keyframes.clone(),
             gain_keyframes: clip.gain_keyframes.clone(),
             pan_keyframes: clip.pan_keyframes.clone(),
-            param_modifiers: clip.param_modifiers.clone(),
+            param_modifiers: clip.param_modifiers().clone(),
             seed: clip.id.0.as_u64_pair().0,
             head_secs: 0.0,
             tail_secs: 0.0,

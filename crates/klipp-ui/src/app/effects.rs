@@ -708,9 +708,7 @@ impl KlippApp {
             AppCommand::AddModifier { clip_id, ref param, ref modifier } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(stack) = modifiers_mut(clip, param, true) {
-                            stack.modifiers.push(modifier.clone());
-                        }
+                        with_modifiers(clip, param, true, |stack| stack.modifiers.push(modifier.clone()));
                         break;
                     }
                 }
@@ -722,11 +720,14 @@ impl KlippApp {
             AppCommand::RemoveModifier { clip_id, ref param, modifier_index } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(stack) = modifiers_mut(clip, param, false) {
+                        let emptied = with_modifiers(clip, param, false, |stack| {
                             if *modifier_index < stack.modifiers.len() {
                                 stack.modifiers.remove(*modifier_index);
                             }
-                            if stack.modifiers.is_empty() {
+                            stack.modifiers.is_empty()
+                        });
+                        if emptied == Some(true) {
+                            {
                                 remove_modifiers(clip, param);
                             }
                         }
@@ -741,11 +742,11 @@ impl KlippApp {
             AppCommand::UpdateModifier { clip_id, ref param, modifier_index, ref modifier } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(stack) = modifiers_mut(clip, param, false) {
+                        with_modifiers(clip, param, false, |stack| {
                             if let Some(m) = stack.modifiers.get_mut(*modifier_index) {
                                 *m = modifier.clone();
                             }
-                        }
+                        });
                         break;
                     }
                 }
@@ -757,7 +758,7 @@ impl KlippApp {
             AppCommand::ToggleModifier { clip_id, ref param, modifier_index } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(stack) = modifiers_mut(clip, param, false) {
+                        with_modifiers(clip, param, false, |stack| {
                             if let Some(m) = stack.modifiers.get_mut(*modifier_index) {
                                 match m {
                                     klipp_core::Modifier::Oscillate { enabled, .. } |
@@ -771,7 +772,7 @@ impl KlippApp {
                                     }
                                 }
                             }
-                        }
+                        });
                         break;
                     }
                 }
@@ -1019,22 +1020,23 @@ mod effects_undo_tests {
 
 /// The modifier stack of `param` on `clip`: an effect parameter's through
 /// the effect's id (keyed as the saved form), the clip's own directly.
-/// `create` makes an empty one where there is none. `None` for an effect
-/// index past the list, which names no effect.
-fn modifiers_mut<'c>(clip: &'c mut klipp_timeline::Clip, param: &klipp_core::ParamId, create: bool) -> Option<&'c mut klipp_core::ModifierStack> {
+/// `create` makes an empty one where there is none. Changed in `f`, which
+/// gives back what `f` returns; `None` where there is no stack (and none was
+/// made), and for an effect index past the list, which names no effect.
+fn with_modifiers<R>(clip: &mut klipp_timeline::Clip, param: &klipp_core::ParamId, create: bool, f: impl FnOnce(&mut klipp_core::ModifierStack) -> R) -> Option<R> {
     match param {
         klipp_core::ParamId::Effect { effect_index, param_name } => {
             // An index past the list names no effect: nothing is kept there
             // to animate whichever effect lands at it later.
             let id = clip.effect_id_at(*effect_index)?;
             if create {
-                clip.effect_modifiers_mut(id, param_name)
+                clip.effect_modifiers_mut(id, param_name).map(f)
             } else {
-                clip.existing_effect_modifiers_mut(id, param_name)
+                clip.existing_effect_modifiers_mut(id, param_name).map(f)
             }
         }
-        _ if create => Some(clip.param_modifiers.entry(param.clone()).or_default()),
-        _ => clip.param_modifiers.get_mut(param),
+        _ if create => Some(clip.edit_param_modifiers(|v| f(v.entry(param.clone()).or_default()))),
+        _ => clip.edit_param_modifiers(|v| v.get_mut(param).map(f)),
     }
 }
 
@@ -1047,14 +1049,14 @@ fn remove_modifiers(clip: &mut klipp_timeline::Clip, param: &klipp_core::ParamId
             }
         }
         _ => {
-            clip.param_modifiers.remove(param);
+            clip.edit_param_modifiers(|v| v.remove(param));
         }
     }
 }
 
 #[cfg(test)]
 mod modifier_target_tests {
-    use super::{modifiers_mut, remove_modifiers};
+    use super::{with_modifiers, remove_modifiers};
     use klipp_core::{ModifierStack, ParamId};
 
     fn clip() -> klipp_timeline::Clip {
@@ -1085,13 +1087,13 @@ mod modifier_target_tests {
     fn stacks_land_on_their_effect_or_the_clip() {
         let mut c = clip();
         c.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 });
-        assert!(modifiers_mut(&mut c, &effect_param(0), true).is_some());
-        assert!(c.param_modifiers.contains_key(&effect_param(0)));
-        assert!(modifiers_mut(&mut c, &ParamId::Opacity, true).is_some());
-        assert!(c.param_modifiers.contains_key(&ParamId::Opacity));
-        assert!(modifiers_mut(&mut c, &ParamId::Scale, false).is_none(), "asking without create makes nothing");
+        assert!(with_modifiers(&mut c, &effect_param(0), true, |_| ()).is_some());
+        assert!(c.param_modifiers().contains_key(&effect_param(0)));
+        assert!(with_modifiers(&mut c, &ParamId::Opacity, true, |_| ()).is_some());
+        assert!(c.param_modifiers().contains_key(&ParamId::Opacity));
+        assert!(with_modifiers(&mut c, &ParamId::Scale, false, |_| ()).is_none(), "asking without create makes nothing");
         remove_modifiers(&mut c, &effect_param(0));
-        assert!(!c.param_modifiers.contains_key(&effect_param(0)));
+        assert!(!c.param_modifiers().contains_key(&effect_param(0)));
     }
 
     /// An index past the list names no effect: no stack, and no keyframe
@@ -1101,8 +1103,8 @@ mod modifier_target_tests {
     fn an_index_past_the_list_starts_nothing() {
         let mut c = clip();
         c.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 });
-        assert!(modifiers_mut(&mut c, &effect_param(3), true).is_none());
-        assert!(c.param_modifiers.is_empty());
+        assert!(with_modifiers(&mut c, &effect_param(3), true, |_| ()).is_none());
+        assert!(c.param_modifiers().is_empty());
         // The keyframe commands resolve the same way.
         assert!(c.effect_id_at(3).is_none());
         // Once an effect does land at that index, it starts clean.
@@ -1111,7 +1113,7 @@ mod modifier_target_tests {
         }
         let id = c.effect_id_at(3).unwrap();
         assert!(c.existing_effect_modifiers_mut(id, "radius").is_none());
-        let _: Option<&mut ModifierStack> = modifiers_mut(&mut c, &effect_param(3), false);
-        assert!(c.param_modifiers.is_empty());
+        let _: Option<()> = with_modifiers(&mut c, &effect_param(3), false, |_: &mut ModifierStack| ());
+        assert!(c.param_modifiers().is_empty());
     }
 }

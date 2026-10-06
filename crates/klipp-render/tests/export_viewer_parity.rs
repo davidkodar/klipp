@@ -420,10 +420,10 @@ fn stacked_tracks_mix_in_linear_light() {
 fn a_precomposition_exports_as_the_composed_scene_faded_once() {
     if !ffmpeg_ok() { return; }
     let mut red = solid([255, 0, 0], 0, FRAMES as i64);
-    klipp_core::keyframe::upsert_keyframe(&mut red.opacity_keyframes, 0.0, 0.5);
+    red.edit_opacity_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.5));
     let scene = timeline(vec![vec![red], vec![solid([0, 255, 0], 0, FRAMES as i64)]]).sequence;
     let mut pre = base_clip(klipp_timeline::ClipKind::Precomposition { sequence_id: scene.id });
-    klipp_core::keyframe::upsert_keyframe(&mut pre.opacity_keyframes, 0.0, 0.5);
+    pre.edit_opacity_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.5));
     let mut v = timeline(vec![vec![pre]]);
     v.sequence = klipp_timeline::flatten::flatten_sequence(&v.sequence, &[v.sequence.clone(), scene]);
     let out = tmp("precomp_faded.mp4");

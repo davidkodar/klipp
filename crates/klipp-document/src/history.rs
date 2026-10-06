@@ -76,14 +76,14 @@ impl KeyframeSnapshot {
             volume_keyframes: clip.volume_keyframes.clone(),
             pan_keyframes: clip.pan_keyframes.clone(),
             gain_keyframes: clip.gain_keyframes.clone(),
-            opacity_keyframes: clip.opacity_keyframes.clone(),
-            transform_pos_x_keyframes: clip.transform_pos_x_keyframes.clone(),
-            transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
-            transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
-            transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
-            transform_tilt_x_keyframes: clip.transform_tilt_x_keyframes.clone(),
-            transform_tilt_y_keyframes: clip.transform_tilt_y_keyframes.clone(),
-            effect_keyframes: clip.effect_keyframes.clone(),
+            opacity_keyframes: clip.opacity_keyframes().to_vec(),
+            transform_pos_x_keyframes: clip.transform_pos_x_keyframes().to_vec(),
+            transform_pos_y_keyframes: clip.transform_pos_y_keyframes().to_vec(),
+            transform_scale_keyframes: clip.transform_scale_keyframes().to_vec(),
+            transform_rotation_keyframes: clip.transform_rotation_keyframes().to_vec(),
+            transform_tilt_x_keyframes: clip.transform_tilt_x_keyframes().to_vec(),
+            transform_tilt_y_keyframes: clip.transform_tilt_y_keyframes().to_vec(),
+            effect_keyframes: clip.effect_keyframes().clone(),
             audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
             speed_keyframes: clip.speed_keyframes.clone(),
         }
@@ -94,13 +94,13 @@ impl KeyframeSnapshot {
         clip.volume_keyframes = self.volume_keyframes.clone();
         clip.pan_keyframes = self.pan_keyframes.clone();
         clip.gain_keyframes = self.gain_keyframes.clone();
-        clip.opacity_keyframes = self.opacity_keyframes.clone();
-        clip.transform_pos_x_keyframes = self.transform_pos_x_keyframes.clone();
-        clip.transform_pos_y_keyframes = self.transform_pos_y_keyframes.clone();
-        clip.transform_scale_keyframes = self.transform_scale_keyframes.clone();
-        clip.transform_rotation_keyframes = self.transform_rotation_keyframes.clone();
-        clip.transform_tilt_x_keyframes = self.transform_tilt_x_keyframes.clone();
-        clip.transform_tilt_y_keyframes = self.transform_tilt_y_keyframes.clone();
+        clip.opacity_keyframes = self.opacity_keyframes.clone().into();
+        clip.transform_pos_x_keyframes = self.transform_pos_x_keyframes.clone().into();
+        clip.transform_pos_y_keyframes = self.transform_pos_y_keyframes.clone().into();
+        clip.transform_scale_keyframes = self.transform_scale_keyframes.clone().into();
+        clip.transform_rotation_keyframes = self.transform_rotation_keyframes.clone().into();
+        clip.transform_tilt_x_keyframes = self.transform_tilt_x_keyframes.clone().into();
+        clip.transform_tilt_y_keyframes = self.transform_tilt_y_keyframes.clone().into();
         clip.restore_effect_keyframes(self.effect_keyframes.clone());
         clip.audio_effect_keyframes = self.audio_effect_keyframes.clone();
         clip.speed_keyframes = self.speed_keyframes.clone();

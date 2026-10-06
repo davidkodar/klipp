@@ -62,7 +62,7 @@ fn show_behavior_for_param(
     cmds: &mut Vec<AppCommand>,
 ) {
     {
-        let stack = clip.param_modifiers.get(param);
+        let stack = clip.param_modifiers().get(param);
         let count = stack.map_or(0, |s| s.modifiers.len());
 
         // Parameter sub-header

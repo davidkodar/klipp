@@ -799,7 +799,7 @@ fn a_grade_group_exports_as_the_viewer_shows_it() {
     let gid = group.id;
     t.seq.grade_groups = vec![group];
     // The two full-frame clips: a (with its own grade) and b.
-    for c in t.seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.builtin_effects().is_empty() && c.transform_scale_keyframes.is_empty()) {
+    for c in t.seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.builtin_effects().is_empty() && c.transform_scale_keyframes().is_empty()) {
         c.grade_group = Some(gid);
     }
     let mut shown = t.clone();

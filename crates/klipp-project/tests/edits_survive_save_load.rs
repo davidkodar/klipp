@@ -100,9 +100,9 @@ fn a_title_saved_with_the_old_animation_opens_with_loops() {
     td.animation_type = TitleAnimationType::ScrollUp { speed_px_per_sec: 40.0 };
     let mut c = Clip::gap(tc(0), tc(48));
     c.kind = ClipKind::Title(td);
-    c.transform_pos_y_keyframes.push(klipp_core::Keyframe {
+    c.edit_transform_pos_y_keyframes(|v| v.push(klipp_core::Keyframe {
         time_secs: 0.0, value: 1080.0, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
-    });
+    }));
     seq.tracks[0].clips = vec![c];
 
     let back = round_trip("title-legacy", seq);
@@ -113,7 +113,7 @@ fn a_title_saved_with_the_old_animation_opens_with_loops() {
         loaded.primary_fx().loops,
         vec![klipp_timeline::TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 40.0, shape: Default::default() }]
     );
-    assert!(clip.transform_pos_y_keyframes.is_empty(), "the baked keyframes should go with it");
+    assert!(clip.transform_pos_y_keyframes().is_empty(), "the baked keyframes should go with it");
 }
 
 #[test]

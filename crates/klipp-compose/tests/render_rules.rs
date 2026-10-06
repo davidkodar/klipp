@@ -1189,10 +1189,10 @@ fn a_shut_shutter_keeps_the_blur_a_title_enters_with() {
 #[test]
 fn a_precomposition_is_composed_before_the_parent_fades_it() {
     let mut red = solid([255, 0, 0], 0.0, 4.0);
-    klipp_core::keyframe::upsert_keyframe(&mut red.opacity_keyframes, 0.0, 0.5);
+    red.edit_opacity_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.5));
     let scene = sequence(vec![vec![red], vec![solid([0, 255, 0], 0.0, 4.0)]]);
     let mut pre = Clip::precomposition(scene.id, tc(0.0), tc(4.0));
-    klipp_core::keyframe::upsert_keyframe(&mut pre.opacity_keyframes, 0.0, 0.5);
+    pre.edit_opacity_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.5));
     let outer = sequence(vec![vec![pre]]);
     let flat = klipp_timeline::flatten::flatten_sequence(&outer, &[outer.clone(), scene.clone()]);
     for (i, img) in render(&flat, 1.0, &mut Flat::default()).iter().enumerate() {
@@ -1238,7 +1238,7 @@ fn a_nested_sequence_keeps_its_timeline_grade() {
 #[test]
 fn a_precomposition_is_transformed_as_one_picture() {
     let mut red = solid([255, 0, 0], 0.0, 4.0);
-    klipp_core::keyframe::upsert_keyframe(&mut red.opacity_keyframes, 0.0, 0.5);
+    red.edit_opacity_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.5));
     let scene = sequence(vec![vec![red], vec![solid([0, 255, 0], 0.0, 4.0)]]);
     let mut pre = Clip::precomposition(scene.id, tc(0.0), tc(4.0));
     pre.set_effect_list(vec![BuiltinEffect::Transform {
@@ -1358,8 +1358,8 @@ fn a_moving_shape_is_smeared_by_the_motion_blur_on_its_layer() {
         // In the sequence's pixels (1920 across), as every transform is:
         // 48 of the 32 rendered here either way. The blur used to place
         // them unscaled, so the numbers were render pixels (#995).
-        klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 0.0, -2880.0);
-        klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 1.0, 2880.0);
+        card.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, -2880.0));
+        card.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 1.0, 2880.0));
         // Over a precomposition, drawn before the card, when asked: the
         // scene's render must not take the card's shutter with it (#995).
         let seq = if precomp {
@@ -1434,7 +1434,7 @@ fn a_shadow_on_a_placed_layer_falls_on_the_track_below() {
     let mut top = media(0.0, 1.0);
     // Placed at two fifths of the frame by keyframes, as `compose`
     // writes it — so the transform is the one the renderer pushes.
-    klipp_core::keyframe::upsert_keyframe(&mut top.transform_scale_keyframes, 0.0, 0.4);
+    top.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.4));
     top.set_effect_list(vec![BuiltinEffect::DropShadow {
         offset_x: 0.0,
         offset_y: 0.06,
@@ -1461,8 +1461,8 @@ fn a_shadow_on_a_placed_layer_falls_on_the_track_below() {
 #[test]
 fn a_camera_over_the_sequence_moves_every_layer_at_once() {
     let place = |c: &mut Clip, x: f32| {
-        klipp_core::keyframe::upsert_keyframe(&mut c.transform_scale_keyframes, 0.0, 0.4);
-        klipp_core::keyframe::upsert_keyframe(&mut c.transform_pos_x_keyframes, 0.0, x);
+        c.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.4));
+        c.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, x));
     };
     let (mut left, mut right) = (media(0.0, 1.0), media(0.0, 1.0));
     place(&mut left, -(W as f32) * 0.25);
@@ -1497,8 +1497,8 @@ fn a_camera_over_the_sequence_moves_every_layer_at_once() {
 #[test]
 fn layers_at_different_depths_move_by_different_amounts_under_one_camera() {
     let place = |c: &mut Clip, x: f32, depth: f32| {
-        klipp_core::keyframe::upsert_keyframe(&mut c.transform_scale_keyframes, 0.0, 0.25);
-        klipp_core::keyframe::upsert_keyframe(&mut c.transform_pos_x_keyframes, 0.0, x);
+        c.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.25));
+        c.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, x));
         c.depth = depth;
     };
     let (mut plane, mut glass, mut far) = (media(0.0, 1.0), media(0.0, 1.0), media(0.0, 1.0));
@@ -1506,7 +1506,7 @@ fn layers_at_different_depths_move_by_different_amounts_under_one_camera() {
     place(&mut glass, 8.0, 0.0);
     place(&mut far, 0.0, 3.0);
     // Below the other two, so neither covers it.
-    klipp_core::keyframe::upsert_keyframe(&mut far.transform_pos_y_keyframes, 0.0, 5.0);
+    far.edit_transform_pos_y_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 5.0));
     let mut seq = sequence(vec![vec![plane.clone()], vec![glass.clone()], vec![far.clone()]]);
     // Positions here are written in the rendered buffer's pixels, so the
     // sequence is the size rendered: a position scales with render/sequence.
@@ -1548,9 +1548,9 @@ fn a_tilted_card_is_drawn_in_perspective_the_way_its_tilt_says() {
     let (w, h) = (128u32, 72u32);
     let render_card = |tx: f32, ty: f32| {
         let mut card = media(0.0, 1.0);
-        klipp_core::keyframe::upsert_keyframe(&mut card.transform_scale_keyframes, 0.0, 0.5);
-        klipp_core::keyframe::upsert_keyframe(&mut card.transform_tilt_x_keyframes, 0.0, tx);
-        klipp_core::keyframe::upsert_keyframe(&mut card.transform_tilt_y_keyframes, 0.0, ty);
+        card.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.5));
+        card.edit_transform_tilt_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, tx));
+        card.edit_transform_tilt_y_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, ty));
         let seq = sequence(vec![vec![card]]);
         [false, true].map(|gpu| {
             let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
@@ -1623,12 +1623,12 @@ fn a_linked_clip_is_smeared_by_what_carries_it() {
     // the speck does not.
     let shot = |linked: bool| {
         let mut parent = media(0.0, 1.0);
-        klipp_core::keyframe::upsert_keyframe(&mut parent.transform_scale_keyframes, 0.0, 0.01);
-        klipp_core::keyframe::upsert_keyframe(&mut parent.transform_pos_x_keyframes, 0.0, -48.0);
-        klipp_core::keyframe::upsert_keyframe(&mut parent.transform_pos_x_keyframes, 1.0, 48.0);
+        parent.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.01));
+        parent.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, -48.0));
+        parent.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 1.0, 48.0));
 
         let mut card = media(0.0, 1.0);
-        klipp_core::keyframe::upsert_keyframe(&mut card.transform_scale_keyframes, 0.0, 0.25);
+        card.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.25));
         if linked {
             card.transform_link = Some(klipp_timeline::TransformLink {
                 target: klipp_timeline::TransformLinkTarget::Clip(parent.id),
@@ -1640,8 +1640,8 @@ fn a_linked_clip_is_smeared_by_what_carries_it() {
             });
         } else {
             // The same path, written on the clip itself.
-            klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 0.0, -48.0);
-            klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 1.0, 48.0);
+            card.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, -48.0));
+            card.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 1.0, 48.0));
         }
         let mut seq = sequence(vec![vec![card], vec![parent]]);
         // Positions here are written in the rendered buffer's pixels, so the
@@ -1676,9 +1676,9 @@ fn a_moving_card_is_smeared_along_its_path_while_the_shutter_is_open() {
     let (w, h) = (128u32, 72u32);
     let shot = |shutter: f32, moving: bool| {
         let mut card = media(0.0, 1.0);
-        klipp_core::keyframe::upsert_keyframe(&mut card.transform_scale_keyframes, 0.0, 0.25);
-        klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 0.0, -48.0);
-        klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 1.0, if moving { 48.0 } else { -48.0 });
+        card.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.25));
+        card.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, -48.0));
+        card.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 1.0, if moving { 48.0 } else { -48.0 }));
         let mut seq = sequence(vec![vec![card]]);
         // Positions here are written in the rendered buffer's pixels, so the
         // sequence is the size rendered: a position scales with render/sequence.
@@ -1704,7 +1704,7 @@ fn a_moving_card_is_smeared_along_its_path_while_the_shutter_is_open() {
 
     // A card that holds still but is carried by the camera is smeared too.
     let mut card = media(0.0, 1.0);
-    klipp_core::keyframe::upsert_keyframe(&mut card.transform_scale_keyframes, 0.0, 0.25);
+    card.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.25));
     let mut seq = sequence(vec![vec![card]]);
     // Positions here are written in the rendered buffer's pixels, so the
     // sequence is the size rendered: a position scales with render/sequence.
@@ -1745,9 +1745,9 @@ impl FrameSource for AnySize {
 #[test]
 fn a_moved_clip_lands_at_the_same_place_at_half_the_sequence_size() {
     let mut card = media(0.0, 1.0);
-    klipp_core::keyframe::upsert_keyframe(&mut card.transform_scale_keyframes, 0.0, 0.25);
+    card.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.25));
     // A quarter of the frame right, in the pixels of a 64×36 sequence.
-    klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 0.0, 16.0);
+    card.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 16.0));
     let mut seq = sequence(vec![vec![card.clone()]]);
     seq.resolution = klipp_core::Resolution { width: 2 * W, height: 2 * H };
     let mut src = AnySize([(card.id, [1.0, 0.0, 0.0])].into_iter().collect(), false);
@@ -2026,7 +2026,7 @@ fn keyframed_effects_ramp_in_the_picture() {
     ] {
         let mut c = media(0.0, 2.0);
         c.set_effect_list(vec![effect.clone()], c.builtin_effects_enabled().to_vec());
-        c.effect_keyframes.insert(format!("0:{name}"), vec![key(0.0, from), key(1.0, to)]);
+        c.edit_effect_keyframes(|v| v.insert(format!("0:{name}"), vec![key(0.0, from), key(1.0, to)]));
         let seq = sequence(vec![vec![c.clone()]]);
         let mut src = Flat::default().ramp(&c);
         let still = render(&seq, 0.0, &mut src);

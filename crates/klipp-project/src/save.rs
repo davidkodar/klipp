@@ -415,13 +415,13 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         volume_keyframes: if c.volume_keyframes.is_empty() { None } else { Some(c.volume_keyframes.clone()) },
                         pan_keyframes: if c.pan_keyframes.is_empty() { None } else { Some(c.pan_keyframes.clone()) },
                         gain_keyframes: if c.gain_keyframes.is_empty() { None } else { Some(c.gain_keyframes.clone()) },
-                        opacity_keyframes: if c.opacity_keyframes.is_empty() { None } else { Some(c.opacity_keyframes.clone()) },
-                        transform_pos_x_keyframes: if c.transform_pos_x_keyframes.is_empty() { None } else { Some(c.transform_pos_x_keyframes.clone()) },
-                        transform_pos_y_keyframes: if c.transform_pos_y_keyframes.is_empty() { None } else { Some(c.transform_pos_y_keyframes.clone()) },
-                        transform_scale_keyframes: if c.transform_scale_keyframes.is_empty() { None } else { Some(c.transform_scale_keyframes.clone()) },
-                        transform_rotation_keyframes: if c.transform_rotation_keyframes.is_empty() { None } else { Some(c.transform_rotation_keyframes.clone()) },
-                        transform_tilt_x_keyframes: (!c.transform_tilt_x_keyframes.is_empty()).then(|| c.transform_tilt_x_keyframes.clone()),
-                        transform_tilt_y_keyframes: (!c.transform_tilt_y_keyframes.is_empty()).then(|| c.transform_tilt_y_keyframes.clone()),
+                        opacity_keyframes: if c.opacity_keyframes.is_empty() { None } else { Some(c.opacity_keyframes().to_vec()) },
+                        transform_pos_x_keyframes: if c.transform_pos_x_keyframes.is_empty() { None } else { Some(c.transform_pos_x_keyframes().to_vec()) },
+                        transform_pos_y_keyframes: if c.transform_pos_y_keyframes.is_empty() { None } else { Some(c.transform_pos_y_keyframes().to_vec()) },
+                        transform_scale_keyframes: if c.transform_scale_keyframes.is_empty() { None } else { Some(c.transform_scale_keyframes().to_vec()) },
+                        transform_rotation_keyframes: if c.transform_rotation_keyframes.is_empty() { None } else { Some(c.transform_rotation_keyframes().to_vec()) },
+                        transform_tilt_x_keyframes: (!c.transform_tilt_x_keyframes.is_empty()).then(|| c.transform_tilt_x_keyframes().to_vec()),
+                        transform_tilt_y_keyframes: (!c.transform_tilt_y_keyframes.is_empty()).then(|| c.transform_tilt_y_keyframes().to_vec()),
                         matte_feather_keyframes: if c.matte_feather_keyframes.is_empty() { None } else { Some(c.matte_feather_keyframes.clone()) },
                         matte_choke_keyframes: if c.matte_choke_keyframes.is_empty() { None } else { Some(c.matte_choke_keyframes.clone()) },
                         clip_markers: if c.clip_markers.is_empty() { None } else {
@@ -432,12 +432,12 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                                 comment: m.comment.clone(),
                             }).collect())
                         },
-                        effect_keyframes: if c.effect_keyframes.is_empty() { None } else { Some(c.effect_keyframes.clone()) },
+                        effect_keyframes: if c.effect_keyframes().is_empty() { None } else { Some(c.effect_keyframes().clone()) },
                         role: if c.role == klipp_core::ClipRole::default() { None } else { Some(c.role) },
-                        param_modifiers: if c.param_modifiers.is_empty() {
+                        param_modifiers: if c.param_modifiers().is_empty() {
                             None
                         } else {
-                            Some(c.param_modifiers.iter().map(|(k, v)| (k.to_key(), v.clone())).collect())
+                            Some(c.param_modifiers().iter().map(|(k, v)| (k.to_key(), v.clone())).collect())
                         },
                         speed: if (c.speed - 1.0).abs() < f64::EPSILON { None } else { Some(c.speed) },
                         speed_keyframes: if c.speed_keyframes.is_empty() { None } else { Some(c.speed_keyframes.clone()) },

@@ -580,8 +580,8 @@ fn rule_cases() -> Vec<Case> {
     // Keyframed effect parameters reach the picture (#992).
     let mut c = media(0.0, 4.0);
     c.set_effect_list(vec![BuiltinEffect::GaussianBlur { radius: 0.0 }, BuiltinEffect::Bloom { threshold: 0.6, radius: 4.0, intensity: 0.2 }], c.builtin_effects_enabled().to_vec());
-    c.effect_keyframes.insert("0:radius".into(), vec![key(0.0, 0.0), key(2.0, 6.0)]);
-    c.effect_keyframes.insert("1:intensity".into(), vec![key(0.0, 0.1), key(2.0, 1.2)]);
+    c.edit_effect_keyframes(|v| v.insert("0:radius".into(), vec![key(0.0, 0.0), key(2.0, 6.0)]));
+    c.edit_effect_keyframes(|v| v.insert("1:intensity".into(), vec![key(0.0, 0.1), key(2.0, 1.2)]));
     let f = Frames::default().with(&c, 0);
     out.push(Case::new("rule/effect keyframes", sequence(vec![track("V1", TrackKind::Video, vec![c])]), f));
 
@@ -596,8 +596,8 @@ fn rule_cases() -> Vec<Case> {
     let base = media(0.0, 4.0);
     let mut top = media(0.0, 4.0);
     top.set_effect_list(vec![BuiltinEffect::Opacity { value: 0.5 }], top.builtin_effects_enabled().to_vec());
-    top.opacity_keyframes = vec![key(0.0, 0.9), key(2.0, 0.9)];
-    top.effect_keyframes.insert("0:value".into(), vec![key(0.0, 0.2), key(2.0, 0.8)]);
+    top.edit_opacity_keyframes(|v| *v = vec![key(0.0, 0.9), key(2.0, 0.9)]);
+    top.edit_effect_keyframes(|v| v.insert("0:value".into(), vec![key(0.0, 0.2), key(2.0, 0.8)]));
     let f = Frames::default().with(&base, 90).with(&top, 0);
     out.push(Case::new("rule/opacity effect keys over clip keys", sequence(vec![track("V2", TrackKind::Video, vec![top]), track("V1", TrackKind::Video, vec![base])]), f));
 
@@ -626,7 +626,7 @@ fn rule_cases() -> Vec<Case> {
     let base = media(0.0, 4.0);
     let mut top = media(0.0, 4.0);
     top.set_effect_list(vec![transform(0.5, 0.0, 0.0), BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 2.0, color: [0, 0, 0], opacity: 0.8 }], top.builtin_effects_enabled().to_vec());
-    top.transform_pos_x_keyframes = vec![key(0.0, -10.0), key(2.0, 10.0)];
+    top.edit_transform_pos_x_keyframes(|v| *v = vec![key(0.0, -10.0), key(2.0, 10.0)]);
     let f = Frames::default().with(&base, 90).with(&top, 0);
     out.push(Case::new("rule/keyed transform with shadow", sequence(vec![track("V2", TrackKind::Video, vec![top]), track("V1", TrackKind::Video, vec![base])]), f));
 
@@ -685,7 +685,7 @@ fn grade_cases() -> Vec<Case> {
         let mut top = media(0.0, 4.0);
         top.set_effect_list(vec![BuiltinEffect::Opacity { value: 0.8 }], top.builtin_effects_enabled().to_vec());
         if keyed {
-            top.opacity_keyframes = vec![key(0.0, 0.3), key(2.0, 0.9)];
+            top.edit_opacity_keyframes(|v| *v = vec![key(0.0, 0.3), key(2.0, 0.9)]);
         }
         let mut t = track("V2", TrackKind::Video, vec![top.clone()]);
         t.effects.set_video_effect_list(vec![BuiltinEffect::Opacity { value: 0.5 }], vec![]);
@@ -985,7 +985,7 @@ fn camera_cases() -> Vec<Case> {
         transform(0.5, 0.0, 0.0),
         BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 2.0, color: [0, 0, 0], opacity: 0.7 },
     ], top.builtin_effects_enabled().to_vec());
-    top.transform_pos_x_keyframes = vec![key(0.0, -12.0), key(2.0, 12.0)];
+    top.edit_transform_pos_x_keyframes(|v| *v = vec![key(0.0, -12.0), key(2.0, 12.0)]);
     let f = Frames::default().with(&base, 90).with(&top, 0);
     let mut seq = two_tracks(top, base);
     seq.camera.x_keyframes = vec![key(0.0, 0.45), key(2.0, 0.55)];
@@ -1017,7 +1017,7 @@ fn title_blur_cases() -> Vec<Case> {
         } else {
             vec![transform(1.0, 0.0, 0.0)]
         }, c.builtin_effects_enabled().to_vec());
-        c.transform_pos_x_keyframes = vec![key(0.0, -20.0), key(2.0, 20.0)];
+        c.edit_transform_pos_x_keyframes(|v| *v = vec![key(0.0, -20.0), key(2.0, 20.0)]);
         c
     };
     let mut out = Vec::new();

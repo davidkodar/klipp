@@ -1,6 +1,6 @@
 use crate::clip_kind::ClipKind;
 use crate::marker::Marker;
-use klipp_core::{AudioEffectInstance, ClipId, Fps, GradeGroupId, GroupId, MarkerColor, MediaId, ModifierStack, ParamId, RationalTime, Resolution, SequenceId, Timecode, TrackId, TransitionId};
+use klipp_core::{AudioEffectInstance, ClipId, Fps, GradeGroupId, GroupId, MarkerColor, MediaId, RationalTime, Resolution, SequenceId, Timecode, TrackId, TransitionId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -1398,19 +1398,19 @@ impl Track {
             volume_keyframes: Vec::new(),
             pan_keyframes: Vec::new(),
             gain_keyframes: Vec::new(),
-            opacity_keyframes: Vec::new(),
-            transform_pos_x_keyframes: Vec::new(),
-            transform_pos_y_keyframes: Vec::new(),
-            transform_scale_keyframes: Vec::new(),
-            transform_rotation_keyframes: Vec::new(),
-            transform_tilt_x_keyframes: Vec::new(),
-            transform_tilt_y_keyframes: Vec::new(),
+            opacity_keyframes: (Vec::new()).into(),
+            transform_pos_x_keyframes: (Vec::new()).into(),
+            transform_pos_y_keyframes: (Vec::new()).into(),
+            transform_scale_keyframes: (Vec::new()).into(),
+            transform_rotation_keyframes: (Vec::new()).into(),
+            transform_tilt_x_keyframes: (Vec::new()).into(),
+            transform_tilt_y_keyframes: (Vec::new()).into(),
             matte_feather_keyframes: Vec::new(),
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
-            effect_keyframes: std::collections::HashMap::new(),
+            effect_keyframes: (std::collections::HashMap::new()).into(),
             role: ClipRole::default(),
-            param_modifiers: HashMap::new(),
+            param_modifiers: (HashMap::new()).into(),
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
@@ -1619,20 +1619,20 @@ impl Track {
         let (vol_a, vol_b) = split_kfs(&clip.volume_keyframes);
         let (pan_a, pan_b) = split_kfs(&clip.pan_keyframes);
         let (gain_a, gain_b) = split_kfs(&clip.gain_keyframes);
-        let (opacity_a, opacity_b) = split_kfs(&clip.opacity_keyframes);
-        let (pos_x_a, pos_x_b) = split_kfs(&clip.transform_pos_x_keyframes);
-        let (pos_y_a, pos_y_b) = split_kfs(&clip.transform_pos_y_keyframes);
-        let (scale_a, scale_b) = split_kfs(&clip.transform_scale_keyframes);
-        let (rot_a, rot_b) = split_kfs(&clip.transform_rotation_keyframes);
-        let (tilt_x_a, tilt_x_b) = split_kfs(&clip.transform_tilt_x_keyframes);
-        let (tilt_y_a, tilt_y_b) = split_kfs(&clip.transform_tilt_y_keyframes);
+        let (opacity_a, opacity_b) = split_kfs(clip.opacity_keyframes());
+        let (pos_x_a, pos_x_b) = split_kfs(clip.transform_pos_x_keyframes());
+        let (pos_y_a, pos_y_b) = split_kfs(clip.transform_pos_y_keyframes());
+        let (scale_a, scale_b) = split_kfs(clip.transform_scale_keyframes());
+        let (rot_a, rot_b) = split_kfs(clip.transform_rotation_keyframes());
+        let (tilt_x_a, tilt_x_b) = split_kfs(clip.transform_tilt_x_keyframes());
+        let (tilt_y_a, tilt_y_b) = split_kfs(clip.transform_tilt_y_keyframes());
         let (mfeath_a, mfeath_b) = split_kfs(&clip.matte_feather_keyframes);
         let (mchoke_a, mchoke_b) = split_kfs(&clip.matte_choke_keyframes);
 
         // Split effect keyframes at the cut point
         let mut effect_kfs_a = std::collections::HashMap::new();
         let mut effect_kfs_b = std::collections::HashMap::new();
-        for (key, kfs) in &clip.effect_keyframes {
+        for (key, kfs) in clip.effect_keyframes() {
             let (a, b) = split_kfs(kfs);
             if !a.is_empty() {
                 effect_kfs_a.insert(key.clone(), a);
@@ -1698,19 +1698,19 @@ impl Track {
             volume_keyframes: vol_a,
             pan_keyframes: pan_a,
             gain_keyframes: gain_a,
-            opacity_keyframes: opacity_a,
-            transform_pos_x_keyframes: pos_x_a,
-            transform_pos_y_keyframes: pos_y_a,
-            transform_scale_keyframes: scale_a,
-            transform_rotation_keyframes: rot_a,
-            transform_tilt_x_keyframes: tilt_x_a,
-            transform_tilt_y_keyframes: tilt_y_a,
+            opacity_keyframes: (opacity_a).into(),
+            transform_pos_x_keyframes: (pos_x_a).into(),
+            transform_pos_y_keyframes: (pos_y_a).into(),
+            transform_scale_keyframes: (scale_a).into(),
+            transform_rotation_keyframes: (rot_a).into(),
+            transform_tilt_x_keyframes: (tilt_x_a).into(),
+            transform_tilt_y_keyframes: (tilt_y_a).into(),
             matte_feather_keyframes: mfeath_a,
             matte_choke_keyframes: mchoke_a,
             clip_markers: markers_a,
-            effect_keyframes: effect_kfs_a,
+            effect_keyframes: (effect_kfs_a).into(),
             role: clip.role,
-            param_modifiers: clip.param_modifiers.clone(),
+            param_modifiers: (clip.param_modifiers().clone()).into(),
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
             keep_pitch: clip.keep_pitch,
@@ -1772,19 +1772,19 @@ impl Track {
             volume_keyframes: vol_b,
             pan_keyframes: pan_b,
             gain_keyframes: gain_b,
-            opacity_keyframes: opacity_b,
-            transform_pos_x_keyframes: pos_x_b,
-            transform_pos_y_keyframes: pos_y_b,
-            transform_scale_keyframes: scale_b,
-            transform_rotation_keyframes: rot_b,
-            transform_tilt_x_keyframes: tilt_x_b,
-            transform_tilt_y_keyframes: tilt_y_b,
+            opacity_keyframes: (opacity_b).into(),
+            transform_pos_x_keyframes: (pos_x_b).into(),
+            transform_pos_y_keyframes: (pos_y_b).into(),
+            transform_scale_keyframes: (scale_b).into(),
+            transform_rotation_keyframes: (rot_b).into(),
+            transform_tilt_x_keyframes: (tilt_x_b).into(),
+            transform_tilt_y_keyframes: (tilt_y_b).into(),
             matte_feather_keyframes: mfeath_b,
             matte_choke_keyframes: mchoke_b,
             clip_markers: markers_b,
-            effect_keyframes: effect_kfs_b,
+            effect_keyframes: (effect_kfs_b).into(),
             role: clip.role,
-            param_modifiers: clip.param_modifiers.clone(),
+            param_modifiers: (clip.param_modifiers().clone()).into(),
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
             keep_pitch: clip.keep_pitch,
@@ -2223,24 +2223,24 @@ pub struct Clip {
     #[serde(default)]
     pub gain_keyframes: Vec<klipp_core::Keyframe>,
     #[serde(default)]
-    pub opacity_keyframes: Vec<klipp_core::Keyframe>,
+    pub opacity_keyframes: crate::Keyframes,
     #[serde(default)]
-    pub transform_pos_x_keyframes: Vec<klipp_core::Keyframe>,
+    pub transform_pos_x_keyframes: crate::Keyframes,
     #[serde(default)]
-    pub transform_pos_y_keyframes: Vec<klipp_core::Keyframe>,
+    pub transform_pos_y_keyframes: crate::Keyframes,
     #[serde(default)]
-    pub transform_scale_keyframes: Vec<klipp_core::Keyframe>,
+    pub transform_scale_keyframes: crate::Keyframes,
     #[serde(default)]
-    pub transform_rotation_keyframes: Vec<klipp_core::Keyframe>,
+    pub transform_rotation_keyframes: crate::Keyframes,
     /// Tilt about the picture's horizontal axis, in degrees, in
     /// perspective: the card leans back or forward like a screen on a
     /// desk. Empty for a flat picture.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub transform_tilt_x_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default, skip_serializing_if = "crate::Keyframes::is_empty")]
+    pub transform_tilt_x_keyframes: crate::Keyframes,
     /// Tilt about the picture's vertical axis, in degrees, in
     /// perspective: the card swings like a door.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub transform_tilt_y_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default, skip_serializing_if = "crate::Keyframes::is_empty")]
+    pub transform_tilt_y_keyframes: crate::Keyframes,
     /// Phase 4D — track-matte feather radius keyframes (px). Empty
     /// for the common case (constant feather); evaluated against
     /// `matte_source.feather_px` as the fallback.
@@ -2255,13 +2255,13 @@ pub struct Clip {
     pub clip_markers: Vec<ClipMarker>,
     /// Per-effect keyframes: maps "{effect_index}:{param_name}" to keyframe track.
     #[serde(default)]
-    pub effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+    pub effect_keyframes: crate::EffectKeyframes,
     /// Content role — determines timeline color coding.
     #[serde(default)]
     pub role: ClipRole,
     /// Per-parameter modifier stacks (behaviors like Oscillate, Wiggle, etc.)
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub param_modifiers: HashMap<ParamId, ModifierStack>,
+    #[serde(default, skip_serializing_if = "crate::ParamModifiers::is_empty")]
+    pub param_modifiers: crate::ParamModifiers,
     /// Playback speed multiplier (1.0 = normal, 2.0 = 2x fast, 0.5 = half speed)
     #[serde(default = "default_speed")]
     pub speed: f64,
@@ -2755,19 +2755,19 @@ impl Clip {
             volume_keyframes: Vec::new(),
             pan_keyframes: Vec::new(),
             gain_keyframes: Vec::new(),
-            opacity_keyframes: Vec::new(),
-            transform_pos_x_keyframes: Vec::new(),
-            transform_pos_y_keyframes: Vec::new(),
-            transform_scale_keyframes: Vec::new(),
-            transform_rotation_keyframes: Vec::new(),
-            transform_tilt_x_keyframes: Vec::new(),
-            transform_tilt_y_keyframes: Vec::new(),
+            opacity_keyframes: (Vec::new()).into(),
+            transform_pos_x_keyframes: (Vec::new()).into(),
+            transform_pos_y_keyframes: (Vec::new()).into(),
+            transform_scale_keyframes: (Vec::new()).into(),
+            transform_rotation_keyframes: (Vec::new()).into(),
+            transform_tilt_x_keyframes: (Vec::new()).into(),
+            transform_tilt_y_keyframes: (Vec::new()).into(),
             matte_feather_keyframes: Vec::new(),
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
-            effect_keyframes: std::collections::HashMap::new(),
+            effect_keyframes: (std::collections::HashMap::new()).into(),
             role: ClipRole::default(),
-            param_modifiers: HashMap::new(),
+            param_modifiers: (HashMap::new()).into(),
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
@@ -2868,19 +2868,19 @@ impl Clip {
             volume_keyframes: Vec::new(),
             pan_keyframes: Vec::new(),
             gain_keyframes: Vec::new(),
-            opacity_keyframes: Vec::new(),
-            transform_pos_x_keyframes: Vec::new(),
-            transform_pos_y_keyframes: Vec::new(),
-            transform_scale_keyframes: Vec::new(),
-            transform_rotation_keyframes: Vec::new(),
-            transform_tilt_x_keyframes: Vec::new(),
-            transform_tilt_y_keyframes: Vec::new(),
+            opacity_keyframes: (Vec::new()).into(),
+            transform_pos_x_keyframes: (Vec::new()).into(),
+            transform_pos_y_keyframes: (Vec::new()).into(),
+            transform_scale_keyframes: (Vec::new()).into(),
+            transform_rotation_keyframes: (Vec::new()).into(),
+            transform_tilt_x_keyframes: (Vec::new()).into(),
+            transform_tilt_y_keyframes: (Vec::new()).into(),
             matte_feather_keyframes: Vec::new(),
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
-            effect_keyframes: std::collections::HashMap::new(),
+            effect_keyframes: (std::collections::HashMap::new()).into(),
             role: ClipRole::default(),
-            param_modifiers: HashMap::new(),
+            param_modifiers: (HashMap::new()).into(),
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,
@@ -2970,19 +2970,19 @@ impl Clip {
             volume_keyframes: Vec::new(),
             pan_keyframes: Vec::new(),
             gain_keyframes: Vec::new(),
-            opacity_keyframes: Vec::new(),
-            transform_pos_x_keyframes: Vec::new(),
-            transform_pos_y_keyframes: Vec::new(),
-            transform_scale_keyframes: Vec::new(),
-            transform_rotation_keyframes: Vec::new(),
-            transform_tilt_x_keyframes: Vec::new(),
-            transform_tilt_y_keyframes: Vec::new(),
+            opacity_keyframes: (Vec::new()).into(),
+            transform_pos_x_keyframes: (Vec::new()).into(),
+            transform_pos_y_keyframes: (Vec::new()).into(),
+            transform_scale_keyframes: (Vec::new()).into(),
+            transform_rotation_keyframes: (Vec::new()).into(),
+            transform_tilt_x_keyframes: (Vec::new()).into(),
+            transform_tilt_y_keyframes: (Vec::new()).into(),
             matte_feather_keyframes: Vec::new(),
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
-            effect_keyframes: std::collections::HashMap::new(),
+            effect_keyframes: (std::collections::HashMap::new()).into(),
             role: ClipRole::default(),
-            param_modifiers: HashMap::new(),
+            param_modifiers: (HashMap::new()).into(),
             speed: 1.0,
             speed_keyframes: Vec::new(),
             keep_pitch: false,

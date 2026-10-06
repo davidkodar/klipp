@@ -44,7 +44,7 @@ pub(super) fn apply_hyperzoom_plan_to_clip(
         },
     );
 
-    clip.transform_scale_keyframes = scale_kfs.to_vec();
+    clip.edit_transform_scale_keyframes(|v| *v = scale_kfs.to_vec());
 }
 
 /// Mirror of [`apply_hyperzoom_plan_to_clip`] for the radial-blur
@@ -377,16 +377,16 @@ mod hyperzoom_handler_tests {
         // would end up with stale keyframes from the first application
         // bleeding into the second.
         let mut c = fresh_clip();
-        c.transform_scale_keyframes = vec![kf(0.0, 0.5), kf(0.25, 2.0), kf(0.5, 5.0)];
+        c.edit_transform_scale_keyframes(|v| *v = vec![kf(0.0, 0.5), kf(0.25, 2.0), kf(0.5, 5.0)]);
         let cid = c.id;
         let mut seq = seq_with_clips(vec![c]);
         let new_kfs = vec![kf(2.5, 1.0), kf(3.0, 50.0)];
         apply_hyperzoom_plan_to_clip(&mut seq, cid, (0.5, 0.5), &new_kfs);
         let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
-        assert_eq!(clip.transform_scale_keyframes.len(), 2);
-        assert!((clip.transform_scale_keyframes[0].time_secs - 2.5).abs() < 1e-9);
-        assert!((clip.transform_scale_keyframes[1].time_secs - 3.0).abs() < 1e-9);
-        assert!((clip.transform_scale_keyframes[1].value - 50.0).abs() < 1e-6);
+        assert_eq!(clip.transform_scale_keyframes().len(), 2);
+        assert!((clip.transform_scale_keyframes()[0].time_secs - 2.5).abs() < 1e-9);
+        assert!((clip.transform_scale_keyframes()[1].time_secs - 3.0).abs() < 1e-9);
+        assert!((clip.transform_scale_keyframes()[1].value - 50.0).abs() < 1e-6);
     }
 
     #[test]
@@ -400,7 +400,7 @@ mod hyperzoom_handler_tests {
         apply_hyperzoom_plan_to_clip(&mut seq, other_id, (0.5, 0.5), &[kf(0.0, 1.0), kf(0.5, 50.0)]);
         // Original clip untouched.
         let same = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|x| x.id == c.id).unwrap();
-        assert!(same.transform_scale_keyframes.is_empty());
+        assert!(same.transform_scale_keyframes().is_empty());
         assert!(same.builtin_effects().iter().all(|e| !matches!(e, BuiltinEffect::Transform { .. })));
     }
 
@@ -431,7 +431,7 @@ mod hyperzoom_handler_tests {
         // Amount keyframes registered under "{idx}:amount" so the
         // engine's per-effect-keyframe lookup picks them up.
         let key = format!("{}:amount", idx);
-        let kfs = clip.effect_keyframes.get(&key).expect("amount keyframes registered");
+        let kfs = clip.effect_keyframes().get(&key).expect("amount keyframes registered");
         assert_eq!(kfs.len(), 2);
         assert!((kfs[1].value - 15.0).abs() < 1e-6);
     }
@@ -693,17 +693,17 @@ mod hyperzoom_handler_tests {
         // We check both keys are present (HashMap doesn't preserve
         // insertion order, so we can't pin the iteration order —
         // but the values must be correct for the right key).
-        let red_key_keyframes = clip.effect_keyframes.iter()
+        let red_key_keyframes = clip.effect_keyframes().iter()
             .find(|(k, _)| k.ends_with(":red_shift"))
             .map(|(_, v)| v.clone());
-        let blue_key_keyframes = clip.effect_keyframes.iter()
+        let blue_key_keyframes = clip.effect_keyframes().iter()
             .find(|(k, _)| k.ends_with(":blue_shift"))
             .map(|(_, v)| v.clone());
         assert_eq!(red_key_keyframes.as_deref(), Some(red.as_slice()));
         assert_eq!(blue_key_keyframes.as_deref(), Some(blue.as_slice()));
         // Both keys present — neither got dropped during the
         // double insert.
-        assert_eq!(clip.effect_keyframes.iter().filter(|(k, _)| k.ends_with(":red_shift") || k.ends_with(":blue_shift")).count(), 2);
+        assert_eq!(clip.effect_keyframes().iter().filter(|(k, _)| k.ends_with(":red_shift") || k.ends_with(":blue_shift")).count(), 2);
     }
 
     #[test]
@@ -721,7 +721,7 @@ mod hyperzoom_handler_tests {
         let blue2 = vec![kf(0.0, 0.0), kf(0.5, 10.0)];
         apply_hyperzoom_chromatic_aberration_to_clip(&mut seq, cid, (0.5, 0.5), 10.0, &red2, &blue2);
         let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
-        let red_kfs = clip.effect_keyframes.iter()
+        let red_kfs = clip.effect_keyframes().iter()
             .find(|(k, _)| k.ends_with(":red_shift"))
             .map(|(_, v)| v.clone()).unwrap();
         assert_eq!(red_kfs.len(), 2);
@@ -792,7 +792,7 @@ mod hyperzoom_handler_tests {
         let kfs2 = vec![kf(0.0, 0.0), kf(0.5, 0.8)];
         apply_hyperzoom_light_leak_to_clip(&mut seq, cid, 0.8, &kfs2);
         let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
-        let intensity_kfs = clip.effect_keyframes.iter()
+        let intensity_kfs = clip.effect_keyframes().iter()
             .find(|(k, _)| k.ends_with(":intensity"))
             .map(|(_, v)| v.clone()).unwrap();
         assert_eq!(intensity_kfs.len(), 2);

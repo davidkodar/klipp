@@ -4889,7 +4889,7 @@ impl ViewerPanel {
         let Some(effect_index) = clip.builtin_effects().iter().position(|e| matches!(e, klipp_effects::BuiltinEffect::CornerPin { .. })) else { return };
         let Some(base) = corners(&clip.builtin_effects()[effect_index]) else { return };
         let clip_time = (state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
-        let keys_of = |name: &str| clip.effect_keyframes.get(&format!("{effect_index}:{name}")).filter(|k| !k.is_empty());
+        let keys_of = |name: &str| clip.effect_keyframes().get(&format!("{effect_index}:{name}")).filter(|k| !k.is_empty());
         let mut shown = base;
         for (corner, names) in shown.iter_mut().zip(PARAMS) {
             for axis in 0..2 {
