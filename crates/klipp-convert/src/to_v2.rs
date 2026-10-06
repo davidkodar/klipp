@@ -120,6 +120,7 @@ fn legacy_node(id: NodeId, type_id: &str, enabled: bool, legacy: Legacy) -> Node
         group: None,
         legacy: Some(legacy),
         legacy_flags: None,
+        origin: None,
     }
 }
 

@@ -23,6 +23,7 @@ fn node(n: u128, type_id: &str) -> Node {
         group: None,
         legacy: legacy(json!({})),
         legacy_flags: None,
+        origin: None,
     }
 }
 

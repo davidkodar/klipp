@@ -103,6 +103,7 @@ fn node(id: NodeId, type_id: &str, enabled: bool, legacy: Option<Legacy>) -> Nod
         group: None,
         legacy,
         legacy_flags: None,
+        origin: None,
     }
 }
 
@@ -214,6 +215,15 @@ fn lift_grade_body(group: &Node, notes: &mut Vec<LiftNote>) -> (Graph, LegacyFla
         }
     }
     (body, group_flags)
+}
+
+/// A grade-only revision-1 graph (one `klipp.legacy.grade` node: a group
+/// stage, a track grade, a version) as a lifted Grade group body.
+pub fn lift_grade_only(structural: &Graph) -> Result<Graph, String> {
+    match structural.nodes.as_slice() {
+        [g] if g.type_id.as_str() == types::LEGACY_GRADE => Ok(lift_grade_body(g, &mut Vec::new()).0),
+        _ => Err(format!("a grade-only graph holds {} nodes, not one grade group", structural.nodes.len())),
+    }
 }
 
 /// An effect's keyframes and modifiers by parameter name, its stored

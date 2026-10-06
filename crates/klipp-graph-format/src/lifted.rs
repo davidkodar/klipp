@@ -133,3 +133,21 @@ pub enum LiftNote {
     /// A stored value no reader used, with a non-default value.
     DroppedField { what: String, field: String },
 }
+
+/// Where a node spliced into a clip's render copy came from. The clip's
+/// own nodes have none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "from", rename_all = "snake_case")]
+pub enum Origin {
+    /// The clip's track: its effects, or its grade.
+    Track { track: uuid::Uuid },
+    /// A stage of the clip's grade group.
+    GroupStage { group: uuid::Uuid, stage: Stage },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stage {
+    Pre,
+    Post,
+}
