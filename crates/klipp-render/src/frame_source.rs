@@ -131,7 +131,7 @@ impl ClipStream {
     }
 }
 
-pub(crate) struct ExportFrameSource<'a> {
+pub struct ExportFrameSource<'a> {
     media: &'a HashMap<MediaId, MediaFile>,
     fps: f64,
     working: WorkingColorspace,
@@ -161,7 +161,7 @@ pub(crate) struct ExportFrameSource<'a> {
 }
 
 impl<'a> ExportFrameSource<'a> {
-    pub(crate) fn new(media: &'a HashMap<MediaId, MediaFile>, fps: f64, working: WorkingColorspace) -> Self {
+    pub fn new(media: &'a HashMap<MediaId, MediaFile>, fps: f64, working: WorkingColorspace) -> Self {
         Self {
             media,
             fps,

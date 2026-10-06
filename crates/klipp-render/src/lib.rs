@@ -60,6 +60,9 @@ pub use audio_mixdown::AudioMixdown;
 pub use clip_decoder::{detect_gpu, GpuVendor, RenderDecoder};
 pub use encoder::Encoder;
 pub use export_job::{partial_path_for, ExportJob};
+/// The export's decoder of a snapshot's media, for tools that render
+/// frames as the export does (the real-project pixel check, #1089).
+pub use frame_source::ExportFrameSource;
 pub use error::RenderError;
 pub use snapshot::{
     AudioClipSnapshot, AudioTrackSnapshot, MediaFile, SequenceSnapshot, SubtitleClipSnapshot,
