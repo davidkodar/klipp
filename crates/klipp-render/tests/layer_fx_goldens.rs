@@ -7,6 +7,11 @@
 //! that build's renderer. The loader hoists the old text-box fields
 //! onto the object; the renderer reads the object; the picture is the
 //! same to the byte.
+//!
+//! The fixture stays in that build's format, as the converter's tests
+//! read it; like any real project it goes through the one-time
+//! conversion to revision 2 (#1089) before the app opens it, here on a
+//! temp copy.
 
 use klipp_core::title_motion::{MotionKind, StaggerUnit, TitleLoop};
 use klipp_project::load_project;
@@ -16,10 +21,24 @@ fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf29ce484222325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x100000001b3))
 }
 
+/// A temp copy of the fixture, converted to revision 2 as `klipp-convert
+/// run` converts a real project.
+fn converted_fixture() -> std::path::PathBuf {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../klipp-project/tests/fixtures/pre_layer_fx");
+    let dir = std::env::temp_dir().join(format!("klipp-layer-fx-goldens-{}", std::process::id())).join("pre_layer_fx");
+    std::fs::create_dir_all(dir.join("media")).unwrap();
+    std::fs::copy(src.join("media/manifest.json"), dir.join("media/manifest.json")).unwrap();
+    let old: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(src.join("project.json")).unwrap()).unwrap();
+    let (converted, _notes) = klipp_graph_lift::revision2::project(&old).unwrap();
+    std::fs::write(dir.join("project.json"), serde_json::to_string_pretty(&converted).unwrap()).unwrap();
+    dir
+}
+
 #[test]
 fn a_project_from_before_the_stacks_moved_renders_the_same() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../klipp-project/tests/fixtures/pre_layer_fx");
+    let dir = converted_fixture();
     let (sequences, ..) = load_project(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     let ClipKind::Title(td) = &sequences[0].tracks[0].clips[0].kind else { panic!("the fixture's title") };
 
     // The old fields came up onto the object, all of them, and are
