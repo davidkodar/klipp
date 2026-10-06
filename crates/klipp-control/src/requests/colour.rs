@@ -825,18 +825,19 @@ pub(crate) fn respond(
         ControlCommand::GetGrade { clip_id: c } => {
             let want = clip_id(&c)?;
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-            let clip = seq
+            let (track, clip) = seq
                 .tracks
                 .iter()
-                .flat_map(|t| t.clips.iter())
-                .find(|cl| cl.id == want)
+                .find_map(|t| t.clips.iter().find(|cl| cl.id == want).map(|cl| (t, cl)))
                 .ok_or_else(|| format!("no clip with id {c}"))?;
             // The timeline grade runs on every frame after the clip's own,
             // so what the viewer shows is both; say so, or a reader of this
             // graph alone would misjudge the picture.
             let timeline = seq.timeline_grade().filter(|g| !g.is_identity());
-            // Likewise its grade group's grades, before and after its own (#237).
+            // Likewise its grade group's grades, before and after its own (#237),
+            // and its track's grade after those, where the render copy runs it (#1072).
             let group = clip.grade_group.and_then(|g| seq.grade_group(g)).filter(|g| g.grades());
+            let track_grade = track.effects.grade_onto(track.kind, clip);
             Ok(json!({
                 "clip_id": c,
                 "is_identity": clip.own_grade().is_identity(),
@@ -847,6 +848,10 @@ pub(crate) fn respond(
                     "pre": g.stage(klipp_timeline::GradeStage::Pre).filter(|p| !p.is_identity()),
                     "post": g.stage(klipp_timeline::GradeStage::Post).filter(|p| !p.is_identity()),
                 })),
+                "track_grade": track_grade
+                    .map(serde_json::to_value)
+                    .transpose()
+                    .map_err(|e| format!("serialising the track grade: {e}"))?,
                 "timeline_graph": timeline
                     .map(serde_json::to_value)
                     .transpose()
