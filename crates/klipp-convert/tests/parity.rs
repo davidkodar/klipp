@@ -20,7 +20,7 @@ fn same_fields(frozen: Value, current: Value, at: &str) {
     }
 }
 
-fn compare(raw: Value, kind: StoreKind) -> usize {
+pub fn compare(raw: Value, kind: StoreKind) -> usize {
     let doc = Document::from_value(raw.clone(), kind).unwrap();
     assert_eq!(doc.raw(), &raw, "unconverted JSON must be identical");
     let encoded = serde_json::to_string(doc.raw()).unwrap();
