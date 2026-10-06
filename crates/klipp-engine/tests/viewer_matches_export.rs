@@ -308,6 +308,14 @@ impl Viewer {
     /// latest as RGB24. A stream that opened later than that would leave a
     /// layer out of the picture, which the comparison catches by a mile.
     fn settled_frame(&self) -> Vec<u8> {
+        self.settled_labelled().0
+    }
+
+    /// [`Viewer::settled_frame`], with the frame the bytes are of and
+    /// whether it was complete, read under the same lock as the bytes: a
+    /// frame published between reading the label and reading the bytes
+    /// would pair one frame's label with another's picture (#1092).
+    fn settled_labelled(&self) -> (Vec<u8>, Option<i64>, bool) {
         let generation = || self.fb.lock().unwrap().latest_generation();
         let start = Instant::now();
         let mut last = generation();
@@ -323,7 +331,8 @@ impl Viewer {
         let fb = self.fb.lock().unwrap();
         let (rgba, w, h, _) = fb.latest_frame();
         assert_eq!((w, h), (W, H), "viewer frame size");
-        rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect()
+        let presented = fb.latest_presented().map(|at| at.value * FPS / at.rate as i64);
+        (rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect(), presented, fb.latest_complete())
     }
 
     /// The frame playback stopped on, once it has settled: the one the
@@ -348,9 +357,30 @@ impl Viewer {
     /// waiting for quiet alone read the black start-up buffer as frame 10
     /// whenever decoders took longer than the window to open. Then for the
     /// re-renders that follow as the frame's streams arrive to stop.
+    ///
+    /// Only a frame published after the park was asked for counts (#1092).
+    /// Pause parks at the playback clock, which under load runs ahead of
+    /// the frame on screen: the screen still named frame `n` from playing,
+    /// so the wait passed on that old frame before the engine had read the
+    /// command, and the park ahead of it published during the quiet window
+    /// and was read as frame `n` (96 levels out). And the settled bytes are
+    /// checked to still be frame `n`, complete, before they're returned.
     fn frame_at(&self, n: i64) -> Vec<u8> {
+        let asked_after = self.fb.lock().unwrap().latest_generation();
         self.cmd.send(AppCommand::SetPlayhead(tc(n))).unwrap();
         let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            self.wait_for_complete(n, asked_after, deadline);
+            let (bytes, presented, complete) = self.settled_labelled();
+            if presented == Some(n) && complete {
+                return bytes;
+            }
+            assert!(Instant::now() < deadline, "the viewer settled on frame {presented:?} (complete {complete}), not a complete frame {n}");
+        }
+    }
+
+    /// Wait for a complete frame `n` published after generation `after`.
+    fn wait_for_complete(&self, n: i64, after: u64, deadline: Instant) {
         // The frame buffer names its bytes, never a zero-copy frame newer
         // than them, so this waits for frame `n`'s own picture — and for a
         // complete one: a frame rendered before every clip's stream had its
@@ -358,17 +388,16 @@ impl Viewer {
         // longer than the quiet window below to arrive. Frame 60 was read
         // with only its bottom clip, 95 levels out where c and d belonged.
         loop {
-            let (presented, complete) = {
+            let (generation, presented, complete) = {
                 let fb = self.fb.lock().unwrap();
-                (fb.latest_presented().map(|at| at.value * FPS / at.rate as i64), fb.latest_complete())
+                (fb.latest_generation(), fb.latest_presented().map(|at| at.value * FPS / at.rate as i64), fb.latest_complete())
             };
-            if presented == Some(n) && complete {
-                break;
+            if generation > after && presented == Some(n) && complete {
+                return;
             }
             assert!(Instant::now() < deadline, "the viewer never presented a complete frame {n} (last: {presented:?}, complete {complete})");
             std::thread::sleep(Duration::from_millis(5));
         }
-        self.settled_frame()
     }
 }
 
@@ -505,6 +534,42 @@ fn playing_through_a_dissolve_shows_the_exported_frames() {
         worst = worst.max(compare(&format!("back to {back:3}"), &viewer.frame_at(back), &exported_frame(out, back)));
     }
     eprintln!("viewer vs export, after playing: worst {worst} levels");
+    assert!(worst <= 3, "the viewer differs from the export by {worst} levels");
+}
+
+/// #1092: a park asked for after another one is still being made is the
+/// one read. Pause parks at the playback clock, which under load runs ahead
+/// of the frame on screen; the test then parked on the frame the screen
+/// named. The screen still named it, so the wait passed before the engine
+/// had read the second park, and the first park, published during the
+/// quiet window, was read as the second (96 levels out). This makes that
+/// happen without load: a slow decoder holds the second park back while
+/// the first one, already under way, publishes.
+#[test]
+fn a_park_asked_for_while_another_is_made_is_the_one_read() {
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            klipp_engine::video_decoder::set_decode_delay_for_tests(0);
+        }
+    }
+    let _decoders = DECODER_SPEED.write().unwrap_or_else(|e| e.into_inner());
+    let (t, out) = main_fixture();
+    let viewer = Viewer::start(t);
+    let _restore = Restore;
+    // Both frames rendered once, so the screen can name 95 while 107 is made.
+    viewer.frame_at(107);
+    viewer.frame_at(95);
+    klipp_engine::video_decoder::set_decode_delay_for_tests(500);
+    viewer.cmd.send(AppCommand::SetPlayhead(tc(107))).unwrap();
+    // Let the engine take the first park up before the second is asked
+    // for, or it reads both commands in one tick and makes only the last.
+    std::thread::sleep(Duration::from_millis(40));
+    let worst = compare("asked for 95 while 107 was made", &viewer.frame_at(95), &exported_frame(out, 95));
     assert!(worst <= 3, "the viewer differs from the export by {worst} levels");
 }
 
