@@ -736,3 +736,30 @@ fn a_repeated_node_id_stops_the_project_without_a_panic() {
     let r = std::panic::catch_unwind(|| crate::lift::lift_grade_only(&structural, false));
     assert!(r.expect("no panic").unwrap_err().contains("repeats node"));
 }
+
+/// A grade group publishing a port can't be kept by today's grade model:
+/// delift refuses it, naming the ports, rather than dropping them, so a
+/// file holding one is never loaded and saved back without it (#1183).
+#[test]
+fn a_published_port_is_refused_not_dropped() {
+    let record = clip_to_v2(clip(json!({"node_graph": json!({
+        "nodes": [gn(SRC, "Source"), gn(COR, "Corrector"), gn(OUT, "Output")],
+        "edges": [edge(SRC, 0, COR, 0), edge(COR, 0, OUT, 0)],
+        "output_node_id": OUT
+    })})).as_object().unwrap()).unwrap();
+    let (mut p, _) = lift_clip(&record, &LiftCtx { clip_id: id(CLIP), kind: ClipKind::Media }).unwrap();
+    assert!(crate::delift::clip(&p).is_ok(), "without one it reads");
+    let group = p.graph.nodes.iter_mut().find(|n| n.type_id.as_str() == lt::GROUP).unwrap();
+    let body = group.group.as_mut().unwrap();
+    let child = body.graph.nodes[0].id;
+    body.interface.push(klipp_graph_format::GroupPort {
+        key: "matte_out".into(),
+        direction: klipp_graph_format::PortDirection::Output,
+        ty: klipp_graph_format::PortType::Matte,
+        binding: klipp_graph_format::PortBinding { node: child, port: "out".into() },
+        label: String::new(),
+    });
+    let err = crate::delift::clip(&p).unwrap_err();
+    assert!(err.contains("publishes ports (matte_out)"), "{err}");
+    assert!(crate::unlift::clip(&p).is_err(), "and loading it is refused the same way");
+}
