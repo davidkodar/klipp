@@ -733,6 +733,13 @@ fn media_item_to_json(item: &MediaItem, project_dir: &Path) -> MediaItemJson {
         pixel_format: item.pixel_format.clone(),
         log_format: item.log_format,
         log_format_user_set: item.log_format_user_set,
+        log: item.log.clone(),
+        markers: item.markers.clone(),
+        synced_audio: item.synced_audio.clone(),
+        span: item.span,
+        screen_text: item.screen_text.clone(),
+        shot: item.shot.clone(),
+        truncated_from_secs: item.truncated_from_secs,
     }
 }
 

@@ -433,14 +433,16 @@ fn load_project_as(dir: &Path, form: crate::FileForm) -> Result<LoadResult, Stri
             skim_file: None,
             waveform_data: None,
             audio_cache: None,
-            shot: Default::default(),
+            shot: item_json.shot.clone(),
+            // Retain the offline snapshot, but re-probe available files:
+            // a source may have changed while the project was closed.
             metadata_read: false,
-            truncated_from_secs: None,
-            log: Default::default(),
-            synced_audio: None,
-            markers: Vec::new(),
-            screen_text: String::new(),
-            span: None,
+            truncated_from_secs: item_json.truncated_from_secs,
+            log: item_json.log.clone(),
+            synced_audio: item_json.synced_audio.clone(),
+            markers: item_json.markers.clone(),
+            screen_text: item_json.screen_text.clone(),
+            span: item_json.span,
         };
         // Re-run the log-format heuristic now that the metadata
         // fields are restored, so files saved before #35 (or files
