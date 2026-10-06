@@ -27,6 +27,7 @@
 
 use crate::audio_mixdown::AudioMixdown;
 use crate::encoder::Encoder;
+use crate::export_frames::{export_renderer, ExportFrame, ExportFrameMaker};
 use crate::error::RenderError;
 use crate::frame_source::ExportFrameSource;
 use crate::snapshot::{SequenceSnapshot, SubtitleClipSnapshot};
@@ -34,7 +35,7 @@ use klipp_core::ExportSettings;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::info;
 use uuid::Uuid;
 
 /// Top-level export coordinator. Ties together the renderer, the encoder
@@ -109,28 +110,7 @@ impl ExportJob {
         Self::set_stage(&self.render_stage, "Initializing\u{2026}");
 
         // ─── Initialise all systems ───────────────────────────────
-        // The viewer's renderer. OFX plugin discovery is slow; only when a
-        // clip uses a plugin.
-        let mut ofx = klipp_plugin::OfxHost::new();
-        if timeline.tracks.iter().flat_map(|t| &t.clips).any(|c| c.has_enabled_plugins()) {
-            ofx.discover_plugins();
-        }
-        let mut renderer = klipp_compose::Renderer::new(ofx, klipp_title::TitleRenderer::new());
-        renderer.set_working_colorspace(self.snapshot.working_colorspace);
-        renderer.set_grade_encoding(self.snapshot.grade_encoding);
-        // Tetrahedral, always: the trilinear option exists so the viewer
-        // can stay responsive, and a delivery is not the place to trade
-        // LUT accuracy for speed.
-        renderer.set_lut_tetrahedral(true);
-        if let Some(path) = &self.snapshot.global_lut_path {
-            match klipp_color::lut::load_lut(path) {
-                Ok(lut) => renderer.set_global_lut(Some(klipp_compose::GlobalLut {
-                    lut,
-                    opacity: self.snapshot.video.global_lut_opacity,
-                })),
-                Err(e) => tracing::warn!("ExportJob {}: global LUT {:?} failed to load: {e}", self.id, path),
-            }
-        }
+        let mut renderer = export_renderer(&self.snapshot, &format!("ExportJob {}", self.id));
         let mut frames = ExportFrameSource::new(&self.snapshot.video.media, self.snapshot.fps, self.snapshot.working_colorspace);
         let mut audio_mixdown = AudioMixdown::new(&self.snapshot)?;
 
@@ -227,23 +207,7 @@ impl ExportJob {
 
         let mut export_frame_num: u64 = 0;
 
-        // Output size, and where the sequence's picture sits in it: an
-        // export resolution with another aspect is letterboxed or
-        // pillarboxed, not stretched.
-        let (out_w, out_h) = self.settings.output_size(self.snapshot.width, self.snapshot.height);
-        let (fit_w, fit_h, fit_x, fit_y) = if (out_w, out_h) == (self.snapshot.width, self.snapshot.height) {
-            (out_w, out_h, 0, 0)
-        } else {
-            fit_to_target(self.snapshot.width, self.snapshot.height, out_w, out_h)
-        };
         let mut hw_reported = false;
-        // An HLG or PQ delivery renders display light for the encoder's
-        // HDR encode (an ACES PQ transform renders its own from SDR).
-        let render_opts = klipp_compose::RenderOptions {
-            hdr_peak_nits: self.settings.renders_hdr().then(|| self.settings.hdr_peak_nits()),
-            ..Default::default()
-        };
-
         let codec_label = self.settings.video_codec.label();
         Self::set_stage(&self.render_stage, &format!("Encoding video ({codec_label})\u{2026}"));
 
@@ -257,23 +221,10 @@ impl ExportJob {
         let mut t_audio = std::time::Duration::ZERO;
         let loop_start = std::time::Instant::now();
 
-        // Whether a frame can be converted to the encoder's planes on the
-        // GPU, and with what. Requires a delivery the shader can finish
-        // (`gpu_yuv420_params`) and a picture that fills the output — a
-        // letterboxed export is padded on the CPU, which needs the frame
-        // there anyway.
-        let mut gpu_yuv = if (fit_w, fit_h) == (out_w, out_h) {
-            encoder.gpu_yuv420_params()
-        } else {
-            None
-        };
-        debug!(
-            "ExportJob {}: GPU frame conversion {} (fit {fit_w}x{fit_h}, out {out_w}x{out_h}, \
-             encoder format {:?})",
-            self.id,
-            if gpu_yuv.is_some() { "available" } else { "unavailable" },
-            encoder.video_format(),
-        );
+        // Each frame as an export makes it: one decision, shared with
+        // anything that must render what an export would (#1156).
+        let mut maker = ExportFrameMaker::new(&self.settings, &self.snapshot, &encoder, format!("ExportJob {}", self.id));
+        let (out_w, out_h) = maker.out_size();
 
         // ─── THE MAIN RENDER LOOP ─────────────────────────────────
         for frame_num in start_frame..end_frame {
@@ -295,60 +246,30 @@ impl ExportJob {
             };
             let t0 = std::time::Instant::now();
 
-            // The frame converted on the GPU, when the whole render is one
-            // clip's grade and the delivery is one this can finish: then
-            // 12.4 MB of Y'CbCr planes come back instead of a 132 MB
-            // linear frame, and the per-pixel display-and-convert pass on
-            // the CPU does not happen at all.
-            //
-            // `gpu_yuv_frames` latches off after a miss. The gate inside
-            // `render_yuv420_on_gpu` is structural and cheap, but if the
-            // grade itself comes back on the CPU — a node with no GPU
-            // dispatch — then this frame is rendered twice, and without
-            // the latch every remaining frame would be too.
-            let planes = gpu_yuv.and_then(|target| {
-                renderer.render_yuv420_on_gpu(
-                    timeline, time, fit_w, fit_h, &mut frames, render_opts, target,
-                )
-            });
-            if let Some((planes, light)) = planes {
-                frames.end_frame()?;
-                t_render += t0.elapsed();
-                let t2 = std::time::Instant::now();
-                // `light` is the frame's MaxCLL/MaxFALL contribution for a
-                // PQ delivery, measured by the shader that wrote these
-                // planes; `None` on every other path.
-                encoder.encode_yuv420_planes(&planes, out_w, out_h, light)?;
-                t_encode += t2.elapsed();
+            let frame = maker.frame(&mut renderer, timeline, time, &mut frames)?;
+            t_render += t0.elapsed().saturating_sub(maker.last_pad);
+            t_pad += maker.last_pad;
+            let picture = match frame {
+                ExportFrame::Planes { planes, light } => {
+                    let t2 = std::time::Instant::now();
+                    // `light` is the frame's MaxCLL/MaxFALL contribution for a
+                    // PQ delivery, measured by the shader that wrote these
+                    // planes; `None` on every other path.
+                    encoder.encode_yuv420_planes(&planes, out_w, out_h, light)?;
+                    t_encode += t2.elapsed();
 
-                let t3 = std::time::Instant::now();
-                let mut audio = audio_mixdown.get_frame_audio(frame_num);
-                delivery.process(&mut audio);
-                encoder.encode_audio_samples(&audio)?;
-                t_audio += t3.elapsed();
+                    let t3 = std::time::Instant::now();
+                    let mut audio = audio_mixdown.get_frame_audio(frame_num);
+                    delivery.process(&mut audio);
+                    encoder.encode_audio_samples(&audio)?;
+                    t_audio += t3.elapsed();
 
-                export_frame_num += 1;
-                self.progress.store(export_frame_num, Ordering::Relaxed);
-                continue;
-            }
-            if gpu_yuv.is_some() && renderer.gpu_export_declined_after_work() {
-                // The miss came after the frame was rendered — a grade
-                // coming back on the CPU, a stack failing part-way — so
-                // this frame was rendered twice, and every frame after it
-                // would be. A miss at the gate costs nothing and is a
-                // property of this frame alone: a plugin clip's stretch of
-                // the timeline goes the ordinary way and the GPU path
-                // resumes after it.
-                gpu_yuv = None;
-                debug!(
-                    "ExportJob {}: GPU frame conversion off from frame {frame_num}",
-                    self.id
-                );
-            }
-
-            let picture = renderer.render(timeline, time, fit_w, fit_h, &mut frames, render_opts);
-            frames.end_frame()?;
-            t_render += t0.elapsed();
+                    export_frame_num += 1;
+                    self.progress.store(export_frame_num, Ordering::Relaxed);
+                    continue;
+                }
+                ExportFrame::Linear(picture) => picture,
+            };
             if !hw_reported {
                 hw_reported = true;
                 let hw_str = format!(
@@ -361,9 +282,6 @@ impl ExportJob {
                     *hw = hw_str;
                 }
             }
-            let t1 = std::time::Instant::now();
-            let picture = pad_linear(picture, fit_w, fit_h, out_w, out_h, fit_x, fit_y);
-            t_pad += t1.elapsed();
             let t2 = std::time::Instant::now();
             encoder.encode_linear_frame(&picture, out_w, out_h)?;
             t_encode += t2.elapsed();
@@ -595,7 +513,7 @@ impl ExportJob {
 
 /// Place a `w` × `h` linear frame at (`x`, `y`) on a black `dst_w` ×
 /// `dst_h` canvas.
-fn pad_linear(frame: Vec<f32>, w: u32, h: u32, dst_w: u32, dst_h: u32, x: u32, y: u32) -> Vec<f32> {
+pub(crate) fn pad_linear(frame: Vec<f32>, w: u32, h: u32, dst_w: u32, dst_h: u32, x: u32, y: u32) -> Vec<f32> {
     if (w, h) == (dst_w, dst_h) {
         return frame;
     }
@@ -623,7 +541,7 @@ pub fn partial_path_for(final_path: &Path) -> PathBuf {
 /// into `(target_w, target_h)` while preserving aspect ratio.
 /// Returns (fitted_w, fitted_h, offset_x, offset_y).
 /// Fitted dimensions are forced even for YUV420p chroma subsampling compatibility.
-fn fit_to_target(src_w: u32, src_h: u32, target_w: u32, target_h: u32) -> (u32, u32, u32, u32) {
+pub(crate) fn fit_to_target(src_w: u32, src_h: u32, target_w: u32, target_h: u32) -> (u32, u32, u32, u32) {
     if src_w == 0 || src_h == 0 || target_w == 0 || target_h == 0 {
         return (target_w & !1, target_h & !1, 0, 0);
     }

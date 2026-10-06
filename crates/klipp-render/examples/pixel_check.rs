@@ -244,22 +244,11 @@ fn display(linear: &[f32], ws: WorkingColorspace) -> Vec<u8> {
     klipp_color::display::display_transform_ws_to(linear, klipp_color::display::ToneMapOp::None, ws, klipp_core::SdrTransfer::Srgb)
 }
 
-/// The renderer as the export sets it up, on the CPU or with the GPU.
+/// The renderer as the export sets it up (`export_frames::export_renderer`),
+/// on the CPU or with the GPU.
 fn renderer(snapshot: &SequenceSnapshot, gpu: bool) -> klipp_compose::Renderer {
-    let mut ofx = klipp_plugin::OfxHost::new();
-    if snapshot.video.sequence.tracks.iter().flat_map(|t| &t.clips).any(|c| c.has_enabled_plugins()) {
-        ofx.discover_plugins();
-    }
-    let mut r = klipp_compose::Renderer::new(ofx, klipp_title::TitleRenderer::new());
+    let mut r = klipp_render::export_frames::export_renderer(snapshot, "pixel check");
     r.set_gpu_enabled(gpu);
-    r.set_working_colorspace(snapshot.working_colorspace);
-    r.set_grade_encoding(snapshot.grade_encoding);
-    r.set_lut_tetrahedral(true);
-    if let Some(path) = &snapshot.global_lut_path {
-        if let Ok(lut) = klipp_color::lut::load_lut(path) {
-            r.set_global_lut(Some(klipp_compose::GlobalLut { lut, opacity: snapshot.video.global_lut_opacity }));
-        }
-    }
     r
 }
 
@@ -342,51 +331,49 @@ fn stack_frames(snapshot: &SequenceSnapshot, frames: &[u64], h: u32, seq_dir: &P
     Ok(())
 }
 
-/// The export's frames, as `ExportJob` makes them: the encoder for the
-/// check's size is asked whether a frame can be converted on the GPU
-/// (`gpu_yuv420_params`), and a frame goes that way when the renderer takes
-/// it (`render_yuv420_on_gpu`: the encoder's planes, `-export-yuv`, grey,
-/// the planes one after another); otherwise it is rendered and put through
-/// the encoder's display transform (`export_display`: `-export`, RGBA),
-/// and a miss after the work turns the GPU way off for the rest, as the job
-/// does. `probe` is where the encoder opens; it is removed again.
+/// The export's frames, made by the export's own decision
+/// (`klipp_render::export_frames`, which `ExportJob` calls too, #1156):
+/// the encoder's planes when a frame is converted on the GPU
+/// (`-export-yuv`, grey, the planes one after another), else the picture
+/// through the encoder's display transform (`-export`). The encoder opens
+/// at the check's size on `probe`, which is removed again.
 fn export_frames(snapshot: &SequenceSnapshot, frames: &[u64], h: u32, seq_dir: &Path, probe: &Path, done: &mut Rendered) -> Result<(), String> {
+    use klipp_render::export_frames::{ExportFrame, ExportFrameMaker};
     let mut out = settings();
     out.resolution = Some(klipp_core::Resolution { width: WIDTH, height: h });
-    let opened = klipp_render::Encoder::open(probe, &out, snapshot).map(|e| e.gpu_yuv420_params());
+    let opened = klipp_render::Encoder::open(probe, &out, snapshot).map(|encoder| ExportFrameMaker::new(&out, snapshot, &encoder, "pixel check"));
     let _ = std::fs::remove_file(probe);
-    let mut target = opened.map_err(|e| format!("opening the export's encoder: {e}"))?;
+    let mut maker = opened.map_err(|e| format!("opening the export's encoder: {e}"))?;
     let display = klipp_render::encoder::export_display(&out, snapshot.working_colorspace);
     let mut r = renderer(snapshot, true);
     let mut source = ExportFrameSource::new(&snapshot.video.media, snapshot.fps, snapshot.working_colorspace);
     for &f in frames {
         let time = Timecode::from_frames(f as i64, snapshot.fps_num);
-        let opts = klipp_compose::RenderOptions::default();
-        let planes = target.and_then(|t| r.render_yuv420_on_gpu(&snapshot.video.sequence, time, WIDTH, h, &mut source, opts, t).map(|(p, _)| (p, t)));
-        if let Some((planes, t)) = planes {
-            source.end_frame().map_err(|e| format!("frame {f} (export): {e}"))?;
-            if !planes.len().is_multiple_of(WIDTH as usize) {
-                return Err(format!("frame {f} (export): {} bytes of planes don't fill rows of {WIDTH}", planes.len()));
+        let made = maker.frame(&mut r, &snapshot.video.sequence, time, &mut source).map_err(|e| format!("frame {f} (export): {e}"))?;
+        match made {
+            ExportFrame::Planes { planes, .. } => {
+                if !planes.len().is_multiple_of(WIDTH as usize) {
+                    return Err(format!("frame {f} (export): {} bytes of planes don't fill rows of {WIDTH}", planes.len()));
+                }
+                let rows = (planes.len() / WIDTH as usize) as u32;
+                image::save_buffer(seq_dir.join(format!("{f}-export-yuv.png")), &planes, WIDTH, rows, image::ExtendedColorType::L8).map_err(|e| e.to_string())?;
+                // Flat when its luma plane is one value; a sample is two
+                // bytes when the planes are deeper than eight bits.
+                let luma_len = (WIDTH * h) as usize;
+                let sample = (planes.len() * 2 / 3 / luma_len).max(1);
+                let luma = &planes[..luma_len * sample];
+                done.frames += 1;
+                done.flat += usize::from(luma.chunks_exact(sample).all(|v| v == &luma[..sample]));
+                done.export_gpu += 1;
             }
-            let rows = (planes.len() / WIDTH as usize) as u32;
-            image::save_buffer(seq_dir.join(format!("{f}-export-yuv.png")), &planes, WIDTH, rows, image::ExtendedColorType::L8).map_err(|e| e.to_string())?;
-            // Flat when its luma plane is one value.
-            let luma = &planes[..(WIDTH * h) as usize * if t.bits > 8 { 2 } else { 1 }];
-            done.frames += 1;
-            done.flat += usize::from(luma.chunks_exact(luma.len() / (WIDTH * h) as usize).all(|v| v == &luma[..v.len()]));
-            done.export_gpu += 1;
-            continue;
+            ExportFrame::Linear(linear) => {
+                let px = display.frame(&linear, |v, n| klipp_color::display::quantise(v, n, 255.0) as u8);
+                image::save_buffer(seq_dir.join(format!("{f}-export.png")), &px, WIDTH, h, image::ExtendedColorType::Rgba8).map_err(|e| e.to_string())?;
+                done.frames += 1;
+                done.flat += usize::from(is_flat(&px));
+                done.export_cpu += 1;
+            }
         }
-        if target.is_some() && r.gpu_export_declined_after_work() {
-            target = None;
-        }
-        let linear = r.render(&snapshot.video.sequence, time, WIDTH, h, &mut source, opts);
-        source.end_frame().map_err(|e| format!("frame {f} (export): {e}"))?;
-        let px = display.frame(&linear, |v, n| klipp_color::display::quantise(v, n, 255.0) as u8);
-        image::save_buffer(seq_dir.join(format!("{f}-export.png")), &px, WIDTH, h, image::ExtendedColorType::Rgba8).map_err(|e| e.to_string())?;
-        done.frames += 1;
-        done.flat += usize::from(is_flat(&px));
-        done.export_cpu += 1;
     }
     Ok(())
 }

@@ -52,6 +52,7 @@ mod vaapi;
 
 pub mod audio_mixdown;
 pub mod encoder;
+pub mod export_frames;
 pub mod export_job;
 mod frame_source;
 pub mod gif_filter;
