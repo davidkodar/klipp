@@ -305,16 +305,16 @@ fn write_beside(dir: &Path, out: &Path, project: &Value) -> Result<(), String> {
 /// It also counts what the comparison reached, so a generator can be held
 /// to reaching it: clips that blend frames somewhere, and grades today's
 /// renderer refuses to run.
-#[derive(Default)]
-struct Checked {
-    alike: usize,
-    unstable_load: usize,
-    blending: usize,
-    passthrough: usize,
+#[derive(Default, Debug)]
+pub struct Checked {
+    pub alike: usize,
+    pub unstable_load: usize,
+    pub blending: usize,
+    pub passthrough: usize,
     /// Render copies left out of the comparison because the conversion
     /// stops their project: a `CrossGroupWireless` note (#1102), where
     /// today's merged namespace and revision 2's scoped links may differ.
-    crossed: usize,
+    pub crossed: usize,
 }
 
 impl Checked {
@@ -629,10 +629,28 @@ fn splice_inputs(seq: &Sequence, track: &Track, clip: &Clip, raw_seq: &Value, ra
 /// revision-2 conversion (`revision2::project`) as it would be written,
 /// not lifted here: the converted file renders as the original does.
 fn check_spliced(dir: &Path, scratch: &Path, from_file: bool) -> Result<Checked, String> {
+    let file = std::fs::read_to_string(dir.join("project.json")).map_err(|e| e.to_string())?;
+    let project: Value = serde_json::from_str(&file).map_err(|e| e.to_string())?;
+    let converted = if from_file { Some(klipp_convert::revision2::project(&project).map_err(|e| format!("revision 2: {e}"))?.0) } else { None };
+    check_spliced_against(dir, scratch, converted)
+}
+
+/// The render check of `klipp-convert run` (#1087): the revision-2 project
+/// written into `copy` renders, clip by clip, as the v1 project in
+/// `original` does today (its render copy, `baked_for_render`). `scratch`
+/// is an empty folder the check may write into.
+pub fn check_written(original: &Path, copy: &Path, scratch: &Path) -> Result<Checked, String> {
+    let text = std::fs::read_to_string(copy.join("project.json")).map_err(|e| format!("the written project: {e}"))?;
+    let written: Value = serde_json::from_str(&text).map_err(|e| format!("the written project: {e}"))?;
+    check_spliced_against(original, scratch, Some(written))
+}
+
+/// [`check_spliced`] with the converted project given, or lifted here when
+/// `None`.
+fn check_spliced_against(dir: &Path, scratch: &Path, converted: Option<Value>) -> Result<Checked, String> {
     let before = load(dir)?;
     let file = std::fs::read_to_string(dir.join("project.json")).map_err(|e| e.to_string())?;
     let mut project: Value = serde_json::from_str(&file).map_err(|e| e.to_string())?;
-    let converted = if from_file { Some(klipp_convert::revision2::project(&project).map_err(|e| format!("revision 2: {e}"))?.0) } else { None };
     // The clips whose link names meet a merged graph's: the conversion
     // stops their project, so their render copies are not compared.
     let crossed: std::collections::BTreeSet<Uuid> = project["sequences"]
@@ -1443,4 +1461,53 @@ fn every_generated_project_comes_back_to_the_same_revision_2_file() {
     }
     eprintln!("unlift: {projects} generated projects back and forth");
     assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.iter().take(5).cloned().collect::<Vec<_>>().join("\n"));
+}
+
+/// The render check `klipp-convert run` applies before its swap (#1087),
+/// for a converted copy at `copy`: the project it came from is beside it.
+pub fn render_check(copy: &Path) -> Result<(), String> {
+    let name = copy.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let original = copy.with_file_name(name.strip_suffix(".klipp-convert").ok_or("not a converted copy")?);
+    let scratch = temp("render_check");
+    let r = check_written(&original, copy, &scratch);
+    let _ = std::fs::remove_dir_all(&scratch);
+    r.map(drop)
+}
+
+/// The run's render check passes generated projects in grade groups on
+/// tracks with effects and grades, as written to disk; and stops one whose
+/// written copy renders otherwise, rolled back.
+#[test]
+fn the_runs_render_check_holds_the_written_copy_to_the_original() {
+    use klipp_convert::run::{run, Hooks, Settings};
+    let ok_parity = |_: &Value, _: klipp_convert::StoreKind| -> Result<(), String> { Ok(()) };
+    for seed in 0..6 {
+        let base = temp(&format!("runcheck{seed}"));
+        let dir = base.join("Film.klipp");
+        std::fs::create_dir_all(&base).unwrap();
+        generated_spliced_project(&dir, seed, 12);
+        let s = Settings { projects: vec![dir.clone()], excluded: Default::default(), config_dir: None, backup_root: base.join("backup"), date: "2026-10-06".into() };
+        let hooks = Hooks { crash: &|_, _| false, crash_in_move: &|_, _| false, render_check: &render_check };
+        let report = run(&s, &|| Ok(()), &ok_parity, &hooks).unwrap();
+        assert_eq!(report.converted, vec![std::fs::canonicalize(&dir).unwrap()], "seed {seed}: {:?}", report.stopped);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+    // A written copy that renders otherwise: one clip's grade loses its
+    // exposure in the file.
+    let base = temp("runcheck_bad");
+    let dir = base.join("Film.klipp");
+    std::fs::create_dir_all(&base).unwrap();
+    generated_spliced_project(&dir, 3, 12);
+    let sabotage = |copy: &Path| -> Result<(), String> {
+        let p = copy.join("project.json");
+        let text = std::fs::read_to_string(&p).unwrap();
+        std::fs::write(&p, text.replacen("\"exposure\"", "\"exposure_gone\"", 1)).unwrap();
+        render_check(copy)
+    };
+    let s = Settings { projects: vec![dir.clone()], excluded: Default::default(), config_dir: None, backup_root: base.join("backup"), date: "2026-10-06".into() };
+    let hooks = Hooks { crash: &|_, _| false, crash_in_move: &|_, _| false, render_check: &sabotage };
+    let report = run(&s, &|| Ok(()), &ok_parity, &hooks).unwrap();
+    assert!(report.converted.is_empty() && report.stopped.len() == 1, "{report:?}");
+    assert!(!dir.with_file_name("Film.klipp.klipp-convert").exists(), "rolled back");
+    let _ = std::fs::remove_dir_all(&base);
 }

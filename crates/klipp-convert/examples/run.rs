@@ -3,6 +3,9 @@
 //!
 //!     cargo run --release -p klipp-convert --example run -- --confirm-real-run [--exclude <dir>]...
 //!
+//! Before each project's swap, its written copy must render as the
+//! original does today (`tests/render_inputs.rs`), or the project stops.
+//!
 //! Run once, at phase 2a's switch, with the user's go-ahead and no Klipp
 //! running. It is an example rather than the binary because the dry run it
 //! repeats compares the frozen reader with today's reader, which only the
@@ -11,6 +14,12 @@
 #[allow(dead_code, unused_imports)]
 #[path = "../tests/parity.rs"]
 mod parity;
+
+/// The render check before each swap: the written copy renders, clip by
+/// clip, as the original's render copy does today (#1068's property).
+#[allow(dead_code, unused_imports)]
+#[path = "../tests/render_inputs.rs"]
+mod render_inputs;
 
 use std::path::PathBuf;
 
@@ -45,7 +54,8 @@ fn main() {
         }
     };
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    match run(&settings, &|| real_preconditions(&repo), &parity, &Hooks::NONE) {
+    let hooks = Hooks { render_check: &render_inputs::render_check, ..Hooks::NONE };
+    match run(&settings, &|| real_preconditions(&repo), &parity, &hooks) {
         Ok(report) => {
             let path = settings.backup_root.join(format!("run-report-{}.json", settings.date));
             let _ = std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap_or_default());
