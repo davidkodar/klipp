@@ -11,8 +11,9 @@
 # 1.8 GB since the gate builds with line tables only (#1046). Measured on
 # its first run, with 6 jobs: the largest link 1.37 GB (2 GB before), the
 # largest rustc 2.2 GB, at most 9.9 GB in use at once, so 1.65 GB a job,
-# and never under 7.5 GB free. rustdoc's 6.8 GB peak is a step of its
-# own, not beside the build. KLIPP_GATE_MB_PER_JOB overrides it.
+# and never under 7.5 GB free. This sizes rustc/link jobs only;
+# KLIPP_GATE_MB_PER_JOB overrides that estimate. rustdoc's 6.8 GB peak
+# needs a separate cap: pre-push.sh runs cargo doc with -j 2 (#1240).
 #
 # Usage: gate-jobs.sh [cores [available_mb]]; both read from the machine
 # when left out. Prints the number.

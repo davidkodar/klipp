@@ -739,18 +739,20 @@ class TestScopeTests(RealGitGate):
     def test_rustdoc_documents_the_crates_whose_tests_run(self):
         # The scope is the branch's changes against main, so each step
         # adds to what the one before it changed.
+        # A larger compile-job budget must not raise rustdoc concurrency.
+        self.env["CARGO_BUILD_JOBS"] = "8"
         self.full_mark.write_text(str(int(time.time())))
         self.change("README.md")
         self.run_gate()
-        self.assertEqual(self.logged("docs"), ["doc --workspace --no-deps"], "no tests to run: documented whole")
+        self.assertEqual(self.logged("docs"), ["doc -j 2 --workspace --no-deps"], "no tests to run: documented whole")
         self.change("crates/b/src/lib.rs")
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.logged("docs"), ["doc -p b --no-deps"], "b: nothing is built on it")
+        self.assertEqual(self.logged("docs"), ["doc -j 2 -p b --no-deps"], "b: nothing is built on it")
         self.assertIn("rustdoc took", result.stdout)
         self.change("Cargo.lock")
         self.run_gate()
-        self.assertEqual(self.logged("docs"), ["doc --workspace --no-deps"], "a shared file: everything")
+        self.assertEqual(self.logged("docs"), ["doc -j 2 --workspace --no-deps"], "a shared file: everything")
 
     def test_everything_the_gate_builds_has_line_tables_only(self):
         self.full_mark.write_text(str(int(time.time())))

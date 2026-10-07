@@ -888,8 +888,10 @@ _step=docs
 _t=$(date +%s)
 _doc_args=$_scope_args
 [ "$_scope" = none ] && _doc_args=--workspace
+# rustdoc can use far more memory per crate than rustc/link jobs. Keep
+# its concurrency separate from the build's CARGO_BUILD_JOBS (#1240).
 # shellcheck disable=SC2086 # the crates, one -p each
-if ! _logged env RUSTDOCFLAGS="-D warnings" cargo doc $_doc_args --no-deps 9>&-; then
+if ! _logged env RUSTDOCFLAGS="-D warnings" cargo doc -j 2 $_doc_args --no-deps 9>&-; then
     printf '\n  pre-push: rustdoc warned — push refused.\n' >&2
     printf '            Usually a [`link`] to something renamed or private, or a\n' >&2
     printf '            bare [0,1] or Vec<T> in prose that needs backticks.\n\n' >&2
