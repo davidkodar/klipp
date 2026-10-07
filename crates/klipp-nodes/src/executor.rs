@@ -1141,6 +1141,28 @@ impl GraphExecutor {
             .map(|bytes| (bytes, None))
     }
 
+    /// Seed the chain from linear working-space f32 in memory, uploaded
+    /// straight from `pixels`: the next run's Source is the chain's input
+    /// slot, with no copy of the frame on the CPU first. A run that
+    /// still needs the source on the CPU (a node off the chain) reports
+    /// `CpuSourceRequired`, and the caller runs again with the pixels.
+    /// `false` with no GPU or a frame of the wrong size.
+    pub fn prime_chain_from_linear(&mut self, pixels: &[f32], width: u32, height: u32) -> bool {
+        if pixels.len() != (width as usize) * (height as usize) * 4 {
+            return false;
+        }
+        self.ensure_gpu();
+        let Some(gpu) = self.gpu.as_mut() else { return false };
+        if gpu.is_device_lost() {
+            return false;
+        }
+        gpu.ensure_chain_buffers((width as u64) * (height as u64) * 16);
+        gpu.upload_chain_input_linear(pixels);
+        self.gpu_chain_preseeded = true;
+        self.gpu_chain_preseed_dims = Some((width, height));
+        true
+    }
+
     /// Seed the chain from a buffer that is already linear working-space
     /// f32 on the GPU — a frame some other pass converted there, with no
     /// expansion left to do.
