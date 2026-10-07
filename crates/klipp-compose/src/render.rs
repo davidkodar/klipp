@@ -252,6 +252,14 @@ impl From<Option<(Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)>> for Sing
     }
 }
 
+/// Clip renders whose effects ran as nodes of the grade's plan, read from
+/// the clip's lifted picture, and those whose picture could not give them
+/// (the list stood in), in this process: `RenderStats`' two counts summed
+/// over every renderer, for a reader with no renderer of its own (the
+/// control socket's `perf`). Cumulative; a reader takes deltas.
+pub static PLAN_EFFECT_CLIPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static PLAN_EFFECT_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Where a render's time went, in milliseconds.
 #[derive(Default, Clone, Copy, Debug)]
 pub struct RenderStats {
@@ -1558,6 +1566,7 @@ impl Renderer {
                             return Err("an effect could not be recorded");
                         }
                         stats.effects_followed_grade += u32::from(effects_done);
+                        PLAN_EFFECT_CLIPS.fetch_add(u64::from(effects_done), std::sync::atomic::Ordering::Relaxed);
                         if pixels.is_empty() {
                             let slot_a = self.executor.last_chain_final_slot().unwrap_or(true);
                             self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_chain(slot, slot_a))
@@ -1576,6 +1585,7 @@ impl Renderer {
                                 return Err("an effect could not be recorded");
                             }
                             stats.effects_followed_grade += u32::from(effects_done);
+                            PLAN_EFFECT_CLIPS.fetch_add(u64::from(effects_done), std::sync::atomic::Ordering::Relaxed);
                             pixels
                         };
                         stats.grade_ms += ms_since(t);
@@ -1742,6 +1752,7 @@ impl Renderer {
                 return Err("an effect could not be recorded");
             }
             stats.effects_followed_grade += u32::from(effects_done);
+            PLAN_EFFECT_CLIPS.fetch_add(u64::from(effects_done), std::sync::atomic::Ordering::Relaxed);
             if pixels.is_empty() {
                 slot_a = self.executor.last_chain_final_slot().unwrap_or(true);
             } else if let Some(g) = self.executor.gpu_pipeline_or_init() {
@@ -2138,6 +2149,7 @@ impl Renderer {
             self.run_effects.clear();
             if self.grade_ran && self.executor.last_run_effects_complete() {
                 self.found.stats.effects_followed_grade += 1;
+                PLAN_EFFECT_CLIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return Some((pixels, opacity));
             }
             // An effect could not be applied (a lost device), or the run
@@ -2202,6 +2214,7 @@ impl Renderer {
             Err(e) => {
                 tracing::warn!("clip {}: effects from its picture: {e}; the list stands in", clip.id.0);
                 stats.effects_fallback_lists += 1;
+                PLAN_EFFECT_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 fallback.to_vec()
             }
         }

@@ -431,6 +431,16 @@ pub(crate) fn respond(
                     "total_us": klipp_engine::CPU_READBACK_US
                         .load(std::sync::atomic::Ordering::Relaxed),
                 },
+                // Clip renders whose effects ran in the grade's plan, read
+                // from the clip's picture, and those that fell back to the
+                // list (M2 step 10c); cumulative.
+                "plan_effects": {
+                    "clips": klipp_compose::PLAN_EFFECT_CLIPS.load(std::sync::atomic::Ordering::Relaxed),
+                    "fallback_lists": klipp_compose::PLAN_EFFECT_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed),
+                    // Clip pictures lifted cold (none while playing with no
+                    // edit: a lift is cached until the clip changes).
+                    "cold_lifts": klipp_timeline::COLD_LIFTS.load(std::sync::atomic::Ordering::Relaxed),
+                },
             }))
         }
 
