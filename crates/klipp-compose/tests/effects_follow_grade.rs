@@ -22,7 +22,7 @@ use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, Track, TrackKind};
 // is held to them where it was held to a live legacy render.
 #[path = "support/legacy_goldens.rs"]
 mod legacy_goldens;
-use legacy_goldens::{legacy_f32, scope};
+use legacy_goldens::{legacy_f32, matches_f32, matches_f32_within, scope};
 
 const W: u32 = 96;
 const H: u32 = 54;
@@ -202,9 +202,9 @@ fn an_effect_that_could_not_be_recorded_sends_the_frame_the_legacy_way() {
     let (new, followed) = render_with(&seq, false, true);
     let legacy = legacy_f32(|| render_with(&seq, true, true).0);
     assert_eq!(followed, 0, "nothing followed the grade");
-    assert!(new.iter().map(|v| v.to_bits()).eq(legacy.iter().map(|v| v.to_bits())), "the legacy route's picture");
+    assert!(matches_f32(&new, &legacy), "the legacy route's picture");
     let all = legacy_f32(|| render(&seq, true).0);
-    assert!(new.iter().zip(&all).all(|(a, b)| (a - b).abs() < 1e-4), "with every effect in it");
+    assert!(matches_f32_within(&new, &all, 1e-4), "with every effect in it");
 }
 
 #[test]
@@ -228,7 +228,7 @@ fn a_grade_run_that_fails_never_drops_the_effects() {
     let (new, followed) = render(&seq, false);
     let legacy = legacy_f32(|| render(&seq, true).0);
     assert_eq!(followed, 0, "the failed run is not taken as done");
-    assert!(new.iter().map(|v| v.to_bits()).eq(legacy.iter().map(|v| v.to_bits())), "the legacy route's picture, effects in it");
+    assert!(matches_f32(&new, &legacy), "the legacy route's picture, effects in it");
     let mut no_fx = seq.clone();
     no_fx.tracks[0].clips[0].set_effect_list(vec![], vec![]);
     let bare = legacy_f32(|| render(&no_fx, true).0);
@@ -260,7 +260,7 @@ fn animated_effects_and_a_fixed_placement_from_the_picture_draw_the_legacy_frame
         let (new, followed) = render_at(&seq, false, false, t);
         let legacy = legacy_f32(|| render_at(&seq, true, false, t).0);
         assert!(followed == 1 || !required(), "at {t}: the plan route was taken");
-        assert!(new.iter().map(|v| v.to_bits()).eq(legacy.iter().map(|v| v.to_bits())), "at {t}: the legacy route's frame");
+        assert!(matches_f32(&new, &legacy), "at {t}: the legacy route's frame");
         seen.push(new);
     }
     assert!(seen.windows(2).all(|w| w[0] != w[1]), "the frames animate");
@@ -289,7 +289,7 @@ fn a_graded_clip_with_stabilisation_keeps_its_correction() {
     });
     let (new, followed) = render(&seq, false);
     let legacy = legacy_f32(|| render(&seq, true).0);
-    assert!(new.iter().map(|v| v.to_bits()).eq(legacy.iter().map(|v| v.to_bits())), "the correction is drawn on both routes");
+    assert!(matches_f32(&new, &legacy), "the correction is drawn on both routes");
     if gpu() {
         assert_eq!(followed, 1, "a stabilised clip takes the plan route (step 12)");
     }
@@ -451,7 +451,7 @@ fn analysis_driven_effects_draw_the_same_on_the_plan_route() {
             let (a, followed) = draw(&mut plan, &seq, secs, &mut Moving);
             let b = legacy_f32(|| draw(legacy.get_or_insert_with(|| renderer(true)), &seq, secs, &mut Moving).0);
             assert_eq!(followed, on_gpu, "{name} at {secs}: the plan route when there is a GPU");
-            assert_eq!(bits(&a), bits(&b), "{name} at {secs}: the plan route draws the legacy frame");
+            assert!(matches_f32(&a, &b), "{name} at {secs}: the plan route draws the legacy frame");
             let (fresh, _) = draw(&mut renderer(false), &seq, secs, &mut Moving);
             assert_eq!(bits(&a), bits(&fresh), "{name} at {secs}: nothing left from the frames before");
             let (uncorrected, _) = if name == "rolling shutter" { draw(&mut renderer(false), &bare, secs, &mut Chart) } else { draw(&mut renderer(false), &bare, secs, &mut Moving) };
@@ -484,7 +484,7 @@ fn analysis_arriving_mid_play_reaches_the_next_plan_frame() {
         let (after, followed) = draw(&mut r, &seq, secs, &mut Moving);
         assert_eq!(followed, on_gpu, "{name}: the plan route");
         let want = legacy_f32(|| draw(&mut renderer(true), &seq, secs, &mut Moving).0);
-        assert_eq!(bits(&after), bits(&want), "{name}: the first frame after the analysis is corrected");
+        assert!(matches_f32(&after, &want), "{name}: the first frame after the analysis is corrected");
         // And the analysis going away (cleared, re-analysing) leaves none behind.
         let (gone, _) = if name == "rolling shutter" { draw(&mut r, &bare, 1.0, &mut Chart) } else { draw(&mut r, &bare, 1.0, &mut Moving) };
         let (plain, _) = if name == "rolling shutter" { draw(&mut renderer(false), &bare, 1.0, &mut Chart) } else { draw(&mut renderer(false), &bare, 1.0, &mut Moving) };
@@ -569,7 +569,15 @@ fn a_scene_referred_clip_runs_its_display_step_and_effects_as_a_plan() {
             let scale = peak.map_or(1.0, |p| p / 203.0);
             let worst = new.iter().zip(&legacy).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
             eprintln!("{case}: worst {worst}");
-            assert!(worst <= BAR * scale, "{case}: the plan differs from the legacy route by {worst}");
+            if legacy_goldens::exact() {
+                assert!(worst <= BAR * scale, "{case}: the plan differs from the legacy route by {worst}");
+            } else {
+                // Recorded on another adapter: one display level of the
+                // light relative to peak.
+                let rel = |f: &[f32]| f.iter().map(|v| v / scale).collect::<Vec<_>>();
+                let levels = legacy_goldens::worst_levels(&rel(&new), &rel(&legacy));
+                assert!(levels <= 1.0, "{case}: the plan differs from the legacy route by {levels} levels");
+            }
         }
     }
 }
@@ -653,7 +661,7 @@ fn a_clip_with_a_plugin_runs_its_effects_as_a_plan_after_it() {
         assert_eq!(after, 1, "{name}");
         let worst = new.iter().zip(&legacy).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
         eprintln!("{name}: plan after the plug-in vs legacy: worst {worst}");
-        assert!(new.iter().map(|v| v.to_bits()).eq(legacy.iter().map(|v| v.to_bits())), "{name}: differs from the legacy route by {worst}");
+        assert!(matches_f32(&new, &legacy), "{name}: differs from the legacy route by {worst}");
         let (plain, _, _) = run(false, &graded(fx.clone()));
         assert!(plain != new, "{name}: the plug-in changes the picture");
     }
@@ -673,7 +681,7 @@ fn effects_after_a_plugin_that_cannot_be_applied_take_the_legacy_route() {
     let (refused, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default());
     assert_eq!(found.stats.effects_after_plugins, 0, "nothing ran as a plan");
     let legacy = legacy_f32(|| renderer_with_invert(true).render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default()).0);
-    assert!(refused.iter().zip(&legacy).all(|(a, b)| (a - b).abs() < 1e-4), "the legacy route's picture, effects in it");
+    assert!(matches_f32_within(&refused, &legacy, 1e-4), "the legacy route's picture, effects in it");
 }
 
 /// Step 11c-3: a moving clip under an open shutter runs its effects as
@@ -729,7 +737,7 @@ fn a_moving_clip_under_an_open_shutter_runs_its_effects_as_plans() {
     assert_eq!(shuttered, 1);
     let worst = new.iter().zip(&legacy).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
     eprintln!("shutter: plans vs legacy: worst {worst}");
-    assert!(new.iter().map(|v| v.to_bits()).eq(legacy.iter().map(|v| v.to_bits())), "differs from the legacy route by {worst}");
+    assert!(matches_f32(&new, &legacy), "differs from the legacy route by {worst}");
     let (shut, _, shut_followed) = run(&shot(0.0), false);
     assert_eq!(shut_followed, 1, "with the shutter shut the effects follow the grade as before");
     assert!(shut != new, "the shutter smears the moving clip");
@@ -763,7 +771,7 @@ fn analysis_driven_effects_after_a_plugin_keep_their_correction() {
             return;
         }
         assert_eq!(after, 1, "{name}");
-        assert_eq!(bits(&new), bits(&legacy), "{name}: the plan after the plug-in draws the legacy frame");
+        assert!(matches_f32(&new, &legacy), "{name}: the plan after the plug-in draws the legacy frame");
         let (uncorrected, _) = if name == "rolling shutter" { run(false, &bare, &mut Chart) } else { run(false, &bare, &mut Moving) };
         assert_ne!(bits(&new), bits(&uncorrected), "{name}: the analysis moves the picture");
     }
