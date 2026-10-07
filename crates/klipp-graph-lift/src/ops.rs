@@ -16,63 +16,12 @@
 
 use klipp_graph_format::lifted::{types as lt, LegacyFlags};
 use klipp_graph_format::path::{NodePath, Root, TrackPart};
-use klipp_graph_format::{ports, types, Animation, Edge, Graph, Node, NodeId, ParamKey, ParamValue, PortKey, PortBinding, PortCatalog, PortDirection, PortType, GroupPort};
+use klipp_graph_format::{ports, types, Animation, Edge, Graph, Node, NodeId, ParamKey, ParamValue, PortKey, PortCatalog, PortDirection, PortType, GroupPort};
 use serde_json::Value;
 
 use crate::paths::Documents;
 
-/// One edit of one root's graph.
-#[derive(Clone, Debug, PartialEq)]
-pub enum GraphOp {
-    /// Put `node` after the node at `after`: whatever read that node reads
-    /// the new one, which reads it.
-    AddNode { after: NodePath, node: Box<Node> },
-    /// Put `node` at the level of the node `at` names, wired to nothing (a
-    /// matte made beside the picture's chain): its inputs and its reader
-    /// are fed by `Connect`, and nothing else in the graph changes. The
-    /// inputs its type needs are connected in the same batch, which is
-    /// checked whole at its end; alone, such a node is refused. Its output
-    /// may go unread: an unused producer is harmless, and stays.
-    AddNodeBeside { at: NodePath, node: Box<Node> },
-    /// Take a node out: whatever read it reads its primary input.
-    RemoveNode { path: NodePath },
-    /// Feed `to`'s `to_port` from `from`'s `from_port`, replacing what fed
-    /// it. Both nodes at one level.
-    Connect { from: NodePath, from_port: PortKey, to: NodePath, to_port: PortKey },
-    /// Leave `to`'s `port` unfed.
-    Disconnect { to: NodePath, port: PortKey },
-    SetParam { path: NodePath, key: ParamKey, value: ParamValue },
-    SetEnabled { path: NodePath, enabled: bool },
-    SetMix { path: NodePath, mix: Option<f32> },
-    /// Expose a direct child's output under a stable public key.
-    /// A clip grade group with published ports cannot yet load into the
-    /// legacy app model; delift refuses it until that model can preserve them.
-    PublishOutput { group: NodePath, endpoint: PortBinding, key: PortKey, label: String },
-    /// Remove an exported port; existing readers must be disconnected first.
-    Unpublish { group: NodePath, key: PortKey },
-    /// None clears the saved setting, restoring migrated red semantics.
-    SetMaskChannel { path: NodePath, channel: Option<String> },
-    /// Move a node to just after another at its level.
-    MoveAfter { path: NodePath, after: NodeId },
-    /// Name a node, or place it in the node editor: what the editor shows,
-    /// never the picture. `None` leaves that part as it is.
-    SetNodeMeta { path: NodePath, label: Option<String>, position: Option<Value> },
-    /// Put `keyframe` on a parameter's animation, in time order, replacing
-    /// a key at the same time. Stored as the keyframe's own JSON (time,
-    /// value, interpolation, tangents), which the renderer reads typed.
-    AddKeyAt { path: NodePath, key: ParamKey, keyframe: Value },
-    /// Take the key at `time_secs` off a parameter's animation; the
-    /// parameter is still animated while it has keys or a modifier stack.
-    RemoveKeyAt { path: NodePath, key: ParamKey, time_secs: f64 },
-    /// Set a parameter's animation whole (generated keys, a modifier
-    /// stack); `None` takes it off.
-    SetAnim { path: NodePath, key: ParamKey, anim: Option<Animation> },
-    /// Replace a legacy entry's stored payload whole: an effect edited in
-    /// its own panel, whose colours and lists no parameter value carries,
-    /// until effects take typed parameters (M3 step 19). Of the same kind,
-    /// and it must read as the frozen v1 types read it.
-    SetPayload { path: NodePath, payload: Value },
-}
+pub use klipp_graph_format::op::GraphOp;
 
 /// What an op did to its root: the root's picture before and after, as
 /// stored. Restoring `before` undoes the op.
@@ -83,32 +32,8 @@ pub struct GraphEdit {
     pub after: Value,
 }
 
-impl GraphOp {
-    /// The node the op names: the one it edits, or the one an added node
-    /// goes after. Its root is the picture the op edits.
-    pub fn path(&self) -> &NodePath {
-        path_of(self)
-    }
-}
-
 fn path_of(op: &GraphOp) -> &NodePath {
-    match op {
-        GraphOp::AddNode { after, .. } => after,
-        GraphOp::AddNodeBeside { at, .. } => at,
-        GraphOp::RemoveNode { path }
-        | GraphOp::SetParam { path, .. }
-        | GraphOp::SetEnabled { path, .. }
-        | GraphOp::SetMix { path, .. }
-        | GraphOp::SetMaskChannel { path, .. }
-        | GraphOp::MoveAfter { path, .. }
-        | GraphOp::SetNodeMeta { path, .. }
-        | GraphOp::AddKeyAt { path, .. }
-        | GraphOp::RemoveKeyAt { path, .. }
-        | GraphOp::SetAnim { path, .. }
-        | GraphOp::SetPayload { path, .. } => path,
-        GraphOp::Connect { to, .. } | GraphOp::Disconnect { to, .. } => to,
-        GraphOp::PublishOutput { group, .. } | GraphOp::Unpublish { group, .. } => group,
-    }
+    op.path()
 }
 
 /// A root's picture, taken out as JSON to edit a copy of.

@@ -984,7 +984,7 @@ pub enum AppCommand {
     /// `label` or not at all (node-graph M2 step 15d): what the control
     /// socket's `graph_ops` and the assistant send. A refusal names the op
     /// that couldn't be applied.
-    GraphOps { ops: Vec<klipp_graph_lift::ops::GraphOp>, label: String },
+    GraphOps { ops: Vec<klipp_graph_format::op::GraphOp>, label: String },
     // Transport
     Play,
     Pause,
