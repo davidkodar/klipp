@@ -1229,32 +1229,6 @@ impl GraphExecutor {
         !self.run_effects_incomplete
     }
 
-    /// Withdraw a [`Self::request_output_on_gpu`] that no run took up (the
-    /// grade was skipped, or the run stopped before it), so it can't apply
-    /// to the next, unrelated run.
-    pub fn cancel_output_on_gpu(&mut self) {
-        self.keep_output_on_gpu = false;
-    }
-
-    /// Run built-in `effects` on the last run's result where it sits on
-    /// the GPU, and read the result back (#1089, M2 step 10): the grade's
-    /// output goes on into the effects without a download and an upload
-    /// between them. `None` if the last run did not keep its output on
-    /// the GPU. The effects run as `run_effects_in_chain` runs them
-    /// anywhere: recorded arms batched, the rest each in its own pass.
-    /// `None` too when an effect could not be recorded (a lost device):
-    /// the picture would lack it.
-    pub fn effects_on_output(&mut self, effects: &[klipp_effects::BuiltinEffect], width: u32, height: u32) -> Option<Vec<f32>> {
-        let slot_a = self.output_on_gpu.take()?;
-        self.last_chain_final_slot = None;
-        let gpu = self.gpu.as_mut()?;
-        let in_a = gpu.run_effects_in_chain_from(effects, slot_a, width, height);
-        if !gpu.last_effects_complete() {
-            return None;
-        }
-        Some(gpu.download_chain_slot_linear(in_a, (width as usize) * (height as usize)))
-    }
-
     /// Encode the last run's GPU-resident result to display sRGB u8 and
     /// read that back — see `GpuEffectsPipeline::encode_chain_to_display_u8`.
     /// `tonemap_exposure` applies the display tone map first. `None` if the
@@ -2702,7 +2676,7 @@ pub struct ChainStats {
     /// once (#1089, M2).
     pub evaluations: u32,
     /// Effect nodes that broke the GPU chain: an effect not recorded
-    /// yet, a legacy segment, or one run off the chain (step 10).
+    /// (Equalize), or one run off the chain (step 10).
     pub effect_breaks: u32,
 }
 
@@ -3018,7 +2992,7 @@ impl GraphExecutor {
         if let NodeKind::Effect | NodeKind::EffectSegment = kind {
             let gpu = self.gpu.as_mut()?;
             let run = gpu.chain_run_effects(&params.effects, in_is_a, width, height);
-            self.run_effect_breaks += run.breaks + u32::from(*kind == NodeKind::EffectSegment && run.breaks == 0);
+            self.run_effect_breaks += run.breaks;
             self.run_effects_incomplete |= !run.complete;
             // Flips mirror the slot: an even count (none included) leaves
             // the picture where it was, which is 2, not 0 (0 is a matte).

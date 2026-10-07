@@ -5081,17 +5081,6 @@ impl GpuEffectsPipeline {
     /// overhead beyond the actual GPU work. Merging the submits is a
     /// pure win — the chain dispatch was always going to fence on the
     /// readback's `device.poll(Wait)` anyway.
-    /// The frame in chain slot A (`slot_a`) or B, read back as linear
-    /// RGBA, after whatever has been submitted against it.
-    #[doc(hidden)]
-    pub fn download_chain_slot_linear(&self, slot_a: bool, pixel_count: usize) -> Vec<f32> {
-        if self.is_device_lost() {
-            return vec![0.0f32; pixel_count * 4];
-        }
-        let buf = if slot_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() };
-        self.download_linear_rgba_f32(buf.expect("chain buffers must be initialized"), pixel_count)
-    }
-
     pub fn flush_chain_and_download_linear(&mut self, slot_a: bool, pixel_count: usize) -> Vec<f32> {
         if self.is_device_lost() {
             return vec![0.0f32; pixel_count * 4];
@@ -6185,14 +6174,25 @@ impl GpuEffectsPipeline {
             out.complete = effects.is_empty();
             return out;
         }
-        for effect in effects {
-            let mut outcome = self.record_in_chain(effect, out.in_a, width, height);
+        // Recording reads the layer passes' buffers too: made now, so
+        // whether an effect records never depends on an earlier run.
+        self.ensure_recording_buffers(width, height);
+        let spills = |e: &BuiltinEffect| crate::layer::Spill::of(e).is_some();
+        let mut rest = effects;
+        while !rest.is_empty() {
+            // Effects that spill past the picture are one layer: each is
+            // cast from the same picture and stacked under it, so a run of
+            // them goes as one, as `apply_effects` groups them.
+            let n = if spills(&rest[0]) { rest.iter().take_while(|e| spills(e)).count() } else { 1 };
+            let (part, after) = rest.split_at(n);
+            rest = after;
+            let mut outcome = self.record_in_chain(part, out.in_a, width, height);
             if outcome == Recorded::OutOfSlots {
                 // The chain's encoder holds the slots' readers: submit it,
                 // then they are free, and the chain goes on in a new one.
                 self.submit_chain();
                 self.begin_chain();
-                outcome = self.record_in_chain(effect, out.in_a, width, height);
+                outcome = self.record_in_chain(part, out.in_a, width, height);
             }
             match outcome {
                 Recorded::Done => out.in_a = !out.in_a,
@@ -6200,7 +6200,7 @@ impl GpuEffectsPipeline {
                 Recorded::NotRecordable | Recorded::OutOfSlots => {
                     out.breaks += 1;
                     self.submit_chain();
-                    out.in_a = self.run_effects_in_chain_from(std::slice::from_ref(effect), out.in_a, width, height);
+                    out.in_a = self.run_effects_in_chain_from(part, out.in_a, width, height);
                     out.complete &= self.last_effects_complete();
                     self.begin_chain();
                 }
@@ -6209,14 +6209,19 @@ impl GpuEffectsPipeline {
         out
     }
 
-    /// Record one effect into the open chain encoder.
-    fn record_in_chain(&mut self, effect: &BuiltinEffect, in_is_a: bool, width: u32, height: u32) -> Recorded {
+    /// Record one effect, or one run of spills, into the open chain
+    /// encoder.
+    fn record_in_chain(&mut self, part: &[BuiltinEffect], in_is_a: bool, width: u32, height: u32) -> Recorded {
         let (Some(mut encoder), Some(mut slots)) = (self.chain_encoder.take(), self.effect_params.take()) else {
             return Recorded::NotRecordable;
         };
         let (a, b) = (self.buf_a.as_ref().expect("chain buffers"), self.buf_b.as_ref().expect("chain buffers"));
         let (src, dst) = if in_is_a { (a, b) } else { (b, a) };
-        let outcome = self.record_effect(effect, src, dst, self.buf_c.as_ref(), width, height, &mut EffectRecording { encoder: &mut encoder, slots: &mut slots });
+        let rec = &mut EffectRecording { encoder: &mut encoder, slots: &mut slots };
+        let outcome = match part {
+            [one] if crate::layer::Spill::of(one).is_none() => self.record_effect(one, src, dst, self.buf_c.as_ref(), width, height, rec),
+            spills => self.record_spill_run(spills, src, dst, self.buf_c.as_ref(), width, height, rec),
+        };
         self.chain_encoder = Some(encoder);
         self.effect_params = Some(slots);
         outcome

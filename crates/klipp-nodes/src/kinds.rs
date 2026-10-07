@@ -171,8 +171,8 @@ pub enum NodeKind {
     /// in `NodeParams::effects`), run as a node of the clip's plan.
     /// Made by the renderer for a run, never by the user or saved.
     Effect,
-    /// Effects that run together as one legacy segment: a spill group
-    /// or a temporal head. Each is a break in the GPU chain, counted.
+    /// Effects that run together as one: a spill group, each cast from
+    /// the same picture.
     EffectSegment,
 
     // ── Future ──────────────────────────────────────────────────

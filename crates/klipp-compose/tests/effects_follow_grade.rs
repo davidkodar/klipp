@@ -92,14 +92,34 @@ fn render_with(seq: &Sequence, legacy: bool, refuse: bool) -> (Vec<f32>, u32) {
         g.refuse_recording(refuse);
     }
     let (out, found) = r.render_inspected(seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default());
+    let chain = r.executor().last_run_chain_stats();
+    LAST.with(|l| l.set((found.stats.cpu_layers, chain.effect_breaks, chain.submits)));
     (out, found.stats.effects_followed_grade)
+}
+
+thread_local! {
+    /// The last render's declines (`cpu_layers`), effect breaks and
+    /// submits, for the cases that check them.
+    static LAST: std::cell::Cell<(u32, u32, u32)> = const { std::cell::Cell::new((0, 0, 0)) };
+}
+
+fn last() -> (u32, u32, u32) {
+    LAST.with(|l| l.get())
 }
 
 /// Both routes, bit for bit; `Some(followed)` when the GPU was there.
 fn both(name: &str, effects: Vec<E>) -> Option<bool> {
     let seq = graded(effects);
     let (new, followed) = render(&seq, false);
+    let (declines, breaks, submits) = last();
     let (legacy, legacy_followed) = render(&seq, true);
+    assert_eq!(declines, last().0, "{name}: no new declines");
+    if followed == 1 {
+        let recorded = seq.tracks[0].clips[0].builtin_effects().iter().all(|e| klipp_effects::gpu::slots_needed(e).is_some());
+        if recorded {
+            assert_eq!((breaks, submits), (0, 1), "{name}: grade and effects in one submit");
+        }
+    }
     assert_eq!(legacy_followed, 0, "{name}: the legacy route never follows");
     if new.iter().map(|v| v.to_bits()).ne(legacy.iter().map(|v| v.to_bits())) {
         let worst = new.iter().zip(&legacy).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
