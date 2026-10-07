@@ -168,8 +168,11 @@ fn treated_layer_stays_in_the_resident_stack() {
     let expected = apply_effects(&effects, p.clone(), w, h);
     assert!(gpu.stack_begin(w, h, 1));
     gpu.upload_chain_input_linear(&p);
-    let slot_a = gpu.run_effects_in_chain(&effects, w, h);
-    assert!(gpu.stack_layer_from_chain(0, slot_a));
+    gpu.begin_chain();
+    let run = gpu.chain_run_effects(&effects, true, w, h);
+    gpu.submit_chain();
+    assert!(run.complete);
+    assert!(gpu.stack_layer_from_chain(0, run.in_a));
     assert!(gpu.stack_blend(0, 1.0, 0));
     assert!(gpu.stack_finish_into_chain(true));
     let got = gpu.stack_download_linear();

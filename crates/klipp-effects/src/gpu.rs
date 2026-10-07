@@ -445,11 +445,12 @@ pub struct GpuEffectsPipeline {
     /// NEXT submit, so naively batching N dispatches against the single
     /// `params_buf` would have all N read whichever write landed last.
     chain_params: ParamSlots,
-    /// The uniform slots of `run_effects_in_chain`'s recorded runs, apart
-    /// from the chain's. Taken out while a run records (`record_effect`
-    /// borrows the pipeline), so `None` only inside it.
+    /// The uniform slots of the effects a chain records
+    /// (`chain_run_effects`), apart from the chain's own. Taken out while
+    /// one records (`record_effect` borrows the pipeline), so `None` only
+    /// inside it.
     effect_params: Option<ParamSlots>,
-    /// Set when the last `run_effects_in_chain` left an effect out: one
+    /// Set when the last chain's effects left one out: one
     /// that is only ever recorded, and could not be (a lost device). See
     /// [`Self::last_effects_complete`].
     effects_incomplete: std::cell::Cell<bool>,
@@ -561,14 +562,6 @@ pub struct ChainEffects {
     pub breaks: u32,
     /// Every effect was applied (`false` on a lost device).
     pub complete: bool,
-}
-
-/// The encoder a run of recorded effects is going into, and how many
-/// passes it holds.
-#[derive(Default)]
-struct RecordedRun {
-    encoder: Option<wgpu::CommandEncoder>,
-    passes: u32,
 }
 
 const CHAIN_PARAMS_RING_SIZE: usize = 32;
@@ -5749,28 +5742,6 @@ impl GpuEffectsPipeline {
         self.stack_sprites.iter().any(|r| r.id == id)
     }
 
-    /// Run built-in effects on layer `i` where it is: through the chain
-    /// buffers and back, no readback.
-    pub fn stack_layer_apply_effects(&mut self, i: usize, effects: &[BuiltinEffect]) -> bool {
-        if self.is_device_lost() || i >= self.stack_layers.len() {
-            return false;
-        }
-        if effects.is_empty() {
-            return true;
-        }
-        let (width, height) = self.stack_dims;
-        let layer = std::sync::Arc::clone(&self.stack_layers[i]);
-        if !self.stack_copy(&layer, self.buf_a.as_ref().unwrap(), "stack_layer_to_chain") {
-            return false;
-        }
-        let in_a = self.run_effects_in_chain(effects, width, height);
-        if !self.last_effects_complete() {
-            return false;
-        }
-        let out = if in_a { self.buf_a.as_ref().unwrap() } else { self.buf_b.as_ref().unwrap() };
-        self.stack_copy(out, &layer, "stack_chain_to_layer")
-    }
-
     /// Multiply layer `i`'s alpha by `factor` (a transition side's
     /// opacity, a missing matte source).
     pub fn stack_scale_alpha(&mut self, i: usize, factor: f32) -> bool {
@@ -5972,7 +5943,15 @@ impl GpuEffectsPipeline {
         self.download_chain_output_linear(true, self.stack_pixel_count() as usize)
     }
 
-    /// Apply a chain of effects on the GPU. Returns the processed RGBA data.
+    /// Apply a chain of effects on the GPU and read the picture back: the
+    /// effects as the plan route runs them ([`Self::chain_run_effects`]:
+    /// one encoder, a pass of their own only where one isn't recorded),
+    /// with an upload before and a download after. Kept for the CPU/GPU
+    /// parity tests and examples, which compare the GPU's effects with the
+    /// CPU kernels' on plain frames; the renderer runs effects as plan
+    /// nodes (phase 2b M2, step 11d). An effect left out (a lost device)
+    /// gives the CPU kernels' picture instead.
+    #[doc(hidden)]
     pub fn apply_effects(
         &mut self,
         effects: &[BuiltinEffect],
@@ -5980,166 +5959,48 @@ impl GpuEffectsPipeline {
         width: u32,
         height: u32,
     ) -> Vec<f32> {
-        if self.is_device_lost() {
+        if self.is_device_lost() || effects.is_empty() {
             return linear_rgba.to_vec();
         }
-        if effects.is_empty() {
-            return linear_rgba.to_vec();
-        }
-
-        let byte_size = (width * height * 16) as u64;
-        self.ensure_buffers(byte_size);
+        self.ensure_recording_buffers(width, height);
         self.upload(self.buf_a.as_ref().unwrap(), 0, bytemuck::cast_slice(linear_rgba));
-        let in_a = self.run_effects_in_chain(effects, width, height);
-        if !self.last_effects_complete() {
-            // An effect is missing from the GPU's picture: the CPU chain's.
+        self.begin_chain();
+        let run = self.chain_run_effects(effects, true, width, height);
+        self.submit_chain();
+        if !run.complete {
             return crate::apply_effects(effects, linear_rgba.to_vec(), width, height);
         }
-        let final_buf = if in_a { self.buf_a.as_ref().unwrap() } else { self.buf_b.as_ref().unwrap() };
+        let final_buf = if run.in_a { self.buf_a.as_ref().unwrap() } else { self.buf_b.as_ref().unwrap() };
         self.download_linear_rgba_f32(final_buf, (width * height) as usize)
     }
 
-    /// Run `effects` on the frame in chain slot A, ping-ponging between
-    /// the chain buffers. Returns whether the result sits in slot A.
-    /// `apply_effects` wraps this in an upload and a download; the layer
-    /// stack runs it on a resident layer.
-    pub fn run_effects_in_chain(&mut self, effects: &[BuiltinEffect], width: u32, height: u32) -> bool {
-        self.run_effects_in_chain_from(effects, true, width, height)
-    }
-
-    /// [`Self::run_effects_in_chain`] on the frame in chain slot A
-    /// (`start_in_a`) or B: where a grade run left its result on the GPU
-    /// (#1089, M2 step 10). Returns whether the result sits in slot A.
-    #[doc(hidden)]
-    pub fn run_effects_in_chain_from(&mut self, effects: &[BuiltinEffect], start_in_a: bool, width: u32, height: u32) -> bool {
+    /// One break of a chain ([`Self::chain_run_effects`]): an effect, or a
+    /// run of spills, the chain couldn't record, run in passes of its own
+    /// on the chain buffers, on the frame in slot A (`in_a`) or B. Returns
+    /// whether the result sits in slot A. Equalize builds its histogram on
+    /// the CPU; a layer pass (rounded corners, fill bars, a run of spills
+    /// too long for the slots) runs unrecorded. Any other effect is only
+    /// ever recorded, so one that couldn't be is missing from the picture,
+    /// and [`Self::last_effects_complete`] says so.
+    fn run_break_pass(&mut self, part: &[BuiltinEffect], in_a: bool, width: u32, height: u32) -> bool {
         // A lost device runs none of them, so every effect is missing;
         // set before the early return, or a caller would read the last
         // run's answer.
-        self.effects_incomplete.set(self.is_device_lost() && !effects.is_empty());
-        if self.is_device_lost() || effects.is_empty() {
-            return start_in_a;
+        self.effects_incomplete.set(self.is_device_lost() && !part.is_empty());
+        if self.is_device_lost() || part.is_empty() {
+            return in_a;
         }
-        let byte_size = (width * height * 16) as u64;
-        self.ensure_buffers(byte_size);
-        if effects.iter().any(|e| matches!(e, BuiltinEffect::RoundedCorners { .. } | BuiltinEffect::DropShadow { .. } | BuiltinEffect::OuterGlow { .. } | BuiltinEffect::FillBars { .. })) {
-            self.layer_gpu.ensure_buffers(&self.device, byte_size);
+        self.ensure_recording_buffers(width, height);
+        let byte_size = u64::from(width) * u64::from(height) * 16;
+        let (buf_a, buf_b) = (self.buf_a.as_ref().unwrap(), self.buf_b.as_ref().unwrap());
+        let (input, output) = if in_a { (buf_a, buf_b) } else { (buf_b, buf_a) };
+        let current_in_a = in_a;
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        if crate::layer::Spill::of(&part[0]).is_some() {
+            let spills: Vec<_> = part.iter().filter_map(crate::layer::Spill::of).collect();
+            return if self.layer_spills(input, output, width, height, &spills) { !in_a } else { in_a };
         }
-        let buf_a = self.buf_a.as_ref().unwrap();
-        let buf_b = self.buf_b.as_ref().unwrap();
-
-        let mut current_in_a = start_in_a;
-        let pixel_count = width * height;
-        let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
-
-        // Runs of recordable effects go into one encoder and one submit;
-        // anything else submits what was recorded first, so the order on
-        // the GPU is the list's.
-        let mut slots = self.effect_params.take().expect("effect slots are only taken inside a run");
-        let mut recorded = RecordedRun::default();
-        let mut effects = effects.iter().peekable();
-        while let Some(effect) = effects.next() {
-            let (input, output) = if current_in_a {
-                (buf_a, buf_b)
-            } else {
-                (buf_b, buf_a)
-            };
-
-            // A run of spills is one layer, recorded in one call.
-            if crate::layer::Spill::of(effect).is_some() {
-                let mut run = vec![effect.clone()];
-                while let Some(e) = effects.next_if(|e| crate::layer::Spill::of(e).is_some()) {
-                    run.push(e.clone());
-                }
-                let mut outcome = self.record_spills_into(&mut recorded, &mut slots, &run, input, output, width, height);
-                if outcome == Recorded::OutOfSlots {
-                    self.submit_recorded(&mut recorded, &mut slots);
-                    outcome = self.record_spills_into(&mut recorded, &mut slots, &run, input, output, width, height);
-                }
-                match outcome {
-                    Recorded::Done => current_in_a = !current_in_a,
-                    Recorded::Identity => {}
-                    // Too long a run for the slots: the passes that
-                    // submit themselves.
-                    Recorded::NotRecordable | Recorded::OutOfSlots => {
-                        self.submit_recorded(&mut recorded, &mut slots);
-                        let spills: Vec<_> = run.iter().filter_map(crate::layer::Spill::of).collect();
-                        if self.layer_spills(input, output, width, height, &spills) {
-                            current_in_a = !current_in_a;
-                        }
-                    }
-                }
-                continue;
-            }
-            if record::slots_needed(effect).is_some() {
-                let mut outcome = self.record_into(&mut recorded, &mut slots, effect, input, output, width, height);
-                if outcome == Recorded::OutOfSlots {
-                    self.submit_recorded(&mut recorded, &mut slots);
-                    outcome = self.record_into(&mut recorded, &mut slots, effect, input, output, width, height);
-                }
-                match outcome {
-                    Recorded::Done => {
-                        current_in_a = !current_in_a;
-                        continue;
-                    }
-                    Recorded::Identity => continue,
-                    Recorded::NotRecordable | Recorded::OutOfSlots => {}
-                }
-            }
-            self.submit_recorded(&mut recorded, &mut slots);
-
-            match effect {
-                // Recorded above (`record_effect`), and they have no other
-                // path: one that could not be recorded is missing from the
-                // picture, so the run says so (`last_effects_complete`).
-                BuiltinEffect::Opacity { .. }
-                | BuiltinEffect::Invert { .. }
-                | BuiltinEffect::Posterize { .. }
-                | BuiltinEffect::ChannelMixer { .. }
-                | BuiltinEffect::Gamma { .. }
-                | BuiltinEffect::HSVAdjust { .. }
-                | BuiltinEffect::Levels { .. }
-                | BuiltinEffect::Vibrance { .. }
-                | BuiltinEffect::ColorFade { .. }
-                | BuiltinEffect::Crop { .. }
-                | BuiltinEffect::Transform { .. }
-                | BuiltinEffect::Mirror { .. }
-                | BuiltinEffect::LensDistortion { .. }
-                | BuiltinEffect::Letterbox { .. }
-                | BuiltinEffect::Dilate { .. }
-                | BuiltinEffect::DirectionalBlur { .. }
-                | BuiltinEffect::EdgeDetect { .. }
-                | BuiltinEffect::Emboss { .. }
-                | BuiltinEffect::Erode { .. }
-                | BuiltinEffect::Mosaic { .. }
-                | BuiltinEffect::RadialBlur { .. }
-                | BuiltinEffect::Sharpen { .. }
-                | BuiltinEffect::MedianFilter { .. }
-                | BuiltinEffect::GaussianBlur { .. }
-                | BuiltinEffect::Denoise { .. }
-                | BuiltinEffect::TiltShift { .. }
-                | BuiltinEffect::FocusBlur { .. }
-                | BuiltinEffect::ChromaKey { .. }
-                | BuiltinEffect::Deflicker { .. }
-                | BuiltinEffect::FilmGrain { .. }
-                | BuiltinEffect::NoiseGenerator { .. }
-                | BuiltinEffect::OldFilm { .. }
-                | BuiltinEffect::Vhs { .. }
-                | BuiltinEffect::CornerPin { .. }
-                | BuiltinEffect::RollingShutterCorrection { .. }
-                | BuiltinEffect::VideoStabilization { .. }
-                | BuiltinEffect::SpeedRamp { .. }
-                | BuiltinEffect::TemporalDenoise { .. }
-                | BuiltinEffect::Frei0r { .. }
-                | BuiltinEffect::AnamorphicStreak { .. }
-                | BuiltinEffect::ChromaticAberration { .. }
-                | BuiltinEffect::LensFlare { .. }
-                | BuiltinEffect::LightRays { .. }
-                | BuiltinEffect::Vignette { .. }
-                | BuiltinEffect::Bloom { .. }
-                | BuiltinEffect::Glow { .. }
-                | BuiltinEffect::Diffusion { .. }
-                | BuiltinEffect::LightWrap { .. }
-                | BuiltinEffect::FilmHalation { .. } => self.effects_incomplete.set(true),
+        match &part[0] {
                 BuiltinEffect::Equalize { strength } => {
                     // Hybrid GPU: build histogram/CDF on CPU (fast), remap on GPU (parallel).
                     // Step 1: Download current frame to compute histogram.
@@ -6191,24 +6052,21 @@ impl GpuEffectsPipeline {
                     // queue drains between submits. See submit_chain for context.
                     self.device.poll(wgpu::Maintain::Poll);
 
-                    current_in_a = !current_in_a;
+                    !current_in_a
                 }
                 BuiltinEffect::RoundedCorners { radius, feather } => {
                     self.layer_corners(input, output, width, height, *radius, *feather);
-                    current_in_a = !current_in_a;
+                    !in_a
                 }
                 BuiltinEffect::FillBars { blur, zoom, darken } => {
                     self.layer_fill(input, output, width, height, *blur, *zoom, *darken);
-                    current_in_a = !current_in_a;
+                    !in_a
                 }
-                // Recorded above as a run, or run there when it can't be.
-                BuiltinEffect::DropShadow { .. } | BuiltinEffect::OuterGlow { .. } => {}
+                _ => {
+                    self.effects_incomplete.set(true);
+                    in_a
+                }
             }
-        }
-        self.submit_recorded(&mut recorded, &mut slots);
-        self.effect_params = Some(slots);
-
-        current_in_a
     }
 
     /// Make the buffers recorded effects use at `width` × `height`: the
@@ -6234,8 +6092,12 @@ impl GpuEffectsPipeline {
     #[doc(hidden)]
     pub fn chain_run_effects(&mut self, effects: &[BuiltinEffect], in_is_a: bool, width: u32, height: u32) -> ChainEffects {
         let mut out = ChainEffects { in_a: in_is_a, breaks: 0, complete: true };
+        // This run's answer for `last_effects_complete`: a break that
+        // leaves an effect out says so below.
+        self.effects_incomplete.set(false);
         if self.is_device_lost() {
             out.complete = effects.is_empty();
+            self.effects_incomplete.set(!out.complete);
             return out;
         }
         // Recording reads the layer passes' buffers too: made now, so
@@ -6264,7 +6126,7 @@ impl GpuEffectsPipeline {
                 Recorded::NotRecordable | Recorded::OutOfSlots => {
                     out.breaks += 1;
                     self.submit_chain();
-                    out.in_a = self.run_effects_in_chain_from(part, out.in_a, width, height);
+                    out.in_a = self.run_break_pass(part, out.in_a, width, height);
                     out.complete &= self.last_effects_complete();
                     self.begin_chain();
                 }
@@ -6445,8 +6307,8 @@ impl GpuEffectsPipeline {
         outcome
     }
 
-    /// Whether the last [`Self::run_effects_in_chain`] applied every
-    /// effect. `false` when one that is only ever recorded could not be
+    /// Whether the last chain's effects ([`Self::chain_run_effects`],
+    /// its breaks included) were all applied. `false` when one that is only ever recorded could not be
     /// (a lost device): its picture is missing that effect, and the caller
     /// takes another path or declines the frame, never shows it.
     pub fn last_effects_complete(&self) -> bool {
@@ -6458,69 +6320,6 @@ impl GpuEffectsPipeline {
     #[doc(hidden)]
     pub fn refuse_recording(&mut self, refuse: bool) {
         self.refuse_recording = refuse;
-    }
-
-    /// Record `effect` into `run`'s encoder, opening one if none is.
-    #[allow(clippy::too_many_arguments)]
-    fn record_into(
-        &self,
-        run: &mut RecordedRun,
-        slots: &mut ParamSlots,
-        effect: &BuiltinEffect,
-        src: &wgpu::Buffer,
-        dst: &wgpu::Buffer,
-        width: u32,
-        height: u32,
-    ) -> Recorded {
-        let encoder = run.encoder.get_or_insert_with(|| {
-            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("recorded_effects") })
-        });
-        // `buf_c` is the third buffer an effect of several passes needs.
-        let scratch = self.buf_c.as_ref();
-        let outcome = self.record_effect(effect, src, dst, scratch, width, height, &mut EffectRecording { encoder, slots });
-        if outcome == Recorded::Done {
-            run.passes += 1;
-        }
-        outcome
-    }
-
-    /// Record a run of spills into `run`'s encoder, opening one if none is.
-    #[allow(clippy::too_many_arguments)]
-    fn record_spills_into(
-        &self,
-        run: &mut RecordedRun,
-        slots: &mut ParamSlots,
-        spills: &[BuiltinEffect],
-        src: &wgpu::Buffer,
-        dst: &wgpu::Buffer,
-        width: u32,
-        height: u32,
-    ) -> Recorded {
-        let encoder = run.encoder.get_or_insert_with(|| {
-            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("recorded_effects") })
-        });
-        let scratch = self.buf_c.as_ref();
-        let outcome = self.record_spill_run(spills, src, dst, scratch, width, height, &mut EffectRecording { encoder, slots });
-        if outcome == Recorded::Done {
-            run.passes += 1;
-        }
-        outcome
-    }
-
-    /// Hand the queue what `run` recorded, and start the slots over. It
-    /// goes through `submit` and then `flush`: inside a stack frame
-    /// `submit` holds an encoder back, and slots rewritten before it went
-    /// would change what its passes read. A run that recorded nothing
-    /// submits nothing.
-    fn submit_recorded(&self, run: &mut RecordedRun, slots: &mut ParamSlots) {
-        if let Some(encoder) = run.encoder.take() {
-            if run.passes > 0 {
-                self.submit(encoder);
-                self.flush();
-            }
-        }
-        run.passes = 0;
-        slots.reset();
     }
 
     /// Blur an alpha mask on the GPU. Input/output are single-channel u8 buffers.
