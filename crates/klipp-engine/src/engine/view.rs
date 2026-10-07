@@ -275,6 +275,7 @@ impl PlaybackEngine {
         while !self.streams.ready(frame_secs) {
             if Instant::now() >= deadline {
                 self.pending_stream_refresh = true;
+                self.note_view(format!("streams not ready in time at {:?}: refresh pending", self.playhead.value));
                 return;
             }
             std::thread::sleep(Duration::from_millis(2));
@@ -312,6 +313,7 @@ impl PlaybackEngine {
         self.streams.pump(frame_secs);
         if self.streams.ready(frame_secs) {
             self.pending_stream_refresh = false;
+            self.note_view(format!("streams ready: regrade {:?} (paused refresh pending {})", self.playhead.value, self.pending_paused_refresh));
             self.regrade_cached_frame();
         }
     }
@@ -1007,6 +1009,7 @@ impl PlaybackEngine {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame_swap(&mut bytes, w, h);
             fb.set_presented(self.playhead, self.published_complete());
+            fb.note(format!("shown as bytes: {:?} {:?} complete {} (streams pending {}, progress {})", self.state, self.playhead.value, self.published_complete(), self.pending_stream_refresh, self.presenting_progress));
             match nits {
                 Some((map, mw, mh, step)) => {
                     fb.nit_map = map;
@@ -1031,6 +1034,7 @@ impl PlaybackEngine {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.note_gpu_frame();
             fb.set_presented(self.playhead, self.published_complete());
+            fb.note(format!("shown zero-copy, the bytes not renamed: {:?} {:?} complete {} (streams pending {}, progress {})", self.state, self.playhead.value, self.published_complete(), self.pending_stream_refresh, self.presenting_progress));
             if !fb.nit_map.is_empty() {
                 fb.nit_map = Vec::new();
                 (fb.nit_map_w, fb.nit_map_h) = (0, 0);

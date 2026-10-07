@@ -376,8 +376,15 @@ impl Viewer {
             if presented == Some(n) && complete {
                 return bytes;
             }
-            assert!(Instant::now() < deadline, "the viewer settled on frame {presented:?} (complete {complete}), not a complete frame {n}");
+            assert!(Instant::now() < deadline, "the viewer settled on frame {presented:?} (complete {complete}), not a complete frame {n}\n{}", self.trail());
         }
+    }
+
+    /// The engine's recent notes on the viewer's picture, one per line,
+    /// for a failed wait to say what the engine did (#1092).
+    fn trail(&self) -> String {
+        let trail = self.fb.lock().unwrap().trail();
+        format!("engine trail, oldest first:\n  {}", trail.join("\n  "))
     }
 
     /// Wait for a complete frame `n` published after generation `after`.
@@ -396,7 +403,7 @@ impl Viewer {
             if generation > after && presented == Some(n) && complete {
                 return;
             }
-            assert!(Instant::now() < deadline, "the viewer never presented a complete frame {n} (last: {presented:?}, complete {complete})");
+            assert!(Instant::now() < deadline, "the viewer never presented a complete frame {n} (last: {presented:?}, complete {complete}, generation {generation}, asked after {after})\n{}", self.trail());
             std::thread::sleep(Duration::from_millis(5));
         }
     }
