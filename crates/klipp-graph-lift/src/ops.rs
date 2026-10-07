@@ -696,6 +696,21 @@ fn check_root(docs: &Documents, root: Root, catalog: Option<&dyn PortCatalog>) -
     }
 }
 
+/// One op of a batch applied op by op, with registry checks: a node the
+/// batch added beside so far (`pending`) may wait for its inputs, which
+/// [`check_batch_end`] then checks whole. What `apply_batch_with_catalog`
+/// does inside, for a caller that has to see each op's result (where an
+/// op leaves the picture, the op a refusal stops at).
+pub fn apply_in_batch(docs: &mut Documents, op: &GraphOp, catalog: &dyn PortCatalog, pending: &[NodeId]) -> Result<GraphEdit, String> {
+    apply_pending(docs, op, Some(catalog), pending)
+}
+
+/// The end of a batch applied with [`apply_in_batch`]: the root checked
+/// whole, nothing waiting.
+pub fn check_batch_end(docs: &Documents, root: Root, catalog: &dyn PortCatalog) -> Result<(), String> {
+    check_root(docs, root, Some(catalog))
+}
+
 /// Apply edits to one root atomically, returning one undo record.
 pub fn apply_batch(docs: &mut Documents, ops: &[GraphOp]) -> Result<GraphEdit, String> {
     apply_batch_inner(docs, ops, None)

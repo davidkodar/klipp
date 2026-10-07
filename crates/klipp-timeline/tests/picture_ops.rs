@@ -465,3 +465,32 @@ fn a_window_beside_the_grade_masks_a_correction_through_the_fields() {
     let err = c.clone().apply_picture_ops(&[GraphOp::AddNodeBeside { at: at(&c, [fx[0]]), node: new_effect(0xe2, &E::Sharpen { amount: 0.5 }, BTreeMap::new()) }]).unwrap_err();
     assert!(err.contains("beside the clip's own chain"), "{err}");
 }
+
+/// The engine's batch rule holds on a clip stored as fields too: a node
+/// whose type needs an input (a corrector), added beside the grade and
+/// connected in the same batch, is applied; added alone, it is refused,
+/// naming the input, and the clip is as it was.
+#[test]
+fn a_node_beside_waits_for_its_input_until_the_batch_ends() {
+    use klipp_graph_format::ports::input_key;
+    let c = clip();
+    let p = picture(&c);
+    let g = grade_group(&p);
+    let body = &p.graph.nodes.iter().find(|n| n.id == g).unwrap().group.as_ref().unwrap().graph;
+    let frame = body.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP_FRAME).expect("the grade's frame").id;
+    let corrector = body.nodes.iter().find(|n| n.legacy.as_ref().is_some_and(|l| l.payload["kind"] == "Corrector")).expect("a corrector").id;
+    let mut second = new_effect(0xf1, &E::Sharpen { amount: 0.5 }, BTreeMap::new());
+    second.type_id = types::LEGACY_NODE.into();
+    second.legacy = Some(Legacy { slot: None, payload: json!({"kind": "Corrector", "label": "Second", "params": {}}), keyframes: Some(json!({"tracks": []})), modifiers: Default::default() });
+    let beside = GraphOp::AddNodeBeside { at: at(&c, [g, corrector]), node: second.clone() };
+
+    let mut alone = c.clone();
+    let err = alone.apply_picture_ops(std::slice::from_ref(&beside)).unwrap_err();
+    assert!(err.contains("Unwired") || err.contains("needs its"), "{err}");
+    assert_eq!(saved(&alone), saved(&c), "a refusal changes nothing");
+
+    let fed = GraphOp::Connect { from: at(&c, [g, frame]), from_port: "out".into(), to: at(&c, [g, second.id]), to_port: input_key("Corrector", 0) };
+    let mut both = c.clone();
+    both.apply_picture_ops(&[beside, fed]).unwrap_or_else(|e| panic!("the batch connects it: {e}"));
+    assert!(klipp_timeline::GradeAccess::grade(&both).nodes.iter().any(|n| n.id == second.id), "the second corrector is in the grade");
+}
