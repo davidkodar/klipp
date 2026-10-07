@@ -21,6 +21,7 @@ pub mod revision;
 pub mod revision2;
 pub mod revision3;
 pub mod splice;
+pub mod stack_view;
 pub mod to_v1;
 pub mod to_v2;
 pub mod unlift;

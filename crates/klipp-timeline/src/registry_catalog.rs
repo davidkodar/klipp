@@ -29,6 +29,22 @@ impl RegistryCatalog {
 }
 
 impl PortCatalog for RegistryCatalog {
+    fn needs_source_neighbours(&self, node: &Node) -> bool {
+        use klipp_effects::registry::Temporal;
+        use klipp_graph_format::lifted::types as lt;
+        if matches!(node.type_id.as_str(), lt::TEMPORAL_DENOISE | lt::FRAME_BLEND) {
+            return true;
+        }
+        let effect = if node.type_id.as_str() == types::LEGACY_EFFECT {
+            node.legacy.as_ref().and_then(|l| l.payload.get("type")).and_then(serde_json::Value::as_str)
+                .and_then(klipp_effects::registry::effect_type)
+        } else {
+            klipp_effects::registry::effect_types().find(|t| t.desc.id == node.type_id.as_str())
+        };
+        effect.is_some_and(|t| t.desc.temporal == Temporal::SourceNeighbours)
+            || klipp_nodes::registry::node_types().any(|t| t.desc.id == node.type_id.as_str() && t.desc.temporal == Temporal::SourceNeighbours)
+    }
+
     fn node(&self, type_id: &str) -> Option<NodeSpec> {
         klipp_effects::registry::effect_types()
             .map(|t| &t.desc)
