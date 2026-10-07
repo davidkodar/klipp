@@ -1738,7 +1738,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Background analysis: shot boundaries, EBU R128 loudness/true peak, silence, and word-timed \
               transcript/language if the speech model is installed. Beat sheet and OCR require screen footage (no \
               camera metadata or tagged screen via klipp_tag_media) and their installed models. Omit media_id for the \
-              pool; analyzed items are free. Also runs on import without downloads. wait true waits, then read \
+              pool; analysed items are free. Also runs on import without downloads. wait true waits, then read \
               klipp_media_analysis. download_models fetches missing enabled-in-preferences models with user knowledge: \
               speech hundreds of MB, OCR pair about 10 MB.",
              json!({
@@ -1768,7 +1768,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Measure the top picture track or clip against the brief look in CIELAB: black/white/mid lightness, \
               contrast, chroma, neutral cast and each face skin hue. Adjust lift/black, gain/white, exposure/median, \
               temperature+tint/cast and saturation/chroma; remeasure for up to three rounds. Strength limits changes \
-              from the starting grade. Revert and stop a shot if sky/foliage/skin hues drift or colors become garish. \
+              from the starting grade. Revert and stop a shot if sky/foliage/skin hues drift or colours become garish. \
               Preview reports current measurements and first adjustments, grouping shots from one file as a scene. \
               apply true makes one undo step. Screen recordings are checked only for cast/clipping. Follow with \
               klipp_skin_balance for skin and klipp_look for style.",
@@ -1879,8 +1879,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Preview sound design; apply true commits one undo step: whooshes on cuts, clicks on reveals, riser into \
               last cut. on cuts is default; transitions selects cuts with transitions; stylised selects \
               zoom/whip/glitch/film-burn, excluding dissolve/dip. Optional media ids select sounds; otherwise preview \
-              built-in whooshes, then synthesize/import on apply. Skip conflicting placements, preserve existing clips. \
-              Place on SFX track with sfx role. When both sources are analyzed, whooshes are 3 dB above the loudest \
+              built-in whooshes, then synthesise/import on apply. Skip conflicting placements, preserve existing clips. \
+              Place on SFX track with sfx role. When both sources are analysed, whooshes are 3 dB above the loudest \
               underlying sound and clicks 3 dB below; otherwise -6/-8 dB.",
              json!({ "whoosh": { "type": "string" }, "click": { "type": "string" }, "riser": { "type": "string" }, "on": { "type": "string", "enum": ["cuts", "transitions", "stylised"] }, "apply": { "type": "boolean" } }), vec![]),
         tool("klipp_auto_redact",
@@ -2515,7 +2515,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              vec![]),
         tool("klipp_match_grade",
              "Match picture clips using scope measurements: adjust target exposure/lift/gain/temperature/tint toward \
-              reference black/mid/white and color balance. secs/reference_secs select timeline frames inside each clip; \
+              reference black/mid/white and colour balance. secs/reference_secs select timeline frames inside each clip; \
               otherwise use the midpoint of each longest detected shot, avoiding cuts. One undo step; verify this first \
               pass with klipp_check color or klipp_frame_stats, then refine with grade.",
              json!({ "clip_id": { "type": "string", "description": "the shot to grade" }, "reference_clip_id": { "type": "string", "description": "the shot to match it to" }, "secs": { "type": "number", "description": "the target frame to read, timeline seconds inside the clip" }, "reference_secs": { "type": "number", "description": "the reference frame to read, timeline seconds inside it" } }),
@@ -2534,15 +2534,15 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               set_brief, plan and apply warn when one is named.",
              json!({}), vec![]),
         tool("klipp_graph",
-             "Edit one graph root atomically as one undo step; send alone. Read graph_read and node_types first. \
+             "Edit one clip graph atomically as one undo step; send alone. Read graph_read and node_types first. \
               Paths contain a root and node IDs; {new:k} refers to the node made by earlier op k. Values follow \
               catalog kinds; choices use labels. Created nodes return full paths. Current clip persistence \
               refuses placed kinds, effect mix/masks/labels, and publication; unsupported parameter shapes \
               are refused with the failing op_index. Revision and project identity guard commit.",
              json!({"ops":graph_schema::ops_schema(),"label":{"type":"string"},"expected_revision":{"type":"integer","minimum":0},"expected_project_identity":{"type":"integer","minimum":0}}), vec!["ops"]),
         tool("klipp_graph_read",
-             "Read a graph by full path; empty nodes reads the root. Includes port keys and nested bodies to depth. \
-              Partial reads name omissions; narrow the path for details.",
+             "Read graph at path; empty nodes reads root. Depth controls nested bodies. Omissions are flagged; \
+              narrow path for details. mask_channel_set marks an explicitly stored channel.",
              json!({"path":graph_schema::path_schema(true),"depth":{"type":"integer","minimum":0,"maximum":4,"default":1}}), vec!["path"]),
         tool("klipp_node_types",
              "The node types Klipp's registry describes: each effect's id, name and category, its \
@@ -2578,7 +2578,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               the user for what it should say and set it.",
              json!({}), vec![]),
         tool("klipp_set_brief",
-             "Fields (all optional): title, about, tone, platform, target_secs, width, height, loudness_lufs (web -14, \
+             "Replace the brief as one undo step. With merge true, keep omitted fields; null clears a field. \
+              Fields (all optional): title, about, tone, platform, target_secs, width, height, loudness_lufs (web -14, \
               broadcast -23), captions/music (bool), cast [{name,role,described}], features [{title,description,rank}] \
               (rank 1 headline; plan segments reference titles), arc (e.g. hook/features/CTA), cta, brand_colors \
               [\"#rrggbb\",...] (first is title default), notes. type_styles: \
@@ -2590,8 +2591,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               reference look_target. vocabulary: correctly spelt names/products/terms for speech recognition; run \
               klipp_analyze after setting. language: ISO 639-1 speech code (en,sv); omitted detects per file. Omitted \
               fields request nothing. Lower thirds use cast names; klipp_check checks the brief; exports inherit \
-              omitted size/loudness. Unknown fields refused. Replacement/merge/null semantics are in the tool \
-              description.",
+              omitted size/loudness. Unknown fields refused.",
              json!({ "brief": { "type": "object" }, "merge": { "type": "boolean", "description": "change only the fields given; the rest stay" } }), vec!["brief"]),
         tool("klipp_edit_plan",
              "The edit plan: the paper edit, as text and as JSON, with whether it is approved and \

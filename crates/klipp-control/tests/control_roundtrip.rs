@@ -442,6 +442,24 @@ fn graph_misspelled_top_level_fields_never_reach_the_app() {
 }
 
 #[test]
+fn graph_batch_refusals_precede_document_preflight() {
+    let mut h = harness();
+    let empty = h.call(json!({"method":"graph_ops","ops":[]}));
+    assert_eq!(empty["ok"],false);
+    assert!(empty["result"]["op_index"].is_null());
+    let missing = json!({"root":{"clip":uuid::Uuid::nil()},"nodes":[uuid::Uuid::nil()]});
+    let long_label = h.call(json!({"method":"graph_ops","label":"x".repeat(257),"ops":[{"op":"enable","path":missing,"enabled":false}]}));
+    assert_eq!(long_label["ok"],false);
+    assert!(long_label["error"].as_str().unwrap().contains("undo label"));
+    assert!(long_label["result"]["op_index"].is_null());
+    let non_clip = h.call(json!({"method":"graph_ops","ops":[{"op":"enable","path":{"root":{"timeline_grade":uuid::Uuid::nil()},"nodes":[uuid::Uuid::nil()]},"enabled":false}]}));
+    assert_eq!(non_clip["ok"],false);
+    assert!(non_clip["error"].as_str().unwrap().contains("clip roots only"));
+    assert!(h.envelopes.lock().unwrap().is_empty());
+    assert_eq!(h.shared.revision(),0);
+}
+
+#[test]
 fn graph_add_refuses_effect_labels_and_matte_splices_without_partial_edits() {
     let mut h = harness();
     let root = json!({"clip":h.ids.clip_a});
@@ -456,7 +474,6 @@ fn graph_add_refuses_effect_labels_and_matte_splices_without_partial_edits() {
         let refused = h.call(json!({"method":"graph_ops","ops":[op]}));
         assert_eq!(refused["ok"], false, "{refused}");
         assert_eq!(refused["op_index"], 0);
-        eprintln!("current add refusal: {}", refused["error"]);
     }
     assert!(h.edits_seen.lock().unwrap().is_empty());
     assert_eq!(h.shared.revision(), graph["revision"].as_u64().unwrap());
