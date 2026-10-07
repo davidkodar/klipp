@@ -2466,6 +2466,7 @@ fn show_builtin_effect_params(
             {
                 crate::widgets::row_recorder::numeric(ui.next_auto_id(), "slider", "Monochrome", mono_f, &(0.0..=1.0), None, None, None, "", None);
                 crate::widgets::row_recorder::parameter("monochrome");
+                crate::widgets::row_recorder::step(1.0);
             }
             let r_m = ui.add(egui::Slider::new(&mut mono_f, 0.0..=1.0).step_by(1.0_f64).text("Monochrome"));
             *monochrome = mono_f as u32;
@@ -2630,6 +2631,7 @@ fn show_builtin_effect_params(
             {
                 crate::widgets::row_recorder::numeric(ui.next_auto_id(), "slider", "Bar Colour (0=Black, 1=White)", bc_f, &(0.0..=1.0), None, None, None, "", None);
                 crate::widgets::row_recorder::parameter("bar_color");
+                crate::widgets::row_recorder::step(1.0);
             }
             let r_bc = ui.add(egui::Slider::new(&mut bc_f, 0.0..=1.0).step_by(1.0_f64).text("Bar Colour (0=Black, 1=White)"));
             *bar_color = bc_f as u32;

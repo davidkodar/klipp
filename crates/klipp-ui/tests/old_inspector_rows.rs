@@ -399,6 +399,27 @@ fn old_effect_rows_cover_the_registry() {
 }
 
 #[test]
+fn binary_sliders_record_their_discrete_step() {
+    let cases = cases();
+    for (kind, parameter) in [
+        ("klipp.fx.noise_generator", "monochrome"),
+        ("klipp.fx.letterbox", "bar_color"),
+    ] {
+        let row = cases
+            .iter()
+            .find(|c| c.kind == kind)
+            .unwrap()
+            .rows
+            .iter()
+            .find(|r| r.parameter.as_deref() == Some(parameter))
+            .unwrap();
+        assert_eq!(row.widget, "slider");
+        assert_eq!(row.range, Some([0.0, 1.0]));
+        assert_eq!(row.step, Some(1.0));
+    }
+}
+
+#[test]
 fn old_grade_rows_cover_the_registry() {
     let cases = cases();
     let mut missing = Vec::new();
@@ -456,7 +477,7 @@ fn old_rows_match_base_m3() {
 #[test]
 #[ignore = "explicit fixture recording, followed by review"]
 fn record_base_m3_rows() {
-    let fixture = serde_json::json!({"format": 1, "base_m3": "1e11f285fd8d3e90e4da799c80d7081bd2bf9e77", "cases": cases()});
+    let fixture = serde_json::json!({"format": 2, "base_m3": "1e11f285fd8d3e90e4da799c80d7081bd2bf9e77", "cases": cases()});
     let path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/old_rows.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
