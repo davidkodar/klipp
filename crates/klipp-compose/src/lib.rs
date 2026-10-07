@@ -9,6 +9,7 @@
 pub mod eval;
 pub mod synth;
 pub mod render;
+pub mod resolve;
 pub mod selfcheck;
 
 pub use render::{
