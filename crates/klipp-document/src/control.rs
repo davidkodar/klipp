@@ -32,4 +32,7 @@ pub struct ControlAck {
     pub revision: u64,
     /// Why nothing was applied, if nothing was.
     pub refused: Option<String>,
+    /// The graph op a refused `GraphOps` batch stopped at, by its index in
+    /// the batch (node-graph M2 step 15d).
+    pub refused_op: Option<usize>,
 }
