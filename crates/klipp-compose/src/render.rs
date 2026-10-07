@@ -96,6 +96,7 @@ pub trait GpuPixels: Send + Sync {
 /// A clip's pixels on their way into its grade: on the CPU, still on the
 /// GPU, or a scene-referred source's codes — decoded to linear on the GPU
 /// as the grade starts, or here only when something needs them here.
+#[derive(Clone)]
 enum GradeInput {
     Cpu(Arc<Vec<f32>>),
     Gpu(Arc<dyn GpuPixels>),
@@ -263,6 +264,9 @@ pub struct RenderStats {
     /// Layers the GPU stack had no seed for, rendered on the CPU and
     /// uploaded: the slow way in.
     pub cpu_layers: u32,
+    /// Clips whose effects ran as nodes of the grade's plan, on the GPU
+    /// with the grade (#1089, M2 step 10).
+    pub effects_followed_grade: u32,
 }
 
 /// One entry of the stack [`Renderer::render`] composites.
@@ -429,6 +433,20 @@ pub struct Renderer {
     gpu: Option<klipp_effects::gpu::GpuEffectsPipeline>,
     gpu_tried: bool,
     allow_gpu: bool,
+    /// The effects take the grade's result as before, through a download
+    /// and an upload, instead of as nodes of the grade's plan (#1089, M2
+    /// step 10): the fallback until M2's effect families are native.
+    legacy_effects: bool,
+    /// The clip's resolved effects for the grade being run, spliced in as
+    /// nodes before its output (step 10b); empty runs the grade alone.
+    run_effects: Vec<BuiltinEffect>,
+    /// The grade with `run_effects` spliced in, kept so each frame reuses
+    /// its allocations.
+    spliced: klipp_nodes::NodeGraph,
+    /// Whether the last `grade` ran its graph to the end. A run that
+    /// failed returns the input with nothing applied, its effects
+    /// included, so a spliced run that failed is never taken as done.
+    grade_ran: bool,
     ofx: klipp_plugin::OfxHost,
     titles: klipp_title::TitleRenderer,
     /// The warm-up thread's ends: titles to render ahead go out, their
@@ -533,6 +551,10 @@ impl Renderer {
             gpu: None,
             gpu_tried: false,
             allow_gpu: true,
+            legacy_effects: std::env::var_os("KLIPP_LEGACY_EFFECTS").is_some_and(|v| v == "1"),
+            run_effects: Vec::new(),
+            spliced: klipp_nodes::NodeGraph::default(),
+            grade_ran: false,
             ofx,
             titles,
             warm_tx: None,
@@ -570,6 +592,12 @@ impl Renderer {
 
     /// The GPU effects pipeline, built on first use; `None` without a
     /// usable GPU or with the GPU disabled.
+    /// Run the effects after the grade the legacy way, through a
+    /// download and an upload (#1089, M2 step 10's fallback).
+    pub fn set_legacy_effects(&mut self, legacy: bool) {
+        self.legacy_effects = legacy;
+    }
+
     pub fn gpu_pipeline(&mut self) -> Option<&mut klipp_effects::gpu::GpuEffectsPipeline> {
         self.gpu()
     }
@@ -2067,14 +2095,34 @@ impl Renderer {
             }
             self.found.ungraded = Some(before);
         }
-        let mut pixels = self.grade(clip, input, clip_time, fps, width, height);
-        if let Some(t) = hdr {
-            self.display_render(&mut pixels, t);
-        }
         let (mut fx, opacity) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied());
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
         self.prepare_temporal_effects(clip, &fx, time, fps, height, src);
+        // The grade's result goes on into the effects on the GPU, with no
+        // download and upload between them, when nothing in between needs
+        // the picture on the CPU (#1089, M2 step 10).
+        let on_gpu = self.effects_follow_grade_on_gpu(clip, hdr.is_some(), &fx);
+        // Kept for a second grade if the effects can't finish in the plan.
+        let retry = on_gpu.then(|| input.clone());
+        if on_gpu {
+            self.run_effects.clone_from(&fx);
+        }
+        let mut pixels = self.grade(clip, input, clip_time, fps, width, height);
+        if on_gpu {
+            self.run_effects.clear();
+            if self.grade_ran && self.executor.last_run_effects_complete() {
+                self.found.stats.effects_followed_grade += 1;
+                return Some((pixels, opacity));
+            }
+            // An effect could not be applied (a lost device), or the run
+            // failed before its effects: the frame is graded again and
+            // takes the legacy route, never shown without the effect.
+            pixels = self.grade(clip, retry.expect("kept when on_gpu"), clip_time, fps, width, height);
+        }
+        if let Some(t) = hdr {
+            self.display_render(&mut pixels, t);
+        }
         let provider = if clip.has_enabled_plugin_matching(is_temporal_plugin) {
             src.temporal_frames(clip)
         } else {
@@ -2097,6 +2145,28 @@ impl Renderer {
             (None, None) => self.effects(&fx, pixels, clip_time, width, height),
         };
         Some((pixels, opacity))
+    }
+
+    /// Whether `clip`'s effects can take the grade's result where it sits
+    /// on the GPU: the grade runs (no shortcut, nothing inspected), and
+    /// nothing between the grade and the effects needs the picture on the
+    /// CPU (an HDR source's display render, a plug-in, a shutter or a
+    /// title's own motion blur), and every effect runs on the GPU. The
+    /// legacy route, a download and an upload between them, stays
+    /// selectable ([`Self::set_legacy_effects`], or `KLIPP_LEGACY_EFFECTS=1`)
+    /// until M2's effect families are native.
+    fn effects_follow_grade_on_gpu(&self, clip: &Clip, hdr: bool, fx: &[BuiltinEffect]) -> bool {
+        !self.legacy_effects
+            && self.allow_gpu
+            && has_active_effects(fx)
+            && klipp_effects::chain_supports_gpu(fx)
+            && !hdr
+            && !clip.grade_is_identity()
+            && self.inspect.clip != Some(clip.id)
+            && !clip.has_enabled_plugins()
+            && title_motion_blur(clip).is_none()
+            && !self.shutter.contains_key(&clip.id)
+            && !self.title_shutter.contains_key(&clip.id)
     }
 
     /// A title as working-space linear pixels at one instant: rasterised
@@ -2429,6 +2499,7 @@ impl Renderer {
     /// Pixels still on the GPU seed the grade there; read back only when
     /// there is no grade to run, or a node needs them on the CPU.
     fn grade(&mut self, clip: &Clip, input: GradeInput, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
+        self.grade_ran = false;
         let inspecting = self.inspect.clip == Some(clip.id);
         let matte_view = if inspecting { self.inspect.matte_view } else { None };
         if clip.grade_is_identity() && matte_view.is_none() {
@@ -2485,7 +2556,10 @@ impl Renderer {
         };
         self.found.stats.grade_ms += ms_since(t);
         match out {
-            Ok(out) => out,
+            Ok(out) => {
+                self.grade_ran = true;
+                out
+            }
             Err(e) => {
                 tracing::error!("node graph failed for clip {:?}: {e:?}", clip.id);
                 unshare(input.pixels())
@@ -2511,10 +2585,16 @@ impl Renderer {
         // sequence's size, as the effects' are (#1012).
         self.executor.set_render_scale(self.px_scale);
         if !inspecting {
-            return self
-                .executor
-                .execute_linear(source, clip.grade(), width, height, clip_time, frame, None, None)
-                .map(|(out, _)| out);
+            let graph = if self.run_effects.is_empty() {
+                clip.grade()
+            } else {
+                self.spliced.clone_from(clip.grade());
+                let groups = effect_groups(&self.run_effects);
+                let base = clip.id.0.as_u128() ^ (0x00ef_fec7_u128 << 64);
+                self.spliced.splice_effects_before_output(&groups, |i| klipp_nodes::NodeId::from_u128(base ^ i as u128));
+                &self.spliced
+            };
+            return self.executor.execute_linear(source, graph, width, height, clip_time, frame, None, None).map(|(out, _)| out);
         }
         let thumbs = self.inspect.thumbs.take();
         let r = self.executor.execute_linear_with_thumbs(
@@ -3075,6 +3155,22 @@ fn behind_the_camera(seq: &Sequence, time: Timecode, width: u32, height: u32, tr
             *t = eval::apply_camera(*t, seen, width, height);
         }
     }
+}
+
+/// A clip's resolved effects as plan nodes (step 10b): one `Effect`
+/// each, except that effects that spill past the picture run together as
+/// one layer, as `apply_effects` groups them.
+fn effect_groups(fx: &[BuiltinEffect]) -> Vec<(klipp_nodes::NodeKind, &[BuiltinEffect])> {
+    let spills = |e: &BuiltinEffect| klipp_effects::layer::Spill::of(e).is_some();
+    let mut groups = Vec::new();
+    let mut i = 0;
+    while i < fx.len() {
+        let len = if spills(&fx[i]) { fx[i..].iter().take_while(|e| spills(e)).count() } else { 1 };
+        let kind = if spills(&fx[i]) { klipp_nodes::NodeKind::EffectSegment } else { klipp_nodes::NodeKind::Effect };
+        groups.push((kind, &fx[i..i + len]));
+        i += len;
+    }
+    groups
 }
 
 /// Whether the already evaluated pixel-effect list has work left.

@@ -96,6 +96,11 @@ pub fn port_param_key(port: &str, param: &str) -> String {
 /// Which part of a picture arriving at a mask input is the mask (#1089,
 /// M2). Luminance is read in the picture's linear working space. Mattes
 /// carried over from revision 1 have always been their red channel.
+///
+/// **An absent setting reads as [`PortParamDesc::migrated`] (red), never
+/// as [`PortParamDesc::default`].** `default` is only what a new connection
+/// writes, explicitly; a graph lifted from revision 1 has no setting, and
+/// reading it as luminance would change the picture of every one of them.
 pub const MASK_CHANNEL: PortParamDesc = PortParamDesc {
     key: "channel",
     label: "Channel",

@@ -203,6 +203,18 @@ pub struct GraphExecutor {
     /// Single-shot request, set by `request_output_on_gpu`: leave the next
     /// run's final result in the chain buffer instead of downloading it.
     keep_output_on_gpu: bool,
+    /// Effect-node chain breaks in the run so far (`ChainStats`).
+    run_effect_breaks: u32,
+    /// An effect node of the last run could not apply its effects (a
+    /// lost device): its picture lacks them. See
+    /// [`Self::last_run_effects_complete`].
+    run_effects_incomplete: bool,
+    /// Plans by [`crate::plan::plan_key`]: what a run of each graph shape
+    /// needs, worked out once (#1089, M2 step 8).
+    plans: HashMap<u64, crate::plan::ExecPlan>,
+    /// Runs that compiled a plan, and runs that found one cached.
+    plan_compiles: u64,
+    plan_hits: u64,
     /// The node whose chain output may stay on the GPU this run: the one
     /// feeding Output, when nothing else reads it. `None` unless
     /// `keep_output_on_gpu` was requested and the graph allows it.
@@ -273,6 +285,10 @@ pub struct GraphExecutor {
 /// compounds in the UI well before that) and shallow enough that the
 /// worst-case per-frame cost stays bounded.
 const COMPOUND_MAX_DEPTH: u32 = 8;
+
+/// Plans kept at once: one per graph shape a session renders (each clip
+/// on screen, its inspection views). Past this the cache starts over.
+const MAX_PLANS: usize = 256;
 
 /// The grade shaders' white balance for no temperature or tint.
 const NO_WHITE_BALANCE: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
@@ -584,6 +600,11 @@ impl GraphExecutor {
             uploaded_seed: None,
             chain_thumbs: None,
             keep_output_on_gpu: false,
+            run_effect_breaks: 0,
+            run_effects_incomplete: false,
+            plans: HashMap::new(),
+            plan_compiles: 0,
+            plan_hits: 0,
             run_gpu_output_node: None,
             output_on_gpu: None,
             last_run_chain_stats: ChainStats::default(),
@@ -643,6 +664,11 @@ impl GraphExecutor {
             uploaded_seed: None,
             chain_thumbs: None,
             keep_output_on_gpu: false,
+            run_effect_breaks: 0,
+            run_effects_incomplete: false,
+            plans: HashMap::new(),
+            plan_compiles: 0,
+            plan_hits: 0,
             run_gpu_output_node: None,
             output_on_gpu: None,
             last_run_chain_stats: ChainStats::default(),
@@ -1179,6 +1205,12 @@ impl GraphExecutor {
     /// round-trips every node produces the same picture as one that
     /// stays resident, only far slower, so this is the only way a test
     /// can hold the difference.
+    /// Runs that compiled their plan, and runs that found it cached, since
+    /// this executor was made (#1089, M2 step 8).
+    pub fn plan_counts(&self) -> (u64, u64) {
+        (self.plan_compiles, self.plan_hits)
+    }
+
     pub fn last_run_chain_stats(&self) -> ChainStats {
         self.last_run_chain_stats
     }
@@ -1188,6 +1220,13 @@ impl GraphExecutor {
     /// `encode_output_to_display_u8`.
     pub fn output_on_gpu(&self) -> Option<bool> {
         self.output_on_gpu
+    }
+
+    /// Whether every effect node of the last run applied its effects;
+    /// `false` after a lost device, when its picture lacks them and the
+    /// caller takes another route.
+    pub fn last_run_effects_complete(&self) -> bool {
+        !self.run_effects_incomplete
     }
 
     /// Encode the last run's GPU-resident result to display sRGB u8 and
@@ -1373,10 +1412,51 @@ impl GraphExecutor {
         matte_preview_node: Option<NodeId>,
         visible_nodes: Option<&std::collections::HashSet<NodeId>>,
     ) -> Result<(Vec<f32>, Option<Vec<f32>>, std::collections::HashMap<NodeId, Vec<u8>>), ExecutorError> {
-        // A correction gated by a matte runs as the correction blended by
-        // an ApplyMatte: no correction reads its port 1 (#440).
-        let gates_applied = graph.with_gates_applied();
-        let graph = gates_applied.as_ref().unwrap_or(graph);
+        // The run's plan (#1089, M2 step 8): compiled once per graph shape
+        // and kept. A correction gated by a matte runs as the correction
+        // blended by an ApplyMatte, so no correction reads its port 1
+        // (#440); the plan holds that rewrite, refreshed with this frame's
+        // values.
+        let key = crate::plan::plan_key(graph, clip_time_secs, matte_tap, matte_preview_node, visible_nodes);
+        let mut plan = match self.plans.remove(&key) {
+            Some(plan) => {
+                self.plan_hits += 1;
+                plan
+            }
+            None => {
+                self.plan_compiles += 1;
+                crate::plan::ExecPlan::compile(graph, matte_tap, matte_preview_node, visible_nodes)?
+            }
+        };
+        plan.refresh(graph);
+        let result = self.execute_with_plan(
+            source_frame, graph, &plan, width, height, clip_time_secs, frame_number,
+            matte_tap, matte_preview_node, visible_nodes,
+        );
+        // Kept for the next run of this shape. A long session of many
+        // shapes starts over rather than grow without bound.
+        if self.plans.len() >= MAX_PLANS {
+            self.plans.clear();
+        }
+        self.plans.insert(key, plan);
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_with_plan(
+        &mut self,
+        source_frame: &[f32],
+        live: &NodeGraph,
+        plan: &crate::plan::ExecPlan,
+        width: u32,
+        height: u32,
+        clip_time_secs: f64,
+        frame_number: u64,
+        matte_tap: Option<NodeId>,
+        matte_preview_node: Option<NodeId>,
+        visible_nodes: Option<&std::collections::HashSet<NodeId>>,
+    ) -> Result<(Vec<f32>, Option<Vec<f32>>, std::collections::HashMap<NodeId, Vec<u8>>), ExecutorError> {
+        let graph = plan.graph(live);
         let saved_ws = self.working_colorspace;
         let needs_swap = graph
             .working_space_override
@@ -1387,7 +1467,7 @@ impl GraphExecutor {
             self.set_working_colorspace(graph.working_space_override.unwrap());
         }
         let result = self.execute_linear_with_thumbs_inner(
-            source_frame, graph, width, height, clip_time_secs, frame_number,
+            source_frame, graph, plan, width, height, clip_time_secs, frame_number,
             matte_tap, matte_preview_node, visible_nodes,
         );
         if needs_swap {
@@ -1401,6 +1481,7 @@ impl GraphExecutor {
         &mut self,
         source_frame: &[f32],
         graph: &NodeGraph,
+        plan: &crate::plan::ExecPlan,
         width: u32,
         height: u32,
         clip_time_secs: f64,
@@ -1460,52 +1541,25 @@ impl GraphExecutor {
         let gpu_counts = |this: &Self| this.gpu.as_ref().map_or((0, 0), |g| (g.submit_count(), g.frame_upload_count()));
         let (submits_before, uploads_before) = gpu_counts(self);
         let mut chain_flush_count: u32 = 0;
+        // Nodes the run evaluated (each node once: the walk visits it once).
+        let mut evaluations: u32 = 0;
         let mut chain_extend_count: u32 = 0;
         let mut chain_start_count: u32 = 0;
         let mut bypass_tunnel_count: u32 = 0;
         let mut cpu_fallback_count: u32 = 0;
 
-        // 1. Topological sort
-        let order = graph.topo_sort()?;
-        // Only the nodes on the way to the output run. A node without a
-        // path there does nothing to the picture; run, one with no input
-        // asked for the CPU source and made the GPU chain refuse.
-        let roots = std::iter::once(graph.output_node_id)
-            .chain(matte_tap)
-            .chain(matte_preview_node)
-            .chain(visible_nodes.into_iter().flat_map(|v| v.iter().copied()));
-        let feeding = graph.nodes_feeding(roots);
-
-        // Pre-compute fan-out count per source node. A node whose output
-        // is consumed more than once can't be absorbed into a chain (its
-        // pre-download value is needed by at least one other path), so we
-        // break the chain after it.
-        let mut fan_out: HashMap<NodeId, usize> = HashMap::new();
-        for edge in &graph.edges {
-            *fan_out.entry(edge.from_node).or_insert(0) += 1;
-        }
-
-        // A qualifier-driven secondary, if this graph is one. Recognising
-        // the shape is what lets it stay on the GPU: the picture is kept
-        // in a side buffer, the matte goes to `matte_buf`, and ApplyMatte
-        // blends them without the frame ever crossing the bus. Without
-        // it the same graph pays five round trips a frame — an upload, a
-        // stall and a download for the qualifier alone.
-        let secondaries = SecondaryChain::detect_all(graph, &order, &fan_out);
-
-        // Blend and Layer read a second picture, so neither is chainable
-        // the way a filter is. They become chainable if that picture is
-        // waiting in `composite_src` by the time they run, which means
-        // knowing in advance whose picture to keep: this maps each
-        // producer feeding a composite's port 1 to the composite that
-        // wants it. The chain start and the extend path both consult it,
-        // exactly as they consult `secondaries` for a kept source.
-        let composite_port1: HashMap<NodeId, NodeId> = graph
-            .nodes
-            .iter()
-            .filter(|n| n.enabled && matches!(n.kind, NodeKind::Blend | NodeKind::Layer))
-            .filter_map(|n| graph.input_of(n.id, 1).map(|src| (src, n.id)))
-            .collect();
+        // 1. The plan's order, the nodes on the way to the output (only
+        // those run: a node without a path there does nothing to the
+        // picture, and one with no input asked for the CPU source), the
+        // fan-out (a node whose output is read more than once can't be
+        // absorbed into a chain, so the chain breaks after it), the
+        // qualifier-driven secondaries the chain can carry, and whose
+        // picture each Blend or Layer reads on port 1 (`ExecPlan`).
+        let order = &plan.order;
+        let feeding = &plan.feeding;
+        let fan_out = &plan.fan_out;
+        let secondaries = &plan.secondaries;
+        let composite_port1 = &plan.composite_port1;
         // Whose picture `composite_src` holds, and how many times this
         // chain segment has written it. Same shape as `matte_in_buf`:
         // the gate is an identity check, not a hope.
@@ -1527,6 +1581,8 @@ impl GraphExecutor {
         // one wants its pixels on the CPU — not a solo view, a scope or
         // matte tap, or a thumbnail.
         self.output_on_gpu = None;
+        self.run_effect_breaks = 0;
+        self.run_effects_incomplete = false;
         let keep = std::mem::take(&mut self.keep_output_on_gpu);
         // (Thumbnails also rule it out: they are read once the chain's
         // last submit is in, and a result kept on the GPU never submits.)
@@ -1550,7 +1606,7 @@ impl GraphExecutor {
 
         // 2. Map: NodeId → linear-light output buffer (Arc-shared for zero-copy
         //    passthrough of bypassed / default-param nodes).
-        let mut node_outputs: HashMap<NodeId, Arc<Vec<f32>>> = HashMap::new();
+        let mut node_outputs = plan.values();
         let mut tapped_output: Option<Arc<Vec<f32>>> = None;
 
         // ── GPU chain state ────────────────────────────────────────────
@@ -1570,7 +1626,7 @@ impl GraphExecutor {
         let mut matte_in_buf: Option<NodeId> = None;
 
         // 3. Execute nodes in topo order
-        for node_id in order {
+        for &node_id in order {
             let t_node = std::time::Instant::now();
             let node = match node_by_id.get(&node_id).copied() {
                 Some(n) => n,
@@ -1579,6 +1635,7 @@ impl GraphExecutor {
             if !feeding.contains(&node_id) && !matches!(node.kind, NodeKind::Source | NodeKind::Output) {
                 continue;
             }
+            evaluations += 1;
             let node_kind_name = format!("{:?}", node.kind);
 
             // Bypassed nodes — and single-input filter nodes whose params
@@ -2276,6 +2333,9 @@ impl GraphExecutor {
             cpu_nodes: cpu_fallback_count,
             submits: u32::try_from(submits_after.saturating_sub(submits_before)).unwrap_or(u32::MAX),
             uploads: u32::try_from(uploads_after.saturating_sub(uploads_before)).unwrap_or(u32::MAX),
+            copies: node_outputs.copies,
+            evaluations,
+            effect_breaks: std::mem::take(&mut self.run_effect_breaks),
         };
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
         if total_ms > 5.0 {
@@ -2356,6 +2416,11 @@ impl GraphExecutor {
             return false;
         }
         match kind {
+            // A clip's effects (step 10): on the chain when the legacy
+            // route would run them on the GPU too.
+            NodeKind::Effect | NodeKind::EffectSegment => {
+                !params.effects.is_empty() && klipp_effects::chain_supports_gpu(&params.effects)
+            }
             // Records the source format; never touches the pixels.
             NodeKind::InputTransform => false,
             NodeKind::Exposure => params.exposure.unwrap_or(0.0) != 0.0,
@@ -2604,13 +2669,22 @@ pub struct ChainStats {
     /// the GPU before the run (`upload_seed`) is the input arriving, not
     /// the run's work, and is not counted.
     pub uploads: u32,
+    /// Whole images copied from one value to another during the run (a
+    /// value passed through is shared, not copied) (#1089, M2).
+    pub copies: u32,
+    /// Nodes the run evaluated: a node shared by several readers counts
+    /// once (#1089, M2).
+    pub evaluations: u32,
+    /// Effect nodes that broke the GPU chain: an effect not recorded
+    /// (Equalize), or one run off the chain (step 10).
+    pub effect_breaks: u32,
 }
 
 /// Whether `node` keyframes any of a qualifier's matte refinements. The
 /// secondary is recognised from the static settings, so a refinement
 /// that is 0 still but keyed above it would be fused and dropped on
 /// every frame it is not 0 (#1013).
-fn refinement_keyed(graph: &NodeGraph, node: NodeId) -> bool {
+pub(crate) fn refinement_keyed(graph: &NodeGraph, node: NodeId) -> bool {
     graph.nodes.iter().find(|n| n.id == node).is_some_and(|n| {
         n.keyframes.tracks.iter().any(|t| {
             !t.keyframes.is_empty()
@@ -2633,7 +2707,7 @@ fn refinement_keyed(graph: &NodeGraph, node: NodeId) -> bool {
 /// it flushes, and ApplyMatte then reads the matte back rather than
 /// dropping the secondary. Slower, still right.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SecondaryChain {
+pub(crate) struct SecondaryChain {
     /// The node whose output is kept and keyed. Its fan-out is three,
     /// which normally breaks the chain; this shape is the exception.
     source: NodeId,
@@ -2665,7 +2739,7 @@ impl SecondaryChain {
     /// sequential, not concurrent. The second one's source is the first
     /// one's ApplyMatte, so by the time it asks for the kept picture and
     /// `matte_buf`, the first shape has finished with both.
-    fn detect_all(
+    pub(crate) fn detect_all(
         graph: &NodeGraph,
         order: &[NodeId],
         fan_out: &HashMap<NodeId, usize>,
@@ -2913,6 +2987,18 @@ impl GraphExecutor {
         frame_number: u64,
         in_is_a: bool,
     ) -> Option<u32> {
+        // A clip's effects record into the chain; ones not recorded yet
+        // are counted breaks (`ChainStats::effect_breaks`).
+        if let NodeKind::Effect | NodeKind::EffectSegment = kind {
+            let gpu = self.gpu.as_mut()?;
+            let run = gpu.chain_run_effects(&params.effects, in_is_a, width, height);
+            self.run_effect_breaks += run.breaks;
+            self.run_effects_incomplete |= !run.complete;
+            // Flips mirror the slot: an even count (none included) leaves
+            // the picture where it was, which is 2, not 0 (0 is a matte).
+            return Some(if run.in_a == in_is_a { 2 } else { 1 });
+        }
+
         // DifferenceKey first, because it needs the plate caches on
         // `self` and the `gpu` borrow below would rule them out. The
         // plate is resolved and uploaded here; the dispatch reads it from
@@ -3418,7 +3504,7 @@ impl GraphExecutor {
         slot_a: bool,
         width: u32,
         height: u32,
-        node_outputs: &mut HashMap<NodeId, Arc<Vec<f32>>>,
+        node_outputs: &mut crate::plan::Values<'_>,
         matte_tap: Option<NodeId>,
         tapped_output: &mut Option<Arc<Vec<f32>>>,
     ) {
@@ -3501,6 +3587,21 @@ impl GraphExecutor {
             // bypass path's primary-input copy so a Reroute slipped
             // into any chain is a no-op on the pixels.
             NodeKind::Reroute => primary_input.to_vec(),
+
+            // A clip's effects off the chain: as the legacy route runs
+            // them, on the GPU when the list allows it.
+            NodeKind::Effect | NodeKind::EffectSegment => {
+                let fx = &params.effects;
+                let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
+                match self.gpu.as_mut() {
+                    Some(gpu) if klipp_effects::chain_supports_gpu(fx) => {
+                        let out = gpu.apply_effects(fx, primary_input, width, height);
+                        self.run_effect_breaks += 1;
+                        out
+                    }
+                    _ => klipp_effects::apply_effects_with_luma(fx, primary_input.to_vec(), width, height, clip_time_secs, luma),
+                }
+            }
 
             // The node records which log format the media is — the media
             // pool passes it to the decoder, which decodes before the

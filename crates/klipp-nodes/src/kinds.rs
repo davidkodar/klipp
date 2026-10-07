@@ -166,6 +166,15 @@ pub enum NodeKind {
     /// it doesn't compete with real nodes for visual weight.
     Reroute,
 
+    // ── Clip effects (phase 2b M2, step 10) ──────────────────────
+    /// One built-in effect from the clip's resolved list (its payload
+    /// in `NodeParams::effects`), run as a node of the clip's plan.
+    /// Made by the renderer for a run, never by the user or saved.
+    Effect,
+    /// Effects that run together as one: a spill group, each cast from
+    /// the same picture.
+    EffectSegment,
+
     // ── Future ──────────────────────────────────────────────────
     #[serde(other)]
     Unknown,
@@ -457,6 +466,8 @@ impl NodeKind {
             NodeKind::MaskCutout => "Mask Cutout",
             NodeKind::PrimariesMatrix => "Primaries Matrix",
             NodeKind::Reroute => "Reroute",
+            NodeKind::Effect => "Effect",
+            NodeKind::EffectSegment => "Effect Segment",
             NodeKind::Unknown => "Unknown",
         }
     }

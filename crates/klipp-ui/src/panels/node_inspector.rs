@@ -2671,6 +2671,8 @@ impl NodeInspectorPanel {
             | NodeKind::RGBSplitter | NodeKind::RGBCombiner
             | NodeKind::MaskCutout
             | NodeKind::Reroute
+            | NodeKind::Effect
+            | NodeKind::EffectSegment
             | NodeKind::Unknown => {
                 ui.label(egui::RichText::new("No parameters").color(theme.text_dim));
             }

@@ -763,6 +763,34 @@ impl NodeGraph {
         Ok(order)
     }
 
+    /// Splice a clip's resolved effects in before the output, one node
+    /// per group in order (phase 2b M2, step 10b): `Effect` for one
+    /// effect, `EffectSegment` for effects that run together. `id(i)`
+    /// names group `i`'s node; ids stable across frames keep the
+    /// executor's cached plan. The edge into the output wins over a
+    /// wireless link there, as it does everywhere.
+    pub fn splice_effects_before_output(&mut self, groups: &[(NodeKind, &[klipp_effects::BuiltinEffect])], id: impl Fn(usize) -> NodeId) {
+        let out = self.output_node_id;
+        let Some(mut prev) = self.input_of(out, 0) else { return };
+        self.edges.retain(|e| !(e.to_node == out && e.to_port == 0));
+        for (i, (kind, effects)) in groups.iter().enumerate() {
+            let node = Node {
+                id: id(i),
+                kind: *kind,
+                label: String::new(),
+                enabled: true,
+                params: crate::params::NodeParams { effects: effects.to_vec(), ..Default::default() },
+                keyframes: Default::default(),
+                output_link: None,
+                input_links: Vec::new(),
+            };
+            self.edges.push(Edge { from_node: prev, from_port: 0, to_node: node.id, to_port: 0 });
+            prev = node.id;
+            self.nodes.push(node);
+        }
+        self.edges.push(Edge { from_node: prev, from_port: 0, to_node: out, to_port: 0 });
+    }
+
     /// Find the node feeding into the given node's port. Edges win; if
     /// no edge lands on the port, the node's own wireless-receiver slot
     /// for that port is resolved against every other node's
