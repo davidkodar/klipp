@@ -865,6 +865,7 @@ fn an_inspected_scene_referred_clip_keeps_its_display_step() {
     let seq = graded(fx);
     let clip = &seq.tracks[0].clips[0];
     let nodes: std::collections::HashSet<_> = clip.grade().nodes.iter().map(|n| n.id).collect();
+    let tapped_node = clip.grade().nodes.iter().find(|n| n.kind == NodeKind::Exposure).expect("the graded clip's Exposure").id;
     let on_gpu = gpu();
     for (name, transfer) in transfers() {
         let draw = |inspect: Inspect| {
@@ -875,10 +876,49 @@ fn an_inspected_scene_referred_clip_keeps_its_display_step() {
         let (viewer, found) = draw(Inspect { clip: Some(clip.id), ..Default::default() });
         assert_eq!(found.stats.effects_followed_grade, u32::from(on_gpu), "{name}: the primary clip's effects follow its grade");
         assert!(within_cpu_gpu_bar(&viewer, &plain), "{name}: the viewer draws the plain picture");
-        let (tapped, found) = draw(Inspect { clip: Some(clip.id), thumbs: Some(nodes.clone()), ..Default::default() });
+        // What the tools read is the grade's own output, as the CPU
+        // renderer reads it: thumbnails and the scope's tap on a grade node,
+        // before the display step and the effects.
+        let tools = Inspect { clip: Some(clip.id), thumbs: Some(nodes.clone()), scope_tap: Some(tapped_node), ..Default::default() };
+        let (tapped, found) = draw(tools.clone());
+        let mut cpu_r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        cpu_r.set_gpu_enabled(false);
+        let (want, want_found) = cpu_r.render_inspected(&seq, tc(1.0), W, H, &mut Scene(transfer), RenderOptions::default(), tools);
         assert_eq!(found.stats.effects_inspected_apart, u32::from(on_gpu), "{name}: the effects run apart from the inspected grade");
         assert_eq!(found.stats.effects_on_cpu_kernels, u32::from(!on_gpu), "{name}: on the GPU when there is one");
-        assert!(!found.thumbs.is_empty(), "{name}: the grade's thumbnails come back");
         assert!(within_cpu_gpu_bar(&tapped, &plain), "{name}: the inspected picture keeps its display step");
+        assert!(within_cpu_gpu_bar(&tapped, &want), "{name}: and is the CPU renderer's");
+        assert_eq!(found.thumbs.keys().collect::<std::collections::BTreeSet<_>>(), want_found.thumbs.keys().collect(), "{name}: the same thumbnails");
+        for (id, px) in &found.thumbs {
+            let worst = px.iter().zip(&want_found.thumbs[id]).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+            assert!(worst <= 1, "{name}: node {id:?}'s thumbnail is {worst} levels from the CPU renderer's");
+        }
+        let (tap, want_tap) = (found.scope_tap.expect("the tap"), want_found.scope_tap.expect("the CPU tap"));
+        assert!(within_cpu_gpu_bar(&tap, &want_tap), "{name}: the scope reads the grade node, not the displayed picture");
+    }
+}
+
+/// A scene-referred clip with a node soloed (#1274): the run returns the
+/// soloed node's picture before any step spliced after the grade, so the
+/// display step must not ride in the run. It runs on what the solo
+/// returns, as the CPU renderer runs it, and the effects follow.
+#[test]
+fn a_soloed_scene_referred_clip_keeps_its_display_step() {
+    let mut fx = colour_family();
+    fx.push(E::Glow { radius: 6.0, intensity: 0.5 });
+    let seq = graded(fx);
+    let clip = &seq.tracks[0].clips[0];
+    let exposure = clip.grade().nodes.iter().find(|n| n.kind == NodeKind::Exposure).expect("the graded clip's Exposure").id;
+    let solo = Inspect { clip: Some(clip.id), solo: Some(exposure), ..Default::default() };
+    assert!(solo.reads_the_grade());
+    let on_gpu = gpu();
+    for (name, transfer) in transfers() {
+        let mut gpu_r = renderer(false);
+        let (shown, found) = gpu_r.render_inspected(&seq, tc(1.0), W, H, &mut Scene(transfer), RenderOptions::default(), solo.clone());
+        let mut cpu_r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        cpu_r.set_gpu_enabled(false);
+        let (want, _) = cpu_r.render_inspected(&seq, tc(1.0), W, H, &mut Scene(transfer), RenderOptions::default(), solo.clone());
+        assert!(within_cpu_gpu_bar(&shown, &want), "{name}: the soloed picture is displayed as the CPU renderer displays it");
+        assert_eq!(found.stats.effects_inspected_apart, u32::from(on_gpu), "{name}: the effects run apart from the soloed grade");
     }
 }

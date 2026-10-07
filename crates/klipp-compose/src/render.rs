@@ -2275,8 +2275,13 @@ impl Renderer {
             }
             // A scene-referred source's display step runs in the plan too,
             // after the grade, where `display_render` runs it below when
-            // the plan doesn't (step 11c).
-            if route {
+            // the plan doesn't (step 11c). Not for a grade the tools read
+            // inside whose effects run apart from it (#1274): its taps,
+            // thumbnails, solo and matte view show the grade's own output,
+            // and `display_render` displays the picture it returns, as on
+            // the CPU. Masked or mixed effects spliced into the run keep the
+            // step there, ahead of them.
+            if route && !(self.inspects_the_grade_of(clip) && !splice) {
                 self.run_display = hdr.map(|t| self.scene_to_display(t));
             }
         }
@@ -2677,6 +2682,7 @@ impl Renderer {
     fn inspects_the_grade_of(&self, clip: &Clip) -> bool {
         self.inspect.clip == Some(clip.id) && self.inspect.reads_the_grade()
     }
+
 
     /// A title as working-space linear pixels at one instant: rasterised
     /// at that time, decoded, its deferred blur entrance applied, and
