@@ -9,7 +9,9 @@
 //! A manual probe, like `composite_cost.rs` and `secondary_cost.rs`: it
 //! needs a GPU and prints milliseconds, so it is ignored in the gate.
 //! Read the submits as well as the times. Run with
-//! `cargo test --release -p klipp-nodes --test effect_chain_cost -- --ignored --nocapture`.
+//! `cargo test --release -p klipp-nodes --test effect_chain_cost -- --ignored --nocapture --test-threads=1`
+//! (one at a time: the two probes share the GPU, and run together they
+//! time each other).
 
 use std::time::Instant;
 
@@ -95,4 +97,61 @@ fn the_native_effect_plan_is_no_slower_than_the_legacy_loop() {
     // between runs; 3% is the noise band. The structural check above is the
     // sharper one: per-effect submits would show there first.
     assert!(nm <= lm * 1.03, "the native plan ({nm:.2} ms) is slower than the legacy loop ({lm:.2} ms)");
+}
+
+/// L7, the GPU memory the effects' scratch takes (the M2 acceptance spec):
+/// the most pool slots a run holds at once, priced at 4K (one frame-sized
+/// slot is 3840 × 2160 × 16 bytes, 126.56 MiB), within the engine's budget
+/// of 4 slots (≈ 506 MiB). Measured on the 8-effect chain and on D10's
+/// worst shape, six masked effects in series, each with its own matte.
+#[test]
+#[ignore = "a manual probe: needs a GPU, prints MiB (L7)"]
+fn the_effects_scratch_stays_within_the_slot_budget_at_4k() {
+    use klipp_core::{Mask, MaskShape, MaskStack};
+    use klipp_effects::mask_mix::MaskChannel;
+    use klipp_nodes::params::EffectBlend;
+    const SLOT_MIB: f64 = (W as f64) * (H as f64) * 16.0 / (1024.0 * 1024.0);
+    const BUDGET: u32 = 4;
+    let px: Vec<f32> = (0..W * H).flat_map(|i| {
+        let (x, y) = ((i % W) as f32 / W as f32, (i / W) as f32 / H as f32);
+        [x * 0.9, y * 0.7, (1.0 - x) * 0.6 + 0.05, 1.0]
+    }).collect();
+    let mut ex = GraphExecutor::new();
+    assert!(ex.gpu_pipeline_or_init().is_some(), "a GPU");
+    // The 8-effect chain, unmasked.
+    let _ = ex.execute_linear(&px, &plan(&chain()), W, H, 0.0, 0, None, None).expect("run");
+    let plain = ex.last_run_chain_stats().peak_slots;
+    // Six masked effects in series, each read through its own window.
+    let node = |id: u128, kind, params| Node { id: NodeId::from_u128(id), kind, label: String::new(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![] };
+    let masked = |n: usize| {
+        let mut nodes = vec![node(1, NodeKind::Source, NodeParams::default())];
+        let mut edges = Vec::new();
+        let mut prev = NodeId::from_u128(1);
+        for (i, e) in chain().into_iter().filter(|e| klipp_effects::registry::effect_types().any(|t| t.desc.mixable && std::mem::discriminant(&(t.sample)()) == std::mem::discriminant(e))).take(n).enumerate() {
+            let (fx, win) = (NodeId::from_u128(100 + i as u128), NodeId::from_u128(200 + i as u128));
+            let shape = MaskShape::Circle { center_x: 0.2 + 0.1 * i as f32, center_y: 0.5, radius: 0.25 };
+            nodes.push(node(200 + i as u128, NodeKind::Mask, NodeParams { masks: Some(MaskStack { masks: vec![Mask { shape, ..Mask::default() }] }), ..Default::default() }));
+            nodes.push(node(100 + i as u128, NodeKind::Effect, NodeParams { effects: vec![e], effect_blend: Some(EffectBlend { mix: 1.0, channel: MaskChannel::Luminance }), ..Default::default() }));
+            edges.push(Edge { from_node: NodeId::from_u128(1), from_port: 0, to_node: win, to_port: 0 });
+            edges.push(Edge { from_node: win, from_port: 0, to_node: fx, to_port: 1 });
+            edges.push(Edge { from_node: prev, from_port: 0, to_node: fx, to_port: 0 });
+            prev = fx;
+        }
+        nodes.push(node(2, NodeKind::Output, NodeParams::default()));
+        edges.push(Edge { from_node: prev, from_port: 0, to_node: NodeId::from_u128(2), to_port: 0 });
+        NodeGraph { output_node_id: NodeId::from_u128(2), nodes, edges, node_positions: Default::default(), working_space_override: None, frames: vec![], sticky_notes: vec![] }
+    };
+    let mut peaks = Vec::new();
+    for n in [3, 6] {
+        let _ = ex.execute_linear(&px, &masked(n), W, H, 0.0, 0, None, None).expect("masked run");
+        let s = ex.last_run_chain_stats();
+        assert_eq!(s.effect_mixes_refused, 0, "{n} masked: every mix applied");
+        peaks.push(s.peak_slots);
+    }
+    eprintln!(
+        "L7 at {W}x{H} ({SLOT_MIB:.2} MiB a slot): 8 effects peak {plain} slots ({:.0} MiB); 3 masked {} ({:.0} MiB); 6 masked {} ({:.0} MiB); budget {BUDGET} ({:.0} MiB)",
+        plain as f64 * SLOT_MIB, peaks[0], peaks[0] as f64 * SLOT_MIB, peaks[1], peaks[1] as f64 * SLOT_MIB, BUDGET as f64 * SLOT_MIB
+    );
+    assert_eq!(peaks[0], peaks[1], "the peak doesn't grow with the number of masked effects");
+    assert!(plain.max(peaks[1]) <= BUDGET, "peak slots over the budget");
 }

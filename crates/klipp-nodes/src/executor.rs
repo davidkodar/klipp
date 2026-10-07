@@ -2463,10 +2463,9 @@ impl GraphExecutor {
         }
 
         let (submits_after, uploads_after) = gpu_counts(self);
-        // The run's pool slots are free again (step 9c).
-        if let Some(gpu) = self.gpu.as_mut() {
-            gpu.end_slot_run();
-        }
+        // The run's pool slots are free again (step 9c); the most it held
+        // at once is reported (D10, L7).
+        let peak_slots = self.gpu.as_mut().map_or(0, |gpu| gpu.end_slot_run());
         self.last_run_chain_stats = ChainStats {
             extends: chain_extend_count,
             flushes: chain_flush_count,
@@ -2477,6 +2476,7 @@ impl GraphExecutor {
             evaluations,
             effect_breaks: std::mem::take(&mut self.run_effect_breaks),
             effect_mixes_refused: std::mem::take(&mut self.run_mix_refused),
+            peak_slots: u32::try_from(peak_slots).unwrap_or(u32::MAX),
         };
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
         if total_ms > 5.0 {
@@ -2823,6 +2823,10 @@ pub struct ChainStats {
     /// Mixed effect nodes whose mix or mask couldn't be read: skipped, the
     /// input passed on (no coverage), never drawn unmasked (step 9c).
     pub effect_mixes_refused: u32,
+    /// The most pool slots (frame-sized scratch buffers beside the chain's
+    /// own pair) the run held at once: the bounded scratch D10 holds to a
+    /// constant, and L7 prices at 4K.
+    pub peak_slots: u32,
 }
 
 /// Whether `node` keyframes any of a qualifier's matte refinements. The
