@@ -42,6 +42,7 @@ pub struct PictureEdit {
 fn path_of(op: &GraphOp) -> &klipp_graph_format::path::NodePath {
     match op {
         GraphOp::AddNode { after, .. } => after,
+        GraphOp::AddNodeBeside { at, .. } => at,
         GraphOp::RemoveNode { path }
         | GraphOp::SetParam { path, .. }
         | GraphOp::SetEnabled { path, .. }
@@ -60,7 +61,7 @@ fn path_of(op: &GraphOp) -> &klipp_graph_format::path::NodePath {
 
 /// An op that adds, removes or moves a node.
 fn is_structural(op: &GraphOp) -> bool {
-    matches!(op, GraphOp::AddNode { .. } | GraphOp::RemoveNode { .. } | GraphOp::MoveAfter { .. })
+    matches!(op, GraphOp::AddNode { .. } | GraphOp::AddNodeBeside { .. } | GraphOp::RemoveNode { .. } | GraphOp::MoveAfter { .. })
 }
 
 /// Where an op lands on the clip's fields.
@@ -111,6 +112,7 @@ fn target(p: &ClipPicture, op: &GraphOp) -> Result<Target, String> {
             Ok(Target::Effect)
         }
         GraphOp::SetNodeMeta { .. } => Err("an effect's name and place aren't kept until effects become nodes".into()),
+        GraphOp::AddNodeBeside { .. } => Err("a node beside the clip's own chain waits for clips whose picture is stored as their revision-2 picture".into()),
         GraphOp::SetMix { .. } => Err("an effect's mix isn't kept until effects become nodes".into()),
         _ => Err("an effect in the clip's chain has nothing to wire".into()),
     }

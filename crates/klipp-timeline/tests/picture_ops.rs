@@ -428,3 +428,40 @@ fn effect_commands_on_placed_kinds_stay_on_the_mutators() {
 fn a_field_write_on_a_picture_truth_clip_maps_to_ops_or_is_refused() {
     unimplemented!("needs picture-truth clips, which arrive with 9c/10c");
 }
+
+/// AR3's case on a clip stored as fields: a window added beside the grade's
+/// chain and connected to a correction's mask, in one batch, writes back
+/// through the grade, which then holds the window and the edge; the
+/// picture is the engine's. Beside the clip's own chain it is refused.
+#[test]
+fn a_window_beside_the_grade_masks_a_correction_through_the_fields() {
+    use klipp_graph_format::ports::{input_key, output_key};
+    let c = clip();
+    let p = picture(&c);
+    let g = grade_group(&p);
+    let body = &p.graph.nodes.iter().find(|n| n.id == g).unwrap().group.as_ref().unwrap().graph;
+    let corrector = body.nodes.iter().find(|n| n.legacy.as_ref().is_some_and(|l| l.payload["kind"] == "Corrector")).expect("a corrector in the grade").id;
+    let mut window = new_effect(0xe1, &E::Sharpen { amount: 0.5 }, BTreeMap::new());
+    window.type_id = types::LEGACY_NODE.into();
+    window.legacy = Some(Legacy { slot: None, payload: json!({"kind": "Mask", "label": "Window", "params": {}}), keyframes: Some(json!({"tracks": []})), modifiers: Default::default() });
+    let frame = body.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP_FRAME).expect("the grade's frame").id;
+    let ops = vec![
+        GraphOp::AddNodeBeside { at: at(&c, [g, corrector]), node: window.clone() },
+        GraphOp::Connect { from: at(&c, [g, frame]), from_port: "out".into(), to: at(&c, [g, window.id]), to_port: input_key("Mask", 0) },
+        GraphOp::Connect { from: at(&c, [g, window.id]), from_port: output_key("Mask", 0), to: at(&c, [g, corrector]), to_port: input_key("Corrector", 1) },
+    ];
+    let mut engine = klipp_graph_lift::paths::Documents::default();
+    engine.clips.insert(c.id.0, p.clone());
+    klipp_graph_lift::ops::apply_batch_with_catalog(&mut engine, &ops, &klipp_timeline::RegistryCatalog).unwrap();
+    let mut written = c.clone();
+    written.apply_picture_ops(&ops).unwrap();
+    assert_eq!(support::picture_ops_check::normalised(&picture(&written)), support::picture_ops_check::normalised(&engine.clips[&c.id.0]));
+    let grade = klipp_timeline::GradeAccess::grade(&written);
+    let w = grade.nodes.iter().find(|n| n.id == window.id).expect("the window is in the grade");
+    assert_eq!(w.kind, klipp_nodes::NodeKind::Mask);
+    assert!(grade.edges.iter().any(|e| e.from_node == window.id && e.to_node == corrector && e.to_port == 1), "and masks the corrector");
+
+    let fx = effects(&p);
+    let err = c.clone().apply_picture_ops(&[GraphOp::AddNodeBeside { at: at(&c, [fx[0]]), node: new_effect(0xe2, &E::Sharpen { amount: 0.5 }, BTreeMap::new()) }]).unwrap_err();
+    assert!(err.contains("beside the clip's own chain"), "{err}");
+}

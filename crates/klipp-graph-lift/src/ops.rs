@@ -27,6 +27,13 @@ pub enum GraphOp {
     /// Put `node` after the node at `after`: whatever read that node reads
     /// the new one, which reads it.
     AddNode { after: NodePath, node: Box<Node> },
+    /// Put `node` at the level of the node `at` names, wired to nothing (a
+    /// matte made beside the picture's chain): its inputs and its reader
+    /// are fed by `Connect`, and nothing else in the graph changes. The
+    /// inputs its type needs are connected in the same batch, which is
+    /// checked whole at its end; alone, such a node is refused. Its output
+    /// may go unread: an unused producer is harmless, and stays.
+    AddNodeBeside { at: NodePath, node: Box<Node> },
     /// Take a node out: whatever read it reads its primary input.
     RemoveNode { path: NodePath },
     /// Feed `to`'s `to_port` from `from`'s `from_port`, replacing what fed
@@ -87,6 +94,7 @@ impl GraphOp {
 fn path_of(op: &GraphOp) -> &NodePath {
     match op {
         GraphOp::AddNode { after, .. } => after,
+        GraphOp::AddNodeBeside { at, .. } => at,
         GraphOp::RemoveNode { path }
         | GraphOp::SetParam { path, .. }
         | GraphOp::SetEnabled { path, .. }
@@ -363,6 +371,16 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn
             g.edges.push(Edge { from: (target, "out".into()), to: (node.id, primary(node)) });
             g.nodes.insert(at + 1, (**node).clone());
         }
+        GraphOp::AddNodeBeside { node, .. } => {
+            if g.nodes.iter().any(|n| n.id == node.id) {
+                return Err(format!("{} is already in the graph", node.id));
+            }
+            if is_end(node) {
+                return Err("a graph's ends can't be added".into());
+            }
+            find(g, target)?;
+            g.nodes.push((**node).clone());
+        }
         GraphOp::RemoveNode { .. } => {
             let at = find(g, target)?;
             if is_end(&g.nodes[at]) {
@@ -578,7 +596,7 @@ fn apply_list(list: &mut Vec<Node>, op: &GraphOp, target: NodeId, catalog: Optio
             let at = find(list, target)?;
             set_payload(&mut list[at], payload)?;
         }
-        GraphOp::Connect { .. } | GraphOp::Disconnect { .. } | GraphOp::PublishOutput { .. } | GraphOp::Unpublish { .. } | GraphOp::SetMaskChannel { .. } => return Err("a track's effects are a list, with nothing to wire".into()),
+        GraphOp::Connect { .. } | GraphOp::Disconnect { .. } | GraphOp::PublishOutput { .. } | GraphOp::Unpublish { .. } | GraphOp::SetMaskChannel { .. } | GraphOp::AddNodeBeside { .. } => return Err("a track's effects are a list, with nothing to wire".into()),
     }
     Ok(())
 }
@@ -593,7 +611,31 @@ pub fn apply_with_catalog(docs: &mut Documents, op: &GraphOp, catalog: &dyn Port
     apply_inner(docs, op, Some(catalog))
 }
 
+/// A check's result, with a node added beside in the same batch allowed
+/// an input still unwired: the batch connects it, and is checked whole at
+/// its end.
+fn tolerate(checked: Result<(), klipp_graph_format::lifted::LiftedError>, pending: &[NodeId]) -> Result<(), klipp_graph_format::lifted::LiftedError> {
+    match checked {
+        Err(klipp_graph_format::lifted::LiftedError::Unwired { node, .. }) if pending.contains(&node) => Ok(()),
+        other => other,
+    }
+}
+
+/// Why a node added beside can't stand alone.
+fn unwired_beside(op: &GraphOp, e: &klipp_graph_format::lifted::LiftedError) -> Option<String> {
+    match (op, e) {
+        (GraphOp::AddNodeBeside { node, .. }, klipp_graph_format::lifted::LiftedError::Unwired { node: n, port }) if *n == node.id => {
+            Some(format!("{} needs its {port} input: add it beside and connect it in one batch", node.id))
+        }
+        _ => None,
+    }
+}
+
 fn apply_inner(docs: &mut Documents, op: &GraphOp, catalog: Option<&dyn PortCatalog>) -> Result<GraphEdit, String> {
+    apply_pending(docs, op, catalog, &[])
+}
+
+fn apply_pending(docs: &mut Documents, op: &GraphOp, catalog: Option<&dyn PortCatalog>, pending: &[NodeId]) -> Result<GraphEdit, String> {
     let path = path_of(op);
     let (through, last) = match path.nodes.split_last() {
         Some((last, through)) => (through, *last),
@@ -621,18 +663,37 @@ fn apply_inner(docs: &mut Documents, op: &GraphOp, catalog: Option<&dyn PortCata
         Root::Clip { .. } => {
             let mut picture: klipp_graph_format::lifted::ClipPicture = serde_json::from_value(copy).map_err(err)?;
             apply_graph(level(&mut picture.graph, through)?, op, last, catalog)?;
-            (if let Some(catalog) = catalog { picture.graph.check_lifted_with_catalog(false, catalog) } else { picture.graph.check_lifted(false) }).map_err(|e| format!("that would leave the clip's graph invalid: {e}"))?;
+            tolerate(if let Some(catalog) = catalog { picture.graph.check_lifted_with_catalog(false, catalog) } else { picture.graph.check_lifted(false) }, pending)
+                .map_err(|e| unwired_beside(op, &e).unwrap_or_else(|| format!("that would leave the clip's graph invalid: {e}")))?;
             serde_json::to_value(picture).map_err(err)?
         }
         _ => {
             let mut body: Graph = serde_json::from_value(std::mem::take(&mut copy)).map_err(err)?;
             apply_graph(level(&mut body, through)?, op, last, catalog)?;
-            (if let Some(catalog) = catalog { body.check_lifted_body_with_catalog(catalog) } else { body.check_lifted_body() }).map_err(|e| format!("that would leave the grade invalid: {e}"))?;
+            tolerate(if let Some(catalog) = catalog { body.check_lifted_body_with_catalog(catalog) } else { body.check_lifted_body() }, pending)
+                .map_err(|e| unwired_beside(op, &e).unwrap_or_else(|| format!("that would leave the grade invalid: {e}")))?;
             serde_json::to_value(body).map_err(err)?
         }
     };
     put(docs, root, &after)?;
     Ok(GraphEdit { root, before, after })
+}
+
+/// A root's picture checked whole, as a batch leaves it.
+fn check_root(docs: &Documents, root: Root, catalog: Option<&dyn PortCatalog>) -> Result<(), String> {
+    let v = snapshot(docs, root)?;
+    let err = |e: serde_json::Error| e.to_string();
+    match root {
+        Root::Track { part: TrackPart::Effects, .. } => check_track_list(&serde_json::from_value::<Vec<Node>>(v).map_err(err)?).map_err(|e| format!("that would leave the track's effects invalid: {e}")),
+        Root::Clip { .. } => {
+            let picture: klipp_graph_format::lifted::ClipPicture = serde_json::from_value(v).map_err(err)?;
+            (if let Some(catalog) = catalog { picture.graph.check_lifted_with_catalog(false, catalog) } else { picture.graph.check_lifted(false) }).map_err(|e| format!("the batch would leave the clip's graph invalid: {e}"))
+        }
+        _ => {
+            let body: Graph = serde_json::from_value(v).map_err(err)?;
+            (if let Some(catalog) = catalog { body.check_lifted_body_with_catalog(catalog) } else { body.check_lifted_body() }).map_err(|e| format!("the batch would leave the grade invalid: {e}"))
+        }
+    }
 }
 
 /// Apply edits to one root atomically, returning one undo record.
@@ -651,7 +712,16 @@ fn apply_batch_inner(docs: &mut Documents, ops: &[GraphOp], catalog: Option<&dyn
     let before = snapshot(docs, root)?;
     let mut copy = Documents::default();
     put(&mut copy, root, &before)?;
-    for op in ops { apply_inner(&mut copy, op, catalog)?; }
+    // A node added beside may wait for its inputs until the batch ends;
+    // then the root is checked whole, with nothing waiting.
+    let mut pending = Vec::new();
+    for op in ops {
+        if let GraphOp::AddNodeBeside { node, .. } = op {
+            pending.push(node.id);
+        }
+        apply_pending(&mut copy, op, catalog, &pending)?;
+    }
+    check_root(&copy, root, catalog)?;
     let after = snapshot(&copy, root)?;
     put(docs, root, &after)?;
     Ok(GraphEdit { root, before, after })

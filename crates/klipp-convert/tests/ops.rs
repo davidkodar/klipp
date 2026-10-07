@@ -754,3 +754,55 @@ fn set_payload_replaces_an_entry_of_the_same_kind() {
     apply(&mut d, &GraphOp::SetPayload { path: clip_path([g, u(E)]), payload: json!({"kind": "Exposure", "label": "E", "params": {"exposure": -0.5}}) }).unwrap();
     assert!(apply(&mut d, &GraphOp::SetPayload { path: clip_path([g, u(E)]), payload: json!({"kind": "Contrast", "label": "E", "params": {}}) }).is_err());
 }
+
+/// A node added beside the chain is wired to nothing (#1212): every node
+/// and edge that was there is as it was, where AddNode would splice it
+/// into the picture. The inputs its type needs are connected in the same
+/// batch (alone it is refused, naming the input); its output may go
+/// unread, an unused matte being harmless. Connected to a mask, it masks.
+#[test]
+fn a_node_added_beside_changes_nothing_until_it_is_connected() {
+    use klipp_graph_format::ports::{input_key, output_key};
+    let body = |d: &Documents, g: NodeId| d.clips[&u(CLIP)].graph.nodes.iter().find(|n| n.id == g).unwrap().group.as_ref().unwrap().graph.clone();
+    let d = docs();
+    let g = group(&d);
+    let before = body(&d, g);
+    let frame = before.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP_FRAME).expect("the grade's frame").id;
+    let window = grade_node(0x61, "Mask");
+    let beside = GraphOp::AddNodeBeside { at: clip_path([g, u(E)]), node: window.clone() };
+    let fed = GraphOp::Connect { from: clip_path([g, frame]), from_port: "out".into(), to: clip_path([g, window.id]), to_port: input_key("Mask", 0) };
+
+    // Alone, its unwired input is refused, by name; nothing changes.
+    let mut alone = docs();
+    let err = apply(&mut alone, &beside).unwrap_err();
+    assert!(err.contains("needs its") && err.contains("one batch"), "{err}");
+    assert_eq!(snapshot(&alone), snapshot(&d));
+
+    // With its input fed and its output unread: one edge more, nothing else.
+    let mut unread = docs();
+    apply_batch_with_catalog(&mut unread, &[beside.clone(), fed.clone()], &RegistryCatalog).unwrap();
+    let after = body(&unread, g);
+    for n in &before.nodes {
+        assert_eq!(after.nodes.iter().find(|m| m.id == n.id), Some(n), "{} is as it was", n.id);
+    }
+    let added: Vec<_> = after.edges.iter().filter(|e| !before.edges.contains(e)).collect();
+    assert_eq!(added.len(), 1, "only its input: {added:?}");
+    assert!(before.edges.iter().all(|e| after.edges.contains(e)), "no edge moved");
+
+    // AddNode, by contrast, puts it in the picture's path.
+    let mut spliced = docs();
+    apply(&mut spliced, &GraphOp::AddNode { after: clip_path([g, u(S)]), node: grade_node(0x62, "Mask") }).unwrap();
+    assert_ne!(body(&spliced, g).edges, before.edges);
+
+    // Connected to the exposure's mask, it gates it.
+    let mut masked = docs();
+    let to = input_key("Exposure", 1);
+    let reads = GraphOp::Connect { from: clip_path([g, window.id]), from_port: output_key("Mask", 0), to: clip_path([g, u(E)]), to_port: to.clone() };
+    apply_batch_with_catalog(&mut masked, &[beside.clone(), fed, reads], &RegistryCatalog).unwrap();
+    assert!(body(&masked, g).edges.iter().any(|e| e.from.0 == window.id && e.to == (u(E), to.clone())));
+
+    // Twice is refused; on a track's list there is nothing to wire beside.
+    assert!(apply_batch_with_catalog(&mut masked, &[beside], &RegistryCatalog).is_err());
+    let first = masked.track_effects[&u(TRACK)][0].id;
+    assert!(apply(&mut masked, &GraphOp::AddNodeBeside { at: NodePath::new(Root::Track { track: u(TRACK), part: TrackPart::Effects }, [first]), node: grade_node(0x63, "Mask") }).is_err());
+}
