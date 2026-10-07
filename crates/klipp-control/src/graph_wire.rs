@@ -7,6 +7,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+/// Check raw keys before serde flattens a command into its socket envelope.
+/// MCP arguments omit `id` and `method`; socket requests may carry them.
+pub fn validate_fields(value: &Value, method: &str, envelope: bool) -> Result<(), String> {
+    let allowed: &[&str] = match method {
+        "graph_ops" => &["ops", "label", "expected_revision", "expected_project_identity", "idempotency_key"],
+        "graph_read" => &["path", "depth", "idempotency_key"],
+        _ => return Ok(()),
+    };
+    let fields = value.as_object().ok_or("graph arguments must be an object")?;
+    for key in fields.keys() {
+        if !allowed.contains(&key.as_str()) && !(envelope && matches!(key.as_str(), "id" | "method")) {
+            return Err(format!("unknown {method} field {key:?}"));
+        }
+    }
+    Ok(())
+}
+
 fn nullable<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
     Option::<T>::deserialize(d)
 }

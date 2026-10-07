@@ -999,7 +999,9 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         "klipp_graph" | "klipp_graph_read" => {
             let mut v = args.clone();
             if !v.is_object() { return Err("graph arguments must be an object".into()); }
-            v["method"] = json!(if name == "klipp_graph" { "graph_ops" } else { "graph_read" });
+            let method = if name == "klipp_graph" { "graph_ops" } else { "graph_read" };
+            klipp_control::graph_wire::validate_fields(&v, method, false)?;
+            v["method"] = json!(method);
             if name == "klipp_graph" {
                 let ops = v["ops"].as_array().filter(|ops| !ops.is_empty() && ops.len() <= 64).ok_or("a graph batch needs 1 to 64 operations")?;
                 for (op_index, op) in ops.iter().enumerate() {
@@ -2911,6 +2913,17 @@ mod interface_tests {
             assert!(size <= budget,"{name}: {size} > {budget}");
         }
         assert!(serde_json::to_vec(&tools).unwrap().len() < 87_500);
+    }
+
+    #[test]
+    fn misspelled_graph_guards_are_refused_before_a_socket_call() {
+        let path = json!({"root":{"clip":uuid::Uuid::nil()},"nodes":[]});
+        for key in ["expected_revison", "expected_project_identty", "lable", "method", "id"] {
+            let mut args = json!({"ops":[{"op":"enable","path":path,"enabled":false}]});
+            args[key] = json!(1);
+            assert!(tool_to_command("klipp_graph", &args).unwrap_err().contains(key));
+        }
+        assert!(tool_to_command("klipp_graph_read", &json!({"path":path,"depht":2})).unwrap_err().contains("depht"));
     }
 
     /// Claude Code cuts an MCP tool's description off at about 2,048

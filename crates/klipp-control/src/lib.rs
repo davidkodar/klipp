@@ -221,7 +221,13 @@ fn serve_connection(stream: UnixStream, ctx: ControlContext) {
         if line.trim().is_empty() {
             continue;
         }
-        let response = match serde_json::from_str::<Request>(&line) {
+        let field_error = serde_json::from_str::<serde_json::Value>(&line).ok().and_then(|raw| {
+            let method = raw["method"].as_str()?;
+            graph_wire::validate_fields(&raw, method, true).err().map(|why| (raw["id"].as_u64().unwrap_or(0), why))
+        });
+        let response = if let Some((id, why)) = field_error {
+            Response::err(id, why)
+        } else { match serde_json::from_str::<Request>(&line) {
             Ok(req) => {
                 let id = req.id;
                 let key = req.idempotency_key;
@@ -249,7 +255,7 @@ fn serve_connection(stream: UnixStream, ctx: ControlContext) {
                 let id = serde_json::from_str::<serde_json::Value>(&line).ok().and_then(|v| v["id"].as_u64()).unwrap_or(0);
                 Response::err(id, explain_bad_request(&line, &e))
             }
-        };
+        }};
         let mut text = match serde_json::to_string(&response) {
             Ok(t) => t,
             Err(e) => format!(r#"{{"id":0,"ok":false,"error":"serialise failed: {e}"}}"#),
@@ -574,6 +580,7 @@ fn read_in_batch(what: &str) -> Result<serde_json::Value, String> {
 /// Blocks until the request is done, which for a tool that grades in
 /// rounds is seconds, so it belongs on a worker thread.
 pub fn respond_local(ctx: &ControlContext, request: serde_json::Value) -> Result<serde_json::Value, String> {
+    if let Some(method) = request["method"].as_str() { graph_wire::validate_fields(&request, method, true)?; }
     let req: Request = serde_json::from_value(request).map_err(|e| format!("not a request Klipp knows: {e}"))?;
     handle(ctx, req.command, &mut None)
 }

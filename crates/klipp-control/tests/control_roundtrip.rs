@@ -167,6 +167,8 @@ fn harness() -> Harness {
                                     }
                                 }
                             })();
+                            // Match control_bridge: the index travels only in
+                            // refused_op; prose must not name the expanded op.
                             if let Err((at, why)) = result { refused_op = Some(at); refused = Some(why); }
                         }
                         if let klipp_core::AppCommand::ImportMediaWithAnalysis { path, analyze: false } = &c {
@@ -409,14 +411,34 @@ fn graph_effect_persistence_refusals_map_expanded_indices_and_change_nothing() {
         ]}));
         assert_eq!(refused["ok"], false, "{refused}");
         assert_eq!(refused["op_index"], 1, "expanded initial params must not shift the caller's index: {refused}");
+        assert!(!refused["error"].as_str().unwrap().starts_with("op "), "the prose must not contradict the caller's index: {refused}");
         let operation = refused["result"]["operation_id"].as_str().expect("app-thread refusal");
         let status = h.ok(json!({"method":"operation_status","operation_id":operation}));
         assert_eq!(status["op_index"], 1);
         assert_eq!(status["state"], "refused");
+        assert_eq!(status["reason"], refused["error"]);
     }
     assert!(h.edits_seen.lock().unwrap().is_empty());
     assert_eq!(h.shared.revision(), graph["revision"].as_u64().unwrap());
     assert_eq!(h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture, before);
+}
+
+#[test]
+fn graph_misspelled_top_level_fields_never_reach_the_app() {
+    let mut h = harness();
+    let path = json!({"root":{"clip":h.ids.clip_a},"nodes":[]});
+    for (method, field) in [("graph_ops", "expected_revison"), ("graph_ops", "expected_project_identty"), ("graph_read", "depht")] {
+        let mut request = if method == "graph_ops" {
+            json!({"method":method,"ops":[{"op":"enable","path":path,"enabled":false}]})
+        } else { json!({"method":method,"path":path}) };
+        request[field] = json!(0);
+        let refused = h.call(request);
+        assert_eq!(refused["ok"],false);
+        assert!(refused["error"].as_str().unwrap().contains(field), "{refused}");
+    }
+    assert!(h.envelopes.lock().unwrap().is_empty());
+    assert!(h.edits_seen.lock().unwrap().is_empty());
+    assert_eq!(h.shared.revision(),0);
 }
 
 #[test]
