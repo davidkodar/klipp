@@ -187,17 +187,39 @@ enum Shape {
     Mixed(Producer, MaskChannel),
 }
 
+/// Where a case's effect sits: straight off the source, or after a grade
+/// on a live chain, its producer keyed from the source or from the graded
+/// picture (AR1's graded half).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Graded {
+    None,
+    KeyedFromSource,
+    KeyedFromGrade,
+}
+
 /// Source -> [Effect] -> Output, a producer off the source into the
-/// effect's mask.
-fn graph(effect: &BuiltinEffect, shape: Shape, files: &Files) -> NodeGraph {
+/// effect's mask; with `grade`'s Exposure before the effect, the effect's
+/// input is the graded picture, and the producer keys what `grade` says.
+fn graph_graded(effect: &BuiltinEffect, shape: Shape, files: &Files, grade: Graded) -> NodeGraph {
     let s = node(NodeKind::Source, NodeParams::default());
     let o = node(NodeKind::Output, NodeParams::default());
     let mut nodes = vec![s.clone()];
     let mut edges = Vec::new();
+    // The effect's input, and what the producer keys.
+    let (picture, keyed) = match grade {
+        Graded::None => (s.id, s.id),
+        _ => {
+            let e = node(NodeKind::Exposure, NodeParams { exposure: Some(0.05), ..Default::default() });
+            edges.push(link(s.id, e.id, 0));
+            let id = e.id;
+            nodes.push(e);
+            (id, if grade == Graded::KeyedFromGrade { id } else { s.id })
+        }
+    };
     let last = match shape {
-        Shape::Input => s.id,
+        Shape::Input => picture,
         Shape::Matte(p) => {
-            let (n, e, m) = producer(p, s.id, files);
+            let (n, e, m) = producer(p, keyed, files);
             nodes.extend(n);
             edges.extend(e);
             m
@@ -208,9 +230,9 @@ fn graph(effect: &BuiltinEffect, shape: Shape, files: &Files) -> NodeGraph {
                 _ => None,
             };
             let fx = node(NodeKind::Effect, NodeParams { effects: vec![effect.clone()], effect_blend: blend, ..Default::default() });
-            edges.push(link(s.id, fx.id, 0));
+            edges.push(link(picture, fx.id, 0));
             if let Shape::Mixed(p, _) = shape {
-                let (n, e, m) = producer(p, s.id, files);
+                let (n, e, m) = producer(p, keyed, files);
                 nodes.extend(n);
                 edges.extend(e);
                 edges.push(link(m, fx.id, 1));
@@ -226,7 +248,11 @@ fn graph(effect: &BuiltinEffect, shape: Shape, files: &Files) -> NodeGraph {
 }
 
 fn run(ex: &mut GraphExecutor, effect: &BuiltinEffect, shape: Shape, files: &Files) -> Vec<f32> {
-    ex.execute_linear(&frame(), &graph(effect, shape, files), W, H, 0.5, 12, None, None).unwrap().0
+    run_graded(ex, effect, shape, files, Graded::None)
+}
+
+fn run_graded(ex: &mut GraphExecutor, effect: &BuiltinEffect, shape: Shape, files: &Files, grade: Graded) -> Vec<f32> {
+    ex.execute_linear(&frame(), &graph_graded(effect, shape, files, grade), W, H, 0.5, 12, None, None).unwrap().0
 }
 
 fn rows(v: &[f32]) -> Vec<[f32; 4]> {
@@ -269,15 +295,31 @@ fn mixable_effects() -> Vec<(&'static str, BuiltinEffect)> {
 /// oracle, every failure named before the test fails.
 #[test]
 fn every_mixable_node_masked_by_every_matte_matches_the_oracle() {
+    check_matrix(Graded::None);
+}
+
+/// AR1's graded half: the same matrix with a grade before the effect, so
+/// the effect runs on a live chain, and each producer keyed from the
+/// source or from the graded picture.
+#[test]
+fn every_mixable_node_masked_after_a_grade_matches_the_oracle() {
+    check_matrix(Graded::KeyedFromSource);
+    check_matrix(Graded::KeyedFromGrade);
+}
+
+/// C9 for `grade`: every mixable effect by every producer and channel
+/// whose coverage spans 0 to 1, on the CPU bit for bit and on the GPU
+/// within a level, each against the oracle over the same graph's pieces.
+fn check_matrix(grade: Graded) {
     let effects = mixable_effects();
     assert!(!effects.is_empty(), "no mixable effect is registered");
     let files = files();
     let mut cpu = GraphExecutor::new_cpu_only();
     let mut gpu = gpu();
     let none = BuiltinEffect::Gamma { gamma: 1.0 };
-    let mattes: HashMap<Producer, Vec<[f32; 4]>> = PRODUCERS.iter().map(|p| (*p, rows(&run(&mut cpu, &none, Shape::Matte(*p), &files)))).collect();
+    let mattes: HashMap<Producer, Vec<[f32; 4]>> = PRODUCERS.iter().map(|p| (*p, rows(&run_graded(&mut cpu, &none, Shape::Matte(*p), &files, grade)))).collect();
     let gpu_mattes: HashMap<Producer, Vec<[f32; 4]>> = match gpu.as_mut() {
-        Some(ex) => PRODUCERS.iter().map(|p| (*p, rows(&run(ex, &none, Shape::Matte(*p), &files)))).collect(),
+        Some(ex) => PRODUCERS.iter().map(|p| (*p, rows(&run_graded(ex, &none, Shape::Matte(*p), &files, grade)))).collect(),
         None => HashMap::new(),
     };
     // Each case reads its coverage from one channel of the matte, and that
@@ -310,29 +352,50 @@ fn every_mixable_node_masked_by_every_matte_matches_the_oracle() {
     for channel in CHANNELS {
         assert!(cases.iter().any(|(_, c)| *c == channel), "no mask source spans the {channel:?} channel");
     }
-    let input = rows(&run(&mut cpu, &none, Shape::Input, &files));
-    let gpu_input = gpu.as_mut().map(|ex| rows(&run(ex, &none, Shape::Input, &files)));
+    let input = rows(&run_graded(&mut cpu, &none, Shape::Input, &files, grade));
+    let gpu_input = gpu.as_mut().map(|ex| rows(&run_graded(ex, &none, Shape::Input, &files, grade)));
     let mut failures = Vec::new();
     let mut checked = 0;
     for (tag, effect) in &effects {
-        let whole = rows(&run(&mut cpu, effect, Shape::Whole, &files));
-        let gpu_whole = gpu.as_mut().map(|ex| rows(&run(ex, effect, Shape::Whole, &files)));
+        let whole = rows(&run_graded(&mut cpu, effect, Shape::Whole, &files, grade));
+        let gpu_whole = gpu.as_mut().map(|ex| rows(&run_graded(ex, effect, Shape::Whole, &files, grade)));
         for &(p, channel) in &cases {
             {
                 checked += 1;
                 let want = oracle(&input, &whole, &mattes[&p], channel);
                 let case = format!("{tag} by {p:?} ({channel:?})");
-                let got = run(&mut cpu, effect, Shape::Mixed(p, channel), &files);
+                let got = run_graded(&mut cpu, effect, Shape::Mixed(p, channel), &files, grade);
                 if bits(&got) != bits(&want) {
                     failures.push(format!("cpu: {case}: worst {}", worst(&got, &want)));
                 }
                 if let (Some(ex), Some(gi), Some(gw)) = (gpu.as_mut(), gpu_input.as_ref(), gpu_whole.as_ref()) {
                     let want = oracle(gi, gw, &gpu_mattes[&p], channel);
-                    let got = run(ex, effect, Shape::Mixed(p, channel), &files);
+                    let got = run_graded(ex, effect, Shape::Mixed(p, channel), &files, grade);
                     let w = worst(&got, &want);
                     let stats = ex.last_run_chain_stats();
                     if w > GPU_BAR {
-                        failures.push(format!("gpu: {case}: worst {w}"));
+                        failures.push(format!("gpu: {case}: worst {w} {stats:?}"));
+                    }
+                    // C9's CPU producers (spec, the CPU half): their matte is
+                    // made on the CPU, one node each, and the effect and its
+                    // mix stay on the GPU in one flush. The source handing
+                    // over its CPU pixels is the other CPU node; a combined
+                    // matte is a luma key, a window and the combine, all on
+                    // the CPU.
+                    let producer_nodes = match p {
+                        Producer::ExternalMatte => Some(1),
+                        Producer::CombineMattes => Some(3),
+                        _ => None,
+                    };
+                    // Keying the graded picture, a CPU producer reads it from the
+                    // CPU: the chain is read back for it, and starts again for
+                    // the effect (two flushes). The external matte reads no
+                    // picture.
+                    let flushes = if grade == Graded::KeyedFromGrade && p == Producer::CombineMattes { 2 } else { 1 };
+                    if let Some(n) = producer_nodes.filter(|_| !KNOWN_DECLINES.contains(tag)) {
+                        if (stats.cpu_nodes, stats.flushes, stats.effect_breaks) != (1 + n, flushes, 0) {
+                            failures.push(format!("gpu: {case}: a CPU producer's counters {stats:?}, want {} CPU nodes and {flushes} flush(es)", 1 + n));
+                        }
                     }
                     let declined = stats.effect_breaks != 0 || stats.effect_mixes_refused != 0;
                     if declined != KNOWN_DECLINES.contains(tag) {
@@ -342,7 +405,7 @@ fn every_mixable_node_masked_by_every_matte_matches_the_oracle() {
             }
         }
     }
-    eprintln!("C9: {checked} cases ({} effects x {} producer-channel pairs), {} failed", effects.len(), cases.len(), failures.len());
+    eprintln!("C9 ({grade:?}): {checked} cases ({} effects x {} producer-channel pairs), {} failed", effects.len(), cases.len(), failures.len());
     assert!(failures.is_empty(), "{} of {checked} cases:\n{}", failures.len(), failures.join("\n"));
 }
 
