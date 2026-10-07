@@ -457,12 +457,21 @@ fn publish_and_connect_is_one_undo_and_new_masks_use_luminance() {
     undo(&mut d, &edit).unwrap();
     assert_eq!(snapshot(&d), before);
     assert_eq!(channel(&d), "red");
+    let redo = klipp_convert::ops::GraphEdit { root: edit.root, before: edit.after.clone(), after: edit.before.clone() };
+    undo(&mut d, &redo).unwrap();
+    assert_eq!(serde_json::to_value(&d.clips[&u(CLIP)]).unwrap(), edit.after);
 }
 
 #[test]
 fn publication_and_batch_refusals_leave_the_whole_root_unchanged() {
     let mut d = publishing_docs();
     let before = snapshot(&d);
+    let mut not_group = publish(&d);
+    if let GraphOp::PublishOutput { group, .. } = &mut not_group { *group = clip_path([Uuid::from_u128(TARGET_ID)]); }
+    assert!(apply_with_catalog(&mut d, &not_group, &RegistryCatalog).is_err());
+    let missing = GraphOp::Unpublish { group: clip_path([group(&d)]), key: "missing".into() };
+    assert!(apply_with_catalog(&mut d, &missing, &RegistryCatalog).is_err());
+    assert_eq!(snapshot(&d), before);
     let mut bad = publish(&d);
     if let GraphOp::PublishOutput { endpoint, .. } = &mut bad { endpoint.node = Uuid::nil(); }
     assert!(apply_with_catalog(&mut d, &bad, &RegistryCatalog).is_err());
@@ -516,6 +525,48 @@ fn channel_edits_clear_to_red_and_undo_exactly() {
     let before = snapshot(&d);
     assert!(apply_with_catalog(&mut d, &GraphOp::SetMaskChannel { path, channel: Some("green".into()) }, &RegistryCatalog).is_err());
     assert_eq!(snapshot(&d), before);
+}
+
+#[test]
+fn mask_connections_preserve_saved_channels_and_existing_red_semantics() {
+    for wireless in [false, true] {
+        for saved in [None, Some("alpha")] {
+            let mut d = publishing_docs();
+            let group_id = group(&d);
+            let target = Uuid::from_u128(TARGET_ID);
+            let ops = [publish(&d), connect_published(&d)];
+            apply_batch_with_catalog(&mut d, &ops, &RegistryCatalog).unwrap();
+            let graph = &mut d.clips.get_mut(&u(CLIP)).unwrap().graph;
+            let node = graph.nodes.iter_mut().find(|n| n.id == target).unwrap();
+            node.params.remove(&"mask.channel".into());
+            if let Some(channel) = saved { node.params.insert("mask.channel".into(), ParamValue::Text(channel.into())); }
+            if wireless {
+                node.wireless.input_links.insert("mask".into(), "selection".into());
+                graph.nodes.iter_mut().find(|n| n.id == group_id).unwrap().wireless.output_link = Some("selection".into());
+                graph.edges.retain(|e| e.to != (target, "mask".into()));
+            }
+            let before = snapshot(&d);
+            let edit = apply_with_catalog(&mut d, &GraphOp::Connect { from: clip_path([group_id]), from_port: "out".into(), to: clip_path([target]), to_port: "mask".into() }, &RegistryCatalog).unwrap();
+            assert_eq!(channel(&d), saved.unwrap_or("red"));
+            assert_eq!(resolve(&d, &clip_path([target])).unwrap().params.contains_key(&"mask.channel".into()), saved.is_some());
+            undo(&mut d, &edit).unwrap();
+            assert_eq!(snapshot(&d), before);
+        }
+    }
+}
+
+#[test]
+fn channel_set_before_connect_survives_connect_and_reconnect() {
+    let mut d = publishing_docs();
+    let path = clip_path([Uuid::from_u128(TARGET_ID)]);
+    apply_with_catalog(&mut d, &GraphOp::SetMaskChannel { path: path.clone(), channel: Some("alpha".into()) }, &RegistryCatalog).unwrap();
+    let ops = [publish(&d), connect_published(&d)];
+    apply_batch_with_catalog(&mut d, &ops, &RegistryCatalog).unwrap();
+    assert_eq!(channel(&d), "alpha");
+    apply_with_catalog(&mut d, &GraphOp::Disconnect { to: path, port: "mask".into() }, &RegistryCatalog).unwrap();
+    let op = connect_published(&d);
+    apply_with_catalog(&mut d, &op, &RegistryCatalog).unwrap();
+    assert_eq!(channel(&d), "alpha");
 }
 
 #[test]
@@ -573,8 +624,10 @@ fn lifted_grade_masks_stay_red_and_refuse_a_channel_setting() {
     assert_eq!(snapshot(&d), before);
     // Reconnecting a grade mask remains red-only, even though effects
     // with the channel setting start a new connection at luminance.
+    let flags = resolve(&d, &path).unwrap().legacy_flags.clone();
     let edit = apply_with_catalog(&mut d, &GraphOp::Connect { from: clip_path([g, matte]), from_port: "out".into(), to: path.clone(), to_port: "mask".into() }, &RegistryCatalog).unwrap();
     assert!(!resolve(&d, &path).unwrap().params.contains_key(&"mask.channel".into()));
+    assert_eq!(resolve(&d, &path).unwrap().legacy_flags, flags, "rewiring a migrated mask preserves every flag");
     undo(&mut d, &edit).unwrap();
     assert_eq!(snapshot(&d), before);
 }

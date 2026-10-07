@@ -38,6 +38,8 @@ pub enum GraphOp {
     SetEnabled { path: NodePath, enabled: bool },
     SetMix { path: NodePath, mix: Option<f32> },
     /// Expose a direct child's output under a stable public key.
+    /// A clip grade group with published ports cannot yet load into the
+    /// legacy app model; delift refuses it until that model can preserve them.
     PublishOutput { group: NodePath, endpoint: PortBinding, key: PortKey, label: String },
     /// Remove an exported port; existing readers must be disconnected first.
     Unpublish { group: NodePath, key: PortKey },
@@ -285,18 +287,18 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn
             let from_id = from.node().ok_or("an empty path")?;
             find(g, from_id)?;
             let at = find(g, target)?;
+            let connected = g.edges.iter().any(|e| e.to == (target, to_port.clone()))
+                || g.nodes[at].wireless.input_links.get(to_port).is_some_and(|name| g.nodes.iter().any(|n| n.id != target && n.wireless.output_link.as_deref() == Some(name)));
             if to_port.as_str() == "mask" && g.nodes[at].type_id.as_str() != lt::GROUP {
                 if let Some(catalog) = catalog {
                     let spec = catalog.node_spec(&g.nodes[at]).ok_or("a mask connection needs a registered node description")?;
                     let mask = spec.inputs.iter().find(|p| p.key == "mask" && p.ty == PortType::Matte).ok_or("this node has no mask input")?;
-                    if mask.params.iter().any(|(key, _)| key == "channel") {
+                    if !connected && !g.nodes[at].params.contains_key(&ParamKey::from("mask.channel")) && mask.params.iter().any(|(key, _)| key == "channel") {
                         set_mask_channel(&mut g.nodes[at], Some("luminance"), Some(catalog))?;
                     }
-                } else if !ports::GATEABLE.contains(&kind(&g.nodes[at])) {
-                    g.nodes[at].params.insert("mask.channel".into(), ParamValue::Text("luminance".into()));
                 }
             }
-            if to_port.as_str() == "mask" && g.nodes[at].type_id.as_str() == types::LEGACY_NODE && ports::GATEABLE.contains(&kind(&g.nodes[at])) {
+            if !connected && to_port.as_str() == "mask" && g.nodes[at].type_id.as_str() == types::LEGACY_NODE && ports::GATEABLE.contains(&kind(&g.nodes[at])) {
                 g.nodes[at].legacy_flags.get_or_insert_with(LegacyFlags::default).alpha_one = true;
             }
             g.edges.retain(|e| e.to != (target, to_port.clone()));
