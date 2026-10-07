@@ -54,8 +54,8 @@ fn required() -> bool {
 /// (`effects_blended_on_cpu`) and left unmasked for want of its matte
 /// (`effects_mask_unavailable`, from B1). Filled by B2, which adds the
 /// first; until then the cases are ignored.
-fn blend_counters(_stats: &RenderStats) -> (u32, u32) {
-    todo!("9c-2 B2: (stats.effects_blended_on_cpu, stats.effects_mask_unavailable)")
+fn blend_counters(stats: &RenderStats) -> (u32, u32) {
+    (stats.effects_blended_on_cpu, stats.effects_mask_unavailable)
 }
 
 /// Edges and a gradient in both halves, so a blur shows inside and outside
@@ -243,8 +243,14 @@ fn oracle(input: &[f32], whole: &[f32], matte: Option<&[[f32; 4]]>) -> Vec<f32> 
 /// render, on the CPU and the GPU, are each the oracle's over their own
 /// route's pieces, within a level (the CPU within float noise); the
 /// pieces differ (the case shows something); the counters say B2 blended
-/// on the CPU and never left the effect unmasked.
-fn case(name: &str, build: impl Fn(Blend) -> Sequence, plugin: bool, keyed: bool) {
+/// the masked effect on the CPU and never left it unmasked, and that a mix
+/// with no mask needs no blend of its own (it runs in the plan).
+///
+/// `cpu_bar`: the CPU route's bar. The pieces are renders of the clip with
+/// no mix or mask, which the CPU kernels draw, while the masked clip's
+/// plan runs on the CPU executor; the two agree to float noise except
+/// where a shutter averages them (one level).
+fn case(name: &str, build: impl Fn(Blend) -> Sequence, plugin: bool, keyed: bool, cpu_bar: f32) {
     let routes: Vec<bool> = if gpu() { vec![false, true] } else { vec![false] };
     for on_gpu in routes {
         let route = if on_gpu { "gpu" } else { "cpu" };
@@ -254,12 +260,13 @@ fn case(name: &str, build: impl Fn(Blend) -> Sequence, plugin: bool, keyed: bool
         let window = matte(keyed);
         let (lo, hi) = window.iter().fold((1.0f32, 0.0f32), |(a, b), p| (a.min(p[0]), b.max(p[0])));
         assert!(lo < 0.05 && hi > 0.95, "{name}: the window covers 0..1 ({lo}..{hi})");
-        let bar = if on_gpu { BAR } else { 1e-5 };
+        let bar = if on_gpu { BAR } else { cpu_bar };
         for (blend, want) in [(Blend::Masked, oracle(&input, &whole, Some(&window))), (Blend::Mixed, oracle(&input, &whole, None))] {
             let (got, stats) = render(&build(blend), on_gpu, plugin);
             assert!(worst(&got, &want) <= bar, "{name} ({route}, {blend:?}): {} from the oracle", worst(&got, &want));
             let (blended, unavailable) = blend_counters(&stats);
-            assert_eq!((blended, unavailable), (1, 0), "{name} ({route}, {blend:?}): blended on the CPU once, never unmasked");
+            let want = if blend == Blend::Masked { (1, 0) } else { (0, 0) };
+            assert_eq!((blended, unavailable), want, "{name} ({route}, {blend:?}): a mask blended on the CPU once, a mix in the plan, never unmasked");
         }
     }
 }
@@ -267,17 +274,15 @@ fn case(name: &str, build: impl Fn(Blend) -> Sequence, plugin: bool, keyed: bool
 /// (a) A clip with a plug-in: its effects run as a plan after the plug-in
 /// (11c-2), off the grade's run, where the window is made.
 #[test]
-#[ignore = "9c-2 B2"]
 fn a_masked_effect_after_a_plugin_is_blended_on_the_cpu() {
     let build = |blend| with_invert(sequence(vec![vec![media(vec![], blend, false)]]), true);
-    case("after a plug-in", build, true, false);
+    case("after a plug-in", build, true, false, 1e-5);
 }
 
 /// (b) A moving clip under the shutter, its blur after its transform:
 /// the blur runs once on the samples' average at the frame's time, with
 /// the window keyed in time and taken at that time (11c-3's shape).
 #[test]
-#[ignore = "9c-2 B2"]
 fn a_masked_effect_after_the_transform_under_the_shutter_is_blended_on_the_average() {
     let transform = E::Transform {
         position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0,
@@ -292,7 +297,7 @@ fn a_masked_effect_after_the_transform_under_the_shutter_is_blended_on_the_avera
         seq.camera.shutter_samples = 8;
         seq
     };
-    case("under the shutter, after the transform", build, false, true);
+    case("under the shutter, after the transform", build, false, true, BAR);
 }
 
 /// (b') The same with the blur before the transform: masked once at the
@@ -301,7 +306,6 @@ fn a_masked_effect_after_the_transform_under_the_shutter_is_blended_on_the_avera
 /// moves with each sample); held to the CPU route, and to the input where
 /// neither the window nor its sweep reaches.
 #[test]
-#[ignore = "9c-2 B2"]
 fn a_masked_effect_before_the_transform_under_the_shutter_smears_with_the_picture() {
     let build = |blend| {
         let mut c = media(vec![], blend, true);
@@ -330,12 +334,11 @@ fn a_masked_effect_before_the_transform_under_the_shutter_smears_with_the_pictur
 /// masked by it, over a plain clip: the adjustment's effects run over the
 /// composite below, off any clip's grade run.
 #[test]
-#[ignore = "9c-2 B2"]
 fn a_masked_effect_on_an_adjustment_layer_is_blended_on_the_cpu() {
     let build = |blend| {
         let below = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
         // The first track is the top one: the adjustment over the clip.
         sequence(vec![vec![graded(ClipKind::AdjustmentLayer, vec![], blend, false)], vec![below]])
     };
-    case("an adjustment layer", build, false, false);
+    case("an adjustment layer", build, false, false, 1e-5);
 }

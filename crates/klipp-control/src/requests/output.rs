@@ -446,6 +446,9 @@ pub(crate) fn respond(
                     // Frames the GPU stack declined to the CPU composite,
                     // whatever the reason; cumulative.
                     "stack_declines": klipp_compose::GPU_STACK_DECLINES.load(std::sync::atomic::Ordering::Relaxed),
+                    // Masked effects in a run apart from their grade, their
+                    // matte made apart and blended on the CPU (9c-2 B2).
+                    "blended_on_cpu": klipp_compose::EFFECTS_BLENDED_ON_CPU.load(std::sync::atomic::Ordering::Relaxed),
                     // Clip pictures lifted cold (none while playing with no
                     // edit: a lift is cached until the clip changes).
                     "cold_lifts": klipp_timeline::COLD_LIFTS.load(std::sync::atomic::Ordering::Relaxed),

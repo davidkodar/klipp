@@ -263,6 +263,9 @@ pub static PLAN_EFFECT_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atom
 /// the CPU kernels drew instead (`RenderStats::effects_on_cpu`), in this
 /// process. Cumulative; zero unless something failed.
 pub static EFFECTS_ON_CPU: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Masked effects blended on the CPU in a run apart from their grade
+/// (`RenderStats::effects_blended_on_cpu`), in this process.
+pub static EFFECTS_BLENDED_ON_CPU: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Frames the GPU stack declined to the CPU composite, in this process,
 /// for whatever reason (`Renderer::frame_decline` says which for the last).
 /// Cumulative; a reader takes deltas.
@@ -312,6 +315,11 @@ pub struct RenderStats {
     /// wiring a file holds that the renderer can't give): drawn bypassed,
     /// the picture as it came in, and said (step 9c-2). Zero unless one is.
     pub effects_mask_unavailable: u32,
+    /// Masked effects in a run apart from the grade they read (after a
+    /// plug-in, across a shutter, an adjustment layer's): the matte made
+    /// in a side run of its producer, the effect run alone, the two
+    /// blended on the CPU (step 9c-2 B2).
+    pub effects_blended_on_cpu: u32,
 }
 
 impl RenderStats {
@@ -499,6 +507,10 @@ pub struct Renderer {
     /// it again when its GPU run can't apply an effect, since the CPU
     /// kernels can't mask or mix (step 9c-2).
     cpu_executor: Option<klipp_nodes::GraphExecutor>,
+    /// The picture the clip being rendered gives its grade (an adjustment
+    /// layer's: what is below it), kept while its effects run apart from
+    /// its grade, for a masked effect's matte to be made from (9c-2 B2).
+    matte_input: Option<Arc<Vec<f32>>>,
     /// A scene-referred clip's display step for the grade being run,
     /// spliced in after the grade and before `run_effects` (step 11c).
     run_display: Option<klipp_color::hdr::SceneToDisplay>,
@@ -624,6 +636,7 @@ impl Renderer {
             run_blends: Vec::new(),
             planned_blends: Vec::new(),
             cpu_executor: None,
+            matte_input: None,
             run_display: None,
             plan_misses: 0,
             spliced: klipp_nodes::NodeGraph::default(),
@@ -2239,6 +2252,9 @@ impl Renderer {
         }
         // Kept for a second grade if the effects can't finish in the plan.
         let retry = (route && splice).then(|| input.clone());
+        // What the grade reads, kept for a masked effect apart from it to
+        // make its matte from (9c-2 B2).
+        self.matte_input = apart_blends.iter().flatten().any(|b| b.mask.is_some()).then(|| input.pixels());
         let mut pixels = self.grade(clip, input, clip_time, fps, width, height);
         // Whether the grade's run took the display step, so it isn't run
         // twice: not when the run failed and gave back its input.
@@ -2288,24 +2304,6 @@ impl Renderer {
         // route is on, from the picture; the list otherwise.
         let plan = apart.is_some();
         let fx = apart.unwrap_or(fx);
-        // Under a title's own motion blur the effects run per sample apart
-        // from their blends: a masked or mixed one there is bypassed, said
-        // and counted until its side run lands (9c-2, B2). The camera's
-        // shutter splits the blends with the effects (`shuttered`).
-        let (fx, apart_blends) = if title_motion_blur(clip).is_some() && apart_blends.iter().any(Option::is_some) {
-            let mut kept = Vec::with_capacity(fx.len());
-            let mut bypassed = Vec::new();
-            for (e, b) in fx.into_iter().zip(apart_blends) {
-                match b {
-                    Some(_) => bypassed.push(format!("a masked or mixed {} runs under the title's own motion blur, apart from its grade", effect_tag(&e))),
-                    None => kept.push(e),
-                }
-            }
-            self.masks_unavailable(clip, bypassed);
-            (kept, Vec::new())
-        } else {
-            (fx, apart_blends)
-        };
         let missed = self.plan_misses;
         // A title whose own drawing moves is drawn again at every shutter
         // sample, by `title_pixels_at`, which carries a sample through
@@ -2316,12 +2314,13 @@ impl Renderer {
         };
         let pixels = match (title_motion_blur(clip), self.shutter.get(&clip.id).cloned()) {
             (Some(_), _) => match self.title_shutter.get(&clip.id).cloned() {
-                Some(samples) => self.motion_blurred(clip, pixels, redrawn, &fx, &samples, time, fps, width, height, plan),
+                Some(samples) => self.motion_blurred(clip, pixels, redrawn, &fx, &apart_blends, &samples, time, fps, width, height, plan),
                 None => self.effects_by(plan, clip, &fx, &apart_blends, pixels, clip_time, fps, width, height),
             },
             (None, Some(samples)) => self.shuttered(clip, pixels, &fx, &apart_blends, &samples, clip_time, fps, width, height, plan),
             (None, None) => self.effects_by(plan, clip, &fx, &apart_blends, pixels, clip_time, fps, width, height),
         };
+        self.matte_input = None;
         // Counted when every run of the clip's effects took the plan.
         if plan && self.plan_misses == missed {
             if shutter {
@@ -2456,6 +2455,84 @@ impl Renderer {
     /// CPU executor: the CPU kernels can't mask or mix (step 9c-2).
     #[allow(clippy::too_many_arguments)]
     fn effects_by(&mut self, plan: bool, clip: &Clip, fx: &[BuiltinEffect], blends: &[Option<crate::resolve::Blend>], pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
+        // A masked effect in a run apart from its grade (9c-2 B2): the
+        // effects before it as usual, it alone and unmasked, its matte made
+        // in a side run of its producer, the two blended on the CPU; then
+        // the rest.
+        let blend = |i: usize| blends.get(i).and_then(Option::as_ref);
+        let masked = (0..fx.len()).find(|&i| blend(i).is_some_and(|b| b.mask.is_some()));
+        let (Some(i), true) = (masked, self.matte_input.is_some()) else {
+            return self.effects_by_plain(plan, clip, fx, blends, pixels, clip_time, fps, width, height);
+        };
+        let b = blend(i).cloned().expect("found above");
+        let head = self.effects_by_plain(plan, clip, &fx[..i], &blends[..i.min(blends.len())], pixels, clip_time, fps, width, height);
+        let drawn = self.effects_by_plain(plan, clip, &fx[i..=i], &[None], head.clone(), clip_time, fps, width, height);
+        let out = match self.side_matte(clip, b.mask.as_ref().expect("masked"), clip_time, fps, width, height) {
+            Some(matte) if matte.len() == head.len() => {
+                let luma = klipp_color::linear::luma_coefs(self.working);
+                let out = match klipp_effects::mask_mix::MaskMix::new(b.blend.mix, b.blend.channel, luma) {
+                    Ok(mix) => head.chunks_exact(4).zip(drawn.chunks_exact(4)).zip(matte.chunks_exact(4)).flat_map(|((p, e), m)| {
+                        mix.pixel([p[0], p[1], p[2], p[3]], [e[0], e[1], e[2], e[3]], Some([m[0], m[1], m[2], m[3]]))
+                    }).collect(),
+                    Err(_) => head,
+                };
+                self.found.stats.effects_blended_on_cpu += 1;
+                EFFECTS_BLENDED_ON_CPU.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                out
+            }
+            _ => {
+                self.masks_unavailable(clip, vec![format!("the matte of its {} couldn't be made apart from its grade", effect_tag(&fx[i]))]);
+                head
+            }
+        };
+        self.effects_by(plan, clip, &fx[i + 1..], blends.get(i + 1..).unwrap_or(&[]), out, clip_time, fps, width, height)
+    }
+
+    /// The matte `mask` gives, made in a run of its own on the CPU from
+    /// the picture the clip's grade reads (`matte_input`), at `clip_time`:
+    /// the clip's grade with its output taken from the publishing node,
+    /// or the node beside the chain on the clip's source or on the grade's
+    /// picture. `None` when it can't be made.
+    #[allow(clippy::too_many_arguments)]
+    fn side_matte(&mut self, clip: &Clip, mask: &crate::resolve::MaskSource, clip_time: f64, fps: f64, width: u32, height: u32) -> Option<Vec<f32>> {
+        use crate::resolve::{MaskSource, SideInput};
+        let input = self.matte_input.clone()?;
+        let (mut g, from, port) = match mask {
+            MaskSource::Grade { node, port } => {
+                let g = clip.grade().clone();
+                g.nodes.iter().any(|n| n.id == *node).then_some(())?;
+                (g, *node, *port)
+            }
+            MaskSource::Side { node, port, input: reads } => {
+                let mut g = if *reads == SideInput::Graded { clip.grade().clone() } else { self.passthrough.clone() };
+                let feed = match reads {
+                    SideInput::Graded => g.input_of(g.output_node_id, 0)?,
+                    SideInput::Source => g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source)?.id,
+                };
+                g.nodes.push((**node).clone());
+                g.edges.push(klipp_nodes::Edge { from_node: feed, from_port: 0, to_node: node.id, to_port: 0 });
+                (g, node.id, *port)
+            }
+            MaskSource::Unavailable(_) => return None,
+        };
+        let out = g.output_node_id;
+        g.edges.retain(|e| !(e.to_node == out && e.to_port == 0));
+        g.edges.push(klipp_nodes::Edge { from_node: from, from_port: port, to_node: out, to_port: 0 });
+        let (encoding, working, scale, tetrahedral) = (self.grade_encoding, self.working, self.px_scale, self.lut_tetrahedral);
+        self.on_cpu_executor(|r| {
+            r.executor.prepare_clip(clip.grade());
+            r.executor.set_grade_encoding(encoding);
+            r.executor.set_working_colorspace(working);
+            r.executor.set_render_scale(scale);
+            r.executor.set_lut_tetrahedral(tetrahedral);
+            r.executor.set_current_clip_track_points(&clip.track_points);
+            r.executor.execute_linear(&input, &g, width, height, clip_time, grade_frame(clip_time, fps), None, None).ok().map(|(o, _)| o)
+        })
+    }
+
+    /// [`Self::effects_by`] for a run whose masks, if any, are wired in it.
+    #[allow(clippy::too_many_arguments)]
+    fn effects_by_plain(&mut self, plan: bool, clip: &Clip, fx: &[BuiltinEffect], blends: &[Option<crate::resolve::Blend>], pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
         let blended = blends.iter().any(Option::is_some);
         if (!plan && !blended) || fx.is_empty() {
             return self.effects(fx, pixels, clip_time, width, height);
@@ -3245,6 +3322,7 @@ impl Renderer {
         pixels: Vec<f32>,
         redrawn: Option<&klipp_timeline::TitleData>,
         fx: &[BuiltinEffect],
+        blends: &[Option<crate::resolve::Blend>],
         samples: &[(ResolvedTransform, f64)],
         time: Timecode,
         fps: f64,
@@ -3259,6 +3337,10 @@ impl Renderer {
             .unwrap_or_else(|| fx.iter().position(klipp_effects::draws_outside_the_picture).unwrap_or(fx.len()));
         let before = &fx[..cut];
         let after: Vec<BuiltinEffect> = fx[cut..].iter().filter(|e| !matches!(e, BuiltinEffect::Transform { .. })).cloned().collect();
+        // Each effect's mix and mask with it, split as the effects are.
+        let blend = |i: usize| blends.get(i).cloned().flatten();
+        let before_blends: Vec<_> = (0..cut).map(blend).collect();
+        let after_blends: Vec<_> = (cut..fx.len()).filter(|i| !matches!(fx[*i], BuiltinEffect::Transform { .. })).map(blend).collect();
         // A title whose glyphs move has a different picture at every
         // instant the shutter is open, so placing one rasterisation
         // eight times blurs only where the clip went, not where the
@@ -3283,7 +3365,7 @@ impl Renderer {
         // transform, when its drawing does not move.
         let still = match redrawn {
             Some(_) => None,
-            None => Some(self.effects_by(plan, clip, before, &[], pixels.clone(), clip_time, fps, width, height)),
+            None => Some(self.effects_by(plan, clip, before, &before_blends, pixels.clone(), clip_time, fps, width, height)),
         };
         let mut acc = vec![0.0f32; pixels.len()];
         for &(xf, t) in samples {
@@ -3291,7 +3373,7 @@ impl Renderer {
                 (Some(base), _) => base.clone(),
                 (None, Some(td)) => {
                     let drawn = self.title_pixels_at(clip, td, t, fps, width, height);
-                    self.effects_by(plan, clip, before, &[], drawn, t, fps, width, height)
+                    self.effects_by(plan, clip, before, &before_blends, drawn, t, fps, width, height)
                 }
                 (None, None) => unreachable!("a still picture is drawn when the title's drawing does not move"),
             };
@@ -3302,7 +3384,7 @@ impl Renderer {
         }
         let inv = 1.0 / samples.len().max(1) as f32;
         acc.iter_mut().for_each(|v| *v *= inv);
-        self.effects_by(plan, clip, &after, &[], acc, clip_time, fps, width, height)
+        self.effects_by(plan, clip, &after, &after_blends, acc, clip_time, fps, width, height)
     }
 
     /// Both clips of a transition as full layers at `time`, blended.
@@ -3410,7 +3492,11 @@ impl Renderer {
         }
         let clip_time = eval_clip_time(clip, time);
         let before = if opacity < 0.999 { Some(below.clone()) } else { None };
-        let graded = self.grade(clip, GradeInput::Cpu(Arc::new(below)), clip_time, fps, width, height);
+        let below = Arc::new(below);
+        // What its grade reads, kept for a masked effect to make its matte
+        // from: its effects run apart from its grade (9c-2 B2).
+        self.matte_input = clip.is_picture_truth().then(|| below.clone());
+        let graded = self.grade(clip, GradeInput::Cpu(below), clip_time, fps, width, height);
         let graded = self.ofx(clip, graded, clip_time, width, height, None);
         let (mut fx, _) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied());
         // Its effect colours are authored in BT.709, as a clip's are, and
@@ -3440,6 +3526,7 @@ impl Renderer {
         };
         let missed = self.plan_misses;
         let mut after = self.effects_by(plan, clip, &fx, &blends, graded, clip_time, fps, width, height);
+        self.matte_input = None;
         if plan && self.plan_misses == missed {
             self.found.stats.effects_on_layers += 1;
             PLAN_EFFECT_CLIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
