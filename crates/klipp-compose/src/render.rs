@@ -263,6 +263,9 @@ pub static PLAN_EFFECT_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atom
 /// the CPU kernels drew instead (`RenderStats::effects_on_cpu`), in this
 /// process. Cumulative; zero unless something failed.
 pub static EFFECTS_ON_CPU: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Masked effects whose matte their run couldn't give
+/// (`RenderStats::effects_mask_unavailable`), in this process.
+pub static EFFECT_MASKS_UNAVAILABLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Where a render's time went, in milliseconds.
 #[derive(Default, Clone, Copy, Debug)]
@@ -300,6 +303,11 @@ pub struct RenderStats {
     /// drawn by the CPU kernels instead, so the frame never shows without
     /// its effects (M2 step 11d). Zero unless something failed.
     pub effects_on_cpu: u32,
+    /// Masked effects whose matte their run couldn't give (an effect run
+    /// apart from the grade it reads, after a plug-in or across a shutter;
+    /// wiring a file holds that the renderer can't give): drawn bypassed,
+    /// the picture as it came in, and said (step 9c-2). Zero unless one is.
+    pub effects_mask_unavailable: u32,
 }
 
 impl RenderStats {
@@ -477,6 +485,16 @@ pub struct Renderer {
     /// The clip's resolved effects for the grade being run, spliced in as
     /// nodes before its output (step 10b); empty runs the grade alone.
     run_effects: Vec<BuiltinEffect>,
+    /// `run_effects`' mixes and masks, by place (a picture-truth clip's,
+    /// step 9c-2); `None`, or shorter, for effects with neither.
+    run_blends: Vec<Option<crate::resolve::Blend>>,
+    /// The mixes and masks of the effects the last `plan_effects` gave,
+    /// by place, for its caller to take.
+    planned_blends: Vec<Option<crate::resolve::Blend>>,
+    /// An executor on the CPU alone: a masked or mixed clip's plan runs on
+    /// it again when its GPU run can't apply an effect, since the CPU
+    /// kernels can't mask or mix (step 9c-2).
+    cpu_executor: Option<klipp_nodes::GraphExecutor>,
     /// A scene-referred clip's display step for the grade being run,
     /// spliced in after the grade and before `run_effects` (step 11c).
     run_display: Option<klipp_color::hdr::SceneToDisplay>,
@@ -599,6 +617,9 @@ impl Renderer {
             gpu_tried: false,
             allow_gpu: true,
             run_effects: Vec::new(),
+            run_blends: Vec::new(),
+            planned_blends: Vec::new(),
+            cpu_executor: None,
             run_display: None,
             plan_misses: 0,
             spliced: klipp_nodes::NodeGraph::default(),
@@ -2181,34 +2202,62 @@ impl Renderer {
         let plugins = clip.has_enabled_plugins();
         let shutter = title_motion_blur(clip).is_some() || self.shutter.contains_key(&clip.id);
         let splice = !plugins && !shutter;
-        // Kept for a second grade if the effects can't finish in the plan.
-        let retry = (on_gpu && splice).then(|| input.clone());
+        // A picture-truth clip's effects may be masked or mixed, which only
+        // a plan draws: those take the plan route, on the GPU or not
+        // (step 9c-2).
+        let truth = !on_gpu && clip.is_picture_truth() && has_active_effects(&fx) && !fx.iter().any(klipp_effects::registry::needs_source_neighbours);
+        let mut route = on_gpu;
+        let mut blended = false;
         let mut apart = None;
-        if on_gpu {
+        let mut apart_blends = Vec::new();
+        if on_gpu || truth {
             let mut stats = std::mem::take(&mut self.found.stats);
             let planned = self.plan_effects(clip, time, fps, transforms, &fx, &mut stats);
             self.found.stats = stats;
-            if splice {
+            let blends = std::mem::take(&mut self.planned_blends);
+            blended = blends.iter().any(Option::is_some);
+            route = on_gpu || blended;
+            if route && splice {
                 self.run_effects = planned;
-            } else {
+                self.run_blends = blends;
+            } else if route {
                 apart = Some(planned);
+                apart_blends = blends;
             }
             // A scene-referred source's display step runs in the plan too,
             // after the grade, where `display_render` runs it below when
             // the plan doesn't (step 11c).
-            self.run_display = hdr.map(|t| self.scene_to_display(t));
+            if route {
+                self.run_display = hdr.map(|t| self.scene_to_display(t));
+            }
         }
+        // Kept for a second grade if the effects can't finish in the plan.
+        let retry = (route && splice).then(|| input.clone());
         let mut pixels = self.grade(clip, input, clip_time, fps, width, height);
         // Whether the grade's run took the display step, so it isn't run
         // twice: not when the run failed and gave back its input.
         let mut displayed = false;
-        if on_gpu {
-            self.run_effects.clear();
+        if route {
+            let ran = (std::mem::take(&mut self.run_effects), std::mem::take(&mut self.run_blends));
             displayed = self.run_display.take().is_some() && self.grade_ran;
             if splice {
                 if self.grade_ran && self.executor.last_run_effects_complete() {
                     self.found.stats.effects_followed_grade += 1;
                     PLAN_EFFECT_CLIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return Some((pixels, opacity));
+                }
+                if blended {
+                    // A masked or mixed clip's effects can't be drawn by the
+                    // CPU kernels: the same plan runs again on the CPU
+                    // executor, counted (step 9c-2).
+                    (self.run_effects, self.run_blends) = ran;
+                    self.run_display = hdr.map(|t| self.scene_to_display(t));
+                    let input = retry.expect("kept on the plan route");
+                    let pixels = self.on_cpu_executor(|r| r.grade(clip, input, clip_time, fps, width, height));
+                    self.run_effects.clear();
+                    self.run_blends.clear();
+                    self.run_display = None;
+                    self.cpu_fallback(clip);
                     return Some((pixels, opacity));
                 }
                 // An effect could not be applied (a lost device), or the run
@@ -2233,6 +2282,24 @@ impl Renderer {
         // route is on, from the picture; the list otherwise.
         let plan = apart.is_some();
         let fx = apart.unwrap_or(fx);
+        // Under a title's own motion blur the effects run per sample apart
+        // from their blends: a masked or mixed one there is bypassed, said
+        // and counted until its side run lands (9c-2, B2). The camera's
+        // shutter splits the blends with the effects (`shuttered`).
+        let (fx, apart_blends) = if title_motion_blur(clip).is_some() && apart_blends.iter().any(Option::is_some) {
+            let mut kept = Vec::with_capacity(fx.len());
+            let mut bypassed = Vec::new();
+            for (e, b) in fx.into_iter().zip(apart_blends) {
+                match b {
+                    Some(_) => bypassed.push(format!("a masked or mixed {} runs under the title's own motion blur, apart from its grade", effect_tag(&e))),
+                    None => kept.push(e),
+                }
+            }
+            self.masks_unavailable(clip, bypassed);
+            (kept, Vec::new())
+        } else {
+            (fx, apart_blends)
+        };
         let missed = self.plan_misses;
         // A title whose own drawing moves is drawn again at every shutter
         // sample, by `title_pixels_at`, which carries a sample through
@@ -2244,10 +2311,10 @@ impl Renderer {
         let pixels = match (title_motion_blur(clip), self.shutter.get(&clip.id).cloned()) {
             (Some(_), _) => match self.title_shutter.get(&clip.id).cloned() {
                 Some(samples) => self.motion_blurred(clip, pixels, redrawn, &fx, &samples, time, fps, width, height, plan),
-                None => self.effects_by(plan, clip, &fx, pixels, clip_time, fps, width, height),
+                None => self.effects_by(plan, clip, &fx, &apart_blends, pixels, clip_time, fps, width, height),
             },
-            (None, Some(samples)) => self.shuttered(clip, pixels, &fx, &samples, clip_time, fps, width, height, plan),
-            (None, None) => self.effects_by(plan, clip, &fx, pixels, clip_time, fps, width, height),
+            (None, Some(samples)) => self.shuttered(clip, pixels, &fx, &apart_blends, &samples, clip_time, fps, width, height, plan),
+            (None, None) => self.effects_by(plan, clip, &fx, &apart_blends, pixels, clip_time, fps, width, height),
         };
         // Counted when every run of the clip's effects took the plan.
         if plan && self.plan_misses == missed {
@@ -2267,11 +2334,11 @@ impl Renderer {
     /// an effect could not be applied or the run failed, `pixels`
     /// untouched for the CPU kernels.
     #[allow(clippy::too_many_arguments)]
-    fn run_effects_plan(&mut self, clip: &Clip, fx: &[BuiltinEffect], pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Result<Vec<f32>, Vec<f32>> {
+    fn run_effects_plan(&mut self, clip: &Clip, fx: &[BuiltinEffect], blends: &[Option<crate::resolve::Blend>], pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Result<Vec<f32>, Vec<f32>> {
         if fx.is_empty() {
             return Ok(pixels);
         }
-        self.splice_effects_only(clip, fx);
+        self.splice_effects_only(clip, fx, blends);
         let t = Instant::now();
         let frame = grade_frame(clip_time, fps);
         // The pixels go straight into the chain, not copied on the CPU for
@@ -2323,11 +2390,21 @@ impl Renderer {
         }
         let mut planned = self.plan_effects(clip, time, fps, transforms, &fx[lead.len().min(fx.len())..], stats);
         planned.splice(0..0, lead.iter().cloned());
+        let mut blends = std::mem::take(&mut self.planned_blends);
+        blends.splice(0..0, lead.iter().map(|_| None));
+        // A matte this run can't give (the grade's, or a node beside the
+        // chain reading the grade's picture): the layer declines to the CPU
+        // path, which runs its grade with its effects (step 9c-2).
+        use crate::resolve::{MaskSource, SideInput};
+        let needs_the_grade = |b: &crate::resolve::Blend| matches!(&b.mask, Some(MaskSource::Grade { .. } | MaskSource::Unavailable(_)) | Some(MaskSource::Side { input: SideInput::Graded, .. }));
+        if blends.iter().flatten().any(needs_the_grade) {
+            return false;
+        }
         let Some(buffer) = self.executor.gpu_pipeline_or_init().and_then(|g| g.stack_layer_buffer(slot)) else { return false };
         if !self.executor.prime_chain_from_gpu_linear_buffer(&buffer, width, height) {
             return false;
         }
-        self.splice_effects_only(clip, &planned);
+        self.splice_effects_only(clip, &planned, &blends);
         self.executor.request_output_on_gpu();
         let clip_time = eval_clip_time(clip, time);
         let run = self.executor.execute_linear(&[], &self.spliced, width, height, clip_time, grade_frame(clip_time, fps), None, None);
@@ -2350,32 +2427,56 @@ impl Renderer {
     /// `self.spliced` as the source straight to the output with `fx`
     /// between them: a plan of the effects alone, ids apart from the
     /// grade run's so each keeps its cached plan.
-    fn splice_effects_only(&mut self, clip: &Clip, fx: &[BuiltinEffect]) {
+    ///
+    /// The run has no grade: a mask from the grade can't be given here
+    /// (bypassed, said); one from beside the chain reads this run's source.
+    fn splice_effects_only(&mut self, clip: &Clip, fx: &[BuiltinEffect], blends: &[Option<crate::resolve::Blend>]) {
         self.executor.set_working_colorspace(self.working);
         self.executor.set_render_scale(self.px_scale);
         self.spliced.clone_from(&self.passthrough);
-        let groups = effect_groups(fx);
+        let source = self.spliced.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source).map(|n| n.id);
         let base = clip.id.0.as_u128() ^ (0x00ef_fec8_u128 << 64);
-        self.spliced.splice_effects_before_output(&groups, |i| klipp_nodes::NodeId::from_u128(base ^ i as u128));
+        let unavailable = splice_blended(&mut self.spliced, fx, blends, |i| klipp_nodes::NodeId::from_u128(base ^ i as u128), source, None);
+        self.masks_unavailable(clip, unavailable);
     }
 
     /// `fx` on `pixels`: as a plan of their own when `plan` (step 11c),
     /// falling back to the CPU kernels for this run when they can't be
     /// applied there (counted in `plan_misses` and `effects_on_cpu`), or
     /// on the CPU kernels.
+    ///
+    /// Effects with `blends` (masked or mixed, a picture-truth clip's) run
+    /// as a plan even with no GPU, and fall back to the same plan on the
+    /// CPU executor: the CPU kernels can't mask or mix (step 9c-2).
     #[allow(clippy::too_many_arguments)]
-    fn effects_by(&mut self, plan: bool, clip: &Clip, fx: &[BuiltinEffect], pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
-        if !plan || fx.is_empty() {
+    fn effects_by(&mut self, plan: bool, clip: &Clip, fx: &[BuiltinEffect], blends: &[Option<crate::resolve::Blend>], pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
+        let blended = blends.iter().any(Option::is_some);
+        if (!plan && !blended) || fx.is_empty() {
             return self.effects(fx, pixels, clip_time, width, height);
         }
-        match self.run_effects_plan(clip, fx, pixels, clip_time, fps, width, height) {
+        match self.run_effects_plan(clip, fx, blends, pixels, clip_time, fps, width, height) {
             Ok(out) => out,
             Err(back) => {
                 self.plan_misses += 1;
                 self.cpu_fallback(clip);
-                self.effects(fx, back, clip_time, width, height)
+                if !blended {
+                    return self.effects(fx, back, clip_time, width, height);
+                }
+                self.on_cpu_executor(|r| r.run_effects_plan(clip, fx, blends, back, clip_time, fps, width, height)).unwrap_or_else(|back| back)
             }
         }
+    }
+
+    /// Run `f` with the CPU executor in the GPU executor's place: a masked
+    /// or mixed clip's plan again where its GPU run couldn't apply an
+    /// effect (step 9c-2).
+    fn on_cpu_executor<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let mut cpu = self.cpu_executor.take().unwrap_or_else(klipp_nodes::GraphExecutor::new_cpu_only);
+        std::mem::swap(&mut self.executor, &mut cpu);
+        let out = f(self);
+        std::mem::swap(&mut self.executor, &mut cpu);
+        self.cpu_executor = Some(cpu);
+        out
     }
 
     /// Splice `fx` into `clip`'s next grade run as plan nodes (step 10b)
@@ -2386,6 +2487,7 @@ impl Renderer {
         let on = self.effects_follow_grade_on_gpu(clip, fx);
         if on {
             self.run_effects = self.plan_effects(clip, time, fps, transforms, fx, stats);
+            self.run_blends = std::mem::take(&mut self.planned_blends);
         }
         on
     }
@@ -2396,13 +2498,16 @@ impl Renderer {
     /// `fallback`, is what the picture gives (10c-1's parity); it stands
     /// in when the picture can't be read, which is said.
     fn plan_effects(&mut self, clip: &Clip, time: Timecode, fps: f64, transforms: &HashMap<ClipId, ResolvedTransform>, fallback: &[BuiltinEffect], stats: &mut RenderStats) -> Vec<BuiltinEffect> {
+        self.planned_blends.clear();
         let resolved = clip.picture_v2().and_then(|p| {
-            crate::resolve::resolve_effects(clip, &p.picture, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied())
+            crate::resolve::resolve_effects_blended(clip, &p.picture, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied(), 1.0)
         });
         match resolved {
-            Ok(mut fx) => {
+            Ok(pairs) => {
+                let (mut fx, blends): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
                 self.authored_colours(&mut fx);
                 self.at_render_scale(&mut fx);
+                self.planned_blends = blends;
                 fx
             }
             Err(e) => {
@@ -2417,6 +2522,7 @@ impl Renderer {
     /// End a [`Self::splice_effects`]: whether every effect was applied.
     fn finish_spliced(&mut self) -> bool {
         self.run_effects.clear();
+        self.run_blends.clear();
         self.grade_ran && self.executor.last_run_effects_complete()
     }
 
@@ -2873,21 +2979,23 @@ impl Renderer {
             } else {
                 // An identity grade is the source straight to the output:
                 // the effects alone (step 11b).
-                let base = if clip.grade_is_identity() { &self.passthrough } else { clip.grade() };
-                self.spliced.clone_from(base);
-                if let Some(step) = self.run_display {
-                    self.spliced.splice_before_output(scene_to_display_node(clip, step));
-                }
-                let groups = effect_groups(&self.run_effects);
-                let base = clip.id.0.as_u128() ^ (0x00ef_fec7_u128 << 64);
-                self.spliced.splice_effects_before_output(&groups, |i| klipp_nodes::NodeId::from_u128(base ^ i as u128));
+                self.splice_run(clip);
                 &self.spliced
             };
             return self.executor.execute_linear(source, graph, width, height, clip_time, frame, None, None).map(|(out, _)| out);
         }
+        // An inspected clip runs its grade alone, unless its effects are
+        // masked or mixed (a picture-truth clip's): those run in the plan
+        // with it, the grade's nodes still tapped (step 9c-2).
+        let graph = if self.run_effects.is_empty() {
+            clip.grade()
+        } else {
+            self.splice_run(clip);
+            &self.spliced
+        };
         let thumbs = self.inspect.thumbs.take();
         let r = self.executor.execute_linear_with_thumbs(
-            source, clip.grade(), width, height, clip_time, frame, self.inspect.scope_tap, matte_view, thumbs.as_ref(),
+            source, graph, width, height, clip_time, frame, self.inspect.scope_tap, matte_view, thumbs.as_ref(),
         );
         self.inspect.thumbs = thumbs;
         r.map(|(out, tapped, thumbs)| {
@@ -2895,6 +3003,35 @@ impl Renderer {
             self.found.thumbs = thumbs;
             out
         })
+    }
+
+    /// `self.spliced`: `clip`'s grade (the source straight to the output for
+    /// an identity grade) with the display step and `run_effects` spliced
+    /// in, each with its mix and mask (`run_blends`).
+    fn splice_run(&mut self, clip: &Clip) {
+        // An identity grade is the source straight to the output: the
+        // effects alone (step 11b). Not when a mask reads a node of it: a
+        // grade whose picture is the source's can still publish a window.
+        let reads_the_grade = self.run_blends.iter().flatten().any(|b| matches!(b.mask, Some(crate::resolve::MaskSource::Grade { .. })));
+        let base = if clip.grade_is_identity() && !reads_the_grade { &self.passthrough } else { clip.grade() };
+        self.spliced.clone_from(base);
+        let source = self.spliced.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source).map(|n| n.id);
+        let graded = self.spliced.input_of(self.spliced.output_node_id, 0);
+        if let Some(step) = self.run_display {
+            self.spliced.splice_before_output(scene_to_display_node(clip, step));
+        }
+        let base = clip.id.0.as_u128() ^ (0x00ef_fec7_u128 << 64);
+        let unavailable = splice_blended(&mut self.spliced, &self.run_effects, &self.run_blends, |i| klipp_nodes::NodeId::from_u128(base ^ i as u128), source, graded);
+        self.masks_unavailable(clip, unavailable);
+    }
+
+    /// Say and count masked effects whose matte their run can't give.
+    fn masks_unavailable(&mut self, clip: &Clip, reasons: Vec<String>) {
+        for why in reasons {
+            tracing::warn!("clip {}: a masked effect is bypassed: {why}", clip.id.0);
+            self.found.stats.effects_mask_unavailable += 1;
+            EFFECT_MASKS_UNAVAILABLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// OFX plugins take 8-bit sRGB; the round trip is scoped to them.
@@ -3063,24 +3200,28 @@ impl Renderer {
     /// is cast once from the blurred result, so it blurs with it.
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
-    fn shuttered(&mut self, clip: &Clip, pixels: Vec<f32>, fx: &[BuiltinEffect], samples: &[(ResolvedTransform, f64)], clip_time: f64, fps: f64, width: u32, height: u32, plan: bool) -> Vec<f32> {
+    fn shuttered(&mut self, clip: &Clip, pixels: Vec<f32>, fx: &[BuiltinEffect], blends: &[Option<crate::resolve::Blend>], samples: &[(ResolvedTransform, f64)], clip_time: f64, fps: f64, width: u32, height: u32, plan: bool) -> Vec<f32> {
         let cut = fx
             .iter()
             .position(|e| matches!(e, BuiltinEffect::Transform { .. }))
             .unwrap_or_else(|| fx.iter().position(klipp_effects::draws_outside_the_picture).unwrap_or(fx.len()));
         let before = &fx[..cut];
         let after: Vec<BuiltinEffect> = fx[cut..].iter().filter(|e| !matches!(e, BuiltinEffect::Transform { .. })).cloned().collect();
-        let base = self.effects_by(plan, clip, before, pixels, clip_time, fps, width, height);
+        // Each effect's mix with it, split as the effects are (step 9c-2).
+        let blend = |i: usize| blends.get(i).cloned().flatten();
+        let before_blends: Vec<_> = (0..cut).map(blend).collect();
+        let after_blends: Vec<_> = (cut..fx.len()).filter(|i| !matches!(fx[*i], BuiltinEffect::Transform { .. })).map(blend).collect();
+        let base = self.effects_by(plan, clip, before, &before_blends, pixels, clip_time, fps, width, height);
         let mut acc = vec![0.0f32; base.len()];
         for &(xf, t) in samples {
-            let placed = self.effects_by(plan, clip, &[transform_effect(xf, tilt(clip, fx, t))], base.clone(), t, fps, width, height);
+            let placed = self.effects_by(plan, clip, &[transform_effect(xf, tilt(clip, fx, t))], &[], base.clone(), t, fps, width, height);
             for (a, s) in acc.iter_mut().zip(&placed) {
                 *a += *s;
             }
         }
         let inv = 1.0 / samples.len() as f32;
         acc.iter_mut().for_each(|v| *v *= inv);
-        self.effects_by(plan, clip, &after, acc, clip_time, fps, width, height)
+        self.effects_by(plan, clip, &after, &after_blends, acc, clip_time, fps, width, height)
     }
 
     /// A title smeared by its own motion blur: as [`Self::shuttered`]
@@ -3136,7 +3277,7 @@ impl Renderer {
         // transform, when its drawing does not move.
         let still = match redrawn {
             Some(_) => None,
-            None => Some(self.effects_by(plan, clip, before, pixels.clone(), clip_time, fps, width, height)),
+            None => Some(self.effects_by(plan, clip, before, &[], pixels.clone(), clip_time, fps, width, height)),
         };
         let mut acc = vec![0.0f32; pixels.len()];
         for &(xf, t) in samples {
@@ -3144,18 +3285,18 @@ impl Renderer {
                 (Some(base), _) => base.clone(),
                 (None, Some(td)) => {
                     let drawn = self.title_pixels_at(clip, td, t, fps, width, height);
-                    self.effects_by(plan, clip, before, drawn, t, fps, width, height)
+                    self.effects_by(plan, clip, before, &[], drawn, t, fps, width, height)
                 }
                 (None, None) => unreachable!("a still picture is drawn when the title's drawing does not move"),
             };
-            let placed = self.effects_by(plan, clip, &[transform_effect(xf, tilt(clip, fx, t))], picture, t, fps, width, height);
+            let placed = self.effects_by(plan, clip, &[transform_effect(xf, tilt(clip, fx, t))], &[], picture, t, fps, width, height);
             for (a, s) in acc.iter_mut().zip(&placed) {
                 *a += *s;
             }
         }
         let inv = 1.0 / samples.len().max(1) as f32;
         acc.iter_mut().for_each(|v| *v *= inv);
-        self.effects_by(plan, clip, &after, acc, clip_time, fps, width, height)
+        self.effects_by(plan, clip, &after, &[], acc, clip_time, fps, width, height)
     }
 
     /// Both clips of a transition as full layers at `time`, blended.
@@ -3279,17 +3420,20 @@ impl Renderer {
         self.forget_motion();
         // As a plan of its own, from its picture, when it can run on the
         // GPU (step 11d); else the CPU kernels.
+        // A picture-truth layer's masked or mixed effects take the plan with
+        // no GPU too (step 9c-2).
         let plan = self.effects_follow_grade_on_gpu(clip, &fx);
-        let fx = if plan {
+        let truth = clip.is_picture_truth() && has_active_effects(&fx);
+        let (fx, blends) = if plan || truth {
             let mut stats = std::mem::take(&mut self.found.stats);
             let planned = self.plan_effects(clip, time, fps, transforms, &fx, &mut stats);
             self.found.stats = stats;
-            planned
+            (planned, std::mem::take(&mut self.planned_blends))
         } else {
-            fx
+            (fx, Vec::new())
         };
         let missed = self.plan_misses;
-        let mut after = self.effects_by(plan, clip, &fx, graded, clip_time, fps, width, height);
+        let mut after = self.effects_by(plan, clip, &fx, &blends, graded, clip_time, fps, width, height);
         if plan && self.plan_misses == missed {
             self.found.stats.effects_on_layers += 1;
             PLAN_EFFECT_CLIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -3487,20 +3631,85 @@ fn scene_to_display_node(clip: &Clip, step: klipp_color::hdr::SceneToDisplay) ->
     }
 }
 
-/// A clip's resolved effects as plan nodes (step 10b): one `Effect`
-/// each, except that effects that spill past the picture run together as
-/// one layer, as `apply_effects` groups them.
-fn effect_groups(fx: &[BuiltinEffect]) -> Vec<(klipp_nodes::NodeKind, &[BuiltinEffect])> {
+
+/// Splice `fx` into `graph` before its output as effect nodes (step 10b),
+/// each with the mix and mask its `blends` entry gives (step 9c-2): a
+/// blended effect is a node of its own, its matte wired into its mask
+/// port from the grade node that publishes it, or from a node beside the
+/// chain built into the run reading `source` (the clip's source) or
+/// `graded` (the grade's picture). A matte the run can't give leaves its
+/// effect bypassed (its mix 0: the picture as it came in); the reasons
+/// come back, one an effect.
+fn splice_blended(
+    graph: &mut klipp_nodes::NodeGraph,
+    fx: &[BuiltinEffect],
+    blends: &[Option<crate::resolve::Blend>],
+    id: impl Fn(usize) -> klipp_nodes::NodeId,
+    source: Option<klipp_nodes::NodeId>,
+    graded: Option<klipp_nodes::NodeId>,
+) -> Vec<String> {
+    use crate::resolve::{MaskSource, SideInput};
+    let blend = |i: usize| blends.get(i).and_then(Option::as_ref);
     let spills = |e: &BuiltinEffect| klipp_effects::layer::Spill::of(e).is_some();
-    let mut groups = Vec::new();
+    let mut groups: Vec<(klipp_nodes::NodeKind, &[BuiltinEffect], Option<&crate::resolve::Blend>)> = Vec::new();
     let mut i = 0;
     while i < fx.len() {
-        let len = if spills(&fx[i]) { fx[i..].iter().take_while(|e| spills(e)).count() } else { 1 };
         let kind = if spills(&fx[i]) { klipp_nodes::NodeKind::EffectSegment } else { klipp_nodes::NodeKind::Effect };
-        groups.push((kind, &fx[i..i + len]));
+        // A blended effect stands alone; spills run together otherwise.
+        let len = if blend(i).is_some() || !spills(&fx[i]) { 1 } else { fx[i..].iter().enumerate().take_while(|(k, e)| spills(e) && blend(i + k).is_none()).count() };
+        groups.push((kind, &fx[i..i + len], blend(i)));
         i += len;
     }
-    groups
+    let plain: Vec<_> = groups.iter().map(|(k, e, _)| (*k, *e)).collect();
+    graph.splice_effects_before_output(&plain, &id);
+    let mut unavailable = Vec::new();
+    for (g, (_, _, b)) in groups.iter().enumerate() {
+        let Some(b) = b else { continue };
+        let node = id(g);
+        let mut params = b.blend;
+        let producer = match &b.mask {
+            None => None,
+            Some(MaskSource::Grade { node: p, port }) if graph.nodes.iter().any(|n| n.id == *p) => Some((*p, *port)),
+            Some(MaskSource::Grade { node: p, .. }) => {
+                unavailable.push(format!("its matte comes from the grade's {p}, which isn't in this run"));
+                None
+            }
+            Some(MaskSource::Side { node: side, port, input }) => match (input, source, graded) {
+                (SideInput::Source, Some(from), _) | (SideInput::Graded, _, Some(from)) => {
+                    if !graph.nodes.iter().any(|n| n.id == side.id) {
+                        graph.nodes.push((**side).clone());
+                        graph.edges.push(klipp_nodes::Edge { from_node: from, from_port: 0, to_node: side.id, to_port: 0 });
+                    }
+                    Some((side.id, *port))
+                }
+                _ => {
+                    unavailable.push(format!("its matte reads {}, which this run hasn't", if *input == SideInput::Graded { "the grade's picture" } else { "the clip's source" }));
+                    None
+                }
+            },
+            Some(MaskSource::Unavailable(why)) => {
+                unavailable.push(why.clone());
+                None
+            }
+        };
+        if b.mask.is_some() && producer.is_none() {
+            // Bypassed: no matte, no effect.
+            params.mix = 0.0;
+        }
+        if let Some((p, port)) = producer {
+            graph.edges.push(klipp_nodes::Edge { from_node: p, from_port: port, to_node: node, to_port: 1 });
+        }
+        if let Some(n) = graph.nodes.iter_mut().find(|n| n.id == node) {
+            n.params.effect_blend = Some(params);
+        }
+    }
+    unavailable
+}
+
+/// An effect's name as its record writes it (`gaussian_blur`), for what
+/// the renderer says about it.
+fn effect_tag(effect: &BuiltinEffect) -> String {
+    serde_json::to_value(effect).ok().and_then(|v| v.get("type").and_then(serde_json::Value::as_str).map(str::to_owned)).unwrap_or_else(|| "effect".into())
 }
 
 /// Whether the already evaluated pixel-effect list has work left.

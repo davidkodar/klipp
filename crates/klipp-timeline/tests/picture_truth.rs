@@ -297,3 +297,62 @@ fn a_field_write_on_a_picture_truth_clip_maps_to_ops_or_is_refused() {
         assert_eq!(picture(&tried), picture(&c), "{what}: the picture as it was");
     }
 }
+
+/// A whole-list write (`set_effect_list`: undo of a list edit, a render
+/// copy given its effects back, a placed kind's list write) gives every
+/// entry a fresh id, so the list carries no effect's identity: an entry
+/// keeps the node at its place when it is of the same type. Two blurs
+/// swapped by such a write leave the mix at the place, on the blur now
+/// there; a type the place didn't hold takes no node, and a write that
+/// leaves the masked node nowhere is refused.
+#[test]
+fn a_whole_list_write_keeps_nodes_by_place_and_type() {
+    let (mut c, qualifier, _, blur) = masked();
+    // The blur first, mixed and masked; a second, plain blur after it.
+    let list = vec![E::GaussianBlur { radius: 3.0 }, E::GaussianBlur { radius: 8.0 }];
+    c.set_effect_list(list, vec![true, true]);
+    assert!(klipp_timeline::take_picture_refusal().is_none());
+    holds_the_mask(&picture(&c), blur, qualifier);
+    // Swapped: the mixed node keeps its place, so it carries the other blur.
+    c.set_effect_list(vec![E::GaussianBlur { radius: 8.0 }, E::GaussianBlur { radius: 3.0 }], vec![true, true]);
+    assert!(klipp_timeline::take_picture_refusal().is_none());
+    let p = picture(&c);
+    holds_the_mask(&p, blur, qualifier);
+    assert_eq!(effects(&p)[0], blur, "the masked node is the first entry still");
+    assert!(matches!(c.builtin_effects()[0], E::GaussianBlur { radius } if radius == 8.0));
+    // Another type at the masked place: nothing keeps the node, refused.
+    let before = picture(&c);
+    c.set_effect_list(vec![E::Sharpen { amount: 0.5 }, E::GaussianBlur { radius: 3.0 }], vec![true, true]);
+    assert!(klipp_timeline::take_picture_refusal().is_some(), "a sharpen can't take the blur's mask");
+    assert_eq!(picture(&c), before);
+}
+
+/// A node beside the clip's chain reads the clip's source or the grade's
+/// picture, which the renderer gives it; wired from anything else (here,
+/// an effect's output) it is refused at the op, naming the node and the
+/// port, and the clip is as it was.
+#[test]
+fn a_side_node_wired_from_what_the_renderer_cannot_give_is_refused() {
+    use klipp_graph_format::ports::{input_key, output_key};
+    let (c, ..) = clip();
+    let p = picture(&c);
+    let fx = effects(&p);
+    let mut window = node_of(&p, fx[0]).clone();
+    window.id = uuid::Uuid::from_u128(0x5e1de);
+    window.type_id = klipp_graph_format::types::LEGACY_NODE.into();
+    window.legacy = Some(klipp_graph_format::Legacy { slot: None, payload: serde_json::json!({"kind": "Mask", "label": "Window", "params": {}}), keyframes: Some(serde_json::json!({"tracks": []})), modifiers: Default::default() });
+    let beside = GraphOp::AddNodeBeside { at: at(&c, [fx[0]]), node: Box::new(window.clone()) };
+    let from_effect = GraphOp::Connect { from: at(&c, [fx[1]]), from_port: "out".into(), to: at(&c, [window.id]), to_port: input_key("Mask", 0) };
+    let into_mask = GraphOp::Connect { from: at(&c, [window.id]), from_port: output_key("Mask", 0), to: at(&c, [fx[0]]), to_port: "mask".into() };
+    let mut tried = c.clone();
+    let (index, why) = tried.apply_picture_ops_indexed(&[beside.clone(), from_effect, into_mask.clone()]).unwrap_err();
+    assert_eq!(index, Some(1), "{why}");
+    assert!(why.contains(&window.id.to_string()) && why.contains(input_key("Mask", 0).as_str()) && why.contains(&fx[1].to_string()), "{why}");
+    assert_eq!(saved(&tried), saved(&c));
+    assert!(!tried.is_picture_truth());
+    // From the source, it goes through.
+    let source = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::SOURCE).unwrap().id;
+    let from_source = GraphOp::Connect { from: at(&c, [source]), from_port: "out".into(), to: at(&c, [window.id]), to_port: input_key("Mask", 0) };
+    tried.apply_picture_ops(&[beside, from_source, into_mask]).unwrap_or_else(|e| panic!("from the source: {e}"));
+    assert!(tried.is_picture_truth());
+}

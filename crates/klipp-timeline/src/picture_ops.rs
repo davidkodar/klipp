@@ -85,21 +85,51 @@ fn node(p: &ClipPicture, id: NodeId) -> Option<&Node> {
 
 /// Whether the fields can't hold `op` at all, so on a picture-truth clip
 /// (or to make one) it goes to the picture alone: an effect's mix or mask
-/// channel, an edge into an effect's mask, and a port the grade group
-/// publishes (for a mask inside the grade to reach an effect).
+/// channel, an edge into an effect's mask, a port the grade group
+/// publishes (for a mask inside the grade to reach an effect), and a node
+/// beside the clip's chain (a window, a key) with anything done to it.
 fn picture_only(p: &ClipPicture, op: &GraphOp) -> bool {
     let path = path_of(op);
     let Some(first) = path.nodes.first().and_then(|id| node(p, *id)) else {
-        return false;
+        // A node this batch adds beside the chain: only the picture has it.
+        return path.nodes.len() == 1;
     };
+    let beside = !chain(p).iter().any(|n| n.id == first.id);
     match op {
         GraphOp::PublishOutput { .. } | GraphOp::Unpublish { .. } => first.type_id.as_str() == lt::GROUP && path.nodes.len() == 1,
         _ if path.nodes.len() != 1 => false,
+        _ if beside => true,
+        GraphOp::AddNodeBeside { .. } => true,
         GraphOp::SetMix { .. } | GraphOp::SetMaskChannel { .. } => first.type_id.as_str() == types::LEGACY_EFFECT,
         GraphOp::Connect { to_port, .. } => first.type_id.as_str() == types::LEGACY_EFFECT && to_port.as_str() == "mask",
         GraphOp::Disconnect { port, .. } => first.type_id.as_str() == types::LEGACY_EFFECT && port.as_str() == "mask",
         _ => false,
     }
+}
+
+/// Why a node beside the clip's chain can't be wired as `op` wires it, if
+/// it can't: its picture comes from the clip's source or from what the
+/// grade made of it, which the renderer gives it; any other source is
+/// refused here, naming the node and the port, rather than rendered
+/// rewired.
+fn side_wiring_refusal(p: &ClipPicture, op: &GraphOp) -> Option<String> {
+    let GraphOp::Connect { from, from_port, to, to_port } = op else { return None };
+    let target = to.nodes.last().and_then(|id| node(p, *id))?;
+    if to.nodes.len() != 1 || chain(p).iter().any(|n| n.id == target.id) {
+        return None;
+    }
+    let source = from.nodes.last().and_then(|id| node(p, *id));
+    let fed_by_the_clip = from.nodes.len() == 1
+        && from_port.as_str() == "out"
+        && source.is_some_and(|n| matches!(n.type_id.as_str(), lt::SOURCE | lt::GROUP));
+    (!fed_by_the_clip).then(|| {
+        format!(
+            "{}'s {} can read the clip's source or its grade's picture; {} isn't one it can be given",
+            target.id,
+            to_port.as_str(),
+            source.map_or_else(|| "that".to_owned(), |n| format!("{} {}", n.id, from_port.as_str())),
+        )
+    })
 }
 
 /// Where `op` lands, or why it can't be written to the fields.
@@ -380,6 +410,9 @@ impl Clip {
             let before = docs.clips[&self.id.0].clone();
             // An op the fields can't hold goes to the picture alone, and
             // the clip is picture-truth from here on.
+            if let Some(why) = side_wiring_refusal(&before, op) {
+                return Err((Some(index), why));
+            }
             let t = if picture_only(&before, op) {
                 truth = true;
                 None
@@ -730,8 +763,11 @@ impl Clip {
             Ok(picture) => self.picture.set_truth(Some(std::sync::Arc::new(picture))),
             Err(why) => {
                 self.picture = before;
-                let why = format!("clip {}: {what} refused: {why}", self.id.0);
-                tracing::warn!("{why}");
+                tracing::warn!("clip {}: {what} refused: {why}", self.id.0);
+                // For the person who made the edit: the clip by its name,
+                // or its id when it has none.
+                let clip = self.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| format!("clip {}", self.id.0));
+                let why = format!("{clip}: {what} not done: {why}");
                 PICTURE_WRITES_REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 REFUSAL.with(|r| *r.borrow_mut() = Some(why));
             }
@@ -755,12 +791,14 @@ pub fn take_picture_refusal() -> Option<String> {
 }
 
 /// The built-in entries of a picture's chain by list place: each with its
-/// node and type. Plug-ins are counted apart and left out.
+/// node and its kind (the node's type, and for an effect node the effect
+/// it holds, so a sharpen is never taken for a blur). Plug-ins are counted
+/// apart and left out.
 fn entries(p: &ClipPicture) -> Vec<(u32, NodeId, String)> {
     chain(p)
         .into_iter()
         .filter(|n| n.type_id.as_str() != types::LEGACY_OFX)
-        .filter_map(|n| Some((n.legacy.as_ref()?.slot?, n.id, n.type_id.as_str().to_owned())))
+        .filter_map(|n| Some((n.legacy.as_ref()?.slot?, n.id, format!("{} {}", n.type_id.as_str(), tag_of(n)))))
         .collect()
 }
 

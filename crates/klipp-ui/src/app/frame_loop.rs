@@ -248,6 +248,12 @@ impl KlippApp {
     /// events drained, the scopes synced, thumbnails, proxies and renders
     /// taken in, and the frames uploaded to egui.
     pub(super) fn take_in_results(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // A write through a picture-truth clip's fields refused (it would
+        // have taken away a mask or a mix only the clip's picture keeps):
+        // the clip was left as it was, and this says why.
+        if let Some(why) = klipp_timeline::take_picture_refusal() {
+            self.state.toast.show(why);
+        }
         // Smooth playhead interpolation BEFORE draining events
         if self.state.playback == PlaybackState::Playing {
             let wall_elapsed = self.state.playhead_anchor_wall.elapsed().as_secs_f64();

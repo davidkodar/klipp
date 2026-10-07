@@ -627,7 +627,6 @@ fn graph_effect_published_mask_connection_applies_reads_back_and_roundtrips() {
 }
 
 #[test]
-#[ignore = "root side nodes arrive with 9c-2"]
 fn graph_effect_mask_connection_applies_reads_back_and_roundtrips() {
     let mut h = harness();
     let effect = graph_test_blur(&mut h);
