@@ -374,3 +374,13 @@ pub fn effect_types() -> impl Iterator<Item = &'static EffectType> {
 pub fn effect_type(tag: &str) -> Option<&'static EffectType> {
     effect_types().find(|t| t.tag == tag)
 }
+
+/// Whether `effect` needs other times than its frame's (`Temporal`): the
+/// source's neighbours, or a per-frame analysis of the clip. Read from
+/// each registry type's declaration, so a new type that needs them is
+/// covered by declaring it.
+pub fn needs_other_times(effect: &BuiltinEffect) -> bool {
+    static KINDS: std::sync::OnceLock<Vec<std::mem::Discriminant<BuiltinEffect>>> = std::sync::OnceLock::new();
+    let kinds = KINDS.get_or_init(|| effect_types().filter(|t| t.desc.temporal != Temporal::None).map(|t| std::mem::discriminant(&(t.sample)())).collect());
+    kinds.contains(&std::mem::discriminant(effect))
+}

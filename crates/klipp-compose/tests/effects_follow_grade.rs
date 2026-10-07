@@ -246,3 +246,46 @@ fn animated_effects_and_a_fixed_placement_from_the_picture_draw_the_legacy_frame
     let now = klipp_compose::PLAN_EFFECT_CLIPS.load(std::sync::atomic::Ordering::Relaxed);
     assert!(now >= counted + 5 || !required(), "{counted} -> {now}");
 }
+
+/// Stabilisation reads motion data the renderer uploads to its own
+/// pipeline, which the plan's executor doesn't have: a graded clip with it
+/// stays on the legacy route (until step 12), so its correction is drawn.
+#[test]
+fn a_graded_clip_with_stabilisation_keeps_its_correction() {
+    use klipp_effects::homography::Homography;
+    use klipp_effects::stabilization::SmoothedTrajectory;
+    let mut seq = graded(vec![E::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }, E::Gamma { gamma: 1.2 }]);
+    let shift = Homography { h: [[1.0, 0.0, 3.5], [0.0, 1.0, -1.5], [0.0, 0.0, 1.0]] };
+    seq.tracks[0].clips[0].smoothed_trajectory = Some(SmoothedTrajectory {
+        smoothed: Vec::new(),
+        corrections: vec![shift; 96],
+        smoothing_window_secs: 1.0,
+        raw_jitter_px: 1.0,
+        smoothed_jitter_px: 0.1,
+    });
+    let (new, _) = render(&seq, false);
+    let (legacy, _) = render(&seq, true);
+    assert!(new.iter().map(|v| v.to_bits()).eq(legacy.iter().map(|v| v.to_bits())), "the correction is drawn on both routes");
+    let mut still = seq.clone();
+    still.tracks[0].clips[0].smoothed_trajectory = None;
+    let (uncorrected, _) = render(&still, true);
+    assert!(legacy != uncorrected, "the case's correction moves the picture");
+}
+
+/// Every registry type driven by an analysis of the clip stays off the
+/// plan route until step 12 (whose side data the plan doesn't carry): a
+/// graded clip with one takes the legacy route. (The types that need the
+/// source's neighbours, temporal denoise and frame blending, run at the
+/// head before the grade and are never in the effects a plan splices.)
+#[test]
+fn every_effect_that_needs_other_times_declines_the_plan_route() {
+    let needing: Vec<_> = klipp_effects::registry::effect_types().filter(|t| t.desc.temporal == klipp_effects::registry::Temporal::AnalysisDriven).collect();
+    assert!(needing.iter().any(|t| t.tag == "video_stabilization") && needing.iter().any(|t| t.tag == "rolling_shutter_correction"), "{:?}", needing.iter().map(|t| t.tag).collect::<Vec<_>>());
+    for ty in needing {
+        let effect = (ty.sample)();
+        assert!(klipp_effects::registry::needs_other_times(&effect), "{}", ty.tag);
+        let (_, followed) = render(&graded(vec![effect, E::Gamma { gamma: 1.2 }]), false);
+        assert_eq!(followed, 0, "{}: the legacy route", ty.tag);
+    }
+    assert!(!klipp_effects::registry::needs_other_times(&E::Gamma { gamma: 1.2 }));
+}
