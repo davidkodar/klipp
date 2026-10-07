@@ -203,6 +203,12 @@ pub struct GraphExecutor {
     /// Single-shot request, set by `request_output_on_gpu`: leave the next
     /// run's final result in the chain buffer instead of downloading it.
     keep_output_on_gpu: bool,
+    /// Effect-node chain breaks in the run so far (`ChainStats`).
+    run_effect_breaks: u32,
+    /// An effect node of the last run could not apply its effects (a
+    /// lost device): its picture lacks them. See
+    /// [`Self::last_run_effects_complete`].
+    run_effects_incomplete: bool,
     /// Plans by [`crate::plan::plan_key`]: what a run of each graph shape
     /// needs, worked out once (#1089, M2 step 8).
     plans: HashMap<u64, crate::plan::ExecPlan>,
@@ -594,6 +600,8 @@ impl GraphExecutor {
             uploaded_seed: None,
             chain_thumbs: None,
             keep_output_on_gpu: false,
+            run_effect_breaks: 0,
+            run_effects_incomplete: false,
             plans: HashMap::new(),
             plan_compiles: 0,
             plan_hits: 0,
@@ -656,6 +664,8 @@ impl GraphExecutor {
             uploaded_seed: None,
             chain_thumbs: None,
             keep_output_on_gpu: false,
+            run_effect_breaks: 0,
+            run_effects_incomplete: false,
             plans: HashMap::new(),
             plan_compiles: 0,
             plan_hits: 0,
@@ -1212,6 +1222,13 @@ impl GraphExecutor {
         self.output_on_gpu
     }
 
+    /// Whether every effect node of the last run applied its effects;
+    /// `false` after a lost device, when its picture lacks them and the
+    /// caller takes another route.
+    pub fn last_run_effects_complete(&self) -> bool {
+        !self.run_effects_incomplete
+    }
+
     /// Withdraw a [`Self::request_output_on_gpu`] that no run took up (the
     /// grade was skipped, or the run stopped before it), so it can't apply
     /// to the next, unrelated run.
@@ -1590,6 +1607,8 @@ impl GraphExecutor {
         // one wants its pixels on the CPU — not a solo view, a scope or
         // matte tap, or a thumbnail.
         self.output_on_gpu = None;
+        self.run_effect_breaks = 0;
+        self.run_effects_incomplete = false;
         let keep = std::mem::take(&mut self.keep_output_on_gpu);
         // (Thumbnails also rule it out: they are read once the chain's
         // last submit is in, and a result kept on the GPU never submits.)
@@ -2342,6 +2361,7 @@ impl GraphExecutor {
             uploads: u32::try_from(uploads_after.saturating_sub(uploads_before)).unwrap_or(u32::MAX),
             copies: node_outputs.copies,
             evaluations,
+            effect_breaks: std::mem::take(&mut self.run_effect_breaks),
         };
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
         if total_ms > 5.0 {
@@ -2422,6 +2442,11 @@ impl GraphExecutor {
             return false;
         }
         match kind {
+            // A clip's effects (step 10): on the chain when the legacy
+            // route would run them on the GPU too.
+            NodeKind::Effect | NodeKind::EffectSegment => {
+                !params.effects.is_empty() && klipp_effects::chain_supports_gpu(&params.effects)
+            }
             // Records the source format; never touches the pixels.
             NodeKind::InputTransform => false,
             NodeKind::Exposure => params.exposure.unwrap_or(0.0) != 0.0,
@@ -2676,6 +2701,9 @@ pub struct ChainStats {
     /// Nodes the run evaluated: a node shared by several readers counts
     /// once (#1089, M2).
     pub evaluations: u32,
+    /// Effect nodes that broke the GPU chain: an effect not recorded
+    /// yet, a legacy segment, or one run off the chain (step 10).
+    pub effect_breaks: u32,
 }
 
 /// Whether `node` keyframes any of a qualifier's matte refinements. The
@@ -2985,6 +3013,18 @@ impl GraphExecutor {
         frame_number: u64,
         in_is_a: bool,
     ) -> Option<u32> {
+        // A clip's effects record into the chain; ones not recorded yet
+        // are counted breaks (`ChainStats::effect_breaks`).
+        if let NodeKind::Effect | NodeKind::EffectSegment = kind {
+            let gpu = self.gpu.as_mut()?;
+            let run = gpu.chain_run_effects(&params.effects, in_is_a, width, height);
+            self.run_effect_breaks += run.breaks + u32::from(*kind == NodeKind::EffectSegment && run.breaks == 0);
+            self.run_effects_incomplete |= !run.complete;
+            // Flips mirror the slot: an even count (none included) leaves
+            // the picture where it was, which is 2, not 0 (0 is a matte).
+            return Some(if run.in_a == in_is_a { 2 } else { 1 });
+        }
+
         // DifferenceKey first, because it needs the plate caches on
         // `self` and the `gpu` borrow below would rule them out. The
         // plate is resolved and uploaded here; the dispatch reads it from
@@ -3573,6 +3613,21 @@ impl GraphExecutor {
             // bypass path's primary-input copy so a Reroute slipped
             // into any chain is a no-op on the pixels.
             NodeKind::Reroute => primary_input.to_vec(),
+
+            // A clip's effects off the chain: as the legacy route runs
+            // them, on the GPU when the list allows it.
+            NodeKind::Effect | NodeKind::EffectSegment => {
+                let fx = &params.effects;
+                let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
+                match self.gpu.as_mut() {
+                    Some(gpu) if klipp_effects::chain_supports_gpu(fx) => {
+                        let out = gpu.apply_effects(fx, primary_input, width, height);
+                        self.run_effect_breaks += 1;
+                        out
+                    }
+                    _ => klipp_effects::apply_effects_with_luma(fx, primary_input.to_vec(), width, height, clip_time_secs, luma),
+                }
+            }
 
             // The node records which log format the media is — the media
             // pool passes it to the decoder, which decodes before the

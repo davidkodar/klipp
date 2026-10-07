@@ -11,6 +11,11 @@ use klipp_core::{
 /// Each node kind uses only a subset of these fields.
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NodeParams {
+    /// `Effect`: its one built-in effect, resolved for the frame;
+    /// `EffectSegment`: the effects it runs together, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<klipp_effects::BuiltinEffect>,
+
     // InputTransform
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_format: Option<LogFormat>,

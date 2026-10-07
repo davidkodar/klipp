@@ -544,6 +544,19 @@ const PARAMS_SIZE: u64 = 256;
 /// grade (~13 active nodes in the default graph) plus multi-pass nodes
 /// like clarity (3 slots) fits comfortably. Bump if a future graph ever
 /// asserts in `next_params_slot`.
+/// What [`GpuEffectsPipeline::chain_run_effects`] did.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChainEffects {
+    /// Whether the picture is in slot A now.
+    pub in_a: bool,
+    /// Effects that broke the chain: run in a pass of their own because
+    /// they aren't recorded (yet).
+    pub breaks: u32,
+    /// Every effect was applied (`false` on a lost device).
+    pub complete: bool,
+}
+
 /// The encoder a run of recorded effects is going into, and how many
 /// passes it holds.
 #[derive(Default)]
@@ -4029,6 +4042,11 @@ impl GpuEffectsPipeline {
     pub fn submit_chain(&mut self) {
         if let Some(enc) = self.chain_encoder.take() {
             self.submit(enc);
+            // Effects recorded into the chain (`chain_run_effects`) read
+            // their uniforms from these slots; submitted, they are free.
+            if let Some(slots) = self.effect_params.as_mut() {
+                slots.reset();
+            }
             // Non-blocking nudge to the driver to reclaim deferred
             // resources (command buffers, staging allocations) between
             // chain segments. On NVIDIA Vulkan these otherwise
@@ -6150,6 +6168,58 @@ impl GpuEffectsPipeline {
         let byte_size = u64::from(width) * u64::from(height) * 16;
         self.ensure_buffers(byte_size);
         self.layer_gpu.ensure_buffers(&self.device, byte_size);
+    }
+
+    /// Run `effects` as nodes of the open chain (`begin_chain`), on the
+    /// picture in slot A (`in_is_a`) or B (#1089, phase 2b M2, step 10).
+    /// A recorded effect goes into the chain's own encoder, so a grade
+    /// and the effects after it are one submit. One that isn't recorded
+    /// is a break: the chain so far is submitted, the effect runs in its
+    /// own pass on the same buffers, and a new chain segment opens; the
+    /// picture never leaves the GPU. `buf_c` is the multi-pass scratch,
+    /// so effects run after any secondary that keeps a picture there.
+    #[doc(hidden)]
+    pub fn chain_run_effects(&mut self, effects: &[BuiltinEffect], in_is_a: bool, width: u32, height: u32) -> ChainEffects {
+        let mut out = ChainEffects { in_a: in_is_a, breaks: 0, complete: true };
+        if self.is_device_lost() {
+            out.complete = effects.is_empty();
+            return out;
+        }
+        for effect in effects {
+            let mut outcome = self.record_in_chain(effect, out.in_a, width, height);
+            if outcome == Recorded::OutOfSlots {
+                // The chain's encoder holds the slots' readers: submit it,
+                // then they are free, and the chain goes on in a new one.
+                self.submit_chain();
+                self.begin_chain();
+                outcome = self.record_in_chain(effect, out.in_a, width, height);
+            }
+            match outcome {
+                Recorded::Done => out.in_a = !out.in_a,
+                Recorded::Identity => {}
+                Recorded::NotRecordable | Recorded::OutOfSlots => {
+                    out.breaks += 1;
+                    self.submit_chain();
+                    out.in_a = self.run_effects_in_chain_from(std::slice::from_ref(effect), out.in_a, width, height);
+                    out.complete &= self.last_effects_complete();
+                    self.begin_chain();
+                }
+            }
+        }
+        out
+    }
+
+    /// Record one effect into the open chain encoder.
+    fn record_in_chain(&mut self, effect: &BuiltinEffect, in_is_a: bool, width: u32, height: u32) -> Recorded {
+        let (Some(mut encoder), Some(mut slots)) = (self.chain_encoder.take(), self.effect_params.take()) else {
+            return Recorded::NotRecordable;
+        };
+        let (a, b) = (self.buf_a.as_ref().expect("chain buffers"), self.buf_b.as_ref().expect("chain buffers"));
+        let (src, dst) = if in_is_a { (a, b) } else { (b, a) };
+        let outcome = self.record_effect(effect, src, dst, self.buf_c.as_ref(), width, height, &mut EffectRecording { encoder: &mut encoder, slots: &mut slots });
+        self.chain_encoder = Some(encoder);
+        self.effect_params = Some(slots);
+        outcome
     }
 
     /// Whether the last [`Self::run_effects_in_chain`] applied every
