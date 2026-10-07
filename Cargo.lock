@@ -2983,7 +2983,7 @@ dependencies = [
  "half",
  "image",
  "klipp-effects",
- "klipp-graph-lift",
+ "klipp-graph-format",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

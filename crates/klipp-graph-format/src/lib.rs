@@ -590,6 +590,7 @@ fn is_yes(v: &bool) -> bool {
 }
 
 pub mod lifted;
+pub mod op;
 pub mod path;
 pub mod ports;
 
