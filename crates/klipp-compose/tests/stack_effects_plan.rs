@@ -15,6 +15,12 @@ use klipp_effects::BuiltinEffect as E;
 use klipp_nodes::{graph::{Edge, Node, NodeGraph, NodeId}, kinds::NodeKind, params::NodeParams};
 use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, Track, TrackKind};
 
+// The legacy route's frames, stored before step 11d deleted it: each case
+// is held to them where it was held to a live legacy render.
+#[path = "support/legacy_goldens.rs"]
+mod legacy_goldens;
+use legacy_goldens::{legacy_bytes, scope};
+
 const W: u32 = 160;
 const H: u32 = 90;
 
@@ -108,8 +114,11 @@ fn both(name: &str, seq: &Sequence, src: &mut Pictures, plan_clips: u32) {
         eprintln!("UNVERIFIED: {name}: no GPU stack");
         return;
     };
-    let (legacy, legacy_followed) = render(seq, src, true).expect("the legacy route takes the stack too");
-    assert_eq!(legacy_followed, 0, "{name}: the legacy route never splices");
+    let legacy = legacy_bytes(|| {
+        let (frame, legacy_followed) = render(seq, src, true).expect("the legacy route takes the stack too");
+        assert_eq!(legacy_followed, 0, "{name}: the legacy route never splices");
+        frame
+    });
     assert_eq!(followed, plan_clips, "{name}: the plan route was taken");
     if new != legacy {
         let worst = new.iter().zip(&legacy).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
@@ -119,12 +128,14 @@ fn both(name: &str, seq: &Sequence, src: &mut Pictures, plan_clips: u32) {
 
 #[test]
 fn a_graded_layers_effects_run_in_its_grades_plan_on_the_stack() {
+    let _goldens = scope("stack_effects_plan.a_graded_layers_effects_run_in_its_grades_plan_on_the_stack");
     let (seq, mut src) = layered();
     both("graded layer", &seq, &mut src, 1);
 }
 
 #[test]
 fn a_graded_adjustment_layers_effects_run_in_its_grades_plan() {
+    let _goldens = scope("stack_effects_plan.a_graded_adjustment_layers_effects_run_in_its_grades_plan");
     let (mut seq, mut src) = layered();
     let mut adj = Track::new("Adj", TrackKind::Video);
     let mut a = Clip { kind: ClipKind::AdjustmentLayer, ..Clip::gap(tc(0.0), tc(4.0)) };
