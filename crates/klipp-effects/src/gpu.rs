@@ -5920,6 +5920,10 @@ impl GpuEffectsPipeline {
     /// `apply_effects` wraps this in an upload and a download; the layer
     /// stack runs it on a resident layer.
     pub fn run_effects_in_chain(&mut self, effects: &[BuiltinEffect], width: u32, height: u32) -> bool {
+        // A lost device runs none of them, so every effect is missing;
+        // set before the early return, or a caller would read the last
+        // run's answer.
+        self.effects_incomplete.set(self.is_device_lost() && !effects.is_empty());
         if self.is_device_lost() || effects.is_empty() {
             return true;
         }
@@ -5938,7 +5942,6 @@ impl GpuEffectsPipeline {
         // Runs of recordable effects go into one encoder and one submit;
         // anything else submits what was recorded first, so the order on
         // the GPU is the list's.
-        self.effects_incomplete.set(false);
         let mut slots = self.effect_params.take().expect("effect slots are only taken inside a run");
         let mut recorded = RecordedRun::default();
         let mut effects = effects.iter().peekable();
@@ -5996,65 +5999,19 @@ impl GpuEffectsPipeline {
                 | BuiltinEffect::GaussianBlur { .. }
                 | BuiltinEffect::Denoise { .. }
                 | BuiltinEffect::TiltShift { .. }
-                | BuiltinEffect::FocusBlur { .. } => self.effects_incomplete.set(true),
-                BuiltinEffect::CornerPin { tl, tr, br, bl } => {
-                    let corners = [*tl, *tr, *br, *bl];
-                    if crate::corner_pin::is_still(&corners) {
-                        continue;
-                    }
-                    // No quadrilateral: nothing is drawn. The shader
-                    // reads a zero denominator everywhere as "behind
-                    // the eye" and writes transparent.
-                    let inv = crate::corner_pin::inverse_map(width, height, &corners).unwrap_or([0.0; 9]);
-                    self.write_params(&CornerPinParams { width, height, inv, _pad: 0 });
-                    self.dispatch(&self.corner_pin_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::ChromaKey {
-                    key_color,
-                    tolerance,
-                    soft_edge,
-                    spill_method,
-                    spill_strength,
-                } => {
-                    // Convert key color to CbCr
-                    let rf = key_color[0] as f32;
-                    let gf = key_color[1] as f32;
-                    let bf = key_color[2] as f32;
-                    let key_cb = 128.0 + (-0.168736 * rf - 0.331264 * gf + 0.5 * bf);
-                    let key_cr = 128.0 + (0.5 * rf - 0.418688 * gf - 0.081312 * bf);
-
-                    // Dominant key channel — same logic as the CPU
-                    // path's `dominant_channel`. Inlined here to keep
-                    // the GPU encoder self-contained.
-                    let key_idx: u32 = if key_color[1] >= key_color[0] && key_color[1] >= key_color[2] {
-                        1
-                    } else if key_color[2] > key_color[0] {
-                        2
-                    } else {
-                        0
-                    };
-                    let method_code: u32 = match spill_method {
-                        crate::SpillMethod::None => 0,
-                        crate::SpillMethod::ChannelClamp => 1,
-                        crate::SpillMethod::Hawk => 2,
-                    };
-
-                    self.write_params(&ChromaKeyParams {
-                        width,
-                        height,
-                        key_cb,
-                        key_cr,
-                        tolerance: *tolerance,
-                        soft_edge: *soft_edge,
-                        spill_method: method_code,
-                        spill_strength: *spill_strength,
-                        spill_key_idx: key_idx,
-                        _pad: [0; 3],
-                    });
-                    self.dispatch(&self.chroma_key_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
+                | BuiltinEffect::FocusBlur { .. }
+                | BuiltinEffect::ChromaKey { .. }
+                | BuiltinEffect::Deflicker { .. }
+                | BuiltinEffect::FilmGrain { .. }
+                | BuiltinEffect::NoiseGenerator { .. }
+                | BuiltinEffect::OldFilm { .. }
+                | BuiltinEffect::Vhs { .. }
+                | BuiltinEffect::CornerPin { .. }
+                | BuiltinEffect::RollingShutterCorrection { .. }
+                | BuiltinEffect::VideoStabilization { .. }
+                | BuiltinEffect::SpeedRamp { .. }
+                | BuiltinEffect::TemporalDenoise { .. }
+                | BuiltinEffect::Frei0r { .. } => self.effects_incomplete.set(true),
                 BuiltinEffect::Bloom { threshold, radius, intensity } => {
                     // Step 1: Extract bright pixels to buf_c
                     let buf_c = self.buf_c.as_ref().unwrap();
@@ -6124,18 +6081,6 @@ impl GpuEffectsPipeline {
                         luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
                     });
                     self.dispatch(&self.light_rays_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::Deflicker { strength, gain, .. } => {
-                    // `window_secs` shaped the gains during analysis
-                    // and the compositor picked this frame's out of
-                    // them; by here the answer is one number.
-                    self.write_params(&DeflickerParams {
-                        width, height,
-                        gain: *gain,
-                        strength: strength.clamp(0.0, 1.0),
-                    });
-                    self.dispatch(&self.deflicker_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
                 }
                 BuiltinEffect::Vignette { amount, size, softness, roundness } => {
@@ -6253,20 +6198,6 @@ impl GpuEffectsPipeline {
                     self.device.poll(wgpu::Maintain::Poll);
                     current_in_a = !current_in_a;
                 }
-                BuiltinEffect::NoiseGenerator { amount, monochrome, seed } => {
-                    if *amount < f32::EPSILON {
-                        continue;
-                    }
-                    self.write_params(&NoiseGeneratorParams {
-                        width, height,
-                        amount: *amount,
-                        monochrome: *monochrome,
-                        seed: *seed,
-                        _pad: 0, _pad2: 0, _pad3: 0,
-                    });
-                    self.dispatch(&self.noise_generator_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
                 BuiltinEffect::Equalize { strength } => {
                     // Hybrid GPU: build histogram/CDF on CPU (fast), remap on GPU (parallel).
                     // Step 1: Download current frame to compute histogram.
@@ -6320,38 +6251,6 @@ impl GpuEffectsPipeline {
 
                     current_in_a = !current_in_a;
                 }
-                BuiltinEffect::FilmGrain { amount, size, color, shadows, seed } => {
-                    if *amount < f32::EPSILON {
-                        continue;
-                    }
-                    self.write_params(&FilmGrainParams {
-                        width, height,
-                        amount: *amount, size: *size, color: *color, shadows: *shadows, seed: *seed,
-                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2],
-                        _pad: 0, _pad2: 0,
-                    });
-                    self.dispatch(&self.film_grain_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::OldFilm { flicker, scratches, dust, weave, sepia, seed } => {
-                    self.write_params(&OldFilmParams {
-                        width, height,
-                        flicker: *flicker, scratches: *scratches, dust: *dust, weave: *weave, sepia: *sepia, seed: *seed,
-                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad: 0,
-                    });
-                    self.dispatch(&self.old_film_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::Vhs { tracking, bleed, noise, scanlines, seed } => {
-                    self.write_params(&VhsParams {
-                        width, height,
-                        tracking: *tracking, bleed: *bleed, noise: *noise, scanlines: *scanlines, seed: *seed,
-                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2],
-                        _pad: 0, _pad2: 0,
-                    });
-                    self.dispatch(&self.vhs_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
                 BuiltinEffect::ChromaticAberration { red_shift, blue_shift, center_x, center_y } => {
                     if red_shift.abs() < f32::EPSILON && blue_shift.abs() < f32::EPSILON {
                         continue;
@@ -6367,83 +6266,6 @@ impl GpuEffectsPipeline {
                     });
                     self.dispatch(&self.chromatic_aberration_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
-                }
-                BuiltinEffect::RollingShutterCorrection { strength, .. } => {
-                    if *strength < f32::EPSILON || !self.has_rsc_data() {
-                        continue; // No correction or no motion data ready
-                    }
-                    self.write_params(&RscParams { width, height, strength: *strength, _pad: 0 });
-                    let input = if current_in_a { buf_a } else { buf_b };
-                    let output = if current_in_a { buf_b } else { buf_a };
-                    let row_buf = self.rsc_row_buf.as_ref().unwrap();
-                    let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("rsc_bg"),
-                        layout: &self.huesat_bgl,
-                        entries: &[
-                            wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
-                            wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                            wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
-                            wgpu::BindGroupEntry { binding: 3, resource: row_buf.as_entire_binding() },
-                        ],
-                    });
-                    let mut enc = self.encoder(None);
-                    {
-                        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-                        pass.set_pipeline(&self.rsc_pipeline);
-                        pass.set_bind_group(0, &bg, &[]);
-                        pass.dispatch_workgroups(workgroups, 1, 1);
-                    }
-                    self.submit(enc);
-                    // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
-                    // queue drains between submits. See submit_chain for context.
-                    self.device.poll(wgpu::Maintain::Poll);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::VideoStabilization { crop_ratio, zoom, .. } => {
-                    if !self.has_stabilization_data() { continue; }
-                    let crop_zoom = crate::stabilization_crop_zoom(*crop_ratio, *zoom);
-                    self.write_params(&StabilizationParams { width, height, crop_zoom, _pad: 0 });
-                    let input = if current_in_a { buf_a } else { buf_b };
-                    let output = if current_in_a { buf_b } else { buf_a };
-                    let hom_buf = self.stabilization_buf.as_ref().unwrap();
-                    let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("stabilization_bg"),
-                        layout: &self.huesat_bgl,
-                        entries: &[
-                            wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
-                            wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                            wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
-                            wgpu::BindGroupEntry { binding: 3, resource: hom_buf.as_entire_binding() },
-                        ],
-                    });
-                    let mut enc = self.encoder(None);
-                    {
-                        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-                        pass.set_pipeline(&self.stabilization_pipeline);
-                        pass.set_bind_group(0, &bg, &[]);
-                        pass.dispatch_workgroups(workgroups, 1, 1);
-                    }
-                    self.submit(enc);
-                    // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
-                    // queue drains between submits. See submit_chain for context.
-                    self.device.poll(wgpu::Maintain::Poll);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::SpeedRamp { .. } => {
-                    // SpeedRamp is handled at the engine level (frame queue + GPU blend),
-                    // not in the per-frame GPU effects chain. Pass through.
-                }
-                BuiltinEffect::TemporalDenoise { .. } => {
-                    // Ran at the head of the clip's pipeline, before
-                    // the grade — the compositor lifts it out and the
-                    // chain never normally sees it. Pass through.
-                }
-                BuiltinEffect::Frei0r { .. } => {
-                    // Frei0r 1.x has no GPU surface; chain_supports_gpu returns
-                    // false on any chain containing a Frei0r entry, so the engine
-                    // falls back to apply_effects_with_time on CPU. Reaching this
-                    // arm means dispatcher policy was bypassed — passthrough
-                    // rather than producing visually-broken output.
                 }
                 BuiltinEffect::RoundedCorners { radius, feather } => {
                     self.layer_corners(input, output, width, height, *radius, *feather);

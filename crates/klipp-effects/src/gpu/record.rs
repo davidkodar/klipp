@@ -51,6 +51,10 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
     // same parameters.
     let boxes = |radius: f32| crate::blur::boxes_for_gaussian(radius).iter().filter(|r| **r != 0).count();
     match effect {
+        // Done elsewhere, or not by the GPU at all: they pass the frame
+        // through here, as they did, without breaking a run.
+        BuiltinEffect::SpeedRamp { .. } | BuiltinEffect::TemporalDenoise { .. } | BuiltinEffect::Frei0r { .. } => Some(0),
+        BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. } => Some(1),
         BuiltinEffect::GaussianBlur { radius } => Some(boxes(*radius)),
         BuiltinEffect::Denoise { .. } => Some(1),
         BuiltinEffect::TiltShift { radius, .. } => Some(boxes(*radius) + 1),
@@ -77,7 +81,14 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         | BuiltinEffect::Mosaic { .. }
         | BuiltinEffect::RadialBlur { .. }
         | BuiltinEffect::Sharpen { .. }
-        | BuiltinEffect::MedianFilter { .. } => Some(1),
+        | BuiltinEffect::MedianFilter { .. }
+        | BuiltinEffect::ChromaKey { .. }
+        | BuiltinEffect::Deflicker { .. }
+        | BuiltinEffect::FilmGrain { .. }
+        | BuiltinEffect::NoiseGenerator { .. }
+        | BuiltinEffect::OldFilm { .. }
+        | BuiltinEffect::Vhs { .. }
+        | BuiltinEffect::CornerPin { .. } => Some(1),
         _ => None,
     }
 }
@@ -430,6 +441,115 @@ impl GpuEffectsPipeline {
                 });
                 (&self.median_filter_pipeline, slot)
             }
+            BuiltinEffect::ChromaKey {
+                key_color,
+                tolerance,
+                soft_edge,
+                spill_method,
+                spill_strength,
+            } => {
+                // Convert key color to CbCr
+                let rf = key_color[0] as f32;
+                let gf = key_color[1] as f32;
+                let bf = key_color[2] as f32;
+                let key_cb = 128.0 + (-0.168736 * rf - 0.331264 * gf + 0.5 * bf);
+                let key_cr = 128.0 + (0.5 * rf - 0.418688 * gf - 0.081312 * bf);
+
+                // Dominant key channel — same logic as the CPU
+                // path's `dominant_channel`. Inlined here to keep
+                // the GPU encoder self-contained.
+                let key_idx: u32 = if key_color[1] >= key_color[0] && key_color[1] >= key_color[2] {
+                    1
+                } else if key_color[2] > key_color[0] {
+                    2
+                } else {
+                    0
+                };
+                let method_code: u32 = match spill_method {
+                    crate::SpillMethod::None => 0,
+                    crate::SpillMethod::ChannelClamp => 1,
+                    crate::SpillMethod::Hawk => 2,
+                };
+
+                let slot = rec.slots.claim(q, &ChromaKeyParams {
+                    width,
+                    height,
+                    key_cb,
+                    key_cr,
+                    tolerance: *tolerance,
+                    soft_edge: *soft_edge,
+                    spill_method: method_code,
+                    spill_strength: *spill_strength,
+                    spill_key_idx: key_idx,
+                    _pad: [0; 3],
+                });
+                (&self.chroma_key_pipeline, slot)
+            }
+            BuiltinEffect::Deflicker { strength, gain, .. } => {
+                // `window_secs` shaped the gains during analysis
+                // and the compositor picked this frame's out of
+                // them; by here the answer is one number.
+                let slot = rec.slots.claim(q, &DeflickerParams {
+                    width, height,
+                    gain: *gain,
+                    strength: strength.clamp(0.0, 1.0),
+                });
+                (&self.deflicker_pipeline, slot)
+            }
+            BuiltinEffect::FilmGrain { amount, size, color, shadows, seed } => {
+                if *amount < f32::EPSILON {
+                    return Recorded::Identity;
+                }
+                let slot = rec.slots.claim(q, &FilmGrainParams {
+                    width, height,
+                    amount: *amount, size: *size, color: *color, shadows: *shadows, seed: *seed,
+                    luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2],
+                    _pad: 0, _pad2: 0,
+                });
+                (&self.film_grain_pipeline, slot)
+            }
+            BuiltinEffect::NoiseGenerator { amount, monochrome, seed } => {
+                if *amount < f32::EPSILON {
+                    return Recorded::Identity;
+                }
+                let slot = rec.slots.claim(q, &NoiseGeneratorParams {
+                    width, height,
+                    amount: *amount,
+                    monochrome: *monochrome,
+                    seed: *seed,
+                    _pad: 0, _pad2: 0, _pad3: 0,
+                });
+                (&self.noise_generator_pipeline, slot)
+            }
+            BuiltinEffect::OldFilm { flicker, scratches, dust, weave, sepia, seed } => {
+                let slot = rec.slots.claim(q, &OldFilmParams {
+                    width, height,
+                    flicker: *flicker, scratches: *scratches, dust: *dust, weave: *weave, sepia: *sepia, seed: *seed,
+                    luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad: 0,
+                });
+                (&self.old_film_pipeline, slot)
+            }
+            BuiltinEffect::Vhs { tracking, bleed, noise, scanlines, seed } => {
+                let slot = rec.slots.claim(q, &VhsParams {
+                    width, height,
+                    tracking: *tracking, bleed: *bleed, noise: *noise, scanlines: *scanlines, seed: *seed,
+                    luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2],
+                    _pad: 0, _pad2: 0,
+                });
+                (&self.vhs_pipeline, slot)
+            }
+            BuiltinEffect::CornerPin { tl, tr, br, bl } => {
+                let corners = [*tl, *tr, *br, *bl];
+                if crate::corner_pin::is_still(&corners) {
+                    return Recorded::Identity;
+                }
+                // No quadrilateral: nothing is drawn. The shader
+                // reads a zero denominator everywhere as "behind
+                // the eye" and writes transparent.
+                let inv = crate::corner_pin::inverse_map(width, height, &corners).unwrap_or([0.0; 9]);
+                let slot = rec.slots.claim(q, &CornerPinParams { width, height, inv, _pad: 0 });
+                (&self.corner_pin_pipeline, slot)
+            }
             _ => return Recorded::NotRecordable,
         };
         let Some(slot) = slot else { return Recorded::OutOfSlots };
@@ -455,6 +575,29 @@ impl GpuEffectsPipeline {
         let nonzero = |radius: f32| -> Vec<usize> { crate::blur::boxes_for_gaussian(radius).into_iter().filter(|r| *r != 0).collect() };
         let blur = |radius: usize| BlurParams { width, height, radius: radius as i32, _pad: 0 };
         let outcome = match effect {
+            // SpeedRamp is the engine's (frame queue and blend), temporal
+            // denoise runs at the head of the clip's pipeline before the
+            // grade, and a Frei0r plug-in has no GPU surface.
+            BuiltinEffect::SpeedRamp { .. } | BuiltinEffect::TemporalDenoise { .. } | BuiltinEffect::Frei0r { .. } => Recorded::Identity,
+            // The motion data comes from `prepare_temporal_effects`, uploaded
+            // before the run; without it the frame passes through.
+            BuiltinEffect::RollingShutterCorrection { strength, .. } => {
+                let Some(rows) = self.rsc_row_buf.as_ref().filter(|_| *strength >= f32::EPSILON && self.has_rsc_data()) else {
+                    return Some(Recorded::Identity);
+                };
+                let Some(slot) = rec.slots.claim(q, &RscParams { width, height, strength: *strength, _pad: 0 }) else { return Some(Recorded::OutOfSlots) };
+                self.record_with(rec, &self.rsc_pipeline, src, dst, slot, rows, width, height);
+                Recorded::Done
+            }
+            BuiltinEffect::VideoStabilization { crop_ratio, zoom, .. } => {
+                let Some(homographies) = self.stabilization_buf.as_ref().filter(|_| self.has_stabilization_data()) else {
+                    return Some(Recorded::Identity);
+                };
+                let crop_zoom = crate::stabilization_crop_zoom(*crop_ratio, *zoom);
+                let Some(slot) = rec.slots.claim(q, &StabilizationParams { width, height, crop_zoom, _pad: 0 }) else { return Some(Recorded::OutOfSlots) };
+                self.record_with(rec, &self.stabilization_pipeline, src, dst, slot, homographies, width, height);
+                Recorded::Done
+            }
             BuiltinEffect::GaussianBlur { radius } => {
                 // A three-box approximation, each box a horizontal and a
                 // vertical pass.
@@ -570,6 +713,33 @@ impl GpuEffectsPipeline {
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: rec.slots.buffer(slot).as_entire_binding() },
+            ],
+        });
+        Self::record_compute_dispatch(rec.encoder, pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
+    }
+
+    /// One pass of a pipeline with a side buffer after its params
+    /// (input, output, params, side).
+    #[allow(clippy::too_many_arguments)]
+    fn record_with(
+        &self,
+        rec: &mut EffectRecording<'_>,
+        pipeline: &wgpu::ComputePipeline,
+        input: &wgpu::Buffer,
+        output: &wgpu::Buffer,
+        slot: usize,
+        side: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+    ) {
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("recorded_effect_side"),
+            layout: &self.huesat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: rec.slots.buffer(slot).as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: side.as_entire_binding() },
             ],
         });
         Self::record_compute_dispatch(rec.encoder, pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
