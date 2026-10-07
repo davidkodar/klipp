@@ -535,8 +535,8 @@ fn a_converted_file_keeps_its_mode() {
 
 /// Someone else changes the second project after the journal names it and
 /// before the run writes it: the run stops, rolls the first back, and the
-/// second keeps the bytes it was given. A rollback never overwrites what
-/// the run didn't write.
+/// second keeps the bytes it was given and is named, the journal left
+/// unfinished. A rollback never overwrites what the run didn't write.
 #[test]
 fn a_rollback_never_overwrites_bytes_the_run_did_not_write() {
     let r = root("theirs");
@@ -551,15 +551,18 @@ fn a_rollback_never_overwrites_bytes_the_run_did_not_write() {
         false
     };
     let err = step3::run(&s, &approved(&s), &ok, &hooks(&edit, NO_FAIL)).unwrap_err();
-    assert!(matches!(&err, RunError::RolledBack(why) if why.contains("changed since the dry run")), "{err:?}");
+    assert!(matches!(&err, RunError::RollbackIncomplete { unrestored, .. } if unrestored.len() == 1 && unrestored[0].0 == b.join("project.json") && unrestored[0].1.contains("someone else")), "{err:?}");
     assert_eq!(snapshot(&a), before_a, "the first is rolled back");
     assert_eq!(std::fs::read(b.join("project.json")).unwrap(), theirs, "the second keeps their bytes");
-    assert_eq!(read(&step3::journal_path(&s))["state"], json!("RolledBack"));
+    assert_eq!(read(&step3::journal_path(&s))["state"], json!("RollingBack"), "left unfinished for a person");
     let _ = std::fs::remove_dir_all(&r);
 }
 
 /// A file the run wrote, changed by someone else before the next run's
-/// recovery: it's left as it is and named, the backups kept.
+/// recovery: it's left as it is and named, the backups kept and the
+/// journal unfinished. The crash is after the write and before the journal
+/// marks it written, where nothing tells the edit from bytes that were
+/// there before the write.
 #[test]
 fn a_file_changed_after_the_run_wrote_it_is_left_and_named() {
     let r = root("after");
@@ -573,6 +576,8 @@ fn a_file_changed_after_the_run_wrote_it_is_left_and_named() {
     assert!(matches!(&err, RunError::RollbackIncomplete { unrestored, .. } if unrestored.len() == 1 && unrestored[0].0 == a.join("project.json") && unrestored[0].1.contains("someone else")), "{err:?}");
     assert_eq!(std::fs::read(a.join("project.json")).unwrap(), theirs);
     assert!(s.backup_root.join("2026-10-07").exists(), "the backups kept");
+    assert_eq!(read(&step3::journal_path(&s))["state"], json!("RollingBack"), "left unfinished for a person");
+    assert_eq!(read(&step3::journal_path(&s))["touched"][0]["written"], json!(false), "the write wasn't marked");
     let _ = std::fs::remove_dir_all(&r);
 }
 

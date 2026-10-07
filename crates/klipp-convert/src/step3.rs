@@ -20,8 +20,8 @@
 //!   the hash of what the run writes there, before it is written, and
 //!   marks it once written. Any error restores every file holding what the
 //!   run wrote from the verified backups, and checks each against its
-//!   hash; a file the run didn't write is never overwritten, and one
-//!   changed by someone else after the run wrote it is left and named. A
+//!   hash; a file holding neither its original bytes nor the run's is
+//!   someone else's, never overwritten, and left and named. A
 //!   crash is rolled back by the next run, never finished forward. A
 //!   restore that fails stops with the files it couldn't restore, and
 //!   everything (backups, journal) is kept.
@@ -265,6 +265,7 @@ pub enum Point {
     BackedUp,
     /// The n-th project to convert, recorded, not yet written.
     BeforeWrite(usize),
+    /// The n-th project written, its write not yet marked in the journal.
     Written(usize),
     Verified(usize),
     BeforeCommit,
@@ -305,8 +306,8 @@ pub struct Report {
 
 /// Restore every touched file that holds what the run wrote from its
 /// backup, and check it. A file at its original hash needs nothing; one
-/// the run never wrote, or that holds neither hash, isn't the run's to
-/// overwrite: the first is left quietly, the second named.
+/// that holds neither hash isn't the run's to overwrite, and is left and
+/// named.
 fn roll_back(s: &Settings, j: &mut Journal, hooks: &Hooks) -> Result<(), RunError> {
     j.state = State::RollingBack;
     record(s, j).map_err(|e| RunError::RollbackIncomplete { why: format!("recording the rollback: {e}"), unrestored: j.touched.iter().map(|t| (t.path.clone(), "not tried".into())).collect() })?;
@@ -316,10 +317,11 @@ fn roll_back(s: &Settings, j: &mut Journal, hooks: &Hooks) -> Result<(), RunErro
         let r = match now {
             Ok(h) if h == t.sha256 => Ok(()),
             Ok(h) if h == t.written_sha256 => restore(t),
-            // Not written by the run (a crash between the write and its
-            // mark leaves the written hash, handled above).
-            Ok(_) if !t.written => Ok(()),
-            Ok(_) => Err("changed by someone else since the run wrote it: left as it is, its backup kept".into()),
+            // Neither hash: someone else's bytes, whether they came before
+            // the run's write or after it (a crash between the write and
+            // its mark leaves `written` false either way), so never
+            // overwritten, and named, the journal left unfinished.
+            Ok(_) => Err(if t.written { "changed by someone else since the run wrote it: left as it is, its backup kept" } else { "changed by someone else during the run (before or after its write): left as it is, its backup kept" }.into()),
             Err(e) => Err(io_err("reading", &t.path, e)),
         };
         if let Err(why) = r {
@@ -525,15 +527,17 @@ pub fn run(s: &Settings, approved: &str, preconditions: &dyn Fn() -> Result<(), 
             failed = Some(e);
             break;
         }
+        // Written, not yet marked: the window a rollback can't tell from
+        // before the write.
+        if (hooks.crash)(Point::Written(n)) {
+            return Err(RunError::Crashed(Point::Written(n)));
+        }
         if let Some(t) = j.touched.last_mut() {
             t.written = true;
         }
         if let Err(e) = record(s, &j) {
             failed = Some(e);
             break;
-        }
-        if (hooks.crash)(Point::Written(n)) {
-            return Err(RunError::Crashed(Point::Written(n)));
         }
         if let Err(e) = prove_one(s, n, c, hooks) {
             failed = Some(e);
