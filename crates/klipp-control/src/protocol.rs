@@ -13,6 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 
+fn graph_read_depth() -> usize { 1 }
+
 fn strict_motion_fields(value: &serde_json::Value) -> Result<(), String> {
     let Some(object) = value.as_object() else { return Ok(()) };
     for key in object.keys() {
@@ -804,6 +806,19 @@ pub enum ControlCommand {
         #[serde(default)]
         category: Option<String>,
     },
+    /// Read the lifted graph by the same paths used for edits.
+    GraphRead {
+        path: crate::graph_wire::GraphPath,
+        #[serde(default = "graph_read_depth")]
+        depth: usize,
+    },
+    /// One graph root, committed atomically by the app.
+    GraphOps {
+        ops: Vec<crate::graph_wire::GraphWireOp>,
+        expected_revision: Option<u64>,
+        expected_project_identity: Option<u64>,
+        label: Option<String>,
+    },
     /// The bundled looks (3D LUTs) an agent can apply, by category, so it
     /// knows what names `look` will take.
     Looks {
@@ -1168,14 +1183,21 @@ pub struct Response {
     pub result: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub op_index: Option<usize>,
 }
 
 impl Response {
     pub fn ok(id: u64, result: serde_json::Value) -> Self {
-        Self { id, ok: true, result: Some(result), error: None }
+        Self { id, ok: true, result: Some(result), error: None, op_index: None }
     }
     pub fn err(id: u64, error: impl Into<String>) -> Self {
-        Self { id, ok: false, result: None, error: Some(error.into()) }
+        Self { id, ok: false, result: None, error: Some(error.into()), op_index: None }
+    }
+    pub(crate) fn graph_refused(id: u64, result: serde_json::Value) -> Self {
+        let error = result["why"].as_str().unwrap_or("graph edit refused").to_owned();
+        let op_index = result["op_index"].as_u64().and_then(|i| usize::try_from(i).ok());
+        Self { id, ok: false, result: Some(result), error: Some(error), op_index }
     }
 }
 

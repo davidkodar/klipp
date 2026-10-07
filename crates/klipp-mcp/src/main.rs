@@ -24,6 +24,7 @@ use std::sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc, Mutex};
 use serde_json::{json, Value};
 
 mod edit_schema;
+mod graph_schema;
 mod socket_connect;
 
 const LEGACY_PROTOCOL_VERSION: &str = "2024-11-05";
@@ -50,6 +51,7 @@ static PENDING_WRITE_GENERATION: std::sync::atomic::AtomicU64 =
 /// Tools that change what the viewer should show. Any of them arms the
 /// next screenshot to wait for a fresh frame.
 const WRITE_TOOLS: &[&str] = &[
+    "klipp_graph",
     "klipp_play", "klipp_pause", "klipp_stop", "klipp_seek",
     "klipp_append_clip", "klipp_remove_clip", "klipp_attach_audio", "klipp_set_append_audio", "klipp_select_clip",
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
@@ -439,6 +441,8 @@ fn control_call(command: Value) -> Result<Value, String> {
         serde_json::from_str(&line).map_err(|e| format!("bad reply from Klipp: {e}"))?;
     if reply.get("ok").and_then(|v| v.as_bool()) == Some(true) {
         Ok(reply.get("result").cloned().unwrap_or(json!({})))
+    } else if reply.get("result").is_some_and(|r| r.get("why").is_some()) {
+        Err(reply["result"].to_string())
     } else {
         Err(reply
             .get("error")
@@ -992,6 +996,20 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_fonts" => json!({ "method": "fonts" }),
+        "klipp_graph" | "klipp_graph_read" => {
+            let mut v = args.clone();
+            if !v.is_object() { return Err("graph arguments must be an object".into()); }
+            v["method"] = json!(if name == "klipp_graph" { "graph_ops" } else { "graph_read" });
+            if name == "klipp_graph" {
+                let ops = v["ops"].as_array().filter(|ops| !ops.is_empty() && ops.len() <= 64).ok_or("a graph batch needs 1 to 64 operations")?;
+                for (op_index, op) in ops.iter().enumerate() {
+                    serde_json::from_value::<klipp_control::graph_wire::GraphWireOp>(op.clone())
+                        .map_err(|e| json!({"op_index":op_index,"why":e.to_string(),"applied":false}).to_string())?;
+                }
+            }
+            serde_json::from_value::<klipp_control::protocol::ControlCommand>(v.clone()).map_err(|e| format!("invalid graph request: {e}"))?;
+            v
+        }
         "klipp_node_types" => {
             let mut v = json!({ "method": "node_types" });
             if let Some(c) = args.get("category").and_then(|v| v.as_str()) { v["category"] = json!(c); }
@@ -2513,6 +2531,17 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               always there, and those installed on this machine. Any other name falls back to Inter; \
               set_brief, plan and apply warn when one is named.",
              json!({}), vec![]),
+        tool("klipp_graph",
+             "Edit one graph root atomically as one undo step; send alone. Read graph_read and node_types first. \
+              Paths contain a root and node IDs; {new:k} refers to the node made by earlier op k. Values follow \
+              catalog kinds; choices use labels. Created nodes return full paths. Current clip persistence \
+              refuses placed kinds, effect mix/masks/labels, and publication; unsupported parameter shapes \
+              are refused with the failing op_index. Revision and project identity guard commit.",
+             json!({"ops":graph_schema::ops_schema(),"label":{"type":"string"},"expected_revision":{"type":"integer","minimum":0},"expected_project_identity":{"type":"integer","minimum":0}}), vec!["ops"]),
+        tool("klipp_graph_read",
+             "Read a graph by full path; empty nodes reads the root. Includes port keys and nested bodies to depth. \
+              Partial reads name omissions; narrow the path for details.",
+             json!({"path":graph_schema::path_schema(true),"depth":{"type":"integer","minimum":0,"maximum":4,"default":1}}), vec!["path"]),
         tool("klipp_node_types",
              "The node types Klipp's registry describes: each effect's id, name and category, its \
               ports, and its parameters with the key keyframes are stored under, the unit, the \
@@ -2844,6 +2873,45 @@ mod listen_arg_tests {
 #[cfg(test)]
 mod interface_tests {
     use super::*;
+
+    #[test]
+    fn graph_calls_preserve_paths_references_and_guards() {
+        let path = json!({"root":{"clip":"00000000-0000-0000-0000-000000000001"},"nodes":[{"new":0}]});
+        let args = json!({"ops":[{"op":"enable","path":path,"enabled":false}],"expected_revision":17,"expected_project_identity":4,"idempotency_key":"same-write"});
+        let mut expected = args.clone();
+        expected["method"] = json!("graph_ops");
+        assert_eq!(tool_to_command("klipp_graph", &args).unwrap(), expected);
+        assert_eq!(tool_to_command("klipp_graph_read", &json!({"path":path,"depth":2})).unwrap(), json!({"method":"graph_read","path":path,"depth":2}));
+        let definitions = tool_definitions_for(false);
+        let graph = definitions.iter().find(|t| t["name"] == "klipp_graph").unwrap();
+        let ops = graph["inputSchema"]["properties"]["ops"]["items"]["properties"]["op"]["enum"].as_array().unwrap();
+        assert_eq!(ops.len(), 9);
+        assert!(!ops.iter().any(|op| matches!(op.as_str(), Some("publish" | "unpublish"))));
+    }
+
+    #[test]
+    fn compact_graph_guidance_still_has_strict_wire_validation() {
+        let path = json!({"root":{"clip":uuid::Uuid::nil()},"nodes":[uuid::Uuid::nil()]});
+        for op in [
+            json!({"op":"enable","path":path,"enabled":true,"value":1}),
+            json!({"op":"enable","path":path}),
+            json!({"op":"mix","path":path}),
+            json!({"op":"set","path":{"root":{"clip":uuid::Uuid::nil(),"track":uuid::Uuid::nil()},"nodes":[]},"key":"x","value":1}),
+            json!({"op":"publish","path":path}),
+        ] {
+            let error = tool_to_command("klipp_graph", &json!({"ops":[op]})).unwrap_err();
+            let error: Value = serde_json::from_str(&error).unwrap();
+            assert_eq!(error["op_index"],0);
+            assert_eq!(error["applied"],false);
+        }
+        let tools = tool_definitions_for(false);
+        for (name, budget) in [("klipp_graph",2900),("klipp_graph_read",700)] {
+            let tool = tools.iter().find(|t| t["name"] == name).unwrap();
+            let size = serde_json::to_vec(tool).unwrap().len();
+            assert!(size <= budget,"{name}: {size} > {budget}");
+        }
+        assert!(serde_json::to_vec(&tools).unwrap().len() < 87_500);
+    }
 
     /// Claude Code cuts an MCP tool's description off at about 2,048
     /// characters, without a word, and sends the agent only that much

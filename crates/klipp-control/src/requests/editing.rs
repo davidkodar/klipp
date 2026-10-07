@@ -289,6 +289,28 @@ pub(crate) fn respond(
             Ok(json!({ "text": text, "bundled": bundled, "installed": installed, "fallback": klipp_title::bundled::DEFAULT_FAMILY }))
         }
 
+        ControlCommand::GraphOps { ops, expected_revision, expected_project_identity, label } => {
+            if in_batch { return Err("graph_ops is its own atomic batch; send it on its own".into()); }
+            crate::graph_request::write(ctx, &ops, expected_revision, expected_project_identity, label)
+        }
+
+        ControlCommand::GraphRead { path, depth } => {
+            if in_batch { return read_in_batch("graph_read"); }
+            let path = crate::graph_prepare::existing_path(&path)?;
+            let identity = project_status(ctx)?.identity;
+            let sequence = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+            let revision = ctx.shared.revision();
+            let documents = crate::graph_model::documents(&sequence, path.root)?;
+            let mut value = crate::graph_read::read(&documents, &path, depth)?;
+            drop(sequence);
+            if project_status(ctx)?.identity != identity || ctx.shared.revision() != revision {
+                return Err("the document changed during the graph read; read again".into());
+            }
+            value["revision"] = json!(revision);
+            value["project_identity"] = json!(identity);
+            Ok(value)
+        }
+
         ControlCommand::NodeTypes { category } => {
             if in_batch {
                 return read_in_batch("node_types");
@@ -312,6 +334,11 @@ pub fn node_types(category: Option<&str>) -> serde_json::Value {
         ps.iter()
             .map(|p| {
                 let mut port = json!({ "key": p.key, "type": format!("{:?}", p.ty), "optional": p.optional });
+                if let Some(channel) = p.params.iter().find(|q| q.key == "channel") {
+                    port["channels"] = json!(channel.options);
+                    port["default_channel"] = json!(channel.default);
+                    port["absent_channel"] = json!(channel.migrated);
+                }
                 if !p.params.is_empty() {
                     // Each saved among the node's parameters under "<port>.<key>".
                     port["params"] = p
@@ -336,11 +363,11 @@ pub fn node_types(category: Option<&str>) -> serde_json::Value {
     // The built-in effects, by their saved tag, and the grade nodes, by
     // their saved kind.
     let all = effect_types()
-        .map(|t| (&t.desc, t.tag.to_owned()))
-        .chain(klipp_nodes::registry::node_types().map(|t| (&t.desc, format!("{:?}", t.kind))));
+        .map(|t| (&t.desc, t.tag.to_owned(), false))
+        .chain(klipp_nodes::registry::node_types().map(|t| (&t.desc, format!("{:?}", t.kind), true)));
     let types: Vec<serde_json::Value> = all
-        .filter(|(desc, _)| wanted(&format!("{:?}", desc.category)))
-        .map(|(desc, tag)| {
+        .filter(|(desc, _, _)| wanted(&format!("{:?}", desc.category)))
+        .map(|(desc, tag, grade)| {
             let params: Vec<serde_json::Value> = desc
                 .params
                 .iter()
@@ -360,7 +387,7 @@ pub fn node_types(category: Option<&str>) -> serde_json::Value {
                     })
                 })
                 .collect();
-            json!({
+            let mut node = json!({
                 "id": desc.id,
                 "tag": tag,
                 "name": desc.name,
@@ -369,7 +396,22 @@ pub fn node_types(category: Option<&str>) -> serde_json::Value {
                 "inputs": ports(desc.inputs),
                 "outputs": ports(desc.outputs),
                 "params": params,
-            })
+            });
+            if grade {
+                for (side, input) in [("inputs", true), ("outputs", false)] {
+                    for (index, port) in node[side].as_array_mut().unwrap().iter_mut().enumerate() {
+                        let key = if input { klipp_graph_format::ports::input_key(&tag, index as u8) } else { klipp_graph_format::ports::output_key(&tag, index as u8) };
+                        if port["key"] != key.as_str() {
+                            port["semantic_key"] = port["key"].clone();
+                            port["key"] = json!(key.as_str());
+                        }
+                    }
+                }
+            }
+            if desc.mixable {
+                node["mix"] = json!({"kind":"Float","range":[0,1],"default":1,"operation":"mix"});
+            }
+            node
         })
         .collect();
     let text = format!(
@@ -377,7 +419,7 @@ pub fn node_types(category: Option<&str>) -> serde_json::Value {
         types.len(),
         category.map(|c| format!(" in {c}")).unwrap_or_default()
     );
-    json!({ "text": text, "types": types })
+    json!({ "text": text, "types": types, "publication": {"available":false,"why":"Publishing group ports waits for the app model to preserve interfaces through save and reopen."} })
 }
 
 #[cfg(test)]
@@ -409,6 +451,10 @@ mod node_types_tests {
         assert_eq!(grade.len(), klipp_nodes::registry::node_types().count());
         let corrector = grade.iter().find(|t| t["tag"] == "Corrector").expect("the Corrector is listed");
         assert!(corrector["params"].as_array().unwrap().iter().any(|p| p["key"] == "exposure"));
+        let mask = grade.iter().find(|t| t["tag"] == "Mask").unwrap();
+        assert_eq!(mask["outputs"][0]["key"], "out");
+        assert_eq!(mask["outputs"][0]["semantic_key"], "matte");
+        assert_eq!(mask["outputs"][0]["type"], "Matte");
     }
 
     /// What an assistant learns about mixing (#1089, M2): which types are
@@ -425,13 +471,17 @@ mod node_types_tests {
             blur["inputs"],
             serde_json::json!([
                 { "key": "in", "type": "Image", "optional": false },
-                { "key": "mask", "type": "Matte", "optional": true, "params": [
+                { "key": "mask", "type": "Matte", "optional": true,
+                  "channels": ["red", "luminance", "alpha"], "default_channel": "luminance", "absent_channel": "red", "params": [
                     { "key": "channel", "saved_as": "mask.channel", "label": "Channel",
                       "options": ["red", "luminance", "alpha"], "default": "luminance", "migrated": "red" }
                 ] }
             ])
         );
         let invert = find("invert");
+        assert_eq!(blur["mix"], serde_json::json!({"kind":"Float","range":[0,1],"default":1,"operation":"mix"}));
+        assert!(invert.get("mix").is_none());
+        assert_eq!(all["publication"]["available"], false);
         assert_eq!(invert["mixable"], false);
         assert_eq!(invert["inputs"], serde_json::json!([{ "key": "in", "type": "Image", "optional": false }]));
         assert_eq!(types.iter().filter(|t| t["mixable"] == true).count(), 33);

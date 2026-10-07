@@ -23,6 +23,11 @@
 //! reachable by the user running Klipp and nobody else.
 
 pub mod protocol;
+pub mod graph_wire;
+mod graph_model;
+mod graph_prepare;
+mod graph_read;
+mod graph_request;
 mod envelope;
 mod grading;
 mod plans;
@@ -221,7 +226,9 @@ fn serve_connection(stream: UnixStream, ctx: ControlContext) {
                 let id = req.id;
                 let key = req.idempotency_key;
                 let fingerprint = serde_json::to_value(&req.command).unwrap_or_default();
+                let graph_write = matches!(&req.command, ControlCommand::GraphOps { .. });
                 let run = || match handle(&ctx, req.command, &mut None) {
+                    Ok(v) if graph_write && v["accepted"] == false => Response::graph_refused(id, v),
                     Ok(v) => Response::ok(id, with_project_generation(&ctx, v)),
                     Err(e) => Response::err(id, e),
                 };
@@ -682,6 +689,8 @@ fn handle(
             | ControlCommand::Apply { .. }
             | ControlCommand::Fonts
             | ControlCommand::NodeTypes { .. }
+            | ControlCommand::GraphRead { .. }
+            | ControlCommand::GraphOps { .. }
         ) => requests::editing::respond(ctx, cmd, collect),
         #[cfg(feature = "test-hooks")]
         cmd @ ControlCommand::EffectCommand { .. } => requests::editing::respond(ctx, cmd, collect),
