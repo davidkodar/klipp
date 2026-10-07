@@ -21,9 +21,11 @@ fn whole(f: &mut ParamFn, name: &'static str, v: &mut u32) {
 }
 
 impl BuiltinEffect {
-    /// Hand every keyframable parameter of this effect to `f`, by the
-    /// name its keyframes are keyed under (`"{index}:{name}"`), and set it
-    /// to what `f` returns.
+    /// Hand every keyframable parameter of this effect to `f`, by its
+    /// keyframe name, and set it to what `f` returns. A revision-1 list
+    /// keys it as `"{index}:{name}"`; an effect node holds it in its
+    /// `anim`, under the parameter it drives, which is the same name but
+    /// for the lift's aliases (ChromaKey's `spill` drives `soft_edge`).
     ///
     /// Not here, and so never keyframable: the transform (its own
     /// keyframe tracks), colours, modes and switches, the plug-in

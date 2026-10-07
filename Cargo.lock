@@ -2917,6 +2917,8 @@ dependencies = [
  "klipp-core",
  "klipp-effects",
  "klipp-frei0r",
+ "klipp-graph-format",
+ "klipp-graph-lift",
  "klipp-nodes",
  "klipp-plugin",
  "klipp-timeline",
