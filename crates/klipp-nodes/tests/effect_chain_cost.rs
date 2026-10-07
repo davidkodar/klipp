@@ -59,6 +59,12 @@ fn median(mut v: Vec<f64>) -> f64 {
 #[test]
 #[ignore = "a manual probe: needs a GPU, prints milliseconds (L6)"]
 fn the_native_effect_plan_is_no_slower_than_the_legacy_loop() {
+    // KLIPP_PROBE_TRACE=1 prints the executor's own per-node breakdown
+    // (`PERF graph_exec`) for each native run: where its time goes, at node
+    // granularity, when no sampling profiler is to hand.
+    if std::env::var_os("KLIPP_PROBE_TRACE").is_some() {
+        let _ = tracing_subscriber::fmt().with_max_level(tracing_subscriber::filter::LevelFilter::DEBUG).with_target(false).try_init();
+    }
     let px: Vec<f32> = (0..W * H).flat_map(|i| {
         let (x, y) = ((i % W) as f32 / W as f32, (i / W) as f32 / H as f32);
         [x * 0.9, y * 0.7, (1.0 - x) * 0.6 + 0.05, 1.0]
