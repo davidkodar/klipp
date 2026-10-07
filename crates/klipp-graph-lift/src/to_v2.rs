@@ -126,11 +126,19 @@ fn legacy_node(id: NodeId, type_id: &str, enabled: bool, legacy: Legacy) -> Node
 
 /// The node type a built-in effect becomes, by its v1 `type` tag.
 fn effect_type(payload: &Value) -> &'static str {
-    match payload.get("type").and_then(Value::as_str) {
-        Some("opacity") => types::LEGACY_OPACITY,
-        Some("transform") => types::LEGACY_TRANSFORM,
-        Some("speed_ramp") => types::LEGACY_SPEED_RAMP,
-        Some("temporal_denoise") => types::LEGACY_TEMPORAL_DENOISE,
+    effect_node_type(payload.get("type").and_then(Value::as_str).unwrap_or(""))
+}
+
+/// The node type a built-in effect with saved tag `tag` becomes: its own
+/// for the four the clip places itself (opacity, transform, speed ramp,
+/// temporal denoise), `klipp.legacy.effect` for every other. The one rule
+/// the conversion and a clip's graph-op writers share.
+pub fn effect_node_type(tag: &str) -> &'static str {
+    match tag {
+        "opacity" => types::LEGACY_OPACITY,
+        "transform" => types::LEGACY_TRANSFORM,
+        "speed_ramp" => types::LEGACY_SPEED_RAMP,
+        "temporal_denoise" => types::LEGACY_TEMPORAL_DENOISE,
         _ => types::LEGACY_EFFECT,
     }
 }
