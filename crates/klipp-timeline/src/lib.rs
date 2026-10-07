@@ -47,6 +47,10 @@ mod brief;
 mod clip_anim;
 mod picture_fields;
 mod picture_store;
+mod picture_ops;
+mod registry_catalog;
+pub use picture_ops::PictureEdit;
+pub use registry_catalog::RegistryCatalog;
 #[cfg(test)]
 mod picture_cache_tests;
 pub use clip_anim::{EffectKeyframes, Keyframes, ParamModifiers};

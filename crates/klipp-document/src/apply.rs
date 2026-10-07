@@ -632,6 +632,14 @@ impl DocumentView<'_> {
             EditCommand::SetNodeGraph { clip_id, old_graph, .. } => {
                 set_node_graph(&mut self.sequences[self.active], *clip_id, old_graph);
             }
+            EditCommand::PictureEdit { clip_id, edit, .. } => {
+                for track in &mut self.sequences[self.active].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.restore_picture(&edit.before);
+                        break;
+                    }
+                }
+            }
             EditCommand::EditKeyframes { clip_id, linked_clip_id, old_state, old_linked_state, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -1314,6 +1322,14 @@ impl DocumentView<'_> {
             EditCommand::SetNodeGraph { clip_id, new_graph, .. } => {
                 set_node_graph(&mut self.sequences[self.active], *clip_id, new_graph);
             }
+            EditCommand::PictureEdit { clip_id, edit, .. } => {
+                for track in &mut self.sequences[self.active].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        clip.restore_picture(&edit.after);
+                        break;
+                    }
+                }
+            }
             EditCommand::EditKeyframes { clip_id, linked_clip_id, new_state, new_linked_state, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -1735,5 +1751,54 @@ mod effect_writer_tests {
         assert_eq!((c.effect_id_at(0), c.effect_id_at(1)), ids, "a keyframe edit is no new effect");
         view.apply_inverse(&edit);
         assert_eq!(animation(clip(view.sequences, id)), ALL);
+    }
+}
+
+#[cfg(test)]
+mod picture_edit_tests {
+    use super::*;
+    use klipp_core::Timecode;
+    use klipp_graph_format::path::{NodePath, Root};
+    use klipp_graph_format::{types, ParamValue};
+    use klipp_graph_lift::ops::GraphOp;
+
+    /// A batch of graph ops on a clip is one history entry: undone, the
+    /// picture is the one before, effect ids included; redone, the one
+    /// after.
+    #[test]
+    fn a_picture_edit_undoes_and_redoes_the_clips_picture_whole() {
+        let mut seq = Sequence::new_default();
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), Timecode::zero(), Timecode { value: 48, rate: 24 }, Timecode::zero(), Timecode { value: 48, rate: 24 });
+        clip.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 });
+        clip.push_effect(klipp_effects::BuiltinEffect::Sharpen { amount: 0.5 });
+        let clip_id = clip.id;
+        let ids: Vec<_> = clip.effect_entries().map(|(id, _, _)| id).collect();
+        let fx: Vec<_> = clip.picture_v2().unwrap().picture.graph.nodes.iter().filter(|n| n.type_id.as_str() == types::LEGACY_EFFECT).map(|n| n.id).collect();
+        let at = |id| NodePath::new(Root::Clip { clip: clip_id.0 }, [id]);
+        let mut edited = clip.clone();
+        let edit = edited
+            .apply_picture_ops(&[
+                GraphOp::SetParam { path: at(fx[0]), key: "radius".into(), value: ParamValue::Float(5.0) },
+                GraphOp::MoveAfter { path: at(fx[0]), after: fx[1] },
+            ])
+            .unwrap();
+        seq.tracks[0].clips.push(edited);
+        let entry = EditCommand::PictureEdit { description: "Edit Effects", clip_id, edit: Box::new(edit) };
+        let mut sequences = vec![seq];
+        let mut pool = MediaPool::new();
+        let mut fps = sequences[0].fps;
+        let mut view = DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        let order = |view: &mut DocumentView| -> Vec<_> {
+            view.sequences[0].tracks[0].find_clip_mut(clip_id).unwrap().effect_entries().map(|(id, e, _)| (id, e.clone())).collect()
+        };
+        view.apply_inverse(&entry);
+        let undone = order(&mut view);
+        assert_eq!(undone.iter().map(|(id, _)| *id).collect::<Vec<_>>(), ids, "the effects' ids and order are back");
+        assert!(matches!(undone[0].1, klipp_effects::BuiltinEffect::GaussianBlur { radius } if radius == 3.0));
+        view.apply_forward(&entry);
+        let redone = order(&mut view);
+        assert_eq!(redone.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![ids[1], ids[0]]);
+        assert!(matches!(redone[1].1, klipp_effects::BuiltinEffect::GaussianBlur { radius } if radius == 5.0));
+        assert_eq!(entry.label(), "Edit Effects");
     }
 }

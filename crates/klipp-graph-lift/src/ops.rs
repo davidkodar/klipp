@@ -152,11 +152,21 @@ fn is_end(n: &Node) -> bool {
     matches!(n.type_id.as_str(), lt::SOURCE | lt::OUTPUT | lt::GROUP_INPUT | lt::GROUP_OUTPUT | lt::GROUP_FRAME)
 }
 
+/// A float as a file writes it: the shortest decimal that reads back as
+/// the same `f32` (`0.065`, not the `0.06499999761581421` its widening to
+/// `f64` gives), so an op stores what a save and a reload would.
+fn float(f: f32) -> Value {
+    if !f.is_finite() {
+        return Value::Null;
+    }
+    f.to_string().parse::<f64>().ok().and_then(serde_json::Number::from_f64).map_or(Value::Null, Value::Number)
+}
+
 /// A parameter value as the v1 entry stores it, or `None` for one that
 /// isn't set that way before 2b.
 fn as_v1(value: &ParamValue) -> Option<Value> {
     Some(match value {
-        ParamValue::Float(f) => serde_json::json!(f),
+        ParamValue::Float(f) => float(*f),
         ParamValue::Int(i) => serde_json::json!(i),
         ParamValue::Bool(b) => serde_json::json!(b),
         ParamValue::Enum(e) => serde_json::json!(e),

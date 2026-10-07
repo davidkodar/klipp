@@ -22,6 +22,9 @@ roxmltree = "0.20"
 zip = { version = "2", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+[dev-dependencies]
+klipp-graph-format = { workspace = true }
+
 [lints]
 workspace = true
 

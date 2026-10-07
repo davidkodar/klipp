@@ -373,41 +373,7 @@ fn removing_a_gating_key_ungates_the_correction() {
 }
 
 
-struct RegistryCatalog;
-impl RegistryCatalog {
-    fn describe(desc: &klipp_effects::registry::NodeTypeDesc) -> klipp_graph_format::NodeSpec {
-        use klipp_graph_format::{NodeSpec, PortSpec, PortType};
-        let ports = |ports: &[klipp_effects::registry::PortDesc]| ports.iter().map(|p| PortSpec {
-            key: p.key.into(),
-            ty: match p.ty { klipp_effects::registry::PortType::Image => PortType::Image, klipp_effects::registry::PortType::Matte => PortType::Matte },
-            optional: p.optional,
-            params: p.params.iter().map(|p| (p.key.into(), p.options.iter().map(|s| (*s).into()).collect())).collect(),
-        }).collect();
-        NodeSpec { inputs: ports(desc.inputs), outputs: ports(desc.outputs), mixable: desc.mixable }
-    }
-}
-impl klipp_graph_format::PortCatalog for RegistryCatalog {
-    fn node(&self, type_id: &str) -> Option<klipp_graph_format::NodeSpec> {
-        klipp_effects::registry::effect_types().map(|t| &t.desc).chain(klipp_nodes::registry::node_types().map(|t| &t.desc)).find(|d| d.id == type_id).map(Self::describe)
-    }
-    fn node_spec(&self, node: &Node) -> Option<klipp_graph_format::NodeSpec> {
-        if node.type_id.as_str() == types::LEGACY_NODE {
-            let name = node.legacy.as_ref()?.payload.get("kind")?.as_str()?;
-            let kind: klipp_nodes::NodeKind = serde_json::from_value(json!(name)).ok()?;
-            let mut spec = Self::describe(&klipp_nodes::registry::node_type(kind)?.desc);
-            // Registry descriptors use semantic names (Qualifier's matte),
-            // while migrated graphs retain the keys from their old indices.
-            for (index, p) in spec.inputs.iter_mut().enumerate() { p.key = klipp_graph_format::ports::input_key(name, index as u8).to_string(); }
-            for (index, p) in spec.outputs.iter_mut().enumerate() { p.key = klipp_graph_format::ports::output_key(name, index as u8).to_string(); }
-            return Some(spec);
-        }
-        if node.type_id.as_str() == types::LEGACY_EFFECT {
-            let tag = node.legacy.as_ref()?.payload.get("type")?.as_str()?;
-            return klipp_effects::registry::effect_type(tag).map(|t| Self::describe(&t.desc));
-        }
-        self.node(node.type_id.as_str())
-    }
-}
+use klipp_timeline::RegistryCatalog;
 
 const MATTE_ID: u128 = 0xe00;
 const TARGET_ID: u128 = 0xe01;
@@ -750,4 +716,18 @@ fn key_ops_edit_a_parameters_animation() {
     let on_track = NodePath::new(Root::Track { track: u(TRACK), part: TrackPart::Effects }, [first]);
     apply(&mut d, &GraphOp::AddKeyAt { path: on_track, key: "radius".into(), keyframe: key_at(0.0, 1.0) }).unwrap();
     assert_eq!(d.track_effects[&u(TRACK)][0].anim[&ParamKey::from("radius")].keys.len(), 1);
+}
+
+/// A float lands as a file writes it, the shortest decimal for its f32,
+/// so an op stores what a save and a reload would.
+#[test]
+fn a_float_param_is_stored_as_the_file_writes_it() {
+    let mut d = docs();
+    let g = group(&d);
+    apply(&mut d, &GraphOp::SetParam { path: clip_path([g, u(E)]), key: "exposure".into(), value: ParamValue::Float(0.065) }).unwrap();
+    let body = &d.clips[&u(CLIP)].graph.nodes.iter().find(|n| n.id == g).unwrap().group.as_ref().unwrap().graph;
+    let e = body.nodes.iter().find(|n| n.id == u(E)).unwrap();
+    let stored = &e.legacy.as_ref().unwrap().payload["params"]["exposure"];
+    assert_eq!(stored.to_string(), "0.065");
+    assert_eq!(serde_json::to_string(&0.065f32).unwrap(), "0.065", "what a save writes");
 }

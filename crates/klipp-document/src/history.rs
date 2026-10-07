@@ -535,6 +535,16 @@ pub enum EditCommand {
         new_graph: klipp_nodes::NodeGraph,
     },
 
+    // === PICTURE (graph ops, node-graph M2 step 15) ===
+    /// A batch of graph ops on a clip's picture: its fields before and
+    /// after, effect ids included (`Clip::apply_picture_ops`), so undo
+    /// and redo put the picture back whole.
+    PictureEdit {
+        description: &'static str,
+        clip_id: ClipId,
+        edit: Box<klipp_timeline::PictureEdit>,
+    },
+
     // === CLIP AUDIO ===
     EditClipAudio {
         clip_id: ClipId,
@@ -820,6 +830,7 @@ impl EditCommand {
             EditCommand::AddTransition { .. } => "Add Transition",
             EditCommand::RemoveTransition { .. } => "Remove Transition",
             EditCommand::SetNodeGraph { .. } => "Color Grade",
+            EditCommand::PictureEdit { description, .. } => description,
             EditCommand::ReplaceClip { description, .. } => description,
             EditCommand::EditKeyframes { description, .. } => description,
             EditCommand::EditClipAudio { .. } => "Edit Audio",
