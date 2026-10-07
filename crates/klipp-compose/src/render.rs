@@ -3435,7 +3435,7 @@ pub(crate) fn clip_opacity(clip: &Clip, time: Timecode, fps: f64) -> f32 {
 /// over whatever its own `Transform` effect says. A tilt with no
 /// perspective given is seen in moderate perspective (1), since flat it
 /// would only squash the picture rather than lean it.
-fn tilt(clip: &Clip, fx: &[BuiltinEffect], t: f64) -> (f32, f32, f32) {
+pub(crate) fn tilt(clip: &Clip, fx: &[BuiltinEffect], t: f64) -> (f32, f32, f32) {
     let (rx, ry, persp) = fx
         .iter()
         .find_map(|e| match e {
@@ -3451,7 +3451,7 @@ fn tilt(clip: &Clip, fx: &[BuiltinEffect], t: f64) -> (f32, f32, f32) {
 }
 
 /// A `Transform` effect with the resolved values and the clip's tilt.
-fn transform_effect(xf: ResolvedTransform, (rx, ry, persp): (f32, f32, f32)) -> BuiltinEffect {
+pub(crate) fn transform_effect(xf: ResolvedTransform, (rx, ry, persp): (f32, f32, f32)) -> BuiltinEffect {
     let (px, py, sx, sy, ro, ax, ay) = xf;
     BuiltinEffect::Transform {
         position_x: px, position_y: py, scale_x: sx, scale_y: sy, rotation: ro,
