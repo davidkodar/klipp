@@ -25,6 +25,7 @@
 pub mod protocol;
 pub mod graph_wire;
 mod graph_model;
+mod graph_masks;
 mod graph_prepare;
 mod graph_read;
 mod graph_request;
