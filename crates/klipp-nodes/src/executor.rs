@@ -1713,6 +1713,12 @@ impl GraphExecutor {
         // grade stacks of 10-20 nodes run every frame during scrub.
         let node_by_id: HashMap<NodeId, &Node> =
             graph.nodes.iter().map(|n| (n.id, n)).collect();
+        // Whether a node's output is the source left on the GPU (its
+        // published value is the empty sentinel, no pixels on the CPU). A
+        // node run on the CPU can't read it, and an empty input reads as
+        // "unwired" to the matte consumers, which pass the graded picture
+        // through: a gate would correct the whole frame (#1234).
+        let is_gpu_source = |id: NodeId| gpu_resident_source && node_by_id.get(&id).is_some_and(|n| n.kind == NodeKind::Source);
 
         // 2. Map: NodeId → linear-light output buffer (Arc-shared for zero-copy
         //    passthrough of bypassed / default-param nodes).
@@ -2347,6 +2353,8 @@ impl GraphExecutor {
                         if let Some(arc) = node_outputs.get(&src_id) {
                             if !arc.is_empty() {
                                 wired.push((port, arc.as_slice()));
+                            } else if is_gpu_source(src_id) {
+                                return Err(ExecutorError::CpuSourceRequired);
                             }
                         }
                     }
@@ -2398,6 +2406,9 @@ impl GraphExecutor {
             let tertiary_slice = tertiary
                 .filter(|arc| !arc.is_empty())
                 .map(|v| v.as_slice());
+            if [1, 2].into_iter().any(|port| graph.input_of(node_id, port).is_some_and(is_gpu_source)) {
+                return Err(ExecutorError::CpuSourceRequired);
+            }
             if matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment)
                 && node.params.effect_blend.is_some()
                 && graph.input_of(node_id, 1).is_some()
