@@ -11090,7 +11090,12 @@ fn display_encode(px_in: vec3<f32>) -> vec4<f32> {
     if params.scene_op == 2u {
         px = hdr_display_light(px, params.scene_kind, params.scene_scale, params.peak_nits);
     } else if params.scene_op == 1u {
-        let e = px * params.scene_exposure;
+        // Negative first goes to 0, as the CPU's `hdr_display_tonemap`
+        // and the viewer's tone map take it: a wide-gamut source's colours
+        // outside the working space arrive negative, and this curve maps a
+        // small negative to a positive (-0.1 to 0.21), a cast the CPU
+        // never shows (#1280).
+        let e = max(px * params.scene_exposure, vec3<f32>(0.0));
         px = vec3<f32>(filmic(e.x), filmic(e.y), filmic(e.z));
     }
     // An HDR delivery is a different tail entirely — the frame is display
