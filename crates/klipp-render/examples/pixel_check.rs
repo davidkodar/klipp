@@ -289,7 +289,7 @@ fn render_project(dir: &Path, out: &Path, scratch: &Path) -> Result<Rendered, St
                 for &f in &frames {
                     let time = Timecode::from_frames(f as i64, snapshot.fps_num);
                     let (linear, found) = r.render_inspected(&snapshot.video.sequence, time, WIDTH, h, &mut source, klipp_compose::RenderOptions::default(), klipp_compose::Inspect::default());
-                    done.plan_clips += found.stats.effects_followed_grade;
+                    done.plan_clips += found.stats.plan_clips();
                     done.plan_fallbacks += found.stats.effects_fallback_lists;
                     // As the export does after each frame: a decoder that
                     // failed fails the project rather than being recorded,
@@ -330,7 +330,7 @@ fn stack_frames(snapshot: &SequenceSnapshot, frames: &[u64], h: u32, seq_dir: &P
         source.end_frame().map_err(|e| format!("frame {f} (stack): {e}"))?;
         match stack {
             Some((px, stats)) => {
-                done.plan_clips += stats.effects_followed_grade;
+                done.plan_clips += stats.plan_clips();
                 done.plan_fallbacks += stats.effects_fallback_lists;
                 image::save_buffer(seq_dir.join(format!("{f}-stack.png")), &px, WIDTH, h, image::ExtendedColorType::Rgba8).map_err(|e| e.to_string())?;
                 done.frames += 1;

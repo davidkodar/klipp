@@ -279,10 +279,23 @@ pub struct RenderStats {
     /// the plug-ins, which run on the CPU between the grade and the
     /// effects (M2 step 11c-2).
     pub effects_after_plugins: u32,
+    /// Clips under a shutter (the camera's, or a title's own motion blur)
+    /// whose effects ran as plans of their own around the sampling: the
+    /// ones before the transform, the transform at each sample, the rest
+    /// after (M2 step 11c-3).
+    pub effects_shuttered: u32,
     /// Clips on the plan route whose lifted picture could not give their
     /// effects, so `clip_effects`' list stood in (M2 step 10c). Zero
     /// unless a lift is broken.
     pub effects_fallback_lists: u32,
+}
+
+impl RenderStats {
+    /// Clips whose effects ran as plans, by any route: spliced into the
+    /// grade's run, after a plug-in, or around a shutter's samples.
+    pub fn plan_clips(&self) -> u32 {
+        self.effects_followed_grade + self.effects_after_plugins + self.effects_shuttered
+    }
 }
 
 /// One entry of the stack [`Renderer::render`] composites.
@@ -459,6 +472,9 @@ pub struct Renderer {
     /// A scene-referred clip's display step for the grade being run,
     /// spliced in after the grade and before `run_effects` (step 11c).
     run_display: Option<klipp_color::hdr::SceneToDisplay>,
+    /// Effect runs that couldn't be applied as a plan of their own and
+    /// took the legacy route (`effects_by`), for the stats' counts.
+    plan_misses: u64,
     /// The grade with `run_effects` spliced in, kept so each frame reuses
     /// its allocations.
     spliced: klipp_nodes::NodeGraph,
@@ -577,6 +593,7 @@ impl Renderer {
             legacy_effects: std::env::var_os("KLIPP_LEGACY_EFFECTS").is_some_and(|v| v == "1"),
             run_effects: Vec::new(),
             run_display: None,
+            plan_misses: 0,
             spliced: klipp_nodes::NodeGraph::default(),
             passthrough: passthrough_graph(),
             grade_ran: false,
@@ -2150,21 +2167,25 @@ impl Renderer {
         // download and upload between them, when nothing in between needs
         // the picture on the CPU (#1089, M2 step 10).
         let on_gpu = self.effects_follow_grade_on_gpu(clip, &fx);
-        // A plug-in sits between the grade and the effects and runs on the
-        // CPU, so a clip with one runs two plans: the grade, then its
-        // effects after the plug-ins (step 11c-2).
+        // What runs on the CPU between the grade and the effects keeps them
+        // out of the grade's run: a plug-in (step 11c-2), or a shutter
+        // that places the picture at every sample and averages them
+        // (11c-3). Such a clip runs its grade as a plan, that CPU step, and
+        // its effects as plans of their own around it.
         let plugins = clip.has_enabled_plugins();
+        let shutter = title_motion_blur(clip).is_some() || self.shutter.contains_key(&clip.id);
+        let splice = !plugins && !shutter;
         // Kept for a second grade if the effects can't finish in the plan.
-        let retry = (on_gpu && !plugins).then(|| input.clone());
-        let mut after_plugins = None;
+        let retry = (on_gpu && splice).then(|| input.clone());
+        let mut apart = None;
         if on_gpu {
             let mut stats = std::mem::take(&mut self.found.stats);
             let planned = self.plan_effects(clip, time, fps, transforms, &fx, &mut stats);
             self.found.stats = stats;
-            if plugins {
-                after_plugins = Some(planned);
-            } else {
+            if splice {
                 self.run_effects = planned;
+            } else {
+                apart = Some(planned);
             }
             // A scene-referred source's display step runs in the plan too,
             // after the grade, where `display_render` runs it below on the
@@ -2178,7 +2199,7 @@ impl Renderer {
         if on_gpu {
             self.run_effects.clear();
             displayed = self.run_display.take().is_some() && self.grade_ran;
-            if !plugins {
+            if splice {
                 if self.grade_ran && self.executor.last_run_effects_complete() {
                     self.found.stats.effects_followed_grade += 1;
                     PLAN_EFFECT_CLIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2199,19 +2220,12 @@ impl Renderer {
         } else {
             None
         };
-        let mut pixels = self.ofx(clip, pixels, clip_time, width, height, provider);
-        if let Some(planned) = after_plugins {
-            match self.run_effects_plan(clip, &planned, pixels, clip_time, fps, width, height) {
-                Ok(out) => {
-                    self.found.stats.effects_after_plugins += 1;
-                    PLAN_EFFECT_CLIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return Some((out, opacity));
-                }
-                // An effect could not be applied: the legacy route below
-                // takes the plug-ins' picture, never shown without it.
-                Err(back) => pixels = back,
-            }
-        }
+        let pixels = self.ofx(clip, pixels, clip_time, width, height, provider);
+        // The effects as plans of their own (`effects_by`) when the plan
+        // route is on, from the picture; the list otherwise.
+        let plan = apart.is_some();
+        let fx = apart.unwrap_or(fx);
+        let missed = self.plan_misses;
         // A title whose own drawing moves is drawn again at every shutter
         // sample, by `title_pixels_at`, which carries a sample through
         // what the frame above was just carried through.
@@ -2221,12 +2235,21 @@ impl Renderer {
         };
         let pixels = match (title_motion_blur(clip), self.shutter.get(&clip.id).cloned()) {
             (Some(_), _) => match self.title_shutter.get(&clip.id).cloned() {
-                Some(samples) => self.motion_blurred(clip, pixels, redrawn, &fx, &samples, time, fps, width, height),
-                None => self.effects(&fx, pixels, clip_time, width, height),
+                Some(samples) => self.motion_blurred(clip, pixels, redrawn, &fx, &samples, time, fps, width, height, plan),
+                None => self.effects_by(plan, clip, &fx, pixels, clip_time, fps, width, height),
             },
-            (None, Some(samples)) => self.shuttered(clip, pixels, &fx, &samples, clip_time, width, height),
-            (None, None) => self.effects(&fx, pixels, clip_time, width, height),
+            (None, Some(samples)) => self.shuttered(clip, pixels, &fx, &samples, clip_time, fps, width, height, plan),
+            (None, None) => self.effects_by(plan, clip, &fx, pixels, clip_time, fps, width, height),
         };
+        // Counted when every run of the clip's effects took the plan.
+        if plan && self.plan_misses == missed {
+            if shutter {
+                self.found.stats.effects_shuttered += 1;
+            } else {
+                self.found.stats.effects_after_plugins += 1;
+            }
+            PLAN_EFFECT_CLIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         Some((pixels, opacity))
     }
 
@@ -2257,6 +2280,23 @@ impl Renderer {
             Err(e) => {
                 tracing::warn!("clip {}: its effects after the plug-ins: {e:?}; the legacy route takes them", clip.id.0);
                 Err(pixels)
+            }
+        }
+    }
+
+    /// `fx` on `pixels`: as a plan of their own when `plan` (step 11c),
+    /// falling back to the legacy route for this run when they can't be
+    /// applied there (counted in `plan_misses`), or on the legacy route.
+    #[allow(clippy::too_many_arguments)]
+    fn effects_by(&mut self, plan: bool, clip: &Clip, fx: &[BuiltinEffect], pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
+        if !plan || fx.is_empty() {
+            return self.effects(fx, pixels, clip_time, width, height);
+        }
+        match self.run_effects_plan(clip, fx, pixels, clip_time, fps, width, height) {
+            Ok(out) => out,
+            Err(back) => {
+                self.plan_misses += 1;
+                self.effects(fx, back, clip_time, width, height)
             }
         }
     }
@@ -2305,12 +2345,11 @@ impl Renderer {
 
     /// Whether `clip`'s effects can take the grade's result where it sits
     /// on the GPU: the grade runs (no shortcut, nothing inspected), and
-    /// nothing between the grade and the effects needs the picture on the
-    /// CPU (a shutter or a title's own motion blur), and every effect runs
-    /// on the GPU. An HDR source's display step runs in the plan between
-    /// them (step 11c-1); a plug-in's clip runs its effects as a plan of
-    /// their own after the plug-ins (11c-2), and the GPU stack, which
-    /// has no plug-in pass, declines it. The
+    /// every effect runs on the GPU. An HDR source's display step runs in
+    /// the plan between them (step 11c-1). A clip with a plug-in (11c-2)
+    /// or a shutter (11c-3) between them runs its effects as plans of
+    /// their own around that CPU step, and the GPU stack, which has
+    /// neither, declines it. The
     /// legacy route, a download and an upload between them, stays
     /// selectable ([`Self::set_legacy_effects`], or `KLIPP_LEGACY_EFFECTS=1`)
     /// until M2's effect families are native.
@@ -2327,9 +2366,6 @@ impl Renderer {
             && has_active_effects(fx)
             && klipp_effects::chain_supports_gpu(fx)
             && self.inspect.clip != Some(clip.id)
-            && title_motion_blur(clip).is_none()
-            && !self.shutter.contains_key(&clip.id)
-            && !self.title_shutter.contains_key(&clip.id)
     }
 
     /// A title as working-space linear pixels at one instant: rasterised
@@ -2945,24 +2981,25 @@ impl Renderer {
     /// averaged, and what draws outside the picture — a shadow, a glow —
     /// is cast once from the blurred result, so it blurs with it.
     #[allow(clippy::too_many_arguments)]
-    fn shuttered(&mut self, clip: &Clip, pixels: Vec<f32>, fx: &[BuiltinEffect], samples: &[(ResolvedTransform, f64)], clip_time: f64, width: u32, height: u32) -> Vec<f32> {
+    #[allow(clippy::too_many_arguments)]
+    fn shuttered(&mut self, clip: &Clip, pixels: Vec<f32>, fx: &[BuiltinEffect], samples: &[(ResolvedTransform, f64)], clip_time: f64, fps: f64, width: u32, height: u32, plan: bool) -> Vec<f32> {
         let cut = fx
             .iter()
             .position(|e| matches!(e, BuiltinEffect::Transform { .. }))
             .unwrap_or_else(|| fx.iter().position(klipp_effects::draws_outside_the_picture).unwrap_or(fx.len()));
         let before = &fx[..cut];
         let after: Vec<BuiltinEffect> = fx[cut..].iter().filter(|e| !matches!(e, BuiltinEffect::Transform { .. })).cloned().collect();
-        let base = self.effects(before, pixels, clip_time, width, height);
+        let base = self.effects_by(plan, clip, before, pixels, clip_time, fps, width, height);
         let mut acc = vec![0.0f32; base.len()];
         for &(xf, t) in samples {
-            let placed = self.effects(&[transform_effect(xf, tilt(clip, fx, t))], base.clone(), t, width, height);
+            let placed = self.effects_by(plan, clip, &[transform_effect(xf, tilt(clip, fx, t))], base.clone(), t, fps, width, height);
             for (a, s) in acc.iter_mut().zip(&placed) {
                 *a += *s;
             }
         }
         let inv = 1.0 / samples.len() as f32;
         acc.iter_mut().for_each(|v| *v *= inv);
-        self.effects(&after, acc, clip_time, width, height)
+        self.effects_by(plan, clip, &after, acc, clip_time, fps, width, height)
     }
 
     /// A title smeared by its own motion blur: as [`Self::shuttered`]
@@ -2985,6 +3022,7 @@ impl Renderer {
         fps: f64,
         width: u32,
         height: u32,
+        plan: bool,
     ) -> Vec<f32> {
         let clip_time = eval_clip_time(clip, time);
         let cut = fx
@@ -3017,7 +3055,7 @@ impl Renderer {
         // transform, when its drawing does not move.
         let still = match redrawn {
             Some(_) => None,
-            None => Some(self.effects(before, pixels.clone(), clip_time, width, height)),
+            None => Some(self.effects_by(plan, clip, before, pixels.clone(), clip_time, fps, width, height)),
         };
         let mut acc = vec![0.0f32; pixels.len()];
         for &(xf, t) in samples {
@@ -3025,18 +3063,18 @@ impl Renderer {
                 (Some(base), _) => base.clone(),
                 (None, Some(td)) => {
                     let drawn = self.title_pixels_at(clip, td, t, fps, width, height);
-                    self.effects(before, drawn, t, width, height)
+                    self.effects_by(plan, clip, before, drawn, t, fps, width, height)
                 }
                 (None, None) => unreachable!("a still picture is drawn when the title's drawing does not move"),
             };
-            let placed = self.effects(&[transform_effect(xf, tilt(clip, fx, t))], picture, t, width, height);
+            let placed = self.effects_by(plan, clip, &[transform_effect(xf, tilt(clip, fx, t))], picture, t, fps, width, height);
             for (a, s) in acc.iter_mut().zip(&placed) {
                 *a += *s;
             }
         }
         let inv = 1.0 / samples.len().max(1) as f32;
         acc.iter_mut().for_each(|v| *v *= inv);
-        self.effects(&after, acc, clip_time, width, height)
+        self.effects_by(plan, clip, &after, acc, clip_time, fps, width, height)
     }
 
     /// Both clips of a transition as full layers at `time`, blended.
