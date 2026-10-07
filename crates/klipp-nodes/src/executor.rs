@@ -158,6 +158,18 @@ impl SeedPixels {
     }
 }
 
+/// `motion` on a GPU pipeline: what it holds uploaded, what it lacks cleared.
+fn upload_motion(gpu: &mut GpuEffectsPipeline, motion: &klipp_effects::MotionData) {
+    match &motion.stabilization {
+        Some(h) => gpu.upload_stabilization_homography(h),
+        None => gpu.clear_stabilization_homography(),
+    }
+    match &motion.rsc_rows {
+        Some(rows) => gpu.upload_rsc_row_transforms(rows),
+        None => gpu.clear_rsc_row_transforms(),
+    }
+}
+
 pub struct GraphExecutor {
     /// Optional GPU pipeline for accelerated node execution.
     /// Lazily populated by `ensure_gpu()` on first use so we don't
@@ -168,6 +180,12 @@ pub struct GraphExecutor {
     /// (success or failure). Prevents retrying a failed init on
     /// every frame.
     gpu_init_attempted: bool,
+    /// This frame's stabilisation correction and rolling-shutter rows
+    /// (node-graph M2 step 12): what an effect node's stabilisation and
+    /// rolling-shutter correction warp by, on the CPU arm and uploaded to
+    /// this executor's own GPU pipeline. Set per frame by the renderer
+    /// ([`Self::set_motion`]); empty, both pass the frame through.
+    motion: klipp_effects::MotionData,
     /// Cache of loaded LUT data keyed by file path.
     lut_cache: HashMap<PathBuf, Arc<LutData>>,
     /// Cache of pre-built curve LUTs keyed by node ID.
@@ -636,6 +654,7 @@ impl GraphExecutor {
         Self {
             gpu: None,
             gpu_init_attempted: false,
+            motion: klipp_effects::MotionData::default(),
             lut_cache: HashMap::new(),
             curve_lut_cache: HashMap::new(),
             matte_image_cache: HashMap::new(),
@@ -688,6 +707,8 @@ impl GraphExecutor {
             // even though the project is on AcesCG.
             gpu.set_luma_coefs(klipp_color::linear::luma_coefs(self.working_colorspace));
             gpu.set_grade_encoding(self.grade_encoding.as_u8());
+            // Motion set before the pipeline existed.
+            upload_motion(gpu, &self.motion);
         } else {
             tracing::info!(
                 "GraphExecutor: GPU unavailable, using CPU fallback for all nodes"
@@ -702,6 +723,7 @@ impl GraphExecutor {
             // Mark "attempted" so `ensure_gpu()` is a no-op —
             // `new_cpu_only` explicitly wants CPU-only.
             gpu_init_attempted: true,
+            motion: klipp_effects::MotionData::default(),
             lut_cache: HashMap::new(),
             curve_lut_cache: HashMap::new(),
             matte_image_cache: HashMap::new(),
@@ -1337,6 +1359,20 @@ impl GraphExecutor {
     /// Returns `None` if GPU init failed or hasn't been attempted yet.
     pub fn gpu_pipeline_mut(&mut self) -> Option<&mut GpuEffectsPipeline> {
         self.gpu.as_mut()
+    }
+
+    /// This frame's motion data for the stabilisation and rolling-shutter
+    /// effects its effect nodes run (node-graph M2 step 12): kept for the
+    /// CPU arm and uploaded to this executor's GPU pipeline, where the
+    /// recorded arms read it. The renderer prepares it per clip and frame
+    /// (`prepare_temporal_effects`) and sets it here before the run; an
+    /// empty one clears both, so no clip warps by the data of the one
+    /// before it.
+    pub fn set_motion(&mut self, motion: &klipp_effects::MotionData) {
+        self.motion = motion.clone();
+        if let Some(gpu) = self.gpu.as_mut() {
+            upload_motion(gpu, motion);
+        }
     }
 
     /// [`Self::gpu_pipeline_mut`], building the pipeline first if it has
@@ -3700,7 +3736,7 @@ impl GraphExecutor {
                         self.run_effect_breaks += 1;
                         out
                     }
-                    _ => klipp_effects::apply_effects_with_luma(fx, primary_input.to_vec(), width, height, clip_time_secs, luma),
+                    _ => klipp_effects::apply_effects_with_motion(fx, primary_input.to_vec(), width, height, clip_time_secs, luma, &self.motion),
                 };
                 match params.effect_blend {
                     Some(blend) => mix_effect_cpu(blend, luma, primary_input, effect, secondary_input).unwrap_or_else(|| {

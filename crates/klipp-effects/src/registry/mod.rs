@@ -388,6 +388,17 @@ pub fn needs_other_times(effect: &BuiltinEffect) -> bool {
     kinds.contains(&std::mem::discriminant(effect))
 }
 
+/// Whether `effect` needs the source's neighbouring frames
+/// (`Temporal::SourceNeighbours`: temporal noise reduction, frame
+/// blending), which run before the grade, outside a plan. The
+/// analysis-driven types need other times too ([`needs_other_times`]),
+/// but their per-frame data reaches a plan node as a value or as motion.
+pub fn needs_source_neighbours(effect: &BuiltinEffect) -> bool {
+    static KINDS: std::sync::OnceLock<Vec<std::mem::Discriminant<BuiltinEffect>>> = std::sync::OnceLock::new();
+    let kinds = KINDS.get_or_init(|| effect_types().filter(|t| t.desc.temporal == Temporal::SourceNeighbours).map(|t| std::mem::discriminant(&(t.sample)())).collect());
+    kinds.contains(&std::mem::discriminant(effect))
+}
+
 impl Scaling {
     /// Whether the effect scales it itself ([`BuiltinEffect::at_render_scale`]).
     pub fn by_the_effect(self) -> bool {

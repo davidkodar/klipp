@@ -2354,14 +2354,17 @@ impl Renderer {
     /// selectable ([`Self::set_legacy_effects`], or `KLIPP_LEGACY_EFFECTS=1`)
     /// until M2's effect families are native.
     fn effects_follow_grade_on_gpu(&self, clip: &Clip, fx: &[BuiltinEffect]) -> bool {
-        // An effect that needs other times (a stabilisation trajectory,
-        // rolling-shutter motion: data the renderer uploads to its own
-        // pipeline in `prepare_temporal_effects`, not the executor's) stays
-        // on the legacy route until step 12 brings its side data into the
-        // plan. Read from the registry, so a new such type is covered.
-        let analysis_driven = fx.iter().any(klipp_effects::registry::needs_other_times);
+        // An effect that needs the source's neighbouring frames can't be a
+        // plan node: temporal noise reduction and frame blending run at the
+        // head before the grade and are gone from `fx` (`clip_effects`), so
+        // this declines only a new such type nobody has moved there. The
+        // analysis-driven ones (stabilisation, rolling shutter, deflicker)
+        // take the plan route since step 12: their per-frame data reaches
+        // the executor (`prepare_temporal_effects`, `frame_inputs`). Read
+        // from the registry, so a new such type is covered.
+        let needs_neighbours = fx.iter().any(klipp_effects::registry::needs_source_neighbours);
         !self.legacy_effects
-            && !analysis_driven
+            && !needs_neighbours
             && self.allow_gpu
             && has_active_effects(fx)
             && klipp_effects::chain_supports_gpu(fx)
@@ -2539,6 +2542,7 @@ impl Renderer {
             gpu.clear_stabilization_homography();
             gpu.clear_rsc_row_transforms();
         }
+        self.executor.set_motion(&self.motion);
     }
 
     /// Work out the per-frame data the stabilisation and rolling-shutter
@@ -2567,6 +2571,9 @@ impl Renderer {
         });
         self.motion = klipp_effects::MotionData::default();
         if !stabilise && rsc.is_none() {
+            // The executor's effect nodes warp by the same data (M2 step
+            // 12): none, for a clip without these effects.
+            self.executor.set_motion(&self.motion);
             return;
         }
         let clip_time = eval_clip_time(clip, time);
@@ -2629,6 +2636,9 @@ impl Renderer {
                 self.motion.rsc_rows = Some(rows);
             }
         }
+        // The plan route's effect nodes run on the executor's own pipeline
+        // and CPU arm: they warp by the same data (M2 step 12).
+        self.executor.set_motion(&self.motion);
     }
 
     /// Average the source frame with its neighbours, before the grade.
