@@ -18,6 +18,48 @@ impl KlippApp {
         self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned()
     }
 
+    /// `edit` through the clip's graph ops when every entry it touches
+    /// takes them (node-graph M2 step 15b): one `PictureEdit` undo step,
+    /// or none while `record` is false (a drag's live steps, which its end
+    /// records). `None` when it doesn't take them, and the caller's
+    /// effect-list mutators run as before: the kinds the clip places
+    /// itself, until picture-truth clips are the norm. `Some(false)` when
+    /// the clip refused it, said in a toast.
+    fn effect_edit_by_ops(&mut self, clip_id: klipp_core::ClipId, edit: klipp_timeline::EffectEdit, description: &'static str, record: bool) -> Option<bool> {
+        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let clip = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id))?;
+        let ops = clip.effect_edit_ops(edit)?;
+        match clip.apply_picture_ops(&ops) {
+            Ok(done) => {
+                self.state.dirty = true;
+                if record {
+                    self.state.push_history(EditCommand::PictureEdit { description, clip_id, edit: Box::new(done) });
+                }
+                Some(true)
+            }
+            Err(why) => {
+                tracing::warn!(?edit, %why, "effect edit refused");
+                self.state.toast.show(format!("{description}: {why}"));
+                Some(false)
+            }
+        }
+    }
+
+    /// Have the engine draw the paused frame again. A new sequence alone
+    /// keeps each clip's cached render key until `SequenceUpdated`, so an
+    /// edit that sends only the sequence (a toggle did) showed the old
+    /// frame from the render cache until another edit came along.
+    fn refresh_paused_frame(&self) {
+        if self.state.playback != PlaybackState::Playing {
+            let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+        }
+    }
+
+    /// The clip's picture fields now, for a drag's ends.
+    fn picture_now(&self, clip_id: klipp_core::ClipId) -> Option<klipp_timeline::ClipPictureFields> {
+        self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).map(|c| c.picture.clone())
+    }
+
     /// Record an edit that moved effects about as one undo step: the
     /// clip whole either side, since the effects' keyframes and
     /// modifiers moved with them and the effects list alone would put
@@ -57,6 +99,15 @@ impl KlippApp {
     /// an effect edit), by dropping it, so nothing bogus is pushed.
     fn close_open_effect_drag(&mut self) {
         let pending = self.state.active_history().pending_old_entry_ref().map(|e| e.command.clone());
+        if let Some(EditCommand::PictureEdit { clip_id, description, edit }) = &pending {
+            match self.picture_now(*clip_id) {
+                Some(after) => self.state.active_history_mut().end_drag(HistoryEntry {
+                    command: EditCommand::PictureEdit { clip_id: *clip_id, description, edit: Box::new(klipp_timeline::PictureEdit { before: edit.before.clone(), after }) },
+                }),
+                None => self.state.active_history_mut().abandon_pending_drag(),
+            }
+            return;
+        }
         let Some(EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect, .. }) = pending else {
             self.state.active_history_mut().abandon_pending_drag();
             return;
@@ -181,6 +232,13 @@ impl KlippApp {
 
             // Built-in effects
             AppCommand::AddBuiltinEffect { clip_id, ref effect } => {
+                if self.effect_edit_by_ops(*clip_id, klipp_timeline::EffectEdit::Add(effect), "Add Effect", true).is_some() {
+                    self.sync_sequence_to_engine();
+                    if self.state.playback != PlaybackState::Playing {
+                        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    }
+                    return true;
+                }
                 let before = self.clip_effects_state(*clip_id);
                 let mut is_speed_ramp = false;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
@@ -211,27 +269,33 @@ impl KlippApp {
             AppCommand::RemoveBuiltinEffect { clip_id, index } => {
                 let before = self.clip_snapshot(*clip_id);
                 let mut was_speed_ramp = false;
-                let mut removed = false;
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if *index < clip.builtin_effects().len() {
-                            // Check if we're removing a SpeedRamp — need to reset speed
-                            if matches!(clip.builtin_effects()[*index], klipp_effects::BuiltinEffect::SpeedRamp { .. }) {
-                                was_speed_ramp = true;
+                let by_ops = self.effect_edit_by_ops(*clip_id, klipp_timeline::EffectEdit::Remove(*index), "Remove Effect", true);
+                let mut removed = by_ops == Some(true);
+                if by_ops == Some(false) {
+                    return true;
+                }
+                if by_ops.is_none() {
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if *index < clip.builtin_effects().len() {
+                                // Check if we're removing a SpeedRamp — need to reset speed
+                                if matches!(clip.builtin_effects()[*index], klipp_effects::BuiltinEffect::SpeedRamp { .. }) {
+                                    was_speed_ramp = true;
+                                }
+                                // Its enabled flag, keyframes and modifiers
+                                // go with it, and those of the effects after
+                                // it move down with theirs.
+                                removed = clip.remove_builtin_effect(*index).is_some();
                             }
-                            // Its enabled flag, keyframes and modifiers
-                            // go with it, and those of the effects after
-                            // it move down with theirs.
-                            removed = clip.remove_builtin_effect(*index).is_some();
+                            // Reset clip speed if SpeedRamp was removed and no other SpeedRamp remains
+                            if was_speed_ramp && !clip.builtin_effects().iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::SpeedRamp { .. })) {
+                                clip.speed = 1.0;
+                                let source_dur_secs = clip.source_duration().to_secs_f64();
+                                let new_duration = klipp_core::RationalTime::from_secs_f64(source_dur_secs, clip.timeline_in.rate);
+                                clip.timeline_out = clip.timeline_in + new_duration;
+                            }
+                            break;
                         }
-                        // Reset clip speed if SpeedRamp was removed and no other SpeedRamp remains
-                        if was_speed_ramp && !clip.builtin_effects().iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::SpeedRamp { .. })) {
-                            clip.speed = 1.0;
-                            let source_dur_secs = clip.source_duration().to_secs_f64();
-                            let new_duration = klipp_core::RationalTime::from_secs_f64(source_dur_secs, clip.timeline_in.rate);
-                            clip.timeline_out = clip.timeline_in + new_duration;
-                        }
-                        break;
                     }
                 }
                 if let Some((cid, idx, false)) = self.state.split_compare_effect {
@@ -253,7 +317,7 @@ impl KlippApp {
                         }
                     }
                 }
-                if removed {
+                if removed && by_ops.is_none() {
                     self.record_clip_replaced("Remove Effect", before);
                 }
                 self.sync_sequence_to_engine();
@@ -265,6 +329,18 @@ impl KlippApp {
                 true
             }
             AppCommand::ToggleBuiltinEffectEnabled { clip_id, index } => {
+                let on = self.state.sequences[self.state.active_sequence_idx]
+                    .tracks
+                    .iter_mut()
+                    .find_map(|t| t.find_clip_mut(*clip_id))
+                    .and_then(|c| c.effect_entries().nth(*index).map(|(_, _, on)| on));
+                if let Some(on) = on {
+                    if self.effect_edit_by_ops(*clip_id, klipp_timeline::EffectEdit::SetEnabled(*index, !on), "Toggle Effect", true).is_some() {
+                        self.sync_sequence_to_engine();
+                        self.refresh_paused_frame();
+                        return true;
+                    }
+                }
                 let mut flipped = false;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -283,9 +359,21 @@ impl KlippApp {
                 }
                 self.state.dirty = true;
                 self.sync_sequence_to_engine();
+                self.refresh_paused_frame();
                 true
             }
             AppCommand::UpdateBuiltinEffect { clip_id, index, ref effect } => {
+                // A drag's steps record nothing; its end records the drag.
+                let drag_key = format!("{:?}:builtin:{}", clip_id, index);
+                let history = self.state.active_history();
+                let dragging = history.is_dragging(&drag_key) || history.is_dragging_builtin_effect(*clip_id, *index) || history.is_dragging_picture(*clip_id);
+                if self.effect_edit_by_ops(*clip_id, klipp_timeline::EffectEdit::Update(*index, effect), "Edit Effect", !dragging).is_some() {
+                    self.sync_sequence_to_engine();
+                    if self.state.playback != PlaybackState::Playing {
+                        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    }
+                    return true;
+                }
                 let mut old_effect = None;
                 let mut is_speed_ramp = false;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
@@ -346,6 +434,26 @@ impl KlippApp {
                     tracing::warn!(key, "BeginEffectDrag with a drag still open: closing the open one first");
                     self.close_open_effect_drag();
                 }
+                // A plain effect's drag is one picture edit, from the
+                // picture as the drag began.
+                let plain = self.state.sequences[self.state.active_sequence_idx]
+                    .all_clips()
+                    .find(|c| c.id == *clip_id)
+                    .filter(|c| c.effect_edit_ops(klipp_timeline::EffectEdit::Update(*effect_index, old_effect)).is_some())
+                    .map(|c| c.picture.clone());
+                if let Some(before) = plain {
+                    self.state.active_history_mut().begin_drag(
+                        key.clone(),
+                        HistoryEntry {
+                            command: EditCommand::PictureEdit {
+                                clip_id: *clip_id,
+                                description: "Edit Effect",
+                                edit: Box::new(klipp_timeline::PictureEdit { before: before.clone(), after: before }),
+                            },
+                        },
+                    );
+                    return true;
+                }
                 self.state.active_history_mut().begin_drag(
                     key.clone(),
                     HistoryEntry {
@@ -360,6 +468,21 @@ impl KlippApp {
                 true
             }
             AppCommand::AbandonEffectDrag { clip_id, effect_index, added } => {
+                let picture_drag = match self.state.active_history().pending_old_entry_ref().map(|e| &e.command) {
+                    Some(EditCommand::PictureEdit { clip_id: c, edit, .. }) if *c == *clip_id => Some(edit.before.clone()),
+                    _ => None,
+                };
+                if let Some(before) = picture_drag {
+                    self.state.active_history_mut().abandon_pending_drag();
+                    if let Some(clip) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find_map(|t| t.find_clip_mut(*clip_id)) {
+                        clip.restore_picture(&before);
+                    }
+                    self.sync_sequence_to_engine();
+                    if self.state.playback != PlaybackState::Playing {
+                        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    }
+                    return true;
+                }
                 let old_effect = self.state.active_history().pending_old_entry_ref()
                     .and_then(|e| match &e.command {
                         EditCommand::EditBuiltinEffect { clip_id: c, effect_index: i, old_effect, .. }
@@ -400,6 +523,15 @@ impl KlippApp {
             }
             AppCommand::EndEffectDrag { ref key, clip_id, effect_index, ref new_effect } => {
                 let _ = key; // key is used to match begin_drag
+                if self.state.active_history().is_dragging_picture(*clip_id) {
+                    if let Some(after) = self.picture_now(*clip_id) {
+                        let before = after.clone(); // replaced by the drag's own "before"
+                        self.state.active_history_mut().end_drag(HistoryEntry {
+                            command: EditCommand::PictureEdit { clip_id: *clip_id, description: "Edit Effect", edit: Box::new(klipp_timeline::PictureEdit { before, after }) },
+                        });
+                    }
+                    return true;
+                }
                 // Read the old_effect from the pending entry
                 let old_effect = self.state.active_history().pending_old_entry_ref()
                     .and_then(|e| match &e.command {
@@ -478,6 +610,17 @@ impl KlippApp {
                 true
             }
             AppCommand::ReorderBuiltinEffect { clip_id, from_index, to_index } => {
+                match self.effect_edit_by_ops(*clip_id, klipp_timeline::EffectEdit::Move { from: *from_index, to: *to_index }, "Reorder Effects", true) {
+                    Some(true) => {
+                        self.sync_sequence_to_engine();
+                        if self.state.playback != PlaybackState::Playing {
+                            let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+                        }
+                        return true;
+                    }
+                    Some(false) => return true,
+                    None => {}
+                }
                 let before = self.clip_snapshot(*clip_id);
                 let mut moved = false;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {

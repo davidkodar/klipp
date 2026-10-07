@@ -1142,6 +1142,13 @@ impl CommandHistory {
             )
     }
 
+    /// Whether a drag on `clip_id`'s picture is open (a graph-op effect
+    /// drag, whose steps record nothing until it ends).
+    pub fn is_dragging_picture(&self, clip_id: ClipId) -> bool {
+        self.pending_coalesce_key.is_some()
+            && matches!(self.pending_old_entry.as_ref().map(|e| &e.command), Some(EditCommand::PictureEdit { clip_id: c, .. }) if *c == clip_id)
+    }
+
     /// Discard any pending drag-coalesce envelope without pushing.
     /// Called when the user navigates away (e.g. switches sequences)
     /// before releasing a drag — the gesture can never close in this
@@ -1272,6 +1279,13 @@ fn title_diff_is_text_only(
 /// For EditClipAudio: takes old_* from old_entry, new_* from new_entry.
 fn combine_old_new(old_entry: HistoryEntry, new_entry: HistoryEntry) -> HistoryEntry {
     let command = match (&old_entry.command, &new_entry.command) {
+        // A drag on a clip's picture: the picture before it began, the
+        // picture after it ended.
+        (EditCommand::PictureEdit { clip_id, description, edit: old }, EditCommand::PictureEdit { edit: new, .. }) => EditCommand::PictureEdit {
+            clip_id: *clip_id,
+            description,
+            edit: Box::new(klipp_timeline::PictureEdit { before: old.before.clone(), after: new.after.clone() }),
+        },
         (EditCommand::EditTitle {clip_id, description, old_data, ..}, EditCommand::EditTitle {new_data, ..}) => EditCommand::EditTitle {clip_id:*clip_id, description, old_data:old_data.clone(), new_data:new_data.clone()},
 
         (
@@ -1932,6 +1946,38 @@ mod drag_coalesce_tests {
         HistoryEntry {
             command: EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect: crop.clone(), new_effect: crop },
         }
+    }
+
+    /// A drag on a clip's picture is one step: the picture as the drag
+    /// began and as it ended, whatever its steps did between.
+    #[test]
+    fn a_picture_drag_is_one_step_from_its_start_to_its_end() {
+        let t = |n| klipp_core::RationalTime::from_frames(n, 24);
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0), t(48), t(0), t(48));
+        clip.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 1.0 });
+        let at = |c: &klipp_timeline::Clip| c.picture.clone();
+        let entry = |before, after| HistoryEntry {
+            command: EditCommand::PictureEdit { clip_id: clip.id, description: "Edit Effect", edit: Box::new(klipp_timeline::PictureEdit { before, after }) },
+        };
+        let start = at(&clip);
+        let mut h = CommandHistory::new();
+        h.begin_drag("drag".into(), entry(start.clone(), start.clone()));
+        assert!(h.is_dragging_picture(clip.id));
+        assert!(!h.is_dragging_picture(ClipId::new()), "another clip's picture isn't");
+        let mut moved = clip.clone();
+        let id = moved.effect_id_at(0).unwrap();
+        for r in [2.0, 3.0, 4.0] {
+            moved.replace_effect(id, klipp_effects::BuiltinEffect::GaussianBlur { radius: r });
+        }
+        h.end_drag(entry(at(&moved), at(&moved)));
+        assert_eq!(h.undo_stack.len(), 1, "one step");
+        let EditCommand::PictureEdit { edit, .. } = &h.undo_stack[0].command else { panic!("a picture edit") };
+        let mut before = clip.clone();
+        before.restore_picture(&edit.before);
+        assert!(matches!(before.builtin_effects()[0], klipp_effects::BuiltinEffect::GaussianBlur { radius } if radius == 1.0), "before is its start");
+        let mut after = clip.clone();
+        after.restore_picture(&edit.after);
+        assert!(matches!(after.builtin_effects()[0], klipp_effects::BuiltinEffect::GaussianBlur { radius } if radius == 4.0), "after is its end");
     }
 
     #[test]

@@ -348,3 +348,83 @@ fn a_grade_op_and_an_added_effect_go_in_one_batch() {
     assert_eq!(written.builtin_effects().len(), 4);
     assert_eq!(support::picture_ops_check::normalised(&picture(&written)), support::picture_ops_check::normalised(&engine.clips[&c.id.0]));
 }
+
+/// Today's effect commands built as graph ops write exactly what the
+/// effect-list mutators write: list, flags, keys and stacks.
+#[test]
+fn effect_commands_as_ops_write_what_the_mutators_write() {
+    use klipp_timeline::EffectEdit;
+    let mut base = clip();
+    let id1 = base.effect_id_at(1).unwrap();
+    base.set_effect_enabled(id1, false);
+    let sharpen = E::Sharpen { amount: 0.25 };
+    let wider = E::Vignette { amount: 0.75, size: 0.25, softness: 0.5, roundness: 0.5 };
+    let cases: Vec<(EffectEdit, Box<dyn Fn(&mut Clip)>)> = vec![
+        (EffectEdit::Add(&sharpen), Box::new(|c: &mut Clip| { c.push_effect(E::Sharpen { amount: 0.25 }); })),
+        (EffectEdit::Remove(0), Box::new(|c: &mut Clip| { c.remove_builtin_effect(0); })),
+        (EffectEdit::Remove(1), Box::new(|c: &mut Clip| { c.remove_builtin_effect(1); })),
+        (EffectEdit::SetEnabled(1, true), Box::new(|c: &mut Clip| { let id = c.effect_id_at(1).unwrap(); c.set_effect_enabled(id, true); })),
+        (EffectEdit::SetEnabled(2, false), Box::new(|c: &mut Clip| { let id = c.effect_id_at(2).unwrap(); c.set_effect_enabled(id, false); })),
+        (EffectEdit::Update(1, &wider), Box::new(|c: &mut Clip| { let id = c.effect_id_at(1).unwrap(); c.replace_effect(id, E::Vignette { amount: 0.75, size: 0.25, softness: 0.5, roundness: 0.5 }); })),
+        (EffectEdit::Move { from: 0, to: 2 }, Box::new(|c: &mut Clip| { c.move_builtin_effect(0, 2); })),
+        (EffectEdit::Move { from: 2, to: 0 }, Box::new(|c: &mut Clip| { c.move_builtin_effect(2, 0); })),
+        (EffectEdit::Move { from: 0, to: 1 }, Box::new(|c: &mut Clip| { c.move_builtin_effect(0, 1); })),
+        (EffectEdit::Move { from: 2, to: 1 }, Box::new(|c: &mut Clip| { c.move_builtin_effect(2, 1); })),
+    ];
+    for (edit, old) in cases {
+        let mut by_ops = base.clone();
+        let ops = by_ops.effect_edit_ops(edit).unwrap_or_else(|| panic!("{edit:?} has no ops"));
+        by_ops.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{edit:?}: {e}"));
+        let mut by_mutator = base.clone();
+        old(&mut by_mutator);
+        assert_eq!(saved(&by_ops), saved(&by_mutator), "{edit:?}");
+    }
+    // An empty list takes its first effect as a push does.
+    let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+    let empty = Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+    let mut by_ops = empty.clone();
+    let ops = by_ops.effect_edit_ops(EffectEdit::Add(&sharpen)).unwrap();
+    by_ops.apply_picture_ops(&ops).unwrap();
+    let mut pushed = empty.clone();
+    pushed.push_effect(sharpen.clone());
+    assert_eq!(saved(&by_ops), saved(&pushed));
+}
+
+/// An edit touching a kind the clip places itself has no ops: it stays on
+/// the mutators, as today (4c's condition: no user regression).
+#[test]
+fn effect_commands_on_placed_kinds_stay_on_the_mutators() {
+    use klipp_timeline::EffectEdit;
+    let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+    let transform = E::Transform {
+        position_x: 0.1, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0,
+        anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
+    };
+    let placed = [
+        transform,
+        E::Opacity { value: 0.5 },
+        E::TemporalDenoise { strength: 0.5, threshold: 0.25 },
+    ];
+    for kind in placed {
+        let mut c = Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+        c.push_effect(E::GaussianBlur { radius: 2.0 });
+        c.push_effect(kind.clone());
+        assert!(c.effect_edit_ops(EffectEdit::Add(&kind)).is_none(), "{kind:?}: add");
+        assert!(c.effect_edit_ops(EffectEdit::Add(&E::Sharpen { amount: 0.5 })).is_none(), "{kind:?}: add after it");
+        assert!(c.effect_edit_ops(EffectEdit::Remove(1)).is_none(), "{kind:?}: remove");
+        assert!(c.effect_edit_ops(EffectEdit::SetEnabled(1, false)).is_none(), "{kind:?}: toggle");
+        assert!(c.effect_edit_ops(EffectEdit::Update(1, &kind)).is_none(), "{kind:?}: update");
+        assert!(c.effect_edit_ops(EffectEdit::Move { from: 1, to: 0 }).is_none(), "{kind:?}: move");
+        assert!(c.effect_edit_ops(EffectEdit::Remove(0)).is_some(), "{kind:?}: the plain blur still takes ops");
+    }
+}
+
+/// A write through the fields (a grade closure, `set_grade`, the effect
+/// mutators) on a picture-truth clip maps to ops where it can and is
+/// otherwise refused, naming the clip and the edit; it never overwrites
+/// the stored revision-2 picture (15b decision, condition 1).
+#[test]
+#[ignore = "un-ignored by the PR that adds the picture-truth predicate (M2 9c/10c); on the M2 close-out checklist"]
+fn a_field_write_on_a_picture_truth_clip_maps_to_ops_or_is_refused() {
+    unimplemented!("needs picture-truth clips, which arrive with 9c/10c");
+}

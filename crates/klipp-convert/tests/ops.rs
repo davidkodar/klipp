@@ -731,3 +731,26 @@ fn a_float_param_is_stored_as_the_file_writes_it() {
     assert_eq!(stored.to_string(), "0.065");
     assert_eq!(serde_json::to_string(&0.065f32).unwrap(), "0.065", "what a save writes");
 }
+
+/// A payload is replaced whole, keeping its kind and reading as the entry
+/// it replaces; anything else is refused and changes nothing.
+#[test]
+fn set_payload_replaces_an_entry_of_the_same_kind() {
+    let mut d = docs();
+    let fx = effect(&d);
+    let p = clip_path([fx]);
+    let edit = apply(&mut d, &GraphOp::SetPayload { path: p.clone(), payload: json!({"type": "gaussian_blur", "radius": 7.0}) }).unwrap();
+    let payload = |d: &Documents| d.clips[&u(CLIP)].graph.nodes.iter().find(|n| n.id == fx).unwrap().legacy.as_ref().unwrap().payload.clone();
+    assert_eq!(payload(&d)["radius"], 7.0);
+    let before = snapshot(&d);
+    assert!(apply(&mut d, &GraphOp::SetPayload { path: p.clone(), payload: json!({"type": "sharpen", "amount": 0.5}) }).is_err(), "another kind");
+    assert!(apply(&mut d, &GraphOp::SetPayload { path: p.clone(), payload: json!({"type": "gaussian_blur", "radius": "wide"}) }).is_err(), "unreadable");
+    assert_eq!(snapshot(&d), before, "a refused payload changes nothing");
+    undo(&mut d, &edit).unwrap();
+    assert_eq!(payload(&d)["radius"], 3.0);
+
+    // A grade node keeps its kind too.
+    let g = group(&d);
+    apply(&mut d, &GraphOp::SetPayload { path: clip_path([g, u(E)]), payload: json!({"kind": "Exposure", "label": "E", "params": {"exposure": -0.5}}) }).unwrap();
+    assert!(apply(&mut d, &GraphOp::SetPayload { path: clip_path([g, u(E)]), payload: json!({"kind": "Contrast", "label": "E", "params": {}}) }).is_err());
+}

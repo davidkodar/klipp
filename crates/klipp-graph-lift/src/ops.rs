@@ -60,6 +60,11 @@ pub enum GraphOp {
     /// Set a parameter's animation whole (generated keys, a modifier
     /// stack); `None` takes it off.
     SetAnim { path: NodePath, key: ParamKey, anim: Option<Animation> },
+    /// Replace a legacy entry's stored payload whole: an effect edited in
+    /// its own panel, whose colours and lists no parameter value carries,
+    /// until effects take typed parameters (M3 step 19). Of the same kind,
+    /// and it must read as the frozen v1 types read it.
+    SetPayload { path: NodePath, payload: Value },
 }
 
 /// What an op did to its root: the root's picture before and after, as
@@ -83,7 +88,8 @@ fn path_of(op: &GraphOp) -> &NodePath {
         | GraphOp::SetNodeMeta { path, .. }
         | GraphOp::AddKeyAt { path, .. }
         | GraphOp::RemoveKeyAt { path, .. }
-        | GraphOp::SetAnim { path, .. } => path,
+        | GraphOp::SetAnim { path, .. }
+        | GraphOp::SetPayload { path, .. } => path,
         GraphOp::Connect { to, .. } | GraphOp::Disconnect { to, .. } => to,
         GraphOp::PublishOutput { group, .. } | GraphOp::Unpublish { group, .. } => group,
     }
@@ -297,6 +303,30 @@ fn apply_anim(n: &mut Node, op: &GraphOp) -> Result<(), String> {
     Ok(())
 }
 
+/// Replace a legacy entry's payload: the same kind (`kind` for a grade
+/// node, `type` for an effect), reading as the frozen v1 types read it.
+fn set_payload(n: &mut Node, payload: &Value) -> Result<(), String> {
+    let t = n.type_id.as_str().to_owned();
+    let legacy = n.legacy.as_mut().filter(|_| t.starts_with("klipp.legacy.") || t == lt::MERGE).ok_or("only a stored entry has a payload to replace")?;
+    let grade_node = t == types::LEGACY_NODE || t == lt::MERGE;
+    let what = if grade_node { "kind" } else { "type" };
+    if payload.get(what) != legacy.payload.get(what) {
+        return Err(format!("a payload keeps its {what}: {} isn't {}", payload.get(what).unwrap_or(&Value::Null), legacy.payload.get(what).unwrap_or(&Value::Null)));
+    }
+    let reads = if grade_node {
+        payload.get("params").is_none_or(|p| serde_json::from_value::<crate::v1::params::NodeParams>(p.clone()).is_ok())
+    } else if t == types::LEGACY_OFX {
+        true
+    } else {
+        serde_json::from_value::<crate::v1::effects::BuiltinEffect>(payload.clone()).is_ok()
+    };
+    if !reads {
+        return Err("that payload doesn't read as the entry it replaces".into());
+    }
+    legacy.payload = payload.clone();
+    Ok(())
+}
+
 /// A node's label: a grade node's lives in its stored entry, as the file
 /// had it; any other node's on the node.
 fn set_label(n: &mut Node, label: &str) {
@@ -441,6 +471,10 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn
             let at = find(g, target)?;
             apply_anim(&mut g.nodes[at], op)?;
         }
+        GraphOp::SetPayload { payload, .. } => {
+            let at = find(g, target)?;
+            set_payload(&mut g.nodes[at], payload)?;
+        }
         GraphOp::MoveAfter { after, .. } => {
             let node = g.nodes[find(g, target)?].clone();
             // Its other inputs (a gate's mask, a merge's second picture)
@@ -531,6 +565,10 @@ fn apply_list(list: &mut Vec<Node>, op: &GraphOp, target: NodeId, catalog: Optio
         GraphOp::AddKeyAt { .. } | GraphOp::RemoveKeyAt { .. } | GraphOp::SetAnim { .. } => {
             let at = find(list, target)?;
             apply_anim(&mut list[at], op)?;
+        }
+        GraphOp::SetPayload { payload, .. } => {
+            let at = find(list, target)?;
+            set_payload(&mut list[at], payload)?;
         }
         GraphOp::Connect { .. } | GraphOp::Disconnect { .. } | GraphOp::PublishOutput { .. } | GraphOp::Unpublish { .. } | GraphOp::SetMaskChannel { .. } => return Err("a track's effects are a list, with nothing to wire".into()),
     }
