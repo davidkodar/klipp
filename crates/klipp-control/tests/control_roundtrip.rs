@@ -504,8 +504,8 @@ fn graph_commit_guards_are_sent_even_when_the_caller_omits_them() {
     assert_eq!(h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture, before);
 }
 
-// These acceptance cases intentionally fail against revision-1 clips. Keep the
-// refusal tests below until picture-truth PR A enables the corresponding edits.
+// Effect-node acceptance uses the production clip adapter and persistence
+// boundary, including the supported route through a published grade matte.
 fn graph_test_blur(h: &mut Harness) -> Value {
     // Seed an existing effect so each acceptance test reaches its own operation,
     // independently of the add operation's revision-1 path remapping.
@@ -548,7 +548,6 @@ fn graph_test_edit_roundtrip(h: &mut Harness, ops: Value) {
 }
 
 #[test]
-#[ignore = "needs picture-truth (9c-2 PR A)"]
 fn graph_effect_mix_applies_reads_back_and_roundtrips() {
     let mut h = harness();
     let path = graph_test_blur(&mut h);
@@ -561,7 +560,6 @@ fn graph_effect_mix_applies_reads_back_and_roundtrips() {
 }
 
 #[test]
-#[ignore = "needs picture-truth (9c-2 PR A)"]
 fn graph_effect_mask_channel_applies_reads_back_and_roundtrips() {
     let mut h = harness();
     let path = graph_test_blur(&mut h);
@@ -575,7 +573,61 @@ fn graph_effect_mask_channel_applies_reads_back_and_roundtrips() {
 }
 
 #[test]
-#[ignore = "needs picture-truth (9c-2 PR A)"]
+fn graph_effect_published_mask_connection_applies_reads_back_and_roundtrips() {
+    let mut h = harness();
+    let effect = graph_test_blur(&mut h);
+    let types = h.ok(json!({"method":"node_types"}));
+    let types = types["types"].as_array().unwrap();
+    let mask = types.iter().find(|n| n["id"] == "klipp.grade.mask").unwrap();
+    let blur = types.iter().find(|n| n["id"] == "klipp.fx.gaussian_blur").unwrap();
+    let from_port = mask["outputs"].as_array().unwrap().iter().find(|p| p["type"] == "Matte").unwrap()["key"].clone();
+    let to_port = blur["inputs"].as_array().unwrap().iter().find(|p| p["type"] == "Matte").unwrap()["key"].clone();
+    let window = serde_json::to_value(klipp_core::MaskStack { masks: vec![klipp_core::Mask::default()] }).unwrap();
+    let root = json!({"root":effect["root"],"nodes":[]});
+    let graph = h.ok(json!({"method":"graph_read","path":root}));
+    let group = graph["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.group").unwrap()["id"].clone();
+    let at = json!({"root":effect["root"],"nodes":[group,h.ids.corrector_a]});
+    let added = h.ok(json!({"method":"graph_ops","ops":[
+        {"op":"add_beside","at":at,"type":mask["id"],"params":{"masks":window}}
+    ]}));
+    let maskpath = added["created"][0]["path"].clone();
+    // Publishing is fixture setup through the production adapter: the socket
+    // has no publish operation yet. Connect/Disconnect below cross the socket.
+    let key = "window_mask";
+    {
+        let mut seq = h.sequence.write().unwrap();
+        let clip = &mut seq.tracks[0].clips[0];
+        let group_id = serde_json::from_value(group.clone()).unwrap();
+        clip.apply_picture_ops(&[klipp_graph_lift::ops::GraphOp::PublishOutput {
+            group: klipp_graph_format::path::NodePath::new(
+                klipp_graph_format::path::Root::Clip { clip: clip.id.0 }, [group_id]),
+            endpoint: klipp_graph_format::PortBinding {
+                node: serde_json::from_value(maskpath["nodes"][1].clone()).unwrap(),
+                port: from_port.as_str().unwrap().into(),
+            },
+            key: key.into(), label: "Window".into(),
+        }]).unwrap();
+    }
+    let group_path = json!({"root":effect["root"],"nodes":[group]});
+    graph_test_edit_roundtrip(&mut h, json!([
+        {"op":"connect","from":group_path,"from_port":key,"to":effect,"to_port":to_port}
+    ]));
+    let read = h.ok(json!({"method":"graph_read","path":root}));
+    let made = h.ok(json!({"method":"graph_read","path":maskpath}));
+    assert_eq!(serde_json::from_value::<klipp_core::MaskStack>(made["nodes"][0]["params"]["masks"].clone()).unwrap(),
+        serde_json::from_value::<klipp_core::MaskStack>(window).unwrap());
+    assert!(read["edges"].as_array().unwrap().iter().any(|e|
+        e["from"] == group && e["from_port"] == key
+            && e["to"] == effect["nodes"][0] && e["to_port"] == to_port));
+    graph_test_edit_roundtrip(&mut h, json!([{"op":"disconnect","to":effect,"port":to_port}]));
+    let disconnected = h.ok(json!({"method":"graph_read","path":root}));
+    assert!(!disconnected["edges"].as_array().unwrap().iter().any(|e|
+        e["to"] == effect["nodes"][0] && e["to_port"] == to_port));
+    assert_eq!(disconnected["nodes"], read["nodes"], "disconnect retains both nodes");
+}
+
+#[test]
+#[ignore = "root side nodes arrive with 9c-2"]
 fn graph_effect_mask_connection_applies_reads_back_and_roundtrips() {
     let mut h = harness();
     let effect = graph_test_blur(&mut h);
@@ -594,7 +646,8 @@ fn graph_effect_mask_connection_applies_reads_back_and_roundtrips() {
     let root = json!({"root":effect["root"],"nodes":[]});
     let read = h.ok(json!({"method":"graph_read","path":root}));
     let made = read["nodes"].as_array().unwrap().iter().find(|n| n["type"] == mask["id"]).unwrap();
-    assert_eq!(made["params"]["masks"], window);
+    assert_eq!(serde_json::from_value::<klipp_core::MaskStack>(made["params"]["masks"].clone()).unwrap(),
+        serde_json::from_value::<klipp_core::MaskStack>(window).unwrap());
     assert!(read["edges"].as_array().unwrap().iter().any(|e|
         e["from"] == made["id"] && e["from_port"] == from_port
             && e["to"] == effect["nodes"][0] && e["to_port"] == to_port));
