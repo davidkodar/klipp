@@ -374,7 +374,7 @@ pub fn node_types(category: Option<&str>) -> serde_json::Value {
                 .filter(|p| !p.derived)
                 .map(|p| {
                     let num = |v: f32| if v.is_finite() { json!(v) } else { serde_json::Value::Null };
-                    json!({
+                    let mut parameter = json!({
                         "key": p.key,
                         "field": p.field,
                         "label": p.label,
@@ -384,7 +384,11 @@ pub fn node_types(category: Option<&str>) -> serde_json::Value {
                         "range": p.range.map(|(a, b)| json!([a, b])),
                         "slider": p.soft.map(|(a, b)| json!([a, b])),
                         "keyframable": p.keyframable,
-                    })
+                    });
+                    if desc.id == "klipp.grade.mask" && p.key == "masks" {
+                        parameter["value_format"] = json!(crate::graph_masks::FORMAT);
+                    }
+                    parameter
                 })
                 .collect();
             let mut node = json!({

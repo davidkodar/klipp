@@ -47,8 +47,7 @@ pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepa
                 GraphWireOp::Disconnect { port, .. } => GraphOp::Disconnect { to: path, port: port.as_str().into() },
                 GraphWireOp::Set { key, value, .. } => {
                     let node = resolve(&docs, &path).map_err(|e| e.to_string())?;
-                    let value = graph_model::parameter(node, key, value)?;
-                    GraphOp::SetParam { path, key: key.as_str().into(), value }
+                    graph_model::parameter_op(node, path, key, value)?
                 }
                 GraphWireOp::Enable { enabled, .. } => GraphOp::SetEnabled { path, enabled: *enabled },
                 GraphWireOp::Mix { mix, .. } => {
@@ -70,8 +69,7 @@ pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepa
             if let Some((target, params)) = initial_params {
                 for (key, value) in params {
                     let node = resolve(&docs, &target).map_err(|e| e.to_string())?;
-                    let value = graph_model::parameter(node, key, value)?;
-                    let op = GraphOp::SetParam { path: target.clone(), key: key.as_str().into(), value };
+                    let op = graph_model::parameter_op(node, target.clone(), key, value)?;
                     apply_in_batch(&mut docs, &op, &RegistryCatalog, &pending)?;
                     result.ops.push(op);
                     result.source_indices.push(index);

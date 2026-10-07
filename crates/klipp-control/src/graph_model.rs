@@ -66,6 +66,14 @@ pub(crate) fn new_node(type_id: &str, id: uuid::Uuid, label: Option<&str>) -> Re
     serde_json::from_value(json!({"id":id,"type_id":type_id,"label":label.unwrap_or(""),"legacy":{"payload":payload}})).map_err(|e| e.to_string())
 }
 
+pub(crate) fn parameter_op(node: &Node, path: klipp_graph_format::path::NodePath, key: &str, value: &Value) -> Result<klipp_graph_lift::ops::GraphOp, String> {
+    use klipp_graph_lift::ops::GraphOp;
+    if key == "masks" && descriptor(node).is_some_and(|d| d.id == "klipp.grade.mask") {
+        return Ok(GraphOp::SetPayload { path, payload: crate::graph_masks::payload(node, value)? });
+    }
+    Ok(GraphOp::SetParam { path, key: key.into(), value: parameter(node, key, value)? })
+}
+
 pub(crate) fn parameter(node: &Node, key: &str, value: &Value) -> Result<ParamValue, String> {
     let desc = descriptor(node).ok_or("this node has no registered parameter description")?;
     let p = desc.params.iter().find(|p| p.key == key && !p.derived).ok_or_else(|| format!("unknown or derived parameter {key}"))?;

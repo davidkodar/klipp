@@ -2539,7 +2539,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               catalog kinds; choices use labels. Created nodes return full paths. Current clip persistence \
               refuses placed kinds, effect mix/masks/labels, and publication; unsupported parameter shapes \
               are refused with the failing op_index. Revision and project identity guard commit. \
-              add_beside inserts unwired; connect required inputs in the same batch.",
+              add_beside inserts unwired; connect required inputs in the same batch. Mask shapes use the masks JSON described by node_types.",
              json!({"ops":graph_schema::ops_schema(),"label":{"type":"string"},"expected_revision":{"type":"integer","minimum":0},"expected_project_identity":{"type":"integer","minimum":0}}), vec!["ops"]),
         tool("klipp_graph_read",
              "Read graph at path; empty nodes reads root. Depth controls nested bodies. Omissions are flagged; \

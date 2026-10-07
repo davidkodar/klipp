@@ -357,9 +357,11 @@ fn graph_add_beside_connects_a_matte_in_one_undoable_batch() {
     let catalog = h.ok(json!({"method":"node_types","category":"Grade"}));
     let mask = catalog["types"].as_array().unwrap().iter().find(|t| t["tag"] == "Mask").unwrap();
     let port = mask["outputs"][0]["key"].clone();
+    let shapes = json!({"masks":[{"shape":{"Rectangle":{"center_x":0.5,"center_y":0.5,"width":0.5,"height":0.5,"rotation":0}},"feather":0,"opacity":1,"invert":false,"enabled":true}]});
+    assert!(mask["params"].as_array().unwrap().iter().any(|p| p["key"] == "masks" && p["value_format"].as_str().is_some_and(|s| s.contains("Rectangle"))));
     let before = h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture.clone();
     let result = h.ok(json!({"method":"graph_ops","ops":[
-        {"op":"add_beside","at":at,"type":mask["id"],"label":"Window"},
+        {"op":"add_beside","at":at,"type":mask["id"],"label":"Window","params":{"masks":shapes}},
         {"op":"connect","from":new,"from_port":port,"to":at,"to_port":"mask"}
     ]}));
     assert_eq!(result["applied"], true);
@@ -368,6 +370,8 @@ fn graph_add_beside_connects_a_matte_in_one_undoable_batch() {
     let made = h.ok(json!({"method":"graph_read","path":path}));
     assert_eq!(made["nodes"][0]["type"], mask["id"]);
     assert_eq!(made["nodes"][0]["label"], "Window");
+    let stored = serde_json::to_value(serde_json::from_value::<klipp_core::MaskStack>(shapes).unwrap()).unwrap();
+    assert_eq!(made["nodes"][0]["params"]["masks"], stored);
     let body = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[group]}}));
     assert!(body["edges"].as_array().unwrap().iter().any(|e| e["from"] == made["nodes"][0]["id"] && e["from_port"] == port && e["to"] == h.ids.corrector_a && e["to_port"] == "mask"));
     assert_eq!(h.edits_seen.lock().unwrap().len(), 1);
@@ -379,6 +383,47 @@ fn graph_add_beside_connects_a_matte_in_one_undoable_batch() {
     assert_eq!(clip.picture_v2().unwrap().picture, before);
     clip.restore_picture(&edit.after);
     assert_eq!(clip.picture_v2().unwrap().picture, after);
+}
+
+#[test]
+fn graph_mask_shapes_set_atomically_and_refuse_invalid_values() {
+    let mut h = harness();
+    let root = json!({"clip":h.ids.clip_a});
+    let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let group = graph["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.group").unwrap()["id"].clone();
+    let at = json!({"root":root,"nodes":[group,h.ids.corrector_a]});
+    let added = h.ok(json!({"method":"graph_ops","ops":[{"op":"add_beside","at":at,"type":"klipp.grade.mask"}]}));
+    let path = added["created"][0]["path"].clone();
+    let shapes = serde_json::to_value(klipp_core::MaskStack { masks: vec![klipp_core::Mask::default()] }).unwrap();
+    let before = h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture.clone();
+    let applied = h.ok(json!({"method":"graph_ops","ops":[{"op":"set","path":path,"key":"masks","value":shapes}]}));
+    assert_eq!(applied["applied"], true);
+    assert_eq!(applied["revision"].as_u64().unwrap(), added["revision"].as_u64().unwrap()+1);
+    assert_eq!(h.edits_seen.lock().unwrap().len(),2);
+    let read = h.ok(json!({"method":"graph_read","path":path}));
+    assert_eq!(read["nodes"][0]["params"]["masks"], shapes);
+    let edit = h.edits_seen.lock().unwrap()[1].clone();
+    let klipp_document::history::EditCommand::PictureEdit { edit, .. } = edit else { panic!("one mask edit") };
+    let mut clip = h.sequence.read().unwrap().tracks[0].clips[0].clone();
+    let after = clip.picture_v2().unwrap().picture.clone();
+    clip.restore_picture(&edit.before);
+    assert_eq!(clip.picture_v2().unwrap().picture,before);
+    clip.restore_picture(&edit.after);
+    assert_eq!(clip.picture_v2().unwrap().picture,after);
+    let mut oversized = shapes.clone(); oversized["masks"] = json!(vec![shapes["masks"][0].clone();17]);
+    let mut nonfinite = shapes.clone(); nonfinite["masks"][0]["opacity"] = json!(1e100);
+    let mut unknown = shapes.clone(); unknown["masks"][0]["shape"]["Circle"]["raduis"] = json!(0.5);
+    for value in [oversized,nonfinite,unknown] {
+        let refused = h.call(json!({"method":"graph_ops","ops":[
+            {"op":"enable","path":path,"enabled":false},
+            {"op":"set","path":path,"key":"masks","value":value}
+        ]}));
+        assert_eq!(refused["ok"],false,"{refused}");
+        assert_eq!(refused["op_index"],1);
+        assert_eq!(h.shared.revision(),applied["revision"].as_u64().unwrap());
+        assert_eq!(h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture,after);
+    }
+    assert_eq!(h.edits_seen.lock().unwrap().len(),2);
 }
 
 #[test]
