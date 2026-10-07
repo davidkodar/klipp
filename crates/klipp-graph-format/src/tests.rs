@@ -556,6 +556,10 @@ mod lifted_checks {
                     mask.params.push(("channel".into(), vec!["red".into(), "luminance".into(), "alpha".into()]));
                     Some(NodeSpec { inputs: vec![port("in", PortType::Image, false), mask], outputs: vec![port("out", PortType::Image, false)], mixable: true })
                 }
+                "test.inputs" => Some(NodeSpec {
+                    inputs: vec![port("in", PortType::Image, false), port("reference", PortType::Image, true), port("matte", PortType::Matte, false)],
+                    outputs: vec![port("out", PortType::Image, false)], mixable: false,
+                }),
                 "test.matte" => Some(NodeSpec { inputs: Vec::new(), outputs: vec![port("out", PortType::Matte, false)], mixable: false }),
                 _ => None,
             }
@@ -727,6 +731,65 @@ mod lifted_checks {
         body(&mut g).nodes[1].mix = None;
         body(&mut g).nodes[1].params.insert("mask.channel".into(), ParamValue::Text("luminance".into()));
         assert!(matches!(g.check_lifted_with_catalog(false, &GradeCatalog), Err(LiftedError::InvalidMaskChannel(_))));
+    }
+
+    #[test]
+    fn structural_interface_bindings_have_real_directions_and_image_types() {
+        for (node, port, direction) in [
+            (11, "in", PortDirection::Input),
+            (13, "out", PortDirection::Output),
+            (15, "in", PortDirection::Input),
+        ] {
+            let mut g = valid();
+            let b = g.nodes[1].group.as_mut().unwrap();
+            b.graph.nodes.push(plain(15, lt::GROUP_FRAME));
+            for child in &mut b.graph.nodes {
+                if matches!(child.type_id.as_str(), lt::GROUP_INPUT | lt::GROUP_OUTPUT | lt::GROUP_FRAME) { child.legacy = None; }
+            }
+            b.interface.push(GroupPort { key: "extra".into(), direction, ty: PortType::Image, binding: PortBinding { node: id(node), port: port.into() }, label: String::new() });
+            assert!(matches!(g.check_lifted(false), Err(LiftedError::InterfaceEndpoint { .. })));
+        }
+        let mut g = valid();
+        let b = g.nodes[1].group.as_mut().unwrap();
+        b.interface.push(GroupPort { key: "plate".into(), direction: PortDirection::Output, ty: PortType::Image, binding: PortBinding { node: id(11), port: "out".into() }, label: String::new() });
+        g.check_lifted(false).unwrap();
+        g.nodes[1].group.as_mut().unwrap().interface[0].ty = PortType::Matte;
+        assert!(matches!(g.check_lifted(false), Err(LiftedError::InterfaceType { .. })));
+    }
+
+    #[test]
+    fn structural_ends_never_gain_opposite_ports_without_legacy_payloads() {
+        let mut g = valid();
+        g.edges.push(e(3, 1, "in"));
+        assert!(matches!(g.check_lifted(false), Err(LiftedError::UnknownPort { node, .. }) if node == id(1)));
+        let mut g = valid();
+        g.edges.push(Edge { from: (id(5), "out".into()), to: (id(2), "frame".into()) });
+        assert!(matches!(g.check_lifted(false), Err(LiftedError::UnknownPort { node, .. }) if node == id(5)));
+    }
+
+    #[test]
+    fn published_inputs_inherit_requiredness_through_nested_groups() {
+        for nested in [false, true] {
+            let mut g = published();
+            let b = g.nodes[1].group.as_mut().unwrap();
+            b.graph.nodes[1] = plain(12, "test.inputs");
+            for (key, port, ty) in [("matte_required", "matte", PortType::Matte), ("image_optional", "reference", PortType::Image)] {
+                b.interface.push(GroupPort { key: key.into(), direction: PortDirection::Input, ty, binding: PortBinding { node: id(12), port: port.into() }, label: String::new() });
+            }
+            if nested {
+                let inner_body = g.nodes[1].group.clone();
+                let b = g.nodes[1].group.as_mut().unwrap();
+                let child = &mut b.graph.nodes[1];
+                *child = plain(12, lt::GROUP);
+                child.group = inner_body;
+                for p in b.interface.iter_mut().filter(|p| p.direction == PortDirection::Input) { p.binding.port = p.key.clone(); }
+            }
+            assert!(matches!(g.check_lifted_with_catalog(false, &Catalog), Err(LiftedError::Unwired { node, port }) if node == id(2) && port == "matte_required"));
+            g.nodes.push(plain(30, "test.matte"));
+            g.edges.push(e(30, 2, "matte_required"));
+            // The optional image input stays optional at every level.
+            g.check_lifted_with_catalog(false, &Catalog).unwrap();
+        }
     }
 
 }
