@@ -252,6 +252,11 @@ pub struct FrameBuffer {
     /// [`PRESENTED_TIMES`]: the measured rate of [`Self::presented_fps`].
     /// A re-render of the time already shown (a paused slider) adds none.
     presented_times: std::collections::VecDeque<(std::time::Instant, klipp_core::RationalTime)>,
+    /// The last [`TRAIL`] things the engine did to the picture under the
+    /// playhead: each publication, with whether it was complete and why
+    /// not, and each refresh it armed, ran or skipped. A reader that waits
+    /// on the viewer prints it when the wait fails (#1092).
+    trail: std::collections::VecDeque<String>,
     /// The device and queue `gpu_output` lives on, to read it back.
     gpu_output_queue: Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>,
 
@@ -317,6 +322,7 @@ impl FrameBuffer {
             gpu_output_live: false,
             gpu_presented: None,
             presented_times: std::collections::VecDeque::new(),
+            trail: std::collections::VecDeque::new(),
             gpu_output_queue: None,
             gpu_output_frame: 0,
             node_thumbs: std::collections::HashMap::new(),
@@ -534,6 +540,20 @@ impl FrameBuffer {
         }
     }
 
+    /// Note what the engine did to the picture, newest last; the oldest
+    /// is dropped past the 64 kept.
+    pub fn note(&mut self, line: String) {
+        if self.trail.len() == TRAIL {
+            self.trail.pop_front();
+        }
+        self.trail.push_back(format!("gen {} {line}", self.latest_generation()));
+    }
+
+    /// The engine's recent notes on the picture, oldest first.
+    pub fn trail(&self) -> Vec<String> {
+        self.trail.iter().cloned().collect()
+    }
+
     /// Swap-based write — the engine provides a `&mut Vec<u8>` that is swapped
     /// with `pending_data`. After the call, `rgba_data` contains the previous
     /// `pending_data` buffer (which the engine can clear and reuse next frame,
@@ -597,6 +617,8 @@ pub type SharedFrameBuffer = Arc<Mutex<FrameBuffer>>;
 /// How many publish times [`FrameBuffer::presented_fps`] keeps: over
 /// two seconds of 120 fps.
 const PRESENTED_TIMES: usize = 256;
+/// How many of the engine's notes on the viewer's picture are kept.
+const TRAIL: usize = 64;
 
 /// Events per second among `times` (oldest first) inside the `window`
 /// before `now`: the intervals after the first of them, over the time
@@ -805,5 +827,23 @@ mod tests {
         // The UI has not swapped: `presented` still names `data`.
         assert_eq!(fb.presented, Some(at(1)));
         assert_eq!(fb.latest_presented(), Some(at(2)));
+    }
+
+    /// The trail keeps the newest notes, each with the generation it was
+    /// written at, and drops the oldest past its length.
+    #[test]
+    fn the_trail_keeps_the_newest_notes() {
+        let mut fb = super::FrameBuffer::new(4, 4);
+        for i in 0..super::TRAIL + 6 {
+            fb.note(format!("note {i}"));
+        }
+        let trail = fb.trail();
+        assert_eq!(trail.len(), super::TRAIL);
+        assert!(trail[0].ends_with("note 6"), "{}", trail[0]);
+        assert!(trail.last().unwrap().ends_with(&format!("note {}", super::TRAIL + 5)));
+        fb.write_frame(vec![0; 64], 4, 4);
+        fb.note("after a frame".into());
+        let gen = fb.latest_generation();
+        assert_eq!(fb.trail().last().unwrap(), &format!("gen {gen} after a frame"));
     }
 }

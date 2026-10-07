@@ -2473,6 +2473,7 @@ impl PlaybackEngine {
                     // the decoder. Silent no-op until the frame lands.
                     if self.try_drain_paused_refresh_frame() {
                         self.pending_paused_refresh = false;
+                        self.note_view(format!("paused refresh drained at {:?}", self.playhead.value));
                     }
                 }
                 if applied > 0 {
@@ -2768,6 +2769,7 @@ impl PlaybackEngine {
 
             AppCommand::Pause => {
                 if self.state == PlaybackState::Playing {
+                    self.note_view(format!("paused at {:?}", self.playhead.value));
                     if let Some(dec) = &self.v1_decoder {
                         dec.pause();
                     }
@@ -2911,6 +2913,7 @@ impl PlaybackEngine {
             }
 
             AppCommand::SetPlayhead(tc) => {
+                self.note_view(format!("asked to park at {:?} ({:?})", tc.value, self.state));
                 self.playhead = tc;
                 // Same Idle / Stopped gate lift as SeekTo.
                 self.seek_in_sequence(tc);
@@ -6666,6 +6669,7 @@ impl PlaybackEngine {
                     // post-process the frame the moment it lands.
                     self.pending_paused_refresh = true;
                     self.paused_refresh_since = Some(std::time::Instant::now() - grab_timeout);
+                    self.note_view(format!("seek missed its frame at {:?}: paused refresh armed", self.playhead.value));
                 }
                 // Play scrub chirp (~40ms snippet at the seek position) unless
                 // the user has disabled audio during a scrub.
@@ -8180,6 +8184,7 @@ impl PlaybackEngine {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame_swap(&mut bytes, width, height);
             fb.set_presented(self.playhead, self.published_complete());
+            fb.note(format!("graded on the GPU: {:?} {:?} complete {} (streams pending {}, progress {})", self.state, self.playhead.value, self.published_complete(), self.pending_stream_refresh, self.presenting_progress));
         }
         self.composite_scratch_u8 = bytes;
         let total_ms = t_frame.elapsed().as_secs_f64() * 1000.0;
@@ -8329,6 +8334,7 @@ impl PlaybackEngine {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame_swap(&mut bytes, width, height);
             fb.set_presented(self.playhead, self.published_complete());
+            fb.note(format!("shown from the decoded frame: {:?} {:?} complete {} (streams pending {}, progress {})", self.state, self.playhead.value, self.published_complete(), self.pending_stream_refresh, self.presenting_progress));
             // HDR monitoring's light map, for the readout under the
             // pointer. Cleared when there is none, or the readout would
             // report a stale frame's levels.
@@ -8578,6 +8584,11 @@ impl PlaybackEngine {
         }
     }
 
+    /// Note `line` in the viewer's trail ([`crate::texture::FrameBuffer::note`]).
+    fn note_view(&self, line: String) {
+        self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).note(line);
+    }
+
     fn regrade_cached_frame(&mut self) {
         mark_stage(EngineStage::PausedRegrade);
         // A slider step on a frame the renderer would only grade.
@@ -8599,6 +8610,7 @@ impl PlaybackEngine {
         // A primary decoder whose first frame has not arrived yet: nothing
         // to show until it does (the paused refresh paints it).
         if primary.is_none() && self.v1_decoder.is_some() {
+            self.note_view(format!("regrade skipped at {:?}: no parked pre-grade, the decoder still owes it (paused refresh pending {})", self.playhead.value, self.pending_paused_refresh));
             return;
         }
         self.present_frame(primary);
