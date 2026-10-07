@@ -351,6 +351,72 @@ fn graph_batches_cross_the_socket_once_and_name_created_nodes() {
 }
 
 #[test]
+fn graph_add_beside_connects_a_matte_in_one_undoable_batch() {
+    let mut h = harness();
+    let root = json!({"clip":h.ids.clip_a});
+    let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let group = graph["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.group").unwrap()["id"].clone();
+    let at = json!({"root":root,"nodes":[group,h.ids.corrector_a]});
+    let new = json!({"root":root,"nodes":[group,{"new":0}]});
+    let catalog = h.ok(json!({"method":"node_types","category":"Grade"}));
+    let mask = catalog["types"].as_array().unwrap().iter().find(|t| t["tag"] == "Mask").unwrap();
+    let port = mask["outputs"][0]["key"].clone();
+    let before = h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture.clone();
+    let result = h.ok(json!({"method":"graph_ops","ops":[
+        {"op":"add_beside","at":at,"type":mask["id"],"label":"Window"},
+        {"op":"connect","from":new,"from_port":port,"to":at,"to_port":"mask"}
+    ]}));
+    assert_eq!(result["applied"], true);
+    assert_eq!(result["revision"].as_u64().unwrap(), graph["revision"].as_u64().unwrap() + 1);
+    let path = result["created"][0]["path"].clone();
+    let made = h.ok(json!({"method":"graph_read","path":path}));
+    assert_eq!(made["nodes"][0]["type"], mask["id"]);
+    assert_eq!(made["nodes"][0]["label"], "Window");
+    let body = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[group]}}));
+    assert!(body["edges"].as_array().unwrap().iter().any(|e| e["from"] == made["nodes"][0]["id"] && e["from_port"] == port && e["to"] == h.ids.corrector_a && e["to_port"] == "mask"));
+    assert_eq!(h.edits_seen.lock().unwrap().len(), 1);
+    let edit = h.edits_seen.lock().unwrap()[0].clone();
+    let klipp_document::history::EditCommand::PictureEdit { edit, .. } = edit else { panic!("one picture edit") };
+    let mut clip = h.sequence.read().unwrap().tracks[0].clips[0].clone();
+    let after = clip.picture_v2().unwrap().picture.clone();
+    clip.restore_picture(&edit.before);
+    assert_eq!(clip.picture_v2().unwrap().picture, before);
+    clip.restore_picture(&edit.after);
+    assert_eq!(clip.picture_v2().unwrap().picture, after);
+}
+
+#[test]
+fn graph_required_input_beside_nodes_validate_at_batch_end() {
+    let mut h = harness();
+    let root = json!({"clip":h.ids.clip_a});
+    let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let group = graph["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.group").unwrap()["id"].clone();
+    let at = json!({"root":root,"nodes":[group,h.ids.corrector_a]});
+    let new = json!({"root":root,"nodes":[group,{"new":1}]});
+    let before = h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture.clone();
+    let first = json!({"op":"set","path":at,"key":"exposure","value":0.2});
+    let add = json!({"op":"add_beside","at":at,"type":"klipp.grade.exposure","params":{"exposure":0.5}});
+    let refused = h.call(json!({"method":"graph_ops","ops":[first,add]}));
+    assert_eq!(refused["ok"], false);
+    assert_eq!(refused["op_index"], 1);
+    assert!(refused["error"].as_str().unwrap().contains("Unwired"));
+    assert!(refused["error"].as_str().unwrap().contains("port: \"in\""));
+    assert!(h.envelopes.lock().unwrap().is_empty());
+    assert!(h.edits_seen.lock().unwrap().is_empty());
+    assert_eq!(h.shared.revision(), graph["revision"].as_u64().unwrap());
+    assert_eq!(h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture, before);
+
+    let applied = h.ok(json!({"method":"graph_ops","ops":[first,add,
+        {"op":"connect","from":at,"from_port":"out","to":new,"to_port":"in"}
+    ]}));
+    assert_eq!(applied["applied"], true);
+    assert_eq!(applied["revision"].as_u64().unwrap(), graph["revision"].as_u64().unwrap() + 1);
+    let node = h.ok(json!({"method":"graph_read","path":applied["created"][0]["path"]}));
+    assert_eq!(node["nodes"][0]["params"]["exposure"], 0.5);
+    assert_eq!(h.edits_seen.lock().unwrap().len(), 1);
+}
+
+#[test]
 fn graph_preflight_refusal_and_stale_guards_leave_the_picture_unchanged() {
     let mut h = harness();
     let root = json!({"clip":h.ids.clip_a});

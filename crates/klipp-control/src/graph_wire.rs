@@ -102,6 +102,7 @@ impl GraphPath {
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GraphWireOp {
     Add { after: GraphPath, r#type: String, #[serde(default)] params: BTreeMap<String, Value>, label: Option<String> },
+    AddBeside { at: GraphPath, r#type: String, #[serde(default)] params: BTreeMap<String, Value>, label: Option<String> },
     Remove { path: GraphPath },
     Connect { from: GraphPath, from_port: String, to: GraphPath, to_port: String },
     Disconnect { to: GraphPath, port: String },
@@ -116,6 +117,7 @@ impl GraphWireOp {
     pub fn path(&self) -> &GraphPath {
         match self {
             Self::Add { after, .. } => after,
+            Self::AddBeside { at, .. } => at,
             Self::Remove { path } | Self::Set { path, .. } | Self::Enable { path, .. }
             | Self::Mix { path, .. } | Self::MaskChannel { path, .. } | Self::MoveAfter { path, .. } => path,
             Self::Connect { to, .. } | Self::Disconnect { to, .. } => to,

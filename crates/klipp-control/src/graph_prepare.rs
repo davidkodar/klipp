@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use klipp_graph_format::path::NodePath;
-use klipp_graph_lift::{ops::{GraphOp, apply_with_catalog}, paths::{Documents, resolve}};
+use klipp_graph_lift::{ops::{GraphOp, apply_in_batch, check_batch_end}, paths::{Documents, resolve}};
 use klipp_timeline::RegistryCatalog;
 use crate::{graph_model, graph_wire::{GraphPath, GraphWireOp}};
 
@@ -12,10 +12,11 @@ pub(crate) struct Prepared {
     pub created: BTreeMap<usize, NodePath>,
 }
 
-pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepared, (usize, String)> {
-    if wire.is_empty() || wire.len() > 64 { return Err((0, "a graph batch needs 1 to 64 operations".into())); }
+pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepared, (Option<usize>, String)> {
+    if wire.is_empty() || wire.len() > 64 { return Err((None, "a graph batch needs 1 to 64 operations".into())); }
     let root = wire[0].path().root.root();
     let mut result = Prepared { ops: Vec::new(), source_indices: Vec::new(), created: BTreeMap::new() };
+    let mut pending = Vec::new();
     for (index, item) in wire.iter().enumerate() {
         let step = (|| -> Result<(), String> {
             if item.path().root.root() != root { return Err("a batch edits one root".into()); }
@@ -24,10 +25,11 @@ pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepa
             let mut initial_params = None;
             let mut created = None;
             let op = match item {
-                GraphWireOp::Add { r#type, params, label, .. } => {
+                GraphWireOp::Add { r#type, params, label, .. } | GraphWireOp::AddBeside { r#type, params, label, .. } => {
                     if params.len() > 64 { return Err("an add takes at most 64 initial parameters".into()); }
                     let id = uuid::Uuid::new_v4();
                     let node = graph_model::new_node(r#type, id, label.as_deref())?;
+                    let beside = matches!(item, GraphWireOp::AddBeside { .. });
                     if node.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT && label.as_ref().is_some_and(|s| !s.is_empty()) {
                         return Err("effect labels are not preserved by the current clip model".into());
                     }
@@ -35,7 +37,8 @@ pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepa
                     *target.nodes.last_mut().unwrap() = id;
                     initial_params = Some((target.clone(), params));
                     created = Some(target);
-                    GraphOp::AddNode { after: path, node: Box::new(node) }
+                    if beside { GraphOp::AddNodeBeside { at: path, node: Box::new(node) } }
+                    else { GraphOp::AddNode { after: path, node: Box::new(node) } }
                 }
                 GraphWireOp::Remove { .. } => GraphOp::RemoveNode { path },
                 GraphWireOp::Connect { from, from_port, to_port, .. } => GraphOp::Connect {
@@ -60,7 +63,8 @@ pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepa
                     GraphOp::MoveAfter { path, after: sibling.node().ok_or("move_after needs a sibling")? }
                 }
             };
-            apply_with_catalog(&mut docs, &op, &RegistryCatalog)?;
+            if let GraphOp::AddNodeBeside { node, .. } = &op { pending.push(node.id); }
+            apply_in_batch(&mut docs, &op, &RegistryCatalog, &pending)?;
             result.ops.push(op);
             result.source_indices.push(index);
             if let Some((target, params)) = initial_params {
@@ -68,7 +72,7 @@ pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepa
                     let node = resolve(&docs, &target).map_err(|e| e.to_string())?;
                     let value = graph_model::parameter(node, key, value)?;
                     let op = GraphOp::SetParam { path: target.clone(), key: key.as_str().into(), value };
-                    apply_with_catalog(&mut docs, &op, &RegistryCatalog)?;
+                    apply_in_batch(&mut docs, &op, &RegistryCatalog, &pending)?;
                     result.ops.push(op);
                     result.source_indices.push(index);
                 }
@@ -76,8 +80,17 @@ pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepa
             if let Some(path) = created { result.created.insert(index, path); }
             Ok(())
         })();
-        step.map_err(|why| (index, why))?;
+        step.map_err(|why| (Some(index), why))?;
     }
+    check_batch_end(&docs, root, &RegistryCatalog).map_err(|error| {
+        // Attribute an unwired beside node to its creation, without parsing prose.
+        // Other whole-batch failures have no single offending operation.
+        let index = error.unwired.and_then(|(id, _)| {
+            if !pending.contains(&id) { return None; }
+            result.created.iter().find_map(|(index, path)| (path.node() == Some(id)).then_some(*index))
+        });
+        (index, error.why)
+    })?;
     Ok(result)
 }
 
