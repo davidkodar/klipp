@@ -45,6 +45,16 @@ impl KlippApp {
         }
     }
 
+    /// Have the engine draw the paused frame again. A new sequence alone
+    /// keeps each clip's cached render key until `SequenceUpdated`, so an
+    /// edit that sends only the sequence (a toggle did) showed the old
+    /// frame from the render cache until another edit came along.
+    fn refresh_paused_frame(&self) {
+        if self.state.playback != PlaybackState::Playing {
+            let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+        }
+    }
+
     /// The clip's picture fields now, for a drag's ends.
     fn picture_now(&self, clip_id: klipp_core::ClipId) -> Option<klipp_timeline::ClipPictureFields> {
         self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).map(|c| c.picture.clone())
@@ -327,6 +337,7 @@ impl KlippApp {
                 if let Some(on) = on {
                     if self.effect_edit_by_ops(*clip_id, klipp_timeline::EffectEdit::SetEnabled(*index, !on), "Toggle Effect", true).is_some() {
                         self.sync_sequence_to_engine();
+                        self.refresh_paused_frame();
                         return true;
                     }
                 }
@@ -348,6 +359,7 @@ impl KlippApp {
                 }
                 self.state.dirty = true;
                 self.sync_sequence_to_engine();
+                self.refresh_paused_frame();
                 true
             }
             AppCommand::UpdateBuiltinEffect { clip_id, index, ref effect } => {
