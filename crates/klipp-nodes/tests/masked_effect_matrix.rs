@@ -247,10 +247,6 @@ fn graph_graded(effect: &BuiltinEffect, shape: Shape, files: &Files, grade: Grad
     NodeGraph { output_node_id: o.id, nodes, edges, node_positions: Default::default(), working_space_override: None, frames: vec![], sticky_notes: vec![] }
 }
 
-fn run(ex: &mut GraphExecutor, effect: &BuiltinEffect, shape: Shape, files: &Files) -> Vec<f32> {
-    run_graded(ex, effect, shape, files, Graded::None)
-}
-
 fn run_graded(ex: &mut GraphExecutor, effect: &BuiltinEffect, shape: Shape, files: &Files, grade: Graded) -> Vec<f32> {
     ex.execute_linear(&frame(), &graph_graded(effect, shape, files, grade), W, H, 0.5, 12, None, None).unwrap().0
 }
@@ -410,20 +406,54 @@ fn check_matrix(grade: Graded) {
 }
 
 /// C9's counters for the GPU's producers: the matte made on the chain, so
-/// no node runs on the CPU and the case is one flush. Today a key's matte
-/// is made off the chain and uploaded (one CPU node per producer).
+/// the one CPU node is the source handing over its CPU pixels (as in C9's
+/// CPU-producer counts, 1 + the producer's) and the case is one flush
+/// (#1242 for a window, #1266 for the keys): keyed from the picture the
+/// effect takes, from the graded picture, or from the source while the
+/// effect sits after a grade.
 #[test]
-#[ignore = "GPU matte producers on the chain come with 9c-2; un-ignored by that PR (on the M2 close-out list)"]
 fn gpu_producers_keep_the_whole_case_on_the_chain() {
     let files = files();
     let Some(mut ex) = gpu() else { return };
     for (tag, effect) in mixable_effects() {
         for p in [Producer::Qualifier, Producer::LumaKey, Producer::DifferenceKey, Producer::Window] {
-            run(&mut ex, &effect, Shape::Mixed(p, MaskChannel::Luminance), &files);
-            let stats = ex.last_run_chain_stats();
-            assert_eq!((stats.cpu_nodes, stats.flushes), (0, 1), "{tag} by {p:?}: {stats:?}");
+            for grade in [Graded::None, Graded::KeyedFromGrade, Graded::KeyedFromSource] {
+                run_graded(&mut ex, &effect, Shape::Mixed(p, MaskChannel::Luminance), &files, grade);
+                let stats = ex.last_run_chain_stats();
+                assert_eq!((stats.cpu_nodes, stats.flushes), (1, 1), "{tag} by {p:?} ({grade:?}): {stats:?}");
+            }
         }
     }
+}
+
+/// The control for the counters above: a key the GPU doesn't draw for an
+/// effect's mask is counted as a CPU node, beside the source's. A
+/// qualifier with finesse (its blur runs on the CPU, as the grade's
+/// secondary leaves it, #1013), and a key read by a blend too, so its
+/// pixels are wanted on the CPU.
+#[test]
+fn a_key_the_gpu_does_not_draw_counts_as_a_cpu_node() {
+    let files = files();
+    let Some(mut ex) = gpu() else { return };
+    let (_, effect) = mixable_effects().into_iter().next().expect("a mixable effect");
+    let mut g = graph_graded(&effect, Shape::Mixed(Producer::Qualifier, MaskChannel::Luminance), &files, Graded::None);
+    let q = g.nodes.iter_mut().find(|n| n.kind == NodeKind::Qualifier).expect("the qualifier");
+    q.params.qualifier.as_mut().unwrap().blur = 2.0;
+    ex.execute_linear(&frame(), &g, W, H, 0.5, 12, None, None).unwrap();
+    assert!(ex.last_run_chain_stats().cpu_nodes >= 2, "finesse: {:?}", ex.last_run_chain_stats());
+    let mut g = graph_graded(&effect, Shape::Mixed(Producer::LumaKey, MaskChannel::Luminance), &files, Graded::None);
+    let key = g.nodes.iter().find(|n| n.kind == NodeKind::LumaKey).expect("the key").id;
+    let blend = node(NodeKind::Blend, NodeParams { mix: Some(0.5), ..Default::default() });
+    let fx = g.edges.iter().find(|e| e.from_node == key).unwrap().to_node;
+    let out = g.output_node_id;
+    g.edges.retain(|e| e.to_node != out);
+    g.edges.extend([link(fx, blend.id, 0), link(key, blend.id, 1), link(blend.id, out, 0)]);
+    g.nodes.push(blend);
+    ex.execute_linear(&frame(), &g, W, H, 0.5, 12, None, None).unwrap();
+    assert!(ex.last_run_chain_stats().cpu_nodes >= 2, "a second reader: {:?}", ex.last_run_chain_stats());
+    // And the same graph without either reason takes the source's alone.
+    ex.execute_linear(&frame(), &graph_graded(&effect, Shape::Mixed(Producer::Qualifier, MaskChannel::Luminance), &files, Graded::None), W, H, 0.5, 12, None, None).unwrap();
+    assert_eq!(ex.last_run_chain_stats().cpu_nodes, 1);
 }
 
 // C9 through a published Grade-group port (D1) is

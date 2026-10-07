@@ -273,6 +273,12 @@ pub struct GraphExecutor {
     /// A mixed effect's window, as shapes the GPU draws into its matte slot
     /// (#1242); set with `effect_mask`, one or the other.
     effect_window: Option<Arc<Vec<klipp_effects::gpu::GpuMaskDef>>>,
+    /// The key whose matte, drawn on the GPU, the next mixed effect node's
+    /// mask reads (#1266); set with `effect_mask`, one or the other.
+    effect_keyed: Option<NodeId>,
+    /// Keys drawn on the GPU this run for effects' masks (#1266): each
+    /// one's matte, and how many of its readers have yet to read it.
+    key_mattes: HashMap<NodeId, (klipp_effects::gpu::KeyedMatte, usize)>,
     /// An effect node of the last run could not apply its effects (a
     /// lost device): its picture lacks them. See
     /// [`Self::last_run_effects_complete`].
@@ -673,6 +679,8 @@ impl GraphExecutor {
             run_mix_refused: 0,
             effect_mask: None,
             effect_window: None,
+            effect_keyed: None,
+            key_mattes: HashMap::new(),
             run_effects_incomplete: false,
             plans: HashMap::new(),
             plan_compiles: 0,
@@ -743,6 +751,8 @@ impl GraphExecutor {
             run_mix_refused: 0,
             effect_mask: None,
             effect_window: None,
+            effect_keyed: None,
+            key_mattes: HashMap::new(),
             run_effects_incomplete: false,
             plans: HashMap::new(),
             plan_compiles: 0,
@@ -1696,6 +1706,8 @@ impl GraphExecutor {
         // matte tap, or a thumbnail.
         self.output_on_gpu = None;
         self.run_effect_breaks = 0;
+        self.key_mattes.clear();
+        self.effect_keyed = None;
         self.run_effects_incomplete = false;
         self.run_mix_refused = 0;
         let keep = std::mem::take(&mut self.keep_output_on_gpu);
@@ -1748,6 +1760,35 @@ impl GraphExecutor {
         // Windows that only mask effects (#1242): their shapes, drawn on the
         // GPU into each effect's matte slot as it runs, never on the CPU here.
         let mut window_mattes: HashMap<NodeId, Arc<Vec<klipp_effects::gpu::GpuMaskDef>>> = HashMap::new();
+        // Readers of a node's picture that the chain itself serves: a key
+        // drawn on the GPU from it for an effect's mask (#1266). They need
+        // no CPU copy, so they don't hold the chain back at that node.
+        let mut served: HashMap<NodeId, usize> = HashMap::new();
+        // Keys whose every reader is a mixed effect's mask port, the GPU
+        // can draw (#1266): each is drawn the moment its picture is on the
+        // chain (`draw_keys_of`), whichever node reads that picture next,
+        // so a key of the source can mask an effect after a grade.
+        let mut pending_keys: Vec<PendingKey> = if self.gpu.is_some() {
+            graph
+                .nodes
+                .iter()
+                .filter(|n| feeding.contains(&n.id) && n.enabled)
+                .filter(|n| Some(n.id) != matte_tap && Some(n.id) != matte_preview_node)
+                // A key whose thumbnail is shown keeps its CPU pixels.
+                .filter(|n| !visible_nodes.is_some_and(|v| v.contains(&n.id)))
+                .filter_map(|n| {
+                    let readers: Vec<_> = graph.edges.iter().filter(|e| e.from_node == n.id).collect();
+                    let masks_only = !readers.is_empty()
+                        && readers.iter().all(|e| {
+                            e.to_port == 1 && node_by_id.get(&e.to_node).is_some_and(|r| matches!(r.kind, NodeKind::Effect | NodeKind::EffectSegment) && r.params.effect_blend.is_some())
+                        });
+                    let key = gpu_key(&n.kind, &params_for_frame(n, clip_time_secs)).filter(|_| masks_only)?;
+                    Some(PendingKey { node: n.id, picture: graph.input_of(n.id, 0)?, key, readers: readers.len() })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         // 3. Execute nodes in topo order
         for &node_id in order {
@@ -1817,6 +1858,44 @@ impl GraphExecutor {
                 || noop_input_transform
                 || effect_blend_is_none(graph, node, clip_time_secs);
 
+            // A mixed effect whose mask is a key still waiting for its
+            // picture on the chain (#1266): drawn from the tail, or from a
+            // chain started here on the picture the effect takes too, or
+            // else keyed on the CPU now, from its picture's pixels.
+            if let Some(key) = graph
+                .input_of(node_id, 1)
+                .filter(|id| matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment) && node.params.effect_blend.is_some() && pending_keys.iter().any(|k| k.node == *id))
+            {
+                let picture = pending_keys.iter().find(|k| k.node == key).map(|k| k.picture).expect("pending");
+                if chain_tail.is_none() && graph.input_of(node_id, 0) == Some(picture) && !composite_port1.contains_key(&picture) {
+                    let held = node_outputs.get(&picture).filter(|a| !a.is_empty()).map(|a| a.as_slice());
+                    let is_source = node_by_id.get(&picture).is_some_and(|n| n.kind == NodeKind::Source);
+                    if let Some(pixels) = held.or(if is_source { Some(source_frame) } else { None }) {
+                        if self.begin_chain_from(pixels, width, height) {
+                            chain_tail = Some(picture);
+                            chain_slot_a = true;
+                            chain_start_count += 1;
+                        }
+                    }
+                }
+                if chain_tail == Some(picture) {
+                    self.draw_keys_of(picture, chain_slot_a, &mut pending_keys, &mut served, graph, width, height);
+                }
+                pending_keys.retain(|k| k.node != key);
+                if !self.key_mattes.contains_key(&key) {
+                    let key_node = *node_by_id.get(&key).expect("a graph node");
+                    let held = node_outputs.get(&picture).filter(|a| !a.is_empty()).map(|a| a.as_slice());
+                    let is_source = node_by_id.get(&picture).is_some_and(|n| n.kind == NodeKind::Source);
+                    let Some(pixels) = held.or(if is_source { Some(source_frame) } else { None }).filter(|p| !p.is_empty()) else {
+                        return Err(if is_source { ExecutorError::CpuSourceRequired } else { ExecutorError::MaskUnavailable(node_id) });
+                    };
+                    let key_params = params_for_frame(key_node, clip_time_secs);
+                    let matte = self.execute_node(key, &key_node.kind, &key_params, pixels, None, None, width, height, source_frame, frame_number, clip_time_secs, false);
+                    node_outputs.insert(key, Arc::new(matte));
+                    cpu_fallback_count += 1;
+                }
+            }
+
             // If a chain is live, see whether this node can extend it or
             // whether we must flush the tail back to CPU first.
             let primary_input_id = graph.input_of(node_id, 0);
@@ -1826,7 +1905,7 @@ impl GraphExecutor {
             // extending only delays the inevitable download).
             let chain_tail_fan_out_one = chain_tail
                 .map(|id| {
-                    fan_out.get(&id).copied().unwrap_or(0) <= 1
+                    fan_out.get(&id).copied().unwrap_or(0).saturating_sub(served.get(&id).copied().unwrap_or(0)) <= 1
                         // The one tail whose extra consumers the chain
                         // itself serves: a secondary's source keeps its
                         // picture in a side buffer for ApplyMatte and
@@ -1911,12 +1990,17 @@ impl GraphExecutor {
                 (NodeKind::Effect | NodeKind::EffectSegment, Some(_)) => graph.input_of(node_id, 1).and_then(|id| window_mattes.get(&id).cloned()),
                 _ => None,
             };
-            let effect_mask_ready = effect_window.is_some() || !matches!(effect_mask, Some(None));
+            let effect_keyed = match (node.kind, node.params.effect_blend) {
+                (NodeKind::Effect | NodeKind::EffectSegment, Some(_)) => graph.input_of(node_id, 1).filter(|id| self.key_mattes.contains_key(id)),
+                _ => None,
+            };
+            let effect_mask_ready = effect_window.is_some() || effect_keyed.is_some() || !matches!(effect_mask, Some(None));
             // Handed to the dispatch, whichever way the node is dispatched
             // (extending a chain, or starting one); each node sets it anew,
             // so nothing carries over to another.
             self.effect_mask = effect_mask.clone().flatten();
             self.effect_window = effect_window;
+            self.effect_keyed = effect_keyed;
             let can_extend_chain = !bypass
                 && effect_mask_ready
                 && !feeds_a_mask
@@ -1987,11 +2071,36 @@ impl GraphExecutor {
                     let defs: Vec<_> = enabled.iter().filter_map(|m| mask_to_gpu_def(m)).collect();
                     if !defs.is_empty() && defs.len() == enabled.len() {
                         window_mattes.insert(node_id, Arc::new(defs));
+                        // It reads none of its input's pixels, so that edge
+                        // holds the chain back no more than a GPU key's.
+                        if let Some(input) = primary_input_id {
+                            *served.entry(input).or_insert(0) += 1;
+                        }
                         node_outputs.insert(node_id, Arc::new(Vec::new()));
                         per_node_ms.push((format!("{node_kind_name}#window_on_gpu"), t_node.elapsed().as_secs_f64() * 1000.0));
                         continue;
                     }
                 }
+            }
+
+            // A key drawn on the GPU for effects' masks (#1266): from the
+            // chain's tail when that is its picture; otherwise left for
+            // when a chain starts from or reaches its picture, or for its
+            // first reader (below). Starting a chain here would skip what
+            // a chain start keeps for a secondary or a composite.
+            if let Some(picture) = pending_keys.iter().find(|k| k.node == node_id).map(|k| k.picture) {
+                if chain_tail == Some(picture) {
+                    self.draw_keys_of(picture, chain_slot_a, &mut pending_keys, &mut served, graph, width, height);
+                } else {
+                    node_outputs.insert(node_id, Arc::new(Vec::new()));
+                    per_node_ms.push((format!("{node_kind_name}#key_deferred"), t_node.elapsed().as_secs_f64() * 1000.0));
+                    continue;
+                }
+            }
+            if self.key_mattes.contains_key(&node_id) {
+                node_outputs.insert(node_id, Arc::new(Vec::new()));
+                per_node_ms.push((format!("{node_kind_name}#key_on_gpu"), t_node.elapsed().as_secs_f64() * 1000.0));
+                continue;
             }
 
             // If a chain is live and this node can't extend it, flush
@@ -2029,7 +2138,7 @@ impl GraphExecutor {
             // mask while that picture was on the GPU: the flush just made
             // them, so the mask is read again. Without it the mix ran with
             // no matte, white, and the whole effect was drawn.
-            if self.effect_mask.is_none() && self.effect_window.is_none() && matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment) && node.params.effect_blend.is_some() {
+            if self.effect_mask.is_none() && self.effect_window.is_none() && self.effect_keyed.is_none() && matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment) && node.params.effect_blend.is_some() {
                 self.effect_mask = graph.input_of(node_id, 1).and_then(|id| node_outputs.get(&id)).filter(|m| !m.is_empty()).cloned();
             }
 
@@ -2126,6 +2235,7 @@ impl GraphExecutor {
                         chain_slot_a = !chain_slot_a;
                         chain_tail = Some(node_id);
                         node_outputs.insert(node_id, Arc::new(Vec::new()));
+                        self.draw_keys_of(node_id, chain_slot_a, &mut pending_keys, &mut served, graph, width, height);
                         // The same three hooks the generic extend path
                         // runs after a dispatch. They live here too
                         // because this arm returns early, and a composite
@@ -2199,6 +2309,7 @@ impl GraphExecutor {
                         }
                         chain_tail = Some(node_id);
                         node_outputs.insert(node_id, Arc::new(Vec::new()));
+                        self.draw_keys_of(node_id, chain_slot_a, &mut pending_keys, &mut served, graph, width, height);
                         // A secondary's source has to survive its own
                         // fan-out: keep the picture where ApplyMatte can
                         // still find it once the branch has overwritten
@@ -2294,6 +2405,13 @@ impl GraphExecutor {
                     .unwrap_or(source_frame);
                 let keep_for_composite = primary_input_id
                     .is_some_and(|id| composite_port1.contains_key(&id));
+                // Keys of the picture the chain starts from are drawn from it
+                // before the node writes over it.
+                let mut keys_of_input = |ex: &mut Self| {
+                    if let Some(picture) = primary_input_id {
+                        ex.draw_keys_of(picture, true, &mut pending_keys, &mut served, graph, width, height);
+                    }
+                };
                 if let Some(n) = self.start_chain(
                     node_id,
                     &node.kind,
@@ -2303,10 +2421,12 @@ impl GraphExecutor {
                     height,
                     frame_number,
                     keep_for_composite,
+                    &mut keys_of_input,
                 ) {
                     chain_tail = Some(node_id);
                     chain_slot_a = n % 2 == 0;
                     node_outputs.insert(node_id, Arc::new(Vec::new()));
+                    self.draw_keys_of(node_id, chain_slot_a, &mut pending_keys, &mut served, graph, width, height);
                     if keep_for_composite {
                         composite_src_holds = primary_input_id;
                         segment_composite_writes += 1;
@@ -2471,6 +2591,19 @@ impl GraphExecutor {
                     window_on_cpu = self.execute_node(window.id, &NodeKind::Mask, &window_params, primary_slice, None, None, width, height, source_frame, frame_number, clip_time_secs, false);
                     cpu_fallback_count += 1;
                     Some(window_on_cpu.as_slice())
+                }
+                None => secondary_slice,
+            };
+            // A mixed effect off the chain whose key was drawn on the GPU
+            // (#1266): its matte is read back (the chain that drew it is
+            // submitted by now), since the key's picture may be nowhere on
+            // the CPU.
+            let key_read_back;
+            let secondary_slice = match graph.input_of(node_id, 1).filter(|id| secondary_slice.is_none() && self.key_mattes.contains_key(id)) {
+                Some(key) => {
+                    key_read_back = self.gpu.as_ref().zip(self.key_mattes.get(&key)).and_then(|(g, (m, _))| g.read_keyed_matte(m, (width as usize) * (height as usize)));
+                    self.keyed_matte_read(key);
+                    key_read_back.as_deref()
                 }
                 None => secondary_slice,
             };
@@ -2729,6 +2862,86 @@ impl GraphExecutor {
         }
     }
 
+    /// Open a chain on `primary` with no node dispatched yet: uploaded, or
+    /// the source's seed when it is there at this size (as
+    /// [`Self::start_chain`] does). The picture is in `buf_a`. `false`
+    /// when there is no GPU or nothing to start from.
+    fn begin_chain_from(&mut self, primary: &[f32], width: u32, height: u32) -> bool {
+        let Some(gpu) = self.gpu.as_mut().filter(|g| !g.is_device_lost()) else { return false };
+        gpu.ensure_chain_buffers(u64::from(width) * u64::from(height) * 16);
+        if self.run_seed_dims == Some((width, height)) {
+            self.run_seed_dims = None;
+        } else if primary.is_empty() {
+            self.run_seed_dims = None;
+            return false;
+        } else {
+            gpu.upload_chain_input_linear(primary);
+        }
+        gpu.begin_chain();
+        true
+    }
+
+    /// The difference key's plate on the GPU, resized to the frame; `false`
+    /// when it won't load.
+    fn difference_plate_on_gpu(&mut self, dk: &klipp_core::DifferenceKeySettings, width: u32, height: u32) -> bool {
+        let Some(path) = dk.plate_path.clone() else { return false };
+        let key = Self::plate_gpu_key(&path, width, height);
+        // Resident already: skip the resize entirely, not just the upload.
+        // This is the steady state during playback.
+        if self.gpu.as_ref().is_some_and(|g| g.has_difference_key_plate(key)) {
+            return true;
+        }
+        let Some(plate) = self.resized_plate(&path, width, height) else { return false };
+        match self.gpu.as_mut() {
+            Some(gpu) => {
+                gpu.upload_difference_key_plate(&plate, key);
+                gpu.has_difference_key_plate(key)
+            }
+            None => false,
+        }
+    }
+
+    /// Draw on the GPU every pending key of `picture`, which is on the chain
+    /// in `buf_a` (`in_is_a`) or `buf_b` (#1266). A key that can't be drawn
+    /// (no plate, no slot) is left to its own turn, which keys it on the
+    /// CPU. Each drawn key is a reader of `picture` the chain serves.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_keys_of(&mut self, picture: NodeId, in_is_a: bool, pending: &mut Vec<PendingKey>, served: &mut HashMap<NodeId, usize>, graph: &NodeGraph, width: u32, height: u32) {
+        let mut i = 0;
+        while i < pending.len() {
+            if pending[i].picture != picture {
+                i += 1;
+                continue;
+            }
+            let k = pending.remove(i);
+            let plate_ready = match k.key {
+                klipp_effects::gpu::GpuKey::DifferenceKey { .. } => graph
+                    .nodes
+                    .iter()
+                    .find(|n| n.id == k.node)
+                    .and_then(|n| n.params.difference_key.clone())
+                    .is_some_and(|dk| self.difference_plate_on_gpu(&dk, width, height)),
+                _ => true,
+            };
+            if let Some(matte) = plate_ready.then(|| self.gpu.as_mut().and_then(|g| g.key_into_matte_slot(&k.key, in_is_a, width, height))).flatten() {
+                self.key_mattes.insert(k.node, (matte, k.readers));
+                *served.entry(picture).or_insert(0) += 1;
+            }
+        }
+    }
+
+    /// One reader of the key `id`'s GPU matte has read it; the last gives
+    /// its slot back.
+    fn keyed_matte_read(&mut self, id: NodeId) {
+        let Some((_, left)) = self.key_mattes.get_mut(&id) else { return };
+        *left = left.saturating_sub(1);
+        if *left == 0 {
+            if let (Some((matte, _)), Some(gpu)) = (self.key_mattes.remove(&id), self.gpu.as_mut()) {
+                gpu.release_keyed_matte(matte);
+            }
+        }
+    }
+
     /// Start a new GPU chain: upload `primary_input` to `buf_a`, dispatch
     /// this first node. Returns `Some(n)` where `n` is the number of
     /// sub-dispatches issued (≥1 on success — the caller must flip
@@ -2746,6 +2959,7 @@ impl GraphExecutor {
         height: u32,
         frame_number: u64,
         keep_input_for_composite: bool,
+        keys_of_input: &mut dyn FnMut(&mut Self),
     ) -> Option<u32> {
         let gpu = self.gpu.as_mut()?;
         if gpu.is_device_lost() {
@@ -2791,6 +3005,8 @@ impl GraphExecutor {
         if keep_input_for_composite {
             gpu.keep_composite_src(/* in_is_a = */ true, width, height);
         }
+        // Keys of the input, for effects' masks (#1266), read it here.
+        keys_of_input(self);
         // Dispatch this node with in = buf_a, out = buf_b. The first
         // node in a chain is always one of the whitelisted single-sub-
         // effect kinds (start_chain is only called via can_start_chain,
@@ -2812,6 +3028,45 @@ impl GraphExecutor {
         dispatches
     }
 
+}
+
+/// A key to draw on the GPU for effects' masks when its picture is on the
+/// chain (#1266).
+struct PendingKey {
+    node: NodeId,
+    picture: NodeId,
+    key: klipp_effects::gpu::GpuKey,
+    readers: usize,
+}
+
+/// The GPU's form of a key node's settings for an effect's mask (#1266),
+/// or `None` for one it can't draw: switched off (the CPU path's whole
+/// matte), a qualifier's finesse (clean, shrink and grow, blur run on the
+/// CPU), a difference key without a plate.
+fn gpu_key(kind: &NodeKind, params: &NodeParams) -> Option<klipp_effects::gpu::GpuKey> {
+    use klipp_effects::gpu::GpuKey;
+    match kind {
+        NodeKind::Qualifier => params.qualifier.as_ref().filter(|q| q.enabled && !q.refines()).map(|q| GpuKey::Qualifier {
+            hue_center: q.hue_center,
+            hue_width: q.hue_width,
+            hue_soft: q.hue_soft,
+            sat_low: q.sat_low,
+            sat_high: q.sat_high,
+            sat_soft: q.sat_soft,
+            lum_low: q.lum_low,
+            lum_high: q.lum_high,
+            lum_soft: q.lum_soft,
+            invert: q.invert,
+        }),
+        NodeKind::LumaKey => params.luma_key.as_ref().filter(|k| k.enabled).map(|k| GpuKey::LumaKey { low: k.low, high: k.high, soft: k.soft, invert: k.invert }),
+        NodeKind::DifferenceKey => params.difference_key.as_ref().filter(|d| d.enabled && d.plate_path.is_some()).map(|d| GpuKey::DifferenceKey {
+            tolerance: d.tolerance,
+            soft: d.soft,
+            invert: d.invert,
+            luminance: matches!(d.match_space, klipp_core::DifferenceKeyMatchSpace::Luminance),
+        }),
+        _ => None,
+    }
 }
 
 /// The primaries a Lut3D node's lookup is bracketed with. The node's
@@ -3217,20 +3472,30 @@ impl GraphExecutor {
         if let NodeKind::Effect | NodeKind::EffectSegment = kind {
             let mask = self.effect_mask.take();
             let window = self.effect_window.take();
+            // Taken out while the run reads it, and put back for the key's
+            // other readers whatever the run does.
+            let keyed = self.effect_keyed.take().and_then(|id| self.key_mattes.remove(&id).map(|k| (id, k)));
             let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
             let gpu = self.gpu.as_mut()?;
             let run = match params.effect_blend {
-                Some(blend) => {
-                    let mix = klipp_effects::mask_mix::MaskMix::new(blend.mix, blend.channel, luma).ok()?;
-                    let matte = match (&window, &mask) {
-                        (Some(shapes), _) => Some(klipp_effects::gpu::EffectMatte::Shapes(shapes.as_slice())),
-                        (None, Some(pixels)) => Some(klipp_effects::gpu::EffectMatte::Pixels(pixels.as_slice())),
-                        (None, None) => None,
+                Some(blend) => klipp_effects::mask_mix::MaskMix::new(blend.mix, blend.channel, luma).ok().and_then(|mix| {
+                    let matte = match (&window, &keyed, &mask) {
+                        (Some(shapes), _, _) => Some(klipp_effects::gpu::EffectMatte::Shapes(shapes.as_slice())),
+                        (None, Some((_, (m, _))), _) => Some(klipp_effects::gpu::EffectMatte::Keyed(m)),
+                        (None, None, Some(pixels)) => Some(klipp_effects::gpu::EffectMatte::Pixels(pixels.as_slice())),
+                        (None, None, None) => None,
                     };
-                    gpu.chain_run_effects_mixed(&params.effects, in_is_a, width, height, mix, matte)?
-                }
-                None => gpu.chain_run_effects(&params.effects, in_is_a, width, height),
+                    gpu.chain_run_effects_mixed(&params.effects, in_is_a, width, height, mix, matte)
+                }),
+                None => Some(gpu.chain_run_effects(&params.effects, in_is_a, width, height)),
             };
+            if let Some((id, k)) = keyed {
+                self.key_mattes.insert(id, k);
+                if run.is_some() {
+                    self.keyed_matte_read(id);
+                }
+            }
+            let run = run?;
             self.run_effect_breaks += run.breaks;
             self.run_effects_incomplete |= !run.complete;
             // Flips mirror the slot: an even count (none included) leaves

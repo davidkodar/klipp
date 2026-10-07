@@ -692,6 +692,40 @@ pub fn poll_until_mapped(
 pub enum EffectMatte<'a> {
     Pixels(&'a [f32]),
     Shapes(&'a [GpuMaskDef]),
+    /// A key already drawn on the GPU into its own slot
+    /// ([`GpuEffectsPipeline::key_into_matte_slot`], #1266): read as it is,
+    /// and left leased for the key's other readers.
+    Keyed(&'a KeyedMatte),
+}
+
+/// A key whose matte is drawn on the GPU for effects' masks (#1266), with
+/// the settings its kernel takes. Hue values are degrees, as the caller
+/// sees them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GpuKey {
+    Qualifier { hue_center: f32, hue_width: f32, hue_soft: f32, sat_low: f32, sat_high: f32, sat_soft: f32, lum_low: f32, lum_high: f32, lum_soft: f32, invert: bool },
+    LumaKey { low: f32, high: f32, soft: f32, invert: bool },
+    /// Against the plate [`GpuEffectsPipeline::upload_difference_key_plate`]
+    /// put on the GPU.
+    DifferenceKey { tolerance: f32, soft: f32, invert: bool, luminance: bool },
+}
+
+/// A key's matte in a pool slot of its own (#1266), drawn from a chain
+/// picture by [`GpuEffectsPipeline::key_into_matte_slot`]. Each mixed
+/// effect it masks reads it ([`EffectMatte::Keyed`]); the caller gives it
+/// back with [`GpuEffectsPipeline::release_keyed_matte`] once the last one
+/// is recorded (the run's end frees it too).
+#[derive(Debug, PartialEq, Eq)]
+pub struct KeyedMatte(slots::SlotId);
+
+/// Where a key reads its picture and writes its matte.
+#[derive(Clone, Copy)]
+enum KeyRoute {
+    /// The picture [`GpuEffectsPipeline::keep_chain_input`] kept, into
+    /// `matte_buf`: a grade secondary's.
+    KeptToMatteBuf,
+    /// The chain's picture in `buf_a` (`true`) or `buf_b`, into a slot.
+    ChainToSlot(bool, slots::SlotId),
 }
 
 impl GpuEffectsPipeline {
@@ -4720,43 +4754,8 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return;
         }
-        let slot = self.next_params_slot();
-        self.write_chain_params(slot, &GpuQualifierParams {
-            width,
-            height,
-            hue_center: hue_center / 360.0,
-            hue_width: hue_width / 360.0,
-            hue_soft: hue_soft / 360.0,
-            sat_low,
-            sat_high,
-            sat_soft,
-            lum_low,
-            lum_high,
-            lum_soft,
-            invert: invert as u32,
-            sec_exposure: 0.0,
-            sec_saturation: 1.0,
-            sec_hue_shift: 0.0,
-            sec_temperature: 0.0,
-            matte_preview: 1,
-            _pad0: 0,
-            _pad1: 0,
-            _pad2: 0,
-        });
-        let input = self.grade_mix_src.as_ref().expect("keep_chain_input first");
-        let matte = self.matte_buf.as_ref().expect("matte_buf populated by ensure_buffers");
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("chain_bg_qualifier_matte"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: matte.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
-            ],
-        });
-        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.qualifier_pipeline, &bind_group, workgroups);
+        let key = GpuKey::Qualifier { hue_center, hue_width, hue_soft, sat_low, sat_high, sat_soft, lum_low, lum_high, lum_soft, invert };
+        self.record_key(&key, KeyRoute::KeptToMatteBuf, width, height);
     }
 
     /// Dispatch-only luminance key: the same as
@@ -4826,34 +4825,7 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() || self.plate_buf.is_none() {
             return false;
         }
-        let slot = self.next_params_slot();
-        self.write_chain_params(slot, &GpuDifferenceKeyParams {
-            width,
-            height,
-            tolerance,
-            soft,
-            invert: invert as u32,
-            match_space: luminance_match as u32,
-            _pad0: 0,
-            _pad1: 0,
-            luma: [self.luma_coefs[0], self.luma_coefs[1], self.luma_coefs[2], 0.0],
-        });
-        let input = self.grade_mix_src.as_ref().expect("keep_chain_input first");
-        let matte = self.matte_buf.as_ref().expect("matte_buf populated by ensure_buffers");
-        let plate = self.plate_buf.as_ref().expect("checked above");
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("chain_bg_difference_key_matte"),
-            layout: &self.difference_key_bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: matte.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: plate.as_entire_binding() },
-            ],
-        });
-        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.difference_key_pipeline, &bind_group, workgroups);
+        self.record_key(&GpuKey::DifferenceKey { tolerance, soft, invert, luminance: luminance_match }, KeyRoute::KeptToMatteBuf, width, height);
         true
     }
 
@@ -4869,28 +4841,7 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return;
         }
-        let slot = self.next_params_slot();
-        self.write_chain_params(slot, &GpuLumaKeyParams {
-            width, height, low, high, soft,
-            invert: invert as u32,
-            _pad0: 0,
-            _pad1: 0,
-            luma: [self.luma_coefs[0], self.luma_coefs[1], self.luma_coefs[2], 0.0],
-        });
-        let input = self.grade_mix_src.as_ref().expect("keep_chain_input first");
-        let matte = self.matte_buf.as_ref().expect("matte_buf populated by ensure_buffers");
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("chain_bg_luma_key_matte"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: matte.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
-            ],
-        });
-        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.luma_key_pipeline, &bind_group, workgroups);
+        self.record_key(&GpuKey::LumaKey { low, high, soft, invert }, KeyRoute::KeptToMatteBuf, width, height);
     }
 
     /// Dispatch-only ApplyMatte: blend the chain's picture (graded) with
@@ -6141,6 +6092,129 @@ impl GpuEffectsPipeline {
     /// Slots the pool may hold at once, of all sizes (9b-1's budget).
     pub const MAX_SLOTS: usize = 8;
 
+    /// Draw `key`'s matte from the chain's picture (in `buf_a` when
+    /// `in_is_a`) into a pool slot of its own, recorded in the chain's
+    /// encoder: the picture isn't touched, and nothing is read back.
+    /// `None` when there is no chain, the pool's budget refuses, or a
+    /// difference key has no plate; the caller keys the CPU way then.
+    pub fn key_into_matte_slot(&mut self, key: &GpuKey, in_is_a: bool, width: u32, height: u32) -> Option<KeyedMatte> {
+        if self.is_device_lost() || self.chain_encoder.is_none() {
+            return None;
+        }
+        if matches!(key, GpuKey::DifferenceKey { .. }) && self.plate_buf.is_none() {
+            return None;
+        }
+        let device = &self.device;
+        let id = self
+            .slot_pool
+            .lease(SlotKey { width, height, usage: SlotUsage::Matte }, |k| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("slot_matte"),
+                    size: u64::from(k.width) * u64::from(k.height) * 16,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                })
+            })
+            .ok()?;
+        self.record_key(key, KeyRoute::ChainToSlot(in_is_a, id), width, height);
+        Some(KeyedMatte(id))
+    }
+
+    /// A keyed matte's pixels, read back for a reader off the chain.
+    /// `None` while the chain that draws it is still being recorded.
+    pub fn read_keyed_matte(&self, matte: &KeyedMatte, pixel_count: usize) -> Option<Vec<f32>> {
+        if self.is_device_lost() || self.chain_encoder.is_some() {
+            return None;
+        }
+        Some(self.download_linear_rgba_f32(self.slot_pool.buffer(matte.0), pixel_count)).filter(|v| v.len() == pixel_count * 4)
+    }
+
+    /// Give a keyed matte's slot back: its last reader is recorded.
+    pub fn release_keyed_matte(&mut self, matte: KeyedMatte) {
+        self.slot_pool.release(matte.0);
+    }
+
+    /// Record `key`'s kernel along `route`.
+    fn record_key(&mut self, key: &GpuKey, route: KeyRoute, width: u32, height: u32) {
+        let slot = self.next_params_slot();
+        let pipeline = match *key {
+            GpuKey::Qualifier { hue_center, hue_width, hue_soft, sat_low, sat_high, sat_soft, lum_low, lum_high, lum_soft, invert } => {
+                self.write_chain_params(slot, &GpuQualifierParams {
+                    width,
+                    height,
+                    hue_center: hue_center / 360.0,
+                    hue_width: hue_width / 360.0,
+                    hue_soft: hue_soft / 360.0,
+                    sat_low,
+                    sat_high,
+                    sat_soft,
+                    lum_low,
+                    lum_high,
+                    lum_soft,
+                    invert: invert as u32,
+                    sec_exposure: 0.0,
+                    sec_saturation: 1.0,
+                    sec_hue_shift: 0.0,
+                    sec_temperature: 0.0,
+                    matte_preview: 1,
+                    _pad0: 0,
+                    _pad1: 0,
+                    _pad2: 0,
+                });
+                &self.qualifier_pipeline
+            }
+            GpuKey::LumaKey { low, high, soft, invert } => {
+                self.write_chain_params(slot, &GpuLumaKeyParams {
+                    width, height, low, high, soft,
+                    invert: invert as u32,
+                    _pad0: 0,
+                    _pad1: 0,
+                    luma: [self.luma_coefs[0], self.luma_coefs[1], self.luma_coefs[2], 0.0],
+                });
+                &self.luma_key_pipeline
+            }
+            GpuKey::DifferenceKey { tolerance, soft, invert, luminance } => {
+                self.write_chain_params(slot, &GpuDifferenceKeyParams {
+                    width,
+                    height,
+                    tolerance,
+                    soft,
+                    invert: invert as u32,
+                    match_space: luminance as u32,
+                    _pad0: 0,
+                    _pad1: 0,
+                    luma: [self.luma_coefs[0], self.luma_coefs[1], self.luma_coefs[2], 0.0],
+                });
+                &self.difference_key_pipeline
+            }
+        };
+        let (input, output) = match route {
+            KeyRoute::KeptToMatteBuf => (
+                self.grade_mix_src.as_ref().expect("keep_chain_input first"),
+                self.matte_buf.as_ref().expect("matte_buf populated by ensure_buffers"),
+            ),
+            KeyRoute::ChainToSlot(in_is_a, id) => (
+                if in_is_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() }.expect("chain buffers"),
+                self.slot_pool.buffer(id),
+            ),
+        };
+        let mut entries = vec![
+            wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
+        ];
+        let layout = match key {
+            GpuKey::DifferenceKey { .. } => {
+                entries.push(wgpu::BindGroupEntry { binding: 3, resource: self.plate_buf.as_ref().expect("checked by the caller").as_entire_binding() });
+                &self.difference_key_bgl
+            }
+            _ => &self.bind_group_layout,
+        };
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("chain_bg_key"), layout, entries: &entries });
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
+    }
+
     /// Draw a window's shapes into the pool slot `id` on the GPU, recorded
     /// in the chain's encoder (#1242). Each call gets its own shape and
     /// parameter buffers: several masked effects in one encoder would
@@ -6214,7 +6288,9 @@ impl GpuEffectsPipeline {
         };
         let device = &self.device;
         let kept = self.slot_pool.lease(image, |k| make(device, k)).ok()?;
+        let keyed = matches!(mask, Some(EffectMatte::Keyed(_)));
         let matte = match mask {
+            Some(EffectMatte::Keyed(m)) => Some(m.0),
             Some(source) => {
                 let device = &self.device;
                 match self.slot_pool.lease(SlotKey { usage: SlotUsage::Matte, ..image }, |k| make(device, k)) {
@@ -6227,6 +6303,7 @@ impl GpuEffectsPipeline {
                             // Drawn by the GPU in the chain's encoder, ahead
                             // of the mix that reads it.
                             EffectMatte::Shapes(masks) => self.record_window_into_slot(id, width, height, masks),
+                            EffectMatte::Keyed(_) => unreachable!("taken above"),
                         }
                         Some(id)
                     }
@@ -6269,7 +6346,8 @@ impl GpuEffectsPipeline {
         // Their readers are recorded: returned (a CPU-written matte is held
         // until the encoder is submitted).
         self.slot_pool.release(kept);
-        if let Some(m) = matte {
+        // A keyed matte is its key's, for its other readers.
+        if let Some(m) = matte.filter(|_| !keyed) {
             self.slot_pool.release(m);
         }
         match recorded {

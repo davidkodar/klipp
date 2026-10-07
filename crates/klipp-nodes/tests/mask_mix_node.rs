@@ -159,9 +159,9 @@ fn a_masked_effect_is_the_oracles_on_the_cpu_and_the_gpu() {
             assert!(w <= GPU_BAR, "gpu, {channel:?}: worst {w}");
             let stats = ex.last_run_chain_stats();
             assert_eq!(stats.effect_breaks, 0, "{channel:?}");
-            // The qualifier runs off the chain (its matte goes up from the
-            // CPU); the mixed effect itself stays on it.
-            assert_eq!(stats.cpu_nodes, whole_cpu + 1, "{channel:?}: {stats:?}");
+            // The qualifier keys on the chain too (#1266): no CPU node
+            // beyond the whole effect's.
+            assert_eq!(stats.cpu_nodes, whole_cpu, "{channel:?}: {stats:?}");
         }
     }
 }
