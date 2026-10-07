@@ -80,7 +80,7 @@ pub fn surface_pin_corners(
 
 /// Evaluate a single clip's *own* transform — keyframes + modifiers
 /// resolved against the clip's `BuiltinEffect::Transform` defaults
-/// (or the conventional `(0,0,1,1,0,0.5,0.5)` if no Transform effect
+/// (or the conventional `(0,0,1,1,0,0.5,0.5)` if no enabled Transform effect
 /// exists). This is the pre-link version; callers that respect
 /// `transform_link` should go through `resolve_clip_transform`
 /// instead.
@@ -89,7 +89,7 @@ pub fn evaluate_clip_own_transform(
     clip_time_secs: f64,
     eval_ctx: &klipp_core::EvalContext,
 ) -> ResolvedTransform {
-    let tdef = clip.builtin_effects().iter()
+    let tdef = enabled_transform(clip).into_iter()
         .find_map(|e| match e {
             klipp_effects::BuiltinEffect::Transform {
                 position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, ..
@@ -103,6 +103,14 @@ pub fn evaluate_clip_own_transform(
     let ro = eval_with_modifiers(clip.transform_rotation_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::Rotation, clip_time_secs, tdef.4, eval_ctx);
     // Scale is single-axis in our model — same value on x and y.
     (px, py, sc, sc, ro, tdef.5, tdef.6)
+}
+
+/// Placement and its focal anchor come from the first enabled Transform.
+fn enabled_transform(clip: &klipp_timeline::Clip) -> Option<&klipp_effects::BuiltinEffect> {
+    clip.builtin_effects().iter().enumerate().find_map(|(i, effect)| {
+        (clip.builtin_effects_enabled().get(i).copied().unwrap_or(true)
+            && matches!(effect, klipp_effects::BuiltinEffect::Transform { .. })).then_some(effect)
+    })
 }
 
 /// A camera resolved at one instant: where it looks (fractions of the
@@ -270,11 +278,11 @@ pub fn resolve_clip_transform_depth(
     let mut own = evaluate_clip_own_transform(clip, clip_time, &eval_ctx);
 
     // Glyph-anchored focal-point override. Reads `focal_ref` off the
-    // first `Transform` builtin on this clip; resolves to clip-space
+    // first enabled `Transform` builtin on this clip; resolves to clip-space
     // `(focal_x, focal_y)` via the title's glyph layout + the
     // title's own resolved transform. Failed resolution falls back
     // to the static `anchor_x` / `anchor_y` (already in `own.5/6`).
-    let focal_ref = clip.builtin_effects().iter().find_map(|e| match e {
+    let focal_ref = enabled_transform(clip).and_then(|e| match e {
         klipp_effects::BuiltinEffect::Transform { focal_ref, .. } => focal_ref.as_ref().copied(),
         _ => None,
     });
