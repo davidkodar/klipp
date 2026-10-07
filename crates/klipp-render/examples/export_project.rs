@@ -148,17 +148,17 @@ fn main() {
     snapshot.export_range = Some((first, last));
 
     let progress = Arc::new(AtomicU64::new(0));
+    // Reports every 2 s, and stops the moment `stop` is dropped. A sleep
+    // here held the process up to 2 s past the export at the join, which
+    // made wall-clock timings of this tool step in 2 s.
+    let (stop, finished) = std::sync::mpsc::channel::<()>();
     let watch = {
         let progress = Arc::clone(&progress);
         std::thread::spawn(move || {
             let start = std::time::Instant::now();
             let mut last_seen = 0;
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(2));
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = finished.recv_timeout(std::time::Duration::from_secs(2)) {
                 let done = progress.load(std::sync::atomic::Ordering::Relaxed);
-                if done >= frames {
-                    return;
-                }
                 if done != last_seen {
                     let secs = start.elapsed().as_secs_f64();
                     eprintln!(
@@ -187,7 +187,7 @@ fn main() {
     match job.run() {
         Ok(()) => {
             let secs = t0.elapsed().as_secs_f64();
-            progress.store(frames, std::sync::atomic::Ordering::Relaxed);
+            drop(stop);
             let _ = watch.join();
             let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
             println!(
