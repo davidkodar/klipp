@@ -679,19 +679,57 @@ fn apply_pending(docs: &mut Documents, op: &GraphOp, catalog: Option<&dyn PortCa
     Ok(GraphEdit { root, before, after })
 }
 
+/// Why a batch's picture isn't valid when the batch ends: the reason,
+/// and, when it is a node's input left unfed (a node added beside and
+/// never connected), that node and port, so a caller can point at the op
+/// that added it. Its text is the reason; it reads as a `String` refusal.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchEndError {
+    pub unwired: Option<(NodeId, PortKey)>,
+    pub why: String,
+}
+
+impl std::fmt::Display for BatchEndError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.why)
+    }
+}
+
+impl std::error::Error for BatchEndError {}
+
+impl From<BatchEndError> for String {
+    fn from(e: BatchEndError) -> String {
+        e.why
+    }
+}
+
+impl From<String> for BatchEndError {
+    fn from(why: String) -> Self {
+        BatchEndError { unwired: None, why }
+    }
+}
+
+fn batch_end(e: klipp_graph_format::lifted::LiftedError, what: &str) -> BatchEndError {
+    let unwired = match &e {
+        klipp_graph_format::lifted::LiftedError::Unwired { node, port } => Some((*node, PortKey::from(port.as_str()))),
+        _ => None,
+    };
+    BatchEndError { unwired, why: format!("the batch would leave {what} invalid: {e}") }
+}
+
 /// A root's picture checked whole, as a batch leaves it.
-fn check_root(docs: &Documents, root: Root, catalog: Option<&dyn PortCatalog>) -> Result<(), String> {
+fn check_root(docs: &Documents, root: Root, catalog: Option<&dyn PortCatalog>) -> Result<(), BatchEndError> {
     let v = snapshot(docs, root)?;
-    let err = |e: serde_json::Error| e.to_string();
+    let err = |e: serde_json::Error| BatchEndError::from(e.to_string());
     match root {
-        Root::Track { part: TrackPart::Effects, .. } => check_track_list(&serde_json::from_value::<Vec<Node>>(v).map_err(err)?).map_err(|e| format!("that would leave the track's effects invalid: {e}")),
+        Root::Track { part: TrackPart::Effects, .. } => check_track_list(&serde_json::from_value::<Vec<Node>>(v).map_err(err)?).map_err(|e| BatchEndError::from(format!("that would leave the track's effects invalid: {e}"))),
         Root::Clip { .. } => {
             let picture: klipp_graph_format::lifted::ClipPicture = serde_json::from_value(v).map_err(err)?;
-            (if let Some(catalog) = catalog { picture.graph.check_lifted_with_catalog(false, catalog) } else { picture.graph.check_lifted(false) }).map_err(|e| format!("the batch would leave the clip's graph invalid: {e}"))
+            (if let Some(catalog) = catalog { picture.graph.check_lifted_with_catalog(false, catalog) } else { picture.graph.check_lifted(false) }).map_err(|e| batch_end(e, "the clip's graph"))
         }
         _ => {
             let body: Graph = serde_json::from_value(v).map_err(err)?;
-            (if let Some(catalog) = catalog { body.check_lifted_body_with_catalog(catalog) } else { body.check_lifted_body() }).map_err(|e| format!("the batch would leave the grade invalid: {e}"))
+            (if let Some(catalog) = catalog { body.check_lifted_body_with_catalog(catalog) } else { body.check_lifted_body() }).map_err(|e| batch_end(e, "the grade"))
         }
     }
 }
@@ -707,7 +745,7 @@ pub fn apply_in_batch(docs: &mut Documents, op: &GraphOp, catalog: &dyn PortCata
 
 /// The end of a batch applied with [`apply_in_batch`]: the root checked
 /// whole, nothing waiting.
-pub fn check_batch_end(docs: &Documents, root: Root, catalog: &dyn PortCatalog) -> Result<(), String> {
+pub fn check_batch_end(docs: &Documents, root: Root, catalog: &dyn PortCatalog) -> Result<(), BatchEndError> {
     check_root(docs, root, Some(catalog))
 }
 
