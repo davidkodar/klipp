@@ -617,3 +617,31 @@ fn a_removed_effects_id_is_never_given_again_after_a_reload() {
     assert!(effects(&picture(&reloaded)).contains(&again));
     assert!(reloaded.clone().apply_picture_ops(&[GraphOp::SetParam { path: at(&reloaded, [newest]), key: "amount".into(), value: ParamValue::Float(1.0) }]).is_err(), "the removed effect's path is refused");
 }
+
+/// A whole-list replacement's new ids are never ones an earlier session
+/// gave out: replace the list, remove an effect, save and reload, replace
+/// the list again, and no id comes back, so the removed effect's path is
+/// refused rather than handed a new effect (the run of new ids isn't
+/// saved, so it can't start again where it was).
+#[test]
+fn a_whole_list_replacement_after_a_reload_repeats_no_id() {
+    let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+    let mut c = Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+    let list = || vec![E::GaussianBlur { radius: 3.0 }, E::Sharpen { amount: 0.5 }];
+    c.set_effect_list(list(), vec![true, true]);
+    let first = effects(&picture(&c));
+    c.apply_picture_ops(&[GraphOp::RemoveNode { path: at(&c, [first[1]]) }]).unwrap();
+    let record = serde_json::to_string(&c).unwrap();
+    let lifted = c.picture_v2().unwrap();
+    let mut reloaded: Clip = serde_json::from_str(&record).unwrap();
+    reloaded.adopt_stored_picture(klipp_timeline::LiftedPicture { picture: lifted.picture.clone(), versions: lifted.versions.clone() }).unwrap();
+    assert_eq!(effects(&picture(&reloaded)), vec![first[0]], "the kept effect keeps its id");
+    for replace in [|c: &mut Clip, l| c.set_effect_list(l, vec![true, true]), |c: &mut Clip, l| c.set_effects(l)] {
+        let mut again = reloaded.clone();
+        replace(&mut again, list());
+        let ids = effects(&picture(&again));
+        assert_eq!(ids.len(), 2);
+        assert!(ids.iter().all(|id| !first.contains(id)), "{ids:?} against {first:?}");
+        assert!(again.clone().apply_picture_ops(&[GraphOp::SetParam { path: at(&again, [first[1]]), key: "amount".into(), value: ParamValue::Float(1.0) }]).is_err(), "the removed effect's path is refused");
+    }
+}

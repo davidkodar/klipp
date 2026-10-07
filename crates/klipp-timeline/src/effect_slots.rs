@@ -66,7 +66,7 @@ impl EffectId {
 /// then get fresh ids the next time they are read, without each of those
 /// places having to ask; [`Clip::refresh_effect_ids`] asks explicitly.
 /// Loading starts empty and reconciles lazily.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct EffectIds {
     /// The clip the ids were made for.
     owner: Option<ClipId>,
@@ -74,6 +74,26 @@ pub(crate) struct EffectIds {
     /// The next of the clip's run of new ids ([`Clip::next_effect_id`]):
     /// only ever rises, so an id an effect gave up is never given again.
     next: usize,
+    /// What makes this run of new ids its own: random, made with the
+    /// sidecar, so a clip read again starts a run no earlier session's
+    /// ids are in (`next` isn't saved), while every lift of the clip in
+    /// one session names a new entry alike.
+    run: uuid::Uuid,
+}
+
+impl Default for EffectIds {
+    fn default() -> Self {
+        Self { owner: None, ids: Vec::new(), next: 0, run: uuid::Uuid::new_v4() }
+    }
+}
+
+impl EffectIds {
+    /// Hold `ids` for `owner`, the run carried on.
+    fn hold(&mut self, owner: ClipId, ids: Vec<EffectId>, next: usize) {
+        self.owner = Some(owner);
+        self.ids = ids;
+        self.next = next;
+    }
 }
 
 impl Clip {
@@ -91,16 +111,18 @@ impl Clip {
     /// clip takes a new ClipId. Existing entries retain their identity.
     pub(crate) fn reconcile_effect_ids(&mut self) {
         let (ids, next) = self.effect_ids_for_picture_and_next();
-        *self.picture.effect_ids_mut() = EffectIds { owner: Some(self.id), ids, next };
+        self.picture.effect_ids_mut().hold(self.id, ids, next);
     }
 
     /// The `n`th id of the clip's run of new ids, or the first after it
     /// none of `taken` holds, and the next `n` (M3 proposal 6). Derived
-    /// from the clip's id, so two builds of one clip agree.
+    /// from the clip's id and the run's random part, so two lifts of one
+    /// clip agree, and a run after a reload repeats no id of an earlier one.
     fn next_effect_id(&self, mut n: usize, taken: &[EffectId]) -> (EffectId, usize) {
         use klipp_graph_lift::ids::{entry_id, RootKind};
+        let run = format!("effects+{}", self.picture.effect_ids().run);
         loop {
-            let id = EffectId(entry_id(RootKind::Clip, self.id.0, "effects+", n));
+            let id = EffectId(entry_id(RootKind::Clip, self.id.0, &run, n));
             n += 1;
             if !taken.contains(&id) {
                 return (id, n);
@@ -141,7 +163,7 @@ impl Clip {
     /// they were saved under.
     pub(crate) fn adopt_effect_ids(&mut self, ids: Vec<EffectId>) {
         let next = self.picture.effect_ids().next;
-        *self.picture.effect_ids_mut() = EffectIds { owner: Some(self.id), ids, next };
+        self.picture.effect_ids_mut().hold(self.id, ids, next);
     }
 
     /// Effect identities, values and effective enabled flags in list order.
@@ -171,7 +193,7 @@ impl Clip {
     pub fn refresh_effect_ids(&mut self) {
         self.reconcile_effect_ids();
         let next = self.picture.effect_ids().next;
-        *self.picture.effect_ids_mut() = EffectIds { owner: Some(self.id), ids: Vec::new(), next };
+        self.picture.effect_ids_mut().hold(self.id, Vec::new(), next);
         self.reconcile_effect_ids();
     }
 
@@ -682,7 +704,7 @@ impl Clip {
             c.view_mut().effect_list.builtin_effects_enabled = state.enabled;
             // The ids belong to this clip, whose snapshot they were.
             let next = c.picture.effect_ids().next;
-            *c.picture.effect_ids_mut() = EffectIds { owner: Some(c.id), ids: state.ids, next };
+            c.picture.effect_ids_mut().hold(c.id, state.ids, next);
             c.edit_effect_keyframes(|v| *v = state.keyframes);
             c.edit_param_modifiers(|v| v.retain(|id, _| !matches!(id, ParamId::Effect { .. })));
             c.edit_param_modifiers(|v| v.extend(state.modifiers));

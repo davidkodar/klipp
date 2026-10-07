@@ -82,7 +82,7 @@ pub(crate) enum FileForm {
     V1,
 }
 
-pub use load::{load_looks, load_project, migrate_graph, side_store_revision_refusal};
+pub use load::{load_looks, load_project, load_project_strict, migrate_graph, side_store_revision_refusal};
 #[cfg(feature = "v1-oracle")]
 pub use load::{load_looks_v1, load_project_v1};
 #[cfg(feature = "v1-oracle")]

@@ -21,12 +21,12 @@ use std::path::{Path, PathBuf};
 use klipp_convert::run::{no_klipp_running, real_preconditions, real_settings};
 use klipp_convert::{scan, step3};
 
-/// The app's loader on a copy. A debug build's assertion in it (a clip whose
-/// stored picture its fields don't give again) is that project's failure,
-/// reported with the rest, not the end of the run.
+/// The app's loader on a copy, strict: a clip whose stored picture its
+/// fields don't give again fails the project in a release build too
+/// (`load_project_strict`), reported with the rest, not the end of the run.
 fn reload(dir: &Path) -> Result<(), String> {
     let dir = dir.to_path_buf();
-    match std::panic::catch_unwind(move || klipp_project::load_project(&dir).map(|_| ())) {
+    match std::panic::catch_unwind(move || klipp_project::load_project_strict(&dir).map(|_| ())) {
         Ok(r) => r,
         Err(e) => Err(format!("the loader stopped: {}", e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_owned())).unwrap_or_default())),
     }

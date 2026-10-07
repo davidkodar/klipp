@@ -16,16 +16,20 @@
 //!   held to its backup by the raw-JSON oracle ([`revision3::verify`]) and
 //!   read back by the app's loader (a copy, so the load can't touch the
 //!   project).
-//! - **Rollback is whole-run:** a durable journal names every file before
-//!   it is written. Any error restores every one of them from the verified
-//!   backups, the failing one too, and checks each against its hash; a
+//! - **Rollback is whole-run:** a durable journal names every file, with
+//!   the hash of what the run writes there, before it is written, and
+//!   marks it once written. Any error restores every file holding what the
+//!   run wrote from the verified backups, and checks each against its
+//!   hash; a file the run didn't write is never overwritten, and one
+//!   changed by someone else after the run wrote it is left and named. A
 //!   crash is rolled back by the next run, never finished forward. A
 //!   restore that fails stops with the files it couldn't restore, and
 //!   everything (backups, journal) is kept.
 //!
-//! The dry run reads only: it writes to an output folder outside every
-//! project and backup, loads its copies there, and says "render NOT RUN"
-//! unless it was given a render check.
+//! The dry run reads only: it writes to a fresh, empty output folder,
+//! reached through no link and outside every project and backup, loads its
+//! copies there, and says "render NOT RUN" unless it was given a render
+//! check.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -96,6 +100,14 @@ impl Manifest {
 /// The files of `dir` the manifest covers, sorted. A link among them is a
 /// stop: the run never follows one out of the project.
 fn inventory(dir: &Path) -> Result<Vec<Item>, String> {
+    // A linked folder would take every file under it out of the project,
+    // whatever the files themselves are.
+    for rel in ["media", "looks", ".recovery"] {
+        let d = dir.join(rel);
+        if std::fs::symlink_metadata(&d).is_ok_and(|m| !m.is_dir()) {
+            return Err(format!("{} isn't a plain folder (a link?): left for a person to settle", d.display()));
+        }
+    }
     let mut paths = Vec::new();
     let named = |rel: &str| dir.join(rel);
     for rel in ["project.json", "media/manifest.json", "media/stills.json"] {
@@ -210,12 +222,17 @@ pub enum State {
 }
 
 /// A file the run may have written, recorded before it is: where it is,
-/// where its verified backup is, and the hash both had.
+/// where its verified backup is, the hash both had, the hash of what the
+/// run writes there, and whether the write was done. A rollback restores
+/// only a file holding what the run wrote: one someone else changed is
+/// left as it is.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Touched {
     pub path: PathBuf,
     pub backup: PathBuf,
     pub sha256: String,
+    pub written_sha256: String,
+    pub written: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -286,18 +303,25 @@ pub struct Report {
     pub rolled_back_earlier: bool,
 }
 
-/// Restore every touched file from its backup and check it.
+/// Restore every touched file that holds what the run wrote from its
+/// backup, and check it. A file at its original hash needs nothing; one
+/// the run never wrote, or that holds neither hash, isn't the run's to
+/// overwrite: the first is left quietly, the second named.
 fn roll_back(s: &Settings, j: &mut Journal, hooks: &Hooks) -> Result<(), RunError> {
     j.state = State::RollingBack;
     record(s, j).map_err(|e| RunError::RollbackIncomplete { why: format!("recording the rollback: {e}"), unrestored: j.touched.iter().map(|t| (t.path.clone(), "not tried".into())).collect() })?;
     let mut unrestored = Vec::new();
     for (i, t) in j.touched.iter().enumerate() {
-        let r = std::fs::read(&t.backup)
-            .map_err(|e| io_err("reading the backup", &t.backup, e))
-            .and_then(|b| if sha256(&b) == t.sha256 { Ok(b) } else { Err(format!("the backup {} no longer has its hash", t.backup.display())) })
-            .and_then(|b| write_keeping_mode(&t.path, &b))
-            .and_then(|()| std::fs::read(&t.path).map_err(|e| io_err("reading back", &t.path, e)))
-            .and_then(|b| if sha256(&b) == t.sha256 { Ok(()) } else { Err("restored, but it reads back different".into()) });
+        let now = std::fs::read(&t.path).map(|b| sha256(&b));
+        let r = match now {
+            Ok(h) if h == t.sha256 => Ok(()),
+            Ok(h) if h == t.written_sha256 => restore(t),
+            // Not written by the run (a crash between the write and its
+            // mark leaves the written hash, handled above).
+            Ok(_) if !t.written => Ok(()),
+            Ok(_) => Err("changed by someone else since the run wrote it: left as it is, its backup kept".into()),
+            Err(e) => Err(io_err("reading", &t.path, e)),
+        };
         if let Err(why) = r {
             unrestored.push((t.path.clone(), why));
         }
@@ -310,6 +334,16 @@ fn roll_back(s: &Settings, j: &mut Journal, hooks: &Hooks) -> Result<(), RunErro
     }
     j.state = State::RolledBack;
     record(s, j).map_err(|e| RunError::RollbackIncomplete { why: format!("every file restored, but recording it failed: {e}"), unrestored: Vec::new() })
+}
+
+/// Put a touched file's backup back, and read it back against its hash.
+fn restore(t: &Touched) -> Result<(), String> {
+    std::fs::read(&t.backup)
+            .map_err(|e| io_err("reading the backup", &t.backup, e))
+            .and_then(|b| if sha256(&b) == t.sha256 { Ok(b) } else { Err(format!("the backup {} no longer has its hash", t.backup.display())) })
+            .and_then(|b| write_keeping_mode(&t.path, &b))
+            .and_then(|()| std::fs::read(&t.path).map_err(|e| io_err("reading back", &t.path, e)))
+            .and_then(|b| if sha256(&b) == t.sha256 { Ok(()) } else { Err("restored, but it reads back different".into()) })
 }
 
 /// Roll back a run the journal shows unfinished. `Ok(true)` when there was
@@ -366,29 +400,51 @@ fn write_keeping_mode(path: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// Write and prove one project; the n-th to convert.
-fn write_one(s: &Settings, n: usize, c: &Candidate, hooks: &Hooks, preconditions: &dyn Fn() -> Result<(), String>) -> Result<(), String> {
-    preconditions()?;
+/// Whether every file of `c` still has its manifest hash.
+fn unchanged(c: &Candidate) -> Result<(), String> {
     for item in &c.items {
         let now = std::fs::read(&item.path).map_err(|e| io_err("reading", &item.path, e))?;
         if sha256(&now) != item.sha256 {
             return Err(format!("{} changed since the dry run", item.path.display()));
         }
     }
-    let path = c.dir.join("project.json");
-    let original = std::fs::read_to_string(in_backup(s, &path)).map_err(|e| io_err("reading the backup of", &path, e))?;
-    let text = revision3::project_text(&original)?;
+    Ok(())
+}
+
+/// The text the run writes for `c`'s project.json, from its backup, the
+/// backup held to the manifest's hash first.
+fn converted_text(s: &Settings, c: &Candidate, item: &Item) -> Result<String, String> {
+    let backup = in_backup(s, &item.path);
+    let bytes = std::fs::read(&backup).map_err(|e| io_err("reading the backup of", &item.path, e))?;
+    if sha256(&bytes) != item.sha256 {
+        return Err(format!("the backup {} no longer has its hash", backup.display()));
+    }
+    let original = String::from_utf8(bytes).map_err(|e| format!("{}: {e}", c.dir.display()))?;
+    revision3::project_text(&original)
+}
+
+/// Write one project; the n-th to convert. The checks are made again just
+/// before the write, so a change since the journal named the file is
+/// never overwritten.
+fn write_one(n: usize, c: &Candidate, path: &Path, text: &str, hooks: &Hooks, preconditions: &dyn Fn() -> Result<(), String>) -> Result<(), String> {
+    preconditions()?;
+    unchanged(c)?;
     if (hooks.fail_write)(n) {
         return Err(format!("writing {}: no space left on device (a test's)", path.display()));
     }
-    write_keeping_mode(&path, text.as_bytes())?;
+    write_keeping_mode(path, text.as_bytes())?;
     Ok(())
 }
 
 /// Hold the written project to its backup and load a copy of it.
 fn prove_one(s: &Settings, n: usize, c: &Candidate, hooks: &Hooks) -> Result<(), String> {
     let path = c.dir.join("project.json");
-    let original = std::fs::read_to_string(in_backup(s, &path)).map_err(|e| io_err("reading the backup of", &path, e))?;
+    let item = c.items.iter().find(|i| i.path == path).ok_or_else(|| format!("{}: no project.json in its manifest", c.dir.display()))?;
+    let backup = std::fs::read(in_backup(s, &path)).map_err(|e| io_err("reading the backup of", &path, e))?;
+    if sha256(&backup) != item.sha256 {
+        return Err(format!("the backup of {} no longer has its hash", path.display()));
+    }
+    let original = String::from_utf8(backup).map_err(|e| format!("{}: {e}", path.display()))?;
     let written = std::fs::read_to_string(&path).map_err(|e| io_err("reading back", &path, e))?;
     revision3::verify(&original, &written).map_err(|e| format!("{}: {e}", path.display()))?;
     let copy = s.backup_root.join(&s.date).join(".reload").join(n.to_string());
@@ -448,7 +504,16 @@ pub fn run(s: &Settings, approved: &str, preconditions: &dyn Fn() -> Result<(), 
             failed = Some(format!("{}: no project.json in its manifest", c.dir.display()));
             break;
         };
-        j.touched.push(Touched { path: path.clone(), backup: in_backup(s, &path), sha256: item.sha256.clone() });
+        // Checked before the journal names it, so a file that changed is
+        // never in the journal at all.
+        let text = match unchanged(c).and_then(|()| converted_text(s, c, item)) {
+            Ok(text) => text,
+            Err(e) => {
+                failed = Some(e);
+                break;
+            }
+        };
+        j.touched.push(Touched { path: path.clone(), backup: in_backup(s, &path), sha256: item.sha256.clone(), written_sha256: sha256(text.as_bytes()), written: false });
         if let Err(e) = record(s, &j) {
             failed = Some(e);
             break;
@@ -456,7 +521,14 @@ pub fn run(s: &Settings, approved: &str, preconditions: &dyn Fn() -> Result<(), 
         if (hooks.crash)(Point::BeforeWrite(n)) {
             return Err(RunError::Crashed(Point::BeforeWrite(n)));
         }
-        if let Err(e) = write_one(s, n, c, hooks, preconditions) {
+        if let Err(e) = write_one(n, c, &path, &text, hooks, preconditions) {
+            failed = Some(e);
+            break;
+        }
+        if let Some(t) = j.touched.last_mut() {
+            t.written = true;
+        }
+        if let Err(e) = record(s, &j) {
             failed = Some(e);
             break;
         }
@@ -554,16 +626,76 @@ impl DryReport {
     }
 }
 
+/// `p`'s real path, though its end may not exist yet: its nearest folder
+/// that does, resolved, and the rest of `p` after it.
+fn real_path(p: &Path) -> PathBuf {
+    let mut base = p;
+    let mut rest = Vec::new();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(base) {
+            return rest.iter().rev().fold(real, |at, c| at.join(c));
+        }
+        match (base.parent(), base.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_owned());
+                base = parent;
+            }
+            _ => return p.to_path_buf(),
+        }
+    }
+}
+
+/// Make the dry run's output folder: a fresh, empty one, reached through
+/// no link, and outside every project and backup (by their real paths, so
+/// a link can't put it inside one). Returns its real path.
+fn dry_run_output(s: &Settings, out: &Path) -> Result<PathBuf, String> {
+    let out = if out.is_absolute() { out.to_path_buf() } else { std::env::current_dir().map_err(|e| e.to_string())?.join(out) };
+    if out.components().any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir)) {
+        return Err(format!("the output {} has a . or .. in it: name it plainly", out.display()));
+    }
+    let mut at = PathBuf::new();
+    for c in out.components() {
+        at.push(c);
+        match std::fs::symlink_metadata(&at) {
+            Ok(m) if m.file_type().is_symlink() => return Err(format!("the output's path goes through a link at {}: name a path without one", at.display())),
+            Ok(m) if !m.is_dir() => return Err(format!("{} isn't a folder", at.display())),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => return Err(io_err("reading", &at, e)),
+        }
+    }
+    // No component is a link, so the path is its own real path; the
+    // projects and the backup are compared by theirs too.
+    for p in s.projects.iter().chain(std::iter::once(&s.backup_root)) {
+        let p_real = real_path(p);
+        if out.starts_with(&p_real) || p_real.starts_with(&out) || out.starts_with(p) || p.starts_with(&out) {
+            return Err(format!("the output {} is inside {} (or holds it): it must be outside every project and backup", out.display(), p.display()));
+        }
+    }
+    if out.exists() {
+        let mut entries = std::fs::read_dir(&out).map_err(|e| io_err("listing", &out, e))?;
+        if entries.next().is_some() {
+            return Err(format!("the output {} isn't empty (an earlier dry run's?): name a fresh folder", out.display()));
+        }
+    } else {
+        if let Some(parent) = out.parent() {
+            make_dirs(parent)?;
+        }
+        std::fs::create_dir(&out).map_err(|e| io_err("making", &out, e))?;
+    }
+    let real = std::fs::canonicalize(&out).map_err(|e| io_err("resolving", &out, e))?;
+    if real != out {
+        return Err(format!("the output {} resolves to {}: name its real path", out.display(), real.display()));
+    }
+    Ok(real)
+}
+
 /// The dry run: reads the projects, writes only under `out`. `render`, when
 /// given, renders the project (read only) and its converted copy under
 /// `out` and says how they compare, or why they don't.
 pub fn dry_run(s: &Settings, out: &Path, build: &str, reload: &dyn Fn(&Path) -> Result<(), String>, render: Option<&dyn Fn(&Path, &Path) -> Result<String, String>>) -> Result<DryReport, String> {
-    let out = if out.is_absolute() { out.to_path_buf() } else { std::env::current_dir().map_err(|e| e.to_string())?.join(out) };
-    if let Some(inside) = s.projects.iter().chain(std::iter::once(&s.backup_root)).find(|p| out.starts_with(p) || p.starts_with(&out)) {
-        return Err(format!("the output {} is inside {} (or holds it): it must be outside every project and backup", out.display(), inside.display()));
-    }
+    let out = dry_run_output(s, out)?;
     let m = preflight(s);
-    std::fs::create_dir_all(&out).map_err(|e| io_err("making", &out, e))?;
     std::fs::write(out.join(DRY_RUN_MARK), b"klipp-convert step3 dry run\n").map_err(|e| io_err("marking", &out, e))?;
     let mut projects = Vec::new();
     for (n, c) in m.candidates.iter().enumerate() {

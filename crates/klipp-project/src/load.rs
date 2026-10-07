@@ -162,7 +162,7 @@ fn stored_pictures(v2: &serde_json::Value) -> HashMap<(String, String), klipp_ti
 /// disagrees keeps none and is lifted again at the next save. In a debug
 /// build and in tests that disagreement stops the load: it means the
 /// first edit of that clip would write something else than it read.
-fn adopt_stored_pictures(sequences: &mut [Sequence], mut stored: HashMap<(String, String), klipp_timeline::LiftedPicture>) {
+fn adopt_stored_pictures(sequences: &mut [Sequence], mut stored: HashMap<(String, String), klipp_timeline::LiftedPicture>, strict: bool) -> Result<(), String> {
     for seq in sequences.iter_mut() {
         let seq_id = seq.id.to_string();
         for track in &mut seq.tracks {
@@ -172,12 +172,16 @@ fn adopt_stored_pictures(sequences: &mut [Sequence], mut stored: HashMap<(String
                     continue;
                 };
                 if let Err(e) = clip.adopt_stored_picture(picture) {
+                    if strict {
+                        return Err(format!("clip {} on track \"{track_name}\": {e}", clip.id.0));
+                    }
                     warn!("Clip {} on track \"{track_name}\": {e}; it will be lifted again when saved", clip.id.0);
                     debug_assert!(false, "clip {} on track \"{track_name}\": {e}", clip.id.0);
                 }
             }
         }
     }
+    Ok(())
 }
 
 /// The generation a project or manifest file was written with, read
@@ -357,7 +361,14 @@ fn refuse_graph_losses(value: &serde_json::Value) -> Result<(), String> {
 }
 
 pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
-    load_project_as(dir, crate::FileForm::Revision2)
+    load_project_as(dir, crate::FileForm::Revision2, false)
+}
+
+/// [`load_project`], refusing a clip whose stored picture its fields don't
+/// give again instead of lifting it anew, in a release build as in a debug
+/// one: a proof that the file reads back whole (the revision-3 step's).
+pub fn load_project_strict(dir: &Path) -> Result<LoadResult, String> {
+    load_project_as(dir, crate::FileForm::Revision2, true)
 }
 
 /// Today's v1 reader, kept only to prove the one-time conversion (#1089): a
@@ -366,10 +377,10 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
 /// run and been verified.
 #[cfg(feature = "v1-oracle")]
 pub fn load_project_v1(dir: &Path) -> Result<LoadResult, String> {
-    load_project_as(dir, crate::FileForm::V1)
+    load_project_as(dir, crate::FileForm::V1, false)
 }
 
-fn load_project_as(dir: &Path, form: crate::FileForm) -> Result<LoadResult, String> {
+fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<LoadResult, String> {
     if matches!(form, crate::FileForm::Revision2) {
         refuse_half_converted(dir)?;
     }
@@ -684,7 +695,7 @@ fn load_project_as(dir: &Path, form: crate::FileForm) -> Result<LoadResult, Stri
     }
 
     stored.retain(|(_, id), _| !rewritten.contains(id));
-    adopt_stored_pictures(&mut sequences, stored);
+    adopt_stored_pictures(&mut sequences, stored, strict)?;
 
     info!(
         "Project loaded from {:?} ({} sequence(s), {} title asset(s))",

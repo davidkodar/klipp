@@ -159,7 +159,7 @@ fn settings(r: &Path, projects: Vec<PathBuf>, excluded: Vec<PathBuf>, date: &str
 }
 
 fn reload(dir: &Path) -> Result<(), String> {
-    klipp_project::load_project(dir).map(|_| ())
+    klipp_project::load_project_strict(dir).map(|_| ())
 }
 
 fn ok() -> Result<(), String> {
@@ -530,5 +530,198 @@ fn a_converted_file_keeps_its_mode() {
     let s = settings(&r, vec![a.clone()], vec![], "2026-10-08");
     step3::run(&s, &approved(&s), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap();
     assert_eq!(std::fs::metadata(a.join("project.json")).unwrap().permissions().mode() & 0o777, 0o640);
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// Someone else changes the second project after the journal names it and
+/// before the run writes it: the run stops, rolls the first back, and the
+/// second keeps the bytes it was given. A rollback never overwrites what
+/// the run didn't write.
+#[test]
+fn a_rollback_never_overwrites_bytes_the_run_did_not_write() {
+    let r = root("theirs");
+    let (a, b) = (plain(&r, "A"), plain(&r, "B"));
+    let before_a = snapshot(&a);
+    let s = settings(&r, vec![a.clone(), b.clone()], vec![], "2026-10-07");
+    let theirs = b"{\"someone\": \"else\"}".to_vec();
+    let edit = |p: Point| {
+        if p == Point::BeforeWrite(1) {
+            std::fs::write(b.join("project.json"), &theirs).unwrap();
+        }
+        false
+    };
+    let err = step3::run(&s, &approved(&s), &ok, &hooks(&edit, NO_FAIL)).unwrap_err();
+    assert!(matches!(&err, RunError::RolledBack(why) if why.contains("changed since the dry run")), "{err:?}");
+    assert_eq!(snapshot(&a), before_a, "the first is rolled back");
+    assert_eq!(std::fs::read(b.join("project.json")).unwrap(), theirs, "the second keeps their bytes");
+    assert_eq!(read(&step3::journal_path(&s))["state"], json!("RolledBack"));
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// A file the run wrote, changed by someone else before the next run's
+/// recovery: it's left as it is and named, the backups kept.
+#[test]
+fn a_file_changed_after_the_run_wrote_it_is_left_and_named() {
+    let r = root("after");
+    let a = plain(&r, "A");
+    let s = settings(&r, vec![a.clone()], vec![], "2026-10-07");
+    let crash = |p: Point| p == Point::Written(0);
+    assert_eq!(step3::run(&s, &approved(&s), &ok, &hooks(&crash, NO_FAIL)).unwrap_err(), RunError::Crashed(Point::Written(0)));
+    let theirs = b"{\"saved\": \"after\"}".to_vec();
+    std::fs::write(a.join("project.json"), &theirs).unwrap();
+    let err = step3::recover(&s, &hooks(NO_CRASH, NO_FAIL)).unwrap_err();
+    assert!(matches!(&err, RunError::RollbackIncomplete { unrestored, .. } if unrestored.len() == 1 && unrestored[0].0 == a.join("project.json") && unrestored[0].1.contains("someone else")), "{err:?}");
+    assert_eq!(std::fs::read(a.join("project.json")).unwrap(), theirs);
+    assert!(s.backup_root.join("2026-10-07").exists(), "the backups kept");
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// A backup that no longer has its hash is never converted, nor proved
+/// against: the run stops before writing.
+#[test]
+fn a_corrupt_backup_is_never_converted() {
+    let r = root("corrupt");
+    let a = plain(&r, "A");
+    let before = snapshot(&a);
+    let s = settings(&r, vec![a.clone()], vec![], "2026-10-07");
+    let backup = s.backup_root.join("2026-10-07").join(a.join("project.json").strip_prefix("/").unwrap());
+    let spoil = |p: Point| {
+        if p == Point::BackedUp {
+            std::fs::write(&backup, b"{\"format_revision\": 2}").unwrap();
+        }
+        false
+    };
+    let err = step3::run(&s, &approved(&s), &ok, &hooks(&spoil, NO_FAIL)).unwrap_err();
+    assert!(matches!(&err, RunError::RolledBack(why) if why.contains("no longer has its hash")), "{err:?}");
+    assert_eq!(snapshot(&a), before);
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// The dry run's output must be a fresh, empty folder reached through no
+/// link and outside every project and backup by its real path; every
+/// refusal leaves each original byte as it was and makes no backup.
+#[test]
+fn the_dry_run_output_is_fresh_plain_and_outside() {
+    let r = root("dryout");
+    let a = plain(&r, "Plain");
+    let before = snapshot(&a);
+    let s = settings(&r, vec![a.clone()], vec![], "2026-10-07");
+    let refused = |out: &Path, says: &str| {
+        let e = step3::dry_run(&s, out, "test", &reload, None).unwrap_err();
+        assert!(e.contains(says), "{}: {e}", out.display());
+    };
+    // A link into the project, as the output or on its way.
+    std::os::unix::fs::symlink(&a, r.join("into")).unwrap();
+    refused(&r.join("into"), "link");
+    refused(&r.join("into/out"), "link");
+    std::os::unix::fs::symlink(a.join("media"), r.join("media-link")).unwrap();
+    refused(&r.join("media-link/out"), "link");
+    // A .. that would land inside it.
+    refused(&r.join("elsewhere/../Plain.klipp/out"), "..");
+    // Inside the project or the backup, or holding one.
+    refused(&a.join("out"), "inside");
+    refused(&s.backup_root.join("x"), "inside");
+    refused(&r, "inside");
+    // An earlier dry run's folder.
+    let used = r.join("used");
+    std::fs::create_dir(&used).unwrap();
+    std::fs::write(used.join("report.txt"), b"old").unwrap();
+    refused(&used, "isn't empty");
+    assert_eq!(std::fs::read(used.join("report.txt")).unwrap(), b"old");
+    assert_eq!(snapshot(&a), before, "the project untouched");
+    assert!(!s.backup_root.exists(), "no backup made");
+    // A fresh one, and an empty one, are taken.
+    assert!(step3::dry_run(&s, &r.join("fresh/out"), "test", &reload, None).is_ok());
+    std::fs::create_dir(r.join("empty")).unwrap();
+    assert!(step3::dry_run(&s, &r.join("empty"), "test", &reload, None).is_ok());
+    assert_eq!(snapshot(&a), before, "the project untouched");
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// A linked media, looks or .recovery folder stops preflight: the files
+/// under it would be outside the project.
+#[test]
+fn a_linked_side_folder_stops_preflight() {
+    for rel in ["media", "looks", ".recovery"] {
+        let r = root(&format!("link-{}", rel.trim_start_matches('.')));
+        let a = plain(&r, "A");
+        let real = r.join("real");
+        let at = a.join(rel);
+        if at.exists() {
+            std::fs::rename(&at, &real).unwrap();
+        } else {
+            std::fs::create_dir(&real).unwrap();
+        }
+        std::os::unix::fs::symlink(&real, &at).unwrap();
+        let m = step3::preflight(&settings(&r, vec![a.clone()], vec![], "2026-10-07"));
+        assert!(m.stops.iter().any(|s| s.contains("isn't a plain folder")), "{rel}: {:?}", m.stops);
+        let _ = std::fs::remove_dir_all(&r);
+    }
+}
+
+/// Give each effect payload of each clip's stored picture a key no
+/// effect has: the clip's fields can't hold it, so the picture then
+/// disagrees with them (as a picture the fields read back otherwise
+/// would, #1270's LUT path).
+fn spoil_stored_picture(dir: &Path) {
+    fn walk(v: &mut Value) -> usize {
+        match v {
+            Value::Object(m) if m.get("type_id") == Some(&json!("klipp.legacy.effect")) => {
+                m["legacy"]["payload"]["spoiled"] = json!(true);
+                1
+            }
+            Value::Object(m) => m.values_mut().map(walk).sum(),
+            Value::Array(a) => a.iter_mut().map(walk).sum(),
+            _ => 0,
+        }
+    }
+    let path = dir.join("project.json");
+    let mut v = read(&path);
+    let mut n = 0;
+    for seq in v["sequences"].as_array_mut().unwrap() {
+        for track in seq["tracks"].as_array_mut().unwrap() {
+            for clip in track["clips"].as_array_mut().unwrap() {
+                n += walk(&mut clip["graph_v2"]);
+            }
+        }
+    }
+    assert!(n > 0, "an effect to spoil");
+    std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+}
+
+/// The strict loader refuses a clip whose stored picture its fields don't
+/// give again, in any build (the plain loader, in a release build, would
+/// log it and lift the clip anew), so the run's proof catches it: the run
+/// stops and rolls back, and the dry run reports it unproven.
+#[test]
+fn a_stored_picture_that_disagrees_fails_the_proof() {
+    let r = root("disagree");
+    let (a, b) = (plain(&r, "A"), plain(&r, "B"));
+    spoil_stored_picture(&b);
+    let before = all(&[&a, &b]);
+    let s = settings(&r, vec![a.clone(), b.clone()], vec![], "2026-10-07");
+    let dry = step3::dry_run(&s, &r.join("out"), "test", &reload, None).unwrap();
+    let proven: Vec<_> = dry.projects.iter().map(|p| (p.dir.clone(), p.proven.is_ok())).collect();
+    assert_eq!(proven, vec![(a.clone(), true), (b.clone(), false)], "{}", dry.text());
+    assert!(dry.projects[1].proven.as_ref().unwrap_err().contains("differs"), "{}", dry.text());
+    let err = step3::run(&s, &approved(&s), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap_err();
+    assert!(matches!(&err, RunError::RolledBack(why) if why.contains("the app's loader refuses it")), "{err:?}");
+    assert_eq!(all(&[&a, &b]), before, "both rolled back");
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// `load_project_strict` on its own: a revision-3 project whose stored
+/// picture disagrees is refused, naming the clip; the same project whole
+/// loads.
+#[test]
+fn the_strict_loader_refuses_a_stored_picture_that_disagrees() {
+    let r = root("strict");
+    let a = plain(&r, "A");
+    let s = settings(&r, vec![a.clone()], vec![], "2026-10-07");
+    step3::run(&s, &approved(&s), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap();
+    assert!(klipp_project::load_project_strict(&a).is_ok());
+    spoil_stored_picture(&a);
+    let e = klipp_project::load_project_strict(&a).map(|_| ()).unwrap_err();
+    assert!(e.contains("clip ") && e.contains("differs"), "{e}");
     let _ = std::fs::remove_dir_all(&r);
 }
