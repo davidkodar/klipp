@@ -21,7 +21,12 @@
 
 use std::path::{Path, PathBuf};
 
-use klipp_compose::render::{clip_effects, frame_blends, temporal_denoise_of};
+use klipp_compose::render::{frame_blends, temporal_denoise_of};
+// The effect chain as the renderer read it before step 11d, frozen: the
+// oracle must not move with the renderer.
+#[path = "support/frozen_clip_effects.rs"]
+mod frozen_clip_effects;
+use frozen_clip_effects::clip_effects;
 use klipp_convert::canon::{AUDIO_MODIFIERS, CLIP_FIELDS};
 use klipp_convert::lift::{lift_clip, ClipKind, LiftCtx};
 use klipp_convert::splice::{splice, stage_body, track_parts, SpliceInputs, StageInputs, TrackInputs};
