@@ -485,7 +485,9 @@ fn a_node_beside_waits_for_its_input_until_the_batch_ends() {
     let beside = GraphOp::AddNodeBeside { at: at(&c, [g, corrector]), node: second.clone() };
 
     let mut alone = c.clone();
-    let err = alone.apply_picture_ops(std::slice::from_ref(&beside)).unwrap_err();
+    let (index, err) = alone.apply_picture_ops_indexed(std::slice::from_ref(&beside)).unwrap_err();
+    assert_eq!(index, Some(0));
+    assert_eq!(alone.apply_picture_ops_indexed(&[]).unwrap_err().0, None);
     assert!(err.contains("Unwired") || err.contains("needs its"), "{err}");
     assert_eq!(saved(&alone), saved(&c), "a refusal changes nothing");
 

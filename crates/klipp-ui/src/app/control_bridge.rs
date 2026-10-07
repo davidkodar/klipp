@@ -42,7 +42,7 @@ impl KlippApp {
                         refused = Some(format!("the document is at revision {now}, the ops were checked at {r}; check them again"));
                     } else if let Err((at, why)) = self.apply_graph_ops(&ops, &label) {
                         refused = Some(why);
-                        refused_op = Some(at);
+                        refused_op = at;
                     }
                 }
             }

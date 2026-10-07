@@ -12,15 +12,16 @@ impl KlippApp {
     pub(super) fn handle_graph_ops_commands(&mut self, cmd: &AppCommand) -> bool {
         let AppCommand::GraphOps { ops, label } = cmd else { return false };
         if let Err((at, why)) = self.apply_graph_ops(ops, label) {
-            tracing::warn!(at, %why, "graph ops refused");
-            self.state.toast.show(format!("{label}: op {at} refused: {why}"));
+            tracing::warn!(?at, %why, "graph ops refused");
+            let location = at.map(|i| format!("op {i}")).unwrap_or_else(|| "batch".into());
+            self.state.toast.show(format!("{label}: {location} refused: {why}"));
         }
         true
     }
 
     /// `ops` applied as one undo step named `label`, or nothing: the index
     /// of the op refused, and why.
-    pub(super) fn apply_graph_ops(&mut self, ops: &[GraphOp], label: &str) -> Result<(), (usize, String)> {
+    pub(super) fn apply_graph_ops(&mut self, ops: &[GraphOp], label: &str) -> Result<(), (Option<usize>, String)> {
         let edit = graph_ops_edit(&self.state.sequences[self.state.active_sequence_idx], ops)?;
         self.apply_edits_as_one(&[edit], label);
         Ok(())
@@ -29,27 +30,21 @@ impl KlippApp {
 
 /// The history entry `ops` make on `seq`, built on a copy: nothing changes
 /// yet. A refusal is the index of the op refused, and why.
-fn graph_ops_edit(seq: &klipp_timeline::Sequence, ops: &[GraphOp]) -> Result<EditCommand, (usize, String)> {
-    let root = ops.first().ok_or((0, "an empty batch has no edit".to_string()))?.path().root;
+fn graph_ops_edit(seq: &klipp_timeline::Sequence, ops: &[GraphOp]) -> Result<EditCommand, (Option<usize>, String)> {
+    let root = ops.first().ok_or((None, "an empty batch has no edit".to_string()))?.path().root;
     if let Some(at) = ops.iter().position(|op| op.path().root != root) {
-        return Err((at, "a batch edits one picture".into()));
+        return Err((Some(at), "a batch edits one picture".into()));
     }
     let Root::Clip { clip } = root else {
-        return Err((0, "only a clip's picture takes graph ops so far; a track's, a grade group's and the timeline's follow".into()));
+        return Err((Some(0), "only a clip's picture takes graph ops so far; a track's, a grade group's and the timeline's follow".into()));
     };
     let clip_id = klipp_core::ClipId(clip);
-    let original = seq.tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id).ok_or_else(|| (0, format!("no clip {clip} on this sequence's tracks")))?;
+    let original = seq.tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id).ok_or_else(|| (None, format!("no clip {clip} on this sequence's tracks")))?;
     let mut scratch = original.clone();
-    match scratch.apply_picture_ops(ops) {
+    match scratch.apply_picture_ops_indexed(ops) {
         Ok(edit) => Ok(EditCommand::PictureEdit { description: "Graph Edit", clip_id, edit: Box::new(edit) }),
-        Err(why) => Err((refused_at(original, ops), why)),
+        Err(error) => Err(error),
     }
-}
-
-/// The first op of `ops` the clip refuses: the batch applied a prefix at a
-/// time on copies, which only a refusal pays for.
-fn refused_at(clip: &klipp_timeline::Clip, ops: &[GraphOp]) -> usize {
-    (0..ops.len()).find(|&i| clip.clone().apply_picture_ops(&ops[..=i]).is_err()).unwrap_or(ops.len().saturating_sub(1))
 }
 
 #[cfg(test)]
@@ -100,9 +95,9 @@ mod tests {
         let good = GraphOp::SetEnabled { path: at(fx[0]), enabled: false };
         let bad = GraphOp::SetParam { path: at(fx[0]), key: "radius".into(), value: ParamValue::Text("wide".into()) };
         let (i, why) = graph_ops_edit(&seq, &[good.clone(), good.clone(), bad]).unwrap_err();
-        assert_eq!(i, 2, "{why}");
+        assert_eq!(i, Some(2), "{why}");
         let elsewhere = GraphOp::SetEnabled { path: NodePath::new(Root::Clip { clip: uuid::Uuid::nil() }, [fx[0]]), enabled: true };
-        assert_eq!(graph_ops_edit(&seq, &[good.clone(), elsewhere]).unwrap_err().0, 1);
+        assert_eq!(graph_ops_edit(&seq, &[good.clone(), elsewhere]).unwrap_err().0, Some(1));
         let track = GraphOp::SetEnabled { path: NodePath::new(Root::TimelineGrade { sequence: uuid::Uuid::nil() }, [fx[0]]), enabled: true };
         assert!(graph_ops_edit(&seq, &[track]).unwrap_err().1.contains("only a clip's picture"));
         assert!(graph_ops_edit(&seq, &[]).is_err());

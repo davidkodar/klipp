@@ -152,24 +152,20 @@ fn harness() -> Harness {
                             // the UI's own tests cover envelope exclusivity/undo dispatch.
                             let mut seq = sequence.write().unwrap();
                             let result = (|| {
-                                let root = ops.first().ok_or((0, "empty batch".to_owned()))?.path().root;
-                                let klipp_graph_format::path::Root::Clip { clip } = root else { return Err((0, "only clip roots are supported".into())); };
-                                let clip = seq.tracks.iter_mut().flat_map(|t| &mut t.clips).find(|c| c.id.0 == clip).ok_or((0, "no clip".to_owned()))?;
-                                let original = clip.clone();
-                                match clip.apply_picture_ops(ops) {
+                                let root = ops.first().ok_or((None, "empty batch".to_owned()))?.path().root;
+                                let klipp_graph_format::path::Root::Clip { clip } = root else { return Err((Some(0), "only clip roots are supported".into())); };
+                                let clip = seq.tracks.iter_mut().flat_map(|t| &mut t.clips).find(|c| c.id.0 == clip).ok_or((None, "no clip".to_owned()))?;
+                                match clip.apply_picture_ops_indexed(ops) {
                                     Ok(edit) => {
                                         edits_seen.lock().unwrap().push(klipp_document::history::EditCommand::PictureEdit { clip_id: clip.id, description: "Graph Edit", edit: Box::new(edit) });
                                         Ok(())
                                     }
-                                    Err(why) => {
-                                        let at = (0..ops.len()).find(|&i| original.clone().apply_picture_ops(&ops[..=i]).is_err()).unwrap_or(0);
-                                        Err((at, why))
-                                    }
+                                    Err(error) => Err(error),
                                 }
                             })();
                             // Match control_bridge: the index travels only in
                             // refused_op; prose must not name the expanded op.
-                            if let Err((at, why)) = result { refused_op = Some(at); refused = Some(why); }
+                            if let Err((at, why)) = result { refused_op = at; refused = Some(why); }
                         }
                         if let klipp_core::AppCommand::ImportMediaWithAnalysis { path, analyze: false } = &c {
                             let bytes = std::fs::read(path).expect("synthesized WAV exists before import");
@@ -483,6 +479,38 @@ fn graph_effect_persistence_refusals_map_expanded_indices_and_change_nothing() {
         assert_eq!(status["op_index"], 1);
         assert_eq!(status["state"], "refused");
         assert_eq!(status["reason"], refused["error"]);
+    }
+    assert!(h.edits_seen.lock().unwrap().is_empty());
+    assert_eq!(h.shared.revision(), graph["revision"].as_u64().unwrap());
+    assert_eq!(h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture, before);
+}
+
+#[test]
+fn graph_commit_refusal_after_a_beside_node_names_the_actual_operation() {
+    let mut h = harness();
+    h.sequence.write().unwrap().tracks[0].clips[0].push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 });
+    let root = json!({"clip":h.ids.clip_a});
+    let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let nodes = graph["nodes"].as_array().unwrap();
+    let group = nodes.iter().find(|n| n["type"] == "klipp.group").unwrap()["id"].clone();
+    let blur = nodes.iter().find(|n| n["type"] == "klipp.fx.gaussian_blur").unwrap()["id"].clone();
+    let at = json!({"root":root,"nodes":[group,h.ids.corrector_a]});
+    let new = json!({"root":root,"nodes":[group,{"new":0}]});
+    let effect = json!({"root":root,"nodes":[blur]});
+    let before = h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture.clone();
+    for bad in [json!({"op":"mix","path":effect,"mix":0.75}), json!({"op":"mask_channel","path":effect,"channel":"alpha"})] {
+        let refused = h.call(json!({"method":"graph_ops","ops":[
+            {"op":"add_beside","at":at,"type":"klipp.grade.exposure","params":{"exposure":0.5}},
+            {"op":"connect","from":at,"from_port":"out","to":new,"to_port":"in"},
+            {"op":"enable","path":new,"enabled":true},
+            bad
+        ]}));
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert_eq!(refused["op_index"], 3, "the incomplete add prefix must not hide the actual refusal: {refused}");
+        let operation = refused["result"]["operation_id"].as_str().expect("app-thread refusal");
+        let status = h.ok(json!({"method":"operation_status","operation_id":operation}));
+        assert_eq!(status["op_index"], 3);
+        assert_eq!(status["state"], "refused");
     }
     assert!(h.edits_seen.lock().unwrap().is_empty());
     assert_eq!(h.shared.revision(), graph["revision"].as_u64().unwrap());
