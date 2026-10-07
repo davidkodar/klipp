@@ -305,6 +305,10 @@ pub struct GpuEffectsPipeline {
     /// upload 33 MB would defeat the purpose.
     plate_buf: Option<wgpu::Buffer>,
     plate_key: Option<(u64, u32, u32)>,
+    /// A difference key recorded in the open chain reads `plate_buf`
+    /// (#1266): a different plate can't go in until that chain is
+    /// submitted, since an upload lands before the whole encoder runs.
+    plate_read_in_chain: bool,
     // Compute pipeline — standalone soft-clip / hard-clip transform
     // (per-channel Reinhard rolloff above threshold). Value
     // transform, not a matte producer.
@@ -1510,6 +1514,7 @@ impl GpuEffectsPipeline {
             difference_key_bgl,
             plate_buf: None,
             plate_key: None,
+            plate_read_in_chain: false,
             soft_clip_pipeline,
             grain_pipeline,
             alpha_blur_h_pipeline,
@@ -4075,6 +4080,7 @@ impl GpuEffectsPipeline {
             self.submit(enc);
         }
         self.chain_params.reset();
+        self.plate_read_in_chain = false;
         // A stack frame's passes so far go first: the chain reads what
         // they wrote, and its own ring starts over.
         self.flush();
@@ -4088,6 +4094,7 @@ impl GpuEffectsPipeline {
     pub fn submit_chain(&mut self) {
         if let Some(enc) = self.chain_encoder.take() {
             self.submit(enc);
+            self.plate_read_in_chain = false;
             // Effects recorded into the chain (`chain_run_effects`) read
             // their uniforms from these slots; submitted, they are free.
             if let Some(slots) = self.effect_params.as_mut() {
@@ -4777,6 +4784,14 @@ impl GpuEffectsPipeline {
     ) {
         if self.is_device_lost() {
             return;
+        }
+        // Another plate while a key recorded in the open chain still reads
+        // this one (#1266): the chain goes to the queue first and goes on
+        // in a new encoder, as when its slots run out. The upload then
+        // lands after that submit and before the next.
+        if self.plate_key != Some(key) && self.plate_read_in_chain && self.chain_encoder.is_some() {
+            self.submit_chain();
+            self.begin_chain();
         }
         let bytes = std::mem::size_of_val(plate_linear) as u64;
         let needs_alloc = self.plate_buf.as_ref().is_none_or(|b| b.size() < bytes);
@@ -6198,6 +6213,7 @@ impl GpuEffectsPipeline {
                 self.slot_pool.buffer(id),
             ),
         };
+        let mut plate_read = false;
         let mut entries = vec![
             wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
@@ -6206,6 +6222,7 @@ impl GpuEffectsPipeline {
         let layout = match key {
             GpuKey::DifferenceKey { .. } => {
                 entries.push(wgpu::BindGroupEntry { binding: 3, resource: self.plate_buf.as_ref().expect("checked by the caller").as_entire_binding() });
+                plate_read = true;
                 &self.difference_key_bgl
             }
             _ => &self.bind_group_layout,
@@ -6213,6 +6230,7 @@ impl GpuEffectsPipeline {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("chain_bg_key"), layout, entries: &entries });
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
         Self::record_compute_dispatch(enc, pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
+        self.plate_read_in_chain |= plate_read;
     }
 
     /// Draw a window's shapes into the pool slot `id` on the GPU, recorded

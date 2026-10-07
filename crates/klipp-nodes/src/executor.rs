@@ -1773,7 +1773,9 @@ impl GraphExecutor {
                 .nodes
                 .iter()
                 .filter(|n| feeding.contains(&n.id) && n.enabled)
-                .filter(|n| Some(n.id) != matte_tap && Some(n.id) != matte_preview_node)
+                // A tapped, previewed or soloed key is looked at: its pixels
+                // stay on the CPU.
+                .filter(|n| Some(n.id) != matte_tap && Some(n.id) != matte_preview_node && Some(n.id) != self.solo_node)
                 // A key whose thumbnail is shown keeps its CPU pixels.
                 .filter(|n| !visible_nodes.is_some_and(|v| v.contains(&n.id)))
                 .filter_map(|n| {
@@ -1862,15 +1864,14 @@ impl GraphExecutor {
             // picture on the chain (#1266): drawn from the tail, or from a
             // chain started here on the picture the effect takes too, or
             // else keyed on the CPU now, from its picture's pixels.
-            if let Some(key) = graph
+            let pending_mask = graph
                 .input_of(node_id, 1)
-                .filter(|id| matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment) && node.params.effect_blend.is_some() && pending_keys.iter().any(|k| k.node == *id))
-            {
-                let picture = pending_keys.iter().find(|k| k.node == key).map(|k| k.picture).expect("pending");
+                .filter(|_| matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment) && node.params.effect_blend.is_some())
+                .and_then(|id| pending_keys.iter().find(|k| k.node == id).map(|k| (id, k.picture)));
+            if let Some((key, picture)) = pending_mask {
+                let is_source = node_by_id.get(&picture).is_some_and(|n| n.kind == NodeKind::Source);
                 if chain_tail.is_none() && graph.input_of(node_id, 0) == Some(picture) && !composite_port1.contains_key(&picture) {
-                    let held = node_outputs.get(&picture).filter(|a| !a.is_empty()).map(|a| a.as_slice());
-                    let is_source = node_by_id.get(&picture).is_some_and(|n| n.kind == NodeKind::Source);
-                    if let Some(pixels) = held.or(if is_source { Some(source_frame) } else { None }) {
+                    if let Some(pixels) = picture_pixels(&node_outputs, picture, is_source, source_frame) {
                         if self.begin_chain_from(pixels, width, height) {
                             chain_tail = Some(picture);
                             chain_slot_a = true;
@@ -1884,9 +1885,7 @@ impl GraphExecutor {
                 pending_keys.retain(|k| k.node != key);
                 if !self.key_mattes.contains_key(&key) {
                     let key_node = *node_by_id.get(&key).expect("a graph node");
-                    let held = node_outputs.get(&picture).filter(|a| !a.is_empty()).map(|a| a.as_slice());
-                    let is_source = node_by_id.get(&picture).is_some_and(|n| n.kind == NodeKind::Source);
-                    let Some(pixels) = held.or(if is_source { Some(source_frame) } else { None }).filter(|p| !p.is_empty()) else {
+                    let Some(pixels) = picture_pixels(&node_outputs, picture, is_source, source_frame).filter(|p| !p.is_empty()) else {
                         return Err(if is_source { ExecutorError::CpuSourceRequired } else { ExecutorError::MaskUnavailable(node_id) });
                     };
                     let key_params = params_for_frame(key_node, clip_time_secs);
@@ -2056,6 +2055,7 @@ impl GraphExecutor {
                 && !bypass
                 && Some(node_id) != matte_tap
                 && Some(node_id) != matte_preview_node
+                && Some(node_id) != self.solo_node
                 && !thumb_needs_cpu
             {
                 let mut readers = graph.edges.iter().filter(|e| e.from_node == node_id).peekable();
@@ -3028,6 +3028,12 @@ impl GraphExecutor {
         dispatches
     }
 
+}
+
+/// A picture's pixels on the CPU: held, or the source frame for the source
+/// (empty when the source is only on the GPU).
+fn picture_pixels<'a>(outputs: &'a crate::plan::Values<'_>, picture: NodeId, is_source: bool, source_frame: &'a [f32]) -> Option<&'a [f32]> {
+    outputs.get(&picture).filter(|a| !a.is_empty()).map(|a| a.as_slice()).or(if is_source { Some(source_frame) } else { None })
 }
 
 /// A key to draw on the GPU for effects' masks when its picture is on the
