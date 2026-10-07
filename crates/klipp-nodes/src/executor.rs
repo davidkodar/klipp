@@ -270,6 +270,9 @@ pub struct GraphExecutor {
     /// The matte the next mixed effect node's mask reads, handed from the
     /// run to its dispatch (step 9c).
     effect_mask: Option<Arc<Vec<f32>>>,
+    /// A mixed effect's window, as shapes the GPU draws into its matte slot
+    /// (#1242); set with `effect_mask`, one or the other.
+    effect_window: Option<Arc<Vec<klipp_effects::gpu::GpuMaskDef>>>,
     /// An effect node of the last run could not apply its effects (a
     /// lost device): its picture lacks them. See
     /// [`Self::last_run_effects_complete`].
@@ -669,6 +672,7 @@ impl GraphExecutor {
             run_effect_breaks: 0,
             run_mix_refused: 0,
             effect_mask: None,
+            effect_window: None,
             run_effects_incomplete: false,
             plans: HashMap::new(),
             plan_compiles: 0,
@@ -738,6 +742,7 @@ impl GraphExecutor {
             run_effect_breaks: 0,
             run_mix_refused: 0,
             effect_mask: None,
+            effect_window: None,
             run_effects_incomplete: false,
             plans: HashMap::new(),
             plan_compiles: 0,
@@ -1740,6 +1745,9 @@ impl GraphExecutor {
         // dispatch path. None = no GPU-resident matte; MaskCutout
         // falls back to CPU multiply.
         let mut matte_in_buf: Option<NodeId> = None;
+        // Windows that only mask effects (#1242): their shapes, drawn on the
+        // GPU into each effect's matte slot as it runs, never on the CPU here.
+        let mut window_mattes: HashMap<NodeId, Arc<Vec<klipp_effects::gpu::GpuMaskDef>>> = HashMap::new();
 
         // 3. Execute nodes in topo order
         for &node_id in order {
@@ -1899,11 +1907,16 @@ impl GraphExecutor {
                 (NodeKind::Effect | NodeKind::EffectSegment, Some(_)) => graph.input_of(node_id, 1).map(|id| node_outputs.get(&id).filter(|m| !m.is_empty()).cloned()),
                 _ => None,
             };
-            let effect_mask_ready = !matches!(effect_mask, Some(None));
+            let effect_window = match (node.kind, node.params.effect_blend) {
+                (NodeKind::Effect | NodeKind::EffectSegment, Some(_)) => graph.input_of(node_id, 1).and_then(|id| window_mattes.get(&id).cloned()),
+                _ => None,
+            };
+            let effect_mask_ready = effect_window.is_some() || !matches!(effect_mask, Some(None));
             // Handed to the dispatch, whichever way the node is dispatched
             // (extending a chain, or starting one); each node sets it anew,
             // so nothing carries over to another.
             self.effect_mask = effect_mask.clone().flatten();
+            self.effect_window = effect_window;
             let can_extend_chain = !bypass
                 && effect_mask_ready
                 && !feeds_a_mask
@@ -1947,6 +1960,38 @@ impl GraphExecutor {
                 bypass_tunnel_count += 1;
                 per_node_ms.push((format!("{node_kind_name}#bypass_tunnel"), t_node.elapsed().as_secs_f64() * 1000.0));
                 continue;
+            }
+
+            // A window whose every reader is a mixed effect's mask port
+            // (#1242): nothing is drawn here, and the chain isn't broken.
+            // Each effect draws the window on the GPU into its own matte
+            // slot as it runs; an effect that leaves the chain draws it on
+            // the CPU then. A shape the GPU can't draw keeps the CPU way.
+            if node.kind == NodeKind::Mask
+                && self.gpu.is_some()
+                && !bypass
+                && Some(node_id) != matte_tap
+                && Some(node_id) != matte_preview_node
+                && !thumb_needs_cpu
+            {
+                let mut readers = graph.edges.iter().filter(|e| e.from_node == node_id).peekable();
+                let only_masks_effects = readers.peek().is_some()
+                    && readers.all(|e| {
+                        e.to_port == 1
+                            && node_by_id.get(&e.to_node).is_some_and(|n| matches!(n.kind, NodeKind::Effect | NodeKind::EffectSegment) && n.params.effect_blend.is_some())
+                    });
+                if only_masks_effects {
+                    // As drawn now: keyframes, then the window's tracked motion (#238).
+                    let masks = node.params.masks.as_ref().map(|ms| ms.evaluated_in(clip_time_secs, height as f32 / width.max(1) as f32));
+                    let enabled: Vec<&klipp_core::Mask> = masks.iter().flat_map(|ms| ms.masks.iter()).filter(|m| m.enabled).collect();
+                    let defs: Vec<_> = enabled.iter().filter_map(|m| mask_to_gpu_def(m)).collect();
+                    if !defs.is_empty() && defs.len() == enabled.len() {
+                        window_mattes.insert(node_id, Arc::new(defs));
+                        node_outputs.insert(node_id, Arc::new(Vec::new()));
+                        per_node_ms.push((format!("{node_kind_name}#window_on_gpu"), t_node.elapsed().as_secs_f64() * 1000.0));
+                        continue;
+                    }
+                }
             }
 
             // If a chain is live and this node can't extend it, flush
@@ -2409,6 +2454,18 @@ impl GraphExecutor {
             if [1, 2].into_iter().any(|port| graph.input_of(node_id, port).is_some_and(is_gpu_source)) {
                 return Err(ExecutorError::CpuSourceRequired);
             }
+            // A mixed effect off the chain whose window was left for the GPU
+            // to draw (#1242): drawn here on the CPU instead.
+            let window_on_cpu;
+            let secondary_slice = match graph.input_of(node_id, 1).filter(|id| secondary_slice.is_none() && window_mattes.contains_key(id)).and_then(|id| node_by_id.get(&id).copied()) {
+                Some(window) => {
+                    let window_params = params_for_frame(window, clip_time_secs);
+                    window_on_cpu = self.execute_node(window.id, &NodeKind::Mask, &window_params, primary_slice, None, None, width, height, source_frame, frame_number, clip_time_secs, false);
+                    cpu_fallback_count += 1;
+                    Some(window_on_cpu.as_slice())
+                }
+                None => secondary_slice,
+            };
             if matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment)
                 && node.params.effect_blend.is_some()
                 && graph.input_of(node_id, 1).is_some()
@@ -3151,12 +3208,18 @@ impl GraphExecutor {
         // are counted breaks (`ChainStats::effect_breaks`).
         if let NodeKind::Effect | NodeKind::EffectSegment = kind {
             let mask = self.effect_mask.take();
+            let window = self.effect_window.take();
             let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
             let gpu = self.gpu.as_mut()?;
             let run = match params.effect_blend {
                 Some(blend) => {
                     let mix = klipp_effects::mask_mix::MaskMix::new(blend.mix, blend.channel, luma).ok()?;
-                    gpu.chain_run_effects_mixed(&params.effects, in_is_a, width, height, mix, mask.as_deref().map(|m| m.as_slice()))?
+                    let matte = match (&window, &mask) {
+                        (Some(shapes), _) => Some(klipp_effects::gpu::EffectMatte::Shapes(shapes.as_slice())),
+                        (None, Some(pixels)) => Some(klipp_effects::gpu::EffectMatte::Pixels(pixels.as_slice())),
+                        (None, None) => None,
+                    };
+                    gpu.chain_run_effects_mixed(&params.effects, in_is_a, width, height, mix, matte)?
                 }
                 None => gpu.chain_run_effects(&params.effects, in_is_a, width, height),
             };
