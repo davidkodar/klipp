@@ -37,7 +37,8 @@ impl EffectList {
     }
 }
 
-/// An effect entry's identity within this editing session. Never persisted.
+/// An effect entry's identity: its node's id in the clip's picture, kept
+/// through a reorder, an insert and a save (M3 proposal 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EffectId(uuid::Uuid);
 
@@ -48,6 +49,11 @@ impl EffectId {
 
     pub fn as_uuid(self) -> uuid::Uuid {
         self.0
+    }
+
+    /// The effect whose picture node has id `id`.
+    pub fn of_node(id: uuid::Uuid) -> Self {
+        Self(id)
     }
 }
 
@@ -65,6 +71,9 @@ pub(crate) struct EffectIds {
     /// The clip the ids were made for.
     owner: Option<ClipId>,
     pub(crate) ids: Vec<EffectId>,
+    /// The next of the clip's run of new ids ([`Clip::next_effect_id`]):
+    /// only ever rises, so an id an effect gave up is never given again.
+    next: usize,
 }
 
 impl Clip {
@@ -79,15 +88,60 @@ impl Clip {
     }
 
     /// Allocate ids after construction/loading, and refresh them when a copied
-    /// clip takes a new ClipId. Existing entries retain their session identity.
+    /// clip takes a new ClipId. Existing entries retain their identity.
     pub(crate) fn reconcile_effect_ids(&mut self) {
-        if self.picture.effect_ids().owner != Some(self.id) {
-            // A new clip: its effects are new effects.
-            *self.picture.effect_ids_mut() = EffectIds { owner: Some(self.id), ids: Vec::new() };
+        let (ids, next) = self.effect_ids_for_picture_and_next();
+        *self.picture.effect_ids_mut() = EffectIds { owner: Some(self.id), ids, next };
+    }
+
+    /// The `n`th id of the clip's run of new ids, or the first after it
+    /// none of `taken` holds, and the next `n` (M3 proposal 6). Derived
+    /// from the clip's id, so two builds of one clip agree.
+    fn next_effect_id(&self, mut n: usize, taken: &[EffectId]) -> (EffectId, usize) {
+        use klipp_graph_lift::ids::{entry_id, RootKind};
+        loop {
+            let id = EffectId(entry_id(RootKind::Clip, self.id.0, "effects+", n));
+            n += 1;
+            if !taken.contains(&id) {
+                return (id, n);
+            }
         }
+    }
+
+    /// Each entry's id, as the clip's picture names its node, and the run's
+    /// next. A clip just read, or a copy whose ids were made for another
+    /// clip, gives each entry its slot's derived id: the one every lift
+    /// named it by before ids were kept, so a clip from before keeps its
+    /// effects' ids, and a copy under a new `ClipId` gets new ones. An entry
+    /// added since takes the next of the run, never an id another entry
+    /// gave up.
+    fn effect_ids_for_picture_and_next(&self) -> (Vec<EffectId>, usize) {
+        use klipp_graph_lift::ids::{entry_id, RootKind};
         let len = self.picture.view().effect_list.builtin_effects.len();
-        self.picture.effect_ids_mut().ids.truncate(len);
-        self.picture.effect_ids_mut().ids.resize_with(len, EffectId::fresh);
+        let held = self.picture.effect_ids();
+        if held.owner != Some(self.id) {
+            return ((0..len).map(|slot| EffectId(entry_id(RootKind::Clip, self.id.0, "effects", slot))).collect(), 0);
+        }
+        let (mut ids, mut next): (Vec<EffectId>, usize) = (held.ids.iter().copied().take(len).collect(), held.next);
+        while ids.len() < len {
+            let (id, n) = self.next_effect_id(next, &ids);
+            ids.push(id);
+            next = n;
+        }
+        (ids, next)
+    }
+
+    /// Each entry's id, as the clip's picture names its node.
+    pub(crate) fn effect_ids_for_picture(&self) -> Vec<EffectId> {
+        self.effect_ids_for_picture_and_next().0
+    }
+
+    /// Take the ids a stored picture gives its effects, in list order, as
+    /// this clip's (a clip read from a file): its effects keep the ids
+    /// they were saved under.
+    pub(crate) fn adopt_effect_ids(&mut self, ids: Vec<EffectId>) {
+        let next = self.picture.effect_ids().next;
+        *self.picture.effect_ids_mut() = EffectIds { owner: Some(self.id), ids, next };
     }
 
     /// Effect identities, values and effective enabled flags in list order.
@@ -115,7 +169,9 @@ impl Clip {
     /// Give every effect a fresh id: for a caller that makes a new clip of
     /// this one without giving it a new `ClipId`.
     pub fn refresh_effect_ids(&mut self) {
-        *self.picture.effect_ids_mut() = EffectIds::default();
+        self.reconcile_effect_ids();
+        let next = self.picture.effect_ids().next;
+        *self.picture.effect_ids_mut() = EffectIds { owner: Some(self.id), ids: Vec::new(), next };
         self.reconcile_effect_ids();
     }
 
@@ -141,8 +197,22 @@ impl Clip {
     /// Inserting before existing entries also shifts orphan animation indices;
     /// an index at `usize::MAX` cannot shift, so that insertion is refused.
     pub fn insert_effect(&mut self, at: usize, effect: BuiltinEffect) -> Option<EffectId> {
+        self.insert_effect_as(at, effect, None)
+    }
+
+    /// [`Self::insert_effect`], the entry taking `id` (an effect node a graph
+    /// op added, which keeps the id the op gave it). `None` if another entry
+    /// holds `id`.
+    pub fn insert_effect_with_id(&mut self, at: usize, effect: BuiltinEffect, id: EffectId) -> Option<EffectId> {
+        self.insert_effect_as(at, effect, Some(id))
+    }
+
+    fn insert_effect_as(&mut self, at: usize, effect: BuiltinEffect, given: Option<EffectId>) -> Option<EffectId> {
         self.through_truth("the effect list", |c| {
             c.reconcile_effect_ids();
+            if given.is_some_and(|id| c.picture.effect_ids().ids.contains(&id)) {
+                return None;
+            }
             let len = c.picture.view().effect_list.builtin_effects.len();
             if at > len {
                 return None;
@@ -164,7 +234,11 @@ impl Clip {
             {
                 return None;
             }
-            let id = EffectId::fresh();
+            // A new effect's id is random: unlike a counter it survives no
+            // save it would have to, and an id an effect gave up, before a
+            // reload or after, is never given again (a client holding the
+            // old path is refused, never handed another effect).
+            let id = given.unwrap_or_else(EffectId::fresh);
             c.view_mut().effect_list.builtin_effects.insert(at, effect);
             c.picture.effect_ids_mut().ids.insert(at, id);
             c.view_mut().effect_list.builtin_effects_enabled.resize(len, true);
@@ -221,7 +295,7 @@ impl Clip {
     pub fn set_effects(&mut self, effects: Vec<BuiltinEffect>) {
         self.through_truth("the effect list", |c| {
             c.reconcile_effect_ids();
-            c.picture.effect_ids_mut().ids = (0..effects.len()).map(|_| EffectId::fresh()).collect();
+            c.picture.effect_ids_mut().ids.clear();
             c.view_mut().effect_list.builtin_effects_enabled = vec![true; effects.len()];
             c.view_mut().effect_list.builtin_effects = effects;
             c.edit_effect_keyframes(|v| v.clear());
@@ -241,9 +315,10 @@ impl Clip {
     pub fn set_effect_list(&mut self, effects: Vec<BuiltinEffect>, enabled: Vec<bool>) {
         self.through_truth("the effect list", |c| {
             c.reconcile_effect_ids();
-            c.picture.effect_ids_mut().ids = (0..effects.len()).map(|_| EffectId::fresh()).collect();
+            c.picture.effect_ids_mut().ids.clear();
             c.view_mut().effect_list.builtin_effects = effects;
             c.view_mut().effect_list.builtin_effects_enabled = enabled;
+            c.reconcile_effect_ids();
         });
     }
 
@@ -606,7 +681,8 @@ impl Clip {
             c.view_mut().effect_list.builtin_effects = state.effects;
             c.view_mut().effect_list.builtin_effects_enabled = state.enabled;
             // The ids belong to this clip, whose snapshot they were.
-            *c.picture.effect_ids_mut() = EffectIds { owner: Some(c.id), ids: state.ids };
+            let next = c.picture.effect_ids().next;
+            *c.picture.effect_ids_mut() = EffectIds { owner: Some(c.id), ids: state.ids, next };
             c.edit_effect_keyframes(|v| *v = state.keyframes);
             c.edit_param_modifiers(|v| v.retain(|id, _| !matches!(id, ParamId::Effect { .. })));
             c.edit_param_modifiers(|v| v.extend(state.modifiers));

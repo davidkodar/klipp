@@ -129,12 +129,19 @@ impl Clip {
     /// (`klipp_graph_lift::delift::view_of`), and a lift of them is not
     /// the picture, so there is nothing to compare it with.
     pub fn adopt_stored_picture(&mut self, stored: LiftedPicture) -> Result<(), String> {
+        // The effects keep the ids the file saved them under (M3
+        // proposal 6), not their slots' ids.
+        let held = self.picture.effect_ids().clone();
+        if let Some(ids) = stored_effect_ids(&stored.picture, self.builtin_effects().len()) {
+            self.adopt_effect_ids(ids);
+        }
         if stored.picture.is_truth() {
             self.picture.set_truth(Some(std::sync::Arc::new(stored)));
             return Ok(());
         }
         let lifted = self.lift_picture()?;
         if lifted != stored {
+            *self.picture.effect_ids_mut() = held;
             let which = if lifted.picture != stored.picture { "picture" } else { "grade versions" };
             return Err(format!("the file's lifted {which} differs from the clip's own"));
         }
@@ -159,9 +166,27 @@ impl Clip {
         let mut record: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&text).map_err(|e| e.to_string())?;
         record.insert("id".into(), self.id.0.to_string().into());
         record.insert("kind".into(), serde_json::json!({ "type": lift_kind_tag(&self.kind) }));
+        // Each effect's node keeps the id the clip holds for it (M3
+        // proposal 6); the record a file holds names none.
+        record.insert("effect_ids".into(), self.effect_ids_for_picture().iter().map(|id| serde_json::Value::from(id.as_uuid().to_string())).collect());
         let (picture, versions) = klipp_graph_lift::revision2::lift_picture(&record)?;
         Ok(LiftedPicture { picture, versions })
     }
+}
+
+/// The ids `picture` gives the clip's built-in effects, in list order:
+/// each effect node by the slot it holds. `None` unless every slot of the
+/// `len` is held once.
+fn stored_effect_ids(picture: &klipp_graph_format::lifted::ClipPicture, len: usize) -> Option<Vec<crate::EffectId>> {
+    let mut ids = vec![None; len];
+    for n in picture.graph.nodes.iter().filter(|n| n.type_id.as_str() != klipp_graph_format::types::LEGACY_OFX) {
+        let Some(slot) = n.legacy.as_ref().and_then(|l| l.slot) else { continue };
+        let at = ids.get_mut(slot as usize)?;
+        if at.replace(crate::EffectId::of_node(n.id)).is_some() {
+            return None;
+        }
+    }
+    ids.into_iter().collect()
 }
 
 /// The kind's `type` as the file writes it, as far as the lift reads it.
