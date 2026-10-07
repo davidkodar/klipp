@@ -263,6 +263,10 @@ pub static PLAN_EFFECT_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atom
 /// the CPU kernels drew instead (`RenderStats::effects_on_cpu`), in this
 /// process. Cumulative; zero unless something failed.
 pub static EFFECTS_ON_CPU: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Frames the GPU stack declined to the CPU composite, in this process,
+/// for whatever reason (`Renderer::frame_decline` says which for the last).
+/// Cumulative; a reader takes deltas.
+pub static GPU_STACK_DECLINES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Masked effects whose matte their run couldn't give
 /// (`RenderStats::effects_mask_unavailable`), in this process.
 pub static EFFECT_MASKS_UNAVAILABLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1204,6 +1208,7 @@ impl Renderer {
         let result = self.render_display_on_gpu_inner(seq, time, width, height, src, opts, out);
         if result.is_none() && self.frame_decline.is_none() {
             self.frame_decline = Some("the GPU pipeline was unavailable");
+            GPU_STACK_DECLINES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         // A frame's passes record into one encoder from `stack_begin`;
         // a decline part-way must not leave them waiting for the next
@@ -1848,6 +1853,7 @@ impl Renderer {
     fn gpu_stack_declines<T>(&mut self, why: &'static str) -> Option<T> {
         self.gpu_export_declined_after_work = self.stack_work_started;
         self.frame_decline = Some(why);
+        GPU_STACK_DECLINES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if self.last_gpu_stack_decline != Some(why) {
             tracing::debug!("GPU stack declines the frame: {why}");
             self.last_gpu_stack_decline = Some(why);

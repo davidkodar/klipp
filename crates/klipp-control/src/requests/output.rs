@@ -443,6 +443,9 @@ pub(crate) fn respond(
                     // Masked effects whose matte their run couldn't give,
                     // drawn bypassed (M2 step 9c-2); zero unless one was.
                     "mask_unavailable": klipp_compose::EFFECT_MASKS_UNAVAILABLE.load(std::sync::atomic::Ordering::Relaxed),
+                    // Frames the GPU stack declined to the CPU composite,
+                    // whatever the reason; cumulative.
+                    "stack_declines": klipp_compose::GPU_STACK_DECLINES.load(std::sync::atomic::Ordering::Relaxed),
                     // Clip pictures lifted cold (none while playing with no
                     // edit: a lift is cached until the clip changes).
                     "cold_lifts": klipp_timeline::COLD_LIFTS.load(std::sync::atomic::Ordering::Relaxed),
