@@ -54,11 +54,12 @@ fn node(n: &Node, depth: usize) -> Value {
     for (key, value) in &n.params {
         if key.as_str() != "mask.channel" { params.insert(key.as_str().into(), json!(value)); }
     }
-    let channel = n.params.iter().find(|(k,_)| k.as_str() == "mask.channel").map(|(_,v)| match v {
+    let stored_channel = n.params.iter().find(|(k,_)| k.as_str() == "mask.channel");
+    let channel = stored_channel.map(|(_,v)| match v {
         klipp_graph_format::ParamValue::Text(s) => json!(s),
         other => json!(other),
-    }).unwrap_or(json!("red (unset)"));
-    let mut out = json!({"id":n.id,"type":desc.map(|d| d.id).unwrap_or(n.type_id.as_str()),"label":n.label,"enabled":n.enabled,"params":params,"mix":n.mix,"mask_channel":channel});
+    }).unwrap_or(json!("red"));
+    let mut out = json!({"id":n.id,"type":desc.map(|d| d.id).unwrap_or(n.type_id.as_str()),"label":n.label,"enabled":n.enabled,"params":params,"mix":n.mix,"mask_channel":channel,"mask_channel_set":stored_channel.is_some()});
     if let Some(group) = &n.group {
         out["ports"] = json!(group.interface);
         if depth > 0 { out["body"] = graph_value(&group.graph, depth - 1); }
@@ -71,8 +72,9 @@ fn node(n: &Node, depth: usize) -> Value {
 fn bounded(mut value: Value) -> Value {
     let mut omitted = 0;
     while value.to_string().len() > BUDGET - 128 {
-        if !trim(&mut value) { break; }
-        omitted += 1;
+        let removed = trim(&mut value);
+        if removed == 0 { break; }
+        omitted += removed;
     }
     if omitted > 0 {
         value["omitted_items"] = json!(omitted);
@@ -81,30 +83,43 @@ fn bounded(mut value: Value) -> Value {
     value
 }
 
-fn trim(value: &mut Value) -> bool {
+fn trim(value: &mut Value) -> usize {
     if let Some(nodes) = value.get_mut("nodes").and_then(Value::as_array_mut) {
         for n in nodes.iter_mut().rev() {
             if let Some(body) = n.get_mut("body") {
-                if trim(body) { return true; }
+                let removed = trim(body);
+                if removed > 0 { return removed; }
             }
             for key in ["params", "ports"] {
                 if n.get(key).is_some_and(|v| v.to_string().len() > 256) {
                     n[key] = Value::Null;
                     n["omitted_details"] = json!(true);
-                    return true;
+                    return 1;
                 }
             }
             if let Some(label) = n.get("label").and_then(Value::as_str).filter(|s| s.len() > 160) {
                 n["label"] = json!(label.chars().take(40).collect::<String>());
                 n["omitted_details"] = json!(true);
-                return true;
+                return 1;
             }
         }
     }
-    for key in ["edges", "nodes"] {
-        if value.get_mut(key).and_then(Value::as_array_mut).is_some_and(|a| a.pop().is_some()) { return true; }
+    if let Some(removed) = value.get_mut("nodes").and_then(Value::as_array_mut).and_then(Vec::pop) {
+        let mut count = 1;
+        if let Some(id) = removed.get("id") {
+            if let Some(edges) = value.get_mut("edges").and_then(Value::as_array_mut) {
+                let before = edges.len();
+                edges.retain(|edge| edge.get("from") != Some(id) && edge.get("to") != Some(id));
+                count += before - edges.len();
+            }
+            if value.get("output") == Some(id) {
+                value.as_object_mut().unwrap().remove("output");
+                value["output_omitted"] = json!(true);
+            }
+        }
+        return count;
     }
-    false
+    0
 }
 
 #[cfg(test)]
@@ -117,5 +132,44 @@ mod tests {
         let read = bounded(graph);
         assert!(read.to_string().len() <= BUDGET);
         assert!(read["omitted_items"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn partial_reads_keep_the_wiring_between_retained_nodes() {
+        let graph = json!({
+            "nodes":(0..60).map(|i| json!({"id":i,"label":"x".repeat(100),"params":{}})).collect::<Vec<_>>(),
+            "edges":(1..60).map(|i| json!({"from":i-1,"from_port":"out","to":i,"to_port":"in"})).collect::<Vec<_>>(),
+            "output":59
+        });
+        let read = bounded(graph);
+        let nodes = read["nodes"].as_array().unwrap();
+        let edges = read["edges"].as_array().unwrap();
+        assert!(read.to_string().len() <= BUDGET);
+        assert!(nodes.len() > 1 && nodes.len() < 60);
+        assert_eq!(edges.len(), nodes.len() - 1);
+        for edge in edges {
+            assert!(nodes.iter().any(|n| n["id"] == edge["from"]));
+            assert!(nodes.iter().any(|n| n["id"] == edge["to"]));
+        }
+        assert!(read.get("output").is_none());
+        assert_eq!(read["output_omitted"], true);
+    }
+
+    #[test]
+    fn read_channel_distinguishes_migrated_red_from_explicit_red() {
+        let mut n = graph_model::new_node("klipp.fx.gaussian_blur", uuid::Uuid::new_v4(), None).unwrap();
+        let absent = node(&n, 0);
+        assert_eq!(absent["mask_channel"], "red");
+        assert_eq!(absent["mask_channel_set"], false);
+        n.params.insert("mask.channel".into(), klipp_graph_format::ParamValue::Text("red".into()));
+        let explicit = node(&n, 0);
+        assert_eq!(explicit["mask_channel"], "red");
+        assert_eq!(explicit["mask_channel_set"], true);
+        // Both returned states can be expressed in the write vocabulary.
+        for read in [absent, explicit] {
+            let channel = if read["mask_channel_set"] == true { read["mask_channel"].clone() } else { Value::Null };
+            let op = json!({"op":"mask_channel","path":{"root":{"clip":uuid::Uuid::nil()},"nodes":[n.id]},"channel":channel});
+            assert!(serde_json::from_value::<crate::graph_wire::GraphWireOp>(op).is_ok());
+        }
     }
 }
