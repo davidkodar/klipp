@@ -159,6 +159,11 @@ pub(crate) struct LiftKey {
     pub(crate) kind: &'static str,
 }
 
+/// Clip pictures lifted (a cold lift: serialised, parsed and lifted) in
+/// this process. A warm read takes the cached picture and counts nothing,
+/// so in playback with no edit this holds still (M2 step 10c).
+pub static COLD_LIFTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// The lifted picture, filled once; shared by clones until one changes.
 #[derive(Clone, Default)]
 pub(crate) struct Lifted(Arc<OnceLock<(LiftKey, Result<Arc<LiftedPicture>, String>)>>);
@@ -176,6 +181,10 @@ impl Lifted {
     /// returned; it is left as it is (the cell is filled once) and the
     /// lift is not kept, until the next change empties the cell.
     pub(crate) fn get_or_lift(&self, key: LiftKey, lift: impl FnOnce() -> Result<LiftedPicture, String>) -> Result<Arc<LiftedPicture>, String> {
+        let lift = || {
+            COLD_LIFTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            lift()
+        };
         let mut lift = Some(lift);
         let (held, picture) = self.0.get_or_init(|| (key, (lift.take().unwrap())().map(Arc::new)));
         if *held == key {

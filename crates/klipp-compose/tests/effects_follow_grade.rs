@@ -232,6 +232,7 @@ fn animated_effects_and_a_fixed_placement_from_the_picture_draw_the_legacy_frame
     });
     clip.edit_video_param_keyframes(klipp_core::VideoParam::PositionX, |k| *k = vec![key(0.0, -10.0), key(2.0, 10.0)]);
     let mut seen = Vec::new();
+    let counted = klipp_compose::PLAN_EFFECT_CLIPS.load(std::sync::atomic::Ordering::Relaxed);
     for t in [0.1, 0.6, 1.0, 1.4, 1.9] {
         let (new, followed) = render_at(&seq, false, false, t);
         let (legacy, _) = render_at(&seq, true, false, t);
@@ -240,4 +241,8 @@ fn animated_effects_and_a_fixed_placement_from_the_picture_draw_the_legacy_frame
         seen.push(new);
     }
     assert!(seen.windows(2).all(|w| w[0] != w[1]), "the frames animate");
+    // The process-wide count the control socket's `perf` reports (other
+    // tests run alongside, so it has grown by at least these five).
+    let now = klipp_compose::PLAN_EFFECT_CLIPS.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(now >= counted + 5 || !required(), "{counted} -> {now}");
 }

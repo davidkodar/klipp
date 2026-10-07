@@ -55,7 +55,7 @@ pub use registry_catalog::RegistryCatalog;
 mod picture_cache_tests;
 pub use clip_anim::{EffectKeyframes, Keyframes, ParamModifiers};
 pub use picture_fields::ClipPictureParts;
-pub use picture_store::{ClipPictureFields, LiftedPicture};
+pub use picture_store::{ClipPictureFields, LiftedPicture, COLD_LIFTS};
 mod edit_plan;
 mod effect_slots;
 mod other_effect_slots;
