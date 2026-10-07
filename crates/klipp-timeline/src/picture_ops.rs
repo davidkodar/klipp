@@ -51,7 +51,8 @@ fn path_of(op: &GraphOp) -> &klipp_graph_format::path::NodePath {
         | GraphOp::SetNodeMeta { path, .. }
         | GraphOp::AddKeyAt { path, .. }
         | GraphOp::RemoveKeyAt { path, .. }
-        | GraphOp::SetAnim { path, .. } => path,
+        | GraphOp::SetAnim { path, .. }
+        | GraphOp::SetPayload { path, .. } => path,
         GraphOp::Connect { to, .. } | GraphOp::Disconnect { to, .. } => to,
         GraphOp::PublishOutput { group, .. } | GraphOp::Unpublish { group, .. } => group,
     }
@@ -105,7 +106,7 @@ fn target(p: &ClipPicture, op: &GraphOp) -> Result<Target, String> {
             entry(new)?;
             Ok(Target::Effect)
         }
-        GraphOp::SetParam { .. } | GraphOp::SetEnabled { .. } | GraphOp::RemoveNode { .. } | GraphOp::MoveAfter { .. } | GraphOp::AddKeyAt { .. } | GraphOp::RemoveKeyAt { .. } | GraphOp::SetAnim { .. } => {
+        GraphOp::SetParam { .. } | GraphOp::SetPayload { .. } | GraphOp::SetEnabled { .. } | GraphOp::RemoveNode { .. } | GraphOp::MoveAfter { .. } | GraphOp::AddKeyAt { .. } | GraphOp::RemoveKeyAt { .. } | GraphOp::SetAnim { .. } => {
             entry(first)?;
             Ok(Target::Effect)
         }
@@ -205,7 +206,95 @@ pub fn takes_picture_ops(effect: &klipp_effects::BuiltinEffect) -> bool {
     klipp_graph_lift::to_v2::effect_node_type(&tag) == types::LEGACY_EFFECT
 }
 
+/// An edit of a clip's built-in effect list as today's commands name it:
+/// by place in the list.
+#[derive(Clone, Copy, Debug)]
+pub enum EffectEdit<'a> {
+    /// Put an effect at the end of the list.
+    Add(&'a klipp_effects::BuiltinEffect),
+    Remove(usize),
+    SetEnabled(usize, bool),
+    /// The effect at a place, replaced whole (its id, flag and keys stay).
+    Update(usize, &'a klipp_effects::BuiltinEffect),
+    /// Move the effect at `from` to place `to` (`to` counted after it is
+    /// taken out), its flag, keys and stacks with it.
+    Move { from: usize, to: usize },
+}
+
 impl Clip {
+    /// The graph ops for `edit`, when every entry it touches is a plain
+    /// effect node ([`takes_picture_ops`]); `None` when one is a placed
+    /// kind or the list can't be read that way, and the edit stays on the
+    /// effect-list mutators (picture-truth clips the norm ends that).
+    pub fn effect_edit_ops(&self, edit: EffectEdit) -> Option<Vec<GraphOp>> {
+        let lifted = self.picture_v2().ok()?;
+        let p = &lifted.picture;
+        let order = list_order(p, self.builtin_effects().len());
+        let plain = |i: usize| -> Option<NodeId> {
+            let id = (*order.get(i)?)?;
+            node(p, id).filter(|n| n.type_id.as_str() == types::LEGACY_EFFECT).map(|n| n.id)
+        };
+        let at = |id: NodeId| klipp_graph_format::path::NodePath::new(Root::Clip { clip: self.id.0 }, [id]);
+        // The chain node a new or moved effect goes after to be first in
+        // the list: the display transform, or the last plug-in after it.
+        let before_first = || {
+            let chain = chain(p);
+            let from = chain.iter().position(|n| n.type_id.as_str() == lt::SCENE_TO_DISPLAY)?;
+            chain[from..].iter().take_while(|n| matches!(n.type_id.as_str(), lt::SCENE_TO_DISPLAY | types::LEGACY_OFX)).last().map(|n| n.id)
+        };
+        Some(match edit {
+            EffectEdit::Add(effect) => {
+                if !takes_picture_ops(effect) {
+                    return None;
+                }
+                // After the list's last entry, which must be a plain effect
+                // (or none), so the new one lands at the end as a push does.
+                let after = match self.builtin_effects().len() {
+                    0 => before_first()?,
+                    n => plain(n - 1)?,
+                };
+                let payload = serde_json::to_value(effect).ok()?;
+                let new = Node {
+                    id: uuid::Uuid::new_v4(),
+                    type_id: types::LEGACY_EFFECT.into(),
+                    type_version: 1,
+                    label: String::new(),
+                    enabled: true,
+                    params: Default::default(),
+                    anim: Default::default(),
+                    mix: None,
+                    wireless: Default::default(),
+                    group: None,
+                    legacy: Some(klipp_graph_format::Legacy { slot: None, payload, keyframes: None, modifiers: Default::default() }),
+                    legacy_flags: None,
+                    origin: None,
+                };
+                vec![GraphOp::AddNode { after: at(after), node: Box::new(new) }]
+            }
+            EffectEdit::Remove(i) => vec![GraphOp::RemoveNode { path: at(plain(i)?) }],
+            EffectEdit::SetEnabled(i, enabled) => vec![GraphOp::SetEnabled { path: at(plain(i)?), enabled }],
+            EffectEdit::Update(i, effect) => {
+                if !takes_picture_ops(effect) {
+                    return None;
+                }
+                vec![GraphOp::SetPayload { path: at(plain(i)?), payload: serde_json::to_value(effect).ok()? }]
+            }
+            EffectEdit::Move { from, to } => {
+                let moved = plain(from)?;
+                let mut rest = order.clone();
+                rest.remove(from);
+                let after = match to {
+                    0 => before_first()?,
+                    _ => {
+                        let id = (*rest.get(to - 1)?)?;
+                        node(p, id).filter(|n| n.type_id.as_str() == types::LEGACY_EFFECT)?.id
+                    }
+                };
+                vec![GraphOp::MoveAfter { path: at(moved), after }]
+            }
+        })
+    }
+
     /// Apply `ops` to the clip's picture as one edit, checked first on a
     /// copy of its lifted picture. A refusal leaves the clip as it was.
     pub fn apply_picture_ops(&mut self, ops: &[GraphOp]) -> Result<PictureEdit, String> {
@@ -292,6 +381,11 @@ impl Clip {
                 v[key.as_str()] = stored(value)?;
                 let effect: klipp_effects::BuiltinEffect = serde_json::from_value(v).map_err(|_| format!("{key} doesn't take {value:?}"))?;
                 let id = id_at(self, i)?;
+                self.replace_effect(id, effect);
+            }
+            GraphOp::SetPayload { payload, .. } => {
+                let effect: klipp_effects::BuiltinEffect = serde_json::from_value(payload.clone()).map_err(|e| format!("the effect: {e}"))?;
+                let id = id_at(self, index(order, named)?)?;
                 self.replace_effect(id, effect);
             }
             GraphOp::SetEnabled { enabled, .. } => {
