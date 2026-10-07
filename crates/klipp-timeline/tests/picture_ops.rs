@@ -414,7 +414,8 @@ fn effect_commands_on_placed_kinds_stay_on_the_mutators() {
 /// AR3's case on a clip stored as fields: a window added beside the grade's
 /// chain and connected to a correction's mask, in one batch, writes back
 /// through the grade, which then holds the window and the edge; the
-/// picture is the engine's. Beside the clip's own chain it is refused.
+/// picture is the engine's. Beside the clip's own chain, unwired, it is
+/// refused.
 #[test]
 fn a_window_beside_the_grade_masks_a_correction_through_the_fields() {
     use klipp_graph_format::ports::{input_key, output_key};
@@ -443,9 +444,12 @@ fn a_window_beside_the_grade_masks_a_correction_through_the_fields() {
     assert_eq!(w.kind, klipp_nodes::NodeKind::Mask);
     assert!(grade.edges.iter().any(|e| e.from_node == window.id && e.to_node == corrector && e.to_port == 1), "and masks the corrector");
 
+    // Beside the clip's own chain a node is the picture's alone (it makes
+    // the clip picture-truth, `picture_truth.rs`), and one left unwired
+    // there is refused by the batch rule.
     let fx = effects(&p);
     let err = c.clone().apply_picture_ops(&[GraphOp::AddNodeBeside { at: at(&c, [fx[0]]), node: new_effect(0xe2, &E::Sharpen { amount: 0.5 }, BTreeMap::new()) }]).unwrap_err();
-    assert!(err.contains("beside the clip's own chain"), "{err}");
+    assert!(err.contains("Unwired"), "{err}");
 }
 
 /// The engine's batch rule holds on a clip stored as fields too: a node

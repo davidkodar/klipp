@@ -6132,6 +6132,9 @@ impl GpuEffectsPipeline {
                 }
             }
         }
+        // A later clean break must not hide an earlier one that left an
+        // effect out: the run's answer is all of them.
+        self.effects_incomplete.set(!out.complete);
         out
     }
 

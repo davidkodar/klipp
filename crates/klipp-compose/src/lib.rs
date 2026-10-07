@@ -15,5 +15,5 @@ pub mod selfcheck;
 pub use render::{
     LinearFrameProviderFn,
     active_layers, frame_snapshot, ActiveLayer, DisplayDelivery, FrameSource, GlobalLut, GpuPixels, Inspect, Inspection, RenderOptions,
-    RenderStats, Renderer, EFFECTS_ON_CPU, PLAN_EFFECT_CLIPS, PLAN_EFFECT_FALLBACKS,
+    RenderStats, Renderer, EFFECTS_ON_CPU, EFFECT_MASKS_UNAVAILABLE, GPU_STACK_DECLINES, PLAN_EFFECT_CLIPS, PLAN_EFFECT_FALLBACKS,
     SourceFrame, SourcePixels, frame_index, frame_blends, over_u8_straight, gpu_composite_enabled};

@@ -162,9 +162,60 @@ fn every_effect_looks_the_same_at_half_scale() {
 }
 
 /// G3: a masked blur at half scale, its window's feather and the blur's
-/// radius both scaled. A masked effect on a clip needs picture-truth.
+/// radius both scaled: a picture-truth clip whose grade publishes a
+/// feathered window that masks its blur (node-graph M2 step 9c-2).
 #[test]
-#[ignore = "a masked effect on a clip needs a picture-truth clip (9c-2); un-ignored by that PR (on the M2 close-out list)"]
 fn a_masked_blur_at_half_scale() {
-    unimplemented!("needs masked effect nodes on a clip, which arrive with 9c-2");
+    use klipp_graph_format::lifted::types as lt;
+    use klipp_graph_format::path::{NodePath, Root};
+    use klipp_nodes::{Edge, Node, NodeGraph, NodeKind, NodeParams};
+    let masked = |seq: (u32, u32), w: u32, h: u32, gpu: bool| {
+        let node = |kind: NodeKind, params: NodeParams| Node { id: klipp_nodes::NodeId::new_v4(), kind, label: String::new(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![] };
+        let masks = klipp_core::MaskStack { masks: vec![klipp_core::Mask { shape: klipp_core::MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 }, feather: 0.15, ..klipp_core::Mask::default() }] };
+        let (source, output) = (node(NodeKind::Source, NodeParams::default()), node(NodeKind::Output, NodeParams::default()));
+        let window = node(NodeKind::Mask, NodeParams { masks: Some(masks), ..Default::default() });
+        let graph = NodeGraph {
+            output_node_id: output.id,
+            edges: vec![
+                Edge { from_node: source.id, from_port: 0, to_node: output.id, to_port: 0 },
+                Edge { from_node: source.id, from_port: 0, to_node: window.id, to_port: 0 },
+            ],
+            nodes: vec![source, output, window.clone()],
+            node_positions: Default::default(),
+            working_space_override: None,
+            frames: vec![],
+            sticky_notes: vec![],
+        };
+        let mut clip = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+        klipp_timeline::GradeAccess::set_grade(&mut clip, graph);
+        clip.push_effect(BuiltinEffect::GaussianBlur { radius: 6.0 });
+        let p = clip.picture_v2().unwrap().picture.clone();
+        let group = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP).unwrap().id;
+        let blur = p.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT).unwrap().id;
+        let at = |id| NodePath::new(Root::Clip { clip: clip.id.0 }, [id]);
+        clip.apply_picture_ops(&[
+            klipp_graph_lift::ops::GraphOp::PublishOutput { group: at(group), endpoint: klipp_graph_format::PortBinding { node: window.id, port: "out".into() }, key: "window".into(), label: "Window".into() },
+            klipp_graph_lift::ops::GraphOp::Connect { from: at(group), from_port: "window".into(), to: at(blur), to_port: "mask".into() },
+        ])
+        .unwrap();
+        let mut s = Sequence::new_default();
+        s.resolution = Resolution { width: seq.0, height: seq.1 };
+        let mut track = Track::new("V", TrackKind::Video);
+        track.clips = vec![clip];
+        s.tracks = vec![track];
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(gpu);
+        r.render(&s, tc(1.0), w, h, &mut Chart, RenderOptions::default())
+    };
+    for gpu in [false, true] {
+        let none = BuiltinEffect::Gamma { gamma: 1.0 };
+        let floor = mean_diff(&render(&none, (W, H), W / 2, H / 2, gpu), &shrink(&render(&none, (W, H), W, H, gpu)));
+        let want = shrink(&masked((W, H), W, H, gpu));
+        let scaled = masked((W, H), W / 2, H / 2, gpu);
+        let unscaled = masked((W / 2, H / 2), W / 2, H / 2, gpu);
+        let (new, old) = (mean_diff(&scaled, &want) - floor, mean_diff(&unscaled, &want) - floor);
+        eprintln!("masked blur (gpu {gpu}): scaled {new:.5}, in its own pixels {old:.5}, over a floor of {floor:.5}");
+        assert!(old > 0.0005, "gpu {gpu}: the masked blur doesn't depend on the render size here ({old} over the floor)");
+        assert!(new < old * 0.75 && new < 0.02, "gpu {gpu}: the half render isn't scaled: {new} against {old} in its own pixels");
+    }
 }

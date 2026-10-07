@@ -627,7 +627,6 @@ fn graph_effect_published_mask_connection_applies_reads_back_and_roundtrips() {
 }
 
 #[test]
-#[ignore = "root side nodes arrive with 9c-2"]
 fn graph_effect_mask_connection_applies_reads_back_and_roundtrips() {
     let mut h = harness();
     let effect = graph_test_blur(&mut h);
@@ -2631,6 +2630,19 @@ fn perf_reports_the_presented_rate_only_while_pictures_change() {
     }
     let fps = h.ok(json!({ "method": "perf" }))["presented_fps"].as_f64().expect("a rate while pictures change");
     assert!(fps.is_finite() && fps > 0.0, "{fps}");
+}
+
+/// Perf's plan_effects says how many effect runs fell to the CPU, how many
+/// masked effects were bypassed for a matte their run couldn't give, and
+/// how many frames the GPU stack declined: cumulative counts a reader
+/// takes deltas of (M2 step 9c-2, for #1212's acceptance run).
+#[test]
+fn perf_counts_cpu_fallbacks_bypassed_masks_and_stack_declines() {
+    let mut h = harness();
+    let plan = h.ok(json!({ "method": "perf" }))["plan_effects"].clone();
+    for key in ["clips", "fallback_lists", "on_cpu", "mask_unavailable", "stack_declines", "cold_lifts"] {
+        assert!(plan[key].is_u64(), "plan_effects.{key}: {plan}");
+    }
 }
 
 /// An edge joins nodes of one graph: a top-level node and one inside a

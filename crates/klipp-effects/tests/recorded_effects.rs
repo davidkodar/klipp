@@ -288,3 +288,24 @@ fn an_identity_never_asks_for_slots() {
         assert_eq!(g.record_effect(&effect, &src, &dst, Some(&scratch), W, H, &mut rec), want, "{effect:?}");
     }
 }
+
+/// A chain whose first break leaves an effect out and whose later break
+/// is clean still says an effect is missing: the run's answer is all of
+/// its breaks, not the last.
+#[test]
+fn a_later_clean_break_does_not_hide_an_earlier_missing_effect() {
+    let Some(mut g) = pipeline() else { return };
+    // Refused recording: the gamma's break leaves it out; Equalize's break
+    // runs (it is never recorded), clean.
+    let fx = [E::Gamma { gamma: 1.4 }, E::Equalize { strength: 0.5 }];
+    g.refuse_recording(true);
+    g.ensure_recording_buffers(W, H);
+    g.upload_chain_input_linear(&picture());
+    g.begin_chain();
+    let run = g.chain_run_effects(&fx, true, W, H);
+    g.submit_chain();
+    g.refuse_recording(false);
+    assert_eq!(run.breaks, 2, "{run:?}");
+    assert!(!run.complete, "the gamma is missing");
+    assert!(!g.last_effects_complete(), "and the pipeline says so after the clean Equalize break");
+}
