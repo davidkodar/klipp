@@ -59,7 +59,11 @@ fn node(n: &Node, depth: usize) -> Value {
         klipp_graph_format::ParamValue::Text(s) => json!(s),
         other => json!(other),
     }).unwrap_or(json!("red"));
-    let mut out = json!({"id":n.id,"type":desc.map(|d| d.id).unwrap_or(n.type_id.as_str()),"label":n.label,"enabled":n.enabled,"params":params,"mix":n.mix,"mask_channel":channel,"mask_channel_set":stored_channel.is_some()});
+    // Grade labels live in the saved legacy entry, including lifted merges.
+    let grade_label = matches!(n.type_id.as_str(), klipp_graph_format::types::LEGACY_NODE | klipp_graph_format::lifted::types::MERGE);
+    let label = n.legacy.as_ref().filter(|_| grade_label)
+        .and_then(|legacy| legacy.payload.get("label")).and_then(Value::as_str).unwrap_or(&n.label);
+    let mut out = json!({"id":n.id,"type":desc.map(|d| d.id).unwrap_or(n.type_id.as_str()),"label":label,"enabled":n.enabled,"params":params,"mix":n.mix,"mask_channel":channel,"mask_channel_set":stored_channel.is_some()});
     if let Some(group) = &n.group {
         out["ports"] = json!(group.interface);
         if depth > 0 { out["body"] = graph_value(&group.graph, depth - 1); }
