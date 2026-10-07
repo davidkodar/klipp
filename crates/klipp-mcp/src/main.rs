@@ -1190,6 +1190,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
 /// the app that a user can read and change, served to the agent as
 /// text. Not a prompt hidden in code.
 const GUIDE: &str = include_str!("../../../assets/craft/guide.md");
+const GRAPH_GUIDE: &str = include_str!("../../../assets/craft/graph.md");
 const CRAFT: &str = include_str!("../../../assets/craft/reference.md");
 const RECIPES: &str = include_str!("../../../assets/craft/recipes.md");
 /// What a person can do here, for answering them when they ask (#626).
@@ -1210,11 +1211,12 @@ fn call_tool(name: &str, args: &Value) -> Result<(Vec<Value>, Option<Value>), St
         let topic = args.get("topic").and_then(|v| v.as_str()).unwrap_or("guide");
         let text = match topic {
             "guide" => GUIDE.to_string(),
+            "graph" => GRAPH_GUIDE.to_string(),
             "craft" => CRAFT.to_string(),
             "recipes" => RECIPES.to_string(),
             "abilities" => ABILITIES.to_string(),
-            "all" => format!("{GUIDE}\n\n---\n\n{CRAFT}\n\n---\n\n{RECIPES}"),
-            other => return Err(format!("unknown topic {other}; use guide, craft, recipes, abilities or all")),
+            "all" => format!("{GUIDE}\n\n---\n\n{CRAFT}\n\n---\n\n{RECIPES}\n\n---\n\n{GRAPH_GUIDE}"),
+            other => return Err(format!("unknown topic {other}; use guide, graph, craft, recipes, abilities or all")),
         };
         return Ok((vec![json!({ "type": "text", "text": text })], None));
     }
@@ -1508,7 +1510,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               craft reference (what a professional does without being asked), and the \
               recipes (worked plans for an interview with B-roll, a social cut-down, a \
               montage). Files the user can read and change.",
-             json!({ "topic": { "type": "string", "description": "guide (default), craft, recipes, abilities (what a person can do here, for answering them when they ask), or all" } }),
+             json!({ "topic": { "type": "string", "description": "guide (default), graph (read before graph edits), craft, recipes, abilities (what a person can do here, for answering them when they ask), or all" } }),
              vec![]),
         tool("klipp_status",
              "Whether Klipp is there and what is open, read live without changing anything: \
