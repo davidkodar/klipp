@@ -203,6 +203,7 @@ const SHADERS: &[(&str, Cover)] = &[
     ("SHADER_SPRITE_GLYPHS", Test(STACK, "posed_glyphs_are_the_cpu_glyph_pose_uploaded")),
     ("SHADER_U8_FIT_TO_LINEAR", Test(COMPOSITE, "a_layer_of_another_size_is_fitted_on_the_gpu")),
     ("SHADER_HDR10_TO_LINEAR", Test("klipp-engine/tests/hdr_gpu_graded_path.rs", "a_chain_seeded_from_hdr_codes_on_the_gpu_grades_like_the_cpu_path")),
+    ("SHADER_SCENE_TO_DISPLAY", Test("klipp-nodes/tests/scene_to_display_node.rs", "the_display_step_on_the_chain_draws_the_cpu_step")),
     ("SHADER_SPRITE_ROWS_F16", Test(COMPOSITE, "the_gpu_stack_is_the_renderers_frame")),
     ("SHADER_DIFFERENCE_KEY", Test(SECONDARY, "the_other_matte_sources_ride_the_chain_too")),
     ("SHADER_FILM_GRAIN", EVERY_EFFECT),
@@ -224,6 +225,7 @@ const SHADERS: &[(&str, Cover)] = &[
 /// the assembled source is registered instead.
 const ASSEMBLED: &[(&str, &str)] = &[
     ("SHADER_HDR10_TO_LINEAR_BODY", "SHADER_HDR10_TO_LINEAR"),
+    ("SHADER_SCENE_TO_DISPLAY_BODY", "SHADER_SCENE_TO_DISPLAY"),
     ("SHADER_NV12_BODY", "SHADER_NV12"),
     ("SHADER_P010_BODY", "SHADER_P010"),
 ];

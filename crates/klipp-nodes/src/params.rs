@@ -22,6 +22,11 @@ pub struct NodeParams {
     #[serde(skip)]
     pub effect_blend: Option<EffectBlend>,
 
+    /// `SceneToDisplay`: the display step it runs (phase 2b M2, step 11c).
+    /// The run's own setting, never saved.
+    #[serde(skip)]
+    pub scene_to_display: Option<klipp_color::hdr::SceneToDisplay>,
+
     // InputTransform
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_format: Option<LogFormat>,

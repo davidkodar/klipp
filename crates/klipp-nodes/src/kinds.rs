@@ -174,6 +174,11 @@ pub enum NodeKind {
     /// Effects that run together as one: a spill group, each cast from
     /// the same picture.
     EffectSegment,
+    /// A scene-referred clip's display step (step 11c): the SDR tone map
+    /// or display light, its settings in `NodeParams::scene_to_display`,
+    /// spliced by the renderer after the grade and before the effects.
+    /// Made by the renderer for a run, never by the user or saved.
+    SceneToDisplay,
 
     // ── Future ──────────────────────────────────────────────────
     #[serde(other)]
@@ -468,6 +473,7 @@ impl NodeKind {
             NodeKind::Reroute => "Reroute",
             NodeKind::Effect => "Effect",
             NodeKind::EffectSegment => "Effect Segment",
+            NodeKind::SceneToDisplay => "Scene to Display",
             NodeKind::Unknown => "Unknown",
         }
     }

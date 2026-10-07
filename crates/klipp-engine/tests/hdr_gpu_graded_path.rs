@@ -242,3 +242,73 @@ fn output_on_gpu_is_single_shot_and_refused_when_the_result_is_tapped() {
     assert!(exec.output_on_gpu().is_none(), "the request is single-shot");
     assert_eq!(out.len(), (W * H * 4) as usize);
 }
+
+/// J4 (phase 2b M2, step 11c): a PQ clip's grade, its display step and a
+/// glow masked by a window, as the renderer splices them into the clip's
+/// plan, draw on the GPU what they draw on the CPU, and the run reports
+/// the path a masked effect takes: the matte made off the chain and
+/// uploaded, the display step and the masked glow on it, one flush, no
+/// effect breaking the chain and no mix refused.
+#[test]
+fn a_masked_effect_on_an_hdr_clip_takes_the_graded_path() {
+    use klipp_color::hdr::SceneToDisplay;
+    use klipp_core::{Mask, MaskShape, MaskStack};
+    use klipp_effects::mask_mix::MaskChannel;
+    use klipp_effects::BuiltinEffect;
+    use klipp_nodes::params::EffectBlend;
+
+    let Some(frame) = hdr_frame() else {
+        eprintln!("skipping: P010 GPU converter unavailable");
+        return;
+    };
+    assert!(
+        klipp_effects::registry::effect_types().any(|t| t.tag == "glow" && t.desc.mixable),
+        "glow takes a mask"
+    );
+    let mut graph = graded_pq_graph();
+    let step = SceneToDisplay {
+        transfer: HdrTransfer::Pq,
+        peak_nits: None,
+        luma: klipp_color::primaries::luminance_weights(WorkingColorspace::Rec709Linear),
+    };
+    graph.splice_before_output(node(NodeKind::SceneToDisplay, NodeParams { scene_to_display: Some(step), ..Default::default() }));
+    let source = graph.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
+    let window = node(NodeKind::Mask, NodeParams {
+        masks: Some(MaskStack { masks: vec![Mask { shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 }, feather: 0.2, ..Mask::default() }] }),
+        ..Default::default()
+    });
+    let glow = node(NodeKind::Effect, NodeParams {
+        effects: vec![BuiltinEffect::Glow { radius: 4.0, intensity: 0.8 }],
+        effect_blend: Some(EffectBlend { mix: 1.0, channel: MaskChannel::Luminance }),
+        ..Default::default()
+    });
+    graph.edges.push(Edge { from_node: source, from_port: 0, to_node: window.id, to_port: 0 });
+    graph.edges.push(Edge { from_node: window.id, from_port: 0, to_node: glow.id, to_port: 1 });
+    let (glow_id, window_id) = (glow.id, window.id);
+    graph.nodes.push(window);
+    graph.splice_before_output(glow);
+    assert_eq!(graph.input_of(glow_id, 1), Some(window_id), "the glow reads the window");
+
+    let mut cpu = GraphExecutor::new_cpu_only();
+    let want = cpu.execute_linear(&frame.cpu_scene_linear, &graph, W, H, 0.0, 0, None, None).expect("CPU run").0;
+    let mut gpu = GraphExecutor::new();
+    if gpu.gpu_pipeline_or_init().is_none() {
+        assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none_or(|v| v != "1"), "required, but there is no GPU");
+        eprintln!("UNVERIFIED: no GPU");
+        return;
+    }
+    let got = gpu.execute_linear(&frame.cpu_scene_linear, &graph, W, H, 0.0, 0, None, None).expect("GPU run").0;
+    let stats = gpu.last_run_chain_stats();
+    assert_eq!((stats.flushes, stats.effect_breaks, stats.effect_mixes_refused), (1, 0, 0), "{stats:?}");
+    // The display step maps to [0, 1]; the glow runs on its own shader on
+    // either side. A level of an 8-bit picture is the bar, as C9 holds a
+    // masked GPU effect to.
+    let worst = got.iter().zip(&want).enumerate().filter(|(i, _)| i % 4 != 3).map(|(_, (a, b))| (a - b).abs()).fold(0.0f32, f32::max);
+    eprintln!("J4: worst {worst}");
+    assert!(worst <= 1.0 / 255.0, "the GPU differs from the CPU by {worst}");
+    // The mask bites: outside the window the glow is gone.
+    let mut unmasked = graph.clone();
+    unmasked.nodes.iter_mut().find(|n| n.id == glow_id).unwrap().params.effect_blend = None;
+    let whole = cpu.execute_linear(&frame.cpu_scene_linear, &unmasked, W, H, 0.0, 0, None, None).unwrap().0;
+    assert!(whole != want, "the window changes the picture");
+}
