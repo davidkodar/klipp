@@ -2538,7 +2538,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               Paths contain a root and node IDs; {new:k} refers to the node made by earlier op k. Values follow \
               catalog kinds; choices use labels. Created nodes return full paths. Current clip persistence \
               refuses placed kinds, effect mix/masks/labels, and publication; unsupported parameter shapes \
-              are refused with the failing op_index. Revision and project identity guard commit.",
+              are refused with the failing op_index. Revision and project identity guard commit. \
+              add_beside inserts unwired; connect required inputs in the same batch.",
              json!({"ops":graph_schema::ops_schema(),"label":{"type":"string"},"expected_revision":{"type":"integer","minimum":0},"expected_project_identity":{"type":"integer","minimum":0}}), vec!["ops"]),
         tool("klipp_graph_read",
              "Read graph at path; empty nodes reads root. Depth controls nested bodies. Omissions are flagged; \
@@ -2887,8 +2888,12 @@ mod interface_tests {
         let definitions = tool_definitions_for(false);
         let graph = definitions.iter().find(|t| t["name"] == "klipp_graph").unwrap();
         let ops = graph["inputSchema"]["properties"]["ops"]["items"]["properties"]["op"]["enum"].as_array().unwrap();
-        assert_eq!(ops.len(), 9);
+        assert_eq!(ops.len(), 10);
         assert!(!ops.iter().any(|op| matches!(op.as_str(), Some("publish" | "unpublish"))));
+        let beside = json!({"ops":[{"op":"add_beside","at":path,"type":"klipp.grade.mask"}]});
+        let command = tool_to_command("klipp_graph", &beside).unwrap();
+        assert_eq!(command["ops"], beside["ops"]);
+        assert!(ops.iter().any(|op| op == "add_beside"));
     }
 
     #[test]
@@ -2912,7 +2917,7 @@ mod interface_tests {
             let size = serde_json::to_vec(tool).unwrap().len();
             assert!(size <= budget,"{name}: {size} > {budget}");
         }
-        assert!(serde_json::to_vec(&tools).unwrap().len() < 87_500);
+        assert!(serde_json::to_vec(&tools).unwrap().len() < 88_000, "keep at least 2 KB of catalog headroom");
     }
 
     #[test]

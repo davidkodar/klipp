@@ -320,14 +320,20 @@ impl Clip {
     /// Apply `ops` to the clip's picture as one edit, checked first on a
     /// copy of its lifted picture. A refusal leaves the clip as it was.
     pub fn apply_picture_ops(&mut self, ops: &[GraphOp]) -> Result<PictureEdit, String> {
+        self.apply_picture_ops_indexed(ops).map_err(|(_, why)| why)
+    }
+
+    /// Apply one atomic batch, retaining the index of an operation-level refusal.
+    /// Whole-picture failures have no index unless an unwired node was added here.
+    pub fn apply_picture_ops_indexed(&mut self, ops: &[GraphOp]) -> Result<PictureEdit, (Option<usize>, String)> {
         if ops.is_empty() {
-            return Err("an empty batch has no edit".into());
+            return Err((None, "an empty batch has no edit".into()));
         }
         let root = Root::Clip { clip: self.id.0 };
-        if let Some(op) = ops.iter().find(|op| path_of(op).root != root) {
-            return Err(format!("{:?} edits another root than this clip", path_of(op).root));
+        if let Some((index, op)) = ops.iter().enumerate().find(|(_, op)| path_of(op).root != root) {
+            return Err((Some(index), format!("{:?} edits another root than this clip", path_of(op).root)));
         }
-        let lifted = self.picture_v2()?;
+        let lifted = self.picture_v2().map_err(|why| (None, why))?;
 
         // Each op on the copy, in turn, with the copy as it stood before it:
         // where a structural op lands in the list is read from the chain.
@@ -341,12 +347,12 @@ impl Clip {
         let mut steps = Vec::with_capacity(ops.len());
         let mut grade = false;
         let mut pending = Vec::new();
-        for op in ops {
+        for (index, op) in ops.iter().enumerate() {
             let before = docs.clips[&self.id.0].clone();
-            let t = target(&before, op)?;
+            let t = target(&before, op).map_err(|why| (Some(index), why))?;
             if is_structural(op) {
                 if let Some(id) = read_by_id(&before) {
-                    return Err(format!("{id} is read by id elsewhere in the picture, so it can't move until effects keep their ids"));
+                    return Err((Some(index), format!("{id} is read by id elsewhere in the picture, so it can't move until effects keep their ids")));
                 }
             }
             // The engine's batch rule: a node added beside waits for its
@@ -354,28 +360,32 @@ impl Clip {
             if let GraphOp::AddNodeBeside { node, .. } = op {
                 pending.push(node.id);
             }
-            apply_in_batch(&mut docs, op, &RegistryCatalog, &pending)?;
+            apply_in_batch(&mut docs, op, &RegistryCatalog, &pending).map_err(|why| (Some(index), why))?;
             if let Target::Grade = t {
-                apply_in_batch(&mut grade_docs, op, &RegistryCatalog, &pending)?;
+                apply_in_batch(&mut grade_docs, op, &RegistryCatalog, &pending).map_err(|why| (Some(index), why))?;
                 grade = true;
             }
             steps.push((t, docs.clips[&self.id.0].clone()));
         }
-        check_batch_end(&docs, root, &RegistryCatalog)?;
+        check_batch_end(&docs, root, &RegistryCatalog).map_err(|error| {
+            let index = error.unwired.and_then(|(id, _)| ops.iter().position(|op|
+                matches!(op, GraphOp::AddNodeBeside { node, .. } if node.id == id)));
+            (index, error.why)
+        })?;
 
         // Written to the fields; a write that fails puts them back.
         let before = self.picture.clone();
         let mut order = list_order(&lifted.picture, self.builtin_effects().len());
         let written = (|| {
-            for (op, (t, post)) in ops.iter().zip(&steps) {
+            for (index, (op, (t, post))) in ops.iter().zip(&steps).enumerate() {
                 if let Target::Effect = t {
-                    self.write_effect_op(op, post, &mut order)?;
+                    self.write_effect_op(op, post, &mut order).map_err(|why| (Some(index), why))?;
                 }
             }
             if grade {
-                self.write_grade(&grade_docs.clips[&self.id.0])?;
+                self.write_grade(&grade_docs.clips[&self.id.0]).map_err(|why| (None, why))?;
             }
-            Ok::<(), String>(())
+            Ok::<(), (Option<usize>, String)>(())
         })();
         if let Err(e) = written {
             self.picture = before;

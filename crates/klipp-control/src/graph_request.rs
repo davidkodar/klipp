@@ -32,7 +32,7 @@ pub(crate) fn write(ctx: &ControlContext, ops: &[GraphWireOp], expected_revision
     drop(sequence);
     let prepared = match graph_prepare::prepare(ops, docs) {
         Ok(batch) => batch,
-        Err((at, why)) => return Ok(refuse(Some(at), why)),
+        Err((at, why)) => return Ok(refuse(at, why)),
     };
     let mut result = send_with_reply(ctx, vec![AppCommand::GraphOps { ops: prepared.ops, label: label.clone() }], Vec::new(), false,
         EnvelopeReply { expected_revision: Some(revision), expected_project_identity: Some(identity), label: Some(label), source_indices: Some(prepared.source_indices) })?;
