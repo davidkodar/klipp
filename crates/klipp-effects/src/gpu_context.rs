@@ -37,6 +37,10 @@ pub struct GpuContext {
     /// unconsumed → panic in `DeviceLostClosureRust::drop`). Register
     /// once per device, share the flag.
     device_lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The adapter the device was made on, when this context made it
+    /// ([`Self::new`]); a device handed in ([`Self::from_existing`])
+    /// doesn't say.
+    adapter_info: Option<wgpu::AdapterInfo>,
 }
 
 impl GpuContext {
@@ -98,6 +102,7 @@ impl GpuContext {
             device: std::sync::Arc::new(device),
             queue: std::sync::Arc::new(queue),
             device_lost,
+            adapter_info: Some(adapter_info),
         })
     }
 
@@ -110,7 +115,14 @@ impl GpuContext {
         queue: std::sync::Arc<wgpu::Queue>,
     ) -> Self {
         let device_lost = register_device_callbacks(&device);
-        Self { device, queue, device_lost }
+        Self { device, queue, device_lost, adapter_info: None }
+    }
+
+    /// The adapter this context's device was made on: its name, driver
+    /// and backend, so a result tied to one GPU and driver can say which.
+    /// `None` for a device handed in by [`Self::from_existing`].
+    pub fn adapter_info(&self) -> Option<&wgpu::AdapterInfo> {
+        self.adapter_info.as_ref()
     }
 
     /// Cheap clone of the Arc-wrapped device.

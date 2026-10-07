@@ -14,6 +14,14 @@
 //! match. To record, with the legacy route still in the tree:
 //!
 //!     KLIPP_RECORD_LEGACY_GOLDENS="<why>" cargo test -p klipp-compose --test <name>
+//!
+//! The frames are a GPU's floats, and once the legacy route is deleted
+//! they can't be recorded again. So each `legacy-<name>.json` names the
+//! adapter and driver that drew them, and a test compares bit for bit
+//! only on that adapter and driver ([`exact`]). Anywhere else (another
+//! GPU, a driver update, no GPU at all) it compares within one display
+//! level per channel and says so with an `UNVERIFIED` line:
+//! [`matches_f32`], [`matches_f32_within`], [`matches_bytes`].
 
 #![allow(dead_code)]
 
@@ -53,6 +61,22 @@ pub struct LegacyGoldens {
     name: String,
     stored: BTreeMap<String, Vec<u8>>,
     recording: Option<(String, Vec<(String, Vec<u8>)>)>,
+    /// Whether this run's adapter and driver drew the stored frames.
+    exact: bool,
+}
+
+/// The adapter and driver this process draws on, as stored in a
+/// recording's header; `None` without a GPU.
+pub fn running_adapter() -> Option<serde_json::Value> {
+    let info = klipp_effects::gpu_context::GpuContext::shared()?.adapter_info()?;
+    Some(serde_json::json!({ "name": info.name, "driver": info.driver, "driver_info": info.driver_info, "backend": format!("{:?}", info.backend) }))
+}
+
+fn describe(adapter: Option<&serde_json::Value>) -> String {
+    match adapter {
+        Some(a) => format!("{} ({} {}, {})", a["name"].as_str().unwrap_or("?"), a["driver"].as_str().unwrap_or("?"), a["driver_info"].as_str().unwrap_or("?"), a["backend"].as_str().unwrap_or("?")),
+        None => "no GPU, or an unrecorded one".to_owned(),
+    }
 }
 
 impl LegacyGoldens {
@@ -63,7 +87,7 @@ impl LegacyGoldens {
         let name = name.to_owned();
         if let Ok(reason) = std::env::var("KLIPP_RECORD_LEGACY_GOLDENS") {
             assert!(!reason.trim().is_empty(), "say why the legacy frames are recorded again");
-            return Self { name, stored: BTreeMap::new(), recording: Some((reason, Vec::new())) };
+            return Self { name, stored: BTreeMap::new(), recording: Some((reason, Vec::new())), exact: true };
         }
         let m = manifest();
         assert_eq!(
@@ -86,7 +110,16 @@ impl LegacyGoldens {
                 (f["key"].as_str().unwrap().to_owned(), data[o..o + n].to_vec())
             })
             .collect();
-        Self { name, stored, recording: None }
+        let (recorded, running) = (doc.get("adapter").filter(|a| !a.is_null()).cloned(), running_adapter());
+        let exact = recorded.is_some() && recorded == running;
+        if !exact {
+            eprintln!(
+                "UNVERIFIED: bit-exactness for {name}: its legacy frames were drawn on {}, this run draws on {}; compared within one display level",
+                describe(recorded.as_ref()),
+                describe(running.as_ref())
+            );
+        }
+        Self { name, stored, recording: None, exact }
     }
 
     /// Whether this run records rather than checks.
@@ -127,8 +160,9 @@ impl LegacyGoldens {
         let commit = std::process::Command::new("git").args(["rev-parse", "--short=8", "HEAD"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
         let lines: Vec<String> = index.iter().map(|f| format!("    {f}")).collect();
         let text = format!(
-            "{{\n  \"recorded_on\": {},\n  \"route\": \"legacy (set_legacy_effects)\",\n  \"reason\": {},\n  \"frames\": [\n{}\n  ]\n}}\n",
+            "{{\n  \"recorded_on\": {},\n  \"route\": \"legacy (set_legacy_effects)\",\n  \"adapter\": {},\n  \"reason\": {},\n  \"frames\": [\n{}\n  ]\n}}\n",
             serde_json::json!(commit),
+            running_adapter().unwrap_or(serde_json::Value::Null),
             serde_json::json!(reason),
             lines.join(",\n")
         );
@@ -178,7 +212,9 @@ pub fn scope(name: &str) -> Scope {
 }
 
 /// The next legacy frame of the running test: drawn by `draw` and stored
-/// when recording, else the stored one.
+/// when recording, else the stored one. Keys are positions: a legacy
+/// render added in the middle of a test shifts every later one, so it
+/// needs a recording, which only the legacy route can make.
 pub fn legacy_bytes(draw: impl FnOnce() -> Vec<u8>) -> Vec<u8> {
     CURRENT.with(|c| {
         let mut c = c.borrow_mut();
@@ -192,4 +228,51 @@ pub fn legacy_bytes(draw: impl FnOnce() -> Vec<u8>) -> Vec<u8> {
 /// [`legacy_bytes`] for a linear f32 frame, stored bit for bit.
 pub fn legacy_f32(draw: impl FnOnce() -> Vec<f32>) -> Vec<f32> {
     f32_frame(&legacy_bytes(|| f32_bytes(&draw())))
+}
+
+/// Whether the running test compares bit for bit: it is recording, or
+/// this run's adapter and driver drew its stored frames.
+pub fn exact() -> bool {
+    CURRENT.with(|c| c.borrow().as_ref().is_none_or(|(g, _)| g.exact))
+}
+
+/// `v` as a display level: the sRGB curve, extended to negative and
+/// over-range values by its sign and slope, times 255.
+fn level(v: f32) -> f32 {
+    let a = v.abs();
+    let e = if a <= 0.003_130_8 { 12.92 * a } else { 1.055 * a.powf(1.0 / 2.4) - 0.055 };
+    e.copysign(v) * 255.0
+}
+
+/// The worst difference between two frames in display levels.
+pub fn worst_levels(new: &[f32], legacy: &[f32]) -> f32 {
+    new.iter().zip(legacy).map(|(a, b)| (level(*a) - level(*b)).abs()).fold(0.0, f32::max)
+}
+
+/// A plan-route frame against a stored legacy one: bit for bit when
+/// [`exact`], else within one display level per channel.
+pub fn matches_f32(new: &[f32], legacy: &[f32]) -> bool {
+    if exact() {
+        return new.len() == legacy.len() && new.iter().zip(legacy).all(|(a, b)| a.to_bits() == b.to_bits());
+    }
+    new.len() == legacy.len() && worst_levels(new, legacy) <= 1.0
+}
+
+/// [`matches_f32`] for a test that already allows `tol` between the
+/// routes on one adapter: within `tol` when [`exact`], else within one
+/// display level per channel.
+pub fn matches_f32_within(new: &[f32], legacy: &[f32], tol: f32) -> bool {
+    if exact() {
+        return new.len() == legacy.len() && new.iter().zip(legacy).all(|(a, b)| (a - b).abs() < tol);
+    }
+    new.len() == legacy.len() && worst_levels(new, legacy) <= 1.0
+}
+
+/// [`matches_f32`] for display bytes: equal when [`exact`], else within
+/// one level.
+pub fn matches_bytes(new: &[u8], legacy: &[u8]) -> bool {
+    if exact() {
+        return new == legacy;
+    }
+    new.len() == legacy.len() && new.iter().zip(legacy).all(|(a, b)| a.abs_diff(*b) <= 1)
 }

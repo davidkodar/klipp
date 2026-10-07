@@ -1,6 +1,7 @@
 {
   "recorded_on": "73e18f94",
   "route": "legacy (set_legacy_effects)",
+  "adapter": {"backend":"Vulkan","driver":"NVIDIA","driver_info":"610.57.04","name":"NVIDIA GeForce RTX 4080"},
   "reason": "phase 2b M2 step 11d-2: the legacy effects route's frames, recorded before 11d-3 deletes it",
   "frames": [
     {"key":"0","len":57600,"offset":0}

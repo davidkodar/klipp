@@ -19,7 +19,7 @@ use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, Track, TrackKind};
 // is held to them where it was held to a live legacy render.
 #[path = "support/legacy_goldens.rs"]
 mod legacy_goldens;
-use legacy_goldens::{legacy_bytes, scope};
+use legacy_goldens::{legacy_bytes, matches_bytes, scope};
 
 const W: u32 = 160;
 const H: u32 = 90;
@@ -120,7 +120,7 @@ fn both(name: &str, seq: &Sequence, src: &mut Pictures, plan_clips: u32) {
         frame
     });
     assert_eq!(followed, plan_clips, "{name}: the plan route was taken");
-    if new != legacy {
+    if !matches_bytes(&new, &legacy) {
         let worst = new.iter().zip(&legacy).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
         panic!("{name}: the plan route differs from the legacy one (worst {worst} levels)");
     }
