@@ -15,6 +15,8 @@ license.workspace = true
 # carries on, so it costs nothing where it cannot help.
 default = ["ai-ort", "ai-ort-cuda", "ai-candle"]
 ai-ort = ["klipp-ui/ai-ort"]
+# The control socket's test hooks (klipp-control): never in a release build.
+test-hooks = ["klipp-control/test-hooks"]
 ai-ort-cuda = ["klipp-ui/ai-ort-cuda"]
 ai-candle = ["klipp-ui/ai-candle"]
 ai-candle-cuda = ["klipp-ui/ai-candle-cuda"]

@@ -47,5 +47,11 @@ png = "0.18"
 klipp-document = { workspace = true }
 klipp-timeline = { workspace = true }
 
+[features]
+# The UI's effect commands over the socket (`effect_command`): live checks of
+# the UI's writers and M3's inspector parity checks. Off by default, never
+# in a release build.
+test-hooks = []
+
 [lints]
 workspace = true

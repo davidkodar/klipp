@@ -209,6 +209,20 @@ pub enum ControlCommand {
     /// session-scoped setting, so it shows there when set from here.
     SetAppendAudio { enabled: bool },
     SelectClip { clip_id: Option<String> },
+    /// A built-in effect command as the inspector sends it, by place in
+    /// the clip's list: for live checks of the UI's effect writers and
+    /// M3's inspector parity checks. Test hooks only (`test-hooks`), off by
+    /// default and never in a release build.
+    #[cfg(feature = "test-hooks")]
+    EffectCommand {
+        clip_id: String,
+        action: EffectAction,
+        #[serde(default)] index: usize,
+        /// The place a `reorder` moves it to.
+        #[serde(default)] to: usize,
+        /// The effect an `add`, `update` or drag step carries, as saved.
+        #[serde(default)] effect: Option<serde_json::Value>,
+    },
     /// Timeline → Detect Scene Cuts for a clip (#616): its picture changes
     /// found in the background and the clip split there with its linked
     /// sound, one undoable edit. Returns at once; the split shows on the
@@ -1296,3 +1310,24 @@ mod tests {
         assert!(matches!(ns.command, super::ControlCommand::NewSequence { width: 1080, height: 1920, .. }));
     }
 }
+
+/// What an `effect_command` does: the inspector's effect commands, a
+/// drag's begin, steps, end and abandon included.
+#[cfg(feature = "test-hooks")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectAction {
+    Add,
+    Remove,
+    Toggle,
+    Update,
+    Reorder,
+    DragBegin,
+    DragStep,
+    DragEnd,
+    DragAbandon,
+}
+
+#[cfg(feature = "test-hooks")]
+#[cfg(not(debug_assertions))]
+compile_error!("klipp-control's test-hooks are never in a release build");

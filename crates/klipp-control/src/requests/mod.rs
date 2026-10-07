@@ -34,17 +34,35 @@ mod routing_tests {
             .collect()
     }
 
+    /// The arm a test hook stands on, routed on its own line in `handle`.
+    const HOOK: &str = "        #[cfg(feature = \"test-hooks\")]";
+
     /// The variants an area's arms answer: each arm starts at the arm
-    /// indent, with `ControlCommand::` or a binding `name @ (`.
+    /// indent, with `ControlCommand::` or a binding `name @ (`. A test
+    /// hook's arm is checked on its own.
     fn answered(area: &str) -> BTreeSet<String> {
         let mut out = BTreeSet::new();
+        let mut hook = false;
         for line in area.lines() {
+            let after_hook = std::mem::replace(&mut hook, line == HOOK);
             let Some(arm) = line.strip_prefix("        ") else { continue };
+            if after_hook {
+                continue;
+            }
             if arm.starts_with("ControlCommand::") || (arm.contains(" @ (") && arm.contains("ControlCommand::")) {
                 out.extend(variants(arm.split("=>").next().unwrap_or(arm)));
             }
         }
         out
+    }
+
+    // The test hook (`effect_command`) is routed on its own line, behind
+    // its feature, to the area that answers it.
+    #[test]
+    fn the_test_hook_goes_to_the_area_that_answers_it() {
+        let lib = include_str!("../lib.rs");
+        assert!(lib.contains(&format!("{HOOK}\n        cmd @ ControlCommand::EffectCommand {{ .. }} => requests::editing::respond(ctx, cmd, collect),")));
+        assert!(include_str!("editing.rs").contains(&format!("{HOOK}\n        ControlCommand::EffectCommand {{")));
     }
 
     // `handle` routes each request to the area that answers it: a request
