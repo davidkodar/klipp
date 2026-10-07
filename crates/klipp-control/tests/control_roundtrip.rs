@@ -529,9 +529,16 @@ fn graph_test_edit_roundtrip(h: &mut Harness, ops: Value) {
     let mut clip = h.sequence.read().unwrap().tracks[0].clips[0].clone();
     let after = clip.picture_v2().unwrap().picture.clone();
     assert_ne!(before, after);
+    // Project persistence stores the fields and picture separately; Clip serde
+    // alone deliberately omits the truth. Exercise that same adoption boundary.
     let saved = serde_json::to_vec(&clip).unwrap();
-    let reopened: klipp_timeline::Clip = serde_json::from_slice(&saved).unwrap();
-    assert_eq!(reopened.picture_v2().unwrap().picture, after, "clip serialization retains the edit");
+    let stored_picture = serde_json::to_vec(&after).unwrap();
+    let versions = clip.picture_v2().unwrap().versions.clone();
+    let mut reopened: klipp_timeline::Clip = serde_json::from_slice(&saved).unwrap();
+    reopened.adopt_stored_picture(klipp_timeline::LiftedPicture {
+        picture: serde_json::from_slice(&stored_picture).unwrap(), versions,
+    }).unwrap();
+    assert_eq!(reopened.picture_v2().unwrap().picture, after, "stored picture retains the edit");
     let edit = h.edits_seen.lock().unwrap().last().unwrap().clone();
     let klipp_document::history::EditCommand::PictureEdit { edit, .. } = edit else { panic!("one picture edit") };
     clip.restore_picture(&edit.before);
