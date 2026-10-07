@@ -1,0 +1,86 @@
+//! Resolve a wire batch against a disposable copy, retaining caller op indices.
+
+use std::collections::BTreeMap;
+use klipp_graph_format::path::NodePath;
+use klipp_graph_lift::{ops::{GraphOp, apply_with_catalog}, paths::{Documents, resolve}};
+use klipp_timeline::RegistryCatalog;
+use crate::{graph_model, graph_wire::{GraphPath, GraphWireOp}};
+
+pub(crate) struct Prepared {
+    pub ops: Vec<GraphOp>,
+    pub source_indices: Vec<usize>,
+    pub created: BTreeMap<usize, NodePath>,
+}
+
+pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepared, (usize, String)> {
+    if wire.is_empty() || wire.len() > 64 { return Err((0, "a graph batch needs 1 to 64 operations".into())); }
+    let root = wire[0].path().root.root();
+    let mut result = Prepared { ops: Vec::new(), source_indices: Vec::new(), created: BTreeMap::new() };
+    for (index, item) in wire.iter().enumerate() {
+        let step = (|| -> Result<(), String> {
+            if item.path().root.root() != root { return Err("a batch edits one root".into()); }
+            let path = item.path().resolve(&result.created)?;
+            if path.nodes.is_empty() { return Err("an operation must name a node".into()); }
+            let mut initial_params = None;
+            let mut created = None;
+            let op = match item {
+                GraphWireOp::Add { r#type, params, label, .. } => {
+                    if params.len() > 64 { return Err("an add takes at most 64 initial parameters".into()); }
+                    let id = uuid::Uuid::new_v4();
+                    let node = graph_model::new_node(r#type, id, label.as_deref())?;
+                    if node.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT && label.as_ref().is_some_and(|s| !s.is_empty()) {
+                        return Err("effect labels are not preserved by the current clip model".into());
+                    }
+                    let mut target = path.clone();
+                    *target.nodes.last_mut().unwrap() = id;
+                    initial_params = Some((target.clone(), params));
+                    created = Some(target);
+                    GraphOp::AddNode { after: path, node: Box::new(node) }
+                }
+                GraphWireOp::Remove { .. } => GraphOp::RemoveNode { path },
+                GraphWireOp::Connect { from, from_port, to_port, .. } => GraphOp::Connect {
+                    from: from.resolve(&result.created)?, from_port: from_port.as_str().into(), to: path, to_port: to_port.as_str().into(),
+                },
+                GraphWireOp::Disconnect { port, .. } => GraphOp::Disconnect { to: path, port: port.as_str().into() },
+                GraphWireOp::Set { key, value, .. } => {
+                    let node = resolve(&docs, &path).map_err(|e| e.to_string())?;
+                    let value = graph_model::parameter(node, key, value)?;
+                    GraphOp::SetParam { path, key: key.as_str().into(), value }
+                }
+                GraphWireOp::Enable { enabled, .. } => GraphOp::SetEnabled { path, enabled: *enabled },
+                GraphWireOp::Mix { mix, .. } => {
+                    if mix.is_some_and(|m| !m.is_finite() || !(0.0..=1.0).contains(&m)) { return Err("mix must be finite and between 0 and 1, or null".into()); }
+                    GraphOp::SetMix { path, mix: *mix }
+                }
+                GraphWireOp::MaskChannel { channel, .. } => GraphOp::SetMaskChannel { path, channel: channel.clone() },
+                GraphWireOp::MoveAfter { after, .. } => {
+                    let mut sibling = item.path().clone();
+                    *sibling.nodes.last_mut().unwrap() = after.clone();
+                    let sibling = sibling.resolve(&result.created)?;
+                    GraphOp::MoveAfter { path, after: sibling.node().ok_or("move_after needs a sibling")? }
+                }
+            };
+            apply_with_catalog(&mut docs, &op, &RegistryCatalog)?;
+            result.ops.push(op);
+            result.source_indices.push(index);
+            if let Some((target, params)) = initial_params {
+                for (key, value) in params {
+                    let node = resolve(&docs, &target).map_err(|e| e.to_string())?;
+                    let value = graph_model::parameter(node, key, value)?;
+                    let op = GraphOp::SetParam { path: target.clone(), key: key.as_str().into(), value };
+                    apply_with_catalog(&mut docs, &op, &RegistryCatalog)?;
+                    result.ops.push(op);
+                    result.source_indices.push(index);
+                }
+            }
+            if let Some(path) = created { result.created.insert(index, path); }
+            Ok(())
+        })();
+        step.map_err(|why| (index, why))?;
+    }
+    Ok(result)
+}
+
+pub(crate) fn existing_path(path: &GraphPath) -> Result<NodePath, String> {
+    path.resolve(&BTreeMap::new())
+}

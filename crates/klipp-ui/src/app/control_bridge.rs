@@ -41,7 +41,7 @@ impl KlippApp {
                     } else if let Some(r) = env.expected_revision.filter(|r| *r != now) {
                         refused = Some(format!("the document is at revision {now}, the ops were checked at {r}; check them again"));
                     } else if let Err((at, why)) = self.apply_graph_ops(&ops, &label) {
-                        refused = Some(format!("op {at}: {why}"));
+                        refused = Some(why);
                         refused_op = Some(at);
                     }
                 }

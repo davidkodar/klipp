@@ -34,6 +34,7 @@ struct Harness {
     socket: std::path::PathBuf,
     next_id: u64,
     ack_delay_ms: Arc<std::sync::atomic::AtomicU64>,
+    commit_change: Arc<std::sync::atomic::AtomicU8>,
     /// Two clips, each with its own Corrector, and a node nested inside
     /// a Compound on the first — what the id checks are checked against.
     ids: Ids,
@@ -107,19 +108,32 @@ fn harness() -> Harness {
     let envelopes: Arc<Mutex<Vec<(bool, usize)>>> = Arc::new(Mutex::new(Vec::new()));
     let edits_seen: Arc<Mutex<Vec<klipp_document::history::EditCommand>>> = Arc::new(Mutex::new(Vec::new()));
     let ack_delay_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let commit_change = Arc::new(std::sync::atomic::AtomicU8::new(0));
     let shared = Arc::new(klipp_core::ControlShared::default());
     let media_pool = Arc::new(RwLock::new(klipp_media::MediaPool::new()));
+    let (sequence, ids) = sequence_with_two_clips();
+    let sequence = Arc::new(klipp_timeline::SharedSequence::new(sequence));
     {
         let (envelopes, shared, edits_seen) = (Arc::clone(&envelopes), Arc::clone(&shared), Arc::clone(&edits_seen));
         let media_pool = media_pool.clone();
         let delay = Arc::clone(&ack_delay_ms);
+        let sequence = Arc::clone(&sequence);
+        let commit_change = Arc::clone(&commit_change);
         std::thread::spawn(move || {
             for env in env_rx {
                 let ms = delay.load(std::sync::atomic::Ordering::Relaxed);
                 if ms > 0 { std::thread::sleep(std::time::Duration::from_millis(ms)); }
                 envelopes.lock().unwrap().push((env.batch, env.commands.len() + env.edits.len()));
+                // Inject a competing change after socket preflight, before
+                // this stand-in app thread checks the envelope guards.
+                match commit_change.swap(0, std::sync::atomic::Ordering::SeqCst) {
+                    1 => { shared.bump_revision(); }
+                    2 => { shared.project.lock().unwrap().identity += 1; }
+                    _ => {}
+                }
                 // A plan made for another revision is refused, as the UI does.
-                let refused = if let Some(want) = env.expected_project_identity {
+                let mut refused_op = None;
+                let mut refused = if let Some(want) = env.expected_project_identity {
                     if shared.project.lock().unwrap().identity != want {
                         Some(format!("project identity moved from {want}"))
                     } else {
@@ -133,6 +147,30 @@ fn harness() -> Harness {
                 });
                 if refused.is_none() {
                     for c in env.commands {
+                        if let klipp_core::AppCommand::GraphOps { ops, .. } = &c {
+                            // Stand-in app thread: use the production clip adapter;
+                            // the UI's own tests cover envelope exclusivity/undo dispatch.
+                            let mut seq = sequence.write().unwrap();
+                            let result = (|| {
+                                let root = ops.first().ok_or((0, "empty batch".to_owned()))?.path().root;
+                                let klipp_graph_format::path::Root::Clip { clip } = root else { return Err((0, "only clip roots are supported".into())); };
+                                let clip = seq.tracks.iter_mut().flat_map(|t| &mut t.clips).find(|c| c.id.0 == clip).ok_or((0, "no clip".to_owned()))?;
+                                let original = clip.clone();
+                                match clip.apply_picture_ops(ops) {
+                                    Ok(edit) => {
+                                        edits_seen.lock().unwrap().push(klipp_document::history::EditCommand::PictureEdit { clip_id: clip.id, description: "Graph Edit", edit: Box::new(edit) });
+                                        Ok(())
+                                    }
+                                    Err(why) => {
+                                        let at = (0..ops.len()).find(|&i| original.clone().apply_picture_ops(&ops[..=i]).is_err()).unwrap_or(0);
+                                        Err((at, why))
+                                    }
+                                }
+                            })();
+                            // Match control_bridge: the index travels only in
+                            // refused_op; prose must not name the expanded op.
+                            if let Err((at, why)) = result { refused_op = Some(at); refused = Some(why); }
+                        }
                         if let klipp_core::AppCommand::ImportMediaWithAnalysis { path, analyze: false } = &c {
                             let bytes = std::fs::read(path).expect("synthesized WAV exists before import");
                             assert_eq!(&bytes[..4], b"RIFF");
@@ -168,7 +206,7 @@ fn harness() -> Harness {
                 }
                 let revision = if refused.is_none() { shared.bump_revision() } else { shared.revision() };
                 if let Some(ack) = env.ack {
-                    let _ = ack.send(klipp_document::control::ControlAck { revision, refused, refused_op: None });
+                    let _ = ack.send(klipp_document::control::ControlAck { revision, refused, refused_op });
                 }
             }
         });
@@ -186,8 +224,6 @@ fn harness() -> Harness {
     // two Correctors are indistinguishable except by id, so a caller
     // reaching for the wrong one is an easy mistake to make and used to
     // be an impossible one to notice.
-    let (sequence, ids) = sequence_with_two_clips();
-    let sequence = Arc::new(klipp_timeline::SharedSequence::new(sequence));
     let frame_buffer = Arc::new(Mutex::new(fb));
     let ctx = ControlContext {
         commands: env_tx,
@@ -210,7 +246,7 @@ fn harness() -> Harness {
         match UnixStream::connect(&sock) {
             Ok(stream) => {
                 let reader = BufReader::new(stream.try_clone().expect("clone"));
-                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, edits_seen, shared, media_pool, sequence, log, socket: sock, next_id: 0, ack_delay_ms, ids };
+                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, edits_seen, shared, media_pool, sequence, log, socket: sock, next_id: 0, ack_delay_ms, commit_change, ids };
             }
             Err(e) => {
                 last_err = Some(e);
@@ -280,6 +316,199 @@ fn sequence_with_two_clips() -> (klipp_timeline::Sequence, Ids) {
     track.clips = vec![clip_a, clip_b];
     seq.tracks = vec![track];
     (seq, ids)
+}
+
+#[test]
+fn graph_batches_cross_the_socket_once_and_name_created_nodes() {
+    let mut h = harness();
+    let root = json!({"clip":h.ids.clip_a});
+    let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let group = graph["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.group").unwrap()["id"].clone();
+    let after = json!({"root":root,"nodes":[group,h.ids.corrector_a]});
+    let new = json!({"root":root,"nodes":[group,{"new":0}]});
+    let before = h.sequence.read().unwrap().tracks[0].clips[0].clone();
+    let reply = h.ok(json!({"method":"graph_ops","expected_revision":graph["revision"],"expected_project_identity":graph["project_identity"],"ops":[
+        {"op":"add","after":after,"type":"klipp.grade.exposure","params":{"exposure":0.5}},
+        {"op":"set","path":new,"key":"exposure","value":1.25},
+        {"op":"enable","path":new,"enabled":false}
+    ]}));
+    assert_eq!(reply["applied"], true);
+    assert_eq!(reply["revision"].as_u64().unwrap(), graph["revision"].as_u64().unwrap() + 1);
+    let path = reply["created"][0]["path"].clone();
+    let read = h.ok(json!({"method":"graph_read","path":path}));
+    assert_eq!(read["nodes"][0]["type"], "klipp.grade.exposure");
+    assert_eq!(read["nodes"][0]["params"]["exposure"], 1.25);
+    assert_eq!(read["nodes"][0]["enabled"], false);
+    assert_eq!(h.edits_seen.lock().unwrap().len(), 1);
+    let edit = h.edits_seen.lock().unwrap()[0].clone();
+    let klipp_document::history::EditCommand::PictureEdit { edit, .. } = edit else { panic!("one picture edit") };
+    let mut clip = h.sequence.read().unwrap().tracks[0].clips[0].clone();
+    let after = clip.picture_v2().unwrap().picture.clone();
+    clip.restore_picture(&edit.before);
+    assert_eq!(clip.picture_v2().unwrap().picture, before.picture_v2().unwrap().picture);
+    clip.restore_picture(&edit.after);
+    assert_eq!(clip.picture_v2().unwrap().picture, after);
+}
+
+#[test]
+fn graph_preflight_refusal_and_stale_guards_leave_the_picture_unchanged() {
+    let mut h = harness();
+    let root = json!({"clip":h.ids.clip_a});
+    let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let group = graph["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.group").unwrap()["id"].clone();
+    let path = json!({"root":root,"nodes":[group,h.ids.corrector_a]});
+    let before = h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture.clone();
+    let refused = h.call(json!({"method":"graph_ops","ops":[
+        {"op":"set","path":path,"key":"exposure","value":1.0},
+        {"op":"set","path":path,"key":"exposure","value":"wrong"}
+    ]}));
+    assert_eq!(refused["ok"], false);
+    assert_eq!(refused["op_index"], 1);
+    assert!(refused["error"].as_str().unwrap().contains("Float"));
+    for guard in ["expected_revision", "expected_project_identity"] {
+        let mut request = json!({"method":"graph_ops","ops":[{"op":"enable","path":path,"enabled":false}]});
+        request[guard] = json!(u64::MAX);
+        assert_eq!(h.call(request)["ok"], false);
+    }
+    assert!(h.edits_seen.lock().unwrap().is_empty());
+    assert_eq!(h.shared.revision(), graph["revision"].as_u64().unwrap());
+    assert_eq!(h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture, before);
+}
+
+#[test]
+fn graph_commit_guards_are_sent_even_when_the_caller_omits_them() {
+    let mut h = harness();
+    let root = json!({"clip":h.ids.clip_a});
+    let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let group = graph["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.group").unwrap()["id"].clone();
+    let path = json!({"root":root,"nodes":[group,h.ids.corrector_a]});
+    let before = h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture.clone();
+    for change in [1,2] {
+        let revision = h.shared.revision();
+        h.commit_change.store(change, std::sync::atomic::Ordering::SeqCst);
+        let refused = h.call(json!({"method":"graph_ops","ops":[{"op":"enable","path":path,"enabled":false}]}));
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert!(refused["result"]["operation_id"].is_string(), "the envelope reached the app thread");
+        assert_eq!(h.shared.revision(), revision + u64::from(change == 1), "only the competing edit may bump the revision");
+    }
+    assert!(h.edits_seen.lock().unwrap().is_empty());
+    assert_eq!(h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture, before);
+}
+
+#[test]
+fn graph_effect_persistence_refusals_map_expanded_indices_and_change_nothing() {
+    let mut h = harness();
+    let root = json!({"clip":h.ids.clip_a});
+    let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let display = graph["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.colour.scene_to_display").unwrap()["id"].clone();
+    let after = json!({"root":root,"nodes":[display]});
+    let new = json!({"root":root,"nodes":[{"new":0}]});
+    let before = h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture.clone();
+    for refused_op in [json!({"op":"mix","path":new,"mix":0.75}), json!({"op":"mask_channel","path":new,"channel":"alpha"})] {
+        let refused = h.call(json!({"method":"graph_ops","ops":[
+            {"op":"add","after":after,"type":"klipp.fx.gaussian_blur","params":{"radius":3.0}},
+            refused_op
+        ]}));
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert_eq!(refused["op_index"], 1, "expanded initial params must not shift the caller's index: {refused}");
+        assert!(!refused["error"].as_str().unwrap().starts_with("op "), "the prose must not contradict the caller's index: {refused}");
+        let operation = refused["result"]["operation_id"].as_str().expect("app-thread refusal");
+        let status = h.ok(json!({"method":"operation_status","operation_id":operation}));
+        assert_eq!(status["op_index"], 1);
+        assert_eq!(status["state"], "refused");
+        assert_eq!(status["reason"], refused["error"]);
+    }
+    assert!(h.edits_seen.lock().unwrap().is_empty());
+    assert_eq!(h.shared.revision(), graph["revision"].as_u64().unwrap());
+    assert_eq!(h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture, before);
+}
+
+#[test]
+fn graph_misspelled_top_level_fields_never_reach_the_app() {
+    let mut h = harness();
+    let path = json!({"root":{"clip":h.ids.clip_a},"nodes":[]});
+    for (method, field) in [("graph_ops", "expected_revison"), ("graph_ops", "expected_project_identty"), ("graph_read", "depht")] {
+        let mut request = if method == "graph_ops" {
+            json!({"method":method,"ops":[{"op":"enable","path":path,"enabled":false}]})
+        } else { json!({"method":method,"path":path}) };
+        request[field] = json!(0);
+        let refused = h.call(request);
+        assert_eq!(refused["ok"],false);
+        assert!(refused["error"].as_str().unwrap().contains(field), "{refused}");
+    }
+    assert!(h.envelopes.lock().unwrap().is_empty());
+    assert!(h.edits_seen.lock().unwrap().is_empty());
+    assert_eq!(h.shared.revision(),0);
+}
+
+#[test]
+fn graph_add_refuses_effect_labels_and_matte_splices_without_partial_edits() {
+    let mut h = harness();
+    let root = json!({"clip":h.ids.clip_a});
+    let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let nodes = graph["nodes"].as_array().unwrap();
+    let group = nodes.iter().find(|n| n["type"] == "klipp.group").unwrap()["id"].clone();
+    let display = nodes.iter().find(|n| n["type"] == "klipp.colour.scene_to_display").unwrap()["id"].clone();
+    for op in [
+        json!({"op":"add","after":{"root":root,"nodes":[display]},"type":"klipp.fx.gaussian_blur","label":"not retained"}),
+        json!({"op":"add","after":{"root":root,"nodes":[group,h.ids.corrector_a]},"type":"klipp.grade.mask"}),
+    ] {
+        let refused = h.call(json!({"method":"graph_ops","ops":[op]}));
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert_eq!(refused["op_index"], 0);
+        eprintln!("current add refusal: {}", refused["error"]);
+    }
+    assert!(h.edits_seen.lock().unwrap().is_empty());
+    assert_eq!(h.shared.revision(), graph["revision"].as_u64().unwrap());
+}
+
+#[test]
+fn graph_wiring_reordering_and_removal_use_catalog_ports_and_one_edit_each() {
+    let mut h = harness();
+    let mask_id = uuid::Uuid::new_v4();
+    {
+        let mut seq = h.sequence.write().unwrap();
+        let clip = &mut seq.tracks[0].clips[0];
+        let mut grade = clip.grade().clone();
+        grade.nodes.push(klipp_nodes::Node { id:mask_id, kind:klipp_nodes::NodeKind::Mask, label:"Window".into(), enabled:true, params:Default::default(), keyframes:Default::default(), output_link:None, input_links:Vec::new() });
+        clip.set_grade(grade);
+    }
+    let root = json!({"clip":h.ids.clip_a});
+    let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let group = graph["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.group").unwrap();
+    let group_id = group["id"].clone();
+    let input = group["body"]["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.group.input").unwrap()["id"].clone();
+    let path = |id: Value| json!({"root":root,"nodes":[group_id,id]});
+    let corrector = path(json!(h.ids.corrector_a));
+    let mask = path(json!(mask_id));
+    let types = h.ok(json!({"method":"node_types","category":"Grade"}));
+    let port = types["types"].as_array().unwrap().iter().find(|n| n["tag"] == "Mask").unwrap()["outputs"][0]["key"].clone();
+    let add = h.ok(json!({"method":"graph_ops","ops":[{"op":"add","after":corrector,"type":"klipp.grade.exposure"}]}));
+    let added = add["created"][0]["path"].clone();
+    for op in [
+        json!({"op":"connect","from":mask,"from_port":port,"to":corrector,"to_port":"mask"}),
+        json!({"op":"disconnect","to":corrector,"port":"mask"}),
+        json!({"op":"move_after","path":added,"after":input}),
+        json!({"op":"remove","path":added}),
+    ] {
+        let count = h.edits_seen.lock().unwrap().len();
+        let revision = h.shared.revision();
+        let before = h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture.clone();
+        let result = h.ok(json!({"method":"graph_ops","ops":[op]}));
+        assert_eq!(result["applied"], true);
+        assert_eq!(h.shared.revision(), revision + 1);
+        assert_eq!(h.edits_seen.lock().unwrap().len(), count + 1);
+        let mut clip = h.sequence.read().unwrap().tracks[0].clips[0].clone();
+        let after = clip.picture_v2().unwrap().picture.clone();
+        assert_ne!(after, before, "the op changes the graph");
+        let edit = h.edits_seen.lock().unwrap().last().unwrap().clone();
+        let klipp_document::history::EditCommand::PictureEdit { edit, .. } = edit else { panic!("one picture edit") };
+        clip.restore_picture(&edit.before);
+        assert_eq!(clip.picture_v2().unwrap().picture, before);
+        clip.restore_picture(&edit.after);
+        assert_eq!(clip.picture_v2().unwrap().picture, after);
+    }
+    assert_eq!(h.call(json!({"method":"graph_read","path":added}))["ok"], false);
 }
 
 /// One test, not several: the socket path comes from a process-global

@@ -349,6 +349,24 @@ pub(crate) fn send_full_envelope_for_project(
     expected_project_identity: Option<u64>,
     label: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    send_with_reply(ctx, commands, edits, batch, EnvelopeReply { expected_revision, expected_project_identity, label, source_indices: None })
+}
+
+pub(crate) struct EnvelopeReply {
+    pub expected_revision: Option<u64>,
+    pub expected_project_identity: Option<u64>,
+    pub label: Option<String>,
+    pub source_indices: Option<Vec<usize>>,
+}
+
+pub(crate) fn send_with_reply(
+    ctx: &ControlContext,
+    commands: Vec<AppCommand>,
+    edits: Vec<klipp_document::history::EditCommand>,
+    batch: bool,
+    reply: EnvelopeReply,
+) -> Result<serde_json::Value, String> {
+    let EnvelopeReply { expected_revision, expected_project_identity, label, source_indices } = reply;
     // Read the generation *before* queueing, so any frame rendered in
     // response to this command is guaranteed to be newer than it.
     let generation = ctx
@@ -375,8 +393,12 @@ pub(crate) fn send_full_envelope_for_project(
     (ctx.wake_ui)();
     match rx.recv_timeout(ACK_TIMEOUT) {
         Ok(ack) => {
-            operations::finished(&operation_id, ack.revision, ack.refused.clone());
+            let op_index = ack.refused_op.and_then(|at| source_indices.as_ref().and_then(|indices| indices.get(at)).copied());
+            operations::finished_at_op(&operation_id, ack.revision, ack.refused.clone(), op_index);
             if let Some(why) = ack.refused {
+                if source_indices.is_some() {
+                    return Ok(json!({"accepted":false,"applied":false,"operation_id":operation_id,"revision":ack.revision,"op_index":op_index,"why":why}));
+                }
                 return Err(format!("not applied (operation {operation_id}): {why}"));
             }
             Ok(json!({
@@ -392,7 +414,10 @@ pub(crate) fn send_full_envelope_for_project(
             let pending_id = operation_id.clone();
             let shared = Arc::clone(&ctx.shared);
             std::thread::spawn(move || match rx.recv() {
-                Ok(ack) => operations::finished(&pending_id, ack.revision, ack.refused),
+                Ok(ack) => {
+                    let op_index = ack.refused_op.and_then(|at| source_indices.as_ref().and_then(|indices| indices.get(at)).copied());
+                    operations::finished_at_op(&pending_id, ack.revision, ack.refused, op_index);
+                }
                 Err(_) => operations::finished(&pending_id, shared.revision(), Some("UI acknowledgement channel closed".into())),
             });
             Ok(json!({

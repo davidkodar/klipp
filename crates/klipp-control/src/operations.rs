@@ -21,6 +21,7 @@ struct Outcome {
     finished_at_ms: Option<u128>,
     revision: Option<u64>,
     reason: Option<String>,
+    op_index: Option<usize>,
     background_job: Option<&'static str>,
 }
 
@@ -96,6 +97,7 @@ pub(crate) fn queued(background_job: Option<&'static str>) -> String {
             finished_at_ms: None,
             revision: None,
             reason: None,
+            op_index: None,
             background_job,
         },
     );
@@ -105,6 +107,10 @@ pub(crate) fn queued(background_job: Option<&'static str>) -> String {
 }
 
 pub(crate) fn finished(id: &str, revision: u64, reason: Option<String>) {
+    finished_at_op(id, revision, reason, None);
+}
+
+pub(crate) fn finished_at_op(id: &str, revision: u64, reason: Option<String>, op_index: Option<usize>) {
     let (lock, _) = registry();
     let mut registry = lock.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(outcome) = registry.outcomes.get_mut(id) {
@@ -123,6 +129,7 @@ pub(crate) fn finished(id: &str, revision: u64, reason: Option<String>) {
         outcome.finished_at_ms = Some(now);
         outcome.revision = Some(revision);
         outcome.reason = reason;
+        outcome.op_index = op_index;
     }
     prune(&mut registry);
 }
@@ -144,6 +151,7 @@ pub(crate) fn status(id: &str) -> Result<Value, String> {
         "finished_at_ms": outcome.finished_at_ms,
         "revision": outcome.revision,
         "reason": outcome.reason,
+        "op_index": outcome.op_index,
         "progress": null,
         "completion_scope": "ui_command",
         "background_job": outcome.background_job,
@@ -277,6 +285,18 @@ fn unknown(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_late_graph_refusal_retains_the_callers_operation_index() {
+        let id = queued(None);
+        assert_eq!(status(&id).unwrap()["state"], "queued");
+        finished_at_op(&id, 17, Some("mask binding cannot be saved yet".into()), Some(3));
+        let outcome = status(&id).unwrap();
+        assert_eq!(outcome["state"], "refused");
+        assert_eq!(outcome["revision"], 17);
+        assert_eq!(outcome["op_index"], 3);
+        assert_eq!(outcome["reason"], "mask binding cannot be saved yet");
+    }
 
     /// #693: an operation id carries its launch. One from before Klipp
     /// last started says so; one of this run's, or any other id, is

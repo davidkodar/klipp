@@ -2944,6 +2944,8 @@ dependencies = [
  "klipp-document",
  "klipp-effects",
  "klipp-engine",
+ "klipp-graph-format",
+ "klipp-graph-lift",
  "klipp-media",
  "klipp-ml",
  "klipp-nodes",
