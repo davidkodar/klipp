@@ -160,13 +160,22 @@ fn blend_of(picture: &ClipPicture, node: &Node) -> Option<Blend> {
         return None;
     }
     // A lifted mask edge with no channel reads red (the migrated read); a
-    // new one is given its channel when it is made.
-    let channel = match node.params.get(&klipp_graph_format::ParamKey::from("mask.channel")) {
-        Some(klipp_graph_format::ParamValue::Text(c)) => c.parse().unwrap_or(MaskChannel::Red),
-        _ => MaskChannel::Red,
+    // new one is given its channel when it is made. A channel this Klipp
+    // doesn't know isn't read as another: the mask can't be given.
+    let (channel, unknown) = match node.params.get(&klipp_graph_format::ParamKey::from("mask.channel")) {
+        None => (MaskChannel::Red, None),
+        Some(klipp_graph_format::ParamValue::Text(c)) => match c.parse() {
+            Ok(channel) => (channel, None),
+            Err(_) => (MaskChannel::Red, Some(format!("its mask channel {c:?} isn't one this Klipp reads"))),
+        },
+        Some(other) => (MaskChannel::Red, Some(format!("its mask channel {other:?} isn't a channel's name"))),
     };
     let blend = klipp_nodes::params::EffectBlend { mix: node.mix.unwrap_or(1.0), channel };
-    Some(Blend { blend, mask: edge.map(|e| mask_source(picture, &e.from.0, e.from.1.as_str())) })
+    let mask = edge.map(|e| match &unknown {
+        Some(why) => MaskSource::Unavailable(why.clone()),
+        None => mask_source(picture, &e.from.0, e.from.1.as_str()),
+    });
+    Some(Blend { blend, mask })
 }
 
 /// Where the matte an edge from `from`'s `port` brings comes from.
@@ -176,7 +185,8 @@ fn mask_source(picture: &ClipPicture, from: &NodeId, port: &str) -> MaskSource {
         return MaskSource::Unavailable(format!("{from} isn't in the clip's picture"));
     };
     let kind_of = |n: &Node| n.legacy.as_ref().and_then(|l| l.payload.get("kind")).and_then(serde_json::Value::as_str).unwrap_or("").to_owned();
-    let index = |n: &Node, key: &str| klipp_graph_format::ports::output_index(&kind_of(n), &key.into()).unwrap_or(0);
+    // An output this kind doesn't have isn't read as its first.
+    let index = |n: &Node, key: &str| klipp_graph_format::ports::output_index(&kind_of(n), &key.into()).ok_or_else(|| format!("{} has no output {key}", n.id));
     if producer.type_id.as_str() == lt::GROUP {
         let Some(body) = producer.group.as_ref() else { return MaskSource::Unavailable("the grade group has no body".into()) };
         let Some(published) = body.interface.iter().find(|p| p.key.as_str() == port) else {
@@ -185,7 +195,10 @@ fn mask_source(picture: &ClipPicture, from: &NodeId, port: &str) -> MaskSource {
         let Some(inner) = body.graph.nodes.iter().find(|n| n.id == published.binding.node) else {
             return MaskSource::Unavailable(format!("the grade's {port} is bound to {}, which isn't in it", published.binding.node));
         };
-        return MaskSource::Grade { node: inner.id, port: index(inner, published.binding.port.as_str()) };
+        return match index(inner, published.binding.port.as_str()) {
+            Ok(port) => MaskSource::Grade { node: inner.id, port },
+            Err(why) => MaskSource::Unavailable(why),
+        };
     }
     if chain(picture).is_ok_and(|c| c.iter().any(|n| n.id == producer.id)) {
         return MaskSource::Unavailable(format!("{} is in the clip's chain, not beside it", producer.id));
@@ -198,8 +211,12 @@ fn mask_source(picture: &ClipPicture, from: &NodeId, port: &str) -> MaskSource {
         Some((n, key)) => return MaskSource::Unavailable(format!("{} reads {} {key}, which the renderer can't give it", producer.id, n.id)),
         None => SideInput::Source,
     };
+    let port = match index(producer, port) {
+        Ok(port) => port,
+        Err(why) => return MaskSource::Unavailable(why),
+    };
     match side_node(producer) {
-        Ok(node) => MaskSource::Side { node: Box::new(node), port: index(producer, port), input },
+        Ok(node) => MaskSource::Side { node: Box::new(node), port, input },
         Err(why) => MaskSource::Unavailable(format!("{}: {why}", producer.id)),
     }
 }

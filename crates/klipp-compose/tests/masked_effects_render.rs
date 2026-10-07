@@ -294,3 +294,35 @@ fn a_mask_the_renderer_cannot_give_leaves_its_effect_bypassed() {
         assert!(worst <= 1, "gpu {gpu_on}: the bypassed effect leaves the graded picture ({worst} levels)");
     }
 }
+
+/// A file whose masked effect names a channel this Klipp doesn't read, or
+/// reads an output its producer hasn't: neither is read as another (red,
+/// the first output); the effect is bypassed, said and counted.
+#[test]
+fn an_unknown_channel_or_output_leaves_the_effect_bypassed() {
+    let seq = masked(Window::InTheGrade);
+    let c = &seq.tracks[0].clips[0];
+    let (graded_clip, _) = clip(vec![], Window::InTheGrade);
+    let graded = render(&mut renderer(false), &sequence(graded_clip), Inspect::default()).0;
+    let edits: [(&str, Box<dyn Fn(&mut klipp_graph_format::lifted::ClipPicture)>); 2] = [
+        ("an unknown channel", Box::new(|p| {
+            let fx = p.graph.nodes.iter_mut().find(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT).unwrap();
+            fx.params.insert("mask.channel".into(), klipp_graph_format::ParamValue::Text("purple".into()));
+        })),
+        ("an output the window hasn't", Box::new(|p| {
+            let g = p.graph.nodes.iter_mut().find(|n| n.type_id.as_str() == lt::GROUP).unwrap();
+            g.group.as_mut().unwrap().interface[0].binding.port = "nowhere".into();
+        })),
+    ];
+    for (what, edit) in edits {
+        let mut stored = (*c.picture_v2().unwrap()).clone();
+        edit(&mut stored.picture);
+        let (mut read, _) = clip(vec![blur()], Window::InTheGrade);
+        read.id = c.id;
+        read.set_grade(c.grade().clone());
+        read.adopt_stored_picture(stored).unwrap();
+        let (out, stats) = render(&mut renderer(false), &sequence(read), Inspect::default());
+        assert_eq!(stats.effects_mask_unavailable, 1, "{what}: counted");
+        assert!(worst_levels(&out, &graded) <= 1, "{what}: bypassed, the graded picture");
+    }
+}
