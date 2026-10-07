@@ -388,3 +388,88 @@ fn a_saved_grade_never_holds_the_display_step() {
     assert!(saved.contains("Exposure"), "the grade was serialised");
     assert!(!saved.contains("SceneToDisplay"), "the display step stayed out of the saved grade");
 }
+
+/// The built-in invert plug-in keeps its host in a process-wide pointer,
+/// so the tests that load it take turns.
+static PLUGIN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// A renderer whose plug-in host holds the built-in invert plug-in.
+fn renderer_with_invert(legacy: bool) -> Renderer {
+    let mut host = klipp_plugin::OfxHost::new();
+    let at = host.register_raw_plugin(klipp_plugin::test_plugin::create_test_plugin_raw());
+    host.initialise_plugin(at).expect("the invert plug-in loads");
+    let mut r = Renderer::new(host, klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(true);
+    r.set_legacy_effects(legacy);
+    r
+}
+
+/// `seq`'s first clip with the built-in invert plug-in on.
+fn with_invert(mut seq: Sequence) -> Sequence {
+    seq.tracks[0].clips[0].set_ofx_effects(vec![klipp_plugin::AppliedEffect {
+        plugin_name: "com.klipp.test.Invert".into(),
+        enabled: true,
+        ..Default::default()
+    }]);
+    seq
+}
+
+/// Step 11c-2: a clip with a plug-in runs its grade as a plan, the
+/// plug-in on the CPU after it, and its effects as a plan of their own
+/// after the plug-in, and draws what the legacy route draws: the same
+/// plug-in on the same picture, then the same shaders. A scene-referred
+/// clip takes its display step in the grade's plan. The plug-in really
+/// runs: the frame differs from the clip without it.
+#[test]
+fn a_clip_with_a_plugin_runs_its_effects_as_a_plan_after_it() {
+    let _turn = PLUGIN.lock().unwrap_or_else(|e| e.into_inner());
+    let mut fx = colour_family();
+    fx.push(E::GaussianBlur { radius: 2.0 });
+    let seq = with_invert(graded(fx.clone()));
+    let mut cases: Vec<(&str, Option<klipp_color::hdr::HdrTransfer>)> = vec![("SDR", None)];
+    cases.extend(transfers().iter().map(|(n, t)| (*n, Some(*t))));
+    for (name, transfer) in cases {
+        let run = |legacy: bool, seq: &Sequence| {
+            let mut r = renderer_with_invert(legacy);
+            let opts = RenderOptions::default();
+            let (out, found) = match transfer {
+                Some(t) => r.render_inspected(seq, tc(1.0), W, H, &mut Scene(t), opts, Inspect::default()),
+                None => r.render_inspected(seq, tc(1.0), W, H, &mut Chart, opts, Inspect::default()),
+            };
+            assert_eq!(found.stats.effects_fallback_lists, 0, "every plan list came from the picture");
+            (out, found.stats.effects_after_plugins, found.stats.effects_followed_grade)
+        };
+        let (new, after, followed) = run(false, &seq);
+        let (legacy, legacy_after, _) = run(true, &seq);
+        assert_eq!(legacy_after, 0, "{name}: the legacy route runs no plan after the plug-in");
+        assert_eq!(followed, 0, "{name}: a plug-in's clip never splices its effects into the grade");
+        if after == 0 {
+            assert!(!required(), "{name}: required, but the effects after the plug-in did not run as a plan");
+            eprintln!("UNVERIFIED: no GPU route");
+            return;
+        }
+        assert_eq!(after, 1, "{name}");
+        let worst = new.iter().zip(&legacy).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        eprintln!("{name}: plan after the plug-in vs legacy: worst {worst}");
+        assert!(new.iter().map(|v| v.to_bits()).eq(legacy.iter().map(|v| v.to_bits())), "{name}: differs from the legacy route by {worst}");
+        let (plain, _, _) = run(false, &graded(fx.clone()));
+        assert!(plain != new, "{name}: the plug-in changes the picture");
+    }
+}
+
+/// The legacy route takes a plug-in's clip whose effects can't be applied
+/// after it (a lost device's refusal): never drawn without them.
+#[test]
+fn effects_after_a_plugin_that_cannot_be_applied_take_the_legacy_route() {
+    let _turn = PLUGIN.lock().unwrap_or_else(|e| e.into_inner());
+    let seq = with_invert(graded(colour_family()));
+    let mut r = renderer_with_invert(false);
+    if let Some(g) = r.executor().gpu_pipeline_or_init() {
+        g.refuse_recording(true);
+    }
+    let (refused, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default());
+    assert_eq!(found.stats.effects_after_plugins, 0, "nothing ran as a plan");
+    let mut l = renderer_with_invert(true);
+    let (legacy, _) = l.render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default());
+    assert!(refused.iter().zip(&legacy).all(|(a, b)| (a - b).abs() < 1e-4), "the legacy route's picture, effects in it");
+}

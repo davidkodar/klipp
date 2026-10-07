@@ -494,3 +494,32 @@ fn a_node_beside_waits_for_its_input_until_the_batch_ends() {
     both.apply_picture_ops(&[beside, fed]).unwrap_or_else(|e| panic!("the batch connects it: {e}"));
     assert!(klipp_timeline::GradeAccess::grade(&both).nodes.iter().any(|n| n.id == second.id), "the second corrector is in the grade");
 }
+
+/// A clip's plug-ins run between its grade and its built-in effects, and
+/// the picture can't put an effect before them until plug-ins are nodes
+/// (step 11c-2 relies on the order): an effect added after the grade or
+/// the display step, ahead of the plug-in, is refused and changes nothing.
+/// After the plug-in it lands, as the first of the effects.
+#[test]
+fn an_effect_is_never_placed_before_a_plugin() {
+    let mut c = clip();
+    c.set_ofx_effects(vec![klipp_plugin::AppliedEffect { plugin_name: "com.klipp.test.Invert".into(), enabled: true, ..Default::default() }]);
+    let p = picture(&c);
+    let find = |t: &str| p.graph.nodes.iter().find(|n| n.type_id.as_str() == t).unwrap_or_else(|| panic!("a {t} node")).id;
+    let (group, display, ofx) = (find(lt::GROUP), find(lt::SCENE_TO_DISPLAY), find(types::LEGACY_OFX));
+    let before = saved(&c);
+    for (what, after) in [("the grade", group), ("the display step", display)] {
+        let err = c.clone().apply_picture_ops(&[GraphOp::AddNode { after: at(&c, [after]), node: new_effect(0xa0, &E::Gamma { gamma: 1.2 }, BTreeMap::new()) }]).unwrap_err();
+        eprintln!("after {what}: {err}");
+        let mut tried = c.clone();
+        let _ = tried.apply_picture_ops(&[GraphOp::AddNode { after: at(&c, [after]), node: new_effect(0xa0, &E::Gamma { gamma: 1.2 }, BTreeMap::new()) }]);
+        assert_eq!(saved(&tried), before, "after {what}: nothing changed");
+    }
+    // Moving an effect there is refused the same way.
+    let first = effects(&p)[0];
+    assert!(c.clone().apply_picture_ops(&[GraphOp::MoveAfter { path: at(&c, [first]), after: group }]).is_err(), "an effect moved before the plug-in");
+    // After the plug-in is where effects go.
+    let mut ok = c.clone();
+    ok.apply_picture_ops(&[GraphOp::AddNode { after: at(&c, [ofx]), node: new_effect(0xa1, &E::Gamma { gamma: 1.2 }, BTreeMap::new()) }]).unwrap();
+    assert!(matches!(ok.builtin_effects()[0], E::Gamma { .. }), "the added effect leads the list: {:?}", ok.builtin_effects());
+}
