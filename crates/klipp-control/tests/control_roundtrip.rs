@@ -401,7 +401,9 @@ fn graph_mask_shapes_set_atomically_and_refuse_invalid_values() {
     assert_eq!(applied["revision"].as_u64().unwrap(), added["revision"].as_u64().unwrap()+1);
     assert_eq!(h.edits_seen.lock().unwrap().len(),2);
     let read = h.ok(json!({"method":"graph_read","path":path}));
-    assert_eq!(read["nodes"][0]["params"]["masks"], shapes);
+    let stored: klipp_core::MaskStack = serde_json::from_value(read["nodes"][0]["params"]["masks"].clone()).unwrap();
+    let expected: klipp_core::MaskStack = serde_json::from_value(shapes.clone()).unwrap();
+    assert_eq!(stored, expected);
     let edit = h.edits_seen.lock().unwrap()[1].clone();
     let klipp_document::history::EditCommand::PictureEdit { edit, .. } = edit else { panic!("one mask edit") };
     let mut clip = h.sequence.read().unwrap().tracks[0].clips[0].clone();
