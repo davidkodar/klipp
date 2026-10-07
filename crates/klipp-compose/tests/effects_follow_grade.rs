@@ -473,3 +473,57 @@ fn effects_after_a_plugin_that_cannot_be_applied_take_the_legacy_route() {
     let (legacy, _) = l.render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default());
     assert!(refused.iter().zip(&legacy).all(|(a, b)| (a - b).abs() < 1e-4), "the legacy route's picture, effects in it");
 }
+
+/// Step 11c-3: a moving clip under an open shutter runs its effects as
+/// plans of their own around the sampling (the colour effects before its
+/// transform once, the transform at each of eight samples, a vignette and
+/// a blur after it once on the average) and draws the legacy frame bit
+/// for bit, since the same shaders run on the same floats and the samples
+/// are averaged on the CPU either way. The shutter really smears: the
+/// frame differs from the same clip with it shut.
+#[test]
+fn a_moving_clip_under_an_open_shutter_runs_its_effects_as_plans() {
+    let transform = E::Transform {
+        position_x: 0.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0,
+        anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
+    };
+    let mut fx = colour_family();
+    fx.push(transform);
+    fx.push(E::Vignette { amount: 0.5, size: 0.6, softness: 0.4, roundness: 1.0 });
+    fx.push(E::GaussianBlur { radius: 1.5 });
+    let shot = |deg: f32| {
+        let mut seq = graded(fx.clone());
+        // The clip's own transform moves; its Transform effect in the list
+        // is where the resolved one goes, the vignette and blur after it.
+        let clip = &mut seq.tracks[0].clips[0];
+        clip.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, -20.0));
+        clip.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 2.0, 20.0));
+        seq.camera.shutter_deg = deg;
+        seq.camera.shutter_samples = 8;
+        seq
+    };
+    let run = |seq: &Sequence, legacy: bool| {
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(true);
+        r.set_legacy_effects(legacy);
+        let (out, found) = r.render_inspected(seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default());
+        assert_eq!(found.stats.effects_fallback_lists, 0, "every plan list came from the picture");
+        (out, found.stats.effects_shuttered, found.stats.effects_followed_grade)
+    };
+    let open = shot(180.0);
+    let (new, shuttered, followed) = run(&open, false);
+    let (legacy, legacy_shuttered, _) = run(&open, true);
+    assert_eq!((legacy_shuttered, followed), (0, 0), "the legacy route runs no plan; a shuttered clip splices nothing into its grade");
+    if shuttered == 0 {
+        assert!(!required(), "required, but the shuttered effects did not run as plans");
+        eprintln!("UNVERIFIED: no GPU route");
+        return;
+    }
+    assert_eq!(shuttered, 1);
+    let worst = new.iter().zip(&legacy).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    eprintln!("shutter: plans vs legacy: worst {worst}");
+    assert!(new.iter().map(|v| v.to_bits()).eq(legacy.iter().map(|v| v.to_bits())), "differs from the legacy route by {worst}");
+    let (shut, _, shut_followed) = run(&shot(0.0), false);
+    assert_eq!(shut_followed, 1, "with the shutter shut the effects follow the grade as before");
+    assert!(shut != new, "the shutter smears the moving clip");
+}
