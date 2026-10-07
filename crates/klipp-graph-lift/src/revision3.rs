@@ -171,9 +171,23 @@ pub fn project_text(text: &str) -> Result<String, String> {
 }
 
 /// The oracle: `written` is `original` with only the top-level
-/// `format_revision` changed, from 2 to 3. Compared as raw JSON, so every
-/// field counts, known to today's reader or not.
+/// `format_revision` changed, from 2 to 3, held two ways.
+/// - **Bytes:** `written` is exactly `original` with the one revision token
+///   replaced at its one place ([`project_text`]). A parse can't see a
+///   number spelled another way (`0.10` against `0.1`) or keys in another
+///   order; the bytes can.
+/// - **JSON:** with that field removed, the two are the same value, every
+///   field counted, known to today's reader or not.
 pub fn verify(original: &str, written: &str) -> Result<(), String> {
+    let expected = project_text(original)?;
+    if written != expected {
+        let at = written.bytes().zip(expected.bytes()).position(|(w, e)| w != e).unwrap_or(written.len().min(expected.len()));
+        return Err(format!(
+            "the written file isn't the original with its revision alone changed: they part at byte {at} of {} (expected {})",
+            written.len(),
+            expected.len()
+        ));
+    }
     let mut a: Value = serde_json::from_str(original).map_err(|e| format!("the original doesn't parse: {e}"))?;
     let mut b: Value = serde_json::from_str(written).map_err(|e| format!("the written file doesn't parse: {e}"))?;
     let take = |v: &mut Value| v.as_object_mut().and_then(|o| o.remove("format_revision")).and_then(|r| r.as_u64());

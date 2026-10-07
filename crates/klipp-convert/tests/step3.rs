@@ -491,12 +491,44 @@ fn the_oracle_fails_every_deliberate_change() {
     let mut with_version: Value = serde_json::from_str(&original).unwrap();
     with_version["sequences"][0]["tracks"][0]["clips"][0]["grade_versions"] = json!([{ "name": "B", "graph_v2": { "kept": 1 } }]);
     let original_v = serde_json::to_string_pretty(&with_version).unwrap();
+    // Written as the original was (pretty, keys in order), so each damage
+    // below is the only difference from what the step writes.
     let good: Value = serde_json::from_str(&revision3::project_text(&original_v).unwrap()).unwrap();
-    revision3::verify(&original_v, &serde_json::to_string(&good).unwrap()).unwrap();
+    revision3::verify(&original_v, &serde_json::to_string_pretty(&good).unwrap()).unwrap();
     for (what, damage) in damages {
         let mut bad = good.clone();
         damage(&mut bad);
-        assert!(revision3::verify(&original_v, &serde_json::to_string(&bad).unwrap()).is_err(), "{what} passed the oracle");
+        assert!(revision3::verify(&original_v, &serde_json::to_string_pretty(&bad).unwrap()).is_err(), "{what} passed the oracle");
     }
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// A change no parse can see fails the oracle too: a number spelled another
+/// way (`0.10` for `0.1`) and two keys in another order give the same JSON
+/// value, but not the original's bytes with the revision alone changed.
+#[test]
+fn the_oracle_holds_the_bytes_not_only_the_value() {
+    let original = "{\n  \"a\": 0.10,\n  \"b\": 1,\n  \"format_revision\": 2,\n  \"sequences\": []\n}";
+    let written = revision3::project_text(original).unwrap();
+    assert_eq!(written, original.replace("\"format_revision\": 2", "\"format_revision\": 3"), "the revision alone changes");
+    revision3::verify(original, &written).unwrap();
+    let respelled = written.replace("0.10", "0.1");
+    assert_eq!(serde_json::from_str::<Value>(&respelled).unwrap(), serde_json::from_str::<Value>(&written).unwrap(), "the same value");
+    assert!(revision3::verify(original, &respelled).is_err(), "a number spelled another way");
+    let reordered = written.replace("\"a\": 0.10,\n  \"b\": 1,", "\"b\": 1,\n  \"a\": 0.10,");
+    assert_ne!(reordered, written);
+    assert!(revision3::verify(original, &reordered).is_err(), "keys in another order");
+}
+
+/// The step keeps a project file's permission bits.
+#[test]
+fn a_converted_file_keeps_its_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = root("mode");
+    let a = plain(&r, "A");
+    std::fs::set_permissions(a.join("project.json"), std::fs::Permissions::from_mode(0o640)).unwrap();
+    let s = settings(&r, vec![a.clone()], vec![], "2026-10-08");
+    step3::run(&s, &approved(&s), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap();
+    assert_eq!(std::fs::metadata(a.join("project.json")).unwrap().permissions().mode() & 0o777, 0o640);
     let _ = std::fs::remove_dir_all(&r);
 }

@@ -295,7 +295,7 @@ fn roll_back(s: &Settings, j: &mut Journal, hooks: &Hooks) -> Result<(), RunErro
         let r = std::fs::read(&t.backup)
             .map_err(|e| io_err("reading the backup", &t.backup, e))
             .and_then(|b| if sha256(&b) == t.sha256 { Ok(b) } else { Err(format!("the backup {} no longer has its hash", t.backup.display())) })
-            .and_then(|b| write_atomic(&t.path, &b))
+            .and_then(|b| write_keeping_mode(&t.path, &b))
             .and_then(|()| std::fs::read(&t.path).map_err(|e| io_err("reading back", &t.path, e)))
             .and_then(|b| if sha256(&b) == t.sha256 { Ok(()) } else { Err("restored, but it reads back different".into()) });
         if let Err(why) = r {
@@ -333,7 +333,7 @@ fn backup_all(s: &Settings, m: &Manifest, hooks: &Hooks) -> Result<(), String> {
         for item in &c.items {
             let to = in_backup(s, &item.path);
             if to.exists() {
-                return Err(format!("{} is already in the backup", to.display()));
+                return Err(format!("{} is already in the backup: run with a fresh date folder (another day's run, or move that one aside)", to.display()));
             }
             let bytes = std::fs::read(&item.path).map_err(|e| io_err("reading", &item.path, e))?;
             if sha256(&bytes) != item.sha256 {
@@ -355,6 +355,17 @@ fn backup_all(s: &Settings, m: &Manifest, hooks: &Hooks) -> Result<(), String> {
     Ok(())
 }
 
+/// [`write_atomic`], the file keeping the permission bits it had (a new
+/// file from `write_atomic` would get the default ones).
+fn write_keeping_mode(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mode = std::fs::metadata(path).map(|m| m.permissions()).ok();
+    write_atomic(path, bytes)?;
+    if let Some(mode) = mode {
+        std::fs::set_permissions(path, mode).map_err(|e| io_err("setting the mode of", path, e))?;
+    }
+    Ok(())
+}
+
 /// Write and prove one project; the n-th to convert.
 fn write_one(s: &Settings, n: usize, c: &Candidate, hooks: &Hooks, preconditions: &dyn Fn() -> Result<(), String>) -> Result<(), String> {
     preconditions()?;
@@ -370,7 +381,7 @@ fn write_one(s: &Settings, n: usize, c: &Candidate, hooks: &Hooks, preconditions
     if (hooks.fail_write)(n) {
         return Err(format!("writing {}: no space left on device (a test's)", path.display()));
     }
-    write_atomic(&path, text.as_bytes())?;
+    write_keeping_mode(&path, text.as_bytes())?;
     Ok(())
 }
 
