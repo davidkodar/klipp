@@ -806,3 +806,23 @@ fn a_node_added_beside_changes_nothing_until_it_is_connected() {
     let first = masked.track_effects[&u(TRACK)][0].id;
     assert!(apply(&mut masked, &GraphOp::AddNodeBeside { at: NodePath::new(Root::Track { track: u(TRACK), part: TrackPart::Effects }, [first]), node: grade_node(0x63, "Mask") }).is_err());
 }
+
+/// A batch that ends with a node added beside still unfed says which node
+/// and port, typed, so a caller can point at the op that added it; its
+/// text is the refusal as before.
+#[test]
+fn a_batch_end_names_the_node_left_unfed() {
+    use klipp_convert::ops::{apply_in_batch, check_batch_end};
+    use klipp_graph_format::ports::input_key;
+    let mut d = docs();
+    let g = group(&d);
+    let second = grade_node(0x71, "Corrector");
+    apply_in_batch(&mut d, &GraphOp::AddNodeBeside { at: clip_path([g, u(E)]), node: second.clone() }, &RegistryCatalog, &[second.id]).unwrap();
+    let err = check_batch_end(&d, Root::Clip { clip: u(CLIP) }, &RegistryCatalog).unwrap_err();
+    assert_eq!(err.unwired, Some((second.id, input_key("Corrector", 0))), "{err}");
+    assert!(err.to_string().contains("invalid"), "{err}");
+    let text: String = err.into();
+    assert!(text.contains("Unwired"), "{text}");
+    // A whole picture ends clean.
+    assert!(check_batch_end(&docs(), Root::Clip { clip: u(CLIP) }, &RegistryCatalog).is_ok());
+}

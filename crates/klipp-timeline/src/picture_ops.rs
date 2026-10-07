@@ -26,7 +26,7 @@ use crate::{Clip, ClipPictureFields, GradeAccess, RegistryCatalog};
 use klipp_graph_format::lifted::{types as lt, ClipPicture};
 use klipp_graph_format::path::Root;
 use klipp_graph_format::{types, Node, NodeId, ParamValue};
-use klipp_graph_lift::ops::{apply_with_catalog, GraphOp};
+use klipp_graph_lift::ops::{apply_in_batch, check_batch_end, GraphOp};
 use klipp_graph_lift::paths::Documents;
 use serde_json::Value;
 
@@ -340,6 +340,7 @@ impl Clip {
         grade_docs.clips.insert(self.id.0, lifted.picture.clone());
         let mut steps = Vec::with_capacity(ops.len());
         let mut grade = false;
+        let mut pending = Vec::new();
         for op in ops {
             let before = docs.clips[&self.id.0].clone();
             let t = target(&before, op)?;
@@ -348,13 +349,19 @@ impl Clip {
                     return Err(format!("{id} is read by id elsewhere in the picture, so it can't move until effects keep their ids"));
                 }
             }
-            apply_with_catalog(&mut docs, op, &RegistryCatalog)?;
+            // The engine's batch rule: a node added beside waits for its
+            // inputs until the batch ends, then the picture is checked whole.
+            if let GraphOp::AddNodeBeside { node, .. } = op {
+                pending.push(node.id);
+            }
+            apply_in_batch(&mut docs, op, &RegistryCatalog, &pending)?;
             if let Target::Grade = t {
-                apply_with_catalog(&mut grade_docs, op, &RegistryCatalog)?;
+                apply_in_batch(&mut grade_docs, op, &RegistryCatalog, &pending)?;
                 grade = true;
             }
             steps.push((t, docs.clips[&self.id.0].clone()));
         }
+        check_batch_end(&docs, root, &RegistryCatalog)?;
 
         // Written to the fields; a write that fails puts them back.
         let before = self.picture.clone();
