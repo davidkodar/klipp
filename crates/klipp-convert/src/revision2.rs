@@ -19,8 +19,8 @@ fn err(e: impl std::fmt::Display) -> String {
 pub fn verify_project(original: &Value, written: &str) -> Result<(), String> {
     let mut back: Value = serde_json::from_str(written).map_err(|e| format!("the written file doesn't read back: {e}"))?;
     let r = revision::read_revision(&back).map_err(err)?;
-    if r != REVISION {
-        return Err(format!("written with revision {r}, not {REVISION}"));
+    if r != PROJECT_REVISION {
+        return Err(format!("written with revision {r}, not {PROJECT_REVISION}"));
     }
     old_fields::strip_sentinels(&mut back).map_err(err)?;
     let (expected, _) = project(original)?;

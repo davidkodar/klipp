@@ -155,14 +155,20 @@ fn resolve_against(copy: &Path, original: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Convert the copy's `project.json` to revision 2 when it is older, as
+/// Convert the copy's `project.json` to the current revision when it is older, as
 /// `klipp-convert run` converts a real project (#1089).
 fn to_revision_2(copy: &Path) -> Result<(), String> {
     let path = copy.join("project.json");
     let text = std::fs::read_to_string(&path).map_err(|e| format!("reading: {e}"))?;
     let mut raw: Value = serde_json::from_str(&text).map_err(|e| format!("parsing: {e}"))?;
-    if raw.get("format_revision").and_then(Value::as_u64).unwrap_or(0) >= u64::from(klipp_project::FORMAT_REVISION) {
-        return Ok(());
+    match raw.get("format_revision").and_then(Value::as_u64).unwrap_or(0) {
+        r if r >= u64::from(klipp_project::FORMAT_REVISION) => return Ok(()),
+        // Revision 2 takes only the step to 3.
+        klipp_graph_lift::revision2::REVISION => {
+            let converted = klipp_graph_lift::revision3::project(&raw).map_err(|e| format!("converting: {e}"))?;
+            return write_owned(&path, &serde_json::to_string_pretty(&converted).map_err(|e| e.to_string())?);
+        }
+        _ => {}
     }
     let library = klipp_core::assets::bundled_luts_dir();
     let rule = |s: &str| klipp_core::assets::portable_lut_path(&klipp_core::assets::resolve_lut_path(s, library), library);

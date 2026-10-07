@@ -190,7 +190,7 @@ impl std::fmt::Display for RunError {
     }
 }
 
-fn io_err(what: &str, path: &Path, e: io::Error) -> String {
+pub(crate) fn io_err(what: &str, path: &Path, e: io::Error) -> String {
     format!("{what} {}: {e}", path.display())
 }
 
@@ -220,12 +220,12 @@ pub fn no_klipp_running() -> Result<(), String> {
 /// process dies. The file stays: removing it could let a run waiting on
 /// the old file and one making a new file both hold "the" lock. It names
 /// the process holding it, for the person reading it.
-struct Lock {
+pub(crate) struct Lock {
     _held: std::fs::File,
 }
 
 impl Lock {
-    fn take(root: &Path) -> Result<Lock, String> {
+    pub(crate) fn take(root: &Path) -> Result<Lock, String> {
         make_dirs(root)?;
         let path = root.join("run.lock");
         let mut f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&path).map_err(|e| io_err("opening", &path, e))?;
@@ -262,12 +262,12 @@ fn journal_path(s: &Settings, dir: &Path) -> PathBuf {
 // keep the renames and the removal but lose the data they point at.
 
 /// Sync a file's data, or a folder's list of names, to the disk.
-fn sync(path: &Path) -> Result<(), String> {
+pub(crate) fn sync(path: &Path) -> Result<(), String> {
     std::fs::File::open(path).and_then(|f| f.sync_all()).map_err(|e| io_err("syncing", path, e))
 }
 
 /// Sync the folder a path is in, after the path was made, renamed or removed.
-fn sync_parent(path: &Path) -> Result<(), String> {
+pub(crate) fn sync_parent(path: &Path) -> Result<(), String> {
     match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => sync(p),
         _ => Ok(()),
@@ -283,7 +283,7 @@ static DURABLE: std::sync::Mutex<BTreeSet<PathBuf>> = std::sync::Mutex::new(BTre
 /// That includes folders already there, which an earlier run may have made
 /// and then failed (or died) before syncing: a folder whose entry isn't on
 /// disk could vanish with everything under it.
-fn make_dirs(dir: &Path) -> Result<(), String> {
+pub(crate) fn make_dirs(dir: &Path) -> Result<(), String> {
     let mut missing = Vec::new();
     let mut at = Some(dir);
     while let Some(d) = at.filter(|d| !d.as_os_str().is_empty() && !d.is_dir()) {
@@ -313,7 +313,7 @@ fn make_dirs(dir: &Path) -> Result<(), String> {
 }
 
 /// Rename, then sync the folders of both names.
-fn rename_synced(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn rename_synced(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::rename(from, to)?;
     let sync_dir = |p: &Path| p.parent().filter(|d| !d.as_os_str().is_empty()).map_or(Ok(()), |d| std::fs::File::open(d).and_then(|f| f.sync_all()));
     sync_dir(to)?;
@@ -325,7 +325,7 @@ fn rename_synced(from: &Path, to: &Path) -> io::Result<()> {
 
 /// Write `bytes` to `path` whole or not at all: beside it, synced, then
 /// renamed.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let tmp = path.with_file_name(format!(".{name}.tmp.{}", std::process::id()));

@@ -286,9 +286,9 @@ fn unmendable(dir: &Path) -> String {
 /// before revision 2 names the converter.
 pub fn side_store_revision_refusal(v: &serde_json::Value) -> Option<String> {
     match v.get("format_revision").and_then(serde_json::Value::as_u64) {
-        Some(r) if r == u64::from(crate::FORMAT_REVISION) => None,
-        Some(r) if r > u64::from(crate::FORMAT_REVISION) => {
-            Some(format!("it was saved by a newer Klipp (format {r}; this Klipp reads up to {})", crate::FORMAT_REVISION))
+        Some(r) if r == u64::from(crate::SIDE_STORE_REVISION) => None,
+        Some(r) if r > u64::from(crate::SIDE_STORE_REVISION) => {
+            Some(format!("it was saved by a newer Klipp (format {r}; this Klipp reads up to {})", crate::SIDE_STORE_REVISION))
         }
         _ => Some("it is from before revision 2: convert it with `klipp-convert run`".into()),
     }
@@ -308,9 +308,9 @@ fn refuse_newer_format(value: &serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Refuse a project from before revision 2 (#1089): this Klipp reads only
-/// the node-graph format, and `klipp-convert run` converts every project
-/// once, with a backup.
+/// Refuse a project from before the current revision (#1089): this Klipp
+/// reads only the node-graph format with stored effect ids, and
+/// `klipp-convert run` converts every project once, with a backup.
 fn refuse_unconverted(value: &serde_json::Value) -> Result<(), String> {
     let revision = value.get("format_revision").and_then(serde_json::Value::as_u64).unwrap_or(0);
     if revision < u64::from(crate::FORMAT_REVISION) {
