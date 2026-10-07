@@ -284,6 +284,10 @@ pub struct RenderStats {
     /// ones before the transform, the transform at each sample, the rest
     /// after (M2 step 11c-3).
     pub effects_shuttered: u32,
+    /// Layers whose effects ran as a plan of their own over the layer: an
+    /// adjustment layer on the CPU composite, a title or a generator
+    /// placed on the GPU stack (M2 step 11d).
+    pub effects_on_layers: u32,
     /// Clips on the plan route whose lifted picture could not give their
     /// effects, so `clip_effects`' list stood in (M2 step 10c). Zero
     /// unless a lift is broken.
@@ -294,7 +298,7 @@ impl RenderStats {
     /// Clips whose effects ran as plans, by any route: spliced into the
     /// grade's run, after a plug-in, or around a shutter's samples.
     pub fn plan_clips(&self) -> u32 {
-        self.effects_followed_grade + self.effects_after_plugins + self.effects_shuttered
+        self.effects_followed_grade + self.effects_after_plugins + self.effects_shuttered + self.effects_on_layers
     }
 }
 
@@ -1554,6 +1558,9 @@ impl Renderer {
         let clip_time = eval_clip_time(c, time);
         let mut rows = (0, height);
         let mut effects_done = false;
+        // A title's entrance and focus blur, put before its effects: they
+        // are the title's own, not in its picture's list.
+        let mut lead: Vec<BuiltinEffect> = Vec::new();
         let placed = match &c.kind {
             ClipKind::Media { .. } if fx_on_gpu => {
                 let at = source_secs(c, time, fps);
@@ -1573,7 +1580,9 @@ impl Renderer {
                     other => other,
                 };
                 match pixels {
-                    SourcePixels::Gpu(g) if c.grade_is_identity() => {
+                    // An ungraded layer with effects takes the branch below:
+                    // its effects run as a plan (step 11d).
+                    SourcePixels::Gpu(g) if c.grade_is_identity() && !has_active_effects(&fx) => {
                         if g.seed(&mut self.executor, width, height) {
                             self.executor.take_seeded_input_as_output()
                                 && self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_chain(slot, true))
@@ -1606,7 +1615,7 @@ impl Renderer {
                     }
                     SourcePixels::Linear(p) => {
                         let t = Instant::now();
-                        let pixels = if c.grade_is_identity() {
+                        let pixels = if c.grade_is_identity() && !has_active_effects(&fx) {
                             unshare(p)
                         } else {
                             effects_done = self.splice_effects(c, &fx, time, fps, transforms, stats);
@@ -1647,6 +1656,7 @@ impl Renderer {
                         if let Some((radius, axis, band)) = self.titles.last_focus_blur() {
                             soft.push(BuiltinEffect::FocusBlur { radius, vertical: axis == klipp_core::title_motion::RampAxis::Vertical, band });
                         }
+                        lead = soft.clone();
                         fx.splice(0..0, soft);
                         self.executor.gpu_pipeline_or_init().is_some_and(|p| {
                             // The layer's fade by where it is, the sprite
@@ -1716,9 +1726,11 @@ impl Renderer {
             return Err("a layer could not be placed on the GPU");
         }
         if !effects_done && has_active_effects(&fx) {
+            // A layer placed without a grade run (a title, a generator):
+            // its effects as a plan of their own over its slot (step 11d).
             let t = Instant::now();
-            if !self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_apply_effects(slot, &fx)) {
-                return Err("an effect pass failed");
+            if !self.effects_on_layer(c, &fx, &lead, slot, time, fps, width, height, transforms, stats) {
+                return Err("a layer's effects could not run as a plan");
             }
             stats.effects_ms += ms_since(t);
             // A blur or a transform can reach outside the sprite's rows.
@@ -1763,7 +1775,9 @@ impl Renderer {
         }
         let mut slot_a = true;
         let mut effects_done = false;
-        if c.grade_is_identity() {
+        // An ungraded adjustment layer with effects takes the seeded branch:
+        // its grade is the passthrough plan the effects are spliced into.
+        if c.grade_is_identity() && !has_active_effects(&fx) {
             if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_acc_to_chain()) {
                 return Err("the accumulator could not seed the chain");
             }
@@ -1790,14 +1804,9 @@ impl Renderer {
             }
         }
         if !effects_done && has_active_effects(&fx) {
-            let t = Instant::now();
-            let Some(g) = self.executor.gpu_pipeline_or_init() else { return Err("GPU gone") };
-            g.stack_chain_to_slot_a(slot_a);
-            slot_a = g.run_effects_in_chain(&fx, width, height);
-            if !g.last_effects_complete() {
-                return Err("an effect could not be recorded");
-            }
-            stats.effects_ms += ms_since(t);
+            // Its effects could not be spliced into the plan: the frame
+            // takes the CPU path, effects and all.
+            return Err("an adjustment layer's effects could not run as a plan");
         }
         let t = Instant::now();
         if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_mix_from_chain(slot_a, opacity)) {
@@ -2263,14 +2272,7 @@ impl Renderer {
         if fx.is_empty() {
             return Ok(pixels);
         }
-        self.executor.set_working_colorspace(self.working);
-        self.executor.set_render_scale(self.px_scale);
-        self.spliced.clone_from(&self.passthrough);
-        let groups = effect_groups(fx);
-        // Ids of their own, apart from the grade run's effect nodes, so
-        // each run keeps its cached plan.
-        let base = clip.id.0.as_u128() ^ (0x00ef_fec8_u128 << 64);
-        self.spliced.splice_effects_before_output(&groups, |i| klipp_nodes::NodeId::from_u128(base ^ i as u128));
+        self.splice_effects_only(clip, fx);
         let t = Instant::now();
         let frame = grade_frame(clip_time, fps);
         // The pixels go straight into the chain, not copied on the CPU for
@@ -2294,6 +2296,67 @@ impl Renderer {
                 Err(pixels)
             }
         }
+    }
+
+    /// A placed layer's effects as a plan of their own over its slot on the
+    /// GPU stack (step 11d): the slot seeds the chain, the effects run, and
+    /// the result goes back into the slot, the copies the legacy pass made.
+    /// The effects come from the clip's picture, after `lead` (a title's
+    /// entrance and focus blur, which are its own). Whether they ran; a
+    /// layer they couldn't run on declines the frame.
+    #[allow(clippy::too_many_arguments)]
+    fn effects_on_layer(
+        &mut self,
+        clip: &Clip,
+        fx: &[BuiltinEffect],
+        lead: &[BuiltinEffect],
+        slot: usize,
+        time: Timecode,
+        fps: f64,
+        width: u32,
+        height: u32,
+        transforms: &HashMap<ClipId, ResolvedTransform>,
+        stats: &mut RenderStats,
+    ) -> bool {
+        if !self.effects_follow_grade_on_gpu(clip, fx) {
+            return false;
+        }
+        let mut planned = self.plan_effects(clip, time, fps, transforms, &fx[lead.len().min(fx.len())..], stats);
+        planned.splice(0..0, lead.iter().cloned());
+        let Some(buffer) = self.executor.gpu_pipeline_or_init().and_then(|g| g.stack_layer_buffer(slot)) else { return false };
+        if !self.executor.prime_chain_from_gpu_linear_buffer(&buffer, width, height) {
+            return false;
+        }
+        self.splice_effects_only(clip, &planned);
+        self.executor.request_output_on_gpu();
+        let clip_time = eval_clip_time(clip, time);
+        let run = self.executor.execute_linear(&[], &self.spliced, width, height, clip_time, grade_frame(clip_time, fps), None, None);
+        let done = match run {
+            Ok((out, _)) if self.executor.last_run_effects_complete() => {
+                // Left on the GPU, as asked; downloaded only if the run
+                // couldn't keep it there.
+                let slot_a = self.executor.last_chain_final_slot().unwrap_or(true);
+                self.executor.gpu_pipeline_or_init().is_some_and(|g| if out.is_empty() { g.stack_layer_from_chain(slot, slot_a) } else { g.stack_layer_from_linear(slot, &out) })
+            }
+            _ => false,
+        };
+        if done {
+            stats.effects_on_layers += 1;
+            PLAN_EFFECT_CLIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        done
+    }
+
+    /// `self.spliced` as the source straight to the output with `fx`
+    /// between them: a plan of the effects alone, ids apart from the
+    /// grade run's so each keeps its cached plan.
+    fn splice_effects_only(&mut self, clip: &Clip, fx: &[BuiltinEffect]) {
+        self.executor.set_working_colorspace(self.working);
+        self.executor.set_render_scale(self.px_scale);
+        self.spliced.clone_from(&self.passthrough);
+        let groups = effect_groups(fx);
+        let base = clip.id.0.as_u128() ^ (0x00ef_fec8_u128 << 64);
+        self.spliced.splice_effects_before_output(&groups, |i| klipp_nodes::NodeId::from_u128(base ^ i as u128));
     }
 
     /// `fx` on `pixels`: as a plan of their own when `plan` (step 11c),
@@ -3218,7 +3281,23 @@ impl Renderer {
         // and pass through, on both arms; they must not warp by the clip
         // rendered before it (#698).
         self.forget_motion();
-        let mut after = self.effects(&fx, graded, clip_time, width, height);
+        // As a plan of its own, from its picture, when it can run on the
+        // GPU (step 11d); else the CPU kernels.
+        let plan = self.effects_follow_grade_on_gpu(clip, &fx);
+        let fx = if plan {
+            let mut stats = std::mem::take(&mut self.found.stats);
+            let planned = self.plan_effects(clip, time, fps, transforms, &fx, &mut stats);
+            self.found.stats = stats;
+            planned
+        } else {
+            fx
+        };
+        let missed = self.plan_misses;
+        let mut after = self.effects_by(plan, clip, &fx, graded, clip_time, fps, width, height);
+        if plan && self.plan_misses == missed {
+            self.found.stats.effects_on_layers += 1;
+            PLAN_EFFECT_CLIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         if let Some(before) = before {
             for (a, b) in after.iter_mut().zip(&before) {
                 *a = b + (*a - b) * opacity;
