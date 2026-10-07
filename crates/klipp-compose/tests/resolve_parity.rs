@@ -125,3 +125,27 @@ fn an_aliased_key_animates_the_field_it_always_did() {
     });
     check("aliased key", &baked(c, vec![]));
 }
+
+#[test]
+fn the_automatic_placement_ignores_what_is_switched_off_or_not_a_pixel_effect() {
+    // A switched-off shadow first, and an Opacity, a speed ramp and a
+    // temporal denoise among the effects: the move goes before the first
+    // *enabled* effect drawn outside the picture, and the others are no
+    // pixel effects at all.
+    let shadow = E::DropShadow { offset_x: 0.02, offset_y: 0.02, blur: 0.01, color: [0, 0, 0], opacity: 0.7 };
+    let glow = E::OuterGlow { radius: 0.02, intensity: 0.5, color: [255, 200, 0] };
+    let mut c = media(
+        vec![
+            shadow,
+            E::Gamma { gamma: 1.1 },
+            E::Opacity { value: 0.7 },
+            E::SpeedRamp { speed: 2.0, blend_mode: 0, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: -1.0, freeze: false },
+            E::TemporalDenoise { strength: 0.5, threshold: 0.1 },
+            glow,
+            E::Vibrance { amount: 0.2 },
+        ],
+        vec![false, true, true, true, true, true, true],
+    );
+    c.edit_video_param_keyframes(klipp_core::VideoParam::PositionX, |k| *k = vec![key(0.0, 0.0), key(4.0, 60.0)]);
+    check("placement among switched-off and non-pixel effects", &baked(c, vec![]));
+}
