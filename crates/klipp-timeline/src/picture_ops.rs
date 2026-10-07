@@ -145,12 +145,28 @@ fn list_order(p: &ClipPicture, len: usize) -> Vec<Option<NodeId>> {
     order
 }
 
+/// The clip's chain in picture order, walked along its edges from the
+/// source (each node's output into the next one's picture input), never
+/// read from the order the node list happens to hold.
+fn chain(p: &ClipPicture) -> Vec<&Node> {
+    let mut out = Vec::with_capacity(p.graph.nodes.len());
+    let mut at = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::SOURCE);
+    while let Some(n) = at {
+        if out.iter().any(|seen: &&Node| seen.id == n.id) {
+            break;
+        }
+        out.push(n);
+        at = p.graph.edges.iter().find(|e| e.from.0 == n.id && e.from.1.as_str() == "out" && e.to.1.as_str() == "in").and_then(|e| node(p, e.to.0));
+    }
+    out
+}
+
 /// Where a node now in the chain sits in the list: just before the next
 /// entry after it in the chain, or at the end. `None` when the chain puts
 /// it where the list can't: before the grade, the display transform or a
 /// plug-in, all of which a clip's built-in effects follow.
 fn list_place(p: &ClipPicture, order: &[Option<NodeId>], id: NodeId) -> Option<usize> {
-    let chain: Vec<&Node> = p.graph.nodes.iter().collect();
+    let chain = chain(p);
     let at = chain.iter().position(|n| n.id == id)?;
     if chain[at + 1..].iter().any(|n| matches!(n.type_id.as_str(), lt::GROUP | lt::SCENE_TO_DISPLAY | types::LEGACY_OFX)) {
         return None;
@@ -180,6 +196,15 @@ fn key_of(v: &Value) -> Result<klipp_core::Keyframe, String> {
     serde_json::from_value(v.clone()).map_err(|e| format!("a key: {e}"))
 }
 
+/// Whether `effect` is an entry graph ops write: a plain effect node, not
+/// one of the four the clip places itself. The writers route by it, with
+/// the conversion's own rule (`to_v2::effect_node_type`), so they and the
+/// refusal here can't disagree.
+pub fn takes_picture_ops(effect: &klipp_effects::BuiltinEffect) -> bool {
+    let tag = serde_json::to_value(effect).ok().and_then(|v| v.get("type").and_then(Value::as_str).map(str::to_owned)).unwrap_or_default();
+    klipp_graph_lift::to_v2::effect_node_type(&tag) == types::LEGACY_EFFECT
+}
+
 impl Clip {
     /// Apply `ops` to the clip's picture as one edit, checked first on a
     /// copy of its lifted picture. A refusal leaves the clip as it was.
@@ -197,6 +222,11 @@ impl Clip {
         // where a structural op lands in the list is read from the chain.
         let mut docs = Documents::default();
         docs.clips.insert(self.id.0, lifted.picture.clone());
+        // The grade is written back from a copy that took the grade's ops
+        // alone: the full copy also holds effect nodes the batch added,
+        // which have no place in the stored list yet.
+        let mut grade_docs = Documents::default();
+        grade_docs.clips.insert(self.id.0, lifted.picture.clone());
         let mut steps = Vec::with_capacity(ops.len());
         let mut grade = false;
         for op in ops {
@@ -208,7 +238,10 @@ impl Clip {
                 }
             }
             apply_with_catalog(&mut docs, op, &RegistryCatalog)?;
-            grade |= matches!(t, Target::Grade);
+            if let Target::Grade = t {
+                apply_with_catalog(&mut grade_docs, op, &RegistryCatalog)?;
+                grade = true;
+            }
             steps.push((t, docs.clips[&self.id.0].clone()));
         }
 
@@ -222,7 +255,7 @@ impl Clip {
                 }
             }
             if grade {
-                self.write_grade(&steps.last().expect("a batch of one op or more").1)?;
+                self.write_grade(&grade_docs.clips[&self.id.0])?;
             }
             Ok::<(), String>(())
         })();
@@ -359,5 +392,39 @@ mod tests {
         let reader = masked.graph.nodes.iter().find(|n| n.type_id.as_str() == types::LEGACY_EFFECT && n.id != blur).unwrap().id;
         masked.graph.edges.push(klipp_graph_format::Edge { from: (blur, "out".into()), to: (reader, "mask".into()) });
         assert_eq!(read_by_id(&masked), Some(blur), "a matte into a mask");
+    }
+
+    /// The writers' routing rule is the lift's: every registered effect
+    /// takes graph ops exactly when it lifts to a plain effect node.
+    #[test]
+    fn the_routing_rule_is_the_lifts_for_every_effect() {
+        let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+        for ty in klipp_effects::registry::effect_types() {
+            let sample = (ty.sample)();
+            let mut c = Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+            c.push_effect(sample.clone());
+            let p = c.picture_v2().unwrap().picture.clone();
+            let plain = p.graph.nodes.iter().any(|n| n.type_id.as_str() == types::LEGACY_EFFECT);
+            assert_eq!(takes_picture_ops(&sample), plain, "{}", ty.tag);
+        }
+    }
+
+    /// Where an effect lands is read along the chain's edges, not from the
+    /// order the node list holds: a shuffled list gives the same place.
+    #[test]
+    fn a_list_place_follows_the_edges_not_the_node_order() {
+        let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+        let mut c = Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+        for amount in [0.25, 0.5, 0.75] {
+            c.push_effect(klipp_effects::BuiltinEffect::Sharpen { amount });
+        }
+        let p = c.picture_v2().unwrap().picture.clone();
+        let order = list_order(&p, 3);
+        let ids: Vec<NodeId> = order.iter().flatten().copied().collect();
+        let places: Vec<_> = ids.iter().map(|id| list_place(&p, &order, *id)).collect();
+        assert_eq!(places, [Some(1), Some(2), Some(3)]);
+        let mut shuffled = p.clone();
+        shuffled.graph.nodes.reverse();
+        assert_eq!(ids.iter().map(|id| list_place(&shuffled, &order, *id)).collect::<Vec<_>>(), places);
     }
 }

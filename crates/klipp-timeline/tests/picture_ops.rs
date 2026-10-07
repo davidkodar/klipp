@@ -319,3 +319,32 @@ fn one_param_step_on_a_busy_clip() {
     times.sort_by(f64::total_cmp);
     println!("P1: one grade SetParam on the same clip: median {:.3} ms, p90 {:.3} ms", times[25], times[45]);
 }
+
+/// A batch that adds a grade node and an effect together is written whole:
+/// the grade from a copy that took the grade's ops alone (the full copy
+/// holds the new effect, which has no place in the stored list yet), and
+/// the result is the engine's.
+#[test]
+fn a_grade_op_and_an_added_effect_go_in_one_batch() {
+    let c = clip();
+    let p = picture(&c);
+    let g = grade_group(&p);
+    let fx = effects(&p);
+    let body = &p.graph.nodes.iter().find(|n| n.id == g).unwrap().group.as_ref().unwrap().graph;
+    let source = body.nodes.iter().find(|n| n.legacy.as_ref().is_some_and(|l| l.payload["kind"] == "Source")).unwrap().id;
+    let mut exposure = new_effect(0xd1, &E::Sharpen { amount: 0.5 }, BTreeMap::new());
+    exposure.type_id = types::LEGACY_NODE.into();
+    exposure.legacy = Some(Legacy { slot: None, payload: json!({"kind": "Exposure", "label": "Exposure", "params": {"exposure": 0.5}}), keyframes: Some(json!({"tracks": []})), modifiers: Default::default() });
+    let ops = vec![
+        GraphOp::AddNode { after: at(&c, [fx[2]]), node: new_effect(0xd2, &E::Sharpen { amount: 0.25 }, BTreeMap::new()) },
+        GraphOp::AddNode { after: at(&c, [g, source]), node: exposure },
+        GraphOp::SetParam { path: at(&c, [g, uuid::Uuid::from_u128(0xd1)]), key: "exposure".into(), value: ParamValue::Float(-0.5) },
+    ];
+    let mut engine = klipp_graph_lift::paths::Documents::default();
+    engine.clips.insert(c.id.0, p.clone());
+    klipp_graph_lift::ops::apply_batch_with_catalog(&mut engine, &ops, &klipp_timeline::RegistryCatalog).unwrap();
+    let mut written = c.clone();
+    written.apply_picture_ops(&ops).unwrap();
+    assert_eq!(written.builtin_effects().len(), 4);
+    assert_eq!(support::picture_ops_check::normalised(&picture(&written)), support::picture_ops_check::normalised(&engine.clips[&c.id.0]));
+}

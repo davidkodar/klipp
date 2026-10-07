@@ -49,7 +49,7 @@ mod picture_fields;
 mod picture_store;
 mod picture_ops;
 mod registry_catalog;
-pub use picture_ops::PictureEdit;
+pub use picture_ops::{takes_picture_ops, PictureEdit};
 pub use registry_catalog::RegistryCatalog;
 #[cfg(test)]
 mod picture_cache_tests;
