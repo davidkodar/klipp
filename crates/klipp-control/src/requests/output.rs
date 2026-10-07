@@ -437,6 +437,9 @@ pub(crate) fn respond(
                 "plan_effects": {
                     "clips": klipp_compose::PLAN_EFFECT_CLIPS.load(std::sync::atomic::Ordering::Relaxed),
                     "fallback_lists": klipp_compose::PLAN_EFFECT_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed),
+                    // Effect runs a plan couldn't apply, drawn by the CPU
+                    // kernels instead (M2 step 11d); zero unless one failed.
+                    "on_cpu": klipp_compose::EFFECTS_ON_CPU.load(std::sync::atomic::Ordering::Relaxed),
                     // Clip pictures lifted cold (none while playing with no
                     // edit: a lift is cached until the clip changes).
                     "cold_lifts": klipp_timeline::COLD_LIFTS.load(std::sync::atomic::Ordering::Relaxed),

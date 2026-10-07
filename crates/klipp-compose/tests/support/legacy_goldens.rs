@@ -7,13 +7,12 @@
 //! recorded it, and why.
 //!
 //! A test then compares the plan route's frame with the stored one where
-//! it compared it with a live legacy render. Recording again is a
-//! deliberate act, reviewed like code: `legacy-manifest.json` holds each
-//! file's checksum and a version, and a recording writes the next version,
-//! so every stored-frame test fails until [`VERSION`] here is bumped to
-//! match. To record, with the legacy route still in the tree:
-//!
-//!     KLIPP_RECORD_LEGACY_GOLDENS="<why>" cargo test -p klipp-compose --test <name>
+//! it compared it with a live legacy render. `legacy-manifest.json` holds
+//! each file's checksum and a version, read only when it matches
+//! [`VERSION`] here, so a stored frame can't change unnoticed. Step 11d
+//! deleted the legacy route, so the frames can't be recorded again: the
+//! recording half below is what wrote them (`KLIPP_RECORD_LEGACY_GOLDENS`),
+//! and now refuses.
 //!
 //! The frames are a GPU's floats, and once the legacy route is deleted
 //! they can't be recorded again. So each `legacy-<name>.json` names the
@@ -28,6 +27,10 @@
 use std::collections::BTreeMap;
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/goldens");
+/// Whether the legacy route that drew the frames is gone from the tree, so
+/// nothing can record them again.
+const ROUTE_GONE: bool = true;
+
 /// The stored frames' version: a recording writes `VERSION + 1` into the
 /// manifest, and the stored frames are read only when the two agree.
 pub const VERSION: u64 = 2;
@@ -86,6 +89,7 @@ impl LegacyGoldens {
     pub fn open(name: &str) -> Self {
         let name = name.to_owned();
         if let Ok(reason) = std::env::var("KLIPP_RECORD_LEGACY_GOLDENS") {
+            assert!(!ROUTE_GONE, "the legacy route is gone (M2 step 11d): its stored frames can't be recorded again");
             assert!(!reason.trim().is_empty(), "say why the legacy frames are recorded again");
             return Self { name, stored: BTreeMap::new(), recording: Some((reason, Vec::new())), exact: true };
         }
@@ -275,4 +279,15 @@ pub fn matches_bytes(new: &[u8], legacy: &[u8]) -> bool {
         return new == legacy;
     }
     new.len() == legacy.len() && new.iter().zip(legacy).all(|(a, b)| a.abs_diff(*b) <= 1)
+}
+
+/// The CPU kernels' frame against a stored GPU one, for the cases whose
+/// effects the CPU kernels draw (a plan that couldn't apply them): within
+/// the bar the effects hold between CPU and GPU everywhere
+/// (`cpu_gpu_effect_parity`), one 8-bit sRGB level per colour channel.
+pub fn within_cpu_gpu_bar(cpu: &[f32], gpu: &[f32]) -> bool {
+    let (a, b) = (klipp_effects::linear_f32_rgba_to_srgb_u8(cpu), klipp_effects::linear_f32_rgba_to_srgb_u8(gpu));
+    let worst = a.iter().zip(&b).enumerate().filter(|(i, _)| i % 4 != 3).map(|(_, (x, y))| x.abs_diff(*y)).max().unwrap_or(0);
+    eprintln!("CPU kernels vs the stored GPU frame: worst {worst} levels");
+    a.len() == b.len() && worst <= 1
 }

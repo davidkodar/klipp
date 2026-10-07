@@ -259,6 +259,10 @@ impl From<Option<(Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)>> for Sing
 /// control socket's `perf`). Cumulative; a reader takes deltas.
 pub static PLAN_EFFECT_CLIPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static PLAN_EFFECT_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Effect runs a plan couldn't apply (a lost device, a failed run) that
+/// the CPU kernels drew instead (`RenderStats::effects_on_cpu`), in this
+/// process. Cumulative; zero unless something failed.
+pub static EFFECTS_ON_CPU: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Where a render's time went, in milliseconds.
 #[derive(Default, Clone, Copy, Debug)]
@@ -292,6 +296,10 @@ pub struct RenderStats {
     /// effects, so `clip_effects`' list stood in (M2 step 10c). Zero
     /// unless a lift is broken.
     pub effects_fallback_lists: u32,
+    /// Effect runs a plan couldn't apply (a lost device, a failed run),
+    /// drawn by the CPU kernels instead, so the frame never shows without
+    /// its effects (M2 step 11d). Zero unless something failed.
+    pub effects_on_cpu: u32,
 }
 
 impl RenderStats {
@@ -466,10 +474,6 @@ pub struct Renderer {
     gpu: Option<klipp_effects::gpu::GpuEffectsPipeline>,
     gpu_tried: bool,
     allow_gpu: bool,
-    /// The effects take the grade's result as before, through a download
-    /// and an upload, instead of as nodes of the grade's plan (#1089, M2
-    /// step 10): the fallback until M2's effect families are native.
-    legacy_effects: bool,
     /// The clip's resolved effects for the grade being run, spliced in as
     /// nodes before its output (step 10b); empty runs the grade alone.
     run_effects: Vec<BuiltinEffect>,
@@ -477,7 +481,7 @@ pub struct Renderer {
     /// spliced in after the grade and before `run_effects` (step 11c).
     run_display: Option<klipp_color::hdr::SceneToDisplay>,
     /// Effect runs that couldn't be applied as a plan of their own and
-    /// took the legacy route (`effects_by`), for the stats' counts.
+    /// took the CPU kernels instead (`effects_by`), for the stats' counts.
     plan_misses: u64,
     /// The grade with `run_effects` spliced in, kept so each frame reuses
     /// its allocations.
@@ -594,7 +598,6 @@ impl Renderer {
             gpu: None,
             gpu_tried: false,
             allow_gpu: true,
-            legacy_effects: std::env::var_os("KLIPP_LEGACY_EFFECTS").is_some_and(|v| v == "1"),
             run_effects: Vec::new(),
             run_display: None,
             plan_misses: 0,
@@ -638,12 +641,6 @@ impl Renderer {
 
     /// The GPU effects pipeline, built on first use; `None` without a
     /// usable GPU or with the GPU disabled.
-    /// Run the effects after the grade the legacy way, through a
-    /// download and an upload (#1089, M2 step 10's fallback).
-    pub fn set_legacy_effects(&mut self, legacy: bool) {
-        self.legacy_effects = legacy;
-    }
-
     pub fn gpu_pipeline(&mut self) -> Option<&mut klipp_effects::gpu::GpuEffectsPipeline> {
         self.gpu()
     }
@@ -2197,8 +2194,8 @@ impl Renderer {
                 apart = Some(planned);
             }
             // A scene-referred source's display step runs in the plan too,
-            // after the grade, where `display_render` runs it below on the
-            // legacy route (step 11c).
+            // after the grade, where `display_render` runs it below when
+            // the plan doesn't (step 11c).
             self.run_display = hdr.map(|t| self.scene_to_display(t));
         }
         let mut pixels = self.grade(clip, input, clip_time, fps, width, height);
@@ -2216,9 +2213,11 @@ impl Renderer {
                 }
                 // An effect could not be applied (a lost device), or the run
                 // failed before its effects: the frame is graded again and
-                // takes the legacy route, never shown without the effect.
+                // its effects drawn by the CPU kernels below, never shown
+                // without them.
                 pixels = self.grade(clip, retry.expect("kept when on_gpu"), clip_time, fps, width, height);
                 displayed = false;
+                self.cpu_fallback(clip);
             }
         }
         if let Some(t) = hdr.filter(|_| !displayed) {
@@ -2266,7 +2265,7 @@ impl Renderer {
     /// nodes between a source and an output, for effects that follow
     /// something the GPU can't run (a plug-in). The picture back, or, when
     /// an effect could not be applied or the run failed, `pixels`
-    /// untouched for the legacy route.
+    /// untouched for the CPU kernels.
     #[allow(clippy::too_many_arguments)]
     fn run_effects_plan(&mut self, clip: &Clip, fx: &[BuiltinEffect], pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Result<Vec<f32>, Vec<f32>> {
         if fx.is_empty() {
@@ -2292,7 +2291,7 @@ impl Renderer {
             Ok((out, _)) if self.executor.last_run_effects_complete() && out.len() == pixels.len() => Ok(out),
             Ok(_) => Err(pixels),
             Err(e) => {
-                tracing::warn!("clip {}: its effects after the plug-ins: {e:?}; the legacy route takes them", clip.id.0);
+                tracing::warn!("clip {}: its effects after the plug-ins: {e:?}; the CPU kernels take them", clip.id.0);
                 Err(pixels)
             }
         }
@@ -2300,7 +2299,8 @@ impl Renderer {
 
     /// A placed layer's effects as a plan of their own over its slot on the
     /// GPU stack (step 11d): the slot seeds the chain, the effects run, and
-    /// the result goes back into the slot, the copies the legacy pass made.
+    /// the result goes back into the slot, with none of the copies a pass
+    /// through the CPU would make.
     /// The effects come from the clip's picture, after `lead` (a title's
     /// entrance and focus blur, which are its own). Whether they ran; a
     /// layer they couldn't run on declines the frame.
@@ -2360,8 +2360,9 @@ impl Renderer {
     }
 
     /// `fx` on `pixels`: as a plan of their own when `plan` (step 11c),
-    /// falling back to the legacy route for this run when they can't be
-    /// applied there (counted in `plan_misses`), or on the legacy route.
+    /// falling back to the CPU kernels for this run when they can't be
+    /// applied there (counted in `plan_misses` and `effects_on_cpu`), or
+    /// on the CPU kernels.
     #[allow(clippy::too_many_arguments)]
     fn effects_by(&mut self, plan: bool, clip: &Clip, fx: &[BuiltinEffect], pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
         if !plan || fx.is_empty() {
@@ -2371,6 +2372,7 @@ impl Renderer {
             Ok(out) => out,
             Err(back) => {
                 self.plan_misses += 1;
+                self.cpu_fallback(clip);
                 self.effects(fx, back, clip_time, width, height)
             }
         }
@@ -2424,10 +2426,7 @@ impl Renderer {
     /// the plan between them (step 11c-1). A clip with a plug-in (11c-2)
     /// or a shutter (11c-3) between them runs its effects as plans of
     /// their own around that CPU step, and the GPU stack, which has
-    /// neither, declines it. The
-    /// legacy route, a download and an upload between them, stays
-    /// selectable ([`Self::set_legacy_effects`], or `KLIPP_LEGACY_EFFECTS=1`)
-    /// until M2's effect families are native.
+    /// neither, declines it. Otherwise the CPU kernels draw them.
     fn effects_follow_grade_on_gpu(&self, clip: &Clip, fx: &[BuiltinEffect]) -> bool {
         // An effect that needs the source's neighbouring frames can't be a
         // plan node: temporal noise reduction and frame blending run at the
@@ -2438,8 +2437,7 @@ impl Renderer {
         // the executor (`prepare_temporal_effects`, `frame_inputs`). Read
         // from the registry, so a new such type is covered.
         let needs_neighbours = fx.iter().any(klipp_effects::registry::needs_source_neighbours);
-        !self.legacy_effects
-            && !needs_neighbours
+        !needs_neighbours
             && self.allow_gpu
             && has_active_effects(fx)
             && klipp_effects::chain_supports_gpu(fx)
@@ -2930,30 +2928,28 @@ impl Renderer {
         out
     }
 
+    /// Count a clip's effect run that a plan couldn't apply and the CPU
+    /// kernels take instead.
+    fn cpu_fallback(&mut self, clip: &Clip) {
+        tracing::debug!("clip {}: its effects on the CPU kernels, the plan couldn't apply them", clip.id.0);
+        self.found.stats.effects_on_cpu += 1;
+        EFFECTS_ON_CPU.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// `fx` on `pixels` by the CPU kernels: a clip whose effects can't run
+    /// on the GPU (no GPU, an inspected clip, an effect with no GPU
+    /// kernel), or whose plan couldn't apply them.
     fn effects(&mut self, fx: &[BuiltinEffect], pixels: Vec<f32>, clip_time: f64, width: u32, height: u32) -> Vec<f32> {
         if !has_active_effects(fx) {
             return pixels;
         }
         let t = Instant::now();
-        let gpu_ok = klipp_effects::chain_supports_gpu(fx);
         // The working space's luminance weights, for the effects that gate
         // on brightness — a bright pass, a denoise threshold, an edge
-        // measure. Both arms get the same numbers, which is what
-        // `cpu_gpu_effect_parity` checks; before this they both assumed
-        // BT.709 and mis-estimated brightness in any other basis. This
-        // renderer owns its own effects pipeline, separate from the
-        // executor's, so the executor's `set_luma_coefs` does not cover
-        // it.
+        // measure: the numbers the plan's effect nodes get, which is what
+        // `cpu_gpu_effect_parity` checks.
         let luma = klipp_color::linear::luma_coefs(self.working);
-        let out = match self.gpu() {
-            Some(gpu) if gpu_ok => {
-                gpu.set_luma_coefs(luma);
-                gpu.apply_effects(fx, &pixels, width, height)
-            }
-            _ => klipp_effects::apply_effects_with_motion(
-                fx, pixels, width, height, clip_time, luma, &self.motion,
-            ),
-        };
+        let out = klipp_effects::apply_effects_with_motion(fx, pixels, width, height, clip_time, luma, &self.motion);
         self.found.stats.effects_ms += ms_since(t);
         out
     }
