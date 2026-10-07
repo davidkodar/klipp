@@ -89,6 +89,24 @@ impl Default for NodeInspectorPanel {
 }
 
 impl NodeInspectorPanel {
+    /// Draw the existing node inspector for headless row recording.
+    #[cfg(feature = "row-recorder")]
+    pub fn record_old_inspector(
+        &mut self, ui: &mut egui::Ui, graph: &mut NodeGraph,
+        selected: NodeId, clip_id: ClipId, theme: &KlippTheme,
+    ) -> Vec<AppCommand> {
+        self.show(ui, &Some(selected), graph, clip_id, theme, FrameSelection { time_secs: 0.0, tolerance: 1.0 / 48.0 })
+    }
+
+    /// Draw a real colour-page tab, including the Corrector's custom editors.
+    #[cfg(feature = "row-recorder")]
+    pub fn record_old_tab(
+        &mut self, ui: &mut egui::Ui, graph: &mut NodeGraph,
+        selected: NodeId, clip_id: ClipId, theme: &KlippTheme, mut tab: ColorTab,
+    ) -> Vec<AppCommand> {
+        let _scope = crate::widgets::row_recorder::scope(format!("tab/{tab:?}"));
+        self.show_simple(ui, graph, clip_id, &mut Some(selected), &mut tab, theme, FrameSelection { time_secs: 0.0, tolerance: 1.0 / 48.0 })
+    }
     /// Recompute the curves' histogram when the viewer shows a new
     /// frame. Cheap enough to call every frame: it returns immediately
     /// unless the generation moved.
@@ -430,6 +448,8 @@ impl NodeInspectorPanel {
         // Linear / Log toggle
         if let Some(wi) = wheels_idx {
             let log_mode = graph.nodes[wi].params.wheels_log_mode.unwrap_or(false);
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::control(ui.next_auto_id(), "choice", "wheels_log_mode", "Linear / Log (HDR)", log_mode);
             let node_id = graph.nodes[wi].id;
             ui.horizontal(|ui| {
                 ui.add_space(8.0);
@@ -493,6 +513,8 @@ impl NodeInspectorPanel {
                         "gain" => &mut self.gain_wheel,
                         _ => &mut self.offset_wheel,
                     };
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::control(col_ui.next_auto_id(), "colour_wheel", prefix, label, (offset, master));
                     let resp = color_wheel::color_wheel_sized(
                         &mut col_ui, wheel_state, theme, label, &mut offset, &mut master, wheel_d, Some(cell_w),
                     );
@@ -561,6 +583,11 @@ impl NodeInspectorPanel {
                     let sat_hit = egui::Rect::from_min_size(egui::pos2(cx - 4.0, sat_track_y), egui::vec2(track_draw_w + 8.0, slider_h));
                     let sat_resp = col_ui.allocate_rect(sat_hit, egui::Sense::click_and_drag());
                     let mut s = sat_field.unwrap_or(0.0);
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    {
+                        crate::widgets::row_recorder::next_parameter(&sat_name);
+                        crate::widgets::row_recorder::numeric(sat_resp.id, "wheel_slider", "Saturation", s, &(-1.0..=1.0), Some(0.0), None, Some(2), "", None);
+                    }
                     if sat_resp.drag_started() {
                         cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
                     }
@@ -610,6 +637,11 @@ impl NodeInspectorPanel {
                     let bri_hit = egui::Rect::from_min_size(egui::pos2(cx - 4.0, bri_track_y), egui::vec2(track_draw_w + 8.0, slider_h));
                     let bri_resp = col_ui.allocate_rect(bri_hit, egui::Sense::click_and_drag());
                     let mut b = bri_field.unwrap_or(0.0);
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    {
+                        crate::widgets::row_recorder::next_parameter(&bri_name);
+                        crate::widgets::row_recorder::numeric(bri_resp.id, "wheel_slider", "Brightness", b, &(-1.0..=1.0), Some(0.0), None, Some(2), "", None);
+                    }
                     if bri_resp.drag_started() {
                         cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
                     }
@@ -668,6 +700,8 @@ impl NodeInspectorPanel {
         tracked_mask_indices: &[usize],
     ) {
         let clip_time_secs = frame.time_secs;
+        #[cfg(any(test, feature = "row-recorder"))]
+        crate::widgets::row_recorder::control(ui.next_auto_id(), "mask_stack", "masks", "Masks", &*masks);
         let mut masks_changed = false;
 
         ui.horizontal(|ui| {
@@ -1016,6 +1050,8 @@ impl NodeInspectorPanel {
         ui.add_space(4.0);
         if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
             let mut val = node.params.contrast.unwrap_or(0.0);
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::next_parameter("contrast");
             if inspector_row(ui, "Contrast", &mut val, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
                 node.params.contrast = Some(val);
                 cmds.push(AppCommand::SetNodeParam {
@@ -1250,6 +1286,8 @@ impl NodeInspectorPanel {
                         });
                     }
                     let mut val = node.params.exposure.unwrap_or(0.0);
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("exposure");
                     if inspector_row(ui, "Exposure", &mut val, -3.0..=3.0, 0.0, "stops", theme, cmds, clip_id) {
                         node.params.exposure = Some(val);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "exposure".into(), value: val });
@@ -1273,6 +1311,8 @@ impl NodeInspectorPanel {
                         });
                     }
                     let mut val = node.params.contrast.unwrap_or(0.0);
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("contrast");
                     if inspector_row(ui, "Contrast", &mut val, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
                         node.params.contrast = Some(val);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast".into(), value: val });
@@ -1305,6 +1345,8 @@ impl NodeInspectorPanel {
                     let mut shown = pivot_shown(
                         node.params.contrast_pivot.unwrap_or(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
                     );
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("contrast_pivot");
                     if inspector_row(
                         ui, "Pivot", &mut shown,
                         pivot_shown(klipp_color::grade_model::MIN_CONTRAST_PIVOT)
@@ -1320,6 +1362,8 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast_pivot".into(), value: linear });
                     }
                     let mut cval = node.params.clarity.unwrap_or(0.0);
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("clarity");
                     if inspector_row(ui, "Clarity", &mut cval, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
                         node.params.clarity = Some(cval);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "clarity".into(), value: cval });
@@ -1348,11 +1392,15 @@ impl NodeInspectorPanel {
                     // Rendered in the same widget with no unit it read as
                     // an inconsistency — "1.00" sitting under "0.00" with
                     // nothing to say why. The multiplier sign says why.
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("saturation");
                     if inspector_row(ui, "Saturation", &mut val, 0.0..=2.0, 1.0, "\u{00D7}", theme, cmds, clip_id) {
                         node.params.saturation = Some(val);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "saturation".into(), value: val });
                     }
                     let mut vval = node.params.vibrance.unwrap_or(0.0);
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("vibrance");
                     if inspector_row(ui, "Vibrance", &mut vval, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
                         node.params.vibrance = Some(vval);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "vibrance".into(), value: vval });
@@ -1389,6 +1437,8 @@ impl NodeInspectorPanel {
                             "whites" => node.params.whites.unwrap_or(default),
                             _ => node.params.blacks.unwrap_or(default),
                         };
+                        #[cfg(any(test, feature = "row-recorder"))]
+                        crate::widgets::row_recorder::next_parameter(param_name);
                         if inspector_row(ui, label, &mut val, -1.0..=1.0, default, "", theme, cmds, clip_id) {
                             node.params.apply_override(param_name, val);
                             cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: param_name.into(), value: val });
@@ -1415,6 +1465,8 @@ impl NodeInspectorPanel {
                 }
                 // Temperature: blue → orange gradient
                 let mut temp = node.params.temperature.unwrap_or(0.0);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::next_parameter("temperature");
                 if gradient_slider_row(ui, "Temperature", &mut temp, -50.0..=50.0, 0.0,
                     egui::Color32::from_rgb(0x6a, 0xb4, 0xf5),
                     egui::Color32::from_rgb(0xf5, 0xa0, 0x5a), theme, cmds, clip_id)
@@ -1425,6 +1477,8 @@ impl NodeInspectorPanel {
 
                 // Tint: green → pink gradient
                 let mut tint = node.params.tint.unwrap_or(0.0);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::next_parameter("tint");
                 if gradient_slider_row(ui, "Tint", &mut tint, -50.0..=50.0, 0.0,
                     egui::Color32::from_rgb(0xa8, 0xf5, 0xa8),
                     egui::Color32::from_rgb(0xf5, 0xa8, 0xc8), theme, cmds, clip_id)
@@ -1453,6 +1507,8 @@ impl NodeInspectorPanel {
 
                 // Hue: rainbow spectrum
                 let mut hue = node.params.hue.unwrap_or(0.0);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::next_parameter("hue");
                 if hue_slider_row(ui, "Hue", &mut hue, theme, cmds, clip_id) {
                     node.params.hue = Some(hue);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "hue".into(), value: hue });
@@ -1460,6 +1516,8 @@ impl NodeInspectorPanel {
 
                 // Global Mix: subtle grey → white
                 let mut mix = node.params.global_mix.unwrap_or(1.0);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::next_parameter("global_mix");
                 if gradient_slider_row(ui, "Global Mix", &mut mix, 0.0..=1.0, 1.0,
                     theme.overlay(20),
                     theme.overlay(90), theme, cmds, clip_id)
@@ -1486,16 +1544,22 @@ impl NodeInspectorPanel {
                         });
                     }
                     let mut luma = node.params.denoise_luma.unwrap_or(0.0);
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("denoise_luma");
                     if inspector_row(ui, "Luma", &mut luma, 0.0..=1.0, 0.0, "", theme, cmds, clip_id) {
                         node.params.denoise_luma = Some(luma);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_luma".into(), value: luma });
                     }
                     let mut chroma = node.params.denoise_chroma.unwrap_or(0.0);
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("denoise_chroma");
                     if inspector_row(ui, "Chroma", &mut chroma, 0.0..=1.0, 0.0, "", theme, cmds, clip_id) {
                         node.params.denoise_chroma = Some(chroma);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_chroma".into(), value: chroma });
                     }
                     let mut radius = node.params.denoise_radius.unwrap_or(3) as f32;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("denoise_radius");
                     if inspector_row(ui, "Radius", &mut radius, 1.0..=DENOISE_RADIUS_MAX, 3.0, "px", theme, cmds, clip_id) {
                         let r = radius.round() as u32;
                         node.params.denoise_radius = Some(r);
@@ -1585,6 +1649,8 @@ impl NodeInspectorPanel {
     /// The InputTransform node's editor: the clip's input colour space.
     fn show_input_colour_space(&self, ui: &mut egui::Ui, clip_id: ClipId, cmds: &mut Vec<AppCommand>, theme: &KlippTheme) {
         let (current, detected) = self.input_colour_space;
+        #[cfg(any(test, feature = "row-recorder"))]
+        crate::widgets::row_recorder::control(ui.next_auto_id(), "choice", "log_format", "Input Colour Space", current);
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.add_space(12.0);
@@ -1635,6 +1701,8 @@ impl NodeInspectorPanel {
         wide_layout: bool,
     ) {
         let clip_time_secs = frame.time_secs;
+        #[cfg(any(test, feature = "row-recorder"))]
+        let _recording_scope = crate::widgets::row_recorder::scope(format!("grade/{kind:?}"));
         let enabled_track = keyframes.tracks.iter().find(|t| t.param_name == klipp_nodes::ENABLED_TRACK);
         let bypass_track_has_kfs = enabled_track.is_some_and(|t| !t.keyframes.is_empty());
         let selected = enabled_track.and_then(|t| crate::inspector::keyframe_selection::nearest(&t.keyframes, clip_time_secs, frame.tolerance).map(|i| &t.keyframes[i]));
@@ -1718,6 +1786,8 @@ impl NodeInspectorPanel {
         match kind {
             NodeKind::Exposure => {
                 let mut val = params.exposure.unwrap_or(0.0);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::next_parameter("exposure");
                 if grade_slider(ui, "Exposure", &mut val, -3.0..=3.0, "stops", cmds, clip_id, theme) {
                     params.exposure = Some(val);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "exposure".into(), value: val });
@@ -1725,6 +1795,8 @@ impl NodeInspectorPanel {
             }
             NodeKind::Contrast => {
                 let mut val = params.contrast.unwrap_or(0.0);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::next_parameter("contrast");
                 if grade_slider(ui, "Contrast", &mut val, -1.0..=1.0, "", cmds, clip_id, theme) {
                     params.contrast = Some(val);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "contrast".into(), value: val });
@@ -1744,6 +1816,8 @@ impl NodeInspectorPanel {
                 let mut shown = pivot_shown(
                     params.contrast_pivot.unwrap_or(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
                 );
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::next_parameter("contrast_pivot");
                 if grade_slider(
                     ui, "Pivot", &mut shown,
                     pivot_shown(klipp_color::grade_model::MIN_CONTRAST_PIVOT)
@@ -1758,6 +1832,8 @@ impl NodeInspectorPanel {
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "contrast_pivot".into(), value: linear });
                 }
                 let mut cval = params.clarity.unwrap_or(0.0);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::next_parameter("clarity");
                 if grade_slider(ui, "Clarity", &mut cval, -1.0..=1.0, "", cmds, clip_id, theme) {
                     params.clarity = Some(cval);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "clarity".into(), value: cval });
@@ -1765,11 +1841,15 @@ impl NodeInspectorPanel {
             }
             NodeKind::Saturation => {
                 let mut val = params.saturation.unwrap_or(1.0);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::next_parameter("saturation");
                 if grade_slider(ui, "Saturation", &mut val, 0.0..=2.0, "", cmds, clip_id, theme) {
                     params.saturation = Some(val);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "saturation".into(), value: val });
                 }
                 let mut vval = params.vibrance.unwrap_or(0.0);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::next_parameter("vibrance");
                 if grade_slider(ui, "Vibrance", &mut vval, -1.0..=1.0, "", cmds, clip_id, theme) {
                     params.vibrance = Some(vval);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "vibrance".into(), value: vval });
@@ -1783,6 +1863,8 @@ impl NodeInspectorPanel {
                     ("Blacks", params.blacks.unwrap_or(0.0), "blacks"),
                 ] {
                     let mut val = field;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter(param_name);
                     if grade_slider(ui, label, &mut val, -1.0..=1.0, "", cmds, clip_id, theme) {
                         params.apply_override(param_name, val);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: param_name.into(), value: val });
@@ -1801,6 +1883,8 @@ impl NodeInspectorPanel {
 
                 // Linear / Log mode toggle tabs
                 let log_mode = params.wheels_log_mode.unwrap_or(false);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::control(ui.next_auto_id(), "choice", "wheels_log_mode", "Linear / Log (HDR)", log_mode);
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
                     let linear_sel = !log_mode;
@@ -1828,6 +1912,8 @@ impl NodeInspectorPanel {
                 {
                     let mut offset = [x.unwrap_or(0.0), y.unwrap_or(0.0)];
                     let mut master = m.unwrap_or(0.0);
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::control(ui.next_auto_id(), "colour_wheel", prefix, label, (offset, master));
                     let resp = color_wheel::color_wheel_sized(
                         ui, state, theme, label, &mut offset, &mut master, wheel_d, Some(cell_w),
                     );
@@ -1874,6 +1960,11 @@ impl NodeInspectorPanel {
                             ("B", bri, "bri", "Brightness"),
                         ] {
                             let mut v = field.unwrap_or(0.0);
+                            #[cfg(any(test, feature = "row-recorder"))]
+                            {
+                                crate::widgets::row_recorder::next_parameter(&format!("{prefix}_{suffix}"));
+                                crate::widgets::row_recorder::numeric(ui.next_auto_id(), "wheel_slider", letter, v, &(-1.0..=1.0), None, None, Some(2), "", None);
+                            }
                             let r = ui.horizontal(|ui| {
                                 ui.add_sized(
                                     [LETTER_W, 14.0],
@@ -2007,11 +2098,15 @@ impl NodeInspectorPanel {
                                 });
                             }
                             let mut s = sat_val;
+                            #[cfg(any(test, feature = "row-recorder"))]
+                            crate::widgets::row_recorder::next_parameter(sat_name);
                             if inspector_row(ui, "Saturation", &mut s, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
                                 params.apply_override(sat_name, s);
                                 cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name.into(), value: s });
                             }
                             let mut b = bri_val;
+                            #[cfg(any(test, feature = "row-recorder"))]
+                            crate::widgets::row_recorder::next_parameter(bri_name);
                             if inspector_row(ui, "Brightness", &mut b, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
                                 params.apply_override(bri_name, b);
                                 cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.into(), value: b });
@@ -2094,6 +2189,8 @@ impl NodeInspectorPanel {
                     ui.horizontal(|ui| {
                         ui.add_space(PAD);
                         let hist = self.histogram_for(ch).copied();
+                        #[cfg(any(test, feature = "row-recorder"))]
+                        crate::widgets::row_recorder::control(ui.next_auto_id(), "rgb_curve", &format!("curves/{ch:?}"), &format!("{ch:?}"), &*points);
                         let resp = curves_editor::curves_editor_sized(
                             ui, theme, ch, points, curve_h, hist.as_ref(),
                         );
@@ -2109,6 +2206,8 @@ impl NodeInspectorPanel {
                 ui.horizontal(|ui| {
                     ui.add_space(PAD);
                     let mut preserve = params.curves_preserve_luma.unwrap_or(false);
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", "curves_preserve_luma", "Preserve Luma", preserve);
                     if ui.checkbox(&mut preserve, egui::RichText::new("Preserve Luma").size(11.0)
                         .color(theme.overlay(140))).changed()
                     {
@@ -2120,6 +2219,8 @@ impl NodeInspectorPanel {
 
                 // Mix slider — same style as Color tab
                 let mut mix = params.curves_mix.unwrap_or(1.0);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::next_parameter("curves_mix");
                 if inspector_row(ui, "Mix", &mut mix, 0.0..=1.0, 1.0, "", theme, cmds, clip_id) {
                     params.curves_mix = Some(mix);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "curves_mix".into(), value: mix });
@@ -2266,6 +2367,8 @@ impl NodeInspectorPanel {
                         // 4, 5 and 6 all read the incoming saturation.
                         _ => curves_editor::CurveAxis::Saturation,
                     };
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::control(ui.next_auto_id(), "huesat_curve", &format!("huesat/{curve_idx}"), label, &*points);
                     let resp = curves_editor::curves_editor_in(
                         ui, theme, *channel, points, curve_h, hist.as_ref(),
                         // Relative: the pipeline fills these LUTs with
@@ -2288,6 +2391,8 @@ impl NodeInspectorPanel {
 
                 // Mix slider
                 let mut mix = params.huesat_mix.unwrap_or(1.0);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::next_parameter("huesat_mix");
                 if inspector_row(ui, "Mix", &mut mix, 0.0..=1.0, 1.0, "", theme, cmds, clip_id) {
                     params.huesat_mix = Some(mix);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "huesat_mix".into(), value: mix });
@@ -2301,6 +2406,8 @@ impl NodeInspectorPanel {
                     ("Global Mix", "global_mix", params.global_mix.unwrap_or(1.0), 0.0..=1.0),
                 ] {
                     let mut v = val;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter(pname);
                     if grade_slider(ui, label, &mut v, range, "", cmds, clip_id, theme) {
                         params.apply_override(pname, v);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: pname.into(), value: v });
@@ -2318,6 +2425,8 @@ impl NodeInspectorPanel {
                 let mut edited = before.clone();
                 let qual = &mut edited;
                 ui.horizontal(|ui| {
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", "qualifier.enabled", "Enabled", qual.enabled);
                     ui.checkbox(&mut qual.enabled, "Enabled");
                     let pick = ui.add(egui::Button::image(Icon::Eyedropper.image(12.0).tint(theme.overlay(160))).min_size(egui::vec2(22.0, 18.0)))
                         .on_hover_text("Pick a colour: click it in the viewer to key it");
@@ -2327,35 +2436,63 @@ impl NodeInspectorPanel {
                 });
                 if qual.enabled {
                     let mut hc = qual.hue_center;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("qualifier.hue_center");
                     if grade_slider(ui, "Hue Center", &mut hc, 0.0..=360.0, "deg", cmds, clip_id, theme) { qual.hue_center = hc; }
                     let mut hw = qual.hue_width;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("qualifier.hue_width");
                     if grade_slider(ui, "Hue Width", &mut hw, 0.0..=180.0, "deg", cmds, clip_id, theme) { qual.hue_width = hw; }
                     let mut hs = qual.hue_soft;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("qualifier.hue_soft");
                     if grade_slider(ui, "Hue Soft", &mut hs, 0.0..=90.0, "deg", cmds, clip_id, theme) { qual.hue_soft = hs; }
                     ui.add_space(4.0);
                     let mut sl = qual.sat_low;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("qualifier.sat_low");
                     if grade_slider(ui, "Sat Low", &mut sl, 0.0..=1.0, "", cmds, clip_id, theme) { qual.sat_low = sl; }
                     let mut sh = qual.sat_high;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("qualifier.sat_high");
                     if grade_slider(ui, "Sat High", &mut sh, 0.0..=1.0, "", cmds, clip_id, theme) { qual.sat_high = sh; }
                     let mut ss = qual.sat_soft;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("qualifier.sat_soft");
                     if grade_slider(ui, "Sat Soft", &mut ss, 0.0..=1.0, "", cmds, clip_id, theme) { qual.sat_soft = ss; }
                     ui.add_space(4.0);
                     let mut ll = qual.lum_low;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("qualifier.lum_low");
                     if grade_slider(ui, "Lum Low", &mut ll, 0.0..=1.0, "", cmds, clip_id, theme) { qual.lum_low = ll; }
                     let mut lh = qual.lum_high;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("qualifier.lum_high");
                     if grade_slider(ui, "Lum High", &mut lh, 0.0..=1.0, "", cmds, clip_id, theme) { qual.lum_high = lh; }
                     let mut ls = qual.lum_soft;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("qualifier.lum_soft");
                     if grade_slider(ui, "Lum Soft", &mut ls, 0.0..=1.0, "", cmds, clip_id, theme) { qual.lum_soft = ls; }
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", "qualifier.invert", "Invert", qual.invert);
                     ui.checkbox(&mut qual.invert, "Invert");
                     ui.add_space(4.0);
                     ui.label(egui::RichText::new("Matte Finesse").size(10.0).color(theme.text_dim));
                     let mut cb = qual.clean_black;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("qualifier.clean_black");
                     if grade_slider(ui, "Clean Black", &mut cb, 0.0..=1.0, "", cmds, clip_id, theme) { qual.clean_black = cb; }
                     let mut cw = qual.clean_white;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("qualifier.clean_white");
                     if grade_slider(ui, "Clean White", &mut cw, 0.0..=1.0, "", cmds, clip_id, theme) { qual.clean_white = cw; }
                     let mut sg = qual.shrink_grow;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("qualifier.shrink_grow");
                     if grade_slider(ui, "Shrink / Grow", &mut sg, -20.0..=20.0, "px", cmds, clip_id, theme) { qual.shrink_grow = sg; }
                     let mut bl = qual.blur;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("qualifier.blur");
                     if grade_slider(ui, "Blur", &mut bl, 0.0..=50.0, "px", cmds, clip_id, theme) { qual.blur = bl; }
                 }
                 if edited != before {
@@ -2367,14 +2504,24 @@ impl NodeInspectorPanel {
                 let before = params.luma_key.clone().unwrap_or_default();
                 let mut edited = before.clone();
                 let lk = &mut edited;
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", "luma_key.enabled", "Enabled", lk.enabled);
                 ui.checkbox(&mut lk.enabled, "Enabled");
                 if lk.enabled {
                     let mut low = lk.low;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("luma_key.low");
                     if grade_slider(ui, "Low", &mut low, 0.0..=1.0, "", cmds, clip_id, theme) { lk.low = low; }
                     let mut high = lk.high;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("luma_key.high");
                     if grade_slider(ui, "High", &mut high, 0.0..=1.0, "", cmds, clip_id, theme) { lk.high = high; }
                     let mut soft = lk.soft;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("luma_key.soft");
                     if grade_slider(ui, "Soft", &mut soft, 0.0..=0.5, "", cmds, clip_id, theme) { lk.soft = soft; }
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", "luma_key.invert", "Invert", lk.invert);
                     ui.checkbox(&mut lk.invert, "Invert");
                 }
                 if edited != before {
@@ -2386,11 +2533,17 @@ impl NodeInspectorPanel {
                 let before = params.soft_clip.clone().unwrap_or_default();
                 let mut edited = before.clone();
                 let sc = &mut edited;
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", "soft_clip.enabled", "Enabled", sc.enabled);
                 ui.checkbox(&mut sc.enabled, "Enabled");
                 if sc.enabled {
                     let mut threshold = sc.threshold;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("soft_clip.threshold");
                     if grade_slider(ui, "Threshold", &mut threshold, 0.0..=1.0, "", cmds, clip_id, theme) { sc.threshold = threshold; }
                     let mut knee = sc.knee;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("soft_clip.knee");
                     if grade_slider(ui, "Knee", &mut knee, 0.0..=0.5, "", cmds, clip_id, theme) { sc.knee = knee; }
                 }
                 if edited != before {
@@ -2408,16 +2561,28 @@ impl NodeInspectorPanel {
                 let before = params.grain.clone().unwrap_or_default();
                 let mut edited = before.clone();
                 let grain = &mut edited;
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", "grain.enabled", "Enabled", grain.enabled);
                 ui.checkbox(&mut grain.enabled, "Enabled");
                 if grain.enabled {
                     let mut a = grain.amount;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("grain.amount");
                     if grade_slider(ui, "Amount", &mut a, 0.0..=1.0, "", cmds, clip_id, theme) { grain.amount = a; }
                     let mut s = grain.size;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("grain.size");
                     if grade_slider(ui, "Size", &mut s, 0.5..=3.0, "", cmds, clip_id, theme) { grain.size = s; }
                     let mut sh = grain.shadows;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("grain.shadows");
                     if grade_slider(ui, "Shadows", &mut sh, 0.0..=1.0, "", cmds, clip_id, theme) { grain.shadows = sh; }
                     let mut hi = grain.highlights;
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("grain.highlights");
                     if grade_slider(ui, "Highlights", &mut hi, 0.0..=1.0, "", cmds, clip_id, theme) { grain.highlights = hi; }
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", "grain.monochrome", "Monochrome", grain.monochrome);
                     ui.checkbox(&mut grain.monochrome, "Monochrome");
                 }
                 if edited != before {
@@ -2425,6 +2590,8 @@ impl NodeInspectorPanel {
                 }
             }
             NodeKind::Lut3D => {
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::control(ui.next_auto_id(), "lut_picker", "lut_path", "LUT", &params.lut_path);
                 if let Some(path) = &params.lut_path {
                     let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| path.display().to_string());
                     ui.label(egui::RichText::new(name).size(11.0)).on_hover_text(path.display().to_string());
@@ -2466,6 +2633,8 @@ impl NodeInspectorPanel {
                     }
                 });
                 let mut opacity = params.lut_opacity.unwrap_or(1.0);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::next_parameter("lut_opacity");
                 if grade_slider(ui, "Opacity", &mut opacity, 0.0..=1.0, "", cmds, clip_id, theme) {
                     params.lut_opacity = Some(opacity);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "lut_opacity".into(), value: opacity });
@@ -2496,6 +2665,8 @@ impl NodeInspectorPanel {
                 // slider showed 1.0 for both (#1039).
                 let unset = if *kind == NodeKind::Blend { 0.5 } else { 1.0 };
                 let mut mix = params.mix.unwrap_or(unset);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::next_parameter("mix");
                 if grade_slider(ui, "Mix", &mut mix, 0.0..=1.0, "", cmds, clip_id, theme) {
                     params.mix = Some(mix);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "mix".into(), value: mix });
@@ -2503,16 +2674,22 @@ impl NodeInspectorPanel {
             }
             NodeKind::Denoise => {
                 let mut luma = params.denoise_luma.unwrap_or(0.0);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::next_parameter("denoise_luma");
                 if grade_slider(ui, "Luma Strength", &mut luma, 0.0..=1.0, "", cmds, clip_id, theme) {
                     params.denoise_luma = Some(luma);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "denoise_luma".into(), value: luma });
                 }
                 let mut chroma = params.denoise_chroma.unwrap_or(0.0);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::next_parameter("denoise_chroma");
                 if grade_slider(ui, "Chroma Strength", &mut chroma, 0.0..=1.0, "", cmds, clip_id, theme) {
                     params.denoise_chroma = Some(chroma);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "denoise_chroma".into(), value: chroma });
                 }
                 let mut radius = params.denoise_radius.unwrap_or(3) as f32;
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::next_parameter("denoise_radius");
                 if grade_slider(ui, "Radius", &mut radius, 1.0..=DENOISE_RADIUS_MAX, "px", cmds, clip_id, theme) {
                     let r = radius.round() as u32;
                     params.denoise_radius = Some(r);
@@ -2548,6 +2725,8 @@ impl NodeInspectorPanel {
                 let mut chosen = current;
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Combine").small().color(theme.text_dim));
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::control(ui.next_auto_id(), "choice", "matte_combine_op", "Combine", current);
                     egui::ComboBox::from_id_salt(("matte_combine_op", node_id))
                         .selected_text(chosen.display_name())
                         .show_ui(ui, |ui| {
@@ -2743,6 +2922,8 @@ impl NodeInspectorPanel {
         cmds: &mut Vec<AppCommand>,
         theme: &crate::theme::KlippTheme,
     ) {
+        #[cfg(any(test, feature = "row-recorder"))]
+        crate::widgets::row_recorder::control(ui.next_auto_id(), "image_picker", "matte_image_path", "Choose image…", &params.matte_image_path);
         // File picker.
         ui.horizontal(|ui| {
             ui.add_space(8.0);
@@ -2787,6 +2968,8 @@ impl NodeInspectorPanel {
             ui.add_space(8.0);
             ui.label(egui::RichText::new("Source").small().color(theme.text_dim));
             let mut new_channel = current_channel;
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::control(ui.next_auto_id(), "choice", "matte_channel", "Source", current_channel);
             egui::ComboBox::from_id_salt(("ext_matte_channel", node_id))
                 .selected_text(new_channel.display_name())
                 .show_ui(ui, |ui| {
@@ -2808,6 +2991,8 @@ impl NodeInspectorPanel {
         ui.horizontal(|ui| {
             ui.add_space(8.0);
             let mut inv = invert;
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", "matte_invert", "Invert", inv);
             if ui.checkbox(&mut inv, "Invert").changed() {
                 params.matte_invert = Some(inv);
                 cmds.push(AppCommand::SetExternalMatteChannel {
@@ -2837,6 +3022,8 @@ impl NodeInspectorPanel {
 
         // Enable / disable the whole node.
         let mut enabled = dk.enabled;
+        #[cfg(any(test, feature = "row-recorder"))]
+        crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", "difference_key.enabled", "Enabled", enabled);
         if ui.checkbox(&mut enabled, "Enabled").changed() {
             dk.enabled = enabled;
             cmds.push(AppCommand::SetNodeDifferenceKey {
@@ -2887,11 +3074,15 @@ impl NodeInspectorPanel {
         ui.add_space(4.0);
 
         // Match-space dropdown (RGB / Luminance).
+        #[cfg(any(test, feature = "row-recorder"))]
+        crate::widgets::row_recorder::control(ui.next_auto_id(), "plate_picker", "difference_key.plate_path", "Plate", &dk.plate_path);
         let current_space = dk.match_space;
         ui.horizontal(|ui| {
             ui.add_space(8.0);
             ui.label(egui::RichText::new("Match").small().color(theme.text_dim));
             let mut new_space = current_space;
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::control(ui.next_auto_id(), "choice", "difference_key.match_space", "Match", current_space);
             egui::ComboBox::from_id_salt(("diff_key_match_space", node_id))
                 .selected_text(match new_space {
                     klipp_core::DifferenceKeyMatchSpace::Rgb => "RGB",
@@ -2919,6 +3110,8 @@ impl NodeInspectorPanel {
 
         // Tolerance + soft sliders.
         let mut tolerance = dk.tolerance;
+        #[cfg(any(test, feature = "row-recorder"))]
+        crate::widgets::row_recorder::next_parameter("difference_key.tolerance");
         if grade_slider(ui, "Tolerance", &mut tolerance, 0.0..=1.0, "", cmds, clip_id, theme) {
             dk.tolerance = tolerance;
             cmds.push(AppCommand::SetNodeDifferenceKey {
@@ -2926,6 +3119,8 @@ impl NodeInspectorPanel {
             });
         }
         let mut soft = dk.soft;
+        #[cfg(any(test, feature = "row-recorder"))]
+        crate::widgets::row_recorder::next_parameter("difference_key.soft");
         if grade_slider(ui, "Soft", &mut soft, 0.0..=0.5, "", cmds, clip_id, theme) {
             dk.soft = soft;
             cmds.push(AppCommand::SetNodeDifferenceKey {
@@ -2936,6 +3131,8 @@ impl NodeInspectorPanel {
         ui.horizontal(|ui| {
             ui.add_space(8.0);
             let mut invert = dk.invert;
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", "difference_key.invert", "Invert", invert);
             if ui.checkbox(&mut invert, "Invert").changed() {
                 dk.invert = invert;
                 cmds.push(AppCommand::SetNodeDifferenceKey {
@@ -2960,6 +3157,8 @@ impl NodeInspectorPanel {
         theme: &crate::theme::KlippTheme,
     ) {
         let mixer = params.layer_mixer.get_or_insert_with(Default::default);
+        #[cfg(any(test, feature = "row-recorder"))]
+        crate::widgets::row_recorder::control(ui.next_auto_id(), "layer_mixer", "layer_mixer", "Inputs", &*mixer);
         if mixer.inputs.is_empty() {
             ui.label(
                 egui::RichText::new(
@@ -2970,11 +3169,18 @@ impl NodeInspectorPanel {
         }
         let count = mixer.inputs.len();
         for port in 0..count {
+            #[cfg(any(test, feature = "row-recorder"))]
+            let _record_scope = crate::widgets::row_recorder::scope(format!("input/{port}"));
             let input_settings = mixer.inputs[port];
             let label = if port == 0 { "Input 1 (top)".to_string() }
                 else { format!("Input {}", port + 1) };
             ui.label(egui::RichText::new(label).strong().small());
             let mut opacity = input_settings.opacity;
+            #[cfg(any(test, feature = "row-recorder"))]
+            {
+                crate::widgets::row_recorder::next_parameter("layer_mixer.opacity");
+                crate::widgets::row_recorder::numeric(ui.next_auto_id(), "slider", "Opacity", opacity, &(0.0..=1.0), None, None, Some(2), "", None);
+            }
             let resp = ui.add(
                 egui::Slider::new(&mut opacity, 0.0..=1.0)
                     .text("Opacity")
@@ -2982,6 +3188,8 @@ impl NodeInspectorPanel {
             );
             let mut blend = input_settings.blend_mode;
             let mut blend_changed = false;
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::control(ui.next_auto_id(), "choice", "layer_mixer.blend_mode", "Blend", blend);
             egui::ComboBox::from_id_salt(("layer_mixer_blend", node_id, port))
                 .selected_text(blend.display_name())
                 .show_ui(ui, |ui| {
@@ -3082,6 +3290,8 @@ impl NodeInspectorPanel {
         theme: &KlippTheme,
     ) {
         let warper = params.warper_params.get_or_insert_with(Default::default);
+        #[cfg(any(test, feature = "row-recorder"))]
+        crate::widgets::row_recorder::control(ui.next_auto_id(), "colour_warper", "warper_params", "Colour Warper", &*warper);
 
         // Allocate the full width so the wheel lands in the middle of
         // the panel. Allocating only the circle's own footprint left it
@@ -3588,6 +3798,8 @@ fn inspector_row(
     clip_id: ClipId,
 ) -> bool {
     let id = ui.next_auto_id();
+    #[cfg(any(test, feature = "row-recorder"))]
+    crate::widgets::row_recorder::numeric(id, "inspector_slider", label, *value, &range, Some(default), None, Some(2), suffix, None);
     let editing = slider_value_editing(ui, id);
     let avail_w = ui.available_width();
     let range_span = (range.end() - range.start()).abs();
@@ -3872,6 +4084,8 @@ fn gradient_slider_row(
     clip_id: ClipId,
 ) -> bool {
     let id = ui.next_auto_id();
+    #[cfg(any(test, feature = "row-recorder"))]
+    crate::widgets::row_recorder::numeric(id, "gradient_slider", label, *value, &range, Some(default), None, Some(2), "", None);
     let editing = slider_value_editing(ui, id);
     let avail_w = ui.available_width();
     let range_span = (range.end() - range.start()).abs();
@@ -3942,6 +4156,8 @@ fn hue_slider_row(
     clip_id: ClipId,
 ) -> bool {
     let id = ui.next_auto_id();
+    #[cfg(any(test, feature = "row-recorder"))]
+    crate::widgets::row_recorder::numeric(id, "hue_slider", label, *value, &(0.0..=360.0), Some(0.0), None, Some(2), "", None);
     let editing = slider_value_editing(ui, id);
     let avail_w = ui.available_width();
     let label_w = (avail_w * 0.28).max(50.0);
@@ -4040,6 +4256,8 @@ fn lut_colorspace_dropdown(
         );
         let mut current_tag: u8 = field.map(|w| w.as_u8()).unwrap_or(USE_LUT_DEFAULT);
         let prev_tag = current_tag;
+        #[cfg(any(test, feature = "row-recorder"))]
+        crate::widgets::row_recorder::control(ui.next_auto_id(), "choice", param_key, label, *field);
         egui::ComboBox::from_id_salt((param_key, node_id))
             .width(150.0)
             .selected_text(label_text)
@@ -4162,6 +4380,8 @@ fn wheel_shape_sliders(
     // the gesture's BeginNodeParamEdit takes, so undo would return to it.
     for (label, pname, val, range) in rows {
         let mut v = val;
+        #[cfg(any(test, feature = "row-recorder"))]
+        crate::widgets::row_recorder::next_parameter(pname);
         if grade_slider(ui, label, &mut v, range, "", cmds, clip_id, theme) {
             cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: pname.into(), value: v });
         }
@@ -4185,6 +4405,8 @@ fn grade_slider(
     let w = (ui.available_width() - pad * 2.0).max(60.0);
     let range_span = (range.end() - range.start()).abs();
     let speed = range_span / 800.0;
+    #[cfg(any(test, feature = "row-recorder"))]
+    crate::widgets::row_recorder::numeric(ui.next_auto_id(), "grade_slider", label, *value, &range, None, Some(f64::from(speed)), Some(2), suffix, None);
     let mut changed = false;
     // Begin/End signals collected inside the horizontal closures (which can't
     // mutably borrow `cmds` directly) and flushed after each closure returns.

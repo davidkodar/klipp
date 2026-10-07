@@ -10,6 +10,8 @@ pub mod scopes;
 pub mod scope_window;
 pub mod role_pill;
 pub mod scrubby_param;
+#[cfg(any(test, feature = "row-recorder"))]
+pub mod row_recorder;
 pub mod segmented;
 pub use scrubby_param::EasePreset;
 pub mod slider;

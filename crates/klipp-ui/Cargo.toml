@@ -6,6 +6,8 @@ license.workspace = true
 
 [features]
 default = []
+# Observe old inspector rows in headless tests; absent from ordinary builds.
+row-recorder = []
 # Pulls in the ort-backed BiRefNet implementation. With this on,
 # the AI Tools panel auto-registers BiRefNet for Remove Background.
 # Requires libonnxruntime.so on the user's machine + ORT_DYLIB_PATH
@@ -88,3 +90,7 @@ klipp-convert = { path = "../klipp-convert" }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "old_inspector_rows"
+required-features = ["row-recorder"]
