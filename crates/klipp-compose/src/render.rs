@@ -2235,7 +2235,14 @@ impl Renderer {
     /// selectable ([`Self::set_legacy_effects`], or `KLIPP_LEGACY_EFFECTS=1`)
     /// until M2's effect families are native.
     fn effects_follow_grade_on_gpu(&self, clip: &Clip, hdr: bool, fx: &[BuiltinEffect]) -> bool {
+        // An effect that needs other times (a stabilisation trajectory,
+        // rolling-shutter motion: data the renderer uploads to its own
+        // pipeline in `prepare_temporal_effects`, not the executor's) stays
+        // on the legacy route until step 12 brings its side data into the
+        // plan. Read from the registry, so a new such type is covered.
+        let analysis_driven = fx.iter().any(klipp_effects::registry::needs_other_times);
         !self.legacy_effects
+            && !analysis_driven
             && self.allow_gpu
             && has_active_effects(fx)
             && klipp_effects::chain_supports_gpu(fx)
