@@ -690,8 +690,8 @@ pub fn poll_until_mapped(
 
 
 /// Where a mixed effect's matte comes from (#1242): pixels made on the
-/// CPU, uploaded into its pool slot; or a window's shapes, drawn into the
-/// slot on the GPU, in the chain's encoder, with nothing made on the CPU.
+/// CPU, uploaded into its pool slot; or a window's shapes, worked out per
+/// pixel inside the mix on the GPU, with no matte made anywhere (#1252).
 #[derive(Clone, Copy)]
 pub enum EffectMatte<'a> {
     Pixels(&'a [f32]),
@@ -6233,12 +6233,11 @@ impl GpuEffectsPipeline {
         self.plate_read_in_chain |= plate_read;
     }
 
-    /// Draw a window's shapes into the pool slot `id` on the GPU, recorded
-    /// in the chain's encoder (#1242). Each call gets its own shape and
-    /// parameter buffers: several masked effects in one encoder would
-    /// otherwise share one upload, and the queue writes all land before
-    /// the encoder runs.
-    fn record_window_into_slot(&mut self, id: slots::SlotId, width: u32, height: u32, masks: &[GpuMaskDef]) {
+    /// A window's shapes as the buffers the window mix reads (#1252): its
+    /// shape records and its bezier points. Each call gets its own buffers:
+    /// several masked effects in one encoder would otherwise share one
+    /// upload, and the queue writes all land before the encoder runs.
+    fn window_buffers(&self, masks: &[GpuMaskDef]) -> (wgpu::Buffer, wgpu::Buffer) {
         let (records, points) = Self::build_mask_storage(masks);
         let records: &[u8] = if records.is_empty() {
             &[0u8; std::mem::size_of::<MaskRecord>()]
@@ -6246,38 +6245,24 @@ impl GpuEffectsPipeline {
             bytemuck::cast_slice(&records)
         };
         let points: &[u8] = if points.is_empty() { &[0u8; 8] } else { bytemuck::cast_slice(&points) };
-        let params = GpuMaskParams { width, height, mask_count: masks.len() as u32, _pad: 0 };
-        let make = |label: &str, bytes: &[u8], usage: wgpu::BufferUsages| {
+        let make = |label: &str, bytes: &[u8]| {
             let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
                 size: bytes.len() as u64,
-                usage: usage | wgpu::BufferUsages::COPY_DST,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
             self.queue.write_buffer(&buf, 0, bytes);
             buf
         };
-        let records = make("window_records", records, wgpu::BufferUsages::STORAGE);
-        let points = make("window_points", points, wgpu::BufferUsages::STORAGE);
-        let params = make("window_params", bytemuck::bytes_of(&params), wgpu::BufferUsages::UNIFORM);
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("window_into_slot"),
-            layout: &self.mask_pipeline.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.slot_pool.buffer(id).as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: records.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: points.as_entire_binding() },
-            ],
-        });
-        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.mask_pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
+        (make("window_records", records), make("window_points", points))
     }
 
     /// [`Self::chain_run_effects`], mixed back over the picture it started
     /// from (phase 2b M2, step 9c): by `mix`, and by the coverage `mask`
-    /// gives (straight RGBA of the frame's size, written to a pool slot;
-    /// none is white). The input is kept in a pool slot before the effects
+    /// gives (straight RGBA of the frame's size, in a pool slot; a window's
+    /// shapes, worked out inside the mix with no slot, #1252; none is
+    /// white). The input is kept in a pool slot before the effects
     /// run, and the mix writes the other chain buffer, so nothing aliases.
     /// `None` when the pool's budget refuses, before anything is recorded:
     /// the caller runs the node another way.
@@ -6307,8 +6292,14 @@ impl GpuEffectsPipeline {
         let device = &self.device;
         let kept = self.slot_pool.lease(image, |k| make(device, k)).ok()?;
         let keyed = matches!(mask, Some(EffectMatte::Keyed(_)));
+        // A window is drawn inside the mix itself: its shapes, no matte.
+        let window = match mask {
+            Some(EffectMatte::Shapes(masks)) => Some((self.window_buffers(masks), masks.len() as u32)),
+            _ => None,
+        };
         let matte = match mask {
             Some(EffectMatte::Keyed(m)) => Some(m.0),
+            Some(EffectMatte::Shapes(_)) | None => None,
             Some(source) => {
                 let device = &self.device;
                 match self.slot_pool.lease(SlotKey { usage: SlotUsage::Matte, ..image }, |k| make(device, k)) {
@@ -6318,10 +6309,7 @@ impl GpuEffectsPipeline {
                                 self.queue.write_buffer(self.slot_pool.buffer(id), 0, bytemuck::cast_slice(data));
                                 self.slot_pool.mark_cpu_written(id);
                             }
-                            // Drawn by the GPU in the chain's encoder, ahead
-                            // of the mix that reads it.
-                            EffectMatte::Shapes(masks) => self.record_window_into_slot(id, width, height, masks),
-                            EffectMatte::Keyed(_) => unreachable!("taken above"),
+                            EffectMatte::Shapes(_) | EffectMatte::Keyed(_) => unreachable!("taken above"),
                         }
                         Some(id)
                     }
@@ -6331,7 +6319,6 @@ impl GpuEffectsPipeline {
                     }
                 }
             }
-            None => None,
         };
         // The input, kept before the effects can write over it.
         {
@@ -6343,18 +6330,25 @@ impl GpuEffectsPipeline {
         // The mix's uniforms are claimed once the effects are recorded: an
         // effect that breaks the chain resets the ring. A full ring is
         // submitted and the chain goes on in a new one.
-        let mut params = self.claim_mask_mix(width, height, mix, matte.is_some(), false);
+        let claim = |gpu: &mut Self| match &window {
+            Some((_, count)) => gpu.claim_mask_mix_window(width, height, mix, *count),
+            None => gpu.claim_mask_mix(width, height, mix, matte.is_some(), false),
+        };
+        let mut params = claim(self);
         if params == Err(crate::mask_mix::MaskMixError::ParamsExhausted) {
             self.submit_chain();
             self.begin_chain();
-            params = self.claim_mask_mix(width, height, mix, matte.is_some(), false);
+            params = claim(self);
         }
         let recorded = match params {
             Ok(Some(slot)) => {
                 let mut encoder = self.chain_encoder.take().expect(Self::CHAIN_ENCODER_EXPECT);
                 let (a, b) = (self.buf_a.as_ref().expect("chain buffers"), self.buf_b.as_ref().expect("chain buffers"));
                 let (effect, out) = if run.in_a { (a, b) } else { (b, a) };
-                let r = self.record_mask_mix_in(&mut encoder, self.slot_pool.buffer(kept), effect, matte.map(|m| self.slot_pool.buffer(m)), out, width, height, slot);
+                let r = match &window {
+                    Some(((records, points), _)) => self.record_mask_mix_window_in(&mut encoder, self.slot_pool.buffer(kept), effect, records, points, out, width, height, slot),
+                    None => self.record_mask_mix_in(&mut encoder, self.slot_pool.buffer(kept), effect, matte.map(|m| self.slot_pool.buffer(m)), out, width, height, slot),
+                };
                 self.chain_encoder = Some(encoder);
                 r
             }
@@ -8669,6 +8663,159 @@ fn hue_rotate_hsl(c: vec3<f32>, degrees: f32) -> vec3<f32> {
 }
 "
         )
+    };
+}
+
+/// A window's shapes as WGSL: the `MaskRecord` layout and `eval_record`,
+/// the coverage of one shape at a pixel (signed distance, feather, invert,
+/// opacity). The including shader binds `points: array<vec2<f32>>`, which
+/// `bezier_sdf` reads. One copy for the window drawn into a matte
+/// (`SHADER_MASK_V2`) and the window drawn inside an effect's mix (#1252),
+/// so the two can't drift apart.
+macro_rules! mask_sdf_wgsl {
+    () => {
+        "
+struct MaskRecord {
+    shape_type: u32,
+    flags: u32,
+    bezier_offset: u32,
+    bezier_count: u32,
+    cx: f32, cy: f32, p1: f32, p2: f32,
+    p3: f32, feather: f32, _pad0: u32, _pad1: u32,
+    w0: vec4<f32>, w1: vec4<f32>, w2: vec4<f32>,
+}
+
+
+fn smooth_step_sdf(dist: f32, feather: f32) -> f32 {
+    if dist <= 0.0 { return 1.0; }
+    if feather > 0.0001 && dist < feather {
+        let t = dist / feather;
+        return 1.0 - t * t * (3.0 - 2.0 * t);
+    }
+    return 0.0;
+}
+
+// Signed-distance to a closed polygon using the same winding-
+// number + min edge distance algorithm as the CPU rasteriser at
+// klipp-color/src/masks.rs:80-115. Returns negative inside,
+// positive outside, in normalised width-relative units.
+fn bezier_sdf(nx: f32, ny: f32, aspect: f32, offset: u32, count: u32) -> f32 {
+    if count < 3u { return 1.0; }
+    let px = nx;
+    let py = ny * aspect;
+    var min_dist_sq: f32 = 1.0e30;
+    var winding: i32 = 0;
+    for (var i: u32 = 0u; i < count; i = i + 1u) {
+        let a_raw = points[offset + i];
+        let b_raw = points[offset + ((i + 1u) % count)];
+        let ax = a_raw.x;
+        let ay = a_raw.y * aspect;
+        let bx = b_raw.x;
+        let by = b_raw.y * aspect;
+        let ex = bx - ax;
+        let ey = by - ay;
+        let dx = px - ax;
+        let dy = py - ay;
+        let denom = ex * ex + ey * ey;
+        var t: f32 = 0.0;
+        if denom > 0.0 {
+            t = clamp((dx * ex + dy * ey) / denom, 0.0, 1.0);
+        }
+        let cx = ax + t * ex - px;
+        let cy = ay + t * ey - py;
+        let d2 = cx * cx + cy * cy;
+        if d2 < min_dist_sq { min_dist_sq = d2; }
+        // Winding-number contribution. CPU uses the classic
+        // ray-casting algorithm — match the branches exactly so
+        // the parity test stays clean.
+        if ay <= py {
+            if by > py {
+                let cross = ex * (py - ay) - ey * (px - ax);
+                if cross > 0.0 { winding = winding + 1; }
+            }
+        } else {
+            if by <= py {
+                let cross = ex * (py - ay) - ey * (px - ax);
+                if cross < 0.0 { winding = winding - 1; }
+            }
+        }
+    }
+    let dist = sqrt(min_dist_sq);
+    if winding != 0 { return -dist; }
+    return dist;
+}
+
+fn eval_record(rec: MaskRecord, px: f32, py: f32, aspect: f32) -> f32 {
+    // A window tracked in perspective is measured where the pixel was
+    // on the frame it was drawn on; past the horizon is outside. As the
+    // CPU rasteriser's PlaneMap::apply.
+    var nx = px;
+    var ny = py;
+    var behind = false;
+    if (rec.flags & 2u) != 0u {
+        let h = vec3<f32>(px, py, 1.0);
+        let w = dot(rec.w2.xyz, h);
+        if !(w > 1.0e-9) {
+            behind = true;
+        } else {
+            nx = dot(rec.w0.xyz, h) / w;
+            ny = dot(rec.w1.xyz, h) / w;
+        }
+    }
+    var dist: f32;
+    if behind { dist = 3.0e38; } else {
+    switch rec.shape_type {
+        case 0u: {
+            // circle
+            let dx = nx - rec.cx;
+            let dy = (ny - rec.cy) * aspect;
+            dist = sqrt(dx * dx + dy * dy) - rec.p1;
+        }
+        case 1u: {
+            // rectangle
+            let rad = rec.p3 * 3.14159265 / 180.0;
+            let cos_r = cos(rad);
+            let sin_r = sin(rad);
+            let dx = nx - rec.cx;
+            let dy = (ny - rec.cy) * aspect;
+            let lx = abs(dx * cos_r + dy * sin_r);
+            let ly = abs(-dx * sin_r + dy * cos_r);
+            let hw = rec.p1 / 2.0;
+            let hh = rec.p2 / 2.0;
+            let ox = lx - hw;
+            let oy = ly - hh;
+            let outside = sqrt(max(ox, 0.0) * max(ox, 0.0) + max(oy, 0.0) * max(oy, 0.0));
+            let inside = min(max(ox, oy), 0.0);
+            dist = outside + inside;
+        }
+        case 2u: {
+            // linear gradient
+            let gx = rec.p1 - rec.cx;
+            let gy = (rec.p2 - rec.cy) * aspect;
+            let glen2 = gx * gx + gy * gy;
+            if glen2 < 1.0e-8 {
+                dist = 0.0;
+            } else {
+                let dx = nx - rec.cx;
+                let dy = (ny - rec.cy) * aspect;
+                let t = (dx * gx + dy * gy) / glen2;
+                dist = t - 0.5;
+            }
+        }
+        case 3u: {
+            // bezier polygon
+            dist = bezier_sdf(nx, ny, aspect, rec.bezier_offset, rec.bezier_count);
+        }
+        default: { dist = 1.0; }
+    }
+    }
+    var m = smooth_step_sdf(dist, rec.feather);
+    if (rec.flags & 1u) != 0u { m = 1.0 - m; }
+    let opacity = f32((rec.flags >> 8u) & 0xFFu) / 255.0;
+    return m * opacity;
+}
+
+"
     };
 }
 
@@ -15568,6 +15715,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // conversion as long as readers don't gamma-encode it.
 const SHADER_MASK_V2: &str = concat!(
     shader_pixel_storage_wgsl!(),
+    mask_sdf_wgsl!(),
     "
 struct Params {
     width: u32,
@@ -15576,149 +15724,10 @@ struct Params {
     _pad: u32,
 }
 
-struct MaskRecord {
-    shape_type: u32,
-    flags: u32,
-    bezier_offset: u32,
-    bezier_count: u32,
-    cx: f32, cy: f32, p1: f32, p2: f32,
-    p3: f32, feather: f32, _pad0: u32, _pad1: u32,
-    w0: vec4<f32>, w1: vec4<f32>, w2: vec4<f32>,
-}
-
 @group(0) @binding(0) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(1) var<uniform> params: Params;
 @group(0) @binding(2) var<storage, read> records: array<MaskRecord>;
 @group(0) @binding(3) var<storage, read> points: array<vec2<f32>>;
-
-fn smooth_step_sdf(dist: f32, feather: f32) -> f32 {
-    if dist <= 0.0 { return 1.0; }
-    if feather > 0.0001 && dist < feather {
-        let t = dist / feather;
-        return 1.0 - t * t * (3.0 - 2.0 * t);
-    }
-    return 0.0;
-}
-
-// Signed-distance to a closed polygon using the same winding-
-// number + min edge distance algorithm as the CPU rasteriser at
-// klipp-color/src/masks.rs:80-115. Returns negative inside,
-// positive outside, in normalised width-relative units.
-fn bezier_sdf(nx: f32, ny: f32, aspect: f32, offset: u32, count: u32) -> f32 {
-    if count < 3u { return 1.0; }
-    let px = nx;
-    let py = ny * aspect;
-    var min_dist_sq: f32 = 1.0e30;
-    var winding: i32 = 0;
-    for (var i: u32 = 0u; i < count; i = i + 1u) {
-        let a_raw = points[offset + i];
-        let b_raw = points[offset + ((i + 1u) % count)];
-        let ax = a_raw.x;
-        let ay = a_raw.y * aspect;
-        let bx = b_raw.x;
-        let by = b_raw.y * aspect;
-        let ex = bx - ax;
-        let ey = by - ay;
-        let dx = px - ax;
-        let dy = py - ay;
-        let denom = ex * ex + ey * ey;
-        var t: f32 = 0.0;
-        if denom > 0.0 {
-            t = clamp((dx * ex + dy * ey) / denom, 0.0, 1.0);
-        }
-        let cx = ax + t * ex - px;
-        let cy = ay + t * ey - py;
-        let d2 = cx * cx + cy * cy;
-        if d2 < min_dist_sq { min_dist_sq = d2; }
-        // Winding-number contribution. CPU uses the classic
-        // ray-casting algorithm — match the branches exactly so
-        // the parity test stays clean.
-        if ay <= py {
-            if by > py {
-                let cross = ex * (py - ay) - ey * (px - ax);
-                if cross > 0.0 { winding = winding + 1; }
-            }
-        } else {
-            if by <= py {
-                let cross = ex * (py - ay) - ey * (px - ax);
-                if cross < 0.0 { winding = winding - 1; }
-            }
-        }
-    }
-    let dist = sqrt(min_dist_sq);
-    if winding != 0 { return -dist; }
-    return dist;
-}
-
-fn eval_record(rec: MaskRecord, px: f32, py: f32, aspect: f32) -> f32 {
-    // A window tracked in perspective is measured where the pixel was
-    // on the frame it was drawn on; past the horizon is outside. As the
-    // CPU rasteriser's PlaneMap::apply.
-    var nx = px;
-    var ny = py;
-    var behind = false;
-    if (rec.flags & 2u) != 0u {
-        let h = vec3<f32>(px, py, 1.0);
-        let w = dot(rec.w2.xyz, h);
-        if !(w > 1.0e-9) {
-            behind = true;
-        } else {
-            nx = dot(rec.w0.xyz, h) / w;
-            ny = dot(rec.w1.xyz, h) / w;
-        }
-    }
-    var dist: f32;
-    if behind { dist = 3.0e38; } else {
-    switch rec.shape_type {
-        case 0u: {
-            // circle
-            let dx = nx - rec.cx;
-            let dy = (ny - rec.cy) * aspect;
-            dist = sqrt(dx * dx + dy * dy) - rec.p1;
-        }
-        case 1u: {
-            // rectangle
-            let rad = rec.p3 * 3.14159265 / 180.0;
-            let cos_r = cos(rad);
-            let sin_r = sin(rad);
-            let dx = nx - rec.cx;
-            let dy = (ny - rec.cy) * aspect;
-            let lx = abs(dx * cos_r + dy * sin_r);
-            let ly = abs(-dx * sin_r + dy * cos_r);
-            let hw = rec.p1 / 2.0;
-            let hh = rec.p2 / 2.0;
-            let ox = lx - hw;
-            let oy = ly - hh;
-            let outside = sqrt(max(ox, 0.0) * max(ox, 0.0) + max(oy, 0.0) * max(oy, 0.0));
-            let inside = min(max(ox, oy), 0.0);
-            dist = outside + inside;
-        }
-        case 2u: {
-            // linear gradient
-            let gx = rec.p1 - rec.cx;
-            let gy = (rec.p2 - rec.cy) * aspect;
-            let glen2 = gx * gx + gy * gy;
-            if glen2 < 1.0e-8 {
-                dist = 0.0;
-            } else {
-                let dx = nx - rec.cx;
-                let dy = (ny - rec.cy) * aspect;
-                let t = (dx * gx + dy * gy) / glen2;
-                dist = t - 0.5;
-            }
-        }
-        case 3u: {
-            // bezier polygon
-            dist = bezier_sdf(nx, ny, aspect, rec.bezier_offset, rec.bezier_count);
-        }
-        default: { dist = 1.0; }
-    }
-    }
-    var m = smooth_step_sdf(dist, rec.feather);
-    if (rec.flags & 1u) != 0u { m = 1.0 - m; }
-    let opacity = f32((rec.flags >> 8u) & 0xFFu) / 255.0;
-    return m * opacity;
-}
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -16276,6 +16285,7 @@ mod bridge_u8_tests {
 pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
     vec![
         ("SHADER_MASK_MIX", mask_mix::SHADER_MASK_MIX),
+        ("SHADER_MASK_MIX_WINDOW", mask_mix::SHADER_MASK_MIX_WINDOW),
         ("LAYER_ROWS", layer::ROWS),
         ("LAYER_BOUNDS", layer::BOUNDS),
         ("LAYER_CAST", layer::CAST),

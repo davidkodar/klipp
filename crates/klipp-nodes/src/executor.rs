@@ -270,8 +270,8 @@ pub struct GraphExecutor {
     /// The matte the next mixed effect node's mask reads, handed from the
     /// run to its dispatch (step 9c).
     effect_mask: Option<Arc<Vec<f32>>>,
-    /// A mixed effect's window, as shapes the GPU draws into its matte slot
-    /// (#1242); set with `effect_mask`, one or the other.
+    /// A mixed effect's window, as shapes the GPU works out inside the
+    /// effect's mix (#1242, #1252); set with `effect_mask`, one or the other.
     effect_window: Option<Arc<Vec<klipp_effects::gpu::GpuMaskDef>>>,
     /// The key whose matte, drawn on the GPU, the next mixed effect node's
     /// mask reads (#1266); set with `effect_mask`, one or the other.
@@ -1758,7 +1758,8 @@ impl GraphExecutor {
         // falls back to CPU multiply.
         let mut matte_in_buf: Option<NodeId> = None;
         // Windows that only mask effects (#1242): their shapes, drawn on the
-        // GPU into each effect's matte slot as it runs, never on the CPU here.
+        // GPU inside each effect's mix as it runs (#1252), never on the CPU
+        // here.
         let mut window_mattes: HashMap<NodeId, Arc<Vec<klipp_effects::gpu::GpuMaskDef>>> = HashMap::new();
         // Readers of a node's picture that the chain itself serves: a key
         // drawn on the GPU from it for an effect's mask (#1266). They need
@@ -2047,8 +2048,8 @@ impl GraphExecutor {
 
             // A window whose every reader is a mixed effect's mask port
             // (#1242): nothing is drawn here, and the chain isn't broken.
-            // Each effect draws the window on the GPU into its own matte
-            // slot as it runs; an effect that leaves the chain draws it on
+            // Each effect draws the window on the GPU inside its own mix as
+            // it runs (#1252); an effect that leaves the chain draws it on
             // the CPU then. A shape the GPU can't draw keeps the CPU way.
             if node.kind == NodeKind::Mask
                 && self.gpu.is_some()

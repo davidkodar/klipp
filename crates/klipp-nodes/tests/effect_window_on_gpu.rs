@@ -1,5 +1,6 @@
-//! A window that masks an effect is drawn on the GPU, into the effect's
-//! matte slot in the chain's encoder (#1242). Each case is held to the
+//! A window that masks an effect is drawn on the GPU, inside the effect's
+//! mix in the chain's encoder, with no matte made (#1242, #1252). Each
+//! case is held to the
 //! CPU executor, which draws the window on the CPU: within a level, and
 //! with the window costing no CPU node on the GPU. The cases are what the
 //! GPU path adds: two windows in one encoder (each drawn from its own
