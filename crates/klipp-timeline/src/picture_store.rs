@@ -6,6 +6,15 @@
 //! or lifted on first use, and dropped by every change, which can only be
 //! made through [`ClipPictureFields::view_mut`]. A clone shares the cache
 //! until either side changes.
+//!
+//! A picture-truth clip (M2 step 9c) is the exception: its picture holds
+//! what the fields can't (an effect's mix or mask, a published grade
+//! port), so the picture is the truth and the fields are a view derived
+//! from it, as far as they can hold it. The picture is replaced whole by
+//! each edit, never changed in place, so clones stay apart. No reader may
+//! write the view back on such a clip: an edit goes to the picture as
+//! graph ops ([`crate::Clip::apply_picture_ops`]), or through the guard for
+//! the writes that aren't ops yet ([`crate::Clip::guard_field_write`]).
 
 use serde::{Deserialize, Serialize};
 use crate::{GradeVersion, OwnEffects};
@@ -41,6 +50,11 @@ pub struct ClipPictureFields {
     /// keeping them current leaves the lifted picture as it is.
     #[serde(skip)]
     effect_ids: crate::effect_slots::EffectIds,
+    /// A picture-truth clip's picture, which the view is derived from;
+    /// `None` for a clip whose fields are the truth. Saved as the clip's
+    /// stored picture, not with the clip's own serde.
+    #[serde(skip)]
+    truth: Option<Arc<LiftedPicture>>,
 }
 
 impl ClipPictureFields {
@@ -51,9 +65,36 @@ impl ClipPictureFields {
 
     /// The picture's fields, to change: the lifted picture no longer
     /// matches them, so it is dropped.
+    ///
+    /// On a picture-truth clip the fields are a view of the picture and a
+    /// write here would be lost from it, so a write that reaches here is a
+    /// writer that skipped the guard: a debug build stops on it, and a
+    /// release build keeps the picture and says so.
     pub(crate) fn view_mut(&mut self) -> &mut PictureView {
+        if self.truth.is_some() {
+            debug_assert!(false, "a field write on a picture-truth clip skipped its guard (Clip::view_mut)");
+            tracing::warn!("a field write on a picture-truth clip skipped the guard; the clip's picture is kept and the write is lost from it");
+        }
         self.lifted = Lifted::default();
         &mut self.view
+    }
+
+    /// The picture-truth clip's picture, if this is one.
+    pub(crate) fn truth(&self) -> Option<&Arc<LiftedPicture>> {
+        self.truth.as_ref()
+    }
+
+    /// Take the picture-truth clip's picture out, so its view can be
+    /// written as the picture's derivation; put back with [`Self::set_truth`].
+    pub(crate) fn take_truth(&mut self) -> Option<Arc<LiftedPicture>> {
+        self.truth.take()
+    }
+
+    /// Make `picture` this clip's truth (or none). The lifted cache goes:
+    /// the truth is what a reader of the lifted picture gets.
+    pub(crate) fn set_truth(&mut self, picture: Option<Arc<LiftedPicture>>) {
+        self.lifted = Lifted::default();
+        self.truth = picture;
     }
 
     pub(crate) fn effect_ids(&self) -> &crate::effect_slots::EffectIds {
@@ -77,7 +118,7 @@ impl ClipPictureFields {
 
 impl From<PictureView> for ClipPictureFields {
     fn from(view: PictureView) -> Self {
-        Self { view, lifted: Lifted::default(), effect_ids: Default::default() }
+        Self { view, lifted: Lifted::default(), effect_ids: Default::default(), truth: None }
     }
 }
 

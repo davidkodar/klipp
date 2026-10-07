@@ -69,7 +69,7 @@ impl Clip {
 
     /// Change the grade versions in `f`, and give back what `f` returns.
     pub fn edit_grade_versions<R>(&mut self, f: impl FnOnce(&mut Vec<GradeVersion>) -> R) -> R {
-        f(&mut self.picture.view_mut().grade_versions)
+        f(&mut self.view_mut().grade_versions)
     }
 
     /// Which grade version is in use, if one is.
@@ -79,7 +79,7 @@ impl Clip {
 
     /// Say which grade version is in use.
     pub fn set_active_grade_version(&mut self, version: Option<usize>) {
-        self.picture.view_mut().active_grade_version = version;
+        self.view_mut().active_grade_version = version;
     }
 
     /// On a render copy carrying its track's effects, the clip's own
@@ -91,28 +91,48 @@ impl Clip {
     /// Set or clear the clip's own effects, which mark a render copy as
     /// carrying its track's effects (see [`crate::Sequence::bake_track_effects`]).
     pub fn set_own_effects(&mut self, own: Option<OwnEffects>) {
-        self.picture.view_mut().own_effects = own.map(Box::new);
+        self.view_mut().own_effects = own.map(Box::new);
     }
 
     /// On a render copy whose grade groups are baked in, change the clip's
     /// own grade in `f`; `None`, and `f` not run, on the document.
     pub fn edit_own_grade<R>(&mut self, f: impl FnOnce(&mut klipp_nodes::NodeGraph) -> R) -> Option<R> {
-        self.picture.view_mut().own_node_graph.as_deref_mut().map(f)
+        self.view_mut().own_node_graph.as_deref_mut().map(f)
     }
 
     /// The clip's picture lifted to revision 2, with its grade versions'
     /// bodies: from the file if the clip hasn't changed since it was read,
     /// otherwise lifted once and kept until the picture next changes.
     /// Works on a shared clip; two readers get the same picture.
+    /// On a picture-truth clip, its picture, which is the truth.
     pub fn picture_v2(&self) -> Result<std::sync::Arc<LiftedPicture>, String> {
+        if let Some(truth) = self.picture.truth() {
+            return Ok(truth.clone());
+        }
         self.picture.lifted().get_or_lift(self.lift_key(), || self.lift_picture())
+    }
+
+    /// Whether the clip's picture is its truth: it holds what the clip's
+    /// fields can't (an effect's mix or mask, a published grade port), and
+    /// the fields are a view of it (M2 step 9c).
+    pub fn is_picture_truth(&self) -> bool {
+        self.picture.truth().is_some()
     }
 
     /// Take `stored`, the clip's picture as its file holds it, as the
     /// clip's lifted picture, if it is exactly what lifting the clip gives.
     /// If it isn't, nothing is kept and the difference is the error: a
     /// picture that disagrees with the clip must never be written back.
+    ///
+    /// A picture-truth clip's stored picture is its truth and is taken as
+    /// it is: the fields the loader read are its view, made from it
+    /// (`klipp_graph_lift::delift::view_of`), and a lift of them is not
+    /// the picture, so there is nothing to compare it with.
     pub fn adopt_stored_picture(&mut self, stored: LiftedPicture) -> Result<(), String> {
+        if stored.picture.is_truth() {
+            self.picture.set_truth(Some(std::sync::Arc::new(stored)));
+            return Ok(());
+        }
         let lifted = self.lift_picture()?;
         if lifted != stored {
             let which = if lifted.picture != stored.picture { "picture" } else { "grade versions" };
@@ -125,14 +145,14 @@ impl Clip {
     /// Whether the clip holds its lifted picture now, from the file or a
     /// lift since its last change, lifted for this clip as it is.
     pub fn has_lifted_picture(&self) -> bool {
-        self.picture.lifted().holds(self.lift_key())
+        self.picture.truth().is_some() || self.picture.lifted().holds(self.lift_key())
     }
 
     fn lift_key(&self) -> crate::picture_store::LiftKey {
         crate::picture_store::LiftKey { clip: self.id, kind: lift_kind_tag(&self.kind) }
     }
 
-    fn lift_picture(&self) -> Result<LiftedPicture, String> {
+    pub(crate) fn lift_picture(&self) -> Result<LiftedPicture, String> {
         // As the file's writer builds the clip's record: the picture
         // fields through the one mapping, read back from text.
         let text = serde_json::to_string(&crate::picture_v1::ClipPictureV1::of(self)).map_err(|e| e.to_string())?;
@@ -205,6 +225,20 @@ mod tests {
         assert!(!copy.has_lifted_picture());
         assert!(original.has_lifted_picture(), "the original keeps its own");
         assert!(std::sync::Arc::ptr_eq(&first, &original.picture_v2().unwrap()));
+    }
+
+    /// A write that reaches the fields of a picture-truth clip without its
+    /// guard (`Clip::view_mut`) would be lost from the picture: a debug
+    /// build stops on it.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "skipped its guard")]
+    fn a_field_write_that_skips_the_guard_stops_a_debug_build() {
+        let mut clip = clip();
+        let mut truth = (*clip.picture_v2().unwrap()).clone();
+        truth.picture.requires.push(klipp_graph_format::lifted::PICTURE_TRUTH_CAPABILITY.into());
+        clip.picture.set_truth(Some(std::sync::Arc::new(truth)));
+        clip.picture.view_mut().active_grade_version = Some(0);
     }
 
     #[test]

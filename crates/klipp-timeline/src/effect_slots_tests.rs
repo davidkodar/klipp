@@ -25,8 +25,8 @@ fn ids(c: &mut Clip) -> Vec<EffectId> {
 #[test]
 fn reads_reconcile_direct_tail_edits_without_changing_saved_fields() {
     let mut c = clip();
-    c.picture.view_mut().effect_list.builtin_effects = vec![blur(1.0), blur(2.0)];
-    c.picture.view_mut().effect_list.builtin_effects_enabled = vec![false];
+    c.view_mut().effect_list.builtin_effects = vec![blur(1.0), blur(2.0)];
+    c.view_mut().effect_list.builtin_effects_enabled = vec![false];
     let before = serde_json::to_value(&c).unwrap();
     let old = ids(&mut c);
     assert_eq!(serde_json::to_value(&c).unwrap(), before);
@@ -35,14 +35,14 @@ fn reads_reconcile_direct_tail_edits_without_changing_saved_fields() {
         vec![false, true]
     );
     assert_eq!(ids(&mut c), old);
-    c.picture.view_mut().effect_list.builtin_effects.push(blur(3.0));
+    c.view_mut().effect_list.builtin_effects.push(blur(3.0));
     let grown = ids(&mut c);
     assert_eq!(&grown[..2], &old);
     assert!(!old.contains(&grown[2]));
-    c.picture.view_mut().effect_list.builtin_effects.truncate(1);
+    c.view_mut().effect_list.builtin_effects.truncate(1);
     assert_eq!(c.index_of(old[1]), None);
     assert_eq!(ids(&mut c), vec![old[0]]);
-    c.picture.view_mut().effect_list.builtin_effects.push(blur(4.0));
+    c.view_mut().effect_list.builtin_effects.push(blur(4.0));
     let fresh = ids(&mut c);
     assert_ne!(fresh[1], old[1]);
     assert_ne!(fresh[1], grown[2]);
@@ -75,8 +75,8 @@ fn a_clone_keeps_ids_a_load_rebuilds_them_and_ids_never_reach_json() {
 #[test]
 fn invalid_operations_and_old_short_flags_keep_their_meaning() {
     let mut c = clip();
-    c.picture.view_mut().effect_list.builtin_effects = vec![blur(1.0), blur(2.0), blur(3.0)];
-    c.picture.view_mut().effect_list.builtin_effects_enabled = vec![false];
+    c.view_mut().effect_list.builtin_effects = vec![blur(1.0), blur(2.0), blur(3.0)];
+    c.view_mut().effect_list.builtin_effects_enabled = vec![false];
     let original = ids(&mut c);
     let missing = EffectId::fresh();
     let before = serde_json::to_value(&c).unwrap();
@@ -110,9 +110,9 @@ struct Entry {
 
 fn attach(c: &mut Clip, id: EffectId, marker: f32) {
     let i = c.index_of(id).unwrap();
-    c.picture.view_mut().effect_keyframes.0
+    c.view_mut().effect_keyframes.0
         .insert(format!("{i}:radius"), vec![key(marker)]);
-    c.picture.view_mut().param_modifiers.0.insert(
+    c.view_mut().param_modifiers.0.insert(
         ParamId::Effect {
             effect_index: i,
             param_name: "radius".into(),
@@ -167,7 +167,7 @@ fn random_edits_keep_values_flags_and_animation_with_their_ids() {
     for seed in 1..=32 {
         let mut random = seed;
         let mut c = clip();
-        c.picture.view_mut().param_modifiers.0
+        c.view_mut().param_modifiers.0
             .insert(ParamId::Opacity, ModifierStack::default());
         let mut rows: Vec<Entry> = vec![];
         let mut seen = HashSet::new();
@@ -265,9 +265,9 @@ fn insertion_preserves_occupied_and_orphan_animation_without_collisions() {
     let mut c = clip();
     let old = c.push_effect(blur(1.0));
     attach(&mut c, old, 10.0);
-    c.picture.view_mut().effect_keyframes.0
+    c.view_mut().effect_keyframes.0
         .insert("1:radius".into(), vec![key(20.0)]);
-    c.picture.view_mut().param_modifiers.0.insert(
+    c.view_mut().param_modifiers.0.insert(
         ParamId::Effect {
             effect_index: 1,
             param_name: "radius".into(),
@@ -291,7 +291,7 @@ fn insertion_refuses_unshiftable_animation_without_partial_edits() {
         let mut c = clip();
         let old = c.push_effect(blur(1.0));
         if modifier {
-            c.picture.view_mut().param_modifiers.0.insert(
+            c.view_mut().param_modifiers.0.insert(
                 ParamId::Effect {
                     effect_index: usize::MAX,
                     param_name: "radius".into(),
@@ -299,7 +299,7 @@ fn insertion_refuses_unshiftable_animation_without_partial_edits() {
                 ModifierStack::default(),
             );
         } else {
-            c.picture.view_mut().effect_keyframes.0
+            c.view_mut().effect_keyframes.0
                 .insert(format!("{}:radius", usize::MAX), vec![key(20.0)]);
         }
         let keys = c.effect_keyframes().clone();

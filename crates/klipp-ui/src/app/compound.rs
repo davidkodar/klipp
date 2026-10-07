@@ -174,6 +174,9 @@ impl KlippApp {
             pan: f32,
             fade_in_secs: f32,
             fade_out_secs: f32,
+            // A picture-truth compound clip, whose picture (masks, mixes)
+            // the adjustment layer takes.
+            truth_source: Option<klipp_timeline::Clip>,
         }
         let snap: CompoundSnapshot = {
             let parent = &self.state.sequences[active_idx];
@@ -210,6 +213,7 @@ impl KlippApp {
                                 pan: c.pan,
                                 fade_in_secs: c.fade_in_secs,
                                 fade_out_secs: c.fade_out_secs,
+                                truth_source: c.is_picture_truth().then(|| c.clone()),
                             });
                         }
                         break 'outer;
@@ -426,6 +430,9 @@ impl KlippApp {
                 parent.renumber_tracks();
                 0
             };
+            if let Some(source) = &snap.truth_source {
+                adj_clip.take_picture_truth_of(source);
+            }
             parent.tracks[adj_track_idx].clips.push(adj_clip);
             parent.tracks[adj_track_idx].sort_clips();
         }

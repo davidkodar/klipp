@@ -123,7 +123,7 @@ fn a_param_is_found_inside_a_compound_as_the_drain_finds_it() {
     let mut compound = node(NodeKind::Compound);
     compound.params.compound_subgraph = Some(inner);
     let mut clip = Clip::gap(t(0.0), t(1.0));
-    clip.picture.view_mut().node_graph.0.nodes.push(compound);
+    clip.view_mut().node_graph.0.nodes.push(compound);
     assert!(clip.set_grade_param(id, "exposure", 0.5));
     let sub = clip.picture.view().node_graph.0.nodes.iter().find_map(|n| n.params.compound_subgraph.as_ref()).unwrap();
     assert_eq!(exposure(sub, id), Some(0.5));

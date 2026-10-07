@@ -179,6 +179,40 @@ pub fn clip(p: &ClipPicture) -> Result<ClipRecordV2, Refusal> {
     Ok(ClipRecordV2 { graph, legacy_clip })
 }
 
+/// A picture-truth clip's picture as far as a revision-1 record can hold
+/// it: the clip's chain without what only the picture keeps. An effect's
+/// mix and mask channel, an edge into a node's mask from outside the grade
+/// group, the grade group's published ports, and a node beside the chain
+/// all go; the picture-truth mark goes too. What remains is a picture the
+/// lift could make, which [`clip`] takes back to its record: the fields a
+/// picture-truth clip shows to the readers of its fields.
+pub fn view_of(p: &ClipPicture) -> ClipPicture {
+    let mut v = p.clone();
+    v.requires.clear();
+    // The chain, walked from the source along each node's picture.
+    let mut chain: Vec<NodeId> = Vec::new();
+    let mut at = v.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::SOURCE).map(|n| n.id);
+    while let Some(id) = at {
+        if chain.contains(&id) {
+            break;
+        }
+        chain.push(id);
+        at = v.graph.edges.iter().find(|e| e.from.0 == id && e.from.1.as_str() == "out" && e.to.1.as_str() == "in").map(|e| e.to.0);
+    }
+    v.graph.nodes.retain(|n| chain.contains(&n.id));
+    v.graph.edges.retain(|e| chain.contains(&e.from.0) && chain.contains(&e.to.0) && e.from.1.as_str() == "out" && e.to.1.as_str() == "in");
+    for n in &mut v.graph.nodes {
+        if n.type_id.as_str() == types::LEGACY_EFFECT {
+            n.mix = None;
+            n.params.remove(&klipp_graph_format::ParamKey::from("mask.channel"));
+        }
+        if let Some(group) = n.group.as_mut() {
+            group.interface.clear();
+        }
+    }
+    v
+}
+
 /// A stored Grade group body standing alone back to its grade-only
 /// revision-1 graph: one `klipp.legacy.grade` node around the body.
 pub fn grade_only(lifted: &Graph, group: NodeId) -> Result<Graph, Refusal> {

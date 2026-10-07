@@ -195,8 +195,11 @@ impl GradeAccess for Clip {
     fn grade(&self) -> &NodeGraph {
         &self.picture.view().node_graph.0
     }
+    /// On a picture-truth clip, through its guard (its picture-truth guard, `Clip::through_truth`):
+    /// the grade put in as the picture's, its published ports kept while
+    /// what they publish is there, or refused.
     fn edit_grade<R>(&mut self, f: impl FnOnce(&mut NodeGraph) -> R) -> R {
-        f(&mut self.picture.view_mut().node_graph.0)
+        self.through_truth("a grade edit", |c| f(&mut c.view_mut().node_graph.0))
     }
 }
 
@@ -315,8 +318,8 @@ impl Sequence {
         for track in &mut self.tracks {
             track.effects.grade.iter_mut().for_each(|g| f(&mut g.0));
             for clip in &mut track.clips {
-                f(&mut clip.picture.view_mut().node_graph.0);
-                clip.picture.view_mut().grade_versions.iter_mut().for_each(|v| f(&mut v.node_graph.0));
+                f(&mut clip.view_mut().node_graph.0);
+                clip.view_mut().grade_versions.iter_mut().for_each(|v| f(&mut v.node_graph.0));
             }
         }
     }

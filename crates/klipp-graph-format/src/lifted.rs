@@ -64,6 +64,33 @@ pub struct ClipPicture {
     pub opacity: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity_anim: Option<Animation>,
+    /// What a reader must understand to read this picture whole; empty for
+    /// a picture lifted from a clip's fields. [`PICTURE_TRUTH_CAPABILITY`]
+    /// marks a clip whose picture is its truth, holding what its fields
+    /// can't (an effect's mix or mask, a published grade port). An unknown
+    /// capability is refused, and a reader from before this field refuses
+    /// the picture as an unknown field, so neither reads it with the rest
+    /// dropped (#1034).
+    #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "known_capabilities")]
+    pub requires: Vec<String>,
+}
+
+/// The capability a picture-truth clip's stored picture requires.
+pub const PICTURE_TRUTH_CAPABILITY: &str = "picture-truth-1";
+
+fn known_capabilities<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
+    let requires = Vec::<String>::deserialize(deserializer)?;
+    match requires.iter().find(|r| r.as_str() != PICTURE_TRUTH_CAPABILITY) {
+        Some(unknown) => Err(serde::de::Error::custom(format!("unsupported picture capability: {unknown}"))),
+        None => Ok(requires),
+    }
+}
+
+impl ClipPicture {
+    /// Whether this is a picture-truth clip's picture.
+    pub fn is_truth(&self) -> bool {
+        self.requires.iter().any(|r| r == PICTURE_TRUTH_CAPABILITY)
+    }
 }
 
 /// The clip's placement values. Each is `Some` only when the clip's own

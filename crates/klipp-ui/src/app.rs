@@ -55,6 +55,8 @@ mod effects;
 mod media;
 mod compound;
 mod clips;
+#[cfg(test)]
+mod picture_truth_rebuild_tests;
 mod timeline_edit;
 mod surfaces;
 mod colour;

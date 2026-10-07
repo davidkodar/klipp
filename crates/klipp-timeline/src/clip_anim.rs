@@ -120,7 +120,7 @@ macro_rules! lanes {
 
                 #[doc = concat!("Change the clip's `", stringify!($field), "` in `f`, and give back what `f` returns.")]
                 pub fn $edit<R>(&mut self, f: impl FnOnce(&mut Vec<Keyframe>) -> R) -> R {
-                    f(&mut self.picture.view_mut().$field.0)
+                    f(&mut self.view_mut().$field.0)
                 }
             )*
         }
@@ -147,7 +147,7 @@ impl Clip {
     /// returns. Prefer the effect-list API, which keeps them with their
     /// effect when it moves.
     pub fn edit_effect_keyframes<R>(&mut self, f: impl FnOnce(&mut HashMap<String, Vec<Keyframe>>) -> R) -> R {
-        f(&mut self.picture.view_mut().effect_keyframes.0)
+        f(&mut self.view_mut().effect_keyframes.0)
     }
 
     /// The parameter modifier stacks: the picture's, and the sound's
@@ -159,7 +159,7 @@ impl Clip {
     /// Change the parameter modifier stacks in `f`, and give back what `f`
     /// returns.
     pub fn edit_param_modifiers<R>(&mut self, f: impl FnOnce(&mut HashMap<ParamId, ModifierStack>) -> R) -> R {
-        f(&mut self.picture.view_mut().param_modifiers.0)
+        f(&mut self.view_mut().param_modifiers.0)
     }
 }
 
@@ -186,16 +186,21 @@ impl Clip {
     /// back what `f` returns.
     pub fn edit_video_param_keyframes<R>(&mut self, param: klipp_core::VideoParam, f: impl FnOnce(&mut Vec<Keyframe>) -> R) -> R {
         use klipp_core::VideoParam as P;
-        f(match param {
-            P::Opacity => &mut self.picture.view_mut().opacity_keyframes.0,
-            P::PositionX => &mut self.picture.view_mut().transform_pos_x_keyframes.0,
-            P::PositionY => &mut self.picture.view_mut().transform_pos_y_keyframes.0,
-            P::Scale => &mut self.picture.view_mut().transform_scale_keyframes.0,
-            P::Rotation => &mut self.picture.view_mut().transform_rotation_keyframes.0,
-            P::TiltX => &mut self.picture.view_mut().transform_tilt_x_keyframes.0,
-            P::TiltY => &mut self.picture.view_mut().transform_tilt_y_keyframes.0,
-            P::MatteFeather => &mut self.matte_feather_keyframes,
-            P::MatteChoke => &mut self.matte_choke_keyframes,
-        })
+        match param {
+            P::MatteFeather => f(&mut self.matte_feather_keyframes),
+            P::MatteChoke => f(&mut self.matte_choke_keyframes),
+            _ => {
+                let mut view = self.view_mut();
+                f(match param {
+                    P::Opacity => &mut view.opacity_keyframes.0,
+                    P::PositionX => &mut view.transform_pos_x_keyframes.0,
+                    P::PositionY => &mut view.transform_pos_y_keyframes.0,
+                    P::Scale => &mut view.transform_scale_keyframes.0,
+                    P::Rotation => &mut view.transform_rotation_keyframes.0,
+                    P::TiltX => &mut view.transform_tilt_x_keyframes.0,
+                    P::TiltY | P::MatteFeather | P::MatteChoke => &mut view.transform_tilt_y_keyframes.0,
+                })
+            }
+        }
     }
 }
