@@ -139,7 +139,7 @@ fn a_run_of_recorded_effects_is_one_submit() {
     let slots: usize = recorded().iter().map(|e| klipp_effects::gpu::slots_needed(e).unwrap()).sum();
     assert!(slots > 64 && slots <= 128, "{slots} slots");
     assert_eq!(run(&mut g, &recorded()).0, 3, "every recorded effect, two runs");
-    // Identities record nothing, and a run of only identities submits nothing.
+    // Identities record nothing.
     let idle = [
         E::Opacity { value: 1.0 },
         E::Gamma { gamma: 1.0 },
@@ -153,7 +153,9 @@ fn a_run_of_recorded_effects_is_one_submit() {
         // No motion data uploaded: the frame passes through.
         E::RollingShutterCorrection { strength: 0.5, readout_ratio: 0.9 },
     ];
-    assert_eq!(run(&mut g, &idle).0, 1, "only the download");
+    // The chain's encoder is submitted whatever it holds, as the
+    // renderer's plan submits it: the chain and the download.
+    assert_eq!(run(&mut g, &idle).0, 2, "nothing recorded: the chain's submit and the download");
     // Seventy passes overflow the 64 slots once: two runs.
     let seventy: Vec<E> = colour().into_iter().cycle().take(70).collect();
     assert_eq!(run(&mut g, &seventy).0, 3);
@@ -229,8 +231,8 @@ fn a_recorded_effect_never_writes_its_source() {
 
 /// An effect that is only ever recorded and could not be (a lost
 /// device; forced here) is never silently left out: `apply_effects`
-/// takes the CPU chain for the frame instead, and the in-place stack
-/// path refuses, which its renderer counts as a decline.
+/// takes the CPU chain for the frame instead, and a chain run says the
+/// effect is missing, which its caller takes as a failed run.
 #[test]
 fn an_effect_that_could_not_be_recorded_is_never_silently_dropped() {
     let Some(mut g) = pipeline() else { return };
@@ -239,10 +241,11 @@ fn an_effect_that_could_not_be_recorded_is_never_silently_dropped() {
     let got = g.apply_effects(&fx, &picture(), W, H);
     assert!(!g.last_effects_complete(), "the run says an effect is missing");
     assert_eq!(got, klipp_effects::apply_effects(&fx, picture(), W, H), "the CPU chain's picture, effects included");
-    assert!(g.stack_begin(W, H, 1));
-    assert!(g.stack_layer_from_linear(0, &picture()));
-    assert!(!g.stack_layer_apply_effects(0, &fx), "the stack's layer refuses rather than skip the effect");
-    g.stack_end();
+    g.upload_chain_input_linear(&picture());
+    g.begin_chain();
+    let run = g.chain_run_effects(&fx, true, W, H);
+    g.submit_chain();
+    assert!(!run.complete, "the chain run says an effect is missing rather than skip it");
     g.refuse_recording(false);
     let _ = g.apply_effects(&fx, &picture(), W, H);
     assert!(g.last_effects_complete());

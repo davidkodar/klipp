@@ -304,8 +304,14 @@ fn a_focus_blur_on_a_layer_is_the_cpu_one() {
         let fx = [klipp_effects::BuiltinEffect::FocusBlur { radius: 3.0, vertical, band }];
         let want = klipp_effects::apply_effects(&fx, layer.clone(), W, H);
         assert!(gpu.stack_begin(W, H, 1));
-        assert!(gpu.stack_layer_from_linear(0, &layer));
-        assert!(gpu.stack_layer_apply_effects(0, &fx));
+        // As the stack runs a layer's effects: a plan over the layer, the
+        // result back in its slot.
+        gpu.upload_chain_input_linear(&layer);
+        gpu.begin_chain();
+        let run = gpu.chain_run_effects(&fx, true, W, H);
+        gpu.submit_chain();
+        assert!(run.complete);
+        assert!(gpu.stack_layer_from_chain(0, run.in_a));
         assert!(gpu.stack_blend(0, 1.0, 0));
         assert!(gpu.stack_finish_into_chain(true));
         let got = gpu.stack_download_linear();

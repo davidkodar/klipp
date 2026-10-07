@@ -261,7 +261,7 @@ impl GpuEffectsPipeline {
 /// layer buffers are this pipeline's and only these passes touch them.
 impl GpuEffectsPipeline {
     /// Whether the layer passes' own buffers hold a `width` × `height`
-    /// frame: they are made by `run_effects_in_chain` (`ensure_buffers`).
+    /// frame: they are made by `ensure_recording_buffers`.
     pub(super) fn layer_ready(&self, width: u32, height: u32) -> bool {
         self.layer_gpu.scratch.len() == 2 && self.layer_gpu.size >= u64::from(width) * u64::from(height) * 16
     }
