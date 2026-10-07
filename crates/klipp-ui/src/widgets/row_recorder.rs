@@ -2,6 +2,8 @@
 //!
 //! Recording never drives a widget or writes a fixture. Each capture owns
 //! its records, including when captures nest or a draw unwinds.
+//! Call-site metadata must be updated together with its neighbouring widget;
+//! handwritten hooks cannot infer a widget builder's later changes.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,6 +20,7 @@ pub struct Row {
     pub range: Option<[f64; 2]>,
     pub reset: Option<Value>,
     pub speed: Option<f64>,
+    pub step: Option<f64>,
     pub decimals: Option<usize>,
     pub suffix: String,
     pub keyframe_state: Option<KeyframeRecord>,
@@ -88,7 +91,9 @@ impl Drop for Scope {
         RECORDINGS.with(|s| {
             let mut s = s.borrow_mut();
             if self.depth > 0 && s.len() == self.depth {
-                s.last_mut().unwrap().context.pop();
+                let recording = s.last_mut().unwrap();
+                recording.context.pop();
+                recording.next_parameter = None;
             }
         });
     }
@@ -127,6 +132,7 @@ pub fn control(id: egui::Id, widget: &str, parameter: &str, label: &str, value: 
         range: None,
         reset: None,
         speed: None,
+        step: None,
         decimals: None,
         suffix: String::new(),
         keyframe_state: None,
@@ -141,6 +147,15 @@ pub fn parameter(key: &str) {
     RECORDINGS.with(|s| {
         if let Some(row) = s.borrow_mut().last_mut().and_then(|r| r.rows.last_mut()) {
             row.parameter = Some(key.into());
+        }
+    });
+}
+
+/// Observe the explicit increment configured on the preceding numeric row.
+pub fn step(value: f64) {
+    RECORDINGS.with(|s| {
+        if let Some(row) = s.borrow_mut().last_mut().and_then(|r| r.rows.last_mut()) {
+            row.step = Some(value);
         }
     });
 }
@@ -167,6 +182,7 @@ pub fn numeric(
         range: Some([f64::from(*range.start()), f64::from(*range.end())]),
         reset: reset.map(Value::from),
         speed,
+        step: None,
         decimals,
         suffix: suffix.into(),
         keyframe_state: keyframe.map(|k| KeyframeRecord {
@@ -227,5 +243,18 @@ mod tests {
         assert!(next[0].context.is_empty());
         assert_eq!(next, capture(draw).1);
         assert!(capture(|| {}).1.is_empty());
+    }
+
+    #[test]
+    fn an_unused_parameter_does_not_escape_its_scope() {
+        let (_, rows) = capture(|| {
+            {
+                let _scope = scope("conditional");
+                next_parameter("not_drawn");
+            }
+            draw();
+        });
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].parameter, None);
     }
 }
