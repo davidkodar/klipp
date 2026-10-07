@@ -82,9 +82,17 @@ impl crate::state::AppState {
             AppCommand::RevealGraph { path, select } => self.reveal_graph(path, *select).map(|()| false),
             AppCommand::SetGraphDockRoot { root } => self.set_graph_dock_root(*root).map(|()| false),
             AppCommand::SetSplitCompareNode { clip_id, path } => self.set_split_compare_node(*clip_id, path.as_ref()).map(|()| false),
-            // Moving a key and setting its interpolation by path read the
-            // node's animation first; they come with step 3's keys.
-            AppCommand::MoveKeyAt { .. } | AppCommand::SetInterpKeyAt { .. } => Err("moving a key and its interpolation by path aren't wired yet".into()),
+            AppCommand::MoveKeyAt { addr, key, time_secs, new_time_secs, value } => self
+                .key_edit(addr, key, *time_secs, |k| {
+                    k["time_secs"] = serde_json::json!(new_time_secs);
+                    k["value"] = serde_json::json!(value);
+                })
+                .and_then(|ops| self.apply_path_ops(&ops, "Move Keyframe"))
+                .map(|()| true),
+            AppCommand::SetInterpKeyAt { addr, key, time_secs, interpolation } => self
+                .key_edit(addr, key, *time_secs, |k| k["interpolation"] = serde_json::to_value(interpolation).unwrap_or_default())
+                .and_then(|ops| self.apply_path_ops(&ops, "Keyframe Interpolation"))
+                .map(|()| true),
             _ => {
                 let (ops, label) = path_ops(cmd)?;
                 self.apply_path_ops(&ops, label).map(|()| true)
@@ -166,6 +174,18 @@ impl crate::state::AppState {
         self.close_open_drag();
     }
 
+    /// The one op that changes the key of `(addr, key)` at `time_secs` by
+    /// `edit`: the parameter's whole animation, written back in time order.
+    fn key_edit(&self, addr: &NodePath, key: &ParamKey, time_secs: f64, edit: impl FnOnce(&mut serde_json::Value)) -> Result<Vec<GraphOp>, String> {
+        let node = self.node_at(addr)?;
+        let mut anim = node.anim.get(key).cloned().ok_or_else(|| format!("{key} isn't animated"))?;
+        let time = |k: &serde_json::Value| k.get("time_secs").and_then(serde_json::Value::as_f64);
+        let at = anim.keys.iter().position(|k| time(k).is_some_and(|t| (t - time_secs).abs() < 1e-9)).ok_or_else(|| format!("{key} has no key at {time_secs} s"))?;
+        edit(&mut anim.keys[at]);
+        anim.keys.sort_by(|a, b| time(a).unwrap_or(0.0).total_cmp(&time(b).unwrap_or(0.0)));
+        Ok(vec![GraphOp::SetAnim { path: addr.clone(), key: key.clone(), anim: Some(anim) }])
+    }
+
     /// The node `path` names, on this sequence: only a clip's graph so far,
     /// as `GraphOps` takes.
     fn node_at(&self, path: &NodePath) -> Result<Node, String> {
@@ -223,7 +243,7 @@ mod tests {
     use crate::state::AppState;
     use klipp_effects::BuiltinEffect as E;
     use klipp_graph_format::{types, ParamValue};
-    use klipp_timeline::EffectEdit;
+    use klipp_timeline::{EffectEdit, GradeAccess};
 
     /// A clip with `effects`, ready to put in states of its own.
     fn fixture(effects: &[E]) -> klipp_timeline::Clip {
@@ -294,25 +314,26 @@ mod tests {
         assert_eq!(state.path_command(&cmd), Some(true), "{cmd:?} applied");
     }
 
-    /// Every index command on a clip's effect list, the path twin it has:
-    /// a new command naming an effect by index fails to compile here until
-    /// its twin is listed (the arms with no twin yet are step 2's second
-    /// half: keys, drags by index, split compare, OFX).
+    /// Every index command on a clip's effect list has a path twin: a new
+    /// command naming an effect by index fails to compile here until it is
+    /// listed. OFX plug-ins' twins are out of step 2 (the clip's writer
+    /// refuses OFX nodes; they get a step of their own), as are track,
+    /// audio and title-object effects.
     fn has_a_twin(cmd: &AppCommand) -> bool {
         match cmd {
             AppCommand::AddBuiltinEffect { .. }
             | AppCommand::RemoveBuiltinEffect { .. }
             | AppCommand::ToggleBuiltinEffectEnabled { .. }
             | AppCommand::UpdateBuiltinEffect { .. }
-            | AppCommand::ReorderBuiltinEffect { .. } => true,
-            AppCommand::AddEffectKeyframe { .. }
+            | AppCommand::ReorderBuiltinEffect { .. }
+            | AppCommand::AddEffectKeyframe { .. }
             | AppCommand::RemoveEffectKeyframe { .. }
             | AppCommand::MoveEffectKeyframe { .. }
             | AppCommand::SetEffectKeyframeInterpolation { .. }
             | AppCommand::BeginEffectDrag { .. }
             | AppCommand::EndEffectDrag { .. }
-            | AppCommand::SetSplitCompareEffect { .. }
-            | AppCommand::AddEffect { .. }
+            | AppCommand::SetSplitCompareEffect { .. } => true,
+            AppCommand::AddEffect { .. }
             | AppCommand::RemoveEffect { .. }
             | AppCommand::SetEffectEnabled { .. }
             | AppCommand::ReorderEffect { .. }
@@ -329,7 +350,7 @@ mod tests {
         let fx = [E::GaussianBlur { radius: 3.0 }, E::Sharpen { amount: 0.5 }, E::Gamma { gamma: 1.2 }];
         let c = fixture(&fx);
         let id = c.id;
-        let base = with(&[c.clone()]);
+        let base = with(std::slice::from_ref(&c));
         let ids = effects(&base, id);
         let (i0, i1, i2) = (ids[0], ids[1], ids[2]);
         let gamma = E::Gamma { gamma: 1.6 };
@@ -359,7 +380,7 @@ mod tests {
         ];
         for (index_cmd, edit, twin) in cases {
             assert!(has_a_twin(&index_cmd));
-            let (mut a, mut b) = (with(&[c.clone()]), with(&[c.clone()]));
+            let (mut a, mut b) = (with(std::slice::from_ref(&c)), with(std::slice::from_ref(&c)));
             old(&mut a, id, edit);
             let cmd = twin(&b);
             run(&mut b, cmd);
@@ -372,7 +393,7 @@ mod tests {
         // pictures are the same down to its id.
         let index_cmd = AppCommand::AddBuiltinEffect { clip_id: id, effect: added.clone() };
         assert!(has_a_twin(&index_cmd));
-        let (mut a, mut b) = (with(&[c.clone()]), with(&[c.clone()]));
+        let (mut a, mut b) = (with(std::slice::from_ref(&c)), with(std::slice::from_ref(&c)));
         old(&mut a, id, EffectEdit::Add(&added));
         let made = clip(&a, id).picture_v2().unwrap().picture.graph.nodes.iter().find(|n| !ids.contains(&n.id) && n.type_id.as_str() == types::LEGACY_EFFECT).cloned().expect("the added node");
         run(&mut b, AppCommand::AddNodeAt { after: at(id, &[ids[2]]), node: Box::new(made) });
@@ -479,13 +500,13 @@ mod tests {
     fn mix_and_masks_by_path_are_one_step_each() {
         let c = fixture(&[E::GaussianBlur { radius: 3.0 }, E::Invert { mix: 1.0 }]);
         let id = c.id;
-        let base = with(&[c.clone()]);
+        let base = with(std::slice::from_ref(&c));
         let ids = effects(&base, id);
         for cmd in [
             AppCommand::SetMixAt { addr: at(id, &[ids[0]]), mix: Some(0.5) },
             AppCommand::SetMaskChannelAt { addr: at(id, &[ids[0]]), channel: Some("alpha".into()) },
         ] {
-            let mut s = with(&[c.clone()]);
+            let mut s = with(std::slice::from_ref(&c));
             run(&mut s, cmd.clone());
             assert_eq!(s.active_history().undo_count(), base.active_history().undo_count() + 1, "{cmd:?}");
             assert!(clip(&s, id).is_picture_truth(), "{cmd:?}: the picture holds it");
@@ -493,7 +514,7 @@ mod tests {
             assert!(!clip(&s, id).is_picture_truth(), "{cmd:?}: undone");
             assert_eq!(picture(&s, id), picture(&base, id));
         }
-        let mut s = with(&[c.clone()]);
+        let mut s = with(std::slice::from_ref(&c));
         let before = picture(&s, id);
         assert_eq!(s.path_command(&AppCommand::SetMixAt { addr: at(id, &[ids.get(1).copied().unwrap_or(ids[0])]), mix: Some(0.5) }), Some(false), "Invert takes no mix");
         assert_eq!(picture(&s, id), before);
@@ -549,4 +570,110 @@ mod tests {
         assert_eq!(moved, was);
         assert_eq!(s.selected_node_addr, Some(at(id, &[ids[1]])), "the selection still names it");
     }
+
+    /// A clip with a Corrector in its grade, and the Corrector's address:
+    /// inside the clip's grade group.
+    fn graded() -> (klipp_timeline::Clip, NodePath) {
+        let mut c = fixture(&[E::GaussianBlur { radius: 3.0 }]);
+        let mut g = klipp_nodes::NodeGraph::default();
+        g.ensure_corrector();
+        let corrector = g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
+        c.set_grade(g);
+        let p = c.picture_v2().unwrap().picture.clone();
+        let group = p.graph.nodes.iter().find(|n| n.group.as_ref().is_some_and(|b| b.graph.nodes.iter().any(|i| i.id == corrector))).expect("the grade group holds the Corrector").id;
+        let addr = at(c.id, &[group, corrector]);
+        (c, addr)
+    }
+
+    /// A grade node's scalar parameter set by its bare id (`SetNodeParam`,
+    /// `apply_override` on the graph) and by path (`SetParamAt` on
+    /// `[group, node]`): the same picture, and one undo back. The Corrector
+    /// named without its group is refused.
+    #[test]
+    fn a_grade_param_by_path_is_the_param_by_id() {
+        let (c, addr) = graded();
+        let node = addr.node().unwrap();
+        for (param, value) in [("exposure", 0.7f32), ("contrast", 0.2), ("saturation", 1.4)] {
+            let mut a = with(std::slice::from_ref(&c));
+            let seq = &mut a.sequences[0];
+            let clip_a = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
+            clip_a.edit_grade(|root| root.nodes.iter_mut().find(|n| n.id == node).unwrap().params.apply_override(param, value));
+            let mut b = with(std::slice::from_ref(&c));
+            run(&mut b, AppCommand::SetParamAt { addr: addr.clone(), key: param.into(), value: ParamValue::Float(value) });
+            assert_eq!(picture(&a, c.id), picture(&b, c.id), "{param}: the same picture");
+            undo(&mut b);
+            assert_eq!(picture(&b, c.id), picture(&with(std::slice::from_ref(&c)), c.id), "{param}: undone");
+        }
+        let mut a = with(std::slice::from_ref(&c));
+        let seq = &mut a.sequences[0];
+        let clip_a = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
+        clip_a.edit_grade(|root| root.nodes.iter_mut().find(|n| n.id == node).unwrap().enabled = false);
+        let mut b = with(std::slice::from_ref(&c));
+        run(&mut b, AppCommand::SetNodeEnabledAt { addr: addr.clone(), enabled: false });
+        assert_eq!(picture(&a, c.id), picture(&b, c.id), "toggled by path as by id");
+        let mut s = with(std::slice::from_ref(&c));
+        let before = picture(&s, c.id);
+        assert_eq!(s.path_command(&AppCommand::SetParamAt { addr: at(c.id, &[node]), key: "exposure".into(), value: ParamValue::Float(0.5) }), Some(false), "the group skipped: refused");
+        assert_eq!(picture(&s, c.id), before);
+    }
+
+
+    /// A grade node's struct parameter set whole by its bare id
+    /// (`SetNodeQualifier`) and by path (`SetPayloadAt`, the node's stored
+    /// entry with that one struct changed): the same picture.
+    #[test]
+    fn a_grade_struct_by_path_is_the_struct_by_id() {
+        let (c, addr) = graded();
+        let node = addr.node().unwrap();
+        let q = klipp_core::QualifierSettings { enabled: true, hue_center: 30.0, hue_width: 40.0, ..Default::default() };
+        let mut a = with(std::slice::from_ref(&c));
+        let clip_a = a.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
+        clip_a.edit_grade(|root| root.nodes.iter_mut().find(|n| n.id == node).unwrap().params.qualifier = Some(q.clone()));
+        let entry = |s: &AppState| {
+            let p = clip(s, c.id).picture_v2().unwrap();
+            let group = p.picture.graph.nodes.iter().find(|n| n.id == addr.nodes[0]).unwrap().clone();
+            group.group.unwrap().graph.nodes.iter().find(|n| n.id == node).unwrap().legacy.clone().unwrap().payload
+        };
+        let mut b = with(std::slice::from_ref(&c));
+        let mut payload = entry(&b);
+        payload["params"]["qualifier"] = serde_json::to_value(&q).unwrap();
+        run(&mut b, AppCommand::SetPayloadAt { addr: addr.clone(), payload });
+        assert_eq!(picture(&a, c.id), picture(&b, c.id), "the qualifier by path as by id");
+        undo(&mut b);
+        assert_eq!(picture(&b, c.id), picture(&with(std::slice::from_ref(&c)), c.id), "undone");
+    }
+
+
+    /// An effect's keys by path and by index: adding one (`AddKeyAt`,
+    /// `AddEffectKeyframe`), moving it and setting its interpolation, and
+    /// removing it give the same picture each time.
+    #[test]
+    fn effect_keys_by_path_are_the_keys_by_index() {
+        let c = fixture(&[E::GaussianBlur { radius: 3.0 }]);
+        let node = effects(&with(std::slice::from_ref(&c)), c.id)[0];
+        let addr = at(c.id, &[node]);
+        let key = |t: f64, v: f32, i: klipp_core::Interpolation| klipp_core::Keyframe { time_secs: t, value: v, interpolation: i, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        let lin = klipp_core::Interpolation::Linear;
+        // By index: the clip's own keyframe list for the effect.
+        let by_index = |keys: Vec<klipp_core::Keyframe>| {
+            let mut s = with(std::slice::from_ref(&c));
+            let clip = s.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
+            let id = clip.effect_id_at(0).unwrap();
+            clip.edit_effect_keyframes_of(id, "radius", |v| *v = keys);
+            s
+        };
+        let mut s = with(std::slice::from_ref(&c));
+        run(&mut s, AppCommand::AddKeyAt { addr: addr.clone(), key: "radius".into(), keyframe: serde_json::to_value(key(0.5, 6.0, lin)).unwrap() });
+        assert_eq!(picture(&s, c.id), picture(&by_index(vec![key(0.5, 6.0, lin)]), c.id), "added");
+        run(&mut s, AppCommand::MoveKeyAt { addr: addr.clone(), key: "radius".into(), time_secs: 0.5, new_time_secs: 1.0, value: 8.0 });
+        assert_eq!(picture(&s, c.id), picture(&by_index(vec![key(1.0, 8.0, lin)]), c.id), "moved");
+        let hold = klipp_core::Interpolation::Step;
+        run(&mut s, AppCommand::SetInterpKeyAt { addr: addr.clone(), key: "radius".into(), time_secs: 1.0, interpolation: hold });
+        assert_eq!(picture(&s, c.id), picture(&by_index(vec![key(1.0, 8.0, hold)]), c.id), "interpolation");
+        run(&mut s, AppCommand::RemoveKeyAt { addr: addr.clone(), key: "radius".into(), time_secs: 1.0 });
+        assert_eq!(picture(&s, c.id), picture(&with(std::slice::from_ref(&c)), c.id), "removed");
+        assert_eq!(s.active_history().undo_count(), 4, "one step each");
+        assert_eq!(s.path_command(&AppCommand::MoveKeyAt { addr, key: "radius".into(), time_secs: 3.0, new_time_secs: 1.0, value: 1.0 }), Some(false), "no key there: refused");
+    }
+
 }

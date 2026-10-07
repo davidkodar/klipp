@@ -996,8 +996,10 @@ pub enum AppCommand {
     MoveNodeAt { addr: klipp_graph_format::path::NodePath, after: klipp_graph_format::NodeId },
     SetNodeEnabledAt { addr: klipp_graph_format::path::NodePath, enabled: bool },
     SetParamAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey, value: klipp_graph_format::ParamValue },
-    /// An effect's settings written whole (an inspector card's one write,
-    /// a preset), as `UpdateBuiltinEffect` writes them, by path.
+    /// A node's stored entry written whole: an effect's settings as
+    /// `UpdateBuiltinEffect` writes them, or a grade node's entry with one
+    /// struct changed (a qualifier, curves, masks), as `SetNodeQualifier`
+    /// and its kin write it. Scalar parameters go by `SetParamAt`.
     SetPayloadAt { addr: klipp_graph_format::path::NodePath, payload: serde_json::Value },
     /// How much of an effect shows over its input; `None` is all of it.
     SetMixAt { addr: klipp_graph_format::path::NodePath, mix: Option<f32> },
