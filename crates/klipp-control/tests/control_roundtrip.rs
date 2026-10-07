@@ -202,7 +202,7 @@ fn harness() -> Harness {
                 }
                 let revision = if refused.is_none() { shared.bump_revision() } else { shared.revision() };
                 if let Some(ack) = env.ack {
-                    let _ = ack.send(klipp_document::control::ControlAck { revision, refused, refused_op });
+                    let _ = ack.send(klipp_document::control::ControlAck { revision, refused, refused_op, renamed: Vec::new() });
                 }
             }
         });

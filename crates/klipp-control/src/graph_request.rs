@@ -39,9 +39,44 @@ pub(crate) fn write(ctx: &ControlContext, ops: &[GraphWireOp], expected_revision
     // Queued ids are useful for recovery, but do not claim they exist until
     // the app acknowledges the write. A late outcome is in operation_status.
     if result["accepted"] == true {
-        let created: Vec<_> = prepared.created.into_iter().map(|(op_index,path)| json!({"op_index":op_index,"path":GraphPath::from(path)})).collect();
+        let created: Vec<_> = prepared.created.into_iter().map(|(op_index,path)| json!({"op_index":op_index,"path":GraphPath::from(renamed_path(path, &result["renamed"]))})).collect();
         let key = if result["applied"] == true { "created" } else { "pending_created" };
         result[key] = json!(created);
     }
     Ok(result)
+}
+
+/// `path` with each node the app's picture holds under another id once
+/// written (`renamed`, its reply's pairs of old and new ids) named by that
+/// id, so the path leads to it (#1256): an effect added to a clip whose
+/// fields keep no effect ids is lifted again under its list slot's id.
+fn renamed_path(mut path: klipp_graph_format::path::NodePath, renamed: &Value) -> klipp_graph_format::path::NodePath {
+    let pairs: Vec<(String, String)> = renamed.as_array().into_iter().flatten()
+        .filter_map(|pair| Some((pair.get(0)?.as_str()?.to_string(), pair.get(1)?.as_str()?.to_string())))
+        .collect();
+    for node in &mut path.nodes {
+        if let Some(now) = pairs.iter().find(|(was, _)| *was == node.to_string()).and_then(|(_, now)| now.parse().ok()) {
+            *node = now;
+        }
+    }
+    path
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use klipp_graph_format::path::{NodePath, Root};
+
+    /// The created path names the id the app's reply renames a node to,
+    /// at any depth of the path, and a path the reply doesn't rename stays.
+    #[test]
+    fn a_created_path_names_the_id_the_app_renamed_it_to() {
+        let id = |n: u128| uuid::Uuid::from_u128(n);
+        let root = Root::Clip { clip: id(1) };
+        let renamed = json!([[id(0xa).to_string(), id(0xb).to_string()], [id(0xc).to_string(), id(0xd).to_string()]]);
+        assert_eq!(renamed_path(NodePath::new(root, [id(0xa)]), &renamed).nodes, vec![id(0xb)]);
+        assert_eq!(renamed_path(NodePath::new(root, [id(0xe), id(0xc)]), &renamed).nodes, vec![id(0xe), id(0xd)]);
+        assert_eq!(renamed_path(NodePath::new(root, [id(0xf)]), &renamed).nodes, vec![id(0xf)]);
+        assert_eq!(renamed_path(NodePath::new(root, [id(0xa)]), &Value::Null).nodes, vec![id(0xa)], "no renames, no change");
+    }
 }

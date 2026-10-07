@@ -507,3 +507,47 @@ fn an_effect_is_never_placed_before_a_plugin() {
     ok.apply_picture_ops(&[GraphOp::AddNode { after: at(&c, [ofx]), node: new_effect(0xa1, &E::Gamma { gamma: 1.2 }, BTreeMap::new()) }]).unwrap();
     assert!(matches!(ok.builtin_effects()[0], E::Gamma { .. }), "the added effect leads the list: {:?}", ok.builtin_effects());
 }
+
+/// An effect a batch adds to a clip whose fields hold its effects is
+/// renamed by the write-back: the fields keep no ids, and the picture
+/// lifted from them names each effect by its slot. The batch says so
+/// (#1256), so the id it gives back for the new effect, and for each
+/// effect the insert moved down a slot, reaches that effect in the next
+/// batch; the batch's own id no longer does.
+#[test]
+fn an_added_effect_is_reached_by_the_id_its_batch_renames_it_to() {
+    let mut c = clip();
+    let fx = effects(&picture(&c));
+    let added = uuid::Uuid::from_u128(0xc1);
+    let blur = E::GaussianBlur { radius: 11.0 };
+    let (_, renamed) = c.apply_picture_ops_renamed(&[GraphOp::AddNode { after: at(&c, [fx[0]]), node: new_effect(0xc1, &blur, BTreeMap::new()) }]).unwrap();
+    let to = |id: NodeId| renamed.iter().find(|(was, _)| *was == id).map(|(_, now)| *now);
+    let now = effects(&picture(&c));
+    assert_eq!(now.len(), 4);
+    assert_eq!(to(added), Some(now[1]), "the new effect, second in the list: {renamed:?}");
+    // The two after it moved a slot down, and their ids moved with them.
+    assert_eq!((to(fx[1]), to(fx[2])), (Some(now[2]), Some(now[3])), "{renamed:?}");
+    assert_eq!(to(fx[0]), None, "the first kept its slot and its id");
+    // The new effect by its renamed id: its radius set, on that effect.
+    c.apply_picture_ops(&[GraphOp::SetParam { path: at(&c, [now[1]]), key: "radius".into(), value: ParamValue::Float(2.5) }]).unwrap();
+    assert!(matches!(c.builtin_effects()[1], E::GaussianBlur { radius } if (radius - 2.5).abs() < 1e-6), "{:?}", c.builtin_effects());
+    // A moved one by its renamed id: the vignette, now third.
+    c.apply_picture_ops(&[GraphOp::SetEnabled { path: at(&c, [to(fx[1]).unwrap()]), enabled: false }]).unwrap();
+    assert!(matches!(c.builtin_effects()[2], E::Vignette { .. }));
+    // The batch's own id for the new effect reaches nothing now.
+    assert!(c.clone().apply_picture_ops(&[GraphOp::SetParam { path: at(&c, [added]), key: "radius".into(), value: ParamValue::Float(4.0) }]).is_err());
+}
+
+/// A picture-truth clip keeps the batch's ids, so its batch renames
+/// nothing.
+#[test]
+fn a_picture_truth_clip_renames_nothing() {
+    let mut c = clip();
+    let fx = effects(&picture(&c));
+    // A mix makes the clip picture-truth (the fields can't hold it).
+    c.apply_picture_ops(&[GraphOp::SetMix { path: at(&c, [fx[0]]), mix: Some(0.5) }]).unwrap();
+    assert!(c.is_picture_truth());
+    let (_, renamed) = c.apply_picture_ops_renamed(&[GraphOp::AddNode { after: at(&c, [fx[0]]), node: new_effect(0xc2, &E::GaussianBlur { radius: 4.0 }, BTreeMap::new()) }]).unwrap();
+    assert!(renamed.is_empty(), "{renamed:?}");
+    assert!(effects(&picture(&c)).contains(&uuid::Uuid::from_u128(0xc2)));
+}
