@@ -8,14 +8,12 @@ pub mod assemble;
 pub mod document;
 pub mod dry_run;
 pub mod installed;
-pub mod ops;
 pub mod run;
 pub mod running;
 pub mod scan;
-pub mod v1;
 pub mod verify;
 /// The pure conversion, in its own crate so the app can use it.
-pub use klipp_graph_lift::{canon, delift, ids, lift, old_fields, paths, revision, splice, to_v1, to_v2, unlift};
+pub use klipp_graph_lift::{canon, delift, ids, lift, old_fields, ops, paths, revision, splice, to_v1, to_v2, unlift, v1};
 pub mod revision2;
 pub use document::{Document, Picture, PictureField, StoreKind};
 

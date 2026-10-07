@@ -218,7 +218,7 @@ fn modifier_keys_match_including_unrecognised_names() {
 
 #[test]
 fn frozen_copy_size_is_reported() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/v1");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../klipp-graph-lift/src/v1");
     let lines: usize = std::fs::read_dir(root)
         .unwrap()
         .map(|e| {
