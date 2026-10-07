@@ -62,6 +62,12 @@ const fn whole(field: &'static str, label: &'static str, default: f32, soft: Opt
     }
 }
 
+/// A pixel size never scaled below one pixel.
+const fn at_least_one_px(mut p: ParamDesc) -> ParamDesc {
+    p.scaling = Scaling::AtRenderScaleAtLeastOne;
+    p
+}
+
 /// A parameter with no inspector slider.
 const fn unslid(mut p: ParamDesc) -> ParamDesc {
     p.soft = None;
@@ -224,7 +230,7 @@ pub(super) static TYPES: &[EffectType] = &[
         sample: || BuiltinEffect::EdgeDetect { strength: 1.0, mix: 1.0 },
     },
     EffectType {
-        desc: mixable(blur("klipp.fx.mosaic", "Mosaic", &[ParamDesc::float("block_size", "Block Size", 10.0, (1.0, 100.0), Unit::CanvasPx)])),
+        desc: mixable(blur("klipp.fx.mosaic", "Mosaic", &[at_least_one_px(ParamDesc::float("block_size", "Block Size", 10.0, (1.0, 100.0), Unit::CanvasPx))])),
         tag: "mosaic",
         sample: || BuiltinEffect::Mosaic { block_size: 10.0 },
     },

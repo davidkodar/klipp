@@ -249,7 +249,7 @@ fn parameters_scaled_by_the_effect_are_the_ones_at_render_scale_scales() {
         let (_, a) = saved(&before);
         let (_, b) = saved(&before.clone().at_render_scale(2.0));
         let described: BTreeSet<(String, Option<usize>)> =
-            t.desc.params.iter().filter(|p| p.scaling == Scaling::AtRenderScale).map(|p| (p.field.to_string(), p.index)).collect();
+            t.desc.params.iter().filter(|p| p.scaling.by_the_effect()).map(|p| (p.field.to_string(), p.index)).collect();
         assert_eq!(described, changed(&a, &b), "{}: AtRenderScale parameters differ from what at_render_scale scales", t.desc.id);
     }
 }
