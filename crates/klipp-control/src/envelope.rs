@@ -401,14 +401,20 @@ pub(crate) fn send_with_reply(
                 }
                 return Err(format!("not applied (operation {operation_id}): {why}"));
             }
-            Ok(json!({
+            let mut reply = json!({
                 "operation_id": operation_id,
                 "applied": true,
                 "accepted": true,
                 "commands": count,
                 "revision": ack.revision,
                 "generation": generation,
-            }))
+            });
+            // Ids the app's picture holds under other names once written
+            // (#1256), for the caller to rename the paths it returns.
+            if !ack.renamed.is_empty() {
+                reply["renamed"] = json!(ack.renamed.iter().map(|(was, now)| [was.to_string(), now.to_string()]).collect::<Vec<_>>());
+            }
+            Ok(reply)
         }
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             let pending_id = operation_id.clone();

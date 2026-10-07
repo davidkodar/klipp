@@ -352,6 +352,17 @@ impl Clip {
     /// Apply one atomic batch, retaining the index of an operation-level refusal.
     /// Whole-picture failures have no index unless an unwired node was added here.
     pub fn apply_picture_ops_indexed(&mut self, ops: &[GraphOp]) -> Result<PictureEdit, (Option<usize>, String)> {
+        self.apply_picture_ops_renamed(ops).map(|(edit, _)| edit)
+    }
+
+    /// [`Self::apply_picture_ops_indexed`], and each built-in effect node id
+    /// the batch's picture held that the clip's picture holds under another
+    /// id once written back (#1256): the fields keep no effect ids, so the
+    /// picture lifted from them names each effect by its list slot. An
+    /// effect the batch added, or moved, gets a new id; a reply that names
+    /// it by the batch's id would point at nothing. Empty for a batch that
+    /// renames nothing.
+    pub fn apply_picture_ops_renamed(&mut self, ops: &[GraphOp]) -> Result<(PictureEdit, Vec<(NodeId, NodeId)>), (Option<usize>, String)> {
         if ops.is_empty() {
             return Err((None, "an empty batch has no edit".into()));
         }
@@ -440,7 +451,22 @@ impl Clip {
             self.picture = before;
             return Err(e);
         }
-        Ok(PictureEdit { before, after: self.picture.clone() })
+        // Each slot's effect, by the id the batch knew it by and the id the
+        // written clip's picture gives it. A picture-truth clip keeps the
+        // batch's ids, so it renames nothing.
+        let renamed = match self.picture_v2().ok().filter(|_| !truth) {
+            Some(after) => order
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, was)| {
+                    let was = (*was)?;
+                    let now = after.picture.graph.nodes.iter().filter(|n| n.type_id.as_str() != types::LEGACY_OFX).find(|n| n.legacy.as_ref().and_then(|l| l.slot) == Some(slot as u32))?.id;
+                    (now != was).then_some((was, now))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        Ok((PictureEdit { before, after: self.picture.clone() }, renamed))
     }
 
     /// `edited` as this clip's picture-truth picture, its fields already

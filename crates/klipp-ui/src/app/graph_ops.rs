@@ -20,17 +20,19 @@ impl KlippApp {
     }
 
     /// `ops` applied as one undo step named `label`, or nothing: the index
-    /// of the op refused, and why.
-    pub(super) fn apply_graph_ops(&mut self, ops: &[GraphOp], label: &str) -> Result<(), (Option<usize>, String)> {
-        let edit = graph_ops_edit(&self.state.sequences[self.state.active_sequence_idx], ops)?;
+    /// of the op refused, and why. Applied, the node ids the picture holds
+    /// under other ids once written (#1256).
+    pub(super) fn apply_graph_ops(&mut self, ops: &[GraphOp], label: &str) -> Result<Vec<(klipp_graph_format::NodeId, klipp_graph_format::NodeId)>, (Option<usize>, String)> {
+        let (edit, renamed) = graph_ops_edit(&self.state.sequences[self.state.active_sequence_idx], ops)?;
         self.apply_edits_as_one(&[edit], label);
-        Ok(())
+        Ok(renamed)
     }
 }
 
 /// The history entry `ops` make on `seq`, built on a copy: nothing changes
-/// yet. A refusal is the index of the op refused, and why.
-fn graph_ops_edit(seq: &klipp_timeline::Sequence, ops: &[GraphOp]) -> Result<EditCommand, (Option<usize>, String)> {
+/// yet, and the ids it renames ([`klipp_timeline::Clip::apply_picture_ops_renamed`]).
+/// A refusal is the index of the op refused, and why.
+fn graph_ops_edit(seq: &klipp_timeline::Sequence, ops: &[GraphOp]) -> Result<(EditCommand, Vec<(klipp_graph_format::NodeId, klipp_graph_format::NodeId)>), (Option<usize>, String)> {
     let root = ops.first().ok_or((None, "an empty batch has no edit".to_string()))?.path().root;
     if let Some(at) = ops.iter().position(|op| op.path().root != root) {
         return Err((Some(at), "a batch edits one picture".into()));
@@ -41,10 +43,8 @@ fn graph_ops_edit(seq: &klipp_timeline::Sequence, ops: &[GraphOp]) -> Result<Edi
     let clip_id = klipp_core::ClipId(clip);
     let original = seq.tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id).ok_or_else(|| (None, format!("no clip {clip} on this sequence's tracks")))?;
     let mut scratch = original.clone();
-    match scratch.apply_picture_ops_indexed(ops) {
-        Ok(edit) => Ok(EditCommand::PictureEdit { description: "Graph Edit", clip_id, edit: Box::new(edit) }),
-        Err(error) => Err(error),
-    }
+    let (edit, renamed) = scratch.apply_picture_ops_renamed(ops)?;
+    Ok((EditCommand::PictureEdit { description: "Graph Edit", clip_id, edit: Box::new(edit) }, renamed))
 }
 
 #[cfg(test)]
@@ -76,7 +76,7 @@ mod tests {
             GraphOp::SetEnabled { path: at(fx[1]), enabled: false },
         ];
         let before = format!("{:?}", seq.tracks[0].clips[0].builtin_effects());
-        let edit = graph_ops_edit(&seq, &ops).unwrap();
+        let (edit, _) = graph_ops_edit(&seq, &ops).unwrap();
         let EditCommand::PictureEdit { clip_id, edit, .. } = edit else { panic!("a picture edit") };
         assert_eq!(clip_id, clip);
         let mut after = seq.tracks[0].clips[0].clone();
@@ -84,6 +84,39 @@ mod tests {
         assert!(matches!(after.builtin_effects()[0], klipp_effects::BuiltinEffect::GaussianBlur { radius } if radius == 5.0));
         assert_eq!(after.builtin_effects_enabled().get(1), Some(&false));
         assert_eq!(format!("{:?}", seq.tracks[0].clips[0].builtin_effects()), before, "built on a copy");
+    }
+
+    /// An effect added to a clip whose fields hold its effects comes back
+    /// renamed (#1256): the edit's clip holds it under the renamed id, and
+    /// the effect after it, moved down a slot, is renamed too.
+    #[test]
+    fn an_added_effect_comes_back_renamed() {
+        let (seq, clip, fx) = sequence();
+        let at = |id| NodePath::new(Root::Clip { clip: clip.0 }, [id]);
+        let added = uuid::Uuid::from_u128(0xd1);
+        let node = klipp_graph_format::Node {
+            id: added,
+            type_id: types::LEGACY_EFFECT.into(),
+            type_version: 1,
+            label: String::new(),
+            enabled: true,
+            params: Default::default(),
+            anim: Default::default(),
+            mix: None,
+            wireless: Default::default(),
+            group: None,
+            legacy: Some(klipp_graph_format::Legacy { slot: None, payload: serde_json::to_value(klipp_effects::BuiltinEffect::Gamma { gamma: 1.3 }).unwrap(), keyframes: None, modifiers: Default::default() }),
+            legacy_flags: None,
+            origin: None,
+        };
+        let (edit, renamed) = graph_ops_edit(&seq, &[GraphOp::AddNode { after: at(fx[0]), node: Box::new(node) }]).unwrap();
+        let EditCommand::PictureEdit { edit, .. } = edit else { panic!("a picture edit") };
+        let mut after = seq.tracks[0].clips[0].clone();
+        after.restore_picture(&edit.after);
+        let now: Vec<_> = after.picture_v2().unwrap().picture.graph.nodes.iter().filter(|n| n.type_id.as_str() == types::LEGACY_EFFECT).map(|n| n.id).collect();
+        assert_eq!(renamed.iter().find(|(was, _)| *was == added).map(|(_, now)| *now), Some(now[1]), "{renamed:?}");
+        assert_eq!(renamed.iter().find(|(was, _)| *was == fx[1]).map(|(_, now)| *now), Some(now[2]), "{renamed:?}");
+        assert!(!now.contains(&added));
     }
 
     /// A refusal names the op it stopped at: the first that couldn't be

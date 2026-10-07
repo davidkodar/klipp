@@ -35,4 +35,9 @@ pub struct ControlAck {
     /// The graph op a refused `GraphOps` batch stopped at, by its index in
     /// the batch (node-graph M2 step 15d).
     pub refused_op: Option<usize>,
+    /// Node ids an applied `GraphOps` batch named that the picture holds
+    /// under other ids once written (#1256): an effect added to, or moved
+    /// in, a clip whose fields keep no effect ids. The reply's paths are
+    /// renamed through it.
+    pub renamed: Vec<(klipp_graph_format::NodeId, klipp_graph_format::NodeId)>,
 }
