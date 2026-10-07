@@ -295,6 +295,26 @@ impl Clip {
         })
     }
 
+    /// `edits` in turn, each built against the clip as the ones before
+    /// left it, as one edit of the clip's picture: what a document op that
+    /// takes an effect off and puts another on records as one step. `None`
+    /// when one of them doesn't take graph ops (a placed kind), and the
+    /// clip is as it was; the caller's mutator path runs instead.
+    pub fn apply_effect_edits(&mut self, edits: &[EffectEdit]) -> Option<Result<PictureEdit, String>> {
+        let before = self.picture.clone();
+        for edit in edits {
+            let Some(ops) = self.effect_edit_ops(*edit) else {
+                self.picture = before;
+                return None;
+            };
+            if let Err(why) = self.apply_picture_ops(&ops) {
+                self.picture = before;
+                return Some(Err(why));
+            }
+        }
+        Some(Ok(PictureEdit { before, after: self.picture.clone() }))
+    }
+
     /// Apply `ops` to the clip's picture as one edit, checked first on a
     /// copy of its lifted picture. A refusal leaves the clip as it was.
     pub fn apply_picture_ops(&mut self, ops: &[GraphOp]) -> Result<PictureEdit, String> {

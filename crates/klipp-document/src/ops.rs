@@ -4670,6 +4670,50 @@ fn pin(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, media
     Ok((what, EditCommand::LinkedImport { video: Some(video), audio: None, created_video_track_at: created, created_audio_track_at: None, autoset: None }, ids))
 }
 
+/// Where an effect a list edit puts on goes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Place {
+    Last,
+    /// First in the chain, so what follows sees its picture (a crop).
+    First,
+}
+
+/// Take off the clip's effects `remove` names and put `add` on, as one
+/// step: through the clip's graph ops when every entry touched is a plain
+/// effect (node-graph M2 step 15c), its flags, keys and stacks moving with
+/// each effect; otherwise as today's whole-list write, for the kinds the
+/// clip places itself. Undoes under the name today's edit had.
+fn effects_edit(clip: &Clip, remove: impl Fn(&klipp_effects::BuiltinEffect) -> bool, add: Option<(klipp_effects::BuiltinEffect, Place)>) -> EditCommand {
+    use klipp_timeline::EffectEdit;
+    let gone: Vec<usize> = clip.builtin_effects().iter().enumerate().filter(|(_, e)| remove(e)).map(|(i, _)| i).rev().collect();
+    let kept = clip.builtin_effects().len() - gone.len();
+    let mut edits: Vec<EffectEdit> = gone.iter().map(|i| EffectEdit::Remove(*i)).collect();
+    if let Some((effect, place)) = &add {
+        edits.push(EffectEdit::Add(effect));
+        if *place == Place::First && kept > 0 {
+            edits.push(EffectEdit::Move { from: kept, to: 0 });
+        }
+    }
+    let after = kept + usize::from(add.is_some());
+    let description = match after.cmp(&clip.builtin_effects().len()) {
+        std::cmp::Ordering::Greater => "Add Effect",
+        std::cmp::Ordering::Less => "Remove Effect",
+        std::cmp::Ordering::Equal => "Effects",
+    };
+    let mut scratch = clip.clone();
+    if let Some(Ok(edit)) = scratch.apply_effect_edits(&edits) {
+        return EditCommand::PictureEdit { description, clip_id: clip.id, edit: Box::new(edit) };
+    }
+    drop(edits);
+    let mut new: Vec<klipp_effects::BuiltinEffect> = clip.builtin_effects().iter().filter(|e| !remove(e)).cloned().collect();
+    match add {
+        Some((effect, Place::First)) => new.insert(0, effect),
+        Some((effect, Place::Last)) => new.push(effect),
+        None => {}
+    }
+    set_builtin_effects(clip, new)
+}
+
 fn set_builtin_effects(clip: &Clip, new: Vec<klipp_effects::BuiltinEffect>) -> EditCommand {
     let mut new_enabled = clip.builtin_effects_enabled().to_vec();
     new_enabled.resize(new.len(), true);
@@ -4752,11 +4796,9 @@ fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &
     let (fx, a) = named_picture_effect(kind, amount).map_err(|(why, fix)| refuse(i, why, fix))?;
     use klipp_effects::BuiltinEffect as E;
     // The same kind of effect replaces the one that is there.
-    let same_kind = |e: &E| std::mem::discriminant(e) == std::mem::discriminant(&fx);
-    let mut effects: Vec<E> = clip.builtin_effects().iter().filter(|e| !same_kind(e)).cloned().collect();
-    effects.push(fx);
+    let kind_of = std::mem::discriminant(&fx);
     let what = format!("{} {a:.2} on {}", kind.to_lowercase(), clip_name(seq, pool, clip));
-    let edit = set_builtin_effects(clip, effects);
+    let edit = effects_edit(clip, |e: &E| std::mem::discriminant(e) == kind_of, Some((fx, Place::Last)));
     Ok((what, edit, vec![clip.id]))
 }
 
@@ -5106,20 +5148,20 @@ fn crop(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, side
         return Err(refuse(i, "the crop leaves nothing", "take less off opposite sides than the whole picture"));
     }
     use klipp_effects::BuiltinEffect as E;
-    let mut effects: Vec<E> = clip.builtin_effects().iter().filter(|e| !matches!(e, E::Crop { .. })).cloned().collect();
+    let is_crop = |e: &E| matches!(e, E::Crop { .. });
     let off = sides.iter().all(|v| *v <= 0.0);
-    let what = if off {
-        if effects.len() == clip.builtin_effects().len() {
+    let (what, add) = if off {
+        if !clip.builtin_effects().iter().any(is_crop) {
             return Err(refuse(i, "there is no crop to take off", "give a side to crop"));
         }
-        format!("take the crop off {}", clip_name(seq, pool, clip))
+        (format!("take the crop off {}", clip_name(seq, pool, clip)), None)
     } else {
         // First in the chain, so what follows — corners, a shadow — sees
         // the picture as cropped.
-        effects.insert(0, E::Crop { left, right, top, bottom, feather: 0.0 });
-        format!("crop {}: {left:.3} left, {right:.3} right, {top:.3} top, {bottom:.3} bottom", clip_name(seq, pool, clip))
+        let what = format!("crop {}: {left:.3} left, {right:.3} right, {top:.3} top, {bottom:.3} bottom", clip_name(seq, pool, clip));
+        (what, Some((E::Crop { left, right, top, bottom, feather: 0.0 }, Place::First)))
     };
-    Ok((what, set_builtin_effects(clip, effects), vec![clip.id]))
+    Ok((what, effects_edit(clip, is_crop, add), vec![clip.id]))
 }
 
 /// Move a camera over the whole sequence, or take it away.
@@ -6140,10 +6182,8 @@ fn stabilize(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip,
     }
     use klipp_effects::BuiltinEffect as E;
     let fx = E::VideoStabilization { smoothing, crop_ratio: 0.05 + smoothing * 0.05, zoom: true };
-    let mut effects: Vec<E> = clip.builtin_effects().iter().filter(|e| !matches!(e, E::VideoStabilization { .. })).cloned().collect();
-    effects.push(fx);
     let what = format!("stabilise {} at {smoothing:.2}", clip_name(seq, pool, clip));
-    Ok((what, set_builtin_effects(clip, effects), vec![clip.id]))
+    Ok((what, effects_edit(clip, |e: &E| matches!(e, E::VideoStabilization { .. }), Some((fx, Place::Last))), vec![clip.id]))
 }
 
 /// A clip's speed set to `speed` — negative plays it reversed — for the
@@ -8023,7 +8063,7 @@ mod tests {
         // A reframe pushed all the way right brings the picture's right
         // edge to the frame's and no further.
         let plan = resolve(&seq, &pool, &[Op::Reframe { clip_id: ClipRef::Id(a), scale: Some(1.5), x: Some(1.0), y: Some(0.0) }]).unwrap();
-        let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
+        let new_effects = &effects_after(&plan.steps[0].edit).expect("effects edit").1;
         let Some(klipp_effects::BuiltinEffect::Transform { position_x, position_y, .. }) = new_effects.first() else { panic!("a transform") };
         let (right_edge, _) = on_screen(1.5, (*position_x, *position_y), (1.0, 0.5));
         assert!((right_edge - 1920.0).abs() < 0.5, "the picture's edge meets the frame's: {right_edge}");
@@ -8167,6 +8207,21 @@ mod tests {
     }
 
     use super::*;
+
+    /// The effects a list edit leaves on its clip, whichever form it
+    /// takes: a whole-list write, or a picture edit through graph ops
+    /// (node-graph M2 step 15c).
+    fn effects_after(edit: &EditCommand) -> Option<(ClipId, Vec<klipp_effects::BuiltinEffect>)> {
+        match edit {
+            EditCommand::SetBuiltinEffects { clip_id, new_effects, .. } => Some((*clip_id, new_effects.clone())),
+            EditCommand::PictureEdit { clip_id, edit, .. } => {
+                let mut c = Clip::gap(tc(0.0), tc(1.0));
+                c.restore_picture(&edit.after);
+                Some((*clip_id, c.builtin_effects().to_vec()))
+            }
+            _ => None,
+        }
+    }
     use klipp_core::RationalTime;
     use klipp_timeline::Track;
 
@@ -8777,9 +8832,10 @@ mod tests {
         let vignetted = |plan: &Plan| -> Vec<ClipId> {
             let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("{:?}", plan.steps[0].edit) };
             edits.iter().map(|e| match e {
-                EditCommand::SetBuiltinEffects { clip_id, new_effects, .. } => {
+                e @ (EditCommand::SetBuiltinEffects { .. } | EditCommand::PictureEdit { .. }) => {
+                    let (clip_id, new_effects) = effects_after(e).unwrap();
                     assert_eq!(new_effects.iter().filter(|e| matches!(e, E::Vignette { .. })).count(), 1, "{new_effects:?}");
-                    *clip_id
+                    clip_id
                 }
                 other => panic!("{other:?}"),
             }).collect()
@@ -8828,7 +8884,7 @@ mod tests {
         let ids = |plan: &Plan| -> Vec<ClipId> {
             let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("one step: {:?}", plan.steps[0].edit) };
             edits.iter().map(|e| match e {
-                EditCommand::SetBuiltinEffects { clip_id, .. } | EditCommand::SetNodeGraph { clip_id, .. } | EditCommand::EditClipAudio { clip_id, .. } => *clip_id,
+                EditCommand::SetBuiltinEffects { clip_id, .. } | EditCommand::PictureEdit { clip_id, .. } | EditCommand::SetNodeGraph { clip_id, .. } | EditCommand::EditClipAudio { clip_id, .. } => *clip_id,
                 other => panic!("{other:?}"),
             }).collect()
         };
@@ -9263,7 +9319,7 @@ mod tests {
         let (seq, pool, _, a, _) = fixture();
         for kind in ["fill_bars", "blanking_fill", "blurred_background"] {
             let plan = resolve(&seq, &pool, &[serde_json::from_value(serde_json::json!({ "op": "effect", "clip_id": a.0.to_string(), "kind": kind, "amount": 0.5 })).unwrap()]).unwrap();
-            let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("{:?}", plan.steps[0].edit) };
+            let new_effects = &effects_after(&plan.steps[0].edit).expect("effects edit").1;
             assert!(matches!(new_effects.last(), Some(klipp_effects::BuiltinEffect::FillBars { darken, .. }) if (*darken - 0.25).abs() < 1e-6), "{kind}: {new_effects:?}");
         }
     }
@@ -9976,7 +10032,7 @@ mod tests {
         // A window in a desktop recording: 320 px in from the left of 3840.
         let op = Op::Crop { clip_id: ClipRef::Id(a), left: 320.0 / 3840.0, right: 320.0 / 3840.0, top: 106.0 / 2160.0, bottom: 54.0 / 2160.0 };
         let plan = resolve(&seq, &pool, &[op]).unwrap();
-        let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
+        let new_effects = &effects_after(&plan.steps[0].edit).expect("effects edit").1;
         assert!(matches!(new_effects.first(), Some(E::Crop { left, .. }) if (*left - 0.0833).abs() < 1e-3));
 
         let mut seqs = vec![seq.clone()];
@@ -9986,7 +10042,7 @@ mod tests {
         view.apply_forward(&plan.steps[0].edit);
         let cropped = view.sequences[0].clone();
         let off = resolve(&cropped, &pool, &[Op::Crop { clip_id: ClipRef::Id(a), left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 }]).unwrap();
-        let EditCommand::SetBuiltinEffects { new_effects, .. } = &off.steps[0].edit else { panic!("effects edit") };
+        let new_effects = &effects_after(&off.steps[0].edit).expect("effects edit").1;
         assert!(new_effects.is_empty(), "four zeros take it off");
 
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
@@ -10172,15 +10228,15 @@ mod tests {
         // An effect appends a builtin effect; the same kind replaces it.
         let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "vignette".into(), amount: Some(0.6) }]).unwrap();
         assert!(plan.steps[0].what.starts_with("vignette 0.60"), "{}", plan.steps[0].what);
-        let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
+        let new_effects = &effects_after(&plan.steps[0].edit).expect("effects edit").1;
         assert!(matches!(new_effects.last(), Some(E::Vignette { .. })));
 
         // The layer treatment reaches the same op by name.
         let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "shadow".into(), amount: Some(0.5) }]).unwrap();
-        let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
+        let new_effects = &effects_after(&plan.steps[0].edit).expect("effects edit").1;
         assert!(matches!(new_effects.last(), Some(E::DropShadow { color, .. }) if *color == [0, 0, 0]));
         let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "corners".into(), amount: Some(0.2) }]).unwrap();
-        let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
+        let new_effects = &effects_after(&plan.steps[0].edit).expect("effects edit").1;
         assert!(matches!(new_effects.last(), Some(E::RoundedCorners { .. })));
 
         // Stabilise appends VideoStabilization; replay and undo.
@@ -10345,7 +10401,7 @@ mod tests {
         // A punch-in with a pan inserts a Transform at the front of the chain.
         let plan = resolve(&seq, &pool, &[Op::Reframe { clip_id: ClipRef::Id(a), scale: Some(1.5), x: Some(0.2), y: Some(-0.1) }]).unwrap();
         assert!(plan.steps[0].what.contains("scale 1.50") && plan.steps[0].what.contains("pan 0.20, -0.10"), "{}", plan.steps[0].what);
-        let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
+        let new_effects = &effects_after(&plan.steps[0].edit).expect("effects edit").1;
         let Some(E::Transform { scale_x, position_x, position_y, .. }) = new_effects.first() else { panic!("transform first") };
         // At 1.5x the picture reaches a quarter of the 1920 frame past
         // each side, 480 px. Panning the frame a fifth of that toward the
@@ -10363,7 +10419,7 @@ mod tests {
             view.apply_forward(&plan.steps[0].edit);
         }
         let plan2 = resolve(&seqs[0], &p, &[Op::Reframe { clip_id: ClipRef::Id(a), scale: Some(2.0), x: Some(0.0), y: Some(0.0) }]).unwrap();
-        let EditCommand::SetBuiltinEffects { new_effects: e2, .. } = &plan2.steps[0].edit else { panic!("effects edit") };
+        let e2 = &effects_after(&plan2.steps[0].edit).expect("effects edit").1;
         assert_eq!(e2.iter().filter(|e| matches!(e, E::Transform { .. })).count(), 1, "one transform, not two");
         {
             let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
@@ -11887,5 +11943,44 @@ mod edit_helper_tests {
         ] {
             serde_json::from_value::<Op>(v.clone()).unwrap_or_else(|e| panic!("{v}: {e}"));
         }
+    }
+}
+
+#[cfg(test)]
+mod effects_edit_tests {
+    use super::*;
+    use klipp_effects::BuiltinEffect as E;
+
+    /// A document op that takes an effect off and puts one on carries the
+    /// other effects' keys with them (node-graph M2 step 15c): the blur's
+    /// keys follow it down a place, where a whole-list write left them at
+    /// the place the blur had.
+    #[test]
+    fn replacing_an_effect_keeps_the_others_keys_on_them() {
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut clip = Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+        clip.push_effect(E::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 });
+        clip.push_effect(E::GaussianBlur { radius: 3.0 });
+        let key = klipp_core::Keyframe { time_secs: 1.0, value: 6.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        clip.edit_effect_keyframes(|m| m.insert("1:radius".into(), vec![key.clone()]));
+        let fresh = E::Vignette { amount: 0.75, size: 0.5, softness: 0.5, roundness: 0.5 };
+        let edit = effects_edit(&clip, |e| matches!(e, E::Vignette { .. }), Some((fresh, Place::Last)));
+        let EditCommand::PictureEdit { edit, description, .. } = edit else { panic!("a picture edit: {edit:?}") };
+        assert_eq!(description, "Effects");
+        let mut after = clip.clone();
+        after.restore_picture(&edit.after);
+        assert!(matches!(after.builtin_effects(), [E::GaussianBlur { .. }, E::Vignette { amount, .. }] if *amount == 0.75), "{:?}", after.builtin_effects());
+        assert_eq!(after.effect_keyframes().get("0:radius"), Some(&vec![key]), "the blur's keys moved with it");
+        assert!(!after.effect_keyframes().contains_key("1:radius"), "none left on the new vignette");
+
+        // A crop goes first; a placed kind falls back to the whole-list write.
+        let crop = effects_edit(&clip, |e| matches!(e, E::Crop { .. }), Some((E::Crop { left: 0.1, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 }, Place::First)));
+        let EditCommand::PictureEdit { edit, .. } = crop else { panic!("a picture edit") };
+        let mut after = clip.clone();
+        after.restore_picture(&edit.after);
+        assert!(matches!(after.builtin_effects().first(), Some(E::Crop { .. })));
+        clip.push_effect(E::Opacity { value: 0.5 });
+        let placed = effects_edit(&clip, |_| false, Some((E::Sharpen { amount: 0.5 }, Place::Last)));
+        assert!(matches!(placed, EditCommand::SetBuiltinEffects { .. }), "after a placed kind: {placed:?}");
     }
 }
