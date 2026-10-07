@@ -19,7 +19,7 @@ pub struct ParamSlots {
 
 impl ParamSlots {
     /// `len` buffers of `size` bytes each, usable as uniforms.
-    pub(crate) fn new(device: &wgpu::Device, len: usize, size: u64, label: &str) -> Self {
+    pub fn new(device: &wgpu::Device, len: usize, size: u64, label: &str) -> Self {
         let bufs = (0..len)
             .map(|i| {
                 device.create_buffer(&wgpu::BufferDescriptor {

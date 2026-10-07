@@ -1,4 +1,4 @@
-//! The recorded effects (colour, geometry) go into one encoder (node-graph M2 step
+//! The recorded effects (colour, geometry, blur) go into one encoder (node-graph M2 step
 //! 7): a run of them is one submit, whatever its length, and gives the
 //! same picture as each effect run on its own. The counts include the
 //! one submit `apply_effects`'s download makes.
@@ -40,9 +40,27 @@ fn geometry() -> Vec<E> {
     ]
 }
 
+fn blur() -> Vec<E> {
+    vec![
+        E::GaussianBlur { radius: 2.5 },
+        E::Denoise { spatial_sigma: 2.0, color_sigma: 0.1, iterations: 2 },
+        E::TiltShift { center: 0.5, width: 0.2, softness: 0.3, radius: 3.0 },
+        E::FocusBlur { radius: 2.0, vertical: false, band: 0.3 },
+        E::Dilate { radius: 1 },
+        E::DirectionalBlur { angle: 30.0, distance: 4.0, samples: 8 },
+        E::EdgeDetect { strength: 0.6, mix: 0.4 },
+        E::Emboss { angle: 45.0, strength: 0.5, mix: 0.3 },
+        E::Erode { radius: 1 },
+        E::Mosaic { block_size: 3.0 },
+        E::RadialBlur { center_x: 0.5, center_y: 0.5, amount: 0.2, samples: 8, mode: 0 },
+        E::Sharpen { amount: 0.5 },
+        E::MedianFilter { radius: 1 },
+    ]
+}
+
 /// Every family recorded so far, in one list.
 fn recorded() -> Vec<E> {
-    colour().into_iter().chain(geometry()).collect()
+    colour().into_iter().chain(geometry()).chain(blur()).collect()
 }
 
 fn pipeline() -> Option<GpuEffectsPipeline> {
@@ -72,6 +90,7 @@ fn a_run_of_recorded_effects_is_one_submit() {
     assert_eq!(run(&mut g, &colour()[..1]).0, 2);
     assert_eq!(run(&mut g, &colour()).0, 2, "nine effects, one run");
     assert_eq!(run(&mut g, &geometry()).0, 2, "the geometry effects, one run");
+    assert_eq!(run(&mut g, &blur()).0, 2, "the blur effects, several passes some of them, one run");
     assert_eq!(run(&mut g, &recorded()).0, 2, "every recorded effect, one run");
     // Identities record nothing, and a run of only identities submits nothing.
     let idle = [
@@ -81,6 +100,9 @@ fn a_run_of_recorded_effects_is_one_submit() {
         E::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 },
         E::Mirror { horizontal: 0, vertical: 0 },
         E::LensDistortion { distortion: 0.0, scale: 1.0 },
+        E::GaussianBlur { radius: 0.2 },
+        E::TiltShift { center: 0.5, width: 0.2, softness: 0.3, radius: 0.0 },
+        E::FocusBlur { radius: 2.0, vertical: false, band: 1.0 },
     ];
     assert_eq!(run(&mut g, &idle).0, 1, "only the download");
     // Seventy passes overflow the 64 slots once: two runs.
@@ -108,4 +130,104 @@ fn a_recorded_run_draws_what_each_effect_alone_draws() {
     assert_eq!(run(&mut g, &seventy).1, one_by_one(&mut g, &seventy), "seventy, across a refill");
     // And the picture is not the input: the effects ran.
     assert_ne!(together, picture());
+}
+
+/// A recorded effect only reads its source and leaves its result in its
+/// destination, however many passes it takes: a mix after it can still
+/// read the input. The multi-pass blurs ping-pong through the scratch.
+#[test]
+fn a_recorded_effect_never_writes_its_source() {
+    let Some(mut g) = pipeline() else { return };
+    let (device, queue) = (g.device(), g.queue());
+    let bytes = (W * H * 16) as u64;
+    let buffer = |label| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    };
+    let read = |b: &wgpu::Buffer| -> Vec<f32> {
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("read"),
+            size: bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&Default::default());
+        enc.copy_buffer_to_buffer(b, 0, &staging, 0, bytes);
+        queue.submit([enc.finish()]);
+        staging.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        device.poll(wgpu::Maintain::Wait);
+        let v = bytemuck::cast_slice(&staging.slice(..).get_mapped_range()).to_vec();
+        v
+    };
+    let (src, dst, scratch) = (buffer("src"), buffer("dst"), buffer("scratch"));
+    let mut slots = klipp_effects::gpu::ParamSlots::new(&device, 16, 256, "test");
+    for effect in [blur()[0].clone(), blur()[1].clone(), blur()[2].clone(), blur()[3].clone(), E::Denoise { spatial_sigma: 2.0, color_sigma: 0.1, iterations: 3 }] {
+        queue.write_buffer(&src, 0, bytemuck::cast_slice(&picture()));
+        let mut enc = device.create_command_encoder(&Default::default());
+        let mut rec = klipp_effects::gpu::EffectRecording { encoder: &mut enc, slots: &mut slots };
+        let outcome = g.record_effect(&effect, &src, &dst, Some(&scratch), W, H, &mut rec);
+        assert_eq!(outcome, klipp_effects::gpu::Recorded::Done, "{effect:?}");
+        queue.submit([enc.finish()]);
+        slots.reset();
+        assert_eq!(read(&src), picture(), "{effect:?} wrote its source");
+        assert_eq!(read(&dst), g.apply_effects(std::slice::from_ref(&effect), &picture(), W, H), "{effect:?}: the result is in dst");
+    }
+}
+
+/// An effect that is only ever recorded and could not be (a lost
+/// device; forced here) is never silently left out: `apply_effects`
+/// takes the CPU chain for the frame instead, and the in-place stack
+/// path refuses, which its renderer counts as a decline.
+#[test]
+fn an_effect_that_could_not_be_recorded_is_never_silently_dropped() {
+    let Some(mut g) = pipeline() else { return };
+    let fx = [E::Gamma { gamma: 1.4 }, E::GaussianBlur { radius: 2.0 }];
+    g.refuse_recording(true);
+    let got = g.apply_effects(&fx, &picture(), W, H);
+    assert!(!g.last_effects_complete(), "the run says an effect is missing");
+    assert_eq!(got, klipp_effects::apply_effects(&fx, picture(), W, H), "the CPU chain's picture, effects included");
+    assert!(g.stack_begin(W, H, 1));
+    assert!(g.stack_layer_from_linear(0, &picture()));
+    assert!(!g.stack_layer_apply_effects(0, &fx), "the stack's layer refuses rather than skip the effect");
+    g.stack_end();
+    g.refuse_recording(false);
+    let _ = g.apply_effects(&fx, &picture(), W, H);
+    assert!(g.last_effects_complete());
+}
+
+/// An identity answers `Identity` even with no slots left: only an
+/// effect that would record anything asks for a refill.
+#[test]
+fn an_identity_never_asks_for_slots() {
+    let Some(g) = pipeline() else { return };
+    let device = g.device();
+    let frame = |label| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: (W * H * 16) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    };
+    let (src, dst, scratch) = (frame("src"), frame("dst"), frame("scratch"));
+    let mut slots = klipp_effects::gpu::ParamSlots::new(&device, 1, 256, "full");
+    assert!(slots.claim_index().is_some());
+    assert_eq!(slots.remaining(), 0);
+    let mut enc = device.create_command_encoder(&Default::default());
+    let mut rec = klipp_effects::gpu::EffectRecording { encoder: &mut enc, slots: &mut slots };
+    use klipp_effects::gpu::Recorded;
+    for (effect, want) in [
+        (E::Opacity { value: 1.0 }, Recorded::Identity),
+        (E::Opacity { value: 0.5 }, Recorded::OutOfSlots),
+        (E::GaussianBlur { radius: 0.2 }, Recorded::Identity),
+        (E::GaussianBlur { radius: 3.0 }, Recorded::OutOfSlots),
+        (E::TiltShift { center: 0.5, width: 0.2, softness: 0.3, radius: 0.0 }, Recorded::Identity),
+        (E::Denoise { spatial_sigma: 2.0, color_sigma: 0.1, iterations: 1 }, Recorded::OutOfSlots),
+    ] {
+        assert_eq!(g.record_effect(&effect, &src, &dst, Some(&scratch), W, H, &mut rec), want, "{effect:?}");
+    }
 }
