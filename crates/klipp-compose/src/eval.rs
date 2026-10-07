@@ -582,11 +582,30 @@ pub fn eval_effect_with_modifiers(
         effect_index,
         param_name: param_name.to_string(),
     };
-    match modifiers.get(&param) {
+    resolve_effect_param(keyframes, modifiers.get(&param), time_secs, default, ctx)
+}
+
+/// One keyframable parameter of an effect node at `time_secs`, from the
+/// node's own animation: its keys, then its modifier stack, else
+/// `current`, the value the effect holds (node-graph M2 step 14).
+///
+/// The node-path form of [`eval_effect_with_modifiers`], which only looks
+/// the stack up by the effect's place in the list and comes here: a node
+/// carries its own keys and stack, so nothing is addressed by index. The
+/// caller passes them typed, converted once when the plan is compiled,
+/// never parsed per frame.
+pub fn resolve_effect_param(
+    keyframes: &[klipp_core::Keyframe],
+    modifiers: Option<&klipp_core::ModifierStack>,
+    time_secs: f64,
+    current: f32,
+    ctx: &klipp_core::EvalContext,
+) -> f32 {
+    match modifiers {
         Some(stack) if !stack.modifiers.is_empty() => {
-            klipp_core::evaluate_param(keyframes, stack, time_secs, default, ctx)
+            klipp_core::evaluate_param(keyframes, stack, time_secs, current, ctx)
         }
-        _ => klipp_core::keyframe::evaluate(keyframes, time_secs, default),
+        _ => klipp_core::keyframe::evaluate(keyframes, time_secs, current),
     }
 }
 
@@ -1163,5 +1182,90 @@ mod camera_tests {
         let got = camera_at(&seq, klipp_core::RationalTime::from_frames(0, 24)).unwrap();
         // The lists left empty keep their resting values.
         assert_eq!(got, (0.5, 0.5, 1.5, 0.0));
+    }
+}
+
+#[cfg(test)]
+mod resolve_effect_param_tests {
+    use super::{eval_effect_with_modifiers, resolve_effect_param};
+    use klipp_core::{EvalContext, Keyframe, ModifierStack, ParamId};
+    use std::collections::HashMap;
+
+    fn ctx(t: f64) -> EvalContext {
+        EvalContext { clip_time_secs: t, clip_duration_secs: 4.0, timeline_time_secs: t + 10.0, fps: 25.0, seed: 932 }
+    }
+
+    fn keys() -> Vec<Keyframe> {
+        let mut k = Vec::new();
+        klipp_core::keyframe::upsert_keyframe(&mut k, 0.0, 1.0);
+        klipp_core::keyframe::upsert_keyframe(&mut k, 1.5, 3.0);
+        klipp_core::keyframe::upsert_keyframe(&mut k, 3.0, -2.0);
+        k
+    }
+
+    /// One stack per modifier kind, plus an empty one.
+    fn stacks() -> Vec<(&'static str, ModifierStack)> {
+        let one = |json: &str| ModifierStack { modifiers: vec![serde_json::from_str(json).expect("a modifier")] };
+        vec![
+            ("empty", ModifierStack::default()),
+            ("oscillate", one(r#"{"type":"oscillate","amplitude":0.5,"frequency":2.0,"phase":0.25,"waveform":"Triangle"}"#)),
+            ("wiggle", one(r#"{"type":"wiggle","amplitude":0.7,"frequency":3.0,"blend":"Multiply"}"#)),
+            ("throw", one(r#"{"type":"throw","velocity":1.5,"acceleration":-0.25}"#)),
+            ("ramp", one(r#"{"type":"ramp","start_value":0.0,"end_value":2.0,"start_norm":0.1,"end_norm":0.9,"blend":"Replace"}"#)),
+            ("loop", one(r#"{"type":"loop","period_secs":1.25}"#)),
+            ("ping_pong", one(r#"{"type":"ping_pong","period_secs":0.8}"#)),
+            ("clamp", one(r#"{"type":"clamp","min":-0.5,"max":2.5}"#)),
+        ]
+    }
+
+    const TIMES: [f64; 10] = [0.0, 0.2, 0.75, 1.0, 1.5, 1.9, 2.4, 3.0, 3.6, 4.0];
+
+    /// The node-path read is the index lookup's, to the bit, for keys
+    /// alone and under every modifier kind.
+    #[test]
+    fn a_nodes_animation_resolves_as_the_index_lookup_did() {
+        let keys = keys();
+        for (name, stack) in stacks() {
+            let mut by_index = HashMap::new();
+            by_index.insert(ParamId::Effect { effect_index: 0, param_name: "radius".into() }, stack.clone());
+            for t in TIMES {
+                let legacy = eval_effect_with_modifiers(&keys, &by_index, 0, "radius", t, 2.0, &ctx(t));
+                let node = resolve_effect_param(&keys, Some(&stack), t, 2.0, &ctx(t));
+                assert_eq!(node.to_bits(), legacy.to_bits(), "{name} at {t}: node {node}, index {legacy}");
+                // And both are klipp-core's own evaluation, not a copy of
+                // it: keys and stack for a stack with modifiers, keys alone
+                // for an empty one.
+                let core = if stack.modifiers.is_empty() {
+                    klipp_core::keyframe::evaluate(&keys, t, 2.0)
+                } else {
+                    klipp_core::evaluate_param(&keys, &stack, t, 2.0, &ctx(t))
+                };
+                assert_eq!(node.to_bits(), core.to_bits(), "{name} at {t}");
+            }
+        }
+        // No stack at all is the keys alone.
+        for t in TIMES {
+            let none = resolve_effect_param(&keys, None, t, 2.0, &ctx(t));
+            assert_eq!(none.to_bits(), klipp_core::keyframe::evaluate(&keys, t, 2.0).to_bits());
+        }
+    }
+
+    /// A node reads its own keys and stack, whatever its place: the
+    /// effect at list position 3 animates from its own, and the one at
+    /// position 0, which has none, keeps its value and picks up nothing
+    /// of position 3's.
+    #[test]
+    fn a_node_reads_its_own_animation_not_its_place() {
+        let (keys, stack) = (keys(), stacks().swap_remove(2).1);
+        let mut by_index = HashMap::new();
+        by_index.insert(ParamId::Effect { effect_index: 3, param_name: "radius".into() }, stack.clone());
+        for t in TIMES {
+            let third = resolve_effect_param(&keys, Some(&stack), t, 2.0, &ctx(t));
+            assert_eq!(third.to_bits(), eval_effect_with_modifiers(&keys, &by_index, 3, "radius", t, 2.0, &ctx(t)).to_bits());
+            assert_eq!(resolve_effect_param(&[], None, t, 2.0, &ctx(t)), 2.0, "position 0 has no animation of its own");
+            assert_eq!(eval_effect_with_modifiers(&[], &by_index, 0, "radius", t, 2.0, &ctx(t)), 2.0, "nor does the index lookup give it 3's");
+        }
+        // The stack is really in play: it moves the value off the keys'.
+        assert!(TIMES.iter().any(|&t| resolve_effect_param(&keys, Some(&stack), t, 2.0, &ctx(t)) != klipp_core::keyframe::evaluate(&keys, t, 2.0)));
     }
 }
