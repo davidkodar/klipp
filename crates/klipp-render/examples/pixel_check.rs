@@ -641,7 +641,98 @@ fn run_in(args: &[String], scratch: &Path) -> i32 {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|m| m == "resolve") {
+        std::process::exit(resolve_sweep(&args[1..], &std::env::temp_dir()));
+    }
     std::process::exit(run(&args));
+}
+
+/// `resolve <projects>`: every clip of every project, at five times
+/// across it, its effects read from its lifted picture against the
+/// renderer's list (#1089, M2 step 10c-1). CPU only, nothing rendered.
+fn resolve_sweep(args: &[String], scratch: &Path) -> i32 {
+    let [list] = args else {
+        eprintln!("usage: pixel_check resolve <projects>");
+        return 2;
+    };
+    let list = match projects(Path::new(list)) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("pixel_check: {e}");
+            return 2;
+        }
+    };
+    let (mut clips, mut times, mut mismatches, mut failed, mut empty) = (0, 0, 0, Vec::new(), Vec::new());
+    for (i, dir) in list.iter().enumerate() {
+        let tmp = scratch.join(format!("klipp-resolve-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let loaded = temp_copy(dir, &tmp)
+            .map_err(|e| format!("copying: {e}"))
+            .and_then(|()| resolve_against(&tmp, dir))
+            .and_then(|()| to_revision_2(&tmp))
+            .and_then(|()| klipp_project::load_project(&tmp).map_err(|e| format!("loading: {e}")));
+        let (sequences, pool, colour) = match loaded {
+            Ok((s, p, c, ..)) => (s, p, c),
+            Err(e) => {
+                failed.push(format!("{i}: {e}"));
+                let _ = std::fs::remove_dir_all(&tmp);
+                continue;
+            }
+        };
+        let before = clips;
+        for seq in &sequences {
+            let Ok(snapshot) = SequenceSnapshot::from_sequence_with_all(seq, &sequences, &pool, &settings(), colour.global_lut_path.clone(), false, colour.working_colorspace) else {
+                failed.push(format!("{i}: snapshot"));
+                continue;
+            };
+            let fps = snapshot.fps;
+            for track in &snapshot.video.sequence.tracks {
+                for clip in &track.clips {
+                    if matches!(clip.kind, klipp_timeline::ClipKind::Gap) {
+                        continue;
+                    }
+                    clips += 1;
+                    let picture = match clip.picture_v2() {
+                        Ok(p) => p,
+                        Err(e) => {
+                            mismatches += 1;
+                            println!("  {i} clip {}: no lift: {e}", clip.id.0);
+                            continue;
+                        }
+                    };
+                    let (a, b) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
+                    for k in 0..5 {
+                        let t = a + (b - a) * (k as f64 / 5.0);
+                        let time = Timecode::from_secs_f64(t, snapshot.fps_num);
+                        times += 1;
+                        let want = klipp_compose::render::clip_effects(clip, time, fps, None, None).0;
+                        let got = klipp_compose::resolve::resolve_effects(clip, &picture.picture, time, fps, None, None);
+                        match got {
+                            Ok(got) if format!("{got:?}") == format!("{want:?}") => {}
+                            Ok(got) => {
+                                mismatches += 1;
+                                println!("  {i} clip {} at {t:.3}: picture {got:?}\n    renderer {want:?}", clip.id.0);
+                            }
+                            Err(e) => {
+                                mismatches += 1;
+                                println!("  {i} clip {} at {t:.3}: {e}", clip.id.0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if clips == before {
+            empty.push(i);
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+    println!("resolve: {} projects, {clips} clips at {times} times, {mismatches} mismatches, {} failed", list.len(), failed.len());
+    println!("  no clips: {empty:?}");
+    for f in &failed {
+        println!("  failed {f}");
+    }
+    i32::from(mismatches > 0 || !failed.is_empty())
 }
 
 #[cfg(test)]
