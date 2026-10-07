@@ -149,8 +149,17 @@ fn sequence(tracks: Vec<Vec<Clip>>) -> Sequence {
 struct Flat {
     colours: HashMap<ClipId, [u8; 3]>,
     scene: HashMap<ClipId, klipp_color::hdr::HdrTransfer>,
+    /// A scene-referred clip's primaries into the working space; the
+    /// identity when absent.
+    scene_matrix: HashMap<ClipId, [[f32; 3]; 3]>,
     on_gpu: bool,
 }
+
+/// The identity basis change: a source in the working space's primaries.
+const SAME_PRIMARIES: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+/// BT.2020 primaries into BT.709: a source shot wide, in a Rec.709 project.
+const BT2020_TO_709: [[f32; 3]; 3] = [[1.6605, -0.5876, -0.0728], [-0.1246, 1.1329, -0.0083], [-0.0182, -0.1006, 1.1187]];
 
 impl Flat {
     /// The colour is given as an sRGB byte triple rather than a linear
@@ -176,6 +185,13 @@ impl Flat {
         self
     }
 
+    /// [`Self::scene`] in other primaries than the working space's, so the
+    /// basis change is something a route could drop or get wrong.
+    fn scene_in(mut self, c: &Clip, transfer: klipp_color::hdr::HdrTransfer, to_working: [[f32; 3]; 3]) -> Self {
+        self.scene_matrix.insert(c.id, to_working);
+        self.scene(c, transfer)
+    }
+
     fn on_gpu(mut self) -> Self {
         self.on_gpu = true;
         self
@@ -184,7 +200,7 @@ impl Flat {
     /// The same fixture with its frames arriving on the GPU, as the
     /// export's do.
     fn clone_for_gpu(&self) -> Self {
-        Flat { colours: self.colours.clone(), scene: self.scene.clone(), on_gpu: true }
+        Flat { colours: self.colours.clone(), scene: self.scene.clone(), scene_matrix: self.scene_matrix.clone(), on_gpu: true }
     }
 
     fn linear(srgb: [u8; 3], n: usize) -> Vec<f32> {
@@ -234,7 +250,7 @@ impl FrameSource for Flat {
                 pixels: SourcePixels::SceneReferred {
                     codes: Arc::new(codes),
                     transfer,
-                    source_to_working: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    source_to_working: self.scene_matrix.get(&clip.id).copied().unwrap_or(SAME_PRIMARIES),
                 },
                 width,
                 height,
@@ -258,6 +274,12 @@ impl FrameSource for Flat {
 
 fn renderer() -> Renderer {
     Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new())
+}
+
+/// Whether this machine's GPU takes the path at all: a plain graded clip.
+fn gpu_path_available() -> bool {
+    let c = graded(0.0, 1.0, 0.5);
+    gpu_planes(&sequence(vec![vec![c.clone()]]), 0.5, &mut Flat::default().with(&c, [46, 128, 230]).on_gpu()).is_some()
 }
 
 /// The planes the GPU path makes, or `None` if it refused.
@@ -1062,11 +1084,24 @@ fn a_scene_referred_source_agrees_with_the_renderer() {
         ("HLG", HdrTransfer::Hlg),
         ("S-Log3", HdrTransfer::Log(klipp_core::ColorTransfer::SLog3)),
     ];
-    for (name, transfer) in transfers {
-        for hdr in [false, true] {
-            let c = graded(0.0, 1.0, 0.5);
+    if !gpu_path_available() {
+        eprintln!("skipping: no usable GPU");
+        return;
+    }
+    let cases = transfers.into_iter().flat_map(|t| {
+        [false, true].into_iter().flat_map(move |hdr| {
+            [true, false].into_iter().flat_map(move |grade| [("BT.709", SAME_PRIMARIES), ("BT.2020", BT2020_TO_709)].into_iter().map(move |p| (t, hdr, grade, p)))
+        })
+    });
+    for ((name, transfer), hdr, grade, (primaries, to_working)) in cases {
+        {
+            // An ungraded clip takes the identity branch, which seeds the
+            // chain from the codes too (#1275); a graded one runs its graph.
+            let c = if grade { graded(0.0, 1.0, 0.5) } else { media(0.0, 1.0) };
+            let name = format!("{name} in {primaries}, {}", if grade { "graded" } else { "ungraded" });
+            let name = name.as_str();
             let seq = sequence(vec![vec![c.clone()]]);
-            let mut src = Flat::default().scene(&c, transfer);
+            let mut src = Flat::default().scene_in(&c, transfer, to_working);
             let opts = RenderOptions {
                 hdr_peak_nits: hdr.then_some(1000.0),
                 ..Default::default()
@@ -1074,12 +1109,11 @@ fn a_scene_referred_source_agrees_with_the_renderer() {
             let target = if hdr { pq_target(1000.0) } else { plain_target() };
 
             let mut r = renderer();
-            let Some((planes, light)) =
-                r.render_yuv420_on_gpu(&seq, tc(0.5), W, H, &mut src, opts, target)
-            else {
-                eprintln!("skipping: the GPU path refused (no usable GPU)");
-                return;
-            };
+            // With a GPU, every case takes the path: an ungraded clip
+            // refused here is the bug this case is for (#1275).
+            let (planes, light) = r
+                .render_yuv420_on_gpu(&seq, tc(0.5), W, H, &mut src, opts, target)
+                .unwrap_or_else(|| panic!("{name}: the GPU path refused: {:?}", r.last_decline()));
 
             // The renderer's own frame, encoded as the CPU export encodes it.
             let mut rr = renderer();
@@ -1145,5 +1179,84 @@ fn a_scene_referred_source_agrees_with_the_renderer() {
                 assert!(light.is_none(), "{name}: an SDR delivery measures no light");
             }
         }
+    }
+}
+
+/// The identity branch's scene-referred seed is the graded branch's (#1275):
+/// an ungraded clip and the same clip under a graph that does work and
+/// cancels (a stop up, a stop down: not an identity graph, so it runs) give
+/// the same planes, chroma included, in other primaries than the project's.
+#[test]
+fn an_ungraded_scene_referred_clip_is_its_cancelled_graded_self() {
+    use klipp_color::hdr::HdrTransfer;
+    if !gpu_path_available() {
+        eprintln!("skipping: no usable GPU");
+        return;
+    }
+    for transfer in [HdrTransfer::Pq, HdrTransfer::Hlg, HdrTransfer::Log(klipp_core::ColorTransfer::SLog3)] {
+        let plain = media(0.0, 1.0);
+        let mut cancelled = graded(0.0, 1.0, 1.0);
+        {
+            // A stop up, then a stop down, in series.
+            let mut g = cancelled.grade().clone();
+            let down = Node {
+                id: NodeId::new_v4(),
+                kind: NodeKind::Exposure,
+                label: "Exposure".into(),
+                enabled: true,
+                params: NodeParams { exposure: Some(-1.0), ..Default::default() },
+                keyframes: Default::default(),
+                output_link: None,
+                input_links: vec![],
+            };
+            let up = g.input_of(g.output_node_id, 0).expect("the stop up");
+            g.edges.retain(|e| e.to_node != g.output_node_id);
+            g.edges.push(Edge { from_node: up, from_port: 0, to_node: down.id, to_port: 0 });
+            g.edges.push(Edge { from_node: down.id, from_port: 0, to_node: g.output_node_id, to_port: 0 });
+            g.nodes.push(down);
+            cancelled.set_grade(g);
+        }
+        assert!(!cancelled.grade_is_identity(), "the control's graph runs");
+        let planes = |c: &Clip| {
+            let seq = sequence(vec![vec![c.clone()]]);
+            let mut src = Flat::default().scene_in(c, transfer, BT2020_TO_709);
+            let mut r = renderer();
+            let out = r.render_yuv420_on_gpu(&seq, tc(0.5), W, H, &mut src, RenderOptions::default(), plain_target());
+            out.unwrap_or_else(|| panic!("{transfer:?}: refused: {:?}", r.last_decline())).0
+        };
+        let (a, b) = (planes(&plain), planes(&cancelled));
+        let worst = a.iter().zip(&b).map(|(x, y)| (*x as i32 - *y as i32).abs()).max().unwrap_or(0);
+        assert!(worst <= 1, "{transfer:?}: the identity branch differs from the cancelled grade by {worst} levels");
+        assert!(a.iter().any(|&v| v > 40), "{transfer:?}: the fixture rendered black");
+    }
+}
+
+/// One renderer, frame after frame of different kinds: an ungraded
+/// scene-referred clip, a graded one, an SDR clip, and the ungraded one
+/// again. Each is the renderer's own picture, so no seeded state from one
+/// frame reaches the next.
+#[test]
+fn alternating_frames_on_one_renderer_keep_no_stale_seed() {
+    use klipp_color::hdr::HdrTransfer;
+    if !gpu_path_available() {
+        eprintln!("skipping: no usable GPU");
+        return;
+    }
+    let (ungraded, graded_clip, sdr) = (media(0.0, 1.0), graded(0.0, 1.0, 0.5), graded(0.0, 1.0, 0.3));
+    let mut src = Flat::default()
+        .scene_in(&ungraded, HdrTransfer::Pq, BT2020_TO_709)
+        .scene(&graded_clip, HdrTransfer::Hlg)
+        .with(&sdr, [200, 90, 60])
+        .on_gpu();
+    let mut r = renderer();
+    for (what, c) in [("ungraded PQ", &ungraded), ("graded HLG", &graded_clip), ("SDR", &sdr), ("ungraded PQ again", &ungraded)] {
+        let seq = sequence(vec![vec![c.clone()]]);
+        let planes = r
+            .render_yuv420_on_gpu(&seq, tc(0.5), W, H, &mut src, RenderOptions::default(), plain_target())
+            .unwrap_or_else(|| panic!("{what}: refused: {:?}", r.last_decline()))
+            .0;
+        let want = cpu_luma(&seq, 0.5, &mut src);
+        let worst = planes[..want.len()].iter().zip(&want).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
+        assert!(worst <= 1, "{what}: differs from the renderer by {worst} levels");
     }
 }
