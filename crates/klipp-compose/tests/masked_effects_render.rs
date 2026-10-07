@@ -259,6 +259,7 @@ fn a_masked_effect_the_gpu_cannot_record_runs_its_plan_on_the_cpu() {
     }
     let (out, stats) = render(&mut r, &seq, Inspect::default());
     assert_eq!(stats.effects_on_cpu, 1, "the plan ran again on the CPU, counted");
+    assert_eq!(stats.effects_on_cpu_kernels, 1, "and counted as an effect run drawn on the CPU (#1274)");
     let worst = worst_levels(&out, &want);
     assert!(worst <= 1, "the CPU plan draws {worst} levels from the oracle");
 }

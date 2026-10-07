@@ -440,6 +440,10 @@ pub(crate) fn respond(
                     // Effect runs a plan couldn't apply, drawn by the CPU
                     // kernels instead (M2 step 11d); zero unless one failed.
                     "on_cpu": klipp_compose::EFFECTS_ON_CPU.load(std::sync::atomic::Ordering::Relaxed),
+                    // Clip effect runs the CPU kernels drew, for any reason,
+                    // failures included (#1274); zero on a GPU machine
+                    // unless an effect has no GPU kernel.
+                    "on_cpu_kernels": klipp_compose::EFFECTS_ON_CPU_KERNELS.load(std::sync::atomic::Ordering::Relaxed),
                     // Masked effects whose matte their run couldn't give,
                     // drawn bypassed (M2 step 9c-2); zero unless one was.
                     "mask_unavailable": klipp_compose::EFFECT_MASKS_UNAVAILABLE.load(std::sync::atomic::Ordering::Relaxed),

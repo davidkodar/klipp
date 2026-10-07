@@ -2640,7 +2640,7 @@ fn perf_reports_the_presented_rate_only_while_pictures_change() {
 fn perf_counts_cpu_fallbacks_bypassed_masks_and_stack_declines() {
     let mut h = harness();
     let plan = h.ok(json!({ "method": "perf" }))["plan_effects"].clone();
-    for key in ["clips", "fallback_lists", "on_cpu", "mask_unavailable", "stack_declines", "cold_lifts"] {
+    for key in ["clips", "fallback_lists", "on_cpu", "on_cpu_kernels", "mask_unavailable", "stack_declines", "cold_lifts"] {
         assert!(plan[key].is_u64(), "plan_effects.{key}: {plan}");
     }
 }

@@ -214,6 +214,15 @@ pub struct Inspect {
     pub only: Option<ClipId>,
 }
 
+impl Inspect {
+    /// Whether the grade tools read inside the inspected clip's grade:
+    /// its node thumbnails, the scope's tap, a matte view or a soloed
+    /// node. Naming a clip alone reads nothing inside it.
+    pub fn reads_the_grade(&self) -> bool {
+        self.thumbs.is_some() || self.scope_tap.is_some() || self.matte_view.is_some() || self.solo.is_some()
+    }
+}
+
 /// What an inspected render found. Fields are empty when not asked for,
 /// or when the clip was not on screen.
 #[derive(Default)]
@@ -263,6 +272,12 @@ pub static PLAN_EFFECT_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atom
 /// the CPU kernels drew instead (`RenderStats::effects_on_cpu`), in this
 /// process. Cumulative; zero unless something failed.
 pub static EFFECTS_ON_CPU: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Clip effect runs drawn on the CPU, for any reason: the CPU kernels (no
+/// GPU, an effect with no GPU kernel, a plan that couldn't apply them) or
+/// the CPU executor running a failed plan again
+/// (`RenderStats::effects_on_cpu_kernels`), in this process (#1274).
+/// Cumulative.
+pub static EFFECTS_ON_CPU_KERNELS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Masked effects blended on the CPU in a run apart from their grade
 /// (`RenderStats::effects_blended_on_cpu`), in this process.
 pub static EFFECTS_BLENDED_ON_CPU: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -293,6 +308,10 @@ pub struct RenderStats {
     /// the plug-ins, which run on the CPU between the grade and the
     /// effects (M2 step 11c-2).
     pub effects_after_plugins: u32,
+    /// Clips whose grade the tools read inside (thumbnails, the scope's
+    /// tap, a matte view, a solo) whose effects ran as a plan of their own
+    /// after the grade, on the GPU (#1274).
+    pub effects_inspected_apart: u32,
     /// Clips under a shutter (the camera's, or a title's own motion blur)
     /// whose effects ran as plans of their own around the sampling: the
     /// ones before the transform, the transform at each sample, the rest
@@ -310,6 +329,10 @@ pub struct RenderStats {
     /// drawn by the CPU kernels instead, so the frame never shows without
     /// its effects (M2 step 11d). Zero unless something failed.
     pub effects_on_cpu: u32,
+    /// Clip effect runs drawn on the CPU, for any reason: by the CPU
+    /// kernels, or by the CPU executor running a failed plan again;
+    /// failures (`effects_on_cpu`) included (#1274).
+    pub effects_on_cpu_kernels: u32,
     /// Masked effects whose matte their run couldn't give (an effect run
     /// apart from the grade it reads, after a plug-in or across a shutter;
     /// wiring a file holds that the renderer can't give): drawn bypassed,
@@ -326,7 +349,7 @@ impl RenderStats {
     /// Clips whose effects ran as plans, by any route: spliced into the
     /// grade's run, after a plug-in, or around a shutter's samples.
     pub fn plan_clips(&self) -> u32 {
-        self.effects_followed_grade + self.effects_after_plugins + self.effects_shuttered + self.effects_on_layers
+        self.effects_followed_grade + self.effects_after_plugins + self.effects_inspected_apart + self.effects_shuttered + self.effects_on_layers
     }
 }
 
@@ -2220,22 +2243,29 @@ impl Renderer {
         // its effects as plans of their own around it.
         let plugins = clip.has_enabled_plugins();
         let shutter = title_motion_blur(clip).is_some() || self.shutter.contains_key(&clip.id);
-        let splice = !plugins && !shutter;
         // A picture-truth clip's effects may be masked or mixed, which only
         // a plan draws: those take the plan route, on the GPU or not
         // (step 9c-2).
         let truth = !on_gpu && clip.is_picture_truth() && has_active_effects(&fx) && !fx.iter().any(klipp_effects::registry::needs_source_neighbours);
+        // A clip whose grade the tools read inside keeps its effects out of
+        // the grade's run, so what they read is the grade's; the effects
+        // still run on the GPU, as a plan of their own after it (#1274).
+        let inspected = !on_gpu && self.inspects_the_grade_of(clip) && self.effects_can_run_on_gpu(&fx);
+        let mut splice = !plugins && !shutter;
         let mut route = on_gpu;
         let mut blended = false;
         let mut apart = None;
         let mut apart_blends = Vec::new();
-        if on_gpu || truth {
+        if on_gpu || truth || inspected {
             let mut stats = std::mem::take(&mut self.found.stats);
             let planned = self.plan_effects(clip, time, fps, transforms, &fx, &mut stats);
             self.found.stats = stats;
             let blends = std::mem::take(&mut self.planned_blends);
             blended = blends.iter().any(Option::is_some);
-            route = on_gpu || blended;
+            route = on_gpu || blended || inspected;
+            // Masked or mixed effects still run in the grade's plan, its
+            // nodes tapped as before (step 9c-2).
+            splice &= !(inspected && !blended);
             if route && splice {
                 self.run_effects = planned;
                 self.run_blends = blends;
@@ -2245,8 +2275,13 @@ impl Renderer {
             }
             // A scene-referred source's display step runs in the plan too,
             // after the grade, where `display_render` runs it below when
-            // the plan doesn't (step 11c).
-            if route {
+            // the plan doesn't (step 11c). Not for a grade the tools read
+            // inside whose effects run apart from it (#1274): its taps,
+            // thumbnails, solo and matte view show the grade's own output,
+            // and `display_render` displays the picture it returns, as on
+            // the CPU. Masked or mixed effects spliced into the run keep the
+            // step there, ahead of them.
+            if route && !(self.inspects_the_grade_of(clip) && !splice) {
                 self.run_display = hdr.map(|t| self.scene_to_display(t));
             }
         }
@@ -2276,6 +2311,7 @@ impl Renderer {
                     self.run_display = hdr.map(|t| self.scene_to_display(t));
                     let input = retry.expect("kept on the plan route");
                     let pixels = self.on_cpu_executor(|r| r.grade(clip, input, clip_time, fps, width, height));
+                    self.cpu_kernel_run();
                     self.run_effects.clear();
                     self.run_blends.clear();
                     self.run_display = None;
@@ -2325,8 +2361,10 @@ impl Renderer {
         if plan && self.plan_misses == missed {
             if shutter {
                 self.found.stats.effects_shuttered += 1;
-            } else {
+            } else if plugins {
                 self.found.stats.effects_after_plugins += 1;
+            } else {
+                self.found.stats.effects_inspected_apart += 1;
             }
             PLAN_EFFECT_CLIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
@@ -2545,6 +2583,7 @@ impl Renderer {
                 if !blended {
                     return self.effects(fx, back, clip_time, width, height);
                 }
+                self.cpu_kernel_run();
                 self.on_cpu_executor(|r| r.run_effects_plan(clip, fx, blends, back, clip_time, fps, width, height)).unwrap_or_else(|back| back)
             }
         }
@@ -2625,13 +2664,25 @@ impl Renderer {
         // take the plan route since step 12: their per-frame data reaches
         // the executor (`prepare_temporal_effects`, `frame_inputs`). Read
         // from the registry, so a new such type is covered.
-        let needs_neighbours = fx.iter().any(klipp_effects::registry::needs_source_neighbours);
-        !needs_neighbours
-            && self.allow_gpu
-            && has_active_effects(fx)
-            && klipp_effects::chain_supports_gpu(fx)
-            && self.inspect.clip != Some(clip.id)
+        self.effects_can_run_on_gpu(fx) && !self.inspects_the_grade_of(clip)
     }
+
+    /// Whether `fx` can run on the GPU as plan nodes at all: something to
+    /// run, a GPU, a GPU kernel for each, and none that needs the source's
+    /// neighbouring frames.
+    fn effects_can_run_on_gpu(&self, fx: &[BuiltinEffect]) -> bool {
+        let needs_neighbours = fx.iter().any(klipp_effects::registry::needs_source_neighbours);
+        !needs_neighbours && self.allow_gpu && has_active_effects(fx) && klipp_effects::chain_supports_gpu(fx)
+    }
+
+    /// Whether the grade tools read inside `clip`'s grade this render: its
+    /// node thumbnails, the scope's tap, a matte view or a soloed node.
+    /// The viewer names its primary clip in every render (#1274), so being
+    /// the inspected clip alone says nothing about what is read.
+    fn inspects_the_grade_of(&self, clip: &Clip) -> bool {
+        self.inspect.clip == Some(clip.id) && self.inspect.reads_the_grade()
+    }
+
 
     /// A title as working-space linear pixels at one instant: rasterised
     /// at that time, decoded, its deferred blur entrance applied, and
@@ -2970,7 +3021,8 @@ impl Renderer {
     /// there is no grade to run, or a node needs them on the CPU.
     fn grade(&mut self, clip: &Clip, input: GradeInput, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
         self.grade_ran = false;
-        let inspecting = self.inspect.clip == Some(clip.id);
+        // Only a grade the tools read inside runs with its taps (#1274).
+        let inspecting = self.inspects_the_grade_of(clip);
         let matte_view = if inspecting { self.inspect.matte_view } else { None };
         // An identity grade with effects queued still runs: the effects are
         // the plan's nodes (step 11b).
@@ -3069,8 +3121,9 @@ impl Renderer {
         }
         // An inspected clip runs its grade alone, unless its effects are
         // masked or mixed (a picture-truth clip's): those run in the plan
-        // with it, the grade's nodes still tapped (step 9c-2).
-        let graph = if self.run_effects.is_empty() {
+        // with it, the grade's nodes still tapped (step 9c-2). A
+        // scene-referred clip's display step runs in it either way.
+        let graph = if self.run_effects.is_empty() && self.run_display.is_none() {
             clip.grade()
         } else {
             self.splice_run(clip);
@@ -3094,9 +3147,11 @@ impl Renderer {
     fn splice_run(&mut self, clip: &Clip) {
         // An identity grade is the source straight to the output: the
         // effects alone (step 11b). Not when a mask reads a node of it: a
-        // grade whose picture is the source's can still publish a window.
+        // grade whose picture is the source's can still publish a window,
+        // and not when the grade tools read its nodes (#1274).
         let reads_the_grade = self.run_blends.iter().flatten().any(|b| matches!(b.mask, Some(crate::resolve::MaskSource::Grade { .. })));
-        let base = if clip.grade_is_identity() && !reads_the_grade { &self.passthrough } else { clip.grade() };
+        let tapped = self.inspects_the_grade_of(clip);
+        let base = if clip.grade_is_identity() && !reads_the_grade && !tapped { &self.passthrough } else { clip.grade() };
         self.spliced.clone_from(base);
         let source = self.spliced.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source).map(|n| n.id);
         let graded = self.spliced.input_of(self.spliced.output_node_id, 0);
@@ -3156,13 +3211,21 @@ impl Renderer {
         EFFECTS_ON_CPU.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Count a clip's effect run drawn on the CPU, by the kernels or by the
+    /// CPU executor running its plan again (#1274).
+    fn cpu_kernel_run(&mut self) {
+        self.found.stats.effects_on_cpu_kernels += 1;
+        EFFECTS_ON_CPU_KERNELS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// `fx` on `pixels` by the CPU kernels: a clip whose effects can't run
-    /// on the GPU (no GPU, an inspected clip, an effect with no GPU
-    /// kernel), or whose plan couldn't apply them.
+    /// on the GPU (no GPU, an effect with no GPU kernel), or whose plan
+    /// couldn't apply them. Every run is counted (#1274).
     fn effects(&mut self, fx: &[BuiltinEffect], pixels: Vec<f32>, clip_time: f64, width: u32, height: u32) -> Vec<f32> {
         if !has_active_effects(fx) {
             return pixels;
         }
+        self.cpu_kernel_run();
         let t = Instant::now();
         // The working space's luminance weights, for the effects that gate
         // on brightness — a bright pass, a denoise threshold, an edge
