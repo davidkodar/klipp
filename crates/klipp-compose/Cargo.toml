@@ -14,6 +14,9 @@ klipp-color       = { workspace = true }
 klipp-title       = { workspace = true }
 klipp-transitions = { workspace = true }
 klipp-plugin      = { workspace = true }
+klipp-graph-format = { workspace = true }
+klipp-graph-lift  = { workspace = true }
+serde_json        = { workspace = true }
 wgpu = { workspace = true }
 bytemuck = { workspace = true }
 rayon             = { workspace = true }

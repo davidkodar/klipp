@@ -54,7 +54,8 @@ pub fn stage_body(structural: &Graph) -> Result<Graph, String> {
 }
 
 /// A track's revision-1 graph split into what the splice takes: its
-/// effects (the entries after its grade group) and its grade, lifted.
+/// effects (the entries after its grade group, their keyframes and
+/// modifier stacks on each node, as a clip's own) and its grade, lifted.
 pub fn track_parts(structural: &Graph) -> Result<(Vec<Node>, Option<Graph>), String> {
     let mut effects = Vec::new();
     let mut grade = None;
@@ -63,7 +64,7 @@ pub fn track_parts(structural: &Graph) -> Result<(Vec<Node>, Option<Graph>), Str
             let only = Graph { nodes: vec![n.clone()], edges: Vec::new(), output: n.id, ..Graph::empty() };
             grade = Some(lift_grade_only(&only, true)?);
         } else {
-            effects.push(n.clone());
+            effects.push(crate::lift::track_effect(n));
         }
     }
     Ok((effects, grade))

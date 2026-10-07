@@ -184,3 +184,39 @@ fn todays_skips_hold() {
         assert_eq!(splice(&c, kind, &i), c, "{kind:?}");
     }
 }
+
+/// A track's effect entry reaches the render copy with its keys and
+/// modifier stacks on its node, read exactly as the same entry is read on
+/// a clip, so the resolver reads every effect node one way. (A track's
+/// list saves no keys today; the entry here carries them as a clip's
+/// does, which is what the track's would be.)
+#[test]
+fn a_track_effect_carries_its_animation_as_a_clips_does() {
+    let key = |t: f64, v: f32| json!({"time_secs": t, "value": v, "interpolation": "Linear", "tangent_out": [0.0, 0.0], "tangent_in": [0.0, 0.0]});
+    let wiggle = json!({"modifiers": [{"type": "wiggle", "amplitude": 0.7, "frequency": 3.0, "blend": "Multiply"}]});
+    let clip = json!({
+        "id": CLIP,
+        "builtin_effects": [{"type": "chroma_key", "key_color": [0, 255, 0], "tolerance": 0.3, "soft_edge": 0.1, "spill_method": "None", "spill_strength": 0.5}],
+        "effect_keyframes": {"0:tolerance": [key(0.0, 0.3), key(1.0, 0.6)], "0:spill": [key(0.0, 0.1), key(2.0, 0.4)]},
+        "param_modifiers": {"effect:0:tolerance": wiggle},
+    });
+    let on_clip = lifted(&clip, ClipKind::Media);
+    let clip_node = on_clip.graph.nodes.iter().find(|n| n.legacy.as_ref().is_some_and(|l| l.slot == Some(0))).expect("the clip's effect node");
+    assert_eq!(clip_node.anim.len(), 2, "tolerance and the soft edge: {:?}", clip_node.anim.keys());
+
+    // The same entry, as it sits in the structural record, in a track's list.
+    let record = to_v2::clip_to_v2(obj(&clip)).unwrap();
+    let entry = record.graph.nodes.iter().find(|n| n.legacy.as_ref().is_some_and(|l| l.slot == Some(0))).expect("the structural entry").clone();
+    let structural = Graph { nodes: vec![entry.clone()], edges: Vec::new(), output: entry.id, ..Graph::empty() };
+    let (fx, grade) = track_parts(&structural).unwrap();
+    assert!(grade.is_none());
+    assert_eq!(fx.len(), 1);
+    assert_eq!(fx[0].anim, clip_node.anim, "the track's node animates as the clip's");
+
+    // Spliced onto a render copy, it keeps that animation.
+    let plain = lifted(&json!({"id": CLIP}), ClipKind::Media);
+    let inputs = SpliceInputs { stages: None, track: Some(TrackInputs { track: id(TRACK), effects: fx, grade: None }) };
+    let spliced = splice(&plain, ClipKind::Media, &inputs);
+    let on_copy = spliced.graph.nodes.iter().find(|n| n.origin.is_some() && n.id == entry.id).expect("the spliced track effect");
+    assert_eq!(on_copy.anim, clip_node.anim);
+}

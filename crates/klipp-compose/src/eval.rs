@@ -609,6 +609,56 @@ pub fn resolve_effect_param(
     }
 }
 
+/// An effect node's keys and modifier stacks, typed once when the plan is
+/// compiled (node-graph M2 step 14), by the keyframe name
+/// [`BuiltinEffect::animate`](klipp_effects::BuiltinEffect::animate) asks
+/// for. The node's `anim` is keyed by the parameter it drives, which the
+/// lift resolved through its aliases; reading it back goes through
+/// [`klipp_graph_lift::lift::keyframe_name`].
+#[derive(Clone, Debug, Default)]
+pub struct EffectNodeAnim(std::collections::BTreeMap<String, (Vec<klipp_core::Keyframe>, Option<klipp_core::ModifierStack>)>);
+
+impl EffectNodeAnim {
+    /// The animation `node` carries. An entry that doesn't read as keys
+    /// or a modifier stack is an error naming its parameter: a picture
+    /// the lift made always reads.
+    pub fn of(node: &klipp_graph_format::Node) -> Result<Self, String> {
+        let tag = node.legacy.as_ref().and_then(|l| l.payload.get("type")).and_then(serde_json::Value::as_str).unwrap_or("");
+        let mut params = std::collections::BTreeMap::new();
+        for (key, anim) in &node.anim {
+            let keys = anim
+                .keys
+                .iter()
+                .map(|k| serde_json::from_value(k.clone()))
+                .collect::<Result<Vec<klipp_core::Keyframe>, _>>()
+                .map_err(|e| format!("{key}'s keys: {e}"))?;
+            let stack = anim
+                .modifiers
+                .as_ref()
+                .map(|m| serde_json::from_value(m.clone()))
+                .transpose()
+                .map_err(|e| format!("{key}'s modifiers: {e}"))?;
+            params.insert(klipp_graph_lift::lift::keyframe_name(tag, key.as_str()).to_owned(), (keys, stack));
+        }
+        Ok(Self(params))
+    }
+
+    /// Whether the node animates nothing.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// `effect` at `time_secs`: each keyframable parameter from its own
+    /// keys and stack, through [`resolve_effect_param`]; a parameter with
+    /// neither keeps its value.
+    pub fn animate(&self, effect: &mut klipp_effects::BuiltinEffect, time_secs: f64, ctx: &klipp_core::EvalContext) {
+        effect.animate(&mut |name, v| match self.0.get(name) {
+            Some((keys, stack)) => resolve_effect_param(keys, stack.as_ref(), time_secs, v, ctx),
+            None => v,
+        });
+    }
+}
+
 
 #[cfg(test)]
 mod tracker_resolution_tests {

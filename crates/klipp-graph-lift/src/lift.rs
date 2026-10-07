@@ -72,6 +72,14 @@ const GATEABLE: [&str; 8] = ["Corrector", "ColorBalance", "Exposure", "Contrast"
 /// the registry's keyframe aliases by a test.
 pub const KEYFRAME_ALIASES: [(&str, &str, &str); 1] = [("chroma_key", "spill", "soft_edge")];
 
+/// The keyframe name an effect asks for (`BuiltinEffect::animate`) of the
+/// parameter its node animates under `key`: the inverse of
+/// [`KEYFRAME_ALIASES`], so a ChromaKey node's `soft_edge` is read as
+/// `spill`. `tag` is the effect's saved tag (`"chroma_key"`).
+pub fn keyframe_name<'a>(tag: &str, key: &'a str) -> &'a str {
+    KEYFRAME_ALIASES.iter().find(|(t, _, to)| *t == tag && *to == key).map_or(key, |(_, from, _)| from)
+}
+
 /// The effects that draw outside the picture, in the margin a transform
 /// leaves (`klipp_effects::draws_outside_the_picture`). Kept in step with
 /// it by a test.
@@ -554,6 +562,19 @@ fn effect_anim(n: &Node) -> (BTreeMap<ParamKey, Animation>, BTreeMap<String, Val
         }
     }
     (anim, orphans)
+}
+
+/// An entry of a track's effect list with its keyframes and modifier
+/// stacks on its node, read as a clip's own entries are read
+/// ([`effect_anim`]), so one reader serves every effect node a render
+/// copy holds. Keys that drive nothing are kept on the node; the track's
+/// own lift notes them.
+pub(crate) fn track_effect(n: &Node) -> Node {
+    let mut e = n.clone();
+    let (anim, orphans) = effect_anim(n);
+    e.anim = anim;
+    keep_orphans(&mut e, orphans, &mut Vec::new());
+    e
 }
 
 /// Keys an effect holds that drive nothing, kept on its node and noted.
