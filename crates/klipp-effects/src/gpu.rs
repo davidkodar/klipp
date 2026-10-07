@@ -256,6 +256,8 @@ pub struct GpuEffectsPipeline {
     rgb_curves_lut_buf: wgpu::Buffer,
     // Compute pipeline — vibrance
     vibrance_pipeline: wgpu::ComputePipeline,
+    // Compute pipeline — a scene-referred clip's display step (step 11c)
+    scene_to_display_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — color warper (12-sector hue/sat)
     color_warper_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — input transform (log-to-sRGB via 1D LUT, reuses huesat_bgl)
@@ -1076,6 +1078,7 @@ impl GpuEffectsPipeline {
         let rsc_pipeline = create_pipeline(&device, &huesat_pl, "rolling_shutter", SHADER_ROLLING_SHUTTER);
         let stabilization_pipeline = create_pipeline(&device, &huesat_pl, "stabilization", SHADER_STABILIZATION);
         let vibrance_pipeline = create_pipeline(&device, &pipeline_layout, "vibrance", SHADER_VIBRANCE);
+        let scene_to_display_pipeline = create_pipeline(&device, &pipeline_layout, "scene_to_display", shader_scene_to_display());
         let color_warper_pipeline = create_pipeline(&device, &pipeline_layout, "color_warper", SHADER_COLOR_WARPER);
         let clarity_blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "clarity_blur_h", SHADER_CLARITY_BLUR_H);
         let clarity_blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "clarity_blur_v", SHADER_CLARITY_BLUR_V);
@@ -1446,6 +1449,7 @@ impl GpuEffectsPipeline {
             lut3d_buf: None,
             lut3d_buf_size: 0,
             vibrance_pipeline,
+            scene_to_display_pipeline,
             color_warper_pipeline,
             clarity_blur_h_pipeline,
             clarity_blur_v_pipeline,
@@ -4324,6 +4328,41 @@ impl GpuEffectsPipeline {
             .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
         Self::record_compute_dispatch(enc, &self.vibrance_pipeline, bind_group, workgroups);
+    }
+
+    /// Dispatch-only display step of a scene-referred clip (phase 2b M2,
+    /// step 11c): `klipp_color::hdr::SceneToDisplay::apply` on the chain,
+    /// so the effects that follow take the picture where it sits. `kind`,
+    /// `scene_scale` and `exposure` are the source transfer's
+    /// (`display_light_kind`, `scene_scale`, `display_exposure`); a `peak`
+    /// is display light, none the SDR tone map; `luma` is the working
+    /// space's luminance weights.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_scene_to_display_chain(&mut self, in_is_a: bool, width: u32, height: u32, kind: u32, scene_scale: f32, exposure: f32, peak: Option<f32>, luma: [f32; 3]) {
+        if self.is_device_lost() {
+            return;
+        }
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuSceneToDisplayParams {
+            width,
+            height,
+            light: u32::from(peak.is_some()),
+            kind,
+            scene_scale,
+            exposure,
+            peak: peak.unwrap_or(0.0),
+            _pad: 0,
+            luma_r: luma[0],
+            luma_g: luma[1],
+            luma_b: luma[2],
+            _pad1: 0,
+        });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let bind_group = self.chain_bg_3binding[slot * 4 + Self::chain_cfg_3b_ab(in_is_a)]
+            .as_ref()
+            .expect(Self::CHAIN_BG_EXPECT);
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.scene_to_display_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only 12-sector colour warper pass.
@@ -7723,6 +7762,19 @@ struct GpuVibranceParams {
     luma_yr: f32, luma_yg: f32, luma_yb: f32, _pad1: u32,
 }
 
+/// [`shader_scene_to_display`]'s uniform: `klipp_color::hdr::SceneToDisplay`.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuSceneToDisplayParams {
+    width: u32, height: u32,
+    /// 1 for display light (a peak is set), 0 for the SDR tone map.
+    light: u32,
+    /// `HdrTransfer::display_light_kind`.
+    kind: u32,
+    scene_scale: f32, exposure: f32, peak: f32, _pad: u32,
+    luma_r: f32, luma_g: f32, luma_b: f32, _pad1: u32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuColorWarperParams {
@@ -9250,6 +9302,52 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 fn shader_hdr10_to_linear() -> &'static str {
     static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     SRC.get_or_init(|| format!("{}{}{}", crate::color_wgsl::WGSL_PRELUDE, crate::color_wgsl::WGSL_HELPERS, SHADER_HDR10_TO_LINEAR_BODY))
+}
+
+/// A scene-referred clip's display step as a chain pass (phase 2b M2, step
+/// 11c): `klipp_color::hdr::SceneToDisplay::apply`, the SDR tone map or
+/// display light, from the two shared definitions the decoders' previews
+/// and the export's writer use. Signed like the CPU: unlike the viewer's
+/// monitor encode it doesn't clamp first, since effects still follow.
+const SHADER_SCENE_TO_DISPLAY_BODY: &str = concat!(
+    "
+struct Params {
+    width: u32, height: u32, light: u32, kind: u32,
+    scene_scale: f32, exposure: f32, peak: f32, _pad: u32,
+    luma_r: f32, luma_g: f32, luma_b: f32, _pad1: u32,
+}
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn h_working_luma() -> vec3<f32> {
+    return vec3<f32>(params.luma_r, params.luma_g, params.luma_b);
+}
+",
+    shader_pixel_storage_wgsl!(),
+    shader_hdr_display_light_wgsl!(),
+    "
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let p = unpack(input[idx]);
+    var rgb = vec3<f32>(0.0);
+    if params.light == 1u {
+        rgb = hdr_display_light(p.xyz, params.kind, params.scene_scale, params.peak);
+    } else {
+        rgb = tone_map_hdr_vec(p.xyz, params.exposure);
+    }
+    output[idx] = pack(vec4<f32>(rgb, p.w));
+}
+"
+);
+
+/// [`SHADER_SCENE_TO_DISPLAY_BODY`] as compiled, after the colour helpers
+/// that hold the tone map. Built once, like [`shader_hdr10_to_linear`].
+fn shader_scene_to_display() -> &'static str {
+    static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SRC.get_or_init(|| format!("{}{}{}", crate::color_wgsl::WGSL_PRELUDE, crate::color_wgsl::WGSL_HELPERS, SHADER_SCENE_TO_DISPLAY_BODY))
 }
 
 // Linear-f32 RGBA → sRGB-u8 RGBA encode. One workgroup-thread per
@@ -16308,6 +16406,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         // Compiled into pipelines but missing from this list until #692,
         // which kept them out of the WGSL validation and pack lints.
         ("SHADER_HDR10_TO_LINEAR", shader_hdr10_to_linear()),
+        ("SHADER_SCENE_TO_DISPLAY", shader_scene_to_display()),
         ("SHADER_SPRITE_ROWS_F16", SHADER_SPRITE_ROWS_F16),
         ("SHADER_DIFFERENCE_KEY", SHADER_DIFFERENCE_KEY),
         ("SHADER_FILM_GRAIN", SHADER_FILM_GRAIN),

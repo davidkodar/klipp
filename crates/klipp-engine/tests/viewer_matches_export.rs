@@ -1117,3 +1117,98 @@ fn footage_at_another_rate_shows_the_same_file_frame_as_the_export() {
     eprintln!("footage at another rate, viewer vs export: worst {worst} levels");
     assert!(worst <= 3, "the viewer shows another frame of the file than the export: {worst} levels");
 }
+
+/// A lossless 10-bit PQ clip (BT.2020, ST 2084) at the sequence's size:
+/// luma ramping across the frame from 1 to about 2000 nits, a bright
+/// square in the middle for a glow to spread from, neutral chroma. Two
+/// seconds at the sequence's rate.
+fn pq_source(name: &str) -> PathBuf {
+    let pq = |nits: f64| {
+        let (m1, m2) = (2610.0 / 16384.0, 2523.0 / 4096.0 * 128.0);
+        let (c1, c2, c3) = (3424.0 / 4096.0, 2413.0 / 4096.0 * 32.0, 2392.0 / 4096.0 * 32.0);
+        let y = (nits / 10000.0f64).powf(m1);
+        (64.0 + ((c1 + c2 * y) / (1.0 + c3 * y)).powf(m2) * 876.0).round() as u16
+    };
+    let raw = tmp(&format!("{}-{name}.yuv", uuid::Uuid::new_v4()));
+    let out = tmp(&format!("{}-{name}.mkv", uuid::Uuid::new_v4()));
+    let mut frame = Vec::with_capacity((W * H * 4) as usize);
+    for y in 0..H {
+        for x in 0..W {
+            let centre = x.abs_diff(W / 2) < 40 && y.abs_diff(H / 2) < 40;
+            let nits = if centre { 3000.0 } else { 10f64.powf(3.3 * x as f64 / W as f64) };
+            frame.extend_from_slice(&pq(nits).to_le_bytes());
+        }
+    }
+    for _ in 0..(W / 2) * H * 2 {
+        frame.extend_from_slice(&512u16.to_le_bytes());
+    }
+    std::fs::write(&raw, frame.repeat(2 * FPS as usize)).unwrap();
+    let tags = ["-color_range", "tv", "-colorspace", "bt2020nc", "-color_primaries", "bt2020", "-color_trc", "smpte2084"];
+    let size = format!("{W}x{H}");
+    let ok = std::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "yuv422p10le", "-s", &size, "-r", &FPS.to_string()])
+        .args(tags)
+        .args(["-i", raw.to_str().unwrap(), "-c:v", "ffv1", "-pix_fmt", "yuv422p10le"])
+        .args(tags)
+        .arg(&out)
+        .status()
+        .unwrap()
+        .success();
+    let _ = std::fs::remove_file(&raw);
+    assert!(ok, "ffmpeg could not make {name}");
+    out
+}
+
+/// The worst difference between two frames, in levels, over every pixel.
+fn worst_levels(a: &[u8], b: &[u8]) -> i32 {
+    a.iter().zip(b).map(|(x, y)| (*x as i32 - *y as i32).abs()).max().unwrap_or(0)
+}
+
+/// A graded PQ clip with effects shows the same picture in the viewer and
+/// the export. Both render it through the clip renderer, which since phase
+/// 2b M2 step 11c runs its grade, display step and effects as one plan
+/// (the route itself is pinned by klipp-compose's `effects_follow_grade`).
+/// The effects are in it: a glow spreads from the bright square and a
+/// vignette darkens the corners, against the same clip without them.
+#[test]
+fn a_graded_hdr_clip_with_effects_exports_as_the_viewer_shows_it() {
+    let _decoders = decoders_at_speed();
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let p = MediaId::new();
+    let file = pq_source("pq-effects");
+    let make = |effects: Vec<BuiltinEffect>| {
+        let mut seq = Sequence::new_default();
+        seq.fps = Fps::new(FPS as u32, 1);
+        seq.resolution = Resolution { width: W, height: H };
+        let mut clip = media_clip(p, 0, 40, 0);
+        clip.set_grade(exposure(-0.5));
+        let n = effects.len();
+        clip.set_effect_list(effects, vec![true; n]);
+        let mut v1 = Track::new("V1", TrackKind::Video);
+        v1.clips = vec![clip];
+        seq.tracks = vec![v1];
+        Timeline { seq, files: HashMap::from([(p, file.clone())]), coded: HashMap::new() }
+    };
+    let t = make(vec![
+        BuiltinEffect::Glow { radius: 12.0, intensity: 0.8 },
+        BuiltinEffect::Vignette { amount: -0.8, size: 0.5, softness: 0.4, roundness: 0.7 },
+    ]);
+    let out = exported(&t);
+    let viewer = Viewer::start(&t);
+    let mut worst = 0;
+    for n in [5, 20, 35] {
+        let (v, e) = (viewer.frame_at(n), exported_frame(&out, n));
+        let w = worst_levels(&v, &e);
+        eprintln!("HDR with effects, frame {n}: worst {w} levels");
+        worst = worst.max(w);
+    }
+    assert!(worst <= 3, "the export differs from the viewer by {worst} levels");
+    let plain = exported(&make(vec![]));
+    let (g, p) = (exported_frame(&out, 20), exported_frame(&plain, 20));
+    assert!(worst_levels(&g, &p) > 20, "the effects are in the export");
+    let corner = |f: &[u8]| px(f, 4, 4).iter().sum::<i32>();
+    assert!(corner(&g) < corner(&p), "the vignette darkens the corner: {} vs {}", corner(&g), corner(&p));
+}

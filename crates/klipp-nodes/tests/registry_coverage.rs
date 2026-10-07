@@ -22,7 +22,8 @@ const NOT_YET_DESCRIBED: &[&str] = &[];
 
 /// The variant names of `pub enum NodeKind`, without the catch-all
 /// `Unknown` and the kinds only the renderer makes for a run (a clip's
-/// effects, step 10), which no one adds and no file holds. Read from the
+/// effects, step 10; a scene-referred clip's display step, step 11c),
+/// which no one adds and no file holds. Read from the
 /// source so a new kind cannot go undescribed.
 fn declared_kinds() -> BTreeSet<String> {
     let src = include_str!("../src/kinds.rs");
@@ -40,7 +41,7 @@ fn declared_kinds() -> BTreeSet<String> {
             let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
             Some(name)
         })
-        .filter(|n| !["Unknown", "Effect", "EffectSegment"].contains(&n.as_str()))
+        .filter(|n| !["Unknown", "Effect", "EffectSegment", "SceneToDisplay"].contains(&n.as_str()))
         .collect()
 }
 

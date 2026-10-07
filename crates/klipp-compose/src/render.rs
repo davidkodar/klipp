@@ -452,6 +452,9 @@ pub struct Renderer {
     /// The clip's resolved effects for the grade being run, spliced in as
     /// nodes before its output (step 10b); empty runs the grade alone.
     run_effects: Vec<BuiltinEffect>,
+    /// A scene-referred clip's display step for the grade being run,
+    /// spliced in after the grade and before `run_effects` (step 11c).
+    run_display: Option<klipp_color::hdr::SceneToDisplay>,
     /// The grade with `run_effects` spliced in, kept so each frame reuses
     /// its allocations.
     spliced: klipp_nodes::NodeGraph,
@@ -569,6 +572,7 @@ impl Renderer {
             allow_gpu: true,
             legacy_effects: std::env::var_os("KLIPP_LEGACY_EFFECTS").is_some_and(|v| v == "1"),
             run_effects: Vec::new(),
+            run_display: None,
             spliced: klipp_nodes::NodeGraph::default(),
             passthrough: passthrough_graph(),
             grade_ran: false,
@@ -2141,17 +2145,22 @@ impl Renderer {
         // The grade's result goes on into the effects on the GPU, with no
         // download and upload between them, when nothing in between needs
         // the picture on the CPU (#1089, M2 step 10).
-        let on_gpu = self.effects_follow_grade_on_gpu(clip, hdr.is_some(), &fx);
+        let on_gpu = self.effects_follow_grade_on_gpu(clip, &fx);
         // Kept for a second grade if the effects can't finish in the plan.
         let retry = on_gpu.then(|| input.clone());
         if on_gpu {
             let mut stats = std::mem::take(&mut self.found.stats);
             self.run_effects = self.plan_effects(clip, time, fps, transforms, &fx, &mut stats);
             self.found.stats = stats;
+            // A scene-referred source's display step runs in the plan too,
+            // between the grade and the effects, where `display_render`
+            // runs it below on the legacy route (step 11c).
+            self.run_display = hdr.map(|t| self.scene_to_display(t));
         }
         let mut pixels = self.grade(clip, input, clip_time, fps, width, height);
         if on_gpu {
             self.run_effects.clear();
+            self.run_display = None;
             if self.grade_ran && self.executor.last_run_effects_complete() {
                 self.found.stats.effects_followed_grade += 1;
                 PLAN_EFFECT_CLIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2194,7 +2203,7 @@ impl Renderer {
     /// [`Self::finish_spliced`] ends it after the grade.
     #[allow(clippy::too_many_arguments)]
     fn splice_effects(&mut self, clip: &Clip, fx: &[BuiltinEffect], time: Timecode, fps: f64, transforms: &HashMap<ClipId, ResolvedTransform>, stats: &mut RenderStats) -> bool {
-        let on = self.effects_follow_grade_on_gpu(clip, false, fx);
+        let on = self.effects_follow_grade_on_gpu(clip, fx);
         if on {
             self.run_effects = self.plan_effects(clip, time, fps, transforms, fx, stats);
         }
@@ -2234,12 +2243,13 @@ impl Renderer {
     /// Whether `clip`'s effects can take the grade's result where it sits
     /// on the GPU: the grade runs (no shortcut, nothing inspected), and
     /// nothing between the grade and the effects needs the picture on the
-    /// CPU (an HDR source's display render, a plug-in, a shutter or a
-    /// title's own motion blur), and every effect runs on the GPU. The
+    /// CPU (a plug-in, a shutter or a title's own motion blur), and every
+    /// effect runs on the GPU. An HDR source's display step runs in the
+    /// plan between them (step 11c). The
     /// legacy route, a download and an upload between them, stays
     /// selectable ([`Self::set_legacy_effects`], or `KLIPP_LEGACY_EFFECTS=1`)
     /// until M2's effect families are native.
-    fn effects_follow_grade_on_gpu(&self, clip: &Clip, hdr: bool, fx: &[BuiltinEffect]) -> bool {
+    fn effects_follow_grade_on_gpu(&self, clip: &Clip, fx: &[BuiltinEffect]) -> bool {
         // An effect that needs other times (a stabilisation trajectory,
         // rolling-shutter motion: data the renderer uploads to its own
         // pipeline in `prepare_temporal_effects`, not the executor's) stays
@@ -2251,7 +2261,6 @@ impl Renderer {
             && self.allow_gpu
             && has_active_effects(fx)
             && klipp_effects::chain_supports_gpu(fx)
-            && !hdr
             && self.inspect.clip != Some(clip.id)
             && !clip.has_enabled_plugins()
             && title_motion_blur(clip).is_none()
@@ -2412,15 +2421,14 @@ impl Renderer {
     /// A scene-referred clip's last step of its own: the SDR display tone
     /// map, or for an HDR delivery its display light.
     fn display_render(&self, pixels: &mut [f32], t: klipp_color::hdr::HdrTransfer) {
-        match self.hdr_peak {
-            Some(peak) => klipp_color::hdr::apply_hdr_display_light(
-                pixels,
-                t,
-                klipp_color::primaries::luminance_weights(self.working),
-                peak,
-            ),
-            None => klipp_color::hdr::apply_hdr_display_tonemap(pixels, t),
-        }
+        self.scene_to_display(t).apply(pixels);
+    }
+
+    /// The display step for a source of transfer `t` under this render's
+    /// delivery or monitor: what `display_render` runs on the CPU and the
+    /// plan's `SceneToDisplay` node runs in a clip's plan (step 11c).
+    fn scene_to_display(&self, t: klipp_color::hdr::HdrTransfer) -> klipp_color::hdr::SceneToDisplay {
+        klipp_color::hdr::SceneToDisplay { transfer: t, peak_nits: self.hdr_peak, luma: klipp_color::primaries::luminance_weights(self.working) }
     }
 
     /// Drop the motion data of the clip rendered last, on the CPU side and
@@ -2594,7 +2602,7 @@ impl Renderer {
         let matte_view = if inspecting { self.inspect.matte_view } else { None };
         // An identity grade with effects queued still runs: the effects are
         // the plan's nodes (step 11b).
-        if clip.grade_is_identity() && matte_view.is_none() && self.run_effects.is_empty() {
+        if clip.grade_is_identity() && matte_view.is_none() && self.run_effects.is_empty() && self.run_display.is_none() {
             // Take the buffer rather than clone the handle: a layer this
             // renderer just made is held once, and moves out for free.
             return match input {
@@ -2677,13 +2685,16 @@ impl Renderer {
         // sequence's size, as the effects' are (#1012).
         self.executor.set_render_scale(self.px_scale);
         if !inspecting {
-            let graph = if self.run_effects.is_empty() {
+            let graph = if self.run_effects.is_empty() && self.run_display.is_none() {
                 clip.grade()
             } else {
                 // An identity grade is the source straight to the output:
                 // the effects alone (step 11b).
                 let base = if clip.grade_is_identity() { &self.passthrough } else { clip.grade() };
                 self.spliced.clone_from(base);
+                if let Some(step) = self.run_display {
+                    self.spliced.splice_before_output(scene_to_display_node(clip, step));
+                }
                 let groups = effect_groups(&self.run_effects);
                 let base = clip.id.0.as_u128() ^ (0x00ef_fec7_u128 << 64);
                 self.spliced.splice_effects_before_output(&groups, |i| klipp_nodes::NodeId::from_u128(base ^ i as u128));
@@ -3259,6 +3270,22 @@ fn passthrough_graph() -> klipp_nodes::NodeGraph {
     let (source, output) = (node(0x0011_b5ce, NodeKind::Source), node(0x0011_b0ce, NodeKind::Output));
     let edges = vec![Edge { from_node: source.id, from_port: 0, to_node: output.id, to_port: 0 }];
     NodeGraph { output_node_id: output.id, nodes: vec![source, output], edges, node_positions: Default::default(), working_space_override: None, frames: vec![], sticky_notes: vec![] }
+}
+
+/// `clip`'s display step as a plan node (step 11c), with an id fixed per
+/// clip so the executor's cached plan holds across frames.
+fn scene_to_display_node(clip: &Clip, step: klipp_color::hdr::SceneToDisplay) -> klipp_nodes::Node {
+    use klipp_nodes::{Node, NodeId, NodeKind, NodeParams};
+    Node {
+        id: NodeId::from_u128(clip.id.0.as_u128() ^ (0x0011_c5d0_u128 << 64)),
+        kind: NodeKind::SceneToDisplay,
+        label: String::new(),
+        enabled: true,
+        params: NodeParams { scene_to_display: Some(step), ..Default::default() },
+        keyframes: Default::default(),
+        output_link: None,
+        input_links: vec![],
+    }
 }
 
 /// A clip's resolved effects as plan nodes (step 10b): one `Effect`

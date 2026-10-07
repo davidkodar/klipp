@@ -297,3 +297,94 @@ fn every_effect_that_needs_other_times_declines_the_plan_route() {
     }
     assert!(!klipp_effects::registry::needs_other_times(&E::Gamma { gamma: 1.2 }));
 }
+
+/// A scene-referred source: 10-bit codes ramping down the frame with a
+/// hue turning across it, so the codes span black to peak and no two
+/// channels agree (the HLG branch weighs them by luma).
+struct Scene(klipp_color::hdr::HdrTransfer);
+
+impl FrameSource for Scene {
+    fn frame(&mut self, _c: &Clip, _secs: f64, w: u32, h: u32) -> Option<SourceFrame> {
+        let codes = (0..h)
+            .flat_map(|y| {
+                (0..w).map(move |x| {
+                    let (v, t) = (y * 1023 / h, x * 1023 / w);
+                    klipp_color::hdr::pack_rgb10(v, (v * 3 / 4 + t / 4).min(1023), (v / 2 + t / 2).min(1023))
+                })
+            })
+            .collect();
+        let pixels = SourcePixels::SceneReferred {
+            codes: Arc::new(codes),
+            transfer: self.0,
+            source_to_working: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        Some(SourceFrame { pixels, width: w, height: h, pts: None })
+    }
+}
+
+/// `seq` from a scene-referred source of `transfer`, under a delivery of
+/// `peak` nits (`None` is SDR): the frame, how many clips took the plan
+/// route, and its chain's effect breaks and submits.
+fn render_scene(seq: &Sequence, legacy: bool, transfer: klipp_color::hdr::HdrTransfer, peak: Option<f32>) -> (Vec<f32>, u32, (u32, u32)) {
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(true);
+    r.set_legacy_effects(legacy);
+    let opts = RenderOptions { hdr_peak_nits: peak, ..Default::default() };
+    let (out, found) = r.render_inspected(seq, tc(1.0), W, H, &mut Scene(transfer), opts, Inspect::default());
+    assert_eq!(found.stats.effects_fallback_lists, 0, "every plan list came from the picture");
+    let chain = r.executor().last_run_chain_stats();
+    (out, found.stats.effects_followed_grade, (chain.effect_breaks, chain.submits))
+}
+
+/// The transfers a scene-referred source arrives in, one per display
+/// branch (`HdrTransfer::display_light_kind`).
+fn transfers() -> [(&'static str, klipp_color::hdr::HdrTransfer); 3] {
+    use klipp_color::hdr::HdrTransfer;
+    [("PQ", HdrTransfer::Pq), ("HLG", HdrTransfer::Hlg), ("S-Log3", HdrTransfer::Log(klipp_core::ColorTransfer::SLog3))]
+}
+
+/// Step 11c: a scene-referred clip's display step runs in its plan, on
+/// the GPU between the grade and the effects, where the legacy route runs
+/// it on the CPU (`display_render`). Each transfer, tone-mapped for an
+/// SDR picture and as display light for an HDR delivery, draws the legacy
+/// picture within a hundredth of a level: the display step is the same
+/// closed form on either side, in f32, so only rounding may differ.
+#[test]
+fn a_scene_referred_clip_runs_its_display_step_and_effects_as_a_plan() {
+    const BAR: f32 = 1.0 / 25_500.0;
+    let mut fx = colour_family();
+    fx.push(E::Glow { radius: 6.0, intensity: 0.5 });
+    let seq = graded(fx);
+    for (name, transfer) in transfers() {
+        for peak in [None, Some(1000.0)] {
+            let case = format!("{name}, peak {peak:?}");
+            let (new, followed, (breaks, submits)) = render_scene(&seq, false, transfer, peak);
+            let (legacy, legacy_followed, _) = render_scene(&seq, true, transfer, peak);
+            assert_eq!(legacy_followed, 0, "{case}: the legacy route never follows");
+            if followed == 0 {
+                assert!(!required(), "{case}: required, but the display step and effects did not run as a plan");
+                eprintln!("UNVERIFIED: no GPU route");
+                return;
+            }
+            assert_eq!((breaks, submits), (0, 1), "{case}: grade, display step and effects in one submit");
+            // Display light runs to peak / 203; the bar is relative to it.
+            let scale = peak.map_or(1.0, |p| p / 203.0);
+            let worst = new.iter().zip(&legacy).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            eprintln!("{case}: worst {worst}");
+            assert!(worst <= BAR * scale, "{case}: the plan differs from the legacy route by {worst}");
+        }
+    }
+}
+
+/// The display step is the run's own: spliced into the plan for a frame,
+/// never into the clip's grade, so a grade saved after an HDR render
+/// holds no `SceneToDisplay`.
+#[test]
+fn a_saved_grade_never_holds_the_display_step() {
+    let seq = graded(colour_family());
+    let (_, followed, _) = render_scene(&seq, false, klipp_color::hdr::HdrTransfer::Pq, Some(1000.0));
+    assert!(followed == 1 || !required());
+    let saved = serde_json::to_string(seq.tracks[0].clips[0].grade()).unwrap();
+    assert!(saved.contains("Exposure"), "the grade was serialised");
+    assert!(!saved.contains("SceneToDisplay"), "the display step stayed out of the saved grade");
+}

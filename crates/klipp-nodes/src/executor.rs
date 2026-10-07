@@ -2504,6 +2504,7 @@ impl GraphExecutor {
             NodeKind::Effect | NodeKind::EffectSegment => {
                 !params.effects.is_empty() && klipp_effects::chain_supports_gpu(&params.effects)
             }
+            NodeKind::SceneToDisplay => params.scene_to_display.is_some(),
             // Records the source format; never touches the pixels.
             NodeKind::InputTransform => false,
             NodeKind::Exposure => params.exposure.unwrap_or(0.0) != 0.0,
@@ -3158,6 +3159,12 @@ impl GraphExecutor {
                 gpu.apply_matte_chain(in_is_a, width, height, params.mix.unwrap_or(1.0));
                 return Some(1);
             }
+            NodeKind::SceneToDisplay => {
+                let step = params.scene_to_display.as_ref()?;
+                let t = step.transfer;
+                gpu.apply_scene_to_display_chain(in_is_a, width, height, t.display_light_kind(), t.scene_scale(), t.display_exposure(), step.peak_nits, step.luma);
+                return Some(1);
+            }
             _ => {}
         }
         if gpu.is_device_lost() {
@@ -3702,6 +3709,17 @@ impl GraphExecutor {
                     }),
                     None => effect,
                 }
+            }
+
+            // A scene-referred clip's display step, as `display_render`
+            // runs it on the legacy route. Made only by the renderer, which
+            // always sets it; without its setting it leaves the picture be.
+            NodeKind::SceneToDisplay => {
+                let mut out = primary_input.to_vec();
+                if let Some(step) = &params.scene_to_display {
+                    step.apply(&mut out);
+                }
+                out
             }
 
             // The node records which log format the media is — the media

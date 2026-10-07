@@ -791,6 +791,18 @@ impl NodeGraph {
         self.edges.push(Edge { from_node: prev, from_port: 0, to_node: out, to_port: 0 });
     }
 
+    /// Splice one node in before the output, between it and what fed it
+    /// (port 0 in and out): how the renderer adds a run's own step, such
+    /// as a scene-referred clip's display step (step 11c).
+    pub fn splice_before_output(&mut self, node: Node) {
+        let out = self.output_node_id;
+        let Some(prev) = self.input_of(out, 0) else { return };
+        self.edges.retain(|e| !(e.to_node == out && e.to_port == 0));
+        self.edges.push(Edge { from_node: prev, from_port: 0, to_node: node.id, to_port: 0 });
+        self.edges.push(Edge { from_node: node.id, from_port: 0, to_node: out, to_port: 0 });
+        self.nodes.push(node);
+    }
+
     /// Find the node feeding into the given node's port. Edges win; if
     /// no edge lands on the port, the node's own wireless-receiver slot
     /// for that port is resolved against every other node's

@@ -409,6 +409,33 @@ pub fn apply_hdr_display_light(rgba: &mut [f32], transfer: HdrTransfer, luma: [f
     });
 }
 
+/// A scene-referred clip's last step of its own: its graded scene-linear
+/// picture to the display, by [`apply_hdr_display_tonemap`] for an SDR
+/// picture or [`apply_hdr_display_light`] for an HDR delivery or monitor.
+/// One value names the step, so the renderer's CPU route and the plan
+/// node that runs it on the GPU (phase 2b M2, step 11c) read the same
+/// settings.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneToDisplay {
+    /// The source's transfer.
+    pub transfer: HdrTransfer,
+    /// The delivery's or monitor's peak, cd/m², for display light; `None`
+    /// tone-maps to an SDR picture.
+    pub peak_nits: Option<f32>,
+    /// The working space's [`crate::primaries::luminance_weights`].
+    pub luma: [f32; 3],
+}
+
+impl SceneToDisplay {
+    /// Apply the step to an RGBA frame, in place. Alpha is untouched.
+    pub fn apply(&self, rgba: &mut [f32]) {
+        match self.peak_nits {
+            Some(peak) => apply_hdr_display_light(rgba, self.transfer, self.luma, peak),
+            None => apply_hdr_display_tonemap(rgba, self.transfer),
+        }
+    }
+}
+
 /// BT.2020 display light (1.0 = 203 cd/m²) → absolute cd/m², clamped to
 /// `[0, peak_nits]`. Over the peak the pixel is scaled down as a whole, so
 /// a highlight too bright for the master keeps its hue instead of turning
