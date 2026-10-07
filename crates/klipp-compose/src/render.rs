@@ -443,6 +443,10 @@ pub struct Renderer {
     /// The grade with `run_effects` spliced in, kept so each frame reuses
     /// its allocations.
     spliced: klipp_nodes::NodeGraph,
+    /// Whether the last `grade` ran its graph to the end. A run that
+    /// failed returns the input with nothing applied, its effects
+    /// included, so a spliced run that failed is never taken as done.
+    grade_ran: bool,
     ofx: klipp_plugin::OfxHost,
     titles: klipp_title::TitleRenderer,
     /// The warm-up thread's ends: titles to render ahead go out, their
@@ -550,6 +554,7 @@ impl Renderer {
             legacy_effects: std::env::var_os("KLIPP_LEGACY_EFFECTS").is_some_and(|v| v == "1"),
             run_effects: Vec::new(),
             spliced: klipp_nodes::NodeGraph::default(),
+            grade_ran: false,
             ofx,
             titles,
             warm_tx: None,
@@ -2106,13 +2111,13 @@ impl Renderer {
         let mut pixels = self.grade(clip, input, clip_time, fps, width, height);
         if on_gpu {
             self.run_effects.clear();
-            if self.executor.last_run_effects_complete() {
+            if self.grade_ran && self.executor.last_run_effects_complete() {
                 self.found.stats.effects_followed_grade += 1;
                 return Some((pixels, opacity));
             }
-            // An effect could not be applied (a lost device): the frame is
-            // graded again and takes the legacy route, never shown without
-            // the effect.
+            // An effect could not be applied (a lost device), or the run
+            // failed before its effects: the frame is graded again and
+            // takes the legacy route, never shown without the effect.
             pixels = self.grade(clip, retry.expect("kept when on_gpu"), clip_time, fps, width, height);
         }
         if let Some(t) = hdr {
@@ -2494,6 +2499,7 @@ impl Renderer {
     /// Pixels still on the GPU seed the grade there; read back only when
     /// there is no grade to run, or a node needs them on the CPU.
     fn grade(&mut self, clip: &Clip, input: GradeInput, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
+        self.grade_ran = false;
         let inspecting = self.inspect.clip == Some(clip.id);
         let matte_view = if inspecting { self.inspect.matte_view } else { None };
         if clip.grade_is_identity() && matte_view.is_none() {
@@ -2550,7 +2556,10 @@ impl Renderer {
         };
         self.found.stats.grade_ms += ms_since(t);
         match out {
-            Ok(out) => out,
+            Ok(out) => {
+                self.grade_ran = true;
+                out
+            }
             Err(e) => {
                 tracing::error!("node graph failed for clip {:?}: {e:?}", clip.id);
                 unshare(input.pixels())

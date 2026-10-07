@@ -179,3 +179,30 @@ fn an_effect_that_could_not_be_recorded_sends_the_frame_the_legacy_way() {
     let (all, _) = render(&seq, true);
     assert!(new.iter().zip(&all).all(|(a, b)| (a - b).abs() < 1e-4), "with every effect in it");
 }
+
+#[test]
+fn a_grade_run_that_fails_never_drops_the_effects() {
+    // A grade whose run fails (here a cycle, the executor's error) gives
+    // back its input with nothing applied. The spliced effects were in
+    // that run, so the frame takes the legacy route and gets them.
+    let mut seq = graded(colour_family());
+    let clip = &mut seq.tracks[0].clips[0];
+    // Two exposures feeding each other, the output reading one of them.
+    let mut g = clip.grade().clone();
+    let exposure = g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Exposure).unwrap().clone();
+    let other = Node { id: NodeId::new_v4(), ..exposure.clone() };
+    g.edges.retain(|e| e.to_node != exposure.id);
+    g.edges.push(Edge { from_node: other.id, from_port: 0, to_node: exposure.id, to_port: 0 });
+    g.edges.push(Edge { from_node: exposure.id, from_port: 0, to_node: other.id, to_port: 0 });
+    g.nodes.push(other);
+    assert!(g.topo_sort().is_err(), "the case is a cycle");
+    clip.set_grade(g);
+    let (new, followed) = render(&seq, false);
+    let (legacy, _) = render(&seq, true);
+    assert_eq!(followed, 0, "the failed run is not taken as done");
+    assert!(new.iter().map(|v| v.to_bits()).eq(legacy.iter().map(|v| v.to_bits())), "the legacy route's picture, effects in it");
+    let mut no_fx = seq.clone();
+    no_fx.tracks[0].clips[0].set_effect_list(vec![], vec![]);
+    let (bare, _) = render(&no_fx, true);
+    assert!(new != bare, "the effects are in the picture");
+}
