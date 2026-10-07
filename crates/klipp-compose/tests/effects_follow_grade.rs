@@ -702,3 +702,33 @@ fn a_moving_clip_under_an_open_shutter_runs_its_effects_as_plans() {
     assert_eq!(shut_followed, 1, "with the shutter shut the effects follow the grade as before");
     assert!(shut != new, "the shutter smears the moving clip");
 }
+
+/// A stabilised, rolling-shutter-corrected or deflickered clip with a
+/// plug-in: its effects run as a plan after the plug-in (11c-2) with the
+/// frame's analysis (step 12), and draw what the legacy route draws, the
+/// correction showing.
+#[test]
+fn analysis_driven_effects_after_a_plugin_keep_their_correction() {
+    let _turn = PLUGIN.lock().unwrap_or_else(|e| e.into_inner());
+    for (name, seq, bare) in analysed() {
+        let (seq, bare) = (with_invert(seq), with_invert(bare));
+        let run = |legacy: bool, seq: &Sequence, src: &mut dyn FrameSource| {
+            let mut r = renderer_with_invert(legacy);
+            let (out, found) = r.render_inspected(seq, tc(1.0), W, H, src, RenderOptions::default(), Inspect::default());
+            assert_eq!(found.stats.effects_fallback_lists, 0, "every plan list came from the picture");
+            (out, found.stats.effects_after_plugins)
+        };
+        let (new, after) = run(false, &seq, &mut Moving);
+        let (legacy, legacy_after) = run(true, &seq, &mut Moving);
+        assert_eq!(legacy_after, 0, "{name}: the legacy route runs no plan after the plug-in");
+        if after == 0 {
+            assert!(!required(), "{name}: required, but the effects after the plug-in did not run as a plan");
+            eprintln!("UNVERIFIED: no GPU route");
+            return;
+        }
+        assert_eq!(after, 1, "{name}");
+        assert_eq!(bits(&new), bits(&legacy), "{name}: the plan after the plug-in draws the legacy frame");
+        let (uncorrected, _) = if name == "rolling shutter" { run(false, &bare, &mut Chart) } else { run(false, &bare, &mut Moving) };
+        assert_ne!(bits(&new), bits(&uncorrected), "{name}: the analysis moves the picture");
+    }
+}
