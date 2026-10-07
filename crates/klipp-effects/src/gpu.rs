@@ -5396,6 +5396,14 @@ impl GpuEffectsPipeline {
         true
     }
 
+    /// Layer `i`'s buffer, for a chain to seed from: a layer whose effects
+    /// run as a plan of its own after it was placed (a title's sprite, a
+    /// generator; phase 2b M2 step 11d), its result copied back with
+    /// [`Self::stack_layer_from_chain`].
+    pub fn stack_layer_buffer(&self, i: usize) -> Option<std::sync::Arc<wgpu::Buffer>> {
+        self.stack_layers.get(i).cloned()
+    }
+
     /// Layer `i` takes the chain's output slot (a grade's result, or a
     /// seeded frame), as an on-GPU copy.
     pub fn stack_layer_from_chain(&mut self, i: usize, slot_a: bool) -> bool {

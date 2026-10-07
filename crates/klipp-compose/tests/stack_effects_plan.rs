@@ -168,3 +168,41 @@ fn a_failed_grade_on_the_stack_never_drops_the_layers_effects() {
         Some((_, followed)) => assert_eq!(followed, 0, "a failed run is never taken as done"),
     }
 }
+
+/// Step 11d: a title on the stack is placed in its slot on the GPU, and
+/// its effects run as a plan of their own over the slot (not the legacy
+/// pass, which is gone): the stack draws it, counts it, and draws what
+/// the renderer's own path draws for the same frame, within a level. The
+/// golden corpus holds the same kind of layer ("rule/title over
+/// footage") to frames recorded before M2.
+#[test]
+fn a_titles_effects_run_as_a_plan_over_its_slot_on_the_stack() {
+    let mut src = Pictures::default();
+    let base = media(&mut src, 0.3, false);
+    let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Stack".into(), font_size: 48.0, ..Default::default() });
+    let mut title = Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(4.0)) };
+    let fx = vec![E::GaussianBlur { radius: 1.5 }, E::DropShadow { offset_x: 0.02, offset_y: 0.03, blur: 0.01, color: [0, 0, 0], opacity: 0.8 }, E::Gamma { gamma: 1.2 }];
+    let n = fx.len();
+    title.set_effect_list(fx, vec![true; n]);
+    let mut text = Track::new("T1", TrackKind::Text);
+    text.clips = vec![title];
+    let mut v1 = Track::new("V1", TrackKind::Video);
+    v1.clips = vec![base];
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    seq.tracks = vec![text, v1];
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(true);
+    let Some((stack, stats)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
+        assert!(!required(), "required, but the GPU stack declined the title");
+        eprintln!("UNVERIFIED: no GPU stack");
+        return;
+    };
+    assert_eq!(stats.effects_on_layers, 1, "the title's effects ran as a plan over its slot");
+    let mut cpu = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    cpu.set_gpu_enabled(false);
+    let want = klipp_effects::linear_f32_rgba_to_srgb_u8(&cpu.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+    let worst = stack.iter().zip(&want).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
+    eprintln!("title on the stack vs the CPU path: worst {worst} levels");
+    assert!(worst <= 2, "the stack's title differs from the CPU path by {worst} levels");
+}
