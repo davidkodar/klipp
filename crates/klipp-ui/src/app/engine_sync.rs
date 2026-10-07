@@ -248,6 +248,7 @@ impl KlippApp {
                 if self.handle_edit_helper_commands(&cmd) { break 'dispatch; }
                 if self.handle_timeline_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
                 if self.handle_effects_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
+                if self.handle_graph_ops_commands(&cmd) { break 'dispatch; }
                 if self.handle_color_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
                 if self.handle_title_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
                 if self.handle_project_commands(&cmd, &mut needs_refresh) { break 'dispatch; }

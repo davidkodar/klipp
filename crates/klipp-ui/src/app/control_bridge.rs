@@ -62,6 +62,28 @@ impl KlippApp {
                     refused = Some(format!("clip {} is inside a compound, not on this sequence's own tracks: open its sequence to grade it", clip.0));
                 }
             }
+            // Graph ops are applied here rather than queued, so a refusal
+            // (the op and why) and a document that moved since the batch
+            // was checked reach the reply.
+            let (graph_ops, mut commands): (Vec<AppCommand>, Vec<AppCommand>) = env.commands.into_iter().partition(|c| matches!(c, AppCommand::GraphOps { .. }));
+            for cmd in graph_ops {
+                let AppCommand::GraphOps { ops, label } = cmd else { continue };
+                if refused.is_some() {
+                    break;
+                }
+                let now = self.state.control_shared.revision();
+                if let Some(r) = env.expected_revision.filter(|r| *r != now) {
+                    refused = Some(format!("the document is at revision {now}, the ops were checked at {r}; check them again"));
+                    break;
+                }
+                if let Err((at, why)) = self.apply_graph_ops(&ops, &label) {
+                    refused = Some(format!("op {at}: {why}"));
+                }
+            }
+            if refused.is_some() {
+                commands.clear();
+            }
+            let env = klipp_document::control::ControlEnvelope { commands, ..env };
             let mut sought = None;
             if refused.is_none() && !env.commands.is_empty() {
                 sought = last_seek(&env.commands);

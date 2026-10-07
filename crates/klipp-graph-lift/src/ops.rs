@@ -76,6 +76,14 @@ pub struct GraphEdit {
     pub after: Value,
 }
 
+impl GraphOp {
+    /// The node the op names: the one it edits, or the one an added node
+    /// goes after. Its root is the picture the op edits.
+    pub fn path(&self) -> &NodePath {
+        path_of(self)
+    }
+}
+
 fn path_of(op: &GraphOp) -> &NodePath {
     match op {
         GraphOp::AddNode { after, .. } => after,
