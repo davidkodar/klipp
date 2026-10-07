@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 half = { workspace = true }
+klipp-graph-lift = { workspace = true }
 klipp-effects = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

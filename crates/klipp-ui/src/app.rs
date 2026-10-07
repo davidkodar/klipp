@@ -60,6 +60,7 @@ mod surfaces;
 mod colour;
 mod audio;
 mod keyframes;
+mod graph_ops;
 mod titles;
 mod poster_frames;
 mod links;

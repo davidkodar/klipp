@@ -22,6 +22,30 @@ impl KlippApp {
         let envelopes: Vec<klipp_document::control::ControlEnvelope> = inbox.try_iter().collect();
         for env in envelopes {
             let mut refused = None;
+            let mut refused_op = None;
+            // A graph-ops batch travels alone (node-graph M2 step 15d): one
+            // batch and nothing else, so nothing of the envelope lands
+            // before the batch is refused. It is checked against the
+            // project and the revision it was checked against, as a
+            // resolved plan is, and applied here rather than queued, so
+            // the reply carries a refusal and the op it stopped at.
+            let mut env = env;
+            match graph_batch(&mut env) {
+                Err(why) => refused = Some(why),
+                Ok(None) => {}
+                Ok(Some((ops, label))) => {
+                    let project_identity = self.state.control_shared.project.lock().ok().map(|p| p.identity);
+                    let now = self.state.control_shared.revision();
+                    if let Some(want) = env.expected_project_identity.filter(|want| project_identity != Some(*want)) {
+                        refused = Some(format!("the project changed since these ops were checked (expected identity {want}); check them again"));
+                    } else if let Some(r) = env.expected_revision.filter(|r| *r != now) {
+                        refused = Some(format!("the document is at revision {now}, the ops were checked at {r}; check them again"));
+                    } else if let Err((at, why)) = self.apply_graph_ops(&ops, &label) {
+                        refused = Some(format!("op {at}: {why}"));
+                        refused_op = Some(at);
+                    }
+                }
+            }
             // Whether the project was already unsaved: the reply names
             // "edits" as the cause only when this envelope made it so. A
             // play or a seek over a project unsaved for another reason
@@ -97,7 +121,7 @@ impl KlippApp {
                 // the position from before it and put the playhead back
                 // there. What this envelope sought is where the user is.
                 self.publish_transport(sought);
-                let _ = ack.send(klipp_document::control::ControlAck { revision: self.state.control_shared.revision(), refused });
+                let _ = ack.send(klipp_document::control::ControlAck { revision: self.state.control_shared.revision(), refused, refused_op });
             }
         }
     }
@@ -513,5 +537,61 @@ mod screen_text_digest_tests {
         let st = ScreenText { spans: vec![span("SETTINGS", 0.0), span("General", 0.0), span("settings", 8.0), span("  General ", 12.0), span("x", 12.0)], ..Default::default() };
         assert_eq!(screen_text_digest(&st), "SETTINGS · General");
         assert_eq!(screen_text_digest(&ScreenText::default()), "");
+    }
+}
+
+/// An envelope's graph-ops batch, taken out of it: `None` when it holds
+/// none. A batch travels alone, one batch with no other edits or commands
+/// beside it, so nothing of the envelope lands before the batch could be
+/// refused; otherwise the whole envelope is refused, and nothing is left
+/// in it to send.
+fn graph_batch(env: &mut klipp_document::control::ControlEnvelope) -> Result<Option<(Vec<klipp_graph_lift::ops::GraphOp>, String)>, String> {
+    let batches = env.commands.iter().filter(|c| matches!(c, AppCommand::GraphOps { .. })).count();
+    if batches == 0 {
+        return Ok(None);
+    }
+    let commands = std::mem::take(&mut env.commands);
+    if batches > 1 || commands.len() > 1 || !env.edits.is_empty() {
+        env.edits.clear();
+        return Err("a graph-ops batch travels alone: one batch, with no other edits or commands in its envelope".into());
+    }
+    match commands.into_iter().next() {
+        Some(AppCommand::GraphOps { ops, label }) => Ok(Some((ops, label))),
+        _ => unreachable!("the one command is the batch"),
+    }
+}
+
+#[cfg(test)]
+mod graph_batch_tests {
+    use super::*;
+    use klipp_document::control::ControlEnvelope;
+
+    fn envelope(commands: Vec<AppCommand>, edits: Vec<EditCommand>) -> ControlEnvelope {
+        ControlEnvelope { commands, edits, batch: false, expected_revision: None, expected_project_identity: None, label: None, ack: None }
+    }
+
+    fn batch() -> AppCommand {
+        AppCommand::GraphOps { ops: Vec::new(), label: "Graph".into() }
+    }
+
+    /// One batch alone is taken out; beside anything else, the whole
+    /// envelope is refused and nothing is left in it to apply.
+    #[test]
+    fn a_graph_batch_travels_alone() {
+        let mut alone = envelope(vec![batch()], Vec::new());
+        assert!(matches!(graph_batch(&mut alone), Ok(Some(_))));
+        assert!(alone.commands.is_empty());
+        for mut mixed in [
+            envelope(vec![batch(), batch()], Vec::new()),
+            envelope(vec![batch(), AppCommand::Pause], Vec::new()),
+            envelope(vec![AppCommand::Pause, batch()], Vec::new()),
+            envelope(vec![batch()], vec![EditCommand::Batch(Vec::new())]),
+        ] {
+            assert!(graph_batch(&mut mixed).unwrap_err().contains("travels alone"));
+            assert!(mixed.commands.is_empty() && mixed.edits.is_empty(), "nothing left to apply");
+        }
+        let mut none = envelope(vec![AppCommand::Pause], Vec::new());
+        assert!(matches!(graph_batch(&mut none), Ok(None)));
+        assert_eq!(none.commands.len(), 1, "an envelope without a batch is left as it was");
     }
 }
