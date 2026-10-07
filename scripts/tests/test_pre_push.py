@@ -772,6 +772,7 @@ class TestScopeTests(RealGitGate):
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertIn("KLIPP_GATE_DOC_JOBS must be a positive integer", result.stderr)
                 self.assertEqual(self.logged("docs"), [])
+                self.assertEqual(self.logged("debuginfo"), [], "no cargo command before validation")
 
     def test_everything_the_gate_builds_has_line_tables_only(self):
         self.full_mark.write_text(str(int(time.time())))

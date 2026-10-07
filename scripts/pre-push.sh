@@ -127,6 +127,18 @@ if ! command -v cargo >/dev/null 2>&1; then
     exit 1
 fi
 
+# rustdoc can use far more memory per crate than rustc/link jobs. Keep
+# its concurrency separate from the build's CARGO_BUILD_JOBS (#1240).
+_doc_jobs=${KLIPP_GATE_DOC_JOBS:-1}
+# Reject non-digits before the numeric comparison.
+case $_doc_jobs in
+    *[!0-9]*) _doc_jobs=0 ;;
+esac
+if ! [ "$_doc_jobs" -gt 0 ] 2>/dev/null; then
+    printf '\n  pre-push: KLIPP_GATE_DOC_JOBS must be a positive integer.\n' >&2
+    exit 1
+fi
+
 # Cargo defaults to one job per core, which on a many-core machine is
 # enough concurrent rustc and LLVM to exhaust memory when several large
 # crates link at once. The OOM killer then takes rustc mid-write and
@@ -888,16 +900,6 @@ _step=docs
 _t=$(date +%s)
 _doc_args=$_scope_args
 [ "$_scope" = none ] && _doc_args=--workspace
-# rustdoc can use far more memory per crate than rustc/link jobs. Keep
-# its concurrency separate from the build's CARGO_BUILD_JOBS (#1240).
-_doc_jobs=${KLIPP_GATE_DOC_JOBS:-1}
-case $_doc_jobs in
-    *[!0-9]*) _doc_jobs=0 ;;
-esac
-if ! [ "$_doc_jobs" -gt 0 ] 2>/dev/null; then
-    printf '\n  pre-push: KLIPP_GATE_DOC_JOBS must be a positive integer.\n' >&2
-    exit 1
-fi
 printf '  pre-push: documenting with %s job(s).\n' "$_doc_jobs"
 # shellcheck disable=SC2086 # the crates, one -p each
 if ! _logged env RUSTDOCFLAGS="-D warnings" cargo doc -j "$_doc_jobs" $_doc_args --no-deps 9>&-; then
