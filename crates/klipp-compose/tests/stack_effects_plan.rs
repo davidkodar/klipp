@@ -98,6 +98,7 @@ fn render(seq: &Sequence, src: &mut Pictures, legacy: bool) -> Option<(Vec<u8>, 
     r.set_gpu_enabled(true);
     r.set_legacy_effects(legacy);
     let (bytes, stats) = r.render_display_u8_on_gpu(seq, tc(1.0), W, H, src, RenderOptions::default())?;
+    assert_eq!(stats.effects_fallback_lists, 0, "every plan list came from the picture");
     Some((bytes, stats.effects_followed_grade))
 }
 
