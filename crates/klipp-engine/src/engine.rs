@@ -7883,7 +7883,9 @@ impl PlaybackEngine {
         // The project-wide colour pipeline (global LUT) runs after the
         // graph on every graded-path frame, identity or not. Neither fast
         // path applies it, so either would show the picture without it.
-        if self.color_pipeline.enabled {
+        // Switched on with no LUT loaded it applies nothing, and blocks
+        // nothing (#1278).
+        if self.color_pipeline.applies() {
             blockers.push("global colour pipeline active");
         }
         // Decoded bytes are sRGB; a BT.1886 viewer re-encodes them, which
@@ -12926,6 +12928,42 @@ mod audio_edited_tests {
 
         // A seek back to the first clips is not an edit either.
         assert!(!engine.audio_edited_at(tc(0.2)));
+    }
+}
+
+#[cfg(test)]
+mod colour_pipeline_gate_tests {
+    use super::*;
+    use klipp_timeline::Sequence;
+    use std::sync::Mutex;
+
+    /// #1278: the colour pipeline switched on with no LUT loaded changes no
+    /// pixel, so it keeps no frame off the fast paths. With a LUT loaded it
+    /// does, as the renderer then applies it.
+    #[test]
+    fn the_colour_pipeline_blocks_the_fast_paths_only_with_a_lut() {
+        let sequence = Arc::new(klipp_timeline::SharedSequence::new(Sequence::new_default()));
+        let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+        let mut engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, fb(), fb(),
+            sequence, Arc::new(RwLock::new(klipp_media::MediaPool::new())), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        // A paused present: no "not playing" ahead of the display gates.
+        let blocked = |e: &PlaybackEngine| e.display_path_blockers(FastPath::PausedPresent).contains(&"global colour pipeline active");
+        assert!(!blocked(&engine), "off");
+        engine.color_pipeline.enabled = true;
+        assert!(!blocked(&engine), "on, with no LUT loaded");
+        let path = std::env::temp_dir().join(format!("klipp_gate_lut_{}.cube", std::process::id()));
+        klipp_color::lut::write_cube(&path, &[[0.0; 3]; 8], 2, "gate-test").unwrap();
+        let loaded = engine.color_pipeline.load_global_lut(&path);
+        let _ = std::fs::remove_file(&path);
+        loaded.unwrap();
+        assert!(blocked(&engine), "on, with a LUT");
+        engine.color_pipeline.enabled = false;
+        assert!(!blocked(&engine), "a LUT loaded but switched off");
     }
 }
 
