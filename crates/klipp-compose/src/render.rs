@@ -275,6 +275,10 @@ pub struct RenderStats {
     /// Clips whose effects ran as nodes of the grade's plan, on the GPU
     /// with the grade (#1089, M2 step 10).
     pub effects_followed_grade: u32,
+    /// Clips with plug-ins whose effects ran as a plan of their own after
+    /// the plug-ins, which run on the CPU between the grade and the
+    /// effects (M2 step 11c-2).
+    pub effects_after_plugins: u32,
     /// Clips on the plan route whose lifted picture could not give their
     /// effects, so `clip_effects`' list stood in (M2 step 10c). Zero
     /// unless a lift is broken.
@@ -2146,32 +2150,48 @@ impl Renderer {
         // download and upload between them, when nothing in between needs
         // the picture on the CPU (#1089, M2 step 10).
         let on_gpu = self.effects_follow_grade_on_gpu(clip, &fx);
+        // A plug-in sits between the grade and the effects and runs on the
+        // CPU, so a clip with one runs two plans: the grade, then its
+        // effects after the plug-ins (step 11c-2).
+        let plugins = clip.has_enabled_plugins();
         // Kept for a second grade if the effects can't finish in the plan.
-        let retry = on_gpu.then(|| input.clone());
+        let retry = (on_gpu && !plugins).then(|| input.clone());
+        let mut after_plugins = None;
         if on_gpu {
             let mut stats = std::mem::take(&mut self.found.stats);
-            self.run_effects = self.plan_effects(clip, time, fps, transforms, &fx, &mut stats);
+            let planned = self.plan_effects(clip, time, fps, transforms, &fx, &mut stats);
             self.found.stats = stats;
+            if plugins {
+                after_plugins = Some(planned);
+            } else {
+                self.run_effects = planned;
+            }
             // A scene-referred source's display step runs in the plan too,
-            // between the grade and the effects, where `display_render`
-            // runs it below on the legacy route (step 11c).
+            // after the grade, where `display_render` runs it below on the
+            // legacy route (step 11c).
             self.run_display = hdr.map(|t| self.scene_to_display(t));
         }
         let mut pixels = self.grade(clip, input, clip_time, fps, width, height);
+        // Whether the grade's run took the display step, so it isn't run
+        // twice: not when the run failed and gave back its input.
+        let mut displayed = false;
         if on_gpu {
             self.run_effects.clear();
-            self.run_display = None;
-            if self.grade_ran && self.executor.last_run_effects_complete() {
-                self.found.stats.effects_followed_grade += 1;
-                PLAN_EFFECT_CLIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                return Some((pixels, opacity));
+            displayed = self.run_display.take().is_some() && self.grade_ran;
+            if !plugins {
+                if self.grade_ran && self.executor.last_run_effects_complete() {
+                    self.found.stats.effects_followed_grade += 1;
+                    PLAN_EFFECT_CLIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return Some((pixels, opacity));
+                }
+                // An effect could not be applied (a lost device), or the run
+                // failed before its effects: the frame is graded again and
+                // takes the legacy route, never shown without the effect.
+                pixels = self.grade(clip, retry.expect("kept when on_gpu"), clip_time, fps, width, height);
+                displayed = false;
             }
-            // An effect could not be applied (a lost device), or the run
-            // failed before its effects: the frame is graded again and
-            // takes the legacy route, never shown without the effect.
-            pixels = self.grade(clip, retry.expect("kept when on_gpu"), clip_time, fps, width, height);
         }
-        if let Some(t) = hdr {
+        if let Some(t) = hdr.filter(|_| !displayed) {
             self.display_render(&mut pixels, t);
         }
         let provider = if clip.has_enabled_plugin_matching(is_temporal_plugin) {
@@ -2179,7 +2199,19 @@ impl Renderer {
         } else {
             None
         };
-        let pixels = self.ofx(clip, pixels, clip_time, width, height, provider);
+        let mut pixels = self.ofx(clip, pixels, clip_time, width, height, provider);
+        if let Some(planned) = after_plugins {
+            match self.run_effects_plan(clip, &planned, pixels, clip_time, fps, width, height) {
+                Ok(out) => {
+                    self.found.stats.effects_after_plugins += 1;
+                    PLAN_EFFECT_CLIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return Some((out, opacity));
+                }
+                // An effect could not be applied: the legacy route below
+                // takes the plug-ins' picture, never shown without it.
+                Err(back) => pixels = back,
+            }
+        }
         // A title whose own drawing moves is drawn again at every shutter
         // sample, by `title_pixels_at`, which carries a sample through
         // what the frame above was just carried through.
@@ -2196,6 +2228,37 @@ impl Renderer {
             (None, None) => self.effects(&fx, pixels, clip_time, width, height),
         };
         Some((pixels, opacity))
+    }
+
+    /// Run `fx` on `pixels` as a plan of their own (step 11c): the effect
+    /// nodes between a source and an output, for effects that follow
+    /// something the GPU can't run (a plug-in). The picture back, or, when
+    /// an effect could not be applied or the run failed, `pixels`
+    /// untouched for the legacy route.
+    #[allow(clippy::too_many_arguments)]
+    fn run_effects_plan(&mut self, clip: &Clip, fx: &[BuiltinEffect], pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Result<Vec<f32>, Vec<f32>> {
+        if fx.is_empty() {
+            return Ok(pixels);
+        }
+        self.executor.set_working_colorspace(self.working);
+        self.executor.set_render_scale(self.px_scale);
+        self.spliced.clone_from(&self.passthrough);
+        let groups = effect_groups(fx);
+        // Ids of their own, apart from the grade run's effect nodes, so
+        // each run keeps its cached plan.
+        let base = clip.id.0.as_u128() ^ (0x00ef_fec8_u128 << 64);
+        self.spliced.splice_effects_before_output(&groups, |i| klipp_nodes::NodeId::from_u128(base ^ i as u128));
+        let t = Instant::now();
+        let run = self.executor.execute_linear(&pixels, &self.spliced, width, height, clip_time, grade_frame(clip_time, fps), None, None);
+        self.found.stats.effects_ms += ms_since(t);
+        match run {
+            Ok((out, _)) if self.executor.last_run_effects_complete() && out.len() == pixels.len() => Ok(out),
+            Ok(_) => Err(pixels),
+            Err(e) => {
+                tracing::warn!("clip {}: its effects after the plug-ins: {e:?}; the legacy route takes them", clip.id.0);
+                Err(pixels)
+            }
+        }
     }
 
     /// Splice `fx` into `clip`'s next grade run as plan nodes (step 10b)
@@ -2243,9 +2306,11 @@ impl Renderer {
     /// Whether `clip`'s effects can take the grade's result where it sits
     /// on the GPU: the grade runs (no shortcut, nothing inspected), and
     /// nothing between the grade and the effects needs the picture on the
-    /// CPU (a plug-in, a shutter or a title's own motion blur), and every
-    /// effect runs on the GPU. An HDR source's display step runs in the
-    /// plan between them (step 11c). The
+    /// CPU (a shutter or a title's own motion blur), and every effect runs
+    /// on the GPU. An HDR source's display step runs in the plan between
+    /// them (step 11c-1); a plug-in's clip runs its effects as a plan of
+    /// their own after the plug-ins (11c-2), and the GPU stack, which
+    /// has no plug-in pass, declines it. The
     /// legacy route, a download and an upload between them, stays
     /// selectable ([`Self::set_legacy_effects`], or `KLIPP_LEGACY_EFFECTS=1`)
     /// until M2's effect families are native.
@@ -2262,7 +2327,6 @@ impl Renderer {
             && has_active_effects(fx)
             && klipp_effects::chain_supports_gpu(fx)
             && self.inspect.clip != Some(clip.id)
-            && !clip.has_enabled_plugins()
             && title_motion_blur(clip).is_none()
             && !self.shutter.contains_key(&clip.id)
             && !self.title_shutter.contains_key(&clip.id)
