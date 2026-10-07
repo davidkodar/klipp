@@ -691,6 +691,16 @@ pub fn poll_until_mapped(
     }
 }
 
+
+/// Where a mixed effect's matte comes from (#1242): pixels made on the
+/// CPU, uploaded into its pool slot; or a window's shapes, drawn into the
+/// slot on the GPU, in the chain's encoder, with nothing made on the CPU.
+#[derive(Clone, Copy)]
+pub enum EffectMatte<'a> {
+    Pixels(&'a [f32]),
+    Shapes(&'a [GpuMaskDef]),
+}
+
 impl GpuEffectsPipeline {
     /// Create a new GPU effects pipeline, sharing the process-wide
     /// `GpuContext` with the NV12/P010 converters. Returns `None` if
@@ -6266,6 +6276,47 @@ impl GpuEffectsPipeline {
     /// Slots the pool may hold at once, of all sizes (9b-1's budget).
     pub const MAX_SLOTS: usize = 8;
 
+    /// Draw a window's shapes into the pool slot `id` on the GPU, recorded
+    /// in the chain's encoder (#1242). Each call gets its own shape and
+    /// parameter buffers: several masked effects in one encoder would
+    /// otherwise share one upload, and the queue writes all land before
+    /// the encoder runs.
+    fn record_window_into_slot(&mut self, id: slots::SlotId, width: u32, height: u32, masks: &[GpuMaskDef]) {
+        let (records, points) = Self::build_mask_storage(masks);
+        let records: &[u8] = if records.is_empty() {
+            &[0u8; std::mem::size_of::<MaskRecord>()]
+        } else {
+            bytemuck::cast_slice(&records)
+        };
+        let points: &[u8] = if points.is_empty() { &[0u8; 8] } else { bytemuck::cast_slice(&points) };
+        let params = GpuMaskParams { width, height, mask_count: masks.len() as u32, _pad: 0 };
+        let make = |label: &str, bytes: &[u8], usage: wgpu::BufferUsages| {
+            let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: bytes.len() as u64,
+                usage: usage | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.queue.write_buffer(&buf, 0, bytes);
+            buf
+        };
+        let records = make("window_records", records, wgpu::BufferUsages::STORAGE);
+        let points = make("window_points", points, wgpu::BufferUsages::STORAGE);
+        let params = make("window_params", bytemuck::bytes_of(&params), wgpu::BufferUsages::UNIFORM);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("window_into_slot"),
+            layout: &self.mask_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.slot_pool.buffer(id).as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: params.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: records.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: points.as_entire_binding() },
+            ],
+        });
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.mask_pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
+    }
+
     /// [`Self::chain_run_effects`], mixed back over the picture it started
     /// from (phase 2b M2, step 9c): by `mix`, and by the coverage `mask`
     /// gives (straight RGBA of the frame's size, written to a pool slot;
@@ -6281,7 +6332,7 @@ impl GpuEffectsPipeline {
         width: u32,
         height: u32,
         mix: crate::mask_mix::MaskMix,
-        mask: Option<&[f32]>,
+        mask: Option<EffectMatte<'_>>,
     ) -> Option<ChainEffects> {
         if self.is_device_lost() || self.chain_encoder.is_none() {
             return None;
@@ -6299,12 +6350,19 @@ impl GpuEffectsPipeline {
         let device = &self.device;
         let kept = self.slot_pool.lease(image, |k| make(device, k)).ok()?;
         let matte = match mask {
-            Some(data) => {
+            Some(source) => {
                 let device = &self.device;
                 match self.slot_pool.lease(SlotKey { usage: SlotUsage::Matte, ..image }, |k| make(device, k)) {
                     Ok(id) => {
-                        self.queue.write_buffer(self.slot_pool.buffer(id), 0, bytemuck::cast_slice(data));
-                        self.slot_pool.mark_cpu_written(id);
+                        match source {
+                            EffectMatte::Pixels(data) => {
+                                self.queue.write_buffer(self.slot_pool.buffer(id), 0, bytemuck::cast_slice(data));
+                                self.slot_pool.mark_cpu_written(id);
+                            }
+                            // Drawn by the GPU in the chain's encoder, ahead
+                            // of the mix that reads it.
+                            EffectMatte::Shapes(masks) => self.record_window_into_slot(id, width, height, masks),
+                        }
                         Some(id)
                     }
                     Err(_) => {
