@@ -455,6 +455,10 @@ pub struct Renderer {
     /// The grade with `run_effects` spliced in, kept so each frame reuses
     /// its allocations.
     spliced: klipp_nodes::NodeGraph,
+    /// The source straight to the output: the base an identity grade's
+    /// effects are spliced into (step 11b). Its ids are fixed, so the
+    /// executor's plan cache keys it by its effects alone.
+    passthrough: klipp_nodes::NodeGraph,
     /// Whether the last `grade` ran its graph to the end. A run that
     /// failed returns the input with nothing applied, its effects
     /// included, so a spliced run that failed is never taken as done.
@@ -566,6 +570,7 @@ impl Renderer {
             legacy_effects: std::env::var_os("KLIPP_LEGACY_EFFECTS").is_some_and(|v| v == "1"),
             run_effects: Vec::new(),
             spliced: klipp_nodes::NodeGraph::default(),
+            passthrough: passthrough_graph(),
             grade_ran: false,
             ofx,
             titles,
@@ -2247,7 +2252,6 @@ impl Renderer {
             && has_active_effects(fx)
             && klipp_effects::chain_supports_gpu(fx)
             && !hdr
-            && !clip.grade_is_identity()
             && self.inspect.clip != Some(clip.id)
             && !clip.has_enabled_plugins()
             && title_motion_blur(clip).is_none()
@@ -2588,7 +2592,9 @@ impl Renderer {
         self.grade_ran = false;
         let inspecting = self.inspect.clip == Some(clip.id);
         let matte_view = if inspecting { self.inspect.matte_view } else { None };
-        if clip.grade_is_identity() && matte_view.is_none() {
+        // An identity grade with effects queued still runs: the effects are
+        // the plan's nodes (step 11b).
+        if clip.grade_is_identity() && matte_view.is_none() && self.run_effects.is_empty() {
             // Take the buffer rather than clone the handle: a layer this
             // renderer just made is held once, and moves out for free.
             return match input {
@@ -2674,7 +2680,10 @@ impl Renderer {
             let graph = if self.run_effects.is_empty() {
                 clip.grade()
             } else {
-                self.spliced.clone_from(clip.grade());
+                // An identity grade is the source straight to the output:
+                // the effects alone (step 11b).
+                let base = if clip.grade_is_identity() { &self.passthrough } else { clip.grade() };
+                self.spliced.clone_from(base);
                 let groups = effect_groups(&self.run_effects);
                 let base = clip.id.0.as_u128() ^ (0x00ef_fec7_u128 << 64);
                 self.spliced.splice_effects_before_output(&groups, |i| klipp_nodes::NodeId::from_u128(base ^ i as u128));
@@ -3241,6 +3250,15 @@ fn behind_the_camera(seq: &Sequence, time: Timecode, width: u32, height: u32, tr
             *t = eval::apply_camera(*t, seen, width, height);
         }
     }
+}
+
+/// The source straight to the output, with fixed ids.
+fn passthrough_graph() -> klipp_nodes::NodeGraph {
+    use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams};
+    let node = |id: u128, kind| Node { id: NodeId::from_u128(id), kind, label: String::new(), enabled: true, params: NodeParams::default(), keyframes: Default::default(), output_link: None, input_links: vec![] };
+    let (source, output) = (node(0x0011_b5ce, NodeKind::Source), node(0x0011_b0ce, NodeKind::Output));
+    let edges = vec![Edge { from_node: source.id, from_port: 0, to_node: output.id, to_port: 0 }];
+    NodeGraph { output_node_id: output.id, nodes: vec![source, output], edges, node_positions: Default::default(), working_space_override: None, frames: vec![], sticky_notes: vec![] }
 }
 
 /// A clip's resolved effects as plan nodes (step 10b): one `Effect`

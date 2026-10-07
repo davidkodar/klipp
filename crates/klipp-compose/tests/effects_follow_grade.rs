@@ -115,7 +115,11 @@ fn last() -> (u32, u32, u32) {
 
 /// Both routes, bit for bit; `Some(followed)` when the GPU was there.
 fn both(name: &str, effects: Vec<E>) -> Option<bool> {
-    let seq = graded(effects);
+    both_seq(name, graded(effects))
+}
+
+/// [`both`] on a sequence of its own.
+fn both_seq(name: &str, seq: Sequence) -> Option<bool> {
     let (new, followed) = render(&seq, false);
     let (declines, breaks, submits) = last();
     let (legacy, legacy_followed) = render(&seq, true);
@@ -165,12 +169,16 @@ fn an_effect_not_yet_recorded_still_follows_and_draws_the_same() {
     assert!(gpu || !required());
 }
 
+/// Step 11b: a clip with no grade runs its effects as a plan too (the
+/// source straight to the output, the effects between), and draws the
+/// legacy route's picture.
 #[test]
-fn a_clip_with_no_grade_takes_the_legacy_route_and_says_so() {
+fn a_clip_with_no_grade_runs_its_effects_as_a_plan() {
     let mut seq = graded(colour_family());
     seq.tracks[0].clips[0].set_grade(NodeGraph::default());
-    let (_, followed) = render(&seq, false);
-    assert_eq!(followed, 0, "nothing on the GPU to follow");
+    assert!(seq.tracks[0].clips[0].grade_is_identity());
+    let gpu = both_seq("no grade", seq).unwrap();
+    assert!(gpu || !required(), "required, but the effects did not run as a plan");
 }
 
 #[test]
