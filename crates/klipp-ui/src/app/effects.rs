@@ -56,7 +56,7 @@ impl KlippApp {
     }
 
     /// The clip's picture fields now, for a drag's ends.
-    fn picture_now(&self, clip_id: klipp_core::ClipId) -> Option<klipp_timeline::ClipPictureFields> {
+    pub(super) fn picture_now(&self, clip_id: klipp_core::ClipId) -> Option<klipp_timeline::ClipPictureFields> {
         self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).map(|c| c.picture.clone())
     }
 
@@ -97,33 +97,8 @@ impl KlippApp {
     /// undo entry from its "before" snapshot to the effect as it is
     /// now, or, when the effect has not moved (or the gesture is not
     /// an effect edit), by dropping it, so nothing bogus is pushed.
-    fn close_open_effect_drag(&mut self) {
-        let pending = self.state.active_history().pending_old_entry_ref().map(|e| e.command.clone());
-        if let Some(EditCommand::PictureEdit { clip_id, description, edit }) = &pending {
-            match self.picture_now(*clip_id) {
-                Some(after) => self.state.active_history_mut().end_drag(HistoryEntry {
-                    command: EditCommand::PictureEdit { clip_id: *clip_id, description, edit: Box::new(klipp_timeline::PictureEdit { before: edit.before.clone(), after }) },
-                }),
-                None => self.state.active_history_mut().abandon_pending_drag(),
-            }
-            return;
-        }
-        let Some(EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect, .. }) = pending else {
-            self.state.active_history_mut().abandon_pending_drag();
-            return;
-        };
-        let now = self.state.sequences[self.state.active_sequence_idx]
-            .all_clips()
-            .find(|c| c.id == clip_id)
-            .and_then(|c| c.builtin_effects().get(effect_index).cloned());
-        match now {
-            Some(new_effect) if new_effect != old_effect => {
-                self.state.active_history_mut().end_drag(HistoryEntry {
-                    command: EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect, new_effect },
-                });
-            }
-            _ => self.state.active_history_mut().abandon_pending_drag(),
-        }
+    pub(super) fn close_open_effect_drag(&mut self) {
+        self.state.close_open_drag();
     }
 
     pub(super) fn handle_effects_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
@@ -1035,6 +1010,48 @@ pub(super) fn fold_drag_into_add(
             true
         }
         _ => false,
+    }
+}
+
+/// Drags whose release was never seen, closed on the state alone, so the
+/// app's handlers and the path edits (M3 step 2) share one rule.
+impl crate::state::AppState {
+    /// The clip's picture fields now, on the active sequence.
+    pub(crate) fn picture_of(&self, clip_id: klipp_core::ClipId) -> Option<klipp_timeline::ClipPictureFields> {
+        self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id == clip_id).map(|c| c.picture.clone())
+    }
+
+    /// Close an effect gesture whose release was never seen: as one
+    /// undo entry from its "before" snapshot to the effect as it is
+    /// now, or, when the effect has not moved (or the gesture is not
+    /// an effect edit), by dropping it, so nothing bogus is pushed.
+    pub(crate) fn close_open_drag(&mut self) {
+        let pending = self.active_history().pending_old_entry_ref().map(|e| e.command.clone());
+        if let Some(EditCommand::PictureEdit { clip_id, description, edit }) = &pending {
+            match self.picture_of(*clip_id) {
+                Some(after) => self.active_history_mut().end_drag(HistoryEntry {
+                    command: EditCommand::PictureEdit { clip_id: *clip_id, description, edit: Box::new(klipp_timeline::PictureEdit { before: edit.before.clone(), after }) },
+                }),
+                None => self.active_history_mut().abandon_pending_drag(),
+            }
+            return;
+        }
+        let Some(EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect, .. }) = pending else {
+            self.active_history_mut().abandon_pending_drag();
+            return;
+        };
+        let now = self.sequences[self.active_sequence_idx]
+            .all_clips()
+            .find(|c| c.id == clip_id)
+            .and_then(|c| c.builtin_effects().get(effect_index).cloned());
+        match now {
+            Some(new_effect) if new_effect != old_effect => {
+                self.active_history_mut().end_drag(HistoryEntry {
+                    command: EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect, new_effect },
+                });
+            }
+            _ => self.active_history_mut().abandon_pending_drag(),
+        }
     }
 }
 

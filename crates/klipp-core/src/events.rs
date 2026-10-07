@@ -985,6 +985,44 @@ pub enum AppCommand {
     /// socket's `graph_ops` and the assistant send. A refusal names the op
     /// that couldn't be applied.
     GraphOps { ops: Vec<klipp_graph_format::op::GraphOp>, label: String },
+    // Path-addressed edits (M3 step 2): a node named by its root and the
+    // ids down to it (`NodePath`) and a parameter by its key, never by a
+    // place in a list. Each is one undo step. They sit beside the index and
+    // bare-id commands, which stay until the inspector switches over.
+    /// Put `node` after the node at `after`, in that node's level.
+    AddNodeAt { after: klipp_graph_format::path::NodePath, node: Box<klipp_graph_format::Node> },
+    RemoveNodeAt { addr: klipp_graph_format::path::NodePath },
+    /// Move the node at `addr` to just after `after`, a node of its level.
+    MoveNodeAt { addr: klipp_graph_format::path::NodePath, after: klipp_graph_format::NodeId },
+    SetNodeEnabledAt { addr: klipp_graph_format::path::NodePath, enabled: bool },
+    SetParamAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey, value: klipp_graph_format::ParamValue },
+    /// An effect's settings written whole (an inspector card's one write,
+    /// a preset), as `UpdateBuiltinEffect` writes them, by path.
+    SetPayloadAt { addr: klipp_graph_format::path::NodePath, payload: serde_json::Value },
+    /// How much of an effect shows over its input; `None` is all of it.
+    SetMixAt { addr: klipp_graph_format::path::NodePath, mix: Option<f32> },
+    /// Feed the mask port of the effect at `addr` from `from`'s `from_port`.
+    ConnectMaskAt { addr: klipp_graph_format::path::NodePath, from: klipp_graph_format::path::NodePath, from_port: klipp_graph_format::PortKey },
+    SetMaskChannelAt { addr: klipp_graph_format::path::NodePath, channel: Option<String> },
+    /// Open a drag of `(addr, key)`: the `SetParamAt`s on it until its
+    /// `EndParamEditAt` are one undo step.
+    BeginParamEditAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey },
+    EndParamEditAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey },
+    /// Add a key to `(addr, key)`: `keyframe` as the node's animation
+    /// holds one.
+    AddKeyAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey, keyframe: serde_json::Value },
+    RemoveKeyAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey, time_secs: f64 },
+    /// Move the key at `time_secs` to `new_time_secs`, with `value`.
+    MoveKeyAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey, time_secs: f64, new_time_secs: f64, value: f32 },
+    SetInterpKeyAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey, time_secs: f64, interpolation: crate::keyframe::Interpolation },
+    /// The split view's "before" half shows the clip's picture up to the
+    /// node at `path`; `None` clears it.
+    SetSplitCompareNode { clip_id: Option<ClipId>, path: Option<klipp_graph_format::path::NodePath> },
+    /// Show the graph dock at the level holding the node at `path`, and
+    /// select the node when `select`. Idempotent: it never closes the dock.
+    RevealGraph { path: klipp_graph_format::path::NodePath, select: bool },
+    /// Show `root`'s top level in the graph dock.
+    SetGraphDockRoot { root: klipp_graph_format::path::Root },
     // Transport
     Play,
     Pause,

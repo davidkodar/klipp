@@ -13,9 +13,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
+serde_json.workspace = true
 
 [lints]
 workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true

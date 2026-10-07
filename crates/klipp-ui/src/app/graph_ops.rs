@@ -32,7 +32,7 @@ impl KlippApp {
 /// The history entry `ops` make on `seq`, built on a copy: nothing changes
 /// yet, and the ids it renames ([`klipp_timeline::Clip::apply_picture_ops_renamed`]).
 /// A refusal is the index of the op refused, and why.
-fn graph_ops_edit(seq: &klipp_timeline::Sequence, ops: &[GraphOp]) -> Result<(EditCommand, Vec<(klipp_graph_format::NodeId, klipp_graph_format::NodeId)>), (Option<usize>, String)> {
+pub(super) fn graph_ops_edit(seq: &klipp_timeline::Sequence, ops: &[GraphOp]) -> Result<(EditCommand, Vec<(klipp_graph_format::NodeId, klipp_graph_format::NodeId)>), (Option<usize>, String)> {
     let root = ops.first().ok_or((None, "an empty batch has no edit".to_string()))?.path().root;
     if let Some(at) = ops.iter().position(|op| op.path().root != root) {
         return Err((Some(at), "a batch edits one picture".into()));

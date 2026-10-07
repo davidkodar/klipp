@@ -2069,6 +2069,26 @@ pub struct AppState {
     /// only one at a time). None = inactive.
     pub split_compare_effect: Option<(ClipId, usize, bool)>,
 
+    // M3's node-addressed UI state, declared once here (step 2) so the
+    // inspector and graph-dock steps that read and set it never edit this
+    // struct. Addresses are node paths, never list places: a clip with the
+    // same local node id as another shares none of it.
+    /// The inspector draws its rows from the node catalog instead of the
+    /// hand-written tabs. Off until the generated rows match the old ones.
+    pub use_generated_stack: bool,
+    /// The node the inspector and the graph dock show, by path.
+    pub selected_node_addr: Option<klipp_graph_format::path::NodePath>,
+    /// The split view's compared node: its clip, and the node whose
+    /// picture the "before" half stops at.
+    pub split_compare_node: Option<(ClipId, klipp_graph_format::path::NodePath)>,
+    /// The graph dock is open.
+    pub graph_dock_open: bool,
+    /// The graph the dock shows.
+    pub graph_dock_root: Option<klipp_graph_format::path::Root>,
+    /// The groups the dock has descended into from its root, outermost
+    /// first; empty at the root's top level.
+    pub graph_dock_path: Vec<klipp_graph_format::NodeId>,
+
     // Grade stills (reference frame comparison)
     /// Saved grade reference stills for comparison.
     pub grade_stills: Vec<GradeStill>,
@@ -4111,6 +4131,12 @@ impl Default for AppState {
             before_after_active: false,
             stabilization_compare_active: false,
             split_compare_effect: None,
+            use_generated_stack: false,
+            selected_node_addr: None,
+            split_compare_node: None,
+            graph_dock_open: false,
+            graph_dock_root: None,
+            graph_dock_path: Vec::new(),
             split_position: 0.5,
             grade_stills: Vec::new(),
             active_grade_still: None,
