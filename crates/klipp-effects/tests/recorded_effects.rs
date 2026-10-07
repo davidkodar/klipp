@@ -1,4 +1,4 @@
-//! The recorded effects (colour, geometry, blur, film) go into one encoder (node-graph M2 step
+//! Every built-in effect but Equalize goes into one encoder (node-graph M2 step
 //! 7): a run of them is one submit, whatever its length, and gives the
 //! same picture as each effect run on its own. The counts include the
 //! one submit `apply_effects`'s download makes.
@@ -70,9 +70,35 @@ fn film() -> Vec<E> {
     ]
 }
 
-/// Every family recorded so far, in one list.
+fn light() -> Vec<E> {
+    vec![
+        E::AnamorphicStreak { threshold: 0.6, length: 0.3, intensity: 0.4, tint: 0.5 },
+        E::ChromaticAberration { red_shift: 1.5, blue_shift: -1.0, center_x: 0.5, center_y: 0.5 },
+        E::LensFlare { position_x: 0.3, position_y: 0.3, brightness: 0.6, flare_size: 0.2, ghost_count: 3, ghost_intensity: 0.3, chromatic_aberration: 0.2 },
+        E::LightRays { center_x: 0.5, center_y: 0.2, threshold: 0.5, samples: 8, decay: 0.9, intensity: 0.4 },
+        E::Vignette { amount: 0.4, size: 0.6, softness: 0.4, roundness: 0.5 },
+        E::Bloom { threshold: 0.5, radius: 3.0, intensity: 0.5 },
+        E::Glow { radius: 2.5, intensity: 0.4 },
+        E::Diffusion { amount: 0.4, radius: 2.0, threshold: 0.4, desaturation: 0.2 },
+        E::LightWrap { width: 3.0, intensity: 0.5, softness: 0.6 },
+        E::FilmHalation { threshold: 0.5, radius: 2.0, intensity: 0.4, hue: 0.3 },
+    ]
+}
+
+/// The layer passes. The two spills are kept apart: next to each other
+/// they make one layer together, which is not each applied alone.
+fn layer() -> Vec<E> {
+    vec![
+        E::RoundedCorners { radius: 0.1, feather: 2.0 },
+        E::DropShadow { offset_x: 0.03, offset_y: 0.02, blur: 0.02, color: [0, 0, 0], opacity: 0.7 },
+        E::FillBars { blur: 0.1, zoom: 1.2, darken: 0.3 },
+        E::OuterGlow { radius: 0.03, intensity: 0.6, color: [255, 200, 120] },
+    ]
+}
+
+/// Every recorded effect, in one list.
 fn recorded() -> Vec<E> {
-    colour().into_iter().chain(geometry()).chain(blur()).chain(film()).collect()
+    colour().into_iter().chain(geometry()).chain(blur()).chain(film()).chain(light()).chain(layer()).collect()
 }
 
 fn pipeline() -> Option<GpuEffectsPipeline> {
@@ -104,7 +130,15 @@ fn a_run_of_recorded_effects_is_one_submit() {
     assert_eq!(run(&mut g, &geometry()).0, 2, "the geometry effects, one run");
     assert_eq!(run(&mut g, &blur()).0, 2, "the blur effects, several passes some of them, one run");
     assert_eq!(run(&mut g, &film()).0, 2, "the film effects, one run");
-    assert_eq!(run(&mut g, &recorded()).0, 2, "every recorded effect, one run");
+    assert_eq!(run(&mut g, &light()).0, 2, "the light effects, one run");
+    assert_eq!(run(&mut g, &layer()).0, 2, "the layer passes, one run");
+    let spills = [layer()[1].clone(), layer()[3].clone(), layer()[1].clone()];
+    assert_eq!(run(&mut g, &spills).0, 2, "a run of spills, one layer, one run");
+    // Every recorded effect together needs more than the 64 slots of a
+    // run's ring: two runs.
+    let slots: usize = recorded().iter().map(|e| klipp_effects::gpu::slots_needed(e).unwrap()).sum();
+    assert!(slots > 64 && slots <= 128, "{slots} slots");
+    assert_eq!(run(&mut g, &recorded()).0, 3, "every recorded effect, two runs");
     // Identities record nothing, and a run of only identities submits nothing.
     let idle = [
         E::Opacity { value: 1.0 },
@@ -218,7 +252,9 @@ fn an_effect_that_could_not_be_recorded_is_never_silently_dropped() {
 /// effect that would record anything asks for a refill.
 #[test]
 fn an_identity_never_asks_for_slots() {
-    let Some(g) = pipeline() else { return };
+    let Some(mut g) = pipeline() else { return };
+    // The layer passes' own buffers, as a recording caller makes them.
+    g.ensure_recording_buffers(W, H);
     let device = g.device();
     let frame = |label| {
         device.create_buffer(&wgpu::BufferDescriptor {
@@ -242,6 +278,9 @@ fn an_identity_never_asks_for_slots() {
         (E::GaussianBlur { radius: 3.0 }, Recorded::OutOfSlots),
         (E::TiltShift { center: 0.5, width: 0.2, softness: 0.3, radius: 0.0 }, Recorded::Identity),
         (E::Denoise { spatial_sigma: 2.0, color_sigma: 0.1, iterations: 1 }, Recorded::OutOfSlots),
+        (E::Bloom { threshold: 0.5, radius: 3.0, intensity: 0.5 }, Recorded::OutOfSlots),
+        (E::RoundedCorners { radius: 0.1, feather: 2.0 }, Recorded::OutOfSlots),
+        (E::FillBars { blur: 0.1, zoom: 1.2, darken: 0.3 }, Recorded::OutOfSlots),
     ] {
         assert_eq!(g.record_effect(&effect, &src, &dst, Some(&scratch), W, H, &mut rec), want, "{effect:?}");
     }

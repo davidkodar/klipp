@@ -5952,6 +5952,32 @@ impl GpuEffectsPipeline {
                 (buf_b, buf_a)
             };
 
+            // A run of spills is one layer, recorded in one call.
+            if crate::layer::Spill::of(effect).is_some() {
+                let mut run = vec![effect.clone()];
+                while let Some(e) = effects.next_if(|e| crate::layer::Spill::of(e).is_some()) {
+                    run.push(e.clone());
+                }
+                let mut outcome = self.record_spills_into(&mut recorded, &mut slots, &run, input, output, width, height);
+                if outcome == Recorded::OutOfSlots {
+                    self.submit_recorded(&mut recorded, &mut slots);
+                    outcome = self.record_spills_into(&mut recorded, &mut slots, &run, input, output, width, height);
+                }
+                match outcome {
+                    Recorded::Done => current_in_a = !current_in_a,
+                    Recorded::Identity => {}
+                    // Too long a run for the slots: the passes that
+                    // submit themselves.
+                    Recorded::NotRecordable | Recorded::OutOfSlots => {
+                        self.submit_recorded(&mut recorded, &mut slots);
+                        let spills: Vec<_> = run.iter().filter_map(crate::layer::Spill::of).collect();
+                        if self.layer_spills(input, output, width, height, &spills) {
+                            current_in_a = !current_in_a;
+                        }
+                    }
+                }
+                continue;
+            }
             if record::slots_needed(effect).is_some() {
                 let mut outcome = self.record_into(&mut recorded, &mut slots, effect, input, output, width, height);
                 if outcome == Recorded::OutOfSlots {
@@ -6011,193 +6037,17 @@ impl GpuEffectsPipeline {
                 | BuiltinEffect::VideoStabilization { .. }
                 | BuiltinEffect::SpeedRamp { .. }
                 | BuiltinEffect::TemporalDenoise { .. }
-                | BuiltinEffect::Frei0r { .. } => self.effects_incomplete.set(true),
-                BuiltinEffect::Bloom { threshold, radius, intensity } => {
-                    // Step 1: Extract bright pixels to buf_c
-                    let buf_c = self.buf_c.as_ref().unwrap();
-                    self.write_params(&BloomThresholdParams {
-                        width, height,
-                        threshold: *threshold,
-                        _pad: 0,
-                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
-                    });
-                    self.dispatch(&self.bloom_threshold_pipeline, input, buf_c, workgroups);
-
-                    // Step 2: Blur the bright pixels (3-pass box blur in buf_c)
-                    let boxes = crate::blur::boxes_for_gaussian(*radius);
-                    for &box_r in &boxes {
-                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
-                        self.dispatch(&self.blur_h_pipeline, buf_c, output, workgroups);
-                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
-                        self.dispatch(&self.blur_v_pipeline, output, buf_c, workgroups);
-                    }
-
-                    // Step 3: Additive blend blurred bright (buf_c) onto input
-                    self.write_params(&BloomBlendParams {
-                        width, height,
-                        intensity: *intensity,
-                        desat: 0.0,
-                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
-                    });
-                    // bloom_blend reads input + buf_c, writes output
-                    self.dispatch_bloom_blend(input, buf_c, output, workgroups, *intensity, width, height);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::Glow { radius, intensity } => {
-                    // Step 1: Blur entire image to buf_c
-                    let buf_c = self.buf_c.as_ref().unwrap();
-                    // Copy input to buf_c first
-                    let byte_size = (width * height * 16) as u64;
-                    {
-                        let mut enc = self.encoder(None);
-                        enc.copy_buffer_to_buffer(input, 0, buf_c, 0, byte_size);
-                        self.submit(enc);
-                        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
-                        // queue drains between submits. See submit_chain for context.
-                        self.device.poll(wgpu::Maintain::Poll);
-                    }
-
-                    let boxes = crate::blur::boxes_for_gaussian(*radius);
-                    for &box_r in &boxes {
-                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
-                        self.dispatch(&self.blur_h_pipeline, buf_c, output, workgroups);
-                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
-                        self.dispatch(&self.blur_v_pipeline, output, buf_c, workgroups);
-                    }
-
-                    // Step 2: Screen blend blurred (buf_c) with original (input) → output
-                    self.dispatch_bloom_blend_screen(input, buf_c, output, workgroups, *intensity, 0.0, width, height);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::LightRays { center_x, center_y, threshold, samples, decay, intensity } => {
-                    self.write_params(&LightRaysParams {
-                        width, height,
-                        center_x: *center_x,
-                        center_y: *center_y,
-                        threshold: *threshold,
-                        samples: (*samples).clamp(4, 128),
-                        decay: *decay,
-                        intensity: *intensity,
-                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
-                    });
-                    self.dispatch(&self.light_rays_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::Vignette { amount, size, softness, roundness } => {
-                    self.write_params(&VignetteParams {
-                        width, height,
-                        amount: *amount, size: *size, softness: *softness, roundness: *roundness,
-                        _pad: 0, _pad2: 0,
-                    });
-                    self.dispatch(&self.vignette_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::Diffusion { amount, radius, threshold, desaturation } => {
-                    // Same as bloom: threshold → blur → screen blend
-                    let buf_c = self.buf_c.as_ref().unwrap();
-                    self.write_params(&BloomThresholdParams { width, height, threshold: *threshold, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0 });
-                    self.dispatch(&self.bloom_threshold_pipeline, input, buf_c, workgroups);
-                    let boxes = crate::blur::boxes_for_gaussian(*radius);
-                    for &box_r in &boxes {
-                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
-                        self.dispatch(&self.blur_h_pipeline, buf_c, output, workgroups);
-                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
-                        self.dispatch(&self.blur_v_pipeline, output, buf_c, workgroups);
-                    }
-                    self.dispatch_bloom_blend_screen(input, buf_c, output, workgroups, *amount, *desaturation, width, height);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::LensFlare { position_x, position_y, brightness, flare_size, ghost_count, ghost_intensity, chromatic_aberration } => {
-                    self.write_params(&LensFlareParams {
-                        width, height,
-                        pos_x: *position_x, pos_y: *position_y,
-                        brightness: *brightness, flare_size: *flare_size,
-                        ghost_count: *ghost_count, ghost_intensity: *ghost_intensity,
-                        chromatic_aberration: *chromatic_aberration,
-                        _pad: 0, _pad2: 0, _pad3: 0,
-                    });
-                    self.dispatch(&self.lens_flare_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::LightWrap { width: wrap_w, intensity, softness } => {
-                    // Blur → blend where dark
-                    let buf_c = self.buf_c.as_ref().unwrap();
-                    let byte_size = (width * height * 16) as u64;
-                    {
-                        let mut enc = self.encoder(None);
-                        enc.copy_buffer_to_buffer(input, 0, buf_c, 0, byte_size);
-                        self.submit(enc);
-                        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
-                        // queue drains between submits. See submit_chain for context.
-                        self.device.poll(wgpu::Maintain::Poll);
-                    }
-                    let boxes = crate::blur::boxes_for_gaussian(*wrap_w * *softness);
-                    for &box_r in &boxes {
-                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
-                        self.dispatch(&self.blur_h_pipeline, buf_c, output, workgroups);
-                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
-                        self.dispatch(&self.blur_v_pipeline, output, buf_c, workgroups);
-                    }
-                    self.dispatch_bloom_blend_screen(input, buf_c, output, workgroups, *intensity, 0.0, width, height);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::AnamorphicStreak { threshold, length, intensity, tint } => {
-                    self.write_params(&AnamorphicStreakParams {
-                        width, height,
-                        threshold: *threshold,
-                        half_len: (*length * 0.5) as u32,
-                        intensity: *intensity,
-                        tint: *tint,
-                        _pad: 0, _pad2: 0,
-                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
-                    });
-                    self.dispatch(&self.anamorphic_streak_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
-                BuiltinEffect::FilmHalation { threshold, radius, intensity, hue } => {
-                    // Extract bright with halation color → blur → screen blend
-                    let buf_c = self.buf_c.as_ref().unwrap();
-                    let hal_r = 1.0f32;
-                    let hal_g = *hue * 0.6;
-                    let hal_b = *hue * *hue * 0.2;
-                    // Use bloom threshold to extract brights (with color tint applied after)
-                    self.write_params(&BloomThresholdParams { width, height, threshold: *threshold, _pad: 0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0 });
-                    self.dispatch(&self.bloom_threshold_pipeline, input, buf_c, workgroups);
-                    let boxes = crate::blur::boxes_for_gaussian(*radius);
-                    for &box_r in &boxes {
-                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
-                        self.dispatch(&self.blur_h_pipeline, buf_c, output, workgroups);
-                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
-                        self.dispatch(&self.blur_v_pipeline, output, buf_c, workgroups);
-                    }
-                    // Screen blend with halation tint
-                    self.write_params(&FilmHalationBlendParams {
-                        width, height, threshold: *threshold, intensity: *intensity,
-                        hal_r, hal_g, hal_b, _pad: 0,
-                        luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
-                    });
-                    let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("halation_bg"),
-                        layout: &self.transition_bgl,
-                        entries: &[
-                            wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
-                            wgpu::BindGroupEntry { binding: 1, resource: buf_c.as_entire_binding() },
-                            wgpu::BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
-                            wgpu::BindGroupEntry { binding: 3, resource: self.params_binding() },
-                        ],
-                    });
-                    let mut enc = self.encoder(None);
-                    { let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-                      pass.set_pipeline(&self.film_halation_blend_pipeline);
-                      pass.set_bind_group(0, &bind_group, &[]);
-                      pass.dispatch_workgroups(workgroups, 1, 1);
-                    }
-                    self.submit(enc);
-                    // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
-                    // queue drains between submits. See submit_chain for context.
-                    self.device.poll(wgpu::Maintain::Poll);
-                    current_in_a = !current_in_a;
-                }
+                | BuiltinEffect::Frei0r { .. }
+                | BuiltinEffect::AnamorphicStreak { .. }
+                | BuiltinEffect::ChromaticAberration { .. }
+                | BuiltinEffect::LensFlare { .. }
+                | BuiltinEffect::LightRays { .. }
+                | BuiltinEffect::Vignette { .. }
+                | BuiltinEffect::Bloom { .. }
+                | BuiltinEffect::Glow { .. }
+                | BuiltinEffect::Diffusion { .. }
+                | BuiltinEffect::LightWrap { .. }
+                | BuiltinEffect::FilmHalation { .. } => self.effects_incomplete.set(true),
                 BuiltinEffect::Equalize { strength } => {
                     // Hybrid GPU: build histogram/CDF on CPU (fast), remap on GPU (parallel).
                     // Step 1: Download current frame to compute histogram.
@@ -6251,22 +6101,6 @@ impl GpuEffectsPipeline {
 
                     current_in_a = !current_in_a;
                 }
-                BuiltinEffect::ChromaticAberration { red_shift, blue_shift, center_x, center_y } => {
-                    if red_shift.abs() < f32::EPSILON && blue_shift.abs() < f32::EPSILON {
-                        continue;
-                    }
-                    self.write_params(&ChromaticAberrationParams {
-                        width, height,
-                        red_shift: *red_shift,
-                        blue_shift: *blue_shift,
-                        center_x: *center_x,
-                        center_y: *center_y,
-                        _pad0: 0,
-                        _pad1: 0,
-                    });
-                    self.dispatch(&self.chromatic_aberration_pipeline, input, output, workgroups);
-                    current_in_a = !current_in_a;
-                }
                 BuiltinEffect::RoundedCorners { radius, feather } => {
                     self.layer_corners(input, output, width, height, *radius, *feather);
                     current_in_a = !current_in_a;
@@ -6275,22 +6109,26 @@ impl GpuEffectsPipeline {
                     self.layer_fill(input, output, width, height, *blur, *zoom, *darken);
                     current_in_a = !current_in_a;
                 }
-                BuiltinEffect::DropShadow { .. } | BuiltinEffect::OuterGlow { .. } => {
-                    let mut run = vec![crate::layer::Spill::of(effect).unwrap()];
-                    while let Some(spill) = effects.peek().and_then(|e| crate::layer::Spill::of(e)) {
-                        run.push(spill);
-                        effects.next();
-                    }
-                    if self.layer_spills(input, output, width, height, &run) {
-                        current_in_a = !current_in_a;
-                    }
-                }
+                // Recorded above as a run, or run there when it can't be.
+                BuiltinEffect::DropShadow { .. } | BuiltinEffect::OuterGlow { .. } => {}
             }
         }
         self.submit_recorded(&mut recorded, &mut slots);
         self.effect_params = Some(slots);
 
         current_in_a
+    }
+
+    /// Make the buffers recorded effects use at `width` × `height`: the
+    /// chain's frames (`buf_c` is a run's scratch) and the layer passes'
+    /// own. A caller that records effects itself calls this once per
+    /// output size, so whether a layer pass records never depends on
+    /// whether a chain happened to run at that size before.
+    #[doc(hidden)]
+    pub fn ensure_recording_buffers(&mut self, width: u32, height: u32) {
+        let byte_size = u64::from(width) * u64::from(height) * 16;
+        self.ensure_buffers(byte_size);
+        self.layer_gpu.ensure_buffers(&self.device, byte_size);
     }
 
     /// Whether the last [`Self::run_effects_in_chain`] applied every
@@ -6326,6 +6164,29 @@ impl GpuEffectsPipeline {
         // `buf_c` is the third buffer an effect of several passes needs.
         let scratch = self.buf_c.as_ref();
         let outcome = self.record_effect(effect, src, dst, scratch, width, height, &mut EffectRecording { encoder, slots });
+        if outcome == Recorded::Done {
+            run.passes += 1;
+        }
+        outcome
+    }
+
+    /// Record a run of spills into `run`'s encoder, opening one if none is.
+    #[allow(clippy::too_many_arguments)]
+    fn record_spills_into(
+        &self,
+        run: &mut RecordedRun,
+        slots: &mut ParamSlots,
+        spills: &[BuiltinEffect],
+        src: &wgpu::Buffer,
+        dst: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+    ) -> Recorded {
+        let encoder = run.encoder.get_or_insert_with(|| {
+            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("recorded_effects") })
+        });
+        let scratch = self.buf_c.as_ref();
+        let outcome = self.record_spill_run(spills, src, dst, scratch, width, height, &mut EffectRecording { encoder, slots });
         if outcome == Recorded::Done {
             run.passes += 1;
         }
@@ -6822,65 +6683,6 @@ impl GpuEffectsPipeline {
         self.device.poll(wgpu::Maintain::Poll);
 
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
-    }
-
-    /// Dispatch bloom blend: additive blend of bright (buf_c) onto original (input) → output
-    fn dispatch_bloom_blend(
-        &self, input: &wgpu::Buffer, bright: &wgpu::Buffer, output: &wgpu::Buffer,
-        workgroups: u32, intensity: f32, width: u32, height: u32,
-    ) {
-        self.write_params(&BloomBlendParams { width, height, intensity, desat: 0.0, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0 });
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("bloom_blend_bg"),
-            layout: &self.transition_bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: bright.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.params_binding() },
-            ],
-        });
-        let mut enc = self.encoder(None);
-        {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-            pass.set_pipeline(&self.bloom_blend_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
-        }
-        self.submit(enc);
-        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
-        // queue drains between submits. See submit_chain for context.
-        self.device.poll(wgpu::Maintain::Poll);
-    }
-
-    /// Dispatch glow blend: screen blend of blurred (buf_c) onto original (input) → output
-    #[allow(clippy::too_many_arguments)]
-    fn dispatch_bloom_blend_screen(
-        &self, input: &wgpu::Buffer, blurred: &wgpu::Buffer, output: &wgpu::Buffer,
-        workgroups: u32, intensity: f32, desat: f32, width: u32, height: u32,
-    ) {
-        self.write_params(&BloomBlendParams { width, height, intensity, desat, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0 });
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("glow_blend_bg"),
-            layout: &self.transition_bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: blurred.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.params_binding() },
-            ],
-        });
-        let mut enc = self.encoder(None);
-        {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-            pass.set_pipeline(&self.glow_blend_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
-        }
-        self.submit(enc);
-        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
-        // queue drains between submits. See submit_chain for context.
-        self.device.poll(wgpu::Maintain::Poll);
     }
 
     /// One pass over two inputs (bindings 0 and 1) into `output`, with

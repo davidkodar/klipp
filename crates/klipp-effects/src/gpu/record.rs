@@ -43,8 +43,8 @@ pub enum Recorded {
     OutOfSlots,
 }
 
-/// Uniform slots `effect` claims when recorded, or `None` when it isn't
-/// recordable. So a plan can size its segments before it records.
+/// Uniform slots `effect` claims when recorded, at most, or `None` when
+/// it isn't recordable. So a plan can size its segments before it records.
 #[doc(hidden)]
 pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
     // A box blur's horizontal and vertical passes share one slot: the
@@ -55,6 +55,16 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         // through here, as they did, without breaking a run.
         BuiltinEffect::SpeedRamp { .. } | BuiltinEffect::TemporalDenoise { .. } | BuiltinEffect::Frei0r { .. } => Some(0),
         BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. } => Some(1),
+        // A bright or copied layer, three box passes over it (zero boxes
+        // too, as before) and the blend: see `record_light_layer`.
+        BuiltinEffect::Bloom { .. } | BuiltinEffect::Diffusion { .. } | BuiltinEffect::FilmHalation { .. } => Some(5),
+        // The layer passes (`gpu/layer.rs`); a spill's count depends on
+        // the frame's width, so this is its most. A run of spills is
+        // `record_spill_run`'s.
+        BuiltinEffect::RoundedCorners { .. } => Some(1),
+        BuiltinEffect::FillBars { .. } => Some(GpuEffectsPipeline::FILL_SLOTS),
+        BuiltinEffect::DropShadow { .. } | BuiltinEffect::OuterGlow { .. } => Some(5),
+        BuiltinEffect::Glow { .. } | BuiltinEffect::LightWrap { .. } => Some(4),
         BuiltinEffect::GaussianBlur { radius } => Some(boxes(*radius)),
         BuiltinEffect::Denoise { .. } => Some(1),
         BuiltinEffect::TiltShift { radius, .. } => Some(boxes(*radius) + 1),
@@ -88,7 +98,12 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         | BuiltinEffect::NoiseGenerator { .. }
         | BuiltinEffect::OldFilm { .. }
         | BuiltinEffect::Vhs { .. }
-        | BuiltinEffect::CornerPin { .. } => Some(1),
+        | BuiltinEffect::CornerPin { .. }
+        | BuiltinEffect::AnamorphicStreak { .. }
+        | BuiltinEffect::ChromaticAberration { .. }
+        | BuiltinEffect::LensFlare { .. }
+        | BuiltinEffect::LightRays { .. }
+        | BuiltinEffect::Vignette { .. } => Some(1),
         _ => None,
     }
 }
@@ -550,11 +565,103 @@ impl GpuEffectsPipeline {
                 let slot = rec.slots.claim(q, &CornerPinParams { width, height, inv, _pad: 0 });
                 (&self.corner_pin_pipeline, slot)
             }
+            BuiltinEffect::AnamorphicStreak { threshold, length, intensity, tint } => {
+                let slot = rec.slots.claim(q, &AnamorphicStreakParams {
+                    width, height,
+                    threshold: *threshold,
+                    half_len: (*length * 0.5) as u32,
+                    intensity: *intensity,
+                    tint: *tint,
+                    _pad: 0, _pad2: 0,
+                    luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
+                });
+                (&self.anamorphic_streak_pipeline, slot)
+            }
+            BuiltinEffect::ChromaticAberration { red_shift, blue_shift, center_x, center_y } => {
+                if red_shift.abs() < f32::EPSILON && blue_shift.abs() < f32::EPSILON {
+                    return Recorded::Identity;
+                }
+                let slot = rec.slots.claim(q, &ChromaticAberrationParams {
+                    width, height,
+                    red_shift: *red_shift,
+                    blue_shift: *blue_shift,
+                    center_x: *center_x,
+                    center_y: *center_y,
+                    _pad0: 0,
+                    _pad1: 0,
+                });
+                (&self.chromatic_aberration_pipeline, slot)
+            }
+            BuiltinEffect::LensFlare { position_x, position_y, brightness, flare_size, ghost_count, ghost_intensity, chromatic_aberration } => {
+                let slot = rec.slots.claim(q, &LensFlareParams {
+                    width, height,
+                    pos_x: *position_x, pos_y: *position_y,
+                    brightness: *brightness, flare_size: *flare_size,
+                    ghost_count: *ghost_count, ghost_intensity: *ghost_intensity,
+                    chromatic_aberration: *chromatic_aberration,
+                    _pad: 0, _pad2: 0, _pad3: 0,
+                });
+                (&self.lens_flare_pipeline, slot)
+            }
+            BuiltinEffect::LightRays { center_x, center_y, threshold, samples, decay, intensity } => {
+                let slot = rec.slots.claim(q, &LightRaysParams {
+                    width, height,
+                    center_x: *center_x,
+                    center_y: *center_y,
+                    threshold: *threshold,
+                    samples: (*samples).clamp(4, 128),
+                    decay: *decay,
+                    intensity: *intensity,
+                    luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
+                });
+                (&self.light_rays_pipeline, slot)
+            }
+            BuiltinEffect::Vignette { amount, size, softness, roundness } => {
+                let slot = rec.slots.claim(q, &VignetteParams {
+                    width, height,
+                    amount: *amount, size: *size, softness: *softness, roundness: *roundness,
+                    _pad: 0, _pad2: 0,
+                });
+                (&self.vignette_pipeline, slot)
+            }
             _ => return Recorded::NotRecordable,
         };
         let Some(slot) = slot else { return Recorded::OutOfSlots };
         self.record_pass(rec, pipeline, src, dst, slot, width, height);
         Recorded::Done
+    }
+
+    /// A run of DropShadow and OuterGlow effects, recorded as the one
+    /// layer they make together: each spill cast from the unchanged
+    /// picture, stacked under it. Not the same as recording them one by
+    /// one (the second would be cast from the first's shadow), so a run
+    /// of them is one call. `Identity` when none of them lays anything.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_spill_run(
+        &self,
+        effects: &[BuiltinEffect],
+        src: &wgpu::Buffer,
+        dst: &wgpu::Buffer,
+        scratch: Option<&wgpu::Buffer>,
+        width: u32,
+        height: u32,
+        rec: &mut EffectRecording<'_>,
+    ) -> Recorded {
+        let Some(run) = effects.iter().map(crate::layer::Spill::of).collect::<Option<Vec<_>>>() else {
+            return Recorded::NotRecordable;
+        };
+        let Some(cast) = scratch.filter(|_| !self.is_device_lost() && self.layer_ready(width, height)) else {
+            return Recorded::NotRecordable;
+        };
+        let needed = Self::spill_run_slots(&run, width, height);
+        if needed > rec.slots.len() {
+            return Recorded::NotRecordable;
+        }
+        if needed > rec.slots.remaining() {
+            return Recorded::OutOfSlots;
+        }
+        if self.record_spills(rec, src, dst, cast, width, height, &run) { Recorded::Done } else { Recorded::Identity }
     }
 
     /// The effects of several passes, or `None` for a one-pass effect.
@@ -596,6 +703,84 @@ impl GpuEffectsPipeline {
                 let crop_zoom = crate::stabilization_crop_zoom(*crop_ratio, *zoom);
                 let Some(slot) = rec.slots.claim(q, &StabilizationParams { width, height, crop_zoom, _pad: 0 }) else { return Some(Recorded::OutOfSlots) };
                 self.record_with(rec, &self.stabilization_pipeline, src, dst, slot, homographies, width, height);
+                Recorded::Done
+            }
+            BuiltinEffect::RoundedCorners { radius, feather } => {
+                let Some(bounds) = scratch.filter(|_| self.layer_ready(width, height)) else { return Some(Recorded::NotRecordable) };
+                if !has_room(rec, effect) {
+                    return Some(Recorded::OutOfSlots);
+                }
+                self.record_layer_corners(rec, src, dst, bounds, width, height, *radius, *feather);
+                Recorded::Done
+            }
+            BuiltinEffect::FillBars { blur, zoom, darken } => {
+                let Some(bounds) = scratch.filter(|_| self.layer_ready(width, height)) else { return Some(Recorded::NotRecordable) };
+                if !has_room(rec, effect) {
+                    return Some(Recorded::OutOfSlots);
+                }
+                self.record_layer_fill(rec, src, dst, bounds, width, height, *blur, *zoom, *darken);
+                Recorded::Done
+            }
+            BuiltinEffect::DropShadow { .. } | BuiltinEffect::OuterGlow { .. } => {
+                return Some(self.record_spill_run(std::slice::from_ref(effect), src, dst, scratch, width, height, rec));
+            }
+            BuiltinEffect::Bloom { threshold, radius, intensity } => {
+                let Some(scratch) = scratch else { return Some(Recorded::NotRecordable) };
+                if !has_room(rec, effect) {
+                    return Some(Recorded::OutOfSlots);
+                }
+                let seed = rec.slots.claim(q, &self.bloom_threshold(width, height, *threshold));
+                let blend = rec.slots.claim(q, &self.bloom_blend(width, height, *intensity, 0.0));
+                let light = LightLayer { seed, radius: *radius, blend: &self.bloom_blend_pipeline, blend_slot: blend };
+                self.record_light_layer(rec, src, dst, scratch, light, width, height);
+                Recorded::Done
+            }
+            BuiltinEffect::Diffusion { amount, radius, threshold, desaturation } => {
+                let Some(scratch) = scratch else { return Some(Recorded::NotRecordable) };
+                if !has_room(rec, effect) {
+                    return Some(Recorded::OutOfSlots);
+                }
+                let seed = rec.slots.claim(q, &self.bloom_threshold(width, height, *threshold));
+                let blend = rec.slots.claim(q, &self.bloom_blend(width, height, *amount, *desaturation));
+                let light = LightLayer { seed, radius: *radius, blend: &self.glow_blend_pipeline, blend_slot: blend };
+                self.record_light_layer(rec, src, dst, scratch, light, width, height);
+                Recorded::Done
+            }
+            BuiltinEffect::FilmHalation { threshold, radius, intensity, hue } => {
+                // The brights, tinted by the halation's colour in the blend.
+                let Some(scratch) = scratch else { return Some(Recorded::NotRecordable) };
+                if !has_room(rec, effect) {
+                    return Some(Recorded::OutOfSlots);
+                }
+                let seed = rec.slots.claim(q, &self.bloom_threshold(width, height, *threshold));
+                let blend = rec.slots.claim(q, &FilmHalationBlendParams {
+                    width, height, threshold: *threshold, intensity: *intensity,
+                    hal_r: 1.0, hal_g: *hue * 0.6, hal_b: *hue * *hue * 0.2, _pad: 0,
+                    luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
+                });
+                let light = LightLayer { seed, radius: *radius, blend: &self.film_halation_blend_pipeline, blend_slot: blend };
+                self.record_light_layer(rec, src, dst, scratch, light, width, height);
+                Recorded::Done
+            }
+            BuiltinEffect::Glow { radius, intensity } => {
+                // The whole picture blurred and screened over itself.
+                let Some(scratch) = scratch else { return Some(Recorded::NotRecordable) };
+                if !has_room(rec, effect) {
+                    return Some(Recorded::OutOfSlots);
+                }
+                let blend = rec.slots.claim(q, &self.bloom_blend(width, height, *intensity, 0.0));
+                let light = LightLayer { seed: None, radius: *radius, blend: &self.glow_blend_pipeline, blend_slot: blend };
+                self.record_light_layer(rec, src, dst, scratch, light, width, height);
+                Recorded::Done
+            }
+            BuiltinEffect::LightWrap { width: wrap_w, intensity, softness } => {
+                let Some(scratch) = scratch else { return Some(Recorded::NotRecordable) };
+                if !has_room(rec, effect) {
+                    return Some(Recorded::OutOfSlots);
+                }
+                let blend = rec.slots.claim(q, &self.bloom_blend(width, height, *intensity, 0.0));
+                let light = LightLayer { seed: None, radius: *wrap_w * *softness, blend: &self.glow_blend_pipeline, blend_slot: blend };
+                self.record_light_layer(rec, src, dst, scratch, light, width, height);
                 Recorded::Done
             }
             BuiltinEffect::GaussianBlur { radius } => {
@@ -694,6 +879,48 @@ impl GpuEffectsPipeline {
         Some(outcome)
     }
 
+    /// A light effect's layer: `src` into `scratch` (its brights through
+    /// the threshold pass when `light.seed` names that pass's slot, else
+    /// a copy), blurred there by three boxes, then blended over `src`
+    /// into `dst`.
+    #[allow(clippy::too_many_arguments)]
+    fn record_light_layer(
+        &self,
+        rec: &mut EffectRecording<'_>,
+        src: &wgpu::Buffer,
+        dst: &wgpu::Buffer,
+        scratch: &wgpu::Buffer,
+        light: LightLayer<'_>,
+        width: u32,
+        height: u32,
+    ) {
+        match light.seed {
+            Some(slot) => self.record_pass(rec, &self.bloom_threshold_pipeline, src, scratch, slot, width, height),
+            None => rec.encoder.copy_buffer_to_buffer(src, 0, scratch, 0, u64::from(width * height) * 16),
+        }
+        for box_r in crate::blur::boxes_for_gaussian(light.radius) {
+            let slot = rec.slots.claim(&self.queue, &BlurParams { width, height, radius: box_r as i32, _pad: 0 });
+            let slot = slot.expect("slots_needed was checked");
+            self.record_pass(rec, &self.blur_h_pipeline, scratch, dst, slot, width, height);
+            self.record_pass(rec, &self.blur_v_pipeline, dst, scratch, slot, width, height);
+        }
+        self.record_pair(rec, light.blend, src, scratch, dst, light.blend_slot.expect("slots_needed was checked"), width, height);
+    }
+
+    fn bloom_threshold(&self, width: u32, height: u32, threshold: f32) -> BloomThresholdParams {
+        BloomThresholdParams {
+            width, height, threshold, _pad: 0,
+            luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
+        }
+    }
+
+    fn bloom_blend(&self, width: u32, height: u32, intensity: f32, desat: f32) -> BloomBlendParams {
+        BloomBlendParams {
+            width, height, intensity, desat,
+            luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
+        }
+    }
+
     /// One pass of a three-binding pipeline (input, output, params).
     #[allow(clippy::too_many_arguments)]
     fn record_pass(
@@ -706,6 +933,20 @@ impl GpuEffectsPipeline {
         width: u32,
         height: u32,
     ) {
+        self.record_pass_n(rec, pipeline, input, output, slot, (width * height).div_ceil(WORKGROUP_SIZE));
+    }
+
+    /// [`Self::record_pass`] over `workgroups` workgroups, for a pass that
+    /// isn't one lane per pixel.
+    pub(super) fn record_pass_n(
+        &self,
+        rec: &mut EffectRecording<'_>,
+        pipeline: &wgpu::ComputePipeline,
+        input: &wgpu::Buffer,
+        output: &wgpu::Buffer,
+        slot: usize,
+        workgroups: u32,
+    ) {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("recorded_effect"),
             layout: &self.bind_group_layout,
@@ -715,7 +956,7 @@ impl GpuEffectsPipeline {
                 wgpu::BindGroupEntry { binding: 2, resource: rec.slots.buffer(slot).as_entire_binding() },
             ],
         });
-        Self::record_compute_dispatch(rec.encoder, pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
+        Self::record_compute_dispatch(rec.encoder, pipeline, &bind_group, workgroups);
     }
 
     /// One pass of a pipeline with a side buffer after its params
@@ -758,6 +999,21 @@ impl GpuEffectsPipeline {
         width: u32,
         height: u32,
     ) {
+        self.record_pair_n(rec, pipeline, a, b, output, slot, (width * height).div_ceil(WORKGROUP_SIZE));
+    }
+
+    /// [`Self::record_pair`] over `workgroups` workgroups.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn record_pair_n(
+        &self,
+        rec: &mut EffectRecording<'_>,
+        pipeline: &wgpu::ComputePipeline,
+        a: &wgpu::Buffer,
+        b: &wgpu::Buffer,
+        output: &wgpu::Buffer,
+        slot: usize,
+        workgroups: u32,
+    ) {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("recorded_effect_pair"),
             layout: &self.transition_bgl,
@@ -768,7 +1024,7 @@ impl GpuEffectsPipeline {
                 wgpu::BindGroupEntry { binding: 3, resource: rec.slots.buffer(slot).as_entire_binding() },
             ],
         });
-        Self::record_compute_dispatch(rec.encoder, pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
+        Self::record_compute_dispatch(rec.encoder, pipeline, &bind_group, workgroups);
     }
 }
 
@@ -776,6 +1032,15 @@ impl GpuEffectsPipeline {
 /// arm of several passes before it records the first.
 fn has_room(rec: &EffectRecording<'_>, effect: &BuiltinEffect) -> bool {
     rec.slots.remaining() >= slots_needed(effect).unwrap_or(0)
+}
+
+/// A light effect's layer for `record_light_layer`: the threshold pass's
+/// slot (`None` copies the picture instead), the blur, and the blend.
+struct LightLayer<'p> {
+    seed: Option<usize>,
+    radius: f32,
+    blend: &'p wgpu::ComputePipeline,
+    blend_slot: Option<usize>,
 }
 
 /// Where pass `i` of `passes` writes, ping-ponging between `dst` and
