@@ -744,15 +744,34 @@ class TestScopeTests(RealGitGate):
         self.full_mark.write_text(str(int(time.time())))
         self.change("README.md")
         self.run_gate()
-        self.assertEqual(self.logged("docs"), ["doc -j 2 --workspace --no-deps"], "no tests to run: documented whole")
+        self.assertEqual(self.logged("docs"), ["doc -j 1 --workspace --no-deps"], "no tests to run: documented whole")
         self.change("crates/b/src/lib.rs")
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.logged("docs"), ["doc -j 2 -p b --no-deps"], "b: nothing is built on it")
+        self.assertEqual(self.logged("docs"), ["doc -j 1 -p b --no-deps"], "b: nothing is built on it")
         self.assertIn("rustdoc took", result.stdout)
         self.change("Cargo.lock")
         self.run_gate()
-        self.assertEqual(self.logged("docs"), ["doc -j 2 --workspace --no-deps"], "a shared file: everything")
+        self.assertEqual(self.logged("docs"), ["doc -j 1 --workspace --no-deps"], "a shared file: everything")
+
+    def test_rustdoc_has_its_own_explicit_job_override(self):
+        self.env.update(CARGO_BUILD_JOBS="8", KLIPP_GATE_DOC_JOBS="3")
+        self.full_mark.write_text(str(int(time.time())))
+        self.change("README.md")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.logged("docs"), ["doc -j 3 --workspace --no-deps"])
+
+    def test_rustdoc_refuses_an_invalid_job_override(self):
+        self.full_mark.write_text(str(int(time.time())))
+        self.change("README.md")
+        for jobs in ("0", "-1", "many"):
+            with self.subTest(jobs=jobs):
+                self.env["KLIPP_GATE_DOC_JOBS"] = jobs
+                result = self.run_gate()
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("KLIPP_GATE_DOC_JOBS must be a positive integer", result.stderr)
+                self.assertEqual(self.logged("docs"), [])
 
     def test_everything_the_gate_builds_has_line_tables_only(self):
         self.full_mark.write_text(str(int(time.time())))
