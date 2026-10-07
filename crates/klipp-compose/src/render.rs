@@ -2272,7 +2272,19 @@ impl Renderer {
         let base = clip.id.0.as_u128() ^ (0x00ef_fec8_u128 << 64);
         self.spliced.splice_effects_before_output(&groups, |i| klipp_nodes::NodeId::from_u128(base ^ i as u128));
         let t = Instant::now();
-        let run = self.executor.execute_linear(&pixels, &self.spliced, width, height, clip_time, grade_frame(clip_time, fps), None, None);
+        let frame = grade_frame(clip_time, fps);
+        // The pixels go straight into the chain, not copied on the CPU for
+        // the Source to upload: a third of a run's time at 720p. A graph
+        // that still wants them on the CPU says so, and runs again.
+        let run = match self.executor.prime_chain_from_linear(&pixels, width, height) {
+            true => match self.executor.execute_linear(&[], &self.spliced, width, height, clip_time, frame, None, None) {
+                Err(klipp_nodes::executor::ExecutorError::CpuSourceRequired) => {
+                    self.executor.execute_linear(&pixels, &self.spliced, width, height, clip_time, frame, None, None)
+                }
+                r => r,
+            },
+            false => self.executor.execute_linear(&pixels, &self.spliced, width, height, clip_time, frame, None, None),
+        };
         self.found.stats.effects_ms += ms_since(t);
         match run {
             Ok((out, _)) if self.executor.last_run_effects_complete() && out.len() == pixels.len() => Ok(out),
