@@ -2165,3 +2165,53 @@ mod append_tests {
         assert_eq!(clip.nodes.len(), before + identity_nodes);
     }
 }
+
+impl NodeGraph {
+    /// Where node `id` is: the Compounds, outermost first, whose graphs
+    /// lead from this one to the graph that holds it. Empty when it is in
+    /// this graph, `None` when it is in none.
+    pub fn path_to_node(&self, id: NodeId) -> Option<Vec<NodeId>> {
+        if self.nodes.iter().any(|n| n.id == id) {
+            return Some(Vec::new());
+        }
+        self.nodes.iter().find_map(|n| {
+            let mut path = n.params.compound_subgraph.as_ref()?.path_to_node(id)?;
+            path.insert(0, n.id);
+            Some(path)
+        })
+    }
+}
+
+#[cfg(test)]
+mod path_to_node_tests {
+    use super::*;
+
+    fn node(kind: NodeKind) -> Node {
+        Node { id: NodeId::new_v4(), kind, label: String::new(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: vec![] }
+    }
+
+    #[test]
+    fn a_node_is_found_where_it_is_however_deep() {
+        let (top, inner, deep) = (node(NodeKind::Exposure), node(NodeKind::Contrast), node(NodeKind::Saturation));
+        let (top_id, inner_id, deep_id) = (top.id, inner.id, deep.id);
+        let mut innermost = NodeGraph::default();
+        innermost.nodes.push(deep);
+        let mut middle = NodeGraph::default();
+        middle.nodes.push(inner);
+        let mut c2 = node(NodeKind::Compound);
+        c2.params.compound_subgraph = Some(innermost);
+        let c2_id = c2.id;
+        middle.nodes.push(c2);
+        let mut c1 = node(NodeKind::Compound);
+        c1.params.compound_subgraph = Some(middle);
+        let c1_id = c1.id;
+        let mut root = NodeGraph::default();
+        root.nodes.push(top);
+        root.nodes.push(c1);
+        assert_eq!(root.path_to_node(top_id), Some(vec![]));
+        assert_eq!(root.path_to_node(c1_id), Some(vec![]), "a Compound is in the graph that holds it");
+        assert_eq!(root.path_to_node(inner_id), Some(vec![c1_id]));
+        assert_eq!(root.path_to_node(deep_id), Some(vec![c1_id, c2_id]));
+        assert_eq!(root.path_to_node(NodeId::new_v4()), None);
+    }
+}

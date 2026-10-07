@@ -1635,7 +1635,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "clip_id": { "type": "string" }, "node_id": { "type": "string" } }),
              vec!["clip_id", "node_id"]),
         tool("klipp_connect_nodes",
-             "Wire one grade node's output into another's input port.",
+             "Wire one grade node's output into another's input port, in one graph.",
              json!({
                  "clip_id": { "type": "string" },
                  "from": { "type": "string", "description": "Source node id" },

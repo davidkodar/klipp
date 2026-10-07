@@ -885,13 +885,9 @@ pub(crate) fn respond(
 
         ControlCommand::ConnectNodes { clip_id: c, from, from_port, to, to_port } => {
             let clip = existing_clip_id(ctx, &c)?;
-            send(AppCommand::ConnectNodes {
-                clip_id: clip,
-                from: existing_node_id(ctx, clip, &from, "from")?,
-                from_port,
-                to: existing_node_id(ctx, clip, &to, "to")?,
-                to_port,
-            })
+            let (from, to) = (existing_node_id(ctx, clip, &from, "from")?, existing_node_id(ctx, clip, &to, "to")?);
+            in_one_graph(ctx, clip, from, to)?;
+            send(AppCommand::ConnectNodes { clip_id: clip, from, from_port, to, to_port })
         }
 
         ControlCommand::SetNodeParam { clip_id: c, node_id, param, value } => {
