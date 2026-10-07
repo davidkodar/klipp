@@ -3,10 +3,10 @@
 //! a window at a mix.
 //!
 //! The mask's lerp is recorded with the blur, in the same chain dispatch
-//! and submit, and the window is drawn on the GPU into the effect's matte
-//! slot in the same encoder (#1242): the chain gains no dispatch, flush,
-//! submit or upload, and no node runs on the CPU. The run holds two pool
-//! slots, the blur's kept input and the window's matte.
+//! and submit, and the window is worked out inside the lerp itself, per
+//! pixel, with no matte written or read (#1242, #1252): the chain gains no
+//! dispatch, flush, submit or upload, and no node runs on the CPU. The run
+//! holds one pool slot, the blur's kept input.
 //!
 //! The counts are the test; the milliseconds are a probe for the quiet
 //! window (`--ignored --nocapture`, release), never asserted: timing under
@@ -86,7 +86,7 @@ fn stats(ex: &mut GraphExecutor, g: &NodeGraph, w: u32, h: u32) -> ChainStats {
 }
 
 #[test]
-fn a_masked_effect_costs_two_slots_and_nothing_on_the_cpu() {
+fn a_masked_effect_costs_one_slot_and_nothing_on_the_cpu() {
     let Some(mut ex) = gpu() else { return };
     let plain = stats(&mut ex, &graph(false), 96, 54);
     let masked = stats(&mut ex, &graph(true), 96, 54);
@@ -95,7 +95,7 @@ fn a_masked_effect_costs_two_slots_and_nothing_on_the_cpu() {
     assert_eq!(chain(&masked), chain(&plain), "the lerp rides the blur's dispatch: {plain:?} -> {masked:?}");
     assert_eq!(masked.cpu_nodes, plain.cpu_nodes, "the window, drawn on the GPU: {plain:?} -> {masked:?}");
     assert_eq!((masked.effect_breaks, masked.effect_mixes_refused), (0, 0), "{masked:?}");
-    assert_eq!((plain.peak_slots, masked.peak_slots), (0, 2), "the blur's input kept for the lerp, and the window's matte");
+    assert_eq!((plain.peak_slots, masked.peak_slots), (0, 1), "the blur's input kept for the lerp, and no matte for the window");
 }
 
 /// The milliseconds behind L3 and L7 at 4K, for the quiet window. L3:
