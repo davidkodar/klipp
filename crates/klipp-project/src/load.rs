@@ -130,7 +130,21 @@ fn read_builtin_effects(value: &serde_json::Value, whose: &str) -> Result<Vec<kl
 /// duplicated sequence keeps its clips' ids. A clip whose stored form
 /// doesn't read, or whose key appears twice, is left out and lifted again
 /// when it's needed.
+///
+/// A grade's LUT path is read as the clip's fields read it (#1270): the
+/// fields resolve a stored name against this machine's LUT library and a
+/// lift of them names a bundled LUT `bundled:<name>`, so a picture saved
+/// with the old absolute path into some `assets/luts/` is given that name
+/// too, or it would never be what the fields give again.
 fn stored_pictures(v2: &serde_json::Value) -> HashMap<(String, String), klipp_timeline::LiftedPicture> {
+    use klipp_core::assets::{bundled_luts_dir, portable_lut_path, resolve_lut_path};
+    let library = bundled_luts_dir();
+    let rule = |s: &str| portable_lut_path(&resolve_lut_path(s, library), library);
+    let portable = |v: &serde_json::Value| {
+        let mut v = v.clone();
+        klipp_graph_lift::load_rewrites::portable_lut_paths(&mut v, &rule);
+        v
+    };
     let mut out = HashMap::new();
     let mut repeated = std::collections::HashSet::new();
     let all = |v: Option<&serde_json::Value>| v.and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
@@ -140,10 +154,10 @@ fn stored_pictures(v2: &serde_json::Value) -> HashMap<(String, String), klipp_ti
                 let (Some(id), Some(picture)) = (clip.get("id").and_then(serde_json::Value::as_str), clip.get("graph_v2")) else {
                     continue;
                 };
-                let Ok(picture) = serde_json::from_value(picture.clone()) else {
+                let Ok(picture) = serde_json::from_value(portable(picture)) else {
                     continue;
                 };
-                let versions: Option<Vec<_>> = all(clip.get("grade_versions")).iter().map(|v| v.get("graph_v2").cloned()).collect();
+                let versions: Option<Vec<_>> = all(clip.get("grade_versions")).iter().map(|v| v.get("graph_v2").map(portable)).collect();
                 if let Some(versions) = versions {
                     let key = (seq.get("id").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(), id.to_string());
                     if out.insert(key.clone(), klipp_timeline::LiftedPicture { picture, versions }).is_some() {
