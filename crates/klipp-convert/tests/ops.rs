@@ -548,16 +548,19 @@ fn nonfinite_mix_and_nonmixable_nodes_refuse_without_landing() {
     let edit = apply_with_catalog(&mut d, &GraphOp::SetMix { path: path.clone(), mix: Some(0.5) }, &RegistryCatalog).unwrap();
     undo(&mut d, &edit).unwrap();
     assert_eq!(snapshot(&d), before);
-    // Invert owns its own blend control, not universal mask/mix.
-    d.clips.get_mut(&u(CLIP)).unwrap().graph.nodes.iter_mut().find(|n| n.id == Uuid::from_u128(TARGET_ID)).unwrap().type_id = "klipp.fx.invert".into();
-    let before = snapshot(&d);
-    for op in [
-        GraphOp::SetMix { path: path.clone(), mix: Some(0.5) },
-        GraphOp::SetMaskChannel { path: path.clone(), channel: Some("red".into()) },
-        GraphOp::Connect { from: clip_path([group(&d)]), from_port: "out".into(), to: path, to_port: "mask".into() },
-    ] {
-        assert!(apply_with_catalog(&mut d, &op, &RegistryCatalog).is_err());
-        assert_eq!(snapshot(&d), before);
+    // Invert owns its own blend control, not universal mask/mix; ChromaKey
+    // makes its own matte and takes neither (D5, the acceptance spec's C10).
+    for type_id in ["klipp.fx.invert", "klipp.fx.chroma_key"] {
+        d.clips.get_mut(&u(CLIP)).unwrap().graph.nodes.iter_mut().find(|n| n.id == Uuid::from_u128(TARGET_ID)).unwrap().type_id = type_id.into();
+        let before = snapshot(&d);
+        for op in [
+            GraphOp::SetMix { path: path.clone(), mix: Some(0.5) },
+            GraphOp::SetMaskChannel { path: path.clone(), channel: Some("red".into()) },
+            GraphOp::Connect { from: clip_path([group(&d)]), from_port: "out".into(), to: path.clone(), to_port: "mask".into() },
+        ] {
+            assert!(apply_with_catalog(&mut d, &op, &RegistryCatalog).is_err(), "{type_id}: {op:?} is refused");
+            assert_eq!(snapshot(&d), before);
+        }
     }
 }
 

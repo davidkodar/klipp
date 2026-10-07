@@ -2024,6 +2024,14 @@ impl GraphExecutor {
                 chain_flush_count += 1;
                 segment_composite_writes = 0;
             }
+            // A mixed effect whose mask is the chain's own picture (the node
+            // feeding its input feeds its mask too) found no pixels for the
+            // mask while that picture was on the GPU: the flush just made
+            // them, so the mask is read again. Without it the mix ran with
+            // no matte, white, and the whole effect was drawn.
+            if self.effect_mask.is_none() && self.effect_window.is_none() && matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment) && node.params.effect_blend.is_some() {
+                self.effect_mask = graph.input_of(node_id, 1).and_then(|id| node_outputs.get(&id)).filter(|m| !m.is_empty()).cloned();
+            }
 
             if bypass && node.kind != NodeKind::Source && node.kind != NodeKind::Output {
                 let passthrough = match primary_input_id.and_then(|id| node_outputs.get(&id)) {
