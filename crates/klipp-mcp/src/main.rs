@@ -1432,7 +1432,7 @@ fn tool(name: &str, description: &str, mut properties: Value, required: Vec<&str
     if WRITE_TOOLS.contains(&name) || RETRYABLE_TOOLS.contains(&name) {
         properties["idempotency_key"] = json!({
             "type": "string",
-            "description": "Reuse the same key when retrying this exact write after a lost reply; Klipp keeps keys only while this app run lasts"
+            "description": "Lost-reply retry: same key, identical write. Keys expire on app exit."
         });
     }
     // Keep every tool's guidance discoverable. For the few large argument
@@ -1585,17 +1585,11 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "clip_id": { "type": "string", "description": "The clip to split" } }),
              vec!["clip_id"]),
         tool("klipp_track_surface",
-             "Follow a flat surface in a clip (a phone or laptop screen, a monitor, a sign, a book \
-              cover) in perspective through the clip, so a picture can be pinned to it with the pin \
-              op. Give click, a point inside it as fractions of the frame, and its corners are found \
-              from the edges round it; or give its four corners on one frame, top left, top right, \
-              bottom right, bottom left, as fractions of the frame: read them off klipp_frame_at at at_secs. Runs in the \
-              background; the surface then shows under the clip in klipp_list_clips with its id and \
-              the stretch it was followed over, one undo step. The track stops where the surface is \
-              lost (covered, out of frame, blurred) rather than drifting: look at frames near there. \
-              To continue past where it was lost, put the corners right on a frame there and track \
-              the same surface again with direction forward (or backward): the new stretch is laid \
-              over the old track and the rest kept.",
+             "Track a planar surface in perspective for the pin op. Supply click or corners (see fields), measured with \
+              klipp_frame_at at at_secs. Runs asynchronously as one undo step; klipp_list_clips reports the surface id \
+              and tracked range. Tracking stops on occlusion, blur or leaving frame; inspect nearby frames. Resume by \
+              correcting corners on a later frame, specifying the same surface and direction forward/backward. The new \
+              range replaces overlapping tracking and preserves the rest.",
              json!({
                  "clip_id": { "type": "string", "description": "The clip of footage the surface is in" },
                  "click": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "number" }, "description": "[x,y] inside the surface, fractions of the frame; instead of corners" },
@@ -1721,19 +1715,12 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec![]),
         tool("klipp_analyze",
-             "Find what is in the footage, in the background: shot boundaries (where the \
-              picture cuts), EBU R128 loudness and true peak, the spans of silence, and \
-              the transcript with word timestamps and the language when the speech model \
-              is downloaded, the beat sheet of a screen recording, and its on-screen text \
-              (OCR) when those models are downloaded. Those two run only on a screen recording: a file \
-              with no camera metadata, or one tagged screen (klipp_tag_media) to ask for them. \
-              One media item by id, or every file in the pool when \
-              media_id is omitted. Pass wait true to wait for completion, then read \
-              klipp_media_analysis. Items already analysed cost nothing. Runs on import \
-              too, without downloading anything: pass download_models to fetch the \
-              missing models once, with the user's knowledge — the speech model is \
-              large (hundreds of MB), the OCR pair about 10 MB; each is only fetched \
-              when its feature is on in preferences.",
+             "Background analysis: shot boundaries, EBU R128 loudness/true peak, silence, and word-timed \
+              transcript/language if the speech model is installed. Beat sheet and OCR require screen footage (no \
+              camera metadata or tagged screen via klipp_tag_media) and their installed models. Omit media_id for the \
+              pool; analyzed items are free. Also runs on import without downloads. wait true waits, then read \
+              klipp_media_analysis. download_models fetches missing enabled-in-preferences models with user knowledge: \
+              speech hundreds of MB, OCR pair about 10 MB.",
              json!({
                  "media_id": { "type": "string", "description": "From klipp_list_media; omit for every item" },
                  "wait": { "type": "boolean", "description": "Wait until all requested items end; inspect finished and succeeded" },
@@ -1758,20 +1745,13 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" }, "all": { "type": "boolean", "description": "every line read, not the summary of headings and lines that stayed up" } }),
              vec!["media_id"]),
         tool("klipp_grade_to_target",
-             "Grade every shot of the top picture track (or one clip) to the brief's look, by \
-              measurement: each shot's frame is read in CIELAB (black, white and mid lightness, \
-              contrast, chroma, the cast on its neutrals, and every face's skin hue), judged \
-              against the look's numbers, and the primaries are moved toward the target — lift \
-              from the black point, gain from the white, exposure from the median, temperature \
-              and tint from the cast, saturation from the chroma — then read again, up to three \
-              rounds. Each knob moves at most so far from where the shot started (strength gentle, \
-              the default; normal; bold), and a round that turns a sky from blue, foliage from \
-              green, skin off its band or colours garish is put back and the shot left there. \
-              A dry run reports where every shot stands and the first step it would take; shots \
-              of one file are named as a scene to grade together. apply true grades them, the \
-              whole pass as one undo step. A screen recording is held only to its cast \
-              and to clipping. Then klipp_skin_balance for a face still off the band, and a \
-              look (klipp_look) for style on top.",
+             "Measure the top picture track or clip against the brief look in CIELAB: black/white/mid lightness, \
+              contrast, chroma, neutral cast and each face skin hue. Adjust lift/black, gain/white, exposure/median, \
+              temperature+tint/cast and saturation/chroma; remeasure for up to three rounds. Strength limits changes \
+              from the starting grade. Revert and stop a shot if sky/foliage/skin hues drift or colors become garish. \
+              Preview reports current measurements and first adjustments, grouping shots from one file as a scene. \
+              apply true makes one undo step. Screen recordings are checked only for cast/clipping. Follow with \
+              klipp_skin_balance for skin and klipp_look for style.",
              json!({ "clip_id": { "type": "string" }, "apply": { "type": "boolean" }, "rounds": { "type": "integer" }, "force": { "type": "boolean" }, "strength": { "type": "string", "enum": ["gentle", "normal", "bold"], "description": "how far each knob may move from where the shot started; gentle unless asked" } }), vec![]),
         tool("klipp_audio_spectrum",
              "A file's sound as frequency against time: where a hum starts, when a hiss creeps \
@@ -1876,17 +1856,12 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               and whether music sits under speech. A read; about a tenth of the stretch's length.",
              json!({ "from_secs": { "type": "number" }, "to_secs": { "type": "number" }, "step_secs": { "type": "number" } }), vec![]),
         tool("klipp_auto_sfx",
-             "Sound design from the cut, as one undo step with apply true (a preview without): \
-              a whoosh on cuts, a click on reveals, a riser into the last cut. on picks the cuts a \
-              whoosh goes on: cuts (every one, the default), transitions (cuts carrying one) or \
-              stylised (zoom, whip, glitch, film burn and the like; never a dissolve or a dip, \
-              which want quiet). Optional media \
-              ids choose your effects. With no ids, previews short built-in whooshes; apply \
-              synthesizes and imports the sound automatically. Conflicting placements are \
-              skipped so a dense montage does not abort the sound pass. Effects go on the \
-              SFX track, marked sfx, each levelled against what plays under it (a whoosh 3 dB over \
-              the loudest sound there, a click 3 dB under) when both are analysed, else at -6/-8 dB. \
-              Existing clips are preserved.",
+             "Preview sound design; apply true commits one undo step: whooshes on cuts, clicks on reveals, riser into \
+              last cut. on cuts is default; transitions selects cuts with transitions; stylised selects \
+              zoom/whip/glitch/film-burn, excluding dissolve/dip. Optional media ids select sounds; otherwise preview \
+              built-in whooshes, then synthesize/import on apply. Skip conflicting placements, preserve existing clips. \
+              Place on SFX track with sfx role. When both sources are analyzed, whooshes are 3 dB above the loudest \
+              underlying sound and clicks 3 dB below; otherwise -6/-8 dB.",
              json!({ "whoosh": { "type": "string" }, "click": { "type": "string" }, "riser": { "type": "string" }, "on": { "type": "string", "enum": ["cuts", "transitions", "stylised"] }, "apply": { "type": "boolean" } }), vec![]),
         tool("klipp_auto_redact",
              "Hide everything the screen text found sensitive — emails, keys, passwords, card \
@@ -2495,14 +2470,11 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               imported and analysed first.",
              json!({ "media_id": { "type": "string" } }), vec!["media_id"]),
         tool("klipp_search_music",
-             "Search royalty-free music by mood or genre (e.g. \"upbeat electronic\", \"calm \
-              piano\", \"cinematic\") from Jamendo, best match to the words first. Each result \
-              shows its title, artist, length, tags, pace and licence — including whether it \
-              clears commercial use. Pass listen: 3 to hear the first three previews, or \
-              listen: [track_id, …] for results further down, without importing them: tempo, how \
-              clear the beat is, and the energy over the track (steady, builds, falls away). Then add one with klipp_add_music. Needs a Jamendo \
-              client id in the user's key config. Use the reference's feel (style_profile) to \
-              pick music of matching energy — never the reference's own track.",
+             "Search Jamendo royalty-free music by mood/genre, best textual match first. Results give title, artist, \
+              duration, tags, pace and licence/commercial clearance. listen previews up to five without importing \
+              (count from first or track-id list), reporting tempo, beat clarity and energy evolution. Import via \
+              klipp_add_music. Requires Jamendo client id in user key config. Match reference energy using \
+              style_profile; never reuse its track.",
              json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "commercial_only": { "type": "boolean", "description": "only tracks whose licence allows commercial use" }, "instrumental": { "type": "boolean", "description": "only instrumental tracks, for a promo with its own titles" }, "listen": { "description": "hear previews (at most 5): the first this-many, or [track_id, …]; tempo, beat and energy, nothing imported", "oneOf": [{ "type": "integer" }, { "type": "array", "items": { "type": "string" } }] } }), vec!["query"]),
         tool("klipp_search_sfx",
              "Search royalty-free sound effects by keyword (e.g. \"whoosh\", \"door slam\", \"rain\", \
@@ -2522,15 +2494,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "title": { "type": "string" }, "artist": { "type": "string" }, "track_id": { "type": "string" }, "download_url": { "type": "string" }, "preview_url": { "type": "string" }, "license": { "type": "string" }, "license_url": { "type": "string" }, "page_url": { "type": "string" } }),
              vec![]),
         tool("klipp_match_grade",
-             "Match one shot's grade to another's. It reads a frame of each clip through the \
-              scopes and sets the target's exposure, lift, gain, temperature and tint to bring \
-              its black, mid and white points and its colour balance toward the reference — the \
-              continuity grade, so shots that sit next to each other look like one scene. The \
-              frames are secs and reference_secs when given (timeline seconds, inside each \
-              clip), else the middle of each clip's longest detected shot — so a clip with a \
-              cut in it is read inside one shot, not across the cut. A first pass, applied as \
-              one undo step; verify with klipp_check color or klipp_frame_stats and refine \
-              with grade. Both must be picture clips.",
+             "Match picture clips using scope measurements: adjust target exposure/lift/gain/temperature/tint toward \
+              reference black/mid/white and color balance. secs/reference_secs select timeline frames inside each clip; \
+              otherwise use the midpoint of each longest detected shot, avoiding cuts. One undo step; verify this first \
+              pass with klipp_check color or klipp_frame_stats, then refine with grade.",
              json!({ "clip_id": { "type": "string", "description": "the shot to grade" }, "reference_clip_id": { "type": "string", "description": "the shot to match it to" }, "secs": { "type": "number", "description": "the target frame to read, timeline seconds inside the clip" }, "reference_secs": { "type": "number", "description": "the reference frame to read, timeline seconds inside it" } }),
              vec!["clip_id", "reference_clip_id"]),
         tool("klipp_align_audio",
@@ -2560,14 +2527,11 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               piece asks for, on top of the grade, never a substitute for grading to the numbers.",
              json!({ "category": { "type": "string", "description": "a category to list in full, e.g. cinematic or film-print" } }), vec![]),
         tool("klipp_look",
-             "Put a creative look on a picture clip: a bundled 3D LUT, chosen by name (see \
-              klipp_looks), as one node after the grade so it sits on the corrected image. name \
-              is category/name or any words that pick one out; opacity (0-1, default 1) fades it \
-              in; remove clears it. Applied as one undo step. Grade for exposure and continuity \
-              first, then a look for style. See it with frame_at. One look over a whole piece or \
-              a scene: on \"timeline\" puts it on the timeline grade, after every clip's own; on \
-              {group} puts it on a grade group's post-clip grade (make the group with the \
-              grade_group op) — one call, one undo step, and every clip follows a later change.",
+             "Apply a bundled 3D LUT after the grade on a picture clip, as one undo step. Choose category/name or \
+              identifying words from klipp_looks; opacity 0-1 defaults to 1; remove clears it. Correct \
+              exposure/continuity first; verify with frame_at. on timeline applies after clip grades. on {group} uses \
+              the group post-clip grade (create via grade_group); one call updates the whole scene/piece and later \
+              changes affect every member.",
              json!({ "clip_id": { "type": "string" }, "on": { "description": "instead of clip_id: \"timeline\", {\"group\": name, \"stage\": \"post\" (default) or \"pre\"}, or {\"track\": index or kind, \"from\"?, \"to\"?} for every picture clip of a track, with \"itself\": true for the track's own grade" }, "name": { "type": "string", "description": "a look name from klipp_looks, or an absolute .cube path" }, "opacity": { "type": "number" }, "remove": { "type": "boolean" } }),
              vec![]),
         tool("klipp_orient",
@@ -2583,31 +2547,20 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               the user for what it should say and set it.",
              json!({}), vec![]),
         tool("klipp_set_brief",
-             "Replace the brief, as one undo step; with merge true, change only the fields \
-              given and keep the rest (a field given as null is cleared, a name the brief \
-              does not have is refused). A brief is an object with any of: title, \
-              type_styles (the brand's type system: [{name, font?, bold?, size?, color?, \
-              fill?, backing?, full_frame?, x?, y?, align?, outline?, outline_color?, glow?, \
-              glow_color?, gradient?, animate?, animate_secs?, stagger?, enter?, exit?, loop_effect?}] — a \
-              title op or a plan title names one by style and its own fields override; enter/exit use the title op motion object, including kind none to disable; \
-              heading, callout and card are built in and a style of that name replaces it), \
-              about (what the piece is about), tone, platform, target_secs, width and height \
-              (the delivery's picture), loudness_lufs (about -14 for the web, -23 for \
-              broadcast), captions (bool), music (bool), cast (a list of {name, role, \
-              described}), features (a list of {title, description, rank}: what the piece \
-              shows off, 1 the headline — the edit plan's segments name these), arc (its \
-              shape: \"hook, three features, call to action\"), cta (what the viewer is asked \
-              to do), brand_colors ([\"#rrggbb\", ...], the first is what titles take), \
-              look ({name} for a preset — broadcast_neutral, web_punchy, film_soft, \
-              warm_interview, cool_tech, screencast — or the numbers black_l, white_l, mid_l, \
-              contrast_range, chroma_mean, cast_a, cast_b, skin_hue; style_profile lifts a \
-              look_target from a reference to paste here), \
-              vocabulary (names, products and terms as they are spelt, for the \
-              speech-to-text: run klipp_analyze after setting it), language (the speech's \
-              ISO 639-1 code, \"en\", \"sv\", for the speech-to-text; left out it is detected per \
-              file), notes. What is left out asks for nothing. Names in lower thirds \
-              come from the cast, klipp_check holds the piece to the brief, and an export \
-              that names no size or loudness takes the brief's.",
+             "Fields (all optional): title, about, tone, platform, target_secs, width, height, loudness_lufs (web -14, \
+              broadcast -23), captions/music (bool), cast [{name,role,described}], features [{title,description,rank}] \
+              (rank 1 headline; plan segments reference titles), arc (e.g. hook/features/CTA), cta, brand_colors \
+              [\"#rrggbb\",...] (first is title default), notes. type_styles: \
+              [{name,font?,bold?,size?,color?,fill?,backing?,full_frame?,x?,y?,align?,outline?,outline_color?,glow?,glow_color?,gradient?,animate?,animate_secs?,stagger?,enter?,exit?,loop_effect?}]. \
+              Title ops/plan titles select style by name and override its fields. Built-ins heading/callout/card can be \
+              replaced. enter/exit use title motion objects; kind none disables. look: {name} preset \
+              broadcast_neutral|web_punchy|film_soft|warm_interview|cool_tech|screencast, or \
+              black_l,white_l,mid_l,contrast_range,chroma_mean,cast_a,cast_b,skin_hue; style_profile supplies a \
+              reference look_target. vocabulary: correctly spelt names/products/terms for speech recognition; run \
+              klipp_analyze after setting. language: ISO 639-1 speech code (en,sv); omitted detects per file. Omitted \
+              fields request nothing. Lower thirds use cast names; klipp_check checks the brief; exports inherit \
+              omitted size/loudness. Unknown fields refused. Replacement/merge/null semantics are in the tool \
+              description.",
              json!({ "brief": { "type": "object" }, "merge": { "type": "boolean", "description": "change only the fields given; the rest stay" } }), vec!["brief"]),
         tool("klipp_edit_plan",
              "The edit plan: the paper edit, as text and as JSON, with whether it is approved and \
@@ -2652,21 +2605,14 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               Refused while the plan is unapproved. `detail` adds every step as JSON.",
              json!({ "apply": { "type": "boolean" }, "detail": { "type": "boolean" } }), vec![]),
         tool("klipp_check",
-             "The check before delivery, as an editor would watch it once: black and flash \
-              frames, jump cuts with nothing over the join, titles across a cut or too short \
-              to read, captions under a lower third, sound cut inside a word, music left at \
-              full level under speech, picture and sound ending apart, offline media, and \
-              the brief: length, size, captions, cast, music. On a screen recording with a \
-              beat sheet: a cut in or out while the screen is still changing, a screen too \
-              short to read, a title over a changing screen (with the file's hold windows \
-              to move it to), a flat cadence; a cut to a settle is not called a jump cut. \
-              With an edit plan: the brief's features it leaves out or gives under three \
-              seconds, and an approved plan not built or drifted from. Every finding says where, \
-              what, and what would put it right. Changes nothing. Run it before klipp_export, \
-              fix the errors, decide about the warnings. Pass color:true to also read a \
-              frame of each shot on the top track through the scopes — clipped highlights, \
-              crushed blacks, a dull picture, over-saturation, skin off the skin-tone line \
-              — so the grade is checked to the numbers, not by eye. Slower: it renders frames.",
+             "Read-only pre-export checks: black/flash frames, uncovered jump cuts, titles spanning cuts or too short, \
+              captions under lower thirds, cuts inside words, unducked music, mismatched picture/audio ends, offline \
+              media; brief length/size/captions/cast/music. With screen beat sheets: cuts during changes, short reading \
+              holds, titles over changing screens (suggests hold windows), flat cadence; cuts to settled screens are \
+              not jump cuts. With plans: missing brief features or under-three-second coverage, approved plans unbuilt \
+              or drifted. Findings give location, cause and remedy. Before klipp_export, fix errors and assess \
+              warnings. color true additionally renders one frame per top-track shot to measure clipping, crushed \
+              blacks, dullness, excess saturation and skin-line deviations; slower.",
              json!({ "color": { "type": "boolean", "description": "also measure a frame of every shot through the scopes for grade faults (slower)" } }), vec![]),
         tool("klipp_rename_sequence",
              "Name the active sequence: what the timeline is called in the app and in the \
