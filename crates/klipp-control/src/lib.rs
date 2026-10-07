@@ -683,6 +683,8 @@ fn handle(
             | ControlCommand::Fonts
             | ControlCommand::NodeTypes { .. }
         ) => requests::editing::respond(ctx, cmd, collect),
+        #[cfg(feature = "test-hooks")]
+        cmd @ ControlCommand::EffectCommand { .. } => requests::editing::respond(ctx, cmd, collect),
         cmd @ (ControlCommand::Selects { .. }
             | ControlCommand::SearchMusic { .. }
             | ControlCommand::SearchSfx { .. }

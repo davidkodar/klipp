@@ -191,6 +191,27 @@ pub(crate) fn respond(
             send(AppCommand::SelectClip(id))
         }
 
+        #[cfg(feature = "test-hooks")]
+        ControlCommand::EffectCommand { clip_id, action, index, to, effect } => {
+            use crate::protocol::EffectAction as A;
+            let clip_id = existing_clip_id(ctx, &clip_id)?;
+            let effect = || -> Result<klipp_effects::BuiltinEffect, String> {
+                serde_json::from_value(effect.clone().ok_or("this action carries an effect")?).map_err(|e| format!("the effect: {e}"))
+            };
+            // The inspector's drag key for the effect at this place.
+            let key = format!("{clip_id:?}:builtin:{index}");
+            send(match action {
+                A::Add => AppCommand::AddBuiltinEffect { clip_id, effect: effect()? },
+                A::Remove => AppCommand::RemoveBuiltinEffect { clip_id, index },
+                A::Toggle => AppCommand::ToggleBuiltinEffectEnabled { clip_id, index },
+                A::Update | A::DragStep => AppCommand::UpdateBuiltinEffect { clip_id, index, effect: effect()? },
+                A::Reorder => AppCommand::ReorderBuiltinEffect { clip_id, from_index: index, to_index: to },
+                A::DragBegin => AppCommand::BeginEffectDrag { key, clip_id, effect_index: index, old_effect: effect()? },
+                A::DragEnd => AppCommand::EndEffectDrag { key, clip_id, effect_index: index, new_effect: effect()? },
+                A::DragAbandon => AppCommand::AbandonEffectDrag { clip_id, effect_index: index, added: false },
+            })
+        }
+
         ControlCommand::Plan { ops, detail } => {
             if in_batch {
                 return read_in_batch("plan");
