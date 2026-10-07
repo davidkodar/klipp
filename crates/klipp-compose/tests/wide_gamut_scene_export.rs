@@ -96,6 +96,33 @@ fn target() -> klipp_effects::gpu::Yuv420Target {
     }
 }
 
+/// A linear frame encoded as the CPU export encodes it for this target:
+/// the display transform, then BT.709 limited-range Y'CbCr, planar 4:2:0
+/// with each chroma sample the mean of its 2x2 block.
+fn yuv420(px: &[f32]) -> Vec<u8> {
+    let display = klipp_color::display::ExportDisplay::new(klipp_core::ToneMapOp::None, klipp_core::WorkingColorspace::Rec709Linear, klipp_core::OdtChoice::MatchViewer);
+    let [kr, kg, kb] = LUMA_709;
+    let ycc: Vec<[f32; 3]> = px
+        .chunks_exact(4)
+        .map(|p| {
+            let e = display.encode([p[0], p[1], p[2]]);
+            let y = kr * e[0] + kg * e[1] + kb * e[2];
+            [y, (e[2] - y) / (2.0 * (1.0 - kb)), (e[0] - y) / (2.0 * (1.0 - kr))]
+        })
+        .collect();
+    let q = |v: f32| (v + 0.5).clamp(0.0, 255.0) as u8;
+    let mut out: Vec<u8> = ycc.iter().map(|c| q(16.0 + 219.0 * c[0])).collect();
+    for k in [1, 2] {
+        for j in 0..(H / 2) as usize {
+            for i in 0..(W / 2) as usize {
+                let at = |dx: usize, dy: usize| ycc[(2 * j + dy) * W as usize + 2 * i + dx][k];
+                out.push(q(128.0 + 224.0 * (at(0, 0) + at(1, 0) + at(0, 1) + at(1, 1)) / 4.0));
+            }
+        }
+    }
+    out
+}
+
 #[test]
 fn a_wide_gamut_scene_referred_clip_exports_to_sdr_as_the_renderer_draws_it() {
     if klipp_effects::gpu::GpuEffectsPipeline::new().is_none() {
@@ -119,18 +146,17 @@ fn a_wide_gamut_scene_referred_clip_exports_to_sdr_as_the_renderer_draws_it() {
         let (planes, _) = r
             .render_yuv420_on_gpu(&seq, tc(0.5), W, H, &mut src, RenderOptions::default(), target())
             .unwrap_or_else(|| panic!("{transfer:?}: the GPU export refused: {:?}", r.last_decline()));
-        let px = renderer().render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default());
-        let display = klipp_color::display::ExportDisplay::new(klipp_core::ToneMapOp::None, klipp_core::WorkingColorspace::Rec709Linear, klipp_core::OdtChoice::MatchViewer);
-        let want: Vec<u8> = px
-            .chunks_exact(4)
-            .map(|p| {
-                let e = display.encode([p[0], p[1], p[2]]);
-                let y = LUMA_709[0] * e[0] + LUMA_709[1] * e[1] + LUMA_709[2] * e[2];
-                (16.0 + y * 219.0 + 0.5).clamp(0.0, 255.0) as u8
-            })
-            .collect();
-        let worst = planes[..want.len()].iter().zip(&want).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
-        eprintln!("{transfer:?} in BT.2020 -> SDR: GPU export vs the renderer, worst {worst} levels");
-        assert!(worst <= 1, "{transfer:?}: the GPU export differs from the renderer by {worst} levels");
+        // The reference is the CPU's own render, with the GPU off.
+        let mut cpu = renderer();
+        cpu.set_gpu_enabled(false);
+        let px = cpu.render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default());
+        let want = yuv420(&px);
+        let (y_len, c_len) = ((W * H) as usize, (W * H / 4) as usize);
+        for (name, at, len, bar) in [("Y", 0, y_len, 1), ("Cb", y_len, c_len, 2), ("Cr", y_len + c_len, c_len, 2)] {
+            let (got, want) = (&planes[at..at + len], &want[at..at + len]);
+            let worst = got.iter().zip(want).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
+            eprintln!("{transfer:?} in BT.2020 -> SDR: {name}, GPU export vs the CPU render, worst {worst} levels");
+            assert!(worst <= bar, "{transfer:?}: {name} differs from the CPU render by {worst} levels");
+        }
     }
 }
