@@ -426,10 +426,6 @@ fn gpu_producers_keep_the_whole_case_on_the_chain() {
     }
 }
 
-/// C9 through a published Grade-group port (D1): each producer inside a
-/// group, its matte published and read by the effect outside it.
-#[test]
-#[ignore = "a producer reached through a published Grade-group port needs a picture-truth clip (9c-2); un-ignored by that PR (on the M2 close-out list)"]
-fn every_producer_through_a_published_group_port_matches_the_oracle() {
-    unimplemented!("needs picture-truth clips and published ports in the executor's input, which arrive with 9c-2");
-}
+// C9 through a published Grade-group port (D1) is
+// klipp-compose's `published_producer_masks.rs`: the lowering from a
+// clip's published port to the run's nodes is the renderer's (9c-2).
