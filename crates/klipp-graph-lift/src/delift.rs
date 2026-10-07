@@ -138,7 +138,18 @@ pub fn clip(p: &ClipPicture) -> Result<ClipRecordV2, Refusal> {
             lt::TEMPORAL_DENOISE => builtins.push((slot(n)?, restore(n.clone(), types::LEGACY_TEMPORAL_DENOISE))),
             lt::FRAME_BLEND => builtins.push((slot(n)?, restore(n.clone(), types::LEGACY_SPEED_RAMP))),
             lt::GROUP => {
-                let lifted = &n.group.as_ref().ok_or("a grade group without a body")?.graph;
+                let group = n.group.as_ref().ok_or("a grade group without a body")?;
+                // Today's grade model has nowhere to keep a published port,
+                // so a picture that publishes one is refused rather than
+                // loaded without it and saved back with it gone (#1183).
+                if !group.interface.is_empty() {
+                    return Err(format!(
+                        "the grade group {} publishes ports ({}), which this Klipp can't keep yet",
+                        n.id,
+                        group.interface.iter().map(|p| p.key.as_str()).collect::<Vec<_>>().join(", "),
+                    ));
+                }
+                let lifted = &group.graph;
                 let mut g = restore(n.clone(), types::LEGACY_GRADE);
                 // The structural grade group is always on: a looping grade
                 // the lift kept off was on as stored.
