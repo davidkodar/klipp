@@ -123,3 +123,33 @@ fn chained_gates_each_keep_the_picture_outside_their_matte() {
 fn an_ungated_graph_runs_as_it_is() {
     assert!(NodeGraph::default().with_gates_applied().is_none());
 }
+
+/// C6 (#1089, M2 step 9c): a grade node gated by a matte (a lifted gate
+/// carries `legacy_flags.alpha_one`) writes alpha 1 wherever its gate
+/// reads, the gate fully closed included, whatever alpha came in. A new
+/// mask on an effect lerps alpha instead (`mask_mix_node.rs`).
+#[test]
+fn a_legacy_gate_keeps_alpha_one_at_both_ends() {
+    let mut g = NodeGraph::default();
+    let (q, c) = g.ensure_masked_secondary(NodeKind::Corrector);
+    for n in &mut g.nodes {
+        if n.id == q {
+            n.params.qualifier = Some(klipp_core::QualifierSettings { enabled: true, hue_center: 0.0, hue_width: 60.0, sat_low: 0.1, ..Default::default() });
+        }
+        if n.id == c {
+            n.params.saturation = Some(0.2);
+        }
+    }
+    // Half-transparent: a gate that kept the input's alpha would show it.
+    let source: Vec<f32> = (0..W * H).flat_map(|i| [(i % W) as f32 / W as f32, 0.3, 0.6, 0.5]).collect();
+    let mut runs = vec![("cpu", GraphExecutor::new_cpu_only())];
+    let mut gpu = GraphExecutor::new();
+    if gpu.gpu_pipeline_or_init().is_some() {
+        runs.push(("gpu", gpu));
+    }
+    for (name, mut ex) in runs {
+        let out = ex.execute_linear(&source, &g, W, H, 0.0, 0, None, None).unwrap().0;
+        let alphas: std::collections::BTreeSet<u32> = out.chunks_exact(4).map(|p| p[3].to_bits()).collect();
+        assert_eq!(alphas.into_iter().collect::<Vec<_>>(), vec![1.0f32.to_bits()], "{name}: every gated pixel's alpha is 1");
+    }
+}

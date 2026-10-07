@@ -11,6 +11,42 @@ use crate::kinds::NodeKind;
 use crate::params::{MatteChannel, NodeParams};
 use klipp_core::{BlendMode, LayerMixerInput};
 
+/// Whether an effect node's blend leaves its input as it was (phase 2b M2,
+/// step 9c): a mix of 0, or a mask whose producer is switched off at this
+/// frame, which gives no coverage. The node then passes its input on.
+fn effect_blend_is_none(graph: &NodeGraph, node: &Node, clip_time_secs: f64) -> bool {
+    let Some(blend) = node.params.effect_blend else { return false };
+    let mask_off = graph
+        .input_of(node.id, 1)
+        .and_then(|id| graph.nodes.iter().find(|n| n.id == id))
+        .is_some_and(|producer| !effective_enabled(producer, clip_time_secs));
+    blend.mix == 0.0 || mask_off
+}
+
+/// An effect node's result mixed back over its input on the CPU: by its
+/// mix, and by the coverage `mask` gives (none is white). A mix or a mask
+/// that can't be read gives no coverage: the input, never the effect
+/// whole, which would draw a masked effect unmasked. `None` says so.
+fn mix_effect_cpu(blend: crate::params::EffectBlend, luma: [f32; 3], input: &[f32], effect: Vec<f32>, mask: Option<&[f32]>) -> Option<Vec<f32>> {
+    let rows = |v: &[f32]| -> Vec<[f32; 4]> { v.chunks_exact(4).map(|p| [p[0], p[1], p[2], p[3]]).collect() };
+    let mixer = match klipp_effects::mask_mix::MaskMix::new(blend.mix, blend.channel, luma) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("an effect's mix: {e}; the effect is skipped");
+            return None;
+        }
+    };
+    let (rows_in, fx, mask) = (rows(input), rows(&effect), mask.map(rows));
+    let mut out = vec![[0.0f32; 4]; rows_in.len()];
+    match mixer.apply(&rows_in, &fx, mask.as_deref(), &mut out) {
+        Ok(()) => Some(out.into_iter().flatten().collect()),
+        Err(e) => {
+            tracing::warn!("an effect's mask: {e}; the effect is skipped");
+            None
+        }
+    }
+}
+
 /// Reserved keyframe track name that animates a node's enabled / bypass state.
 /// Values >= 0.5 mean enabled, < 0.5 mean bypassed. Falls back to the static
 /// `node.enabled` bool when the track has no keyframes.
@@ -68,6 +104,11 @@ pub enum ExecutorError {
     /// anyway. Callers realise the pixels and retry.
     #[error("node graph needs CPU source pixels but none were supplied")]
     CpuSourceRequired,
+    /// A mixed effect's mask is wired to a node that gave no matte the run
+    /// can read (step 9c). An unwired mask is white; a wired one that
+    /// gives nothing is never taken for white.
+    #[error("the mask of effect node {0} is wired but its matte isn't there")]
+    MaskUnavailable(NodeId),
 }
 
 /// Executes a node graph on RGBA frames.
@@ -205,6 +246,12 @@ pub struct GraphExecutor {
     keep_output_on_gpu: bool,
     /// Effect-node chain breaks in the run so far (`ChainStats`).
     run_effect_breaks: u32,
+    /// Mixed effect nodes whose mix or mask couldn't be read, skipped
+    /// (`ChainStats::effect_mixes_refused`).
+    run_mix_refused: u32,
+    /// The matte the next mixed effect node's mask reads, handed from the
+    /// run to its dispatch (step 9c).
+    effect_mask: Option<Arc<Vec<f32>>>,
     /// An effect node of the last run could not apply its effects (a
     /// lost device): its picture lacks them. See
     /// [`Self::last_run_effects_complete`].
@@ -601,6 +648,8 @@ impl GraphExecutor {
             chain_thumbs: None,
             keep_output_on_gpu: false,
             run_effect_breaks: 0,
+            run_mix_refused: 0,
+            effect_mask: None,
             run_effects_incomplete: false,
             plans: HashMap::new(),
             plan_compiles: 0,
@@ -665,6 +714,8 @@ impl GraphExecutor {
             chain_thumbs: None,
             keep_output_on_gpu: false,
             run_effect_breaks: 0,
+            run_mix_refused: 0,
+            effect_mask: None,
             run_effects_incomplete: false,
             plans: HashMap::new(),
             plan_compiles: 0,
@@ -1583,6 +1634,7 @@ impl GraphExecutor {
         self.output_on_gpu = None;
         self.run_effect_breaks = 0;
         self.run_effects_incomplete = false;
+        self.run_mix_refused = 0;
         let keep = std::mem::take(&mut self.keep_output_on_gpu);
         // (Thumbnails also rule it out: they are read once the chain's
         // last submit is in, and a result kept on the GPU never submits.)
@@ -1690,7 +1742,8 @@ impl GraphExecutor {
             let bypass = !effective_enabled(node, clip_time_secs)
                 || (is_param_driven_filter && params_for_frame(node, clip_time_secs).is_default())
                 || neutral_corrector
-                || noop_input_transform;
+                || noop_input_transform
+                || effect_blend_is_none(graph, node, clip_time_secs);
 
             // If a chain is live, see whether this node can extend it or
             // whether we must flush the tail back to CPU first.
@@ -1771,7 +1824,25 @@ impl GraphExecutor {
             });
             let composite_ready = composite_route.is_some() && self.gpu.is_some();
 
+            // A mixed effect's matte goes up from the CPU (step 9c-1): one
+            // only on the GPU sends the node the CPU way for now. So a node
+            // feeding a mixed effect's mask runs off the chain, its matte
+            // made on the CPU where the effect can read it.
+            let feeds_a_mask = graph.nodes.iter().any(|n| {
+                matches!(n.kind, NodeKind::Effect | NodeKind::EffectSegment) && n.params.effect_blend.is_some() && graph.input_of(n.id, 1) == Some(node_id)
+            });
+            let effect_mask = match (node.kind, node.params.effect_blend) {
+                (NodeKind::Effect | NodeKind::EffectSegment, Some(_)) => graph.input_of(node_id, 1).map(|id| node_outputs.get(&id).filter(|m| !m.is_empty()).cloned()),
+                _ => None,
+            };
+            let effect_mask_ready = !matches!(effect_mask, Some(None));
+            // Handed to the dispatch, whichever way the node is dispatched
+            // (extending a chain, or starting one); each node sets it anew,
+            // so nothing carries over to another.
+            self.effect_mask = effect_mask.clone().flatten();
             let can_extend_chain = !bypass
+                && effect_mask_ready
+                && !feeds_a_mask
                 && (primary_is_chain_tail || secondary_keyer_ready)
                 && chain_tail_fan_out_one
                 && (secondary_chain_node
@@ -2269,6 +2340,13 @@ impl GraphExecutor {
             let tertiary_slice = tertiary
                 .filter(|arc| !arc.is_empty())
                 .map(|v| v.as_slice());
+            if matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment)
+                && node.params.effect_blend.is_some()
+                && graph.input_of(node_id, 1).is_some()
+                && secondary_slice.is_none()
+            {
+                return Err(ExecutorError::MaskUnavailable(node_id));
+            }
 
             // Execute the node
             let output = self.execute_node(
@@ -2327,6 +2405,10 @@ impl GraphExecutor {
         }
 
         let (submits_after, uploads_after) = gpu_counts(self);
+        // The run's pool slots are free again (step 9c).
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.end_slot_run();
+        }
         self.last_run_chain_stats = ChainStats {
             extends: chain_extend_count,
             flushes: chain_flush_count,
@@ -2336,6 +2418,7 @@ impl GraphExecutor {
             copies: node_outputs.copies,
             evaluations,
             effect_breaks: std::mem::take(&mut self.run_effect_breaks),
+            effect_mixes_refused: std::mem::take(&mut self.run_mix_refused),
         };
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
         if total_ms > 5.0 {
@@ -2678,6 +2761,9 @@ pub struct ChainStats {
     /// Effect nodes that broke the GPU chain: an effect not recorded
     /// (Equalize), or one run off the chain (step 10).
     pub effect_breaks: u32,
+    /// Mixed effect nodes whose mix or mask couldn't be read: skipped, the
+    /// input passed on (no coverage), never drawn unmasked (step 9c).
+    pub effect_mixes_refused: u32,
 }
 
 /// Whether `node` keyframes any of a qualifier's matte refinements. The
@@ -2990,8 +3076,16 @@ impl GraphExecutor {
         // A clip's effects record into the chain; ones not recorded yet
         // are counted breaks (`ChainStats::effect_breaks`).
         if let NodeKind::Effect | NodeKind::EffectSegment = kind {
+            let mask = self.effect_mask.take();
+            let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
             let gpu = self.gpu.as_mut()?;
-            let run = gpu.chain_run_effects(&params.effects, in_is_a, width, height);
+            let run = match params.effect_blend {
+                Some(blend) => {
+                    let mix = klipp_effects::mask_mix::MaskMix::new(blend.mix, blend.channel, luma).ok()?;
+                    gpu.chain_run_effects_mixed(&params.effects, in_is_a, width, height, mix, mask.as_deref().map(|m| m.as_slice()))?
+                }
+                None => gpu.chain_run_effects(&params.effects, in_is_a, width, height),
+            };
             self.run_effect_breaks += run.breaks;
             self.run_effects_incomplete |= !run.complete;
             // Flips mirror the slot: an even count (none included) leaves
@@ -3593,13 +3687,20 @@ impl GraphExecutor {
             NodeKind::Effect | NodeKind::EffectSegment => {
                 let fx = &params.effects;
                 let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
-                match self.gpu.as_mut() {
+                let effect = match self.gpu.as_mut() {
                     Some(gpu) if klipp_effects::chain_supports_gpu(fx) => {
                         let out = gpu.apply_effects(fx, primary_input, width, height);
                         self.run_effect_breaks += 1;
                         out
                     }
                     _ => klipp_effects::apply_effects_with_luma(fx, primary_input.to_vec(), width, height, clip_time_secs, luma),
+                };
+                match params.effect_blend {
+                    Some(blend) => mix_effect_cpu(blend, luma, primary_input, effect, secondary_input).unwrap_or_else(|| {
+                        self.run_mix_refused += 1;
+                        primary_input.to_vec()
+                    }),
+                    None => effect,
                 }
             }
 
