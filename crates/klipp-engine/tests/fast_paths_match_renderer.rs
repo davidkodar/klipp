@@ -508,6 +508,81 @@ fn the_graded_fast_path_is_the_renderers_frame_for_pq() {
     assert!(worst <= 1, "the graded fast path differs from the renderer by {worst} levels");
 }
 
+/// A wide-gamut PQ clip (BT.2020 primaries in a Rec.709 project) exported
+/// to SDR on the GPU is the viewer's picture: the export's Y'CbCr luma
+/// against the luma of the viewer's graded fast path, which holds to the
+/// renderer above. The export's tone map took the out-of-gamut colours'
+/// negative components through the curve unclamped, a cast the viewer
+/// never showed (#1280).
+#[test]
+fn the_gpu_export_of_a_wide_gamut_pq_clip_is_the_viewers_picture() {
+    let Some(mut conv) = GpuP010Converter::new() else {
+        eprintln!("skipping: P010 GPU converter unavailable");
+        return;
+    };
+    let mut y = Vec::new();
+    for row in 0..H {
+        for col in 0..W {
+            let v: u32 = 64 + ((col * 37 + row * 11) % 877);
+            y.extend_from_slice(&(((v & 0x3FF) << 6) as u16).to_le_bytes());
+        }
+    }
+    // Strong chroma, so the BT.2020 colours fall well outside BT.709.
+    let mut uv = Vec::new();
+    for row in 0..(H / 2) {
+        for col in 0..(W / 2) {
+            let u = 512 + (((col as i32 - row as i32) * 41).rem_euclid(700)) as u32 - 350;
+            let v = 512 + (((col as i32 + row as i32) * 53).rem_euclid(700)) as u32 - 350;
+            uv.extend_from_slice(&(((u & 0x3FF) << 6) as u16).to_le_bytes());
+            uv.extend_from_slice(&(((v & 0x3FF) << 6) as u16).to_le_bytes());
+        }
+    }
+    let m = primaries_to_working_matrix(ColorPrimaries::Bt2020, WORKING);
+    let matrix4 = klipp_effects::color_wgsl::pack_primaries_matrix(m);
+    let ids = [color_ids::COLOR_RANGE_LIMITED, color_ids::MATRIX_BT2020_NCL, color_ids::TRANSFER_PQ, color_ids::PRIMARIES_BT2020];
+    let codes = conv.convert_p010_hdr_codes(&y, &uv, W, H, W * 2, W * 2, W, H, 0, ids, matrix4).expect("CPU codes");
+    let gpu_codes = conv.convert_p010_on_gpu(&y, &uv, W, H, W * 2, W * 2, W, H, 0, ids, matrix4).hdr_codes.expect("GPU codes");
+    let (seq, clip) = one_clip(keyframed_grade(Some(LogFormat::PQ)));
+    let codes = Arc::new(codes);
+    let mut src = Frame(Box::new(move || SourcePixels::SceneReferred { codes: Arc::clone(&codes), transfer: HdrTransfer::Pq, source_to_working: m }));
+
+    // The viewer's picture: the graded fast path.
+    let mut r = renderer();
+    let viewer = fast(&mut r, &clip, 4.0, GpuSeed::SceneReferred { buffer: &gpu_codes, transfer: HdrTransfer::Pq, source_to_working: m });
+    // The export's: an SDR delivery, 8-bit planar, BT.709 luma.
+    let luma = [0.2126f32, 0.7152, 0.0722];
+    let target = klipp_effects::gpu::Yuv420Target {
+        tone_map_op: 0,
+        odt_tag: 0,
+        scene: None,
+        gamut_op: 0,
+        hdr_op: 0,
+        peak_nits: 0.0,
+        luma_coefs: luma,
+        semi_planar: false,
+        bits: 8,
+        sample_shift: 0,
+    };
+    let mut x = renderer();
+    let Some((planes, _)) = x.render_yuv420_on_gpu(&seq, tc(4.0), W, H, &mut src, RenderOptions::default(), target) else {
+        panic!("the GPU export refused the clip: {:?}", x.last_decline());
+    };
+    let viewer_luma: Vec<i32> = viewer
+        .chunks_exact(4)
+        .map(|p| {
+            let y = luma[0] * p[0] as f32 / 255.0 + luma[1] * p[1] as f32 / 255.0 + luma[2] * p[2] as f32 / 255.0;
+            (16.0 + y * 219.0 + 0.5) as i32
+        })
+        .collect();
+    let worst = planes[..viewer_luma.len()].iter().zip(&viewer_luma).map(|(e, v)| (*e as i32 - v).abs()).max().unwrap_or(0);
+    eprintln!("wide-gamut PQ: GPU export luma vs the viewer: worst {worst} levels");
+    assert!(worst <= 2, "the GPU export differs from the viewer by {worst} levels");
+    // The fixture does reach outside BT.709: some converted component is
+    // negative, or the test would pass without the clamp.
+    let linear = klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(&conv.convert_p010_hdr_codes(&y, &uv, W, H, W * 2, W * 2, W, H, 0, ids, matrix4).expect("codes"), HdrTransfer::Pq, m);
+    assert!(linear.chunks_exact(4).any(|p| p[..3].iter().any(|c| *c < -0.01)), "the fixture has no colour outside BT.709");
+}
+
 /// A decoder frame left on the GPU, as the viewer hands it to the
 /// renderer: the grade seeds from it; `read` counts readbacks.
 struct OnGpu {
