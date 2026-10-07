@@ -86,17 +86,18 @@ impl GpuEffectsPipeline {
         settings: MaskMix,
         legacy_alpha_one: bool,
     ) -> Result<(), MaskMixError> {
-        let pixels = width
-            .checked_mul(height)
-            .ok_or(MaskMixError::SizeMismatch)?;
-        if pixels == 0 {
+        let Some(slot) = self.claim_mask_mix(width, height, settings, mask.is_some(), legacy_alpha_one)? else {
             return Ok(());
-        }
-        let bytes = u64::from(pixels) * 16;
-        if [input, effect, output].iter().any(|b| b.size() < bytes)
-            || mask.is_some_and(|b| b.size() < bytes)
-        {
-            return Err(MaskMixError::SizeMismatch);
+        };
+        self.record_mask_mix_in(encoder, input, effect, mask, output, width, height, slot)
+    }
+
+    /// The uniform slot a mix at `width` x `height` reads, its parameters
+    /// written; `None` for an empty frame, which records nothing.
+    pub(crate) fn claim_mask_mix(&mut self, width: u32, height: u32, settings: MaskMix, has_mask: bool, legacy_alpha_one: bool) -> Result<Option<usize>, MaskMixError> {
+        let pixels = width.checked_mul(height).ok_or(MaskMixError::SizeMismatch)?;
+        if pixels == 0 {
+            return Ok(None);
         }
         if self.chain_params.remaining() == 0 {
             return Err(MaskMixError::ParamsExhausted);
@@ -107,38 +108,45 @@ impl GpuEffectsPipeline {
             height,
             mix: settings.mix,
             channel: settings.channel as u32,
-            has_mask: u32::from(mask.is_some()),
+            has_mask: u32::from(has_mask),
             alpha_one: u32::from(legacy_alpha_one),
             pad: [0; 2],
             luma: [settings.luma[0], settings.luma[1], settings.luma[2], 0.0],
         };
         self.write_chain_params(slot, &params);
-        let buffers = [
-            input,
-            effect,
-            mask.unwrap_or(input),
-            output,
-            self.chain_params.buffer(slot),
-        ];
+        Ok(Some(slot))
+    }
+
+    /// Record the mix whose parameters `slot` holds ([`Self::claim_mask_mix`]).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_mask_mix_in(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        input: &wgpu::Buffer,
+        effect: &wgpu::Buffer,
+        mask: Option<&wgpu::Buffer>,
+        output: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+        slot: usize,
+    ) -> Result<(), MaskMixError> {
+        let pixels = width.checked_mul(height).ok_or(MaskMixError::SizeMismatch)?;
+        let bytes = u64::from(pixels) * 16;
+        if [input, effect, output].iter().any(|b| b.size() < bytes) || mask.is_some_and(|b| b.size() < bytes) {
+            return Err(MaskMixError::SizeMismatch);
+        }
+        let buffers = [input, effect, mask.unwrap_or(input), output, self.chain_params.buffer(slot)];
         let entries: Vec<_> = buffers
             .iter()
             .enumerate()
-            .map(|(binding, b)| wgpu::BindGroupEntry {
-                binding: binding as u32,
-                resource: b.as_entire_binding(),
-            })
+            .map(|(binding, b)| wgpu::BindGroupEntry { binding: binding as u32, resource: b.as_entire_binding() })
             .collect();
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("mask_mix"),
             layout: &self.mask_mix_gpu.layout,
             entries: &entries,
         });
-        Self::record_compute_dispatch(
-            encoder,
-            &self.mask_mix_gpu.pipeline,
-            &group,
-            pixels.div_ceil(WORKGROUP_SIZE),
-        );
+        Self::record_compute_dispatch(encoder, &self.mask_mix_gpu.pipeline, &group, pixels.div_ceil(WORKGROUP_SIZE));
         Ok(())
     }
 }

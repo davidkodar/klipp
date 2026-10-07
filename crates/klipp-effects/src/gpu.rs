@@ -451,6 +451,10 @@ pub struct GpuEffectsPipeline {
     /// that is only ever recorded, and could not be (a lost device). See
     /// [`Self::last_effects_complete`].
     effects_incomplete: std::cell::Cell<bool>,
+    /// Frame-sized slots a run leases for the values a mixed effect needs
+    /// (its input before it, the matte its mask reads): step 9c's first
+    /// users of the pool (9b-1).
+    slot_pool: SlotPool<wgpu::Buffer>,
     /// A test's switch: every `record_effect` answers `NotRecordable`.
     refuse_recording: bool,
     /// Pre-allocated bind groups for the 3-binding chain layout
@@ -1532,6 +1536,7 @@ impl GpuEffectsPipeline {
             chain_params,
             effect_params,
             effects_incomplete: std::cell::Cell::new(false),
+            slot_pool: SlotPool::new(Self::MAX_SLOTS),
             refuse_recording: false,
             // Start empty; populated by `rebuild_chain_bind_group_pools`
             // after the first `ensure_buffers` call (buf_a/b/c don't
@@ -4047,6 +4052,8 @@ impl GpuEffectsPipeline {
             if let Some(slots) = self.effect_params.as_mut() {
                 slots.reset();
             }
+            // A slot written from the CPU was held for this encoder's readers.
+            self.slot_pool.submitted();
             // Non-blocking nudge to the driver to reclaim deferred
             // resources (command buffers, staging allocations) between
             // chain segments. On NVIDIA Vulkan these otherwise
@@ -6207,6 +6214,112 @@ impl GpuEffectsPipeline {
             }
         }
         out
+    }
+
+    /// Slots the pool may hold at once, of all sizes (9b-1's budget).
+    pub const MAX_SLOTS: usize = 8;
+
+    /// [`Self::chain_run_effects`], mixed back over the picture it started
+    /// from (phase 2b M2, step 9c): by `mix`, and by the coverage `mask`
+    /// gives (straight RGBA of the frame's size, written to a pool slot;
+    /// none is white). The input is kept in a pool slot before the effects
+    /// run, and the mix writes the other chain buffer, so nothing aliases.
+    /// `None` when the pool's budget refuses, before anything is recorded:
+    /// the caller runs the node another way.
+    #[doc(hidden)]
+    pub fn chain_run_effects_mixed(
+        &mut self,
+        effects: &[BuiltinEffect],
+        in_is_a: bool,
+        width: u32,
+        height: u32,
+        mix: crate::mask_mix::MaskMix,
+        mask: Option<&[f32]>,
+    ) -> Option<ChainEffects> {
+        if self.is_device_lost() || self.chain_encoder.is_none() {
+            return None;
+        }
+        let bytes = u64::from(width) * u64::from(height) * 16;
+        let image = SlotKey { width, height, usage: SlotUsage::Image };
+        let make = |device: &wgpu::Device, k: SlotKey| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(match k.usage { SlotUsage::Image => "slot_image", SlotUsage::Matte => "slot_matte" }),
+                size: u64::from(k.width) * u64::from(k.height) * 16,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            })
+        };
+        let device = &self.device;
+        let kept = self.slot_pool.lease(image, |k| make(device, k)).ok()?;
+        let matte = match mask {
+            Some(data) => {
+                let device = &self.device;
+                match self.slot_pool.lease(SlotKey { usage: SlotUsage::Matte, ..image }, |k| make(device, k)) {
+                    Ok(id) => {
+                        self.queue.write_buffer(self.slot_pool.buffer(id), 0, bytemuck::cast_slice(data));
+                        self.slot_pool.mark_cpu_written(id);
+                        Some(id)
+                    }
+                    Err(_) => {
+                        self.slot_pool.release(kept);
+                        return None;
+                    }
+                }
+            }
+            None => None,
+        };
+        // The input, kept before the effects can write over it.
+        {
+            let src = if in_is_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() };
+            let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+            enc.copy_buffer_to_buffer(src.expect("chain buffers"), 0, self.slot_pool.buffer(kept), 0, bytes);
+        }
+        let mut run = self.chain_run_effects(effects, in_is_a, width, height);
+        // The mix's uniforms are claimed once the effects are recorded: an
+        // effect that breaks the chain resets the ring. A full ring is
+        // submitted and the chain goes on in a new one.
+        let mut params = self.claim_mask_mix(width, height, mix, matte.is_some(), false);
+        if params == Err(crate::mask_mix::MaskMixError::ParamsExhausted) {
+            self.submit_chain();
+            self.begin_chain();
+            params = self.claim_mask_mix(width, height, mix, matte.is_some(), false);
+        }
+        let recorded = match params {
+            Ok(Some(slot)) => {
+                let mut encoder = self.chain_encoder.take().expect(Self::CHAIN_ENCODER_EXPECT);
+                let (a, b) = (self.buf_a.as_ref().expect("chain buffers"), self.buf_b.as_ref().expect("chain buffers"));
+                let (effect, out) = if run.in_a { (a, b) } else { (b, a) };
+                let r = self.record_mask_mix_in(&mut encoder, self.slot_pool.buffer(kept), effect, matte.map(|m| self.slot_pool.buffer(m)), out, width, height, slot);
+                self.chain_encoder = Some(encoder);
+                r
+            }
+            Ok(None) => Ok(()),
+            Err(e) => Err(e),
+        };
+        // Their readers are recorded: returned (a CPU-written matte is held
+        // until the encoder is submitted).
+        self.slot_pool.release(kept);
+        if let Some(m) = matte {
+            self.slot_pool.release(m);
+        }
+        match recorded {
+            Ok(()) => run.in_a = !run.in_a,
+            // The effects ran, the mix didn't: the picture lacks the mix,
+            // and the run says so (the caller takes another route).
+            Err(e) => {
+                tracing::warn!("an effect's mix wasn't recorded: {e}");
+                run.complete = false;
+            }
+        }
+        Some(run)
+    }
+
+    /// The run is over: every pool slot is free again, and a size no run
+    /// has used for a while is dropped. Gives back the most slots leased
+    /// at once.
+    #[doc(hidden)]
+    pub fn end_slot_run(&mut self) -> usize {
+        self.slot_pool.end_run()
     }
 
     /// Record one effect, or one run of spills, into the open chain

@@ -16,6 +16,12 @@ pub struct NodeParams {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<klipp_effects::BuiltinEffect>,
 
+    /// `Effect`/`EffectSegment`: how the effects' result is mixed back over
+    /// their input (phase 2b M2, step 9c): `None` takes the result whole.
+    /// The run's own setting, never saved.
+    #[serde(skip)]
+    pub effect_blend: Option<EffectBlend>,
+
     // InputTransform
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_format: Option<LogFormat>,
@@ -1049,4 +1055,13 @@ mod override_names_tests {
         }
         assert!(NodeParams::accepts("qual_hue_center"), "the key's own settings still are");
     }
+}
+
+/// How an effect node's result is mixed back over its input: by `mix`,
+/// and by the coverage its mask input gives (port 1; none is white),
+/// read from `channel`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EffectBlend {
+    pub mix: f32,
+    pub channel: klipp_effects::mask_mix::MaskChannel,
 }
