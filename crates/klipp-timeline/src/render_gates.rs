@@ -374,7 +374,7 @@ mod tests {
     fn grade_gate_keeps_identity_and_nonidentity_separate() {
         for exposure in [None, Some(0.0), Some(1.0)] {
             let mut c = clip();
-            c.picture.view_mut().node_graph
+            c.view_mut().node_graph
                 .0
                 .nodes
                 .iter_mut()

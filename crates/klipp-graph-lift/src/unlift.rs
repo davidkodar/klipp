@@ -16,9 +16,10 @@ use crate::{delift, to_v1};
 
 pub type Refusal = String;
 
-/// A stored clip picture as the clip's v1 picture fields.
+/// A stored clip picture as the clip's v1 picture fields; a picture-truth
+/// clip's as far as they can hold it ([`delift::view_of`]).
 pub fn clip(p: &ClipPicture) -> Result<Value, Refusal> {
-    let record = delift::clip(p)?;
+    let record = if p.is_truth() { delift::clip(&delift::view_of(p))? } else { delift::clip(p)? };
     to_v1::clip(&serde_json::to_value(&record).map_err(|e| e.to_string())?)
 }
 

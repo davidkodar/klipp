@@ -76,16 +76,16 @@ impl Clip {
 
     /// Edit one entry without changing the list's order.
     pub fn edit_ofx_effect<R>(&mut self, index: usize, f: impl FnOnce(&mut AppliedEffect) -> R) -> Option<R> {
-        self.picture.view_mut().effects.0.get_mut(index).map(f)
+        self.view_mut().effects.0.get_mut(index).map(f)
     }
 
     /// Edit the list without changing its existing ordering or parameters.
     pub fn edit_ofx_effects<R>(&mut self, edit: impl FnOnce(&mut Vec<AppliedEffect>) -> R) -> R {
-        edit(&mut self.picture.view_mut().effects.0)
+        edit(&mut self.view_mut().effects.0)
     }
 
     pub fn set_ofx_effects(&mut self, effects: Vec<AppliedEffect>) {
-        self.picture.view_mut().effects = effects.into();
+        self.view_mut().effects = effects.into();
     }
 }
 

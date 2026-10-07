@@ -511,9 +511,10 @@ fn graph_effect_persistence_refusals_map_expanded_indices_and_change_nothing() {
     let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
     let display = graph["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.colour.scene_to_display").unwrap()["id"].clone();
     let after = json!({"root":root,"nodes":[display]});
-    let new = json!({"root":root,"nodes":[{"new":0}]});
     let before = h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture.clone();
-    for refused_op in [json!({"op":"mix","path":new,"mix":0.75}), json!({"op":"mask_channel","path":new,"channel":"alpha"})] {
+    // Refused after the add expands (an effect's mix or mask makes the clip
+    // picture-truth since M2 step 9c, so those go through).
+    for refused_op in [json!({"op":"enable","path":after,"enabled":false}), json!({"op":"move_after","path":after,"after":{"new":0}})] {
         let refused = h.call(json!({"method":"graph_ops","ops":[
             {"op":"add","after":after,"type":"klipp.fx.gaussian_blur","params":{"radius":3.0}},
             refused_op
@@ -540,12 +541,14 @@ fn graph_commit_refusal_after_a_beside_node_names_the_actual_operation() {
     let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
     let nodes = graph["nodes"].as_array().unwrap();
     let group = nodes.iter().find(|n| n["type"] == "klipp.group").unwrap()["id"].clone();
-    let blur = nodes.iter().find(|n| n["type"] == "klipp.fx.gaussian_blur").unwrap()["id"].clone();
     let at = json!({"root":root,"nodes":[group,h.ids.corrector_a]});
     let new = json!({"root":root,"nodes":[group,{"new":0}]});
-    let effect = json!({"root":root,"nodes":[blur]});
     let before = h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture.clone();
-    for bad in [json!({"op":"mix","path":effect,"mix":0.75}), json!({"op":"mask_channel","path":effect,"channel":"alpha"})] {
+    // Refused (an effect's mix or mask makes the clip picture-truth since
+    // M2 step 9c, so those go through).
+    let display = nodes.iter().find(|n| n["type"] == "klipp.colour.scene_to_display").unwrap()["id"].clone();
+    let display = json!({"root":root,"nodes":[display]});
+    for bad in [json!({"op":"enable","path":display,"enabled":false}), json!({"op":"remove","path":display})] {
         let refused = h.call(json!({"method":"graph_ops","ops":[
             {"op":"add_beside","at":at,"type":"klipp.grade.exposure","params":{"exposure":0.5}},
             {"op":"connect","from":at,"from_port":"out","to":new,"to_port":"in"},

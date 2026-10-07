@@ -808,84 +808,8 @@ impl KlippApp {
                         t.find_clip(cid).map(|c| (ti, c.clone()))
                     });
                     if let Some((track_index, clip)) = found {
-                        let new_id = klipp_core::ClipId::new();
-                        let timeline_in = clip.timeline_out;
-                        let dur = clip.duration();
-                        let mut new_clip = klipp_timeline::Clip {
-                            id: new_id,
-                            kind: clip.kind.clone(),
-                            timeline_in,
-                            timeline_out: timeline_in + dur,
-                            source_in: clip.source_in,
-                            source_out: clip.source_out,
-                            picture: klipp_timeline::ClipPictureParts {
-                                ofx_effects: clip.ofx_effects().to_vec(),
-                                builtin_effects: clip.builtin_effects().to_vec(),
-                                builtin_effects_enabled: clip.builtin_effects_enabled().to_vec(),
-                                opacity_keyframes: clip.opacity_keyframes().to_vec(),
-                                transform_pos_x_keyframes: clip.transform_pos_x_keyframes().to_vec(),
-                                transform_pos_y_keyframes: clip.transform_pos_y_keyframes().to_vec(),
-                                transform_scale_keyframes: clip.transform_scale_keyframes().to_vec(),
-                                transform_rotation_keyframes: clip.transform_rotation_keyframes().to_vec(),
-                                transform_tilt_x_keyframes: clip.transform_tilt_x_keyframes().to_vec(),
-                                transform_tilt_y_keyframes: clip.transform_tilt_y_keyframes().to_vec(),
-                                effect_keyframes: clip.effect_keyframes().clone(),
-                                param_modifiers: clip.param_modifiers().clone(),
-                                grade_versions: clip.grade_versions().to_vec(),
-                                active_grade_version: clip.active_grade_version(),
-                                ..Default::default()
-                            }
-                            .into(),
-                            linked_clip_id: None,
-                            linked_title_asset_id: None,
-                            group_id: None,
-                            grade_group: None,
-                            magnetic_anchor: None,
-                            gain: clip.gain,
-                            volume: clip.volume,
-                            pan: clip.pan,
-                            fade_in_secs: clip.fade_in_secs,
-                            fade_out_secs: clip.fade_out_secs,
-                            fade_in_curve: clip.fade_in_curve,
-                            fade_out_curve: clip.fade_out_curve,
-                            channel_config: clip.channel_config,
-                            volume_keyframes: clip.volume_keyframes.clone(),
-                            pan_keyframes: clip.pan_keyframes.clone(),
-                            gain_keyframes: clip.gain_keyframes.clone(),
-                            matte_feather_keyframes: clip.matte_feather_keyframes.clone(),
-                            matte_choke_keyframes: clip.matte_choke_keyframes.clone(),
-                            clip_markers: clip.clip_markers.clone(),
-                            role: clip.role,
-                            speed: clip.speed,
-                            speed_keyframes: clip.speed_keyframes.clone(),
-                            keep_pitch: clip.keep_pitch,
-                            source_rotation: clip.source_rotation,
-                            enabled: clip.enabled,
-                            solo: clip.solo,
-                            blend_mode: clip.blend_mode,
-                            depth: clip.depth,
-                            matte_source: clip.matte_source.clone(),
-                            matte_stencil: clip.matte_stencil.clone(),
-                            consumed_as_matte: clip.consumed_as_matte,
-                            transform_link: None,
-                            multicam_group: clip.multicam_group,
-                            multicam_angle: clip.multicam_angle,
-                            multicam_cuts: clip.multicam_cuts.clone(),
-                            multicam_sound: clip.multicam_sound,
-                            audio_effects: clip.audio_effects.clone(),
-                            audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
-                            deflicker_data: None,
-                            deflicker_gains: None,
-                            stabilization_data: None,
-                            smoothed_trajectory: None,
-                            track_points: Vec::new(),
-                            surfaces: clip.surfaces.clone(),
-                            surface_pin: clip.surface_pin,
-                            name: clip.name.clone(),
-                            colour_label: clip.colour_label,
-                            precomp: None,
-                        };
-                        new_clip.set_grade(clip.grade().clone());
+                        let new_clip = duplicate_after(&clip);
+                        let new_id = new_clip.id;
                         let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[track_index];
                         Self::overwrite_insert_clip_on_track(track, new_clip.clone());
                         self.state.push_history(EditCommand::LegacyPasteClip {
@@ -1807,6 +1731,93 @@ pub(super) fn clips_clipboard_text(count: usize) -> String {
         1 => "1 clip copied in Klipp".into(),
         n => format!("{n} clips copied in Klipp"),
     }
+}
+
+/// A duplicate of `clip` placed right after it: a new id, its own copy of
+/// every field, and a picture-truth clip's picture with it.
+pub(super) fn duplicate_after(clip: &klipp_timeline::Clip) -> klipp_timeline::Clip {
+    let new_id = klipp_core::ClipId::new();
+    let timeline_in = clip.timeline_out;
+    let dur = clip.duration();
+    let mut new_clip = klipp_timeline::Clip {
+        id: new_id,
+        kind: clip.kind.clone(),
+        timeline_in,
+        timeline_out: timeline_in + dur,
+        source_in: clip.source_in,
+        source_out: clip.source_out,
+        picture: klipp_timeline::ClipPictureParts {
+            ofx_effects: clip.ofx_effects().to_vec(),
+            builtin_effects: clip.builtin_effects().to_vec(),
+            builtin_effects_enabled: clip.builtin_effects_enabled().to_vec(),
+            opacity_keyframes: clip.opacity_keyframes().to_vec(),
+            transform_pos_x_keyframes: clip.transform_pos_x_keyframes().to_vec(),
+            transform_pos_y_keyframes: clip.transform_pos_y_keyframes().to_vec(),
+            transform_scale_keyframes: clip.transform_scale_keyframes().to_vec(),
+            transform_rotation_keyframes: clip.transform_rotation_keyframes().to_vec(),
+            transform_tilt_x_keyframes: clip.transform_tilt_x_keyframes().to_vec(),
+            transform_tilt_y_keyframes: clip.transform_tilt_y_keyframes().to_vec(),
+            effect_keyframes: clip.effect_keyframes().clone(),
+            param_modifiers: clip.param_modifiers().clone(),
+            grade_versions: clip.grade_versions().to_vec(),
+            active_grade_version: clip.active_grade_version(),
+            ..Default::default()
+        }
+        .into(),
+        linked_clip_id: None,
+        linked_title_asset_id: None,
+        group_id: None,
+        grade_group: None,
+        magnetic_anchor: None,
+        gain: clip.gain,
+        volume: clip.volume,
+        pan: clip.pan,
+        fade_in_secs: clip.fade_in_secs,
+        fade_out_secs: clip.fade_out_secs,
+        fade_in_curve: clip.fade_in_curve,
+        fade_out_curve: clip.fade_out_curve,
+        channel_config: clip.channel_config,
+        volume_keyframes: clip.volume_keyframes.clone(),
+        pan_keyframes: clip.pan_keyframes.clone(),
+        gain_keyframes: clip.gain_keyframes.clone(),
+        matte_feather_keyframes: clip.matte_feather_keyframes.clone(),
+        matte_choke_keyframes: clip.matte_choke_keyframes.clone(),
+        clip_markers: clip.clip_markers.clone(),
+        role: clip.role,
+        speed: clip.speed,
+        speed_keyframes: clip.speed_keyframes.clone(),
+        keep_pitch: clip.keep_pitch,
+        source_rotation: clip.source_rotation,
+        enabled: clip.enabled,
+        solo: clip.solo,
+        blend_mode: clip.blend_mode,
+        depth: clip.depth,
+        matte_source: clip.matte_source.clone(),
+        matte_stencil: clip.matte_stencil.clone(),
+        consumed_as_matte: clip.consumed_as_matte,
+        transform_link: None,
+        multicam_group: clip.multicam_group,
+        multicam_angle: clip.multicam_angle,
+        multicam_cuts: clip.multicam_cuts.clone(),
+        multicam_sound: clip.multicam_sound,
+        audio_effects: clip.audio_effects.clone(),
+        audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
+        deflicker_data: None,
+        deflicker_gains: None,
+        stabilization_data: None,
+        smoothed_trajectory: None,
+        track_points: Vec::new(),
+        surfaces: clip.surfaces.clone(),
+        surface_pin: clip.surface_pin,
+        name: clip.name.clone(),
+        colour_label: clip.colour_label,
+        precomp: None,
+    };
+    new_clip.set_grade(clip.grade().clone());
+    // A picture-truth clip's picture (its masks, mixes)
+    // goes with the copy made from its fields.
+    new_clip.take_picture_truth_of(clip);
+    new_clip
 }
 
 #[cfg(test)]

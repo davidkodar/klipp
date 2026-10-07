@@ -21,8 +21,15 @@
 //! The effect-list half of this goes when a clip's picture is stored as
 //! its revision-2 picture (picture-truth clips the norm, `m3-decisions`
 //! proposal 6): the edited copy is then the clip's picture itself.
+//!
+//! A batch holding an op the fields can't (an effect's mix or mask, a
+//! published grade port; `picture_only`) makes
+//! the clip picture-truth (M2 step 9c): the edited copy becomes its
+//! picture, and the rest of the batch is written to its fields as above,
+//! which are then the picture's view. On a picture-truth clip every batch
+//! goes that way.
 
-use crate::{Clip, ClipPictureFields, GradeAccess, RegistryCatalog};
+use crate::{Clip, ClipPictureFields, GradeAccess, LiftedPicture, RegistryCatalog};
 use klipp_graph_format::lifted::{types as lt, ClipPicture};
 use klipp_graph_format::path::Root;
 use klipp_graph_format::{types, Node, NodeId, ParamValue};
@@ -74,6 +81,25 @@ enum Target {
 
 fn node(p: &ClipPicture, id: NodeId) -> Option<&Node> {
     p.graph.nodes.iter().find(|n| n.id == id)
+}
+
+/// Whether the fields can't hold `op` at all, so on a picture-truth clip
+/// (or to make one) it goes to the picture alone: an effect's mix or mask
+/// channel, an edge into an effect's mask, and a port the grade group
+/// publishes (for a mask inside the grade to reach an effect).
+fn picture_only(p: &ClipPicture, op: &GraphOp) -> bool {
+    let path = path_of(op);
+    let Some(first) = path.nodes.first().and_then(|id| node(p, *id)) else {
+        return false;
+    };
+    match op {
+        GraphOp::PublishOutput { .. } | GraphOp::Unpublish { .. } => first.type_id.as_str() == lt::GROUP && path.nodes.len() == 1,
+        _ if path.nodes.len() != 1 => false,
+        GraphOp::SetMix { .. } | GraphOp::SetMaskChannel { .. } => first.type_id.as_str() == types::LEGACY_EFFECT,
+        GraphOp::Connect { to_port, .. } => first.type_id.as_str() == types::LEGACY_EFFECT && to_port.as_str() == "mask",
+        GraphOp::Disconnect { port, .. } => first.type_id.as_str() == types::LEGACY_EFFECT && port.as_str() == "mask",
+        _ => false,
+    }
 }
 
 /// Where `op` lands, or why it can't be written to the fields.
@@ -334,6 +360,9 @@ impl Clip {
             return Err((Some(index), format!("{:?} edits another root than this clip", path_of(op).root)));
         }
         let lifted = self.picture_v2().map_err(|why| (None, why))?;
+        // Picture-truth already, or made so by an op the fields can't hold
+        // (each judged on the copy as the ops before it left it, below).
+        let mut truth = self.is_picture_truth();
 
         // Each op on the copy, in turn, with the copy as it stood before it:
         // where a structural op lands in the list is read from the chain.
@@ -349,8 +378,18 @@ impl Clip {
         let mut pending = Vec::new();
         for (index, op) in ops.iter().enumerate() {
             let before = docs.clips[&self.id.0].clone();
-            let t = target(&before, op).map_err(|why| (Some(index), why))?;
-            if is_structural(op) {
+            // An op the fields can't hold goes to the picture alone, and
+            // the clip is picture-truth from here on.
+            let t = if picture_only(&before, op) {
+                truth = true;
+                None
+            } else {
+                Some(target(&before, op).map_err(|why| (Some(index), why))?)
+            };
+            // A picture-truth clip's ids are its picture's, kept by every
+            // op, so an entry read by id can move; fields lifted again would
+            // renumber it under the reference.
+            if is_structural(op) && !truth {
                 if let Some(id) = read_by_id(&before) {
                     return Err((Some(index), format!("{id} is read by id elsewhere in the picture, so it can't move until effects keep their ids")));
                 }
@@ -361,7 +400,7 @@ impl Clip {
                 pending.push(node.id);
             }
             apply_in_batch(&mut docs, op, &RegistryCatalog, &pending).map_err(|why| (Some(index), why))?;
-            if let Target::Grade = t {
+            if let Some(Target::Grade) = t {
                 apply_in_batch(&mut grade_docs, op, &RegistryCatalog, &pending).map_err(|why| (Some(index), why))?;
                 grade = true;
             }
@@ -373,17 +412,27 @@ impl Clip {
             (index, error.why)
         })?;
 
-        // Written to the fields; a write that fails puts them back.
+        // Written to the fields; a write that fails puts them back. On a
+        // picture-truth clip the fields are written as the picture's view,
+        // with the picture out of the way, and the edited copy is then the
+        // picture.
         let before = self.picture.clone();
+        self.picture.take_truth();
         let mut order = list_order(&lifted.picture, self.builtin_effects().len());
         let written = (|| {
             for (index, (op, (t, post))) in ops.iter().zip(&steps).enumerate() {
-                if let Target::Effect = t {
+                if let Some(Target::Effect) = t {
                     self.write_effect_op(op, post, &mut order).map_err(|why| (Some(index), why))?;
                 }
             }
             if grade {
-                self.write_grade(&grade_docs.clips[&self.id.0]).map_err(|why| (None, why))?;
+                let edited = &grade_docs.clips[&self.id.0];
+                let edited = if truth { klipp_graph_lift::delift::view_of(edited) } else { edited.clone() };
+                self.write_grade(&edited).map_err(|why| (None, why))?;
+            }
+            if truth {
+                let picture = self.truth_from(docs.clips.remove(&self.id.0).expect("the copy")).map_err(|why| (None, why))?;
+                self.picture.set_truth(Some(std::sync::Arc::new(picture)));
             }
             Ok::<(), (Option<usize>, String)>(())
         })();
@@ -392,6 +441,68 @@ impl Clip {
             return Err(e);
         }
         Ok(PictureEdit { before, after: self.picture.clone() })
+    }
+
+    /// `edited` as this clip's picture-truth picture, its fields already
+    /// written as its view: marked as truth, its grade versions' bodies
+    /// and its built-in entries' list places taken from a lift of the view,
+    /// so an entry the batch added has its place, and a picture whose
+    /// chain and fields disagree is refused.
+    fn truth_from(&self, mut edited: ClipPicture) -> Result<LiftedPicture, String> {
+        let view = self.lift_picture()?;
+        let listed = |p: &ClipPicture| -> Vec<NodeId> {
+            chain(p).into_iter().filter(|n| n.legacy.is_some() && !matches!(n.type_id.as_str(), lt::SOURCE | lt::OUTPUT | lt::SCENE_TO_DISPLAY | lt::GROUP | types::LEGACY_OFX)).map(|n| n.id).collect()
+        };
+        let (ours, theirs) = (listed(&edited), listed(&view.picture));
+        if ours.len() != theirs.len() {
+            return Err(format!("the picture's chain holds {} entries and its fields {}", ours.len(), theirs.len()));
+        }
+        for (mine, from) in ours.iter().zip(&theirs) {
+            let slot = node(&view.picture, *from).and_then(|n| n.legacy.as_ref()).and_then(|l| l.slot);
+            let n = edited.graph.nodes.iter_mut().find(|n| n.id == *mine).expect("in the chain");
+            if let Some(l) = n.legacy.as_mut() {
+                l.slot = slot;
+            }
+        }
+        if !edited.is_truth() {
+            edited.requires.push(klipp_graph_format::lifted::PICTURE_TRUTH_CAPABILITY.into());
+        }
+        Ok(LiftedPicture { picture: edited, versions: view.versions })
+    }
+
+    /// Run `f`, a write through the clip's fields: as it is on a clip whose
+    /// fields are the truth. On a picture-truth clip this is the guard
+    /// (amendment 12): `f` writes the fields as the picture's view, the
+    /// fields are lifted again, and the picture becomes that lift in the
+    /// picture's own ids with what only the picture holds carried over (an
+    /// effect's mix and mask, its mask's wiring, the grade's published
+    /// ports, a node beside the chain). A write that takes away what one of
+    /// those refers to is refused: the clip is put back as it was, and the
+    /// reason, naming the clip and `what`, is kept for
+    /// [`take_picture_refusal`] and logged. `f`'s result is returned either
+    /// way.
+    pub(crate) fn through_truth<R>(&mut self, what: &str, f: impl FnOnce(&mut Clip) -> R) -> R {
+        if !self.is_picture_truth() {
+            return f(self);
+        }
+        self.reconcile_effect_ids();
+        let before = self.picture.clone();
+        let old = self.picture.take_truth().expect("a picture-truth clip");
+        let result = f(self);
+        self.settle_truth(&old, before, what);
+        result
+    }
+
+    /// Take `source`'s picture-truth picture, if it has one, for this clip
+    /// made from it field by field (a split's half, a lifted range's piece,
+    /// a duplicate): its picture is `source`'s, settled against its own
+    /// fields as a write would be, so what only the picture holds isn't
+    /// left behind. Nothing for a source whose fields are the truth.
+    pub fn take_picture_truth_of(&mut self, source: &Clip) {
+        if let Some(truth) = source.picture.truth() {
+            self.picture.set_truth(Some(truth.clone()));
+            self.through_truth("a copy", |_| ());
+        }
     }
 
     /// Put the clip's picture back as an edit left it (undo, redo).
@@ -560,4 +671,196 @@ mod tests {
         shuffled.graph.nodes.reverse();
         assert_eq!(ids.iter().map(|id| list_place(&shuffled, &order, *id)).collect::<Vec<_>>(), places);
     }
+}
+
+/// A write to a clip's fields, open: dereferences to them. On a
+/// picture-truth clip it is the guard for every write that isn't graph ops
+/// (amendment 12): when it ends, the fields are lifted again and the
+/// picture becomes that lift with what only the picture holds carried over,
+/// or the write is refused and the clip put back as it was
+/// (`Clip::through_truth` says how). Every writer of a clip's fields
+/// takes one ([`Clip::view_mut`]); a write that skips it trips
+/// `ClipPictureFields::view_mut`'s check.
+pub(crate) struct ViewMut<'a> {
+    clip: &'a mut Clip,
+    /// On a picture-truth clip: its picture, taken out while the fields are
+    /// written, and the clip as it was, to put back on a refusal.
+    truth: Option<(std::sync::Arc<LiftedPicture>, ClipPictureFields)>,
+}
+
+impl std::ops::Deref for ViewMut<'_> {
+    type Target = crate::picture_store::PictureView;
+    fn deref(&self) -> &Self::Target {
+        self.clip.picture.view()
+    }
+}
+
+impl std::ops::DerefMut for ViewMut<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.clip.picture.view_mut()
+    }
+}
+
+impl Drop for ViewMut<'_> {
+    fn drop(&mut self) {
+        if let Some((old, before)) = self.truth.take() {
+            self.clip.settle_truth(&old, before, "a write to its fields");
+        }
+    }
+}
+
+impl Clip {
+    /// Open a write to the clip's fields ([`ViewMut`]).
+    pub(crate) fn view_mut(&mut self) -> ViewMut<'_> {
+        let truth = self.picture.truth().is_some().then(|| {
+            self.reconcile_effect_ids();
+            let before = self.picture.clone();
+            (self.picture.take_truth().expect("a picture-truth clip"), before)
+        });
+        ViewMut { clip: self, truth }
+    }
+
+    /// After a write to a picture-truth clip's fields with its picture
+    /// `old` taken out: the fields lifted again, merged as its picture, or
+    /// the write refused and the clip put back as `before`.
+    fn settle_truth(&mut self, old: &LiftedPicture, before: ClipPictureFields, what: &str) {
+        self.reconcile_effect_ids();
+        let ids = (before.effect_ids().ids.clone(), self.picture.effect_ids().ids.clone());
+        match self.lift_picture().and_then(|fresh| merge_truth(old, &ids, fresh)) {
+            Ok(picture) => self.picture.set_truth(Some(std::sync::Arc::new(picture))),
+            Err(why) => {
+                self.picture = before;
+                let why = format!("clip {}: {what} refused: {why}", self.id.0);
+                tracing::warn!("{why}");
+                PICTURE_WRITES_REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                REFUSAL.with(|r| *r.borrow_mut() = Some(why));
+            }
+        }
+    }
+}
+
+/// Writes through a picture-truth clip's fields that were refused
+/// (`Clip::through_truth`), in this process.
+pub static PICTURE_WRITES_REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+thread_local! {
+    static REFUSAL: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Why the last write through a picture-truth clip's fields on this thread
+/// was refused, once: the clip was put back as it was. For the caller
+/// that made the write to tell the user.
+pub fn take_picture_refusal() -> Option<String> {
+    REFUSAL.with(|r| r.borrow_mut().take())
+}
+
+/// The built-in entries of a picture's chain by list place: each with its
+/// node and type. Plug-ins are counted apart and left out.
+fn entries(p: &ClipPicture) -> Vec<(u32, NodeId, String)> {
+    chain(p)
+        .into_iter()
+        .filter(|n| n.type_id.as_str() != types::LEGACY_OFX)
+        .filter_map(|n| Some((n.legacy.as_ref()?.slot?, n.id, n.type_id.as_str().to_owned())))
+        .collect()
+}
+
+/// `fresh`, a picture-truth clip's fields lifted again after a write, as
+/// its picture: in the old picture's ids, with what only the picture holds
+/// carried over from `old`. An entry keeps its node when it is the same
+/// effect (its `EffectId`, by `ids`: the list's ids before the write and
+/// after) and of the same type, wherever the write moved it. Refused,
+/// naming it, when the write took away what the picture's own data refers
+/// to.
+fn merge_truth(old: &LiftedPicture, ids: &(Vec<crate::EffectId>, Vec<crate::EffectId>), fresh: LiftedPicture) -> Result<LiftedPicture, String> {
+    let mut p = fresh.picture;
+    let before = entries(&old.picture);
+    let (was, now) = ids;
+    // A clip given a new id (a split's half, a duplicate) has new effect
+    // ids for the same list: the entries are the same, place by place.
+    let copied = !was.is_empty() && was.len() == now.len() && was.iter().all(|e| !now.contains(e));
+    let mut rename: std::collections::HashMap<NodeId, NodeId> = entries(&p)
+        .into_iter()
+        .filter_map(|(slot, id, ty)| {
+            let was_at = if copied { slot } else { was.iter().position(|e| Some(e) == now.get(slot as usize))? as u32 };
+            before.iter().find(|(s, _, t)| *s == was_at && *t == ty).map(|(_, old_id, _)| (id, *old_id))
+        })
+        .collect();
+    // The chain's own nodes, one of each (the source, the grade, the
+    // display step, the output), whose ids a lift derives from the clip's.
+    for n in chain(&p) {
+        if n.legacy.as_ref().is_some_and(|l| l.slot.is_some()) || n.type_id.as_str() == types::LEGACY_OFX {
+            continue;
+        }
+        let of_type = |q: &ClipPicture| chain(q).into_iter().filter(|m| m.type_id == n.type_id && !m.legacy.as_ref().is_some_and(|l| l.slot.is_some())).map(|m| m.id).collect::<Vec<_>>();
+        if let ([theirs], [mine]) = (of_type(&old.picture).as_slice(), of_type(&p).as_slice()) {
+            rename.insert(*mine, *theirs);
+        }
+    }
+    // An entry the write didn't keep (a new one, or one put where another
+    // was) may carry an id the lift derives from its place, which an old
+    // node had: it gets its own, so nothing of the old one lands on it.
+    let matched: Vec<NodeId> = rename.keys().copied().collect();
+    let old_ids: Vec<NodeId> = old.picture.graph.nodes.iter().map(|n| n.id).collect();
+    for (_, id, _) in entries(&p) {
+        if !matched.contains(&id) && old_ids.contains(&id) {
+            rename.insert(id, uuid::Uuid::new_v4());
+        }
+    }
+    rename.retain(|new, old| new != old);
+    let renamed = |id: NodeId| rename.get(&id).copied().unwrap_or(id);
+    for n in &mut p.graph.nodes {
+        n.id = renamed(n.id);
+    }
+    for e in &mut p.graph.edges {
+        e.from.0 = renamed(e.from.0);
+        e.to.0 = renamed(e.to.0);
+    }
+    p.graph.output = renamed(p.graph.output);
+
+    let old_chain: Vec<NodeId> = chain(&old.picture).iter().map(|n| n.id).collect();
+    let label = |n: &Node| if n.label.is_empty() { tag_of(n).to_owned() } else { n.label.clone() };
+    // An effect's mix and mask channel.
+    let mask_key = klipp_graph_format::ParamKey::from("mask.channel");
+    for n in old.picture.graph.nodes.iter().filter(|n| n.type_id.as_str() == types::LEGACY_EFFECT && old_chain.contains(&n.id)) {
+        let channel = n.params.get(&mask_key);
+        if n.mix.is_none() && channel.is_none() {
+            continue;
+        }
+        let Some(t) = p.graph.nodes.iter_mut().find(|t| t.id == n.id) else {
+            return Err(format!("it takes away the {} effect, whose mix or mask only the clip's picture keeps", label(n)));
+        };
+        t.mix = n.mix;
+        if let Some(c) = channel {
+            t.params.insert(mask_key.clone(), c.clone());
+        }
+    }
+    // The nodes beside the chain, then every edge that isn't the chain's.
+    p.graph.nodes.extend(old.picture.graph.nodes.iter().filter(|n| !old_chain.contains(&n.id)).cloned());
+    let is_chain_edge = |e: &klipp_graph_format::Edge| old_chain.contains(&e.from.0) && old_chain.contains(&e.to.0) && e.from.1.as_str() == "out" && e.to.1.as_str() == "in";
+    for e in old.picture.graph.edges.iter().filter(|e| !is_chain_edge(e)) {
+        // The lift's own wiring (the source into the grade's frame) is in
+        // the lift already: only what only the picture holds is carried.
+        if p.graph.edges.iter().any(|f| f.to == e.to) {
+            continue;
+        }
+        for end in [e.from.0, e.to.0] {
+            if !p.graph.nodes.iter().any(|n| n.id == end) {
+                return Err(format!("it takes away {end}, which the picture's mask wiring reads"));
+            }
+        }
+        p.graph.edges.push(e.clone());
+    }
+    // The grade's published ports, while what each is bound to is there.
+    let interface = old.picture.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP).and_then(|g| g.group.as_ref()).map(|g| g.interface.clone()).unwrap_or_default();
+    if !interface.is_empty() {
+        let grade = p.graph.nodes.iter_mut().find(|n| n.type_id.as_str() == lt::GROUP).and_then(|g| g.group.as_mut()).ok_or("it takes away the grade, whose ports the picture publishes")?;
+        for port in &interface {
+            if !grade.graph.nodes.iter().any(|n| n.id == port.binding.node) {
+                return Err(format!("it takes away the grade node {} that the grade's port {} publishes", port.binding.node, port.key.as_str()));
+            }
+        }
+        grade.interface = interface;
+    }
+    p.requires = old.picture.requires.clone();
+    Ok(LiftedPicture { picture: p, versions: fresh.versions })
 }

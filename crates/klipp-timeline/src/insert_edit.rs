@@ -495,8 +495,8 @@ mod tests {
     #[test]
     fn keyframes_and_markers_stay_with_their_half() {
         let mut c = clip(0, 100);
-        klipp_core::keyframe::upsert_keyframe(&mut c.picture.view_mut().opacity_keyframes.0, 0.4, 0.2);
-        klipp_core::keyframe::upsert_keyframe(&mut c.picture.view_mut().opacity_keyframes.0, 2.4, 0.8);
+        klipp_core::keyframe::upsert_keyframe(&mut c.view_mut().opacity_keyframes.0, 0.4, 0.2);
+        klipp_core::keyframe::upsert_keyframe(&mut c.view_mut().opacity_keyframes.0, 2.4, 0.8);
         let mut s = seq(vec![(TrackKind::Video, vec![c])]);
         s.insert_edit(0, clip(0, 10), tc(40)).expect("insert");
         let (left, right) = (&s.tracks[0].clips[0], &s.tracks[0].clips[2]);

@@ -530,6 +530,9 @@ impl KlippApp {
                 precomp: None,
             };
             right_clip.set_grade(clip.grade().clone());
+            // A picture-truth clip's picture (its masks, mixes) goes with
+            // the piece made from its fields.
+            right_clip.take_picture_truth_of(&clip);
             track.clips.insert(i + 1, right_clip);
         }
 
@@ -675,6 +678,9 @@ impl KlippApp {
                 precomp: None,
             };
             right_clip.set_grade(clip.grade().clone());
+            // A picture-truth clip's picture (its masks, mixes) goes with
+            // the piece made from its fields.
+            right_clip.take_picture_truth_of(&clip);
             track.clips.insert(i + 1, right_clip);
         }
 

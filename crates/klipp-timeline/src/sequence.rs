@@ -379,8 +379,8 @@ impl Sequence {
                 }
                 if let Some(group) = clip.grade_group.and_then(|id| groups.get(&id)) {
                     let wrapped = group.wrap(&clip.picture.view().node_graph.0);
-                    let own = std::mem::replace(&mut clip.picture.view_mut().node_graph.0, wrapped);
-                    clip.picture.view_mut().own_node_graph = Some(Box::new(own));
+                    let own = std::mem::replace(&mut clip.view_mut().node_graph.0, wrapped);
+                    clip.view_mut().own_node_graph = Some(Box::new(own));
                 }
             }
         }
@@ -428,7 +428,7 @@ impl Sequence {
                 if clip.picture.view().own_effects.is_some() || matches!(clip.kind, ClipKind::Gap | ClipKind::AdjustmentLayer) {
                     continue;
                 }
-                clip.picture.view_mut().own_effects = Some(Box::new(OwnEffects {
+                clip.view_mut().own_effects = Some(Box::new(OwnEffects {
                     builtin_effects: clip.builtin_effects().to_vec(),
                     builtin_effects_enabled: clip.builtin_effects_enabled().to_vec(),
                     audio_effects: clip.audio_effects.clone(),
@@ -444,9 +444,9 @@ impl Sequence {
                     }
                     if let Some(grade) = fx.grade_onto(track.kind, clip) {
                         if clip.picture.view().own_node_graph.is_none() {
-                            clip.picture.view_mut().own_node_graph = Some(Box::new(clip.picture.view().node_graph.0.clone()));
+                            clip.view_mut().own_node_graph = Some(Box::new(clip.picture.view().node_graph.0.clone()));
                         }
-                        let _ = clip.picture.view_mut().node_graph.0.append_keeping_ids(grade);
+                        let _ = clip.view_mut().node_graph.0.append_keeping_ids(grade);
                     }
                 }
                 clip.audio_effects.extend(fx.audio.iter().cloned());
@@ -484,10 +484,12 @@ impl Sequence {
         }
         let mut seq = self.clone();
         for clip in seq.all_clips_mut() {
-            if let Some(own) = clip.picture.view_mut().own_node_graph.take() {
-                clip.picture.view_mut().node_graph = crate::Grade(*own);
+            let own = clip.view_mut().own_node_graph.take();
+            if let Some(own) = own {
+                clip.view_mut().node_graph = crate::Grade(*own);
             }
-            if let Some(own) = clip.picture.view_mut().own_effects.take() {
+            let own = clip.view_mut().own_effects.take();
+            if let Some(own) = own {
                 clip.set_effect_list(own.builtin_effects, own.builtin_effects_enabled);
                 clip.audio_effects = own.audio_effects;
             }
@@ -1575,6 +1577,8 @@ impl Track {
     pub fn split_at(&mut self, clip_id: ClipId, cut_at: Timecode) -> Option<(Clip, Clip)> {
         let pos = self.clips.iter().position(|c| c.id == clip_id)?;
         let clip = self.clips[pos].clone();
+        // A picture-truth clip, whose picture both halves take below.
+        let truth_of = clip.is_picture_truth().then(|| clip.clone());
         if cut_at <= clip.timeline_in || cut_at >= clip.timeline_out {
             return None;
         }
@@ -1823,6 +1827,12 @@ impl Track {
             colour_label: clip.colour_label,
             precomp: None,
         };
+        // A picture-truth clip's picture goes to both halves.
+        let (mut clip_a, mut clip_b) = (clip_a, clip_b);
+        if let Some(source) = &truth_of {
+            clip_a.take_picture_truth_of(source);
+            clip_b.take_picture_truth_of(source);
+        }
 
         self.clips.remove(pos);
         self.clips.insert(pos, clip_b.clone());
@@ -2614,7 +2624,7 @@ impl Clip {
         if format == klipp_core::LogFormat::Srgb {
             return;
         }
-        let graph = &mut self.picture.view_mut().node_graph.0;
+        let graph = &mut self.view_mut().node_graph.0;
         if let Some(node) = graph.nodes.iter_mut()
             .find(|n| n.kind == klipp_nodes::NodeKind::InputTransform)
         {
@@ -2789,7 +2799,7 @@ impl Clip {
         let mut clip = Self::media(MediaId::nil(), zero, end, zero, end);
         clip.id = seq.timeline_grade_clip_id();
         clip.kind = ClipKind::AdjustmentLayer;
-        clip.picture.view_mut().node_graph = seq.timeline_graph.clone().unwrap_or_default();
+        clip.view_mut().node_graph = seq.timeline_graph.clone().unwrap_or_default();
         clip
     }
 

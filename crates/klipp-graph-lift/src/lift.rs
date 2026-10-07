@@ -909,5 +909,5 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
     let edges = chain_edges(&chain);
     let output = chain.last().map(|n| n.id).unwrap_or_default();
     let graph = Graph { graph_version: GRAPH_VERSION, nodes: chain, edges, output, ui: GraphUi::default(), working_space_override: None };
-    Ok((ClipPicture { graph, placement, placement_anim, opacity, opacity_anim }, notes))
+    Ok((ClipPicture { graph, placement, placement_anim, opacity, opacity_anim, requires: Vec::new() }, notes))
 }

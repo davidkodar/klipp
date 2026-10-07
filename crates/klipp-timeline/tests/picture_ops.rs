@@ -205,11 +205,11 @@ fn a_batch_is_one_edit_and_a_refusal_changes_nothing() {
     assert_eq!(picture(&undone), picture(&edited));
 
     // A refused op anywhere in the batch writes nothing, the first op's
-    // change included.
+    // change included. (An effect's mix makes the clip picture-truth since
+    // M2 step 9c: `picture_truth.rs`.)
     let refusals = [
         GraphOp::SetParam { path: at(&c, [fx[0]]), key: "radius".into(), value: ParamValue::Text("wide".into()) },
         GraphOp::SetNodeMeta { path: at(&c, [fx[0]]), label: Some("Soft".into()), position: None },
-        GraphOp::SetMix { path: at(&c, [fx[0]]), mix: Some(0.5) },
         GraphOp::RemoveNode { path: at(&c, [grade_group(&p)]) },
         GraphOp::RemoveKeyAt { path: at(&c, [fx[1]]), key: "amount".into(), time_secs: 3.0 },
         GraphOp::SetParam { path: NodePath::new(Root::Clip { clip: uuid::Uuid::nil() }, [fx[0]]), key: "radius".into(), value: ParamValue::Float(1.0) },
@@ -234,14 +234,6 @@ fn nodes_the_clip_places_itself_are_refused_with_a_reason() {
     let head = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::TEMPORAL_DENOISE).expect("a head node").id;
     let err = c.clone().apply_picture_ops(&[GraphOp::SetEnabled { path: at(&c, [head]), enabled: false }]).unwrap_err();
     assert!(err.contains("placed by the clip"), "{err}");
-}
-
-/// A picture-truth clip keeps its node ids through structural ops and a
-/// save and reload (decision §10, T1).
-#[test]
-#[ignore = "un-ignored by the PR that adds the picture-truth predicate (M2 9c/10c); on the M2 close-out checklist"]
-fn a_picture_truth_clip_keeps_node_ids_through_structural_ops_and_save() {
-    unimplemented!("needs picture-truth clips, which arrive with 9c/10c");
 }
 
 /// A busy clip: about 30 grade nodes and 8 effects.
@@ -417,16 +409,6 @@ fn effect_commands_on_placed_kinds_stay_on_the_mutators() {
         assert!(c.effect_edit_ops(EffectEdit::Move { from: 1, to: 0 }).is_none(), "{kind:?}: move");
         assert!(c.effect_edit_ops(EffectEdit::Remove(0)).is_some(), "{kind:?}: the plain blur still takes ops");
     }
-}
-
-/// A write through the fields (a grade closure, `set_grade`, the effect
-/// mutators) on a picture-truth clip maps to ops where it can and is
-/// otherwise refused, naming the clip and the edit; it never overwrites
-/// the stored revision-2 picture (15b decision, condition 1).
-#[test]
-#[ignore = "un-ignored by the PR that adds the picture-truth predicate (M2 9c/10c); on the M2 close-out checklist"]
-fn a_field_write_on_a_picture_truth_clip_maps_to_ops_or_is_refused() {
-    unimplemented!("needs picture-truth clips, which arrive with 9c/10c");
 }
 
 /// AR3's case on a clip stored as fields: a window added beside the grade's

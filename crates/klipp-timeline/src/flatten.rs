@@ -749,7 +749,7 @@ mod tests {
                 if let Some(k) = clip_kind {
                     c.kind = k;
                 }
-                c.picture.view_mut().node_graph = exposed(0.1).into();
+                c.view_mut().node_graph = exposed(0.1).into();
                 c.grade_group = in_group.then_some(group.id);
                 track.clips.push(c);
             }
