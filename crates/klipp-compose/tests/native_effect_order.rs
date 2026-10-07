@@ -4,9 +4,10 @@
 //! every path a frame can take: the renderer on the CPU, the renderer with
 //! the GPU (where the plan route runs), and the GPU stack.
 //!
-//! Each case renders one small timeline on the plan route and on the
-//! legacy route (`set_legacy_effects`), the live legacy path standing in
-//! for BASE, and holds every path to a level of an 8-bit picture: the
+//! Each case renders one small timeline on the plan route and holds it to
+//! the legacy route's frames, stored before step 11d deleted that route
+//! (`support/legacy_goldens.rs`), standing in for BASE: every path within
+//! a level of an 8-bit picture: the
 //! renderer's linear frames once display-encoded, the stack's bytes as
 //! they are. The decline set is the same on both routes: the stack takes
 //! or declines a frame alike, and the renderer uploads the same layers.
@@ -130,7 +131,7 @@ fn render(seq: &Sequence, src: &Pictures, at: f64, legacy: bool, host: impl Fn()
     let renderer = |gpu: bool| {
         let mut r = Renderer::new(host(), klipp_title::TitleRenderer::new());
         r.set_gpu_enabled(gpu);
-        r.set_legacy_effects(legacy);
+        assert!(!legacy, "the legacy route is gone (M2 step 11d): its frames are stored, never drawn");
         r
     };
     let (cpu, _) = renderer(false).render_inspected(seq, tc(at), W, H, &mut src.clone(), RenderOptions::default(), Inspect::default());

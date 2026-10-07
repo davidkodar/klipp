@@ -102,7 +102,7 @@ fn layered() -> (Sequence, Pictures) {
 fn render(seq: &Sequence, src: &mut Pictures, legacy: bool) -> Option<(Vec<u8>, u32)> {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
-    r.set_legacy_effects(legacy);
+    assert!(!legacy, "the legacy route is gone (M2 step 11d): its frames are stored, never drawn");
     let (bytes, stats) = r.render_display_u8_on_gpu(seq, tc(1.0), W, H, src, RenderOptions::default())?;
     assert_eq!(stats.effects_fallback_lists, 0, "every plan list came from the picture");
     Some((bytes, stats.effects_followed_grade))

@@ -2,10 +2,11 @@
 //! with no download and upload between them, and draw exactly what the
 //! legacy route draws (#1089, phase 2b M2 step 10).
 //!
-//! Each case renders one graded clip with effects twice: on the new route
-//! and on the legacy one (`set_legacy_effects`), comparing the linear
-//! floats bit for bit. The same shaders run on the same f32 frame either
-//! way, so anything but equal is a fault. The render counter says which
+//! Each case renders one graded clip with effects on the new route and
+//! compares the linear floats bit for bit with the legacy route's frame,
+//! stored before step 11d deleted that route (`support/legacy_goldens.rs`;
+//! within one display level on another GPU or driver). The same shaders
+//! ran on the same f32 frame either way, so anything but equal is a fault. The render counter says which
 //! route a frame took, so a case can't pass by both falling back.
 //! A missing GPU is reported as unverified; with
 //! `KLIPP_TEST_REQUIRE_GPU=1` it fails.
@@ -22,7 +23,7 @@ use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, Track, TrackKind};
 // is held to them where it was held to a live legacy render.
 #[path = "support/legacy_goldens.rs"]
 mod legacy_goldens;
-use legacy_goldens::{legacy_f32, matches_f32, matches_f32_within, scope};
+use legacy_goldens::{legacy_f32, matches_f32, scope, within_cpu_gpu_bar};
 
 const W: u32 = 96;
 const H: u32 = 54;
@@ -93,9 +94,9 @@ fn render_with(seq: &Sequence, legacy: bool, refuse: bool) -> (Vec<f32>, u32) {
 fn render_at(seq: &Sequence, legacy: bool, refuse: bool, secs: f64) -> (Vec<f32>, u32) {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
-    r.set_legacy_effects(legacy);
+    assert!(!legacy, "the legacy route is gone (M2 step 11d): its frames are stored, never drawn");
     // Both pipelines: the grade's (whose chain the effects follow on) and
-    // the renderer's own (the legacy route's).
+    // the renderer's own (its layers and stack).
     if let Some(g) = r.executor().gpu_pipeline_or_init() {
         g.refuse_recording(refuse);
     }
@@ -106,6 +107,7 @@ fn render_at(seq: &Sequence, legacy: bool, refuse: bool, secs: f64) -> (Vec<f32>
     assert_eq!(found.stats.effects_fallback_lists, 0, "every plan list came from the picture");
     let chain = r.executor().last_run_chain_stats();
     LAST.with(|l| l.set((found.stats.cpu_layers, chain.effect_breaks, chain.submits)));
+    ON_CPU.with(|c| c.set(found.stats.effects_on_cpu));
     (out, found.stats.effects_followed_grade)
 }
 
@@ -113,6 +115,9 @@ thread_local! {
     /// The last render's declines (`cpu_layers`), effect breaks and
     /// submits, for the cases that check them.
     static LAST: std::cell::Cell<(u32, u32, u32)> = const { std::cell::Cell::new((0, 0, 0)) };
+    /// The last render's effect runs the CPU kernels took after a plan
+    /// couldn't apply them.
+    static ON_CPU: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 fn last() -> (u32, u32, u32) {
@@ -193,18 +198,22 @@ fn a_clip_with_no_grade_runs_its_effects_as_a_plan() {
     assert!(gpu || !required(), "required, but the effects did not run as a plan");
 }
 
+/// An injected failure (every effect's recording refused, as a lost
+/// device refuses it): the grade's picture is gone with the GPU run, so
+/// the frame is graded again and its effects drawn by the CPU kernels,
+/// counted, and never drawn without them.
 #[test]
-fn an_effect_that_could_not_be_recorded_sends_the_frame_the_legacy_way() {
+fn an_effect_that_could_not_be_recorded_is_drawn_by_the_cpu_kernels() {
+    // The stored frames keep the name they were recorded under.
     let _goldens = scope("effects_follow_grade.an_effect_that_could_not_be_recorded_sends_the_frame_the_legacy_way");
-    // The grade's picture is gone with the GPU run, so the frame is graded
-    // again and takes the legacy route: never drawn without the effect.
     let seq = graded(colour_family());
     let (new, followed) = render_with(&seq, false, true);
     let legacy = legacy_f32(|| render_with(&seq, true, true).0);
     assert_eq!(followed, 0, "nothing followed the grade");
-    assert!(matches_f32(&new, &legacy), "the legacy route's picture");
+    assert_eq!(ON_CPU.with(|c| c.get()), u32::from(gpu()), "the CPU kernels took the effects, counted");
+    assert!(within_cpu_gpu_bar(&new, &legacy), "the legacy route's picture, within the CPU/GPU bar");
     let all = legacy_f32(|| render(&seq, true).0);
-    assert!(matches_f32_within(&new, &all, 1e-4), "with every effect in it");
+    assert!(within_cpu_gpu_bar(&new, &all), "with every effect in it");
 }
 
 #[test]
@@ -212,7 +221,7 @@ fn a_grade_run_that_fails_never_drops_the_effects() {
     let _goldens = scope("effects_follow_grade.a_grade_run_that_fails_never_drops_the_effects");
     // A grade whose run fails (here a cycle, the executor's error) gives
     // back its input with nothing applied. The spliced effects were in
-    // that run, so the frame takes the legacy route and gets them.
+    // that run, so the CPU kernels draw them.
     let mut seq = graded(colour_family());
     let clip = &mut seq.tracks[0].clips[0];
     // Two exposures feeding each other, the output reading one of them.
@@ -228,7 +237,8 @@ fn a_grade_run_that_fails_never_drops_the_effects() {
     let (new, followed) = render(&seq, false);
     let legacy = legacy_f32(|| render(&seq, true).0);
     assert_eq!(followed, 0, "the failed run is not taken as done");
-    assert!(matches_f32(&new, &legacy), "the legacy route's picture, effects in it");
+    assert_eq!(ON_CPU.with(|c| c.get()), u32::from(gpu()), "the CPU kernels took the effects, counted");
+    assert!(within_cpu_gpu_bar(&new, &legacy), "the legacy route's picture, effects in it, within the CPU/GPU bar");
     let mut no_fx = seq.clone();
     no_fx.tracks[0].clips[0].set_effect_list(vec![], vec![]);
     let bare = legacy_f32(|| render(&no_fx, true).0);
@@ -420,7 +430,7 @@ fn analysed() -> Vec<(&'static str, Sequence, Sequence)> {
 fn renderer(legacy: bool) -> Renderer {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
-    r.set_legacy_effects(legacy);
+    assert!(!legacy, "the legacy route is gone (M2 step 11d): its frames are stored, never drawn");
     r
 }
 
@@ -522,7 +532,7 @@ impl FrameSource for Scene {
 fn render_scene(seq: &Sequence, legacy: bool, transfer: klipp_color::hdr::HdrTransfer, peak: Option<f32>) -> (Vec<f32>, u32, (u32, u32)) {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
-    r.set_legacy_effects(legacy);
+    assert!(!legacy, "the legacy route is gone (M2 step 11d): its frames are stored, never drawn");
     let opts = RenderOptions { hdr_peak_nits: peak, ..Default::default() };
     let (out, found) = r.render_inspected(seq, tc(1.0), W, H, &mut Scene(transfer), opts, Inspect::default());
     assert_eq!(found.stats.effects_fallback_lists, 0, "every plan list came from the picture");
@@ -606,7 +616,7 @@ fn renderer_with_invert(legacy: bool) -> Renderer {
     host.initialise_plugin(at).expect("the invert plug-in loads");
     let mut r = Renderer::new(host, klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
-    r.set_legacy_effects(legacy);
+    assert!(!legacy, "the legacy route is gone (M2 step 11d): its frames are stored, never drawn");
     r
 }
 
@@ -667,10 +677,10 @@ fn a_clip_with_a_plugin_runs_its_effects_as_a_plan_after_it() {
     }
 }
 
-/// The legacy route takes a plug-in's clip whose effects can't be applied
-/// after it (a lost device's refusal): never drawn without them.
+/// The CPU kernels take a plug-in's clip whose effects can't be applied
+/// after it (a lost device's refusal), counted: never drawn without them.
 #[test]
-fn effects_after_a_plugin_that_cannot_be_applied_take_the_legacy_route() {
+fn effects_after_a_plugin_that_cannot_be_applied_take_the_cpu_kernels() {
     let _goldens = scope("effects_follow_grade.effects_after_a_plugin_that_cannot_be_applied_take_the_legacy_route");
     let _turn = PLUGIN.lock().unwrap_or_else(|e| e.into_inner());
     let seq = with_invert(graded(colour_family()));
@@ -680,8 +690,9 @@ fn effects_after_a_plugin_that_cannot_be_applied_take_the_legacy_route() {
     }
     let (refused, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default());
     assert_eq!(found.stats.effects_after_plugins, 0, "nothing ran as a plan");
+    assert_eq!(found.stats.effects_on_cpu, u32::from(gpu()), "the CPU kernels took the effects, counted");
     let legacy = legacy_f32(|| renderer_with_invert(true).render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default()).0);
-    assert!(matches_f32_within(&refused, &legacy, 1e-4), "the legacy route's picture, effects in it");
+    assert!(within_cpu_gpu_bar(&refused, &legacy), "the legacy route's picture, effects in it, within the CPU/GPU bar");
 }
 
 /// Step 11c-3: a moving clip under an open shutter runs its effects as
@@ -716,7 +727,7 @@ fn a_moving_clip_under_an_open_shutter_runs_its_effects_as_plans() {
     let run = |seq: &Sequence, legacy: bool| {
         let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
         r.set_gpu_enabled(true);
-        r.set_legacy_effects(legacy);
+        assert!(!legacy, "the legacy route is gone (M2 step 11d): its frames are stored, never drawn");
         let (out, found) = r.render_inspected(seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default());
         assert_eq!(found.stats.effects_fallback_lists, 0, "every plan list came from the picture");
         (out, found.stats.effects_shuttered, found.stats.effects_followed_grade)
@@ -775,4 +786,41 @@ fn analysis_driven_effects_after_a_plugin_keep_their_correction() {
         let (uncorrected, _) = if name == "rolling shutter" { run(false, &bare, &mut Chart) } else { run(false, &bare, &mut Moving) };
         assert_ne!(bits(&new), bits(&uncorrected), "{name}: the analysis moves the picture");
     }
+}
+
+/// Inspecting a clip (the node editor reads its intermediate pictures)
+/// takes its effects off the plan and onto the CPU kernels (step 11d):
+/// the picture is the one the normal render draws, within the CPU/GPU
+/// bar, and that isn't counted as a fallback. What it costs is printed.
+#[test]
+fn an_inspected_clip_shows_the_picture_the_render_draws() {
+    let seq = graded(colour_family());
+    let id = seq.tracks[0].clips[0].id;
+    let on_gpu = gpu();
+    let (normal, followed) = render(&seq, false);
+    assert_eq!(followed, u32::from(on_gpu), "the normal render takes the plan route when there is a GPU");
+    let mut r = renderer(false);
+    let inspect = || Inspect { clip: Some(id), ..Default::default() };
+    let (inspected, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), inspect());
+    assert_eq!(found.stats.plan_clips(), 0, "an inspected clip's effects don't take the plan");
+    assert_eq!(found.stats.effects_on_cpu, 0, "inspecting isn't a fallback");
+    assert!(within_cpu_gpu_bar(&inspected, &normal), "the inspected picture is the rendered one");
+    let mut no_fx = seq.clone();
+    no_fx.tracks[0].clips[0].set_effect_list(vec![], vec![]);
+    assert!(inspected != render(&no_fx, false).0, "the effects are in the inspected picture");
+    // The cost, for the PR: medians of the same frame, inspected and not.
+    let median = |inspected: bool, r: &mut Renderer| {
+        let mut ms: Vec<f64> = (0..9)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                let how = if inspected { inspect() } else { Inspect::default() };
+                std::hint::black_box(r.render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), how));
+                t.elapsed().as_secs_f64() * 1000.0
+            })
+            .collect();
+        ms.sort_by(f64::total_cmp);
+        ms[4]
+    };
+    let mut plain = renderer(false);
+    eprintln!("at {W}x{H}: rendered {:.2} ms, inspected {:.2} ms", median(false, &mut plain), median(true, &mut r));
 }

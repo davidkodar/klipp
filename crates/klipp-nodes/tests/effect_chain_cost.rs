@@ -101,7 +101,9 @@ fn the_native_effect_plan_is_no_slower_than_the_legacy_loop() {
     // Both runs move the frame up and back (about 27 of 28.5 ms at 4K), so
     // the medians agree to within about a percent and move by that much
     // between runs; 3% is the noise band. The structural check above is the
-    // sharper one: per-effect submits would show there first.
+    // sharper one: per-effect submits would show there first. On a quiet
+    // machine the native plan measures about 1.5% slower, in its flush and
+    // copy-out (#1249); the band holds that until it is fixed.
     assert!(nm <= lm * 1.03, "the native plan ({nm:.2} ms) is slower than the legacy loop ({lm:.2} ms)");
 }
 
