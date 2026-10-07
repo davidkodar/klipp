@@ -330,3 +330,19 @@ fn a_masked_effect_inside_a_secondary_with_a_blend() {
         assert!(stats.flushes <= D6_FLUSHES, "{stats:?}");
     }
 }
+
+/// A mix that can't be read (not finite) gives no coverage: the node
+/// passes its input on, bit for bit, and the run counts it. Never the
+/// effect taken whole, which would draw a masked effect unmasked.
+#[test]
+fn an_unreadable_mix_skips_the_effect_and_says_so() {
+    let blend = EffectBlend { mix: f32::NAN, channel: MaskChannel::Red };
+    let mut runs = vec![GraphExecutor::new_cpu_only()];
+    runs.extend(gpu());
+    for mut ex in runs {
+        let input = run(&mut ex, &Shape::Input);
+        let got = run(&mut ex, &Shape::Mixed(blend, Some(true)));
+        assert_eq!(bits(&got), bits(&input), "the input, not the effect whole");
+        assert_eq!(ex.last_run_chain_stats().effect_mixes_refused, 1);
+    }
+}
