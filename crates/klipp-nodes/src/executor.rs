@@ -1225,11 +1225,16 @@ impl GraphExecutor {
     /// between them. `None` if the last run did not keep its output on
     /// the GPU. The effects run as `run_effects_in_chain` runs them
     /// anywhere: recorded arms batched, the rest each in its own pass.
+    /// `None` too when an effect could not be recorded (a lost device):
+    /// the picture would lack it.
     pub fn effects_on_output(&mut self, effects: &[klipp_effects::BuiltinEffect], width: u32, height: u32) -> Option<Vec<f32>> {
         let slot_a = self.output_on_gpu.take()?;
         self.last_chain_final_slot = None;
         let gpu = self.gpu.as_mut()?;
         let in_a = gpu.run_effects_in_chain_from(effects, slot_a, width, height);
+        if !gpu.last_effects_complete() {
+            return None;
+        }
         Some(gpu.download_chain_slot_linear(in_a, (width as usize) * (height as usize)))
     }
 

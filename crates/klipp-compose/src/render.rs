@@ -96,6 +96,7 @@ pub trait GpuPixels: Send + Sync {
 /// A clip's pixels on their way into its grade: on the CPU, still on the
 /// GPU, or a scene-referred source's codes — decoded to linear on the GPU
 /// as the grade starts, or here only when something needs them here.
+#[derive(Clone)]
 enum GradeInput {
     Cpu(Arc<Vec<f32>>),
     Gpu(Arc<dyn GpuPixels>),
@@ -2092,6 +2093,8 @@ impl Renderer {
         if on_gpu {
             self.executor.request_output_on_gpu();
         }
+        // Kept for a second grade if the effects can't finish on the GPU.
+        let retry = on_gpu.then(|| input.clone());
         let mut pixels = self.grade(clip, input, clip_time, fps, width, height);
         if on_gpu {
             if pixels.is_empty() {
@@ -2101,6 +2104,11 @@ impl Renderer {
                     self.found.stats.effects_followed_grade += 1;
                     return Some((out, opacity));
                 }
+                // An effect could not be recorded: the grade's picture is
+                // gone with the run, so the frame is graded again and takes
+                // the legacy route, never shown without the effect.
+                self.executor.cancel_output_on_gpu();
+                pixels = self.grade(clip, retry.expect("kept when on_gpu"), clip_time, fps, width, height);
             }
             // Came back on the CPU (a node with no GPU dispatch), or the
             // grade never ran: the effects take the picture as before.

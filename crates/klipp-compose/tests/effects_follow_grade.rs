@@ -74,9 +74,23 @@ fn graded(effects: Vec<E>) -> Sequence {
 
 /// The frame and how many clips took the new route.
 fn render(seq: &Sequence, legacy: bool) -> (Vec<f32>, u32) {
+    render_with(seq, legacy, false)
+}
+
+/// `render`, with every effect's recording refused when `refuse` (as a
+/// lost device refuses it).
+fn render_with(seq: &Sequence, legacy: bool, refuse: bool) -> (Vec<f32>, u32) {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
     r.set_legacy_effects(legacy);
+    // Both pipelines: the grade's (whose chain the effects follow on) and
+    // the renderer's own (the legacy route's).
+    if let Some(g) = r.executor().gpu_pipeline_or_init() {
+        g.refuse_recording(refuse);
+    }
+    if let Some(g) = r.gpu_pipeline() {
+        g.refuse_recording(refuse);
+    }
     let (out, found) = r.render_inspected(seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default());
     (out, found.stats.effects_followed_grade)
 }
@@ -131,4 +145,17 @@ fn a_clip_with_no_grade_takes_the_legacy_route_and_says_so() {
     seq.tracks[0].clips[0].set_grade(NodeGraph::default());
     let (_, followed) = render(&seq, false);
     assert_eq!(followed, 0, "nothing on the GPU to follow");
+}
+
+#[test]
+fn an_effect_that_could_not_be_recorded_sends_the_frame_the_legacy_way() {
+    // The grade's picture is gone with the GPU run, so the frame is graded
+    // again and takes the legacy route: never drawn without the effect.
+    let seq = graded(colour_family());
+    let (new, followed) = render_with(&seq, false, true);
+    let (legacy, _) = render_with(&seq, true, true);
+    assert_eq!(followed, 0, "nothing followed the grade");
+    assert!(new.iter().map(|v| v.to_bits()).eq(legacy.iter().map(|v| v.to_bits())), "the legacy route's picture");
+    let (all, _) = render(&seq, true);
+    assert!(new.iter().zip(&all).all(|(a, b)| (a - b).abs() < 1e-4), "with every effect in it");
 }
