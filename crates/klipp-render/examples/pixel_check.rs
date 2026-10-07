@@ -228,6 +228,9 @@ struct Rendered {
     /// (the list stood in), over every render of the project.
     plan_clips: u32,
     plan_fallbacks: u32,
+    /// Clip effect runs the CPU kernels drew in the GPU renders (#1274):
+    /// zero unless an effect has no GPU kernel or a plan failed.
+    gpu_cpu_kernels: u32,
     /// Export frames converted on the GPU (`-export-yuv`), and those
     /// rendered and converted on the CPU (`-export`), as the export job
     /// chooses between them.
@@ -291,6 +294,9 @@ fn render_project(dir: &Path, out: &Path, scratch: &Path) -> Result<Rendered, St
                     let (linear, found) = r.render_inspected(&snapshot.video.sequence, time, WIDTH, h, &mut source, klipp_compose::RenderOptions::default(), klipp_compose::Inspect::default());
                     done.plan_clips += found.stats.plan_clips();
                     done.plan_fallbacks += found.stats.effects_fallback_lists;
+                    if gpu {
+                        done.gpu_cpu_kernels += found.stats.effects_on_cpu_kernels;
+                    }
                     // As the export does after each frame: a decoder that
                     // failed fails the project rather than being recorded,
                     // and the streams the frame did not use are closed.
@@ -332,6 +338,7 @@ fn stack_frames(snapshot: &SequenceSnapshot, frames: &[u64], h: u32, seq_dir: &P
             Some((px, stats)) => {
                 done.plan_clips += stats.plan_clips();
                 done.plan_fallbacks += stats.effects_fallback_lists;
+                done.gpu_cpu_kernels += stats.effects_on_cpu_kernels;
                 image::save_buffer(seq_dir.join(format!("{f}-stack.png")), &px, WIDTH, h, image::ExtendedColorType::Rgba8).map_err(|e| e.to_string())?;
                 done.frames += 1;
                 done.flat += usize::from(is_flat(&px));
@@ -567,7 +574,7 @@ fn run_in(args: &[String], scratch: &Path) -> i32 {
     let (mut rendered, mut failed, mut frames, mut graded_on_gpu) = (0, Vec::new(), 0, 0);
     let (mut covered, mut real_frames, mut not_covered, mut lost) = (0, 0, Vec::new(), Vec::new());
     let (mut stack_drawn, mut stack_declined, mut export_gpu, mut export_cpu, mut export_letterboxed) = (0, 0, 0, 0, 0);
-    let (mut plan_clips, mut plan_fallbacks) = (0u32, 0u32);
+    let (mut plan_clips, mut plan_fallbacks, mut gpu_cpu_kernels) = (0u32, 0u32, 0u32);
     let mut index = Vec::new();
     for (i, dir) in list.iter().enumerate() {
         let r = match render_project(dir, &out.join(format!("{i}")), scratch) {
@@ -596,6 +603,7 @@ fn run_in(args: &[String], scratch: &Path) -> i32 {
         stack_declined += r.stack_declined;
         plan_clips += r.plan_clips;
         plan_fallbacks += r.plan_fallbacks;
+        gpu_cpu_kernels += r.gpu_cpu_kernels;
         export_gpu += r.export_gpu;
         export_cpu += r.export_cpu;
         export_letterboxed += r.export_letterboxed;
@@ -615,7 +623,7 @@ fn run_in(args: &[String], scratch: &Path) -> i32 {
         started.elapsed().as_secs_f64()
     );
     println!("paths: GPU stack drew {stack_drawn} frames and declined {stack_declined}; export converted {export_gpu} on the GPU and {export_cpu} on the CPU ({export_letterboxed} letterboxed)");
-    println!("plan: {plan_clips} clip renders took their effects from the picture, {plan_fallbacks} fell back to the list");
+    println!("plan: {plan_clips} clip renders took their effects from the picture, {plan_fallbacks} fell back to the list; the CPU kernels drew {gpu_cpu_kernels} effect runs in the GPU renders");
     let list_of = |v: &[usize]| v.iter().map(usize::to_string).collect::<Vec<_>>().join(", ");
     println!(
         "coverage: {covered} of {rendered} projects show pictures, {real_frames} of {frames} frames; not covered (media offline, a file missing, or every frame flat; never counted as passed): {}",

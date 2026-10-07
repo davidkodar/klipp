@@ -691,6 +691,7 @@ fn effects_after_a_plugin_that_cannot_be_applied_take_the_cpu_kernels() {
     let (refused, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default());
     assert_eq!(found.stats.effects_after_plugins, 0, "nothing ran as a plan");
     assert_eq!(found.stats.effects_on_cpu, u32::from(gpu()), "the CPU kernels took the effects, counted");
+    assert!(found.stats.effects_on_cpu_kernels >= 1, "and counted as drawn on the CPU (#1274)");
     let legacy = legacy_f32(|| renderer_with_invert(true).render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default()).0);
     assert!(within_cpu_gpu_bar(&refused, &legacy), "the legacy route's picture, effects in it, within the CPU/GPU bar");
 }
@@ -788,22 +789,50 @@ fn analysis_driven_effects_after_a_plugin_keep_their_correction() {
     }
 }
 
-/// Inspecting a clip (the node editor reads its intermediate pictures)
-/// takes its effects off the plan and onto the CPU kernels (step 11d):
-/// the picture is the one the normal render draws, within the CPU/GPU
-/// bar, and that isn't counted as a fallback. What it costs is printed.
+/// The viewer names its primary clip in every render (the engine's
+/// `inspect_request`), with nothing read inside its grade: the clip's
+/// effects still follow its grade on the GPU, and the CPU kernels draw
+/// none of them (#1274: they took the CPU kernels on every frame the GPU
+/// stack declined).
+#[test]
+fn the_viewers_primary_clip_keeps_its_effects_on_the_grades_plan() {
+    let seq = graded(colour_family());
+    let id = seq.tracks[0].clips[0].id;
+    let on_gpu = gpu();
+    let (normal, _) = render(&seq, false);
+    let mut r = renderer(false);
+    let viewer = Inspect { clip: Some(id), ..Default::default() };
+    assert!(!viewer.reads_the_grade());
+    let (shown, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), viewer);
+    assert_eq!(found.stats.effects_followed_grade, u32::from(on_gpu), "the primary clip's effects follow its grade");
+    assert_eq!(found.stats.effects_on_cpu_kernels, u32::from(!on_gpu), "the CPU kernels draw them only without a GPU");
+    assert_eq!(found.stats.effects_on_cpu, 0);
+    assert!(within_cpu_gpu_bar(&shown, &normal), "the viewer's picture is the rendered one");
+}
+
+/// Inspecting a clip's grade (the node editor's thumbnails read its
+/// intermediate pictures) keeps its effects out of the grade's run, so the
+/// thumbnails are the grade's; the effects run as a plan of their own
+/// after it, still on the GPU (#1274), and the picture is the one the
+/// normal render draws. What it costs is printed.
 #[test]
 fn an_inspected_clip_shows_the_picture_the_render_draws() {
     let seq = graded(colour_family());
-    let id = seq.tracks[0].clips[0].id;
+    let clip = &seq.tracks[0].clips[0];
+    let id = clip.id;
+    let nodes: std::collections::HashSet<_> = clip.grade().nodes.iter().map(|n| n.id).collect();
     let on_gpu = gpu();
     let (normal, followed) = render(&seq, false);
     assert_eq!(followed, u32::from(on_gpu), "the normal render takes the plan route when there is a GPU");
     let mut r = renderer(false);
-    let inspect = || Inspect { clip: Some(id), ..Default::default() };
+    let inspect = || Inspect { clip: Some(id), thumbs: Some(nodes.clone()), ..Default::default() };
+    assert!(inspect().reads_the_grade());
     let (inspected, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), inspect());
-    assert_eq!(found.stats.plan_clips(), 0, "an inspected clip's effects don't take the plan");
+    assert_eq!(found.stats.effects_followed_grade, 0, "an inspected grade runs alone");
+    assert_eq!(found.stats.effects_inspected_apart, u32::from(on_gpu), "its effects run as a plan of their own");
+    assert_eq!(found.stats.effects_on_cpu_kernels, u32::from(!on_gpu), "on the GPU when there is one");
     assert_eq!(found.stats.effects_on_cpu, 0, "inspecting isn't a fallback");
+    assert!(!found.thumbs.is_empty(), "the grade's thumbnails come back");
     assert!(within_cpu_gpu_bar(&inspected, &normal), "the inspected picture is the rendered one");
     let mut no_fx = seq.clone();
     no_fx.tracks[0].clips[0].set_effect_list(vec![], vec![]);
@@ -823,4 +852,33 @@ fn an_inspected_clip_shows_the_picture_the_render_draws() {
     };
     let mut plain = renderer(false);
     eprintln!("at {W}x{H}: rendered {:.2} ms, inspected {:.2} ms", median(false, &mut plain), median(true, &mut r));
+}
+
+/// A scene-referred clip whose grade the tools read inside (#1274): its
+/// display step still runs, and its effects as a plan of their own after
+/// the grade, so the picture is the one the plain render draws, for the
+/// viewer's primary-only inspection and for the node canvas's thumbnails.
+#[test]
+fn an_inspected_scene_referred_clip_keeps_its_display_step() {
+    let mut fx = colour_family();
+    fx.push(E::Glow { radius: 6.0, intensity: 0.5 });
+    let seq = graded(fx);
+    let clip = &seq.tracks[0].clips[0];
+    let nodes: std::collections::HashSet<_> = clip.grade().nodes.iter().map(|n| n.id).collect();
+    let on_gpu = gpu();
+    for (name, transfer) in transfers() {
+        let draw = |inspect: Inspect| {
+            let mut r = renderer(false);
+            r.render_inspected(&seq, tc(1.0), W, H, &mut Scene(transfer), RenderOptions::default(), inspect)
+        };
+        let (plain, _) = draw(Inspect::default());
+        let (viewer, found) = draw(Inspect { clip: Some(clip.id), ..Default::default() });
+        assert_eq!(found.stats.effects_followed_grade, u32::from(on_gpu), "{name}: the primary clip's effects follow its grade");
+        assert!(within_cpu_gpu_bar(&viewer, &plain), "{name}: the viewer draws the plain picture");
+        let (tapped, found) = draw(Inspect { clip: Some(clip.id), thumbs: Some(nodes.clone()), ..Default::default() });
+        assert_eq!(found.stats.effects_inspected_apart, u32::from(on_gpu), "{name}: the effects run apart from the inspected grade");
+        assert_eq!(found.stats.effects_on_cpu_kernels, u32::from(!on_gpu), "{name}: on the GPU when there is one");
+        assert!(!found.thumbs.is_empty(), "{name}: the grade's thumbnails come back");
+        assert!(within_cpu_gpu_bar(&tapped, &plain), "{name}: the inspected picture keeps its display step");
+    }
 }
