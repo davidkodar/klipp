@@ -637,10 +637,25 @@ mod lifted_checks {
     fn interface_capability_is_explicit_and_legacy_bytes_stay_unchanged() {
         let empty = valid();
         let b = empty.nodes[1].group.as_ref().unwrap();
-        assert_eq!(serde_json::to_value(b).unwrap(), json!({ "graph": b.graph }));
+        // Model the pre-interface serializer, including field order.
+        #[derive(serde::Serialize)]
+        struct OldGroupBody<'a> {
+            graph: &'a Graph,
+            #[serde(skip_serializing_if = "Vec::is_empty")]
+            ports: &'a Vec<PortKey>,
+        }
+        for ports in [Vec::new(), vec![PortKey::from("old_port")]] {
+            let mut b = (**b).clone();
+            b.ports = ports;
+            let old = OldGroupBody { graph: &b.graph, ports: &b.ports };
+            assert_eq!(serde_json::to_vec(&b).unwrap(), serde_json::to_vec(&old).unwrap());
+        }
         let mut g = published();
         let b = g.nodes[1].group.as_mut().unwrap();
         b.interface.push(GroupPort { key: "matte_other".into(), label: String::new(), ..b.interface[0].clone() });
+        let bytes = serde_json::to_vec(b).unwrap();
+        let loaded: GroupBody = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(serde_json::to_vec(&loaded).unwrap(), bytes);
         let value = serde_json::to_value(&g).unwrap();
         let body = &value["nodes"][1]["group"];
         assert_eq!(body["requires"], json!([GROUP_INTERFACE_CAPABILITY]));
@@ -656,6 +671,42 @@ mod lifted_checks {
         empty_unknown["interface"] = json!([]);
         empty_unknown["requires"] = json!(["future-capability"]);
         assert!(serde_json::from_value::<GroupBody>(empty_unknown).is_err());
+    }
+
+    #[test]
+    fn two_public_inputs_cannot_bind_the_same_child_input() {
+        let mut g = published();
+        let b = g.nodes[1].group.as_mut().unwrap();
+        for key in ["mask_a", "mask_b"] {
+            b.interface.push(GroupPort {
+                key: key.into(), direction: PortDirection::Input, ty: PortType::Matte,
+                binding: PortBinding { node: id(12), port: "mask".into() }, label: String::new(),
+            });
+        }
+        let before = serde_json::to_vec(&g).unwrap();
+        assert!(matches!(g.check_lifted_with_catalog(false, &Catalog), Err(LiftedError::InterfaceEndpoint { group, key }) if group == id(2) && key == "mask_b"));
+        assert_eq!(serde_json::to_vec(&g).unwrap(), before);
+    }
+
+    #[test]
+    fn feedback_through_a_published_input_and_output_is_a_cycle() {
+        let mut g = published();
+        let b = g.nodes[1].group.as_mut().unwrap();
+        b.interface.push(GroupPort {
+            key: "feedback".into(), direction: PortDirection::Input, ty: PortType::Image,
+            binding: PortBinding { node: id(12), port: "in".into() }, label: String::new(),
+        });
+        b.interface.push(GroupPort {
+            key: "corrected".into(), direction: PortDirection::Output, ty: PortType::Image,
+            binding: PortBinding { node: id(12), port: "out".into() }, label: String::new(),
+        });
+        b.graph.edges.remove(0);
+        g.edges.push(e(1, 2, "feedback"));
+        g.check_lifted_with_catalog(false, &Catalog).unwrap();
+        // The very same binding becomes a loop when its output feeds its input.
+        let edge = g.edges.last_mut().unwrap();
+        edge.from = (id(2), "corrected".into());
+        assert!(matches!(g.check_lifted_with_catalog(false, &Catalog), Err(LiftedError::Cycle { .. })));
     }
 
     #[test]
