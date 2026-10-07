@@ -1,0 +1,22 @@
+{
+  "recorded_on": "73e18f94",
+  "route": "legacy (set_legacy_effects)",
+  "reason": "phase 2b M2 step 11d-2: the legacy effects route's frames, recorded before 11d-3 deletes it",
+  "frames": [
+    {"key":"0","len":82944,"offset":0},
+    {"key":"1","len":82944,"offset":82944},
+    {"key":"2","len":82944,"offset":165888},
+    {"key":"3","len":82944,"offset":248832},
+    {"key":"4","len":82944,"offset":331776},
+    {"key":"5","len":82944,"offset":414720},
+    {"key":"6","len":82944,"offset":497664},
+    {"key":"7","len":82944,"offset":580608},
+    {"key":"8","len":82944,"offset":663552},
+    {"key":"9","len":82944,"offset":746496},
+    {"key":"10","len":82944,"offset":829440},
+    {"key":"11","len":82944,"offset":912384},
+    {"key":"12","len":82944,"offset":995328},
+    {"key":"13","len":82944,"offset":1078272},
+    {"key":"14","len":82944,"offset":1161216}
+  ]
+}

@@ -18,6 +18,12 @@ use klipp_effects::BuiltinEffect as E;
 use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams};
 use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, Track, TrackKind};
 
+// The legacy route's frames, stored before step 11d deleted it: each test
+// is held to them where it was held to a live legacy render.
+#[path = "support/legacy_goldens.rs"]
+mod legacy_goldens;
+use legacy_goldens::{legacy_f32, scope};
+
 const W: u32 = 96;
 const H: u32 = 54;
 
@@ -122,15 +128,18 @@ fn both(name: &str, effects: Vec<E>) -> Option<bool> {
 fn both_seq(name: &str, seq: Sequence) -> Option<bool> {
     let (new, followed) = render(&seq, false);
     let (declines, breaks, submits) = last();
-    let (legacy, legacy_followed) = render(&seq, true);
-    assert_eq!(declines, last().0, "{name}: no new declines");
+    let legacy = legacy_f32(|| {
+        let (frame, legacy_followed) = render(&seq, true);
+        assert_eq!(declines, last().0, "{name}: no new declines");
+        assert_eq!(legacy_followed, 0, "{name}: the legacy route never follows");
+        frame
+    });
     if followed == 1 {
         let recorded = seq.tracks[0].clips[0].builtin_effects().iter().all(|e| klipp_effects::gpu::slots_needed(e).is_some());
         if recorded {
             assert_eq!((breaks, submits), (0, 1), "{name}: grade and effects in one submit");
         }
     }
-    assert_eq!(legacy_followed, 0, "{name}: the legacy route never follows");
     if new.iter().map(|v| v.to_bits()).ne(legacy.iter().map(|v| v.to_bits())) {
         let worst = new.iter().zip(&legacy).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
         panic!("{name}: the new route differs from the legacy one (worst {worst})");
@@ -151,6 +160,7 @@ fn colour_family() -> Vec<E> {
 
 #[test]
 fn the_colour_family_follows_the_grade_and_draws_the_same() {
+    let _goldens = scope("effects_follow_grade.the_colour_family_follows_the_grade_and_draws_the_same");
     let gpu = both("colour family", colour_family()).unwrap();
     if !gpu {
         assert!(!required(), "required, but the effects did not follow the grade on the GPU");
@@ -160,6 +170,7 @@ fn the_colour_family_follows_the_grade_and_draws_the_same() {
 
 #[test]
 fn an_effect_not_yet_recorded_still_follows_and_draws_the_same() {
+    let _goldens = scope("effects_follow_grade.an_effect_not_yet_recorded_still_follows_and_draws_the_same");
     // Blur isn't recorded yet (step 7's later family): it runs in its own
     // pass on the same frame, after the recorded ones.
     let mut fx = colour_family();
@@ -174,6 +185,7 @@ fn an_effect_not_yet_recorded_still_follows_and_draws_the_same() {
 /// legacy route's picture.
 #[test]
 fn a_clip_with_no_grade_runs_its_effects_as_a_plan() {
+    let _goldens = scope("effects_follow_grade.a_clip_with_no_grade_runs_its_effects_as_a_plan");
     let mut seq = graded(colour_family());
     seq.tracks[0].clips[0].set_grade(NodeGraph::default());
     assert!(seq.tracks[0].clips[0].grade_is_identity());
@@ -183,19 +195,21 @@ fn a_clip_with_no_grade_runs_its_effects_as_a_plan() {
 
 #[test]
 fn an_effect_that_could_not_be_recorded_sends_the_frame_the_legacy_way() {
+    let _goldens = scope("effects_follow_grade.an_effect_that_could_not_be_recorded_sends_the_frame_the_legacy_way");
     // The grade's picture is gone with the GPU run, so the frame is graded
     // again and takes the legacy route: never drawn without the effect.
     let seq = graded(colour_family());
     let (new, followed) = render_with(&seq, false, true);
-    let (legacy, _) = render_with(&seq, true, true);
+    let legacy = legacy_f32(|| render_with(&seq, true, true).0);
     assert_eq!(followed, 0, "nothing followed the grade");
     assert!(new.iter().map(|v| v.to_bits()).eq(legacy.iter().map(|v| v.to_bits())), "the legacy route's picture");
-    let (all, _) = render(&seq, true);
+    let all = legacy_f32(|| render(&seq, true).0);
     assert!(new.iter().zip(&all).all(|(a, b)| (a - b).abs() < 1e-4), "with every effect in it");
 }
 
 #[test]
 fn a_grade_run_that_fails_never_drops_the_effects() {
+    let _goldens = scope("effects_follow_grade.a_grade_run_that_fails_never_drops_the_effects");
     // A grade whose run fails (here a cycle, the executor's error) gives
     // back its input with nothing applied. The spliced effects were in
     // that run, so the frame takes the legacy route and gets them.
@@ -212,17 +226,18 @@ fn a_grade_run_that_fails_never_drops_the_effects() {
     assert!(g.topo_sort().is_err(), "the case is a cycle");
     clip.set_grade(g);
     let (new, followed) = render(&seq, false);
-    let (legacy, _) = render(&seq, true);
+    let legacy = legacy_f32(|| render(&seq, true).0);
     assert_eq!(followed, 0, "the failed run is not taken as done");
     assert!(new.iter().map(|v| v.to_bits()).eq(legacy.iter().map(|v| v.to_bits())), "the legacy route's picture, effects in it");
     let mut no_fx = seq.clone();
     no_fx.tracks[0].clips[0].set_effect_list(vec![], vec![]);
-    let (bare, _) = render(&no_fx, true);
+    let bare = legacy_f32(|| render(&no_fx, true).0);
     assert!(new != bare, "the effects are in the picture");
 }
 
 #[test]
 fn animated_effects_and_a_fixed_placement_from_the_picture_draw_the_legacy_frames() {
+    let _goldens = scope("effects_follow_grade.animated_effects_and_a_fixed_placement_from_the_picture_draw_the_legacy_frames");
     // Step 10c-2: the plan route's effects come from the clip's lifted
     // picture. A keyed parameter, a modifier stack, and a Transform effect
     // placed after a shadow while the clip moves, at times around the keys.
@@ -243,7 +258,7 @@ fn animated_effects_and_a_fixed_placement_from_the_picture_draw_the_legacy_frame
     let counted = klipp_compose::PLAN_EFFECT_CLIPS.load(std::sync::atomic::Ordering::Relaxed);
     for t in [0.1, 0.6, 1.0, 1.4, 1.9] {
         let (new, followed) = render_at(&seq, false, false, t);
-        let (legacy, _) = render_at(&seq, true, false, t);
+        let legacy = legacy_f32(|| render_at(&seq, true, false, t).0);
         assert!(followed == 1 || !required(), "at {t}: the plan route was taken");
         assert!(new.iter().map(|v| v.to_bits()).eq(legacy.iter().map(|v| v.to_bits())), "at {t}: the legacy route's frame");
         seen.push(new);
@@ -260,6 +275,7 @@ fn animated_effects_and_a_fixed_placement_from_the_picture_draw_the_legacy_frame
 /// the plan route and draws its correction as the legacy route does.
 #[test]
 fn a_graded_clip_with_stabilisation_keeps_its_correction() {
+    let _goldens = scope("effects_follow_grade.a_graded_clip_with_stabilisation_keeps_its_correction");
     use klipp_effects::homography::Homography;
     use klipp_effects::stabilization::SmoothedTrajectory;
     let mut seq = graded(vec![E::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }, E::Gamma { gamma: 1.2 }]);
@@ -272,14 +288,14 @@ fn a_graded_clip_with_stabilisation_keeps_its_correction() {
         smoothed_jitter_px: 0.1,
     });
     let (new, followed) = render(&seq, false);
-    let (legacy, _) = render(&seq, true);
+    let legacy = legacy_f32(|| render(&seq, true).0);
     assert!(new.iter().map(|v| v.to_bits()).eq(legacy.iter().map(|v| v.to_bits())), "the correction is drawn on both routes");
     if gpu() {
         assert_eq!(followed, 1, "a stabilised clip takes the plan route (step 12)");
     }
     let mut still = seq.clone();
     still.tracks[0].clips[0].smoothed_trajectory = None;
-    let (uncorrected, _) = render(&still, true);
+    let uncorrected = legacy_f32(|| render(&still, true).0);
     assert!(legacy != uncorrected, "the case's correction moves the picture");
 }
 
@@ -298,6 +314,7 @@ fn gpu() -> bool {
 /// so the effects after it follow the grade. Each draws the legacy frame.
 #[test]
 fn temporal_effects_take_the_plan_route() {
+    let _goldens = scope("effects_follow_grade.temporal_effects_take_the_plan_route");
     use klipp_effects::registry::Temporal;
     let temporal: Vec<_> = klipp_effects::registry::effect_types().filter(|t| t.desc.temporal != Temporal::None).collect();
     let tags = |kind: Temporal| temporal.iter().filter(|t| t.desc.temporal == kind).map(|t| t.tag).collect::<Vec<_>>();
@@ -424,14 +441,15 @@ fn bits(a: &[f32]) -> Vec<u32> {
 /// after frame and back again, and its analysis moves the picture.
 #[test]
 fn analysis_driven_effects_draw_the_same_on_the_plan_route() {
+    let _goldens = scope("effects_follow_grade.analysis_driven_effects_draw_the_same_on_the_plan_route");
     let on_gpu = gpu();
     for (name, seq, bare) in analysed() {
-        let (mut plan, mut legacy) = (renderer(false), renderer(true));
+        let (mut plan, mut legacy) = (renderer(false), None);
         let mut frames = Vec::new();
         // Forward, then a seek back to a frame the analysis treats differently.
         for secs in [0.5, 0.5 + 1.0 / 24.0, 1.0, 1.5, 0.25] {
             let (a, followed) = draw(&mut plan, &seq, secs, &mut Moving);
-            let (b, _) = draw(&mut legacy, &seq, secs, &mut Moving);
+            let b = legacy_f32(|| draw(legacy.get_or_insert_with(|| renderer(true)), &seq, secs, &mut Moving).0);
             assert_eq!(followed, on_gpu, "{name} at {secs}: the plan route when there is a GPU");
             assert_eq!(bits(&a), bits(&b), "{name} at {secs}: the plan route draws the legacy frame");
             let (fresh, _) = draw(&mut renderer(false), &seq, secs, &mut Moving);
@@ -453,6 +471,7 @@ fn analysis_driven_effects_draw_the_same_on_the_plan_route() {
 /// or missing data.
 #[test]
 fn analysis_arriving_mid_play_reaches_the_next_plan_frame() {
+    let _goldens = scope("effects_follow_grade.analysis_arriving_mid_play_reaches_the_next_plan_frame");
     let on_gpu = gpu();
     for (name, seq, bare) in analysed() {
         let mut r = renderer(false);
@@ -464,7 +483,7 @@ fn analysis_arriving_mid_play_reaches_the_next_plan_frame() {
         let secs = 0.5 + 1.0 / 24.0;
         let (after, followed) = draw(&mut r, &seq, secs, &mut Moving);
         assert_eq!(followed, on_gpu, "{name}: the plan route");
-        let (want, _) = draw(&mut renderer(true), &seq, secs, &mut Moving);
+        let want = legacy_f32(|| draw(&mut renderer(true), &seq, secs, &mut Moving).0);
         assert_eq!(bits(&after), bits(&want), "{name}: the first frame after the analysis is corrected");
         // And the analysis going away (cleared, re-analysing) leaves none behind.
         let (gone, _) = if name == "rolling shutter" { draw(&mut r, &bare, 1.0, &mut Chart) } else { draw(&mut r, &bare, 1.0, &mut Moving) };
@@ -526,6 +545,7 @@ fn transfers() -> [(&'static str, klipp_color::hdr::HdrTransfer); 3] {
 /// closed form on either side, in f32, so only rounding may differ.
 #[test]
 fn a_scene_referred_clip_runs_its_display_step_and_effects_as_a_plan() {
+    let _goldens = scope("effects_follow_grade.a_scene_referred_clip_runs_its_display_step_and_effects_as_a_plan");
     const BAR: f32 = 1.0 / 25_500.0;
     let mut fx = colour_family();
     fx.push(E::Glow { radius: 6.0, intensity: 0.5 });
@@ -534,8 +554,11 @@ fn a_scene_referred_clip_runs_its_display_step_and_effects_as_a_plan() {
         for peak in [None, Some(1000.0)] {
             let case = format!("{name}, peak {peak:?}");
             let (new, followed, (breaks, submits)) = render_scene(&seq, false, transfer, peak);
-            let (legacy, legacy_followed, _) = render_scene(&seq, true, transfer, peak);
-            assert_eq!(legacy_followed, 0, "{case}: the legacy route never follows");
+            let legacy = legacy_f32(|| {
+                let (frame, legacy_followed, _) = render_scene(&seq, true, transfer, peak);
+                assert_eq!(legacy_followed, 0, "{case}: the legacy route never follows");
+                frame
+            });
             if followed == 0 {
                 assert!(!required(), "{case}: required, but the display step and effects did not run as a plan");
                 eprintln!("UNVERIFIED: no GPU route");
@@ -597,6 +620,7 @@ fn with_invert(mut seq: Sequence) -> Sequence {
 /// runs: the frame differs from the clip without it.
 #[test]
 fn a_clip_with_a_plugin_runs_its_effects_as_a_plan_after_it() {
+    let _goldens = scope("effects_follow_grade.a_clip_with_a_plugin_runs_its_effects_as_a_plan_after_it");
     let _turn = PLUGIN.lock().unwrap_or_else(|e| e.into_inner());
     let mut fx = colour_family();
     fx.push(E::GaussianBlur { radius: 2.0 });
@@ -615,8 +639,11 @@ fn a_clip_with_a_plugin_runs_its_effects_as_a_plan_after_it() {
             (out, found.stats.effects_after_plugins, found.stats.effects_followed_grade)
         };
         let (new, after, followed) = run(false, &seq);
-        let (legacy, legacy_after, _) = run(true, &seq);
-        assert_eq!(legacy_after, 0, "{name}: the legacy route runs no plan after the plug-in");
+        let legacy = legacy_f32(|| {
+            let (frame, legacy_after, _) = run(true, &seq);
+            assert_eq!(legacy_after, 0, "{name}: the legacy route runs no plan after the plug-in");
+            frame
+        });
         assert_eq!(followed, 0, "{name}: a plug-in's clip never splices its effects into the grade");
         if after == 0 {
             assert!(!required(), "{name}: required, but the effects after the plug-in did not run as a plan");
@@ -636,6 +663,7 @@ fn a_clip_with_a_plugin_runs_its_effects_as_a_plan_after_it() {
 /// after it (a lost device's refusal): never drawn without them.
 #[test]
 fn effects_after_a_plugin_that_cannot_be_applied_take_the_legacy_route() {
+    let _goldens = scope("effects_follow_grade.effects_after_a_plugin_that_cannot_be_applied_take_the_legacy_route");
     let _turn = PLUGIN.lock().unwrap_or_else(|e| e.into_inner());
     let seq = with_invert(graded(colour_family()));
     let mut r = renderer_with_invert(false);
@@ -644,8 +672,7 @@ fn effects_after_a_plugin_that_cannot_be_applied_take_the_legacy_route() {
     }
     let (refused, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default());
     assert_eq!(found.stats.effects_after_plugins, 0, "nothing ran as a plan");
-    let mut l = renderer_with_invert(true);
-    let (legacy, _) = l.render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default());
+    let legacy = legacy_f32(|| renderer_with_invert(true).render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default()).0);
     assert!(refused.iter().zip(&legacy).all(|(a, b)| (a - b).abs() < 1e-4), "the legacy route's picture, effects in it");
 }
 
@@ -658,6 +685,7 @@ fn effects_after_a_plugin_that_cannot_be_applied_take_the_legacy_route() {
 /// frame differs from the same clip with it shut.
 #[test]
 fn a_moving_clip_under_an_open_shutter_runs_its_effects_as_plans() {
+    let _goldens = scope("effects_follow_grade.a_moving_clip_under_an_open_shutter_runs_its_effects_as_plans");
     let transform = E::Transform {
         position_x: 0.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0,
         anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
@@ -687,8 +715,12 @@ fn a_moving_clip_under_an_open_shutter_runs_its_effects_as_plans() {
     };
     let open = shot(180.0);
     let (new, shuttered, followed) = run(&open, false);
-    let (legacy, legacy_shuttered, _) = run(&open, true);
-    assert_eq!((legacy_shuttered, followed), (0, 0), "the legacy route runs no plan; a shuttered clip splices nothing into its grade");
+    let legacy = legacy_f32(|| {
+        let (frame, legacy_shuttered, _) = run(&open, true);
+        assert_eq!(legacy_shuttered, 0, "the legacy route runs no plan");
+        frame
+    });
+    assert_eq!(followed, 0, "a shuttered clip splices nothing into its grade");
     if shuttered == 0 {
         assert!(!required(), "required, but the shuttered effects did not run as plans");
         eprintln!("UNVERIFIED: no GPU route");
@@ -709,6 +741,7 @@ fn a_moving_clip_under_an_open_shutter_runs_its_effects_as_plans() {
 /// correction showing.
 #[test]
 fn analysis_driven_effects_after_a_plugin_keep_their_correction() {
+    let _goldens = scope("effects_follow_grade.analysis_driven_effects_after_a_plugin_keep_their_correction");
     let _turn = PLUGIN.lock().unwrap_or_else(|e| e.into_inner());
     for (name, seq, bare) in analysed() {
         let (seq, bare) = (with_invert(seq), with_invert(bare));
@@ -719,8 +752,11 @@ fn analysis_driven_effects_after_a_plugin_keep_their_correction() {
             (out, found.stats.effects_after_plugins)
         };
         let (new, after) = run(false, &seq, &mut Moving);
-        let (legacy, legacy_after) = run(true, &seq, &mut Moving);
-        assert_eq!(legacy_after, 0, "{name}: the legacy route runs no plan after the plug-in");
+        let legacy = legacy_f32(|| {
+            let (frame, legacy_after) = run(true, &seq, &mut Moving);
+            assert_eq!(legacy_after, 0, "{name}: the legacy route runs no plan after the plug-in");
+            frame
+        });
         if after == 0 {
             assert!(!required(), "{name}: required, but the effects after the plug-in did not run as a plan");
             eprintln!("UNVERIFIED: no GPU route");

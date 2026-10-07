@@ -25,6 +25,12 @@ use klipp_effects::BuiltinEffect as E;
 use klipp_nodes::{graph::{Edge, Node, NodeGraph, NodeId}, kinds::NodeKind, params::NodeParams};
 use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, Track, TrackKind};
 
+// The legacy route's frames, stored before step 11d deleted it: each case
+// is held to them where it was held to a live legacy render.
+#[path = "support/legacy_goldens.rs"]
+mod legacy_goldens;
+use legacy_goldens::{legacy_bytes, scope};
+
 const W: u32 = 160;
 const H: u32 = 90;
 
@@ -145,11 +151,60 @@ fn worst(a: &[u8], b: &[u8]) -> i32 {
 
 /// The rule holds on every path: plan and legacy within a level, the same
 /// paths declined, and the plan route taken somewhere it could be.
+/// The legacy route's paths as the cases compare them: the renderer's
+/// frames display-encoded, the stack's bytes or its decline, and the
+/// layers drawn on the CPU.
+struct Legacy {
+    cpu: Vec<u8>,
+    gpu: Vec<u8>,
+    stack: Option<Vec<u8>>,
+    cpu_layers: u32,
+}
+
+/// `Legacy` packed into one stored frame: each part's length, then it.
+fn pack(p: &Paths) -> Vec<u8> {
+    let mut out = Vec::new();
+    for part in [Some(encoded(&p.cpu)), Some(encoded(&p.gpu)), p.stack.clone()] {
+        match part {
+            Some(b) => {
+                out.extend((b.len() as u32).to_le_bytes());
+                out.extend(b);
+            }
+            None => out.extend(u32::MAX.to_le_bytes()),
+        }
+    }
+    out.extend(p.cpu_layers.to_le_bytes());
+    out
+}
+
+fn unpack(b: &[u8]) -> Legacy {
+    let word = |at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+    let mut at = 0;
+    let mut parts = Vec::new();
+    for _ in 0..3 {
+        let n = word(at);
+        at += 4;
+        if n == u32::MAX {
+            parts.push(None);
+        } else {
+            parts.push(Some(b[at..at + n as usize].to_vec()));
+            at += n as usize;
+        }
+    }
+    let cpu_layers = word(at);
+    let mut parts = parts.into_iter();
+    Legacy { cpu: parts.next().flatten().unwrap(), gpu: parts.next().flatten().unwrap(), stack: parts.next().flatten(), cpu_layers }
+}
+
 fn holds(name: &str, seq: &Sequence, src: &Pictures, at: f64, host: impl Fn() -> klipp_plugin::OfxHost + Copy) {
     let plan = render(seq, src, at, false, host);
-    let legacy = render(seq, src, at, true, host);
-    let cpu = worst(&encoded(&plan.cpu), &encoded(&legacy.cpu));
-    let gpu = worst(&encoded(&plan.gpu), &encoded(&legacy.gpu));
+    let legacy = unpack(&legacy_bytes(|| {
+        let l = render(seq, src, at, true, host);
+        assert_eq!(l.plans, 0, "{name}: the legacy route runs no plan");
+        pack(&l)
+    }));
+    let cpu = worst(&encoded(&plan.cpu), &legacy.cpu);
+    let gpu = worst(&encoded(&plan.gpu), &legacy.gpu);
     eprintln!("{name}: cpu {cpu}, gpu {gpu}, stack {:?}, plans {}", plan.stack.as_ref().zip(legacy.stack.as_ref()).map(|(a, b)| worst(a, b)), plan.plans);
     assert!(cpu <= 1, "{name}: the CPU path differs by {cpu} levels");
     assert!(gpu <= 1, "{name}: the GPU path differs by {gpu} levels");
@@ -159,22 +214,19 @@ fn holds(name: &str, seq: &Sequence, src: &Pictures, at: f64, host: impl Fn() ->
         assert!(s <= 1, "{name}: the stack differs by {s} levels");
     }
     assert_eq!(plan.cpu_layers, legacy.cpu_layers, "{name}: the same layers drawn on the CPU");
-    assert_eq!(legacy.plans, 0, "{name}: the legacy route runs no plan");
     if plan.plans == 0 {
         assert!(!required(), "{name}: required, but no path ran the effects as a plan");
         eprintln!("UNVERIFIED: {name}: no GPU route");
     }
     // The case is a real one: its effects change the picture.
-    assert!(encoded(&plan.cpu) != encoded(&{
-        let mut bare = seq.clone();
-        for t in &mut bare.tracks {
-            for c in &mut t.clips {
-                c.set_effect_list(vec![], vec![]);
-            }
-            t.effects.set_video_effect_list(vec![], vec![]);
+    let mut bare = seq.clone();
+    for t in &mut bare.tracks {
+        for c in &mut t.clips {
+            c.set_effect_list(vec![], vec![]);
         }
-        render(&bare, src, at, true, host).cpu
-    }), "{name}: the effects change the picture");
+        t.effects.set_video_effect_list(vec![], vec![]);
+    }
+    assert!(encoded(&plan.cpu) != encoded(&render(&bare, src, at, false, host).cpu), "{name}: the effects change the picture");
 }
 
 fn plain_host() -> klipp_plugin::OfxHost {
@@ -196,6 +248,7 @@ fn invert_host() -> klipp_plugin::OfxHost {
 /// effects: the effects take the inverted picture.
 #[test]
 fn a_plugin_runs_before_the_built_in_effects() {
+    let _goldens = scope("native_effect_order.a_plugin_runs_before_the_built_in_effects");
     let _turn = PLUGIN.lock().unwrap_or_else(|e| e.into_inner());
     let mut src = Pictures::default();
     let mut c = media(&mut src, 0.0, vec![E::Gamma { gamma: 1.3 }, E::Vignette { amount: 0.6, size: 0.5, softness: 0.4, roundness: 1.0 }], None);
@@ -208,6 +261,7 @@ fn a_plugin_runs_before_the_built_in_effects() {
 /// no such effect the placement comes last.
 #[test]
 fn the_automatic_placement_goes_before_the_first_effect_drawing_outside() {
+    let _goldens = scope("native_effect_order.the_automatic_placement_goes_before_the_first_effect_drawing_outside");
     for (name, fx) in [
         ("with a shadow", vec![E::Gamma { gamma: 1.2 }, shadow(), E::Vibrance { amount: 0.3 }]),
         ("without", vec![E::Gamma { gamma: 1.2 }, E::Vibrance { amount: 0.3 }]),
@@ -224,6 +278,7 @@ fn the_automatic_placement_goes_before_the_first_effect_drawing_outside() {
 /// carrying values does nothing.
 #[test]
 fn two_transforms_apply_in_order_and_a_disabled_one_does_nothing() {
+    let _goldens = scope("native_effect_order.two_transforms_apply_in_order_and_a_disabled_one_does_nothing");
     let mut src = Pictures::default();
     let fx = vec![transform(0.0, 0.8, 0.0), E::Gamma { gamma: 1.1 }, transform(10.0, 1.0, 8.0), transform(40.0, 0.5, 30.0)];
     let c = media(&mut src, 0.1, fx, Some(vec![true, true, true, false]));
@@ -235,6 +290,7 @@ fn two_transforms_apply_in_order_and_a_disabled_one_does_nothing() {
 /// shutter: it doesn't move, so the shutter leaves it as it is.
 #[test]
 fn an_identity_placement_under_an_open_shutter_is_left_as_it_is() {
+    let _goldens = scope("native_effect_order.an_identity_placement_under_an_open_shutter_is_left_as_it_is");
     let mut src = Pictures::default();
     let c = media(&mut src, 0.3, vec![E::Gamma { gamma: 1.2 }, transform(0.0, 1.0, 0.0), E::Vignette { amount: 0.5, size: 0.6, softness: 0.4, roundness: 1.0 }], None);
     let mut seq = sequence(vec![track("V1", vec![c])]);
@@ -247,6 +303,7 @@ fn an_identity_placement_under_an_open_shutter_is_left_as_it_is() {
 /// group; separated by a blur, as two.
 #[test]
 fn spill_effects_group_when_adjacent_and_split_when_separated() {
+    let _goldens = scope("native_effect_order.spill_effects_group_when_adjacent_and_split_when_separated");
     for (name, fx) in [
         ("adjacent", vec![E::Gamma { gamma: 1.1 }, shadow(), glow()]),
         ("separated by a blur", vec![E::Gamma { gamma: 1.1 }, shadow(), E::GaussianBlur { radius: 2.0 }, glow()]),
@@ -264,6 +321,7 @@ fn spill_effects_group_when_adjacent_and_split_when_separated() {
 /// track (#1078).
 #[test]
 fn track_effects_follow_the_clips_own_with_each_opacity_its_own() {
+    let _goldens = scope("native_effect_order.track_effects_follow_the_clips_own_with_each_opacity_its_own");
     let mut src = Pictures::default();
     let c = media(&mut src, 0.5, vec![E::Gamma { gamma: 1.2 }, E::Opacity { value: 0.7 }], None);
     let base = media(&mut src, 0.8, vec![], None);
@@ -276,6 +334,7 @@ fn track_effects_follow_the_clips_own_with_each_opacity_its_own() {
 /// and is mixed back over it by its opacity.
 #[test]
 fn an_adjustment_layer_grades_then_runs_its_effects_then_mixes_by_opacity() {
+    let _goldens = scope("native_effect_order.an_adjustment_layer_grades_then_runs_its_effects_then_mixes_by_opacity");
     let mut src = Pictures::default();
     let base = media(&mut src, 0.2, vec![], None);
     let mut adj = Clip { kind: ClipKind::AdjustmentLayer, ..Clip::gap(tc(0.0), tc(4.0)) };
