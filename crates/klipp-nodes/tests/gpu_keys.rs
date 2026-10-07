@@ -128,9 +128,10 @@ fn two_plates(p: &Plates, reversed: bool) -> NodeGraph {
 }
 
 /// Two difference keys with different plates of one size, drawn in one
-/// chain: each keys against its own plate, in either order. One plate's
-/// upload can't land under the other's reader (Codex's finding on #1269):
-/// the chain is submitted first, which the count of submits shows.
+/// chain: each keys against its own plate, in either order. An upload
+/// lands before the whole open encoder runs, so the second plate would
+/// land under the first plate's reader: the chain is submitted first,
+/// which the count of submits shows.
 #[test]
 fn two_plates_in_one_chain_each_key_their_own() {
     let p = plates("two");
@@ -200,8 +201,8 @@ fn masked_by(producer: Node) -> (NodeGraph, NodeId) {
 }
 
 /// A soloed key or window that only masks an effect gives its matte, the
-/// one it gives as the output, not the empty placeholder a GPU-drawn one
-/// leaves (Codex's second finding on #1269).
+/// one it gives as the output. Drawn on the GPU, it left an empty
+/// placeholder as the solo result, an empty picture.
 #[test]
 fn a_soloed_key_or_window_gives_its_matte() {
     let p = plates("solo");
