@@ -1,7 +1,7 @@
 //! Graph ops by path (#1083): each op, each refusal as a sentence, and
 //! undo from the edit's `before` giving the original back.
 
-use klipp_convert::ops::{apply, undo, GraphOp};
+use klipp_convert::ops::{apply, apply_with_catalog, apply_batch_with_catalog, undo, GraphOp};
 use klipp_convert::paths::{resolve, Documents};
 use klipp_convert::revision2;
 use klipp_graph_format::lifted::types as lt;
@@ -20,7 +20,7 @@ fn u(s: &str) -> Uuid {
     Uuid::parse_str(s).unwrap()
 }
 
-fn docs() -> Documents {
+fn legacy_project() -> Value {
     let grade = json!({
         "nodes": [{"id": S, "kind": "Source", "label": "S", "enabled": true}, {"id": E, "kind": "Exposure", "label": "E", "enabled": true, "params": {"exposure": 0.5}},
                   {"id": O, "kind": "Output", "label": "O", "enabled": true}],
@@ -28,11 +28,14 @@ fn docs() -> Documents {
         "output_node_id": O
     });
     let blur = |r: f64| json!({"type": "gaussian_blur", "radius": r});
-    let p = json!({"version": "1.0.0", "sequences": [{"id": "00000000-0000-0000-0000-000000000501", "name": "S", "tracks": [{
+    json!({"version": "1.0.0", "sequences": [{"id": "00000000-0000-0000-0000-000000000501", "name": "S", "tracks": [{
         "id": TRACK, "name": "V1", "kind": "Video", "effects": {"video": [blur(1.0), blur(2.0)]},
         "clips": [{"id": CLIP, "kind": {"type": "media", "media_id": "00000000-0000-0000-0000-0000000000d1"}, "node_graph": grade, "builtin_effects": [blur(3.0)]}]
-    }]}]});
-    Documents::of(&revision2::project(&p).unwrap().0).unwrap()
+    }]}]})
+}
+
+fn docs() -> Documents {
+    Documents::of(&revision2::project(&legacy_project()).unwrap().0).unwrap()
 }
 
 fn group(d: &Documents) -> NodeId {
@@ -367,4 +370,302 @@ fn removing_a_gating_key_ungates_the_correction() {
     assert!(!body.edges.iter().any(|e| e.to.0 == u(E) && e.to.1.as_str() == "mask"), "no matte, not the source as one");
     let e = body.nodes.iter().find(|n| n.id == u(E)).unwrap();
     assert!(!e.legacy_flags.as_ref().is_some_and(|f| f.alpha_one), "and no gate");
+}
+
+
+struct RegistryCatalog;
+impl RegistryCatalog {
+    fn describe(desc: &klipp_effects::registry::NodeTypeDesc) -> klipp_graph_format::NodeSpec {
+        use klipp_graph_format::{NodeSpec, PortSpec, PortType};
+        let ports = |ports: &[klipp_effects::registry::PortDesc]| ports.iter().map(|p| PortSpec {
+            key: p.key.into(),
+            ty: match p.ty { klipp_effects::registry::PortType::Image => PortType::Image, klipp_effects::registry::PortType::Matte => PortType::Matte },
+            optional: p.optional,
+            params: p.params.iter().map(|p| (p.key.into(), p.options.iter().map(|s| (*s).into()).collect())).collect(),
+        }).collect();
+        NodeSpec { inputs: ports(desc.inputs), outputs: ports(desc.outputs), mixable: desc.mixable }
+    }
+}
+impl klipp_graph_format::PortCatalog for RegistryCatalog {
+    fn node(&self, type_id: &str) -> Option<klipp_graph_format::NodeSpec> {
+        klipp_effects::registry::effect_types().map(|t| &t.desc).chain(klipp_nodes::registry::node_types().map(|t| &t.desc)).find(|d| d.id == type_id).map(Self::describe)
+    }
+    fn node_spec(&self, node: &Node) -> Option<klipp_graph_format::NodeSpec> {
+        if node.type_id.as_str() == types::LEGACY_NODE {
+            let name = node.legacy.as_ref()?.payload.get("kind")?.as_str()?;
+            let kind: klipp_nodes::NodeKind = serde_json::from_value(json!(name)).ok()?;
+            let mut spec = Self::describe(&klipp_nodes::registry::node_type(kind)?.desc);
+            // Registry descriptors use semantic names (Qualifier's matte),
+            // while migrated graphs retain the keys from their old indices.
+            for (index, p) in spec.inputs.iter_mut().enumerate() { p.key = klipp_graph_format::ports::input_key(name, index as u8).to_string(); }
+            for (index, p) in spec.outputs.iter_mut().enumerate() { p.key = klipp_graph_format::ports::output_key(name, index as u8).to_string(); }
+            return Some(spec);
+        }
+        if node.type_id.as_str() == types::LEGACY_EFFECT {
+            let tag = node.legacy.as_ref()?.payload.get("type")?.as_str()?;
+            return klipp_effects::registry::effect_type(tag).map(|t| Self::describe(&t.desc));
+        }
+        self.node(node.type_id.as_str())
+    }
+}
+
+const MATTE_ID: u128 = 0xe00;
+const TARGET_ID: u128 = 0xe01;
+fn publishing_docs() -> Documents {
+    let mut d = docs();
+    let group = group(&d);
+    let b = d.clips.get_mut(&u(CLIP)).unwrap().graph.nodes.iter_mut().find(|n| n.id == group).unwrap().group.as_mut().unwrap();
+    let source = b.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP_INPUT).unwrap().id;
+    b.graph.nodes.push(*grade_node(MATTE_ID, "Qualifier"));
+    b.graph.edges.push(klipp_graph_format::Edge { from: (source, "out".into()), to: (Uuid::from_u128(MATTE_ID), "in".into()) });
+    let mut effect = grade_node(TARGET_ID, "Exposure");
+    effect.type_id = "klipp.fx.gaussian_blur".into();
+    effect.legacy = None;
+    apply_with_catalog(&mut d, &GraphOp::AddNode { after: clip_path([group]), node: effect }, &RegistryCatalog).unwrap();
+    d
+}
+fn publish(d: &Documents) -> GraphOp {
+    GraphOp::PublishOutput {
+        group: clip_path([group(d)]),
+        endpoint: klipp_graph_format::PortBinding { node: Uuid::from_u128(MATTE_ID), port: "out".into() },
+        key: "matte_selection".into(), label: "Selection".into(),
+    }
+}
+fn connect_published(d: &Documents) -> GraphOp {
+    GraphOp::Connect { from: clip_path([group(d)]), from_port: "matte_selection".into(), to: clip_path([Uuid::from_u128(TARGET_ID)]), to_port: "mask".into() }
+}
+fn channel(d: &Documents) -> &str {
+    match resolve(d, &clip_path([Uuid::from_u128(TARGET_ID)])).unwrap().params.get(&"mask.channel".into()) {
+        Some(ParamValue::Text(s)) => s,
+        None => klipp_effects::registry::MASK_CHANNEL.migrated,
+        _ => panic!("channel must be text"),
+    }
+}
+
+#[test]
+fn publish_and_connect_is_one_undo_and_new_masks_use_luminance() {
+    let mut d = publishing_docs();
+    let before = snapshot(&d);
+    let ops = [publish(&d), connect_published(&d)];
+    let edit = apply_batch_with_catalog(&mut d, &ops, &RegistryCatalog).unwrap();
+    assert_eq!(channel(&d), klipp_effects::registry::MASK_CHANNEL.default);
+    assert_eq!(channel(&d), "luminance");
+    let body = resolve(&d, &clip_path([group(&d)])).unwrap().group.as_ref().unwrap();
+    assert_eq!(body.interface[0].ty, klipp_graph_format::PortType::Matte);
+    assert_eq!(body.interface[0].binding.node, Uuid::from_u128(MATTE_ID));
+    assert_eq!(serde_json::to_value(body).unwrap()["requires"], json!(["group-interface-1"]));
+    undo(&mut d, &edit).unwrap();
+    assert_eq!(snapshot(&d), before);
+    assert_eq!(channel(&d), "red");
+    let redo = klipp_convert::ops::GraphEdit { root: edit.root, before: edit.after.clone(), after: edit.before.clone() };
+    undo(&mut d, &redo).unwrap();
+    assert_eq!(serde_json::to_value(&d.clips[&u(CLIP)]).unwrap(), edit.after);
+}
+
+#[test]
+fn publication_and_batch_refusals_leave_the_whole_root_unchanged() {
+    let mut d = publishing_docs();
+    let before = snapshot(&d);
+    let mut not_group = publish(&d);
+    if let GraphOp::PublishOutput { group, .. } = &mut not_group { *group = clip_path([Uuid::from_u128(TARGET_ID)]); }
+    assert!(apply_with_catalog(&mut d, &not_group, &RegistryCatalog).is_err());
+    let missing = GraphOp::Unpublish { group: clip_path([group(&d)]), key: "missing".into() };
+    assert!(apply_with_catalog(&mut d, &missing, &RegistryCatalog).is_err());
+    assert_eq!(snapshot(&d), before);
+    let mut bad = publish(&d);
+    if let GraphOp::PublishOutput { endpoint, .. } = &mut bad { endpoint.node = Uuid::nil(); }
+    assert!(apply_with_catalog(&mut d, &bad, &RegistryCatalog).is_err());
+    assert_eq!(snapshot(&d), before);
+    let mut wrong_direction = publish(&d);
+    if let GraphOp::PublishOutput { endpoint, .. } = &mut wrong_direction { endpoint.port = "in".into(); }
+    assert!(apply_with_catalog(&mut d, &wrong_direction, &RegistryCatalog).is_err());
+    assert_eq!(snapshot(&d), before);
+    for key in ["in", "out", "frame", ""] {
+        let mut bad = publish(&d);
+        if let GraphOp::PublishOutput { key: k, .. } = &mut bad { *k = key.into(); }
+        assert!(apply_with_catalog(&mut d, &bad, &RegistryCatalog).is_err());
+        assert_eq!(snapshot(&d), before);
+    }
+    let duplicates = [publish(&d), publish(&d)];
+    assert!(apply_batch_with_catalog(&mut d, &duplicates, &RegistryCatalog).is_err());
+    assert_eq!(snapshot(&d), before);
+    let mut bad_connect = connect_published(&d);
+    if let GraphOp::Connect { from_port, .. } = &mut bad_connect { *from_port = "missing".into(); }
+    let ops = [publish(&d), bad_connect];
+    assert!(apply_batch_with_catalog(&mut d, &ops, &RegistryCatalog).is_err());
+    assert_eq!(snapshot(&d), before, "publication must roll back too");
+}
+
+#[test]
+fn unpublish_refuses_readers_and_disconnect_unpublish_undo_together() {
+    let mut d = publishing_docs();
+    let ops = [publish(&d), connect_published(&d)];
+    apply_batch_with_catalog(&mut d, &ops, &RegistryCatalog).unwrap();
+    let before = snapshot(&d);
+    let unpublish = GraphOp::Unpublish { group: clip_path([group(&d)]), key: "matte_selection".into() };
+    assert!(apply_with_catalog(&mut d, &unpublish, &RegistryCatalog).is_err());
+    assert_eq!(snapshot(&d), before);
+    let edit = apply_batch_with_catalog(&mut d, &[GraphOp::Disconnect { to: clip_path([Uuid::from_u128(TARGET_ID)]), port: "mask".into() }, unpublish], &RegistryCatalog).unwrap();
+    assert!(resolve(&d, &clip_path([group(&d)])).unwrap().group.as_ref().unwrap().interface.is_empty());
+    undo(&mut d, &edit).unwrap();
+    assert_eq!(snapshot(&d), before);
+}
+
+#[test]
+fn channel_edits_clear_to_red_and_undo_exactly() {
+    let mut d = publishing_docs();
+    let path = clip_path([Uuid::from_u128(TARGET_ID)]);
+    for value in [Some("alpha"), Some("luminance"), None] {
+        let before = snapshot(&d);
+        let edit = apply_with_catalog(&mut d, &GraphOp::SetMaskChannel { path: path.clone(), channel: value.map(str::to_owned) }, &RegistryCatalog).unwrap();
+        assert_eq!(channel(&d), value.unwrap_or("red"));
+        undo(&mut d, &edit).unwrap();
+        assert_eq!(snapshot(&d), before);
+    }
+    let before = snapshot(&d);
+    assert!(apply_with_catalog(&mut d, &GraphOp::SetMaskChannel { path, channel: Some("green".into()) }, &RegistryCatalog).is_err());
+    assert_eq!(snapshot(&d), before);
+}
+
+#[test]
+fn mask_connections_preserve_saved_channels_and_existing_red_semantics() {
+    for wireless in [false, true] {
+        for saved in [None, Some("alpha")] {
+            let mut d = publishing_docs();
+            let group_id = group(&d);
+            let target = Uuid::from_u128(TARGET_ID);
+            let ops = [publish(&d), connect_published(&d)];
+            apply_batch_with_catalog(&mut d, &ops, &RegistryCatalog).unwrap();
+            let graph = &mut d.clips.get_mut(&u(CLIP)).unwrap().graph;
+            let node = graph.nodes.iter_mut().find(|n| n.id == target).unwrap();
+            node.params.remove(&"mask.channel".into());
+            if let Some(channel) = saved { node.params.insert("mask.channel".into(), ParamValue::Text(channel.into())); }
+            if wireless {
+                node.wireless.input_links.insert("mask".into(), "selection".into());
+                graph.nodes.iter_mut().find(|n| n.id == group_id).unwrap().wireless.output_link = Some("selection".into());
+                graph.edges.retain(|e| e.to != (target, "mask".into()));
+            }
+            let before = snapshot(&d);
+            let edit = apply_with_catalog(&mut d, &GraphOp::Connect { from: clip_path([group_id]), from_port: "out".into(), to: clip_path([target]), to_port: "mask".into() }, &RegistryCatalog).unwrap();
+            assert_eq!(channel(&d), saved.unwrap_or("red"));
+            assert_eq!(resolve(&d, &clip_path([target])).unwrap().params.contains_key(&"mask.channel".into()), saved.is_some());
+            undo(&mut d, &edit).unwrap();
+            assert_eq!(snapshot(&d), before);
+        }
+    }
+}
+
+#[test]
+fn channel_set_before_connect_survives_connect_and_reconnect() {
+    let mut d = publishing_docs();
+    let path = clip_path([Uuid::from_u128(TARGET_ID)]);
+    apply_with_catalog(&mut d, &GraphOp::SetMaskChannel { path: path.clone(), channel: Some("alpha".into()) }, &RegistryCatalog).unwrap();
+    let ops = [publish(&d), connect_published(&d)];
+    apply_batch_with_catalog(&mut d, &ops, &RegistryCatalog).unwrap();
+    assert_eq!(channel(&d), "alpha");
+    apply_with_catalog(&mut d, &GraphOp::Disconnect { to: path, port: "mask".into() }, &RegistryCatalog).unwrap();
+    let op = connect_published(&d);
+    apply_with_catalog(&mut d, &op, &RegistryCatalog).unwrap();
+    assert_eq!(channel(&d), "alpha");
+}
+
+#[test]
+fn nonfinite_mix_and_nonmixable_nodes_refuse_without_landing() {
+    let mut d = publishing_docs();
+    let path = clip_path([Uuid::from_u128(TARGET_ID)]);
+    for mix in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let before = snapshot(&d);
+        assert!(apply_with_catalog(&mut d, &GraphOp::SetMix { path: path.clone(), mix: Some(mix) }, &RegistryCatalog).is_err());
+        assert_eq!(snapshot(&d), before);
+    }
+    let before = snapshot(&d);
+    let edit = apply_with_catalog(&mut d, &GraphOp::SetMix { path: path.clone(), mix: Some(0.5) }, &RegistryCatalog).unwrap();
+    undo(&mut d, &edit).unwrap();
+    assert_eq!(snapshot(&d), before);
+    // Invert owns its own blend control, not universal mask/mix.
+    d.clips.get_mut(&u(CLIP)).unwrap().graph.nodes.iter_mut().find(|n| n.id == Uuid::from_u128(TARGET_ID)).unwrap().type_id = "klipp.fx.invert".into();
+    let before = snapshot(&d);
+    for op in [
+        GraphOp::SetMix { path: path.clone(), mix: Some(0.5) },
+        GraphOp::SetMaskChannel { path: path.clone(), channel: Some("red".into()) },
+        GraphOp::Connect { from: clip_path([group(&d)]), from_port: "out".into(), to: path, to_port: "mask".into() },
+    ] {
+        assert!(apply_with_catalog(&mut d, &op, &RegistryCatalog).is_err());
+        assert_eq!(snapshot(&d), before);
+    }
+}
+
+
+fn migrated_grade_docs() -> Documents {
+    let mut project = legacy_project();
+    let grade = &mut project["sequences"][0]["tracks"][0]["clips"][0]["node_graph"];
+    let matte = Uuid::from_u128(MATTE_ID);
+    grade["nodes"].as_array_mut().unwrap().push(json!({"id": matte, "kind": "Qualifier", "enabled": true, "params": {}}));
+    grade["edges"].as_array_mut().unwrap().extend([
+        json!({"from_node": S, "from_port": 0, "to_node": matte, "to_port": 0}),
+        json!({"from_node": matte, "from_port": 0, "to_node": E, "to_port": 1}),
+    ]);
+    Documents::of(&revision2::project(&project).unwrap().0).unwrap()
+}
+
+#[test]
+fn lifted_grade_masks_stay_red_and_refuse_a_channel_setting() {
+    let mut d = migrated_grade_docs();
+    let g = group(&d);
+    let matte = Uuid::from_u128(MATTE_ID);
+    let path = clip_path([g, u(E)]);
+    let n = resolve(&d, &path).unwrap();
+    assert!(!n.params.contains_key(&"mask.channel".into()));
+    assert_eq!(klipp_effects::registry::MASK_CHANNEL.migrated, "red");
+    d.clips[&u(CLIP)].graph.check_lifted_with_catalog(false, &RegistryCatalog).unwrap();
+    let before = snapshot(&d);
+    let error = apply_with_catalog(&mut d, &GraphOp::SetMaskChannel { path: path.clone(), channel: Some("alpha".into()) }, &RegistryCatalog).unwrap_err();
+    assert!(error.contains("reads red"), "{error}");
+    assert_eq!(snapshot(&d), before);
+    // Reconnecting a grade mask remains red-only, even though effects
+    // with the channel setting start a new connection at luminance.
+    let flags = resolve(&d, &path).unwrap().legacy_flags.clone();
+    let edit = apply_with_catalog(&mut d, &GraphOp::Connect { from: clip_path([g, matte]), from_port: "out".into(), to: path.clone(), to_port: "mask".into() }, &RegistryCatalog).unwrap();
+    assert!(!resolve(&d, &path).unwrap().params.contains_key(&"mask.channel".into()));
+    assert_eq!(resolve(&d, &path).unwrap().legacy_flags, flags, "rewiring a migrated mask preserves every flag");
+    undo(&mut d, &edit).unwrap();
+    assert_eq!(snapshot(&d), before);
+}
+
+
+#[test]
+fn a_new_grade_gate_records_legacy_alpha_and_undo_restores_it() {
+    let mut d = publishing_docs();
+    let g = group(&d);
+    let path = clip_path([g, u(E)]);
+    assert!(resolve(&d, &path).unwrap().legacy_flags.as_ref().is_none_or(|f| !f.alpha_one));
+    let before = snapshot(&d);
+    let edit = apply_with_catalog(&mut d, &GraphOp::Connect { from: clip_path([g, Uuid::from_u128(MATTE_ID)]), from_port: "out".into(), to: path.clone(), to_port: "mask".into() }, &RegistryCatalog).unwrap();
+    let node = resolve(&d, &path).unwrap();
+    assert!(node.legacy_flags.as_ref().unwrap().alpha_one);
+    let migrated = migrated_grade_docs();
+    assert_eq!(node.legacy_flags, resolve(&migrated, &clip_path([group(&migrated), u(E)])).unwrap().legacy_flags);
+    assert!(!node.params.contains_key(&"mask.channel".into()));
+    let gated = snapshot(&d);
+    let disconnect = apply_with_catalog(&mut d, &GraphOp::Disconnect { to: path.clone(), port: "mask".into() }, &RegistryCatalog).unwrap();
+    assert!(resolve(&d, &path).unwrap().legacy_flags.as_ref().is_none_or(|f| !f.alpha_one));
+    undo(&mut d, &disconnect).unwrap();
+    assert_eq!(snapshot(&d), gated);
+    undo(&mut d, &edit).unwrap();
+    assert_eq!(snapshot(&d), before);
+}
+
+
+#[test]
+fn a_batch_refuses_empty_or_multiple_roots_without_any_edit() {
+    let mut d = publishing_docs();
+    let before = snapshot(&d);
+    assert!(apply_batch_with_catalog(&mut d, &[], &RegistryCatalog).is_err());
+    let track_node = d.track_effects[&u(TRACK)][0].id;
+    let ops = [
+        GraphOp::SetEnabled { path: clip_path([Uuid::from_u128(TARGET_ID)]), enabled: false },
+        GraphOp::SetEnabled { path: NodePath::new(Root::Track { track: u(TRACK), part: TrackPart::Effects }, [track_node]), enabled: false },
+    ];
+    assert!(apply_batch_with_catalog(&mut d, &ops, &RegistryCatalog).is_err());
+    assert_eq!(snapshot(&d), before);
 }
