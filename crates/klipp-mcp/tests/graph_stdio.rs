@@ -12,14 +12,16 @@ fn graph_tools_forward_paths_and_return_indexed_refusals_as_errors() {
     let listener = UnixListener::bind(&socket).unwrap();
     let (sent, received) = mpsc::channel();
     let server = std::thread::spawn(move || {
-        for connection in listener.incoming().take(2) {
+        for (index, connection) in listener.incoming().take(3).enumerate() {
             let mut stream = connection.unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             let mut line = String::new();
             BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
             let request: Value = serde_json::from_str(&line).unwrap();
             sent.send(request.clone()).unwrap();
-            let reply = if request["method"] == "graph_ops" {
+            let reply = if index == 2 {
+                json!({"id":request["id"],"ok":true,"result":{"accepted":true,"applied":true,"revision":18}})
+            } else if request["method"] == "graph_ops" {
                 json!({"id":request["id"],"ok":false,"op_index":1,"error":"mix cannot be saved yet","result":{"accepted":false,"applied":false,"op_index":1,"why":"mix cannot be saved yet"}})
             } else { json!({"id":request["id"],"ok":true,"result":{"nodes":[],"edges":[],"revision":17}}) };
             writeln!(stream,"{reply}").unwrap();
@@ -37,9 +39,19 @@ fn graph_tools_forward_paths_and_return_indexed_refusals_as_errors() {
     });
     let path = json!({"root":{"clip":uuid::Uuid::nil()},"nodes":[]});
     let ops = json!([{"op":"add","after":path,"type":"klipp.fx.gaussian_blur"},{"op":"mix","path":{"root":{"clip":uuid::Uuid::nil()},"nodes":[{"new":0}]},"mix":0.75}]);
+    // Transport coverage uses an applied socket reply; real model acceptance
+    // is covered by control_roundtrip's picture-truth-gated tests.
+    let effect = json!({"root":{"clip":uuid::Uuid::nil()},"nodes":[uuid::Uuid::from_u128(1)]});
+    let mask = json!({"root":{"clip":uuid::Uuid::nil()},"nodes":[uuid::Uuid::from_u128(2)]});
+    let effect_ops = json!([
+        {"op":"mix","path":effect,"mix":0.25},
+        {"op":"mask_channel","path":effect,"channel":"alpha"},
+        {"op":"connect","from":mask,"from_port":"matte","to":effect,"to_port":"mask"}
+    ]);
     for (id, name, arguments) in [
         (1,"klipp_graph_read",json!({"path":path,"depth":2})),
         (2,"klipp_graph",json!({"ops":ops,"expected_revision":17,"expected_project_identity":8,"idempotency_key":"graph-retry"})),
+        (3,"klipp_graph",json!({"ops":effect_ops,"expected_revision":17})),
     ] {
         writeln!(input,"{}",json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments}})).unwrap();
         input.flush().unwrap();
@@ -49,7 +61,7 @@ fn graph_tools_forward_paths_and_return_indexed_refusals_as_errors() {
             assert_eq!(request["method"],"graph_read");
             assert_eq!(request["path"],path);
             assert_eq!(request["depth"],2);
-        } else {
+        } else if id == 2 {
             assert_eq!(request["method"],"graph_ops");
             assert_eq!(request["ops"],ops);
             assert_eq!(request["expected_revision"],17);
@@ -59,6 +71,13 @@ fn graph_tools_forward_paths_and_return_indexed_refusals_as_errors() {
             let error: Value = serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
             assert_eq!(error["op_index"],1);
             assert_eq!(error["applied"],false);
+        } else {
+            assert_eq!(request["method"],"graph_ops");
+            assert_eq!(request["ops"],effect_ops);
+            assert_ne!(reply["result"]["isError"],true);
+            let applied: Value = serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+            assert_eq!(applied["applied"],true);
+            assert_eq!(applied["revision"],18);
         }
     }
     drop(input);

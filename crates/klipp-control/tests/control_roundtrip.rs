@@ -504,6 +504,100 @@ fn graph_commit_guards_are_sent_even_when_the_caller_omits_them() {
     assert_eq!(h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture, before);
 }
 
+// These acceptance cases intentionally fail against revision-1 clips. Keep the
+// refusal tests below until picture-truth PR A enables the corresponding edits.
+fn graph_test_blur(h: &mut Harness) -> Value {
+    // Seed an existing effect so each acceptance test reaches its own operation,
+    // independently of the add operation's revision-1 path remapping.
+    h.sequence.write().unwrap().tracks[0].clips[0]
+        .push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 });
+    let root = json!({"clip":h.ids.clip_a});
+    let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let blur = graph["nodes"].as_array().unwrap().iter()
+        .find(|n| n["type"] == "klipp.fx.gaussian_blur").unwrap()["id"].clone();
+    json!({"root":root,"nodes":[blur]})
+}
+
+fn graph_test_edit_roundtrip(h: &mut Harness, ops: Value) {
+    let before = h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture.clone();
+    let revision = h.shared.revision();
+    let count = h.edits_seen.lock().unwrap().len();
+    let result = h.ok(json!({"method":"graph_ops","ops":ops}));
+    assert_eq!(result["applied"], true);
+    assert_eq!(h.shared.revision(), revision + 1);
+    assert_eq!(h.edits_seen.lock().unwrap().len(), count + 1, "one undo edit per batch");
+    let mut clip = h.sequence.read().unwrap().tracks[0].clips[0].clone();
+    let after = clip.picture_v2().unwrap().picture.clone();
+    assert_ne!(before, after);
+    let saved = serde_json::to_vec(&clip).unwrap();
+    let reopened: klipp_timeline::Clip = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(reopened.picture_v2().unwrap().picture, after, "clip serialization retains the edit");
+    let edit = h.edits_seen.lock().unwrap().last().unwrap().clone();
+    let klipp_document::history::EditCommand::PictureEdit { edit, .. } = edit else { panic!("one picture edit") };
+    clip.restore_picture(&edit.before);
+    assert_eq!(clip.picture_v2().unwrap().picture, before);
+    clip.restore_picture(&edit.after);
+    assert_eq!(clip.picture_v2().unwrap().picture, after);
+}
+
+#[test]
+#[ignore = "needs picture-truth (9c-2 PR A)"]
+fn graph_effect_mix_applies_reads_back_and_roundtrips() {
+    let mut h = harness();
+    let path = graph_test_blur(&mut h);
+    for mix in [json!(0.25), Value::Null] {
+        graph_test_edit_roundtrip(&mut h, json!([{"op":"mix","path":path,"mix":mix}]));
+        let read = h.ok(json!({"method":"graph_read","path":path}));
+        assert_eq!(read["nodes"][0]["mix"], mix);
+        assert_eq!(read["nodes"][0]["id"], path["nodes"][0]);
+    }
+}
+
+#[test]
+#[ignore = "needs picture-truth (9c-2 PR A)"]
+fn graph_effect_mask_channel_applies_reads_back_and_roundtrips() {
+    let mut h = harness();
+    let path = graph_test_blur(&mut h);
+    for channel in [json!("alpha"), json!("red"), Value::Null] {
+        graph_test_edit_roundtrip(&mut h, json!([{"op":"mask_channel","path":path,"channel":channel}]));
+        let read = h.ok(json!({"method":"graph_read","path":path}));
+        assert_eq!(read["nodes"][0]["mask_channel"], if channel.is_null() { json!("red") } else { channel.clone() });
+        assert_eq!(read["nodes"][0]["mask_channel_set"], !channel.is_null());
+        assert_eq!(read["nodes"][0]["id"], path["nodes"][0]);
+    }
+}
+
+#[test]
+#[ignore = "needs picture-truth (9c-2 PR A)"]
+fn graph_effect_mask_connection_applies_reads_back_and_roundtrips() {
+    let mut h = harness();
+    let effect = graph_test_blur(&mut h);
+    let types = h.ok(json!({"method":"node_types"}));
+    let types = types["types"].as_array().unwrap();
+    let mask = types.iter().find(|n| n["id"] == "klipp.grade.mask").unwrap();
+    let blur = types.iter().find(|n| n["id"] == "klipp.fx.gaussian_blur").unwrap();
+    let from_port = mask["outputs"].as_array().unwrap().iter().find(|p| p["type"] == "Matte").unwrap()["key"].clone();
+    let to_port = blur["inputs"].as_array().unwrap().iter().find(|p| p["type"] == "Matte").unwrap()["key"].clone();
+    let window = serde_json::to_value(klipp_core::MaskStack { masks: vec![klipp_core::Mask::default()] }).unwrap();
+    let new = json!({"root":effect["root"],"nodes":[{"new":0}]});
+    graph_test_edit_roundtrip(&mut h, json!([
+        {"op":"add_beside","at":effect,"type":mask["id"],"params":{"masks":window}},
+        {"op":"connect","from":new,"from_port":from_port,"to":effect,"to_port":to_port}
+    ]));
+    let root = json!({"root":effect["root"],"nodes":[]});
+    let read = h.ok(json!({"method":"graph_read","path":root}));
+    let made = read["nodes"].as_array().unwrap().iter().find(|n| n["type"] == mask["id"]).unwrap();
+    assert_eq!(made["params"]["masks"], window);
+    assert!(read["edges"].as_array().unwrap().iter().any(|e|
+        e["from"] == made["id"] && e["from_port"] == from_port
+            && e["to"] == effect["nodes"][0] && e["to_port"] == to_port));
+    graph_test_edit_roundtrip(&mut h, json!([{"op":"disconnect","to":effect,"port":to_port}]));
+    let disconnected = h.ok(json!({"method":"graph_read","path":root}));
+    assert!(!disconnected["edges"].as_array().unwrap().iter().any(|e|
+        e["to"] == effect["nodes"][0] && e["to_port"] == to_port));
+    assert_eq!(disconnected["nodes"], read["nodes"], "disconnect retains both nodes");
+}
+
 #[test]
 fn graph_effect_persistence_refusals_map_expanded_indices_and_change_nothing() {
     let mut h = harness();
