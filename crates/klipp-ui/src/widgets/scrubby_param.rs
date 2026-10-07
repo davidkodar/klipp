@@ -102,6 +102,8 @@ pub fn scrubby_param_row(
     suffix: &str,
     keyframe_state: Option<KeyframeState>,
 ) -> ScrubbyParamResponse {
+    #[cfg(any(test, feature = "row-recorder"))]
+    super::row_recorder::numeric(ui.id().with(label).with("scrubby_row_hover"), "scrubby", label, *value, &range, Some(default), Some(speed), Some(decimals), suffix, keyframe_state);
     let old_value = *value;
     let is_at_default = (*value - default).abs() < f32::EPSILON;
 

@@ -1400,6 +1400,8 @@ fn show_builtin_effect_params(
     clip_time_secs: f64,
     state: &AppState,
 ) -> Option<klipp_effects::BuiltinEffect> {
+    #[cfg(any(test, feature = "row-recorder"))]
+    let _recording_scope = crate::widgets::row_recorder::scope(crate::effect_presets::builtin_effect_key(effect));
     let keyframe_tolerance = crate::inspector::keyframe_selection::frame_tolerance(state.sequence());
     let mut updated = effect.clone();
     let mut changed = false;
@@ -1561,6 +1563,8 @@ fn show_builtin_effect_params(
     macro_rules! track_scrubby {
         ($param_name:expr, $r:expr, $val:expr) => {{
             let r = $r;
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::parameter($param_name);
             changed |= r.changed;
             if r.drag_started { any_drag_started = true; }
             if r.drag_stopped { any_drag_stopped = true; }
@@ -1580,6 +1584,8 @@ fn show_builtin_effect_params(
             ui.horizontal(|ui| {
                 ui.label("Mode");
                 let mut m = *mode;
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::control(ui.next_auto_id(), "choice", "mode", "Mode", *mode);
                 egui::ComboBox::from_id_salt(("color_fade_mode", effect_index))
                     .selected_text(match m {
                         klipp_effects::ColorFadeMode::In => "Fade From",
@@ -1595,6 +1601,8 @@ fn show_builtin_effect_params(
             ui.horizontal(|ui| {
                 ui.label("Colour");
                 let mut c = egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::control(ui.next_auto_id(), "colour", "color", "Colour", *color);
                 if ui.color_edit_button_srgba(&mut c).changed() {
                     *color = [c.r(), c.g(), c.b(), c.a()];
                     changed = true;
@@ -1603,6 +1611,11 @@ fn show_builtin_effect_params(
             // Duration
             ui.horizontal(|ui| {
                 ui.label("Duration");
+                #[cfg(any(test, feature = "row-recorder"))]
+                {
+                    crate::widgets::row_recorder::numeric(ui.next_auto_id(), "drag_value", "Duration", *duration_secs, &(0.05..=10.0), None, Some(0.05), Some(2), " s", None);
+                    crate::widgets::row_recorder::parameter("duration_secs");
+                }
                 if ui.add(egui::DragValue::new(duration_secs)
                     .range(0.05..=10.0)
                     .speed(0.05)
@@ -1635,6 +1648,8 @@ fn show_builtin_effect_params(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Colour").size(10.0));
                 let mut c = egui::Color32::from_rgb(color[0], color[1], color[2]);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::control(ui.next_auto_id(), "colour", "color", "Colour", *color);
                 if ui.color_edit_button_srgba(&mut c).changed() {
                     *color = [c.r(), c.g(), c.b()];
                     changed = true;
@@ -1657,6 +1672,8 @@ fn show_builtin_effect_params(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Colour").size(10.0));
                 let mut c = egui::Color32::from_rgb(color[0], color[1], color[2]);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::control(ui.next_auto_id(), "colour", "color", "Colour", *color);
                 if ui.color_edit_button_srgba(&mut c).changed() {
                     *color = [c.r(), c.g(), c.b()];
                     changed = true;
@@ -1711,18 +1728,32 @@ fn show_builtin_effect_params(
             // Transform in effects tab: no keyframes (handled by video tab's dedicated keyframes)
             let r = scrubby_param_row(ui, "Pos X", position_x, -2000.0..=2000.0, 0.0, 1.0, 0, " px", None);
             track_scrubby!("", r, *position_x);
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::parameter("position_x");
             let r = scrubby_param_row(ui, "Pos Y", position_y, -2000.0..=2000.0, 0.0, 1.0, 0, " px", None);
             track_scrubby!("", r, *position_y);
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::parameter("position_y");
             let r = scrubby_param_row(ui, "Scale X", scale_x, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", None);
             track_scrubby!("", r, *scale_x);
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::parameter("scale_x");
             let r = scrubby_param_row(ui, "Scale Y", scale_y, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", None);
             track_scrubby!("", r, *scale_y);
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::parameter("scale_y");
             let r = scrubby_param_row(ui, "Rotation", rotation, -360.0..=360.0, 0.0, 0.5, 1, " \u{00b0}", None);
             track_scrubby!("", r, *rotation);
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::parameter("rotation");
             let r = scrubby_param_row(ui, "Anchor X", anchor_x, 0.0..=1.0, 0.5, 0.005, 3, "", None);
             track_scrubby!("", r, *anchor_x);
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::parameter("anchor_x");
             let r = scrubby_param_row(ui, "Anchor Y", anchor_y, 0.0..=1.0, 0.5, 0.005, 3, "", None);
             track_scrubby!("", r, *anchor_y);
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::parameter("anchor_y");
         }
         klipp_effects::BuiltinEffect::CornerPin { tl, tr, br, bl } => {
             // Eight rows, one per coordinate, each keyed under its own
@@ -1747,6 +1778,8 @@ fn show_builtin_effect_params(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Key Colour").size(10.0));
                 let mut color = egui::Color32::from_rgb(key_color[0], key_color[1], key_color[2]);
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::control(ui.next_auto_id(), "colour", "key_color", "Key Colour", *key_color);
                 if ui.color_edit_button_srgba(&mut color).changed() {
                     key_color[0] = color.r();
                     key_color[1] = color.g();
@@ -1772,6 +1805,8 @@ fn show_builtin_effect_params(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Spill Method").size(10.0));
                 let prev = *spill_method;
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::control(ui.next_auto_id(), "choice", "spill_method", "Spill Method", *spill_method);
                 egui::ComboBox::from_id_salt(("chroma_key_spill_method", effect_index))
                     .selected_text(match spill_method {
                         klipp_effects::SpillMethod::None => "None",
@@ -1839,6 +1874,8 @@ fn show_builtin_effect_params(
             let r_s = scrubby_param_row(ui, "Samples", &mut samples_f, 4.0..=128.0, 64.0, 1.0, 0, "", ks_s);
             *samples = samples_f as u32;
             track_scrubby!("", r_s, samples_f);
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::parameter("samples");
             let r_d = scrubby_param_row(ui, "Decay", decay, 0.0..=1.0, 0.3, 0.005, 3, "", ks_d);
             track_scrubby!("decay", r_d, *decay);
             let r_i = scrubby_param_row(ui, "Intensity", intensity, 0.0..=2.0, 0.5, 0.01, 2, "", ks_i);
@@ -1898,6 +1935,8 @@ fn show_builtin_effect_params(
             let r_gc = scrubby_param_row(ui, "Ghost Count", &mut gc_f, 0.0..=8.0, 4.0, 1.0, 0, "", None);
             *ghost_count = gc_f as u32;
             track_scrubby!("", r_gc, gc_f);
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::parameter("ghost_count");
             let r_gi = scrubby_param_row(ui, "Ghost Intensity", ghost_intensity, 0.0..=1.0, 0.3, 0.005, 2, "", ks_gi);
             track_scrubby!("ghost_intensity", r_gi, *ghost_intensity);
             let r_ca = scrubby_param_row(ui, "Chromatic Aberration", chromatic_aberration, 0.0..=1.0, 0.4, 0.005, 2, "", ks_ca);
@@ -2185,6 +2224,8 @@ fn show_builtin_effect_params(
             let r_c = scrubby_param_row(ui, "Crop", crop_ratio, 0.0..=0.2, 0.05, 0.002, 3, "", ks_c);
             track_scrubby!("crop_ratio", r_c, *crop_ratio);
 
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", "zoom", "Auto-zoom to fill", *zoom);
             if ui.checkbox(zoom, "Auto-zoom to fill").changed() {
                 changed = true;
             }
@@ -2204,6 +2245,8 @@ fn show_builtin_effect_params(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Blend Mode").size(10.0));
                 let combo_id = ui.make_persistent_id(format!("sr_blend_{clip_id:?}_{effect_index}"));
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::control(combo_id, "choice", "blend_mode", "Blend Mode", *blend_mode);
                 egui::ComboBox::from_id_salt(combo_id)
                     .selected_text(blend_labels[blend_sel])
                     .show_ui(ui, |ui| {
@@ -2221,6 +2264,8 @@ fn show_builtin_effect_params(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Ramp Curve").size(10.0));
                 let combo_id = ui.make_persistent_id(format!("sr_curve_{clip_id:?}_{effect_index}"));
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::control(combo_id, "choice", "ramp_curve", "Ramp Curve", *ramp_curve);
                 egui::ComboBox::from_id_salt(combo_id)
                     .selected_text(curve_labels[curve_sel])
                     .show_ui(ui, |ui| {
@@ -2237,9 +2282,13 @@ fn show_builtin_effect_params(
             let r_re = scrubby_param_row(ui, "Ramp End", ramp_end, 0.0..=1.0, 1.0, 0.005, 3, "", ks_re);
             track_scrubby!("ramp_end", r_re, *ramp_end);
 
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", "reverse", "Reverse", *reverse);
             if ui.checkbox(reverse, "Reverse").changed() {
                 changed = true;
             }
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", "freeze", "Freeze Frame", *freeze);
             if ui.checkbox(freeze, "Freeze Frame").changed() {
                 changed = true;
             }
@@ -2344,10 +2393,14 @@ fn show_builtin_effect_params(
         klipp_effects::BuiltinEffect::Mirror { horizontal, vertical } => {
             let mut h_bool = *horizontal != 0;
             let mut v_bool = *vertical != 0;
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", "horizontal", "Horizontal", h_bool);
             if ui.checkbox(&mut h_bool, "Horizontal").changed() {
                 *horizontal = if h_bool { 1 } else { 0 };
                 changed = true;
             }
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", "vertical", "Vertical", v_bool);
             if ui.checkbox(&mut v_bool, "Vertical").changed() {
                 *vertical = if v_bool { 1 } else { 0 };
                 changed = true;
@@ -2409,12 +2462,22 @@ fn show_builtin_effect_params(
             let r_a = scrubby_param_row(ui, "Amount", amount, 0.0..=1.0, 0.1, 0.005, 3, "", ks_a);
             track_scrubby!("amount", r_a, *amount);
             let mut mono_f = *monochrome as f32;
+            #[cfg(any(test, feature = "row-recorder"))]
+            {
+                crate::widgets::row_recorder::numeric(ui.next_auto_id(), "slider", "Monochrome", mono_f, &(0.0..=1.0), None, None, None, "", None);
+                crate::widgets::row_recorder::parameter("monochrome");
+            }
             let r_m = ui.add(egui::Slider::new(&mut mono_f, 0.0..=1.0).step_by(1.0_f64).text("Monochrome"));
             *monochrome = mono_f as u32;
             if r_m.drag_started() { any_drag_started = true; }
             if r_m.drag_stopped() { any_drag_stopped = true; }
             changed |= r_m.changed();
             let mut seed_f = *seed as f32;
+            #[cfg(any(test, feature = "row-recorder"))]
+            {
+                crate::widgets::row_recorder::numeric(ui.next_auto_id(), "slider", "Seed", seed_f, &(0.0..=10000.0), None, None, None, "", None);
+                crate::widgets::row_recorder::parameter("seed");
+            }
             let r_s = ui.add(egui::Slider::new(&mut seed_f, 0.0..=10000.0).text("Seed"));
             *seed = seed_f as u32;
             if r_s.drag_started() { any_drag_started = true; }
@@ -2432,6 +2495,8 @@ fn show_builtin_effect_params(
             let r_h = scrubby_param_row(ui, "Shadows", shadows, 0.0..=1.0, 0.6, 0.005, 2, "", ks_h);
             track_scrubby!("shadows", r_h, *shadows);
             let mut col = *color != 0;
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", "color", "Colour grain", col);
             let r_c = ui.checkbox(&mut col, "Colour grain");
             *color = u32::from(col);
             changed |= r_c.changed();
@@ -2503,6 +2568,11 @@ fn show_builtin_effect_params(
             let r_a = scrubby_param_row(ui, "Amount", amount, 0.0..=50.0, 10.0, 0.5, 1, "", ks_a);
             track_scrubby!("amount", r_a, *amount);
             let mut s_f = *samples as f32;
+            #[cfg(any(test, feature = "row-recorder"))]
+            {
+                crate::widgets::row_recorder::numeric(ui.next_auto_id(), "slider", "Samples", s_f, &(4.0..=32.0), None, None, None, "", None);
+                crate::widgets::row_recorder::parameter("samples");
+            }
             let r_s = ui.add(egui::Slider::new(&mut s_f, 4.0..=32.0).text("Samples"));
             *samples = s_f as u32;
             if r_s.drag_started() { any_drag_started = true; }
@@ -2514,6 +2584,8 @@ fn show_builtin_effect_params(
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Mode").size(10.0));
                 let combo_id = ui.make_persistent_id(format!("rb_mode_{clip_id:?}_{effect_index}"));
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::control(combo_id, "choice", "mode", "Mode", *mode);
                 egui::ComboBox::from_id_salt(combo_id)
                     .selected_text(mode_labels[mode_sel])
                     .show_ui(ui, |ui| {
@@ -2554,6 +2626,11 @@ fn show_builtin_effect_params(
             track_scrubby!("aspect_ratio", r_ar, *aspect_ratio);
             // Bar color toggle
             let mut bc_f = *bar_color as f32;
+            #[cfg(any(test, feature = "row-recorder"))]
+            {
+                crate::widgets::row_recorder::numeric(ui.next_auto_id(), "slider", "Bar Colour (0=Black, 1=White)", bc_f, &(0.0..=1.0), None, None, None, "", None);
+                crate::widgets::row_recorder::parameter("bar_color");
+            }
             let r_bc = ui.add(egui::Slider::new(&mut bc_f, 0.0..=1.0).step_by(1.0_f64).text("Bar Colour (0=Black, 1=White)"));
             *bar_color = bc_f as u32;
             if r_bc.drag_started() { any_drag_started = true; }
