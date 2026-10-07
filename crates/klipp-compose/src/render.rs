@@ -267,6 +267,10 @@ pub struct RenderStats {
     /// Clips whose effects ran as nodes of the grade's plan, on the GPU
     /// with the grade (#1089, M2 step 10).
     pub effects_followed_grade: u32,
+    /// Clips on the plan route whose lifted picture could not give their
+    /// effects, so `clip_effects`' list stood in (M2 step 10c). Zero
+    /// unless a lift is broken.
+    pub effects_fallback_lists: u32,
 }
 
 /// One entry of the stack [`Renderer::render`] composites.
@@ -1546,7 +1550,7 @@ impl Renderer {
                         let t = Instant::now();
                         // The effects as nodes of the grade's plan (step 10b),
                         // on the GPU with it, instead of a pass over the layer.
-                        effects_done = self.splice_effects(c, &fx);
+                        effects_done = self.splice_effects(c, &fx, time, fps, transforms, stats);
                         self.executor.request_output_on_gpu();
                         let pixels = self.grade(c, GradeInput::Gpu(g), clip_time, fps, width, height);
                         stats.grade_ms += ms_since(t);
@@ -1566,7 +1570,7 @@ impl Renderer {
                         let pixels = if c.grade_is_identity() {
                             unshare(p)
                         } else {
-                            effects_done = self.splice_effects(c, &fx);
+                            effects_done = self.splice_effects(c, &fx, time, fps, transforms, stats);
                             let pixels = self.grade(c, GradeInput::Cpu(p), clip_time, fps, width, height);
                             if effects_done && !self.finish_spliced() {
                                 return Err("an effect could not be recorded");
@@ -1730,7 +1734,7 @@ impl Renderer {
                 Some(Arc::new(AccSeed { buffer, device: g.device(), queue: g.queue(), width, height }))
             });
             let Some(seed) = seed else { return Err("the accumulator could not seed the chain") };
-            effects_done = self.splice_effects(c, &fx);
+            effects_done = self.splice_effects(c, &fx, time, fps, transforms, stats);
             self.executor.request_output_on_gpu();
             let pixels = self.grade(c, GradeInput::Gpu(seed), clip_time, fps, width, height);
             stats.grade_ms += ms_since(t);
@@ -2125,7 +2129,9 @@ impl Renderer {
         // Kept for a second grade if the effects can't finish in the plan.
         let retry = on_gpu.then(|| input.clone());
         if on_gpu {
-            self.run_effects.clone_from(&fx);
+            let mut stats = std::mem::take(&mut self.found.stats);
+            self.run_effects = self.plan_effects(clip, time, fps, transforms, &fx, &mut stats);
+            self.found.stats = stats;
         }
         let mut pixels = self.grade(clip, input, clip_time, fps, width, height);
         if on_gpu {
@@ -2169,13 +2175,36 @@ impl Renderer {
     /// Splice `fx` into `clip`'s next grade run as plan nodes (step 10b)
     /// when they can follow its grade on the GPU; whether they will.
     /// [`Self::finish_spliced`] ends it after the grade.
-    fn splice_effects(&mut self, clip: &Clip, fx: &[BuiltinEffect]) -> bool {
+    #[allow(clippy::too_many_arguments)]
+    fn splice_effects(&mut self, clip: &Clip, fx: &[BuiltinEffect], time: Timecode, fps: f64, transforms: &HashMap<ClipId, ResolvedTransform>, stats: &mut RenderStats) -> bool {
         let on = self.effects_follow_grade_on_gpu(clip, false, fx);
         if on {
-            self.run_effects.clear();
-            self.run_effects.extend_from_slice(fx);
+            self.run_effects = self.plan_effects(clip, time, fps, transforms, fx, stats);
         }
         on
+    }
+
+    /// The effects a plan route splices in for `clip` at `time` (step
+    /// 10c): read from its lifted picture (`resolve_effects`), in the
+    /// working space and at the render scale. `clip_effects`' list,
+    /// `fallback`, is what the picture gives (10c-1's parity); it stands
+    /// in when the picture can't be read, which is said.
+    fn plan_effects(&mut self, clip: &Clip, time: Timecode, fps: f64, transforms: &HashMap<ClipId, ResolvedTransform>, fallback: &[BuiltinEffect], stats: &mut RenderStats) -> Vec<BuiltinEffect> {
+        let resolved = clip.picture_v2().and_then(|p| {
+            crate::resolve::resolve_effects(clip, &p.picture, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied())
+        });
+        match resolved {
+            Ok(mut fx) => {
+                self.authored_colours(&mut fx);
+                self.at_render_scale(&mut fx);
+                fx
+            }
+            Err(e) => {
+                tracing::warn!("clip {}: effects from its picture: {e}; the list stands in", clip.id.0);
+                stats.effects_fallback_lists += 1;
+                fallback.to_vec()
+            }
+        }
     }
 
     /// End a [`Self::splice_effects`]: whether every effect was applied.

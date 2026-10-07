@@ -80,6 +80,11 @@ fn render(seq: &Sequence, legacy: bool) -> (Vec<f32>, u32) {
 /// `render`, with every effect's recording refused when `refuse` (as a
 /// lost device refuses it).
 fn render_with(seq: &Sequence, legacy: bool, refuse: bool) -> (Vec<f32>, u32) {
+    render_at(seq, legacy, refuse, 1.0)
+}
+
+/// `render_with` at `secs` into the sequence.
+fn render_at(seq: &Sequence, legacy: bool, refuse: bool, secs: f64) -> (Vec<f32>, u32) {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
     r.set_legacy_effects(legacy);
@@ -91,7 +96,8 @@ fn render_with(seq: &Sequence, legacy: bool, refuse: bool) -> (Vec<f32>, u32) {
     if let Some(g) = r.gpu_pipeline() {
         g.refuse_recording(refuse);
     }
-    let (out, found) = r.render_inspected(seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default());
+    let (out, found) = r.render_inspected(seq, tc(secs), W, H, &mut Chart, RenderOptions::default(), Inspect::default());
+    assert_eq!(found.stats.effects_fallback_lists, 0, "every plan list came from the picture");
     let chain = r.executor().last_run_chain_stats();
     LAST.with(|l| l.set((found.stats.cpu_layers, chain.effect_breaks, chain.submits)));
     (out, found.stats.effects_followed_grade)
@@ -205,4 +211,33 @@ fn a_grade_run_that_fails_never_drops_the_effects() {
     no_fx.tracks[0].clips[0].set_effect_list(vec![], vec![]);
     let (bare, _) = render(&no_fx, true);
     assert!(new != bare, "the effects are in the picture");
+}
+
+#[test]
+fn animated_effects_and_a_fixed_placement_from_the_picture_draw_the_legacy_frames() {
+    // Step 10c-2: the plan route's effects come from the clip's lifted
+    // picture. A keyed parameter, a modifier stack, and a Transform effect
+    // placed after a shadow while the clip moves, at times around the keys.
+    let shadow = E::DropShadow { offset_x: 0.03, offset_y: 0.02, blur: 0.01, color: [10, 20, 40], opacity: 0.8 };
+    let tf = E::Transform { position_x: 0.0, position_y: 0.0, scale_x: 0.7, scale_y: 0.7, rotation: 4.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 8.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+    let mut seq = graded(vec![E::Gamma { gamma: 1.0 }, E::Vibrance { amount: 0.2 }, shadow, tf]);
+    let clip = &mut seq.tracks[0].clips[0];
+    let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    clip.edit_effect_keyframes(|k| {
+        k.insert("0:gamma".into(), vec![key(0.2, 0.7), key(1.0, 1.5), key(1.8, 0.9)]);
+    });
+    clip.edit_param_modifiers(|m| {
+        let osc = klipp_core::Modifier::Oscillate { amplitude: 0.3, frequency: 1.3, phase: 0.1, waveform: Default::default(), blend: Default::default(), enabled: true };
+        m.insert(klipp_core::ParamId::Effect { effect_index: 1, param_name: "amount".into() }, klipp_core::ModifierStack { modifiers: vec![osc] });
+    });
+    clip.edit_video_param_keyframes(klipp_core::VideoParam::PositionX, |k| *k = vec![key(0.0, -10.0), key(2.0, 10.0)]);
+    let mut seen = Vec::new();
+    for t in [0.1, 0.6, 1.0, 1.4, 1.9] {
+        let (new, followed) = render_at(&seq, false, false, t);
+        let (legacy, _) = render_at(&seq, true, false, t);
+        assert!(followed == 1 || !required(), "at {t}: the plan route was taken");
+        assert!(new.iter().map(|v| v.to_bits()).eq(legacy.iter().map(|v| v.to_bits())), "at {t}: the legacy route's frame");
+        seen.push(new);
+    }
+    assert!(seen.windows(2).all(|w| w[0] != w[1]), "the frames animate");
 }
