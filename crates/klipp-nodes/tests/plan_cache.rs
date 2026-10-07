@@ -220,3 +220,75 @@ fn each_node_is_evaluated_once_and_nothing_is_copied() {
         assert_eq!(stats.copies, 0);
     }
 }
+
+/// A chain of `n` Exposure nodes, the first `animated` keyed over a second.
+fn long_chain(n: usize, animated: usize) -> NodeGraph {
+    let mut g = NodeGraph::default();
+    let nodes: Vec<_> = (0..n)
+        .map(|i| {
+            let mut node = klipp_nodes::graph::Node {
+                id: NodeId::new_v4(), kind: NodeKind::Exposure, label: "Exposure".into(), enabled: true,
+                params: NodeParams { exposure: Some(0.01), ..Default::default() },
+                keyframes: Default::default(), output_link: None, input_links: vec![],
+            };
+            if i < animated {
+                node.keyframes.tracks.push(NodeKeyframeTrack { param_name: "exposure".into(), keyframes: vec![key(0.0, -0.05), key(1.0, 0.05)] });
+            }
+            node
+        })
+        .collect();
+    let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
+    let output = g.output_node_id;
+    g.nodes.retain(|n| n.id == source || n.id == output);
+    g.edges.clear();
+    let mut prev = source;
+    for node in &nodes {
+        g.edges.push(Edge { from_node: prev, from_port: 0, to_node: node.id, to_port: 0 });
+        prev = node.id;
+    }
+    g.edges.push(Edge { from_node: prev, from_port: 0, to_node: output, to_port: 0 });
+    g.nodes.extend(nodes);
+    g
+}
+
+/// The acceptance spec's L4 in counts: fifty nodes, ten of them animated,
+/// played ten frames, compile one plan and find it nine times.
+#[test]
+fn a_long_animated_chain_compiles_once() {
+    let g = long_chain(50, 10);
+    let mut ex = GraphExecutor::new_cpu_only();
+    for f in 0..10 {
+        ex.execute(&frame(), &g, W, H, f as f64 / 9.0, f, None, None).unwrap();
+    }
+    assert_eq!(ex.plan_counts(), (1, 9));
+}
+
+/// L4's milliseconds, for the quiet window: a plan's compile, as a first
+/// run's time over a cached run's on a 1x1 frame (50 nodes), and a cached
+/// run's (parameter evaluation and 20 trivial passes: 20 nodes, 10
+/// animated). Reported against < 1 ms and < 0.3 ms, never asserted.
+#[test]
+#[ignore = "perf probe: run explicitly, release, in a quiet window"]
+fn plan_budgets() {
+    let px = [128u8, 96, 64, 255];
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+    let time = |ex: &mut GraphExecutor, g: &NodeGraph, t: f64| {
+        let start = std::time::Instant::now();
+        ex.execute(&px, g, 1, 1, t, 0, None, None).unwrap();
+        start.elapsed().as_secs_f64() * 1000.0
+    };
+    let fifty = long_chain(50, 10);
+    let first = median((0..21).map(|_| time(&mut GraphExecutor::new_cpu_only(), &fifty, 0.5)).collect());
+    let mut ex = GraphExecutor::new_cpu_only();
+    time(&mut ex, &fifty, 0.5);
+    let cached = median((0..21).map(|i| time(&mut ex, &fifty, i as f64 / 20.0)).collect());
+    eprintln!("50 nodes: first run {first:.3} ms, cached {cached:.3} ms -> compile ~{:.3} ms (budget < 1 ms)", first - cached);
+    let twenty = long_chain(20, 10);
+    let mut ex = GraphExecutor::new_cpu_only();
+    time(&mut ex, &twenty, 0.5);
+    let eval = median((0..21).map(|i| time(&mut ex, &twenty, i as f64 / 20.0)).collect());
+    eprintln!("20 nodes, 10 animated: cached run {eval:.3} ms (evaluation budget < 0.3 ms)");
+}
