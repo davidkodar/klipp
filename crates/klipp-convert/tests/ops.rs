@@ -6,7 +6,7 @@ use klipp_convert::paths::{resolve, Documents};
 use klipp_convert::revision2;
 use klipp_graph_format::lifted::types as lt;
 use klipp_graph_format::path::{NodePath, Root, TrackPart};
-use klipp_graph_format::{types, Legacy, Node, NodeId, ParamValue};
+use klipp_graph_format::{types, Animation, Legacy, Node, NodeId, ParamKey, ParamValue};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -373,41 +373,7 @@ fn removing_a_gating_key_ungates_the_correction() {
 }
 
 
-struct RegistryCatalog;
-impl RegistryCatalog {
-    fn describe(desc: &klipp_effects::registry::NodeTypeDesc) -> klipp_graph_format::NodeSpec {
-        use klipp_graph_format::{NodeSpec, PortSpec, PortType};
-        let ports = |ports: &[klipp_effects::registry::PortDesc]| ports.iter().map(|p| PortSpec {
-            key: p.key.into(),
-            ty: match p.ty { klipp_effects::registry::PortType::Image => PortType::Image, klipp_effects::registry::PortType::Matte => PortType::Matte },
-            optional: p.optional,
-            params: p.params.iter().map(|p| (p.key.into(), p.options.iter().map(|s| (*s).into()).collect())).collect(),
-        }).collect();
-        NodeSpec { inputs: ports(desc.inputs), outputs: ports(desc.outputs), mixable: desc.mixable }
-    }
-}
-impl klipp_graph_format::PortCatalog for RegistryCatalog {
-    fn node(&self, type_id: &str) -> Option<klipp_graph_format::NodeSpec> {
-        klipp_effects::registry::effect_types().map(|t| &t.desc).chain(klipp_nodes::registry::node_types().map(|t| &t.desc)).find(|d| d.id == type_id).map(Self::describe)
-    }
-    fn node_spec(&self, node: &Node) -> Option<klipp_graph_format::NodeSpec> {
-        if node.type_id.as_str() == types::LEGACY_NODE {
-            let name = node.legacy.as_ref()?.payload.get("kind")?.as_str()?;
-            let kind: klipp_nodes::NodeKind = serde_json::from_value(json!(name)).ok()?;
-            let mut spec = Self::describe(&klipp_nodes::registry::node_type(kind)?.desc);
-            // Registry descriptors use semantic names (Qualifier's matte),
-            // while migrated graphs retain the keys from their old indices.
-            for (index, p) in spec.inputs.iter_mut().enumerate() { p.key = klipp_graph_format::ports::input_key(name, index as u8).to_string(); }
-            for (index, p) in spec.outputs.iter_mut().enumerate() { p.key = klipp_graph_format::ports::output_key(name, index as u8).to_string(); }
-            return Some(spec);
-        }
-        if node.type_id.as_str() == types::LEGACY_EFFECT {
-            let tag = node.legacy.as_ref()?.payload.get("type")?.as_str()?;
-            return klipp_effects::registry::effect_type(tag).map(|t| Self::describe(&t.desc));
-        }
-        self.node(node.type_id.as_str())
-    }
-}
+use klipp_timeline::RegistryCatalog;
 
 const MATTE_ID: u128 = 0xe00;
 const TARGET_ID: u128 = 0xe01;
@@ -668,4 +634,100 @@ fn a_batch_refuses_empty_or_multiple_roots_without_any_edit() {
     ];
     assert!(apply_batch_with_catalog(&mut d, &ops, &RegistryCatalog).is_err());
     assert_eq!(snapshot(&d), before);
+}
+
+/// A key as the renderer reads it.
+fn key_at(t: f64, v: f64) -> Value {
+    json!({"time_secs": t, "value": v, "interpolation": "Linear", "tangent_out": [0.0, 0.0], "tangent_in": [0.0, 0.0]})
+}
+
+fn times(d: &Documents, fx: NodeId, key: &str) -> Vec<f64> {
+    let n = d.clips[&u(CLIP)].graph.nodes.iter().find(|n| n.id == fx).unwrap();
+    n.anim.get(&ParamKey::from(key)).map(|a| a.keys.iter().map(|k| k["time_secs"].as_f64().unwrap()).collect()).unwrap_or_default()
+}
+
+/// A grade node's label lives in its stored entry and its place in the
+/// grade body's layout, so both come back out as the file writes them;
+/// the picture itself is untouched.
+#[test]
+fn node_meta_names_and_places_a_node_and_round_trips() {
+    let mut d = docs();
+    let g = group(&d);
+    let canon_before = klipp_convert::canon::canon(klipp_convert::canon::Store::Clip, &serde_json::to_value(&d.clips[&u(CLIP)]).unwrap());
+    let edit = apply(&mut d, &GraphOp::SetNodeMeta { path: clip_path([g, u(E)]), label: Some("Lift".into()), position: Some(json!({"x": 120.0, "y": 40.0})) }).unwrap();
+    let record = klipp_convert::delift::clip(&d.clips[&u(CLIP)]).unwrap();
+    let v1 = klipp_convert::to_v1::clip(&serde_json::to_value(&record).unwrap()).unwrap();
+    let grade = &v1["node_graph"];
+    let node = grade["nodes"].as_array().unwrap().iter().find(|n| n["id"] == E).unwrap();
+    assert_eq!(node["label"], "Lift");
+    assert_eq!(grade["node_positions"][E], json!({"x": 120.0, "y": 40.0}));
+    let canon_after = klipp_convert::canon::canon(klipp_convert::canon::Store::Clip, &serde_json::to_value(&d.clips[&u(CLIP)]).unwrap());
+    assert_eq!(canon_after, canon_before, "a name and a place change no picture");
+    undo(&mut d, &edit).unwrap();
+    assert_eq!(serde_json::to_value(&d.clips[&u(CLIP)]).unwrap(), edit.before);
+
+    // An effect node's label is its own; a track's list has no layout.
+    let fx = effect(&d);
+    apply(&mut d, &GraphOp::SetNodeMeta { path: clip_path([fx]), label: Some("Soft".into()), position: None }).unwrap();
+    assert_eq!(d.clips[&u(CLIP)].graph.nodes.iter().find(|n| n.id == fx).unwrap().label, "Soft");
+    let first = d.track_effects[&u(TRACK)][0].id;
+    let on_track = NodePath::new(Root::Track { track: u(TRACK), part: TrackPart::Effects }, [first]);
+    let before = snapshot(&d);
+    assert!(apply(&mut d, &GraphOp::SetNodeMeta { path: on_track.clone(), label: None, position: Some(json!({"x": 0.0, "y": 0.0})) }).is_err());
+    assert_eq!(snapshot(&d), before);
+    apply(&mut d, &GraphOp::SetNodeMeta { path: on_track, label: Some("Edge".into()), position: None }).unwrap();
+    assert_eq!(d.track_effects[&u(TRACK)][0].label, "Edge");
+}
+
+/// Keys go in time order, one per time; taking the last key off leaves
+/// the parameter unanimated; a whole animation is set and cleared.
+#[test]
+fn key_ops_edit_a_parameters_animation() {
+    let mut d = docs();
+    let fx = effect(&d);
+    let p = clip_path([fx]);
+    for (t, v) in [(1.0, 4.0), (0.0, 3.0), (2.0, 6.0), (1.0, 5.0)] {
+        apply(&mut d, &GraphOp::AddKeyAt { path: p.clone(), key: "radius".into(), keyframe: key_at(t, v) }).unwrap();
+    }
+    assert_eq!(times(&d, fx, "radius"), [0.0, 1.0, 2.0]);
+    let n = d.clips[&u(CLIP)].graph.nodes.iter().find(|n| n.id == fx).unwrap();
+    assert_eq!(n.anim[&ParamKey::from("radius")].keys[1]["value"], 5.0, "a key at the same time replaces it");
+
+    let before = snapshot(&d);
+    assert!(apply(&mut d, &GraphOp::RemoveKeyAt { path: p.clone(), key: "radius".into(), time_secs: 0.5 }).is_err(), "no key there");
+    assert!(apply(&mut d, &GraphOp::AddKeyAt { path: p.clone(), key: "radius".into(), keyframe: json!({"time_secs": "soon", "value": 1.0}) }).is_err());
+    assert_eq!(snapshot(&d), before, "a refused key op changes nothing");
+
+    for t in [0.0, 1.0, 2.0] {
+        apply(&mut d, &GraphOp::RemoveKeyAt { path: p.clone(), key: "radius".into(), time_secs: t }).unwrap();
+    }
+    assert!(!d.clips[&u(CLIP)].graph.nodes.iter().find(|n| n.id == fx).unwrap().anim.contains_key(&ParamKey::from("radius")));
+
+    let wiggle = json!({"modifiers": [{"type": "wiggle", "amplitude": 0.7, "frequency": 3.0, "blend": "Multiply"}]});
+    let edit = apply(&mut d, &GraphOp::SetAnim { path: p.clone(), key: "radius".into(), anim: Some(Animation { keys: vec![key_at(0.0, 2.0)], modifiers: Some(wiggle) }) }).unwrap();
+    assert_eq!(times(&d, fx, "radius"), [0.0]);
+    apply(&mut d, &GraphOp::SetAnim { path: p.clone(), key: "radius".into(), anim: None }).unwrap();
+    assert!(times(&d, fx, "radius").is_empty());
+    undo(&mut d, &edit).unwrap();
+    assert_eq!(serde_json::to_value(&d.clips[&u(CLIP)]).unwrap(), edit.before);
+
+    // On a track's list too.
+    let first = d.track_effects[&u(TRACK)][0].id;
+    let on_track = NodePath::new(Root::Track { track: u(TRACK), part: TrackPart::Effects }, [first]);
+    apply(&mut d, &GraphOp::AddKeyAt { path: on_track, key: "radius".into(), keyframe: key_at(0.0, 1.0) }).unwrap();
+    assert_eq!(d.track_effects[&u(TRACK)][0].anim[&ParamKey::from("radius")].keys.len(), 1);
+}
+
+/// A float lands as a file writes it, the shortest decimal for its f32,
+/// so an op stores what a save and a reload would.
+#[test]
+fn a_float_param_is_stored_as_the_file_writes_it() {
+    let mut d = docs();
+    let g = group(&d);
+    apply(&mut d, &GraphOp::SetParam { path: clip_path([g, u(E)]), key: "exposure".into(), value: ParamValue::Float(0.065) }).unwrap();
+    let body = &d.clips[&u(CLIP)].graph.nodes.iter().find(|n| n.id == g).unwrap().group.as_ref().unwrap().graph;
+    let e = body.nodes.iter().find(|n| n.id == u(E)).unwrap();
+    let stored = &e.legacy.as_ref().unwrap().payload["params"]["exposure"];
+    assert_eq!(stored.to_string(), "0.065");
+    assert_eq!(serde_json::to_string(&0.065f32).unwrap(), "0.065", "what a save writes");
 }

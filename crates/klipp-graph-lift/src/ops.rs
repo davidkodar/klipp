@@ -16,7 +16,7 @@
 
 use klipp_graph_format::lifted::{types as lt, LegacyFlags};
 use klipp_graph_format::path::{NodePath, Root, TrackPart};
-use klipp_graph_format::{ports, types, Edge, Graph, Node, NodeId, ParamKey, ParamValue, PortKey, PortBinding, PortCatalog, PortDirection, PortType, GroupPort};
+use klipp_graph_format::{ports, types, Animation, Edge, Graph, Node, NodeId, ParamKey, ParamValue, PortKey, PortBinding, PortCatalog, PortDirection, PortType, GroupPort};
 use serde_json::Value;
 
 use crate::paths::Documents;
@@ -47,6 +47,19 @@ pub enum GraphOp {
     SetMaskChannel { path: NodePath, channel: Option<String> },
     /// Move a node to just after another at its level.
     MoveAfter { path: NodePath, after: NodeId },
+    /// Name a node, or place it in the node editor: what the editor shows,
+    /// never the picture. `None` leaves that part as it is.
+    SetNodeMeta { path: NodePath, label: Option<String>, position: Option<Value> },
+    /// Put `keyframe` on a parameter's animation, in time order, replacing
+    /// a key at the same time. Stored as the keyframe's own JSON (time,
+    /// value, interpolation, tangents), which the renderer reads typed.
+    AddKeyAt { path: NodePath, key: ParamKey, keyframe: Value },
+    /// Take the key at `time_secs` off a parameter's animation; the
+    /// parameter is still animated while it has keys or a modifier stack.
+    RemoveKeyAt { path: NodePath, key: ParamKey, time_secs: f64 },
+    /// Set a parameter's animation whole (generated keys, a modifier
+    /// stack); `None` takes it off.
+    SetAnim { path: NodePath, key: ParamKey, anim: Option<Animation> },
 }
 
 /// What an op did to its root: the root's picture before and after, as
@@ -66,7 +79,11 @@ fn path_of(op: &GraphOp) -> &NodePath {
         | GraphOp::SetEnabled { path, .. }
         | GraphOp::SetMix { path, .. }
         | GraphOp::SetMaskChannel { path, .. }
-        | GraphOp::MoveAfter { path, .. } => path,
+        | GraphOp::MoveAfter { path, .. }
+        | GraphOp::SetNodeMeta { path, .. }
+        | GraphOp::AddKeyAt { path, .. }
+        | GraphOp::RemoveKeyAt { path, .. }
+        | GraphOp::SetAnim { path, .. } => path,
         GraphOp::Connect { to, .. } | GraphOp::Disconnect { to, .. } => to,
         GraphOp::PublishOutput { group, .. } | GraphOp::Unpublish { group, .. } => group,
     }
@@ -135,11 +152,21 @@ fn is_end(n: &Node) -> bool {
     matches!(n.type_id.as_str(), lt::SOURCE | lt::OUTPUT | lt::GROUP_INPUT | lt::GROUP_OUTPUT | lt::GROUP_FRAME)
 }
 
+/// A float as a file writes it: the shortest decimal that reads back as
+/// the same `f32` (`0.065`, not the `0.06499999761581421` its widening to
+/// `f64` gives), so an op stores what a save and a reload would.
+fn float(f: f32) -> Value {
+    if !f.is_finite() {
+        return Value::Null;
+    }
+    f.to_string().parse::<f64>().ok().and_then(serde_json::Number::from_f64).map_or(Value::Null, Value::Number)
+}
+
 /// A parameter value as the v1 entry stores it, or `None` for one that
 /// isn't set that way before 2b.
 fn as_v1(value: &ParamValue) -> Option<Value> {
     Some(match value {
-        ParamValue::Float(f) => serde_json::json!(f),
+        ParamValue::Float(f) => float(*f),
         ParamValue::Int(i) => serde_json::json!(i),
         ParamValue::Bool(b) => serde_json::json!(b),
         ParamValue::Enum(e) => serde_json::json!(e),
@@ -221,6 +248,63 @@ fn published_output_type(node: &Node, port: &PortKey, catalog: Option<&dyn PortC
     }
     let spec = catalog.and_then(|c| c.node_spec(node)).ok_or("publishing this endpoint needs a registered node description")?;
     spec.outputs.iter().find(|p| p.key == port.as_str()).map(|p| p.ty).ok_or_else(|| "the child has no such output".into())
+}
+
+/// A key's time, if it reads as a key: finite seconds and a finite value.
+fn key_time(keyframe: &Value) -> Result<f64, String> {
+    let time = keyframe.get("time_secs").and_then(Value::as_f64).filter(|t| t.is_finite()).ok_or("a key needs a finite time_secs")?;
+    keyframe.get("value").and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or("a key needs a finite value")?;
+    Ok(time)
+}
+
+/// Keys at the same time are one key.
+const SAME_TIME: f64 = 1e-9;
+
+/// The animation edits, the same on a graph and on a track's list.
+fn apply_anim(n: &mut Node, op: &GraphOp) -> Result<(), String> {
+    match op {
+        GraphOp::AddKeyAt { key, keyframe, .. } => {
+            let t = key_time(keyframe)?;
+            let a = n.anim.entry(key.clone()).or_insert(Animation { keys: Vec::new(), modifiers: None });
+            a.keys.retain(|k| key_time(k).map_or(true, |kt| (kt - t).abs() > SAME_TIME));
+            let at = a.keys.iter().position(|k| key_time(k).is_ok_and(|kt| kt > t)).unwrap_or(a.keys.len());
+            a.keys.insert(at, keyframe.clone());
+        }
+        GraphOp::RemoveKeyAt { key, time_secs, .. } => {
+            let a = n.anim.get_mut(key).ok_or_else(|| format!("{key} isn't animated"))?;
+            let before = a.keys.len();
+            a.keys.retain(|k| key_time(k).map_or(true, |kt| (kt - time_secs).abs() > SAME_TIME));
+            if a.keys.len() == before {
+                return Err(format!("{key} has no key at {time_secs} s"));
+            }
+            if a.keys.is_empty() && a.modifiers.is_none() {
+                n.anim.remove(key);
+            }
+        }
+        GraphOp::SetAnim { key, anim, .. } => match anim {
+            Some(a) => {
+                for k in &a.keys {
+                    key_time(k)?;
+                }
+                n.anim.insert(key.clone(), a.clone());
+            }
+            None => {
+                n.anim.remove(key);
+            }
+        },
+        _ => unreachable!("only the animation ops come here"),
+    }
+    Ok(())
+}
+
+/// A node's label: a grade node's lives in its stored entry, as the file
+/// had it; any other node's on the node.
+fn set_label(n: &mut Node, label: &str) {
+    let grade_node = matches!(n.type_id.as_str(), types::LEGACY_NODE) || n.type_id.as_str() == lt::MERGE;
+    match n.legacy.as_mut().filter(|l| grade_node && l.payload.is_object()) {
+        Some(legacy) => legacy.payload["label"] = Value::String(label.to_owned()),
+        None => n.label = label.to_owned(),
+    }
 }
 
 /// The edits on a graph level.
@@ -344,6 +428,19 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn
             let at = find(g, target)?;
             set_mask_channel(&mut g.nodes[at], channel.as_deref(), catalog)?;
         }
+        GraphOp::SetNodeMeta { label, position, .. } => {
+            let at = find(g, target)?;
+            if let Some(label) = label {
+                set_label(&mut g.nodes[at], label);
+            }
+            if let Some(position) = position {
+                g.ui.positions.insert(target, position.clone());
+            }
+        }
+        GraphOp::AddKeyAt { .. } | GraphOp::RemoveKeyAt { .. } | GraphOp::SetAnim { .. } => {
+            let at = find(g, target)?;
+            apply_anim(&mut g.nodes[at], op)?;
+        }
         GraphOp::MoveAfter { after, .. } => {
             let node = g.nodes[find(g, target)?].clone();
             // Its other inputs (a gate's mask, a merge's second picture)
@@ -421,6 +518,19 @@ fn apply_list(list: &mut Vec<Node>, op: &GraphOp, target: NodeId, catalog: Optio
             let node = list.remove(at);
             let to = find(list, *after)?;
             list.insert(to + 1, node);
+        }
+        GraphOp::SetNodeMeta { label, position, .. } => {
+            if position.is_some() {
+                return Err("a track's effects are a list, with no place in a node editor".into());
+            }
+            let at = find(list, target)?;
+            if let Some(label) = label {
+                set_label(&mut list[at], label);
+            }
+        }
+        GraphOp::AddKeyAt { .. } | GraphOp::RemoveKeyAt { .. } | GraphOp::SetAnim { .. } => {
+            let at = find(list, target)?;
+            apply_anim(&mut list[at], op)?;
         }
         GraphOp::Connect { .. } | GraphOp::Disconnect { .. } | GraphOp::PublishOutput { .. } | GraphOp::Unpublish { .. } | GraphOp::SetMaskChannel { .. } => return Err("a track's effects are a list, with nothing to wire".into()),
     }
