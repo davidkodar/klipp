@@ -34,23 +34,23 @@ const MIX: f32 = 0.75;
 const GPU_BAR: f32 = 1.0 / 255.0;
 const CHANNELS: [MaskChannel; 3] = [MaskChannel::Red, MaskChannel::Luminance, MaskChannel::Alpha];
 
-/// Mixable effects whose node breaks the GPU chain today, masked or not:
-/// AR1 holds them to no decline, so each is an open item, not a pass.
+/// Mixable effects whose node breaks the GPU chain today, masked or not.
 /// Equalize evens the whole frame's histogram, which the chain can't
-/// record; whether it stays mixable or gains a GPU pass is D5's to
-/// decide. The list is exact: an effect that stops declining, or another
-/// that starts, fails the matrix until it is updated.
+/// record: the read-back break #1211 pinned, which AR1's "no new decline"
+/// lets stand (D5: it stays mixable; a GPU histogram is #1215). The list
+/// is exact: an effect that stops declining, or another that starts,
+/// fails the matrix until it is updated.
 const KNOWN_DECLINES: [&str; 1] = ["equalize"];
 
-/// A frame whose luminance, hue and alpha each run across the picture, so
-/// every producer's coverage spans 0 to 1; its left strip is the clean
-/// plate's grey, which the difference key leaves out.
+/// A frame whose luminance, hue and alpha (0 to 1) each run across the
+/// picture, so every producer's coverage spans 0 to 1; its left strip is
+/// the clean plate's grey, which the difference key leaves out.
 fn frame() -> Vec<f32> {
     let plate = klipp_color::transfer::srgb_to_linear(128.0 / 255.0);
     (0..W * H)
         .flat_map(|i| {
             let (x, y) = ((i % W) as f32 / (W - 1) as f32, (i / W) as f32 / (H - 1) as f32);
-            let alpha = 0.25 + 0.75 * y;
+            let alpha = y;
             if i % W < W / 8 {
                 [plate, plate, plate, alpha]
             } else {
@@ -83,9 +83,12 @@ enum Producer {
     Window,
     ExternalMatte,
     CombineMattes,
+    /// The picture itself wired into the mask: the one source whose alpha
+    /// varies, since every producer above makes an opaque matte (A = 1).
+    Picture,
 }
 
-const PRODUCERS: [Producer; 6] = [Producer::Qualifier, Producer::LumaKey, Producer::DifferenceKey, Producer::Window, Producer::ExternalMatte, Producer::CombineMattes];
+const PRODUCERS: [Producer; 7] = [Producer::Qualifier, Producer::LumaKey, Producer::DifferenceKey, Producer::Window, Producer::ExternalMatte, Producer::CombineMattes, Producer::Picture];
 
 /// The files the disk-reading producers load: a mid-grey clean plate and
 /// a horizontal ramp painted as a matte.
@@ -160,6 +163,7 @@ fn producer(p: Producer, source: NodeId, files: &Files) -> (Vec<Node>, Vec<Edge>
         ),
         Producer::Window => one(window(), true),
         Producer::ExternalMatte => one(node(NodeKind::ExternalMatte, NodeParams { matte_image_path: Some(files.ramp.clone()), ..Default::default() }), false),
+        Producer::Picture => (vec![], vec![], source),
         Producer::CombineMattes => {
             let (a, b) = (luma_key(), window());
             let c = node(NodeKind::CombineMattes, NodeParams::default());
@@ -247,7 +251,6 @@ fn gpu() -> Option<GraphExecutor> {
     ok.then_some(ex)
 }
 
-/// Every registered effect that takes a mask and a mix (D5's list).
 /// `klipp_effects::mask_mix` over the pieces an executor gives.
 fn oracle(input: &[[f32; 4]], whole: &[[f32; 4]], matte: &[[f32; 4]], channel: MaskChannel) -> Vec<f32> {
     let luma = klipp_color::linear::luma_coefs(klipp_core::WorkingColorspace::default());
@@ -257,6 +260,7 @@ fn oracle(input: &[[f32; 4]], whole: &[[f32; 4]], matte: &[[f32; 4]], channel: M
     out.into_iter().flatten().collect()
 }
 
+/// Every registered effect that takes a mask and a mix (D5's list).
 fn mixable_effects() -> Vec<(&'static str, BuiltinEffect)> {
     klipp_effects::registry::effect_types().filter(|t| t.desc.mixable).map(|t| (t.tag, (t.sample)())).collect()
 }
@@ -276,10 +280,35 @@ fn every_mixable_node_masked_by_every_matte_matches_the_oracle() {
         Some(ex) => PRODUCERS.iter().map(|p| (*p, rows(&run(ex, &none, Shape::Matte(*p), &files)))).collect(),
         None => HashMap::new(),
     };
-    // Each producer's matte spans its range, or the cases prove nothing.
-    for (p, m) in &mattes {
-        let (lo, hi) = m.iter().map(|px| px[0]).fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(v), b.max(v)));
-        assert!(lo < 0.1 && hi > 0.9, "{p:?}'s matte runs only {lo}..{hi}");
+    // Each case reads its coverage from one channel of the matte, and that
+    // channel spans 0 to 1, or the case proves nothing. The producers make
+    // an opaque matte, so their alpha is flat: they stay off the alpha
+    // channel, which the picture itself covers. Any other flat channel is
+    // a fixture that has stopped keying, and fails.
+    let luma = klipp_color::linear::luma_coefs(klipp_core::WorkingColorspace::default());
+    let coverage = |px: &[f32; 4], channel: MaskChannel| match channel {
+        MaskChannel::Red => px[0],
+        MaskChannel::Luminance => luma[0] * px[0] + luma[1] * px[1] + luma[2] * px[2],
+        MaskChannel::Alpha => px[3],
+    };
+    let mut cases: Vec<(Producer, MaskChannel)> = Vec::new();
+    for p in PRODUCERS {
+        for channel in CHANNELS {
+            // The picture stands in for the alpha the producers don't make;
+            // their mattes cover red and luminance.
+            if p == Producer::Picture && channel != MaskChannel::Alpha {
+                continue;
+            }
+            let (lo, hi) = mattes[&p].iter().map(|px| coverage(px, channel)).fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(v), b.max(v)));
+            if lo < 0.1 && hi > 0.9 {
+                cases.push((p, channel));
+            } else {
+                assert!(channel == MaskChannel::Alpha && p != Producer::Picture && lo == 1.0 && hi == 1.0, "{p:?}'s {channel:?} runs only {lo}..{hi}");
+            }
+        }
+    }
+    for channel in CHANNELS {
+        assert!(cases.iter().any(|(_, c)| *c == channel), "no mask source spans the {channel:?} channel");
     }
     let input = rows(&run(&mut cpu, &none, Shape::Input, &files));
     let gpu_input = gpu.as_mut().map(|ex| rows(&run(ex, &none, Shape::Input, &files)));
@@ -288,8 +317,8 @@ fn every_mixable_node_masked_by_every_matte_matches_the_oracle() {
     for (tag, effect) in &effects {
         let whole = rows(&run(&mut cpu, effect, Shape::Whole, &files));
         let gpu_whole = gpu.as_mut().map(|ex| rows(&run(ex, effect, Shape::Whole, &files)));
-        for p in PRODUCERS {
-            for channel in CHANNELS {
+        for &(p, channel) in &cases {
+            {
                 checked += 1;
                 let want = oracle(&input, &whole, &mattes[&p], channel);
                 let case = format!("{tag} by {p:?} ({channel:?})");
@@ -313,7 +342,7 @@ fn every_mixable_node_masked_by_every_matte_matches_the_oracle() {
             }
         }
     }
-    eprintln!("C9: {checked} cases ({} effects x {} producers x {} channels), {} failed", effects.len(), PRODUCERS.len(), CHANNELS.len(), failures.len());
+    eprintln!("C9: {checked} cases ({} effects x {} producer-channel pairs), {} failed", effects.len(), cases.len(), failures.len());
     assert!(failures.is_empty(), "{} of {checked} cases:\n{}", failures.len(), failures.join("\n"));
 }
 
