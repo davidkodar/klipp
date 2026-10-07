@@ -2,7 +2,7 @@
 //! proof, and what today's build does with the side files: it must leave
 //! them alone, neither loading nor pruning nor overwriting them.
 
-use klipp_convert::revision2::{self, REVISION};
+use klipp_convert::revision2::{self, PROJECT_REVISION, REVISION};
 use klipp_graph_format::lifted::{ClipPicture, LiftNote};
 use klipp_graph_format::Graph;
 use serde_json::{json, Value};
@@ -52,7 +52,7 @@ fn project() -> Value {
 fn a_project_converts_to_revision_2_and_proves_itself() {
     let p = project();
     let (out, _notes) = revision2::project(&p).unwrap();
-    assert_eq!(out["format_revision"], REVISION);
+    assert_eq!(out["format_revision"], PROJECT_REVISION);
     let text = serde_json::to_string(&out).unwrap();
     revision2::verify_project(&p, &text).unwrap();
 
@@ -184,7 +184,7 @@ fn todays_build_leaves_a_revision_2_stills_index_alone() {
 fn an_empty_project_is_revision_2_too() {
     let p = json!({"version": "1.0.0", "sequences": [{"id": "00000000-0000-0000-0000-000000000501", "name": "S", "tracks": []}]});
     let (out, _) = revision2::project(&p).unwrap();
-    assert_eq!(out["format_revision"], REVISION);
+    assert_eq!(out["format_revision"], PROJECT_REVISION);
     revision2::verify_project(&p, &serde_json::to_string(&out).unwrap()).unwrap();
 }
 

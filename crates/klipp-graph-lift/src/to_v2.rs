@@ -254,6 +254,10 @@ struct Effects<'a> {
     enabled: &'a [Value],
     keyframes: BTreeMap<usize, BTreeMap<String, Value>>,
     modifiers: BTreeMap<usize, BTreeMap<String, Value>>,
+    /// Each entry's node id where the store keeps one (M3 proposal 6: an
+    /// effect keeps its id through a reorder); an entry without one takes
+    /// its slot's ([`Root::id_of`]), as every store written before did.
+    ids: Vec<Option<NodeId>>,
 }
 
 /// Chain the nodes of one store: its grade group, then its OFX entries,
@@ -271,7 +275,7 @@ fn chain(root: Root, grade: Option<&Map<String, Value>>, ofx: &[Value], fx: Effe
             modifiers: BTreeMap::new(),
         }));
     }
-    let Effects { list, enabled, mut keyframes, mut modifiers } = fx;
+    let Effects { list, enabled, mut keyframes, mut modifiers, ids } = fx;
     for (slot, entry) in list.iter().enumerate() {
         let on = match enabled.get(slot) {
             None => true,
@@ -279,7 +283,8 @@ fn chain(root: Root, grade: Option<&Map<String, Value>>, ofx: &[Value], fx: Effe
             Some(_) => return Err(ToV2Error::Shape { what, field: "builtin_effects_enabled" }),
         };
         let keys = keyframes.remove(&slot).map(|m| Value::Object(m.into_iter().collect()));
-        nodes.push(legacy_node(root.id_of("effects", slot), effect_type(entry), on, Legacy {
+        let id = ids.get(slot).copied().flatten().unwrap_or_else(|| root.id_of("effects", slot));
+        nodes.push(legacy_node(id, effect_type(entry), on, Legacy {
             slot: Some(slot as u32),
             payload: entry.clone(),
             keyframes: keys,
@@ -350,7 +355,16 @@ pub fn clip_to_v2(clip: &Map<String, Value>) -> Result<ClipRecordV2, ToV2Error> 
             legacy_clip.fields.insert(field.to_owned(), v.clone());
         }
     }
-    let fx = Effects { list: effects, enabled: vec(clip, "builtin_effects_enabled", WHAT)?, keyframes, modifiers };
+    // The session's effect ids, which the record carries when the clip
+    // has them; a missing or null entry takes its slot's id.
+    let ids = vec(clip, "effect_ids", WHAT)?
+        .iter()
+        .map(|v| match v {
+            Value::Null => Ok(None),
+            v => parse_id(WHAT, Some(v)).map(Some),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let fx = Effects { list: effects, enabled: vec(clip, "builtin_effects_enabled", WHAT)?, keyframes, modifiers, ids };
     let graph = chain(root, grade_of(clip, "node_graph", WHAT)?, vec(clip, "effects", WHAT)?, fx, WHAT)?;
     Ok(ClipRecordV2 { graph, legacy_clip })
 }
@@ -363,12 +377,12 @@ pub fn track_to_v2(track: &Map<String, Value>) -> Result<Graph, ToV2Error> {
     let Some(effects) = map(track, "effects", WHAT)? else {
         return Ok(Graph::empty());
     };
-    let fx = Effects { list: list(effects, "video", WHAT)?, enabled: vec(effects, "video_enabled", WHAT)?, keyframes: BTreeMap::new(), modifiers: BTreeMap::new() };
+    let fx = Effects { list: list(effects, "video", WHAT)?, enabled: vec(effects, "video_enabled", WHAT)?, keyframes: BTreeMap::new(), modifiers: BTreeMap::new(), ids: Vec::new() };
     chain(root, grade_of(effects, "grade", WHAT)?, &[], fx, WHAT)
 }
 
 fn grade_only(root: Root, graph: Option<&Map<String, Value>>, what: &'static str) -> Result<Graph, ToV2Error> {
-    let none = Effects { list: &[], enabled: &[], keyframes: BTreeMap::new(), modifiers: BTreeMap::new() };
+    let none = Effects { list: &[], enabled: &[], keyframes: BTreeMap::new(), modifiers: BTreeMap::new(), ids: Vec::new() };
     chain(root, graph, &[], none, what)
 }
 

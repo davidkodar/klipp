@@ -466,7 +466,7 @@ mod overwrite_tests {
         let path = dir.join("Warm.json");
         let text = std::fs::read_to_string(&path).unwrap();
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(v["format_revision"], serde_json::json!(klipp_project::FORMAT_REVISION), "written as revision 2");
+        assert_eq!(v["format_revision"], serde_json::json!(klipp_project::SIDE_STORE_REVISION), "written as revision 2");
         let (name, back) = load_preset_file(&path).expect("read back");
         assert_eq!(name, "Warm");
         assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&graph).unwrap(), "the graph comes back unchanged");

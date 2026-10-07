@@ -116,7 +116,7 @@ fn in_backup(s: &Settings, path: &Path) -> PathBuf {
 
 /// The project in `dir` is converted, and its backup is the original.
 fn assert_converted(s: &Settings, dir: &Path, before: &[(PathBuf, Vec<u8>)]) {
-    assert_eq!(revision_of(&dir.join("project.json")), 2, "{}", dir.display());
+    assert_eq!(revision_of(&dir.join("project.json")), 3, "{}", dir.display());
     assert_eq!(revision_of(&dir.join("media/stills.json")), 2);
     for look in std::fs::read_dir(dir.join("looks")).unwrap() {
         assert_eq!(revision_of(&look.unwrap().path()), 2);

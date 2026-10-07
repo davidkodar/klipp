@@ -66,11 +66,6 @@ fn path_of(op: &GraphOp) -> &klipp_graph_format::path::NodePath {
     }
 }
 
-/// An op that adds, removes or moves a node.
-fn is_structural(op: &GraphOp) -> bool {
-    matches!(op, GraphOp::AddNode { .. } | GraphOp::AddNodeBeside { .. } | GraphOp::RemoveNode { .. } | GraphOp::MoveAfter { .. })
-}
-
 /// Where an op lands on the clip's fields.
 enum Target {
     /// Inside the grade group: the grade is written back whole.
@@ -172,21 +167,6 @@ fn target(p: &ClipPicture, op: &GraphOp) -> Result<Target, String> {
         GraphOp::SetMix { .. } => Err("an effect's mix isn't kept until effects become nodes".into()),
         _ => Err("an effect in the clip's chain has nothing to wire".into()),
     }
-}
-
-/// Whether anything reads a built-in effect node by its id other than as
-/// the next picture in the chain: a matte into a mask, a wireless link, a
-/// published port. Moving such an entry would renumber it under the
-/// reference (its id comes from its place in the list).
-fn read_by_id(p: &ClipPicture) -> Option<NodeId> {
-    let effect = |id: NodeId| node(p, id).is_some_and(|n| n.type_id.as_str() == types::LEGACY_EFFECT);
-    if let Some(e) = p.graph.edges.iter().find(|e| effect(e.from.0) && e.to.1.as_str() != "in") {
-        return Some(e.from.0);
-    }
-    if let Some(n) = p.graph.nodes.iter().find(|n| effect(n.id) && n.wireless.output_link.is_some()) {
-        return Some(n.id);
-    }
-    p.graph.nodes.iter().filter_map(|n| n.group.as_ref()).flat_map(|g| &g.interface).map(|port| port.binding.node).find(|id| effect(*id))
 }
 
 /// The built-in effect entries in list order (by their stored slot), each
@@ -430,14 +410,6 @@ impl Clip {
             } else {
                 Some(target(&before, op).map_err(|why| (Some(index), why))?)
             };
-            // A picture-truth clip's ids are its picture's, kept by every
-            // op, so an entry read by id can move; fields lifted again would
-            // renumber it under the reference.
-            if is_structural(op) && !truth {
-                if let Some(id) = read_by_id(&before) {
-                    return Err((Some(index), format!("{id} is read by id elsewhere in the picture, so it can't move until effects keep their ids")));
-                }
-            }
             // The engine's batch rule: a node added beside waits for its
             // inputs until the batch ends, then the picture is checked whole.
             if let GraphOp::AddNodeBeside { node, .. } = op {
@@ -605,7 +577,8 @@ impl Clip {
                 let payload = new.legacy.as_ref().map(|l| l.payload.clone()).ok_or("a new effect carries its entry")?;
                 let effect: klipp_effects::BuiltinEffect = serde_json::from_value(payload).map_err(|e| format!("the new effect: {e}"))?;
                 let at = list_place(post, order, new.id).ok_or("an effect goes after the grade, the display transform and the plug-ins")?;
-                let id = self.insert_effect(at, effect).ok_or("the list can't take an effect there")?;
+                // The entry keeps the id the op gave its node (M3 proposal 6).
+                let id = self.insert_effect_with_id(at, effect, crate::EffectId::of_node(new.id)).ok_or("the list can't take an effect there, or holds one by that id")?;
                 order.insert(at, Some(new.id));
                 for (key, anim) in &new.anim {
                     self.write_anim(id, tag_of(new), key.as_str(), Some(anim))?;
@@ -672,30 +645,6 @@ impl Clip {
 mod tests {
     use super::*;
     use klipp_core::{MediaId, RationalTime};
-
-    /// A structural op on a clip where something reads an effect by id is
-    /// refused, never renumbered under the reference (decision §10, T2).
-    /// A clip stored as fields can't hold such a reference, so the check is
-    /// run on a lifted picture given one, each kind in turn.
-    #[test]
-    fn an_effect_read_by_id_is_found_whatever_reads_it() {
-        let t = |s: f64| RationalTime::from_secs_f64(s, 24);
-        let mut c = Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
-        c.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 });
-        c.push_effect(klipp_effects::BuiltinEffect::Sharpen { amount: 0.5 });
-        let p = c.picture_v2().unwrap().picture.clone();
-        assert_eq!(read_by_id(&p), None, "a plain chain reads nothing by id");
-        let blur = p.graph.nodes.iter().find(|n| n.type_id.as_str() == types::LEGACY_EFFECT).unwrap().id;
-
-        let mut linked = p.clone();
-        linked.graph.nodes.iter_mut().find(|n| n.id == blur).unwrap().wireless.output_link = Some("matte".into());
-        assert_eq!(read_by_id(&linked), Some(blur), "a wireless link");
-
-        let mut masked = p.clone();
-        let reader = masked.graph.nodes.iter().find(|n| n.type_id.as_str() == types::LEGACY_EFFECT && n.id != blur).unwrap().id;
-        masked.graph.edges.push(klipp_graph_format::Edge { from: (blur, "out".into()), to: (reader, "mask".into()) });
-        assert_eq!(read_by_id(&masked), Some(blur), "a matte into a mask");
-    }
 
     /// The writers' routing rule is the lift's: every registered effect
     /// takes graph ops exactly when it lifts to a plain effect node.

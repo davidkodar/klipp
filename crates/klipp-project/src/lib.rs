@@ -63,9 +63,15 @@ pub use grade_stills::{adopt_still, adopt_temp_stills, delete_grade_still_file, 
 /// added), and that change's PR raises it and says why. 2 is the node-graph
 /// format (#997, #1089): the pictures in `graph_v2`, read back into this
 /// model through `klipp_graph_lift::unlift` and written through
-/// `revision2`. A file from before it is refused, naming the tool that
-/// converts it.
-pub const FORMAT_REVISION: u32 = 2;
+/// `revision2`. 3 reads each effect's node id as stored, so an effect
+/// keeps its id through a reorder and a save (`revision3`); a revision-2
+/// reader would rename them. A file from before it is refused, naming the
+/// tool that converts it.
+pub const FORMAT_REVISION: u32 = 3;
+
+/// The side stores' revision (a Look, the stills index, a colour preset):
+/// they hold no effects, so they stay at 2 while the project is at 3.
+pub const SIDE_STORE_REVISION: u32 = 2;
 
 /// Which form of the project file a load reads or a save writes: revision 2,
 /// the app's, or today's v1 form, kept only for the converter's proofs.
@@ -76,7 +82,7 @@ pub(crate) enum FileForm {
     V1,
 }
 
-pub use load::{load_looks, load_project, migrate_graph, side_store_revision_refusal};
+pub use load::{load_looks, load_project, load_project_strict, migrate_graph, side_store_revision_refusal};
 #[cfg(feature = "v1-oracle")]
 pub use load::{load_looks_v1, load_project_v1};
 #[cfg(feature = "v1-oracle")]

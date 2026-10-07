@@ -512,34 +512,25 @@ fn an_effect_is_never_placed_before_a_plugin() {
     assert!(matches!(ok.builtin_effects()[0], E::Gamma { .. }), "the added effect leads the list: {:?}", ok.builtin_effects());
 }
 
-/// An effect a batch adds to a clip whose fields hold its effects is
-/// renamed by the write-back: the fields keep no ids, and the picture
-/// lifted from them names each effect by its slot. The batch says so
-/// (#1256), so the id it gives back for the new effect, and for each
-/// effect the insert moved down a slot, reaches that effect in the next
-/// batch; the batch's own id no longer does.
+/// An effect a batch adds to a clip whose fields hold its effects keeps
+/// the id the batch gave it, and every effect the insert moved down a slot
+/// keeps its own (M3 proposal 6): the batch renames nothing, and the next
+/// batch reaches each effect by the id it had (#1256 needed a rename while
+/// the write-back named effects by slot).
 #[test]
-fn an_added_effect_is_reached_by_the_id_its_batch_renames_it_to() {
+fn an_added_effect_keeps_its_id_and_the_effects_it_moves_keep_theirs() {
     let mut c = clip();
     let fx = effects(&picture(&c));
     let added = uuid::Uuid::from_u128(0xc1);
     let blur = E::GaussianBlur { radius: 11.0 };
     let (_, renamed) = c.apply_picture_ops_renamed(&[GraphOp::AddNode { after: at(&c, [fx[0]]), node: new_effect(0xc1, &blur, BTreeMap::new()) }]).unwrap();
-    let to = |id: NodeId| renamed.iter().find(|(was, _)| *was == id).map(|(_, now)| *now);
-    let now = effects(&picture(&c));
-    assert_eq!(now.len(), 4);
-    assert_eq!(to(added), Some(now[1]), "the new effect, second in the list: {renamed:?}");
-    // The two after it moved a slot down, and their ids moved with them.
-    assert_eq!((to(fx[1]), to(fx[2])), (Some(now[2]), Some(now[3])), "{renamed:?}");
-    assert_eq!(to(fx[0]), None, "the first kept its slot and its id");
-    // The new effect by its renamed id: its radius set, on that effect.
-    c.apply_picture_ops(&[GraphOp::SetParam { path: at(&c, [now[1]]), key: "radius".into(), value: ParamValue::Float(2.5) }]).unwrap();
+    assert!(renamed.is_empty(), "{renamed:?}");
+    assert_eq!(effects(&picture(&c)), vec![fx[0], added, fx[1], fx[2]]);
+    c.apply_picture_ops(&[GraphOp::SetParam { path: at(&c, [added]), key: "radius".into(), value: ParamValue::Float(2.5) }]).unwrap();
     assert!(matches!(c.builtin_effects()[1], E::GaussianBlur { radius } if (radius - 2.5).abs() < 1e-6), "{:?}", c.builtin_effects());
-    // A moved one by its renamed id: the vignette, now third.
-    c.apply_picture_ops(&[GraphOp::SetEnabled { path: at(&c, [to(fx[1]).unwrap()]), enabled: false }]).unwrap();
+    c.apply_picture_ops(&[GraphOp::SetEnabled { path: at(&c, [fx[1]]), enabled: false }]).unwrap();
     assert!(matches!(c.builtin_effects()[2], E::Vignette { .. }));
-    // The batch's own id for the new effect reaches nothing now.
-    assert!(c.clone().apply_picture_ops(&[GraphOp::SetParam { path: at(&c, [added]), key: "radius".into(), value: ParamValue::Float(4.0) }]).is_err());
+    assert_eq!(c.builtin_effects_enabled().get(2), Some(&false));
 }
 
 /// A picture-truth clip keeps the batch's ids, so its batch renames
@@ -554,4 +545,103 @@ fn a_picture_truth_clip_renames_nothing() {
     let (_, renamed) = c.apply_picture_ops_renamed(&[GraphOp::AddNode { after: at(&c, [fx[0]]), node: new_effect(0xc2, &E::GaussianBlur { radius: 4.0 }, BTreeMap::new()) }]).unwrap();
     assert!(renamed.is_empty(), "{renamed:?}");
     assert!(effects(&picture(&c)).contains(&uuid::Uuid::from_u128(0xc2)));
+}
+
+/// P-B2 (M3 proposal 6): on a clip whose fields hold its effects, a move,
+/// a mid-list insert and a remove keep every surviving effect's node id,
+/// through a save and a reload (the clip's record read back, its picture
+/// as the file stores it adopted), and ops on the reloaded clip reach the
+/// same effects by those ids.
+#[test]
+fn a_reorder_keeps_effect_node_ids_through_save_and_reload() {
+    // Three effects and no modifier stacks: the record goes through serde
+    // here, and the project writer, not serde, writes a stack's keys.
+    let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+    let mut c = Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+    c.push_effect(E::GaussianBlur { radius: 3.0 });
+    c.push_effect(E::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 });
+    c.push_effect(E::Bloom { threshold: 0.75, radius: 6.0, intensity: 0.5 });
+    let fx = effects(&picture(&c));
+    let added = uuid::Uuid::from_u128(0xc3);
+    c.apply_picture_ops(&[GraphOp::MoveAfter { path: at(&c, [fx[0]]), after: fx[2] }]).unwrap();
+    c.apply_picture_ops(&[GraphOp::AddNode { after: at(&c, [fx[1]]), node: new_effect(0xc3, &E::Sharpen { amount: 0.5 }, BTreeMap::new()) }]).unwrap();
+    c.apply_picture_ops(&[GraphOp::RemoveNode { path: at(&c, [fx[2]]) }]).unwrap();
+    assert!(!c.is_picture_truth(), "a clip whose fields hold it all");
+    let after = picture(&c);
+    assert_eq!(effects(&after), vec![fx[1], added, fx[0]], "each effect keeps its id wherever it moved");
+
+    // Saved and read back, as the file does it: the record, and the
+    // picture the file stores.
+    let record = serde_json::to_string(&c).unwrap();
+    let versions = c.picture_v2().unwrap().versions.clone();
+    let mut reloaded: Clip = serde_json::from_str(&record).unwrap();
+    reloaded.adopt_stored_picture(klipp_timeline::LiftedPicture { picture: after.clone(), versions }).unwrap();
+    assert_eq!(picture(&reloaded), after, "the reloaded clip's picture is the saved one, ids and all");
+    reloaded.apply_picture_ops(&[GraphOp::SetParam { path: at(&reloaded, [added]), key: "amount".into(), value: ParamValue::Float(0.25) }]).unwrap();
+    assert!(matches!(reloaded.builtin_effects()[1], E::Sharpen { amount } if (amount - 0.25).abs() < 1e-6), "{:?}", reloaded.builtin_effects());
+    reloaded.apply_picture_ops(&[GraphOp::SetEnabled { path: at(&reloaded, [fx[0]]), enabled: false }]).unwrap();
+    assert_eq!(reloaded.builtin_effects_enabled().get(2), Some(&false), "the blur, moved last, by its own id");
+}
+
+/// P-B3: a copy under a new clip id (a duplicate, a paste, a split half)
+/// shares no effect id with its source, and keeps its own through edits.
+#[test]
+fn a_copied_clip_gets_fresh_effect_ids() {
+    let c = clip();
+    let source = effects(&picture(&c));
+    let mut copy = c.clone();
+    copy.id = klipp_core::ClipId::new();
+    let ids = effects(&picture(&copy));
+    assert!(ids.iter().all(|id| !source.contains(id)), "{ids:?} against {source:?}");
+    copy.apply_picture_ops(&[GraphOp::MoveAfter { path: at(&copy, [ids[0]]), after: ids[2] }]).unwrap();
+    assert_eq!(effects(&picture(&copy)), vec![ids[1], ids[2], ids[0]]);
+}
+
+/// An id an effect gave up is never given again, across a save and a
+/// reload too: add an effect, remove it, save and reload, add another,
+/// and the new one has a new id, so a client holding the removed one's
+/// path is refused rather than handed the new effect.
+#[test]
+fn a_removed_effects_id_is_never_given_again_after_a_reload() {
+    let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+    let mut c = Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+    c.push_effect(E::GaussianBlur { radius: 3.0 });
+    let newest = c.push_effect(E::Sharpen { amount: 0.5 }).as_uuid();
+    c.apply_picture_ops(&[GraphOp::RemoveNode { path: at(&c, [newest]) }]).unwrap();
+    let record = serde_json::to_string(&c).unwrap();
+    let lifted = c.picture_v2().unwrap();
+    let mut reloaded: Clip = serde_json::from_str(&record).unwrap();
+    reloaded.adopt_stored_picture(klipp_timeline::LiftedPicture { picture: lifted.picture.clone(), versions: lifted.versions.clone() }).unwrap();
+    let again = reloaded.push_effect(E::Sharpen { amount: 0.5 }).as_uuid();
+    assert_ne!(again, newest, "a new effect, a new id");
+    assert!(effects(&picture(&reloaded)).contains(&again));
+    assert!(reloaded.clone().apply_picture_ops(&[GraphOp::SetParam { path: at(&reloaded, [newest]), key: "amount".into(), value: ParamValue::Float(1.0) }]).is_err(), "the removed effect's path is refused");
+}
+
+/// A whole-list replacement's new ids are never ones an earlier session
+/// gave out: replace the list, remove an effect, save and reload, replace
+/// the list again, and no id comes back, so the removed effect's path is
+/// refused rather than handed a new effect (the run of new ids isn't
+/// saved, so it can't start again where it was).
+#[test]
+fn a_whole_list_replacement_after_a_reload_repeats_no_id() {
+    let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+    let mut c = Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+    let list = || vec![E::GaussianBlur { radius: 3.0 }, E::Sharpen { amount: 0.5 }];
+    c.set_effect_list(list(), vec![true, true]);
+    let first = effects(&picture(&c));
+    c.apply_picture_ops(&[GraphOp::RemoveNode { path: at(&c, [first[1]]) }]).unwrap();
+    let record = serde_json::to_string(&c).unwrap();
+    let lifted = c.picture_v2().unwrap();
+    let mut reloaded: Clip = serde_json::from_str(&record).unwrap();
+    reloaded.adopt_stored_picture(klipp_timeline::LiftedPicture { picture: lifted.picture.clone(), versions: lifted.versions.clone() }).unwrap();
+    assert_eq!(effects(&picture(&reloaded)), vec![first[0]], "the kept effect keeps its id");
+    for replace in [|c: &mut Clip, l| c.set_effect_list(l, vec![true, true]), |c: &mut Clip, l| c.set_effects(l)] {
+        let mut again = reloaded.clone();
+        replace(&mut again, list());
+        let ids = effects(&picture(&again));
+        assert_eq!(ids.len(), 2);
+        assert!(ids.iter().all(|id| !first.contains(id)), "{ids:?} against {first:?}");
+        assert!(again.clone().apply_picture_ops(&[GraphOp::SetParam { path: at(&again, [first[1]]), key: "amount".into(), value: ParamValue::Float(1.0) }]).is_err(), "the removed effect's path is refused");
+    }
 }

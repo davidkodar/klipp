@@ -86,11 +86,12 @@ mod tests {
         assert_eq!(format!("{:?}", seq.tracks[0].clips[0].builtin_effects()), before, "built on a copy");
     }
 
-    /// An effect added to a clip whose fields hold its effects comes back
-    /// renamed (#1256): the edit's clip holds it under the renamed id, and
-    /// the effect after it, moved down a slot, is renamed too.
+    /// An effect added to a clip whose fields hold its effects keeps its id
+    /// (effects' node ids are their identity, M3 proposal 6): the edit's
+    /// clip holds it under the batch's id, the effect after it keeps its own
+    /// though it moved down a slot, and the reply renames nothing.
     #[test]
-    fn an_added_effect_comes_back_renamed() {
+    fn an_added_effect_keeps_its_id() {
         let (seq, clip, fx) = sequence();
         let at = |id| NodePath::new(Root::Clip { clip: clip.0 }, [id]);
         let added = uuid::Uuid::from_u128(0xd1);
@@ -114,9 +115,8 @@ mod tests {
         let mut after = seq.tracks[0].clips[0].clone();
         after.restore_picture(&edit.after);
         let now: Vec<_> = after.picture_v2().unwrap().picture.graph.nodes.iter().filter(|n| n.type_id.as_str() == types::LEGACY_EFFECT).map(|n| n.id).collect();
-        assert_eq!(renamed.iter().find(|(was, _)| *was == added).map(|(_, now)| *now), Some(now[1]), "{renamed:?}");
-        assert_eq!(renamed.iter().find(|(was, _)| *was == fx[1]).map(|(_, now)| *now), Some(now[2]), "{renamed:?}");
-        assert!(!now.contains(&added));
+        assert!(renamed.is_empty(), "{renamed:?}");
+        assert_eq!(now, vec![fx[0], added, fx[1]], "each effect under its own id");
     }
 
     /// A refusal names the op it stopped at: the first that couldn't be

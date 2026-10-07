@@ -26,8 +26,15 @@ use crate::to_v2;
 use klipp_graph_format::lifted::{ClipPicture, LiftNote};
 use klipp_graph_format::Graph;
 
-/// The project's revision in revision 2, and the side stores'.
+/// The side stores' revision (Looks, stills, colour presets), and the
+/// project's in revision 2.
 pub const REVISION: u64 = 2;
+
+/// The project's revision now: 3, where each effect's node id is its
+/// identity, kept through a reorder and a save (M3 proposal 6). A project
+/// converted from revision 0 or 1 has its effects' slot ids, which is what
+/// revision 3 reads them as, so it is written as 3 directly.
+pub const PROJECT_REVISION: u64 = 3;
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -231,9 +238,9 @@ pub fn project_with(raw: &Value, stored: StoredPictures<'_>) -> Result<(Value, V
         }
     }
     old_fields::write_old_fields(&mut copy).map_err(err)?;
-    // Every converted project says revision 2, an empty one too: after the
-    // switch the app reads revision 2 only.
-    copy.as_object_mut().ok_or("not a project")?.insert("format_revision".into(), REVISION.into());
+    // Every converted project says the project revision, an empty one too:
+    // the app reads that one only.
+    copy.as_object_mut().ok_or("not a project")?.insert("format_revision".into(), PROJECT_REVISION.into());
     Ok((copy, notes))
 }
 
