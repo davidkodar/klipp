@@ -1544,9 +1544,16 @@ impl Renderer {
                     }
                     SourcePixels::Gpu(g) => {
                         let t = Instant::now();
+                        // The effects as nodes of the grade's plan (step 10b),
+                        // on the GPU with it, instead of a pass over the layer.
+                        effects_done = self.splice_effects(c, &fx);
                         self.executor.request_output_on_gpu();
                         let pixels = self.grade(c, GradeInput::Gpu(g), clip_time, fps, width, height);
                         stats.grade_ms += ms_since(t);
+                        if effects_done && !self.finish_spliced() {
+                            return Err("an effect could not be recorded");
+                        }
+                        stats.effects_followed_grade += u32::from(effects_done);
                         if pixels.is_empty() {
                             let slot_a = self.executor.last_chain_final_slot().unwrap_or(true);
                             self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_chain(slot, slot_a))
@@ -1559,7 +1566,13 @@ impl Renderer {
                         let pixels = if c.grade_is_identity() {
                             unshare(p)
                         } else {
-                            self.grade(c, GradeInput::Cpu(p), clip_time, fps, width, height)
+                            effects_done = self.splice_effects(c, &fx);
+                            let pixels = self.grade(c, GradeInput::Cpu(p), clip_time, fps, width, height);
+                            if effects_done && !self.finish_spliced() {
+                                return Err("an effect could not be recorded");
+                            }
+                            stats.effects_followed_grade += u32::from(effects_done);
+                            pixels
                         };
                         stats.grade_ms += ms_since(t);
                         self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(slot, &pixels))
@@ -1705,6 +1718,7 @@ impl Renderer {
             return Err("adjustment layer with a CPU-only effect");
         }
         let mut slot_a = true;
+        let mut effects_done = false;
         if c.grade_is_identity() {
             if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_acc_to_chain()) {
                 return Err("the accumulator could not seed the chain");
@@ -1716,16 +1730,21 @@ impl Renderer {
                 Some(Arc::new(AccSeed { buffer, device: g.device(), queue: g.queue(), width, height }))
             });
             let Some(seed) = seed else { return Err("the accumulator could not seed the chain") };
+            effects_done = self.splice_effects(c, &fx);
             self.executor.request_output_on_gpu();
             let pixels = self.grade(c, GradeInput::Gpu(seed), clip_time, fps, width, height);
             stats.grade_ms += ms_since(t);
+            if effects_done && !self.finish_spliced() {
+                return Err("an effect could not be recorded");
+            }
+            stats.effects_followed_grade += u32::from(effects_done);
             if pixels.is_empty() {
                 slot_a = self.executor.last_chain_final_slot().unwrap_or(true);
             } else if let Some(g) = self.executor.gpu_pipeline_or_init() {
                 g.upload_chain_input_linear(&pixels);
             }
         }
-        if has_active_effects(&fx) {
+        if !effects_done && has_active_effects(&fx) {
             let t = Instant::now();
             let Some(g) = self.executor.gpu_pipeline_or_init() else { return Err("GPU gone") };
             g.stack_chain_to_slot_a(slot_a);
@@ -2145,6 +2164,24 @@ impl Renderer {
             (None, None) => self.effects(&fx, pixels, clip_time, width, height),
         };
         Some((pixels, opacity))
+    }
+
+    /// Splice `fx` into `clip`'s next grade run as plan nodes (step 10b)
+    /// when they can follow its grade on the GPU; whether they will.
+    /// [`Self::finish_spliced`] ends it after the grade.
+    fn splice_effects(&mut self, clip: &Clip, fx: &[BuiltinEffect]) -> bool {
+        let on = self.effects_follow_grade_on_gpu(clip, false, fx);
+        if on {
+            self.run_effects.clear();
+            self.run_effects.extend_from_slice(fx);
+        }
+        on
+    }
+
+    /// End a [`Self::splice_effects`]: whether every effect was applied.
+    fn finish_spliced(&mut self) -> bool {
+        self.run_effects.clear();
+        self.grade_ran && self.executor.last_run_effects_complete()
     }
 
     /// Whether `clip`'s effects can take the grade's result where it sits
