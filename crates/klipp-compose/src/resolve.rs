@@ -35,6 +35,23 @@ pub fn resolve_effects(
     resolved: Option<ResolvedTransform>,
     pin: Option<klipp_timeline::surface::Quad>,
 ) -> Result<Vec<BuiltinEffect>, String> {
+    resolve_effects_at(clip, picture, time, fps, resolved, pin, 1.0)
+}
+
+/// [`resolve_effects`] for a frame rendered `scale` times the sequence's
+/// size (node-graph M2 step 13): each effect's pixel sizes scaled as the
+/// effect scales them ([`BuiltinEffect::at_render_scale`], whose rules the
+/// registry describes). The renderer scales after resolving until it
+/// takes the scale here instead.
+pub fn resolve_effects_at(
+    clip: &Clip,
+    picture: &ClipPicture,
+    time: Timecode,
+    fps: f64,
+    resolved: Option<ResolvedTransform>,
+    pin: Option<klipp_timeline::surface::Quad>,
+    scale: f32,
+) -> Result<Vec<BuiltinEffect>, String> {
     let t = crate::render::eval_clip_time(clip, time);
     let ctx = eval::eval_context(clip, time, fps);
     let mut fx = Vec::new();
@@ -81,7 +98,7 @@ pub fn resolve_effects(
         _ => {}
     }
     fx.retain(|e| !klipp_effects::is_identity_effect(e));
-    Ok(fx)
+    Ok(fx.into_iter().map(|e| e.at_render_scale(scale)).collect())
 }
 
 /// An effect node's payload as its effect, animated for the frame.

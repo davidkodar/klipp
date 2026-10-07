@@ -8,7 +8,7 @@
 //! a shadow drawn outside the picture, the film seeds, a colour fade, the
 //! deflicker gain, and a track's effects baked after the clip's own.
 
-use klipp_compose::resolve::resolve_effects;
+use klipp_compose::resolve::{resolve_effects, resolve_effects_at};
 use klipp_core::{Keyframe, ModifierStack, ParamId, RationalTime, Timecode};
 use klipp_effects::BuiltinEffect as E;
 use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
@@ -148,4 +148,32 @@ fn the_automatic_placement_ignores_what_is_switched_off_or_not_a_pixel_effect() 
     );
     c.edit_video_param_keyframes(klipp_core::VideoParam::PositionX, |k| *k = vec![key(0.0, 0.0), key(4.0, 60.0)]);
     check("placement among switched-off and non-pixel effects", &baked(c, vec![]));
+}
+
+/// A frame rendered smaller resolves each effect scaled as the renderer
+/// scales it after resolving today (node-graph M2 step 13): keyed pixel
+/// sizes, a whole radius, a block, and an effect with nothing to scale.
+#[test]
+fn a_frame_at_render_scale_resolves_each_effect_scaled() {
+    let mut c = media(
+        vec![E::GaussianBlur { radius: 6.0 }, E::Dilate { radius: 3 }, E::Mosaic { block_size: 2.0 }, E::Gamma { gamma: 1.2 }],
+        vec![true, true, true, true],
+    );
+    c.edit_effect_keyframes(|k| {
+        k.insert("0:radius".into(), vec![key(0.0, 4.0), key(3.0, 12.0)]);
+    });
+    let clip = baked(c, vec![E::Bloom { threshold: 0.6, radius: 8.0, intensity: 0.5 }]);
+    let picture = clip.picture_v2().unwrap();
+    for k in [1.0, 0.5, 0.25] {
+        for t in [0.0, 1.0, 2.5] {
+            let want: Vec<E> = klipp_compose::render::clip_effects(&clip, tc(t), 24.0, None, None).0.into_iter().map(|e| e.at_render_scale(k)).collect();
+            let got = resolve_effects_at(&clip, &picture.picture, tc(t), 24.0, None, None, k).unwrap();
+            assert_eq!(format!("{got:?}"), format!("{want:?}"), "at {k}, {t} s");
+        }
+    }
+    // At scale 1 it is resolve_effects.
+    assert_eq!(
+        format!("{:?}", resolve_effects_at(&clip, &picture.picture, tc(1.0), 24.0, None, None, 1.0).unwrap()),
+        format!("{:?}", resolve_effects(&clip, &picture.picture, tc(1.0), 24.0, None, None).unwrap()),
+    );
 }

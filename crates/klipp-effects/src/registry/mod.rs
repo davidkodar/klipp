@@ -180,6 +180,9 @@ pub enum Scaling {
     None,
     /// The effect itself, through [`BuiltinEffect::at_render_scale`].
     AtRenderScale,
+    /// As [`Scaling::AtRenderScale`], never below one pixel (a mosaic's
+    /// block).
+    AtRenderScaleAtLeastOne,
     /// The compositor, which resolves the clip's placement in the
     /// sequence's pixels and converts the offset to the rendered frame's
     /// (`klipp_compose::render::to_render_pixels`).
@@ -383,4 +386,30 @@ pub fn needs_other_times(effect: &BuiltinEffect) -> bool {
     static KINDS: std::sync::OnceLock<Vec<std::mem::Discriminant<BuiltinEffect>>> = std::sync::OnceLock::new();
     let kinds = KINDS.get_or_init(|| effect_types().filter(|t| t.desc.temporal != Temporal::None).map(|t| std::mem::discriminant(&(t.sample)())).collect());
     kinds.contains(&std::mem::discriminant(effect))
+}
+
+impl Scaling {
+    /// Whether the effect scales it itself ([`BuiltinEffect::at_render_scale`]).
+    pub fn by_the_effect(self) -> bool {
+        matches!(self, Scaling::AtRenderScale | Scaling::AtRenderScaleAtLeastOne)
+    }
+}
+
+/// `value` of the parameter `desc` describes, as the effect runs it on a
+/// buffer `k` times the sequence's size (node-graph M2 step 13): what
+/// [`BuiltinEffect::at_render_scale`] does to that field, read from the
+/// registry. A pixel size is multiplied by `k`; a whole number of pixels
+/// is rounded and kept at one or more where it was above zero; a block
+/// is never below a pixel. Anything else, and any `k` that isn't a
+/// positive number other than 1, leaves it as it is.
+pub fn scaled_value(desc: &ParamDesc, value: f32, k: f32) -> f32 {
+    if (k - 1.0).abs() < 1e-6 || !k.is_finite() || k <= 0.0 || !desc.scaling.by_the_effect() {
+        return value;
+    }
+    match (desc.kind, desc.scaling) {
+        (ParamKind::Whole, _) if value > 0.0 => (value * k).round().max(1.0),
+        (ParamKind::Whole, _) => value,
+        (_, Scaling::AtRenderScaleAtLeastOne) => (value * k).max(1.0),
+        _ => value * k,
+    }
 }
