@@ -715,6 +715,17 @@ fn show_clip_video(
     keyframe_controls(cmds, &r_ty, clip.transform_tilt_y_keyframes(), &tilt_y_ks, VideoParam::TiltY, tilt_y, clip_id, clip_time_secs, seek, keyframe_tolerance);
 
     // ── Opacity keyframe/drag handling ──
+    // Escape ends the drag (egui reports it as drag_stopped). It takes the
+    // gesture back, rather than committing it as a release does: the
+    // drag's snapshot restores the picture, keys included, with no undo
+    // step, and the pointer moving on changes nothing (#1364, IC14).
+    let opacity_escaped = r_op.drag_stopped
+        && opacity_index.is_some()
+        && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    if opacity_escaped {
+        cmds.push(AppCommand::AbandonEffectDrag { clip_id, effect_index: opacity_index.unwrap_or(0), added: false });
+        ui.ctx().stop_dragging();
+    }
     if r_op.drag_started {
         if let Some(idx) = opacity_index {
             cmds.push(AppCommand::BeginEffectDrag {
@@ -726,13 +737,13 @@ fn show_clip_video(
         }
         cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::Opacity));
     }
-    if r_op.changed {
+    if r_op.changed && !opacity_escaped {
         emit_opacity(cmds, clip, clip_id, opacity);
         if !clip.opacity_keyframes().is_empty() {
             cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::Opacity, time_secs: clip_time_secs, value: opacity });
         }
     }
-    if r_op.drag_stopped {
+    if r_op.drag_stopped && !opacity_escaped {
         if let Some(idx) = opacity_index {
             cmds.push(AppCommand::EndEffectDrag {
                 key: opacity_drag_key,

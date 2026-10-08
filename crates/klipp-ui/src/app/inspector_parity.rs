@@ -552,3 +552,32 @@ fn plain_slider_escape_cancels_rail_and_number_drags() {
         }
     }
 }
+
+/// Escape on the Video tab's Opacity drag takes the gesture back, as it
+/// does on a number row (#1364, IC14): the picture from before the drag,
+/// no undo step, and the pointer moving on changes nothing.
+#[test]
+fn escape_cancels_the_video_tab_opacity_drag() {
+    let mut run = Run::new(fixture(&BuiltinEffect::Opacity { value: 0.8 }), true);
+    run.property = true;
+    let before = run.clip().picture_v2().unwrap();
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    let (_, at) = run.row("Opacity").expect("the Video tab's Opacity row");
+    run.button(at, egui::PointerButton::Primary, true);
+    for dx in [-6.0, -12.0, -18.0] {
+        run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))], egui::Modifiers::NONE);
+    }
+    let during = run.clip().picture_v2().unwrap();
+    assert_ne!(during, before, "the real control must edit before Escape");
+    run.key(egui::Key::Escape, egui::Modifiers::NONE);
+    assert_eq!(run.clip().picture_v2().unwrap(), before, "Escape restores the picture from before the drag");
+    for dx in [-28.0, -40.0] {
+        run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))], egui::Modifiers::NONE);
+    }
+    run.button(at + egui::vec2(-40.0, 0.0), egui::PointerButton::Primary, false);
+    assert_eq!(run.clip().picture_v2().unwrap(), before, "moving on after Escape changes nothing");
+    assert_eq!(run.state.active_history().undo_count(), 0, "a cancelled drag leaves no undo step");
+    assert!(!run.state.any_drag_in_progress());
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+}
+
