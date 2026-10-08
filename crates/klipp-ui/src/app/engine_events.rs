@@ -232,6 +232,10 @@ impl KlippApp {
                     if let Some(old) = &previous {
                         klipp_media::merge_reprobed(old, &mut media_item);
                     }
+                    // A re-probe that finds the item as it was stored, as
+                    // every open's does for an unchanged file, leaves
+                    // nothing to save (#1353).
+                    let saves_alike = previous.as_ref().is_some_and(|old| klipp_project::media_items_save_alike(old, &media_item));
                     let filmstrips_enabled = self.state.project_auto_filmstrips
                         .unwrap_or(self.prefs.editing.auto_generate_filmstrips);
                     let skim_enabled = self.state.project_auto_skim
@@ -269,7 +273,9 @@ impl KlippApp {
                     // expected timeline clip. The bin's "Remove from
                     // project" affordance is the supported way to take
                     // an item out.
-                    self.state.dirty = true;
+                    if !saves_alike {
+                        self.state.dirty = true;
+                    }
                     self.sync_media_pool_to_engine();
                     if previous.is_some() {
                         tracing::info!(
