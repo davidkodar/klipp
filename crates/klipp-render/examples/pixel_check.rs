@@ -380,7 +380,14 @@ fn export_frames(snapshot: &SequenceSnapshot, frames: &[u64], h: u32, seq_dir: &
     }
     let mut out = settings();
     out.resolution = Some(klipp_core::Resolution { width: ew, height: eh });
-    let opened = klipp_render::Encoder::open(probe, &out, snapshot).map(|encoder| ExportFrameMaker::new(&out, snapshot, &encoder, "pixel check"));
+    // The encoder's planes' layout, written beside each `-export-yuv`
+    // frame, so a compare can read it against a frame the export drew
+    // through its display transform (a route that changed).
+    let mut layout = None;
+    let opened = klipp_render::Encoder::open(probe, &out, snapshot).map(|encoder| {
+        layout = encoder.gpu_yuv420_params();
+        ExportFrameMaker::new(&out, snapshot, &encoder, "pixel check")
+    });
     let _ = std::fs::remove_file(probe);
     let mut maker = opened.map_err(|e| format!("opening the export's encoder: {e}"))?;
     if maker.letterboxed() {
@@ -399,6 +406,10 @@ fn export_frames(snapshot: &SequenceSnapshot, frames: &[u64], h: u32, seq_dir: &
                 }
                 let rows = (planes.len() / ew as usize) as u32;
                 image::save_buffer(seq_dir.join(format!("{f}-export-yuv.png")), &planes, ew, rows, image::ExtendedColorType::L8).map_err(|e| e.to_string())?;
+                if let Some(t) = &layout {
+                    let side = YuvLayout { width: ew, height: eh, bits: t.bits, semi_planar: t.semi_planar, sample_shift: t.sample_shift, luma: t.luma_coefs };
+                    std::fs::write(seq_dir.join(format!("{f}-export-yuv.json")), side.to_json().to_string()).map_err(|e| e.to_string())?;
+                }
                 // Flat when its luma plane is one value; a sample is two
                 // bytes when the planes are deeper than eight bits.
                 let luma_len = (ew * eh) as usize;
@@ -459,6 +470,104 @@ fn differ(a: &Path, b: &Path) -> Result<(i32, usize), String> {
         over += usize::from(d > 1);
     }
     Ok((worst, over))
+}
+
+/// How an `-export-yuv` frame's planes are laid out: 4:2:0, luma then
+/// chroma (planar, or interleaved), `bits` deep in one or two bytes a
+/// sample, limited range, by the delivery's luma coefficients.
+struct YuvLayout {
+    width: u32,
+    height: u32,
+    bits: u32,
+    semi_planar: bool,
+    sample_shift: u32,
+    luma: [f32; 3],
+}
+
+impl YuvLayout {
+    fn to_json(&self) -> Value {
+        json!({ "width": self.width, "height": self.height, "bits": self.bits, "semi_planar": self.semi_planar, "sample_shift": self.sample_shift, "luma": self.luma, "range": "limited" })
+    }
+
+    /// The layout a sidecar names; without one (a frame recorded before
+    /// they were written), the check's export: 8-bit planar BT.709.
+    fn read(yuv_png: &Path, width: u32, height: u32) -> Result<Self, String> {
+        let side = yuv_png.with_extension("json");
+        let Ok(text) = std::fs::read_to_string(&side) else {
+            return Ok(Self { width, height, bits: 8, semi_planar: false, sample_shift: 0, luma: [0.2126, 0.7152, 0.0722] });
+        };
+        let v: Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", side.display()))?;
+        let n = |k: &str| v[k].as_u64().map(|x| x as u32).ok_or_else(|| format!("{}: no {k}", side.display()));
+        let luma: Vec<f32> = v["luma"].as_array().into_iter().flatten().filter_map(Value::as_f64).map(|x| x as f32).collect();
+        if v["range"].as_str() != Some("limited") || luma.len() != 3 {
+            return Err(format!("{}: a layout this check doesn't read", side.display()));
+        }
+        Ok(Self { width: n("width")?, height: n("height")?, bits: n("bits")?, semi_planar: v["semi_planar"].as_bool().unwrap_or(false), sample_shift: n("sample_shift")?, luma: [luma[0], luma[1], luma[2]] })
+    }
+}
+
+/// An export frame drawn through the display transform (`-export.png`)
+/// against one converted on the GPU (`-export-yuv.png`): the picture taken
+/// to the planes' own layout (the delivery's matrix, limited range, each
+/// 2x2 block's chroma averaged) and compared plane by plane, in 8-bit
+/// levels. The worst difference, and how many samples are over a level.
+fn differ_route(rgb_png: &Path, yuv_png: &Path) -> Result<(i32, usize), String> {
+    let rgb = image::open(rgb_png).map_err(|e| e.to_string())?.to_rgba8();
+    let (w, h) = rgb.dimensions();
+    let l = YuvLayout::read(yuv_png, w, h)?;
+    if (l.width, l.height) != (w, h) {
+        return Err("sizes differ".into());
+    }
+    let raw = image::open(yuv_png).map_err(|e| e.to_string())?.to_luma8().into_raw();
+    let (cw, ch) = (w.div_ceil(2) as usize, h.div_ceil(2) as usize);
+    let size = if l.bits > 8 { 2 } else { 1 };
+    // A stored sample as an 8-bit level.
+    let sample = |i: usize| -> Option<f32> {
+        let v = if size == 2 { u16::from_le_bytes([*raw.get(2 * i)?, *raw.get(2 * i + 1)?]) as u32 } else { *raw.get(i)? as u32 };
+        Some((v >> l.sample_shift) as f32 * 255.0 / ((1u32 << l.bits) - 1) as f32)
+    };
+    let luma_len = (w * h) as usize;
+    let chroma = |plane: usize, i: usize| if l.semi_planar { sample(luma_len + 2 * i + plane) } else { sample(luma_len + plane * cw * ch + i) };
+    let [kr, kg, kb] = l.luma;
+    let ycc = |x: u32, y: u32| {
+        let p = rgb.get_pixel(x.min(w - 1), y.min(h - 1));
+        let (r, g, b) = (p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0);
+        let luma = kr * r + kg * g + kb * b;
+        (luma, (b - luma) / (2.0 * (1.0 - kb)), (r - luma) / (2.0 * (1.0 - kr)))
+    };
+    let (mut worst, mut over) = (0i32, 0usize);
+    let mut count = |want: f32, got: f32| {
+        let d = (want - got).abs().round() as i32;
+        worst = worst.max(d);
+        over += usize::from(d > 1);
+    };
+    for y in 0..h {
+        for x in 0..w {
+            let got = sample((y * w + x) as usize).ok_or("the planes are short")?;
+            count(16.0 + 219.0 * ycc(x, y).0, got);
+        }
+    }
+    for cy in 0..ch as u32 {
+        for cx in 0..cw as u32 {
+            let block = [ycc(2 * cx, 2 * cy), ycc(2 * cx + 1, 2 * cy), ycc(2 * cx, 2 * cy + 1), ycc(2 * cx + 1, 2 * cy + 1)];
+            let (cb, cr) = block.iter().fold((0.0, 0.0), |(b, r), c| (b + c.1 / 4.0, r + c.2 / 4.0));
+            let i = cy as usize * cw + cx as usize;
+            count(128.0 + 224.0 * cb, chroma(0, i).ok_or("the planes are short")?);
+            count(128.0 + 224.0 * cr, chroma(1, i).ok_or("the planes are short")?);
+        }
+    }
+    Ok((worst, over))
+}
+
+/// The frame a run made for `f` when the export took the other route:
+/// `-export.png` for `-export-yuv.png`, or the other way round.
+fn other_route(f: &Path) -> Option<PathBuf> {
+    let name = f.file_name()?.to_str()?;
+    let other = match name.strip_suffix("-export.png") {
+        Some(n) => format!("{n}-export-yuv.png"),
+        None => format!("{}-export.png", name.strip_suffix("-export-yuv.png")?),
+    };
+    Some(f.with_file_name(other))
 }
 
 fn files(dir: &Path) -> Vec<PathBuf> {
@@ -651,14 +760,49 @@ fn run_in(args: &[String], scratch: &Path) -> i32 {
     let mut code = i32::from(!failed.is_empty() || !lost.is_empty());
     if let Some(rec) = recorded {
         let (mut same, mut different, mut missing) = (0, 0, 0);
+        // An export frame recorded on one route and made on the other: its
+        // picture held to the planes (`differ_route`), never left missing.
+        // Its bar is a level wider: the picture it is held to was rounded
+        // to 8-bit RGB before it was converted, where the planes were
+        // converted from the frame's floats.
+        let (mut rerouted, mut rerouted_worst, mut rerouted_over, mut rerouted_samples) = (Vec::new(), 0, 0, 0);
         for f in files(&rec) {
-            match differ(&rec.join(&f), &out.join(&f)) {
-                Ok((worst, _)) if worst <= 1 => same += 1,
+            let mut bar = 1;
+            let compared = match differ(&rec.join(&f), &out.join(&f)) {
+                Err(_) if !out.join(&f).exists() => match other_route(&f).filter(|o| out.join(o).exists()) {
+                    Some(o) => {
+                        bar = 2;
+                        let gpu_now = o.to_string_lossy().ends_with("-export-yuv.png");
+                        rerouted.push(format!("{} ({})", f.display(), if gpu_now { "CPU→GPU" } else { "GPU→CPU" }));
+                        let (rgb, yuv) = if gpu_now { (rec.join(&f), out.join(&o)) } else { (out.join(&o), rec.join(&f)) };
+                        let r = differ_route(&rgb, &yuv);
+                        if let Ok((worst, over)) = r {
+                            rerouted_worst = rerouted_worst.max(worst);
+                            rerouted_over += over;
+                            rerouted_samples += image::image_dimensions(&rgb).map_or(0, |(w, h)| (w * h) as usize * 3 / 2);
+                        }
+                        r
+                    }
+                    None => Err("missing".into()),
+                },
+                r => r,
+            };
+            match compared {
+                Ok((worst, _)) if worst <= bar => same += 1,
                 Ok(_) => different += 1,
                 Err(_) => missing += 1,
             }
         }
         println!("compared: {same} frames alike, {different} differ by more than a level, {missing} missing or unreadable");
+        if !rerouted.is_empty() {
+            println!(
+                "  route changed: {} export frames held to the other route's planes (bar 2 levels), worst {rerouted_worst}, {rerouted_over} of {rerouted_samples} samples over a level",
+                rerouted.len()
+            );
+            for r in &rerouted {
+                println!("    {r}");
+            }
+        }
         if different + missing > 0 {
             code = 1;
         }
