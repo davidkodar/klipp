@@ -494,16 +494,39 @@ fn show_clip_video(
         emit_opacity(cmds, clip, clip_id, 1.0);
     }
 
-    // Undo coalescing for transform drags
-    if r_px.drag_started || r_py.drag_started || r_sc.drag_started || r_ro.drag_started || tilt_started {
-        if let Some(idx) = transform_index {
-            cmds.push(AppCommand::BeginEffectDrag {
-                key: transform_drag_key.clone(),
-                clip_id,
-                effect_index: idx,
-                old_effect: transform.to_builtin_effect(),
-            });
+    let transform_started = r_px.drag_started || r_py.drag_started || r_sc.drag_started || r_ro.drag_started || tilt_started;
+    let transform_changed = r_px.changed || r_py.changed || r_sc.changed || r_ro.changed || tilt_changed;
+    let transform_stopped = r_px.drag_stopped || r_py.drag_stopped || r_sc.drag_stopped || r_ro.drag_stopped || tilt_stopped;
+    let transform_added = egui::Id::new(&transform_drag_key).with("added_by_drag");
+    let transform_escaped = transform_stopped
+        && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    if transform_escaped {
+        let added = ui.data_mut(|d| d.remove_temp::<(usize, bool)>(transform_added));
+        if let Some(index) = transform_index.or(added.map(|(index, _)| index)) {
+            cmds.push(AppCommand::AbandonEffectDrag { clip_id, effect_index: index, added: added.is_some() });
         }
+        ui.ctx().stop_dragging();
+    }
+
+    // The old view needs an effect before opening the gesture. The
+    // generated view edits placement directly and already has an index.
+    let mut transform_started_index = None;
+    if transform_started {
+        // A hidden row may miss release; never inherit its add marker.
+        ui.data_mut(|d| d.remove_temp::<(usize, bool)>(transform_added));
+        let index = transform_index.unwrap_or_else(|| {
+            let index = clip.builtin_effects().len();
+            cmds.push(AppCommand::AddBuiltinEffect { clip_id, effect: transform.to_builtin_effect() });
+            ui.data_mut(|d| d.insert_temp(transform_added, (index, false)));
+            transform_started_index = Some(index);
+            index
+        });
+        cmds.push(AppCommand::BeginEffectDrag {
+            key: transform_drag_key.clone(),
+            clip_id,
+            effect_index: index,
+            old_effect: transform.to_builtin_effect(),
+        });
         if r_px.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::PositionX)); }
         else if r_py.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::PositionY)); }
         else if r_sc.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::Scale)); }
@@ -513,7 +536,12 @@ fn show_clip_video(
     }
 
     // Emit command for any changed transform value
-    if r_px.changed || r_py.changed || r_sc.changed || r_ro.changed || tilt_changed {
+    if transform_changed && !transform_escaped {
+        ui.data_mut(|d| {
+            if let Some((index, _)) = d.get_temp::<(usize, bool)>(transform_added) {
+                d.insert_temp(transform_added, (index, true));
+            }
+        });
         let mut t = transform;
         t.position_x = pos_x;
         t.position_y = pos_y;
@@ -523,7 +551,10 @@ fn show_clip_video(
         t.rotation_x = tilt_x;
         t.rotation_y = tilt_y;
         t.perspective = persp;
-        emit_transform(cmds, clip, clip_id, t);
+        match transform_started_index {
+            Some(index) => cmds.push(AppCommand::UpdateBuiltinEffect { clip_id, index, effect: t.to_builtin_effect() }),
+            None => emit_transform(cmds, clip, clip_id, t),
+        }
         if r_tx.changed && !clip.transform_tilt_x_keyframes().is_empty() {
             cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::TiltX, time_secs: clip_time_secs, value: tilt_x });
         }
@@ -545,8 +576,17 @@ fn show_clip_video(
         }
     }
 
-    if r_px.drag_stopped || r_py.drag_stopped || r_sc.drag_stopped || r_ro.drag_stopped || tilt_stopped {
-        if let Some(idx) = transform_index {
+    let unmoved_transform_add = if transform_stopped && !transform_escaped {
+        ui.data_mut(|d| d.remove_temp::<(usize, bool)>(transform_added))
+            .filter(|(_, moved)| !moved)
+            .map(|(index, _)| index)
+    } else {
+        None
+    };
+    if let Some(index) = unmoved_transform_add {
+        cmds.push(AppCommand::AbandonEffectDrag { clip_id, effect_index: index, added: true });
+    } else if transform_stopped && !transform_escaped {
+        if let Some(idx) = transform_index.or(transform_started_index) {
             let mut t = transform;
             t.position_x = pos_x;
             t.position_y = pos_y;
