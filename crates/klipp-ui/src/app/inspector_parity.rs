@@ -454,3 +454,34 @@ fn escape_cancels_a_generated_number_drag_while_legacy_keeps_its_edit() {
         }
     }
 }
+
+#[test]
+fn perspective_label_reset_restores_unset_below_its_soft_range() {
+    let mut transform = crate::inspector::video_tab::TransformParams {
+        perspective: 1.7, rotation_y: 15.0, ..Default::default()
+    };
+    let clip = fixture(&transform.to_builtin_effect());
+    let mut run = Run::new(clip.clone(), true);
+    let mut oracle = Run::new(clip, false);
+    let before = run.clip().picture_v2().unwrap();
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    let (label, _) = run.row("Perspective").expect("perspective row");
+    run.button(label, egui::PointerButton::Primary, true);
+    run.button(label, egui::PointerButton::Primary, false);
+    transform.perspective = 0.0;
+    oracle.apply(AppCommand::UpdateBuiltinEffect {
+        clip_id: oracle.clip, index: 0, effect: transform.to_builtin_effect(),
+    });
+    let after = run.clip().picture_v2().unwrap();
+    assert_eq!(after, oracle.clip().picture_v2().unwrap());
+    assert_ne!(after, before);
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    assert_eq!(run.clip().picture_v2().unwrap(), after, "drawing preserves unset");
+    assert_eq!(run.state.active_history().undo_count(), 1);
+    assert!(!run.state.any_drag_in_progress());
+    assert!(run.step(false));
+    assert_eq!(run.clip().picture_v2().unwrap(), before);
+    assert!(run.step(true));
+    assert_eq!(run.clip().picture_v2().unwrap(), after);
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+}
