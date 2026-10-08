@@ -2,8 +2,8 @@
 //! drag-to-connect wires, multi-port visualisation, pan + zoom.
 //!
 //! Replaces (or augments — see toggle) the legacy horizontal strip
-//! in `panels/node_graph.rs`. Same data model (`klipp_nodes::NodeGraph`),
-//! same `AppCommand` mutation surface (AddNode / RemoveNode /
+//! in `panels/node_graph.rs`. The painter borrows a `CanvasGraph`; the
+//! grade adapter keeps the same `AppCommand` mutation surface (AddNode / RemoveNode /
 //! ConnectNodes / DisconnectEdge / MoveNode / ToggleNodeEnabled),
 //! so the existing engine + executor + persistence paths are
 //! untouched. This file is purely a renderer + interaction layer.
@@ -21,7 +21,10 @@
 
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, ClipId};
-use klipp_nodes::{NodeFrameId, NodeGraph, NodeId, NodeKind, NodePos, NodeStickyNoteId};
+use klipp_nodes::{NodeFrameId, NodeGraph, NodeId, NodePos, NodeStickyNoteId};
+
+mod model;
+use model::{CanvasGraph, CanvasKind, CanvasNode, GradeCanvas, MenuCategory, Palette};
 
 const NODE_W: f32 = 120.0;
 const NODE_H: f32 = 60.0;
@@ -100,47 +103,15 @@ const FAMILY_STRUCTURAL: egui::Color32 = egui::Color32::from_rgb(0x4a, 0x47, 0x4
 const FAMILY_SOURCE: egui::Color32 = egui::Color32::from_rgb(0x3e, 0x4d, 0x44);
 const FAMILY_OUTPUT: egui::Color32 = egui::Color32::from_rgb(0x3e, 0x44, 0x4d);
 
-fn node_color(kind: &NodeKind, theme: &KlippTheme) -> egui::Color32 {
-    let _ = theme;
-    match kind {
-        NodeKind::Source => FAMILY_SOURCE,
-        NodeKind::Output => FAMILY_OUTPUT,
-
-        // Secondary / matte family.
-        NodeKind::Qualifier
-        | NodeKind::LumaKey
-        | NodeKind::Mask
-        | NodeKind::CombineMattes
-        | NodeKind::ExternalMatte
-        | NodeKind::DifferenceKey
-        | NodeKind::MaskCutout => FAMILY_SECONDARY_MATTE,
-
-        // Composite family.
-        NodeKind::Layer
-        | NodeKind::Blend
-        | NodeKind::ApplyMatte
-        | NodeKind::LayerMixer => FAMILY_COMPOSITE,
-
-        // Look / finishing family.
-        NodeKind::Lut3D
-        | NodeKind::FilmGrain
-        | NodeKind::Denoise
-        | NodeKind::SoftClip => FAMILY_LOOK,
-
-        // Structural family — routing + containers.
-        NodeKind::Reroute
-        | NodeKind::Compound
-        | NodeKind::RGBSplitter
-        | NodeKind::RGBCombiner
-        | NodeKind::PrimariesMatrix
-        | NodeKind::InputTransform => FAMILY_STRUCTURAL,
-
-        // Everything else falls into the primary-grade family —
-        // Corrector, Exposure, Contrast, Saturation, ToneControls,
-        // ColorWheels, WheelSatBri, RGBCurves, HueSatCurves,
-        // ColorBalance, ColorMatch, ColorWarper, plus future
-        // colour-pipeline kinds.
-        _ => FAMILY_PRIMARY_GRADE,
+fn node_color(kind: &impl CanvasKind, _theme: &KlippTheme) -> egui::Color32 {
+    match kind.palette() {
+        Palette::Grade => FAMILY_PRIMARY_GRADE,
+        Palette::Matte => FAMILY_SECONDARY_MATTE,
+        Palette::Composite => FAMILY_COMPOSITE,
+        Palette::Look => FAMILY_LOOK,
+        Palette::Structural => FAMILY_STRUCTURAL,
+        Palette::Source => FAMILY_SOURCE,
+        Palette::Output => FAMILY_OUTPUT,
     }
 }
 
@@ -491,6 +462,33 @@ impl NodeGraphV2Panel {
         port_snap_radius_px: f32,
         solo_node: Option<NodeId>,
     ) -> Vec<AppCommand> {
+        self.show_canvas(ui, selected_node, selected_set, &GradeCanvas(graph), clip_id, theme,
+            engine_node_thumbs, engine_node_thumbs_gen, deferred_drops, descent_path,
+            breadcrumb_labels, grade_version_names, active_grade_version, clip_time_secs,
+            port_snap_enabled, port_snap_radius_px, solo_node)
+    }
+
+    fn show_canvas<G: CanvasGraph>(
+        &mut self,
+        ui: &mut egui::Ui,
+        selected_node: &mut Option<NodeId>,
+        selected_set: &mut std::collections::HashSet<NodeId>,
+        graph: &G,
+        clip_id: ClipId,
+        theme: &KlippTheme,
+        engine_node_thumbs: &std::collections::HashMap<NodeId, Vec<u8>>,
+        engine_node_thumbs_gen: u64,
+        deferred_drops: &mut Vec<egui::TextureHandle>,
+        descent_path: &mut Vec<NodeId>,
+        breadcrumb_labels: &[String],
+        // `None` for a graph that keeps no versions: the timeline grade.
+        grade_version_names: Option<&[String]>,
+        active_grade_version: Option<usize>,
+        clip_time_secs: f64,
+        port_snap_enabled: bool,
+        port_snap_radius_px: f32,
+        solo_node: Option<NodeId>,
+    ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
         // Self-heal: drop any stale ids from the selection set that
@@ -500,9 +498,9 @@ impl NodeGraphV2Panel {
         // checks trustworthy without forcing every caller to clear it
         // on every transition.
         if !selected_set.is_empty() {
-            selected_set.retain(|id| graph.nodes.iter().any(|n| n.id == *id));
+            selected_set.retain(|id| graph.nodes().iter().any(|n| n.id() == *id));
             if let Some(p) = *selected_node {
-                if !graph.nodes.iter().any(|n| n.id == p) {
+                if !graph.nodes().iter().any(|n| n.id() == p) {
                     *selected_node = selected_set.iter().next().copied();
                 }
             }
@@ -805,9 +803,9 @@ impl NodeGraphV2Panel {
         // Background uses the same yellow as the on-canvas halo so
         // the link reads visually.
         if let Some(solo_id) = solo_node {
-            let label = graph.nodes.iter()
-                .find(|n| n.id == solo_id)
-                .map(|n| n.label.clone())
+            let label = graph.nodes().iter()
+                .find(|n| n.id() == solo_id)
+                .map(|n| n.label().to_owned())
                 .unwrap_or_else(|| "?".to_string());
             let solo_color = egui::Color32::from_rgb(0xff, 0xd5, 0x3a);
             let bg = egui::Color32::from_rgba_unmultiplied(
@@ -864,7 +862,7 @@ impl NodeGraphV2Panel {
             || f_pressed
             || self.fit_pending
             || self.last_fit_clip != Some(clip_id);
-        if need_fit && !graph.nodes.is_empty() {
+        if need_fit && !graph.nodes().is_empty() {
             self.fit_to_nodes(graph, canvas_rect);
             self.fit_pending = false;
             self.last_fit_clip = Some(clip_id);
@@ -912,12 +910,11 @@ impl NodeGraphV2Panel {
         // The trailing u8 is the *dynamic* input-port count — needed
         // because LayerMixer grows past its kind's static count and
         // the editor must render every wired port + accept new ones.
-        let mut node_rects: Vec<(NodeId, egui::Rect, egui::Color32, NodeKind, u8)> =
-            Vec::with_capacity(graph.nodes.len());
-        for node in &graph.nodes {
-            let pos = graph
-                .node_positions
-                .get(&node.id)
+        let mut node_rects: Vec<(NodeId, egui::Rect, egui::Color32, <G::Node as CanvasNode>::Kind, u8)> =
+            Vec::with_capacity(graph.nodes().len());
+        for node in graph.nodes() {
+            let pos = graph.positions()
+                .get(&node.id())
                 .copied()
                 .unwrap_or(NodePos { x: 0.0, y: 0.0 });
             let center = to_screen(egui::pos2(pos.x, pos.y));
@@ -928,14 +925,14 @@ impl NodeGraphV2Panel {
             // height threshold in `port_pos_on_edge` so input/output
             // ports land on the dot's edges, not in empty space
             // beside it.
-            let size = if matches!(node.kind, NodeKind::Reroute) {
+            let size = if node.kind().is_reroute() {
                 egui::vec2(REROUTE_SIZE * zoom, REROUTE_SIZE * zoom)
             } else {
                 egui::vec2(NODE_W * zoom, NODE_H * zoom)
             };
             let rect = egui::Rect::from_center_size(center, size);
-            let in_count = node.dynamic_input_port_count();
-            node_rects.push((node.id, rect, node_color(&node.kind, theme), node.kind, in_count));
+            let in_count = node.input_count();
+            node_rects.push((node.id(), rect, node_color(&node.kind(), theme), node.kind(), in_count));
         }
 
         // ── Search matches ────────────────────────────────────────
@@ -946,12 +943,12 @@ impl NodeGraphV2Panel {
         // "Sky Glow" node hits both as the user types either.
         let search_matches: Vec<NodeId> = if self.search_open && !self.search_query.is_empty() {
             let q = self.search_query.to_lowercase();
-            graph.nodes.iter()
+            graph.nodes().iter()
                 .filter(|n| {
-                    n.label.to_lowercase().contains(&q)
-                        || n.kind.display_name().to_lowercase().contains(&q)
+                    n.label().to_lowercase().contains(&q)
+                        || n.kind().display_name().to_lowercase().contains(&q)
                 })
-                .map(|n| n.id)
+                .map(|n| n.id())
                 .collect()
         } else {
             Vec::new()
@@ -967,8 +964,8 @@ impl NodeGraphV2Panel {
         // empty frames (every member id is stale) silently skip.
         const FRAME_PAD: f32 = 18.0;
         let mut frame_rects: Vec<(NodeFrameId, egui::Rect, egui::Color32)> =
-            Vec::with_capacity(graph.frames.len());
-        for frame in &graph.frames {
+            Vec::with_capacity(graph.frames().len());
+        for frame in graph.frames() {
             let mut min = egui::pos2(f32::INFINITY, f32::INFINITY);
             let mut max = egui::pos2(f32::NEG_INFINITY, f32::NEG_INFINITY);
             for (nid, rect, _, _, _) in &node_rects {
@@ -1063,8 +1060,8 @@ impl NodeGraphV2Panel {
             egui::Color32,
             std::sync::Arc<egui::epaint::text::Galley>,
             bool,
-        )> = Vec::with_capacity(graph.sticky_notes.len());
-        for note in &graph.sticky_notes {
+        )> = Vec::with_capacity(graph.sticky_notes().len());
+        for note in graph.sticky_notes() {
             let bytes = note.color_rgba.to_le_bytes();
             let color = egui::Color32::from_rgba_unmultiplied(
                 bytes[0], bytes[1], bytes[2], bytes[3],
@@ -1122,7 +1119,7 @@ impl NodeGraphV2Panel {
             if let Some(c) = cursor {
                 let threshold_sq = (8.0 * zoom).powi(2);
                 let mut best_sq = threshold_sq;
-                for (idx, edge) in graph.edges.iter().enumerate() {
+                for (idx, edge) in graph.edges().iter().enumerate() {
                     let Some((_, from_rect, _, from_kind, _)) =
                         node_rects.iter().find(|(id, _, _, _, _)| *id == edge.from_node).copied()
                     else { continue; };
@@ -1141,7 +1138,7 @@ impl NodeGraphV2Panel {
             }
         }
 
-        for (idx, edge) in graph.edges.iter().enumerate() {
+        for (idx, edge) in graph.edges().iter().enumerate() {
             let Some((_, from_rect, _, from_kind, _)) =
                 node_rects.iter().find(|(id, _, _, _, _)| *id == edge.from_node).copied()
             else { continue; };
@@ -1158,8 +1155,8 @@ impl NodeGraphV2Panel {
             // any Reroute chain so a magenta matte stays magenta even
             // after several reroute hops.
             let dest_role = to_kind.input_port_role(edge.to_port);
-            let role = if matches!(to_kind, NodeKind::Reroute) || dest_role == klipp_nodes::PortRole::Primary {
-                klipp_nodes::effective_signal_role_at(graph, edge.from_node, edge.from_port)
+            let role = if to_kind.is_reroute() || dest_role == klipp_nodes::PortRole::Primary {
+                graph.signal_role(edge.from_node, edge.from_port)
             } else {
                 dest_role
             };
@@ -1268,8 +1265,8 @@ impl NodeGraphV2Panel {
                 // Walking back through any Reroute chain at the source
                 // so dragging from a Reroute output keeps the upstream
                 // signal's colour rather than defaulting to amber.
-                let role = if matches!(from_kind, NodeKind::Reroute) {
-                    klipp_nodes::effective_signal_role_at(graph, dw.from_node, dw.from_port)
+                let role = if from_kind.is_reroute() {
+                    graph.signal_role(dw.from_node, dw.from_port)
                 } else {
                     from_kind.output_port_role(dw.from_port)
                 };
@@ -1371,8 +1368,8 @@ impl NodeGraphV2Panel {
         // effect: 100 % CPU just by having the editor open.
         let hover_pointer = ui.input(|i| i.pointer.hover_pos());
         for (idx, (node_id, rect, fill, kind, in_count)) in node_rects.iter().copied().enumerate() {
-            let node = &graph.nodes[idx];
-            let node_on = klipp_nodes::effective_enabled(node, clip_time_secs);
+            let node = &graph.nodes()[idx];
+            let node_on = node.effective_enabled(clip_time_secs);
             // Selection paints amber whether the node is the
             // inspector-primary OR part of a multi-selection set.
             // Both paths must paint the same so the user can't tell
@@ -1425,7 +1422,7 @@ impl NodeGraphV2Panel {
             // amber ring, port hit-test continues to use the rect
             // edges which `port_pos_on_edge` translates correctly
             // for the small rect.
-            if matches!(kind, NodeKind::Reroute) {
+            if kind.is_reroute() {
                 let centre = rect.center();
                 let radius = rect.width() * 0.40;
                 if glow_alpha > 0 {
@@ -1512,7 +1509,7 @@ impl NodeGraphV2Panel {
             // same single card. Shadow colours pick up the node's
             // fill darkened, so the stack reads even against dark
             // canvas backgrounds.
-            if kind == NodeKind::Compound {
+            if kind.is_group() {
                 let shade = |c: egui::Color32, d: u8| {
                     egui::Color32::from_rgb(
                         c.r().saturating_sub(d),
@@ -1721,7 +1718,7 @@ impl NodeGraphV2Panel {
             painter.text(
                 egui::pos2(rect.center().x, rect.min.y + header_h * 0.5),
                 egui::Align2::CENTER_CENTER,
-                &node.label,
+                node.label(),
                 egui::FontId::proportional(10.0 * zoom),
                 label_color,
             );
@@ -1762,20 +1759,14 @@ impl NodeGraphV2Panel {
                 // something." Skipped for kinds where "default" is
                 // structural (Source / Output / Reroute / Compound)
                 // since those don't have grade params to begin with.
-                let is_grade_kind = !matches!(
-                    kind,
-                    NodeKind::Source
-                        | NodeKind::Output
-                        | NodeKind::Reroute
-                        | NodeKind::Compound
-                );
-                if is_grade_kind && !node.params.is_default() {
+                let is_grade_kind = !kind.is_terminal() && !kind.is_reroute() && !kind.is_group();
+                if is_grade_kind && node.modified() {
                     let green = egui::Color32::from_rgb(0x68, 0xc8, 0x6a);
                     painter.circle_filled(egui::pos2(x, cy), dot_r, green);
                     x -= pitch;
                 }
                 // Slot 2 — keyframe dot.
-                if !node.keyframes.is_empty() {
+                if node.animated() {
                     let cyan = egui::Color32::from_rgb(0x6a, 0xc8, 0xe0);
                     painter.circle_filled(egui::pos2(x, cy), dot_r, cyan);
                     x -= pitch;
@@ -1839,19 +1830,8 @@ impl NodeGraphV2Panel {
             // click descends. A compound has no thumbnail of its own
             // (the thumbnail capture doesn't render sub-graphs), so the
             // count is the cue that the node contains something.
-            if kind == NodeKind::Compound && node_on {
-                let n = node.params.compound_subgraph
-                    .as_ref()
-                    .map(|g| {
-                        // Don't count the synthetic Source / Output
-                        // wrappers the Group operation adds — the
-                        // user-meaningful count is the packed nodes.
-                        g.nodes.iter()
-                            .filter(|n| !matches!(n.kind,
-                                NodeKind::Source | NodeKind::Output))
-                            .count()
-                    })
-                    .unwrap_or(0);
+            if kind.is_group() && node_on {
+                let n = node.child_count();
                 let label = if n == 1 { "1 node".to_string() }
                     else { format!("{n} nodes") };
                 painter.text(
@@ -1893,7 +1873,7 @@ impl NodeGraphV2Panel {
                 let chip_bg = egui::Color32::from_rgba_unmultiplied(
                     chip_fg.r(), chip_fg.g(), chip_fg.b(), 48);
                 let chip_font = egui::FontId::proportional(9.0 * zoom);
-                if let Some(label) = node.output_link.as_ref() {
+                if let Some(label) = node.output_link() {
                     let text = format!("⚲ {label}");
                     let galley = painter.layout_no_wrap(text, chip_font.clone(), chip_fg);
                     let pad = egui::vec2(6.0, 3.0) * zoom;
@@ -1907,7 +1887,7 @@ impl NodeGraphV2Panel {
                     painter.rect_stroke(chip_rect, 2.0, egui::Stroke::new(0.5_f32, chip_fg));
                     painter.galley(chip_rect.min + pad, galley, chip_fg);
                 }
-                for (port, slot) in node.input_links.iter().enumerate() {
+                for (port, slot) in node.input_links().iter().enumerate() {
                     if let Some(label) = slot {
                         let port_pos = input_port_pos(&rect, port as u8, in_count);
                         let text = format!("{label} ⚲");
@@ -1929,8 +1909,8 @@ impl NodeGraphV2Panel {
             // ExternalMatte: paint the loaded image as a thumbnail
             // inside the node body so the user sees which mask is
             // attached without having to click through the inspector.
-            if kind == NodeKind::ExternalMatte {
-                if let Some(path) = node.params.matte_image_path.as_ref() {
+            if kind.is_external_matte() {
+                if let Some(path) = node.matte_image() {
                     let cached = self.matte_thumbs.get(&node_id);
                     let needs_load = match cached {
                         Some((p, _)) => p != path,
@@ -1955,7 +1935,7 @@ impl NodeGraphV2Panel {
                             if let Some((_, old)) = self.matte_thumbs.remove(&node_id) {
                                 deferred_drops.push(old);
                             }
-                            self.matte_thumbs.insert(node_id, (path.clone(), tex));
+                            self.matte_thumbs.insert(node_id, (path.to_owned(), tex));
                         }
                     }
                     if let Some((_, tex)) = self.matte_thumbs.get(&node_id) {
@@ -1993,14 +1973,14 @@ impl NodeGraphV2Panel {
             // chain nodes (output buffer is a sentinel). ExternalMatte
             // nodes already painted their own source-image thumb
             // above; let that one win.
-            if kind != NodeKind::ExternalMatte {
+            if !kind.is_external_matte() {
                 // Output is a no-op in the executor (no entry in
                 // node_outputs), so engine_node_thumbs.get(output_id)
                 // is always None. Look up the feeder node instead so
                 // Output paints the same thumbnail as the node
                 // currently feeding it — i.e. the final composite.
-                let thumb_lookup_id = if matches!(kind, NodeKind::Output) {
-                    graph.edges.iter()
+                let thumb_lookup_id = if kind.is_output() {
+                    graph.edges().iter()
                         .find(|e| e.to_node == node_id && e.to_port == 0)
                         .map(|e| e.from_node)
                         .unwrap_or(node_id)
@@ -2138,20 +2118,20 @@ impl NodeGraphV2Panel {
             // the sink, without relying on x-position alone.
             for p in 0..in_count {
                 let pos = input_port_pos(&rect, p, in_count);
-                let role = if matches!(kind, NodeKind::Reroute) {
+                let role = if kind.is_reroute() {
                     // Find the edge feeding this port and take the
                     // upstream's effective signal role; fall back to
                     // Primary when disconnected.
-                    graph.edges.iter()
+                    graph.edges().iter()
                         .find(|e| e.to_node == node_id && e.to_port == p)
-                        .map(|e| klipp_nodes::effective_signal_role_at(graph, e.from_node, e.from_port))
+                        .map(|e| graph.signal_role(e.from_node, e.from_port))
                         .unwrap_or(klipp_nodes::PortRole::Primary)
                 } else {
                     kind.input_port_role(p)
                 };
                 let (rr, gg, bb) = role.editor_color();
                 let role_color = egui::Color32::from_rgb(rr, gg, bb);
-                let is_connected = graph.edges.iter()
+                let is_connected = graph.edges().iter()
                     .any(|e| e.to_node == node_id && e.to_port == p);
                 let r = PORT_RADIUS * zoom;
 
@@ -2237,7 +2217,7 @@ impl NodeGraphV2Panel {
             // wire on the empty stretch of the left edge to add a new
             // port. Pure visual; the actual port allocation happens
             // on wire drop in the input-port hit-test fall-through.
-            if kind == NodeKind::LayerMixer {
+            if kind.is_variadic() {
                 let last = input_port_pos(&rect, in_count.saturating_sub(1), in_count);
                 let next = input_port_pos(
                     &rect,
@@ -2249,7 +2229,7 @@ impl NodeGraphV2Panel {
                 // node body when the count is high.
                 let hint_y = ((last.y + next.y) * 0.5).clamp(rect.min.y + 12.0, rect.max.y - 4.0);
                 let hint_pos = egui::pos2(rect.min.x, hint_y);
-                let role = NodeKind::LayerMixer.input_port_role(0);
+                let role = kind.input_port_role(0);
                 let (rr, gg, bb) = role.editor_color();
                 painter.circle_stroke(
                     hint_pos, PORT_RADIUS * zoom * 0.7,
@@ -2277,8 +2257,8 @@ impl NodeGraphV2Panel {
             // is unambiguous on inspection.
             for p in 0..kind.output_port_count() {
                 let pos = output_port_pos(&rect, p, &kind);
-                let role = if matches!(kind, NodeKind::Reroute) {
-                    klipp_nodes::effective_signal_role_at(graph, node_id, p)
+                let role = if kind.is_reroute() {
+                    graph.signal_role(node_id, p)
                 } else {
                     kind.output_port_role(p)
                 };
@@ -2402,7 +2382,7 @@ impl NodeGraphV2Panel {
                         for (node_id, rect, _, kind, _) in &node_rects {
                             if rect.contains(p) {
                                 if primary_double_clicked
-                                    && *kind == NodeKind::Compound
+                                    && kind.is_group()
                                 {
                                     cmds.push(AppCommand::DescendIntoCompound {
                                         clip_id,
@@ -2413,8 +2393,8 @@ impl NodeGraphV2Panel {
                                 }
                                 // Any other grade node: a double-click
                                 // names it (#893).
-                                if primary_double_clicked && !matches!(kind, NodeKind::Source | NodeKind::Output) {
-                                    let current = graph.nodes.iter().find(|n| n.id == *node_id).map(|n| n.label.clone()).unwrap_or_default();
+                                if primary_double_clicked && !kind.is_terminal() {
+                                    let current = graph.nodes().iter().find(|n| n.id() == *node_id).map(|n| n.label().to_owned()).unwrap_or_default();
                                     self.node_rename_editor = Some((*node_id, p, current));
                                     node_hit = true;
                                     break;
@@ -2499,7 +2479,7 @@ impl NodeGraphV2Panel {
                             for (sticky_id, sr_rect, _, _, _) in sticky_rects.iter().rev() {
                                 if !sr_rect.contains(p) { continue; }
                                 if primary_double_clicked {
-                                    let initial = graph.sticky_notes.iter()
+                                    let initial = graph.sticky_notes().iter()
                                         .find(|s| s.id == *sticky_id)
                                         .map(|s| s.text.clone())
                                         .unwrap_or_default();
@@ -2526,7 +2506,7 @@ impl NodeGraphV2Panel {
                         if !node_hit && !sticky_hit && !shift {
                             for (frame_id, fr_rect, _) in frame_rects.iter().rev() {
                                 if !fr_rect.contains(p) { continue; }
-                                let frame = match graph.frames.iter().find(|f| f.id == *frame_id) {
+                                let frame = match graph.frames().iter().find(|f| f.id == *frame_id) {
                                     Some(f) => f,
                                     None => continue,
                                 };
@@ -2686,7 +2666,7 @@ impl NodeGraphV2Panel {
                         // the new port. The band is the full left edge
                         // of the node body (not just the header strip)
                         // so users have a generous target.
-                        if *kind == NodeKind::LayerMixer {
+                        if kind.is_variadic() {
                             let edge_band = egui::Rect::from_min_max(
                                 egui::pos2(rect.min.x - PORT_HIT_RADIUS, rect.min.y),
                                 egui::pos2(rect.min.x + PORT_HIT_RADIUS, rect.max.y),
@@ -2763,11 +2743,10 @@ impl NodeGraphV2Panel {
                 .iter()
                 .copied()
                 .filter(|id| {
-                    graph
-                        .nodes
+                    graph.nodes()
                         .iter()
-                        .find(|n| n.id == *id)
-                        .map(|n| !matches!(n.kind, NodeKind::Source | NodeKind::Output))
+                        .find(|n| n.id() == *id)
+                        .map(|n| !n.kind().is_terminal())
                         .unwrap_or(false)
                 })
                 .collect();
@@ -2858,7 +2837,7 @@ impl NodeGraphV2Panel {
                         for port in 0..*in_count {
                             let port_pos = input_port_pos(rect, port, *in_count);
                             if (p - port_pos).length() <= PORT_HIT_RADIUS * zoom.max(0.5) {
-                                let has_edge = graph.edges.iter().any(|e|
+                                let has_edge = graph.edges().iter().any(|e|
                                     e.to_node == *node_id && e.to_port == port
                                 );
                                 if has_edge {
@@ -2933,11 +2912,11 @@ impl NodeGraphV2Panel {
 
         // ── Floating menus (egui::Area) ──────────────────────────
         if self.add_menu_open {
-            self.draw_add_menu(ui, clip_id, &mut cmds, theme);
+            self.draw_add_menu(ui, clip_id, &mut cmds, theme, graph.add_menu());
         }
         if let Some((nid, _pos)) = self.node_menu {
             // Snapshot kind+enabled so we can borrow out of `graph` cleanly
-            let info = graph.nodes.iter().find(|n| n.id == nid).map(|n| (n.kind, n.enabled));
+            let info = graph.nodes().iter().find(|n| n.id() == nid).map(|n| (n.kind(), n.enabled()));
             if let Some((kind, enabled)) = info {
                 self.draw_node_menu(ui, clip_id, nid, kind, enabled, &mut cmds, selected_node, selected_set, graph, solo_node);
             } else {
@@ -2983,7 +2962,7 @@ impl NodeGraphV2Panel {
         // Output's preview by looking up its FEEDER node's thumb
         // instead (see the Output-thumb branch in the paint loop).
         let mut current_visible: Vec<NodeId> = node_rects.iter()
-            .filter(|(_, _, _, kind, _)| !matches!(kind, NodeKind::Output))
+            .filter(|(_, _, _, kind, _)| !kind.is_output())
             .map(|(id, _, _, _, _)| *id)
             .collect();
         current_visible.sort();
@@ -3065,10 +3044,10 @@ impl NodeGraphV2Panel {
                 painter.rect_stroke(map_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border));
 
                 // Node rects.
-                for node in &graph.nodes {
-                    let pos = graph.node_positions.get(&node.id).copied()
+                for node in graph.nodes() {
+                    let pos = graph.positions().get(&node.id()).copied()
                         .unwrap_or(NodePos { x: 0.0, y: 0.0 });
-                    let (half_w, half_h) = if matches!(node.kind, NodeKind::Reroute) {
+                    let (half_w, half_h) = if node.kind().is_reroute() {
                         (REROUTE_SIZE * 0.5, REROUTE_SIZE * 0.5)
                     } else {
                         (NODE_W * 0.5, NODE_H * 0.5)
@@ -3076,18 +3055,18 @@ impl NodeGraphV2Panel {
                     let n_min = graph_to_map(egui::pos2(pos.x - half_w, pos.y - half_h));
                     let n_max = graph_to_map(egui::pos2(pos.x + half_w, pos.y + half_h));
                     let n_rect = egui::Rect::from_min_max(n_min, n_max);
-                    let is_selected_n = *selected_node == Some(node.id)
-                        || selected_set.contains(&node.id);
-                    let is_soloed_n = solo_node == Some(node.id);
-                    let on_n = klipp_nodes::effective_enabled(node, clip_time_secs);
-                    let mut fill = node_color(&node.kind, theme);
+                    let is_selected_n = *selected_node == Some(node.id())
+                        || selected_set.contains(&node.id());
+                    let is_soloed_n = solo_node == Some(node.id());
+                    let on_n = node.effective_enabled(clip_time_secs);
+                    let mut fill = node_color(&node.kind(), theme);
                     if is_selected_n { fill = theme.accent; }
                     if is_soloed_n { fill = egui::Color32::from_rgb(0xff, 0xd5, 0x3a); }
                     let alpha: u8 = if on_n { 220 } else { 100 };
                     let fill_a = egui::Color32::from_rgba_unmultiplied(
                         fill.r(), fill.g(), fill.b(), alpha,
                     );
-                    if matches!(node.kind, NodeKind::Reroute) {
+                    if node.kind().is_reroute() {
                         painter.circle_filled(n_rect.center(), n_rect.width().max(2.0) * 0.5, fill_a);
                     } else {
                         painter.rect_filled(n_rect, 1.0, fill_a);
@@ -3226,7 +3205,7 @@ impl NodeGraphV2Panel {
                     self.search_active_idx = (self.search_active_idx + n - 1) % n;
                 }
                 let target_id = search_matches[self.search_active_idx % n];
-                if let Some(pos) = graph.node_positions.get(&target_id).copied() {
+                if let Some(pos) = graph.positions().get(&target_id).copied() {
                     self.pan = egui::vec2(-pos.x, -pos.y);
                 }
             }
@@ -3277,13 +3256,13 @@ impl NodeGraphV2Panel {
             }
         }
 
-        cmds
+        cmds.into_iter().filter_map(|command| graph.command(command)).collect()
     }
 
     /// Compute zoom + pan that frames every node in the graph
     /// inside the canvas with a comfortable margin. Called on first
     /// open of a clip, on Fit toolbar click, and on `F` press.
-    fn fit_to_nodes(&mut self, graph: &NodeGraph, canvas_rect: egui::Rect) {
+    fn fit_to_nodes(&mut self, graph: &impl CanvasGraph, canvas_rect: egui::Rect) {
         let Some(bounds) = graph_bounds(graph) else { return; };
         let graph_w = bounds.width().max(1.0);
         let graph_h = bounds.height().max(1.0);
@@ -3458,6 +3437,7 @@ impl NodeGraphV2Panel {
         clip_id: ClipId,
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
+        categories: &[MenuCategory],
     ) {
         // Salt the menu id with `add_menu_opened_frame` so each open
         // is a fresh egui::Area / ScrollArea layer with no cached
@@ -3480,13 +3460,12 @@ impl NodeGraphV2Panel {
         // wheel scroll for free; same pattern the Add Transition
         // submenu uses on the timeline side.
         let max_h = (ui.ctx().screen_rect().height() * 0.70).max(240.0);
-        const CATEGORIES: &[(&str, &[(&str, &str)])] = ADD_MENU_CATEGORIES;
 
         // Lookup helper — recents store kind_str; we want to render
-        // them with their display label, so we walk CATEGORIES once.
+        // them with their display label, so we walk categories once.
         let label_for_kind = |kind: &str| -> Option<&'static str> {
-            for (_, entries) in CATEGORIES {
-                for (label, k) in *entries {
+            for (_, entries) in categories {
+                for (label, k) in entries {
                     if *k == kind { return Some(*label); }
                 }
             }
@@ -3583,7 +3562,7 @@ impl NodeGraphV2Panel {
                             // last category doesn't trail dead
                             // whitespace at the bottom of the menu.
                             let mut first_cat = true;
-                            for (cat_name, entries) in CATEGORIES {
+                            for (cat_name, entries) in categories {
                                 // Pre-filter so we know whether the
                                 // category has any visible entries
                                 // before painting its header — empty
@@ -3649,7 +3628,7 @@ impl NodeGraphV2Panel {
 
                             // Empty-state for search-with-no-hits.
                             if in_search {
-                                let any = CATEGORIES.iter().any(|(_, entries)| {
+                                let any = categories.iter().any(|(_, entries)| {
                                     entries.iter().any(|(label, _)| matches(label))
                                 });
                                 if !any {
@@ -3759,14 +3738,14 @@ impl NodeGraphV2Panel {
         &mut self,
         ui: &mut egui::Ui,
         clip_id: ClipId,
-        graph: &NodeGraph,
+        graph: &impl CanvasGraph,
         cmds: &mut Vec<AppCommand>,
     ) {
         let Some((frame_id, pos)) = self.frame_menu else { return; };
         // Resolve current colour for the swatch row's "selected"
         // marker. None if the frame was deleted between the right-
         // click and the next paint pass.
-        let current_color = graph.frames.iter()
+        let current_color = graph.frames().iter()
             .find(|f| f.id == frame_id)
             .map(|f| f.color_rgba);
         let mut close = false;
@@ -3777,7 +3756,7 @@ impl NodeGraphV2Panel {
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     if ui.button("Rename…").clicked() {
-                        let initial = graph.frames.iter()
+                        let initial = graph.frames().iter()
                             .find(|f| f.id == frame_id)
                             .map(|f| f.label.clone())
                             .unwrap_or_default();
@@ -3785,7 +3764,7 @@ impl NodeGraphV2Panel {
                         close = true;
                     }
                     if ui.button("Edit description…").clicked() {
-                        let initial = graph.frames.iter()
+                        let initial = graph.frames().iter()
                             .find(|f| f.id == frame_id)
                             .map(|f| f.description.clone())
                             .unwrap_or_default();
@@ -3925,7 +3904,7 @@ impl NodeGraphV2Panel {
         &mut self,
         ui: &mut egui::Ui,
         clip_id: ClipId,
-        graph: &NodeGraph,
+        graph: &impl CanvasGraph,
         cmds: &mut Vec<AppCommand>,
     ) {
         let Some((sticky_id, pos)) = self.sticky_menu else { return; };
@@ -3937,7 +3916,7 @@ impl NodeGraphV2Panel {
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     if ui.button("Edit text…").clicked() {
-                        let initial = graph.sticky_notes.iter()
+                        let initial = graph.sticky_notes().iter()
                             .find(|s| s.id == sticky_id)
                             .map(|s| s.text.clone())
                             .unwrap_or_default();
@@ -4087,12 +4066,12 @@ impl NodeGraphV2Panel {
         ui: &mut egui::Ui,
         clip_id: ClipId,
         node_id: NodeId,
-        kind: NodeKind,
+        kind: impl CanvasKind,
         enabled: bool,
         cmds: &mut Vec<AppCommand>,
         selected_node: &mut Option<NodeId>,
         selected_set: &mut std::collections::HashSet<NodeId>,
-        graph: &NodeGraph,
+        graph: &impl CanvasGraph,
         solo_node: Option<NodeId>,
     ) {
         let pos = self.node_menu.map(|(_, p)| p).unwrap_or_default();
@@ -4106,14 +4085,14 @@ impl NodeGraphV2Panel {
                     // Source / Output only get the wireless controls
                     // below — bypass / delete / group don't apply to
                     // them, so skip those entries entirely.
-                    let is_structural = matches!(kind, NodeKind::Source | NodeKind::Output);
+                    let is_structural = kind.is_terminal();
                     // Reroute is already a passthrough — Bypass
                     // would be a no-op-on-no-op; suppress to avoid
                     // user confusion (Delete / Disconnect still
                     // appear).
-                    let is_passthrough_kind = matches!(kind, NodeKind::Reroute);
+                    let is_passthrough_kind = kind.is_reroute();
                     if !is_structural && ui.button("Rename\u{2026}").clicked() {
-                        let current = graph.nodes.iter().find(|n| n.id == node_id).map(|n| n.label.clone()).unwrap_or_default();
+                        let current = graph.nodes().iter().find(|n| n.id() == node_id).map(|n| n.label().to_owned()).unwrap_or_default();
                         self.node_rename_editor = Some((node_id, pos, current));
                         close = true;
                     }
@@ -4186,7 +4165,7 @@ impl NodeGraphV2Panel {
                     // on multi-selection), so right-clicking a
                     // compound always gets Ungroup regardless of
                     // how many other nodes happen to be selected.
-                    if kind == NodeKind::Compound
+                    if kind.is_group()
                         && ui.button("Ungroup Compound").clicked() {
                             cmds.push(AppCommand::UngroupCompound {
                                 clip_id,
@@ -4201,16 +4180,16 @@ impl NodeGraphV2Panel {
                     // currently broadcasts the matching label.
                     // Source / Output are structural, so Source gets
                     // only the send control and Output only the receive.
-                    let node_ref = graph.nodes.iter().find(|n| n.id == node_id);
-                    let current_send = node_ref.and_then(|n| n.output_link.clone());
+                    let node_ref = graph.nodes().iter().find(|n| n.id() == node_id);
+                    let current_send = node_ref.and_then(|n| n.output_link().map(str::to_owned));
                     let current_receives: Vec<Option<String>> = node_ref
-                        .map(|n| n.input_links.clone()).unwrap_or_default();
-                    let in_count = node_ref.map(|n| n.dynamic_input_port_count()).unwrap_or(0);
-                    let can_send = kind != NodeKind::Output;
-                    let can_receive = kind != NodeKind::Source && in_count > 0;
-                    let available_labels: Vec<String> = graph.nodes.iter()
-                        .filter(|n| n.id != node_id)
-                        .filter_map(|n| n.output_link.clone())
+                        .map(|n| n.input_links().to_vec()).unwrap_or_default();
+                    let in_count = node_ref.map(|n| n.input_count()).unwrap_or(0);
+                    let can_send = !kind.is_output();
+                    let can_receive = !kind.is_source() && in_count > 0;
+                    let available_labels: Vec<String> = graph.nodes().iter()
+                        .filter(|n| n.id() != node_id)
+                        .filter_map(|n| n.output_link().map(str::to_owned))
                         .collect();
 
                     if can_send {
@@ -4284,9 +4263,9 @@ impl NodeGraphV2Panel {
                                 .iter()
                                 .copied()
                                 .filter(|id| {
-                                    graph.nodes.iter()
-                                        .find(|n| n.id == *id)
-                                        .map(|n| !matches!(n.kind, NodeKind::Source | NodeKind::Output))
+                                    graph.nodes().iter()
+                                        .find(|n| n.id() == *id)
+                                        .map(|n| !n.kind().is_terminal())
                                         .unwrap_or(false)
                                 })
                                 .collect();
@@ -4330,15 +4309,15 @@ impl NodeGraphV2Panel {
 /// short-circuit cleanly). Reroute nodes contribute their smaller
 /// 20×20 footprint rather than NODE_W×NODE_H so the bounds reflect
 /// what's actually painted.
-pub(super) fn graph_bounds(graph: &NodeGraph) -> Option<egui::Rect> {
+fn graph_bounds(graph: &impl CanvasGraph) -> Option<egui::Rect> {
     let mut min_x = f32::INFINITY;
     let mut min_y = f32::INFINITY;
     let mut max_x = f32::NEG_INFINITY;
     let mut max_y = f32::NEG_INFINITY;
-    for node in &graph.nodes {
-        let pos = graph.node_positions.get(&node.id).copied()
+    for node in graph.nodes() {
+        let pos = graph.positions().get(&node.id()).copied()
             .unwrap_or(NodePos { x: 0.0, y: 0.0 });
-        let (half_w, half_h) = if matches!(node.kind, NodeKind::Reroute) {
+        let (half_w, half_h) = if node.kind().is_reroute() {
             (REROUTE_SIZE * 0.5, REROUTE_SIZE * 0.5)
         } else {
             (NODE_W * 0.5, NODE_H * 0.5)
@@ -4490,39 +4469,7 @@ fn paint_thumb_rounded(
 /// chip. 5 buckets — corrections / matte / compositing / looks /
 /// routing — plus a couple of structural one-offs so the badge
 /// stays distinct rather than always reading "C".
-fn kind_category_glyph(kind: &NodeKind) -> &'static str {
-    match kind {
-        // Source = play (input flowing IN); Output = eject (the
-        // final composite leaving the graph). Distinct so the two
-        // terminals are visually unambiguous on the thumbnail
-        // badge.
-        NodeKind::Source => "\u{25B6}",   // ▶
-        NodeKind::Output => "\u{23CF}",   // ⏏
-        NodeKind::Compound => "\u{229E}",                  // ⊞
-        NodeKind::Reroute
-        | NodeKind::RGBSplitter
-        | NodeKind::RGBCombiner
-        | NodeKind::PrimariesMatrix => "\u{21B9}",         // ↹
-        NodeKind::Qualifier
-        | NodeKind::LumaKey
-        | NodeKind::Mask
-        | NodeKind::CombineMattes
-        | NodeKind::ExternalMatte
-        | NodeKind::DifferenceKey
-        | NodeKind::MaskCutout => "M",
-        NodeKind::Layer
-        | NodeKind::Blend
-        | NodeKind::ApplyMatte
-        | NodeKind::LayerMixer => "L",
-        NodeKind::Lut3D
-        | NodeKind::FilmGrain
-        | NodeKind::ColorMatch
-        | NodeKind::ColorWarper
-        | NodeKind::Denoise => "F",
-        // Everything else is the primary-correction family.
-        _ => "C",
-    }
-}
+fn kind_category_glyph(kind: &impl CanvasKind) -> &'static str { kind.glyph() }
 
 /// Build a 192×108 RGBA overlay image marking exposure-clipped
 /// pixels — red where any channel is at the upper sentinel
@@ -4657,7 +4604,7 @@ fn input_port_pos(rect: &egui::Rect, port: u8, count: u8) -> egui::Pos2 {
     port_pos_on_edge(rect, port, count.max(1), false)
 }
 
-fn output_port_pos(rect: &egui::Rect, port: u8, kind: &NodeKind) -> egui::Pos2 {
+fn output_port_pos(rect: &egui::Rect, port: u8, kind: &impl CanvasKind) -> egui::Pos2 {
     let count = kind.output_port_count().max(1);
     port_pos_on_edge(rect, port, count, true)
 }
@@ -4774,6 +4721,8 @@ fn bezier_at_phase(from: egui::Pos2, to: egui::Pos2, phase: f32) -> egui::Pos2 {
     )
 }
 
+
+
 #[cfg(test)]
 mod rename_tests {
     //! A grade node is named from the graph (#893): a double-click on it,
@@ -4878,6 +4827,7 @@ mod dock_toolbar_tests {
 /// are exactly these. Every kind is one `add_color_node` can make
 /// (`klipp_nodes::kinds::ADDABLE_NODE_KINDS`): a name outside it would
 /// add nothing, which the test below holds.
+#[cfg(test)]
 const ADD_MENU_CATEGORIES: &[(&str, &[(&str, &str)])] = &[
     ("Primary Grade", &[
         ("Corrector (all-in-one)", "Corrector"),
@@ -4925,11 +4875,156 @@ const ADD_MENU_CATEGORIES: &[(&str, &[(&str, &str)])] = &[
 #[cfg(test)]
 mod add_menu_tests {
     #[test]
+    fn the_grade_add_menu_lists_the_same_entries() {
+        use super::model::CanvasGraph;
+        let graph = klipp_nodes::NodeGraph::default();
+        let model = super::model::GradeCanvas(&graph);
+        let actual: Vec<_> = model.add_menu().iter().map(|(label, entries)| (*label, entries.as_slice())).collect();
+        assert_eq!(actual, super::ADD_MENU_CATEGORIES);
+    }
+
+    #[test]
     fn every_kind_the_add_menu_offers_can_be_added() {
         for (category, entries) in super::ADD_MENU_CATEGORIES {
             for (label, kind) in *entries {
                 assert!(klipp_nodes::kinds::addable_node_kind(kind).is_some(), "{category} › {label}: {kind} is not an addable kind");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod canvas_command_tests {
+    use super::*;
+    use klipp_nodes::NodeKind;
+
+    struct Harness {
+        ctx: egui::Context,
+        panel: NodeGraphV2Panel,
+        graph: NodeGraph,
+        clip: ClipId,
+        selected: Option<NodeId>,
+        set: std::collections::HashSet<NodeId>,
+        texts: Vec<(String, egui::Pos2)>,
+        cards: Vec<egui::Rect>,
+        time: f64,
+    }
+    impl Harness {
+        fn new() -> Self {
+            let mut graph = NodeGraph::default();
+            graph.ensure_corrector();
+            for (i, node) in graph.nodes.iter().enumerate() {
+                graph.node_positions.insert(node.id, NodePos { x: (i as f32 - 1.0) * 230.0, y: 0.0 });
+            }
+            let clip = ClipId::new();
+            let mut h = Self { ctx: Default::default(), panel: NodeGraphV2Panel { last_fit_clip: Some(clip), zoom: 1.0, ..Default::default() }, graph, clip, selected: None, set: Default::default(), texts: Vec::new(), cards: Vec::new(), time: 0.0 };
+            h.settle();
+            h
+        }
+        fn frame(&mut self, events: Vec<egui::Event>) -> Vec<AppCommand> {
+            self.time += 1.0 / 30.0;
+            let mut cmds = Vec::new();
+            let out = self.ctx.run(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))),
+                time: Some(self.time), events, ..Default::default()
+            }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    cmds = self.panel.show(ui, &mut self.selected, &mut self.set, &mut self.graph, self.clip,
+                        &KlippTheme::default(), &Default::default(), 0, &mut Vec::new(), &mut Vec::new(),
+                        &[], None, None, 0.0, false, 0.0, None);
+                });
+            });
+            self.texts = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)), _ => None,
+            }).collect();
+            self.cards = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r) if (r.rect.width() - NODE_W).abs() < 0.1 && (r.rect.height() - NODE_H).abs() < 0.1 => Some(r.rect), _ => None,
+            }).collect();
+            cmds
+        }
+        fn settle(&mut self) { for _ in 0..3 { self.frame(Vec::new()); } }
+        fn text(&self, label: &str) -> egui::Pos2 {
+            self.texts.iter().rev().find(|(s, _)| s == label).unwrap_or_else(|| panic!("missing {label}: {:?}", self.texts)).1
+        }
+        fn card(&self, kind: NodeKind) -> (NodeId, egui::Rect) {
+            let node = self.graph.nodes.iter().find(|n| n.kind == kind).unwrap();
+            let at = self.text(&node.label);
+            (node.id, *self.cards.iter().find(|r| r.contains(at)).unwrap_or_else(|| panic!("no card at {at:?}: {:?}", self.cards)))
+        }
+        fn button(at: egui::Pos2, button: egui::PointerButton, pressed: bool) -> egui::Event {
+            egui::Event::PointerButton { pos: at, button, pressed, modifiers: egui::Modifiers::NONE }
+        }
+        fn click(&mut self, at: egui::Pos2, button: egui::PointerButton) -> Vec<AppCommand> {
+            let mut commands = self.frame(vec![egui::Event::PointerMoved(at), Self::button(at, button, true)]);
+            commands.extend(self.frame(vec![Self::button(at, button, false)]));
+            commands
+        }
+        fn menu_item(&mut self, at: egui::Pos2, label: &str) -> Vec<AppCommand> {
+            self.click(at, egui::PointerButton::Secondary);
+            self.settle();
+            self.click(self.text(label), egui::PointerButton::Primary)
+        }
+    }
+
+    /// Real pointer interactions, held against the commands from the grade
+    /// painter before extracting its model. The graph itself remains read-only.
+    #[test]
+    fn canvas_commands_are_unchanged_for_the_grade() {
+        let mut h = Harness::new();
+        let before = serde_json::to_value(&h.graph).unwrap();
+        h.panel.add_menu_open = true;
+        h.panel.add_menu_screen_pos = egui::pos2(100.0, 100.0);
+        h.panel.add_menu_graph_pos = egui::pos2(42.0, 64.0);
+        h.panel.add_menu_search = "Exposure".into();
+        h.settle();
+        let commands = h.click(h.text("Exposure"), egui::PointerButton::Primary);
+        assert!(matches!(commands.as_slice(), [AppCommand::AddNode { clip_id, kind, node_id: None, position }] if *clip_id == h.clip && kind == "Exposure" && *position == (42.0, 64.0)), "{commands:?}");
+        h.settle();
+        let (source, source_rect) = h.card(NodeKind::Source);
+        let (output, output_rect) = h.card(NodeKind::Output);
+        let from = output_port_pos(&source_rect, 0, &NodeKind::Source);
+        let to = input_port_pos(&output_rect, 0, 1);
+        h.frame(vec![egui::Event::PointerMoved(from), Harness::button(from, egui::PointerButton::Primary, true)]);
+        h.frame(vec![egui::Event::PointerMoved(to)]);
+        let commands = h.frame(vec![Harness::button(to, egui::PointerButton::Primary, false)]);
+        assert!(matches!(commands.as_slice(), [AppCommand::ConnectNodes { clip_id, from, from_port: 0, to, to_port: 0 }] if *clip_id == h.clip && *from == source && *to == output), "{commands:?}");
+        let (corrector, rect) = h.card(NodeKind::Corrector);
+        let at = rect.center();
+        h.frame(vec![egui::Event::PointerMoved(at), Harness::button(at, egui::PointerButton::Primary, true)]);
+        for offset in [egui::vec2(50.0, 30.0), egui::vec2(100.0, 60.0)] {
+            let commands = h.frame(vec![egui::Event::PointerMoved(at + offset)]);
+            assert!(matches!(commands.as_slice(), [AppCommand::MoveNode { clip_id, node_id, delta_x, delta_y }] if *clip_id == h.clip && *node_id == corrector && (*delta_x - 50.0).abs() < 0.01 && (*delta_y - 30.0).abs() < 0.01), "{commands:?}");
+        }
+        h.frame(vec![Harness::button(at + egui::vec2(100.0, 60.0), egui::PointerButton::Primary, false)]);
+        assert_eq!(serde_json::to_value(&h.graph).unwrap(), before);
+
+        // Supply a second editable node as a fixture; commands are deliberately
+        // not dispatched by this painter test.
+        let mut extra = h.graph.nodes.iter().find(|n| n.id == corrector).unwrap().clone();
+        extra.id = NodeId::new_v4(); extra.kind = NodeKind::Exposure; extra.label = "Exposure fixture".into();
+        let extra_id = extra.id;
+        h.graph.node_positions.insert(extra_id, NodePos { x: 0.0, y: 160.0 });
+        h.graph.nodes.push(extra);
+        h.set = [corrector, extra_id].into_iter().collect(); h.selected = Some(corrector);
+        h.settle();
+        let before = serde_json::to_value(&h.graph).unwrap();
+        let commands = h.menu_item(rect.center(), "Group 2 into Compound");
+        assert!(matches!(commands.as_slice(), [AppCommand::GroupIntoCompound { clip_id, node_ids }] if *clip_id == h.clip && node_ids.len() == 2 && node_ids.contains(&corrector) && node_ids.contains(&extra_id)), "{commands:?}");
+        assert_eq!(serde_json::to_value(&h.graph).unwrap(), before);
+
+        let node = h.graph.nodes.iter_mut().find(|n| n.id == extra_id).unwrap();
+        node.kind = NodeKind::Compound; node.label = "Compound fixture".into();
+        node.params.compound_subgraph = Some(NodeGraph::default());
+        h.settle();
+        let before = serde_json::to_value(&h.graph).unwrap();
+        let (_, rect) = h.card(NodeKind::Compound);
+        let commands = h.menu_item(rect.center(), "Ungroup Compound");
+        assert!(matches!(commands.as_slice(), [AppCommand::UngroupCompound { clip_id, node_id }] if *clip_id == h.clip && *node_id == extra_id), "{commands:?}");
+        h.settle();
+        // Seed the preceding press to avoid a wall-clock timing dependency.
+        h.panel.last_primary_press = Some((std::time::Instant::now(), rect.center()));
+        let commands = h.click(rect.center(), egui::PointerButton::Primary);
+        assert!(matches!(commands.as_slice(), [AppCommand::DescendIntoCompound { clip_id, node_id }] if *clip_id == h.clip && *node_id == extra_id), "{commands:?}");
+        assert_eq!(serde_json::to_value(&h.graph).unwrap(), before);
     }
 }
