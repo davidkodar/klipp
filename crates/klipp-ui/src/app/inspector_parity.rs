@@ -581,3 +581,85 @@ fn escape_cancels_the_video_tab_opacity_drag() {
     assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
 }
 
+fn soft_edge_clip(keyed: bool) -> klipp_timeline::Clip {
+    let ty = klipp_effects::registry::effect_type("chroma_key").unwrap();
+    let desc = ty.desc.params.iter().find(|p| p.key == "spill").unwrap();
+    let mut clip = fixture(&with_value(&(ty.sample)(), desc, 0.2));
+    if keyed {
+        clip.edit_effect_keyframes(|tracks| {
+            tracks.insert("0:spill".into(), vec![klipp_core::keyframe::upserted(&[], 0.0, 0.4)]);
+        });
+    }
+    clip
+}
+
+#[test]
+fn soft_edge_alias_edits_match_the_old_control() {
+    for script in [Script::Type, Script::Drag { left: false }, Script::Reset] {
+        let clip = soft_edge_clip(false);
+        let before = clip.picture_v2().unwrap();
+        let mut old = Run::new(clip.clone(), false);
+        let mut new = Run::new(clip, true);
+        assert!(play(&mut old, "Soft Edge", script, "0.700"));
+        assert!(play(&mut new, "Soft Edge", script, "0.700"));
+        let after = new.clip().picture_v2().unwrap();
+        assert_ne!(after, before, "{script:?}");
+        assert_eq!(after, old.clip().picture_v2().unwrap(), "{script:?}");
+        assert_eq!(new.state.active_history().undo_count(), 1);
+        assert!(!new.state.any_drag_in_progress());
+        assert!(new.step(false));
+        assert_eq!(new.clip().picture_v2().unwrap(), before);
+        assert!(new.step(true));
+        assert_eq!(new.clip().picture_v2().unwrap(), after);
+        assert!(new.unapplied.is_empty(), "{:?}", new.unapplied);
+        assert!(old.unapplied.is_empty(), "{:?}", old.unapplied);
+    }
+}
+
+#[test]
+fn soft_edge_alias_reads_and_edits_its_existing_animation() {
+    let clip = soft_edge_clip(true);
+    let before = clip.picture_v2().unwrap();
+    let mut new = Run::new(clip.clone(), true);
+    let mut oracle = clip;
+    new.frame(Vec::new(), egui::Modifiers::NONE);
+    let (_, number) = new.row("Soft Edge").unwrap();
+    let drawn = new.frame(Vec::new(), egui::Modifiers::NONE);
+    assert!(drawn.iter().any(|(s, p)| p.distance(number) < 1.0 && s.parse::<f32>() == Ok(0.4)), "the existing key is shown");
+    assert!(play(&mut new, "Soft Edge", Script::Type, "0.700"));
+    // Use the clip's existing legacy lane API as the reference: the
+    // shared row driver does not dispatch old keyframe commands.
+    let effect = oracle.effect_id_at(0).unwrap();
+    oracle.edit_effect_keyframes_of(effect, "spill", |keys| klipp_core::keyframe::upsert_keyframe(keys, 0.0, 0.7));
+    let after = new.clip().picture_v2().unwrap();
+    assert_ne!(after, before);
+    assert_eq!(after, oracle.picture_v2().unwrap());
+    assert_eq!(new.state.active_history().undo_count(), 1);
+    assert!(new.step(false));
+    assert_eq!(new.clip().picture_v2().unwrap(), before);
+    assert!(new.step(true));
+    assert_eq!(new.clip().picture_v2().unwrap(), after);
+    assert!(new.unapplied.is_empty(), "{:?}", new.unapplied);
+}
+
+#[test]
+fn soft_edge_alias_drag_cancels_static_and_animated_edits() {
+    for keyed in [false, true] {
+        let mut run = Run::new(soft_edge_clip(keyed), true);
+        let before = run.clip().picture_v2().unwrap();
+        run.frame(Vec::new(), egui::Modifiers::NONE);
+        let (_, at) = run.row("Soft Edge").unwrap();
+        run.button(at, egui::PointerButton::Primary, true);
+        for dx in [6.0, 12.0, 18.0] {
+            run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))], egui::Modifiers::NONE);
+        }
+        assert_ne!(run.clip().picture_v2().unwrap(), before, "keyed={keyed}");
+        run.key(egui::Key::Escape, egui::Modifiers::NONE);
+        run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(28.0, 0.0))], egui::Modifiers::NONE);
+        run.button(at + egui::vec2(28.0, 0.0), egui::PointerButton::Primary, false);
+        assert_eq!(run.clip().picture_v2().unwrap(), before, "keyed={keyed}");
+        assert_eq!(run.state.active_history().undo_count(), 0);
+        assert!(!run.state.any_drag_in_progress());
+        assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+    }
+}
