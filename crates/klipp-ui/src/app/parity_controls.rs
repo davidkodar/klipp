@@ -83,6 +83,8 @@ impl Stack {
         out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)), _ => None }).collect()
     }
 
+
+
     /// `cmd` as the app applies it, past the dispatch boundary: a path
     /// command by the state, an index command by the inspector edit host.
     fn apply(&mut self, cmd: &AppCommand) {
@@ -293,8 +295,10 @@ pub(super) struct Grade {
     panel: crate::panels::node_inspector::NodeInspectorPanel,
     generated: bool,
     pub(super) unapplied: Vec<String>,
-    /// Requests the app runs off the panel (a mask region tracked, its
-    /// tracker taken off), recorded here, in order, not applied.
+    /// Requests the app runs off the panel, recorded here, in order, not
+    /// applied: the sampling tools' (Auto White Balance, an eyedropper,
+    /// Colour Match's capture and apply), which read the viewer's frame,
+    /// and a mask region's tracking, or its tracker taken off.
     pub(super) side: Vec<String>,
     /// Which of the grade's pages draws the node.
     pub(super) page: Page,
@@ -390,72 +394,83 @@ impl Grade {
                 }
             });
         });
-        for mut cmd in cmds {
-            crate::inspector::keyframe_selection::resolve_command(&self.state.sequences[0], &mut cmd);
-            // The dispatch boundary first, for every command, as the app's
-            // dispatch passes it.
-            self.state.before_dispatch(&cmd);
-            self.state.toast = Default::default();
-            match self.state.path_command(&cmd) {
-                Some(_) => {
-                    if let Some(why) = self.state.toast.message_for_test() {
-                        self.unapplied.push(format!("{cmd:?} refused: {why}"));
-                    }
-                }
-                None => {
-                    if matches!(cmd, AppCommand::TrackMaskRegion { .. } | AppCommand::RemoveMaskTracking { .. }) {
-                        self.side.push(format!("{cmd:?}"));
-                        continue;
-                    }
-                    // An old-panel gesture, recorded as the colour dispatch
-                    // records it: one graph step, from the grade as it was
-                    // before the input that began it.
-                    match &cmd {
-                        AppCommand::BeginNodeParamEdit { .. } => {
-                            if self.gesture.is_none() {
-                                self.gesture = self.before_input.clone();
-                            }
-                            continue;
-                        }
-                        AppCommand::AbandonNodeParamEdit { .. } => {
-                            if let Some(old_graph) = self.gesture.take() {
-                                super::colour::abandon_gesture(&mut self.state, self.clip, old_graph);
-                            }
-                            continue;
-                        }
-                        AppCommand::EndNodeParamEdit { .. } => {
-                            if let Some(old_graph) = self.gesture.take() {
-                                super::colour::close_gesture(&mut self.state, self.clip, old_graph);
-                            }
-                            continue;
-                        }
-                        _ => {}
-                    }
-                    let path = self.state.graph_descent_path.clone();
-                    // The old panel's number, as the colour dispatch writes
-                    // it (the history is its gesture's).
-                    if let AppCommand::SetNodeParam { node_id, param, value, .. } = &cmd {
-                        super::colour::write_node_param(&mut self.state, self.clip, &path, *node_id, param, *value);
-                        continue;
-                    }
-                    // A per-node editor's settings, as the colour dispatch
-                    // lands them: written, one graph step unless a gesture
-                    // is open (its close records the step). Whether `cmd`
-                    // is one is asked of a copy, so nothing else is written.
-                    if super::colour::write_node_settings(&mut self.clip().grade().clone(), &cmd) {
-                        super::colour::edit_clip_graph(&mut self.state, self.clip, &path, self.gesture.is_none(), |g| {
-                            super::colour::write_node_settings(g, &cmd);
-                        });
-                        continue;
-                    }
-                    if !(InspectorEditHost { state: &mut self.state, side: &Sink }).apply(&cmd) {
-                        self.unapplied.push(format!("{cmd:?}"));
-                    }
-                }
-            }
+        for cmd in cmds {
+            self.apply(cmd);
         }
         out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)), _ => None }).collect()
     }
+
+    /// `cmd` as the app applies it: its key resolved, past the dispatch
+    /// boundary, then by the path ops, the colour dispatch's writes the
+    /// harness shares (colour.rs's `write_node_settings`, `edit_clip_graph`,
+    /// `write_node_param` and the gesture's close and abandon), or the
+    /// inspector edit host. A sampling tool's request is recorded in
+    /// `side`; what nothing applies, in `unapplied`.
+    pub(super) fn apply(&mut self, mut cmd: AppCommand) {
+        crate::inspector::keyframe_selection::resolve_command(&self.state.sequences[0], &mut cmd);
+        // The dispatch boundary first, for every command, as the app's
+        // dispatch passes it.
+        self.state.before_dispatch(&cmd);
+        self.state.toast = Default::default();
+        match self.state.path_command(&cmd) {
+            Some(_) => {
+                if let Some(why) = self.state.toast.message_for_test() {
+                    self.unapplied.push(format!("{cmd:?} refused: {why}"));
+                }
+            }
+            None => {
+                if matches!(cmd, AppCommand::AutoWhiteBalance { .. } | AppCommand::PickWhiteBalance { .. } | AppCommand::PickQualifierColour { .. } | AppCommand::PickHueCurve { .. } | AppCommand::CaptureColorMatchReference | AppCommand::ApplyColorMatch { .. } | AppCommand::TrackMaskRegion { .. } | AppCommand::RemoveMaskTracking { .. }) {
+                    self.side.push(format!("{cmd:?}"));
+                    return;
+                }
+                // An old-panel gesture, recorded as the colour dispatch
+                // records it: one graph step, from the grade as it was
+                // before the input that began it.
+                match &cmd {
+                    AppCommand::BeginNodeParamEdit { .. } => {
+                        if self.gesture.is_none() {
+                            self.gesture = self.before_input.clone();
+                        }
+                        return;
+                    }
+                    AppCommand::AbandonNodeParamEdit { .. } => {
+                        if let Some(old_graph) = self.gesture.take() {
+                            super::colour::abandon_gesture(&mut self.state, self.clip, old_graph);
+                        }
+                        return;
+                    }
+                    AppCommand::EndNodeParamEdit { .. } => {
+                        if let Some(old_graph) = self.gesture.take() {
+                            super::colour::close_gesture(&mut self.state, self.clip, old_graph);
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+                let path = self.state.graph_descent_path.clone();
+                // The old panel's number, as the colour dispatch writes
+                // it (the history is its gesture's).
+                if let AppCommand::SetNodeParam { node_id, param, value, .. } = &cmd {
+                    super::colour::write_node_param(&mut self.state, self.clip, &path, *node_id, param, *value);
+                    return;
+                }
+                // A per-node editor's settings, as the colour dispatch
+                // lands them: written, one graph step unless a gesture
+                // is open (its close records the step). Whether `cmd`
+                // is one is asked of a copy, so nothing else is written.
+                if super::colour::write_node_settings(&mut self.clip().grade().clone(), &cmd) {
+                    super::colour::edit_clip_graph(&mut self.state, self.clip, &path, self.gesture.is_none(), |g| {
+                        super::colour::write_node_settings(g, &cmd);
+                    });
+                    return;
+                }
+                if !(InspectorEditHost { state: &mut self.state, side: &Sink }).apply(&cmd) {
+                    self.unapplied.push(format!("{cmd:?}"));
+                }
+            }
+        }
+    }
+
 
     pub(super) fn click_at(&mut self, at: egui::Pos2) {
         let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };

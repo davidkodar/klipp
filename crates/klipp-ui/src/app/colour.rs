@@ -614,46 +614,15 @@ impl KlippApp {
         who: &str,
         needs_refresh: &mut bool,
     ) {
-        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-        let mut edit: Option<(klipp_nodes::NodeGraph, klipp_nodes::NodeGraph, bool)> = None;
-        for track in &mut seq.tracks {
-            if let Some(clip) = track.find_clip_mut(clip_id) {
-                let before = clip.grade().clone();
-                // The Corrector's temperature/tint feed the unified grade
-                // shader; the legacy Colour Balance node is the fallback.
-                let railed = clip.edit_grade(|graph| {
-                    let target = graph.nodes.iter().position(|n| n.kind == klipp_nodes::NodeKind::Corrector)
-                        .or_else(|| graph.nodes.iter().position(|n| n.kind == klipp_nodes::NodeKind::ColorBalance));
-                    target.map(|idx| {
-                        let node = &mut graph.nodes[idx];
-                        let (t, t_railed) = add_on_rail(node.params.temperature.unwrap_or(0.0), temp_adj);
-                        let (g, g_railed) = add_on_rail(node.params.tint.unwrap_or(0.0), tint_adj);
-                        node.params.temperature = Some(t);
-                        node.params.tint = Some(g);
-                        t_railed || g_railed
-                    })
-                });
-                if let Some(railed) = railed {
-                    edit = Some((before, clip.grade().clone(), railed));
-                }
-                break;
-            }
-        }
-        let Some((old_graph, new_graph, railed)) = edit else {
-            self.state.toast.show(format!("{who}: add a Colour Balance node first"));
-            return;
-        };
-        self.state.active_history_mut().push(crate::history::HistoryEntry {
-            command: crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph },
-        });
-        self.state.dirty = true;
-        // The sliders stop at ±50; a strong cast, or a clip already near
-        // the end, gets part of what it needs.
-        if railed {
-            self.state.toast.show(format!(
+        match self.state.apply_white_balance(clip_id, temp_adj, tint_adj) {
+            None => self.state.toast.show(format!("{who}: add a Colour Balance node first")),
+            // The sliders stop at ±50; a strong cast, or a clip already near
+            // the end, gets part of what it needs.
+            Some(true) => self.state.toast.show(format!(
                 "{who}: the correction reached the end of the temperature or tint range, so the \
                  frame is only partly balanced — fix the cast at the source or with another balance node"
-            ));
+            )),
+            Some(false) => {}
         }
         *needs_refresh = true;
     }
@@ -1459,14 +1428,9 @@ impl KlippApp {
                 }
                 true
             }
-            AppCommand::SetNodeColorMatch { clip_id, node_id, settings } => {
-                let node_id = *node_id;
-                let settings = *settings;
+            AppCommand::SetNodeColorMatch { clip_id, .. } => {
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        node.params.color_match = Some(settings);
-                        node.enabled = true;
-                    }
+                    write_node_settings(graph, cmd);
                 });
                 true
             }
@@ -1690,21 +1654,10 @@ impl KlippApp {
                     tint: result.tint_adjust,
                     saturation: result.saturation_adjust,
                 };
-                // Apply directly to the local sequence — same effect
-                // as the SetNodeColorMatch arm above; doing it inline
-                // avoids re-dispatching through the command channel
-                // when we already have everything we need here.
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.edit_grade(|graph| {
-                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                                node.params.color_match = Some(settings);
-                                node.enabled = true;
-                            }
-                        });
-                        break;
-                    }
-                }
+                // Through SetNodeColorMatch, as the qualifier picker sends
+                // its key: one undo step. Written here in place, it was
+                // recorded in none, and undo could not take it back.
+                self.send_commands(vec![AppCommand::SetNodeColorMatch { clip_id: *clip_id, node_id: *node_id, settings }]);
                 *needs_refresh = true;
                 self.state.toast.show(format!(
                     "Match: exp {:+.2}, temp {:+.0}, tint {:+.0}, sat {:.2}×",
@@ -3165,12 +3118,43 @@ mod add_node_tests {
     }
 }
 
+impl crate::state::AppState {
+    /// A white balance's correction added to the clip's balance, as Auto
+    /// White Balance and its picker land theirs: the Corrector's
+    /// temperature and tint (a legacy Colour Balance node's when there is
+    /// no Corrector), each held to its range, as one undo step. Whether
+    /// either reached the end of its range, or `None` when the grade has
+    /// no balance to add to. One place, so the dispatch and the parity
+    /// land a computed balance alike.
+    pub(crate) fn apply_white_balance(&mut self, clip_id: klipp_core::ClipId, temp_adj: f32, tint_adj: f32) -> Option<bool> {
+        let seq = &mut self.sequences[self.active_sequence_idx];
+        let clip = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id))?;
+        let old_graph = clip.grade().clone();
+        let railed = clip.edit_grade(|graph| {
+            let target = graph.nodes.iter().position(|n| n.kind == klipp_nodes::NodeKind::Corrector)
+                .or_else(|| graph.nodes.iter().position(|n| n.kind == klipp_nodes::NodeKind::ColorBalance))?;
+            let node = &mut graph.nodes[target];
+            let (t, t_railed) = add_on_rail(node.params.temperature.unwrap_or(0.0), temp_adj);
+            let (g, g_railed) = add_on_rail(node.params.tint.unwrap_or(0.0), tint_adj);
+            node.params.temperature = Some(t);
+            node.params.tint = Some(g);
+            Some(t_railed || g_railed)
+        })?;
+        let new_graph = clip.grade().clone();
+        self.active_history_mut().push(crate::history::HistoryEntry {
+            command: crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph },
+        });
+        self.dirty = true;
+        Some(railed)
+    }
+}
+
 /// A per-node editor's settings command written to its node in `graph`:
 /// the curves, hue curves, qualifier, luma key, difference key, soft clip,
-/// grain, external matte channel, matte combine, LUT file or mask stack
-/// that the command carries, or a mask shape added to (or removed from) the grade's Mask
-/// node. One place, so the app's dispatch and the inspector parity apply
-/// them alike. `false` when `cmd` is none of these.
+/// grain, external matte channel, matte combine, LUT file, mask stack or
+/// colour match that the command carries, or a mask shape added to (or
+/// removed from) the grade's Mask node. One place, so the app's dispatch
+/// and the inspector parity apply them alike. `false` when `cmd` is none of these.
 pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppCommand) -> bool {
     // A mask shape added or removed names its clip, not its node: the
     // grade's Mask node takes it, made (with its cutout) when there's none.
@@ -3193,7 +3177,7 @@ pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppC
         _ => {}
     }
     let node_id = match cmd {
-        AppCommand::SetNodeLut { node_id, .. } | AppCommand::SetNodeMasks { node_id, .. } => *node_id,
+        AppCommand::SetNodeLut { node_id, .. } | AppCommand::SetNodeMasks { node_id, .. } | AppCommand::SetNodeColorMatch { node_id, .. } => *node_id,
         AppCommand::SetNodeCurves { node_id, .. } | AppCommand::SetNodeHueSatCurves { node_id, .. } => *node_id,
         AppCommand::SetNodeQualifier { node_id, .. }
         | AppCommand::SetNodeLumaKey { node_id, .. }
@@ -3222,6 +3206,10 @@ pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppC
             node.enabled = true;
         }
         AppCommand::SetNodeLut { path, .. } => params.lut_path = path.clone(),
+        AppCommand::SetNodeColorMatch { settings, .. } => {
+            params.color_match = Some(*settings);
+            node.enabled = true;
+        }
         AppCommand::SetNodeMasks { masks, .. } => {
             params.masks = Some(masks.clone());
             node.enabled = true;
