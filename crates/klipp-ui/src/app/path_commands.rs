@@ -155,14 +155,15 @@ impl crate::state::AppState {
         }
     }
 
-    /// Whether `cmd`, arriving while a path drag is open, closes it first:
-    /// every command but the drag's own (`BeginParamEditAt`, `SetParamAt`,
-    /// `EndParamEditAt` and `AbandonParamEditAt` of its `(addr, key)`) and those that change no
-    /// picture (transport, a refresh, the dock and compare state). An edit
-    /// by any route, old or new, is then its own step, never folded into
-    /// the drag's snapshot nor taken as one of its live steps. A command
-    /// missing from the list only splits a drag into more steps; it can't
-    /// mix two edits.
+    /// Whether `cmd`, arriving while a path drag is open, closes it first.
+    /// Only a command that can write the picture, the saved project or the
+    /// history closes it, so that edit is its own step and never folded
+    /// into the drag's; a command that writes none of them (transport, a
+    /// selection, the viewer and its scopes, a panel, a dialog, a job whose
+    /// result arrives later) leaves the drag open.
+    ///
+    /// Which commands write is [`super::command_writes::writes`], where
+    /// every command is named.
     pub(crate) fn closes_path_drag(&self, cmd: &AppCommand) -> bool {
         let Some(open) = self.active_history().pending_drag_key().filter(|k| k.starts_with(PATH_DRAG)) else { return false };
         match cmd {
@@ -172,22 +173,7 @@ impl crate::state::AppState {
             AppCommand::SetParamAt { addr, key, .. } | AppCommand::MoveKeyAt { addr, key, .. } | AppCommand::AddKeyAt { addr, key, .. } | AppCommand::RemoveKeyAt { addr, key, .. } => {
                 drag_key(addr, key) != open && node_drag(addr) != open
             }
-            AppCommand::Play
-            | AppCommand::Pause
-            | AppCommand::Stop
-            | AppCommand::SeekTo(_)
-            | AppCommand::SeekRelative(_)
-            | AppCommand::SequenceUpdated
-            | AppCommand::RevealGraph { .. }
-            | AppCommand::SetGraphDockRoot { .. }
-            | AppCommand::SetSplitCompareNode { .. }
-            // What the viewer and the timeline show while a row is used:
-            // the Video tab sends these as it draws and as a drag starts.
-            // A stopgap: an exhaustive classification of the commands that
-            // write the picture or history replaces this list.
-            | AppCommand::SetInspectorMattePreviewTarget(_)
-            | AppCommand::SetVideoRubberBandParam(_) => false,
-            _ => true,
+            _ => super::command_writes::writes(cmd),
         }
     }
 
@@ -1420,8 +1406,8 @@ mod tests {
     /// the dispatch boundary closes the drag first, so the edit is its own
     /// step, neither taken as one of the drag's live steps nor folded into
     /// its snapshot. Every old effect command, a keyframe edit and a
-    /// `GraphOps` batch close it; the drag's own commands and transport
-    /// don't. Then, end to end: a drag, an old toggle, the drag's end are
+    /// `GraphOps` batch close it; the drag's own commands, transport and
+    /// what only the viewer, the timeline and the panels show don't. Then, end to end: a drag, an old toggle, the drag's end are
     /// two steps, each undoing its own change.
     #[test]
     fn any_other_command_closes_an_open_path_drag() {
@@ -1449,9 +1435,22 @@ mod tests {
             AppCommand::EndParamEditAt { addr: blur.clone(), key: "radius".into() },
             AppCommand::SeekTo(klipp_core::RationalTime::from_secs_f64(0.0, 25)),
             AppCommand::Play,
+            // What the viewer, the timeline and the panels show: the Video
+            // tab sends the first two as it draws and as a drag starts.
+            AppCommand::SetInspectorMattePreviewTarget(None),
+            AppCommand::SetVideoRubberBandParam(klipp_core::VideoParam::Opacity),
+            AppCommand::SelectClip(Some(c.id)),
+            AppCommand::SetTimelineZoom { zoom: 2.0, scroll_x: None },
+            AppCommand::SetScopesVisible(true),
+            AppCommand::ToggleColorPanel,
+            // An analysis recomputed from the parameter being dragged.
+            AppCommand::RegainDeflicker { clip_id: c.id },
         ] {
             assert!(!s.closes_path_drag(&cmd), "{cmd:?} leaves the drag open");
         }
+        // A writer the old list didn't name, beyond the effect commands:
+        // a clip's depth, which merges into the last step if left open.
+        assert!(s.closes_path_drag(&AppCommand::SetClipDepth { clip_id: c.id, depth: 2.0 }), "a clip's depth closes the drag");
         // End to end: the drag's step, then an old toggle at the boundary.
         let original = picture(&s, c.id);
         run(&mut s, AppCommand::SetParamAt { addr: blur.clone(), key: "radius".into(), value: ParamValue::Float(9.0) });
