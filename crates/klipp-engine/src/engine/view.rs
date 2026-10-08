@@ -370,8 +370,8 @@ impl PlaybackEngine {
         if self.pushed_lut_sig.as_ref() == Some(&sig) {
             return;
         }
-        let lut = match (&p.global_lut, p.enabled) {
-            (Some(lut), true) => Some(klipp_compose::GlobalLut { lut: lut.clone(), opacity: p.global_lut_opacity }),
+        let lut = match &p.global_lut {
+            Some(lut) if p.applies() => Some(klipp_compose::GlobalLut { lut: lut.clone(), opacity: p.global_lut_opacity }),
             _ => None,
         };
         self.renderer.set_global_lut(lut);
@@ -457,7 +457,7 @@ impl PlaybackEngine {
         use std::hash::{Hash, Hasher};
         let p = &self.color_pipeline;
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (p.enabled && p.global_lut.is_some()).hash(&mut h);
+        p.applies().hash(&mut h);
         p.global_lut_path.hash(&mut h);
         p.global_lut_opacity.to_bits().hash(&mut h);
         h.finish()
