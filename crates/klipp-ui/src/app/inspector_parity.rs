@@ -825,7 +825,9 @@ fn undoing_a_later_add_leaves_earlier_effects_ids_alone() {
     run.apply(AppCommand::AddBuiltinEffect { clip_id: run.clip, effect: BuiltinEffect::Opacity { value: 0.5 } });
     let opacity = node_id_of(&run, "klipp.legacy.opacity").expect("Opacity added");
     let blur = node_id_of(&run, "klipp.legacy.effect").expect("the Blur");
-    // A later add of a plain effect, recorded as a picture edit.
+    // A later add of a plain effect: after Opacity it can't go through the
+    // picture's ops either (a picture-op add needs a plain effect last), so
+    // it too is recorded as the effect list.
     run.apply(AppCommand::AddBuiltinEffect { clip_id: run.clip, effect: BuiltinEffect::Vignette { amount: 0.4, size: 0.7, softness: 0.4, roundness: 0.0 } });
     assert!(run.step(false), "undo the later add");
     assert_eq!(node_id_of(&run, "klipp.legacy.opacity"), Some(opacity), "Opacity keeps its id");

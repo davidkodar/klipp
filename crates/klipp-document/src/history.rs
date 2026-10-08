@@ -593,8 +593,9 @@ pub enum EditCommand {
         new_effects: Vec<klipp_effects::BuiltinEffect>,
         new_enabled: Vec<bool>,
         /// Each side's effect ids, so undo and redo give every effect back
-        /// the node id its paths name (#1373). Empty when the recorder
-        /// knew none: each effect still on the list then keeps its own.
+        /// the node id its paths name (#1373). Empty (or not one each)
+        /// when the recorder knew none: the list is then written as a
+        /// whole, every entry under a new id.
         old_ids: Vec<klipp_timeline::EffectId>,
         new_ids: Vec<klipp_timeline::EffectId>,
     },
