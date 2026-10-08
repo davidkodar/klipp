@@ -136,6 +136,76 @@ fn as_v1(value: &ParamValue) -> Option<Value> {
     })
 }
 
+/// A grade node's parameters with `key` set as the grade sets it: a
+/// number `NodeParams::apply_override` takes, the way it takes it (a
+/// neutral value unset, a keyed struct field into its struct); a struct
+/// field named `struct.field` into its struct, made at its default when
+/// unset. `None` for a key neither names, or parameters that don't read.
+fn grade_param(params: &Value, key: &str, value: &ParamValue) -> Option<Value> {
+    let before: klipp_nodes::NodeParams = serde_json::from_value(params.clone()).ok()?;
+    let mut typed = before.clone();
+    let number = match value {
+        ParamValue::Float(f) => Some(*f),
+        ParamValue::Int(i) => Some(*i as f32),
+        ParamValue::Enum(e) => Some(*e as f32),
+        ParamValue::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+        _ => None,
+    };
+    if number.is_some_and(|n| typed.apply_override(key, n)) {
+        return written(params, &before, &typed);
+    }
+    let (name, field) = key.split_once('.')?;
+    let unset = serde_json::to_value(&typed).ok()?.get(name).is_none_or(Value::is_null);
+    if unset {
+        match name {
+            "qualifier" => typed.qualifier = Some(Default::default()),
+            "luma_key" => typed.luma_key = Some(Default::default()),
+            "difference_key" => typed.difference_key = Some(Default::default()),
+            "soft_clip" => typed.soft_clip = Some(Default::default()),
+            "grain" => typed.grain = Some(Default::default()),
+            "color_match" => typed.color_match = Some(Default::default()),
+            _ => return None,
+        }
+    }
+    let mut out = written(params, &before, &typed)?;
+    let held = out.get_mut(name)?.as_object_mut()?;
+    held.contains_key(field).then_some(())?;
+    held.insert(field.to_owned(), as_v1(value)?);
+    Some(out)
+}
+
+/// `params` with the fields that differ between `before` and `after` (the
+/// typed parameters an edit started from and made) written as the file
+/// writes them: a changed field's numbers in their shortest decimal (what
+/// a save writes, `0.065` and not the f32's widened `0.0649999976`), an
+/// unset one taken out, and every other field kept byte for byte.
+fn written(params: &Value, before: &klipp_nodes::NodeParams, after: &klipp_nodes::NodeParams) -> Option<Value> {
+    let (old, new) = (serde_json::to_value(before).ok()?, serde_json::to_value(after).ok()?);
+    let (old, new) = (old.as_object()?, new.as_object()?);
+    let mut out = params.as_object()?.clone();
+    for key in old.keys().chain(new.keys()) {
+        if old.get(key) == new.get(key) {
+            continue;
+        }
+        match new.get(key).filter(|v| !v.is_null()) {
+            Some(v) => out.insert(key.clone(), shortest(v)),
+            None => out.remove(key),
+        };
+    }
+    Some(Value::Object(out))
+}
+
+/// `v` with every number that isn't whole written as an f32's shortest
+/// decimal, as [`float`] writes one.
+fn shortest(v: &Value) -> Value {
+    match v {
+        Value::Number(n) if !(n.is_i64() || n.is_u64()) => n.as_f64().map_or(Value::Null, |f| float(f as f32)),
+        Value::Array(a) => Value::Array(a.iter().map(shortest).collect()),
+        Value::Object(o) => Value::Object(o.iter().map(|(k, v)| (k.clone(), shortest(v))).collect()),
+        other => other.clone(),
+    }
+}
+
 /// Set a parameter on a node: a legacy node's v1 entry, which must still
 /// read as the frozen v1 types read it; any other node's own parameters.
 fn set_param(n: &mut Node, key: &ParamKey, value: &ParamValue) -> Result<(), String> {
@@ -186,7 +256,12 @@ fn set_param(n: &mut Node, key: &ParamKey, value: &ParamValue) -> Result<(), Str
             &mut entry["params"]
         }
     };
-    target.as_object_mut().ok_or_else(|| format!("the node's stored entry isn't an object, so {key} has nowhere to go"))?.insert(key.as_str().to_owned(), v);
+    match grade_node.then(|| grade_param(target, key.as_str(), value)).flatten() {
+        Some(written) => *target = written,
+        None => {
+            target.as_object_mut().ok_or_else(|| format!("the node's stored entry isn't an object, so {key} has nowhere to go"))?.insert(key.as_str().to_owned(), v);
+        }
+    }
     let reads = if grade_node {
         serde_json::from_value::<crate::v1::params::NodeParams>(entry["params"].clone()).is_ok()
     } else if t == types::LEGACY_OFX {
@@ -239,6 +314,47 @@ fn key_time(keyframe: &Value) -> Result<f64, String> {
 
 /// Keys at the same time are one key.
 const SAME_TIME: f64 = 1e-9;
+
+/// A key edit on a grade node: a grade node's keys are its v1 keyframe
+/// tracks, held on its record (not its `anim`, which the record never
+/// reads), changed as the grade changes them: a key is put in at its
+/// time (`NodeKeyframeTrack::set_keyframe`, keeping the interpolation of
+/// a key already there) or taken out at its time; an animation set whole
+/// replaces the track's keys.
+fn apply_grade_anim(n: &mut Node, op: &GraphOp) -> Result<(), String> {
+    let legacy = n.legacy.as_mut().ok_or("a grade node without its record")?;
+    let mut tracks: klipp_nodes::NodeKeyframeTracks = match &legacy.keyframes {
+        Some(k) => serde_json::from_value(k.clone()).map_err(|e| format!("the node's keyframes don't read: {e}"))?,
+        None => Default::default(),
+    };
+    // The keys as the grade's own type, read through its track.
+    let read = |key: &ParamKey, keys: &[Value]| -> Result<klipp_nodes::NodeKeyframeTrack, String> {
+        serde_json::from_value(serde_json::json!({ "param_name": key.as_str(), "keyframes": keys })).map_err(|e| format!("a key for {key} doesn't read: {e}"))
+    };
+    match op {
+        GraphOp::AddKeyAt { key, keyframe, .. } => {
+            for k in read(key, std::slice::from_ref(keyframe))?.keyframes {
+                tracks.track_mut(key.as_str()).set_keyframe(k.time_secs, k.value);
+            }
+        }
+        GraphOp::RemoveKeyAt { key, time_secs, .. } => {
+            if !tracks.track_mut(key.as_str()).remove_keyframe(*time_secs) {
+                return Err(format!("{key} has no key at {time_secs} s"));
+            }
+        }
+        GraphOp::SetAnim { key, anim, .. } => {
+            let keys = match anim {
+                Some(a) if a.modifiers.is_some() => return Err(format!("a grade parameter's behaviours aren't kept, so {key} takes none")),
+                Some(a) => read(key, &a.keys)?.keyframes,
+                None => Vec::new(),
+            };
+            tracks.track_mut(key.as_str()).keyframes = keys;
+        }
+        _ => return Err("not a key edit".into()),
+    }
+    legacy.keyframes = Some(serde_json::to_value(&tracks).map_err(|e| format!("the node's keyframes: {e}"))?);
+    Ok(())
+}
 
 /// The animation edits, the same on a graph and on a track's list.
 fn apply_anim(n: &mut Node, op: &GraphOp) -> Result<(), String> {
@@ -432,7 +548,11 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn
         }
         GraphOp::AddKeyAt { .. } | GraphOp::RemoveKeyAt { .. } | GraphOp::SetAnim { .. } => {
             let at = find(g, target)?;
-            apply_anim(&mut g.nodes[at], op)?;
+            if matches!(g.nodes[at].type_id.as_str(), types::LEGACY_NODE | lt::MERGE) {
+                apply_grade_anim(&mut g.nodes[at], op)?;
+            } else {
+                apply_anim(&mut g.nodes[at], op)?;
+            }
         }
         GraphOp::SetPayload { payload, .. } => {
             let at = find(g, target)?;
