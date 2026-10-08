@@ -37,6 +37,7 @@ fn image_port(key: &str) -> PortSpec {
 }
 
 fn native(node: &Node) -> Option<klipp_nodes::Node> {
+    if !matches!(node.type_id.as_str(), klipp_graph_format::types::LEGACY_NODE | lt::MERGE | lt::GROUP_INPUT | lt::GROUP_OUTPUT) { return None; }
     let legacy = node.legacy.as_ref()?;
     let kind: NodeKind = serde_json::from_value(legacy.payload.get("kind")?.clone()).ok()?;
     Some(klipp_nodes::Node {
