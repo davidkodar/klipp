@@ -11,14 +11,13 @@
 //! graph at it instead.
 
 use crate::inspector::generated::adapters::effect_card;
-use crate::inspector::generated::{effect_value, Entry, KeyState, NodeRows, RowCtx};
-use crate::inspector::keyframe_selection;
+use crate::inspector::generated::{effect_value, Entry, NodeRows, RowCtx};
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, Keyframe};
 use klipp_effects::registry::{effect_types, ParamDesc};
 use klipp_graph_format::path::{NodePath, Root};
-use klipp_graph_format::{Graph, Node, ParamKey};
+use klipp_graph_format::{Graph, Node};
 use klipp_graph_lift::stack_view::{project, Item, Placement, Row, Section, StackView};
 use klipp_timeline::Clip;
 
@@ -192,11 +191,6 @@ pub fn node_at<'a>(graph: &'a Graph, addr: &NodePath) -> Option<&'a Node> {
     level.nodes.iter().find(|n| n.id == *last)
 }
 
-/// A node's keys for `key`, as stored on its animation.
-fn keys_of(node: &Node, key: &str) -> Vec<Keyframe> {
-    node.anim.get(&ParamKey::new(key)).map(|a| a.keys.iter().filter_map(|k| serde_json::from_value(k.clone()).ok()).collect()).unwrap_or_default()
-}
-
 /// A placed kind's row commands as the clip's effect-list commands, which
 /// place it: a drag's bracket as the effect drag, a value as the effect
 /// with it changed, a key as the effect's key. What has no list form (a
@@ -319,14 +313,8 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
             let presentation = |p: &ParamDesc| ty.presentation(p);
             let stored = |p: &ParamDesc| effect_value(&entry, p);
             let keys = |p: &ParamDesc| {
-                let kfs = keys_of(n, p.key);
-                if kfs.is_empty() {
-                    return (None, KeyState::default());
-                }
-                let s = keyframe_selection::state(&kfs, clip_time_secs, KEY_TOLERANCE);
                 let base = crate::inspector::generated::row::number(&effect_value(&entry, p)).unwrap_or(p.default);
-                let shown = Some(keyframe_selection::editable_value(&kfs, clip_time_secs, base, KEY_TOLERANCE));
-                (shown, KeyState { any: s.has_any_keyframes, at_playhead: s.has_keyframe_at_playhead, in_frame: s.keys_in_frame, prev: s.prev_keyframe_time, next: s.next_keyframe_time, interpolation: s.current_interpolation })
+                crate::inspector::generated::keys_at(n, p, base, clip_time_secs, KEY_TOLERANCE)
             };
             let rows = NodeRows { params: ty.desc.params, presentation: &presentation, stored: &stored, keys: &keys };
             let behaviours = |ui: &mut egui::Ui, param: &klipp_core::ParamId, cmds: &mut Vec<AppCommand>| {

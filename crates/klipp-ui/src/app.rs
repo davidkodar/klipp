@@ -56,6 +56,8 @@ mod inspector_edit_host;
 mod command_writes;
 #[cfg(test)]
 mod inspector_parity;
+#[cfg(test)]
+mod grade_inspector_tests;
 mod media;
 mod compound;
 mod clips;

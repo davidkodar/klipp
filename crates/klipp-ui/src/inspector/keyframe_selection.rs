@@ -92,6 +92,13 @@ pub(crate) fn resolve_command(sequence: &Sequence, command: &mut AppCommand) {
     });
 }
 
+/// `command` resolved as [`resolve_command`] does, against `clip` alone:
+/// for a view drawing one clip outside the inspector (the grade view on the
+/// Colour page), with its frame's tolerance.
+pub(crate) fn resolve_for_clip(clip: &Clip, tolerance: f64, command: &mut AppCommand) {
+    resolve_with(command, tolerance, |id| (id == clip.id).then_some(clip));
+}
+
 fn resolve_with<'a>(
     command: &mut AppCommand,
     tolerance: f64,

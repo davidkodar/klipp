@@ -9,6 +9,7 @@ pub mod audio_fx_inspector;
 pub mod color_and_luts;
 pub mod effects_tab;
 pub mod generated;
+pub mod grade_view;
 pub mod stack_view;
 pub mod info_tab;
 pub mod modifier_ui;

@@ -1700,88 +1700,9 @@ impl NodeInspectorPanel {
         frame: FrameSelection,
         wide_layout: bool,
     ) {
-        let clip_time_secs = frame.time_secs;
         #[cfg(any(test, feature = "row-recorder"))]
         let _recording_scope = crate::widgets::row_recorder::scope(format!("grade/{kind:?}"));
-        let enabled_track = keyframes.tracks.iter().find(|t| t.param_name == klipp_nodes::ENABLED_TRACK);
-        let bypass_track_has_kfs = enabled_track.is_some_and(|t| !t.keyframes.is_empty());
-        let selected = enabled_track.and_then(|t| crate::inspector::keyframe_selection::nearest(&t.keyframes, clip_time_secs, frame.tolerance).map(|i| &t.keyframes[i]));
-        let key_time = selected.map_or(clip_time_secs, |k| k.time_secs);
-        let bypass_kf_at_playhead = selected.is_some();
-        let effective_on = selected.map(|k| k.value).or_else(|| enabled_track.and_then(|t| t.evaluate(clip_time_secs)))
-            .map(|v| v >= 0.5)
-            .unwrap_or(*enabled);
-
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.add_space(12.0);
-            ui.label(egui::RichText::new(kind.display_name())
-                .size(12.0).color(theme.text_accent).strong());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(12.0);
-                let mut shown = effective_on;
-                if ui.checkbox(&mut shown, "").changed() {
-                    if bypass_track_has_kfs {
-                        cmds.push(AppCommand::AddKeyframe {
-                            clip_id, node_id,
-                            param: klipp_nodes::ENABLED_TRACK.to_string(),
-                            time_secs: key_time,
-                            value: if shown { 1.0 } else { 0.0 },
-                        });
-                    } else {
-                        cmds.push(AppCommand::ToggleNodeEnabled { clip_id, node_id });
-                    }
-                }
-                ui.add_space(4.0);
-                let diamond_color = if bypass_kf_at_playhead {
-                    theme.text_accent
-                } else if bypass_track_has_kfs {
-                    egui::Color32::from_rgba_premultiplied(255, 191, 0, 128)
-                } else {
-                    theme.text_dim
-                };
-                let diamond_text = if bypass_kf_at_playhead { "\u{25C6}" } else { "\u{25C7}" };
-                let diamond_resp = ui.add(
-                    egui::Button::new(egui::RichText::new(diamond_text).size(12.0).color(diamond_color))
-                        .frame(false),
-                );
-                if diamond_resp.clicked() {
-                    if bypass_kf_at_playhead {
-                        cmds.push(AppCommand::RemoveKeyframe {
-                            clip_id, node_id,
-                            param: klipp_nodes::ENABLED_TRACK.to_string(),
-                            time_secs: key_time,
-                        });
-                    } else {
-                        cmds.push(AppCommand::AddKeyframe {
-                            clip_id, node_id,
-                            param: klipp_nodes::ENABLED_TRACK.to_string(),
-                            time_secs: key_time,
-                            value: if effective_on { 1.0 } else { 0.0 },
-                        });
-                    }
-                }
-                if bypass_track_has_kfs {
-                    diamond_resp.context_menu(|ui| {
-                        if ui.button("Clear bypass keyframes").clicked() {
-                            cmds.push(AppCommand::ClearKeyframes {
-                                clip_id, node_id,
-                                param: klipp_nodes::ENABLED_TRACK.to_string(),
-                            });
-                            ui.close_menu();
-                        }
-                    });
-                }
-                diamond_resp.on_hover_text(if bypass_kf_at_playhead {
-                    "Remove bypass keyframe at playhead"
-                } else {
-                    "Add bypass keyframe at playhead"
-                });
-            });
-        });
-        ui.add_space(2.0);
-        ui.separator();
-        ui.add_space(4.0);
+        node_header(ui, kind, *enabled, keyframes, node_id, clip_id, cmds, theme, frame);
 
         match kind {
             NodeKind::Exposure => {
@@ -3688,6 +3609,103 @@ const ROW_H: f32 = 28.0;
 /// Returns true if the reset button was clicked.
 /// Collapsible section header matching the inspector card style.
 /// Returns (reset_clicked, is_open).
+/// A grade node's header: its name, its on switch, and the diamond that
+/// keys the switch. Shared by the per-node layout and the generated one
+/// (M3 step 11).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn node_header(
+    ui: &mut egui::Ui,
+    kind: &NodeKind,
+    enabled: bool,
+    keyframes: &klipp_nodes::NodeKeyframeTracks,
+    node_id: NodeId,
+    clip_id: ClipId,
+    cmds: &mut Vec<AppCommand>,
+    theme: &KlippTheme,
+    frame: FrameSelection,
+) {
+    let clip_time_secs = frame.time_secs;
+    let enabled_track = keyframes.tracks.iter().find(|t| t.param_name == klipp_nodes::ENABLED_TRACK);
+    let bypass_track_has_kfs = enabled_track.is_some_and(|t| !t.keyframes.is_empty());
+    let selected = enabled_track.and_then(|t| crate::inspector::keyframe_selection::nearest(&t.keyframes, clip_time_secs, frame.tolerance).map(|i| &t.keyframes[i]));
+    let key_time = selected.map_or(clip_time_secs, |k| k.time_secs);
+    let bypass_kf_at_playhead = selected.is_some();
+    let effective_on = selected.map(|k| k.value).or_else(|| enabled_track.and_then(|t| t.evaluate(clip_time_secs)))
+        .map(|v| v >= 0.5)
+        .unwrap_or(enabled);
+
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new(kind.display_name())
+            .size(12.0).color(theme.text_accent).strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(12.0);
+            let mut shown = effective_on;
+            if ui.checkbox(&mut shown, "").changed() {
+                if bypass_track_has_kfs {
+                    cmds.push(AppCommand::AddKeyframe {
+                        clip_id, node_id,
+                        param: klipp_nodes::ENABLED_TRACK.to_string(),
+                        time_secs: key_time,
+                        value: if shown { 1.0 } else { 0.0 },
+                    });
+                } else {
+                    cmds.push(AppCommand::ToggleNodeEnabled { clip_id, node_id });
+                }
+            }
+            ui.add_space(4.0);
+            let diamond_color = if bypass_kf_at_playhead {
+                theme.text_accent
+            } else if bypass_track_has_kfs {
+                egui::Color32::from_rgba_premultiplied(255, 191, 0, 128)
+            } else {
+                theme.text_dim
+            };
+            let diamond_text = if bypass_kf_at_playhead { "\u{25C6}" } else { "\u{25C7}" };
+            let diamond_resp = ui.add(
+                egui::Button::new(egui::RichText::new(diamond_text).size(12.0).color(diamond_color))
+                    .frame(false),
+            );
+            if diamond_resp.clicked() {
+                if bypass_kf_at_playhead {
+                    cmds.push(AppCommand::RemoveKeyframe {
+                        clip_id, node_id,
+                        param: klipp_nodes::ENABLED_TRACK.to_string(),
+                        time_secs: key_time,
+                    });
+                } else {
+                    cmds.push(AppCommand::AddKeyframe {
+                        clip_id, node_id,
+                        param: klipp_nodes::ENABLED_TRACK.to_string(),
+                        time_secs: key_time,
+                        value: if effective_on { 1.0 } else { 0.0 },
+                    });
+                }
+            }
+            if bypass_track_has_kfs {
+                diamond_resp.context_menu(|ui| {
+                    if ui.button("Clear bypass keyframes").clicked() {
+                        cmds.push(AppCommand::ClearKeyframes {
+                            clip_id, node_id,
+                            param: klipp_nodes::ENABLED_TRACK.to_string(),
+                        });
+                        ui.close_menu();
+                    }
+                });
+            }
+            diamond_resp.on_hover_text(if bypass_kf_at_playhead {
+                "Remove bypass keyframe at playhead"
+            } else {
+                "Add bypass keyframe at playhead"
+            });
+        });
+    });
+    ui.add_space(2.0);
+    ui.separator();
+    ui.add_space(4.0);
+}
+
 fn section_header(ui: &mut egui::Ui, title: &str, enabled: bool, theme: &KlippTheme) -> (bool, bool) {
     ui.add_space(2.0);
     let avail_w = ui.available_width();
