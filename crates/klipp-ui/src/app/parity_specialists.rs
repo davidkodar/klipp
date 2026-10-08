@@ -15,6 +15,7 @@ use super::parity_harness::{fixture, Run};
 use super::parity_manifest::{catalog, CatalogValue, CoverageKey, Interaction, Manifest, Report, Surface};
 use klipp_core::{AppEvent, ClipId};
 use klipp_effects::registry::{effect_types, EffectType};
+use klipp_effects::BuiltinEffect;
 
 /// The fixture: the type's sample on a two-second clip.
 const VARIANT: &str = "sample";
@@ -87,14 +88,32 @@ fn effect_type(tag: &str) -> &'static EffectType {
     effect_types().find(|t| t.tag == tag).unwrap()
 }
 
-/// Every analysis effect's workflow entry, required on the effects stack.
+/// Every specialist entry this family covers, required on the effects
+/// stack: the analysis effects' workflows and the frei0r plug-in editor.
 pub(super) fn require(manifest: &mut Manifest) {
+    require_analyses(manifest);
+    require_frei0r(manifest);
+}
+
+fn require_analyses(manifest: &mut Manifest) {
     for entry in catalog() {
         if let CatalogValue::Workflow(id) = entry.value {
             if ANALYSES.iter().any(|a| a.workflow == id) {
                 manifest.require_fixture(&entry, Surface::EffectsStack, VARIANT);
             }
         }
+    }
+}
+
+/// The frei0r effect's plug-in editor: the catalog entry its custom
+/// widget draws.
+fn frei0r_entry() -> Option<super::parity_manifest::CatalogEntry> {
+    catalog().into_iter().find(|e| matches!(e.value, CatalogValue::Parameter { presentation, .. } if presentation.widget == klipp_effects::registry::presentation::Widget::Custom("frei0r_plugin")))
+}
+
+fn require_frei0r(manifest: &mut Manifest) {
+    if let Some(entry) = frei0r_entry() {
+        manifest.require_fixture(&entry, Surface::EffectsStack, VARIANT);
     }
 }
 
@@ -295,10 +314,252 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
     });
 }
 
+/// A plug-in no machine has, declaring one parameter of each kind the
+/// editor draws: what the frei0r cases drive, registered once.
+fn parity_plugin() -> klipp_frei0r::Frei0rPluginInfo {
+    use klipp_frei0r::{ColorModel, ParamInfo, ParamKind, PluginType};
+    let param = |name: &str, kind| ParamInfo { name: name.into(), kind, explanation: String::new() };
+    let info = klipp_frei0r::Frei0rPluginInfo {
+        path: std::path::PathBuf::from("/nonexistent/klipp-parity/parity_fx.so"),
+        name: "ParityFx".into(),
+        author: "klipp".into(),
+        plugin_type: PluginType::Filter,
+        color_model: ColorModel::Rgba8888,
+        frei0r_version: 1,
+        major_version: 0,
+        minor_version: 1,
+        explanation: String::new(),
+        params: vec![param("Amount", ParamKind::Double), param("Active", ParamKind::Bool), param("Centre", ParamKind::Position), param("Caption", ParamKind::String), param("Tint", ParamKind::Color)],
+    };
+    static REGISTERED: std::sync::Once = std::sync::Once::new();
+    REGISTERED.call_once(|| klipp_effects::frei0r_effect::_register_for_test(info.clone()));
+    info
+}
+
+/// Type `text` into the number field at `at` and press Enter, as a user
+/// does: a click to focus, select all, the text, Enter.
+fn type_into(run: &mut Run, at: egui::Pos2, text: &str) {
+    for pressed in [true, false, true, false] {
+        run.button(at, egui::PointerButton::Primary, pressed);
+    }
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    run.key(egui::Key::A, egui::Modifiers::COMMAND);
+    run.frame(vec![egui::Event::Text(text.into())], egui::Modifiers::NONE);
+    run.key(egui::Key::Enter, egui::Modifiers::NONE);
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+}
+
+/// The first number drawn right of the text `label` on its line.
+fn number_right_of(run: &mut Run, label: &str) -> Option<egui::Pos2> {
+    let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
+    let at = drawn.iter().rev().find(|(t, _)| t == label).map(|(_, p)| *p)?;
+    drawn.iter().filter(|(t, p)| (p.y - at.y).abs() < 6.0 && p.x > at.x && t.trim_start_matches('-').starts_with(|c: char| c.is_ascii_digit())).min_by(|a, b| a.1.x.total_cmp(&b.1.x)).map(|(_, p)| *p)
+}
+
+/// Click right of `label` on its line, nearest first, until the clip's
+/// effect changes: a control drawn without text of its own (a frei0r
+/// switch's box).
+fn click_right_of(run: &mut Run, label: &str) -> bool {
+    let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
+    let Some(at) = drawn.iter().rev().find(|(t, _)| t == label).map(|(_, p)| *p) else { return false };
+    let before = format!("{:?}", run.clip().builtin_effects());
+    let mut x = at.x + 8.0;
+    while x < at.x + 160.0 {
+        let p = egui::pos2(x, at.y);
+        run.button(p, egui::PointerButton::Primary, true);
+        run.button(p, egui::PointerButton::Primary, false);
+        run.frame(Vec::new(), egui::Modifiers::NONE);
+        if format!("{:?}", run.clip().builtin_effects()) != before {
+            return true;
+        }
+        x += 4.0;
+    }
+    false
+}
+
+/// The frei0r plug-in editor's cases.
+fn run_frei0r(report: &mut Report) {
+    let Some(entry) = frei0r_entry() else {
+        report.case("frei0r editor", [], || Err("no catalog entry draws the frei0r editor".into()));
+        return;
+    };
+    let key = |interaction| CoverageKey::new(entry.type_id, &entry.parameter, Surface::EffectsStack, VARIANT, interaction);
+    let plugin = parity_plugin();
+    let defaults: Vec<klipp_frei0r::Frei0rValue> = plugin.params.iter().map(|p| klipp_frei0r::Frei0rValue::default_for(p.kind)).collect();
+    let effect = BuiltinEffect::Frei0r { type_id: plugin.type_id(), params: defaults.clone() };
+    let clip = fixture(&effect);
+
+    report.case("frei0r opened", [key(Interaction::OpenWithoutWrite)], || {
+        let (mut old, mut new) = both(&clip, |_| {});
+        let before = new.clip().picture_v2()?;
+        for run in [&mut old, &mut new] {
+            let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
+            if !drawn.iter().any(|(t, _)| t == "Amount") {
+                return Err("the plug-in's rows aren't drawn".into());
+            }
+        }
+        agree(&old, &new, 0, &[])?;
+        if new.clip().picture_v2()? != before {
+            return Err("opening it wrote the picture".into());
+        }
+        Ok(())
+    });
+
+    // A plug-in this machine doesn't have: said in both views, nothing
+    // written, and no rows for values it can't name.
+    report.case("frei0r missing", [key(Interaction::MissingAsset)], || {
+        let missing = fixture(&BuiltinEffect::Frei0r { type_id: "frei0r:/nonexistent/gone.so:Gone".into(), params: vec![klipp_frei0r::Frei0rValue::Double(0.25)] });
+        let (mut old, mut new) = both(&missing, |_| {});
+        for run in [&mut old, &mut new] {
+            let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
+            if !drawn.iter().any(|(t, _)| t.starts_with("⚠ Plugin not installed")) {
+                return Err(format!("no missing-plug-in notice (generated {})", run.state.use_generated_stack));
+            }
+        }
+        agree(&old, &new, 0, &[])
+    });
+
+    // Picked from the effects browser, as its double-click and drop do,
+    // in each view: the same effect, with the plug-in's declared defaults.
+    // Behind the switch the browser still adds a plug-in by its index
+    // (`effect_commands_in` routes only built-in effects by path): its add
+    // moves to a path when plug-ins become nodes, M4 step 5 (frei0r as a
+    // node). Until then both views add it the same way, which is what
+    // this holds.
+    report.case("frei0r picked", [key(Interaction::PluginSelect)], || {
+        let base = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
+        let (mut old, mut new) = both(&base, |_| {});
+        let source = crate::browser::effect_registry::EffectSource::Frei0r(plugin.clone());
+        for run in [&mut old, &mut new] {
+            let cmds = crate::browser::effects_tab::effect_commands_in(&run.state, &source, run.clip);
+            for cmd in cmds {
+                run.apply(cmd);
+            }
+        }
+        if !old.unapplied.is_empty() || !new.unapplied.is_empty() {
+            return Err(format!("unapplied: old {:?}, new {:?}", old.unapplied, new.unapplied));
+        }
+        let want = vec![BuiltinEffect::GaussianBlur { radius: 3.0 }, effect.clone()];
+        if old.clip().builtin_effects() != want.as_slice() || new.clip().builtin_effects() != want.as_slice() {
+            return Err(format!("old {:?}, new {:?}", old.clip().builtin_effects(), new.clip().builtin_effects()));
+        }
+        Ok(())
+    });
+
+    // Each of its values edited through its own control in both views:
+    // the same picture, one step, undone and redone exactly.
+    type Drive = fn(&mut Run) -> Result<(), String>;
+    let edits: [(&str, Drive); 5] = [
+        ("Amount", |r| {
+            let at = number_right_of(r, "Amount").ok_or("no number for Amount")?;
+            type_into(r, at, "0.4");
+            Ok(())
+        }),
+        ("Active", |r| if click_right_of(r, "Active") { Ok(()) } else { Err("no switch for Active".into()) }),
+        ("Centre X", |r| {
+            let at = number_right_of(r, "X").ok_or("no number for X")?;
+            type_into(r, at, "0.3");
+            Ok(())
+        }),
+        ("Centre Y", |r| {
+            let at = number_right_of(r, "Y").ok_or("no number for Y")?;
+            type_into(r, at, "0.7");
+            Ok(())
+        }),
+        ("Caption", |r| {
+            let drawn = r.frame(Vec::new(), egui::Modifiers::NONE);
+            let at = drawn.iter().rev().find(|(t, _)| t == "Caption").map(|(_, p)| *p).ok_or("no Caption")?;
+            let field = egui::pos2(at.x + 90.0, at.y);
+            r.button(field, egui::PointerButton::Primary, true);
+            r.button(field, egui::PointerButton::Primary, false);
+            r.frame(vec![egui::Event::Text("hi".into())], egui::Modifiers::NONE);
+            r.key(egui::Key::Enter, egui::Modifiers::NONE);
+            r.frame(Vec::new(), egui::Modifiers::NONE);
+            Ok(())
+        }),
+    ];
+    let colour: (&str, Drive) = ("Tint", |r| {
+        // Its button opens the picker; its R value typed there, then the
+        // picker closed by a click away from it, as a user does.
+        let drawn = r.frame(Vec::new(), egui::Modifiers::NONE);
+        let at = drawn.iter().rev().find(|(t, _)| t == "Tint").map(|(_, p)| *p).ok_or("no Tint")?;
+        let mut x = at.x + 8.0;
+        let red = loop {
+            if x > at.x + 160.0 {
+                return Err("no colour button for Tint".into());
+            }
+            let p = egui::pos2(x, at.y);
+            r.button(p, egui::PointerButton::Primary, true);
+            r.button(p, egui::PointerButton::Primary, false);
+            let drawn = r.frame(Vec::new(), egui::Modifiers::NONE);
+            if let Some((_, red)) = drawn.iter().rev().find(|(t, _)| t.starts_with("R ")) {
+                break *red;
+            }
+            x += 4.0;
+        };
+        type_into(r, red, "128");
+        let away = egui::pos2(500.0, 2900.0);
+        r.button(away, egui::PointerButton::Primary, true);
+        r.button(away, egui::PointerButton::Primary, false);
+        r.frame(Vec::new(), egui::Modifiers::NONE);
+        Ok(())
+    });
+    let mut edits = edits.to_vec();
+    edits.push(colour);
+    for (what, drive) in edits {
+        report.case(&format!("frei0r {what}"), [key(Interaction::PluginParameter), key(Interaction::UndoRedo)], || {
+            let (mut old, mut new) = both(&clip, |_| {});
+            let before = new.clip().picture_v2()?;
+            drive(&mut old).map_err(|e| format!("old: {e}"))?;
+            drive(&mut new).map_err(|e| format!("new: {e}"))?;
+            let after = new.clip().picture_v2()?;
+            if after == before {
+                return Err(format!("{what} changed nothing: {:?}", new.clip().builtin_effects()));
+            }
+            let depth = old.state.active_history().undo_count();
+            if depth == 0 {
+                return Err("the old view's edit left no step".into());
+            }
+            agree(&old, &new, depth, &[])?;
+            for _ in 0..depth {
+                if !new.step(false) {
+                    return Err("an undo step is missing".into());
+                }
+            }
+            if new.clip().picture_v2()? != before {
+                return Err("undo doesn't give back the picture before".into());
+            }
+            for _ in 0..depth {
+                if !new.step(true) {
+                    return Err("a redo step is missing".into());
+                }
+            }
+            if new.clip().picture_v2()? != after {
+                return Err("redo doesn't give back the picture after".into());
+            }
+            Ok(())
+        });
+    }
+}
+
 pub(super) fn run(report: &mut Report) {
     for a in ANALYSES {
         report.family(a.tag, |report| run_analysis(report, a));
     }
+    report.family("frei0r", run_frei0r);
+}
+
+/// The frei0r editor's required keys, but Pixels (the picture oracle's).
+#[test]
+fn frei0r_plug_ins_are_the_same_through_both_views() {
+    let mut report = Report::default();
+    report.family("frei0r", run_frei0r);
+    report.family_result().unwrap();
+    let mut manifest = Manifest::default();
+    require_frei0r(&mut manifest);
+    let wanted: Vec<_> = manifest.required.iter().filter(|k| !matches!(k.interaction, Interaction::Pixels)).collect();
+    let missing: Vec<_> = wanted.iter().filter(|k| !report.passed.contains(k)).collect();
+    assert!(!wanted.is_empty() && missing.is_empty(), "required and not earned: {missing:#?}");
 }
 
 #[test]
@@ -307,8 +568,21 @@ fn analysis_workflows_are_the_same_through_both_views() {
     report.family("analysis workflows", run);
     report.family_result().unwrap();
     let mut manifest = Manifest::default();
-    require(&mut manifest);
+    require_analyses(&mut manifest);
     let wanted: Vec<_> = manifest.required.iter().filter(|k| !matches!(k.interaction, Interaction::Pixels)).collect();
     let missing: Vec<_> = wanted.iter().filter(|k| !report.passed.contains(k)).collect();
+    assert!(missing.is_empty(), "required and not earned: {missing:#?}");
+}
+
+/// The whole family, as the orchestrator runs it: every key it requires
+/// (but Pixels) earned.
+#[test]
+fn every_specialist_key_is_earned() {
+    let mut report = Report::default();
+    run(&mut report);
+    report.family_result().unwrap();
+    let mut manifest = Manifest::default();
+    require(&mut manifest);
+    let missing: Vec<_> = manifest.required.iter().filter(|k| !matches!(k.interaction, Interaction::Pixels) && !report.passed.contains(k)).collect();
     assert!(missing.is_empty(), "required and not earned: {missing:#?}");
 }
