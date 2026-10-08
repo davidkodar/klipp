@@ -118,6 +118,9 @@ fn animation_of(node: &Node, key: &ParamKey) -> Option<klipp_graph_format::Anima
 }
 
 impl crate::state::AppState {
+    /// The node's implicit blend, distinct from an effect parameter named `mix`.
+    pub(crate) const NODE_MIX_DRAG_KEY: &'static str = "@mix";
+
     /// Run a path-addressed command on the state: `None` when `cmd` isn't
     /// one, else whether a picture changed (the engine wants the
     /// sequence). A refusal is said in a toast and changes nothing.
@@ -186,6 +189,7 @@ impl crate::state::AppState {
             AppCommand::SetParamAt { addr, key, .. } | AppCommand::MoveKeyAt { addr, key, .. } | AppCommand::AddKeyAt { addr, key, .. } | AppCommand::RemoveKeyAt { addr, key, .. } => {
                 drag_key(addr, key) != open && node_drag(addr) != open
             }
+            AppCommand::SetMixAt { addr, .. } => drag_key(addr, &Self::NODE_MIX_DRAG_KEY.into()) != open && node_drag(addr) != open,
             _ => super::command_writes::writes(cmd),
         }
     }
@@ -228,7 +232,13 @@ impl crate::state::AppState {
                 return Ok(());
             }
         }
-        if let [GraphOp::SetParam { path, key, .. } | GraphOp::SetAnim { path, key, .. } | GraphOp::AddKeyAt { path, key, .. } | GraphOp::RemoveKeyAt { path, key, .. }] = ops {
+        let mix_key = Self::NODE_MIX_DRAG_KEY.into();
+        let dragged = match ops {
+            [GraphOp::SetParam { path, key, .. } | GraphOp::SetAnim { path, key, .. } | GraphOp::AddKeyAt { path, key, .. } | GraphOp::RemoveKeyAt { path, key, .. }] => Some((path, key)),
+            [GraphOp::SetMix { path, .. }] => Some((path, &mix_key)),
+            _ => None,
+        };
+        if let Some((path, key)) = dragged {
             if self.active_history().pending_drag_key().is_some_and(|open| open == drag_key(path, key) || open == node_drag(path)) {
                 let graph_ops::GraphOpsOutcome { edit, .. } = graph_ops::graph_ops_edit(&self.sequences[self.active_sequence_idx], ops).map_err(refused)?;
                 if let EditCommand::PictureEdit { clip_id, edit, .. } = edit {
@@ -683,6 +693,52 @@ mod tests {
         assert_eq!(picture(&a, id), picture(&b, id), "the add's twin draws the same picture");
         undo(&mut b);
         assert_eq!(picture(&b, id), picture(&base, id), "the add undone");
+    }
+
+    #[test]
+    fn mix_drags_keep_other_nodes_and_parameters_in_separate_undo_steps() {
+        for other_node in [false, true] {
+            let (mut s, id) = state(&[E::GaussianBlur { radius: 3.0 }, E::Sharpen { amount: 0.5 }]);
+            let ids = effects(&s, id);
+            let addr = at(id, &[ids[0]]);
+            let before = picture(&s, id);
+            let key = AppState::NODE_MIX_DRAG_KEY.into();
+            s.path_command(&AppCommand::BeginParamEditAt {
+                addr: addr.clone(),
+                key,
+            });
+            for mix in [0.8, 0.6, 0.4] {
+                let cmd = AppCommand::SetMixAt {
+                    addr: addr.clone(),
+                    mix: Some(mix),
+                };
+                assert!(!s.closes_path_drag(&cmd));
+                s.before_dispatch(&cmd);
+                run(&mut s, cmd);
+            }
+            let dragged = picture(&s, id);
+            let cmd = if other_node {
+                AppCommand::SetMixAt {
+                    addr: at(id, &[ids[1]]),
+                    mix: Some(0.2),
+                }
+            } else {
+                AppCommand::SetParamAt {
+                    addr,
+                    key: "radius".into(),
+                    value: ParamValue::Float(9.0),
+                }
+            };
+            assert!(s.closes_path_drag(&cmd));
+            s.before_dispatch(&cmd);
+            run(&mut s, cmd);
+            assert!(!s.any_drag_in_progress());
+            assert_eq!(s.active_history().undo_count(), 2);
+            undo(&mut s);
+            assert_eq!(picture(&s, id), dragged);
+            undo(&mut s);
+            assert_eq!(picture(&s, id), before);
+        }
     }
 
     /// A drag by path is one undo step, whatever its steps: undo returns
