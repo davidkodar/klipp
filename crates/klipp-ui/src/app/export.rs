@@ -2688,27 +2688,8 @@ impl KlippApp {
                 true
             }
             AppCommand::ShowPanel { workspace, inspector_tab } => {
-                use crate::layout_state::InspectorTab;
-                use crate::state::Workspace;
-                match workspace.as_deref() {
-                    Some("edit") => self.state.active_workspace = Workspace::Edit,
-                    Some("colour" | "color") => self.state.active_workspace = Workspace::Color,
-                    Some("export") => self.state.active_workspace = Workspace::Export,
-                    _ => {}
-                }
-                let tab = match inspector_tab.as_deref() {
-                    Some("video") => Some(InspectorTab::Video),
-                    Some("audio") => Some(InspectorTab::Audio),
-                    Some("colour" | "color") => Some(InspectorTab::Color),
-                    Some("effects") => Some(InspectorTab::Effects),
-                    Some("title") => Some(InspectorTab::Title),
-                    Some("generator") => Some(InspectorTab::Generator),
-                    Some("info") => Some(InspectorTab::Info),
-                    _ => None,
-                };
-                if let Some(tab) = tab {
-                    self.layout.active_inspector_tab = tab;
-                    self.set_inspector_visible(true);
+                if super::main_layout::show_panel(&mut self.state, &mut self.layout, workspace.as_deref(), inspector_tab.as_deref()) {
+                    self.layout_dirty = true;
                 }
                 true
             }
