@@ -703,6 +703,27 @@ mod tests {
     }
 
     #[test]
+    fn every_routed_grade_node_has_a_required_per_node_fixture() {
+        let entries = catalog();
+        for ty in klipp_nodes::registry::node_types() {
+            let routed = crate::app::main_layout::per_node_kind(ty.kind);
+            let mut manifest = Manifest::default();
+            for entry in entries.iter().filter(|entry| entry.type_id == ty.desc.id) {
+                require_every_surface(&mut manifest, entry);
+            }
+            let registered = manifest
+                .required
+                .iter()
+                .any(|key| key.surface == Surface::GradePerNode);
+            assert_eq!(
+                registered, routed,
+                "{}: production routing and required fixtures disagree",
+                ty.desc.id
+            );
+        }
+    }
+
+    #[test]
     fn required_surfaces_follow_placed_kinds_and_reviewed_grade_routes() {
         let entries = catalog();
         for ty in klipp_effects::registry::effect_types() {
