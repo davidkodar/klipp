@@ -2451,6 +2451,9 @@ impl KlippApp {
             project.dirty = self.state.dirty;
             project.undo = self.state.active_history().undo_label().map(str::to_owned);
             project.redo = self.state.active_history().redo_label().map(str::to_owned);
+            project.undo_depth = self.state.active_history().undo_count();
+            project.redo_depth = self.state.active_history().redo_count();
+            project.generated_stack = self.state.use_generated_stack;
         }
         // And where the user is, so a frame read can put the playhead back.
         // Not while a seek is on its way: the playhead has not reached it
@@ -2682,6 +2685,31 @@ impl KlippApp {
                 self.state.clip_properties_media_id = Some(*media_id);
                 self.state.clip_properties_tab = crate::state::ClipPropertiesTab::default();
                 self.state.show_clip_properties = true;
+                true
+            }
+            AppCommand::ShowPanel { workspace, inspector_tab } => {
+                use crate::layout_state::InspectorTab;
+                use crate::state::Workspace;
+                match workspace.as_deref() {
+                    Some("edit") => self.state.active_workspace = Workspace::Edit,
+                    Some("colour" | "color") => self.state.active_workspace = Workspace::Color,
+                    Some("export") => self.state.active_workspace = Workspace::Export,
+                    _ => {}
+                }
+                let tab = match inspector_tab.as_deref() {
+                    Some("video") => Some(InspectorTab::Video),
+                    Some("audio") => Some(InspectorTab::Audio),
+                    Some("colour" | "color") => Some(InspectorTab::Color),
+                    Some("effects") => Some(InspectorTab::Effects),
+                    Some("title") => Some(InspectorTab::Title),
+                    Some("generator") => Some(InspectorTab::Generator),
+                    Some("info") => Some(InspectorTab::Info),
+                    _ => None,
+                };
+                if let Some(tab) = tab {
+                    self.layout.active_inspector_tab = tab;
+                    self.set_inspector_visible(true);
+                }
                 true
             }
             AppCommand::ApplyBuiltinWorkspaceLayout { index } => {

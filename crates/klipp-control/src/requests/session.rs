@@ -98,6 +98,16 @@ pub(crate) fn respond(
                 "pid": std::process::id(),
                 "revision": ctx.shared.revision(),
                 "active_jobs": active_jobs,
+                // The edit history's reach and its next steps, for a client
+                // checking that something wrote none (M3 step 18).
+                "history": {
+                    "undo_depth": project.undo_depth,
+                    "redo_depth": project.redo_depth,
+                    "next_undo": project.undo,
+                    "next_redo": project.redo,
+                },
+                // Which inspector view the app draws, as it runs.
+                "inspector": { "generated_stack": project.generated_stack },
                 "project": {
                     "path": project.path.as_ref().map(|p| p.to_string_lossy().to_string()),
                     "unsaved_changes": project.dirty,

@@ -21,6 +21,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         // recompute a clip's cached analysis from the parameter being
         // dragged, as it goes, so a drag's step holds what they write.
         AppCommand::SetSplitCompareNode { .. }
+        | AppCommand::ShowPanel { .. }
         | AppCommand::ToggleGraphDock
         | AppCommand::RevealGraph { .. }
         | AppCommand::SetGraphDockRoot { .. }

@@ -56,13 +56,15 @@ mod routing_tests {
         out
     }
 
-    // The test hook (`effect_command`) is routed on its own line, behind
-    // its feature, to the area that answers it.
+    // The test hooks (`effect_command`, `show_panel`) are routed each on
+    // its own line, behind their feature, to the area that answers them.
     #[test]
     fn the_test_hook_goes_to_the_area_that_answers_it() {
         let lib = include_str!("../lib.rs");
-        assert!(lib.contains(&format!("{HOOK}\n        cmd @ ControlCommand::EffectCommand {{ .. }} => requests::editing::respond(ctx, cmd, collect),")));
-        assert!(include_str!("editing.rs").contains(&format!("{HOOK}\n        ControlCommand::EffectCommand {{")));
+        for hook in ["EffectCommand", "ShowPanel"] {
+            assert!(lib.contains(&format!("{HOOK}\n        cmd @ ControlCommand::{hook} {{ .. }} => requests::editing::respond(ctx, cmd, collect),")), "{hook}");
+            assert!(include_str!("editing.rs").contains(&format!("{HOOK}\n        ControlCommand::{hook} {{")), "{hook}");
+        }
     }
 
     // `handle` routes each request to the area that answers it: a request

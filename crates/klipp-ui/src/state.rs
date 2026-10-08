@@ -504,6 +504,21 @@ pub enum RangeDragKind {
     RulerCreate { anchor_secs: f64 },
 }
 
+/// What `KLIPP_GENERATED_STACK` (its value, if set) asks of the
+/// inspector's generated view (M3): `"1"` on, `"0"` off, unset nothing
+/// (the default stands). Any other value asks nothing either, and says so
+/// in the log: a mistyped switch is never read as one or the other.
+pub fn generated_stack_switch(value: Option<&str>) -> Option<bool> {
+    match value? {
+        "1" => Some(true),
+        "0" => Some(false),
+        other => {
+            tracing::warn!("KLIPP_GENERATED_STACK={other:?} is neither 0 nor 1; the inspector keeps its default view");
+            None
+        }
+    }
+}
+
 /// Workspace mode — determines panel arrangement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Workspace {
@@ -5689,3 +5704,20 @@ mod paste_speed_tests {
         assert!(!target.param_modifiers().contains_key(&wiggle), "an effect modifier came without its effect");
     }
 }
+
+#[cfg(test)]
+mod generated_stack_switch_tests {
+    /// KLIPP_GENERATED_STACK: 1 on, 0 off, unset nothing; anything else
+    /// nothing too, never guessed.
+    #[test]
+    fn the_switch_reads_one_zero_and_nothing_else() {
+        use super::generated_stack_switch as read;
+        assert_eq!(read(Some("1")), Some(true));
+        assert_eq!(read(Some("0")), Some(false));
+        assert_eq!(read(None), None);
+        for bad in ["true", "on", "", " 1", "2"] {
+            assert_eq!(read(Some(bad)), None, "{bad:?}");
+        }
+    }
+}
+
