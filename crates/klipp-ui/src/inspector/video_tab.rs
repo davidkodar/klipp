@@ -1133,7 +1133,7 @@ fn show_clip_video(
     // BuiltinEffect::ColorFade entries on the clip's effects chain;
     // the engine patches each effect's `progress` per-frame from
     // clip-time + duration + mode (same pattern as Opacity).
-    show_color_fade_section(ui, theme, clip, cmds);
+    show_color_fade_section(ui, theme, clip, cmds, state.use_generated_stack);
 
     ui.add_space(8.0);
 
@@ -3583,7 +3583,10 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
     });
 }
 
-fn show_color_fade_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: &mut Vec<AppCommand>) {
+/// `by_path`: the generated stack's switch. With it on, an edit writes the
+/// Colour Fade's node by its path, as the stack's own card does, so the
+/// two edit one source of truth (M3 step 6).
+fn show_color_fade_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: &mut Vec<AppCommand>, by_path: bool) {
     section_card(ui, "COLOUR FADE", theme, |ui| {
         ui.add_space(4.0);
         egui::Frame::default()
@@ -3592,9 +3595,9 @@ fn show_color_fade_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, c
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
             .show(ui, |ui| {
-                color_fade_row(ui, theme, clip, cmds, klipp_effects::ColorFadeMode::In, "Fade From Colour");
+                color_fade_row(ui, theme, clip, cmds, klipp_effects::ColorFadeMode::In, "Fade From Colour", by_path);
                 ui.add_space(6.0);
-                color_fade_row(ui, theme, clip, cmds, klipp_effects::ColorFadeMode::Out, "Fade To Colour");
+                color_fade_row(ui, theme, clip, cmds, klipp_effects::ColorFadeMode::Out, "Fade To Colour", by_path);
             });
         ui.add_space(6.0);
     });
@@ -3611,8 +3614,10 @@ fn color_fade_row(
     cmds: &mut Vec<AppCommand>,
     mode: klipp_effects::ColorFadeMode,
     label: &str,
+    by_path: bool,
 ) {
     use klipp_effects::BuiltinEffect;
+    let update = |idx: usize, effect: BuiltinEffect| color_fade_update(clip, idx, effect, by_path);
     let existing = clip.builtin_effects().iter().enumerate().find_map(|(i, e)| match e {
         BuiltinEffect::ColorFade { color, duration_secs, mode: m, .. } if *m == mode => {
             Some((i, *color, *duration_secs))
@@ -3652,16 +3657,7 @@ fn color_fade_row(
             // Colour picker — reads/writes on change.
             let mut c = egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
             if ui.color_edit_button_srgba(&mut c).changed() {
-                cmds.push(AppCommand::UpdateBuiltinEffect {
-                    clip_id,
-                    index: idx,
-                    effect: BuiltinEffect::ColorFade {
-                        color: [c.r(), c.g(), c.b(), c.a()],
-                        duration_secs: duration,
-                        mode,
-                        progress: 0.0,
-                    },
-                });
+                cmds.push(update(idx, BuiltinEffect::ColorFade { color: [c.r(), c.g(), c.b(), c.a()], duration_secs: duration, mode, progress: 0.0 }));
             }
             ui.add_space(4.0);
             // Duration scrubby. egui's DragValue is enough — no need for
@@ -3674,19 +3670,51 @@ fn color_fade_row(
                 .suffix(" s")
                 .fixed_decimals(2)
             ).changed() {
-                cmds.push(AppCommand::UpdateBuiltinEffect {
-                    clip_id,
-                    index: idx,
-                    effect: BuiltinEffect::ColorFade {
-                        color,
-                        duration_secs: dur,
-                        mode,
-                        progress: 0.0,
-                    },
-                });
+                cmds.push(update(idx, BuiltinEffect::ColorFade { color, duration_secs: dur, mode, progress: 0.0 }));
             }
         }
     });
+}
+
+/// An edit of the clip's Colour Fade at `idx` of its effect list: its node
+/// by path when `by_path` (the generated stack's switch), else its place in
+/// the list.
+pub(crate) fn color_fade_update(clip: &Clip, idx: usize, effect: klipp_effects::BuiltinEffect, by_path: bool) -> AppCommand {
+    match clip.effect_node_at(false, idx).filter(|_| by_path) {
+        Some(node) => AppCommand::SetPayloadAt {
+            addr: klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip.id.0 }, [node]),
+            payload: serde_json::to_value(&effect).unwrap_or(serde_json::Value::Null),
+        },
+        None => AppCommand::UpdateBuiltinEffect { clip_id: clip.id, index: idx, effect },
+    }
+}
+
+#[cfg(test)]
+mod color_fade_tests {
+    use super::*;
+
+    /// With the switch on, the Video tab's Colour Fade edit writes the very
+    /// node the generated stack's Colour Fade row addresses; off, it's the
+    /// list edit it always was.
+    #[test]
+    fn color_fade_has_one_source_of_truth() {
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut clip = Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
+        clip.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 });
+        let fade = klipp_effects::BuiltinEffect::ColorFade { color: [0, 0, 0, 255], duration_secs: 1.0, mode: klipp_effects::ColorFadeMode::In, progress: 0.0 };
+        clip.push_effect(fade.clone());
+        let lifted = clip.picture_v2().unwrap();
+        let view = klipp_graph_lift::stack_view::project(klipp_graph_format::path::Root::Clip { clip: clip.id.0 }, &lifted.picture.graph, &klipp_timeline::RegistryCatalog, None).unwrap();
+        let row = view.rows().find(|r| klipp_graph_lift::effect_params::tag(crate::inspector::stack_view::node_at(&lifted.picture.graph, &r.addr).unwrap()) == Some("color_fade")).expect("the fade's row");
+        match color_fade_update(&clip, 1, fade.clone(), true) {
+            AppCommand::SetPayloadAt { addr, payload } => {
+                assert_eq!(addr, row.addr, "the stack's own node");
+                assert_eq!(payload["type"], "color_fade");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(color_fade_update(&clip, 1, fade, false), AppCommand::UpdateBuiltinEffect { index: 1, .. }));
+    }
 }
 
 fn show_behaviors_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: &mut Vec<AppCommand>) {

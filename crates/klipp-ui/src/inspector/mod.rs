@@ -8,6 +8,7 @@ pub mod audio_fx_inspector;
 pub mod color_and_luts;
 pub mod effects_tab;
 pub mod generated;
+pub mod stack_view;
 pub mod info_tab;
 pub mod modifier_ui;
 pub mod title_tab;
@@ -402,7 +403,11 @@ impl NewInspectorPanel {
                 InspectorTab::Effects => {
                     if let Some((_, clip)) = clip_info {
                         let clip_time_secs = keyframe_selection::clip_time(state, clip);
-                        effects_tab::show(ui, theme, state, clip, &mut cmds, &mut self.show_add_builtin, &mut self.show_add_ofx, clip_time_secs);
+                        if state.use_generated_stack {
+                            stack_view::show(ui, theme, state, clip, &mut cmds, clip_time_secs);
+                        } else {
+                            effects_tab::show(ui, theme, state, clip, &mut cmds, &mut self.show_add_builtin, &mut self.show_add_ofx, clip_time_secs);
+                        }
                     } else {
                         effects_tab::show_empty(ui, theme, &mut cmds);
                     }

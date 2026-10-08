@@ -120,7 +120,6 @@ pub fn show(
     let card_rounding = 6.0;
     let header_h = 32.0;
     let badge_green = theme.marker_success;
-    let badge_gray = theme.text_dim;
 
     for (i, effect) in clip.builtin_effects().iter().enumerate() {
         let name = builtin_effect_name(effect).into_owned();
@@ -380,294 +379,7 @@ pub fn show(
         }
     }
 
-    // ── OFX effects ──
-    let mut ofx_remove = None;
-    let mut ofx_move_to: Option<(usize, usize)> = None;
-
-    for (i, effect) in clip.ofx_effects().iter().enumerate() {
-        let display_name = effect.plugin_name
-            .rsplit_once('.')
-            .map(|(_, name)| name)
-            .unwrap_or(&effect.plugin_name);
-
-        let header_id = ui.make_persistent_id(format!("ofx_{clip_id:?}_{i}"));
-        let mut col_state = egui::collapsing_header::CollapsingState::load_with_default_open(
-            ui.ctx(), header_id, true,
-        );
-        let is_open = col_state.is_open();
-        let card_w = ui.available_width();
-
-        // ── Card header ──
-        let (header_rect, header_resp) = ui.allocate_exact_size(
-            egui::vec2(card_w, header_h), egui::Sense::click_and_drag(),
-        );
-
-        let header_rounding = if is_open {
-            egui::Rounding { nw: card_rounding, ne: card_rounding, sw: 0.0, se: 0.0 }
-        } else {
-            egui::Rounding::same(card_rounding)
-        };
-        ui.painter().rect_filled(header_rect, header_rounding, card_header_bg);
-        ui.painter().rect_stroke(header_rect.shrink(0.25), header_rounding, egui::Stroke::new(0.5_f32, theme.border));
-
-        // Collapse caret (SVG icon)
-        let caret_x = header_rect.min.x + pad;
-        let caret_icon = if is_open { Icon::CaretDown } else { Icon::CaretRight };
-        caret_icon.image(10.0).tint(theme.text_dim).paint_at(ui, egui::Rect::from_center_size(
-            egui::pos2(caret_x + 5.0, header_rect.center().y), egui::vec2(10.0, 10.0),
-        ));
-
-        // Effect name
-        let name_x = caret_x + 18.0;
-        ui.painter().text(
-            egui::pos2(name_x, header_rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            display_name,
-            egui::FontId::proportional(13.0),
-            theme.text_primary,
-        );
-
-        // "OFX" badge — outlined pill, gray
-        let badge_text = "OFX";
-        let badge_font = egui::FontId::proportional(10.0);
-        let badge_galley = ui.painter().layout_no_wrap(badge_text.to_string(), badge_font.clone(), badge_gray);
-        let badge_w = badge_galley.size().x + 10.0;
-        let badge_h = 16.0;
-        let name_galley = ui.painter().layout_no_wrap(display_name.to_string(), egui::FontId::proportional(13.0), theme.text_primary);
-        let badge_x = name_x + name_galley.size().x + 8.0;
-        let badge_rect = egui::Rect::from_min_size(
-            egui::pos2(badge_x, header_rect.center().y - badge_h / 2.0),
-            egui::vec2(badge_w, badge_h),
-        );
-        ui.painter().rect_stroke(badge_rect, badge_h / 2.0, egui::Stroke::new(0.8_f32, badge_gray));
-        ui.painter().text(
-            badge_rect.center(), egui::Align2::CENTER_CENTER,
-            badge_text, badge_font, badge_gray,
-        );
-
-        // Right side: × remove button
-        let remove_x = header_rect.max.x - pad - 6.0;
-        let remove_center = egui::pos2(remove_x, header_rect.center().y);
-        let remove_rect = egui::Rect::from_center_size(remove_center, egui::vec2(18.0, 18.0));
-        let remove_resp = ui.interact(remove_rect, ui.id().with(("ofx_rm", i)), egui::Sense::click());
-        let remove_color = if remove_resp.hovered() { theme.text_primary } else { theme.text_dim };
-        ui.painter().text(
-            remove_center, egui::Align2::CENTER_CENTER,
-            "\u{00d7}", egui::FontId::proportional(13.0), remove_color,
-        );
-        let remove_clicked = remove_resp.on_hover_text("Remove effect").clicked();
-        if remove_clicked {
-            ofx_remove = Some(i);
-        }
-
-        // Enable/disable eye-icon toggle — same style as the builtin path.
-        let enabled = effect.enabled;
-        let toggle_rect = egui::Rect::from_min_size(
-            egui::pos2(remove_x - 26.0, header_rect.center().y - 8.0),
-            egui::vec2(16.0, 16.0),
-        );
-        let toggle_resp = ui
-            .interact(toggle_rect, ui.id().with(("ofx_tog", i)), egui::Sense::click())
-            .on_hover_text(if enabled { "Disable effect" } else { "Enable effect" });
-        let eye_icon = if enabled { Icon::Eye } else { Icon::EyeSlash };
-        let tint = if enabled {
-            theme.text_primary
-        } else {
-            theme.text_dim
-        };
-        eye_icon.image(14.0).tint(tint).paint_at(ui, toggle_rect);
-        let toggle_clicked = toggle_resp.clicked();
-        if toggle_clicked {
-            cmds.push(AppCommand::SetEffectEnabled {
-                clip_id,
-                effect_index: i,
-                enabled: !enabled,
-            });
-        }
-
-        // Split-compare (A/B) toggle — mirrors the builtin path.
-        // The compared effect is a node of the clip's picture (M3 step 4),
-        // so a reorder or a removal before it leaves the compare on it.
-        let compare_path = clip.effect_node_at(true, i).map(|n| klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip_id.0 }, [n]));
-        let compare_active = compare_path.is_some()
-            && matches!(&state.split_compare_node, Some((cid, path)) if *cid == clip_id && Some(path) == compare_path.as_ref());
-        let compare_rect = egui::Rect::from_min_size(
-            egui::pos2(remove_x - 48.0, header_rect.center().y - 8.0),
-            egui::vec2(16.0, 16.0),
-        );
-        let compare_resp = ui
-            .interact(compare_rect, ui.id().with(("ofx_cmp", i)), egui::Sense::click())
-            .on_hover_text(if compare_active { "Stop A/B compare" } else { "A/B compare: bypass vs applied" });
-        let compare_tint = if compare_active {
-            theme.accent_alt
-        } else if compare_resp.hovered() {
-            theme.text_primary
-        } else {
-            theme.text_dim
-        };
-        ui.painter().text(
-            compare_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "\u{25D0}",
-            egui::FontId::proportional(13.0),
-            compare_tint,
-        );
-        let compare_clicked = compare_resp.clicked();
-        if compare_clicked {
-            if compare_active {
-                cmds.push(AppCommand::SetSplitCompareNode { clip_id: None, path: None });
-            } else if let Some(path) = compare_path {
-                cmds.push(AppCommand::SetSplitCompareNode { clip_id: Some(clip_id), path: Some(path) });
-            }
-        }
-
-        // Click header to toggle collapse
-        if header_resp.clicked() && !remove_clicked && !toggle_clicked && !compare_clicked {
-            col_state.toggle(ui);
-        }
-
-        col_state.store(ui.ctx());
-
-        // ── Card body ──
-        if is_open {
-            let body_frame = egui::Frame::none()
-                .fill(card_bg)
-                .stroke(egui::Stroke::new(0.5_f32, theme.border))
-                .rounding(egui::Rounding { nw: 0.0, ne: 0.0, sw: card_rounding, se: card_rounding })
-                .inner_margin(egui::Margin { left: pad, right: pad, top: 8.0, bottom: 8.0 });
-            body_frame.show(ui, |ui: &mut egui::Ui| {
-                // When disabled, dim and lock the params — mirrors the
-                // builtin path for consistency.
-                ui.add_enabled_ui(enabled, |ui| {
-                // CPU-only notice for float-only plugins (CImg, keyers, etc.)
-                let is_float_plugin = effect.plugin_name.contains("cimg")
-                    || effect.plugin_name.contains("CImg")
-                    || effect.plugin_name.contains("PIK")
-                    || effect.plugin_name.contains("Keyer")
-                    || effect.plugin_name.contains("IDistort")
-                    || effect.plugin_name.contains("STMap")
-                    || effect.plugin_name.contains("VectorToColor")
-                    || effect.plugin_name.contains("ContactSheet");
-                if is_float_plugin {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("CPU only").size(10.0).color(theme.marker_warning).strong());
-                        ui.label(egui::RichText::new("\u{2014} adjust while paused, apply on export").size(10.0).color(theme.text_dim));
-                    });
-                    ui.add_space(2.0);
-                }
-
-                // Render-only notice for temporal plugins
-                let is_temporal = effect.plugin_name.contains("Retime")
-                    || effect.plugin_name.contains("SlitScan")
-                    || effect.plugin_name.contains("timeOffset")
-                    || effect.plugin_name.contains("TimeOffset");
-                if is_temporal {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Render only").size(10.0).color(theme.marker_error).strong());
-                        ui.label(egui::RichText::new("\u{2014} not real-time, applied on export").size(10.0).color(theme.text_dim));
-                    });
-                    ui.add_space(2.0);
-                }
-
-                // Multi-view/stereo notice
-                let is_stereo = effect.plugin_name.contains("anaglyph")
-                    || effect.plugin_name.contains("Anaglyph")
-                    || effect.plugin_name.contains("joinViews")
-                    || effect.plugin_name.contains("JoinView")
-                    || effect.plugin_name.contains("mixViews")
-                    || effect.plugin_name.contains("MixView")
-                    || effect.plugin_name.contains("oneView")
-                    || effect.plugin_name.contains("OneView")
-                    || effect.plugin_name.contains("sideBySide")
-                    || effect.plugin_name.contains("SideBySide");
-                if is_stereo {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Requires multi-view").size(10.0).color(theme.marker_error).strong());
-                        ui.label(egui::RichText::new("\u{2014} stereo 3D not supported yet").size(10.0).color(theme.text_dim));
-                    });
-                    ui.add_space(2.0);
-                }
-
-                // Show parameter controls if plugin has declared params
-                if let Some(plugin_info) = state.available_plugins.iter().find(|p| p.name == effect.plugin_name) {
-                    for desc in &plugin_info.parameters {
-                        if desc.secret {
-                            continue;
-                        }
-                        match desc.param_type {
-                            klipp_plugin::ParamType::Group | klipp_plugin::ParamType::Page => continue,
-                            _ => {}
-                        }
-                        show_ofx_param(ui, theme, clip_id, i, effect, desc, cmds);
-                    }
-                    if plugin_info.parameters.is_empty() {
-                        ui.label(
-                            egui::RichText::new("No parameters")
-                                .size(10.0)
-                                .color(theme.text_dim),
-                        );
-                    }
-                }
-                }); // end ui.add_enabled_ui
-            });
-        }
-
-        // Drag visual feedback + reorder
-        if header_resp.dragged_by(egui::PointerButton::Primary) {
-            ui.painter().rect_stroke(
-                header_rect,
-                if is_open { egui::Rounding { nw: card_rounding, ne: card_rounding, sw: 0.0, se: 0.0 } } else { egui::Rounding::same(card_rounding) },
-                egui::Stroke::new(2.0_f32, theme.accent),
-            );
-            let drag_dy = header_resp.drag_delta().y;
-            let total_drag: f32 = ui.ctx().data_mut(|d| {
-                let key = egui::Id::new("ofx_drag_accum").with(i);
-                let accum: &mut f32 = d.get_temp_mut_or_default(key);
-                *accum += drag_dy;
-                *accum
-            });
-            if total_drag < -15.0 && i > 0 {
-                ui.painter().hline(header_rect.x_range(), header_rect.min.y - 2.0, egui::Stroke::new(2.0_f32, theme.accent));
-            } else if total_drag > 15.0 && i + 1 < clip.ofx_effects().len() {
-                let line_y = if is_open { ui.cursor().min.y + 2.0 } else { header_rect.max.y + 2.0 };
-                ui.painter().hline(header_rect.x_range(), line_y, egui::Stroke::new(2.0_f32, theme.accent));
-            }
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-        }
-        if header_resp.drag_stopped() {
-            let total_drag: f32 = ui.ctx().data_mut(|d| {
-                let key = egui::Id::new("ofx_drag_accum").with(i);
-                let accum = d.get_temp::<f32>(key).unwrap_or(0.0);
-                d.remove_temp::<f32>(key);
-                accum
-            });
-            let slot_h = 40.0_f32;
-            let steps = (total_drag.abs() / slot_h).floor() as usize;
-            if steps > 0 {
-                let max_idx = clip.ofx_effects().len() - 1;
-                let target = if total_drag < 0.0 {
-                    i.saturating_sub(steps)
-                } else {
-                    (i + steps).min(max_idx)
-                };
-                if target != i {
-                    ofx_move_to = Some((i, target));
-                }
-            }
-        }
-        if header_resp.hovered() && !header_resp.dragged() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-        }
-
-        ui.add_space(4.0);
-    }
-
-    if let Some(idx) = ofx_remove {
-        cmds.push(AppCommand::RemoveEffect { clip_id, effect_index: idx });
-    }
-    if let Some((from, to)) = ofx_move_to {
-        cmds.push(AppCommand::ReorderEffect { clip_id, from_index: from, to_index: to });
-    }
+    show_ofx_cards(ui, theme, state, clip, cmds);
 
     // ── Add Effect button (dashed border, accent "+", "E" shortcut badge) ──
     show_add_effect_button(ui, theme, clip, cmds);
@@ -2872,4 +2584,309 @@ pub(crate) fn frei0r_body(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppStat
         });
     }
     changed
+}
+
+/// A clip's plug-in (OFX) effect cards, with their reorder and remove.
+/// Shared by the effects tab and the generated stack, which draws them
+/// unchanged under its own rows (M4 owns them; M3 step 12).
+pub(crate) fn show_ofx_cards(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip, cmds: &mut Vec<AppCommand>) {
+    let clip_id = clip.id;
+    let pad = 14.0;
+    let card_bg = theme.bg_raised;
+    let card_header_bg = egui::Color32::from_rgb(
+        (card_bg.r() as u16).saturating_sub(8) as u8,
+        (card_bg.g() as u16).saturating_sub(8) as u8,
+        (card_bg.b() as u16).saturating_sub(8) as u8,
+    );
+    let card_rounding = 6.0;
+    let header_h = 32.0;
+    let badge_gray = theme.text_dim;
+    // ── OFX effects ──
+    let mut ofx_remove = None;
+    let mut ofx_move_to: Option<(usize, usize)> = None;
+
+    for (i, effect) in clip.ofx_effects().iter().enumerate() {
+        let display_name = effect.plugin_name
+            .rsplit_once('.')
+            .map(|(_, name)| name)
+            .unwrap_or(&effect.plugin_name);
+
+        let header_id = ui.make_persistent_id(format!("ofx_{clip_id:?}_{i}"));
+        let mut col_state = egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(), header_id, true,
+        );
+        let is_open = col_state.is_open();
+        let card_w = ui.available_width();
+
+        // ── Card header ──
+        let (header_rect, header_resp) = ui.allocate_exact_size(
+            egui::vec2(card_w, header_h), egui::Sense::click_and_drag(),
+        );
+
+        let header_rounding = if is_open {
+            egui::Rounding { nw: card_rounding, ne: card_rounding, sw: 0.0, se: 0.0 }
+        } else {
+            egui::Rounding::same(card_rounding)
+        };
+        ui.painter().rect_filled(header_rect, header_rounding, card_header_bg);
+        ui.painter().rect_stroke(header_rect.shrink(0.25), header_rounding, egui::Stroke::new(0.5_f32, theme.border));
+
+        // Collapse caret (SVG icon)
+        let caret_x = header_rect.min.x + pad;
+        let caret_icon = if is_open { Icon::CaretDown } else { Icon::CaretRight };
+        caret_icon.image(10.0).tint(theme.text_dim).paint_at(ui, egui::Rect::from_center_size(
+            egui::pos2(caret_x + 5.0, header_rect.center().y), egui::vec2(10.0, 10.0),
+        ));
+
+        // Effect name
+        let name_x = caret_x + 18.0;
+        ui.painter().text(
+            egui::pos2(name_x, header_rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            display_name,
+            egui::FontId::proportional(13.0),
+            theme.text_primary,
+        );
+
+        // "OFX" badge — outlined pill, gray
+        let badge_text = "OFX";
+        let badge_font = egui::FontId::proportional(10.0);
+        let badge_galley = ui.painter().layout_no_wrap(badge_text.to_string(), badge_font.clone(), badge_gray);
+        let badge_w = badge_galley.size().x + 10.0;
+        let badge_h = 16.0;
+        let name_galley = ui.painter().layout_no_wrap(display_name.to_string(), egui::FontId::proportional(13.0), theme.text_primary);
+        let badge_x = name_x + name_galley.size().x + 8.0;
+        let badge_rect = egui::Rect::from_min_size(
+            egui::pos2(badge_x, header_rect.center().y - badge_h / 2.0),
+            egui::vec2(badge_w, badge_h),
+        );
+        ui.painter().rect_stroke(badge_rect, badge_h / 2.0, egui::Stroke::new(0.8_f32, badge_gray));
+        ui.painter().text(
+            badge_rect.center(), egui::Align2::CENTER_CENTER,
+            badge_text, badge_font, badge_gray,
+        );
+
+        // Right side: × remove button
+        let remove_x = header_rect.max.x - pad - 6.0;
+        let remove_center = egui::pos2(remove_x, header_rect.center().y);
+        let remove_rect = egui::Rect::from_center_size(remove_center, egui::vec2(18.0, 18.0));
+        let remove_resp = ui.interact(remove_rect, ui.id().with(("ofx_rm", i)), egui::Sense::click());
+        let remove_color = if remove_resp.hovered() { theme.text_primary } else { theme.text_dim };
+        ui.painter().text(
+            remove_center, egui::Align2::CENTER_CENTER,
+            "\u{00d7}", egui::FontId::proportional(13.0), remove_color,
+        );
+        let remove_clicked = remove_resp.on_hover_text("Remove effect").clicked();
+        if remove_clicked {
+            ofx_remove = Some(i);
+        }
+
+        // Enable/disable eye-icon toggle — same style as the builtin path.
+        let enabled = effect.enabled;
+        let toggle_rect = egui::Rect::from_min_size(
+            egui::pos2(remove_x - 26.0, header_rect.center().y - 8.0),
+            egui::vec2(16.0, 16.0),
+        );
+        let toggle_resp = ui
+            .interact(toggle_rect, ui.id().with(("ofx_tog", i)), egui::Sense::click())
+            .on_hover_text(if enabled { "Disable effect" } else { "Enable effect" });
+        let eye_icon = if enabled { Icon::Eye } else { Icon::EyeSlash };
+        let tint = if enabled {
+            theme.text_primary
+        } else {
+            theme.text_dim
+        };
+        eye_icon.image(14.0).tint(tint).paint_at(ui, toggle_rect);
+        let toggle_clicked = toggle_resp.clicked();
+        if toggle_clicked {
+            cmds.push(AppCommand::SetEffectEnabled {
+                clip_id,
+                effect_index: i,
+                enabled: !enabled,
+            });
+        }
+
+        // Split-compare (A/B) toggle — mirrors the builtin path.
+        // The compared effect is a node of the clip's picture (M3 step 4),
+        // so a reorder or a removal before it leaves the compare on it.
+        let compare_path = clip.effect_node_at(true, i).map(|n| klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip_id.0 }, [n]));
+        let compare_active = compare_path.is_some()
+            && matches!(&state.split_compare_node, Some((cid, path)) if *cid == clip_id && Some(path) == compare_path.as_ref());
+        let compare_rect = egui::Rect::from_min_size(
+            egui::pos2(remove_x - 48.0, header_rect.center().y - 8.0),
+            egui::vec2(16.0, 16.0),
+        );
+        let compare_resp = ui
+            .interact(compare_rect, ui.id().with(("ofx_cmp", i)), egui::Sense::click())
+            .on_hover_text(if compare_active { "Stop A/B compare" } else { "A/B compare: bypass vs applied" });
+        let compare_tint = if compare_active {
+            theme.accent_alt
+        } else if compare_resp.hovered() {
+            theme.text_primary
+        } else {
+            theme.text_dim
+        };
+        ui.painter().text(
+            compare_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "\u{25D0}",
+            egui::FontId::proportional(13.0),
+            compare_tint,
+        );
+        let compare_clicked = compare_resp.clicked();
+        if compare_clicked {
+            if compare_active {
+                cmds.push(AppCommand::SetSplitCompareNode { clip_id: None, path: None });
+            } else if let Some(path) = compare_path {
+                cmds.push(AppCommand::SetSplitCompareNode { clip_id: Some(clip_id), path: Some(path) });
+            }
+        }
+
+        // Click header to toggle collapse
+        if header_resp.clicked() && !remove_clicked && !toggle_clicked && !compare_clicked {
+            col_state.toggle(ui);
+        }
+
+        col_state.store(ui.ctx());
+
+        // ── Card body ──
+        if is_open {
+            let body_frame = egui::Frame::none()
+                .fill(card_bg)
+                .stroke(egui::Stroke::new(0.5_f32, theme.border))
+                .rounding(egui::Rounding { nw: 0.0, ne: 0.0, sw: card_rounding, se: card_rounding })
+                .inner_margin(egui::Margin { left: pad, right: pad, top: 8.0, bottom: 8.0 });
+            body_frame.show(ui, |ui: &mut egui::Ui| {
+                // When disabled, dim and lock the params — mirrors the
+                // builtin path for consistency.
+                ui.add_enabled_ui(enabled, |ui| {
+                // CPU-only notice for float-only plugins (CImg, keyers, etc.)
+                let is_float_plugin = effect.plugin_name.contains("cimg")
+                    || effect.plugin_name.contains("CImg")
+                    || effect.plugin_name.contains("PIK")
+                    || effect.plugin_name.contains("Keyer")
+                    || effect.plugin_name.contains("IDistort")
+                    || effect.plugin_name.contains("STMap")
+                    || effect.plugin_name.contains("VectorToColor")
+                    || effect.plugin_name.contains("ContactSheet");
+                if is_float_plugin {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("CPU only").size(10.0).color(theme.marker_warning).strong());
+                        ui.label(egui::RichText::new("\u{2014} adjust while paused, apply on export").size(10.0).color(theme.text_dim));
+                    });
+                    ui.add_space(2.0);
+                }
+
+                // Render-only notice for temporal plugins
+                let is_temporal = effect.plugin_name.contains("Retime")
+                    || effect.plugin_name.contains("SlitScan")
+                    || effect.plugin_name.contains("timeOffset")
+                    || effect.plugin_name.contains("TimeOffset");
+                if is_temporal {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Render only").size(10.0).color(theme.marker_error).strong());
+                        ui.label(egui::RichText::new("\u{2014} not real-time, applied on export").size(10.0).color(theme.text_dim));
+                    });
+                    ui.add_space(2.0);
+                }
+
+                // Multi-view/stereo notice
+                let is_stereo = effect.plugin_name.contains("anaglyph")
+                    || effect.plugin_name.contains("Anaglyph")
+                    || effect.plugin_name.contains("joinViews")
+                    || effect.plugin_name.contains("JoinView")
+                    || effect.plugin_name.contains("mixViews")
+                    || effect.plugin_name.contains("MixView")
+                    || effect.plugin_name.contains("oneView")
+                    || effect.plugin_name.contains("OneView")
+                    || effect.plugin_name.contains("sideBySide")
+                    || effect.plugin_name.contains("SideBySide");
+                if is_stereo {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Requires multi-view").size(10.0).color(theme.marker_error).strong());
+                        ui.label(egui::RichText::new("\u{2014} stereo 3D not supported yet").size(10.0).color(theme.text_dim));
+                    });
+                    ui.add_space(2.0);
+                }
+
+                // Show parameter controls if plugin has declared params
+                if let Some(plugin_info) = state.available_plugins.iter().find(|p| p.name == effect.plugin_name) {
+                    for desc in &plugin_info.parameters {
+                        if desc.secret {
+                            continue;
+                        }
+                        match desc.param_type {
+                            klipp_plugin::ParamType::Group | klipp_plugin::ParamType::Page => continue,
+                            _ => {}
+                        }
+                        show_ofx_param(ui, theme, clip_id, i, effect, desc, cmds);
+                    }
+                    if plugin_info.parameters.is_empty() {
+                        ui.label(
+                            egui::RichText::new("No parameters")
+                                .size(10.0)
+                                .color(theme.text_dim),
+                        );
+                    }
+                }
+                }); // end ui.add_enabled_ui
+            });
+        }
+
+        // Drag visual feedback + reorder
+        if header_resp.dragged_by(egui::PointerButton::Primary) {
+            ui.painter().rect_stroke(
+                header_rect,
+                if is_open { egui::Rounding { nw: card_rounding, ne: card_rounding, sw: 0.0, se: 0.0 } } else { egui::Rounding::same(card_rounding) },
+                egui::Stroke::new(2.0_f32, theme.accent),
+            );
+            let drag_dy = header_resp.drag_delta().y;
+            let total_drag: f32 = ui.ctx().data_mut(|d| {
+                let key = egui::Id::new("ofx_drag_accum").with(i);
+                let accum: &mut f32 = d.get_temp_mut_or_default(key);
+                *accum += drag_dy;
+                *accum
+            });
+            if total_drag < -15.0 && i > 0 {
+                ui.painter().hline(header_rect.x_range(), header_rect.min.y - 2.0, egui::Stroke::new(2.0_f32, theme.accent));
+            } else if total_drag > 15.0 && i + 1 < clip.ofx_effects().len() {
+                let line_y = if is_open { ui.cursor().min.y + 2.0 } else { header_rect.max.y + 2.0 };
+                ui.painter().hline(header_rect.x_range(), line_y, egui::Stroke::new(2.0_f32, theme.accent));
+            }
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        }
+        if header_resp.drag_stopped() {
+            let total_drag: f32 = ui.ctx().data_mut(|d| {
+                let key = egui::Id::new("ofx_drag_accum").with(i);
+                let accum = d.get_temp::<f32>(key).unwrap_or(0.0);
+                d.remove_temp::<f32>(key);
+                accum
+            });
+            let slot_h = 40.0_f32;
+            let steps = (total_drag.abs() / slot_h).floor() as usize;
+            if steps > 0 {
+                let max_idx = clip.ofx_effects().len() - 1;
+                let target = if total_drag < 0.0 {
+                    i.saturating_sub(steps)
+                } else {
+                    (i + steps).min(max_idx)
+                };
+                if target != i {
+                    ofx_move_to = Some((i, target));
+                }
+            }
+        }
+        if header_resp.hovered() && !header_resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+
+        ui.add_space(4.0);
+    }
+
+    if let Some(idx) = ofx_remove {
+        cmds.push(AppCommand::RemoveEffect { clip_id, effect_index: idx });
+    }
+    if let Some((from, to)) = ofx_move_to {
+        cmds.push(AppCommand::ReorderEffect { clip_id, from_index: from, to_index: to });
+    }
 }
