@@ -7,6 +7,7 @@ pub mod audio_tab;
 pub mod audio_fx_inspector;
 pub mod color_and_luts;
 pub mod effects_tab;
+pub mod generated;
 pub mod info_tab;
 pub mod modifier_ui;
 pub mod title_tab;
