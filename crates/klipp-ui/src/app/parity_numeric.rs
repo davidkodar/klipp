@@ -17,7 +17,7 @@ use serde_json::Value;
 
 const VARIANT: &str = "editable";
 
-fn numeric(entry: &CatalogEntry) -> bool {
+pub(super) fn numeric(entry: &CatalogEntry) -> bool {
     !entry.grade
         && matches!(entry.value, CatalogValue::Parameter { presentation, .. }
         if matches!(presentation.widget, Widget::Scrub | Widget::Slider | Widget::Gradient(_) | Widget::HueRainbow | Widget::Vec2))
@@ -47,7 +47,7 @@ pub(super) fn require(manifest: &mut Manifest) {
     }
 }
 
-fn with_field(
+pub(super) fn with_field(
     effect: &BuiltinEffect,
     desc: &ParamDesc,
     value: Value,
@@ -64,7 +64,7 @@ fn stored(effect: &BuiltinEffect, desc: &ParamDesc) -> Value {
     effect_value(&serde_json::to_value(effect).unwrap(), desc)
 }
 
-fn number(desc: &ParamDesc, value: f32) -> Value {
+pub(super) fn number(desc: &ParamDesc, value: f32) -> Value {
     if desc.kind == ParamKind::Whole {
         Value::from(value.round().max(0.0) as u32)
     } else {
@@ -72,7 +72,7 @@ fn number(desc: &ParamDesc, value: f32) -> Value {
     }
 }
 
-fn editable(ty: &EffectType, pres: &Presentation) -> Result<BuiltinEffect, String> {
+pub(super) fn editable(ty: &EffectType, pres: &Presentation) -> Result<BuiltinEffect, String> {
     let mut effect = (ty.sample)();
     for Cond::ParamIs { key, value } in [pres.visible_if, pres.enabled_if].into_iter().flatten() {
         let desc = ty
@@ -96,7 +96,7 @@ fn editable(ty: &EffectType, pres: &Presentation) -> Result<BuiltinEffect, Strin
     Ok(effect)
 }
 
-fn fixture_on(effect: &BuiltinEffect, surface: Surface) -> klipp_timeline::Clip {
+pub(super) fn fixture_on(effect: &BuiltinEffect, surface: Surface) -> klipp_timeline::Clip {
     let mut clip = fixture(effect);
     if matches!(effect, BuiltinEffect::Opacity { .. }) && surface == Surface::EffectsStack {
         // The final enabled Opacity becomes the clip anchor. The first
@@ -113,12 +113,12 @@ fn run_for(surface: Surface, clip: klipp_timeline::Clip, generated: bool) -> Run
 }
 
 #[derive(Clone, Copy, Debug)]
-struct RowLabel {
-    text: &'static str,
-    group: Option<&'static str>,
+pub(super) struct RowLabel {
+    pub(super) text: &'static str,
+    pub(super) group: Option<&'static str>,
 }
 
-fn ready(run: &mut Run, label: RowLabel) -> Result<(egui::Pos2, egui::Pos2), String> {
+pub(super) fn ready(run: &mut Run, label: RowLabel) -> Result<(egui::Pos2, egui::Pos2), String> {
     run.frame(Vec::new(), egui::Modifiers::NONE);
     let Some(group) = label.group else {
         return run
@@ -150,7 +150,7 @@ fn ready(run: &mut Run, label: RowLabel) -> Result<(egui::Pos2, egui::Pos2), Str
         .ok_or_else(|| format!("numeric value {label:?} is not drawn"))
 }
 
-fn type_value(run: &mut Run, label: RowLabel, text: &str) -> Result<(), String> {
+pub(super) fn type_value(run: &mut Run, label: RowLabel, text: &str) -> Result<(), String> {
     let (_, at) = ready(run, label)?;
     for _ in 0..2 {
         run.button(at, egui::PointerButton::Primary, true);

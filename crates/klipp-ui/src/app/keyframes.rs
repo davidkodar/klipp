@@ -493,132 +493,15 @@ impl KlippApp {
     }
 
     fn handle_effect_keyframe_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        let side = inspector_edit_host::EngineSideEffects {
+            cmd_tx: &self.cmd_tx,
+            sequence: &self.sequence,
+            param_change_queue: &self.param_change_queue,
+        };
+        if (inspector_edit_host::InspectorEditHost { state: &mut self.state, side: &side }).apply_effect_keyframes(cmd) {
+            return true;
+        }
         match cmd {
-                AppCommand::AddEffectKeyframe { clip_id, effect_index, param_name, time_secs, value } => {
-                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
-                        .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            // An index past the list names no effect: no track
-                            // is started there.
-                            if let Some(id) = clip.effect_id_at(*effect_index) {
-                                clip.edit_effect_keyframes_of(id, param_name, |keyframes| {
-                                    klipp_core::keyframe::upsert_keyframe(keyframes, *time_secs, *value);
-                                });
-                            }
-                            break;
-                        }
-                    }
-                    if let Some(old_snap) = old_state {
-                        let new_snap = self.state.sequences[self.state.active_sequence_idx].all_clips()
-                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                        if let Some(new_snap) = new_snap {
-                            self.state.push_history(EditCommand::EditKeyframes {
-                                    clip_id: *clip_id,
-                                    linked_clip_id: None,
-                                    description: "Add Effect Keyframe",
-                                    old_state: old_snap,
-                                    new_state: new_snap,
-                                    old_linked_state: None,
-                                    new_linked_state: None,
-                                });
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                    self.state.dirty = true;
-                    true
-                }
-                AppCommand::RemoveEffectKeyframe { clip_id, effect_index, param_name, time_secs } => {
-                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
-                        .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            if let Some(id) = clip.effect_id_at(*effect_index) {
-                                let emptied = clip.edit_existing_effect_keyframes(id, param_name, |keyframes| {
-                                    klipp_core::keyframe::remove_keyframe_at(keyframes, *time_secs);
-                                    keyframes.is_empty()
-                                });
-                                if emptied == Some(true) {
-                                    clip.remove_effect_keyframes(id, param_name);
-                                }
-                            }
-                            break;
-                        }
-                    }
-                    if let Some(old_snap) = old_state {
-                        let new_snap = self.state.sequences[self.state.active_sequence_idx].all_clips()
-                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                        if let Some(new_snap) = new_snap {
-                            self.state.push_history(EditCommand::EditKeyframes {
-                                    clip_id: *clip_id,
-                                    linked_clip_id: None,
-                                    description: "Remove Effect Keyframe",
-                                    old_state: old_snap,
-                                    new_state: new_snap,
-                                    old_linked_state: None,
-                                    new_linked_state: None,
-                                });
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                    self.state.dirty = true;
-                    true
-                }
-                AppCommand::MoveEffectKeyframe { clip_id, effect_index, param_name, keyframe_index, new_time_secs, new_value } => {
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            if let Some(id) = clip.effect_id_at(*effect_index) {
-                                clip.edit_existing_effect_keyframes(id, param_name, |keyframes| {
-                                    if let Some(kf) = keyframes.get_mut(*keyframe_index) {
-                                        kf.time_secs = *new_time_secs;
-                                        kf.value = *new_value;
-                                    }
-                                    keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
-                                });
-                            }
-                            break;
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                    self.state.dirty = true;
-                    true
-                }
-                AppCommand::SetEffectKeyframeInterpolation { clip_id, effect_index, param_name, keyframe_index, interpolation } => {
-                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
-                        .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            if let Some(id) = clip.effect_id_at(*effect_index) {
-                                clip.edit_existing_effect_keyframes(id, param_name, |keyframes| {
-                                    klipp_core::keyframe::set_interpolation_at(keyframes, *keyframe_index, *interpolation);
-                                });
-                            }
-                            break;
-                        }
-                    }
-                    if let Some(old_snap) = old_state {
-                        let new_snap = self.state.sequences[self.state.active_sequence_idx].all_clips()
-                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                        if let Some(new_snap) = new_snap {
-                            self.state.push_history(EditCommand::EditKeyframes {
-                                    clip_id: *clip_id,
-                                    linked_clip_id: None,
-                                    description: "Set Keyframe Interpolation",
-                                    old_state: old_snap,
-                                    new_state: new_snap,
-                                    old_linked_state: None,
-                                    new_linked_state: None,
-                                });
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                    self.state.dirty = true;
-                    true
-                }
                 AppCommand::AddAudioEffectKeyframe { clip_id, effect_index, param_name, time_secs, value } => {
                     let key = format!("{}:{}", effect_index, param_name);
                     // Same drag key the BeginAudioChainDrag /

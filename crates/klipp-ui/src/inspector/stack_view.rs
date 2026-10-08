@@ -262,6 +262,14 @@ pub fn to_effect_list(clip: &Clip, ty: &klipp_effects::registry::EffectType, nod
                 }
             }
             AppCommand::RemoveKeyAt { key: pk, time_secs, .. } => out.push(AppCommand::RemoveEffectKeyframe { clip_id, effect_index: index, param_name: pk.as_str().to_owned(), time_secs }),
+            AppCommand::SetInterpKeyAt { key: pk, time_secs, interpolation, .. } => {
+                let lanes = clip.effect_keyframes();
+                if let Some(keys) = lanes.get(&format!("{index}:{}", pk.as_str())) {
+                    if let Some(keyframe_index) = crate::inspector::keyframe_selection::nearest(keys, time_secs, KEY_TOLERANCE) {
+                        out.push(AppCommand::SetEffectKeyframeInterpolation { clip_id, effect_index: index, param_name: pk.as_str().to_owned(), keyframe_index, interpolation });
+                    }
+                }
+            }
             other => out.push(other),
         }
     }
@@ -377,6 +385,15 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
             let stored = |p: &ParamDesc| effect_value(&entry, p);
             let keys = |p: &ParamDesc| {
                 let base = crate::inspector::generated::row::number(&effect_value(&entry, p)).unwrap_or(p.default);
+                // Non-anchor Opacity keeps its effect keys in the legacy
+                // lane; the lift intentionally does not animate this node.
+                if ty.tag == "opacity" {
+                    if let Some((false, index)) = clip.effect_slot_of_node(n.id) {
+                        let lanes = clip.effect_keyframes();
+                        let keys = lanes.get(&format!("{index}:{}", p.key)).map_or(&[][..], Vec::as_slice);
+                        return crate::inspector::generated::keys_from_lane(keys, base, clip_time_secs, KEY_TOLERANCE);
+                    }
+                }
                 crate::inspector::generated::keys_at(n, p, base, clip_time_secs, KEY_TOLERANCE)
             };
             let rows = NodeRows { params: &params, presentation: &presentation, stored: &stored, keys: &keys };

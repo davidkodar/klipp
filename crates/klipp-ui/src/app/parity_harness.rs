@@ -115,6 +115,8 @@ pub(super) struct Run {
     pub(super) time: f64,
     pub(super) side: Vec<String>,
     pub(super) unapplied: Vec<String>,
+    pub(super) shapes: Vec<egui::epaint::ClippedShape>,
+    pub(super) seeks: Vec<klipp_core::Timecode>,
     /// Draw the clip's Video tab, not its stack, in either view: the
     /// effect is a clip property there (M3 step 13).
     pub(super) property: bool,
@@ -187,13 +189,17 @@ impl Run {
         let mut state = AppState::default();
         state.sequences[0].tracks[0].clips.push(clip);
         state.use_generated_stack = generated;
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
         Run {
             state,
             clip: id,
-            ctx: egui::Context::default(),
+            ctx,
             time: 0.0,
             side: Vec::new(),
             unapplied: Vec::new(),
+            shapes: Vec::new(),
+            seeks: Vec::new(),
             property: false,
         }
     }
@@ -235,6 +241,8 @@ impl Run {
                     .find(|c| c.id == clip_id)
                     .unwrap();
                 let theme = KlippTheme::default();
+                let clip_time =
+                    (state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
                 // The Video tab, in either view, when the effect is a clip
                 // property there (the old view's Video tab included).
                 if property {
@@ -242,22 +250,26 @@ impl Run {
                         ui,
                         &theme,
                         state,
-                        Some((clip, 0.0, false)),
+                        Some((clip, clip_time, false)),
                         None,
                         &mut cmds,
                     );
                 } else if state.use_generated_stack {
-                    crate::inspector::stack_view::show(ui, &theme, state, clip, &mut cmds, 0.0);
+                    crate::inspector::stack_view::show(
+                        ui, &theme, state, clip, &mut cmds, clip_time,
+                    );
                 } else {
                     crate::inspector::effects_tab::show(
-                        ui, &theme, state, clip, &mut cmds, &mut false, &mut false, 0.0,
+                        ui, &theme, state, clip, &mut cmds, &mut false, &mut false, clip_time,
                     );
                 }
             });
         });
-        for cmd in cmds {
+        for mut cmd in cmds {
+            crate::inspector::keyframe_selection::resolve_command(self.state.sequence(), &mut cmd);
             self.apply(cmd);
         }
+        self.shapes.clone_from(&out.shapes);
         out.shapes
             .iter()
             .filter_map(|s| match &s.shape {
@@ -271,6 +283,11 @@ impl Run {
 
     pub(super) fn apply(&mut self, cmd: AppCommand) {
         self.state.before_dispatch(&cmd);
+        if let AppCommand::SeekTo(time) = cmd {
+            self.seeks.push(time);
+            self.state.playhead = time;
+            return;
+        }
         if is_side(&cmd) {
             // An analysis the row asks for passes the dispatch boundary as in
             // the app, which must not close the row's drag.
@@ -290,12 +307,11 @@ impl Run {
             }
             return;
         }
-        if !(InspectorEditHost {
+        let mut host = InspectorEditHost {
             state: &mut self.state,
             side: &Sink,
-        })
-        .apply(&cmd)
-        {
+        };
+        if !host.apply_effect_keyframes(&cmd) && !host.apply(&cmd) {
             self.unapplied.push(format!("{cmd:?}"));
         }
     }
