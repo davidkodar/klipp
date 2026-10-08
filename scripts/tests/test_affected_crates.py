@@ -295,5 +295,50 @@ class TestFolderScopeTests(unittest.TestCase):
         self.assertTrue(decide(["crates/klipp-timeline/tests/a.rs"], METADATA, {}, broken).startswith("full "))
 
 
+SCAN = 'let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();'
+
+
+class WorkspaceScanTests(unittest.TestCase):
+    """A test that scans every crate's sources runs on any crate's code
+    change: a new reader in one crate turned another crate's scan red on
+    main, unseen, while the gate tested only the crates the change reached."""
+
+    def test_a_code_change_anywhere_runs_every_workspace_scan(self):
+        # media reaches only itself and ui; core's scan reads it too.
+        files = {"crates/klipp-core/tests/readers.rs": SCAN}
+        got = decide(["crates/klipp-media/src/lib.rs"], METADATA, {}, mentions_in(files))
+        self.assertEqual(got, "packages klipp-core klipp-media klipp-ui")
+
+    def test_a_scan_in_a_crates_own_code_counts_too(self):
+        files = {"crates/klipp-document/src/scan_tests.rs": SCAN}
+        got = decide(["crates/klipp-media/src/lib.rs"], METADATA, {}, mentions_in(files))
+        self.assertEqual(got, "packages klipp-document klipp-media klipp-ui")
+
+    def test_a_scan_runs_its_crate_alone_not_what_is_built_on_it(self):
+        # timeline's scan: document and ui are built on timeline, but its
+        # code is unchanged, so they don't run.
+        files = {"crates/klipp-timeline/tests/readers.rs": SCAN}
+        got = decide(["crates/klipp-media/src/lib.rs"], METADATA, {}, mentions_in(files))
+        self.assertEqual(got, "packages klipp-media klipp-timeline klipp-ui")
+
+    def test_a_test_or_documentation_change_runs_no_scan(self):
+        # The scans read `src/`: a test file or a README is not in it.
+        files = {"crates/klipp-core/tests/readers.rs": SCAN}
+        self.assertEqual(decide(["crates/klipp-media/tests/a.rs"], METADATA, {}, mentions_in(files)), "packages klipp-media")
+        self.assertTrue(decide(["README.md"], METADATA, {}, mentions_in(files)).startswith("none "))
+
+    def test_a_comment_naming_the_scan_scans_nothing(self):
+        files = {"crates/klipp-core/src/lib.rs": "// " + SCAN, "crates/klipp-timeline/src/lib.rs": "/* " + SCAN}
+        got = decide(["crates/klipp-media/src/lib.rs"], METADATA, {}, mentions_in(files))
+        self.assertEqual(got, "packages klipp-media klipp-ui")
+
+    def test_the_real_scans_use_the_form_the_gate_looks_for(self):
+        # If a scan finds the crates folder another way, the gate misses
+        # it: this holds the two scans that exist to the form.
+        root = Path(__file__).resolve().parents[2] / "crates"
+        for scan in ("klipp-graph-lift/tests/effect_entry_readers.rs", "klipp-compose/tests/legacy_route_gone.rs"):
+            self.assertIn('env!("CARGO_MANIFEST_DIR")).parent()', (root / scan).read_text(), scan)
+
+
 if __name__ == "__main__":
     unittest.main()

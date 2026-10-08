@@ -38,6 +38,11 @@ what it touches instead of everything; each was a 25-minute run.
   `/*` lines are comments; `#[path = ...]` is code. A reader outside
   every crate runs everything, unless it is documentation or the gate's
   own `scripts/`, which no crate's tests run.
+- **A test that scans every crate's sources** (a no-new-readers scan,
+  such as `effect_entry_readers`) finds the crates folder as
+  `env!("CARGO_MANIFEST_DIR")).parent()`. Its crate's tests run whenever
+  any crate's code changes, since a new line anywhere can fail it. A
+  comment naming that form scans nothing.
 - A path crate outside the workspace (`vendor/`) in the lockfile is
   walked through like any package; a change to `vendor/` itself still
   runs everything.
@@ -200,6 +205,22 @@ def _test_folder_readers(crate_dir, folder, member_dirs, mentions):
     return held
 
 
+# How a test finds the crates folder to scan every crate's sources.
+WORKSPACE_SCAN = 'env!("CARGO_MANIFEST_DIR")).parent()'
+
+
+def _workspace_scanners(member_dirs, mentions):
+    """The crates with a test that scans every crate's sources."""
+    found = set()
+    for f, line in mentions(WORKSPACE_SCAN):
+        if line.lstrip().startswith(("//", "/*")):
+            continue
+        reader = next((n for d, n in sorted(member_dirs.items(), key=lambda kv: -len(kv[0])) if f.startswith(d + "/")), None)
+        if reader is not None:
+            found.add(reader)
+    return found
+
+
 def is_documentation(path):
     """Read by people, not by a build or a test."""
     top = PurePosixPath(path)
@@ -245,6 +266,7 @@ def _decide(changed, metadata, manifests, mentions):
             tests_only.add(owner)
 
     hit = set()
+    code_changed = False
     for path in (line.strip() for line in changed):
         if not path:
             continue
@@ -274,12 +296,18 @@ def _decide(changed, metadata, manifests, mentions):
                     continue
         if owner:
             hit.add(owner)
+            if mentions is not None:
+                crate_dir = next(d for d, n in member_dirs.items() if n == owner)
+                if is_code(path[len(crate_dir) + 1:]):
+                    code_changed = True
             continue
         top = PurePosixPath(path)
         if path.startswith(NONE_DIRS) or (len(top.parts) == 1 and (path.endswith(NONE_SUFFIXES) or path in NONE_FILES)):
             continue
         return f"full {path} is outside every crate, and the gate cannot tell what reads it"
 
+    if code_changed:
+        tests_only |= _workspace_scanners(member_dirs, mentions)
     if not hit and not tests_only:
         return "none only documentation changed"
     # Every crate built on one hit, at any remove; then every crate whose
