@@ -1255,6 +1255,9 @@ impl KlippApp {
                     let generated_node = self.state.selected_node_id.filter(|nid| {
                         generated && klipp_timeline::GradeAccess::grade(&*clip).nodes.iter().any(|n| n.id == *nid && per_node_kind(n.kind))
                     });
+                    // The tabbed page draws what it shares with the
+                    // per-node layout as the same generated rows (11c).
+                    self.node_inspector_panel.generated = generated.then(|| crate::inspector::grade_view::GradeSnapshot::of(clip)).flatten();
                     let mut generated_cmds = Vec::new();
                     let drawn = generated_node.is_some_and(|nid| {
                         egui::ScrollArea::vertical()
@@ -1287,6 +1290,14 @@ impl KlippApp {
                             )
                         }
                     }) };
+                    // A key the generated rows name at the playhead is the
+                    // stored key in its frame.
+                    let mut panel_cmds = panel_cmds;
+                    if generated {
+                        for cmd in &mut panel_cmds {
+                            crate::inspector::keyframe_selection::resolve_for_clip(clip, mask_tolerance, cmd);
+                        }
+                    }
                     all_cmds.extend(panel_cmds);
                 }
             } else {

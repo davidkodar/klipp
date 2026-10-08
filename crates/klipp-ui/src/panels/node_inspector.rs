@@ -59,6 +59,11 @@ pub struct NodeInspectorPanel {
     /// chose it, set by the caller each frame: the InputTransform node
     /// edits the media item's format, which this panel cannot see.
     pub input_colour_space: (klipp_core::LogFormat, bool),
+    /// With the generated grade inspector on, the clip's own grade nodes,
+    /// set by the caller each frame: the tabbed page draws the parameters
+    /// it shares with the per-node layout as their generated rows from it
+    /// (M3 step 11c). `None` draws them as before.
+    pub(crate) generated: Option<crate::inspector::grade_view::GradeSnapshot>,
 }
 
 impl Default for NodeInspectorPanel {
@@ -84,6 +89,7 @@ impl Default for NodeInspectorPanel {
             preset_saving_tool: None,
             preset_save_error: None,
             input_colour_space: (klipp_core::LogFormat::Srgb, false),
+            generated: None,
         }
     }
 }
@@ -303,7 +309,7 @@ impl NodeInspectorPanel {
         // Colour tab (`show_adjustments_tab`) and in the node's own
         // inspector, so this row stays one control wide.
         if *color_tab == ColorTab::Wheels {
-            self.show_wheels_contrast_row(ui, graph, clip_id, cmds, theme);
+            self.show_wheels_contrast_row(ui, graph, clip_id, cmds, theme, frame);
         }
 
         match color_tab {
@@ -1036,6 +1042,7 @@ impl NodeInspectorPanel {
         clip_id: ClipId,
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
+        frame: FrameSelection,
     ) {
         // Same target the wheels themselves write to: the Corrector when
         // there is one, else a standalone node of the right kind.
@@ -1048,7 +1055,9 @@ impl NodeInspectorPanel {
         let Some(nid) = target else { return };
 
         ui.add_space(4.0);
-        if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
+        if self.shared_row(ui, nid, "contrast", cmds, theme, frame) {
+            // Drawn as the generated row.
+        } else if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
             let mut val = node.params.contrast.unwrap_or(0.0);
             #[cfg(any(test, feature = "row-recorder"))]
             crate::widgets::row_recorder::next_parameter("contrast");
@@ -1097,6 +1106,13 @@ impl NodeInspectorPanel {
         });
         ui.add_space(4.0);
         section_divider(ui, theme);
+    }
+
+    /// Draw `node`'s parameter `key` as its generated row from the
+    /// snapshot the caller set (`generated`): whether it drew it, so the
+    /// tabbed page draws its own row only when it didn't.
+    fn shared_row(&self, ui: &mut egui::Ui, node: NodeId, key: &str, cmds: &mut Vec<AppCommand>, theme: &KlippTheme, frame: FrameSelection) -> bool {
+        self.generated.as_ref().is_some_and(|g| g.row(ui, theme, node, key, cmds, frame))
     }
 
     fn show_adjustments_tab(
@@ -1285,12 +1301,14 @@ impl NodeInspectorPanel {
                             c.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "exposure".into(), value: 0.0 });
                         });
                     }
-                    let mut val = node.params.exposure.unwrap_or(0.0);
-                    #[cfg(any(test, feature = "row-recorder"))]
-                    crate::widgets::row_recorder::next_parameter("exposure");
-                    if inspector_row(ui, "Exposure", &mut val, -3.0..=3.0, 0.0, "stops", theme, cmds, clip_id) {
-                        node.params.exposure = Some(val);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "exposure".into(), value: val });
+                    if !self.shared_row(ui, nid, "exposure", cmds, theme, frame) {
+                        let mut val = node.params.exposure.unwrap_or(0.0);
+                        #[cfg(any(test, feature = "row-recorder"))]
+                        crate::widgets::row_recorder::next_parameter("exposure");
+                        if inspector_row(ui, "Exposure", &mut val, -3.0..=3.0, 0.0, "stops", theme, cmds, clip_id) {
+                            node.params.exposure = Some(val);
+                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "exposure".into(), value: val });
+                        }
                     }
                 }
                 section_divider(ui, theme);
@@ -1310,12 +1328,14 @@ impl NodeInspectorPanel {
                             c.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "clarity".into(), value: 0.0 });
                         });
                     }
-                    let mut val = node.params.contrast.unwrap_or(0.0);
-                    #[cfg(any(test, feature = "row-recorder"))]
-                    crate::widgets::row_recorder::next_parameter("contrast");
-                    if inspector_row(ui, "Contrast", &mut val, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
-                        node.params.contrast = Some(val);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast".into(), value: val });
+                    if !self.shared_row(ui, nid, "contrast", cmds, theme, frame) {
+                        let mut val = node.params.contrast.unwrap_or(0.0);
+                        #[cfg(any(test, feature = "row-recorder"))]
+                        crate::widgets::row_recorder::next_parameter("contrast");
+                        if inspector_row(ui, "Contrast", &mut val, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
+                            node.params.contrast = Some(val);
+                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast".into(), value: val });
+                        }
                     }
                     // Where the contrast hinges: below it a push
                     // darkens, above it a push brightens, so the pivot
@@ -1342,31 +1362,35 @@ impl NodeInspectorPanel {
                     // encoding it lands near the middle and equal travel
                     // is an equal change, which is why Resolve's pivot
                     // reads about 0.43 rather than 0.18.
-                    let mut shown = pivot_shown(
-                        node.params.contrast_pivot.unwrap_or(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
-                    );
-                    #[cfg(any(test, feature = "row-recorder"))]
-                    crate::widgets::row_recorder::next_parameter("contrast_pivot");
-                    if inspector_row(
-                        ui, "Pivot", &mut shown,
-                        pivot_shown(klipp_color::grade_model::MIN_CONTRAST_PIVOT)
-                            ..=pivot_shown(klipp_color::grade_model::MAX_CONTRAST_PIVOT),
-                        pivot_shown(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
-                        "", theme, cmds, clip_id,
-                    ) {
-                        let linear = pivot_linear(shown).clamp(
-                            klipp_color::grade_model::MIN_CONTRAST_PIVOT,
-                            klipp_color::grade_model::MAX_CONTRAST_PIVOT,
+                    if !self.shared_row(ui, nid, "contrast_pivot", cmds, theme, frame) {
+                        let mut shown = pivot_shown(
+                            node.params.contrast_pivot.unwrap_or(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
                         );
-                        node.params.contrast_pivot = Some(linear);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast_pivot".into(), value: linear });
+                        #[cfg(any(test, feature = "row-recorder"))]
+                        crate::widgets::row_recorder::next_parameter("contrast_pivot");
+                        if inspector_row(
+                            ui, "Pivot", &mut shown,
+                            pivot_shown(klipp_color::grade_model::MIN_CONTRAST_PIVOT)
+                                ..=pivot_shown(klipp_color::grade_model::MAX_CONTRAST_PIVOT),
+                            pivot_shown(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
+                            "", theme, cmds, clip_id,
+                        ) {
+                            let linear = pivot_linear(shown).clamp(
+                                klipp_color::grade_model::MIN_CONTRAST_PIVOT,
+                                klipp_color::grade_model::MAX_CONTRAST_PIVOT,
+                            );
+                            node.params.contrast_pivot = Some(linear);
+                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast_pivot".into(), value: linear });
+                        }
                     }
-                    let mut cval = node.params.clarity.unwrap_or(0.0);
-                    #[cfg(any(test, feature = "row-recorder"))]
-                    crate::widgets::row_recorder::next_parameter("clarity");
-                    if inspector_row(ui, "Clarity", &mut cval, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
-                        node.params.clarity = Some(cval);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "clarity".into(), value: cval });
+                    if !self.shared_row(ui, nid, "clarity", cmds, theme, frame) {
+                        let mut cval = node.params.clarity.unwrap_or(0.0);
+                        #[cfg(any(test, feature = "row-recorder"))]
+                        crate::widgets::row_recorder::next_parameter("clarity");
+                        if inspector_row(ui, "Clarity", &mut cval, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
+                            node.params.clarity = Some(cval);
+                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "clarity".into(), value: cval });
+                        }
                     }
                 }
                 section_divider(ui, theme);
@@ -1386,24 +1410,28 @@ impl NodeInspectorPanel {
                             c.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "vibrance".into(), value: 0.0 });
                         });
                     }
-                    let mut val = node.params.saturation.unwrap_or(1.0);
-                    // Saturation is a multiplier: 1.0 is neutral, unlike
-                    // every other row in this panel where neutral is 0.
-                    // Rendered in the same widget with no unit it read as
-                    // an inconsistency — "1.00" sitting under "0.00" with
-                    // nothing to say why. The multiplier sign says why.
-                    #[cfg(any(test, feature = "row-recorder"))]
-                    crate::widgets::row_recorder::next_parameter("saturation");
-                    if inspector_row(ui, "Saturation", &mut val, 0.0..=2.0, 1.0, "\u{00D7}", theme, cmds, clip_id) {
-                        node.params.saturation = Some(val);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "saturation".into(), value: val });
+                    if !self.shared_row(ui, nid, "saturation", cmds, theme, frame) {
+                        let mut val = node.params.saturation.unwrap_or(1.0);
+                        // Saturation is a multiplier: 1.0 is neutral, unlike
+                        // every other row in this panel where neutral is 0.
+                        // Rendered in the same widget with no unit it read as
+                        // an inconsistency — "1.00" sitting under "0.00" with
+                        // nothing to say why. The multiplier sign says why.
+                        #[cfg(any(test, feature = "row-recorder"))]
+                        crate::widgets::row_recorder::next_parameter("saturation");
+                        if inspector_row(ui, "Saturation", &mut val, 0.0..=2.0, 1.0, "\u{00D7}", theme, cmds, clip_id) {
+                            node.params.saturation = Some(val);
+                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "saturation".into(), value: val });
+                        }
                     }
-                    let mut vval = node.params.vibrance.unwrap_or(0.0);
-                    #[cfg(any(test, feature = "row-recorder"))]
-                    crate::widgets::row_recorder::next_parameter("vibrance");
-                    if inspector_row(ui, "Vibrance", &mut vval, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
-                        node.params.vibrance = Some(vval);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "vibrance".into(), value: vval });
+                    if !self.shared_row(ui, nid, "vibrance", cmds, theme, frame) {
+                        let mut vval = node.params.vibrance.unwrap_or(0.0);
+                        #[cfg(any(test, feature = "row-recorder"))]
+                        crate::widgets::row_recorder::next_parameter("vibrance");
+                        if inspector_row(ui, "Vibrance", &mut vval, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
+                            node.params.vibrance = Some(vval);
+                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "vibrance".into(), value: vval });
+                        }
                     }
                 }
                 section_divider(ui, theme);
@@ -1464,27 +1492,31 @@ impl NodeInspectorPanel {
                     });
                 }
                 // Temperature: blue → orange gradient
-                let mut temp = node.params.temperature.unwrap_or(0.0);
-                #[cfg(any(test, feature = "row-recorder"))]
-                crate::widgets::row_recorder::next_parameter("temperature");
-                if gradient_slider_row(ui, "Temperature", &mut temp, -50.0..=50.0, 0.0,
-                    egui::Color32::from_rgb(0x6a, 0xb4, 0xf5),
-                    egui::Color32::from_rgb(0xf5, 0xa0, 0x5a), theme, cmds, clip_id)
-                {
-                    node.params.temperature = Some(temp);
-                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "temperature".into(), value: temp });
+                if !self.shared_row(ui, nid, "temperature", cmds, theme, frame) {
+                    let mut temp = node.params.temperature.unwrap_or(0.0);
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("temperature");
+                    if gradient_slider_row(ui, "Temperature", &mut temp, -50.0..=50.0, 0.0,
+                        egui::Color32::from_rgb(0x6a, 0xb4, 0xf5),
+                        egui::Color32::from_rgb(0xf5, 0xa0, 0x5a), theme, cmds, clip_id)
+                    {
+                        node.params.temperature = Some(temp);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "temperature".into(), value: temp });
+                    }
                 }
 
                 // Tint: green → pink gradient
-                let mut tint = node.params.tint.unwrap_or(0.0);
-                #[cfg(any(test, feature = "row-recorder"))]
-                crate::widgets::row_recorder::next_parameter("tint");
-                if gradient_slider_row(ui, "Tint", &mut tint, -50.0..=50.0, 0.0,
-                    egui::Color32::from_rgb(0xa8, 0xf5, 0xa8),
-                    egui::Color32::from_rgb(0xf5, 0xa8, 0xc8), theme, cmds, clip_id)
-                {
-                    node.params.tint = Some(tint);
-                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "tint".into(), value: tint });
+                if !self.shared_row(ui, nid, "tint", cmds, theme, frame) {
+                    let mut tint = node.params.tint.unwrap_or(0.0);
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("tint");
+                    if gradient_slider_row(ui, "Tint", &mut tint, -50.0..=50.0, 0.0,
+                        egui::Color32::from_rgb(0xa8, 0xf5, 0xa8),
+                        egui::Color32::from_rgb(0xf5, 0xa8, 0xc8), theme, cmds, clip_id)
+                    {
+                        node.params.tint = Some(tint);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "tint".into(), value: tint });
+                    }
                 }
 
                 // Auto White Balance, and the eyedropper for when Auto WB
@@ -1506,24 +1538,28 @@ impl NodeInspectorPanel {
                 ui.add_space(2.0);
 
                 // Hue: rainbow spectrum
-                let mut hue = node.params.hue.unwrap_or(0.0);
-                #[cfg(any(test, feature = "row-recorder"))]
-                crate::widgets::row_recorder::next_parameter("hue");
-                if hue_slider_row(ui, "Hue", &mut hue, theme, cmds, clip_id) {
-                    node.params.hue = Some(hue);
-                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "hue".into(), value: hue });
+                if !self.shared_row(ui, nid, "hue", cmds, theme, frame) {
+                    let mut hue = node.params.hue.unwrap_or(0.0);
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("hue");
+                    if hue_slider_row(ui, "Hue", &mut hue, theme, cmds, clip_id) {
+                        node.params.hue = Some(hue);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "hue".into(), value: hue });
+                    }
                 }
 
                 // Global Mix: subtle grey → white
-                let mut mix = node.params.global_mix.unwrap_or(1.0);
-                #[cfg(any(test, feature = "row-recorder"))]
-                crate::widgets::row_recorder::next_parameter("global_mix");
-                if gradient_slider_row(ui, "Global Mix", &mut mix, 0.0..=1.0, 1.0,
-                    theme.overlay(20),
-                    theme.overlay(90), theme, cmds, clip_id)
-                {
-                    node.params.global_mix = Some(mix);
-                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "global_mix".into(), value: mix });
+                if !self.shared_row(ui, nid, "global_mix", cmds, theme, frame) {
+                    let mut mix = node.params.global_mix.unwrap_or(1.0);
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    crate::widgets::row_recorder::next_parameter("global_mix");
+                    if gradient_slider_row(ui, "Global Mix", &mut mix, 0.0..=1.0, 1.0,
+                        theme.overlay(20),
+                        theme.overlay(90), theme, cmds, clip_id)
+                    {
+                        node.params.global_mix = Some(mix);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "global_mix".into(), value: mix });
+                    }
                 }
             } }
         }
