@@ -258,6 +258,13 @@ impl crate::state::AppState {
         let time = |k: &serde_json::Value| k.get("time_secs").and_then(serde_json::Value::as_f64);
         let at = anim.keys.iter().position(|k| time(k).is_some_and(|t| (t - time_secs).abs() < 1e-9)).ok_or_else(|| format!("{key} has no key at {time_secs} s"))?;
         edit(&mut anim.keys[at]);
+        // Keys are named by their time, so two may never share one: a key
+        // moved onto another's time would make the next edit of either
+        // ambiguous (M3 step 3).
+        let moved = time(&anim.keys[at]).unwrap_or(time_secs);
+        if anim.keys.iter().enumerate().any(|(i, k)| i != at && time(k).is_some_and(|t| (t - moved).abs() < 1e-9)) {
+            return Err(format!("{key} has another key at {moved} s"));
+        }
         anim.keys.sort_by(|a, b| time(a).unwrap_or(0.0).total_cmp(&time(b).unwrap_or(0.0)));
         Ok(vec![GraphOp::SetAnim { path: addr.clone(), key: key.clone(), anim: Some(anim) }])
     }
@@ -690,6 +697,31 @@ mod tests {
         assert_eq!(s.active_history().undo_count(), steps + 1, "one undo step for the drag");
         undo(&mut s);
         assert_eq!(keys(&s), before, "undone, the keys as they were");
+    }
+
+    /// A key dragged onto another's time is refused there (two keys never
+    /// share a time, which names them), so the drag goes on moving the key
+    /// it took, never the other; and undo brings back both.
+    #[test]
+    fn a_key_dragged_across_another_keeps_its_identity() {
+        let (mut s, id) = keyed();
+        let fx = effects(&s, id);
+        let (addr, key) = (at(id, &[fx[0]]), ParamKey::from("gamma"));
+        let keys = |s: &AppState| clip(s, id).node_key_state(&addr, &key).unwrap().keys.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>();
+        let before = keys(&s);
+        assert_eq!(before, [(0.2, 0.8), (1.2, 1.4)]);
+        assert_eq!(s.path_command(&AppCommand::BeginParamEditAt { addr: addr.clone(), key: key.clone() }), Some(false));
+        // B onto A's time: refused, B stays where it was.
+        let onto = s.path_command(&AppCommand::MoveKeyAt { addr: addr.clone(), key: key.clone(), time_secs: 1.2, new_time_secs: 0.2, value: 1.0 });
+        assert_eq!(onto, Some(false), "refused");
+        assert_eq!(keys(&s), before);
+        // B past A: B moves, A untouched, and the next frame moves B again.
+        run(&mut s, AppCommand::MoveKeyAt { addr: addr.clone(), key: key.clone(), time_secs: 1.2, new_time_secs: 0.1, value: 1.0 });
+        run(&mut s, AppCommand::MoveKeyAt { addr: addr.clone(), key: key.clone(), time_secs: 0.1, new_time_secs: 0.05, value: 0.9 });
+        assert_eq!(keys(&s), [(0.05, 0.9), (0.2, 0.8)]);
+        assert_eq!(s.path_command(&AppCommand::EndParamEditAt { addr: addr.clone(), key: key.clone() }), Some(false));
+        undo(&mut s);
+        assert_eq!(keys(&s), before, "undone, both keys as they were");
     }
 
     /// State held by address belongs to the clip it names: a selection,

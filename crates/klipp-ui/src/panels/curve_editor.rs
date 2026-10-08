@@ -1147,6 +1147,9 @@ impl CurveEditorPanel {
                                     }
                                     // By the key's time now; the keys stay in time
                                     // order, so the dragged one's place follows.
+                                    // Never onto another key's time: keys are named
+                                    // by their time (the command refuses it too).
+                                    CurveParam::Node { .. } if keyframes.iter().enumerate().any(|(i, k)| i != kf_idx && (k.time_secs - new_t).abs() < 1e-9) => {}
                                     CurveParam::Node { path, key, .. } => {
                                         cmds.push(AppCommand::MoveKeyAt { addr: path.clone(), key: key.clone(), time_secs: kf.time_secs, new_time_secs: new_t, value: new_v });
                                         moved_title_index = Some(keyframes.iter().enumerate().filter(|(i, k)| *i != kf_idx && (k.time_secs < new_t || (k.time_secs == new_t && *i < kf_idx))).count());
@@ -1487,7 +1490,9 @@ mod curve_param_tests {
     #[test]
     fn no_positional_effect_keys_in_these_files() {
         for (name, text) in [("curve_editor.rs", include_str!("curve_editor.rs")), ("keyframe_selection.rs", include_str!("../inspector/keyframe_selection.rs"))] {
-            let code = text.split("#[cfg(test)]").next().unwrap_or(text);
+            // The file before its test module (a test-only helper above it
+            // is still production code's neighbour, and scanned).
+            let code = text.split("#[cfg(test)]\nmod ").next().unwrap_or(text);
             for positional in [".effect_keyframes()", "CurveParam::Effect("] {
                 assert!(!code.contains(positional), "{name} reads an effect's keys by its place: {positional}");
             }
