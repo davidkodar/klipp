@@ -533,7 +533,7 @@ pub fn lift_grade_only_noted(structural: &Graph, migrate: bool, notes: &mut Vec<
 fn effect_anim(n: &Node) -> (BTreeMap<ParamKey, Animation>, BTreeMap<String, Value>) {
     let mut orphans = BTreeMap::new();
     let Some(legacy) = &n.legacy else { return (BTreeMap::new(), orphans) };
-    let tag = legacy.payload.get("type").and_then(Value::as_str).unwrap_or("");
+    let tag = crate::effect_params::tag(n).unwrap_or("");
     let alias = |k: &str| {
         KEYFRAME_ALIASES.iter().find(|(t, from, _)| *t == tag && *from == k).map(|(_, _, to)| (*to).to_owned()).unwrap_or_else(|| k.to_owned())
     };
@@ -569,12 +569,13 @@ fn effect_anim(n: &Node) -> (BTreeMap<ParamKey, Animation>, BTreeMap<String, Val
 /// ([`effect_anim`]), so one reader serves every effect node a render
 /// copy holds. Keys that drive nothing are kept on the node; the track's
 /// own lift notes them.
-pub(crate) fn track_effect(n: &Node) -> Node {
+pub(crate) fn track_effect(n: &Node) -> Result<Node, String> {
     let mut e = n.clone();
     let (anim, orphans) = effect_anim(n);
     e.anim = anim;
     keep_orphans(&mut e, orphans, &mut Vec::new());
-    e
+    crate::effect_params::into_memory(&mut e)?;
+    Ok(e)
 }
 
 /// Keys an effect holds that drive nothing, kept on its node and noted.
@@ -909,5 +910,8 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
     let edges = chain_edges(&chain);
     let output = chain.last().map(|n| n.id).unwrap_or_default();
     let graph = Graph { graph_version: GRAPH_VERSION, nodes: chain, edges, output, ui: GraphUi::default(), working_space_override: None };
-    Ok((ClipPicture { graph, placement, placement_anim, opacity, opacity_anim, requires: Vec::new() }, notes))
+    let mut picture = ClipPicture { graph, placement, placement_anim, opacity, opacity_anim, requires: Vec::new() };
+    // Each effect's values held in its map from here on (M3-2).
+    crate::effect_params::picture_into_memory(&mut picture)?;
+    Ok((picture, notes))
 }

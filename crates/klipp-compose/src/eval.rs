@@ -623,7 +623,7 @@ impl EffectNodeAnim {
     /// or a modifier stack is an error naming its parameter: a picture
     /// the lift made always reads.
     pub fn of(node: &klipp_graph_format::Node) -> Result<Self, String> {
-        let tag = node.legacy.as_ref().and_then(|l| l.payload.get("type")).and_then(serde_json::Value::as_str).unwrap_or("");
+        let tag = klipp_graph_lift::effect_params::tag(node).unwrap_or("");
         let mut params = std::collections::BTreeMap::new();
         for (key, anim) in &node.anim {
             let keys = anim

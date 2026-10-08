@@ -154,9 +154,14 @@ fn stored_pictures(v2: &serde_json::Value) -> HashMap<(String, String), klipp_ti
                 let (Some(id), Some(picture)) = (clip.get("id").and_then(serde_json::Value::as_str), clip.get("graph_v2")) else {
                     continue;
                 };
-                let Ok(picture) = serde_json::from_value(portable(picture)) else {
+                let Ok(mut picture) = serde_json::from_value(portable(picture)) else {
                     continue;
                 };
+                // Its effects' values held in their maps, as a lift holds
+                // them (M3-2); a picture that can't be is lifted again.
+                if klipp_graph_lift::effect_params::picture_into_memory(&mut picture).is_err() {
+                    continue;
+                }
                 let versions: Option<Vec<_>> = all(clip.get("grade_versions")).iter().map(|v| v.get("graph_v2").map(portable)).collect();
                 if let Some(versions) = versions {
                     let key = (seq.get("id").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(), id.to_string());

@@ -228,7 +228,7 @@ fn stored(value: &ParamValue) -> Result<Value, String> {
 }
 
 fn tag_of(n: &Node) -> &str {
-    n.legacy.as_ref().and_then(|l| l.payload.get("type")).and_then(Value::as_str).unwrap_or("")
+    klipp_graph_lift::effect_params::tag(n).unwrap_or("")
 }
 
 fn key_of(v: &Value) -> Result<klipp_core::Keyframe, String> {
@@ -558,9 +558,17 @@ impl Clip {
         match op {
             GraphOp::SetParam { key, value, .. } => {
                 let i = index(order, named)?;
-                let mut v = serde_json::to_value(&self.builtin_effects()[i]).map_err(|e| e.to_string())?;
-                v[key.as_str()] = stored(value)?;
-                let effect: klipp_effects::BuiltinEffect = serde_json::from_value(v).map_err(|_| format!("{key} doesn't take {value:?}"))?;
+                // The value written as the picture's node holds it (its
+                // map, M3-2), so the list and the node agree on a field
+                // keyed by element too.
+                use klipp_graph_lift::effect_params as ep;
+                if !ep::is_field_key(key) {
+                    return Err(format!("{key} is the node's own, not a setting of its effect"));
+                }
+                let v = serde_json::to_value(&self.builtin_effects()[i]).map_err(|e| e.to_string())?;
+                let (tag, mut params) = ep::to_params(&v)?;
+                params.insert(key.clone(), ep::held(&tag, key, &stored(value)?));
+                let effect = ep::effect(&tag, &params).map_err(|_| format!("{key} doesn't take {value:?}"))?;
                 let id = id_at(self, i)?;
                 self.replace_effect(id, effect);
             }
@@ -574,8 +582,12 @@ impl Clip {
                 self.set_effect_enabled(id, *enabled);
             }
             GraphOp::AddNode { node: new, .. } => {
-                let payload = new.legacy.as_ref().map(|l| l.payload.clone()).ok_or("a new effect carries its entry")?;
-                let effect: klipp_effects::BuiltinEffect = serde_json::from_value(payload).map_err(|e| format!("the new effect: {e}"))?;
+                let mut held = (**new).clone();
+                klipp_graph_lift::effect_params::added_into_memory(&mut held).map_err(|e| format!("the new effect: {e}"))?;
+                if held.legacy.is_none() {
+                    return Err("a new effect carries its entry".into());
+                }
+                let effect = klipp_graph_lift::effect_params::effect_of(&held).map_err(|e| format!("the new effect: {e}"))?;
                 let at = list_place(post, order, new.id).ok_or("an effect goes after the grade, the display transform and the plug-ins")?;
                 // The entry keeps the id the op gave its node (M3 proposal 6).
                 let id = self.insert_effect_with_id(at, effect, crate::EffectId::of_node(new.id)).ok_or("the list can't take an effect there, or holds one by that id")?;

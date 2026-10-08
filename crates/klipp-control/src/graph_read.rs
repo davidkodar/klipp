@@ -38,8 +38,14 @@ fn graph_value(graph: &Graph, depth: usize) -> Value {
 fn node(n: &Node, depth: usize) -> Value {
     let desc = graph_model::descriptor(n);
     let mut params = serde_json::Map::new();
+    // An effect's values as its stored entry, written from its map (M3-2).
+    let effect = n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT;
+    let entry = effect.then(|| klipp_graph_lift::effect_params::entry_of(n).ok()).flatten();
     if let (Some(desc), Some(legacy)) = (desc, &n.legacy) {
-        let payload = legacy.payload.get("params").unwrap_or(&legacy.payload);
+        let payload = match &entry {
+            Some(entry) => entry,
+            None => legacy.payload.get("params").unwrap_or(&legacy.payload),
+        };
         for p in desc.params.iter().filter(|p| !p.derived) {
             let mut value = Some(payload);
             for field in p.field.split('.') { value = value.and_then(|v| v.get(field)); }
@@ -52,6 +58,8 @@ fn node(n: &Node, depth: usize) -> Value {
         }
     }
     for (key, value) in &n.params {
+        // An effect's field keys are read above, from its entry.
+        if effect && klipp_graph_lift::effect_params::is_field_key(key) { continue; }
         if key.as_str() != "mask.channel" { params.insert(key.as_str().into(), json!(value)); }
     }
     let stored_channel = n.params.iter().find(|(k,_)| k.as_str() == "mask.channel");

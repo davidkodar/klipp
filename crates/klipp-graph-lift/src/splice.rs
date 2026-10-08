@@ -64,7 +64,7 @@ pub fn track_parts(structural: &Graph) -> Result<(Vec<Node>, Option<Graph>), Str
             let only = Graph { nodes: vec![n.clone()], edges: Vec::new(), output: n.id, ..Graph::empty() };
             grade = Some(lift_grade_only(&only, true)?);
         } else {
-            effects.push(crate::lift::track_effect(n));
+            effects.push(crate::lift::track_effect(n)?);
         }
     }
     Ok((effects, grade))

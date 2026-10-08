@@ -44,7 +44,7 @@ pub(crate) fn documents(seq: &Sequence, root: Root) -> Result<Documents, String>
 
 pub(crate) fn descriptor(node: &Node) -> Option<&'static NodeTypeDesc> {
     if node.type_id.as_str() == types::LEGACY_EFFECT {
-        return klipp_effects::registry::effect_type(node.legacy.as_ref()?.payload.get("type")?.as_str()?).map(|t| &t.desc);
+        return klipp_effects::registry::effect_type(klipp_graph_lift::effect_params::tag(node)?).map(|t| &t.desc);
     }
     if node.type_id.as_str() == types::LEGACY_NODE {
         let kind = serde_json::from_value(node.legacy.as_ref()?.payload.get("kind")?.clone()).ok()?;
@@ -101,10 +101,14 @@ pub(crate) fn parameter(node: &Node, key: &str, value: &Value) -> Result<ParamVa
         ParamKind::Choice(options) => {
             let choice = value.as_str().ok_or_else(wrong)?;
             let at = options.iter().position(|name| *name == choice).ok_or_else(wrong)?;
-            let stored = node.legacy.as_ref().and_then(|l| {
-                let payload = if node.type_id.as_str() == types::LEGACY_NODE { l.payload.get("params")? } else { &l.payload };
-                payload.get(p.field)
-            });
+            let entry = (node.type_id.as_str() == types::LEGACY_EFFECT).then(|| klipp_graph_lift::effect_params::entry_of(node).ok()).flatten();
+            let stored = match &entry {
+                Some(entry) => entry.get(p.field),
+                None => node.legacy.as_ref().and_then(|l| {
+                    let payload = if node.type_id.as_str() == types::LEGACY_NODE { l.payload.get("params")? } else { &l.payload };
+                    payload.get(p.field)
+                }),
+            };
             if stored.is_some_and(Value::is_string) { Ok(ParamValue::Text(choice.into())) }
             else { Ok(ParamValue::Enum(at as u32)) }
         }

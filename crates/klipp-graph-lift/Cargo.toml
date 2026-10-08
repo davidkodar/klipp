@@ -9,13 +9,15 @@ description = "Klipp's pictures in revision 2 and back, as pure functions: the l
 workspace = true
 
 # Pure functions over the files' JSON and the graph format. The app may
-# depend on this crate; it depends on no app crate itself.
+# depend on this crate; it depends on no app crate itself, only on the
+# effect catalog (klipp-effects, which the graph format already pulls in
+# through klipp-nodes) to hold an effect's values as typed params (M3-2).
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 klipp-graph-format = { workspace = true }
+klipp-effects = { path = "../klipp-effects" }
 
 [dev-dependencies]
-klipp-effects = { path = "../klipp-effects" }
 klipp-nodes = { path = "../klipp-nodes" }
