@@ -31,6 +31,12 @@ fn is_side(cmd: &AppCommand) -> bool {
     matches!(cmd, AppCommand::ResmoothStabilization { .. } | AppCommand::RegainDeflicker { .. } | AppCommand::AnalyzeStabilization { .. } | AppCommand::AnalyzeDeflicker { .. })
 }
 
+/// The commands a view sends that set only what the viewer and the
+/// timeline show, which the app's dispatch applies and no clip records.
+fn is_view(cmd: &AppCommand) -> bool {
+    matches!(cmd, AppCommand::SetInspectorMattePreviewTarget(_) | AppCommand::SetVideoRubberBandParam(_))
+}
+
 /// One view of one clip, drawn and driven.
 struct Run {
     state: AppState,
@@ -39,6 +45,9 @@ struct Run {
     time: f64,
     side: Vec<String>,
     unapplied: Vec<String>,
+    /// The generated view draws the clip's Video tab, not its stack: the
+    /// effect is a clip property there (M3 step 13).
+    property: bool,
 }
 
 /// The one clip both views start from: a clone each, so their pictures
@@ -56,7 +65,7 @@ impl Run {
         let mut state = AppState::default();
         state.sequences[0].tracks[0].clips.push(clip);
         state.use_generated_stack = generated;
-        Run { state, clip: id, ctx: egui::Context::default(), time: 0.0, side: Vec::new(), unapplied: Vec::new() }
+        Run { state, clip: id, ctx: egui::Context::default(), time: 0.0, side: Vec::new(), unapplied: Vec::new(), property: false }
     }
 
     fn clip(&self) -> &klipp_timeline::Clip {
@@ -69,12 +78,14 @@ impl Run {
         self.time += 0.05;
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(520.0, 3000.0))), time: Some(self.time), events, modifiers, ..Default::default() };
         let mut cmds = Vec::new();
-        let (state, clip_id) = (&self.state, self.clip);
+        let (state, clip_id, property) = (&self.state, self.clip, self.property);
         let out = self.ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let clip = state.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap();
                 let theme = KlippTheme::default();
-                if state.use_generated_stack {
+                if state.use_generated_stack && property {
+                    crate::inspector::video_tab::show(ui, &theme, state, Some((clip, 0.0, false)), None, &mut cmds);
+                } else if state.use_generated_stack {
                     crate::inspector::stack_view::show(ui, &theme, state, clip, &mut cmds, 0.0);
                 } else {
                     crate::inspector::effects_tab::show(ui, &theme, state, clip, &mut cmds, &mut false, &mut false, 0.0);
@@ -90,6 +101,12 @@ impl Run {
     fn apply(&mut self, cmd: AppCommand) {
         if is_side(&cmd) {
             self.side.push(format!("{cmd:?}"));
+            return;
+        }
+        // What the viewer and timeline show changes no clip; it passes the
+        // dispatch boundary as in the app, which must not close a drag.
+        if is_view(&cmd) {
+            self.state.before_dispatch(&cmd);
             return;
         }
         // A refused path edit says so in a toast and changes nothing.
@@ -203,6 +220,11 @@ fn with_value(effect: &BuiltinEffect, desc: &ParamDesc, v: f32) -> BuiltinEffect
     serde_json::from_value(entry).unwrap()
 }
 
+/// The effects the generated view edits as clip properties, in the Video
+/// tab, not as cards in the stack (M3 step 13): their row is driven there,
+/// and the picture must still be the old card's.
+const PROPERTIES: &[&str] = &["klipp.fx.opacity"];
+
 /// The types whose reset differs from today by design: the value the old
 /// view leaves and the generated row's, pinned.
 /// - IC2: Sharpen's and Vibrance's amount reset to 0.5 in the old view
@@ -221,7 +243,6 @@ const UNDO_DIFFERS: &[(&str, &str, usize, usize)] = &[("klipp.fx.color_fade", "D
 /// S1–S3 on every effect's first number row: the same picture, the same
 /// undo depth and the same side commands, old view against new.
 #[test]
-#[ignore = "M3 step 12: run with --ignored until the generated stack is the default"]
 fn number_rows_edit_the_same_through_both_views() {
     let mut differ = Vec::new();
     let mut compared = 0;
@@ -244,6 +265,7 @@ fn number_rows_edit_the_same_through_both_views() {
             let clip = fixture(&sample);
             let before = clip.picture_v2().unwrap().clone();
             let (mut old, mut new) = (Run::new(clip.clone(), false), Run::new(clip, true));
+            new.property = PROPERTIES.contains(&id);
             let (o, n) = (play(&mut old, label, script, &typed), play(&mut new, label, script, &typed));
             if !(o && n) {
                 differ.push(format!("{id} {script:?}: row {label:?} found old {o}, new {n}"));
@@ -370,7 +392,6 @@ fn card_name(t: &klipp_effects::registry::EffectType) -> &'static str {
 /// card's index commands, the new card's eye, ✕, ↓ and Add menu): the same
 /// picture, or for an add, the same effects in the same order.
 #[test]
-#[ignore = "M3 step 12: run with --ignored until the generated stack is the default"]
 fn card_edits_are_the_same_through_both_views() {
     let mut differ = Vec::new();
     let mut compared = 0;
