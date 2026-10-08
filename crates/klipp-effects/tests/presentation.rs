@@ -27,7 +27,7 @@ fn every_param_has_presentation() {
 
 #[test]
 fn the_table_names_real_params_and_holds_together() {
-    let problems = presentation::problems(&types(), presentation::PARAMS, presentation::TYPES);
+    let problems = presentation::problems(&types(), &presentation::params().copied().collect::<Vec<_>>(), &presentation::types().copied().collect::<Vec<_>>());
     assert!(problems.is_empty(), "{problems:#?}");
 }
 
@@ -109,4 +109,85 @@ fn an_entry_naming_no_param_is_refused() {
     assert_eq!(presentation::problems(&types(), &stray, &[]).len(), 1);
     let twice = [presentation::ParamEntry { type_id: effect_types().next().unwrap().desc.id, key: p.key, pres: Presentation::derived(&p) }; 2];
     assert!(presentation::problems(&types(), &twice, &[]).iter().any(|e| e.contains("two entries")));
+}
+
+/// The types the tables give rows for so far (M3 step 0b lands family by
+/// family): each gives every one of its parameters an entry.
+fn covered() -> Vec<&'static klipp_effects::registry::EffectType> {
+    effect_types().filter(|t| presentation::params().any(|e| e.type_id == t.desc.id)).collect()
+}
+
+#[test]
+fn a_covered_type_names_every_param() {
+    for t in covered() {
+        for p in t.desc.params {
+            assert!(presentation::params().any(|e| e.type_id == t.desc.id && e.key == p.key), "{}/{} has no entry", t.desc.id, p.key);
+        }
+    }
+}
+
+/// Differences from today's rows that are meant, by (type, parameter,
+/// what): each is a reviewed change (m3-work-breakdown's IC list).
+const MEANT: &[(&str, &str, &str)] = &[
+    // IC2: Vibrance resets to its catalog default, 0, not 0.5.
+    ("klipp.fx.vibrance", "amount", "reset"),
+];
+
+/// Every covered type's rows are today's: the same parameters in the same
+/// order, each with today's label, widget, decimals, drag step, suffix and
+/// reset, as the old inspector recorded them (M3 step 1b's fixture), but
+/// for the meant differences above.
+#[test]
+fn presentation_matches_the_old_rows() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!("../../klipp-ui/tests/fixtures/old_rows.json")).unwrap();
+    let mut differ = Vec::new();
+    let mut compared = 0;
+    for t in covered() {
+        let case = fixture["cases"].as_array().unwrap().iter().find(|c| c["kind"] == t.desc.id && c["variant"] == "sample").unwrap_or_else(|| panic!("{}: not recorded", t.desc.id));
+        let rows = case["rows"].as_array().unwrap();
+        // The order: by `order`, then the catalog's, hidden rows left out.
+        let mut shown: Vec<(u16, usize, &ParamDesc)> = t.desc.params.iter().enumerate().map(|(i, p)| (t.presentation(p).order, i, p)).filter(|(_, _, p)| t.presentation(p).widget != Widget::Hidden).collect();
+        shown.sort_by_key(|(o, i, _)| (*o, *i));
+        let order: Vec<&str> = shown.iter().map(|(_, _, p)| p.key).collect();
+        let recorded: Vec<&str> = rows.iter().map(|r| r["parameter"].as_str().unwrap()).collect();
+        if order != recorded {
+            differ.push(format!("{}: rows {order:?}, today {recorded:?}", t.desc.id));
+        }
+        for r in rows {
+            let key = r["parameter"].as_str().unwrap();
+            let Some(p) = t.desc.params.iter().find(|p| p.key == key) else {
+                differ.push(format!("{}/{key}: recorded, not in the catalog", t.desc.id));
+                continue;
+            };
+            let pres = t.presentation(p);
+            let mut check = |what: &str, ours: String, today: String| {
+                if ours != today && !MEANT.contains(&(t.desc.id, key, what)) {
+                    differ.push(format!("{}/{key} {what}: {ours}, today {today}", t.desc.id));
+                }
+            };
+            check("label", pres.label.unwrap_or(p.label).into(), r["label"].as_str().unwrap().into());
+            let widget = match r["widget"].as_str().unwrap() {
+                "scrubby" | "drag_value" => "Scrub",
+                "choice" => "Combo",
+                "colour" => if pres.widget == Widget::ColourRgb { "ColourRgb" } else { "ColourRgba" },
+                "checkbox" => "Toggle",
+                "slider" => "Slider",
+                other => other,
+            };
+            check("widget", format!("{:?}", pres.widget), widget.into());
+            if let Some(dec) = r["decimals"].as_u64() {
+                check("decimals", pres.decimals.to_string(), dec.to_string());
+            }
+            if let Some(speed) = r["speed"].as_f64() {
+                check("step", pres.step.to_string(), (speed as f32).to_string());
+            }
+            check("suffix", pres.suffix.text(p.unit).into(), r["suffix"].as_str().unwrap().trim().into());
+            if let Some(reset) = r["reset"].as_f64() {
+                check("reset", pres.reset.unwrap_or(p.default).to_string(), (reset as f32).to_string());
+            }
+            compared += 1;
+        }
+    }
+    assert!(differ.is_empty(), "{} differences:\n{}", differ.len(), differ.join("\n"));
+    assert!(compared > 0 || covered().is_empty());
 }
