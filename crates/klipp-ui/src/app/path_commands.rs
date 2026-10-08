@@ -205,6 +205,7 @@ impl crate::state::AppState {
     /// drag that `cmd` doesn't belong to is closed as its own step before
     /// any handler runs.
     pub(crate) fn before_dispatch(&mut self, cmd: &AppCommand) {
+        if super::command_writes::writes(cmd) { self.invalidate_node_thumbnails(); }
         if self.closes_path_drag(cmd) {
             self.close_open_drag();
         }

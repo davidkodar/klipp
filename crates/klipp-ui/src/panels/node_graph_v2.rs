@@ -21,6 +21,7 @@
 
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, ClipId};
+use klipp_compose::InspectAt as NodeOutput;
 use klipp_nodes::{NodeFrameId, NodeGraph, NodeId, NodePos, NodeStickyNoteId};
 
 mod model;
@@ -281,16 +282,17 @@ pub struct NodeGraphV2Panel {
     /// `ctx.load_texture` and dropped from egui's pool on panel
     /// destruction (or when the entry is overwritten on path change).
     matte_thumbs: std::collections::HashMap<NodeId, (std::path::PathBuf, egui::TextureHandle)>,
-    /// Per-node output-thumbnail textures. Keyed by node id; value is
+    /// Per-node output-thumbnail textures. Keyed by full output address; value is
     /// `(node_thumbs_gen at upload time, texture handle)`. Re-uploads
     /// when the engine bumps `FrameBuffer::node_thumbs_gen`; otherwise
     /// reuses the cached texture.
-    output_thumbs: std::collections::HashMap<NodeId, (u64, egui::TextureHandle)>,
-    /// The set of node-ids we last told the engine to capture thumbs
+    output_thumbs: std::collections::HashMap<NodeOutput, (u64, egui::TextureHandle)>,
+    /// The output addresses we last told the engine to capture thumbs
     /// for, so we can avoid re-sending `SetVisibleNodeThumbs` every
     /// frame. Snapshotted at end of each render; compared against the
     /// current frame's visible set on the next render.
-    last_visible_thumb_nodes: Vec<NodeId>,
+    last_visible_thumb_nodes: Vec<NodeOutput>,
+    pub(crate) thumbnail_quality: Option<klipp_engine::node_thumbnails::PreviewQuality>,
     /// Box-select / marquee state. Set when the user presses the
     /// primary mouse button on empty canvas (no node, no port hit);
     /// the live `current` is updated on every drag frame so the
@@ -353,11 +355,11 @@ pub struct NodeGraphV2Panel {
     /// `engine_node_thumbs_gen` so the cache invalidates when the
     /// engine pushes a new thumb. Defer-dropped through the same
     /// `deferred_texture_drops` queue the output-thumb cache uses.
-    thumb_clipping_overlays: std::collections::HashMap<NodeId, (u64, egui::TextureHandle)>,
+    thumb_clipping_overlays: std::collections::HashMap<NodeOutput, (u64, egui::TextureHandle)>,
     /// Cached 64-bucket luma histograms keyed by thumb generation.
     /// Cheap to recompute (~20 K samples per node) but caching
     /// avoids the work for nodes we paint every frame anyway.
-    thumb_histograms: std::collections::HashMap<NodeId, (u64, [u32; 64])>,
+    thumb_histograms: std::collections::HashMap<NodeOutput, (u64, [u32; 64])>,
 }
 
 impl Default for NodeGraphV2Panel {
@@ -394,6 +396,7 @@ impl Default for NodeGraphV2Panel {
             matte_thumbs: std::collections::HashMap::new(),
             output_thumbs: std::collections::HashMap::new(),
             last_visible_thumb_nodes: Vec::new(),
+            thumbnail_quality: None,
             wireless_label_editor: None,
             view_bookmarks: [None; 9],
             bookmark_toast: None,
@@ -410,6 +413,8 @@ impl Default for NodeGraphV2Panel {
 }
 
 impl NodeGraphV2Panel {
+    pub(crate) fn invalidate_thumbnail_requests(&mut self) { self.last_visible_thumb_nodes.clear(); }
+
     /// Reframe the graph after moving its panel to a different dock.
     pub fn request_fit(&mut self) { self.fit_pending = true; }
 
@@ -454,7 +459,7 @@ impl NodeGraphV2Panel {
         graph: &mut NodeGraph,
         clip_id: ClipId,
         theme: &KlippTheme,
-        engine_node_thumbs: &std::collections::HashMap<NodeId, Vec<u8>>,
+        engine_node_thumbs: &std::collections::HashMap<NodeOutput, Vec<u8>>,
         engine_node_thumbs_gen: u64,
         deferred_drops: &mut Vec<egui::TextureHandle>,
         descent_path: &mut Vec<NodeId>,
@@ -499,6 +504,9 @@ impl NodeGraphV2Panel {
         theme: &KlippTheme,
         clip_time_secs: f64,
         keyboard_enabled: bool,
+        engine_node_thumbs: &std::collections::HashMap<NodeOutput, Vec<u8>>,
+        engine_node_thumbs_gen: u64,
+        deferred_drops: &mut Vec<egui::TextureHandle>,
     ) -> Result<Vec<AppCommand>, String> {
         if level.root_clip() != Some(clip.id.0) {
             return Err("The graph belongs to a different clip".into());
@@ -525,7 +533,7 @@ impl NodeGraphV2Panel {
             body = &n.group.as_ref().ok_or("The selected node is not a group")?.graph;
         }
         let updates = self.show_canvas(ui, selected_node, selected_set, &graph, clip.id, theme,
-            &Default::default(), 0, &mut Vec::new(), &mut level.nodes, &labels, None, None,
+            engine_node_thumbs, engine_node_thumbs_gen, deferred_drops, &mut level.nodes, &labels, None, None,
             clip_time_secs, false, 0.0, None);
         // A click without movement must not create an undo entry. Begin
         // only when the first position update is about to be dispatched.
@@ -548,7 +556,7 @@ impl NodeGraphV2Panel {
         graph: &G,
         clip_id: ClipId,
         theme: &KlippTheme,
-        engine_node_thumbs: &std::collections::HashMap<NodeId, Vec<u8>>,
+        engine_node_thumbs: &std::collections::HashMap<NodeOutput, Vec<u8>>,
         engine_node_thumbs_gen: u64,
         deferred_drops: &mut Vec<egui::TextureHandle>,
         descent_path: &mut Vec<NodeId>,
@@ -563,6 +571,7 @@ impl NodeGraphV2Panel {
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
+        let thumbnail_descent = descent_path.clone();
         // Self-heal: drop any stale ids from the selection set that
         // no longer exist in the current clip's graph (clip-switch,
         // upstream RemoveNode the engine has already applied, etc.).
@@ -2055,9 +2064,10 @@ impl NodeGraphV2Panel {
                 } else {
                     node_id
                 };
-                if let Some(thumb_bytes) = engine_node_thumbs.get(&thumb_lookup_id) {
+                let thumb_output = graph.thumbnail_output(clip_id, thumb_lookup_id, &thumbnail_descent);
+                if let Some((thumb_output, thumb_bytes)) = thumb_output.as_ref().and_then(|at| engine_node_thumbs.get(at).map(|bytes| (at, bytes))) {
                     if !thumb_bytes.is_empty() {
-                        let needs_upload = match self.output_thumbs.get(&node_id) {
+                        let needs_upload = match self.output_thumbs.get(thumb_output) {
                             Some((gen, _)) => *gen != engine_node_thumbs_gen,
                             None => true,
                         };
@@ -2085,15 +2095,15 @@ impl NodeGraphV2Panel {
                                 // label has been destroyed" panic.
                                 // Defer the drop to a later frame (see
                                 // `AppState::deferred_texture_drops`).
-                                if let Some((_, old)) = self.output_thumbs.remove(&node_id) {
+                                if let Some((_, old)) = self.output_thumbs.remove(thumb_output) {
                                     deferred_drops.push(old);
                                 }
                                 self.output_thumbs.insert(
-                                    node_id, (engine_node_thumbs_gen, tex),
+                                    thumb_output.clone(), (engine_node_thumbs_gen, tex),
                                 );
                             }
                         }
-                        if let Some((_, tex)) = self.output_thumbs.get(&node_id) {
+                        if let Some((_, tex)) = self.output_thumbs.get(thumb_output) {
                             // Aspect-fit the 16:9 thumb into the wider-
                             // than-tall body cell with rounded corners
                             // and a category glyph in the bottom-right.
@@ -2114,21 +2124,21 @@ impl NodeGraphV2Panel {
                             // cache uses.
                             if self.show_thumb_clipping {
                                 let cached_gen = self.thumb_clipping_overlays
-                                    .get(&node_id).map(|(g, _)| *g);
+                                    .get(thumb_output).map(|(g, _)| *g);
                                 if cached_gen != Some(engine_node_thumbs_gen) {
                                     let img = build_clipping_overlay_image(thumb_bytes);
                                     let name = format!("node_clip_overlay_{}", node_id.as_simple());
                                     let overlay_tex = ui.ctx().load_texture(
                                         name, img, egui::TextureOptions::NEAREST,
                                     );
-                                    if let Some((_, old)) = self.thumb_clipping_overlays.remove(&node_id) {
+                                    if let Some((_, old)) = self.thumb_clipping_overlays.remove(thumb_output) {
                                         deferred_drops.push(old);
                                     }
                                     self.thumb_clipping_overlays.insert(
-                                        node_id, (engine_node_thumbs_gen, overlay_tex),
+                                        thumb_output.clone(), (engine_node_thumbs_gen, overlay_tex),
                                     );
                                 }
-                                if let Some((_, ov_tex)) = self.thumb_clipping_overlays.get(&node_id) {
+                                if let Some((_, ov_tex)) = self.thumb_clipping_overlays.get(thumb_output) {
                                     paint_thumb_rounded(&painter, thumb_rect, ov_tex.id(), 3.0);
                                 }
                             }
@@ -2138,14 +2148,14 @@ impl NodeGraphV2Panel {
                             // of the thumb. Cached the same way.
                             if self.show_thumb_histogram {
                                 let cached_gen = self.thumb_histograms
-                                    .get(&node_id).map(|(g, _)| *g);
+                                    .get(thumb_output).map(|(g, _)| *g);
                                 if cached_gen != Some(engine_node_thumbs_gen) {
                                     let bins = compute_thumb_histogram(thumb_bytes);
                                     self.thumb_histograms.insert(
-                                        node_id, (engine_node_thumbs_gen, bins),
+                                        thumb_output.clone(), (engine_node_thumbs_gen, bins),
                                     );
                                 }
-                                if let Some((_, bins)) = self.thumb_histograms.get(&node_id) {
+                                if let Some((_, bins)) = self.thumb_histograms.get(thumb_output) {
                                     paint_thumb_histogram(&painter, thumb_rect, bins, theme);
                                 }
                             }
@@ -2161,7 +2171,7 @@ impl NodeGraphV2Panel {
                     // node not in visible set) — defer-drop any stale
                     // thumb so wgpu's in-flight submit completes before
                     // the TextureHandle's destructor runs.
-                    if let Some((_, old)) = self.output_thumbs.remove(&node_id) {
+                    if let Some((_, old)) = thumb_output.as_ref().and_then(|at| self.output_thumbs.remove(at)) {
                         deferred_drops.push(old);
                     }
                 }
@@ -2986,7 +2996,7 @@ impl NodeGraphV2Panel {
             // Snapshot kind+enabled so we can borrow out of `graph` cleanly
             let info = graph.nodes().iter().find(|n| n.id() == nid).map(|n| (n.kind(), n.enabled()));
             if let Some((kind, enabled)) = info {
-                self.draw_node_menu(ui, clip_id, nid, kind, enabled, &mut cmds, selected_node, selected_set, graph, solo_node);
+                self.draw_node_menu(ui, clip_id, nid, kind, enabled, &mut cmds, selected_node, selected_set, graph, solo_node, &thumbnail_descent);
             } else {
                 self.node_menu = None;
             }
@@ -3029,17 +3039,49 @@ impl NodeGraphV2Panel {
         // — node_outputs has no entry for it; the UI paints
         // Output's preview by looking up its FEEDER node's thumb
         // instead (see the Output-thumb branch in the paint loop).
-        let mut current_visible: Vec<NodeId> = node_rects.iter()
-            .filter(|(_, _, _, kind, _)| !kind.is_output())
-            .map(|(id, _, _, _, _)| *id)
-            .collect();
-        current_visible.sort();
+        let mut visible: Vec<_> = node_rects.iter()
+            .filter(|(_, rect, _, _, _)| rect.intersects(canvas_rect))
+            .map(|(id, _, _, kind, _)| {
+                let priority = !selected_set.contains(id) && *selected_node != Some(*id);
+                let output = if kind.is_output() {
+                    graph.edges().iter().find(|e| e.to_node == *id && e.to_port == 0).map_or(*id, |e| e.from_node)
+                } else { *id };
+                (priority, output)
+            }).collect();
+        visible.sort();
+        let mut current_visible = Vec::new();
+        for (_, id) in visible {
+            if let Some(at) = graph.thumbnail_output(clip_id, id, &thumbnail_descent) {
+                if !current_visible.contains(&at) { current_visible.push(at); }
+            }
+            if current_visible.len() == klipp_engine::node_thumbnails::MAX_THUMBS { break; }
+        }
         if current_visible != self.last_visible_thumb_nodes {
             cmds.push(AppCommand::SetVisibleNodeThumbs {
-                clip_id,
-                at: current_visible.iter().map(|n| klipp_compose::inspect::grade_node(clip_id, *n)).collect(),
+                request: 0, clip_id, at: current_visible.clone(),
             });
             self.last_visible_thumb_nodes = current_visible;
+        }
+        self.output_thumbs.retain(|at, (_, texture)| {
+            if self.last_visible_thumb_nodes.contains(at) { true }
+            else { deferred_drops.push(texture.clone()); false }
+        });
+        self.thumb_clipping_overlays.retain(|at, (_, texture)| {
+            if self.last_visible_thumb_nodes.contains(at) { true }
+            else { deferred_drops.push(texture.clone()); false }
+        });
+        self.thumb_histograms.retain(|at, _| self.last_visible_thumb_nodes.contains(at));
+        self.output_thumbs.retain(|at, (_, texture)| {
+            if engine_node_thumbs.contains_key(at) { true } else { deferred_drops.push(texture.clone()); false }
+        });
+        self.thumb_clipping_overlays.retain(|at, (_, texture)| {
+            if engine_node_thumbs.contains_key(at) { true } else { deferred_drops.push(texture.clone()); false }
+        });
+        self.thumb_histograms.retain(|at, _| engine_node_thumbs.contains_key(at));
+
+        if let Some(label) = self.thumbnail_quality.and_then(|q| q.label()) {
+            painter.text(canvas_rect.right_top() + egui::vec2(-8.0, 8.0), egui::Align2::RIGHT_TOP,
+                label, egui::FontId::proportional(10.0), theme.text_dim);
         }
 
         // ── Vignette ──────────────────────────────────────────────
@@ -4141,6 +4183,7 @@ impl NodeGraphV2Panel {
         selected_set: &mut std::collections::HashSet<NodeId>,
         graph: &impl CanvasGraph,
         solo_node: Option<NodeId>,
+        descent: &[NodeId],
     ) {
         if !graph.grade_tools() && kind.is_terminal() {
             self.node_menu = None;
@@ -4188,7 +4231,7 @@ impl NodeGraphV2Panel {
                         let label = if is_soloed { "Clear solo" } else { "Solo this node" };
                         if ui.button(label).clicked() {
                             let new_target = if is_soloed { None } else { Some(node_id) };
-                            cmds.push(AppCommand::SetNodeSolo { at: new_target.map(|n| klipp_compose::inspect::grade_node(clip_id, n)) });
+                            cmds.push(AppCommand::SetNodeSolo { at: new_target.and_then(|n| graph.thumbnail_output(clip_id, n, descent)) });
                             close = true;
                         }
                     }
@@ -5163,5 +5206,49 @@ mod canvas_command_tests {
         let commands = h.click(rect.center(), egui::PointerButton::Primary);
         assert!(matches!(commands.as_slice(), [AppCommand::DescendIntoCompound { clip_id, node_id }] if *clip_id == h.clip && *node_id == extra_id), "{commands:?}");
         assert_eq!(serde_json::to_value(&h.graph).unwrap(), before);
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_request_tests {
+    use super::*;
+
+    #[test]
+    fn nested_canvas_requests_visible_nodes_by_full_path_with_selection_first() {
+        let mut graph = NodeGraph::default();
+        let id = graph.ensure_corrector();
+        let prototype = graph.nodes.iter().find(|n| n.id == id).unwrap().clone();
+        for _ in 0..70 {
+            let mut node = prototype.clone();
+            node.id = NodeId::new_v4();
+            graph.nodes.push(node);
+        }
+        let hidden = graph.nodes.last().unwrap().id;
+        graph.node_positions.insert(hidden, NodePos { x: 100_000.0, y: 0.0 });
+        let selected = graph.nodes[graph.nodes.len() - 2].id;
+        let clip = ClipId::new();
+        let group = NodeId::new_v4();
+        let mut panel = NodeGraphV2Panel { last_fit_clip: Some(clip), thumbnail_quality: Some(klipp_engine::node_thumbnails::PreviewQuality::Filmstrip), ..Default::default() };
+        let ctx = egui::Context::default();
+        let mut commands = Vec::new();
+        let out = ctx.run(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))),
+            ..Default::default()
+        }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                commands = panel.show(ui, &mut Some(selected), &mut [selected].into(), &mut graph, clip,
+                    &KlippTheme::default(), &Default::default(), 0, &mut Vec::new(), &mut vec![group],
+                    &["Group".into()], Some(&[]), None, 0.0, false, 0.0, None);
+            });
+        });
+        let wanted = commands.iter().find_map(|cmd| match cmd {
+            AppCommand::SetVisibleNodeThumbs { at, .. } => Some(at), _ => None,
+        }).expect("the canvas requests its previews");
+        assert_eq!(wanted.len(), klipp_engine::node_thumbnails::MAX_THUMBS);
+        assert_eq!(wanted[0].path.node(), Some(selected));
+        assert!(wanted.iter().all(|at| at.path.nodes.len() == 3 && at.path.nodes[1] == group));
+        assert!(wanted.iter().all(|at| at.path.root_clip() == Some(clip.0)));
+        assert!(!wanted.iter().any(|at| at.path.node() == Some(hidden)));
+        assert!(out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == "Low-res preview")));
     }
 }

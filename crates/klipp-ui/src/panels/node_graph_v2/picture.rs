@@ -261,6 +261,7 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
     fn add_menu(&self) -> &[MenuCategory] { picture_menu() }
     fn grade_tools(&self) -> bool { false }
     fn keyboard_enabled(&self) -> bool { self.keyboard_enabled }
+    fn thumbnail_output(&self, _: klipp_core::ClipId, node: NodeId, _: &[NodeId]) -> Option<NodeOutput> { self.output(node) }
     fn command(&self, command: AppCommand) -> Option<AppCommand> {
         let single = |op, label: &str| Some(AppCommand::GraphOps { ops: vec![op], label: label.into() });
         match command {
@@ -288,7 +289,7 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
                     GraphOp::SetNodeMeta { path, label: None, position: Some(serde_json::json!({"x":position.0,"y":position.1})) }], label: "Add effect".into() })
             }
             AppCommand::SetNodeSolo { at } => Some(AppCommand::SetNodeSolo { at: match at { Some(at) => Some(self.output(at.path.node()?)?), None => None } }),
-            AppCommand::SetVisibleNodeThumbs { clip_id, at } => Some(AppCommand::SetVisibleNodeThumbs { clip_id, at: at.iter().filter_map(|at| self.output(at.path.node()?)).collect() }),
+            AppCommand::SetVisibleNodeThumbs { request, clip_id, at } => Some(AppCommand::SetVisibleNodeThumbs { request, clip_id, at: at.iter().filter_map(|at| self.output(at.path.node()?)).collect() }),
             // Grade-only clipboard, versions and annotations have no picture
             // writer yet. The workspace integration hides those actions.
             _ => None,
@@ -450,7 +451,7 @@ mod tests {
             let mut cmds = Vec::new();
             let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 700.0))), time: Some(time), events, ..Default::default() }, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    cmds = panel.show_picture(ui, &c, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, true).unwrap();
+                    cmds = panel.show_picture(ui, &c, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, true, &Default::default(), 0, &mut Vec::new()).unwrap();
                 });
             });
             let texts: Vec<_> = out.shapes.iter().filter_map(|s| match &s.shape {
@@ -504,7 +505,7 @@ mod tests {
             time += 0.1;
             let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 700.0))), time: Some(time), events, ..Default::default() }, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    let commands = panel.show_picture(ui, &c, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, true).unwrap();
+                    let commands = panel.show_picture(ui, &c, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, true, &Default::default(), 0, &mut Vec::new()).unwrap();
                     assert!(commands.iter().all(|cmd| matches!(cmd, AppCommand::SetVisibleNodeThumbs { .. })), "{commands:?}");
                 });
             });
@@ -588,7 +589,7 @@ mod tests {
                 ..Default::default()
             }, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    cmds = panel.show_picture(ui, &c, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, focused).unwrap();
+                    cmds = panel.show_picture(ui, &c, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, focused, &Default::default(), 0, &mut Vec::new()).unwrap();
                 });
             });
             cmds.retain(|cmd| !matches!(cmd, AppCommand::SetVisibleNodeThumbs { .. }));
@@ -618,7 +619,7 @@ mod tests {
                 let mut cmds = Vec::new();
                 let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 700.0))), time: Some(time), events, ..Default::default() }, |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        cmds = panel.show_picture(ui, clip, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, true).unwrap();
+                        cmds = panel.show_picture(ui, clip, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, true, &Default::default(), 0, &mut Vec::new()).unwrap();
                     });
                 });
                 cmds.retain(|cmd| !matches!(cmd, AppCommand::SetVisibleNodeThumbs { .. }));

@@ -55,6 +55,7 @@ mod effects;
 mod inspector_edit_host;
 mod command_writes;
 mod graph_dock;
+pub(crate) mod node_thumbnails;
 #[cfg(test)]
 mod inspector_parity;
 #[cfg(test)]

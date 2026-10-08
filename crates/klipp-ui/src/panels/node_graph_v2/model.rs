@@ -58,6 +58,11 @@ pub(super) trait CanvasGraph {
     fn signal_role(&self, node: NodeId, port: u8) -> PortRole;
     fn add_menu(&self) -> &[MenuCategory];
     fn command(&self, command: AppCommand) -> Option<AppCommand>;
+    fn thumbnail_output(&self, clip: klipp_core::ClipId, node: NodeId, descent: &[NodeId]) -> Option<klipp_compose::InspectAt> {
+        let mut at = klipp_compose::inspect::grade_node(clip, node);
+        at.path.nodes.splice(1..1, descent.iter().copied());
+        Some(at)
+    }
     fn grade_tools(&self) -> bool { true }
     fn keyboard_enabled(&self) -> bool { true }
 }
