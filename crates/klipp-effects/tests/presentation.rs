@@ -220,7 +220,12 @@ fn presentation_matches_the_old_rows() {
             let widget = match r["widget"].as_str().unwrap() {
                 "scrubby" | "drag_value" => "Scrub",
                 "choice" => "Combo",
-                "colour" => if pres.widget == Widget::ColourRgb { "ColourRgb" } else { "ColourRgba" },
+                // RGB or RGBA by what today's picker holds, never by ours.
+                "colour" => match r["value"].as_array().map(Vec::len) {
+                    Some(4) => "ColourRgba",
+                    Some(3) => "ColourRgb",
+                    n => panic!("{}/{key}: a colour of {n:?} channels", t.desc.id),
+                },
                 "checkbox" => "Toggle",
                 "slider" => "Slider",
                 other => other,
@@ -318,4 +323,48 @@ fn the_adapters_are_named() {
             ("klipp.fx.video_stabilization", "video_stabilization"),
         ]
     );
+}
+
+/// Today's choice labels, from the effects tab's combos
+/// (`inspector/effects_tab.rs`), and IC5's new one: what each choice's
+/// presentation must name, independently of the tables.
+const CHOICE_LABELS: &[(&str, &str, &[&str])] = &[
+    ("klipp.fx.color_fade", "mode", &["Fade From", "Fade To"]),
+    ("klipp.fx.letterbox", "bar_color", &["Black", "White"]),
+    ("klipp.fx.chroma_key", "spill_method", &["None", "Channel Clamp", "Hawk"]),
+    ("klipp.fx.speed_ramp", "blend_mode", &["Nearest", "Linear"]),
+    ("klipp.fx.speed_ramp", "ramp_curve", &["Constant", "Ease In", "Ease Out", "Ease In-Out", "S-Curve"]),
+    ("klipp.fx.radial_blur", "mode", &["Zoom", "Spin"]),
+];
+
+/// Today's sub-headers (the channel mixer's per-output groups).
+const GROUPS: &[(&str, &str, &str)] = &[
+    ("klipp.fx.channel_mixer", "red_red", "Red Output"),
+    ("klipp.fx.channel_mixer", "red_green", "Red Output"),
+    ("klipp.fx.channel_mixer", "red_blue", "Red Output"),
+    ("klipp.fx.channel_mixer", "green_red", "Green Output"),
+    ("klipp.fx.channel_mixer", "green_green", "Green Output"),
+    ("klipp.fx.channel_mixer", "green_blue", "Green Output"),
+    ("klipp.fx.channel_mixer", "blue_red", "Blue Output"),
+    ("klipp.fx.channel_mixer", "blue_green", "Blue Output"),
+    ("klipp.fx.channel_mixer", "blue_blue", "Blue Output"),
+    ("klipp.fx.frei0r", "type_id", "Plug-in"),
+    ("klipp.fx.frei0r", "params", "Plug-in"),
+];
+
+/// Every choice drawn as a combo names today's labels, and every group is
+/// today's sub-header: held to the lists above, not to the tables.
+#[test]
+fn choice_labels_and_groups_are_todays() {
+    for t in effect_types() {
+        for p in t.desc.params {
+            let pres = t.presentation(p);
+            let want = CHOICE_LABELS.iter().find(|(id, k, _)| *id == t.desc.id && *k == p.key).map(|(_, _, l)| *l);
+            if pres.widget == Widget::Combo || want.is_some() {
+                assert_eq!(pres.labels, want, "{}/{}: choice labels", t.desc.id, p.key);
+            }
+            let group = GROUPS.iter().find(|(id, k, _)| *id == t.desc.id && *k == p.key).map(|(_, _, g)| *g);
+            assert_eq!(pres.group, group, "{}/{}: group", t.desc.id, p.key);
+        }
+    }
 }
