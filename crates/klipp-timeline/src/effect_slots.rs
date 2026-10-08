@@ -613,6 +613,41 @@ impl EffectsState {
 /// `ParamId::Effect { effect_index, param_name }`), so a caller moved onto
 /// these behaves as before.
 impl Clip {
+    /// The picture node of the clip's effect at `index` of its built-in
+    /// list, or of its plug-in list when `ofx` (M3 step 4): what a list
+    /// widget's row is, addressed as the picture names it.
+    pub fn effect_node_at(&self, ofx: bool, index: usize) -> Option<uuid::Uuid> {
+        if ofx {
+            use klipp_graph_lift::ids::{entry_id, RootKind};
+            return (index < self.ofx_effects().len()).then(|| entry_id(RootKind::Clip, self.id.0, "ofx", index));
+        }
+        self.effect_ids_for_picture().get(index).map(|id| id.as_uuid())
+    }
+
+    /// Where the clip's effect node `node` sits: in its plug-in list or its
+    /// built-in list, and at which place. The inverse of
+    /// [`Clip::effect_node_at`].
+    pub fn effect_slot_of_node(&self, node: uuid::Uuid) -> Option<(bool, usize)> {
+        if let Some(i) = self.effect_ids_for_picture().iter().position(|id| id.as_uuid() == node) {
+            return Some((false, i));
+        }
+        (0..self.ofx_effects().len()).find(|i| self.effect_node_at(true, *i) == Some(node)).map(|i| (true, i))
+    }
+
+    /// Switch the effect node `node` on or off, as the A/B compare's
+    /// bypass does: true when the clip has it.
+    pub fn toggle_effect_node(&mut self, node: uuid::Uuid) -> bool {
+        match self.effect_slot_of_node(node) {
+            Some((true, i)) => self.edit_ofx_effect(i, |e| e.enabled = !e.enabled).is_some(),
+            Some((false, i)) => {
+                let id = crate::EffectId::of_node(node);
+                let on = self.builtin_effects_enabled().get(i).copied().unwrap_or(true);
+                self.set_effect_enabled(id, !on)
+            }
+            None => false,
+        }
+    }
+
     /// The id of the entry at `index`, for an index a list widget holds:
     /// resolve it once, at the edge, and address the effect by id after.
     pub fn effect_id_at(&mut self, index: usize) -> Option<EffectId> {

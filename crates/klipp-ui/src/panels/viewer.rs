@@ -924,7 +924,7 @@ impl ViewerPanel {
         let image_rect = frame.image_rect;
         let grade_still_active = frame.grade_still_active;
         let stab_compare_active = state.stabilization_compare_active;
-        let effect_compare_active = state.split_compare_effect.is_some();
+        let effect_compare_active = state.split_compare_node.is_some();
         let split_x = image_rect.min.x + state.split_position * image_rect.width();
         let divider_color = if grade_still_active {
             theme.marker_info // cool blue for grade still compare
@@ -1798,7 +1798,7 @@ impl ViewerPanel {
         let show_split_divider = state.before_after_active
             || frame.grade_still_active
             || state.stabilization_compare_active
-            || state.split_compare_effect.is_some();
+            || state.split_compare_node.is_some();
         if show_split_divider {
             self.draw_split_divider(ui, state, theme, &frame);
             // Keyboard nudge: ←/→ move the split by 0.02. Only consumed

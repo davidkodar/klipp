@@ -1253,14 +1253,14 @@ pub struct PlaybackEngine {
     // the raw vs stabilized result. Cost: ~2× builtin chain when active.
     pub compare_stabilization: bool,
     // Per-effect compare — mirrors compare_stabilization but targets a single
-    // effect picked in the inspector, identified by clip + index + is_ofx.
+    // effect picked in the inspector, identified by clip + its picture node
+    // (M3 step 4: a reorder or a removal before it doesn't move it).
     // When active on the current clip, the engine renders the chain twice
     // (once normal, once with the target effect's enabled flag flipped to
     // false) and writes the bypassed version to FrameBuffer.compare_effect_data.
     pub compare_effect_active: bool,
     pub compare_effect_clip_id: Option<klipp_core::ClipId>,
-    pub compare_effect_index: usize,
-    pub compare_effect_is_ofx: bool,
+    pub compare_effect_node: Option<uuid::Uuid>,
     // Matte preview — when true, show B&W qualifier/mask matte instead of graded frame
     matte_preview: bool,
     /// What the viewer shows while grading for an HDR delivery
@@ -2106,8 +2106,7 @@ impl PlaybackEngine {
             compare_stabilization: false,
             compare_effect_active: false,
             compare_effect_clip_id: None,
-            compare_effect_index: 0,
-            compare_effect_is_ofx: false,
+            compare_effect_node: None,
             matte_preview: false,
             hdr_monitor: klipp_core::HdrMonitor::default(),
             hdr_reference_output: false,
@@ -3132,15 +3131,13 @@ impl PlaybackEngine {
                 debug!("StabilizationCompare: compare_stabilization = {}", self.compare_stabilization);
             }
 
-            AppCommand::SetSplitCompareEffect { clip_id, effect_index, is_ofx } => {
-                self.compare_effect_active = clip_id.is_some();
+            AppCommand::SetSplitCompareNode { clip_id, path } => {
+                self.compare_effect_node = path.as_ref().and_then(|p| p.node());
+                self.compare_effect_active = clip_id.is_some() && self.compare_effect_node.is_some();
                 self.compare_effect_clip_id = clip_id;
-                self.compare_effect_index = effect_index;
-                self.compare_effect_is_ofx = is_ofx;
                 debug!(
-                    "SetSplitCompareEffect: active={} clip={:?} index={} is_ofx={}",
-                    self.compare_effect_active, self.compare_effect_clip_id,
-                    self.compare_effect_index, self.compare_effect_is_ofx,
+                    "SetSplitCompareNode: active={} clip={:?} node={:?}",
+                    self.compare_effect_active, self.compare_effect_clip_id, self.compare_effect_node,
                 );
             }
 

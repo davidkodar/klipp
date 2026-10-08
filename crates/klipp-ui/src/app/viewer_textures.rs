@@ -170,7 +170,7 @@ impl KlippApp {
         // right = with it. Same byte-row copy as the other compare modes;
         // the engine has already produced compare_effect_data at the same
         // dimensions as the main frame.
-        if self.state.split_compare_effect.is_some() && !compare_effect_bytes.is_empty()
+        if self.state.split_compare_node.is_some() && !compare_effect_bytes.is_empty()
             && compare_effect_bytes.len() == rgba_bytes.len()
         {
             let split_x = (self.state.split_position * w as f32) as usize;

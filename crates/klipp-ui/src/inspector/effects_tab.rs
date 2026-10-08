@@ -228,10 +228,11 @@ pub fn show(
         // Split-compare (A/B) toggle — sits left of the eye icon. When active
         // for this effect, the viewer shows a draggable split divider with the
         // effect bypassed on the left and applied on the right.
-        let compare_active = matches!(
-            state.split_compare_effect,
-            Some((cid, idx, false)) if cid == clip_id && idx == i
-        );
+        // The compared effect is a node of the clip's picture (M3 step 4),
+        // so a reorder or a removal before it leaves the compare on it.
+        let compare_path = clip.effect_node_at(false, i).map(|n| klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip_id.0 }, [n]));
+        let compare_active = compare_path.is_some()
+            && matches!(&state.split_compare_node, Some((cid, path)) if *cid == clip_id && Some(path) == compare_path.as_ref());
         let compare_rect = egui::Rect::from_min_size(
             egui::pos2(remove_x - 48.0, header_rect.center().y - 8.0),
             egui::vec2(16.0, 16.0),
@@ -256,17 +257,9 @@ pub fn show(
         let compare_clicked = compare_resp.clicked();
         if compare_clicked {
             if compare_active {
-                cmds.push(AppCommand::SetSplitCompareEffect {
-                    clip_id: None,
-                    effect_index: 0,
-                    is_ofx: false,
-                });
-            } else {
-                cmds.push(AppCommand::SetSplitCompareEffect {
-                    clip_id: Some(clip_id),
-                    effect_index: i,
-                    is_ofx: false,
-                });
+                cmds.push(AppCommand::SetSplitCompareNode { clip_id: None, path: None });
+            } else if let Some(path) = compare_path {
+                cmds.push(AppCommand::SetSplitCompareNode { clip_id: Some(clip_id), path: Some(path) });
             }
         }
 
@@ -493,10 +486,11 @@ pub fn show(
         }
 
         // Split-compare (A/B) toggle — mirrors the builtin path.
-        let compare_active = matches!(
-            state.split_compare_effect,
-            Some((cid, idx, true)) if cid == clip_id && idx == i
-        );
+        // The compared effect is a node of the clip's picture (M3 step 4),
+        // so a reorder or a removal before it leaves the compare on it.
+        let compare_path = clip.effect_node_at(true, i).map(|n| klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip_id.0 }, [n]));
+        let compare_active = compare_path.is_some()
+            && matches!(&state.split_compare_node, Some((cid, path)) if *cid == clip_id && Some(path) == compare_path.as_ref());
         let compare_rect = egui::Rect::from_min_size(
             egui::pos2(remove_x - 48.0, header_rect.center().y - 8.0),
             egui::vec2(16.0, 16.0),
@@ -521,17 +515,9 @@ pub fn show(
         let compare_clicked = compare_resp.clicked();
         if compare_clicked {
             if compare_active {
-                cmds.push(AppCommand::SetSplitCompareEffect {
-                    clip_id: None,
-                    effect_index: 0,
-                    is_ofx: false,
-                });
-            } else {
-                cmds.push(AppCommand::SetSplitCompareEffect {
-                    clip_id: Some(clip_id),
-                    effect_index: i,
-                    is_ofx: true,
-                });
+                cmds.push(AppCommand::SetSplitCompareNode { clip_id: None, path: None });
+            } else if let Some(path) = compare_path {
+                cmds.push(AppCommand::SetSplitCompareNode { clip_id: Some(clip_id), path: Some(path) });
             }
         }
 

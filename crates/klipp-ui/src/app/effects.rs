@@ -128,23 +128,27 @@ impl KlippApp {
                         break;
                     }
                 }
-                if let Some((cid, idx, true)) = self.state.split_compare_effect {
-                    if cid == *clip_id {
-                        if idx == *effect_index {
-                            self.state.split_compare_effect = None;
-                            let _ = self.cmd_tx.send(AppCommand::SetSplitCompareEffect {
-                                clip_id: None,
-                                effect_index: 0,
-                                is_ofx: false,
-                            });
-                        } else if idx > *effect_index {
-                            self.state.split_compare_effect = Some((cid, idx - 1, true));
-                            let _ = self.cmd_tx.send(AppCommand::SetSplitCompareEffect {
-                                clip_id: Some(cid),
-                                effect_index: idx - 1,
-                                is_ofx: true,
-                            });
+                // A plug-in's node is named by its place in the list, so the
+                // ones after the removed one are renamed: a compare on one of
+                // them follows it (M3 step 4; a built-in effect keeps its id).
+                if let Some((cid, path)) = self.state.split_compare_node.clone() {
+                    let ofx_node = |slot: usize| klipp_graph_lift::ids::entry_id(klipp_graph_lift::ids::RootKind::Clip, cid.0, "ofx", slot);
+                    // Up to the list's length before the removal.
+                    let before = self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == cid).map_or(0, |c| c.ofx_effects().len() + 1);
+                    let slot = path.node().and_then(|n| (0..before).find(|k| ofx_node(*k) == n));
+                    match slot {
+                        // The compared plug-in itself: its slot's id now names
+                        // the next one, so the compare ends here.
+                        Some(k) if cid == *clip_id && k == *effect_index => {
+                            self.state.split_compare_node = None;
+                            let _ = self.cmd_tx.send(AppCommand::SetSplitCompareNode { clip_id: None, path: None });
                         }
+                        Some(k) if cid == *clip_id && k > *effect_index => {
+                            let moved = klipp_graph_format::path::NodePath::new(path.root, [ofx_node(k - 1)]);
+                            self.state.split_compare_node = Some((cid, moved.clone()));
+                            let _ = self.cmd_tx.send(AppCommand::SetSplitCompareNode { clip_id: Some(cid), path: Some(moved) });
+                        }
+                        _ => {}
                     }
                 }
                 self.sync_sequence_to_engine();
@@ -270,25 +274,6 @@ impl KlippApp {
                                 clip.timeline_out = clip.timeline_in + new_duration;
                             }
                             break;
-                        }
-                    }
-                }
-                if let Some((cid, idx, false)) = self.state.split_compare_effect {
-                    if cid == *clip_id {
-                        if idx == *index {
-                            self.state.split_compare_effect = None;
-                            let _ = self.cmd_tx.send(AppCommand::SetSplitCompareEffect {
-                                clip_id: None,
-                                effect_index: 0,
-                                is_ofx: false,
-                            });
-                        } else if idx > *index {
-                            self.state.split_compare_effect = Some((cid, idx - 1, false));
-                            let _ = self.cmd_tx.send(AppCommand::SetSplitCompareEffect {
-                                clip_id: Some(cid),
-                                effect_index: idx - 1,
-                                is_ofx: false,
-                            });
                         }
                     }
                 }

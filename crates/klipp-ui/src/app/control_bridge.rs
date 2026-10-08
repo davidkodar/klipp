@@ -246,7 +246,7 @@ impl KlippApp {
             Some(format!("before/after split: left {pct}% shows the frame ungraded, right graded"))
         } else if s.stabilization_compare_active {
             Some(format!("stabilisation split: left {pct}% unstabilised"))
-        } else if s.split_compare_effect.is_some() {
+        } else if s.split_compare_node.is_some() {
             Some(format!("effect split: left {pct}% with the effect toggled"))
         } else {
             None

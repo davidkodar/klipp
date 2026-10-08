@@ -1064,43 +1064,15 @@ impl KlippApp {
                                 }
                             } else {
                                 let param = self.state.video_rubber_band_param;
-                                let opacity_static = clip.builtin_effects().iter()
-                                    .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
-                                    .unwrap_or(1.0);
-                                let transform = clip.builtin_effects().iter()
-                                    .find_map(|e| match e {
-                                        klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
-                                            Some((*position_x, *position_y, *scale_x, *rotation)),
-                                        _ => None,
-                                    })
-                                    .unwrap_or((0.0, 0.0, 1.0, 0.0));
-                                let keyframes = match param {
-                                    klipp_core::VideoParam::Opacity => clip.opacity_keyframes(),
-                                    klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes(),
-                                    klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes(),
-                                    klipp_core::VideoParam::Scale => clip.transform_scale_keyframes(),
-                                    klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes(),
-                                    klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes(),
-                                    klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes(),
-                                    klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
-                                    klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
-                                };
+                                let keyframes = clip.video_param_keyframes(param);
                                 keys_in_frame = crate::inspector::keyframe_selection::state(keyframes, clip_time_secs, tolerance).keys_in_frame;
                                         let existing = crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, tolerance).map(|i| &keyframes[i]);
                                 if let Some(kf) = existing {
                                     cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param, time_secs: kf.time_secs });
                                 } else {
-                                    let default_val = match param {
-                                        klipp_core::VideoParam::Opacity => opacity_static,
-                                        klipp_core::VideoParam::PositionX => transform.0,
-                                        klipp_core::VideoParam::PositionY => transform.1,
-                                        klipp_core::VideoParam::Scale => transform.2,
-                                        klipp_core::VideoParam::Rotation => transform.3,
-                                        klipp_core::VideoParam::TiltX => crate::inspector::video_tab::get_transform(clip).rotation_x,
-                                        klipp_core::VideoParam::TiltY => crate::inspector::video_tab::get_transform(clip).rotation_y,
-                                        klipp_core::VideoParam::MatteFeather => clip.matte_source.as_ref().map(|b| b.feather_px).unwrap_or(0.0),
-                                        klipp_core::VideoParam::MatteChoke => clip.matte_source.as_ref().map(|b| b.choke_px).unwrap_or(0.0),
-                                    };
+                                    // From the clip's placement and opacity as the
+                                    // renderer reads them (M3 step 4).
+                                    let default_val = clip.video_param_value(param);
                                     let value = klipp_core::keyframe::evaluate(keyframes, clip_time_secs, default_val);
                                     cmds.push(AppCommand::AddVideoKeyframe { clip_id, param, time_secs: clip_time_secs, value });
                                 }

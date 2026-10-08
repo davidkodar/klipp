@@ -1017,8 +1017,10 @@ pub enum AppCommand {
     /// Move the key at `time_secs` to `new_time_secs`, with `value`.
     MoveKeyAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey, time_secs: f64, new_time_secs: f64, value: f32 },
     SetInterpKeyAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey, time_secs: f64, interpolation: crate::keyframe::Interpolation },
-    /// The split view's "before" half shows the clip's picture up to the
-    /// node at `path`; `None` clears it.
+    /// Split-compare the effect node at `path`: the viewer's left half
+    /// shows the clip with it bypassed, the right half with it applied.
+    /// Mutually exclusive with the other compare modes; `None` clears it on
+    /// both sides (M3 step 4: by node, so a reorder doesn't move it).
     SetSplitCompareNode { clip_id: Option<ClipId>, path: Option<klipp_graph_format::path::NodePath> },
     /// Show the graph dock at the level holding the node at `path`, and
     /// select the node when `select`. Idempotent: it never closes the dock.
@@ -1998,14 +2000,6 @@ pub enum AppCommand {
     /// Toggle stabilization compare split view (raw vs stabilized).
     /// Mutually exclusive with ToggleBeforeAfter and grade still compare.
     ToggleStabilizationCompare,
-    /// Activate / deactivate per-effect split compare. `clip_id = None`
-    /// deactivates and clears the compare state on both sides. `is_ofx`
-    /// tells the engine which effect Vec on the clip to target.
-    SetSplitCompareEffect {
-        clip_id: Option<ClipId>,
-        effect_index: usize,
-        is_ofx: bool,
-    },
     SetMattePreview(bool),
 
     /// What the viewer shows while grading for an HDR delivery — see

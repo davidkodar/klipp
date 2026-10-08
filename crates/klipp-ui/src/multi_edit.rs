@@ -47,6 +47,34 @@ pub fn classify(cmd: &AppCommand) -> Option<(ClipId, Phase)> {
 /// `cmd`, made on the clip it names, made on `other` too, from what it
 /// left on `primary`. False when `other` has nothing it applies to: an
 /// effect `primary` has and `other` does not, an audio plugin it lacks.
+/// An effect's type, as its picture node names it: the saved tag
+/// (`"opacity"`, `"gaussian_blur"`), whichever node type the lift gives the
+/// entry (a placement, an extra Transform, an effect).
+fn effect_kind(effect: &klipp_effects::BuiltinEffect) -> Option<String> {
+    serde_json::to_value(effect).ok()?.get("type")?.as_str().map(str::to_owned)
+}
+
+/// The first of `clip`'s effect entries of type `kind` along its picture's
+/// spine, from the source to the output: the order the picture runs them
+/// in, which a picture-truth clip may hold apart from its list's.
+pub(crate) fn first_on_the_spine(clip: &mut Clip, kind: &str) -> Option<klipp_timeline::EffectId> {
+    let lifted = clip.picture_v2().ok()?;
+    let graph = &lifted.picture.graph;
+    // Back from the output along each node's primary input.
+    let mut spine = Vec::new();
+    let mut at = Some(graph.output);
+    while let Some(id) = at.filter(|id| !spine.contains(id)) {
+        spine.push(id);
+        at = graph.edges.iter().find(|e| e.to == (id, "in".into())).map(|e| e.from.0);
+    }
+    spine.reverse();
+    let of_kind = |id: &klipp_graph_format::NodeId| {
+        graph.nodes.iter().find(|n| n.id == *id).and_then(klipp_graph_lift::effect_params::tag) == Some(kind)
+    };
+    let ids: Vec<_> = spine.into_iter().filter(of_kind).collect();
+    ids.into_iter().map(klipp_timeline::EffectId::of_node).find(|id| clip.index_of(*id).is_some())
+}
+
 pub fn copy_to(cmd: &AppCommand, primary: &Clip, other: &mut Clip) -> bool {
     match cmd {
         AppCommand::UpdateClipAudio { .. } | AppCommand::BeginAudioDrag { .. } | AppCommand::EndAudioDrag { .. } => {
@@ -62,11 +90,10 @@ pub fn copy_to(cmd: &AppCommand, primary: &Clip, other: &mut Clip) -> bool {
         }
         AppCommand::UpdateBuiltinEffect { index, .. } | AppCommand::EndEffectDrag { effect_index: index, .. } => {
             let Some(effect) = primary.builtin_effects().get(*index) else { return false };
-            // The same kind of effect on the other clip, wherever it sits
-            // in its chain.
-            let kind = std::mem::discriminant(effect);
-            let same = other.effect_entries().find(|(_, e, _)| std::mem::discriminant(*e) == kind).map(|(id, _, _)| id);
-            match same {
+            // The same type of effect on the other clip, the first on its
+            // spine (M3 step 4), wherever its list holds it.
+            let Some(kind) = effect_kind(effect) else { return false };
+            match first_on_the_spine(other, &kind) {
                 Some(id) => other.replace_effect(id, effect.clone()),
                 None => false,
             }
@@ -177,6 +204,32 @@ mod tests {
         let mut bare = clip();
         assert!(!copy_to(&cmd, &primary, &mut bare));
         assert!(bare.builtin_effects().is_empty());
+    }
+
+    /// M3 step 4: the match is by the effect's type as its picture node
+    /// names it, the first on the other clip's spine: a Transform the lift
+    /// made a placement is still a Transform, a different type in front of
+    /// it is passed over, and of two of a type the first the picture runs.
+    #[test]
+    fn multi_edit_matches_by_type_id() {
+        let transform = |x: f32| BuiltinEffect::Transform { position_x: x, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+        let mut primary = clip();
+        primary.set_effect_list(vec![transform(40.0)], vec![true]);
+        let mut other = clip();
+        other.set_effect_list(vec![BuiltinEffect::Gamma { gamma: 1.2 }, transform(0.0)], vec![true, true]);
+        let cmd = AppCommand::UpdateBuiltinEffect { clip_id: primary.id, index: 0, effect: transform(40.0) };
+        assert!(copy_to(&cmd, &primary, &mut other));
+        assert!(matches!(other.builtin_effects()[1], BuiltinEffect::Transform { position_x, .. } if position_x == 40.0), "the placement's Transform: {:?}", other.builtin_effects());
+        assert!(matches!(other.builtin_effects()[0], BuiltinEffect::Gamma { gamma } if gamma == 1.2));
+
+        let mut primary = clip();
+        primary.set_effect_list(vec![BuiltinEffect::Gamma { gamma: 0.7 }], vec![true]);
+        let mut other = clip();
+        other.set_effect_list(vec![BuiltinEffect::Vibrance { amount: 0.2 }, BuiltinEffect::Gamma { gamma: 1.0 }, BuiltinEffect::Gamma { gamma: 2.0 }], vec![true; 3]);
+        let cmd = AppCommand::UpdateBuiltinEffect { clip_id: primary.id, index: 0, effect: BuiltinEffect::Gamma { gamma: 0.7 } };
+        assert!(copy_to(&cmd, &primary, &mut other));
+        let gammas: Vec<f32> = other.builtin_effects().iter().filter_map(|e| match e { BuiltinEffect::Gamma { gamma } => Some(*gamma), _ => None }).collect();
+        assert_eq!(gammas, vec![0.7, 2.0], "the first Gamma the picture runs");
     }
 
     /// The undo step the app records for a change on three clips: the

@@ -65,9 +65,32 @@ impl KlippApp {
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 }
+                if matches!(cmd, AppCommand::SetSplitCompareNode { .. }) {
+                    self.split_compare_to_engine();
+                }
                 true
             }
         }
+    }
+
+    /// The split compare as the state holds it, to the engine (M3 step 4),
+    /// which renders the compared node bypassed: a refused command leaves
+    /// it as it was. Comparing an effect ends the other compare modes.
+    fn split_compare_to_engine(&mut self) {
+        let compared = self.state.split_compare_node.clone();
+        if compared.is_some() {
+            if self.state.before_after_active {
+                self.state.before_after_active = false;
+                let _ = self.cmd_tx.send(AppCommand::ToggleBeforeAfter);
+            }
+            if self.state.stabilization_compare_active {
+                self.state.stabilization_compare_active = false;
+                let _ = self.cmd_tx.send(AppCommand::ToggleStabilizationCompare);
+            }
+            self.state.grade_still_compare = false;
+        }
+        let (clip_id, path) = compared.map_or((None, None), |(c, p)| (Some(c), Some(p)));
+        let _ = self.cmd_tx.send(AppCommand::SetSplitCompareNode { clip_id, path });
     }
 }
 
@@ -278,6 +301,17 @@ impl crate::state::AppState {
         Ok(())
     }
 
+    /// Whether the split compare's node has gone (removed, or its clip):
+    /// then the compare is ended here, and the caller tells the engine.
+    pub(crate) fn split_compare_gone(&mut self) -> bool {
+        let Some((_, path)) = self.split_compare_node.clone() else { return false };
+        if self.node_at(&path).is_ok() {
+            return false;
+        }
+        self.split_compare_node = None;
+        true
+    }
+
     fn set_split_compare_node(&mut self, clip_id: Option<ClipId>, path: Option<&NodePath>) -> Result<(), String> {
         let (Some(clip_id), Some(path)) = (clip_id, path) else {
             self.split_compare_node = None;
@@ -287,8 +321,6 @@ impl crate::state::AppState {
             return Err("the compared node is in another clip's graph".into());
         }
         self.node_at(path)?;
-        // One split compare at a time, as the effect's.
-        self.split_compare_effect = None;
         self.split_compare_node = Some((clip_id, path.clone()));
         Ok(())
     }
@@ -393,8 +425,7 @@ mod tests {
             | AppCommand::MoveEffectKeyframe { .. }
             | AppCommand::SetEffectKeyframeInterpolation { .. }
             | AppCommand::BeginEffectDrag { .. }
-            | AppCommand::EndEffectDrag { .. }
-            | AppCommand::SetSplitCompareEffect { .. } => true,
+            | AppCommand::EndEffectDrag { .. } => true,
             AppCommand::AddEffect { .. }
             | AppCommand::RemoveEffect { .. }
             | AppCommand::SetEffectEnabled { .. }
@@ -531,6 +562,40 @@ mod tests {
             assert_eq!(picture(&s, a), before);
             assert_eq!(s.active_history().undo_count(), steps);
         }
+    }
+
+    /// M3 step 4: the split compare names a node, so moving the effects
+    /// around it, or taking away one before it, leaves it on the same
+    /// effect (the index it held was patched by hand on a removal, and a
+    /// reorder moved it onto another effect); taking the compared effect
+    /// away ends it. The engine toggles the same node.
+    #[test]
+    fn split_compare_survives_a_reorder() {
+        let (mut s, a) = state(&[E::GaussianBlur { radius: 3.0 }, E::Sharpen { amount: 0.5 }, E::Vibrance { amount: 0.2 }]);
+        let fx = effects(&s, a);
+        let compared = at(a, &[fx[2]]);
+        assert_eq!(s.path_command(&AppCommand::SetSplitCompareNode { clip_id: Some(a), path: Some(compared.clone()) }), Some(false));
+        let is_vibrance = |s: &AppState| {
+            let (_, path) = s.split_compare_node.clone().expect("still compared");
+            let c = clip(s, a);
+            let (ofx, i) = c.effect_slot_of_node(path.node().unwrap()).expect("the clip holds it");
+            !ofx && matches!(c.builtin_effects()[i], E::Vibrance { .. })
+        };
+        // Moved to the front, then the effect before it taken away.
+        run(&mut s, AppCommand::MoveNodeAt { addr: compared.clone(), after: fx[0] });
+        assert!(!s.split_compare_gone());
+        assert!(is_vibrance(&s), "the compare moved with its effect");
+        run(&mut s, AppCommand::RemoveNodeAt { addr: at(a, &[fx[0]]) });
+        assert!(!s.split_compare_gone());
+        assert!(is_vibrance(&s), "a removal before it doesn't move it");
+        let mut toggled = clip(&s, a).clone();
+        assert!(toggled.toggle_effect_node(compared.node().unwrap()));
+        let i = toggled.effect_slot_of_node(compared.node().unwrap()).unwrap().1;
+        assert!(!toggled.builtin_effects_enabled()[i], "the engine's bypass is the compared effect's");
+        // The compared effect taken away: the compare ends.
+        run(&mut s, AppCommand::RemoveNodeAt { addr: compared });
+        assert!(s.split_compare_gone());
+        assert!(s.split_compare_node.is_none());
     }
 
     /// State held by address belongs to the clip it names: a selection,

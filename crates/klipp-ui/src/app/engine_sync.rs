@@ -271,6 +271,11 @@ impl KlippApp {
             if let Some(post) = multi {
                 self.multi_edit_post(post);
             }
+            // A split compare on a node the command took away ends (M3 step
+            // 4): the compare is by node, so nothing else moves it.
+            if self.state.split_compare_gone() {
+                let _ = self.cmd_tx.send(AppCommand::SetSplitCompareNode { clip_id: None, path: None });
+            }
         }
         // Prefer the full-sync path when ANY non-slider command needed refresh
         // (structural changes, keyframe edits, etc.). The slider fast path is

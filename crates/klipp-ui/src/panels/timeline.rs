@@ -12040,34 +12040,9 @@ impl TimelinePanel {
             vrb_clip_id,
         ) = {
             let clip = &state.sequence().tracks[track_idx].clips[clip_index];
-            let opacity_static = clip.builtin_effects().iter()
-                .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
-                .unwrap_or(1.0);
-            let transform = clip.builtin_effects().iter()
-                .find_map(|e| match e {
-                    klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
-                        Some((*position_x, *position_y, *scale_x, *rotation)),
-                    _ => None,
-                })
-                .unwrap_or((0.0, 0.0, 1.0, 0.0));
-            let still_tilt = crate::inspector::video_tab::get_transform(clip);
-            let (sval, kfs) = match vrb_param {
-                klipp_core::VideoParam::Opacity => (opacity_static, clip.opacity_keyframes().to_vec()),
-                klipp_core::VideoParam::PositionX => (transform.0, clip.transform_pos_x_keyframes().to_vec()),
-                klipp_core::VideoParam::PositionY => (transform.1, clip.transform_pos_y_keyframes().to_vec()),
-                klipp_core::VideoParam::Scale => (transform.2, clip.transform_scale_keyframes().to_vec()),
-                klipp_core::VideoParam::Rotation => (transform.3, clip.transform_rotation_keyframes().to_vec()),
-                klipp_core::VideoParam::TiltX => (still_tilt.rotation_x, clip.transform_tilt_x_keyframes().to_vec()),
-                klipp_core::VideoParam::TiltY => (still_tilt.rotation_y, clip.transform_tilt_y_keyframes().to_vec()),
-                klipp_core::VideoParam::MatteFeather => (
-                    clip.matte_source.as_ref().map(|b| b.feather_px).unwrap_or(0.0),
-                    clip.matte_feather_keyframes.clone(),
-                ),
-                klipp_core::VideoParam::MatteChoke => (
-                    clip.matte_source.as_ref().map(|b| b.choke_px).unwrap_or(0.0),
-                    clip.matte_choke_keyframes.clone(),
-                ),
-            };
+            // The clip's placement and opacity as the renderer reads them
+            // (M3 step 4), and the lane's keys.
+            let (sval, kfs) = (clip.video_param_value(vrb_param), clip.video_param_keyframes(vrb_param).to_vec());
             let any_kf = !clip.opacity_keyframes().is_empty()
                 || !clip.transform_pos_x_keyframes().is_empty()
                 || !clip.transform_pos_y_keyframes().is_empty()
@@ -15566,33 +15541,7 @@ impl TimelinePanel {
                             let clip_dur_secs = clip.duration().to_secs_f64();
 
                             // Read keyframes for the dragged video parameter
-                            let vrb_opacity_static = clip.builtin_effects().iter()
-                                .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
-                                .unwrap_or(1.0);
-                            let vrb_transform = clip.builtin_effects().iter()
-                                .find_map(|e| match e {
-                                    klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
-                                        Some((*position_x, *position_y, *scale_x, *rotation)),
-                                    _ => None,
-                                })
-                                .unwrap_or((0.0, 0.0, 1.0, 0.0));
-                            let (vrb_static_val, vrb_keyframes) = match drag_vbh.param {
-                                klipp_core::VideoParam::Opacity => (vrb_opacity_static, clip.opacity_keyframes()),
-                                klipp_core::VideoParam::PositionX => (vrb_transform.0, clip.transform_pos_x_keyframes()),
-                                klipp_core::VideoParam::PositionY => (vrb_transform.1, clip.transform_pos_y_keyframes()),
-                                klipp_core::VideoParam::Scale => (vrb_transform.2, clip.transform_scale_keyframes()),
-                                klipp_core::VideoParam::Rotation => (vrb_transform.3, clip.transform_rotation_keyframes()),
-                                klipp_core::VideoParam::TiltX => (crate::inspector::video_tab::get_transform(clip).rotation_x, clip.transform_tilt_x_keyframes()),
-                                klipp_core::VideoParam::TiltY => (crate::inspector::video_tab::get_transform(clip).rotation_y, clip.transform_tilt_y_keyframes()),
-                                klipp_core::VideoParam::MatteFeather => (
-                                    clip.matte_source.as_ref().map(|b| b.feather_px).unwrap_or(0.0),
-                                    clip.matte_feather_keyframes.as_slice(),
-                                ),
-                                klipp_core::VideoParam::MatteChoke => (
-                                    clip.matte_source.as_ref().map(|b| b.choke_px).unwrap_or(0.0),
-                                    clip.matte_choke_keyframes.as_slice(),
-                                ),
-                            };
+                            let (vrb_static_val, vrb_keyframes) = (clip.video_param_value(drag_vbh.param), clip.video_param_keyframes(drag_vbh.param));
 
                             // Compute auto-scale Y axis (same as rendering)
                             let mut vrb_val_min = vrb_static_val;
@@ -15839,35 +15788,7 @@ impl TimelinePanel {
                                 }
 
                                 // Map Y to param value using auto-scaled range
-                                let base_val = match drag_kf.param {
-                                    klipp_core::VideoParam::Opacity => {
-                                        clip.builtin_effects().iter()
-                                            .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
-                                            .unwrap_or(1.0)
-                                    }
-                                    _ => {
-                                        let t = clip.builtin_effects().iter()
-                                            .find_map(|e| match e {
-                                                klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
-                                                    Some((*position_x, *position_y, *scale_x, *rotation)),
-                                                _ => None,
-                                            })
-                                            .unwrap_or((0.0, 0.0, 1.0, 0.0));
-                                        match drag_kf.param {
-                                            klipp_core::VideoParam::PositionX => t.0,
-                                            klipp_core::VideoParam::PositionY => t.1,
-                                            klipp_core::VideoParam::Scale => t.2,
-                                            klipp_core::VideoParam::Rotation => t.3,
-                                            klipp_core::VideoParam::TiltX => crate::inspector::video_tab::get_transform(clip).rotation_x,
-                                            klipp_core::VideoParam::TiltY => crate::inspector::video_tab::get_transform(clip).rotation_y,
-                                            // Every parameter is named: this was an
-                                            // unreachable!() that a matte keyframe could reach.
-                                            klipp_core::VideoParam::MatteFeather => clip.matte_source.as_ref().map(|b| b.feather_px).unwrap_or(0.0),
-                                            klipp_core::VideoParam::MatteChoke => clip.matte_source.as_ref().map(|b| b.choke_px).unwrap_or(0.0),
-                                            klipp_core::VideoParam::Opacity => 1.0,
-                                        }
-                                    }
-                                };
+                                let base_val = clip.video_param_value(drag_kf.param);
                                 let mut val_min = base_val;
                                 let mut val_max = base_val;
                                 for kf in keyframes.iter() {

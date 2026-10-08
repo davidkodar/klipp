@@ -182,6 +182,34 @@ impl Clip {
         }
     }
 
+    /// The value of the video parameter `param` where nothing animates it:
+    /// the clip's placement and opacity as its picture holds them (the
+    /// renderer's: the first Transform's place, the last enabled Opacity's
+    /// value), or a track-matte radius. What a new key on its lane starts
+    /// from.
+    pub fn video_param_value(&self, param: klipp_core::VideoParam) -> f32 {
+        use klipp_core::VideoParam as P;
+        match param {
+            P::MatteFeather => return self.matte_source.as_ref().map_or(0.0, |m| m.feather_px),
+            P::MatteChoke => return self.matte_source.as_ref().map_or(0.0, |m| m.choke_px),
+            _ => {}
+        }
+        let Ok(lifted) = self.picture_v2() else {
+            return if param == P::Opacity || param == P::Scale { 1.0 } else { 0.0 };
+        };
+        let (p, opacity) = (&lifted.picture.placement, lifted.picture.opacity);
+        match param {
+            P::Opacity => opacity,
+            P::PositionX => p.pos_x.unwrap_or(0.0),
+            P::PositionY => p.pos_y.unwrap_or(0.0),
+            P::Scale => p.scale.unwrap_or(1.0),
+            P::Rotation => p.rotation.unwrap_or(0.0),
+            P::TiltX => p.tilt_x.unwrap_or(0.0),
+            P::TiltY => p.tilt_y.unwrap_or(0.0),
+            P::MatteFeather | P::MatteChoke => 0.0,
+        }
+    }
+
     /// Change the keyframes of the video parameter `param` in `f`, and give
     /// back what `f` returns.
     pub fn edit_video_param_keyframes<R>(&mut self, param: klipp_core::VideoParam, f: impl FnOnce(&mut Vec<Keyframe>) -> R) -> R {

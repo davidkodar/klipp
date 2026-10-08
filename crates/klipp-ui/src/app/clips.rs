@@ -1184,6 +1184,11 @@ impl KlippApp {
                         light_leak_intensity: *light_leak_intensity,
                     });
 
+                    // Each clip's picture before, for the one undo step the
+                    // apply records (M3 step 4: the effect layers are graph
+                    // edits by path, recorded as picture edits).
+                    let picture_of = |seq: &klipp_timeline::Sequence, id| seq.all_clips().find(|c| c.id == id).map(|c| c.picture.clone());
+                    let before = [src_id, tgt_id].map(|id| (id, picture_of(&self.state.sequences[seq_idx], id)));
                     let seq = &mut self.state.sequences[seq_idx];
                     apply_hyperzoom_plan_to_clip(seq, src_id, plan.source_anchor, &plan.source_scale_kfs);
                     apply_hyperzoom_plan_to_clip(seq, tgt_id, plan.target_anchor, &plan.target_scale_kfs);
@@ -1232,6 +1237,14 @@ impl KlippApp {
                     // variant resolution + pool registration + clip
                     // insertion; we only record the undo entry on
                     // success.
+                    self.state.active_history_mut().begin_batch();
+                    for (clip_id, before) in before {
+                        let after = picture_of(&self.state.sequences[seq_idx], clip_id);
+                        if let (Some(before), Some(after)) = (before, after) {
+                            let edit = klipp_timeline::PictureEdit { before, after };
+                            self.state.push_history(EditCommand::PictureEdit { description: "Hyperzoom", clip_id, edit: Box::new(edit) });
+                        }
+                    }
                     if let Some(inserted) = maybe_insert_whoosh_for_apply(
                         &mut self.state,
                         seq_idx,
@@ -1245,6 +1258,7 @@ impl KlippApp {
                             track_index: inserted.track_index,
                         });
                     }
+                    self.state.active_history_mut().end_batch_as("Apply Hyperzoom");
 
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
