@@ -15,30 +15,18 @@ use std::collections::{HashMap, HashSet};
 
 use klipp_core::ClipId;
 use klipp_graph_format::path::{NodePath, Root};
-use klipp_graph_format::PortKey;
 use klipp_nodes::NodeId;
 use klipp_timeline::{GradeAccess, Sequence};
 
 /// A node's output to inspect: the node `path` names in the inspected
 /// clip's picture, at its output `port`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct InspectAt {
-    pub path: NodePath,
-    pub port: PortKey,
-}
+pub use klipp_graph_format::path::NodeOutput as InspectAt;
 
-impl InspectAt {
-    /// The node at `path`, at its picture output.
-    pub fn out(path: NodePath) -> Self {
-        Self { path, port: PortKey::from("out") }
-    }
-
-    /// A node of `clip`'s own grade, by its id there: what the grade
-    /// tools hold of the grade they edit.
-    pub fn grade_node(clip: ClipId, node: NodeId) -> Self {
-        let group = klipp_graph_lift::ids::entry_id(klipp_graph_lift::ids::RootKind::Clip, clip.0, "grade", 0);
-        Self::out(NodePath::new(Root::Clip { clip: clip.0 }, [group, node]))
-    }
+/// The output of a node of `clip`'s own grade, by its id there: what the
+/// grade tools hold of the grade they edit.
+pub fn grade_node(clip: ClipId, node: NodeId) -> InspectAt {
+    let group = klipp_graph_lift::ids::entry_id(klipp_graph_lift::ids::RootKind::Clip, clip.0, "grade", 0);
+    InspectAt::out(NodePath::new(Root::Clip { clip: clip.0 }, [group, node]))
 }
 
 /// An inspection resolved to the nodes the renderer runs.
@@ -79,6 +67,11 @@ fn node_of(seq: &Sequence, clip: ClipId, at: &InspectAt) -> Result<(NodeId, bool
                     Some(klipp_graph_format::types::LEGACY_EFFECT) if at.port.as_str() == "out" => Ok((*node, false)),
                     Some(klipp_graph_format::types::LEGACY_EFFECT) => Err(format!("an effect has no output {}", at.port)),
                     Some(klipp_graph_format::types::LEGACY_OFX) => Err("a plug-in effect runs outside the grade and can't be inspected yet".into()),
+                    // They read neighbouring source frames before the
+                    // grade runs, outside the plan (#1305).
+                    Some(klipp_graph_format::lifted::types::TEMPORAL_DENOISE | klipp_graph_format::lifted::types::FRAME_BLEND) => {
+                        Err("a temporal denoise or a frame blend runs before the grade, outside the plan, so it can't be inspected yet (#1305)".into())
+                    }
                     _ => Err(why),
                 }
             }

@@ -1152,7 +1152,7 @@ impl KlippApp {
                 });
                 true
             }
-            AppCommand::SetNodeSolo { node_id } => {
+            AppCommand::SetNodeSolo { at } => {
                 // Mirror into AppState for UI feedback (halo / badge /
                 // toolbar indicator) AND let the dispatcher propagate
                 // it to the engine via the normal forward path so the
@@ -1160,7 +1160,8 @@ impl KlippApp {
                 // needs_refresh = true so the paused viewer re-renders
                 // the new soloed output immediately rather than waiting
                 // for the next frame to arrive on its own.
-                self.state.solo_node = *node_id;
+                // The canvas marks the soloed node of the grade it shows.
+                self.state.solo_node = at.as_ref().and_then(|a| a.path.node());
                 *needs_refresh = true;
                 false
             }

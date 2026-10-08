@@ -161,7 +161,7 @@ fn oracle(p: Producer, gpu: bool) -> Vec<f32> {
     let id = graded.id;
     let g = render(&sequence(graded.clone()), gpu, Inspect::default()).0;
     let b = render(&sequence(blurred), gpu, Inspect::default()).0;
-    let m = render(&sequence(graded), gpu, Inspect { clip: Some(id), matte_view: Some(klipp_compose::InspectAt::grade_node(id, k)), ..Default::default() }).0;
+    let m = render(&sequence(graded), gpu, Inspect { clip: Some(id), matte_view: Some(klipp_compose::inspect::grade_node(id, k)), ..Default::default() }).0;
     let luma = klipp_color::linear::luma_coefs(klipp_core::WorkingColorspace::default());
     let mix = klipp_effects::mask_mix::MaskMix::new(MIX, klipp_effects::mask_mix::MaskChannel::Luminance, luma).unwrap();
     g.chunks_exact(4)

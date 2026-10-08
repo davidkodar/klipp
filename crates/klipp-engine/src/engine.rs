@@ -79,30 +79,6 @@ fn alpha_u8_to_f32_lut() -> &'static [f32; 256] {
     })
 }
 
-#[inline]
-/// Nearest-neighbour downsample of an sRGB u8 RGBA buffer to a smaller
-/// sRGB u8 RGBA buffer. Stays in sRGB space — the filmstrip tile is
-/// already sRGB-encoded and the V2 canvas expects sRGB-encoded thumbs,
-/// so a linear round-trip would only add quantisation for no gain. Used
-/// for the identity-graph path of `render_node_thumbs_from_source`.
-fn downsample_srgb_u8_to_thumb(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
-    if src.len() < (src_w * src_h * 4) as usize || src_w == 0 || src_h == 0 {
-        return Vec::new();
-    }
-    let mut out = Vec::with_capacity((dst_w * dst_h * 4) as usize);
-    for y in 0..dst_h {
-        let sy = ((y as u64 * src_h as u64) / dst_h as u64).min(src_h as u64 - 1) as u32;
-        for x in 0..dst_w {
-            let sx = ((x as u64 * src_w as u64) / dst_w as u64).min(src_w as u64 - 1) as u32;
-            let i = ((sy * src_w + sx) as usize) * 4;
-            out.push(src[i]);
-            out.push(src[i + 1]);
-            out.push(src[i + 2]);
-            out.push(src[i + 3]);
-        }
-    }
-    out
-}
 
 fn u8_rgba_to_linear(rgba: &[u8]) -> Vec<f32> {
     use rayon::prelude::*;
@@ -1295,13 +1271,16 @@ pub struct PlaybackEngine {
     /// as the final image instead of the Output-node-input. Single
     /// global slot; auto-inactive when the id doesn't exist in the
     /// active clip's graph (so switching clips silently un-solos).
-    solo_node: Option<klipp_nodes::NodeId>,
+    /// The soloed node's output, by path (M3 step 16a).
+    solo: Option<klipp_compose::InspectAt>,
+    /// `solo` in the grade the fast paths run (`v1_graph_setup`).
+    fast_solo: Option<klipp_nodes::NodeId>,
     /// V2 canvas "nodes visible right now" set — the executor
     /// captures downsampled thumbnails for each of these on the
     /// paused / post-seek re-grade so the canvas can paint per-node
     /// previews. Empty during playback (capturing N readbacks per
     /// frame would cost more than the grade itself).
-    visible_node_thumbs: std::collections::HashSet<klipp_nodes::NodeId>,
+    visible_node_thumbs: std::collections::HashSet<klipp_compose::InspectAt>,
     /// The clip the grade panel is on, from the node canvas's and scope
     /// tap's commands. The grade tools follow it when it is on screen.
     inspect_clip: Option<klipp_core::ClipId>,
@@ -2120,7 +2099,8 @@ impl PlaybackEngine {
             inspector_matte_preview_target: None,
             measure_only_clip: None,
             node_sample: None,
-            solo_node: None,
+            solo: None,
+            fast_solo: None,
             visible_node_thumbs: std::collections::HashSet::new(),
             inspect_clip: None,
             pending_stream_refresh: false,
@@ -3286,13 +3266,13 @@ impl PlaybackEngine {
             AppCommand::SampleNodeInput { clip_id, node_id, nx, ny } => {
                 self.sample_node_input(clip_id, node_id, nx, ny);
             }
-            AppCommand::SetNodeSolo { node_id } => {
-                self.solo_node = node_id;
-                debug!("Solo node: {:?}", self.solo_node);
+            AppCommand::SetNodeSolo { at } => {
+                self.solo = at;
+                debug!("Solo node: {:?}", self.solo);
             }
-            AppCommand::SetVisibleNodeThumbs { clip_id, node_ids } => {
+            AppCommand::SetVisibleNodeThumbs { clip_id, at } => {
                 self.inspect_clip = Some(clip_id);
-                self.visible_node_thumbs = node_ids.iter().copied().collect();
+                self.visible_node_thumbs = at.into_iter().collect();
                 // Clear the old thumb cache so the next re-grade is
                 // what the UI sees (stale thumbs from a different node
                 // set would confuse the user mid-transition).
@@ -7449,12 +7429,13 @@ impl PlaybackEngine {
     /// from a nearby timestamp (visually indistinguishable at 192×108
     /// and way more reliable than the decode-then-capture path).
     ///
-    /// Source is sRGB u8 RGBA at `src_w × src_h`. Executor runs at the
-    /// same resolution and its thumb-capture stage downsamples each
-    /// visible node's output to 192×108 (`THUMB_W/THUMB_H` in
-    /// klipp-nodes). Silently no-ops when the visible-set is empty,
-    /// the clip / graph is missing, or the source payload has the
-    /// wrong length — nothing to do, no harm done.
+    /// Source is sRGB u8 RGBA at `src_w × src_h`. The renderer runs the
+    /// clip at that size through its inspected render (M3 step 16a), and
+    /// the executor's thumb-capture stage downsamples each visible node's
+    /// output to 192×108 (`THUMB_W/THUMB_H` in klipp-nodes). A node the
+    /// run doesn't hold gets no thumbnail and says why in the log.
+    /// Silently no-ops when the visible-set is empty, the clip is
+    /// missing, or the source payload has the wrong length.
     fn render_node_thumbs_from_source(
         &mut self,
         clip_id: klipp_core::ClipId,
@@ -7469,69 +7450,38 @@ impl PlaybackEngine {
         if src_rgba.len() != (src_w as usize) * (src_h as usize) * 4 {
             return;
         }
-        // Clone the graph under a short read lock so the executor call
-        // below doesn't hold the sequence lock.
-        let (graph, clip_track_points, clip_time_secs) = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            let found = seq.tracks.iter().find_map(|track| {
-                track.clips.iter().find(|c| c.id == clip_id).map(|c| {
-                    let clip_t = c.source_secs_at((playhead - c.timeline_in).to_secs_f64(), self.fps.as_f64());
-                    (c.grade().clone(), c.track_points.clone(), clip_t.max(0.0))
-                })
-            });
-            match found {
-                Some(v) => v,
-                None => return,
-            }
-        };
-        if graph.is_identity() {
-            // Empty graph: the thumb is just the source (pre-grade)
-            // for every visible node. Cheap one-off downsample + fan-out
-            // so Source / Output nodes still get a preview.
-            use klipp_nodes::{THUMB_W, THUMB_H};
-            let thumb = downsample_srgb_u8_to_thumb(&src_rgba, src_w, src_h, THUMB_W, THUMB_H);
-            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            fb.node_thumbs.clear();
-            for &node_id in &self.visible_node_thumbs {
-                fb.node_thumbs.insert(node_id, thumb.clone());
-            }
-            fb.node_thumbs_gen = fb.node_thumbs_gen.wrapping_add(1);
+        // The clip alone, its picture this bitmap, inspected through the
+        // renderer as every inspection is (M3 step 16a): the production
+        // plan, each thumbnail named by path, each node evaluated at the
+        // playhead's time. A copy of the sequence, so the render doesn't
+        // hold its lock.
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner()).clone();
+        if !seq.all_clips().any(|c| c.id == clip_id) {
             return;
         }
-        let linear_in = u8_rgba_to_linear(&src_rgba);
-        let frame_number = (clip_time_secs * self.playhead.rate as f64).max(0.0) as u64;
-        let thumb_set = self.visible_node_thumbs.clone();
-        let executor = self.renderer.executor();
-        // Mirror the project's active working colorspace into the
-        // executor so gamut-aware grade ops (Saturation, Vibrance,
-        // ToneControls, ColorWheels, etc.) use the right luma vector.
-        // Cheap setter; safe to call per-frame.
-        executor.set_grade_encoding(klipp_core::grade_encoding());
-        executor.set_working_colorspace(crate::video_decoder::working_colorspace());
-        executor.set_current_clip_track_points(&clip_track_points);
-        match executor.execute_linear_with_thumbs(
-            &linear_in,
-            &graph,
-            src_w,
-            src_h,
-            clip_time_secs,
-            frame_number,
-            None, // no scope tap on this pass
-            None, // no matte preview on this pass
-            Some(&thumb_set),
-        ) {
-            Ok((_result, _tapped, thumbs)) => {
-                if thumbs.is_empty() {
-                    return;
-                }
-                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                fb.node_thumbs = thumbs;
-                fb.node_thumbs_gen = fb.node_thumbs_gen.wrapping_add(1);
-            }
-            Err(e) => {
-                tracing::debug!("render_node_thumbs_from_source: executor failed: {e:?}");
+        struct Bitmap(klipp_core::ClipId, std::sync::Arc<Vec<f32>>, u32, u32);
+        impl klipp_compose::FrameSource for Bitmap {
+            fn frame(&mut self, clip: &klipp_timeline::Clip, _secs: f64, _w: u32, _h: u32) -> Option<klipp_compose::SourceFrame> {
+                (clip.id == self.0).then(|| klipp_compose::SourceFrame { pixels: klipp_compose::SourcePixels::Linear(self.1.clone()), width: self.2, height: self.3, pts: None })
             }
         }
+        let mut source = Bitmap(clip_id, std::sync::Arc::new(u8_rgba_to_linear(&src_rgba)), src_w, src_h);
+        let inspect = klipp_compose::Inspect {
+            clip: Some(clip_id),
+            only: Some(clip_id),
+            thumbs: Some(self.visible_node_thumbs.clone()),
+            ..Default::default()
+        };
+        let (_, found) = self.renderer.render_inspected(&seq, playhead, src_w, src_h, &mut source, klipp_compose::RenderOptions::default(), inspect);
+        for (at, why) in &found.unavailable {
+            tracing::debug!("node thumbnail {at:?}: {why}");
+        }
+        if found.thumbs.is_empty() {
+            return;
+        }
+        let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+        fb.node_thumbs = found.thumbs.iter().filter_map(|(at, bytes)| Some((at.path.node()?, bytes.clone()))).collect();
+        fb.node_thumbs_gen = fb.node_thumbs_gen.wrapping_add(1);
     }
 
 
@@ -8099,6 +8049,8 @@ impl PlaybackEngine {
             }
         };
         let (clip_time_secs, frame_number) = klipp_compose::render::grade_time(clip, self.playhead, seq.fps.as_f64());
+        // The soloed node in the grade this runs, if it runs here.
+        self.fast_solo = self.solo.as_ref().and_then(|at| seq.grade_node_at(clip.id, &at.path).ok());
         Some((graph, clip_time_secs, frame_number, clip.track_points.clone()))
     }
 
@@ -8157,7 +8109,7 @@ impl PlaybackEngine {
             track_points: &track_points,
             working: crate::video_decoder::working_colorspace(),
             lut_tetrahedral: self.color_pipeline.use_tetrahedral,
-            solo: self.solo_node,
+            solo: self.fast_solo,
             // Monitoring's preview. False colour is a different picture
             // and stays on the CPU, so `fast_path_blockers` refuses it.
             hdr_preview: self.hdr_monitor == klipp_core::HdrMonitor::Preview,
@@ -8264,7 +8216,7 @@ impl PlaybackEngine {
             track_points: &track_points,
             working: crate::video_decoder::working_colorspace(),
             lut_tetrahedral: self.color_pipeline.use_tetrahedral,
-            solo: self.solo_node,
+            solo: self.fast_solo,
             // Monitoring's preview. False colour is a different picture
             // and stays on the CPU, so `fast_path_blockers` refuses it.
             hdr_preview: self.hdr_monitor == klipp_core::HdrMonitor::Preview,

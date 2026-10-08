@@ -828,7 +828,7 @@ impl NodeGraphV2Panel {
                         .on_hover_text("Clear solo")
                         .clicked()
                     {
-                        cmds.push(AppCommand::SetNodeSolo { node_id: None });
+                        cmds.push(AppCommand::SetNodeSolo { at: None });
                     }
                 });
             toolbar_ui.add_space(8.0);
@@ -2990,7 +2990,7 @@ impl NodeGraphV2Panel {
         if current_visible != self.last_visible_thumb_nodes {
             cmds.push(AppCommand::SetVisibleNodeThumbs {
                 clip_id,
-                node_ids: current_visible.clone(),
+                at: current_visible.iter().map(|n| klipp_compose::inspect::grade_node(clip_id, *n)).collect(),
             });
             self.last_visible_thumb_nodes = current_visible;
         }
@@ -4137,7 +4137,7 @@ impl NodeGraphV2Panel {
                         let label = if is_soloed { "Clear solo" } else { "Solo this node" };
                         if ui.button(label).clicked() {
                             let new_target = if is_soloed { None } else { Some(node_id) };
-                            cmds.push(AppCommand::SetNodeSolo { node_id: new_target });
+                            cmds.push(AppCommand::SetNodeSolo { at: new_target.map(|n| klipp_compose::inspect::grade_node(clip_id, n)) });
                             close = true;
                         }
                     }

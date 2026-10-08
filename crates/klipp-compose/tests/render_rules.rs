@@ -1863,7 +1863,7 @@ fn a_scope_tap_returns_the_input_a_qualifier_reads() {
             let mut src = Flat::default().grey(&c, 0.2);
             let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
             r.set_gpu_enabled(gpu);
-            let inspect = Inspect { clip: Some(c.id), scope_tap: Some(klipp_compose::InspectAt::grade_node(c.id, tap)), ..Default::default() };
+            let inspect = Inspect { clip: Some(c.id), scope_tap: Some(klipp_compose::inspect::grade_node(c.id, tap)), ..Default::default() };
             let (_, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut src, RenderOptions::default(), inspect);
             let tapped = found.scope_tap.unwrap_or_else(|| panic!("gpu {gpu}: a tap on {tap:?}"));
             assert_eq!(tapped.len(), (W * H * 4) as usize, "gpu {gpu}: at the frame's size");

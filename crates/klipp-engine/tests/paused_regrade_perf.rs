@@ -51,7 +51,7 @@ fn paused_4k_pq_regrade() {
     // Output, on every paused frame.
     parked.send(AppCommand::SetVisibleNodeThumbs {
         clip_id: parked.clip_id,
-        node_ids: vec![parked.source_node, parked.exposure_node],
+        at: [parked.source_node, parked.exposure_node].into_iter().map(|n| klipp_compose::inspect::grade_node(parked.clip_id, n)).collect(),
     });
     parked.settle();
     drag("node editor open");

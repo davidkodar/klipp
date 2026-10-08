@@ -345,16 +345,15 @@ impl PlaybackEngine {
             && !self.thumb_capture_suspended
             && !self.in_node_param_edit)
             .then(|| self.visible_node_thumbs.clone());
-        // The grade tools name nodes of the clip's own grade; the renderer
-        // takes them by path (M3 step 16a).
-        let at = |node: klipp_nodes::NodeId| clip.map(|c| klipp_compose::InspectAt::grade_node(c, node));
+        // The matte view's node is the clip's own grade's (M3 step 16a).
+        let at = |node: klipp_nodes::NodeId| clip.map(|c| klipp_compose::inspect::grade_node(c, node));
         Inspect {
             clip,
-            thumbs: thumbs.map(|t| t.into_iter().filter_map(at).collect()),
+            thumbs,
             // An eyedropper read borrows the tap for one render.
-            scope_tap: self.node_sample.map(|s| klipp_compose::InspectAt::grade_node(s.clip, s.tap)),
+            scope_tap: self.node_sample.map(|s| klipp_compose::inspect::grade_node(s.clip, s.tap)),
             matte_view: matte_view.and_then(at),
-            solo: self.solo_node.and_then(at),
+            solo: self.solo.clone(),
             ungraded: self.bypass_color_grade,
             matte_of: self.inspector_matte_preview_target,
             only: self.measure_only_clip,
@@ -393,7 +392,7 @@ impl PlaybackEngine {
     /// frames by grade.
     fn render_cache_key(&mut self, seq: &Sequence, primary: Option<ClipId>, size: (u32, u32)) -> Option<crate::render_cache::RenderCacheKey> {
         if self.in_node_param_edit
-            || self.solo_node.is_some()
+            || self.solo.is_some()
             || self.matte_preview
             // The cache holds display bytes of the SDR picture; HDR
             // monitoring shows another picture entirely.
