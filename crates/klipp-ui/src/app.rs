@@ -125,6 +125,11 @@ pub(crate) use titles::apply_title_preset;
 pub(crate) use viewer_textures::alloc_texture_logged;
 use project_io::LockDecision;
 
+/// Why a grade holding a correction's mix or mask channel (M3 step 17a)
+/// isn't copied: a copy takes the grade's fields, which hold neither, so
+/// it would arrive with the correction at full strength.
+const GRADE_MIX_NOT_COPIED: &str = "A grade with a correction's mix or mask channel can't be copied yet: set them back to whole and red first";
+
 /// Default colour for freshly-created sticky notes — warm beige
 /// `#d4c89a`. Single value in v1; a future right-click recolour
 /// menu would route through SetStickyNoteColor (not yet shipped).

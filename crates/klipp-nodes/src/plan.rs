@@ -89,17 +89,22 @@ impl ExecPlan {
 
     /// Bring the kept gated graph's values up to `live`'s: every node it
     /// shares with `live` takes that node's parameters, keyframes, switch
-    /// and label. Its structure (edges, links, the inserted blends) is the
+    /// and label, and each inserted gate its correction's mix and channel. Its structure (edges, links, the inserted blends) is the
     /// plan's and stays.
     pub(crate) fn refresh(&mut self, live: &NodeGraph) {
         let Some(gated) = self.gated.as_mut() else { return };
         let by_id: HashMap<NodeId, &crate::graph::Node> = live.nodes.iter().map(|n| (n.id, n)).collect();
+        let gates: HashMap<NodeId, NodeId> = live.nodes.iter().map(|n| (crate::graph::gate_id(n.id), n.id)).collect();
         for node in &mut gated.nodes {
             if let Some(from) = by_id.get(&node.id) {
                 node.params.clone_from(&from.params);
                 node.keyframes.clone_from(&from.keyframes);
                 node.enabled = from.enabled;
                 node.label.clone_from(&from.label);
+            } else if let Some(corr) = gates.get(&node.id).and_then(|c| by_id.get(c)) {
+                // An inserted gate takes its correction's mix and channel
+                // as they are now (M3 step 17a).
+                node.params = crate::graph::gate_params(corr.params.correction_blend);
             }
         }
         gated.working_space_override = live.working_space_override;
@@ -173,6 +178,8 @@ pub(crate) fn plan_key(
         n.input_links.hash(&mut h);
         n.output_link.hash(&mut h);
         matte_armed(graph, n).hash(&mut h);
+        // A correction's mix decides whether it gets a gate (M3 step 17a).
+        crate::graph::gets_a_gate(graph, n).hash(&mut h);
     }
     graph.edges.len().hash(&mut h);
     for e in &graph.edges {

@@ -100,6 +100,40 @@ impl Clip {
         self.view_mut().own_node_graph.as_deref_mut().map(f)
     }
 
+    /// Whether the clip's picture holds a grade correction's mix or mask
+    /// channel (M3 step 17a), which only it keeps: its grade versions
+    /// don't, so saving or switching one is refused until they are
+    /// cleared.
+    pub fn holds_grade_mix(&self) -> bool {
+        self.picture.truth().is_some_and(|t| t.picture.grade_mix_used())
+    }
+
+    /// The grade as the renderer runs it: [`GradeAccess::grade`], with each
+    /// correction's mix and mask channel set as its run setting
+    /// (`correction_blend`) when the clip's picture holds them (M3 step
+    /// 17a). Only a picture-truth clip's can; any other clip's grade is
+    /// lent as it is. A copy, never the stored grade, so the settings
+    /// stay with the picture that saves them.
+    ///
+    /// [`GradeAccess::grade`]: crate::GradeAccess::grade
+    pub fn grade_to_run(&self) -> std::borrow::Cow<'_, klipp_nodes::NodeGraph> {
+        use crate::GradeAccess;
+        let Some(truth) = self.picture.truth().filter(|t| t.picture.grade_mix_used()) else { return std::borrow::Cow::Borrowed(self.grade()) };
+        let mut run = self.grade().clone();
+        let channel_key = klipp_graph_format::ParamKey::from("mask.channel");
+        let grade = truth.picture.graph.nodes.iter().filter_map(|n| n.group.as_ref()).flat_map(|g| g.graph.nodes.iter());
+        for n in grade.filter(|n| n.mix.is_some() || n.params.contains_key(&channel_key)) {
+            let channel = match n.params.get(&channel_key) {
+                Some(klipp_graph_format::ParamValue::Text(c)) => c.parse().unwrap_or(klipp_effects::mask_mix::MaskChannel::Red),
+                _ => klipp_effects::mask_mix::MaskChannel::Red,
+            };
+            if let Some(node) = run.nodes.iter_mut().find(|m| m.id == n.id) {
+                node.params.correction_blend = Some(klipp_nodes::params::EffectBlend { mix: n.mix.unwrap_or(1.0), channel });
+            }
+        }
+        std::borrow::Cow::Owned(run)
+    }
+
     /// The clip's picture lifted to revision 2, with its grade versions'
     /// bodies: from the file if the clip hasn't changed since it was read,
     /// otherwise lifted once and kept until the picture next changes.

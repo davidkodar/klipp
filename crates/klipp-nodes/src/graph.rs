@@ -1581,6 +1581,31 @@ fn gateable(kind: NodeKind) -> bool {
     )
 }
 
+/// A correction whose mix fades it against its input with no matte to
+/// gate it (M3 step 17a): it gets a gate of its own, which takes the
+/// whole frame by its mix.
+fn mixed_alone(n: &Node) -> bool {
+    n.params.correction_blend.is_some_and(|b| b.mix != 1.0)
+}
+
+/// Whether `n` runs with a gate inserted after it.
+pub(crate) fn gets_a_gate(graph: &NodeGraph, n: &Node) -> bool {
+    gateable(n.kind) && graph.input_of(n.id, 0).is_some() && (graph.input_of(n.id, 1).is_some() || mixed_alone(n))
+}
+
+/// The id of the gate inserted after the correction `corr`, the same from
+/// frame to frame.
+pub(crate) fn gate_id(corr: NodeId) -> NodeId {
+    Uuid::from_u128(corr.as_u128() ^ 0x6761_7465_645f_6d61_7474_655f_6170_706c)
+}
+
+/// The settings of the gate after a correction with `blend`: its mix and
+/// the channel its matte is read from (M3 step 17a), or a whole gate read
+/// from red, as every gate was before.
+pub(crate) fn gate_params(blend: Option<crate::params::EffectBlend>) -> NodeParams {
+    NodeParams { mix: blend.map(|b| b.mix), correction_blend: blend, ..NodeParams::default() }
+}
+
 impl NodeGraph {
     /// The graph as the executor runs it, when it holds a correction
     /// gated by a matte on its port 1: each such correction followed by
@@ -1594,11 +1619,15 @@ impl NodeGraph {
     /// the one the executor blends by a matte, on the GPU chain as well.
     /// The ApplyMatte's id is derived from the correction's, so it is the
     /// same node from frame to frame.
+    ///
+    /// A correction with a mix (M3 step 17a) gets one too, gated or not:
+    /// the gate takes its mix, and reads its matte from the correction's
+    /// mask channel; with no matte it takes the whole frame by the mix.
     pub fn with_gates_applied(&self) -> Option<NodeGraph> {
         let gated: Vec<NodeId> = self
             .nodes
             .iter()
-            .filter(|n| gateable(n.kind) && self.input_of(n.id, 1).is_some() && self.input_of(n.id, 0).is_some())
+            .filter(|n| gets_a_gate(self, n))
             .map(|n| n.id)
             .collect();
         if gated.is_empty() {
@@ -1609,8 +1638,10 @@ impl NodeGraph {
             // Read from the graph as rewritten so far: a correction fed
             // by one gated before it reads that one's blend, not its
             // whole-frame grade.
-            let (Some(matte), Some(plain)) = (g.input_of(corr, 1), g.input_of(corr, 0)) else { continue };
-            let apply = Uuid::from_u128(corr.as_u128() ^ 0x6761_7465_645f_6d61_7474_655f_6170_706c);
+            let Some(plain) = g.input_of(corr, 0) else { continue };
+            let matte = g.input_of(corr, 1);
+            let apply = gate_id(corr);
+            let blend = g.nodes.iter().find(|n| n.id == corr).and_then(|n| n.params.correction_blend);
             let at = g.nodes.iter().position(|n| n.id == corr).map_or(g.nodes.len(), |i| i + 1);
             // Whoever read the correction reads the blend now.
             for e in &mut g.edges {
@@ -1630,7 +1661,9 @@ impl NodeGraph {
             }
             g.edges.retain(|e| !(e.to_node == corr && e.to_port == 1));
             g.edges.push(Edge { from_node: corr, from_port: 0, to_node: apply, to_port: 0 });
-            g.edges.push(Edge { from_node: matte, from_port: 0, to_node: apply, to_port: 1 });
+            if let Some(matte) = matte {
+                g.edges.push(Edge { from_node: matte, from_port: 0, to_node: apply, to_port: 1 });
+            }
             g.edges.push(Edge { from_node: plain, from_port: 0, to_node: apply, to_port: 2 });
             g.nodes.insert(
                 at,
@@ -1639,7 +1672,7 @@ impl NodeGraph {
                     kind: NodeKind::ApplyMatte,
                     label: "Gate".into(),
                     enabled: true,
-                    params: NodeParams::default(),
+                    params: gate_params(blend),
                     keyframes: NodeKeyframeTracks::default(),
                     output_link,
                     input_links: Vec::new(),

@@ -83,8 +83,8 @@ fn node(p: &ClipPicture, id: NodeId) -> Option<&Node> {
 }
 
 /// Whether the fields can't hold `op` at all, so on a picture-truth clip
-/// (or to make one) it goes to the picture alone: an effect's mix or mask
-/// channel, an edge into an effect's mask, a port the grade group
+/// (or to make one) it goes to the picture alone: an effect's or a grade
+/// correction's mix or mask channel, an edge into an effect's mask, a port the grade group
 /// publishes (for a mask inside the grade to reach an effect), and a node
 /// beside the clip's chain (a window, a key) with anything done to it.
 fn picture_only(p: &ClipPicture, op: &GraphOp) -> bool {
@@ -100,6 +100,9 @@ fn picture_only(p: &ClipPicture, op: &GraphOp) -> bool {
     let beside = !chain(p).iter().any(|n| n.id == first.id);
     match op {
         GraphOp::PublishOutput { .. } | GraphOp::Unpublish { .. } => first.type_id.as_str() == lt::GROUP && path.nodes.len() == 1,
+        // A grade correction's mix or mask channel (M3 step 17a): the
+        // fields' grade has no place for either.
+        GraphOp::SetMix { .. } | GraphOp::SetMaskChannel { .. } if first.type_id.as_str() == lt::GROUP => path.nodes.len() == 2,
         _ if path.nodes.len() != 1 => false,
         _ if beside => true,
         GraphOp::AddNodeBeside { .. } => true,
@@ -151,6 +154,12 @@ fn target(p: &ClipPicture, op: &GraphOp) -> Result<Target, String> {
     if first.type_id.as_str() == lt::GROUP && !(in_chain && matches!(op, GraphOp::AddNode { .. })) {
         if path.nodes.len() < 2 {
             return Err("the grade group itself is set by the nodes inside it".into());
+        }
+        // Only a correction at the grade's top level keeps a mix or mask
+        // channel (M3 step 17a, `picture_only`); one inside a compound
+        // would be written to fields that drop it.
+        if matches!(op, GraphOp::SetMix { .. } | GraphOp::SetMaskChannel { .. }) {
+            return Err("a correction inside a compound doesn't keep a mix or mask channel yet".into());
         }
         return Ok(Target::Grade);
     }
@@ -515,6 +524,7 @@ impl Clip {
         if !edited.is_truth() {
             edited.requires.push(klipp_graph_format::lifted::PICTURE_TRUTH_CAPABILITY.into());
         }
+        edited.mark_grade_mix();
         Ok(LiftedPicture { picture: edited, versions: view.versions })
     }
 
@@ -989,6 +999,28 @@ fn merge_truth(old: &LiftedPicture, ids: &(Vec<crate::EffectId>, Vec<crate::Effe
             t.params.insert(mask_key.clone(), c.clone());
         }
     }
+    // A grade correction's mix and mask channel (M3 step 17a), by the
+    // node's id, which the grade keeps. A node the write took out of the
+    // grade takes its settings with it: nothing else reads them.
+    let grade_settings: Vec<(NodeId, Option<f32>, Option<klipp_graph_format::ParamValue>)> = grade_nodes(&old.picture)
+        .filter(|n| n.mix.is_some() || n.params.contains_key(&mask_key))
+        .map(|n| (n.id, n.mix, n.params.get(&mask_key).cloned()))
+        .collect();
+    for (id, mix, channel) in grade_settings {
+        if !grade_nodes(&p).any(|t| t.id == id) {
+            if grade_nests(&p, id) {
+                // Moved into a compound, where nothing keeps them.
+                return Err(format!("it puts the grade node {id}, whose mix or mask channel only the clip's picture keeps, inside a compound"));
+            }
+            continue;
+        }
+        if let Some(t) = grade_nodes_mut(&mut p).find(|t| t.id == id) {
+            t.mix = mix;
+            if let Some(c) = channel {
+                t.params.insert(mask_key.clone(), c);
+            }
+        }
+    }
     // The nodes beside the chain, then every edge that isn't the chain's.
     p.graph.nodes.extend(old.picture.graph.nodes.iter().filter(|n| !old_chain.contains(&n.id)).cloned());
     let is_chain_edge = |e: &klipp_graph_format::Edge| old_chain.contains(&e.from.0) && old_chain.contains(&e.to.0) && e.from.1.as_str() == "out" && e.to.1.as_str() == "in";
@@ -1017,5 +1049,25 @@ fn merge_truth(old: &LiftedPicture, ids: &(Vec<crate::EffectId>, Vec<crate::Effe
         grade.interface = interface;
     }
     p.requires = old.picture.requires.clone();
+    p.mark_grade_mix();
     Ok(LiftedPicture { picture: p, versions: fresh.versions })
+}
+
+/// Whether a node of the picture's grade holds `id` inside it: a compound
+/// carries its inner graph in its entry, a group in its body.
+fn grade_nests(p: &ClipPicture, id: NodeId) -> bool {
+    let id = id.to_string();
+    grade_nodes(p).any(|n| {
+        n.group.as_ref().is_some_and(|g| serde_json::to_string(&g.graph).is_ok_and(|t| t.contains(&id)))
+            || n.legacy.as_ref().is_some_and(|l| l.payload.to_string().contains(&id))
+    })
+}
+
+/// The nodes inside the picture's grade (its group's body).
+fn grade_nodes(p: &ClipPicture) -> impl Iterator<Item = &Node> {
+    p.graph.nodes.iter().filter(|n| n.type_id.as_str() == lt::GROUP).filter_map(|g| g.group.as_ref()).flat_map(|g| g.graph.nodes.iter())
+}
+
+fn grade_nodes_mut(p: &mut ClipPicture) -> impl Iterator<Item = &mut Node> {
+    p.graph.nodes.iter_mut().filter(|n| n.type_id.as_str() == lt::GROUP).filter_map(|g| g.group.as_mut()).flat_map(|g| g.graph.nodes.iter_mut())
 }

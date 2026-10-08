@@ -770,6 +770,12 @@ impl KlippApp {
                     // to whichever targets came before that, skipped the
                     // engine sync, and said nothing.
                     if let Some(attrs) = self.state.attributes_clipboard.clone() {
+                        // The grade would arrive without its corrections'
+                        // mixes (M3 step 17a): refused, never pasted whole.
+                        if *color_grade && attrs.grade_mix_held {
+                            self.state.toast.show(GRADE_MIX_NOT_COPIED);
+                            return true;
+                        }
                         let what = crate::state::PasteChoice {
                             effects: *effects,
                             color_grade: *color_grade,

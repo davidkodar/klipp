@@ -83,6 +83,53 @@ pub(super) fn paste_attributes_edits(
         .collect()
 }
 
+impl crate::state::AppState {
+    /// Save or switch a clip's grade version (`SaveGradeVersion`,
+    /// `SwitchGradeVersion`): whether the clip changed. A clip whose
+    /// picture holds a correction's mix or mask channel (M3 step 17a) is
+    /// refused, saying why: a version keeps the grade's fields, never
+    /// those, so it would come back without them.
+    pub(super) fn grade_version_command(&mut self, cmd: &AppCommand) -> bool {
+        let clip_id = match cmd {
+            AppCommand::SaveGradeVersion { clip_id, .. } | AppCommand::SwitchGradeVersion { clip_id, .. } => *clip_id,
+            _ => return false,
+        };
+        let seq = &mut self.sequences[self.active_sequence_idx];
+        let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) else { return false };
+        if clip.holds_grade_mix() {
+            self.toast.show("Grade versions don't keep a correction's mix or mask channel yet: set them back to whole and red first");
+            return false;
+        }
+        match cmd {
+            AppCommand::SaveGradeVersion { name, .. } => {
+                let version = klipp_timeline::GradeVersion::new(name.clone(), clip.grade().clone());
+                let index = clip.edit_grade_versions(|vs| {
+                    vs.push(version);
+                    vs.len() - 1
+                });
+                clip.set_active_grade_version(Some(index));
+            }
+            AppCommand::SwitchGradeVersion { version_index, .. } => {
+                // Save current graph back to active version slot before switching
+                if let Some(active_idx) = clip.active_grade_version() {
+                    if active_idx < clip.grade_versions().len() {
+                        let grade = clip.grade().clone();
+                        clip.edit_grade_versions(|vs| vs[active_idx].set_grade(grade));
+                    }
+                }
+                // Load the target version
+                if let Some(grade) = clip.grade_versions().get(*version_index).map(|v| v.grade().clone()) {
+                    clip.set_grade(grade);
+                    clip.set_active_grade_version(Some(*version_index));
+                }
+            }
+            _ => {}
+        }
+        self.dirty = true;
+        true
+    }
+}
+
 #[cfg(test)]
 mod paste_attributes_tests {
     use super::*;
@@ -298,5 +345,64 @@ mod grade_still_tests {
     #[test]
     fn a_record_timecode_reads_as_an_editor_would_say_it() {
         assert_eq!(record_timecode(3723.48, 25.0), "01:02:03:12");
+    }
+}
+
+/// M3 step 17a: grade versions don't keep a correction's mix or mask
+/// channel, so a clip holding one refuses to save or switch a version,
+/// saying why, with its picture and versions as they were; set back to
+/// whole and red, it saves one.
+#[cfg(test)]
+mod grade_versions_and_mix {
+    use super::*;
+    use klipp_graph_format::path::{NodePath, Root};
+    use klipp_graph_lift::ops::GraphOp;
+    use klipp_timeline::GradeAccess;
+
+    fn state() -> (crate::state::AppState, klipp_core::ClipId, NodePath) {
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
+        let mut g = klipp_nodes::NodeGraph::default();
+        let corrector = g.ensure_corrector();
+        clip.set_grade(g);
+        let group = clip.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::GROUP).unwrap().id;
+        let path = NodePath::new(Root::Clip { clip: clip.id.0 }, [group, corrector]);
+        clip.apply_picture_ops(&[GraphOp::SetMix { path: path.clone(), mix: Some(0.25) }]).unwrap();
+        let id = clip.id;
+        let mut state = crate::state::AppState::default();
+        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        state.sequences[0].tracks[v1].clips.push(clip);
+        (state, id, path)
+    }
+
+    fn clip(s: &crate::state::AppState, id: klipp_core::ClipId) -> &klipp_timeline::Clip {
+        s.sequences[0].all_clips().find(|c| c.id == id).unwrap()
+    }
+
+    #[test]
+    fn a_mixed_grade_refuses_to_save_or_switch_a_version() {
+        let (mut s, id, path) = state();
+        let (picture, versions) = (clip(&s, id).picture_v2().unwrap(), clip(&s, id).grade_versions().len());
+        for cmd in [AppCommand::SaveGradeVersion { clip_id: id, name: "A".into() }, AppCommand::SwitchGradeVersion { clip_id: id, version_index: 0 }] {
+            assert!(!s.grade_version_command(&cmd), "{cmd:?} is refused");
+            assert!(s.toast.message_for_test().is_some_and(|m| m.contains("set them back to whole and red")), "{:?}", s.toast.message_for_test());
+            assert_eq!(clip(&s, id).picture_v2().unwrap(), picture, "the picture as it was");
+            assert_eq!(clip(&s, id).grade_versions().len(), versions, "and its versions");
+        }
+        // Set back to whole and red, as the refusal says: saved.
+        let c = s.sequences[0].all_clips_mut().find(|c| c.id == id).unwrap();
+        c.apply_picture_ops(&[GraphOp::SetMix { path, mix: Some(1.0) }]).unwrap();
+        assert!(s.grade_version_command(&AppCommand::SaveGradeVersion { clip_id: id, name: "A".into() }));
+        assert_eq!(clip(&s, id).grade_versions().len(), versions + 1);
+    }
+
+    /// Copy Attributes notes a grade it can't carry whole, so its paste
+    /// of the grade is refused rather than made at full strength.
+    #[test]
+    fn copied_attributes_know_the_grade_held_a_mix() {
+        let (s, id, _) = state();
+        assert!(crate::state::AttributesClipboard::of(clip(&s, id)).grade_mix_held);
+        let plain = klipp_timeline::Clip::media(klipp_core::MediaId::new(), klipp_core::RationalTime::from_secs_f64(0.0, 25), klipp_core::RationalTime::from_secs_f64(1.0, 25), klipp_core::RationalTime::from_secs_f64(0.0, 25), klipp_core::RationalTime::from_secs_f64(1.0, 25));
+        assert!(!crate::state::AttributesClipboard::of(&plain).grade_mix_held);
     }
 }

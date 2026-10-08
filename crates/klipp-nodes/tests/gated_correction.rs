@@ -153,3 +153,111 @@ fn a_legacy_gate_keeps_alpha_one_at_both_ends() {
         assert_eq!(alphas.into_iter().collect::<Vec<_>>(), vec![1.0f32.to_bits()], "{name}: every gated pixel's alpha is 1");
     }
 }
+
+/// M3 step 17a: a qualifier gating a desaturating corrector, keyed on the
+/// left half's red, the corrector given `blend` as its run setting.
+fn gated(blend: Option<klipp_nodes::params::EffectBlend>) -> NodeGraph {
+    let mut g = NodeGraph::default();
+    let (q, c) = g.ensure_masked_secondary(NodeKind::Corrector);
+    for n in &mut g.nodes {
+        if n.id == q {
+            n.params.qualifier = Some(klipp_core::QualifierSettings { enabled: true, hue_center: 0.0, hue_width: 60.0, sat_low: 0.1, ..Default::default() });
+        }
+        if n.id == c {
+            n.params.saturation = Some(0.0);
+            n.params.correction_blend = blend;
+        }
+    }
+    g
+}
+
+fn blend(mix: f32, channel: klipp_effects::mask_mix::MaskChannel) -> Option<klipp_nodes::params::EffectBlend> {
+    Some(klipp_nodes::params::EffectBlend { mix, channel })
+}
+
+/// Left half warm, right half cool, in linear light, with alpha a half
+/// (a gate's alpha is 1 whatever comes in).
+fn linear_frame() -> Vec<f32> {
+    (0..W * H).flat_map(|i| if i % W < W / 2 { [0.7, 0.05, 0.05, 0.5] } else { [0.05, 0.05, 0.7, 0.5] }).collect()
+}
+
+/// `graph` on the CPU, and on the GPU when there is one.
+fn run_linear(graph: &NodeGraph) -> Vec<(&'static str, Vec<f32>)> {
+    let mut runs = vec![("cpu", GraphExecutor::new_cpu_only())];
+    let mut gpu = GraphExecutor::new();
+    if gpu.gpu_pipeline_or_init().is_some() {
+        runs.push(("gpu", gpu));
+    }
+    runs.into_iter().map(|(name, mut ex)| (name, ex.execute_linear(&linear_frame(), graph, W, H, 0.0, 0, None, None).unwrap().0)).collect()
+}
+
+fn close(a: &[f32], b: &[f32], what: &str) {
+    assert_eq!(a.len(), b.len());
+    let worst = a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+    assert!(worst < 2e-3, "{what}: worst difference {worst}");
+}
+
+/// IC10: a lifted gate (no blend) is the gate it always was, the same node
+/// inserted and the same pixels as a whole gate read from red.
+#[test]
+fn a_lifted_gated_correction_is_unchanged() {
+    let lifted = gated(None);
+    let gate = lifted.with_gates_applied().unwrap().nodes.into_iter().find(|n| n.kind == NodeKind::ApplyMatte).unwrap();
+    assert_eq!(gate.params, NodeParams::default(), "the gate a lifted correction gets, as before");
+    let explicit = gated(blend(1.0, klipp_effects::mask_mix::MaskChannel::Red));
+    for ((name, a), (_, b)) in run_linear(&lifted).into_iter().zip(run_linear(&explicit)) {
+        close(&a, &b, name);
+        assert!(a.chunks_exact(4).all(|p| p[3] == 1.0), "{name}: alpha 1");
+    }
+}
+
+/// C3 for a gate: a half mix lands halfway between the picture without
+/// the correction (mix 0) and the whole gate (mix 1).
+#[test]
+fn a_gates_mix_fades_its_correction() {
+    use klipp_effects::mask_mix::MaskChannel::Red;
+    let runs = |mix| run_linear(&gated(blend(mix, Red)));
+    for (((name, none), (_, half)), (_, whole)) in runs(0.0).into_iter().zip(runs(0.5)).zip(runs(1.0)) {
+        let input: Vec<f32> = linear_frame().chunks_exact(4).flat_map(|p| [p[0], p[1], p[2], 1.0]).collect();
+        close(&none, &input, &format!("{name}: mix 0 is the input"));
+        assert!(whole.chunks_exact(4).any(|p| (p[0] - p[1]).abs() < 1e-3), "{name}: mix 1 greys the key");
+        let mid: Vec<f32> = none.iter().zip(&whole).map(|(a, b)| (a + b) / 2.0).collect();
+        close(&half, &mid, &format!("{name}: mix 0.5 is halfway"));
+    }
+}
+
+/// A grade matte is grey: its luminance is its red, so a gate reading
+/// luminance draws what one reading red does.
+#[test]
+fn a_greyscale_gate_reads_the_same_by_luminance() {
+    use klipp_effects::mask_mix::MaskChannel::{Luminance, Red};
+    for ((name, red), (_, luma)) in run_linear(&gated(blend(1.0, Red))).into_iter().zip(run_linear(&gated(blend(1.0, Luminance)))) {
+        close(&luma, &red, name);
+    }
+}
+
+/// A correction with a mix and no matte fades against its input over the
+/// whole frame, and keeps the alpha it was given.
+#[test]
+fn an_ungated_corrections_mix_fades_it_and_keeps_alpha() {
+    let graph = |blend: Option<klipp_nodes::params::EffectBlend>| {
+        let mut g = NodeGraph::default();
+        let c = g.ensure_corrector();
+        for n in &mut g.nodes {
+            if n.id == c {
+                n.params.saturation = Some(0.0);
+                n.params.correction_blend = blend;
+            }
+        }
+        g
+    };
+    use klipp_effects::mask_mix::MaskChannel::Red;
+    assert!(graph(blend(1.0, Red)).with_gates_applied().is_none(), "a whole mix needs no gate");
+    let input = linear_frame();
+    for (((name, whole), (_, half)), (_, none)) in run_linear(&graph(None)).into_iter().zip(run_linear(&graph(blend(0.5, Red)))).zip(run_linear(&graph(blend(0.0, Red)))) {
+        close(&none, &input, &format!("{name}: mix 0 is the input"));
+        let mid: Vec<f32> = input.iter().zip(&whole).map(|(a, b)| (a + b) / 2.0).collect();
+        close(&half, &mid, &format!("{name}: mix 0.5 is halfway"));
+        assert!(half.chunks_exact(4).all(|p| p[3] == 0.5), "{name}: the input's alpha is kept");
+    }
+}

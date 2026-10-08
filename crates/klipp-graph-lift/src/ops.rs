@@ -486,7 +486,13 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn
                 if let Some(catalog) = catalog {
                     let spec = catalog.node_spec(&g.nodes[at]).ok_or("a mask connection needs a registered node description")?;
                     let mask = spec.inputs.iter().find(|p| p.key == "mask" && p.ty == PortType::Matte).ok_or("this node has no mask input")?;
-                    if !connected && !g.nodes[at].params.contains_key(&ParamKey::from("mask.channel")) && mask.params.iter().any(|(key, _)| key == "channel") {
+                    // A new effect mask reads luminance. A grade gate's
+                    // reads red, as every gate always has: its channel
+                    // lives only in the picture (M3 step 17a), so writing
+                    // one on every new secondary would make each clip
+                    // with one picture-truth; it is set when picked.
+                    let effect = g.nodes[at].type_id.as_str() != types::LEGACY_NODE;
+                    if effect && !connected && !g.nodes[at].params.contains_key(&ParamKey::from("mask.channel")) && mask.params.iter().any(|(key, _)| key == "channel") {
                         set_mask_channel(&mut g.nodes[at], Some("luminance"), Some(catalog))?;
                     }
                 }
@@ -711,11 +717,20 @@ fn apply_pending(docs: &mut Documents, op: &GraphOp, catalog: Option<&dyn PortCa
             } else {
                 apply_graph(level(&mut picture.graph, through)?, op, last, catalog, &interface)?;
             }
+            // A grade correction's mix or mask channel needs a reader that
+            // knows them (M3 step 17a); the mark comes and goes with them.
+            picture.mark_grade_mix();
             tolerate(if let Some(catalog) = catalog { picture.graph.check_lifted_with_catalog(false, catalog) } else { picture.graph.check_lifted(false) }, pending)
                 .map_err(|e| unwired_beside(op, &e).unwrap_or_else(|| format!("that would leave the clip's graph invalid: {e}")))?;
             serde_json::to_value(picture).map_err(err)?
         }
         _ => {
+            // Only a clip's picture keeps a correction's mix or mask
+            // channel (M3 step 17a); a track's, a timeline's or a grade
+            // group's grade has no place for them yet.
+            if matches!(op, GraphOp::SetMix { .. } | GraphOp::SetMaskChannel { .. }) {
+                return Err("only a clip's grade keeps a correction's mix or mask channel".into());
+            }
             let mut body: Graph = serde_json::from_value(std::mem::take(&mut copy)).map_err(err)?;
             let interface = if matches!(op, GraphOp::RemoveNode { .. } | GraphOp::MoveAfter { .. }) { containing_interface(&body, through)? } else { Vec::new() };
             apply_graph(level(&mut body, through)?, op, last, catalog, &interface)?;
