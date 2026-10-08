@@ -111,7 +111,7 @@ pub(super) struct Run {
     pub(super) time: f64,
     pub(super) side: Vec<String>,
     pub(super) unapplied: Vec<String>,
-    /// The generated view draws the clip's Video tab, not its stack: the
+    /// Draw the clip's Video tab, not its stack, in either view: the
     /// effect is a clip property there (M3 step 13).
     pub(super) property: bool,
 }
@@ -228,7 +228,9 @@ impl Run {
                     .find(|c| c.id == clip_id)
                     .unwrap();
                 let theme = KlippTheme::default();
-                if state.use_generated_stack && property {
+                // The Video tab, in either view, when the effect is a clip
+                // property there (the old view's Video tab included).
+                if property {
                     crate::inspector::video_tab::show(
                         ui,
                         &theme,
