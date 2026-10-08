@@ -28,6 +28,7 @@ mod colour;
 mod film;
 mod geometry;
 mod light;
+pub mod presentation;
 
 /// What kind of operation a node type is, for grouping in the browser and
 /// the add menu.

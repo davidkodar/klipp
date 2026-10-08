@@ -1,0 +1,298 @@
+//! How the inspector shows a parameter (M3 step 0a): the display facts the
+//! hand-written rows hard-code today, kept apart from what the parameter
+//! is ([`ParamDesc`]: its kind, range, default, keyframes). Two structs so
+//! that no label, step or decimals change can alter a stored value, and
+//! so that the semantic consumers (ops, the socket, the executor) never
+//! carry display data.
+//!
+//! A parameter's [`Presentation`] is the entry its catalog's table gives
+//! for its `(type id, key)`, or else the one [`Presentation::derived`]
+//! makes from its description. The tables are data, one per family
+//! (M3 step 0b for effects, 0c for grade nodes); nothing reads them until
+//! the generated rows (step 5). UI-free: no egui types here.
+
+use super::{EffectType, ParamDesc, ParamKind, Unit};
+
+/// How a parameter is shown.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Presentation {
+    /// The drag speed: the value's change per pixel dragged.
+    pub step: f32,
+    /// Decimals shown, 0 to 3.
+    pub decimals: u8,
+    pub suffix: Suffix,
+    /// Shown and stored differ (the contrast pivot is stored linear and
+    /// shown encoded). `None`: shown as stored.
+    pub display: Option<DisplayMap>,
+    /// A choice's labels, by index. They name the stored choices for the
+    /// eye and never rename them (the stored value is the index).
+    pub labels: Option<&'static [&'static str]>,
+    /// The row's label where it differs from [`ParamDesc::label`], kept
+    /// only to hold today's wording.
+    pub label: Option<&'static str>,
+    pub widget: Widget,
+    /// The sub-header the row sits under (a channel mixer's "Red Output",
+    /// a wheel's triplet).
+    pub group: Option<&'static str>,
+    /// Where the row is shown among its type's, where that differs from
+    /// the catalog's order; rows are shown by `order`, then by catalog
+    /// order.
+    pub order: u16,
+    /// Shown only while this holds (a speed ramp's freeze point, while
+    /// it freezes).
+    pub visible_if: Option<Cond>,
+    /// Editable only while this holds; shown dimmed otherwise.
+    pub enabled_if: Option<Cond>,
+    pub help: Option<&'static str>,
+    /// What a reset writes where it must differ from
+    /// [`ParamDesc::default`]. The list is kept to the reset audit's.
+    pub reset: Option<f32>,
+    /// A whole-number slider's range, where the catalog gives none (a
+    /// radial blur's samples, a seed).
+    pub soft_whole: Option<(i32, i32)>,
+}
+
+/// What follows the number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Suffix {
+    /// The parameter's [`Unit`]'s: px, °, s, or nothing ([`Suffix::text`]).
+    FromUnit,
+    /// Text the unit doesn't give: `×`, `:1`, `stops`, `%`.
+    Text(&'static str),
+    None,
+}
+
+impl Suffix {
+    /// The text shown after a value of `unit`.
+    pub fn text(self, unit: Unit) -> &'static str {
+        match self {
+            Suffix::FromUnit => match unit {
+                Unit::CanvasPx | Unit::Per1080 => "px",
+                Unit::Degrees => "°",
+                Unit::Seconds => "s",
+                Unit::Ratio | Unit::Normalised | Unit::Count | Unit::None => "",
+            },
+            Suffix::Text(t) => t,
+            Suffix::None => "",
+        }
+    }
+}
+
+/// A shown value made from a stored one and back: a pair of pure
+/// functions, each the other's inverse over the parameter's slider range.
+#[derive(Debug, Clone, Copy)]
+pub struct DisplayMap {
+    pub to_shown: fn(f32) -> f32,
+    pub to_stored: fn(f32) -> f32,
+}
+
+impl PartialEq for DisplayMap {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::fn_addr_eq(self.to_shown, other.to_shown) && std::ptr::fn_addr_eq(self.to_stored, other.to_stored)
+    }
+}
+
+impl DisplayMap {
+    /// How far, in units in the last place, a stored value may come back
+    /// from shown: a power curve's round trip in `f32` drifts by two.
+    pub const ROUND_TRIP_ULPS: u32 = 4;
+
+    /// The first stored value in `range`, of `samples` across it, that
+    /// doesn't come back from shown within [`Self::ROUND_TRIP_ULPS`] of
+    /// itself, if any.
+    pub fn round_trip_fault(&self, range: (f32, f32), samples: usize) -> Option<(f32, f32)> {
+        let n = samples.max(2);
+        (0..n).map(|i| range.0 + (range.1 - range.0) * i as f32 / (n - 1) as f32).find_map(|stored| {
+            let back = (self.to_stored)((self.to_shown)(stored));
+            (back.to_bits().abs_diff(stored.to_bits()) > Self::ROUND_TRIP_ULPS).then_some((stored, back))
+        })
+    }
+}
+
+/// The control a row draws. Two choices never imply a toggle: a
+/// [`Widget::Toggle`] is always said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Widget {
+    /// The label-drag scrub and its number.
+    Scrub,
+    /// A grade slider.
+    Slider,
+    Toggle,
+    /// A choice's drop-down, labelled by [`Presentation::labels`] or by the
+    /// catalog's choice names.
+    Combo,
+    ColourRgb,
+    ColourRgba,
+    /// A slider over a colour ramp.
+    Gradient(Gradient),
+    /// A slider over the hue circle.
+    HueRainbow,
+    /// Two values edited as a point (a corner pin's corner).
+    Vec2,
+    /// One part of a colour wheel; the wheel's parts share the group named.
+    WheelPart(&'static str),
+    /// No row; the value is kept as it is.
+    Hidden,
+    /// A specialist editor, named (M3 step 0d). An empty name is one not
+    /// named yet, which step 0d's coverage refuses.
+    Custom(&'static str),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gradient {
+    Temperature,
+    Tint,
+}
+
+/// A condition on a sibling parameter's stored value (never its animated
+/// one, so a keyed switch doesn't make rows come and go).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Cond {
+    /// The parameter `key` holds `value`: 1 or 0 for a switch, the index
+    /// for a choice.
+    ParamIs { key: &'static str, value: f32 },
+}
+
+/// How a node type is shown, beyond its rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TypePresentation {
+    /// A line shown above the rows ("runs on the source").
+    pub notice: Option<&'static str>,
+    /// The adapter that draws what rows can't (a deflicker's analysis, a
+    /// stabilizer's), by name (M3 step 6).
+    pub extra_ui: Option<&'static str>,
+}
+
+/// One table entry: `pres` for parameter `key` of type `type_id`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParamEntry {
+    pub type_id: &'static str,
+    pub key: &'static str,
+    pub pres: Presentation,
+}
+
+/// One table entry: `pres` for type `type_id`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TypeEntry {
+    pub type_id: &'static str,
+    pub pres: TypePresentation,
+}
+
+/// The effects' entries, filled family by family (M3 step 0b).
+pub static PARAMS: &[ParamEntry] = &[];
+pub static TYPES: &[TypeEntry] = &[];
+
+impl Presentation {
+    /// What a parameter is shown as when its table gives nothing: the
+    /// widget its kind implies, the suffix its unit gives, a step of a
+    /// two-hundredth of its slider's range.
+    pub fn derived(p: &ParamDesc) -> Self {
+        let (step, decimals) = match (p.kind, p.soft) {
+            (ParamKind::Whole, _) => (1.0, 0),
+            (ParamKind::Float, Some((lo, hi))) if hi > lo => ((hi - lo) / 200.0, 2),
+            (ParamKind::Float, _) => (0.01, 2),
+            _ => (0.0, 0),
+        };
+        let widget = match p.kind {
+            ParamKind::Float | ParamKind::Whole => Widget::Scrub,
+            ParamKind::Bool => Widget::Toggle,
+            ParamKind::Choice(_) => Widget::Combo,
+            ParamKind::Colour => Widget::ColourRgb,
+            ParamKind::Other => Widget::Custom(""),
+        };
+        Presentation {
+            step,
+            decimals,
+            suffix: Suffix::FromUnit,
+            display: None,
+            labels: None,
+            label: None,
+            widget,
+            group: None,
+            order: 0,
+            visible_if: None,
+            enabled_if: None,
+            help: None,
+            reset: None,
+            soft_whole: None,
+        }
+    }
+
+    /// `p`'s presentation: `table`'s entry for `(type_id, p.key)`, or the
+    /// derived one.
+    pub fn of(table: &[ParamEntry], type_id: &str, p: &ParamDesc) -> Self {
+        table.iter().find(|e| e.type_id == type_id && e.key == p.key).map_or_else(|| Self::derived(p), |e| e.pres)
+    }
+}
+
+impl TypePresentation {
+    /// `type_id`'s entry in `table`, or none.
+    pub fn of(table: &[TypeEntry], type_id: &str) -> Self {
+        table.iter().find(|e| e.type_id == type_id).map(|e| e.pres).unwrap_or_default()
+    }
+}
+
+impl EffectType {
+    /// How parameter `p` of this effect is shown.
+    pub fn presentation(&self, p: &ParamDesc) -> Presentation {
+        Presentation::of(PARAMS, self.desc.id, p)
+    }
+
+    /// How this effect is shown, beyond its rows.
+    pub fn type_presentation(&self) -> TypePresentation {
+        TypePresentation::of(TYPES, self.desc.id)
+    }
+}
+
+/// What is wrong with a catalog's tables, one line each: an entry naming
+/// no parameter of `types` (each type's id and parameters), two entries for one parameter, decimals over
+/// 3, a step that doesn't move a number, labels that don't match a
+/// choice's count, a toggle for anything but a switch, a display map that
+/// doesn't round-trip over the slider range, a type entry naming no type.
+/// Both catalogs' coverage tests hold their tables to it.
+pub fn problems(types: &[(&str, &[ParamDesc])], params: &[ParamEntry], type_entries: &[TypeEntry]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (i, e) in params.iter().enumerate() {
+        let Some(p) = types.iter().find(|(id, _)| *id == e.type_id).and_then(|(_, ps)| ps.iter().find(|p| p.key == e.key)) else {
+            out.push(format!("{}/{}: names no parameter", e.type_id, e.key));
+            continue;
+        };
+        if params[..i].iter().any(|o| o.type_id == e.type_id && o.key == e.key) {
+            out.push(format!("{}/{}: two entries", e.type_id, e.key));
+        }
+        out.extend(param_problems(e.type_id, p, &e.pres));
+    }
+    for e in type_entries {
+        if !types.iter().any(|(id, _)| *id == e.type_id) {
+            out.push(format!("{}: names no type", e.type_id));
+        }
+    }
+    out
+}
+
+/// What is wrong with `pres` for `p`, one line each (see [`problems`]).
+pub fn param_problems(type_id: &str, p: &ParamDesc, pres: &Presentation) -> Vec<String> {
+    let at = format!("{type_id}/{}", p.key);
+    let mut out = Vec::new();
+    if pres.decimals > 3 {
+        out.push(format!("{at}: {} decimals", pres.decimals));
+    }
+    let numeric = matches!(p.kind, ParamKind::Float | ParamKind::Whole);
+    if numeric && !matches!(pres.widget, Widget::Hidden | Widget::Custom(_)) && !(pres.step.is_finite() && pres.step > 0.0) {
+        out.push(format!("{at}: step {} doesn't move it", pres.step));
+    }
+    match (p.kind, pres.labels) {
+        (ParamKind::Choice(names), Some(labels)) if labels.len() != names.len() => out.push(format!("{at}: {} labels for {} choices", labels.len(), names.len())),
+        (ParamKind::Choice(_), _) | (_, None) => {}
+        (_, Some(_)) => out.push(format!("{at}: labels on a parameter that isn't a choice")),
+    }
+    if pres.widget == Widget::Toggle && p.kind != ParamKind::Bool {
+        out.push(format!("{at}: a toggle for a {:?}", p.kind));
+    }
+    if let (Some(map), Some(range)) = (pres.display, p.soft) {
+        if let Some((stored, back)) = map.round_trip_fault(range, 1001) {
+            out.push(format!("{at}: shown and back, {stored} comes back {back}"));
+        }
+    }
+    out
+}
