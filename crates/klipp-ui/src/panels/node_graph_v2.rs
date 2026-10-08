@@ -477,10 +477,12 @@ impl NodeGraphV2Panel {
             self.drag_frame = None;
             cmds.push(AppCommand::EndNodeLayoutEdit { root });
         }
+        let previous_path = descent_path.clone();
         cmds.extend(self.show_canvas(ui, selected_node, selected_set, &GradeCanvas(graph), clip_id, theme,
             engine_node_thumbs, engine_node_thumbs_gen, deferred_drops, descent_path,
             breadcrumb_labels, grade_version_names, active_grade_version, clip_time_secs,
             port_snap_enabled, port_snap_radius_px, solo_node));
+        if *descent_path != previous_path { self.fit_pending = true; }
         cmds
     }
 
@@ -577,50 +579,44 @@ impl NodeGraphV2Panel {
         }
 
         // Toolbar — small strip at the top with view controls.
-        // Breadcrumb row — only drawn when descended into one or
-        // more compounds. "Root" always pops back to clip level;
-        // each intermediate segment truncates the descent path to
-        // that depth. Clicks mutate `descent_path` directly (no
-        // AppCommand needed — it's UI-local state) and clear
-        // selection so the inspector doesn't linger on a node that
-        // lives in a different depth than the one we're now showing.
+        // A clip's grade is a group within its picture. Timeline grades
+        // have no clip root (and no version selector), so cannot leave it.
         let avail = ui.available_size();
-        if !descent_path.is_empty() {
-            let breadcrumb_h = 20.0;
-            let (bc_rect, _) = ui.allocate_exact_size(
-                egui::vec2(avail.x, breadcrumb_h), egui::Sense::hover(),
-            );
-            let mut bc_ui = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(bc_rect)
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            );
-            ui.painter().rect_filled(bc_rect, 0.0, theme.bg_panel);
-            bc_ui.add_space(8.0);
-            if bc_ui.link(
-                egui::RichText::new("Root").small().color(theme.accent)
-            ).clicked() {
-                descent_path.clear();
+        let clip_grade = graph.grade_tools() && grade_version_names.is_some();
+        if clip_grade || !graph.grade_tools() || !descent_path.is_empty() {
+            let mut navigated = false;
+            egui::Frame::none().fill(theme.bg_panel).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_space(8.0);
+                    if clip_grade {
+                        if ui.link(egui::RichText::new("Clip").small().color(theme.accent)).clicked() {
+                            cmds.push(AppCommand::SetGraphDockRoot { root: klipp_graph_format::path::Root::Clip { clip: clip_id.0 } });
+                            navigated = true;
+                        }
+                        ui.label(egui::RichText::new(" › ").small().color(theme.text_dim));
+                    }
+                    let root_label = if graph.grade_tools() { "Grade" } else { "Clip" };
+                    if descent_path.is_empty() {
+                        ui.label(egui::RichText::new(root_label).small().color(theme.text_primary));
+                    } else if ui.link(egui::RichText::new(root_label).small().color(theme.accent)).clicked() {
+                        descent_path.clear();
+                        navigated = true;
+                    }
+                    let depth = descent_path.len();
+                    for (i, label) in breadcrumb_labels.iter().take(depth).enumerate() {
+                        ui.label(egui::RichText::new(" › ").small().color(theme.text_dim));
+                        if i + 1 == depth {
+                            ui.label(egui::RichText::new(label).small().color(theme.text_primary));
+                        } else if ui.link(egui::RichText::new(label).small().color(theme.accent)).clicked() {
+                            descent_path.truncate(i + 1);
+                            navigated = true;
+                        }
+                    }
+                });
+            });
+            if navigated {
                 selected_set.clear();
                 *selected_node = None;
-            }
-            let depth = descent_path.len();
-            for (i, label) in breadcrumb_labels.iter().enumerate() {
-                bc_ui.label(
-                    egui::RichText::new(" › ").small().color(theme.text_dim)
-                );
-                if i + 1 == depth {
-                    // Current level — plain label, not clickable.
-                    bc_ui.label(
-                        egui::RichText::new(label).small().color(theme.text_primary)
-                    );
-                } else if bc_ui.link(
-                    egui::RichText::new(label).small().color(theme.accent)
-                ).clicked() {
-                    descent_path.truncate(i + 1);
-                    selected_set.clear();
-                    *selected_node = None;
-                }
             }
         }
 
@@ -4854,6 +4850,71 @@ mod rename_tests {
             cmds.iter().any(|c| matches!(c, AppCommand::RenameNode { node_id, label, .. } if *node_id == node && label == "Skin")),
             "Enter names it: {cmds:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod breadcrumb_tests {
+    use super::*;
+    use klipp_timeline::GradeAccess;
+
+    #[test]
+    fn the_clip_crumb_leaves_the_grade_and_keeps_the_clip() {
+        for width in [240.0, 800.0] {
+            for nested in [false, true] {
+                let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
+                let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+                let id = clip.id;
+                let before = clip.picture_v2().unwrap();
+                let mut graph = clip.grade().clone();
+                let mut panel = NodeGraphV2Panel::default();
+                let mut selected = Some(graph.output_node_id);
+                let mut set = [graph.output_node_id].into_iter().collect();
+                let mut path = if nested { vec![NodeId::new_v4(), NodeId::new_v4()] } else { Vec::new() };
+                let labels = if nested { vec!["Outer group".to_owned(), "Inner group".to_owned()] } else { Vec::new() };
+                let ctx = egui::Context::default();
+                let mut time = 0.0;
+                let mut frame = |events| {
+                    time += 0.1;
+                    let mut cmds = Vec::new();
+                    let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 600.0))), time: Some(time), events, ..Default::default() }, |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            cmds = panel.show(ui, &mut selected, &mut set, &mut graph, id, &KlippTheme::default(), &Default::default(), 0, &mut Vec::new(), &mut path, &labels, Some(&[]), None, 0.0, false, 0.0, None);
+                        });
+                    });
+                    let texts: Vec<_> = out.shapes.iter().filter_map(|s| match &s.shape {
+                        egui::Shape::Text(t) => Some((t.galley.text().to_owned(), egui::Rect::from_min_size(t.pos, t.galley.size()))), _ => None,
+                    }).collect();
+                    (cmds, texts)
+                };
+                let mut texts = Vec::new();
+                for _ in 0..3 { texts = frame(Vec::new()).1; }
+                for label in if nested { vec!["Clip", "Grade", "Outer group", "Inner group"] } else { vec!["Clip", "Grade"] } {
+                    let r = texts.iter().find(|(s, _)| s == label).unwrap().1;
+                    assert!(r.left() >= 0.0 && r.right() <= width, "{label}: {r:?}");
+                }
+                let at = texts.iter().find(|(s, _)| s == "Clip").unwrap().1.center();
+                let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+                frame(vec![egui::Event::PointerMoved(at), button(true)]);
+                let cmds = frame(vec![button(false)]).0;
+                let roots: Vec<_> = cmds.iter().filter_map(|cmd| if let AppCommand::SetGraphDockRoot { root } = cmd { Some(*root) } else { None }).collect();
+                assert_eq!(roots, [klipp_graph_format::path::Root::Clip { clip: id.0 }]);
+                let mut state = crate::state::AppState::default();
+                state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(clip);
+                state.selected_clip = Some(id);
+                state.active_workspace = crate::state::Workspace::Color;
+                state.show_color_panel = true;
+                state.graph_descent_path = path;
+                state.path_command(&AppCommand::SetGraphDockRoot { root: roots[0] });
+                assert_eq!(state.selected_clip, Some(id));
+                assert_eq!(state.active_workspace, crate::state::Workspace::Color);
+                assert!(state.graph_dock_open && state.graph_dock_path.is_empty() && state.graph_descent_path.is_empty());
+                assert_eq!(state.active_panel, Some(crate::state::PanelKind::PictureGraph));
+                assert!(!state.dirty);
+                assert_eq!(state.active_history().undo_count(), 0);
+                assert_eq!(state.sequence().all_clips().find(|c| c.id == id).unwrap().picture_v2().unwrap(), before);
+            }
+        }
     }
 }
 
