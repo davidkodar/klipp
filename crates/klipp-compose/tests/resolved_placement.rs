@@ -207,3 +207,38 @@ fn the_revision_moves_with_the_picture() {
     assert_eq!(ra.plan_revision, read("a again", &a, 0.4).plan_revision, "a read is stable");
     assert_ne!(ra.plan_revision, rb.plan_revision);
 }
+
+/// The move as the renderer resolves it (a parent's, the camera's, a
+/// shutter sample's) decides whether anything is placed, both ways: a
+/// still clip resolved away from identity is placed, a moving clip
+/// resolved to identity isn't. Each read held to the frame given the same
+/// resolved move.
+#[test]
+fn the_resolved_move_decides_identity() {
+    let identity = (0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5);
+    let moved = (40.0, -12.0, 0.9, 0.9, 3.0, 0.5, 0.5);
+    let cases = [
+        ("still, resolved moving", baked(media(vec![E::Gamma { gamma: 1.1 }, shadow(0.7)], vec![true; 2], true), vec![]), moved, Some("Drop Shadow")),
+        ("moving, resolved still", baked(media(vec![E::Gamma { gamma: 1.1 }, shadow(0.7)], vec![true; 2], false), vec![]), identity, None),
+    ];
+    for (name, placed, xf, before) in cases {
+        let clip = &placed.clip;
+        let lifted = clip.picture_v2().unwrap();
+        for t in [0.4, 2.5] {
+            let read = resolved_placement(clip, &lifted.picture, tc(t), 24.0, Some(xf), Some(placed.track)).unwrap().unwrap();
+            assert_eq!(placement_in(&placed.seq, clip.id, tc(t), 24.0, Some(xf)).unwrap().as_ref(), Some(&read), "{name}");
+            let fx = resolve_effects(clip, &lifted.picture, tc(t), 24.0, Some(xf), None).unwrap();
+            let at = fx.iter().position(|e| matches!(e, E::Transform { .. }));
+            match before {
+                Some(effect) => {
+                    assert_eq!(read.reason, format!("Auto · before {effect}, which draws outside the picture"), "{name} at {t}");
+                    assert_eq!(at.and_then(|i| fx.get(i + 1)).map(kind).as_deref(), Some("drop_shadow"), "{name} at {t}: {fx:?}");
+                }
+                None => {
+                    assert_eq!((read.boundary, read.reason.as_str()), (PlacementBoundary::End, "Auto · nothing to move"), "{name} at {t}");
+                    assert_eq!(at, None, "{name} at {t}: {fx:?}");
+                }
+            }
+        }
+    }
+}
