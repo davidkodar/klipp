@@ -1134,6 +1134,7 @@ fn a_scene_referred_source_agrees_with_the_renderer() {
             let k = if hdr { [0.2627f32, 0.6780, 0.0593] } else { LUMA_709 };
             let (scale, top) = if hdr { (4.0f32, 1023.0f32) } else { (1.0, 255.0) };
             let mut want = Vec::with_capacity((W * H) as usize);
+            let mut encoded = Vec::with_capacity((W * H) as usize);
             let (mut max, mut sum) = (0.0f32, 0.0f64);
             for p in px.chunks_exact(4) {
                 let (e, nits) = display.encode_light([p[0], p[1], p[2]]);
@@ -1141,6 +1142,27 @@ fn a_scene_referred_source_agrees_with_the_renderer() {
                 sum += nits as f64;
                 let y = k[0] * e[0] + k[1] * e[1] + k[2] * e[2];
                 want.push(((16.0 + y * 219.0) * scale + 0.5).clamp(0.0, top) as u16);
+                encoded.push(e);
+            }
+            // Chroma as the encoder makes it: each site from the mean of
+            // its 2x2 quad's encoded RGB, then the difference from luma, so
+            // a matrix or chroma error shared by both GPU branches shows.
+            let quant = |v: f32| ((128.0 + v * 224.0) * scale + 0.5).clamp(0.0, top) as u16;
+            let mut want_cb = Vec::with_capacity((W * H / 4) as usize);
+            let mut want_cr = Vec::with_capacity((W * H / 4) as usize);
+            for by in 0..(H / 2) as usize {
+                for bx in 0..(W / 2) as usize {
+                    let at = |dy: usize, dx: usize| encoded[(by * 2 + dy) * W as usize + bx * 2 + dx];
+                    let mut acc = [0.0f32; 3];
+                    for e in [at(0, 0), at(0, 1), at(1, 0), at(1, 1)] {
+                        for c in 0..3 {
+                            acc[c] += e[c] * 0.25;
+                        }
+                    }
+                    let l = k[0] * acc[0] + k[1] * acc[1] + k[2] * acc[2];
+                    want_cb.push(quant((acc[2] - l) / (2.0 * (1.0 - k[2]))));
+                    want_cr.push(quant((acc[0] - l) / (2.0 * (1.0 - k[0]))));
+                }
             }
 
             let got: Vec<u16> = if hdr {
@@ -1160,6 +1182,25 @@ fn a_scene_referred_source_agrees_with_the_renderer() {
             let delivery = if hdr { "PQ" } else { "SDR" };
             eprintln!("{name} -> {delivery}: worst {worst} of {top}");
             assert!(worst <= 1, "{name} -> {delivery}: differs by {worst} levels");
+
+            // The chroma: P010 interleaves 16-bit Cb,Cr after the luma; the
+            // plain delivery has 8-bit Cb then Cr planes.
+            let sites = want_cb.len();
+            let (got_cb, got_cr): (Vec<u16>, Vec<u16>) = if hdr {
+                let pairs = &planes[want.len() * 2..want.len() * 2 + sites * 4];
+                pairs.chunks_exact(4).map(|b| (u16::from_le_bytes([b[0], b[1]]) >> 6, u16::from_le_bytes([b[2], b[3]]) >> 6)).unzip()
+            } else {
+                let c = &planes[want.len()..want.len() + sites * 2];
+                (c[..sites].iter().map(|v| *v as u16).collect(), c[sites..].iter().map(|v| *v as u16).collect())
+            };
+            let off = |g: &[u16], w: &[u16]| g.iter().zip(w).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
+            let (worst_cb, worst_cr) = (off(&got_cb, &want_cb), off(&got_cr, &want_cr));
+            assert!(worst_cb <= 1 && worst_cr <= 1, "{name} -> {delivery}: chroma differs by {worst_cb} (Cb), {worst_cr} (Cr) levels");
+            let centre = 128.0 * scale;
+            assert!(
+                want_cb.iter().chain(&want_cr).any(|&v| (v as f32 - centre).abs() > 4.0 * scale),
+                "{name} -> {delivery}: the fixture is grey, so its chroma proves nothing",
+            );
             assert!(
                 got.iter().any(|&v| v as f32 > 16.0 * scale + 8.0),
                 "{name} -> {delivery}: the fixture rendered black",
