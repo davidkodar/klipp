@@ -114,11 +114,18 @@ pub(super) fn surfaces(entry: &CatalogEntry) -> Result<BTreeSet<Surface>, String
     Ok(required)
 }
 
+/// Keyframing a grade track, a colour wheel's parts among them: no view
+/// does it today (no diamond on a wheel part, and the curve editor lists
+/// effect tracks only), and it's phase 4's "animation everywhere".
+const GRADE_KEYFRAMING: &str = "#891 (grade keyframing: phase 4)";
+
 /// Reviewed absent affordances stay obligations with explicit exclusions,
 /// not silently omitted interactions. One decision covers every fixture.
 pub(super) fn key_exclusion(entry: &CatalogEntry, surface: Surface) -> Option<&'static str> {
+    // The curve editor lists effect tracks only; a grade track, a wheel's
+    // parts among them, is keyed in neither view today.
     if surface == Surface::CurveEditor {
-        return None;
+        return entry.grade.then_some(GRADE_KEYFRAMING);
     }
     match &entry.value {
         CatalogValue::Parameter { presentation, .. }
@@ -129,10 +136,18 @@ pub(super) fn key_exclusion(entry: &CatalogEntry, surface: Surface) -> Option<&'
         CatalogValue::Parameter { presentation, .. }
             if matches!(presentation.widget, Widget::WheelPart(_)) =>
         {
-            Some("#1318 (wheel axes have no diamonds; keys come from the curve editor and canvas)")
+            Some(GRADE_KEYFRAMING)
         }
         _ => None,
     }
+}
+
+/// Previous and Next key on the curve editor: Alt+←/→ walks the clip's own
+/// video or audio track's keys, never the curve editor's selected track,
+/// in either view, so it's a feature to add after M3, not parity.
+pub(super) fn navigation_exclusion(surface: Surface, interaction: Interaction) -> Option<&'static str> {
+    (surface == Surface::CurveEditor && matches!(interaction, Interaction::PreviousKey | Interaction::NextKey))
+        .then_some("#1401 (Previous/Next key doesn't follow the curve editor's track)")
 }
 
 pub(super) fn is_key(interaction: Interaction) -> bool {

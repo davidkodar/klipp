@@ -291,8 +291,9 @@ impl Manifest {
                 variant,
                 interaction,
             );
-            if let Some(reason) =
-                rules::key_exclusion(entry, surface).filter(|_| rules::is_key(interaction))
+            if let Some(reason) = rules::key_exclusion(entry, surface)
+                .filter(|_| rules::is_key(interaction))
+                .or_else(|| rules::navigation_exclusion(surface, interaction))
             {
                 self.exclude_key(key, reason);
             } else {
@@ -1153,59 +1154,70 @@ mod tests {
     }
 
     #[test]
-    fn reviewed_key_exclusions_are_narrow_and_leave_curve_editor_keys_required() {
+    fn reviewed_key_exclusions_are_narrow_and_cite_their_decisions() {
         use klipp_effects::registry::presentation::Widget;
         let mut excluded = 0;
         let mut wheel_tracks = 0;
+        let mut effect_tracks = 0;
         for entry in catalog() {
             let mut manifest = Manifest::default();
             manifest.require_fixture(&entry, Surface::GradePerNode, "sample");
             for (key, reason) in &manifest.excluded_keys {
                 assert!(rules::is_key(key.interaction), "non-key exclusion: {key:?}");
-                assert!(
-                    matches!(entry.value, CatalogValue::Parameter { presentation, .. }
-                    if matches!(presentation.widget, Widget::Toggle | Widget::Combo | Widget::WheelPart(_))),
-                    "other widget excluded: {key:?}"
-                );
-                assert!(reason.contains("#1318"));
+                match entry.value {
+                    CatalogValue::Parameter { presentation, .. } if matches!(presentation.widget, Widget::Toggle | Widget::Combo) => {
+                        assert!(reason.contains("#1318"), "{key:?}: {reason}")
+                    }
+                    CatalogValue::Parameter { presentation, .. } if matches!(presentation.widget, Widget::WheelPart(_)) => {
+                        assert!(reason.contains("#891"), "{key:?}: {reason}")
+                    }
+                    _ => panic!("other widget excluded: {key:?}"),
+                }
                 excluded += 1;
             }
             assert!(!manifest
                 .excluded_keys
                 .keys()
                 .any(|k| k.interaction == Interaction::Pixels));
-            if matches!(entry.value, CatalogValue::Parameter { desc, presentation }
-                if desc.keyframable && matches!(presentation.widget, Widget::WheelPart(_)))
-            {
-                let mut curves = Manifest::default();
-                curves.require_fixture(&entry, Surface::CurveEditor, "wheel-track");
-                assert!(curves.excluded_keys.is_empty());
-                for action in [
-                    Interaction::AddKey,
-                    Interaction::EditKey,
-                    Interaction::RemoveKey,
-                ] {
-                    assert!(curves.required.contains(&CoverageKey::new(
-                        entry.type_id,
-                        &entry.parameter,
-                        Surface::CurveEditor,
-                        "wheel-track",
-                        action
-                    )));
-                }
-                assert!(
-                    !curves
-                        .required
-                        .iter()
-                        .any(|k| matches!(k.interaction, Interaction::WheelDrag(_))),
-                    "the curve editor does not draw a wheel"
-                );
-                wheel_tracks += 1;
+            let CatalogValue::Parameter { desc, presentation } = entry.value else { continue };
+            if !desc.keyframable {
+                continue;
             }
+            let mut curves = Manifest::default();
+            curves.require_fixture(&entry, Surface::CurveEditor, "track");
+            let actions = [Interaction::AddKey, Interaction::EditKey, Interaction::RemoveKey];
+            let key = |action| CoverageKey::new(entry.type_id, &entry.parameter, Surface::CurveEditor, "track", action);
+            if entry.grade {
+                // A grade track, a wheel's parts among them: keyed in no
+                // view today (#891), excluded centrally, not required.
+                for action in actions {
+                    assert!(!curves.required.contains(&key(action)), "{key:?}", key = key(action));
+                    assert!(curves.excluded_keys.get(&key(action)).is_some_and(|r| r.contains("#891")), "{:?}", key(action));
+                }
+                if matches!(presentation.widget, Widget::WheelPart(_)) {
+                    wheel_tracks += 1;
+                }
+            } else {
+                // An effect track: its keys stay required on the curve
+                // editor, but Previous/Next, which follows no curve-editor
+                // track in either view (#1401).
+                for action in actions {
+                    assert!(curves.required.contains(&key(action)), "{:?}", key(action));
+                }
+                for nav in [Interaction::PreviousKey, Interaction::NextKey] {
+                    assert!(curves.excluded_keys.get(&key(nav)).is_some_and(|r| r.contains("#1401")), "{:?}", key(nav));
+                }
+                assert_eq!(curves.excluded_keys.len(), 2, "{:?}", curves.excluded_keys);
+                effect_tracks += 1;
+            }
+            assert!(
+                !curves.required.iter().any(|k| matches!(k.interaction, Interaction::WheelDrag(_))),
+                "the curve editor does not draw a wheel"
+            );
         }
         assert!(
-            excluded > 0 && wheel_tracks > 0,
-            "exercise both actual catalog classes"
+            excluded > 0 && wheel_tracks > 0 && effect_tracks > 0,
+            "exercise every catalog class"
         );
     }
 
