@@ -145,7 +145,10 @@ impl crate::state::AppState {
     pub(crate) fn closes_path_drag(&self, cmd: &AppCommand) -> bool {
         let Some(open) = self.active_history().pending_drag_key().filter(|k| k.starts_with(PATH_DRAG)) else { return false };
         match cmd {
-            AppCommand::BeginParamEditAt { addr, key } | AppCommand::SetParamAt { addr, key, .. } | AppCommand::EndParamEditAt { addr, key } => drag_key(addr, key) != open,
+            AppCommand::BeginParamEditAt { addr, key }
+            | AppCommand::SetParamAt { addr, key, .. }
+            | AppCommand::MoveKeyAt { addr, key, .. }
+            | AppCommand::EndParamEditAt { addr, key } => drag_key(addr, key) != open,
             AppCommand::Play
             | AppCommand::Pause
             | AppCommand::Stop
@@ -180,14 +183,15 @@ impl crate::state::AppState {
     }
 
     /// `ops` as one undo step named `label`, or live inside the open drag
-    /// of the one `(addr, key)` they set. Any other edit closes an open
-    /// drag first, as its own step.
+    /// of the one `(addr, key)` they set: a value, or (a key dragged on a
+    /// curve, M3 step 3) its animation. Any other edit closes an open drag
+    /// first, as its own step.
     pub(crate) fn apply_path_ops(&mut self, ops: &[GraphOp], label: &str) -> Result<(), String> {
         let refused = |(at, why): (Option<usize>, String)| match at {
             Some(i) if ops.len() > 1 => format!("{label}: op {i}: {why}"),
             _ => format!("{label}: {why}"),
         };
-        if let [GraphOp::SetParam { path, key, .. }] = ops {
+        if let [GraphOp::SetParam { path, key, .. } | GraphOp::SetAnim { path, key, .. }] = ops {
             if self.active_history().is_dragging(&drag_key(path, key)) {
                 let graph_ops::GraphOpsOutcome { edit, .. } = graph_ops::graph_ops_edit(&self.sequences[self.active_sequence_idx], ops).map_err(refused)?;
                 if let EditCommand::PictureEdit { clip_id, edit, .. } = edit {
@@ -254,6 +258,13 @@ impl crate::state::AppState {
         let time = |k: &serde_json::Value| k.get("time_secs").and_then(serde_json::Value::as_f64);
         let at = anim.keys.iter().position(|k| time(k).is_some_and(|t| (t - time_secs).abs() < 1e-9)).ok_or_else(|| format!("{key} has no key at {time_secs} s"))?;
         edit(&mut anim.keys[at]);
+        // Keys are named by their time, so two may never share one: a key
+        // moved onto another's time would make the next edit of either
+        // ambiguous (M3 step 3).
+        let moved = time(&anim.keys[at]).unwrap_or(time_secs);
+        if anim.keys.iter().enumerate().any(|(i, k)| i != at && time(k).is_some_and(|t| (t - moved).abs() < 1e-9)) {
+            return Err(format!("{key} has another key at {moved} s"));
+        }
         anim.keys.sort_by(|a, b| time(a).unwrap_or(0.0).total_cmp(&time(b).unwrap_or(0.0)));
         Ok(vec![GraphOp::SetAnim { path: addr.clone(), key: key.clone(), anim: Some(anim) }])
     }
@@ -597,6 +608,120 @@ mod tests {
         run(&mut s, AppCommand::RemoveNodeAt { addr: compared });
         assert!(s.split_compare_gone());
         assert!(s.split_compare_node.is_none());
+    }
+
+    /// A clip with a keyed Gamma and a keyed Vibrance (M3 step 3).
+    fn keyed() -> (AppState, ClipId) {
+        let (mut s, id) = state(&[E::Gamma { gamma: 1.0 }, E::Vibrance { amount: 0.1 }]);
+        let v1 = s.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let clip = s.sequences[0].tracks[v1].find_clip_mut(id).unwrap();
+        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        clip.edit_effect_keyframes(|k| {
+            k.insert("0:gamma".into(), vec![key(0.2, 0.8), key(1.2, 1.4)]);
+            k.insert("1:amount".into(), vec![key(0.5, 0.0), key(1.5, 0.6)]);
+        });
+        (s, id)
+    }
+
+    /// M3 step 3, H4 at the UI's level: the curve editor's tracks are the
+    /// nodes' parameters, listed in the order the picture runs them, so
+    /// a reorder moves each track (its keys, its diamonds) with its node.
+    #[test]
+    fn curve_tracks_follow_the_node_through_a_reorder() {
+        let (mut s, id) = keyed();
+        let tracks = |s: &AppState| clip(s, id).animated_effect_keys();
+        let before = tracks(&s);
+        assert_eq!(before.iter().map(|(_, k, t)| (t.as_str(), k.as_str())).collect::<Vec<_>>(), [("gamma", "gamma"), ("vibrance", "amount")]);
+        let keys_of = |s: &AppState, (path, key, _): &(NodePath, ParamKey, String)| clip(s, id).node_key_state(path, key).unwrap().keys;
+        let gamma_keys = keys_of(&s, &before[0]);
+        let fx = effects(&s, id);
+        run(&mut s, AppCommand::MoveNodeAt { addr: at(id, &[fx[0]]), after: fx[1] });
+        let after = tracks(&s);
+        assert_eq!(after.iter().map(|(_, _, t)| t.as_str()).collect::<Vec<_>>(), ["vibrance", "gamma"], "listed as the picture runs them");
+        let gamma = after.iter().find(|(_, _, t)| t == "gamma").unwrap();
+        assert_eq!(gamma.0, before[0].0, "the track is the same node's");
+        assert_eq!(keys_of(&s, gamma), gamma_keys, "its keys moved with it");
+    }
+
+    /// IC6: a track's label and range come from the catalog and its
+    /// presentation, so a pixel radius ranges over its slider's span.
+    #[test]
+    fn curve_ranges_come_from_the_catalog() {
+        let (s, id) = state(&[E::GaussianBlur { radius: 3.0 }]);
+        let node = effects(&s, id)[0];
+        let p = crate::panels::curve_editor::CurveParam::Node { path: at(id, &[node]), key: "radius".into(), tag: "gaussian_blur".into() };
+        let desc = klipp_effects::registry::effect_type("gaussian_blur").unwrap().desc.params.iter().find(|d| d.field == "radius").unwrap();
+        let (lo, hi) = desc.soft.or(desc.range).unwrap();
+        assert_eq!((p.curve_range().0, p.curve_range().1), (lo, hi));
+        assert_ne!((lo, hi), (0.0, 1.0), "not the old 0..1");
+        assert!(p.label().starts_with("Gaussian Blur: "), "{}", p.label());
+    }
+
+    /// E: on a plain stack, the key a click resolves to by path is the
+    /// key it resolved to by index.
+    #[test]
+    fn keyframe_selection_by_path_matches_by_index_on_a_linear_stack() {
+        let (s, id) = keyed();
+        let fx = effects(&s, id);
+        let seq = &s.sequences[0];
+        for t in [0.19, 0.21, 1.19, 1.25, 0.7] {
+            let mut by_index = AppCommand::RemoveEffectKeyframe { clip_id: id, effect_index: 0, param_name: "gamma".into(), time_secs: t };
+            let mut by_path = AppCommand::RemoveKeyAt { addr: at(id, &[fx[0]]), key: "gamma".into(), time_secs: t };
+            crate::inspector::keyframe_selection::resolve_command(seq, &mut by_index);
+            crate::inspector::keyframe_selection::resolve_command(seq, &mut by_path);
+            let (AppCommand::RemoveEffectKeyframe { time_secs: a, .. }, AppCommand::RemoveKeyAt { time_secs: b, .. }) = (&by_index, &by_path) else { unreachable!() };
+            assert_eq!(a, b, "at {t}");
+        }
+    }
+
+    /// A key dragged on the curve writes the node's animation, live, and
+    /// the drag is one undo step back to where it started.
+    #[test]
+    fn a_curve_edit_writes_the_node_anim() {
+        let (mut s, id) = keyed();
+        let fx = effects(&s, id);
+        let (addr, key) = (at(id, &[fx[0]]), ParamKey::from("gamma"));
+        let keys = |s: &AppState| clip(s, id).node_key_state(&addr, &key).unwrap().keys;
+        let before = keys(&s);
+        let steps = s.active_history().undo_count();
+        assert_eq!(s.path_command(&AppCommand::BeginParamEditAt { addr: addr.clone(), key: key.clone() }), Some(false));
+        let mut time = 0.2;
+        for (t, v) in [(0.3, 0.9), (0.4, 1.0), (0.5, 1.1)] {
+            run(&mut s, AppCommand::MoveKeyAt { addr: addr.clone(), key: key.clone(), time_secs: time, new_time_secs: t, value: v });
+            time = t;
+            assert_eq!(s.active_history().undo_count(), steps, "a drag's steps are no undo steps of their own");
+        }
+        assert_eq!(keys(&s)[0].time_secs, 0.5);
+        assert_eq!(keys(&s)[0].value, 1.1);
+        assert_eq!(s.path_command(&AppCommand::EndParamEditAt { addr: addr.clone(), key: key.clone() }), Some(false));
+        assert_eq!(s.active_history().undo_count(), steps + 1, "one undo step for the drag");
+        undo(&mut s);
+        assert_eq!(keys(&s), before, "undone, the keys as they were");
+    }
+
+    /// A key dragged onto another's time is refused there (two keys never
+    /// share a time, which names them), so the drag goes on moving the key
+    /// it took, never the other; and undo brings back both.
+    #[test]
+    fn a_key_dragged_across_another_keeps_its_identity() {
+        let (mut s, id) = keyed();
+        let fx = effects(&s, id);
+        let (addr, key) = (at(id, &[fx[0]]), ParamKey::from("gamma"));
+        let keys = |s: &AppState| clip(s, id).node_key_state(&addr, &key).unwrap().keys.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>();
+        let before = keys(&s);
+        assert_eq!(before, [(0.2, 0.8), (1.2, 1.4)]);
+        assert_eq!(s.path_command(&AppCommand::BeginParamEditAt { addr: addr.clone(), key: key.clone() }), Some(false));
+        // B onto A's time: refused, B stays where it was.
+        let onto = s.path_command(&AppCommand::MoveKeyAt { addr: addr.clone(), key: key.clone(), time_secs: 1.2, new_time_secs: 0.2, value: 1.0 });
+        assert_eq!(onto, Some(false), "refused");
+        assert_eq!(keys(&s), before);
+        // B past A: B moves, A untouched, and the next frame moves B again.
+        run(&mut s, AppCommand::MoveKeyAt { addr: addr.clone(), key: key.clone(), time_secs: 1.2, new_time_secs: 0.1, value: 1.0 });
+        run(&mut s, AppCommand::MoveKeyAt { addr: addr.clone(), key: key.clone(), time_secs: 0.1, new_time_secs: 0.05, value: 0.9 });
+        assert_eq!(keys(&s), [(0.05, 0.9), (0.2, 0.8)]);
+        assert_eq!(s.path_command(&AppCommand::EndParamEditAt { addr: addr.clone(), key: key.clone() }), Some(false));
+        undo(&mut s);
+        assert_eq!(keys(&s), before, "undone, both keys as they were");
     }
 
     /// State held by address belongs to the clip it names: a selection,
