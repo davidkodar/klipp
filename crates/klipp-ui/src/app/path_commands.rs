@@ -839,6 +839,77 @@ mod tests {
         assert_eq!(s.active_history().undo_count(), steps, "no step recorded");
     }
 
+    /// The card by path reads what the clip draws: the first enabled
+    /// Transform past a switched-off one, the last enabled of several
+    /// Opacity entries. A scale edit built from what it shows sets the
+    /// scale alone; the enabled Transform's position and rotation stay.
+    #[test]
+    fn the_card_shows_and_keeps_the_entries_the_clip_reads() {
+        let tf = |x: f32, rotation: f32| E::Transform { position_x: x, position_y: 2.0, scale_x: 1.0, scale_y: 1.0, rotation, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+        let mut c = fixture(&[]);
+        c.set_effect_list(vec![tf(20.0, 45.0), tf(8.0, 10.0), E::Opacity { value: 0.3 }, E::Opacity { value: 0.6 }, E::Opacity { value: 0.9 }], vec![false, true, true, true, false]);
+        let id = c.id;
+        let mut s = with(&[c]);
+        let c = clip(&s, id).clone();
+        let shown = crate::inspector::placement_by_path::placement(&c);
+        assert_eq!((shown.position_x, shown.rotation), (8.0, 10.0), "the enabled Transform's");
+        assert_eq!(crate::inspector::placement_by_path::opacity(&c), 0.6, "the last enabled Opacity's");
+        let mut t = shown;
+        (t.scale_x, t.scale_y) = (0.5, 0.5);
+        let cmds = crate::inspector::placement_by_path::by_path(vec![AppCommand::UpdateBuiltinEffect { clip_id: id, index: 1, effect: t.to_builtin_effect() }], &c);
+        assert!(matches!(&cmds[..], [AppCommand::SetParamAt { key, .. }] if key.as_str() == "scale"), "{cmds:?}");
+        for cmd in cmds {
+            run(&mut s, cmd);
+        }
+        let p = clip(&s, id).picture_v2().unwrap().picture.placement.clone();
+        assert_eq!((p.pos_x, p.rotation, p.scale), (Some(8.0), Some(10.0), Some(0.5)));
+    }
+
+    /// A key put by path where one already is keeps that key's time and
+    /// curve shape, as the lanes' own upsert does: the card's placement
+    /// and opacity keys, field-backed and on a picture-truth clip, and the
+    /// pin's keys as the viewer builds them.
+    #[test]
+    fn a_key_set_by_path_keeps_its_curve_shape() {
+        let bezier = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Bezier, tangent_out: (0.1, 0.2), tangent_in: (-0.3, 0.4) };
+        for truth in [false, true] {
+            let mut c = fixture(&[E::GaussianBlur { radius: 2.0 }]);
+            c.edit_video_param_keyframes(klipp_core::VideoParam::PositionX, |k| k.push(bezier(0.5, 1.0)));
+            c.edit_video_param_keyframes(klipp_core::VideoParam::Opacity, |k| k.push(bezier(0.5, 0.4)));
+            let id = c.id;
+            let mut s = with(&[c]);
+            if truth {
+                let blur = effects(&s, id)[0];
+                run(&mut s, AppCommand::SetMixAt { addr: at(id, &[blur]), mix: Some(0.5) });
+                assert!(clip(&s, id).is_picture_truth());
+            }
+            let c = clip(&s, id).clone();
+            let card = vec![
+                AppCommand::AddVideoKeyframe { clip_id: id, param: klipp_core::VideoParam::PositionX, time_secs: 0.5 + 1e-8, value: 7.0 },
+                AppCommand::AddVideoKeyframe { clip_id: id, param: klipp_core::VideoParam::Opacity, time_secs: 0.5 + 1e-8, value: 0.8 },
+            ];
+            for cmd in crate::inspector::placement_by_path::by_path(card, &c) {
+                run(&mut s, cmd);
+            }
+            let picture = clip(&s, id).picture_v2().unwrap();
+            let p = &picture.picture;
+            for (anim, value) in [(&p.placement_anim[&ParamKey::from("pos_x")], 7.0), (p.opacity_anim.as_ref().unwrap(), 0.8)] {
+                let keys: Vec<klipp_core::Keyframe> = anim.keys.iter().map(|k| serde_json::from_value(k.clone()).unwrap()).collect();
+                assert_eq!(keys, [klipp_core::Keyframe { value, ..bezier(0.5, 0.0) }], "truth {truth}");
+            }
+        }
+        // The pin's: its keys as the viewer reads them (by its node), the
+        // key built from them.
+        let pin = (klipp_effects::registry::effect_type("corner_pin").unwrap().sample)();
+        let (mut s, id) = state(&[pin]);
+        let addr = at(id, &[clip(&s, id).effect_node_at(false, 0).unwrap()]);
+        run(&mut s, AppCommand::AddKeyAt { addr: addr.clone(), key: "tl_x".into(), keyframe: serde_json::to_value(bezier(0.5, 0.1)).unwrap() });
+        let keys = clip(&s, id).node_key_state(&addr, &"tl_x".into()).unwrap().keys;
+        let keyframe = serde_json::to_value(klipp_core::keyframe::upserted(&keys, 0.5 + 1e-8, 0.3)).unwrap();
+        run(&mut s, AppCommand::AddKeyAt { addr: addr.clone(), key: "tl_x".into(), keyframe });
+        assert_eq!(clip(&s, id).node_key_state(&addr, &"tl_x".into()).unwrap().keys, [klipp_core::Keyframe { value: 0.3, ..bezier(0.5, 0.0) }]);
+    }
+
     /// The engine's side of an edit, left out: these tests read the state.
     struct NoSide;
     impl super::super::inspector_edit_host::InspectorSideEffects for NoSide {

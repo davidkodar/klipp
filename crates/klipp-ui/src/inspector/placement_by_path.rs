@@ -95,6 +95,20 @@ pub fn placement(clip: &Clip) -> crate::inspector::video_tab::TransformParams {
     t
 }
 
+/// The clip's keys on a placement or opacity `key`, as its picture holds
+/// them.
+fn keys(clip: &Clip, key: &str) -> Vec<klipp_core::Keyframe> {
+    let Ok(lifted) = clip.picture_v2() else { return Vec::new() };
+    let p = &lifted.picture;
+    let anim = if key == "opacity" { p.opacity_anim.as_ref() } else { p.placement_anim.get(&ParamKey::from(key)) };
+    anim.map(|a| a.keys.iter().filter_map(|k| serde_json::from_value(k.clone()).ok()).collect()).unwrap_or_default()
+}
+
+/// The clip's opacity as the picture holds it, as the card shows it.
+pub fn opacity(clip: &Clip) -> f32 {
+    current(clip).into_iter().find(|(key, _)| *key == "opacity").map_or(1.0, |(_, v)| v)
+}
+
 /// `cmds`, the card's or the gizmo's for `clip`, as path commands on the
 /// clip's placement node. Unchanged when the clip has none.
 pub fn by_path(cmds: Vec<AppCommand>, clip: &Clip) -> Vec<AppCommand> {
@@ -122,7 +136,9 @@ pub fn by_path(cmds: Vec<AppCommand>, clip: &Clip) -> Vec<AppCommand> {
             // abandons the placement drag it opened.
             AppCommand::AbandonEffectDrag { clip_id, .. } if *clip_id == clip.id => out.push(AppCommand::AbandonParamEditAt { addr: addr.clone(), key: whole.clone() }),
             AppCommand::AddVideoKeyframe { clip_id, param, time_secs, value } if *clip_id == clip.id && lane_key(*param).is_some() => {
-                let key = klipp_core::Keyframe { time_secs: *time_secs, value: *value, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+                // A key already there keeps its time and curve shape, as
+                // the lane's own upsert keeps them.
+                let key = klipp_core::keyframe::upserted(&keys(clip, lane_key(*param).unwrap_or_default()), *time_secs, *value);
                 match serde_json::to_value(key) {
                     Ok(keyframe) => out.push(AppCommand::AddKeyAt { addr: addr.clone(), key: lane_key(*param).unwrap_or_default().into(), keyframe }),
                     Err(_) => out.push(cmd),

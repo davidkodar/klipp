@@ -4992,7 +4992,10 @@ impl ViewerPanel {
                                     let value = next[drag.corner][axis];
                                     cmds.push(AppCommand::SetParamAt { addr: a.clone(), key: path_key(drag.corner, axis), value: klipp_graph_format::ParamValue::Float(value) });
                                     if keyed[drag.corner][axis] {
-                                        let key = klipp_core::Keyframe { time_secs: clip_time, value, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+                                        // A key already there keeps its time
+                                        // and curve shape, as the old route's
+                                        // upsert kept them.
+                                        let key = klipp_core::keyframe::upserted(&node_keys[drag.corner * 2 + axis], clip_time, value);
                                         if let Ok(keyframe) = serde_json::to_value(key) {
                                             cmds.push(AppCommand::AddKeyAt { addr: a.clone(), key: path_key(drag.corner, axis), keyframe });
                                         }
