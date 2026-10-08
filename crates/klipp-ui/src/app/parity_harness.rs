@@ -40,6 +40,40 @@ fn a_menu_edit_can_be_undone_and_redone_through_the_shared_driver() {
     }
 }
 
+#[test]
+fn undo_during_a_path_drag_closes_the_drag_before_taking_its_step() {
+    use klipp_graph_format::path::{NodePath, Root};
+    let mut run = Run::new(fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 }), true);
+    let before = run.clip().picture_v2().unwrap();
+    let node = before
+        .picture
+        .graph
+        .nodes
+        .iter()
+        .find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur"))
+        .unwrap()
+        .id;
+    let addr = NodePath::new(Root::Clip { clip: run.clip.0 }, [node]);
+    run.apply(AppCommand::BeginParamEditAt {
+        addr: addr.clone(),
+        key: "radius".into(),
+    });
+    run.apply(AppCommand::SetParamAt {
+        addr,
+        key: "radius".into(),
+        value: klipp_graph_format::ParamValue::Float(9.0),
+    });
+    let edited = run.clip().picture_v2().unwrap();
+    assert_ne!(edited, before);
+    assert!(run.state.any_drag_in_progress());
+    assert!(run.step(false));
+    assert!(!run.state.any_drag_in_progress());
+    assert_eq!(run.clip().picture_v2().unwrap(), before);
+    assert!(run.step(true));
+    assert_eq!(run.clip().picture_v2().unwrap(), edited);
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+}
+
 /// What the host would send on: recorded, never sent.
 #[derive(Default)]
 struct Sink;
@@ -101,6 +135,11 @@ impl Run {
     /// Undo (`false`) or redo (`true`) through the document application
     /// path. Returns false when there is no history entry to apply.
     pub(super) fn step(&mut self, forward: bool) -> bool {
+        self.state.before_dispatch(&if forward {
+            AppCommand::Redo
+        } else {
+            AppCommand::Undo
+        });
         let entry = if forward {
             self.state.active_history_mut().redo()
         } else {
@@ -222,17 +261,16 @@ impl Run {
     }
 
     pub(super) fn apply(&mut self, cmd: AppCommand) {
+        self.state.before_dispatch(&cmd);
         if is_side(&cmd) {
             // An analysis the row asks for passes the dispatch boundary as in
             // the app, which must not close the row's drag.
-            self.state.before_dispatch(&cmd);
             self.side.push(format!("{cmd:?}"));
             return;
         }
         // What the viewer and timeline show changes no clip; it passes the
         // dispatch boundary as in the app, which must not close a drag.
         if is_view(&cmd) {
-            self.state.before_dispatch(&cmd);
             return;
         }
         // A refused path edit says so in a toast and changes nothing.
@@ -243,7 +281,6 @@ impl Run {
             }
             return;
         }
-        self.state.before_dispatch(&cmd);
         if !(InspectorEditHost {
             state: &mut self.state,
             side: &Sink,

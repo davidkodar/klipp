@@ -269,6 +269,10 @@ impl Manifest {
     /// Families choose concrete fixtures, not how little behavior counts
     /// as coverage. The central rules expand their interaction obligations.
     pub fn require_fixture(&mut self, entry: &CatalogEntry, surface: Surface, variant: &str) {
+        if let Some(reason) = rules::entry_exclusion(entry) {
+            self.exclude(entry.type_id, &entry.parameter, reason);
+            return;
+        }
         let interactions = match rules::interactions(entry, surface) {
             Ok(interactions) => interactions,
             Err(error) => {
@@ -335,12 +339,48 @@ impl Manifest {
             .map(|e| ((e.type_id, e.parameter.as_str()), e))
             .collect();
         let mut errors = self.registration_failures.clone();
+        for entry in entries {
+            if self
+                .exclusions
+                .contains_key(&(entry.type_id.into(), entry.parameter.clone()))
+            {
+                continue;
+            }
+            match rules::surfaces(entry) {
+                Ok(surfaces) => {
+                    for surface in surfaces {
+                        if !self.required.iter().any(|key| {
+                            key.type_id == entry.type_id
+                                && key.parameter == entry.parameter
+                                && key.surface == surface
+                        }) {
+                            errors.push(format!(
+                                "missing surface: {} / {} / {surface:?}",
+                                entry.type_id, entry.parameter
+                            ));
+                        }
+                    }
+                }
+                Err(error) => errors.push(error),
+            }
+        }
         let mut contexts = BTreeSet::new();
         for key in &self.required {
             let Some(entry) = catalog.get(&(key.type_id.as_str(), key.parameter.as_str())) else {
                 errors.push(format!("required key outside catalog: {key:?}"));
                 continue;
             };
+            if let Some(reason) = rules::entry_exclusion(entry) {
+                errors.push(format!(
+                    "excluded entry registered as required: {key:?}: {reason}"
+                ));
+            }
+            if key.surface == Surface::GraphInspector {
+                errors.push(format!(
+                    "excluded surface registered as required: {key:?}: {}",
+                    rules::GRAPH_INSPECTOR_EXCLUSION
+                ));
+            }
             if !contexts.insert((
                 key.type_id.as_str(),
                 key.parameter.as_str(),
@@ -410,6 +450,7 @@ impl Manifest {
                     && !self
                         .exclusions
                         .contains_key(&(entry.type_id.into(), entry.parameter.clone()))
+                    && rules::entry_exclusion(entry).is_none()
             })
             .map(|entry| format!("{} / {}", entry.type_id, entry.parameter))
             .collect()
@@ -419,7 +460,29 @@ impl Manifest {
 #[derive(Debug, Default, serde::Serialize)]
 pub(super) struct Report {
     pub passed: BTreeSet<CoverageKey>,
+    /// Successful cases that still exercised the legacy implementation.
+    /// These count for parity, but never authorize removing that fallback.
+    #[serde(serialize_with = "serialize_fallbacks")]
+    pub fallback: BTreeMap<CoverageKey, String>,
     pub failures: Vec<String>,
+}
+
+fn serialize_fallbacks<S: serde::Serializer>(
+    fallback: &BTreeMap<CoverageKey, String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    // JSON object keys cannot hold a structured CoverageKey. Keep the
+    // key and its reason together in an auditable array instead.
+    #[derive(serde::Serialize)]
+    struct Evidence<'a> {
+        key: &'a CoverageKey,
+        reason: &'a str,
+    }
+    let entries: Vec<_> = fallback
+        .iter()
+        .map(|(key, reason)| Evidence { key, reason })
+        .collect();
+    serde::Serialize::serialize(&entries, serializer)
 }
 
 impl Report {
@@ -450,6 +513,27 @@ impl Report {
                 self.failures
                     .push(format!("{name}: {}", panic_message(panic.as_ref())));
             }
+        }
+    }
+
+    pub fn case_via_fallback(
+        &mut self,
+        name: &str,
+        keys: impl IntoIterator<Item = CoverageKey>,
+        reason: &str,
+        run: impl FnOnce() -> Result<(), String>,
+    ) {
+        let keys: Vec<_> = keys.into_iter().collect();
+        if !cited(reason) {
+            self.failures
+                .push(format!("{name}: fallback needs a cited reason"));
+            return;
+        }
+        let before = self.failures.len();
+        self.case(name, keys.clone(), run);
+        if self.failures.len() == before {
+            self.fallback
+                .extend(keys.into_iter().map(|key| (key, reason.into())));
         }
     }
 
@@ -490,7 +574,46 @@ impl Report {
                 .filter(|key| manifest.excluded_keys.contains_key(*key))
                 .map(|key| format!("excluded case counted as passed: {key:?}")),
         );
-        let exclusions = manifest.exclusion_lines();
+        for (key, reason) in &self.fallback {
+            eprintln!("fallback: {key:?}: {reason}");
+            if !self.passed.contains(key) || !cited(reason) {
+                errors.push(format!("invalid fallback evidence: {key:?}: {reason}"));
+            }
+        }
+        for key in &self.passed {
+            // snapshot_for deliberately disables generated rows for these
+            // roots. They must not silently be labelled new-path evidence.
+            if matches!(key.surface, Surface::NestedGrade | Surface::NonClipGrade)
+                && !self.fallback.contains_key(key)
+            {
+                errors.push(format!("fallback evidence not labelled: {key:?} (#997: nested/nonclip layouts still use the legacy path)"));
+            }
+        }
+        let mut exclusions = manifest.exclusion_lines();
+        exclusions.push(format!(
+            "excluded surface: GraphInspector: {}",
+            rules::GRAPH_INSPECTOR_EXCLUSION
+        ));
+        if entries
+            .iter()
+            .any(|e| e.type_id == "klipp.grade.wheel_sat_bri")
+        {
+            exclusions.push(format!(
+                "excluded surfaces: {}",
+                rules::NARROW_WHEEL_EXCLUSION
+            ));
+        }
+        for entry in entries {
+            if let Some(reason) = rules::entry_exclusion(entry) {
+                let line = format!(
+                    "excluded: {} / {}: {reason}",
+                    entry.type_id, entry.parameter
+                );
+                if !exclusions.contains(&line) {
+                    exclusions.push(line);
+                }
+            }
+        }
         for line in &exclusions {
             eprintln!("{line}");
         }
@@ -498,6 +621,30 @@ impl Report {
             Ok(())
         } else {
             errors.extend(exclusions);
+            Err(errors.join("\n"))
+        }
+    }
+
+    /// Step 19 has a stronger gate than parity: passing through old code
+    /// is proof that code must remain until the case passes without it.
+    pub fn complete_for_deletion(
+        &self,
+        manifest: &Manifest,
+        entries: &[CatalogEntry],
+    ) -> Result<(), String> {
+        let mut errors = self
+            .complete(manifest, entries)
+            .err()
+            .into_iter()
+            .collect::<Vec<_>>();
+        errors.extend(
+            self.fallback
+                .iter()
+                .map(|(key, reason)| format!("legacy deletion blocked: {key:?}: {reason}")),
+        );
+        if errors.is_empty() {
+            Ok(())
+        } else {
             Err(errors.join("\n"))
         }
     }
@@ -549,6 +696,233 @@ mod tests {
         entry
     }
 
+    fn require_every_surface(manifest: &mut Manifest, entry: &CatalogEntry) {
+        for surface in rules::surfaces(entry).unwrap() {
+            manifest.require_fixture(entry, surface, "sample");
+        }
+    }
+
+    #[test]
+    fn required_surfaces_follow_placed_kinds_and_reviewed_grade_routes() {
+        let entries = catalog();
+        for ty in klipp_effects::registry::effect_types() {
+            let entry = entries
+                .iter()
+                .find(|e| e.type_id == ty.desc.id && matches!(e.value, CatalogValue::Enabled))
+                .unwrap();
+            let surfaces = rules::surfaces(entry).unwrap();
+            let placed = matches!(
+                ty.tag,
+                "transform" | "opacity" | "speed_ramp" | "temporal_denoise"
+            );
+            assert_eq!(surfaces.contains(&Surface::VideoTab), placed, "{}", ty.tag);
+            assert_eq!(
+                surfaces.contains(&Surface::EffectsStack),
+                !placed,
+                "{}",
+                ty.tag
+            );
+            assert!(!surfaces.contains(&Surface::GraphInspector));
+        }
+        let wheel = entries
+            .iter()
+            .find(|e| {
+                e.type_id == "klipp.grade.wheel_sat_bri"
+                    && matches!(e.value, CatalogValue::Parameter { .. })
+            })
+            .unwrap();
+        let surfaces = rules::surfaces(wheel).unwrap();
+        assert!(surfaces.contains(&Surface::GradeBottomTools));
+        assert!(!surfaces.contains(&Surface::GradeTabbedRight));
+        assert!(!surfaces.contains(&Surface::GradePerNode));
+        for (ty, param) in [
+            ("klipp.grade.primaries_matrix", "primaries_from"),
+            ("klipp.grade.input_transform", "@enabled"),
+        ] {
+            let entry = entries
+                .iter()
+                .find(|e| e.type_id == ty && e.parameter == param)
+                .unwrap();
+            assert!(rules::surfaces(entry).unwrap().is_empty());
+            assert!(rules::entry_exclusion(entry).unwrap().contains("#1351"));
+        }
+    }
+
+    #[test]
+    fn covering_one_grade_layout_cannot_hide_other_layouts_or_fallbacks() {
+        let entry = catalog()
+            .into_iter()
+            .find(|e| e.type_id == "klipp.grade.corrector" && e.parameter == "exposure")
+            .unwrap();
+        let mut manifest = Manifest::default();
+        manifest.require_fixture(&entry, Surface::GradeTabbedRight, "sample");
+        let errors = manifest
+            .rule_errors(std::slice::from_ref(&entry))
+            .join("\n");
+        for surface in [
+            "GradeBottomTools",
+            "NestedGrade",
+            "NonClipGrade",
+            "CurveEditor",
+        ] {
+            assert!(errors.contains(surface), "{surface}: {errors}");
+        }
+        require_every_surface(&mut manifest, &entry);
+        assert!(manifest
+            .rule_errors(std::slice::from_ref(&entry))
+            .is_empty());
+        let mut mislabeled = Report::default();
+        mislabeled.case(
+            "all labelled new",
+            manifest.required.iter().cloned(),
+            || Ok(()),
+        );
+        assert!(mislabeled
+            .complete(&manifest, std::slice::from_ref(&entry))
+            .unwrap_err()
+            .contains("fallback evidence not labelled"));
+
+        let fallback = |key: &&CoverageKey| {
+            matches!(key.surface, Surface::NestedGrade | Surface::NonClipGrade)
+        };
+        let mut report = Report::default();
+        report.case(
+            "generated",
+            manifest
+                .required
+                .iter()
+                .filter(|key| !fallback(key))
+                .cloned(),
+            || Ok(()),
+        );
+        report.case_via_fallback(
+            "legacy roots",
+            manifest.required.iter().filter(fallback).cloned(),
+            "#997: nested/nonclip rows retain their legacy route",
+            || Ok(()),
+        );
+        assert!(report
+            .complete(&manifest, std::slice::from_ref(&entry))
+            .is_ok());
+        assert!(report
+            .complete_for_deletion(&manifest, &[entry])
+            .unwrap_err()
+            .contains("legacy deletion blocked"));
+    }
+
+    #[test]
+    fn absent_port_and_grade_mix_controls_are_cited_without_earned_coverage() {
+        let entries: Vec<_> = catalog()
+            .into_iter()
+            .filter(|e| rules::entry_exclusion(e).is_some_and(|reason| reason.contains("#1348")))
+            .collect();
+        assert!(entries
+            .iter()
+            .any(|e| matches!(e.value, CatalogValue::Port { .. })));
+        assert!(entries
+            .iter()
+            .any(|e| e.grade && matches!(e.value, CatalogValue::Mix)));
+        let mut manifest = Manifest::default();
+        for entry in &entries {
+            manifest.require_fixture(entry, Surface::GradePerNode, "sample");
+        }
+        assert!(manifest.required.is_empty());
+        assert!(manifest
+            .exclusion_lines()
+            .iter()
+            .all(|line| line.contains("#1348")));
+        let report = Report::default();
+        assert!(report.complete(&manifest, &entries).is_ok());
+        assert!(report.passed.is_empty());
+        let mut new_port = entries
+            .iter()
+            .find(|e| matches!(e.value, CatalogValue::Port { .. }))
+            .unwrap()
+            .clone();
+        if let CatalogValue::Port { port, .. } = &mut new_port.value {
+            *port = "new_port";
+        }
+        assert!(
+            rules::entry_exclusion(&new_port).is_none(),
+            "new port controls need their own ruling"
+        );
+    }
+
+    #[test]
+    fn implicit_node_mix_has_no_animation_track_but_effect_mix_can_have_one() {
+        let entries = catalog();
+        let mix = entries
+            .iter()
+            .find(|e| !e.grade && matches!(e.value, CatalogValue::Mix))
+            .unwrap();
+        let required = rules::interactions(mix, Surface::EffectsStack).unwrap();
+        assert!(required.contains(&Interaction::Drag));
+        assert!(!required.iter().copied().any(rules::is_key));
+        assert!(rules::interactions(mix, Surface::CurveEditor).is_err());
+        let animated = entries
+            .iter()
+            .find(|e| {
+                !e.grade
+                    && e.parameter == "mix"
+                    && matches!(e.value, CatalogValue::Parameter { desc, .. } if desc.keyframable)
+            })
+            .unwrap();
+        assert!(rules::interactions(animated, Surface::CurveEditor)
+            .unwrap()
+            .contains(&Interaction::AddKey));
+    }
+
+    #[test]
+    fn fallback_evidence_passes_parity_but_blocks_legacy_deletion() {
+        let entry = slider();
+        let mut manifest = Manifest::default();
+        require_every_surface(&mut manifest, &entry);
+        let mut report = Report::default();
+        report.case_via_fallback(
+            "old path",
+            manifest.required.iter().cloned(),
+            "#997: legacy fixture still required",
+            || Ok(()),
+        );
+        let json =
+            serde_json::to_value(&report).expect("fallback evidence must remain machine-readable");
+        assert_eq!(
+            json["fallback"].as_array().unwrap().len(),
+            report.fallback.len()
+        );
+        assert!(json["fallback"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("#997"));
+        assert!(report
+            .complete(&manifest, std::slice::from_ref(&entry))
+            .is_ok());
+        let errors = report
+            .complete_for_deletion(&manifest, std::slice::from_ref(&entry))
+            .unwrap_err();
+        assert!(errors.contains("legacy deletion blocked"));
+        assert!(errors.contains("#997: legacy fixture still required"));
+
+        let mut converted = Report::default();
+        converted.case("new path", manifest.required.iter().cloned(), || Ok(()));
+        assert!(converted.complete_for_deletion(&manifest, &[entry]).is_ok());
+    }
+
+    #[test]
+    fn failed_fallback_cases_earn_neither_passes_nor_fallback_evidence() {
+        let mut report = Report::default();
+        report.case_via_fallback("failure", [key("radius")], "#997: legacy fixture", || {
+            Err("assertion failed".into())
+        });
+        report.case_via_fallback("panic", [key("radius")], "#997: legacy fixture", || {
+            panic!("fixture failed")
+        });
+        report.case_via_fallback("uncited", [key("radius")], "old code", || Ok(()));
+        assert!(report.passed.is_empty());
+        assert!(report.fallback.is_empty());
+        assert_eq!(report.failures.len(), 3);
+    }
+
     #[test]
     fn opening_a_slider_does_not_satisfy_its_interaction_obligations() {
         let entry = slider();
@@ -576,7 +950,7 @@ mod tests {
         ] {
             assert!(errors.contains(missing), "missing {missing}: {errors}");
         }
-        manifest.require_fixture(&entry, Surface::EffectsStack, "sample");
+        require_every_surface(&mut manifest, &entry);
         assert!(
             report
                 .complete(&manifest, std::slice::from_ref(&entry))
@@ -597,6 +971,8 @@ mod tests {
         for entry in catalog() {
             rules::interactions(&entry, Surface::EffectsStack)
                 .unwrap_or_else(|why| panic!("{} / {}: {why}", entry.type_id, entry.parameter));
+            let surfaces = rules::surfaces(&entry).unwrap_or_else(|why| panic!("{why}"));
+            assert!(!surfaces.is_empty() || rules::entry_exclusion(&entry).is_some());
         }
         let mut unknown = slider();
         unknown.value = CatalogValue::Workflow("new_editor");
@@ -620,7 +996,7 @@ mod tests {
     fn an_exclusion_is_cited_visible_and_never_earned_coverage() {
         let entry = slider();
         let mut manifest = Manifest::default();
-        manifest.require_fixture(&entry, Surface::EffectsStack, "sample");
+        require_every_surface(&mut manifest, &entry);
         let excluded = CoverageKey {
             interaction: Interaction::CancelDrag,
             ..key("radius")
@@ -772,7 +1148,10 @@ mod tests {
         manifest.require(key("radius"));
         let missing = manifest.unclassified(&blur);
         assert!(missing.iter().any(|e| e.ends_with("@enabled")));
-        assert!(missing.iter().any(|e| e.ends_with("mask.channel")));
+        assert!(
+            !missing.iter().any(|e| e.ends_with("mask.channel")),
+            "mask.channel has the central #1348 exclusion"
+        );
         assert!(missing.iter().any(|e| e.ends_with("@mix")));
         let report = Report::default();
         assert!(
