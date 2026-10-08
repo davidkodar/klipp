@@ -31,6 +31,12 @@ pub fn grade_node(clip: &Clip, node: NodeId) -> Option<(NodePath, Node)> {
     Some((NodePath::new(Root::Clip { clip: clip.id.0 }, [group.id, node]), inner.clone()))
 }
 
+/// A grade node's stored entry (its kind, its v1 params): what its rows
+/// read their values from.
+fn entry_of(node: &Node) -> serde_json::Value {
+    node.legacy.as_ref().map(|l| l.payload.clone()).unwrap_or(serde_json::Value::Null)
+}
+
 /// Draw the clip's grade node `node` and push the commands its edits
 /// imply: `false`, drawing nothing, when the node isn't in the clip's own
 /// grade or its kind has no catalog type.
@@ -60,7 +66,7 @@ pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, node: Nod
             cmds.push(AppCommand::PickQualifierColour { clip_id: clip.id, node_id: node });
         }
     }
-    let entry = lifted.legacy.as_ref().map(|l| l.payload.clone()).unwrap_or(serde_json::Value::Null);
+    let entry = entry_of(&lifted);
     let presentation = |p: &ParamDesc| ty.presentation(p);
     let stored = |p: &ParamDesc| grade_value(&entry, p);
     let keys = |p: &ParamDesc| {
@@ -107,4 +113,68 @@ pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, node: Nod
         crate::inspector::keyframe_selection::resolve_for_clip(clip, frame.tolerance, cmd);
     }
     true
+}
+
+/// The clip's own grade nodes as their generated rows read them, taken
+/// before the tabbed page draws (it draws inside the grade's edit, with
+/// no clip to read): what lets that page draw a parameter it shares with
+/// the per-node layout as the same generated row (M3 step 11c).
+pub(crate) struct GradeSnapshot {
+    clip: klipp_core::ClipId,
+    group: klipp_graph_format::NodeId,
+    nodes: Vec<(klipp_nodes::NodeKind, Node)>,
+    timeline_in_secs: f64,
+    rate: u32,
+}
+
+/// The snapshot a tabbed page draws its shared rows from this frame: the
+/// clip's own grade, with the generated inspector on (`on`); `None` for a
+/// nested grade (descended into a compound) or a stand-in's (the timeline
+/// grade, a group's stage), which keep the old rows. Every caller of the
+/// tabbed page takes it the same way, each frame, and drops it after.
+pub(crate) fn snapshot_for(clip: &Clip, on: bool, nested: bool, stand_in: bool) -> Option<GradeSnapshot> {
+    (on && !nested && !stand_in).then(|| GradeSnapshot::of(clip)).flatten()
+}
+
+impl GradeSnapshot {
+    /// The clip's grade nodes, or `None` when its picture has no grade
+    /// group.
+    pub(crate) fn of(clip: &Clip) -> Option<Self> {
+        let picture = &clip.picture_v2().ok()?.picture;
+        let group = picture.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP)?;
+        let body = &group.group.as_ref()?.graph;
+        let nodes = clip.grade().nodes.iter().filter_map(|v1| body.nodes.iter().find(|n| n.id == v1.id).map(|n| (v1.kind, n.clone()))).collect();
+        Some(Self { clip: clip.id, group: group.id, nodes, timeline_in_secs: clip.timeline_in.to_secs_f64(), rate: clip.timeline_in.rate })
+    }
+
+    /// Draw `node`'s parameter `key` as its generated row, as the per-node
+    /// layout draws it, and push what it implies: whether it drew one (not
+    /// for a node or key the snapshot doesn't hold, a phantom Corrector's).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn row(&self, ui: &mut egui::Ui, theme: &KlippTheme, node: NodeId, key: &str, cmds: &mut Vec<AppCommand>, frame: FrameSelection) -> bool {
+        let Some((kind, lifted)) = self.nodes.iter().find(|(_, n)| n.id == node) else { return false };
+        let Some(ty) = klipp_nodes::registry::node_type(*kind) else { return false };
+        let Some(desc) = ty.desc.params.iter().find(|p| p.key == key) else { return false };
+        let pres = ty.presentation(desc);
+        let addr = NodePath::new(Root::Clip { clip: self.clip.0 }, [self.group, node]);
+        let entry = entry_of(lifted);
+        let stored = grade_value(&entry, desc);
+        let base = row::number(&stored).unwrap_or(desc.default);
+        let (shown_at_t, keys) = keys_at(lifted, desc, base, frame.time_secs, frame.tolerance);
+        let mut ctx = RowCtx {
+            addr: &addr,
+            clip_time_secs: frame.time_secs,
+            timeline_in_secs: self.timeline_in_secs,
+            rate: self.rate,
+            encoding: klipp_grade_model::Encoding::from_u8(klipp_core::grade_encoding().effective(klipp_engine::video_decoder::working_colorspace()).as_u8()),
+            entry: Some(Entry { payload: &entry, fields_at: &["params"] }),
+            cmds,
+            behaviours: None,
+            theme,
+            app: None,
+            custom: None,
+        };
+        row::param_row(ui, &mut ctx, row::RowInput { desc, pres: &pres, stored: &stored, shown_at_t, keys });
+        true
+    }
 }

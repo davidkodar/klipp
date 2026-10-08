@@ -364,3 +364,143 @@ fn whole_node_widgets_stand_in_for_rows() {
         assert!(drawn.contains(&(widget, Some(parameter))), "{kind:?}: {drawn:?}");
     }
 }
+
+/// The parameters the tabbed page shares with the per-node layout.
+const SHARED: &[&str] = &["exposure", "contrast", "contrast_pivot", "clarity", "saturation", "vibrance", "temperature", "tint", "hue", "global_mix"];
+
+/// The tabbed page's Adjustments tab, one frame with `events`, with the
+/// generated rows on (the snapshot set, as the app sets it) or off, and
+/// `selected` the canvas selection: its commands, what the recorder saw
+/// and its texts.
+fn tabbed(run: &mut Run, generated: bool, selected: Option<NodeId>, events: Vec<egui::Event>) -> (Vec<AppCommand>, Vec<crate::widgets::row_recorder::Row>, Vec<(String, egui::Pos2)>) {
+    tabbed_in(run, generated, false, selected, events)
+}
+
+/// As [`tabbed`], in the right inspector's layout or (`wide`) the Colour
+/// page's bottom tools'.
+fn tabbed_in(run: &mut Run, generated: bool, wide: bool, selected: Option<NodeId>, events: Vec<egui::Event>) -> (Vec<AppCommand>, Vec<crate::widgets::row_recorder::Row>, Vec<(String, egui::Pos2)>) {
+    let c = clip(&run.state, run.clip).clone();
+    let mut panel = run.panel.take().unwrap_or_default();
+    panel.generated = crate::inspector::grade_view::snapshot_for(&c, generated, false, false);
+    let mut graph = c.grade().clone();
+    let theme = crate::theme::KlippTheme::default();
+    let frame = FrameSelection { time_secs: run.time, tolerance: 0.02 };
+    run.clock += 0.05;
+    let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(WIDTH, 2400.0))), time: Some(run.clock), events, ..Default::default() };
+    let mut cmds = Vec::new();
+    let mut texts = Vec::new();
+    let ((), rows) = crate::widgets::row_recorder::capture(|| {
+        let out = run.ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut sel = selected;
+                let mut tab = crate::state::ColorTab::Adjustments;
+                cmds = if wide {
+                    panel.show_simple_horizontal(ui, &mut graph, c.id, &mut sel, &mut tab, &theme, frame)
+                } else {
+                    panel.show_simple(ui, &mut graph, c.id, &mut sel, &mut tab, &theme, frame)
+                };
+            });
+        });
+        texts = out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+            _ => None,
+        }).collect();
+    });
+    // Each caller drops the snapshot after the draw, so none is reused.
+    panel.generated = None;
+    run.panel = Some(panel);
+    (cmds, rows, texts)
+}
+
+/// A recorded row as its control is shown: what must be the same on both
+/// pages for one parameter.
+fn shown_as(r: &crate::widgets::row_recorder::Row) -> String {
+    format!("{} {} {:?} {:?} {:?} {:?} {} diamond={}", r.widget, r.label, r.range, r.reset, r.step, r.decimals, r.suffix, r.keyframe_state.is_some())
+}
+
+/// The parameters the tabbed page shares with the per-node layout are one
+/// row on both: the same widget, label, range, reset, step, decimals,
+/// suffix and diamond, from the same descriptor (M3 decision §3).
+#[test]
+fn the_shared_controls_are_one_row_on_both_pages() {
+    let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
+    let (cmds, tab_rows, _) = tabbed(&mut run, true, None, Vec::new());
+    assert!(cmds.is_empty(), "the tabbed page wrote on open: {cmds:?}");
+    run.frame(Vec::new());
+    let (_, node_rows) = run.recorded();
+    for key in SHARED {
+        let find = |rows: &[crate::widgets::row_recorder::Row]| rows.iter().find(|r| r.parameter.as_deref() == Some(key)).map(shown_as);
+        let (on_tab, on_node) = (find(&tab_rows), find(&node_rows));
+        assert!(on_tab.is_some(), "{key} isn't on the tabbed page");
+        assert_eq!(on_tab, on_node, "{key}: the tabbed page's row isn't the per-node layout's");
+    }
+}
+
+/// The tabbed page writes each shared parameter to the node it always
+/// targeted: the selected node of the row's kind, else the Corrector.
+/// Only the row drawing it changed: its reset (a click on its label) sets
+/// `exposure` by path on that node.
+#[test]
+fn tabbed_targeting_is_unchanged() {
+    let mut run = Run::with_panel(NodeKind::Exposure).unwrap();
+    let exposure_node = run.node;
+    let corrector = clip(&run.state, run.clip).grade().nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
+    // Both away from the default, so the row's label resets them.
+    for id in [exposure_node, corrector] {
+        let c = run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap();
+        c.edit_grade(|g| g.nodes.iter_mut().find(|n| n.id == id).unwrap().params.exposure = Some(0.7));
+    }
+    for (selected, want) in [(Some(exposure_node), exposure_node), (None, corrector)] {
+        tabbed(&mut run, true, selected, Vec::new());
+        let (_, _, texts) = tabbed(&mut run, true, selected, Vec::new());
+        let at = texts.iter().filter(|(t, _)| t == "Exposure").map(|(_, p)| *p).next_back().expect("the Exposure row");
+        let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut cmds = tabbed(&mut run, true, selected, vec![egui::Event::PointerMoved(at)]).0;
+        cmds.extend(tabbed(&mut run, true, selected, vec![egui::Event::PointerMoved(at), press(true)]).0);
+        cmds.extend(tabbed(&mut run, true, selected, vec![egui::Event::PointerMoved(at), press(false)]).0);
+        let set: Vec<_> = cmds.iter().filter_map(|c| match c {
+            AppCommand::SetParamAt { addr, key, .. } if key.as_str() == "exposure" => addr.node(),
+            _ => None,
+        }).collect();
+        assert_eq!(set, vec![want], "selected {selected:?}: {cmds:?}");
+    }
+}
+
+/// A tabbed page draws its shared rows from a snapshot only of the clip's
+/// own grade with the generated inspector on; a nested grade or a
+/// stand-in's (the timeline grade, a group's stage) keeps the old rows.
+#[test]
+fn the_shared_rows_fall_back_for_nested_and_stand_in_grades() {
+    let run = Run::new(NodeKind::Corrector).unwrap();
+    let c = clip(&run.state, run.clip);
+    use crate::inspector::grade_view::snapshot_for;
+    assert!(snapshot_for(c, true, false, false).is_some(), "the clip's own grade");
+    assert!(snapshot_for(c, false, false, false).is_none(), "the switch off");
+    assert!(snapshot_for(c, true, true, false).is_none(), "a nested grade");
+    assert!(snapshot_for(c, true, false, true).is_none(), "a stand-in's grade");
+}
+
+/// The Colour page's bottom tools draw the shared rows from this frame's
+/// snapshot, as the right inspector does: a value changed between draws
+/// (by path, as an edit there sends it) shows at once, never a snapshot
+/// left by an earlier draw.
+#[test]
+fn the_bottom_tools_draw_the_current_values() {
+    let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
+    let (addr, _) = crate::inspector::grade_view::grade_node(clip(&run.state, run.clip), run.node).unwrap();
+    // The generated row has a keyframe diamond; the old one hasn't.
+    let exposure = |rows: &[crate::widgets::row_recorder::Row]| rows.iter().find(|r| r.parameter.as_deref() == Some("exposure")).map(|r| (r.keyframe_state.is_some(), r.value.clone()));
+    for v in [0.3f32, 0.6] {
+        run.apply(&[AppCommand::SetParamAt { addr: addr.clone(), key: "exposure".into(), value: klipp_graph_format::ParamValue::Float(v) }]);
+        let (_, right, _) = tabbed_in(&mut run, true, false, None, Vec::new());
+        let (cmds, bottom, _) = tabbed_in(&mut run, true, true, None, Vec::new());
+        assert!(cmds.is_empty(), "the bottom tools wrote on open: {cmds:?}");
+        assert_eq!(exposure(&bottom), exposure(&right), "the bottom tools' exposure row is the right inspector's");
+        assert_eq!(exposure(&bottom).map(|(_, value)| value), Some(serde_json::json!(v)), "the current value, {v}");
+    }
+    // With the generated rows off (no snapshot this frame), the bottom
+    // tools draw the old row, not one left from the last draw.
+    let (_, off, _) = tabbed_in(&mut run, false, true, None, Vec::new());
+    assert_ne!(exposure(&off).map(|(w, _)| w), exposure(&tabbed_in(&mut run, true, true, None, Vec::new()).1).map(|(w, _)| w), "no snapshot reused");
+}
+
