@@ -340,18 +340,9 @@ impl KlippApp {
                 AppEvent::DeflickerProgress { clip_id, progress } => {
                     self.state.deflicker_progress.insert(clip_id, progress);
                 }
-                AppEvent::DeflickerComplete { clip_id } => {
-                    self.state.deflicker_in_progress.remove(&clip_id);
-                    self.state.deflicker_progress.remove(&clip_id);
-                    // The worker wrote into the shared sequence; bring
-                    // the UI's copy alongside, as stabilization does.
-                    if let Ok(shared) = self.sequence.read() {
-                        copy_back_analysis(&mut self.state.sequences[self.state.active_sequence_idx], &shared, clip_id, |to, from| {
-                            to.deflicker_data = from.deflicker_data.clone();
-                            to.deflicker_gains = from.deflicker_gains.clone();
-                        });
-                    }
-                    self.state.toast.show("Deflicker analysis complete");
+                done @ (AppEvent::DeflickerComplete { .. } | AppEvent::StabilizationComplete { .. }) => {
+                    let shared = self.sequence.read().ok();
+                    apply_analysis_result(&mut self.state, shared.as_deref(), &done);
                 }
                 AppEvent::DeflickerFailed { clip_id, error } => {
                     self.state.deflicker_in_progress.remove(&clip_id);
@@ -361,19 +352,6 @@ impl KlippApp {
                 }
                 AppEvent::StabilizationProgress { clip_id, progress } => {
                     self.state.stabilization_progress.insert(clip_id, progress);
-                }
-                AppEvent::StabilizationComplete { clip_id } => {
-                    self.state.stabilization_in_progress.remove(&clip_id);
-                    self.state.stabilization_progress.remove(&clip_id);
-                    // The worker wrote into the shared sequence; bring
-                    // the UI's copy alongside.
-                    if let Ok(shared) = self.sequence.read() {
-                        copy_back_analysis(&mut self.state.sequences[self.state.active_sequence_idx], &shared, clip_id, |to, from| {
-                            to.stabilization_data = from.stabilization_data.clone();
-                            to.smoothed_trajectory = from.smoothed_trajectory.clone();
-                        });
-                    }
-                    self.state.toast.show("Stabilization analysis complete");
                 }
                 AppEvent::StabilizationFailed { clip_id, error } => {
                     self.state.stabilization_in_progress.remove(&clip_id);
@@ -588,6 +566,42 @@ pub(super) fn skim_file_is_complete(path: &Path, source_secs: f64) -> bool {
         );
     }
     complete
+}
+
+/// What a finished deflicker or stabilization analysis writes: the clip
+/// is no longer being measured, and what the worker wrote onto it in the
+/// engine's sequence (`flat`, when it could be read) is brought onto the
+/// document's copy. One place, so the drain and the inspector parity's
+/// result-during-a-drag case apply a result alike; the drain closes an
+/// open drag before it (`event_writes`). `false` for any other event.
+pub(super) fn apply_analysis_result(state: &mut crate::state::AppState, flat: Option<&klipp_timeline::Sequence>, event: &AppEvent) -> bool {
+    let seq = state.active_sequence_idx;
+    match *event {
+        AppEvent::DeflickerComplete { clip_id } => {
+            state.deflicker_in_progress.remove(&clip_id);
+            state.deflicker_progress.remove(&clip_id);
+            if let Some(flat) = flat {
+                copy_back_analysis(&mut state.sequences[seq], flat, clip_id, |to, from| {
+                    to.deflicker_data = from.deflicker_data.clone();
+                    to.deflicker_gains = from.deflicker_gains.clone();
+                });
+            }
+            state.toast.show("Deflicker analysis complete");
+        }
+        AppEvent::StabilizationComplete { clip_id } => {
+            state.stabilization_in_progress.remove(&clip_id);
+            state.stabilization_progress.remove(&clip_id);
+            if let Some(flat) = flat {
+                copy_back_analysis(&mut state.sequences[seq], flat, clip_id, |to, from| {
+                    to.stabilization_data = from.stabilization_data.clone();
+                    to.smoothed_trajectory = from.smoothed_trajectory.clone();
+                });
+            }
+            state.toast.show("Stabilization analysis complete");
+        }
+        _ => return false,
+    }
+    true
 }
 
 /// Copy what an analysis wrote onto `clip_id` in the engine's sequence
