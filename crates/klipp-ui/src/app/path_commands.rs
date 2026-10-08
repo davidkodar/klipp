@@ -101,6 +101,19 @@ impl KlippApp {
     }
 }
 
+/// `key`'s animation on `node`: its `anim`, or for a grade node (or a
+/// merge lifted from the grade) its keyframe track on its record, where a
+/// grade node keeps its keys. `None` when it has no keys there.
+fn animation_of(node: &Node, key: &ParamKey) -> Option<klipp_graph_format::Animation> {
+    if !matches!(node.type_id.as_str(), klipp_graph_format::types::LEGACY_NODE | klipp_graph_format::lifted::types::MERGE) {
+        return node.anim.get(key).cloned();
+    }
+    let tracks = node.legacy.as_ref()?.keyframes.as_ref()?.get("tracks")?.as_array()?;
+    let track = tracks.iter().find(|t| t.get("param_name").and_then(serde_json::Value::as_str) == Some(key.as_str()))?;
+    let keys = track.get("keyframes")?.as_array()?.clone();
+    (!keys.is_empty()).then_some(klipp_graph_format::Animation { keys, modifiers: None })
+}
+
 impl crate::state::AppState {
     /// Run a path-addressed command on the state: `None` when `cmd` isn't
     /// one, else whether a picture changed (the engine wants the
@@ -167,7 +180,13 @@ impl crate::state::AppState {
             | AppCommand::SequenceUpdated
             | AppCommand::RevealGraph { .. }
             | AppCommand::SetGraphDockRoot { .. }
-            | AppCommand::SetSplitCompareNode { .. } => false,
+            | AppCommand::SetSplitCompareNode { .. }
+            // What the viewer and the timeline show while a row is used:
+            // the Video tab sends these as it draws and as a drag starts.
+            // A stopgap: an exhaustive classification of the commands that
+            // write the picture or history replaces this list.
+            | AppCommand::SetInspectorMattePreviewTarget(_)
+            | AppCommand::SetVideoRubberBandParam(_) => false,
             _ => true,
         }
     }
@@ -281,7 +300,7 @@ impl crate::state::AppState {
     /// `edit`: the parameter's whole animation, written back in time order.
     fn key_edit(&self, addr: &NodePath, key: &ParamKey, time_secs: f64, edit: impl FnOnce(&mut serde_json::Value)) -> Result<Vec<GraphOp>, String> {
         let node = self.node_at(addr)?;
-        let mut anim = node.anim.get(key).cloned().ok_or_else(|| format!("{key} isn't animated"))?;
+        let mut anim = animation_of(&node, key).ok_or_else(|| format!("{key} isn't animated"))?;
         let time = |k: &serde_json::Value| k.get("time_secs").and_then(serde_json::Value::as_f64);
         let at = anim.keys.iter().position(|k| time(k).is_some_and(|t| (t - time_secs).abs() < 1e-9)).ok_or_else(|| format!("{key} has no key at {time_secs} s"))?;
         edit(&mut anim.keys[at]);
@@ -302,7 +321,7 @@ impl crate::state::AppState {
     /// one before it, with Bezier tangents where they have none.
     fn interpolation_edit(&self, addr: &NodePath, key: &ParamKey, time_secs: f64, interpolation: klipp_core::Interpolation) -> Result<Vec<GraphOp>, String> {
         let node = self.node_at(addr)?;
-        let mut anim = node.anim.get(key).cloned().ok_or_else(|| format!("{key} isn't animated"))?;
+        let mut anim = animation_of(&node, key).ok_or_else(|| format!("{key} isn't animated"))?;
         let mut keys: Vec<klipp_core::Keyframe> = anim.keys.iter().map(|k| serde_json::from_value(k.clone()).map_err(|e| format!("a key of {key}: {e}"))).collect::<Result<_, _>>()?;
         let at = keys.iter().position(|k| (k.time_secs - time_secs).abs() < 1e-9).ok_or_else(|| format!("{key} has no key at {time_secs} s"))?;
         klipp_core::keyframe::set_interpolation_at(&mut keys, at, interpolation);
@@ -1287,6 +1306,43 @@ mod tests {
         let (set, _) = ex.execute(&frame, &outright, 16, 16, 0.5, 12, None, None).unwrap();
         assert_ne!(keyed, frame, "the key grades the frame");
         assert_eq!(keyed, set, "the keyed frame is the frame graded to the key's value");
+    }
+
+    /// A grade key is moved and given its interpolation by path, as an
+    /// effect's is: `MoveKeyAt` puts it at its new time and value, and
+    /// `SetInterpKeyAt` sets it as the keyframe editor does
+    /// (`set_interpolation_at`), on the node's own track. The same on a
+    /// merge lifted from the grade (a Blend), which keeps its keys there too.
+    #[test]
+    fn a_grade_key_moves_and_takes_its_interpolation_by_path() {
+        for (kind, key) in [(klipp_nodes::NodeKind::Corrector, "exposure"), (klipp_nodes::NodeKind::Blend, "mix")] {
+            let (mut c, corrector_addr) = graded();
+            let node = if kind == klipp_nodes::NodeKind::Corrector {
+                corrector_addr.node().unwrap()
+            } else {
+                let n = klipp_nodes::Node { id: klipp_nodes::NodeId::new_v4(), kind, label: String::new(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() };
+                let id = n.id;
+                assert!(klipp_timeline::GradeAccess::insert_grade_node(&mut c, corrector_addr.node(), n), "{kind:?} in the grade");
+                id
+            };
+            let p = c.picture_v2().unwrap().picture.clone();
+            let lifted = p.graph.nodes.iter().find(|n| n.id == corrector_addr.nodes[0]).unwrap().group.as_ref().unwrap().graph.nodes.iter().find(|n| n.id == node).unwrap().type_id.clone();
+            let addr = at(c.id, &[corrector_addr.nodes[0], node]);
+            let mut s = with(std::slice::from_ref(&c));
+            for (t, v) in [(0.0, 0.0f32), (1.0, 1.0)] {
+                let k = klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+                run(&mut s, AppCommand::AddKeyAt { addr: addr.clone(), key: key.into(), keyframe: serde_json::to_value(k).unwrap() });
+            }
+            run(&mut s, AppCommand::MoveKeyAt { addr: addr.clone(), key: key.into(), time_secs: 1.0, new_time_secs: 1.5, value: 0.8 });
+            run(&mut s, AppCommand::SetInterpKeyAt { addr: addr.clone(), key: key.into(), time_secs: 1.5, interpolation: klipp_core::Interpolation::Bezier });
+            let track = klipp_timeline::GradeAccess::grade(clip(&s, c.id)).nodes.iter().find(|n| n.id == node).unwrap().keyframes.tracks.iter().find(|t| t.param_name == key).unwrap().keyframes.clone();
+            let mut want = vec![
+                klipp_core::Keyframe { time_secs: 0.0, value: 0.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+                klipp_core::Keyframe { time_secs: 1.5, value: 0.8, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+            ];
+            klipp_core::keyframe::set_interpolation_at(&mut want, 1, klipp_core::Interpolation::Bezier);
+            assert_eq!(track, want, "{kind:?} ({lifted}) {key}");
+        }
     }
 
     /// An effect's keys by path and by index: adding one (`AddKeyAt`,
