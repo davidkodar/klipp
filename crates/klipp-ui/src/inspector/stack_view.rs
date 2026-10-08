@@ -197,6 +197,61 @@ fn keys_of(node: &Node, key: &str) -> Vec<Keyframe> {
     node.anim.get(&ParamKey::new(key)).map(|a| a.keys.iter().filter_map(|k| serde_json::from_value(k.clone()).ok()).collect()).unwrap_or_default()
 }
 
+/// A placed kind's row commands as the clip's effect-list commands, which
+/// place it: a drag's bracket as the effect drag, a value as the effect
+/// with it changed, a key as the effect's key. What has no list form (a
+/// seek) passes through.
+pub fn to_effect_list(clip: &Clip, ty: &klipp_effects::registry::EffectType, node: klipp_graph_format::NodeId, entry: &serde_json::Value, cmds: Vec<AppCommand>) -> Vec<AppCommand> {
+    let Some((false, index)) = clip.effect_slot_of_node(node) else { return Vec::new() };
+    let clip_id = clip.id;
+    let key = format!("{clip_id:?}:builtin:{index}");
+    let read = |e: &serde_json::Value| serde_json::from_value::<klipp_effects::BuiltinEffect>(e.clone()).ok();
+    let Some(mut current) = read(entry) else { return Vec::new() };
+    let mut current_json = entry.clone();
+    let field = |pk: &str| ty.desc.params.iter().find(|p| p.key == pk);
+    let mut out = Vec::new();
+    for cmd in cmds {
+        match cmd {
+            AppCommand::BeginParamEditAt { .. } => out.push(AppCommand::BeginEffectDrag { key: key.clone(), clip_id, effect_index: index, old_effect: current.clone() }),
+            AppCommand::EndParamEditAt { .. } => out.push(AppCommand::EndEffectDrag { key: key.clone(), clip_id, effect_index: index, new_effect: current.clone() }),
+            AppCommand::SetParamAt { key: pk, value, .. } => {
+                let Some(p) = field(pk.as_str()) else { continue };
+                let v = match value {
+                    klipp_graph_format::ParamValue::Float(f) => serde_json::json!(f),
+                    klipp_graph_format::ParamValue::Int(i) => serde_json::json!(i),
+                    klipp_graph_format::ParamValue::Bool(b) => serde_json::json!(b),
+                    klipp_graph_format::ParamValue::Enum(e) => serde_json::json!(e),
+                    _ => continue,
+                };
+                let slot = match (current_json.get_mut(p.field), p.index) {
+                    (Some(f), Some(i)) => f.get_mut(i),
+                    (f, None) => f,
+                    _ => None,
+                };
+                let Some(slot) = slot else { continue };
+                *slot = v;
+                let Some(e) = read(&current_json) else { continue };
+                current = e;
+                out.push(AppCommand::UpdateBuiltinEffect { clip_id, index, effect: current.clone() });
+            }
+            AppCommand::SetPayloadAt { payload, .. } => {
+                let Some(e) = read(&payload) else { continue };
+                current_json = payload;
+                current = e;
+                out.push(AppCommand::UpdateBuiltinEffect { clip_id, index, effect: current.clone() });
+            }
+            AppCommand::AddKeyAt { key: pk, keyframe, .. } => {
+                if let Ok(k) = serde_json::from_value::<Keyframe>(keyframe) {
+                    out.push(AppCommand::AddEffectKeyframe { clip_id, effect_index: index, param_name: pk.as_str().to_owned(), time_secs: k.time_secs, value: k.value });
+                }
+            }
+            AppCommand::RemoveKeyAt { key: pk, time_secs, .. } => out.push(AppCommand::RemoveEffectKeyframe { clip_id, effect_index: index, param_name: pk.as_str().to_owned(), time_secs }),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// What a node is called in the stack: its label, else its effect's
 /// name, else a grade group's, else its type.
 pub fn display_name(graph: &Graph, addr: &NodePath, label: &str, is_group: bool) -> String {
@@ -259,7 +314,7 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
     }
     let effect = node.and_then(|n| klipp_graph_lift::effect_params::tag(n).map(|tag| (n, tag))).and_then(|(n, tag)| effect_types().find(|t| t.tag == tag).map(|t| (n, t)));
     match effect {
-        Some((n, ty)) if !row.read_only && !row.placed => {
+        Some((n, ty)) if !row.read_only => {
             let entry = klipp_graph_lift::effect_params::entry_of(n).unwrap_or(serde_json::Value::Null);
             let presentation = |p: &ParamDesc| ty.presentation(p);
             let stored = |p: &ParamDesc| effect_value(&entry, p);
@@ -277,6 +332,10 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
             let behaviours = |ui: &mut egui::Ui, param: &klipp_core::ParamId, cmds: &mut Vec<AppCommand>| {
                 crate::inspector::modifier_ui::show_behaviors_content(ui, theme, clip, std::slice::from_ref(param), cmds);
             };
+            // A placed kind's edits go through the clip's effect list, which
+            // places it: drawn into a scratch list, then translated.
+            let mut scratch = Vec::new();
+            let out: &mut Vec<AppCommand> = if row.placed { &mut scratch } else { cmds };
             let mut rc = RowCtx {
                 addr: &row.addr,
                 clip_time_secs,
@@ -284,17 +343,15 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
                 rate: clip.timeline_in.rate,
                 encoding: klipp_grade_model::Encoding::from_u8(klipp_core::grade_encoding().effective(klipp_engine::video_decoder::working_colorspace()).as_u8()),
                 entry: Some(Entry { payload: &entry, fields_at: &[] }),
-                cmds,
+                cmds: out,
                 behaviours: Some(&behaviours),
                 theme,
                 app: Some(state),
             };
             ui.indent(("stack_row", row.addr.clone()), |ui| effect_card(ui, &mut rc, &rows, ty, clip, state));
-        }
-        Some(_) if row.placed => {
-            // A placed kind's card (a Transform) is the clip's placement,
-            // edited in the Video tab.
-            ui.label(egui::RichText::new("Edited in the Video tab").size(10.0).color(theme.text_dim));
+            if row.placed {
+                cmds.extend(to_effect_list(clip, ty, n.id, &entry, scratch));
+            }
         }
         _ if row.is_group || row.section == Section::Colour => {
             let open = ui.small_button("Open in graph").clicked();
