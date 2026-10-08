@@ -52,6 +52,7 @@ mod transitions;
 mod playback;
 mod stabilization;
 mod effects;
+mod inspector_edit_host;
 mod media;
 mod compound;
 mod clips;

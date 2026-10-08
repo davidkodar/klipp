@@ -5,28 +5,7 @@ use super::*;
 
 impl KlippApp {
     pub(super) fn sync_sequence_to_engine(&self) {
-        // Parameter changes still queued for the engine are already in
-        // the mirror this pushes; left in the queue they would land
-        // *after* it and overwrite it — an undo of a grade change lost
-        // to the change itself, seen over the control socket and
-        // possible for a fast ctrl+z too. The queue is multi-consumer.
-        while self.param_change_queue.pop().is_some() {}
-        // The sequence the engine renders from is built here, with nothing
-        // locked, and put in place whole (#690). It used to be written in
-        // place under a read-write lock the engine read for every frame,
-        // and a busy frame kept the UI waiting; once, after a project
-        // opened, for over a minute.
-        let active = &self.state.sequences[self.state.active_sequence_idx];
-        // Flatten compound clips so the engine receives a plain sequence
-        // with no ClipKind::Sequence clips — the engine has no compound-clip
-        // awareness. This mirrors the export path exactly: viewer and export
-        // are consistent by construction.
-        let mut flat = klipp_timeline::flatten::flatten_sequence(active, &self.state.sequences);
-        // A command in the Colour workspace can sync while the timeline
-        // grade stands in as a clip: the engine gets the grade, never the
-        // stand-in.
-        settle_timeline_grade_proxy(&mut flat, None);
-        self.sequence.replace(flat);
+        sync_sequence(&self.state, &self.sequence, &self.param_change_queue);
     }
 
     /// Fast UI-thread re-grade at reduced resolution for instant scope
@@ -305,6 +284,32 @@ impl KlippApp {
     }
 }
 
+/// The same engine mirror write used by the live inspector edit host.
+pub(super) fn sync_sequence(state: &AppState, sequence: &klipp_timeline::SharedSequence, param_change_queue: &ArrayQueue<ParamChange>) {
+    // Parameter changes still queued for the engine are already in
+    // the mirror this pushes; left in the queue they would land
+    // *after* it and overwrite it — an undo of a grade change lost
+    // to the change itself, seen over the control socket and
+    // possible for a fast ctrl+z too. The queue is multi-consumer.
+    while param_change_queue.pop().is_some() {}
+    // The sequence the engine renders from is built here, with nothing
+    // locked, and put in place whole (#690). It used to be written in
+    // place under a read-write lock the engine read for every frame,
+    // and a busy frame kept the UI waiting; once, after a project
+    // opened, for over a minute.
+    let active = &state.sequences[state.active_sequence_idx];
+    // Flatten compound clips so the engine receives a plain sequence
+    // with no ClipKind::Sequence clips — the engine has no compound-clip
+    // awareness. This mirrors the export path exactly: viewer and export
+    // are consistent by construction.
+    let mut flat = klipp_timeline::flatten::flatten_sequence(active, &state.sequences);
+    // A command in the Colour workspace can sync while the timeline
+    // grade stands in as a clip: the engine gets the grade, never the
+    // stand-in.
+    settle_timeline_grade_proxy(&mut flat, None);
+    sequence.replace(flat);
+}
+
 #[cfg(test)]
 mod engine_send_tests {
     /// #437: every command the UI sends straight to the playback engine is
@@ -327,7 +332,7 @@ mod engine_send_tests {
         let mut sent = 0;
         let mut astray = Vec::new();
         for (path, text) in &files {
-            for marker in ["cmd_tx.send(AppCommand::", "cmd_tx.send(klipp_core::AppCommand::"] {
+            for marker in ["cmd_tx.send(AppCommand::", "cmd_tx.send(klipp_core::AppCommand::", "side.send(AppCommand::"] {
                 for (at, _) in text.match_indices(marker) {
                     let name: String = text[at + marker.len()..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
                     // This test's own markers name nothing.

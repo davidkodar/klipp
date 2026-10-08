@@ -16,6 +16,7 @@
 const FILES: &[(&str, &str)] = &[
     ("klipp-document/src/ops.rs", include_str!("../../klipp-document/src/ops.rs")),
     ("klipp-ui/src/app/effects.rs", include_str!("../src/app/effects.rs")),
+    ("klipp-ui/src/app/inspector_edit_host.rs", include_str!("../src/app/inspector_edit_host.rs")),
     ("klipp-ui/src/app/colour.rs", include_str!("../src/app/colour.rs")),
     ("klipp-ui/src/app/compound.rs", include_str!("../src/app/compound.rs")),
     ("klipp-ui/src/app/stabilization.rs", include_str!("../src/app/stabilization.rs")),
@@ -31,10 +32,12 @@ const KNOWN: &[(&str, &str, usize)] = &[
     // stage grades) and their tests.
     ("klipp-document/src/ops.rs", "SetNodeGraph", 18),
     // The placed kinds' add (a speed ramp's speed with it), drag and
-    // toggle, on the effect-list mutators.
+    // toggle, on the effect-list mutators: the add and the drags left in
+    // the app, the edits the inspector's host runs (M3 step 1c).
     ("klipp-ui/src/app/effects.rs", "SetBuiltinEffects", 4),
-    ("klipp-ui/src/app/effects.rs", "EditBuiltinEffect", 7),
-    ("klipp-ui/src/app/effects.rs", "ToggleBuiltinEffectEnabled", 1),
+    ("klipp-ui/src/app/effects.rs", "EditBuiltinEffect", 2),
+    ("klipp-ui/src/app/inspector_edit_host.rs", "EditBuiltinEffect", 5),
+    ("klipp-ui/src/app/inspector_edit_host.rs", "ToggleBuiltinEffectEnabled", 1),
     // The grade closures (node edits, auto layout, balance, a look) and
     // their tests.
     ("klipp-ui/src/app/colour.rs", "SetNodeGraph", 9),
