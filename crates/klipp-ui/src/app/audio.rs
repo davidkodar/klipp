@@ -969,30 +969,9 @@ impl KlippApp {
         params: &[(String, f32)],
         description: &'static str,
     ) {
-        let old_state = self.state.sequences[self.state.active_sequence_idx]
-            .all_clips()
-            .find(|c| c.id == clip_id)
-            .map(crate::history::AudioChainSnapshot::from_clip);
-        let mut applied = false;
-        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-            if let Some(clip) = track.find_clip_mut(clip_id) {
-                if let Some(inst) = clip.audio_effects.get_mut(effect_index) {
-                    for (name, value) in params {
-                        if let Some(p) = inst.params.iter_mut().find(|(k, _)| k == name) {
-                            p.1 = *value;
-                        } else {
-                            inst.params.push((name.clone(), *value));
-                        }
-                    }
-                    applied = true;
-                }
-                break;
-            }
-        }
-        if !applied {
+        if !self.state.set_audio_effect_params(clip_id, effect_index, params, description) {
             return;
         }
-        self.push_audio_chain_history(clip_id, description, old_state);
         self.sync_sequence_to_engine();
         self.state.dirty = true;
         let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
@@ -1148,6 +1127,40 @@ impl MeterBallistics {
         let n = (dt * 60.0).clamp(0.0, 6.0);
         let ema = |alpha: f32| 1.0 - (1.0 - alpha).powf(n);
         Self { peak_release: 0.96_f32.powf(n), momentary_alpha: ema(0.12), short_term_alpha: ema(0.12 * 0.6), drift: 1.5 * n }
+    }
+}
+
+impl crate::state::AppState {
+    /// Set `params` on the clip's audio effect `effect_index`, as one undo
+    /// step: a learnt noise profile's result, or an edit. An open path drag
+    /// is closed first (#1327), so a result arriving during one is its own
+    /// step. Whether the effect was there to set.
+    pub(crate) fn set_audio_effect_params(&mut self, clip_id: klipp_core::ClipId, effect_index: usize, params: &[(String, f32)], description: &'static str) -> bool {
+        self.close_path_drag_before_edit();
+        let seq = self.active_sequence_idx;
+        let Some(old_state) = self.sequences[seq].all_clips().find(|c| c.id == clip_id).map(crate::history::AudioChainSnapshot::from_clip) else { return false };
+        let mut applied = false;
+        for track in &mut self.sequences[seq].tracks {
+            if let Some(clip) = track.find_clip_mut(clip_id) {
+                if let Some(inst) = clip.audio_effects.get_mut(effect_index) {
+                    for (name, value) in params {
+                        if let Some(p) = inst.params.iter_mut().find(|(k, _)| k == name) {
+                            p.1 = *value;
+                        } else {
+                            inst.params.push((name.clone(), *value));
+                        }
+                    }
+                    applied = true;
+                }
+                break;
+            }
+        }
+        if !applied {
+            return false;
+        }
+        let Some(new_state) = self.sequences[seq].all_clips().find(|c| c.id == clip_id).map(crate::history::AudioChainSnapshot::from_clip) else { return false };
+        self.push_history(EditCommand::EditAudioChain { clip_id, description, old_state, new_state });
+        true
     }
 }
 

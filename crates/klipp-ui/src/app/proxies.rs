@@ -160,6 +160,9 @@ impl KlippApp {
 
     pub(super) fn drain_proxy_events(&mut self) {
         while let Ok(event) = self.proxy_event_rx.try_recv() {
+            if super::event_writes::event_writes(&event) {
+                self.close_drag_for_result();
+            }
             match event {
                 AppEvent::ProxyGenerationStarted { media_id } => {
                     let filename = self.state.media_pool.get(&media_id)
@@ -168,7 +171,6 @@ impl KlippApp {
                     tracing::info!("Proxy generation started for {}", filename);
                 }
                 AppEvent::ProxyGenerationComplete { media_id, path } => {
-                    self.close_drag_for_result();
                     self.state.proxy_generating.remove(&media_id);
                     self.state.proxy_progress.remove(&media_id);
                     let elapsed_secs = self.state.proxy_start_times.remove(&media_id)
@@ -392,7 +394,6 @@ impl KlippApp {
                     if !running {
                         continue;
                     }
-                    self.close_drag_for_result();
                     if split {
                         self.split_at_scene_cuts(clip_id, &cut_times);
                         continue;
@@ -531,7 +532,6 @@ impl KlippApp {
                     self.state.toast.show(format!("Audio sync failed: {error}"));
                 }
                 AppEvent::DenoiserProfileLearned { clip_id, effect_index, params, source_secs } => {
-                    self.close_drag_for_result();
                     self.set_audio_effect_params(clip_id, effect_index, &params, "Learn Noise Profile");
                     self.state.toast.show(format!("Noise profile learned at {}", format_profile_time(source_secs)));
                 }

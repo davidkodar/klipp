@@ -9,6 +9,9 @@ impl KlippApp {
         self.drain_control_inbox();
         self.apply_analysis_markers();
         while let Ok(event) = self.event_rx.try_recv() {
+            if super::event_writes::event_writes(&event) {
+                self.close_drag_for_result();
+            }
             match event {
                 AppEvent::PlaybackStarted => {
                     self.state.playback = PlaybackState::Playing;
@@ -96,7 +99,6 @@ impl KlippApp {
                     );
                 }
                 AppEvent::MediaLoaded(payload) => {
-                    self.close_drag_for_result();
                     let klipp_core::MediaLoadedPayload {
                         media_id,
                         path,

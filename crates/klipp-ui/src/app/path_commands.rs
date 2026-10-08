@@ -1493,6 +1493,42 @@ mod tests {
         assert_eq!(s.active_history().undo_count(), 1, "one undo step");
     }
 
+    /// #1327: a background result (a learnt noise profile, set on the
+    /// clip's audio effect) arriving while a path drag is open is a step of
+    /// its own: the drag closes first, the drag's later end adds nothing,
+    /// and undo takes back the result alone, then the drag; redo puts
+    /// both back. Undone and redone as the app does, by the document.
+    #[test]
+    fn a_result_during_a_path_drag_is_its_own_step() {
+        let mut c = fixture(&[E::GaussianBlur { radius: 3.0 }]);
+        c.audio_effects.push(klipp_core::AudioEffectInstance { effect_type: "denoise".into(), enabled: true, wet_dry: 1.0, params: vec![("strength".into(), 0.2)] });
+        let ids = effects(&with(std::slice::from_ref(&c)), c.id);
+        let blur = at(c.id, &[ids[0]]);
+        let mut s = with(std::slice::from_ref(&c));
+        let audio = |s: &AppState| clip(s, c.id).audio_effects[0].params.clone();
+        let (picture0, audio0) = (picture(&s, c.id), audio(&s));
+        s.path_command(&AppCommand::BeginParamEditAt { addr: blur.clone(), key: "radius".into() });
+        run(&mut s, AppCommand::SetParamAt { addr: blur.clone(), key: "radius".into(), value: ParamValue::Float(9.0) });
+        let picture1 = picture(&s, c.id);
+        assert!(s.set_audio_effect_params(c.id, 0, &[("strength".into(), 0.8)], "Learn Noise Profile"), "the result lands");
+        let audio1 = audio(&s);
+        s.path_command(&AppCommand::EndParamEditAt { addr: blur.clone(), key: "radius".into() });
+        assert_eq!(s.active_history().undo_count(), 2, "the drag and the result, two steps");
+        let step = |s: &mut AppState, back: bool| {
+            let entry = if back { s.active_history_mut().undo() } else { s.active_history_mut().redo() }.expect("a step");
+            let seq = s.active_sequence_idx;
+            let mut view = klipp_document::apply::DocumentView { sequences: &mut s.sequences, active: seq, media_pool: &mut s.media_pool, fps: &mut s.fps };
+            if back { view.apply_inverse(&entry.command); } else { view.apply_forward(&entry.command); }
+        };
+        step(&mut s, true);
+        assert_eq!((picture(&s, c.id), audio(&s)), (picture1.clone(), audio0.clone()), "undo takes back the result alone");
+        step(&mut s, true);
+        assert_eq!((picture(&s, c.id), audio(&s)), (picture0, audio0), "then the drag");
+        step(&mut s, false);
+        step(&mut s, false);
+        assert_eq!((picture(&s, c.id), audio(&s)), (picture1, audio1), "redo puts both back");
+    }
+
     /// An effect's keys by path and by index: adding one (`AddKeyAt`,
     /// `AddEffectKeyframe`), moving it and setting its interpolation, and
     /// removing it give the same picture each time.
