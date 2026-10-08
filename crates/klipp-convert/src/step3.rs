@@ -99,9 +99,10 @@ impl Manifest {
 
 /// The files of `dir` the manifest covers, sorted. A link among them is a
 /// stop: the run never follows one out of the project. An excluded
-/// project's linked side folder isn't followed either, but isn't a stop:
-/// the run never writes an excluded project, and its other files are
-/// still held to their hashes.
+/// project's links (a linked side folder, or a linked file among those it
+/// covers) aren't followed either, but aren't a stop: the run never writes
+/// an excluded project, and its other files are still held to their
+/// hashes.
 fn inventory(dir: &Path, excluded: bool) -> Result<Vec<Item>, String> {
     // A linked folder would take every file under it out of the project,
     // whatever the files themselves are.
@@ -153,6 +154,11 @@ fn inventory(dir: &Path, excluded: bool) -> Result<Vec<Item>, String> {
             Err(e) => return Err(io_err("reading", &p, e)),
         };
         if !m.is_file() {
+            // An excluded project is never written: a link in it is left
+            // unfollowed, as its linked folders are.
+            if excluded && m.file_type().is_symlink() {
+                continue;
+            }
             return Err(format!("{} isn't a plain file (a link?): left for a person to settle", p.display()));
         }
         let bytes = std::fs::read(&p).map_err(|e| io_err("reading", &p, e))?;

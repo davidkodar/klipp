@@ -731,12 +731,13 @@ fn the_strict_loader_refuses_a_stored_picture_that_disagrees() {
     let _ = std::fs::remove_dir_all(&r);
 }
 
-/// An excluded project's linked media, looks or .recovery folder isn't a
-/// stop, and isn't followed: the run never writes an excluded project.
+/// An excluded project's linked media, looks or .recovery folder, or a
+/// linked file among those the manifest covers, isn't a stop, and isn't
+/// followed: the run never writes an excluded project.
 /// Its other files are still in the manifest, and a run holds them to
 /// their hashes while it converts the rest.
 #[test]
-fn an_excluded_projects_linked_side_folder_is_not_followed_or_a_stop() {
+fn an_excluded_projects_links_are_not_followed_or_a_stop() {
     for rel in ["media", "looks", ".recovery"] {
         let r = root(&format!("exlink-{}", rel.trim_start_matches('.')));
         let (a, b) = (plain(&r, "A"), plain(&r, "B"));
@@ -749,20 +750,27 @@ fn an_excluded_projects_linked_side_folder_is_not_followed_or_a_stop() {
         }
         std::fs::write(real.join("behind-the-link.json"), b"{}").unwrap();
         std::os::unix::fs::symlink(&real, &at).unwrap();
+        // And linked files among those the manifest covers, as a harness's
+        // copy links them.
+        let linked_bak = b.join("project.json.bak.linked");
+        std::os::unix::fs::symlink(a.join("project.json"), &linked_bak).unwrap();
         let s = settings(&r, vec![a.clone(), b.clone()], vec![b.clone()], "2026-10-07");
         let m = step3::preflight(&s);
         assert!(m.stops.is_empty(), "{rel}: {:?}", m.stops);
         let excluded = m.candidates.iter().find(|c| c.dir == b).unwrap();
         assert_eq!(excluded.decision, Decision::Excluded);
-        assert!(excluded.items.iter().all(|i| !i.path.starts_with(&at)), "{rel}: nothing under the link: {:?}", excluded.items);
+        assert!(excluded.items.iter().all(|i| !i.path.starts_with(&at) && i.path != linked_bak), "{rel}: nothing through a link: {:?}", excluded.items);
         assert!(excluded.items.iter().any(|i| i.path == b.join("project.json")), "its own files are held");
         let before = std::fs::read(b.join("project.json")).unwrap();
         let report = step3::run(&s, &approved(&s), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap();
         assert_eq!((report.converted, report.excluded), (vec![a.clone()], vec![b.clone()]));
         assert_eq!(std::fs::read(b.join("project.json")).unwrap(), before);
-        // Not excluded, the same link stops it.
+        // Not excluded, the same links stop it.
         let m = step3::preflight(&settings(&r, vec![b.clone()], vec![], "2026-10-08"));
         assert!(m.stops.iter().any(|s| s.contains("isn't a plain folder")), "{rel}: {:?}", m.stops);
+        std::fs::remove_file(&at).unwrap();
+        let m = step3::preflight(&settings(&r, vec![b.clone()], vec![], "2026-10-08"));
+        assert!(m.stops.iter().any(|s| s.contains("isn't a plain file")), "{rel}: {:?}", m.stops);
         let _ = std::fs::remove_dir_all(&r);
     }
 }
