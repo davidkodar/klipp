@@ -302,6 +302,14 @@ fn numeric_row(ui: &mut egui::Ui, ctx: &mut RowCtx, input: RowInput) -> RowOutco
         behaviours_menu(ui, ctx, desc);
     }
     let key = ParamKey::new(desc.key);
+    // egui reports Escape as drag_stopped before drawing this row. It
+    // abandons the gesture, rather than committing the value as release
+    // does; the path drag's snapshot also restores any animated value.
+    if r.drag_stopped && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        ctx.cmds.push(AppCommand::AbandonParamEditAt { addr: ctx.addr.clone(), key });
+        ui.ctx().stop_dragging();
+        return RowOutcome::Nothing;
+    }
     let mut outcome = RowOutcome::Nothing;
     if r.drag_started {
         ctx.cmds.push(AppCommand::BeginParamEditAt { addr: ctx.addr.clone(), key: key.clone() });
