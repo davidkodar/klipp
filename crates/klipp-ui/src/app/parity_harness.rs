@@ -224,8 +224,11 @@ impl Run {
             ..Default::default()
         };
         let mut cmds = Vec::new();
-        let (state, clip_id, property) = (&self.state, self.clip, self.property);
+        let (state, clip_id, property) = (&mut self.state, self.clip, self.property);
         let out = self.ctx.run(input, |ctx| {
+            // As the app's frame does before its panels draw.
+            state.forget_stale_path_drag(ctx.input(|i| i.pointer.any_down()));
+            let state = &*state;
             egui::CentralPanel::default().show(ctx, |ui| {
                 let clip = state.sequences[0]
                     .all_clips()

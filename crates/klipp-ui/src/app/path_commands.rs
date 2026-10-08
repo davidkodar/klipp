@@ -128,7 +128,7 @@ impl crate::state::AppState {
         // A tick of a row whose drag an edit closed under it: the rest of
         // the gesture is one drag again.
         if let AppCommand::SetParamAt { addr, key, .. } = cmd {
-            if self.resumable_path_drag.as_deref() == Some(drag_key(addr, key).as_str()) && !self.active_history().is_any_drag_in_progress() {
+            if self.resumes(addr, key) && !self.active_history().is_any_drag_in_progress() {
                 let _ = self.begin_param_edit_at(addr, key);
             }
         }
@@ -213,7 +213,23 @@ impl crate::state::AppState {
     pub(crate) fn close_path_drag_before_edit(&mut self) {
         let Some(open) = self.active_history().pending_drag_key().filter(|k| k.starts_with(PATH_DRAG)).map(str::to_owned) else { return };
         self.close_open_drag();
-        self.resumable_path_drag = Some(open);
+        self.resumable_path_drag = Some((open, self.selected_clip));
+    }
+
+    /// Forget a drag a result closed (`resumable_path_drag`) once its
+    /// gesture can't be going on, so a later edit of the row (a typed
+    /// value, a reset) is its own step and reopens nothing: each frame,
+    /// before the panels draw, when no button is held (a release the row
+    /// missed, being hidden or collapsed, counts) or another clip is
+    /// selected.
+    pub(crate) fn forget_stale_path_drag(&mut self, pointer_down: bool) {
+        if self.resumable_path_drag.as_ref().is_some_and(|(_, selected)| !pointer_down || *selected != self.selected_clip) {
+            self.resumable_path_drag = None;
+        }
+    }
+
+    fn resumes(&self, addr: &NodePath, key: &ParamKey) -> bool {
+        self.resumable_path_drag.as_ref().is_some_and(|(open, _)| *open == drag_key(addr, key))
     }
 
     /// The dispatch boundary every command passes (M3 step 2): an open path
@@ -221,6 +237,12 @@ impl crate::state::AppState {
     /// any handler runs.
     pub(crate) fn before_dispatch(&mut self, cmd: &AppCommand) {
         if super::command_writes::writes(cmd) { self.invalidate_node_thumbnails(); }
+        // Any other write ends a drag a result closed: only its own row's
+        // next tick resumes it.
+        let resuming = matches!(cmd, AppCommand::SetParamAt { addr, key, .. } if self.resumes(addr, key));
+        if super::command_writes::writes(cmd) && !resuming {
+            self.resumable_path_drag = None;
+        }
         if self.closes_path_drag(cmd) {
             self.close_open_drag();
         }
@@ -338,7 +360,7 @@ impl crate::state::AppState {
     }
 
     fn end_param_edit_at(&mut self, addr: &NodePath, key: &ParamKey) {
-        if self.resumable_path_drag.as_deref() == Some(drag_key(addr, key).as_str()) {
+        if self.resumes(addr, key) {
             self.resumable_path_drag = None;
         }
         if !self.active_history().is_dragging(&drag_key(addr, key)) {
@@ -352,7 +374,7 @@ impl crate::state::AppState {
     /// Take the open drag of `(addr, key)` back: the clip's picture as the
     /// drag found it, and no history entry. Whether a picture changed.
     fn abandon_param_edit_at(&mut self, addr: &NodePath, key: &ParamKey) -> bool {
-        if self.resumable_path_drag.as_deref() == Some(drag_key(addr, key).as_str()) {
+        if self.resumes(addr, key) {
             self.resumable_path_drag = None;
         }
         if !self.active_history().is_dragging(&drag_key(addr, key)) {
@@ -1659,6 +1681,50 @@ mod tests {
         assert!(s.resumable_path_drag.is_none());
         undo(&mut s);
         assert_eq!(picture(&s, c.id), picture0, "which undoes to the start");
+    }
+
+    /// A drag a result closed whose gesture then ends without a release
+    /// reaching its row (the row hidden or collapsed, or another clip
+    /// selected) is forgotten, so a later typed edit of the same row is its
+    /// own single step and leaves no drag open (#1379).
+    #[test]
+    fn a_result_closed_drag_is_forgotten_once_its_gesture_ends() {
+        let c = fixture(&[E::GaussianBlur { radius: 3.0 }]);
+        let ids = effects(&with(std::slice::from_ref(&c)), c.id);
+        let blur = at(c.id, &[ids[0]]);
+        let typed = |s: &mut AppState, r: f32| {
+            let cmd = AppCommand::SetParamAt { addr: blur.clone(), key: "radius".into(), value: ParamValue::Float(r) };
+            s.before_dispatch(&cmd);
+            run(s, cmd);
+        };
+        let closed = |selected: Option<ClipId>| {
+            let mut s = with(std::slice::from_ref(&c));
+            s.selected_clip = selected;
+            s.path_command(&AppCommand::BeginParamEditAt { addr: blur.clone(), key: "radius".into() });
+            run(&mut s, AppCommand::SetParamAt { addr: blur.clone(), key: "radius".into(), value: ParamValue::Float(5.0) });
+            s.close_path_drag_before_edit();
+            s
+        };
+        // The row hidden: its release never comes, and the next frame has
+        // no button held.
+        let mut s = closed(Some(c.id));
+        s.forget_stale_path_drag(false);
+        assert!(s.resumable_path_drag.is_none(), "no button held: forgotten");
+        typed(&mut s, 7.0);
+        assert_eq!(s.active_history().undo_count(), 2, "the typed edit is its own step");
+        assert!(!s.active_history().is_any_drag_in_progress(), "and leaves no drag open");
+        // Another clip selected while the button is still down.
+        let mut s = closed(Some(c.id));
+        s.selected_clip = Some(ClipId::new());
+        s.forget_stale_path_drag(true);
+        assert!(s.resumable_path_drag.is_none(), "another clip: forgotten");
+        // Still held, same selection: kept, and the row's tick resumes it.
+        let mut s = closed(Some(c.id));
+        s.forget_stale_path_drag(true);
+        assert!(s.resumable_path_drag.is_some(), "still held: kept");
+        // Any other write ends it.
+        s.before_dispatch(&AppCommand::ToggleBuiltinEffectEnabled { clip_id: c.id, index: 0 });
+        assert!(s.resumable_path_drag.is_none(), "another write: forgotten");
     }
 
     /// An effect's keys by path and by index: adding one (`AddKeyAt`,

@@ -988,6 +988,7 @@ impl KlippApp {
     /// every panel. Returns the commands they asked for.
     pub(super) fn draw_window(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
         self.keep_graph_before_input(ctx);
+        self.state.forget_stale_path_drag(ctx.input(|i| i.pointer.any_down()));
         // Pickers run off the UI thread (see `file_dialog`); what the
         // ones that closed since the last frame chose starts this
         // frame's commands. Their scope is the open project and the

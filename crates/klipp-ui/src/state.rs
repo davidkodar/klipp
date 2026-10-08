@@ -2091,9 +2091,11 @@ pub struct AppState {
     /// The node the inspector and the graph dock show, by path.
     pub selected_node_addr: Option<klipp_graph_format::path::NodePath>,
     /// The path drag a background result closed while its row was still
-    /// held (`close_path_drag_before_edit`): the row's next tick reopens
-    /// it, so the rest of the gesture is one more step, not one per tick.
-    pub resumable_path_drag: Option<String>,
+    /// held (`close_path_drag_before_edit`), with the clip selected then:
+    /// the row's next tick reopens it, so the rest of the gesture is one
+    /// more step, not one per tick. Forgotten as soon as the gesture can't
+    /// be going on (`forget_stale_path_drag`).
+    pub resumable_path_drag: Option<(String, Option<ClipId>)>,
     /// The split view's compared node: its clip, and the node whose
     /// picture the "before" half stops at.
     pub split_compare_node: Option<(ClipId, klipp_graph_format::path::NodePath)>,
