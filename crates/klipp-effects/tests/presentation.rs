@@ -145,7 +145,32 @@ const MEANT: &[(&str, &str, &str)] = &[
     // slider whose label explains the numbers.
     ("klipp.fx.letterbox", "bar_color", "widget"),
     ("klipp.fx.letterbox", "bar_color", "label"),
+    // IC5: Noise's monochrome is a switch, not a 0-to-1 slider.
+    ("klipp.fx.noise_generator", "monochrome", "widget"),
 ];
+
+/// `p`'s value as the recorded effect stores it: a switch as 0 or 1, a
+/// choice by its index.
+fn stored(case: &serde_json::Value, p: &ParamDesc) -> Option<f32> {
+    let v = &case["stored"][p.field];
+    match (p.kind, v) {
+        (_, serde_json::Value::Bool(b)) => Some(f32::from(u8::from(*b))),
+        (ParamKind::Choice(names), serde_json::Value::String(s)) => names.iter().position(|n| n == s).map(|i| i as f32),
+        (_, serde_json::Value::Number(n)) => n.as_f64().map(|x| x as f32),
+        _ => None,
+    }
+}
+
+/// Whether `pres`'s row shows for the recorded `case`.
+fn shows(t: &klipp_effects::registry::EffectType, case: &serde_json::Value, pres: &Presentation) -> bool {
+    match pres.visible_if {
+        None => true,
+        Some(presentation::Cond::ParamIs { key, value }) => {
+            let p = t.desc.params.iter().find(|p| p.key == key).unwrap_or_else(|| panic!("{}: a condition on {key}, no such parameter", t.desc.id));
+            stored(case, p) == Some(value)
+        }
+    }
+}
 
 /// Every covered type's rows are today's: the same parameters in the same
 /// order, each with today's label, widget, decimals, drag step, suffix and
@@ -157,15 +182,25 @@ fn presentation_matches_the_old_rows() {
     let mut differ = Vec::new();
     let mut compared = 0;
     for t in covered() {
-        let case = fixture["cases"].as_array().unwrap().iter().find(|c| c["kind"] == t.desc.id && c["variant"] == "sample").unwrap_or_else(|| panic!("{}: not recorded", t.desc.id));
+        let cases: Vec<&serde_json::Value> = fixture["cases"].as_array().unwrap().iter().filter(|c| c["kind"] == t.desc.id).collect();
+        assert!(cases.iter().any(|c| c["variant"] == "sample"), "{}: not recorded", t.desc.id);
+        for case in cases {
         let rows = case["rows"].as_array().unwrap();
-        // The order: by `order`, then the catalog's, hidden rows left out.
-        let mut shown: Vec<(u16, usize, &ParamDesc)> = t.desc.params.iter().enumerate().map(|(i, p)| (t.presentation(p).order, i, p)).filter(|(_, _, p)| t.presentation(p).widget != Widget::Hidden).collect();
+        // The order: by `order`, then the catalog's, hidden rows and rows
+        // whose condition doesn't hold left out.
+        let mut shown: Vec<(u16, usize, &ParamDesc)> = t.desc.params.iter().enumerate().map(|(i, p)| (t.presentation(p).order, i, p)).filter(|(_, _, p)| t.presentation(p).widget != Widget::Hidden && shows(t, case, &t.presentation(p))).collect();
         shown.sort_by_key(|(o, i, _)| (*o, *i));
-        let order: Vec<&str> = shown.iter().map(|(_, _, p)| p.key).filter(|k| !MEANT.contains(&(t.desc.id, k, "row"))).collect();
+        // A named editor draws its own (frei0r's plug-in picker drew none
+        // when recorded, with no plug-in installed): it isn't a row.
+        let order: Vec<&str> = shown
+            .iter()
+            .filter(|(_, _, p)| !matches!(t.presentation(p).widget, Widget::Custom(_)))
+            .map(|(_, _, p)| p.key)
+            .filter(|k| !MEANT.contains(&(t.desc.id, k, "row")))
+            .collect();
         let recorded: Vec<&str> = rows.iter().map(|r| r["parameter"].as_str().unwrap()).collect();
         if order != recorded {
-            differ.push(format!("{}: rows {order:?}, today {recorded:?}", t.desc.id));
+            differ.push(format!("{} [{}]: rows {order:?}, today {recorded:?}", t.desc.id, case["variant"]));
         }
         for r in rows {
             let key = r["parameter"].as_str().unwrap();
@@ -201,6 +236,7 @@ fn presentation_matches_the_old_rows() {
             }
             compared += 1;
         }
+        }
     }
     assert!(differ.is_empty(), "{} differences:\n{}", differ.len(), differ.join("\n"));
     assert!(compared > 0 || covered().is_empty());
@@ -209,7 +245,13 @@ fn presentation_matches_the_old_rows() {
 /// System values kept as they are, hidden by name: never because they're
 /// fixed (fixed means not keyframable, and a fixed parameter is still
 /// edited by hand).
-const HIDDEN: &[(&str, &str)] = &[("klipp.fx.transform", "focal_ref")];
+const HIDDEN: &[(&str, &str)] = &[
+    ("klipp.fx.transform", "focal_ref"),
+    ("klipp.fx.film_grain", "seed"),
+    ("klipp.fx.old_film", "seed"),
+    ("klipp.fx.vhs", "seed"),
+    ("klipp.fx.deflicker", "gain"),
+];
 
 #[test]
 fn hidden_is_not_fixed() {
