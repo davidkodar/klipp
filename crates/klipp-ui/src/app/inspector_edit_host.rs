@@ -488,6 +488,7 @@ mod tests {
     use klipp_effects::BuiltinEffect as E;
 
     #[derive(Debug)]
+    #[allow(clippy::large_enum_variant)] // a test's record, kept as it reads
     enum Side {
         Sync { picture: klipp_timeline::LiftedPicture, speed: f64, end: klipp_core::RationalTime },
         Command(AppCommand),
