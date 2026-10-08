@@ -69,6 +69,9 @@ fn draw_stack(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Cl
                 if let Some(i) = order.iter().position(|r| r.addr == row.addr) {
                     reorder_buttons(ui, view, &order, i, cmds);
                 }
+                if let Some(p) = &row.placement {
+                    placement_controls(ui, clip, view, row, p, cmds);
+                }
                 ui.add_space(4.0);
             }
         }
@@ -80,6 +83,62 @@ fn draw_stack(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Cl
 /// in its top level, not a placed kind, not read-only.
 pub fn movable(view: &StackView) -> Vec<&Row> {
     view.rows().filter(|r| r.section == Section::Effects && r.addr.nodes.len() == 1 && !r.read_only && !r.placed && r.placement.is_none() && r.provenance.is_none()).collect()
+}
+
+/// The rows the Placement row steps past with its moves: the clip's own
+/// top-level effects, the placed kinds' cards and the Placement row
+/// itself, as the list holds them all.
+pub fn placement_steps(view: &StackView) -> Vec<&Row> {
+    view.rows().filter(|r| r.section == Section::Effects && r.addr.nodes.len() == 1 && !r.read_only && r.provenance.is_none()).collect()
+}
+
+/// The Placement row's mode and moves (M3 DEC-§2): Auto or Fixed, each
+/// one path edit of its mode, and up and down, a move that makes it Fixed
+/// where it goes. Auto is refused, and greyed with the reason, for a
+/// placement that moves the clip, which automatic placement can't keep
+/// yet.
+fn placement_controls(ui: &mut egui::Ui, clip: &Clip, view: &StackView, row: &Row, placement: &Placement, cmds: &mut Vec<AppCommand>) {
+    use klipp_graph_format::lifted::types as lt;
+    if row.read_only || row.provenance.is_some() {
+        return;
+    }
+    if clip.is_picture_truth() {
+        ui.label(egui::RichText::new("This clip's placement moves with the next project format").size(10.0).weak());
+        return;
+    }
+    let auto = placement.mode != Some(lt::PLACEMENT_FIXED);
+    let refusal = clip.placement_auto_refusal();
+    let mode = |m: u32| AppCommand::SetParamAt { addr: row.addr.clone(), key: "mode".into(), value: klipp_graph_format::ParamValue::Enum(m) };
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt(("placement_mode", clip.id.0))
+            .selected_text(if auto { "Auto" } else { "Fixed" })
+            .show_ui(ui, |ui| {
+                let r = ui.add_enabled(auto || refusal.is_none(), egui::SelectableLabel::new(auto, "Auto"));
+                let r = match refusal.filter(|_| !auto) {
+                    Some(why) => r.on_disabled_hover_text(why),
+                    None => r.on_hover_text("Placed before the first effect drawn outside the picture"),
+                };
+                if r.clicked() && !auto {
+                    cmds.push(mode(lt::PLACEMENT_AUTO));
+                }
+                if ui.selectable_label(!auto, "Fixed").on_hover_text("Placed where the row is").clicked() && auto {
+                    cmds.push(mode(lt::PLACEMENT_FIXED));
+                }
+            });
+        let steps = placement_steps(view);
+        if let Some(i) = steps.iter().position(|r| r.addr == row.addr) {
+            if ui.add_enabled(i > 0, egui::Button::new("↑").small()).on_hover_text("Move up (fixes it here)").clicked() {
+                if let Some(after) = after_for_up(view, &steps, i) {
+                    cmds.push(AppCommand::MoveNodeAt { addr: row.addr.clone(), after });
+                }
+            }
+            if ui.add_enabled(i + 1 < steps.len(), egui::Button::new("↓").small()).on_hover_text("Move down (fixes it here)").clicked() {
+                if let Some(after) = steps[i + 1].addr.node() {
+                    cmds.push(AppCommand::MoveNodeAt { addr: row.addr.clone(), after });
+                }
+            }
+        }
+    });
 }
 
 /// The node a row's move up goes after: the row before the one above it,

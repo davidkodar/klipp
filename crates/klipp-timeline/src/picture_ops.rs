@@ -192,6 +192,25 @@ fn target(p: &ClipPicture, op: &GraphOp) -> Result<Target, String> {
     }
 }
 
+/// The Transform a placement is fixed by when it moves nothing: what a
+/// placement made fixed, or moved from automatic, is put in the list as.
+const IDENTITY_TRANSFORM: BuiltinEffect = BuiltinEffect::Transform {
+    position_x: 0.0,
+    position_y: 0.0,
+    scale_x: 1.0,
+    scale_y: 1.0,
+    rotation: 0.0,
+    anchor_x: 0.5,
+    anchor_y: 0.5,
+    rotation_x: 0.0,
+    rotation_y: 0.0,
+    perspective: 0.0,
+    focal_ref: None,
+};
+
+/// Why a moved placement can't be made automatic.
+const AUTO_NEEDS_UNMOVED: &str = "Auto places an unmoved clip; reset its placement first";
+
 /// The built-in effect entries in list order (by their stored slot), each
 /// by its node; a slot whose entry the lift didn't keep as a node is
 /// `None`.
@@ -404,6 +423,9 @@ impl Clip {
             return Err((Some(index), format!("{:?} edits another root than this clip", path_of(op).root)));
         }
         let lifted = self.picture_v2().map_err(|why| (None, why))?;
+        if let Some(done) = self.placement_list_edit(&lifted.picture.clone(), ops) {
+            return done;
+        }
         // Picture-truth already, or made so by an op the fields can't hold
         // (each judged on the copy as the ops before it left it, below).
         let mut truth = self.is_picture_truth();
@@ -486,19 +508,161 @@ impl Clip {
         // Each slot's effect, by the id the batch knew it by and the id the
         // written clip's picture gives it. A picture-truth clip keeps the
         // batch's ids, so it renames nothing.
-        let renamed = match self.picture_v2().ok().filter(|_| !truth) {
-            Some(after) => order
-                .iter()
-                .enumerate()
-                .filter_map(|(slot, was)| {
-                    let was = (*was)?;
-                    let now = after.picture.graph.nodes.iter().filter(|n| n.type_id.as_str() != types::LEGACY_OFX).find(|n| n.legacy.as_ref().and_then(|l| l.slot) == Some(slot as u32))?.id;
-                    (now != was).then_some((was, now))
-                })
-                .collect(),
-            None => Vec::new(),
-        };
+        let renamed = if truth { Vec::new() } else { self.renamed(&order) };
         Ok((PictureEdit { before, after: self.picture.clone() }, renamed))
+    }
+
+    /// Each effect the list held at a slot of `order` (by the id the batch
+    /// knew it by) that the written clip's picture holds under another id.
+    fn renamed(&self, order: &[Option<NodeId>]) -> Vec<(NodeId, NodeId)> {
+        let Ok(after) = self.picture_v2() else { return Vec::new() };
+        order
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, was)| {
+                let was = (*was)?;
+                let now = after.picture.graph.nodes.iter().filter(|n| n.type_id.as_str() != types::LEGACY_OFX).find(|n| n.legacy.as_ref().and_then(|l| l.slot) == Some(slot as u32))?.id;
+                (now != was).then_some((was, now))
+            })
+            .collect()
+    }
+
+    /// A batch of one op on the clip's own PLACEMENT node that moves it or
+    /// sets its mode (M3 DEC-§2), written to the fields that place it: a
+    /// fixed placement is the first enabled Transform entry, so a move
+    /// moves that entry, as the old tab's reorder did; an automatic one has
+    /// none, so moving it, or making it fixed, puts an identity Transform
+    /// where it goes. Making it automatic takes the entry away, which only
+    /// an unmoved placement can be: its lanes stay. `None` for any other
+    /// batch.
+    fn placement_list_edit(&mut self, picture: &ClipPicture, ops: &[GraphOp]) -> Option<Result<(PictureEdit, Vec<(NodeId, NodeId)>), (Option<usize>, String)>> {
+        let at_placement = |op: &GraphOp| {
+            let path = path_of(op);
+            let named = klipp_graph_lift::clip_properties::placement_node(picture).map(|n| n.id);
+            path.nodes.len() == 1 && (named == path.node() || path.root_clip().is_some_and(|clip| klipp_graph_lift::clip_properties::placement_id(clip) == path.nodes[0]))
+        };
+        let moves = |op: &GraphOp| matches!(op, GraphOp::MoveAfter { .. }) || matches!(op, GraphOp::SetParam { key, .. } if key.as_str() == "mode");
+        let index = ops.iter().position(|op| moves(op) && at_placement(op))?;
+        if ops.len() != 1 {
+            return Some(Err((Some(index), "the placement's place or mode is an edit of its own".into())));
+        }
+        if self.is_picture_truth() {
+            return Some(Err((Some(0), "the placement of a clip whose picture is stored whole moves with the next format revision".into())));
+        }
+        let before = self.picture.clone();
+        let mut order = list_order(picture, self.builtin_effects().len());
+        let fixed = klipp_graph_lift::clip_properties::placement_node(picture).filter(|n| n.legacy.is_some()).and_then(|n| order.iter().position(|o| *o == Some(n.id)));
+        let written = match &ops[0] {
+            GraphOp::MoveAfter { after, .. } => self.move_placement(picture, &mut order, fixed, *after),
+            GraphOp::SetParam { value: ParamValue::Enum(m), .. } if *m == lt::PLACEMENT_FIXED => match fixed {
+                Some(_) => Err("the placement is fixed already".into()),
+                None => {
+                    // Where automatic placement puts it now: before the first
+                    // enabled effect drawn outside the picture, or at the end,
+                    // so the picture doesn't change.
+                    let on = self.builtin_effects_enabled().to_vec();
+                    let at = self.builtin_effects().iter().enumerate().position(|(i, e)| on.get(i).copied().unwrap_or(true) && takes_picture_ops(e) && klipp_effects::draws_outside_the_picture(e)).unwrap_or(self.builtin_effects().len());
+                    self.insert_placement(&mut order, at)
+                }
+            },
+            GraphOp::SetParam { value: ParamValue::Enum(m), .. } if *m == lt::PLACEMENT_AUTO => match fixed {
+                None => Err("the placement is automatic already".into()),
+                Some(slot) => self.unfix_placement(&mut order, slot),
+            },
+            GraphOp::SetParam { value, .. } => Err(format!("the placement's mode is automatic or fixed, not {value:?}")),
+            _ => unreachable!("a move or a mode"),
+        };
+        Some(match written {
+            Ok(()) => {
+                let renamed = self.renamed(&order);
+                Ok((PictureEdit { before, after: self.picture.clone() }, renamed))
+            }
+            Err(why) => {
+                self.picture = before;
+                Err((Some(0), why))
+            }
+        })
+    }
+
+    /// The placement moved after `after`: its entry, when it is fixed (at
+    /// `fixed` in the list), else a new identity Transform there.
+    fn move_placement(&mut self, picture: &ClipPicture, order: &mut Vec<Option<NodeId>>, fixed: Option<usize>, after: NodeId) -> Result<(), String> {
+        let moved = klipp_graph_lift::clip_properties::placement_node(picture).map(|n| n.id).ok_or("the clip has no placement")?;
+        if after == moved {
+            return Err("the placement can't go after itself".into());
+        }
+        let mut rest = order.clone();
+        if let Some(from) = fixed {
+            rest.remove(from);
+        }
+        let chain = chain(picture);
+        let at = chain.iter().position(|n| n.id == after).ok_or_else(|| format!("{after} isn't in the clip's chain"))?;
+        let later = &chain[at + 1..];
+        if later.iter().any(|n| matches!(n.type_id.as_str(), lt::GROUP | lt::SCENE_TO_DISPLAY | types::LEGACY_OFX)) {
+            return Err("the placement goes after the grade, the display transform and the plug-ins".into());
+        }
+        let to = later.iter().filter(|n| n.id != moved).find_map(|n| rest.iter().position(|o| *o == Some(n.id))).unwrap_or(rest.len());
+        match fixed {
+            Some(from) if from == to => Err("the placement is there already".into()),
+            Some(from) => {
+                let id = self.effect_id_at(from).ok_or("the placement's entry is gone")?;
+                if !self.move_effect(id, to) {
+                    return Err("the list can't move the placement there".into());
+                }
+                let entry = order.remove(from);
+                order.insert(to, entry);
+                Ok(())
+            }
+            None => {
+                // Where an enabled Transform before `to` would already be
+                // the placement, a new one there wouldn't be.
+                let on = self.builtin_effects_enabled().to_vec();
+                if self.builtin_effects()[..to].iter().enumerate().any(|(i, e)| matches!(e, BuiltinEffect::Transform { .. }) && on.get(i).copied().unwrap_or(true)) {
+                    return Err("an enabled Transform before there places the clip".into());
+                }
+                self.insert_placement(order, to)
+            }
+        }
+    }
+
+    /// An identity Transform put in the list at `at`: the clip's placement,
+    /// fixed there.
+    fn insert_placement(&mut self, order: &mut Vec<Option<NodeId>>, at: usize) -> Result<(), String> {
+        self.insert_effect(at, IDENTITY_TRANSFORM).ok_or("the list can't take the placement there")?;
+        order.insert(at, None);
+        Ok(())
+    }
+
+    /// Why the clip's fixed placement can't be made automatic, if it
+    /// can't: automatic placement keeps no static move yet, so its
+    /// Transform must move nothing, have no keys or modifiers of its own,
+    /// and be the only enabled Transform (another would place the clip).
+    /// `None` too when the placement is automatic already. What the
+    /// Placement row's Auto choice is disabled by.
+    pub fn placement_auto_refusal(&self) -> Option<&'static str> {
+        let on = |i: usize| self.builtin_effects_enabled().get(i).copied().unwrap_or(true);
+        let transforms: Vec<usize> = self.builtin_effects().iter().enumerate().filter(|(i, e)| matches!(e, BuiltinEffect::Transform { .. }) && on(*i)).map(|(i, _)| i).collect();
+        let &slot = transforms.first()?;
+        if self.builtin_effects()[slot] != IDENTITY_TRANSFORM {
+            return Some(AUTO_NEEDS_UNMOVED);
+        }
+        let prefix = format!("{slot}:");
+        if self.effect_keyframes().keys().any(|k| k.starts_with(&prefix)) || self.param_modifiers().keys().any(|k| matches!(k, klipp_core::ParamId::Effect { effect_index, .. } if *effect_index == slot)) {
+            return Some("the placement's Transform has keys or modifiers of its own");
+        }
+        (transforms.len() > 1).then_some("another enabled Transform would place the clip")
+    }
+
+    /// The fixed placement's entry, at `slot`, taken out so the placement
+    /// is automatic, unless [`Self::placement_auto_refusal`] says why not.
+    fn unfix_placement(&mut self, order: &mut Vec<Option<NodeId>>, slot: usize) -> Result<(), String> {
+        if let Some(why) = self.placement_auto_refusal() {
+            return Err(why.into());
+        }
+        let id = self.effect_id_at(slot).ok_or("the placement's entry is gone")?;
+        self.remove_effect(id).ok_or("the placement's entry is gone")?;
+        order.remove(slot);
+        Ok(())
     }
 
     /// `edited` as this clip's picture-truth picture, its fields already
@@ -613,19 +777,7 @@ impl Clip {
             let at = (0..self.builtin_effects().len()).find(|i| matches!(self.builtin_effects()[*i], BuiltinEffect::Transform { .. }) && on(self, *i));
             let id = match at {
                 Some(i) => self.effect_id_at(i).ok_or("the transform entry is gone")?,
-                None => self.push_effect(BuiltinEffect::Transform {
-                    position_x: 0.0,
-                    position_y: 0.0,
-                    scale_x: 1.0,
-                    scale_y: 1.0,
-                    rotation: 0.0,
-                    anchor_x: 0.5,
-                    anchor_y: 0.5,
-                    rotation_x: 0.0,
-                    rotation_y: 0.0,
-                    perspective: 0.0,
-                    focal_ref: None,
-                }),
+                None => self.push_effect(IDENTITY_TRANSFORM),
             };
             let name = key.as_str().to_owned();
             self.edit_effect(id, |e| {
