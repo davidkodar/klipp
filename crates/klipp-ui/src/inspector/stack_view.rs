@@ -360,13 +360,26 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
     match effect {
         Some((n, ty)) if !row.read_only => {
             let entry = klipp_graph_lift::effect_params::entry_of(n).unwrap_or(serde_json::Value::Null);
-            let presentation = |p: &ParamDesc| ty.presentation(p);
+            // The catalog retains legacy animation names (Chroma Key's
+            // "spill"), while the picture stores their canonical keys
+            // ("soft_edge"). Bind every row operation to that picture key,
+            // but look up its presentation by the original descriptor.
+            let params: Vec<_> = ty.desc.params.iter().map(|p| {
+                let key = klipp_graph_lift::lift::KEYFRAME_ALIASES.iter()
+                    .find(|(tag, from, _)| *tag == ty.tag && *from == p.key)
+                    .map_or(p.key, |(_, _, to)| *to);
+                ParamDesc { key, ..*p }
+            }).collect();
+            let presentation = |p: &ParamDesc| {
+                let original = klipp_graph_lift::lift::keyframe_name(ty.tag, p.key);
+                ty.presentation(ty.desc.params.iter().find(|p| p.key == original).unwrap_or(p))
+            };
             let stored = |p: &ParamDesc| effect_value(&entry, p);
             let keys = |p: &ParamDesc| {
                 let base = crate::inspector::generated::row::number(&effect_value(&entry, p)).unwrap_or(p.default);
                 crate::inspector::generated::keys_at(n, p, base, clip_time_secs, KEY_TOLERANCE)
             };
-            let rows = NodeRows { params: ty.desc.params, presentation: &presentation, stored: &stored, keys: &keys };
+            let rows = NodeRows { params: &params, presentation: &presentation, stored: &stored, keys: &keys };
             let behaviours = |ui: &mut egui::Ui, param: &klipp_core::ParamId, cmds: &mut Vec<AppCommand>| {
                 crate::inspector::modifier_ui::show_behaviors_content(ui, theme, clip, std::slice::from_ref(param), cmds);
             };
