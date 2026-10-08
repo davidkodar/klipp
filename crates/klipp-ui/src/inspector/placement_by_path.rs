@@ -8,8 +8,8 @@
 //! those commands into the path commands that change the same thing:
 //! - an update (or an add) of the Transform or the Opacity they show, into
 //!   one `SetParamAt` per value that differs from the clip's;
-//! - their drag's begin and end, into a drag over the placement node's
-//!   parameters together (`BeginParamEditAt` with an empty key);
+//! - their drag's begin, end and abandon, into a drag over the placement
+//!   node's parameters together (`BeginParamEditAt` with an empty key);
 //! - a key put on or taken off a placement or opacity lane, into
 //!   `AddKeyAt` / `RemoveKeyAt` on the node's key.
 //!
@@ -118,6 +118,9 @@ pub fn by_path(cmds: Vec<AppCommand>, clip: &Clip) -> Vec<AppCommand> {
             }
             AppCommand::BeginEffectDrag { key, clip_id, .. } if *clip_id == clip.id && is_placement_drag(key) => out.push(AppCommand::BeginParamEditAt { addr: addr.clone(), key: whole.clone() }),
             AppCommand::EndEffectDrag { key, clip_id, .. } if *clip_id == clip.id && is_placement_drag(key) => out.push(AppCommand::EndParamEditAt { addr: addr.clone(), key: whole.clone() }),
+            // The gizmo names no drag key on its abandon; it only ever
+            // abandons the placement drag it opened.
+            AppCommand::AbandonEffectDrag { clip_id, .. } if *clip_id == clip.id => out.push(AppCommand::AbandonParamEditAt { addr: addr.clone(), key: whole.clone() }),
             AppCommand::AddVideoKeyframe { clip_id, param, time_secs, value } if *clip_id == clip.id && lane_key(*param).is_some() => {
                 let key = klipp_core::Keyframe { time_secs: *time_secs, value: *value, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
                 match serde_json::to_value(key) {

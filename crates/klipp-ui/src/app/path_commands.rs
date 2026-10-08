@@ -112,6 +112,7 @@ impl crate::state::AppState {
                 self.end_param_edit_at(addr, key);
                 Ok(false)
             }
+            AppCommand::AbandonParamEditAt { addr, key } => Ok(self.abandon_param_edit_at(addr, key)),
             AppCommand::RevealGraph { path, select } => self.reveal_graph(path, *select).map(|()| false),
             AppCommand::SetGraphDockRoot { root } => self.set_graph_dock_root(*root).map(|()| false),
             AppCommand::SetSplitCompareNode { clip_id, path } => self.set_split_compare_node(*clip_id, path.as_ref()).map(|()| false),
@@ -142,8 +143,8 @@ impl crate::state::AppState {
     }
 
     /// Whether `cmd`, arriving while a path drag is open, closes it first:
-    /// every command but the drag's own (`BeginParamEditAt`, `SetParamAt`
-    /// and `EndParamEditAt` of its `(addr, key)`) and those that change no
+    /// every command but the drag's own (`BeginParamEditAt`, `SetParamAt`,
+    /// `EndParamEditAt` and `AbandonParamEditAt` of its `(addr, key)`) and those that change no
     /// picture (transport, a refresh, the dock and compare state). An edit
     /// by any route, old or new, is then its own step, never folded into
     /// the drag's snapshot nor taken as one of its live steps. A command
@@ -152,7 +153,7 @@ impl crate::state::AppState {
     pub(crate) fn closes_path_drag(&self, cmd: &AppCommand) -> bool {
         let Some(open) = self.active_history().pending_drag_key().filter(|k| k.starts_with(PATH_DRAG)) else { return false };
         match cmd {
-            AppCommand::BeginParamEditAt { addr, key } | AppCommand::EndParamEditAt { addr, key } => drag_key(addr, key) != open,
+            AppCommand::BeginParamEditAt { addr, key } | AppCommand::EndParamEditAt { addr, key } | AppCommand::AbandonParamEditAt { addr, key } => drag_key(addr, key) != open,
             // An edit of the dragged parameter, its value or its keys, is
             // part of the drag; of any of the node's, in a drag over them all.
             AppCommand::SetParamAt { addr, key, .. } | AppCommand::MoveKeyAt { addr, key, .. } | AppCommand::AddKeyAt { addr, key, .. } | AppCommand::RemoveKeyAt { addr, key, .. } => {
@@ -258,6 +259,22 @@ impl crate::state::AppState {
         // The entry keeps the drag's own "before": closing it is closing
         // any open drag, from its start to the picture now.
         self.close_open_drag();
+    }
+
+    /// Take the open drag of `(addr, key)` back: the clip's picture as the
+    /// drag found it, and no history entry. Whether a picture changed.
+    fn abandon_param_edit_at(&mut self, addr: &NodePath, key: &ParamKey) -> bool {
+        if !self.active_history().is_dragging(&drag_key(addr, key)) {
+            return false;
+        }
+        let before = match self.active_history().pending_old_entry_ref().map(|e| &e.command) {
+            Some(EditCommand::PictureEdit { clip_id, edit, .. }) => Some((*clip_id, edit.before.clone())),
+            _ => None,
+        };
+        self.active_history_mut().abandon_pending_drag();
+        let Some((clip_id, before)) = before else { return false };
+        self.set_picture(clip_id, &before);
+        true
     }
 
     /// The one op that changes the key of `(addr, key)` at `time_secs` by
@@ -774,6 +791,52 @@ mod tests {
         let keys = c.node_key_state(&addr, &"tl_x".into()).unwrap().keys;
         assert_eq!(keys.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>(), [(0.0, 0.0), (1.0, 0.1), (1.5, 0.2)], "every key on the pin's node");
         assert!(matches!(c.builtin_effects()[1], E::CornerPin { tl, .. } if tl[1] == 0.1), "{:?}", c.builtin_effects()[1]);
+    }
+
+    /// A pin drag taken back (Escape) leaves the picture exactly as the
+    /// drag found it, the static axis's value and the keyed axis's new
+    /// key alike, and records no step.
+    #[test]
+    fn an_abandoned_cornerpin_drag_leaves_the_picture_as_it_was() {
+        let pin = (klipp_effects::registry::effect_type("corner_pin").unwrap().sample)();
+        let (mut s, id) = state(&[pin]);
+        let addr = at(id, &[clip(&s, id).effect_node_at(false, 0).unwrap()]);
+        let key = |t: f64, v: f32| serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).unwrap();
+        run(&mut s, AppCommand::AddKeyAt { addr: addr.clone(), key: "tl_x".into(), keyframe: key(0.0, 0.0) });
+        let picture = |s: &AppState| serde_json::to_string(&clip(s, id).picture_v2().unwrap().picture).unwrap();
+        let (before, steps) = (picture(&s), s.active_history().undo_count());
+        assert_eq!(s.path_command(&AppCommand::BeginParamEditAt { addr: addr.clone(), key: "".into() }), Some(false));
+        for frame in 1..=3 {
+            let v = 0.1 * frame as f32;
+            run(&mut s, AppCommand::SetParamAt { addr: addr.clone(), key: "tl_x".into(), value: ParamValue::Float(v) });
+            run(&mut s, AppCommand::SetParamAt { addr: addr.clone(), key: "tl_y".into(), value: ParamValue::Float(v) });
+            run(&mut s, AppCommand::AddKeyAt { addr: addr.clone(), key: "tl_x".into(), keyframe: key(1.0, v) });
+        }
+        assert_ne!(picture(&s), before, "the drag moved the pin");
+        assert_eq!(s.path_command(&AppCommand::AbandonParamEditAt { addr: addr.clone(), key: "".into() }), Some(true));
+        assert_eq!(picture(&s), before, "values and keys as the drag found them");
+        assert_eq!(s.active_history().undo_count(), steps, "no step recorded");
+        assert!(!s.active_history().is_any_drag_in_progress());
+    }
+
+    /// The gizmo's abandon by path, after it moved the clip, leaves the
+    /// placement as the drag found it and records no step.
+    #[test]
+    fn an_abandoned_gizmo_drag_leaves_the_placement_as_it_was() {
+        let (mut s, id) = state(&[E::Gamma { gamma: 1.1 }, transform(5.0, 1.0)]);
+        let c = clip(&s, id).clone();
+        let picture = |s: &AppState| serde_json::to_string(&clip(s, id).picture_v2().unwrap().picture).unwrap();
+        let (before, steps) = (picture(&s), s.active_history().undo_count());
+        let mut cmds = gizmo_drag(&c, transform(5.0, 1.0), transform(40.0, 0.6));
+        let end = cmds.pop();
+        assert!(matches!(end, Some(AppCommand::EndEffectDrag { .. })));
+        cmds.push(AppCommand::AbandonEffectDrag { clip_id: id, effect_index: 1, added: false });
+        for cmd in crate::inspector::placement_by_path::by_path(cmds, &c) {
+            s.before_dispatch(&cmd);
+            assert!(s.path_command(&cmd).is_some(), "{cmd:?} is a path command");
+        }
+        assert_eq!(picture(&s), before);
+        assert_eq!(s.active_history().undo_count(), steps, "no step recorded");
     }
 
     /// The engine's side of an edit, left out: these tests read the state.

@@ -4579,14 +4579,9 @@ impl ViewerPanel {
                     // edit's undo entry (#409). One that never opened
                     // (a click) has nothing to take back.
                     if drag.started {
-                        if by_path {
-                            // By path: the placement back as the drag found
-                            // it, and the drag closed.
-                            cmds.push(AppCommand::UpdateBuiltinEffect { clip_id, index: idx, effect: drag.initial_transform.to_builtin_effect() });
-                            cmds.push(AppCommand::EndEffectDrag { key: drag_key, clip_id, effect_index: idx, new_effect: drag.initial_transform.to_builtin_effect() });
-                        } else {
-                            cmds.push(AppCommand::AbandonEffectDrag { clip_id, effect_index: idx, added: drag.added });
-                        }
+                        // By path, `placement_by_path` takes this as the
+                        // placement drag's abandon.
+                        cmds.push(AppCommand::AbandonEffectDrag { clip_id, effect_index: idx, added: drag.added });
                     }
                 }
             }
@@ -5040,15 +5035,9 @@ impl ViewerPanel {
                 GizmoStep::Abandon => {
                     if drag.started {
                         match &path {
-                            // The corner back where the drag found it, then
-                            // the drag closed.
-                            Some(a) => {
-                                let was = base[drag.corner];
-                                for axis in 0..2 {
-                                    cmds.push(AppCommand::SetParamAt { addr: a.clone(), key: path_key(drag.corner, axis), value: klipp_graph_format::ParamValue::Float(was[axis]) });
-                                }
-                                cmds.push(AppCommand::EndParamEditAt { addr: a.clone(), key: whole.clone() });
-                            }
+                            // The pin as the drag found it, its values and
+                            // keys, and no step recorded.
+                            Some(a) => cmds.push(AppCommand::AbandonParamEditAt { addr: a.clone(), key: whole.clone() }),
                             None => cmds.push(AppCommand::AbandonEffectDrag { clip_id, effect_index, added: false }),
                         }
                     }

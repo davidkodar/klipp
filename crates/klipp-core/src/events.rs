@@ -1012,6 +1012,11 @@ pub enum AppCommand {
     /// handle moves two at once).
     BeginParamEditAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey },
     EndParamEditAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey },
+    /// Take the open drag of `(addr, key)` back without recording it: the
+    /// clip's picture returns to what it was when the drag opened, values
+    /// and keys alike. For a gesture that cannot close as an edit (Escape,
+    /// the pointer leaving the window, its release never seen).
+    AbandonParamEditAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey },
     /// Add a key to `(addr, key)`: `keyframe` as the node's animation
     /// holds one.
     AddKeyAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey, keyframe: serde_json::Value },
