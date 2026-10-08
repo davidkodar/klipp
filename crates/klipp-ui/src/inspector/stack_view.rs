@@ -396,7 +396,7 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
                 timeline_in_secs: clip.timeline_in.to_secs_f64(),
                 rate: clip.timeline_in.rate,
                 encoding: klipp_grade_model::Encoding::from_u8(klipp_core::grade_encoding().effective(klipp_engine::video_decoder::working_colorspace()).as_u8()),
-                entry: Some(Entry { payload: &entry, fields_at: &[] }),
+                entry: Some(Entry { payload: &entry, fields_at: &[], choices_by_index: false }),
                 cmds: out,
                 behaviours: Some(&behaviours),
                 theme,

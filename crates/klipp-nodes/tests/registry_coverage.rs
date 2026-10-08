@@ -101,6 +101,12 @@ fn ids_are_unique_grade_ids() {
 /// description carries them (#1040).
 const TAKEN_BUT_UNUSED: &[&str] = &["qual_exposure", "qual_saturation", "qual_hue_shift", "qual_temperature"];
 
+/// Names `apply_override` takes as a choice's index, so the inspector can
+/// write every grade choice the way the old panel's `SetNodeParam` did
+/// (M3 step 18), but that no description makes keyframable: a choice
+/// described, set by hand, never keyed.
+const SET_NOT_KEYED: &[&str] = &["difference_key.match_space", "matte_channel", "matte_combine_op"];
+
 /// Every name `apply_override` takes, read from its match arms: the plain
 /// names, the qualifier's and luma key's prefixed ones, and the warper's
 /// indexed ones. Each is confirmed by `NodeParams::accepts`, so a misread
@@ -144,6 +150,11 @@ fn every_name_a_keyframe_track_can_drive_is_a_described_parameter() {
     for name in override_names() {
         if TAKEN_BUT_UNUSED.contains(&name.as_str()) {
             assert!(!described.contains(name.as_str()), "{name} is described: take it off TAKEN_BUT_UNUSED");
+            continue;
+        }
+        if SET_NOT_KEYED.contains(&name.as_str()) {
+            let desc = node_types().flat_map(|t| t.desc.params.iter()).find(|p| p.key == name);
+            assert!(desc.is_some_and(|d| !d.keyframable && matches!(d.kind, ParamKind::Choice(_))), "{name}: SET_NOT_KEYED holds described choices no key drives");
             continue;
         }
         assert!(described.contains(name.as_str()), "apply_override takes {name}, and no description makes it keyframable");

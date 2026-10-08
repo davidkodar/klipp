@@ -72,6 +72,10 @@ pub struct Entry<'a> {
     /// The object holding the fields: `[]` for an effect's settings,
     /// `["params"]` for a grade node's entry.
     pub fields_at: &'static [&'static str],
+    /// A choice is written as its index (`SetParamAt`), not its name: a
+    /// grade node's are, as the old panel's `SetNodeParam` wrote them,
+    /// since its stored names are its own types', not the catalog's.
+    pub choices_by_index: bool,
 }
 
 /// A parameter's keys around the playhead, in the clip's seconds.
@@ -132,11 +136,18 @@ pub fn number(stored: &Value) -> Option<f32> {
     }
 }
 
+/// A choice's name as stored names are matched against it: its letters
+/// and digits, whatever the case ("Rec.709 linear" is stored as
+/// "Rec709Linear", "Box Blur" as "box_blur").
+pub fn plain_name(name: &str) -> String {
+    name.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect()
+}
+
 /// `stored` as a choice's index: stored by name or by index.
 pub fn choice_index(desc: &ParamDesc, stored: &Value) -> Option<usize> {
     let ParamKind::Choice(names) = desc.kind else { return None };
     match stored {
-        Value::String(s) => names.iter().position(|n| n.eq_ignore_ascii_case(s) || n.replace(['-', ' '], "_").eq_ignore_ascii_case(s)),
+        Value::String(s) => names.iter().position(|n| plain_name(n) == plain_name(s)),
         Value::Number(n) => n.as_u64().map(|i| i as usize).filter(|i| *i < names.len()),
         Value::Bool(b) => Some(usize::from(*b)).filter(|i| *i < names.len()),
         _ => None,
@@ -432,7 +443,9 @@ fn toggle_row(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc, pres: &Pres
     }
     // In the stored form: a switch's bool or number, a choice's index or
     // name.
+    let by_index = ctx.entry.as_ref().is_some_and(|e| e.choices_by_index);
     let new = match (desc.kind, stored) {
+        (ParamKind::Choice(_), _) if by_index => Value::from(u32::from(on)),
         (ParamKind::Choice(names), Value::String(_)) => Value::from(names[usize::from(on)]),
         (_, Value::Bool(_)) => Value::Bool(on),
         _ => Value::from(u32::from(on)),
@@ -469,7 +482,9 @@ fn combo_row(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc, pres: &Prese
     if chosen == index {
         return RowOutcome::Nothing;
     }
+    let by_index = ctx.entry.as_ref().is_some_and(|e| e.choices_by_index);
     let new = match (desc.kind, stored) {
+        (ParamKind::Choice(_), _) if by_index => Value::from(chosen as u32),
         (ParamKind::Choice(names), Value::String(_)) => Value::from(names[chosen]),
         (_, Value::Bool(_)) => Value::Bool(chosen == 1),
         _ => Value::from(chosen as u32),
@@ -522,9 +537,30 @@ mod tests {
         let addr = NodePath::new(Root::Clip { clip: uuid::Uuid::nil() }, [uuid::Uuid::from_u128(1)]);
         let mut cmds = Vec::new();
         let theme = crate::theme::KlippTheme::default();
-        let mut ctx = RowCtx { addr: &addr, clip_time_secs: 0.0, timeline_in_secs: 0.0, rate: 24, encoding: Encoding::Bt1886, entry: Some(Entry { payload, fields_at: &[] }), cmds: &mut cmds, behaviours: None, theme: &theme, app: None, custom: None };
+        let mut ctx = RowCtx { addr: &addr, clip_time_secs: 0.0, timeline_in_secs: 0.0, rate: 24, encoding: Encoding::Bt1886, entry: Some(Entry { payload, fields_at: &[], choices_by_index: false }), cmds: &mut cmds, behaviours: None, theme: &theme, app: None, custom: None };
         assert!(write_stored(&mut ctx, desc(type_id, key), new));
         cmds
+    }
+
+    /// Every choice in the effect and grade catalogs keeps its names apart
+    /// as stored names are matched (`plain_name`): two that read alike
+    /// would make a stored name pick the wrong one.
+    #[test]
+    fn every_choice_name_is_its_own_by_letters_and_digits() {
+        let params = effect_types().flat_map(|t| t.desc.params.iter().map(move |p| (t.desc.id, p)));
+        let grade = klipp_nodes::registry::node_types().flat_map(|t| t.desc.params.iter().map(move |p| (t.desc.id, p)));
+        let mut checked = 0;
+        for (id, p) in params.chain(grade) {
+            let ParamKind::Choice(names) = p.kind else { continue };
+            let mut seen = std::collections::BTreeMap::new();
+            for name in names {
+                if let Some(other) = seen.insert(plain_name(name), name) {
+                    panic!("{id} {}: {other:?} and {name:?} read alike", p.key);
+                }
+            }
+            checked += 1;
+        }
+        assert!(checked > 10, "only {checked} choices");
     }
 
     /// A choice the effect stores by name is written by its catalog name,

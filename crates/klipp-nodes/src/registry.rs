@@ -287,8 +287,8 @@ static P_LAYER_MIXER: &[ParamDesc] = &[
 static P_LUT_3D: &[ParamDesc] = &[
     ParamDesc { field: "lut_path", index: None, key: "lut_path", label: "LUT file", kind: ParamKind::Other, default: f32::NAN, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: false, derived: false },
     ParamDesc { field: "lut_opacity", index: None, key: "lut_opacity", label: "Opacity", kind: ParamKind::Float, default: 1.0, range: None, soft: Some((0.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
-    ParamDesc { field: "lut_input_space", index: None, key: "lut_input_space", label: "Input space", kind: ParamKind::Choice(&["Rec.709 linear", "ACEScg", "BT.2020 linear"]), default: 0.0, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: true, derived: false },
-    ParamDesc { field: "lut_output_space", index: None, key: "lut_output_space", label: "Output space", kind: ParamKind::Choice(&["Rec.709 linear", "ACEScg", "BT.2020 linear"]), default: 0.0, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: true, derived: false },
+    ParamDesc { field: "lut_input_space", index: None, key: "lut_input_space", label: "Input space", kind: ParamKind::Choice(&["Rec.709 linear", "ACEScg", "BT.2020 linear", "Use LUT default"]), default: 3.0, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: true, derived: false },
+    ParamDesc { field: "lut_output_space", index: None, key: "lut_output_space", label: "Output space", kind: ParamKind::Choice(&["Rec.709 linear", "ACEScg", "BT.2020 linear", "Use LUT default"]), default: 3.0, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: true, derived: false },
 ];
 static P_FILM_GRAIN: &[ParamDesc] = &[
     ParamDesc { field: "grain.enabled", index: None, key: "grain.enabled", label: "Enabled", kind: ParamKind::Bool, default: 0.0, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: false, derived: false },

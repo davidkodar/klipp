@@ -48,7 +48,7 @@ fn card(ctx: &egui::Context, t: &EffectType, clip: &Clip, state: &AppState, even
                 timeline_in_secs: 0.0,
                 rate: 24,
                 encoding: klipp_grade_model::Encoding::Bt1886,
-                entry: Some(klipp_ui::inspector::generated::Entry { payload: &json, fields_at: &[] }),
+                entry: Some(klipp_ui::inspector::generated::Entry { payload: &json, fields_at: &[], choices_by_index: false }),
                 cmds: &mut cmds,
                 behaviours: None,
                 theme: &theme,

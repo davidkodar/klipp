@@ -93,7 +93,7 @@ pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, node: Nod
         timeline_in_secs: clip.timeline_in.to_secs_f64(),
         rate: clip.timeline_in.rate,
         encoding: klipp_grade_model::Encoding::from_u8(klipp_core::grade_encoding().effective(klipp_engine::video_decoder::working_colorspace()).as_u8()),
-        entry: Some(Entry { payload: &entry, fields_at: &["params"] }),
+        entry: Some(Entry { payload: &entry, fields_at: &["params"], choices_by_index: true }),
         cmds: &mut *cmds,
         // A grade parameter's Behaviours aren't kept yet.
         behaviours: None,
@@ -167,7 +167,7 @@ impl GradeSnapshot {
             timeline_in_secs: self.timeline_in_secs,
             rate: self.rate,
             encoding: klipp_grade_model::Encoding::from_u8(klipp_core::grade_encoding().effective(klipp_engine::video_decoder::working_colorspace()).as_u8()),
-            entry: Some(Entry { payload: &entry, fields_at: &["params"] }),
+            entry: Some(Entry { payload: &entry, fields_at: &["params"], choices_by_index: true }),
             cmds,
             behaviours: None,
             theme,

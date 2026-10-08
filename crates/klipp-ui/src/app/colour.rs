@@ -1471,35 +1471,19 @@ impl KlippApp {
                 });
                 true
             }
-            AppCommand::SetNodeQualifier { clip_id, node_id, qualifier } => {
-                let node_id = *node_id;
-                let qualifier = qualifier.clone();
+            AppCommand::SetNodeQualifier { clip_id, .. }
+            | AppCommand::SetNodeLumaKey { clip_id, .. }
+            | AppCommand::SetNodeDifferenceKey { clip_id, .. }
+            | AppCommand::SetNodeSoftClip { clip_id, .. }
+            | AppCommand::SetNodeFilmGrain { clip_id, .. }
+            | AppCommand::SetExternalMatteChannel { clip_id, .. }
+            | AppCommand::SetMatteCombineOp { clip_id, .. } => {
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        node.params.qualifier = Some(qualifier);
-                    }
+                    write_node_settings(graph, cmd);
                 });
-                true
-            }
-            AppCommand::SetNodeLumaKey { clip_id, node_id, luma_key } => {
-                let node_id = *node_id;
-                let luma_key = luma_key.clone();
-                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        node.params.luma_key = Some(luma_key);
-                    }
-                });
-                true
-            }
-            AppCommand::SetNodeDifferenceKey { clip_id, node_id, difference_key } => {
-                let node_id = *node_id;
-                let dk = difference_key.clone();
-                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        node.params.difference_key = Some(dk);
-                        node.enabled = true;
-                    }
-                });
+                if matches!(cmd, AppCommand::SetExternalMatteChannel { .. } | AppCommand::SetMatteCombineOp { .. }) {
+                    self.state.dirty = true;
+                }
                 true
             }
             AppCommand::SetNodeDifferenceKeyPlate { clip_id, node_id, plate_path } => {
@@ -1510,26 +1494,6 @@ impl KlippApp {
                         let dk = node.params.difference_key.get_or_insert_with(Default::default);
                         dk.plate_path = plate_path;
                         node.enabled = true;
-                    }
-                });
-                true
-            }
-            AppCommand::SetNodeSoftClip { clip_id, node_id, soft_clip } => {
-                let node_id = *node_id;
-                let soft_clip = soft_clip.clone();
-                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        node.params.soft_clip = Some(soft_clip);
-                    }
-                });
-                true
-            }
-            AppCommand::SetNodeFilmGrain { clip_id, node_id, grain } => {
-                let node_id = *node_id;
-                let grain = grain.clone();
-                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        node.params.grain = Some(grain);
                     }
                 });
                 true
@@ -1580,43 +1544,6 @@ impl KlippApp {
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
                     if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
                         node.params.matte_image_path = matte_path;
-                    }
-                });
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::SetExternalMatteChannel { clip_id, node_id, channel, invert } => {
-                let ch = match *channel {
-                    0 => klipp_nodes::MatteChannel::Alpha,
-                    1 => klipp_nodes::MatteChannel::Luminance,
-                    2 => klipp_nodes::MatteChannel::Red,
-                    3 => klipp_nodes::MatteChannel::Green,
-                    4 => klipp_nodes::MatteChannel::Blue,
-                    _ => klipp_nodes::MatteChannel::Luminance,
-                };
-                let node_id = *node_id;
-                let invert = *invert;
-                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        node.params.matte_channel = Some(ch);
-                        node.params.matte_invert = Some(invert);
-                    }
-                });
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::SetMatteCombineOp { clip_id, node_id, op } => {
-                // Out-of-range falls back to the default rather than
-                // refusing the command, matching the channel handler
-                // above: a bad discriminant should not wedge the node.
-                let chosen = klipp_nodes::MatteCombineOp::ALL
-                    .get(*op as usize)
-                    .copied()
-                    .unwrap_or_default();
-                let node_id = *node_id;
-                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        node.params.matte_combine_op = Some(chosen);
                     }
                 });
                 self.state.dirty = true;
@@ -3322,6 +3249,55 @@ mod add_node_tests {
         assert!(!ids(&root).contains(&id));
         assert!(ids(inside(&root, compound)).contains(&id));
     }
+}
+
+/// A per-node editor's settings command written to its node in `graph`:
+/// the qualifier, luma key, difference key, soft clip, grain, external
+/// matte channel or matte combine that the command carries. One place, so
+/// the app's dispatch and the inspector parity apply them alike. `false`
+/// when `cmd` is none of these.
+pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppCommand) -> bool {
+    let node_id = match cmd {
+        AppCommand::SetNodeQualifier { node_id, .. }
+        | AppCommand::SetNodeLumaKey { node_id, .. }
+        | AppCommand::SetNodeDifferenceKey { node_id, .. }
+        | AppCommand::SetNodeSoftClip { node_id, .. }
+        | AppCommand::SetNodeFilmGrain { node_id, .. }
+        | AppCommand::SetExternalMatteChannel { node_id, .. }
+        | AppCommand::SetMatteCombineOp { node_id, .. } => *node_id,
+        _ => return false,
+    };
+    let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) else { return true };
+    let params = &mut node.params;
+    match cmd {
+        AppCommand::SetNodeQualifier { qualifier, .. } => params.qualifier = Some(qualifier.clone()),
+        AppCommand::SetNodeLumaKey { luma_key, .. } => params.luma_key = Some(luma_key.clone()),
+        AppCommand::SetNodeDifferenceKey { difference_key, .. } => {
+            params.difference_key = Some(difference_key.clone());
+            node.enabled = true;
+        }
+        AppCommand::SetNodeSoftClip { soft_clip, .. } => params.soft_clip = Some(soft_clip.clone()),
+        AppCommand::SetNodeFilmGrain { grain, .. } => params.grain = Some(grain.clone()),
+        AppCommand::SetExternalMatteChannel { channel, invert, .. } => {
+            params.matte_channel = Some(match *channel {
+                0 => klipp_nodes::MatteChannel::Alpha,
+                1 => klipp_nodes::MatteChannel::Luminance,
+                2 => klipp_nodes::MatteChannel::Red,
+                3 => klipp_nodes::MatteChannel::Green,
+                4 => klipp_nodes::MatteChannel::Blue,
+                _ => klipp_nodes::MatteChannel::Luminance,
+            });
+            params.matte_invert = Some(*invert);
+        }
+        // Out-of-range falls back to the default rather than refusing the
+        // command, matching the channel above: a bad discriminant should
+        // not wedge the node.
+        AppCommand::SetMatteCombineOp { op, .. } => {
+            params.matte_combine_op = Some(klipp_nodes::MatteCombineOp::ALL.get(*op as usize).copied().unwrap_or_default());
+        }
+        _ => {}
+    }
+    true
 }
 
 /// The graph a command naming `nodes` edits, as a path from the clip's
