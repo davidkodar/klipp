@@ -2763,3 +2763,56 @@ fn status_reports_history_and_the_inspector_view_and_writes_nothing() {
     assert!(h.cmd_rx.try_recv().is_err(), "and sends the app nothing");
 }
 
+
+/// An agent's effect edit, planned from the socket's copy of a clip
+/// whose track has effects, leaves the clip's own effects under the node
+/// ids the document has, so a path read before the edit still names the
+/// same node after it and after its undo (#1376). The socket plans from
+/// that copy with its track's effects taken back out, which used to give
+/// every effect a new id that the edit then wrote into the document.
+#[test]
+fn an_effect_op_on_a_clip_with_track_effects_keeps_its_effects_node_ids() {
+    use klipp_effects::BuiltinEffect as E;
+    let mut h = harness();
+    let clip = h.ids.clip_a.clone();
+    let mut doc: klipp_timeline::Sequence = (*h.sequence.read().unwrap()).clone();
+    {
+        let track = &mut doc.tracks[0];
+        track.effects.set_video_effect_list(vec![E::Sharpen { amount: 0.5 }], vec![true]);
+        let c = &mut track.clips[0];
+        c.kind = klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() };
+        c.push_effect(E::GaussianBlur { radius: 4.0 });
+    }
+    let blur = doc.tracks[0].clips[0].effect_id_list()[0];
+    // What the socket reads, as the app hands it over: flattened, with
+    // the track's effects baked onto its clips.
+    *h.sequence.write().unwrap() = klipp_timeline::flatten::flatten_sequence(&doc, &[doc.clone()]);
+
+    // List, and take the Blur's path from the reading.
+    let read = h.ok(json!({"method":"graph_read","path":{"root":{"clip":clip},"nodes":[]}}));
+    let listed = read["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.fx.gaussian_blur")
+        .unwrap_or_else(|| panic!("the Blur is listed: {read}"))["id"].as_str().unwrap().to_owned();
+    assert_eq!(listed, blur.as_uuid().to_string(), "the listed Blur is the document's node");
+
+    // Edit by an op the socket plans from its copy, then play the edit
+    // on the document, as the app does.
+    h.ok(json!({"method":"apply","expected_revision":h.shared.revision(),"ops":[{"op":"effect","clip_id":clip,"kind":"grain"}]}));
+    let edits = h.edits_seen.lock().unwrap().clone();
+    assert_eq!(edits.len(), 1, "one edit: {edits:?}");
+    let mut sequences = vec![doc];
+    let mut pool = h.media_pool.read().unwrap().clone();
+    let mut fps = sequences[0].fps;
+    let ids = |s: &[klipp_timeline::Sequence]| s[0].tracks[0].clips[0].effect_id_list();
+    {
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        view.apply_forward(&edits[0]);
+    }
+    let after = ids(&sequences);
+    assert_eq!(sequences[0].tracks[0].clips[0].builtin_effects().len(), 2, "the grain was added");
+    assert_eq!(after[0], blur, "the Blur keeps its node id, so the path read before still names it");
+    {
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        view.apply_inverse(&edits[0]);
+    }
+    assert_eq!(ids(&sequences), vec![blur], "and its undo leaves the Blur as it was");
+}

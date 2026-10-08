@@ -716,6 +716,7 @@ mod tests {
         let back = flat.with_own_grades();
         let back = &back.tracks[0].clips[0];
         assert_eq!((back.builtin_effects_enabled(), animation(back)), (own.builtin_effects_enabled(), animation(own)), "and its flags and animation");
+        assert!(!own.builtin_effects().is_empty() && back.effect_id_list() == own.effect_id_list(), "and each effect's node id (#1376)");
 
         // A clip added to the track later takes its effects too.
         seq.tracks[1].clips.push(Clip::media(MediaId::new(), t(24), t(48), t(0), t(24)));

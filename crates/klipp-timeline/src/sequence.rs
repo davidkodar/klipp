@@ -448,6 +448,7 @@ impl Sequence {
                     builtin_effects: clip.builtin_effects().to_vec(),
                     builtin_effects_enabled: clip.builtin_effects_enabled().to_vec(),
                     audio_effects: clip.audio_effects.clone(),
+                    ids: clip.effect_id_list(),
                 }));
                 if picture {
                     if !fx.video_effects().is_empty() {
@@ -546,8 +547,9 @@ impl Sequence {
     /// clip's own grade in place of its grade inside its group's (see
     /// [`Sequence::bake_grade_groups`]), and its own effects and audio
     /// chain in place of those with its track's (see
-    /// [`Sequence::bake_track_effects`]). A copy only when there is
-    /// something to take back out.
+    /// [`Sequence::bake_track_effects`]), each effect under the node id
+    /// the document has for it. A copy only when there is something to
+    /// take back out.
     pub fn with_own_grades(&self) -> std::borrow::Cow<'_, Sequence> {
         if !self.all_clips().any(|c| c.picture.view().own_node_graph.is_some() || c.picture.view().own_effects.is_some()) {
             return std::borrow::Cow::Borrowed(self);
@@ -560,7 +562,7 @@ impl Sequence {
             }
             let own = clip.view_mut().own_effects.take();
             if let Some(own) = own {
-                clip.set_effect_list(own.builtin_effects, own.builtin_effects_enabled);
+                clip.set_effect_list_with_ids(own.builtin_effects, own.builtin_effects_enabled, &own.ids);
                 clip.audio_effects = own.audio_effects;
             }
         }
@@ -1400,6 +1402,11 @@ pub struct OwnEffects {
     pub builtin_effects: Vec<klipp_effects::BuiltinEffect>,
     pub builtin_effects_enabled: Vec<bool>,
     pub audio_effects: Vec<AudioEffectInstance>,
+    /// The effects' node ids, one each, so that taking them back out
+    /// (see [`Sequence::with_own_grades`]) gives the clip the ids the
+    /// document has, and a path read from it names the real node.
+    /// Empty when not known: the effects then get new ids.
+    pub ids: Vec<crate::EffectId>,
 }
 
 fn default_opacity() -> f32 { 1.0 }

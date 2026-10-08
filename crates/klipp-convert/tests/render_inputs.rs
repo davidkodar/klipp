@@ -730,6 +730,7 @@ fn check_spliced_against(dir: &Path, scratch: &Path, converted: Option<Value>) -
                 builtin_effects: cb.builtin_effects()[..own].to_vec(),
                 builtin_effects_enabled: cb.builtin_effects_enabled().iter().copied().take(own).collect(),
                 audio_effects: cb.audio_effects.clone(),
+                ids: cb.effect_id_list()[..own].to_vec(),
             }));
         }
         if !grade.is_null() {
