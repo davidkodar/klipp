@@ -13,6 +13,8 @@
 
 use super::{EffectType, ParamDesc, ParamKind, Unit};
 
+mod colour;
+
 /// How a parameter is shown.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Presentation {
@@ -178,11 +180,99 @@ pub struct TypeEntry {
     pub pres: TypePresentation,
 }
 
-/// The effects' entries, filled family by family (M3 step 0b).
-pub static PARAMS: &[ParamEntry] = &[];
-pub static TYPES: &[TypeEntry] = &[];
+/// The effects' entries, one table per family (M3 step 0b), transcribed
+/// from today's hand-written rows.
+pub static PARAMS: &[&[ParamEntry]] = &[colour::PARAMS];
+pub static TYPES: &[&[TypeEntry]] = &[colour::TYPES];
+
+/// Every effect entry, family by family.
+pub fn params() -> impl Iterator<Item = &'static ParamEntry> {
+    PARAMS.iter().flat_map(|f| f.iter())
+}
+
+/// Every effect type entry, family by family.
+pub fn types() -> impl Iterator<Item = &'static TypeEntry> {
+    TYPES.iter().flat_map(|f| f.iter())
+}
 
 impl Presentation {
+    /// A number dragged by `step` per pixel and shown to `decimals`: a
+    /// row's start, the rest as today's default ([`Presentation::derived`]
+    /// otherwise), changed with the builders below.
+    pub const fn scrub(step: f32, decimals: u8) -> Self {
+        Presentation {
+            step,
+            decimals,
+            suffix: Suffix::FromUnit,
+            display: None,
+            labels: None,
+            label: None,
+            widget: Widget::Scrub,
+            group: None,
+            order: 0,
+            visible_if: None,
+            enabled_if: None,
+            help: None,
+            reset: None,
+            soft_whole: None,
+        }
+    }
+
+    /// A row that isn't a number: `widget`, with no step or decimals.
+    pub const fn shown_as(widget: Widget) -> Self {
+        Presentation { widget, ..Self::scrub(0.0, 0) }
+    }
+
+    /// No row; the value is kept.
+    pub const fn hidden() -> Self {
+        Self::shown_as(Widget::Hidden)
+    }
+
+    pub const fn label(mut self, label: &'static str) -> Self {
+        self.label = Some(label);
+        self
+    }
+
+    pub const fn labels(mut self, labels: &'static [&'static str]) -> Self {
+        self.labels = Some(labels);
+        self
+    }
+
+    pub const fn suffix(mut self, suffix: Suffix) -> Self {
+        self.suffix = suffix;
+        self
+    }
+
+    pub const fn group(mut self, group: &'static str) -> Self {
+        self.group = Some(group);
+        self
+    }
+
+    pub const fn order(mut self, order: u16) -> Self {
+        self.order = order;
+        self
+    }
+
+    pub const fn reset(mut self, reset: f32) -> Self {
+        self.reset = Some(reset);
+        self
+    }
+
+    pub const fn help(mut self, help: &'static str) -> Self {
+        self.help = Some(help);
+        self
+    }
+
+    pub const fn visible_if(mut self, cond: Cond) -> Self {
+        self.visible_if = Some(cond);
+        self
+    }
+
+    pub const fn enabled_if(mut self, cond: Cond) -> Self {
+        self.enabled_if = Some(cond);
+        self
+    }
+
     /// What a parameter is shown as when its table gives nothing: the
     /// widget its kind implies, the suffix its unit gives, a step of a
     /// two-hundredth of its slider's range.
@@ -221,7 +311,12 @@ impl Presentation {
     /// `p`'s presentation: `table`'s entry for `(type_id, p.key)`, or the
     /// derived one.
     pub fn of(table: &[ParamEntry], type_id: &str, p: &ParamDesc) -> Self {
-        table.iter().find(|e| e.type_id == type_id && e.key == p.key).map_or_else(|| Self::derived(p), |e| e.pres)
+        Self::find(table.iter(), type_id, p)
+    }
+
+    /// [`Presentation::of`] over any entries.
+    pub fn find<'a>(mut entries: impl Iterator<Item = &'a ParamEntry>, type_id: &str, p: &ParamDesc) -> Self {
+        entries.find(|e| e.type_id == type_id && e.key == p.key).map_or_else(|| Self::derived(p), |e| e.pres)
     }
 }
 
@@ -235,12 +330,12 @@ impl TypePresentation {
 impl EffectType {
     /// How parameter `p` of this effect is shown.
     pub fn presentation(&self, p: &ParamDesc) -> Presentation {
-        Presentation::of(PARAMS, self.desc.id, p)
+        Presentation::find(params(), self.desc.id, p)
     }
 
     /// How this effect is shown, beyond its rows.
     pub fn type_presentation(&self) -> TypePresentation {
-        TypePresentation::of(TYPES, self.desc.id)
+        types().find(|e| e.type_id == self.desc.id).map(|e| e.pres).unwrap_or_default()
     }
 }
 
