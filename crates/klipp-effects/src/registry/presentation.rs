@@ -15,6 +15,7 @@ use super::{EffectType, ParamDesc, ParamKind, Unit};
 use klipp_grade_model::Encoding;
 
 mod colour;
+mod film;
 mod geometry;
 
 /// How a parameter is shown.
@@ -203,8 +204,8 @@ pub struct TypeEntry {
 
 /// The effects' entries, one table per family (M3 step 0b), transcribed
 /// from today's hand-written rows.
-pub static PARAMS: &[&[ParamEntry]] = &[colour::PARAMS, geometry::PARAMS];
-pub static TYPES: &[&[TypeEntry]] = &[colour::TYPES, geometry::TYPES];
+pub static PARAMS: &[&[ParamEntry]] = &[colour::PARAMS, geometry::PARAMS, film::PARAMS];
+pub static TYPES: &[&[TypeEntry]] = &[colour::TYPES, geometry::TYPES, film::TYPES];
 
 /// Every effect entry, family by family.
 pub fn params() -> impl Iterator<Item = &'static ParamEntry> {
@@ -286,6 +287,11 @@ impl Presentation {
 
     pub const fn reset(mut self, reset: f32) -> Self {
         self.reset = Some(reset);
+        self
+    }
+
+    pub const fn soft_whole(mut self, range: (i32, i32)) -> Self {
+        self.soft_whole = Some(range);
         self
     }
 
