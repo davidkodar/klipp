@@ -560,21 +560,27 @@ impl NodeParams {
             "lut_opacity" => self.lut_opacity = n,
             "lut_input_space" => {
                 // Encoded as the WorkingColorspace::as_u8 tag in
-                // f32. NaN/negative/very-large values fall back to
-                // `None` (use the LUT's own tag) — defensive against
-                // a corrupted dispatch from somewhere upstream.
-                self.lut_input_space = if value.is_finite() && (0.0..256.0).contains(&value) {
-                    Some(klipp_core::WorkingColorspace::from_u8(value as u8))
-                } else {
-                    None
-                };
+                // f32. Any other value (the catalog's "Use LUT default"
+                // item, 3; the old menu's sentinel, infinity; NaN or a
+                // negative from a corrupted dispatch) is `None`: use the
+                // LUT's own tag.
+                self.lut_input_space = lut_space(value);
             }
-            "lut_output_space" => {
-                self.lut_output_space = if value.is_finite() && (0.0..256.0).contains(&value) {
-                    Some(klipp_core::WorkingColorspace::from_u8(value as u8))
-                } else {
-                    None
-                };
+            "lut_output_space" => self.lut_output_space = lut_space(value),
+            // A choice's index, as the catalog names its items. An index
+            // past the end falls back to the default rather than refusing,
+            // as the old panel's dispatch does: a bad discriminant should
+            // not wedge the node.
+            "matte_channel" => {
+                use crate::MatteChannel::*;
+                self.matte_channel = Some([Alpha, Luminance, Red, Green, Blue].get(value as usize).copied().unwrap_or_default());
+            }
+            "matte_combine_op" => {
+                self.matte_combine_op = Some(crate::MatteCombineOp::ALL.get(value as usize).copied().unwrap_or_default());
+            }
+            "difference_key.match_space" => {
+                use klipp_core::color_grade::DifferenceKeyMatchSpace::*;
+                self.difference_key.get_or_insert_with(Default::default).match_space = [Rgb, Luminance].get(value as usize).copied().unwrap_or_default();
             }
             "primaries_from" => {
                 // Encoded as the WorkingColorspace::as_u8 tag in
@@ -675,6 +681,12 @@ impl NodeParams {
     pub fn accepts(param_name: &str) -> bool {
         Self::default().apply_override(param_name, 0.0)
     }
+}
+
+/// A LUT's working-space tag from its `apply_override` value: a tag for
+/// 0, 1 or 2, else `None` (the LUT's own).
+fn lut_space(value: f32) -> Option<klipp_core::WorkingColorspace> {
+    (value.is_finite() && (0.0..3.0).contains(&value)).then(|| klipp_core::WorkingColorspace::from_u8(value as u8))
 }
 
 // ── Keyframe tracks for nodes ──────────────────────────────────────────────
@@ -885,6 +897,10 @@ mod tests {
         assert_eq!(p.lut_input_space, None);
         // Out-of-range positive → None.
         p.apply_override("lut_input_space", 256.0);
+        assert_eq!(p.lut_input_space, None);
+        // The catalog's "Use LUT default" item, past the three tags → None.
+        p.apply_override("lut_input_space", 1.0);
+        p.apply_override("lut_input_space", 3.0);
         assert_eq!(p.lut_input_space, None);
     }
 

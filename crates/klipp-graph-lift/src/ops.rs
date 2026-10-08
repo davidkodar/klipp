@@ -852,3 +852,38 @@ fn apply_batch_inner(docs: &mut Documents, ops: &[GraphOp], catalog: Option<&dyn
 pub fn undo(docs: &mut Documents, edit: &GraphEdit) -> Result<(), String> {
     put(docs, edit.root, &edit.before)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use klipp_effects::registry::ParamKind;
+    use klipp_nodes::NodeParams;
+
+    /// Every grade choice in the catalog, at every index, writes through
+    /// the generated row's path (`grade_param`, a choice by its index) the
+    /// typed parameters the old panel's `SetNodeParam` gave
+    /// (`apply_override`), and each index a different one: a choice the
+    /// lift can't write, or one written as another, fails here.
+    #[test]
+    fn every_grade_choice_index_writes_as_set_node_param() {
+        let mut checked = 0;
+        for ty in klipp_nodes::registry::node_types() {
+            for desc in ty.desc.params {
+                let ParamKind::Choice(names) = desc.kind else { continue };
+                let mut seen = Vec::new();
+                for i in 0..names.len() {
+                    let params = serde_json::to_value(NodeParams::default()).unwrap();
+                    let written = grade_param(&params, desc.key, &ParamValue::Int(i as i32)).unwrap_or_else(|| panic!("{} {} [{i}]: not written", ty.desc.id, desc.key));
+                    let new: NodeParams = serde_json::from_value(written).unwrap();
+                    let mut old = NodeParams::default();
+                    assert!(old.apply_override(desc.key, i as f32), "{} {}: no SetNodeParam", ty.desc.id, desc.key);
+                    assert_eq!(new, old, "{} {} [{i}] {:?}", ty.desc.id, desc.key, names[i]);
+                    assert!(!seen.contains(&new), "{} {} [{i}] {:?} writes what another item does", ty.desc.id, desc.key, names[i]);
+                    seen.push(new);
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 20, "only {checked} choice items");
+    }
+}

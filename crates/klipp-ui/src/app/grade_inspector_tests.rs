@@ -16,7 +16,7 @@ const WIDTH: f32 = 420.0;
 /// A state holding one clip whose grade is a Corrector, with a `kind`
 /// node after it (the Corrector itself for `Corrector`); the clip and the
 /// node, or `None` when the grade won't take one.
-fn graded(kind: NodeKind) -> Option<(AppState, ClipId, NodeId)> {
+pub(super) fn graded(kind: NodeKind) -> Option<(AppState, ClipId, NodeId)> {
     let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
     let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
     let mut g = NodeGraph::default();
