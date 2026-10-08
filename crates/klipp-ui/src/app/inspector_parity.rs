@@ -13,6 +13,8 @@ use super::inspector_edit_host::{InspectorEditHost, InspectorSideEffects};
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, ClipId};
+use klipp_effects::registry::presentation::Presentation;
+use klipp_effects::registry::ParamDesc;
 use klipp_effects::BuiltinEffect;
 
 /// What the host would send on: recorded, never sent.
@@ -90,7 +92,12 @@ impl Run {
             self.side.push(format!("{cmd:?}"));
             return;
         }
+        // A refused path edit says so in a toast and changes nothing.
+        self.state.toast = Default::default();
         if self.state.path_command(&cmd).is_some() {
+            if let Some(why) = self.state.toast.message_for_test() {
+                self.unapplied.push(format!("{cmd:?} refused: {why}"));
+            }
             return;
         }
         self.state.before_dispatch(&cmd);
@@ -101,7 +108,8 @@ impl Run {
 
     /// The number drawn on the row labelled `label`: the first text right
     /// of it on its line that reads as a number.
-    fn number(&mut self, label: &str) -> Option<egui::Pos2> {
+    /// The row labelled `label`: its label and its number, where drawn.
+    fn row(&mut self, label: &str) -> Option<(egui::Pos2, egui::Pos2)> {
         let drawn = self.frame(Vec::new(), egui::Modifiers::NONE);
         // The label may be drawn twice (an effect named as its row): the
         // row's is the one with a number on its line.
@@ -110,7 +118,7 @@ impl Run {
                 .iter()
                 .filter(|(s, p)| (p.y - at.y).abs() < 6.0 && p.x > at.x && s.trim_start_matches('-').starts_with(|c: char| c.is_ascii_digit()))
                 .min_by(|a, b| a.1.x.total_cmp(&b.1.x))
-                .map(|(_, p)| *p)
+                .map(|(_, p)| (*at, *p))
         })
     }
 
@@ -128,14 +136,15 @@ impl Run {
 enum Script {
     /// S1: type a value inside the slider range and press Enter.
     Type,
-    /// S2: press on the number, three moves, release.
-    Drag,
-    /// S3: right-click the number.
+    /// S2: press on the number, three moves (right, or left when the
+    /// value sits in the upper half of its range), release.
+    Drag { left: bool },
+    /// S3: click the row's label, which resets it.
     Reset,
 }
 
 fn play(run: &mut Run, label: &str, script: Script, typed: &str) -> bool {
-    let Some(at) = run.number(label) else { return false };
+    let Some((label_at, at)) = run.row(label) else { return false };
     match script {
         Script::Type => {
             run.button(at, egui::PointerButton::Primary, true);
@@ -147,16 +156,17 @@ fn play(run: &mut Run, label: &str, script: Script, typed: &str) -> bool {
             run.frame(vec![egui::Event::Text(typed.into())], egui::Modifiers::NONE);
             run.key(egui::Key::Enter, egui::Modifiers::NONE);
         }
-        Script::Drag => {
+        Script::Drag { left } => {
+            let sign = if left { -1.0 } else { 1.0 };
             run.button(at, egui::PointerButton::Primary, true);
             for dx in [6.0, 12.0, 18.0] {
-                run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))], egui::Modifiers::NONE);
+                run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(sign * dx, 0.0))], egui::Modifiers::NONE);
             }
-            run.frame(vec![egui::Event::PointerButton { pos: at + egui::vec2(18.0, 0.0), button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }], egui::Modifiers::NONE);
+            run.frame(vec![egui::Event::PointerButton { pos: at + egui::vec2(sign * 18.0, 0.0), button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }], egui::Modifiers::NONE);
         }
         Script::Reset => {
-            run.button(at, egui::PointerButton::Secondary, true);
-            run.button(at, egui::PointerButton::Secondary, false);
+            run.button(label_at, egui::PointerButton::Primary, true);
+            run.button(label_at, egui::PointerButton::Primary, false);
         }
     }
     run.frame(Vec::new(), egui::Modifiers::NONE);
@@ -165,23 +175,48 @@ fn play(run: &mut Run, label: &str, script: Script, typed: &str) -> bool {
 
 /// Each effect type's first number row, with today's label and a value
 /// inside its slider range to type.
-fn first_number_row(t: &klipp_effects::registry::EffectType) -> Option<(&'static str, String)> {
+fn first_number_row(t: &klipp_effects::registry::EffectType) -> Option<(&'static ParamDesc, Presentation, &'static str, String)> {
     use klipp_effects::registry::presentation::Widget;
     t.desc.params.iter().find_map(|p| {
         let pres = t.presentation(p);
-        let numeric = matches!(p.kind, klipp_effects::registry::ParamKind::Float) && pres.widget == Widget::Scrub && pres.visible_if.is_none();
+        let numeric = matches!(p.kind, klipp_effects::registry::ParamKind::Float) && pres.widget == Widget::Scrub && pres.visible_if.is_none() && p.index.is_none();
         let (lo, hi) = p.soft?;
-        numeric.then(|| (pres.label.unwrap_or(p.label), format!("{:.*}", usize::from(pres.decimals), lo + (hi - lo) * 0.3)))
+        numeric.then(|| (p, pres, pres.label.unwrap_or(p.label), format!("{:.*}", usize::from(pres.decimals), lo + (hi - lo) * 0.3)))
     })
 }
 
-/// The types whose rows differ from today by design (the meant
-/// differences of the generated rows), where a reset can't agree.
-const RESET_DIFFERS: &[&str] = &["klipp.fx.sharpen", "klipp.fx.vibrance"];
+/// The effect's stored value for `desc` on the run's clip.
+fn value(run: &Run, desc: &ParamDesc) -> Option<f32> {
+    value_of(run.clip().builtin_effects().first()?, desc)
+}
 
-/// IC13: a drag of any row is one undo step. Colour Fade's duration was a
-/// bare drag value, two steps for one drag; its picture still agrees.
-const UNDO_DIFFERS: &[(&str, &str)] = &[("klipp.fx.color_fade", "Drag")];
+fn value_of(effect: &BuiltinEffect, desc: &ParamDesc) -> Option<f32> {
+    let entry = serde_json::to_value(effect).ok()?;
+    crate::inspector::generated::row::number(&crate::inspector::generated::effect_value(&entry, desc))
+}
+
+/// `effect` with `desc` set to `v`, so a reset starts away from its
+/// default.
+fn with_value(effect: &BuiltinEffect, desc: &ParamDesc, v: f32) -> BuiltinEffect {
+    let mut entry = serde_json::to_value(effect).unwrap();
+    entry[desc.field] = serde_json::json!(v);
+    serde_json::from_value(entry).unwrap()
+}
+
+/// The types whose reset differs from today by design: the value the old
+/// view leaves and the generated row's, pinned.
+/// - IC2: Sharpen's and Vibrance's amount reset to 0.5 in the old view
+///   and to their catalog default, 0, in the generated row.
+/// - IC4: Colour Fade's duration had no reset in the old view (the value
+///   stays where the reset started it, 7.5125 s); the generated row
+///   resets it to 1 s.
+const RESET_DIFFERS: &[(&str, f32, f32)] = &[("klipp.fx.sharpen", 0.5, 0.0), ("klipp.fx.vibrance", 0.5, 0.0), ("klipp.fx.color_fade", 7.5125, 1.0)];
+
+/// The undo depths that differ by design (old, new pinned):
+/// - IC13: a drag of any row is one undo step. Colour Fade's duration was
+///   a bare drag value, two steps for one drag; its picture still agrees.
+/// - IC4: its reset, which the old view lacked, is one step.
+const UNDO_DIFFERS: &[(&str, &str, usize, usize)] = &[("klipp.fx.color_fade", "Drag", 2, 1), ("klipp.fx.color_fade", "Reset", 0, 1)];
 
 /// S1–S3 on every effect's first number row: the same picture, the same
 /// undo depth and the same side commands, old view against new.
@@ -191,31 +226,69 @@ fn number_rows_edit_the_same_through_both_views() {
     let mut differ = Vec::new();
     let mut compared = 0;
     for t in klipp_effects::registry::effect_types() {
-        let Some((label, typed)) = first_number_row(t) else { continue };
-        for script in [Script::Type, Script::Drag, Script::Reset] {
-            if matches!(script, Script::Reset) && RESET_DIFFERS.contains(&t.desc.id) {
-                continue;
+        let Some((desc, pres, label, typed)) = first_number_row(t) else { continue };
+        let typed_value: f32 = typed.parse().unwrap();
+        let reset_to = crate::inspector::generated::row::reset_value(desc, &pres);
+        let near = |a: Option<f32>, b: f32| a.is_some_and(|a| (a - b).abs() <= 0.5 * 10f32.powi(-i32::from(pres.decimals)) + 1e-6);
+        let stored = value_of(&(t.sample)(), desc).unwrap_or(desc.default);
+        let left = desc.soft.is_some_and(|(lo, hi)| stored > (lo + hi) / 2.0);
+        for script in [Script::Type, Script::Drag { left }, Script::Reset] {
+            let id = t.desc.id;
+            let name = if matches!(script, Script::Drag { .. }) { "Drag".to_owned() } else { format!("{script:?}") };
+            // A reset starts away from where it goes.
+            let mut sample = (t.sample)();
+            if matches!(script, Script::Reset) {
+                let away = desc.soft.map_or(reset_to + 1.0, |(lo, hi)| if (reset_to - hi).abs() < (reset_to - lo).abs() { lo + (hi - lo) * 0.25 } else { lo + (hi - lo) * 0.75 });
+                sample = with_value(&sample, desc, away);
             }
-            let clip = fixture(&(t.sample)());
+            let clip = fixture(&sample);
+            let before = clip.picture_v2().unwrap().clone();
             let (mut old, mut new) = (Run::new(clip.clone(), false), Run::new(clip, true));
             let (o, n) = (play(&mut old, label, script, &typed), play(&mut new, label, script, &typed));
             if !(o && n) {
-                differ.push(format!("{} {script:?}: row {label:?} found old {o}, new {n}", t.desc.id));
+                differ.push(format!("{id} {script:?}: row {label:?} found old {o}, new {n}"));
                 continue;
             }
-            let (po, pn) = (old.clip().picture_v2().unwrap(), new.clip().picture_v2().unwrap());
-            if po != pn {
-                differ.push(format!("{} {script:?}: the pictures differ: old {:?}, new {:?}", t.desc.id, old.clip().builtin_effects(), new.clip().builtin_effects()));
-            }
+            let (vo, vn) = (value(&old, desc), value(&new, desc));
             let (uo, un) = (old.state.active_history().undo_count(), new.state.active_history().undo_count());
-            if uo != un && !UNDO_DIFFERS.contains(&(t.desc.id, &format!("{script:?}"))) {
-                differ.push(format!("{} {script:?}: undo depth old {uo}, new {un}", t.desc.id));
+            // What the script must have done, in each view.
+            match script {
+                Script::Type => {
+                    if !near(vo, typed_value) || !near(vn, typed_value) {
+                        differ.push(format!("{id} Type: typed {typed}, old {vo:?}, new {vn:?}"));
+                    }
+                }
+                Script::Drag { .. } => {
+                    if *new.clip().picture_v2().unwrap() == *before {
+                        differ.push(format!("{id} Drag: the drag changed nothing"));
+                    }
+                    if un != 1 {
+                        differ.push(format!("{id} Drag: {un} undo steps in the generated view, not one"));
+                    }
+                }
+                Script::Reset => {
+                    let pinned = RESET_DIFFERS.iter().find(|(r, _, _)| *r == id);
+                    let (want_old, want_new) = pinned.map_or((reset_to, reset_to), |&(_, a, b)| (a, b));
+                    if !near(vo, want_old) || !near(vn, want_new) {
+                        differ.push(format!("{id} Reset: old {vo:?} (want {want_old}), new {vn:?} (want {want_new})"));
+                    }
+                }
+            }
+            let reset_differs = matches!(script, Script::Reset) && RESET_DIFFERS.iter().any(|(r, _, _)| *r == id);
+            let (po, pn) = (old.clip().picture_v2().unwrap(), new.clip().picture_v2().unwrap());
+            if po != pn && !reset_differs {
+                differ.push(format!("{id} {script:?}: the pictures differ: old {:?}, new {:?}", old.clip().builtin_effects(), new.clip().builtin_effects()));
+            }
+            match UNDO_DIFFERS.iter().find(|(u, s, _, _)| *u == id && *s == name) {
+                Some(&(_, _, want_old, want_new)) if (uo, un) != (want_old, want_new) => differ.push(format!("{id} {script:?}: undo depth old {uo}, new {un}, pinned {want_old}, {want_new}")),
+                None if uo != un => differ.push(format!("{id} {script:?}: undo depth old {uo}, new {un}")),
+                _ => {}
             }
             if old.side != new.side {
-                differ.push(format!("{} {script:?}: side commands old {:?}, new {:?}", t.desc.id, old.side, new.side));
+                differ.push(format!("{id} {script:?}: side commands old {:?}, new {:?}", old.side, new.side));
             }
             if !old.unapplied.is_empty() || !new.unapplied.is_empty() {
-                differ.push(format!("{} {script:?}: unapplied old {:?}, new {:?}", t.desc.id, old.unapplied, new.unapplied));
+                differ.push(format!("{id} {script:?}: unapplied old {:?}, new {:?}", old.unapplied, new.unapplied));
             }
             compared += 1;
         }
