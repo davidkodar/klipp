@@ -43,6 +43,12 @@ pub fn show(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
         }
     };
     draw_stack(ui, theme, state, clip, &lifted.picture.graph, &view, cmds, clip_time_secs);
+    // A clip's plug-in effects keep their own cards under the stack (M4
+    // owns them).
+    if !clip.ofx_effects().is_empty() {
+        ui.add_space(6.0);
+        crate::inspector::effects_tab::show_ofx_cards(ui, theme, state, clip, cmds);
+    }
 }
 
 /// Where the clip's transform is drawn, as the renderer resolves it at
