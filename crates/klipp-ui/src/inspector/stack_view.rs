@@ -61,15 +61,115 @@ fn placement(state: &AppState, clip: &Clip) -> Option<klipp_graph_lift::stack_vi
 
 #[allow(clippy::too_many_arguments)]
 fn draw_stack(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip, graph: &Graph, view: &StackView, cmds: &mut Vec<AppCommand>, clip_time_secs: f64) {
+    let order = movable(view);
     for item in &view.items {
         match item {
             Item::Header(section) => header(ui, theme, *section),
             Item::Node(row) => {
                 row_card(ui, theme, state, clip, graph, row, cmds, clip_time_secs);
+                if let Some(i) = order.iter().position(|r| r.addr == row.addr) {
+                    reorder_buttons(ui, view, &order, i, cmds);
+                }
                 ui.add_space(4.0);
             }
         }
     }
+    add_menu(ui, clip, view, cmds);
+}
+
+/// The rows that can be moved and removed here: the clip's own effects
+/// in its top level, not a placed kind, not read-only.
+pub fn movable(view: &StackView) -> Vec<&Row> {
+    view.rows().filter(|r| r.section == Section::Effects && r.addr.nodes.len() == 1 && !r.read_only && !r.placed && r.placement.is_none() && r.provenance.is_none()).collect()
+}
+
+/// The node a row's move up goes after: the row before the one above it,
+/// or what precedes the effects (the last row before them) for the top.
+fn after_for_up(view: &StackView, order: &[&Row], i: usize) -> Option<klipp_graph_format::NodeId> {
+    if i >= 2 {
+        return order[i - 2].addr.node();
+    }
+    let first = order.first()?;
+    let rows: Vec<&Row> = view.rows().collect();
+    let at = rows.iter().position(|r| r.addr == first.addr)?;
+    at.checked_sub(1).and_then(|p| rows[p].addr.node())
+}
+
+fn reorder_buttons(ui: &mut egui::Ui, view: &StackView, order: &[&Row], i: usize, cmds: &mut Vec<AppCommand>) {
+    let row = order[i];
+    ui.horizontal(|ui| {
+        if ui.add_enabled(i > 0, egui::Button::new("↑").small()).on_hover_text("Move up").clicked() {
+            if let Some(after) = after_for_up(view, order, i) {
+                cmds.push(AppCommand::MoveNodeAt { addr: row.addr.clone(), after });
+            }
+        }
+        if ui.add_enabled(i + 1 < order.len(), egui::Button::new("↓").small()).on_hover_text("Move down").clicked() {
+            if let Some(after) = order[i + 1].addr.node() {
+                cmds.push(AppCommand::MoveNodeAt { addr: row.addr.clone(), after });
+            }
+        }
+        // A removal is planned by the app (M3 step 9): a refusal says why,
+        // and a mask's readers it ungates are named.
+        if ui.small_button("✕").on_hover_text("Remove").clicked() {
+            cmds.push(AppCommand::RemoveNodeAt { addr: row.addr.clone() });
+        }
+    });
+}
+
+/// Where an added effect goes: after the clip's last effect, or after the
+/// last row before the effects when it has none.
+pub fn add_after(view: &StackView) -> Option<NodePath> {
+    if let Some(last) = movable(view).last() {
+        return Some(last.addr.clone());
+    }
+    view.rows().filter(|r| r.section != Section::Effects && r.addr.nodes.len() == 1).last().map(|r| r.addr.clone())
+}
+
+/// A new effect node for the saved tag `tag`, at its reset values: what
+/// an add puts in the clip's picture.
+pub fn new_effect_node(tag: &str) -> Option<Node> {
+    let ty = effect_types().find(|t| t.tag == tag)?;
+    let payload = serde_json::to_value((ty.sample)()).ok()?;
+    serde_json::from_value(serde_json::json!({
+        "id": uuid::Uuid::new_v4(),
+        "type_id": klipp_graph_lift::to_v2::effect_node_type(tag),
+        "legacy": { "payload": payload },
+    }))
+    .ok()
+}
+
+/// The four kinds the clip places itself (a transform, an opacity, a
+/// speed ramp, a temporal denoise): a card of theirs is added through the
+/// clip's effect list, which places it (the placed-kinds ruling).
+pub fn is_placed_kind(tag: &str) -> bool {
+    matches!(tag, "transform" | "opacity" | "speed_ramp" | "temporal_denoise")
+}
+
+/// What adding the effect saved as `tag` sends: a placed kind through the
+/// clip's effect list, any other as a node after `after`.
+pub fn add_command(clip: &Clip, after: &NodePath, tag: &str) -> Option<AppCommand> {
+    if is_placed_kind(tag) {
+        let ty = effect_types().find(|t| t.tag == tag)?;
+        return Some(AppCommand::AddBuiltinEffect { clip_id: clip.id, effect: (ty.sample)() });
+    }
+    new_effect_node(tag).map(|node| AppCommand::AddNodeAt { after: after.clone(), node: Box::new(node) })
+}
+
+fn add_menu(ui: &mut egui::Ui, clip: &Clip, view: &StackView, cmds: &mut Vec<AppCommand>) {
+    let Some(after) = add_after(view) else { return };
+    ui.add_space(6.0);
+    ui.menu_button("+ Add effect", |ui| {
+        let mut types: Vec<_> = effect_types().collect();
+        types.sort_by_key(|t| t.desc.name);
+        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+            for t in types {
+                if ui.button(t.desc.name).clicked() {
+                    cmds.extend(add_command(clip, &after, t.tag));
+                    ui.close_menu();
+                }
+            }
+        });
+    });
 }
 
 fn header(ui: &mut egui::Ui, theme: &KlippTheme, section: Section) {
