@@ -1494,7 +1494,7 @@ impl KlippApp {
 /// Whether a selected grade node of `kind` is shown in its own layout
 /// rather than the grade tabs: the nodes with their own widget, and the
 /// ones with none (whose tabs would mislead).
-fn per_node_kind(kind: klipp_nodes::NodeKind) -> bool {
+pub(crate) fn per_node_kind(kind: klipp_nodes::NodeKind) -> bool {
     matches!(kind,
         klipp_nodes::NodeKind::Mask
         | klipp_nodes::NodeKind::Qualifier

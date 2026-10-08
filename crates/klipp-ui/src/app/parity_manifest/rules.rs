@@ -53,32 +53,31 @@ pub(super) fn surfaces(entry: &CatalogEntry) -> Result<BTreeSet<Surface>, String
             .find(|t| t.desc.id == entry.type_id)
             .ok_or_else(|| format!("{}: unclassified grade surfaces", entry.type_id))?
             .kind;
-        // main_layout::per_node_kind selects these, for both generations.
-        match kind {
-            Mask | Qualifier | LumaKey | SoftClip | FilmGrain | Lut3D | ColorMatch | LayerMixer
-            | ExternalMatte | DifferenceKey | Denoise | ColorWarper | Source | Output | Layer
-            | Blend | CombineMattes | ApplyMatte | Compound | RGBSplitter | RGBCombiner => {
-                required.insert(GradePerNode);
-            }
-            Corrector | Exposure | Contrast | Saturation | ToneControls | ColorBalance
-            | ColorWheels | RGBCurves | HueSatCurves | InputTransform => {
-                required.extend([GradeTabbedRight, GradeBottomTools]);
-            }
-            WheelSatBri => {
-                required.insert(GradeBottomTools);
-            }
-            // Only their bypass entry remains after the parameter exclusions.
-            PrimariesMatrix | MaskCutout | Reroute => {
-                if matches!(entry.value, CatalogValue::Enabled) {
+        // Use the same predicate that routes the production inspector.
+        if crate::app::main_layout::per_node_kind(kind) {
+            required.insert(GradePerNode);
+        } else {
+            match kind {
+                Corrector | Exposure | Contrast | Saturation | ToneControls | ColorBalance
+                | ColorWheels | RGBCurves | HueSatCurves | InputTransform => {
                     required.extend([GradeTabbedRight, GradeBottomTools]);
-                } else {
-                    return Err(format!(
-                        "{} / {}: unclassified grade surfaces",
-                        entry.type_id, entry.parameter
-                    ));
                 }
+                WheelSatBri => {
+                    required.insert(GradeBottomTools);
+                }
+                // Only their bypass entry remains after the parameter exclusions.
+                PrimariesMatrix | MaskCutout | Reroute => {
+                    if matches!(entry.value, CatalogValue::Enabled) {
+                        required.extend([GradeTabbedRight, GradeBottomTools]);
+                    } else {
+                        return Err(format!(
+                            "{} / {}: unclassified grade surfaces",
+                            entry.type_id, entry.parameter
+                        ));
+                    }
+                }
+                _ => return Err(format!("{}: unclassified grade surfaces", entry.type_id)),
             }
-            _ => return Err(format!("{}: unclassified grade surfaces", entry.type_id)),
         }
         // These controls are also reached through tabs, independently of
         // the selected-node layout: Masks, Noise Reduction and Warper.
