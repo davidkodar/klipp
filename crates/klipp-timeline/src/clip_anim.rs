@@ -261,26 +261,37 @@ impl NodeKeyState {
 
 impl Clip {
     /// The node of the clip's picture `path` names: a node of its top
-    /// level, the clip's own (a spliced one isn't the clip's to edit).
+    /// level, the clip's own (a spliced one isn't the clip's to edit), or
+    /// one inside a group there (a grade node, in the grade group).
     fn picture_node<R>(&self, path: &klipp_graph_format::path::NodePath, f: impl FnOnce(&klipp_graph_format::Node) -> R) -> Option<R> {
         use klipp_graph_format::path::Root;
-        if path.root != (Root::Clip { clip: self.id.0 }) || path.nodes.len() != 1 {
+        if path.root != (Root::Clip { clip: self.id.0 }) {
             return None;
         }
         let lifted = self.picture_v2().ok()?;
-        lifted.picture.graph.nodes.iter().find(|n| Some(n.id) == path.node() && n.origin.is_none()).map(f)
+        let (first, inner) = path.nodes.split_first()?;
+        let mut node = lifted.picture.graph.nodes.iter().find(|n| n.id == *first && n.origin.is_none())?;
+        for id in inner {
+            node = node.group.as_ref()?.graph.nodes.iter().find(|n| n.id == *id)?;
+        }
+        Some(f(node))
     }
 
     /// The keys of the parameter `key` of the node at `path` in the clip's
     /// picture, its value where nothing animates it, and its effect's tag
     /// (M3 step 3): what the curve editor and keyframe selection read in
-    /// place of the effect list's `"{index}:{param}"` keys. `None` when the
-    /// path names no node of the clip's top level: a clip's effects are
-    /// there, and a grade node's animation is its grade's keys, not a
-    /// node's `anim`.
+    /// place of the effect list's `"{index}:{param}"` keys. A grade node
+    /// (or a merge lifted from the grade) keeps its keys on its own
+    /// keyframe track (#1323), which is read for it. `None` when the path
+    /// names no node of the clip's picture.
     pub fn node_key_state(&self, path: &klipp_graph_format::path::NodePath, key: &klipp_graph_format::ParamKey) -> Option<NodeKeyState> {
         self.picture_node(path, |n| {
-            let keys = n.anim.get(key).map(|a| a.keys.iter().filter_map(|k| serde_json::from_value::<Keyframe>(k.clone()).ok()).collect()).unwrap_or_default();
+            let keys = if matches!(n.type_id.as_str(), klipp_graph_format::types::LEGACY_NODE | klipp_graph_format::lifted::types::MERGE) {
+                let tracks: Option<klipp_nodes::NodeKeyframeTracks> = n.legacy.as_ref().and_then(|l| l.keyframes.clone()).and_then(|k| serde_json::from_value(k).ok());
+                tracks.and_then(|t| t.tracks.into_iter().find(|t| t.param_name == key.as_str())).map(|t| t.keyframes).unwrap_or_default()
+            } else {
+                n.anim.get(key).map(|a| a.keys.iter().filter_map(|k| serde_json::from_value::<Keyframe>(k.clone()).ok()).collect()).unwrap_or_default()
+            };
             let value = match n.params.get(key) {
                 Some(klipp_graph_format::ParamValue::Float(v)) => Some(*v),
                 Some(klipp_graph_format::ParamValue::Int(v)) => Some(*v as f32),

@@ -120,9 +120,13 @@ impl Run {
         Vec::new()
     }
 
+    /// Apply `cmds` as the app's dispatch does: each key's time resolved
+    /// to the stored key it names within the frame, then the path edit.
     fn apply(&mut self, cmds: &[AppCommand]) {
         for cmd in cmds {
-            assert_eq!(self.state.path_command(cmd), Some(true), "{cmd:?} applied");
+            let mut cmd = cmd.clone();
+            crate::inspector::keyframe_selection::resolve_command(&self.state.sequences[0], &mut cmd);
+            assert_eq!(self.state.path_command(&cmd), Some(true), "{cmd:?} applied");
         }
     }
 
@@ -269,3 +273,27 @@ fn opening_a_grade_node_writes_nothing() {
     }
     assert!(drawn > 25, "only {drawn} kinds drawn");
 }
+
+/// A key off the frame grid, shown at the playhead's frame, is the key
+/// the row's diamond takes away, and the one an edit there changes: the
+/// commands resolve to its stored time, as an effect's do.
+#[test]
+fn an_off_grid_grade_key_is_the_one_its_row_edits() {
+    let mut run = Run::new(NodeKind::Corrector).unwrap();
+    let (addr, _) = crate::inspector::grade_view::grade_node(clip(&run.state, run.clip), run.node).unwrap();
+    let key = klipp_core::Keyframe { time_secs: 0.49, value: 0.3, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    run.apply(&[AppCommand::AddKeyAt { addr: addr.clone(), key: "exposure".into(), keyframe: serde_json::to_value(key.clone()).unwrap() }]);
+    // At 0.50 s (25 fps), the key at 0.49 s is in the frame.
+    run.time = 0.5;
+    let times = |run: &Run| run.v1().keyframes.tracks.iter().find(|t| t.param_name == "exposure").map(|t| t.keyframes.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>()).unwrap_or_default();
+    // An edit at the playhead changes that key, not a second one.
+    let edit = AppCommand::AddKeyAt { addr: addr.clone(), key: "exposure".into(), keyframe: serde_json::to_value(klipp_core::Keyframe { time_secs: 0.5, value: 0.6, ..key }).unwrap() };
+    run.apply(&[edit]);
+    assert_eq!(times(&run), vec![(0.49, 0.6)], "the key in the frame is changed");
+    // Its filled diamond takes it away.
+    let remove = run.click_diamond("Exposure", 0, 1);
+    assert!(matches!(remove.as_slice(), [AppCommand::RemoveKeyAt { .. }]), "{remove:?}");
+    run.apply(&remove);
+    assert_eq!(times(&run), Vec::<(f64, f32)>::new(), "the key at 0.49 s is gone");
+}
+

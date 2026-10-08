@@ -37,6 +37,7 @@ pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, node: Nod
     let Some(v1) = clip.grade().nodes.iter().find(|n| n.id == node) else { return false };
     let Some(ty) = klipp_nodes::registry::node_type(v1.kind) else { return false };
     let Some((addr, lifted)) = grade_node(clip, node) else { return false };
+    let start = cmds.len();
     crate::panels::node_inspector::node_header(ui, &v1.kind, v1.enabled, &v1.keyframes, node, clip.id, cmds, theme, frame);
     let entry = lifted.legacy.as_ref().map(|l| l.payload.clone()).unwrap_or(serde_json::Value::Null);
     let presentation = |p: &ParamDesc| ty.presentation(p);
@@ -53,7 +54,7 @@ pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, node: Nod
         rate: clip.timeline_in.rate,
         encoding: klipp_grade_model::Encoding::from_u8(klipp_core::grade_encoding().effective(klipp_engine::video_decoder::working_colorspace()).as_u8()),
         entry: Some(Entry { payload: &entry, fields_at: &["params"] }),
-        cmds,
+        cmds: &mut *cmds,
         // A grade parameter's Behaviours aren't kept yet.
         behaviours: None,
         theme,
@@ -62,6 +63,10 @@ pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, node: Nod
     let drawn = ui.indent(("grade_node", node), |ui| node_rows(ui, &mut ctx, &rows)).inner;
     if drawn.is_empty() {
         ui.label(egui::RichText::new("No parameters").color(theme.text_dim));
+    }
+    // A key the rows name at the playhead is the stored key in its frame.
+    for cmd in &mut cmds[start..] {
+        crate::inspector::keyframe_selection::resolve_for_clip(clip, frame.tolerance, cmd);
     }
     true
 }
