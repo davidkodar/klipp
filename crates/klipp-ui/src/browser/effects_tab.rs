@@ -1944,7 +1944,7 @@ fn paint_effect_preview(
 /// The commands that put `source` on `clip_id`, as [`effect_commands`];
 /// behind the switch a built-in effect is added by path, after the clip's
 /// stack (M3 step 14), with the entry's own values.
-fn effect_commands_in(state: &AppState, source: &EffectSource, clip_id: klipp_core::ClipId) -> Vec<AppCommand> {
+pub(crate) fn effect_commands_in(state: &AppState, source: &EffectSource, clip_id: klipp_core::ClipId) -> Vec<AppCommand> {
     if let (true, EffectSource::Builtin(effect)) = (state.use_generated_stack, source) {
         let clip = state.sequence().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id);
         if let Some(cmd) = clip.and_then(|c| crate::inspector::stack_view::add_effect_command(state, c, effect)) {
