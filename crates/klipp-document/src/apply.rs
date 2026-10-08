@@ -728,10 +728,10 @@ impl DocumentView<'_> {
                 effects.sync_sequence = true;
                 effects.set_playhead = true;
             }
-            EditCommand::SetBuiltinEffects { clip_id, old_effects, old_enabled, .. } => {
+            EditCommand::SetBuiltinEffects { clip_id, old_effects, old_enabled, old_ids, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.set_effect_list(old_effects.clone(), old_enabled.clone());
+                        clip.set_effect_list_with_ids(old_effects.clone(), old_enabled.clone(), old_ids);
                         break;
                     }
                 }
@@ -1417,10 +1417,10 @@ impl DocumentView<'_> {
                 effects.sync_sequence = true;
                 effects.set_playhead = true;
             }
-            EditCommand::SetBuiltinEffects { clip_id, new_effects, new_enabled, .. } => {
+            EditCommand::SetBuiltinEffects { clip_id, new_effects, new_enabled, new_ids, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.set_effect_list(new_effects.clone(), new_enabled.clone());
+                        clip.set_effect_list_with_ids(new_effects.clone(), new_enabled.clone(), new_ids);
                         break;
                     }
                 }
@@ -1719,6 +1719,8 @@ mod effect_writer_tests {
             old_enabled: vec![true, true],
             new_effects: vec![blur(5.0), vignette(0.4), blur(1.0)],
             new_enabled: vec![true, false, true],
+            old_ids: Vec::new(),
+            new_ids: Vec::new(),
         };
         let mut pool = MediaPool::new();
         let mut fps = seqs[0].fps;

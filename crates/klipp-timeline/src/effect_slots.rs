@@ -43,7 +43,10 @@ impl EffectList {
 pub struct EffectId(uuid::Uuid);
 
 impl EffectId {
-    fn fresh() -> Self {
+    /// A new effect's id: random, so no effect before or after a reload
+    /// is ever given one another had. Minted by an edit that records the
+    /// new list with its ids, so its undo and redo put it back as made.
+    pub fn fresh() -> Self {
         Self(uuid::Uuid::new_v4())
     }
 
@@ -335,11 +338,36 @@ impl Clip {
     /// an entry at the same place and of the same type keeps its node, and
     /// a list that takes away an effect holding a mix or mask is refused.
     pub fn set_effect_list(&mut self, effects: Vec<BuiltinEffect>, enabled: Vec<bool>) {
+        self.set_effect_list_with_ids(effects, enabled, &[]);
+    }
+
+    /// Each effect's id, in list order: its node's id in the clip's
+    /// picture (M3 proposal 6), for an edit that puts the list back.
+    pub fn effect_id_list(&self) -> Vec<EffectId> {
+        self.effect_ids_for_picture()
+    }
+
+    /// Put `effects` in place under `ids`, one each and none twice, as an
+    /// undo or a redo puts back the list it recorded: every effect keeps
+    /// the node id a path, a selection or a key names it by (#1373). It
+    /// used to clear the ids, so an undo gave every effect of the clip a
+    /// new one.
+    ///
+    /// Without such ids (an edit that only knows the effects) it is the
+    /// whole-list write it always was: every entry a new id, none borrowed
+    /// from a neighbour a held path would then silently name, and a
+    /// picture-truth clip's nodes kept by place and type.
+    pub fn set_effect_list_with_ids(&mut self, effects: Vec<BuiltinEffect>, enabled: Vec<bool>, ids: &[EffectId]) {
+        let exact = ids.len() == effects.len() && ids.iter().collect::<std::collections::HashSet<_>>().len() == ids.len();
         self.through_truth("the effect list", |c| {
             c.reconcile_effect_ids();
             c.picture.effect_ids_mut().ids.clear();
             c.view_mut().effect_list.builtin_effects = effects;
             c.view_mut().effect_list.builtin_effects_enabled = enabled;
+            if exact {
+                let (owner, next) = (c.id, c.picture.effect_ids().next);
+                c.picture.effect_ids_mut().hold(owner, ids.to_vec(), next);
+            }
             c.reconcile_effect_ids();
         });
     }
@@ -744,5 +772,55 @@ impl Clip {
             c.edit_param_modifiers(|v| v.retain(|id, _| !matches!(id, ParamId::Effect { .. })));
             c.edit_param_modifiers(|v| v.extend(state.modifiers));
         })
+    }
+}
+
+#[cfg(test)]
+mod set_effect_list_ids_tests {
+    use crate::*;
+    use klipp_effects::BuiltinEffect as E;
+
+    fn clip_with(effects: &[E]) -> Clip {
+        let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut c = Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        for e in effects {
+            c.push_effect(e.clone());
+        }
+        c
+    }
+    fn blur(r: f32) -> E { E::GaussianBlur { radius: r } }
+    fn opacity(v: f32) -> E { E::Opacity { value: v } }
+
+    #[test]
+    fn given_ids_are_put_back_exactly() {
+        let mut c = clip_with(&[blur(1.0), opacity(0.5)]);
+        let ids = c.effect_id_list();
+        c.set_effect_list(vec![blur(1.0)], vec![true]);
+        c.set_effect_list_with_ids(vec![blur(1.0), opacity(0.5)], vec![true, true], &ids);
+        assert_eq!(c.effect_id_list(), ids, "an undo's or a redo's ids come back as they were");
+    }
+
+    #[test]
+    fn without_ids_no_effect_takes_an_id_another_had() {
+        // Two Blurs, A then B, and A taken out by an edit that knows no
+        // ids: the one left gets a new id, never A's handed on to B.
+        let mut c = clip_with(&[blur(1.0), blur(2.0), opacity(0.5)]);
+        let before = c.effect_id_list();
+        c.set_effect_list(vec![blur(2.0), opacity(0.5)], vec![true, true]);
+        assert!(c.effect_id_list().iter().all(|id| !before.contains(id)), "a whole-list write borrows no id");
+    }
+
+    #[test]
+    fn ids_that_dont_fit_the_list_are_not_used() {
+        let c = clip_with(&[blur(1.0), opacity(0.5)]);
+        let ids = c.effect_id_list();
+        // Too few, or one twice: taken as no ids at all.
+        for given in [vec![ids[0]], vec![ids[0], ids[0]]] {
+            let mut tried = c.clone();
+            tried.set_effect_list_with_ids(vec![blur(1.0), opacity(0.5)], vec![true, true], &given);
+            let now = tried.effect_id_list();
+            assert_eq!(now.len(), 2);
+            assert!(now.iter().all(|id| !ids.contains(id)), "{given:?}: no id given half-used");
+        }
     }
 }
