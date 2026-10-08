@@ -4705,16 +4705,25 @@ fn effects_edit(clip: &Clip, remove: impl Fn(&klipp_effects::BuiltinEffect) -> b
         return EditCommand::PictureEdit { description, clip_id: clip.id, edit: Box::new(edit) };
     }
     drop(edits);
-    let mut new: Vec<klipp_effects::BuiltinEffect> = clip.builtin_effects().iter().filter(|e| !remove(e)).cloned().collect();
+    // Each effect kept keeps its id, and the one added has its own from
+    // here, so the edit's undo and redo put back every id (#1373).
+    let (mut new, mut ids): (Vec<klipp_effects::BuiltinEffect>, Vec<klipp_timeline::EffectId>) =
+        clip.builtin_effects().iter().zip(clip.effect_id_list()).filter(|(e, _)| !remove(e)).map(|(e, id)| (e.clone(), id)).unzip();
     match add {
-        Some((effect, Place::First)) => new.insert(0, effect),
-        Some((effect, Place::Last)) => new.push(effect),
+        Some((effect, Place::First)) => {
+            new.insert(0, effect);
+            ids.insert(0, klipp_timeline::EffectId::fresh());
+        }
+        Some((effect, Place::Last)) => {
+            new.push(effect);
+            ids.push(klipp_timeline::EffectId::fresh());
+        }
         None => {}
     }
-    set_builtin_effects(clip, new)
+    set_builtin_effects(clip, new, ids)
 }
 
-fn set_builtin_effects(clip: &Clip, new: Vec<klipp_effects::BuiltinEffect>) -> EditCommand {
+fn set_builtin_effects(clip: &Clip, new: Vec<klipp_effects::BuiltinEffect>, new_ids: Vec<klipp_timeline::EffectId>) -> EditCommand {
     let mut new_enabled = clip.builtin_effects_enabled().to_vec();
     new_enabled.resize(new.len(), true);
     EditCommand::SetBuiltinEffects {
@@ -4723,6 +4732,8 @@ fn set_builtin_effects(clip: &Clip, new: Vec<klipp_effects::BuiltinEffect>) -> E
         old_enabled: clip.builtin_effects_enabled().to_vec(),
         new_effects: new,
         new_enabled,
+        old_ids: clip.effect_id_list(),
+        new_ids,
     }
 }
 
@@ -5125,11 +5136,13 @@ fn reframe(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, s
     // share of how far it can: at 1 the picture's edge meets the
     // frame's. Moving the frame right moves the picture left.
     let fx = E::Transform { position_x: -x * reach(scale, w), position_y: -y * reach(scale, h), scale_x: scale, scale_y: scale, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
-    let mut effects: Vec<E> = clip.builtin_effects().iter().filter(|e| !matches!(e, E::Transform { .. })).cloned().collect();
+    let (mut effects, mut ids): (Vec<E>, Vec<klipp_timeline::EffectId>) =
+        clip.builtin_effects().iter().zip(clip.effect_id_list()).filter(|(e, _)| !matches!(e, E::Transform { .. })).map(|(e, id)| (e.clone(), id)).unzip();
     // Transform goes first, so a crop or effect after it sees the reframed picture.
     effects.insert(0, fx);
+    ids.insert(0, klipp_timeline::EffectId::fresh());
     let what = format!("reframe {}: scale {scale:.2}, pan {x:.2}, {y:.2}", clip_name(seq, pool, clip));
-    Ok((what, set_builtin_effects(clip, effects), vec![clip.id]))
+    Ok((what, set_builtin_effects(clip, effects, ids), vec![clip.id]))
 }
 
 /// An animated crop through `keys`: at each, `scale` centred on the frame

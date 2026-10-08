@@ -780,3 +780,58 @@ fn an_unseen_end_of_an_adding_drag_never_lets_escape_remove_a_kept_opacity() {
     assert_eq!(run.clip().picture_v2().unwrap(), kept, "and the picture as it was before the drag");
     assert!(!run.state.any_drag_in_progress());
 }
+
+/// The node id an effect of `kind` (its picture type) has in the clip.
+fn node_id_of(run: &Run, type_id: &str) -> Option<uuid::Uuid> {
+    run.clip().picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == type_id).map(|n| n.id)
+}
+
+/// What the project saves of the clip: its fields and its stored picture.
+fn saved(run: &Run) -> String {
+    format!("{}\n{}", serde_json::to_string(run.clip()).unwrap(), serde_json::to_string(&run.clip().picture_v2().unwrap().picture).unwrap())
+}
+
+/// #1373: an effect beside one added and taken back keeps its node id, so
+/// a path held to it (a selection, a key) still names it; and the added
+/// effect comes back under the id it was added with. Opacity's add is
+/// recorded as the effect list, which an undo used to put back under new
+/// ids for every effect of the clip.
+#[test]
+fn undo_and_redo_of_an_add_keep_every_effects_node_id() {
+    let mut run = Run::new(fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 }), false);
+    let blur = node_id_of(&run, "klipp.legacy.effect").expect("the Blur's node");
+    let held = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: run.clip.0 }, vec![blur]);
+    let resolves = |run: &Run| run.clip().picture_v2().unwrap().picture.graph.nodes.iter().any(|n| Some(&n.id) == held.nodes.last());
+    run.apply(AppCommand::AddBuiltinEffect { clip_id: run.clip, effect: BuiltinEffect::Opacity { value: 0.5 } });
+    let opacity = node_id_of(&run, "klipp.legacy.opacity").expect("Opacity added");
+    let (picture, bytes) = (run.clip().picture_v2().unwrap(), saved(&run));
+    assert!(run.step(false), "undo the add");
+    assert_eq!(node_id_of(&run, "klipp.legacy.effect"), Some(blur), "the Blur keeps its id through the undo");
+    assert!(resolves(&run), "the path held to the Blur still names it after the undo");
+    assert_eq!(node_id_of(&run, "klipp.legacy.opacity"), None);
+    assert!(run.step(true), "redo it");
+    assert_eq!(node_id_of(&run, "klipp.legacy.effect"), Some(blur), "the Blur keeps its id through the redo");
+    assert!(resolves(&run), "and its path still names it");
+    assert_eq!(node_id_of(&run, "klipp.legacy.opacity"), Some(opacity), "the Opacity comes back under the id it was added with");
+    assert_eq!(run.clip().picture_v2().unwrap(), picture, "the same picture");
+    assert_eq!(saved(&run), bytes, "the same saved bytes");
+}
+
+/// #1373: taking back a later effect's add leaves the ids of those added
+/// before it alone, whichever way each add was recorded.
+#[test]
+fn undoing_a_later_add_leaves_earlier_effects_ids_alone() {
+    let mut run = Run::new(fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 }), false);
+    run.apply(AppCommand::AddBuiltinEffect { clip_id: run.clip, effect: BuiltinEffect::Opacity { value: 0.5 } });
+    let opacity = node_id_of(&run, "klipp.legacy.opacity").expect("Opacity added");
+    let blur = node_id_of(&run, "klipp.legacy.effect").expect("the Blur");
+    // A later add of a plain effect, recorded as a picture edit.
+    run.apply(AppCommand::AddBuiltinEffect { clip_id: run.clip, effect: BuiltinEffect::Vignette { amount: 0.4, size: 0.7, softness: 0.4, roundness: 0.0 } });
+    assert!(run.step(false), "undo the later add");
+    assert_eq!(node_id_of(&run, "klipp.legacy.opacity"), Some(opacity), "Opacity keeps its id");
+    assert!(run.clip().picture_v2().unwrap().picture.graph.nodes.iter().any(|n| n.id == blur), "the Blur keeps its id");
+    assert!(run.step(true), "redo it");
+    assert_eq!(node_id_of(&run, "klipp.legacy.opacity"), Some(opacity));
+    assert!(run.clip().picture_v2().unwrap().picture.graph.nodes.iter().any(|n| n.id == blur));
+}
+

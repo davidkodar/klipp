@@ -490,6 +490,8 @@ impl KlippApp {
 pub(super) struct ClipEffectsState {
     pub(super) effects: Vec<klipp_effects::BuiltinEffect>,
     pub(super) enabled: Vec<bool>,
+    /// Each effect's id, so an undo or redo gives it back (#1373).
+    pub(super) ids: Vec<klipp_timeline::EffectId>,
     pub(super) speed: f64,
     pub(super) timeline_out: klipp_core::RationalTime,
 }
@@ -499,6 +501,7 @@ impl ClipEffectsState {
         Self {
             effects: clip.builtin_effects().to_vec(),
             enabled: clip.builtin_effects_enabled().to_vec(),
+            ids: clip.effect_id_list(),
             speed: clip.speed,
             timeline_out: clip.timeline_out,
         }
@@ -518,6 +521,8 @@ pub(super) fn effects_change_edits(clip_id: klipp_core::ClipId, before: &ClipEff
             old_enabled: before.enabled.clone(),
             new_effects: after.effects.clone(),
             new_enabled: after.enabled.clone(),
+            old_ids: before.ids.clone(),
+            new_ids: after.ids.clone(),
         });
     }
     if before.speed != after.speed || before.timeline_out != after.timeline_out {
@@ -687,7 +692,7 @@ mod effects_undo_tests {
 
     fn state(effects: Vec<klipp_effects::BuiltinEffect>, speed: f64) -> ClipEffectsState {
         let enabled = vec![true; effects.len()];
-        ClipEffectsState { effects, enabled, speed, timeline_out: klipp_core::RationalTime { value: 300, rate: 30 } }
+        ClipEffectsState { effects, enabled, ids: Vec::new(), speed, timeline_out: klipp_core::RationalTime { value: 300, rate: 30 } }
     }
 
     #[test]
