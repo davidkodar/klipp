@@ -83,9 +83,10 @@ impl Stack {
         out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)), _ => None }).collect()
     }
 
-    /// `cmd` as the app applies it: a path command by the state, an index
-    /// command by the inspector edit host, after the dispatch boundary.
+    /// `cmd` as the app applies it, past the dispatch boundary: a path
+    /// command by the state, an index command by the inspector edit host.
     fn apply(&mut self, cmd: &AppCommand) {
+        self.state.before_dispatch(cmd);
         self.state.toast = Default::default();
         if self.state.path_command(cmd).is_some() {
             if let Some(why) = self.state.toast.message_for_test() {
@@ -93,7 +94,6 @@ impl Stack {
             }
             return;
         }
-        self.state.before_dispatch(cmd);
         if !(InspectorEditHost { state: &mut self.state, side: &Sink }).apply(cmd) {
             self.unapplied.push(format!("{cmd:?}"));
         }
@@ -113,6 +113,9 @@ impl Stack {
 
     /// Undo (or redo) one step, through the document as the app does.
     fn step(&mut self, forward: bool) -> Result<(), String> {
+        // The undo or redo passes the dispatch boundary first, as the app's
+        // does, which closes any drag still open.
+        self.state.before_dispatch(&if forward { AppCommand::Redo } else { AppCommand::Undo });
         let history = self.state.active_history_mut();
         let entry = if forward { history.redo() } else { history.undo() }.ok_or("no step to take")?;
         let mut doc = klipp_document::apply::DocumentView { sequences: &mut self.state.sequences, active: self.state.active_sequence_idx, media_pool: &mut self.state.media_pool, fps: &mut self.state.fps };
@@ -341,6 +344,9 @@ impl Grade {
         });
         for mut cmd in cmds {
             crate::inspector::keyframe_selection::resolve_command(&self.state.sequences[0], &mut cmd);
+            // The dispatch boundary first, for every command, as the app's
+            // dispatch passes it.
+            self.state.before_dispatch(&cmd);
             self.state.toast = Default::default();
             match self.state.path_command(&cmd) {
                 Some(_) => {
@@ -349,7 +355,6 @@ impl Grade {
                     }
                 }
                 None => {
-                    self.state.before_dispatch(&cmd);
                     // The old panel's number, as the colour dispatch writes
                     // it (`apply_override`; the history is its gesture's).
                     if let AppCommand::SetNodeParam { node_id, param, value, .. } = &cmd {
@@ -412,6 +417,9 @@ impl Grade {
     }
 
     fn step(&mut self, forward: bool) -> Result<(), String> {
+        // The undo or redo passes the dispatch boundary first, as the app's
+        // does, which closes any drag still open.
+        self.state.before_dispatch(&if forward { AppCommand::Redo } else { AppCommand::Undo });
         let history = self.state.active_history_mut();
         let entry = if forward { history.redo() } else { history.undo() }.ok_or("no step to take")?;
         let mut doc = klipp_document::apply::DocumentView { sequences: &mut self.state.sequences, active: self.state.active_sequence_idx, media_pool: &mut self.state.media_pool, fps: &mut self.state.fps };
@@ -431,9 +439,10 @@ impl Grade {
 /// catalog: its row label and its item names, where they differ. The
 /// items are the same choices in the same order.
 /// - Combine names each operator with its sets ("Intersect (A and B)").
-/// - A LUT's spaces read "Rec.709 / sRGB" and "BT.2020", the row label
-///   ends in a colon, and the old menu also offers "Use LUT default"
-///   (unset), which the generated row has no item for.
+/// - A LUT's spaces read "Rec.709 / sRGB" and "BT.2020", and the row
+///   label ends in a colon. Both menus offer "Use LUT default" (unset),
+///   the old one first and the generated row last, as the catalog's
+///   fourth choice.
 fn old_menu<'a>(label: &str, shows: &'a str, item: &'a str) -> (String, &'a str, &'a str) {
     let combine = |s: &'a str| match s {
         "Intersect" => "Intersect (A and B)",
