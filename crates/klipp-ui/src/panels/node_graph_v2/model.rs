@@ -133,29 +133,6 @@ fn grade_menu() -> &'static [MenuCategory] {
     }).collect())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn catalog_ports_keep_the_grade_sockets_labels_and_colours() {
-        for t in klipp_nodes::registry::node_types() {
-            let kind = t.kind;
-            assert_eq!(CanvasKind::output_port_count(&kind), kind.output_port_count(), "{}", t.desc.id);
-            assert_eq!(kind.inputs(), t.desc.inputs);
-            assert_eq!(kind.outputs(), t.desc.outputs);
-            // Include the optional gate socket beyond the counted inputs.
-            for port in 0..=kind.input_port_count() {
-                assert_eq!(CanvasKind::input_port_role(&kind, port), kind.input_port_role(port), "{} input {port}", t.desc.id);
-                assert_eq!(CanvasKind::input_port_label(&kind, port), kind.input_port_label(port));
-            }
-            for port in 0..kind.output_port_count() {
-                assert_eq!(CanvasKind::output_port_role(&kind, port), kind.output_port_role(port), "{} output {port}", t.desc.id);
-                assert_eq!(CanvasKind::output_port_label(&kind, port), kind.output_port_label(port));
-            }
-        }
-    }
-}
 
 /// Catalog categories supply the palette for new canvas roots. Grade's
 /// historical sub-families below are presentation overrides: every grade
@@ -289,3 +266,27 @@ const GRADE_MENU_PRESENTATION: &[(&str, &[(&str, &str)])] = &[
         ("Compound", "Compound"),
     ]),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_ports_keep_the_grade_sockets_labels_and_colours() {
+        for t in klipp_nodes::registry::node_types() {
+            let kind = t.kind;
+            assert_eq!(CanvasKind::output_port_count(&kind), kind.output_port_count(), "{}", t.desc.id);
+            assert_eq!(kind.inputs(), t.desc.inputs);
+            assert_eq!(kind.outputs(), t.desc.outputs);
+            // Include the optional gate socket beyond the counted inputs.
+            for port in 0..=kind.input_port_count() {
+                assert_eq!(CanvasKind::input_port_role(&kind, port), kind.input_port_role(port), "{} input {port}", t.desc.id);
+                assert_eq!(CanvasKind::input_port_label(&kind, port), kind.input_port_label(port));
+            }
+            for port in 0..kind.output_port_count() {
+                assert_eq!(CanvasKind::output_port_role(&kind, port), kind.output_port_role(port), "{} output {port}", t.desc.id);
+                assert_eq!(CanvasKind::output_port_label(&kind, port), kind.output_port_label(port));
+            }
+        }
+    }
+}
