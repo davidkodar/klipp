@@ -214,7 +214,7 @@ fn a_batch_is_one_edit_and_a_refusal_changes_nothing() {
     // M2 step 9c: `picture_truth.rs`.)
     let refusals = [
         GraphOp::SetParam { path: at(&c, [fx[0]]), key: "radius".into(), value: ParamValue::Text("wide".into()) },
-        GraphOp::SetNodeMeta { path: at(&c, [fx[0]]), label: Some("Soft".into()), position: None },
+        GraphOp::SetNodeMeta { path: at(&c, [uuid::Uuid::nil()]), label: Some("Soft".into()), position: None },
         GraphOp::RemoveNode { path: at(&c, [grade_group(&p)]) },
         GraphOp::RemoveKeyAt { path: at(&c, [fx[1]]), key: "amount".into(), time_secs: 3.0 },
         GraphOp::SetParam { path: NodePath::new(Root::Clip { clip: uuid::Uuid::nil() }, [fx[0]]), key: "radius".into(), value: ParamValue::Float(1.0) },

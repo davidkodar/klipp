@@ -105,7 +105,8 @@ fn picture_only(p: &ClipPicture, op: &GraphOp) -> bool {
         GraphOp::SetMix { .. } | GraphOp::SetMaskChannel { .. } if first.type_id.as_str() == lt::GROUP => path.nodes.len() == 2,
         _ if path.nodes.len() != 1 => false,
         _ if beside => true,
-        GraphOp::AddNodeBeside { .. } => true,
+        // Root canvas metadata has no legacy field representation.
+        GraphOp::SetNodeMeta { .. } | GraphOp::AddNodeBeside { .. } => true,
         GraphOp::SetMix { .. } | GraphOp::SetMaskChannel { .. } => first.type_id.as_str() == types::LEGACY_EFFECT,
         GraphOp::Connect { to_port, .. } => first.type_id.as_str() == types::LEGACY_EFFECT && to_port.as_str() == "mask",
         GraphOp::Disconnect { port, .. } => first.type_id.as_str() == types::LEGACY_EFFECT && port.as_str() == "mask",
@@ -982,6 +983,15 @@ fn merge_truth(old: &LiftedPicture, ids: &(Vec<crate::EffectId>, Vec<crate::Effe
     }
     p.graph.output = renamed(p.graph.output);
 
+    // Root-canvas names and positions belong to the picture, not to the
+    // effect list. Match after restoring stable ids so reordering, editing
+    // and duplicating a clip keep them on their original nodes.
+    for n in &mut p.graph.nodes {
+        if let Some(previous) = old.picture.graph.nodes.iter().find(|old| old.id == n.id) {
+            n.label.clone_from(&previous.label);
+        }
+    }
+
     let old_chain: Vec<NodeId> = chain(&old.picture).iter().map(|n| n.id).collect();
     let label = |n: &Node| if n.label.is_empty() { tag_of(n).to_owned() } else { n.label.clone() };
     // An effect's mix and mask channel.
@@ -1023,6 +1033,11 @@ fn merge_truth(old: &LiftedPicture, ids: &(Vec<crate::EffectId>, Vec<crate::Effe
     }
     // The nodes beside the chain, then every edge that isn't the chain's.
     p.graph.nodes.extend(old.picture.graph.nodes.iter().filter(|n| !old_chain.contains(&n.id)).cloned());
+    for (id, position) in &old.picture.graph.ui.positions {
+        if p.graph.nodes.iter().any(|n| n.id == *id) {
+            p.graph.ui.positions.insert(*id, position.clone());
+        }
+    }
     let is_chain_edge = |e: &klipp_graph_format::Edge| old_chain.contains(&e.from.0) && old_chain.contains(&e.to.0) && e.from.1.as_str() == "out" && e.to.1.as_str() == "in";
     for e in old.picture.graph.edges.iter().filter(|e| !is_chain_edge(e)) {
         // The lift's own wiring (the source into the grade's frame) is in

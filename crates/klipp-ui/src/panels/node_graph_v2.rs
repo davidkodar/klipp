@@ -24,6 +24,7 @@ use klipp_core::{AppCommand, ClipId};
 use klipp_nodes::{NodeFrameId, NodeGraph, NodeId, NodePos, NodeStickyNoteId};
 
 mod model;
+mod picture;
 use model::{CanvasGraph, CanvasKind, CanvasNode, GradeCanvas, MenuCategory, Palette};
 
 const NODE_W: f32 = 120.0;
@@ -268,6 +269,7 @@ pub struct NodeGraphV2Panel {
     /// extends to graph x=2400+ for the default 13-node graph,
     /// far beyond the canvas's visible window at zoom=1.
     last_fit_clip: Option<ClipId>,
+    last_picture_level: Option<klipp_graph_format::path::NodePath>,
     /// Set by the toolbar's "Fit" button or programmatically
     /// (clip switch). Consumed at the top of the next `show()`.
     fit_pending: bool,
@@ -385,6 +387,7 @@ impl Default for NodeGraphV2Panel {
             node_menu: None,
             node_menu_opened_frame: 0,
             last_fit_clip: None,
+            last_picture_level: None,
             fit_pending: false,
             matte_thumbs: std::collections::HashMap::new(),
             output_thumbs: std::collections::HashMap::new(),
@@ -462,10 +465,49 @@ impl NodeGraphV2Panel {
         port_snap_radius_px: f32,
         solo_node: Option<NodeId>,
     ) -> Vec<AppCommand> {
+        if self.last_picture_level.take().is_some() {
+            self.fit_pending = true;
+            self.last_visible_thumb_nodes.clear();
+        }
         self.show_canvas(ui, selected_node, selected_set, &GradeCanvas(graph), clip_id, theme,
             engine_node_thumbs, engine_node_thumbs_gen, deferred_drops, descent_path,
             breadcrumb_labels, grade_version_names, active_grade_version, clip_time_secs,
             port_snap_enabled, port_snap_radius_px, solo_node)
+    }
+
+    /// Draw the clip's actual picture graph at `level`. Navigation stays
+    /// in the caller's UI state; edits carry complete node and port paths.
+    /// Picture thumbnails are supplied by the later inspection UI step.
+    pub fn show_picture(
+        &mut self,
+        ui: &mut egui::Ui,
+        clip: &klipp_timeline::Clip,
+        level: &mut klipp_graph_format::path::NodePath,
+        selected_node: &mut Option<NodeId>,
+        selected_set: &mut std::collections::HashSet<NodeId>,
+        theme: &KlippTheme,
+        clip_time_secs: f64,
+    ) -> Result<Vec<AppCommand>, String> {
+        if level.root_clip() != Some(clip.id.0) {
+            return Err("The graph belongs to a different clip".into());
+        }
+        let lifted = clip.picture_v2().map_err(|e| e.to_string())?;
+        if self.last_picture_level.as_ref() != Some(level) {
+            self.fit_pending = true;
+            self.last_visible_thumb_nodes.clear();
+            self.last_picture_level = Some(level.clone());
+        }
+        let graph = picture::PictureCanvas::new(&lifted.picture.graph, level.clone(), *selected_node)?;
+        let mut labels = Vec::new();
+        let mut body = &lifted.picture.graph;
+        for id in &level.nodes {
+            let n = body.nodes.iter().find(|n| n.id == *id).ok_or("The selected group is no longer available")?;
+            labels.push(if n.label.is_empty() { "Group".to_owned() } else { n.label.clone() });
+            body = &n.group.as_ref().ok_or("The selected node is not a group")?.graph;
+        }
+        Ok(self.show_canvas(ui, selected_node, selected_set, &graph, clip.id, theme,
+            &Default::default(), 0, &mut Vec::new(), &mut level.nodes, &labels, None, None,
+            clip_time_secs, false, 0.0, None))
     }
 
     fn show_canvas<G: CanvasGraph>(
@@ -614,7 +656,7 @@ impl NodeGraphV2Panel {
 
         // ── Group 3: annotate ──
         // Sticky-note creation at the canvas viewport centre.
-        if toolbar_ui.add(mutating_button(egui::RichText::new("\u{1F4DD} Note")))
+        if graph.grade_tools() && toolbar_ui.add(mutating_button(egui::RichText::new("\u{1F4DD} Note")))
             .on_hover_text("Add a sticky note at the canvas centre")
             .clicked()
         {
@@ -719,83 +761,85 @@ impl NodeGraphV2Panel {
         // actions. Clicking a version triggers SwitchGradeVersion;
         // "Save as new version" picks the next auto-name (V1 / V2 /
         // ...). Rename / delete act on the currently-active version.
-        let keeps_versions = grade_version_names.is_some();
-        let grade_version_names = grade_version_names.unwrap_or(&[]);
-        let active_name = active_grade_version
-            .and_then(|i| grade_version_names.get(i).map(|s| s.as_str()));
-        // Plain-language labels — the previous "V: +" / "V: —" /
-        // "V: V1 ▾" was opaque to anyone who didn't already know
-        // it was a version picker. Now: the verb tells you what
-        // clicking does (save / browse / switch).
-        let (menu_label, menu_tooltip) = match active_name {
-            Some(n) => (
-                format!("Version: {n}  \u{25BE}"),
-                format!(
-                    "Currently viewing version {n}.\nClick to switch, \
-                     save, update, or delete versions."
+        if graph.grade_tools() {
+            let keeps_versions = grade_version_names.is_some();
+            let grade_version_names = grade_version_names.unwrap_or(&[]);
+            let active_name = active_grade_version
+                .and_then(|i| grade_version_names.get(i).map(|s| s.as_str()));
+            // Plain-language labels — the previous "V: +" / "V: —" /
+            // "V: V1 ▾" was opaque to anyone who didn't already know
+            // it was a version picker. Now: the verb tells you what
+            // clicking does (save / browse / switch).
+            let (menu_label, menu_tooltip) = match active_name {
+                Some(n) => (
+                    format!("Version: {n}  \u{25BE}"),
+                    format!(
+                        "Currently viewing version {n}.\nClick to switch, \
+                         save, update, or delete versions."
+                    ),
                 ),
-            ),
-            None if grade_version_names.is_empty() => (
-                "+ Save version  \u{25BE}".to_string(),
-                "Save a snapshot of the current grade so you can come \
-                 back to it later or A/B against future edits."
-                    .to_string(),
-            ),
-            None => (
-                "Versions  \u{25BE}".to_string(),
-                format!(
-                    "{} saved version(s) — none active. Click to pick \
-                     one or save a new snapshot.",
-                    grade_version_names.len(),
+                None if grade_version_names.is_empty() => (
+                    "+ Save version  \u{25BE}".to_string(),
+                    "Save a snapshot of the current grade so you can come \
+                     back to it later or A/B against future edits."
+                        .to_string(),
                 ),
-            ),
-        };
-        // Keep this widget directly in the wrapping row. A nested scope
-        // measures against the remaining row width and can turn the menu
-        // label into a tall, clipped column before the parent wraps it.
-        let menu_resp = if keeps_versions { toolbar_ui.menu_button(menu_label, |mb_ui| {
-            // Existing versions — click to switch.
-            for (i, name) in grade_version_names.iter().enumerate() {
-                let marker = if Some(i) == active_grade_version { "●" } else { "○" };
-                if mb_ui.button(format!("{marker}  {name}")).clicked() {
-                    cmds.push(AppCommand::SwitchGradeVersion {
-                        clip_id,
-                        version_index: i,
-                    });
+                None => (
+                    "Versions  \u{25BE}".to_string(),
+                    format!(
+                        "{} saved version(s) — none active. Click to pick \
+                         one or save a new snapshot.",
+                        grade_version_names.len(),
+                    ),
+                ),
+            };
+            // Keep this widget directly in the wrapping row. A nested scope
+            // measures against the remaining row width and can turn the menu
+            // label into a tall, clipped column before the parent wraps it.
+            let menu_resp = if keeps_versions { toolbar_ui.menu_button(menu_label, |mb_ui| {
+                // Existing versions — click to switch.
+                for (i, name) in grade_version_names.iter().enumerate() {
+                    let marker = if Some(i) == active_grade_version { "●" } else { "○" };
+                    if mb_ui.button(format!("{marker}  {name}")).clicked() {
+                        cmds.push(AppCommand::SwitchGradeVersion {
+                            clip_id,
+                            version_index: i,
+                        });
+                        mb_ui.close_menu();
+                    }
+                }
+                if !grade_version_names.is_empty() {
+                    mb_ui.separator();
+                }
+                if mb_ui.button("Save as new version").clicked() {
+                    // Auto-numbered "V1", "V2", … based on current count.
+                    let name = format!("V{}", grade_version_names.len() + 1);
+                    cmds.push(AppCommand::SaveGradeVersion { clip_id, name });
                     mb_ui.close_menu();
                 }
-            }
-            if !grade_version_names.is_empty() {
-                mb_ui.separator();
-            }
-            if mb_ui.button("Save as new version").clicked() {
-                // Auto-numbered "V1", "V2", … based on current count.
-                let name = format!("V{}", grade_version_names.len() + 1);
-                cmds.push(AppCommand::SaveGradeVersion { clip_id, name });
-                mb_ui.close_menu();
-            }
-            if let Some(idx) = active_grade_version {
-                if mb_ui.button("Update active version with current").clicked() {
-                    cmds.push(AppCommand::UpdateActiveGradeVersion { clip_id });
-                    mb_ui.close_menu();
+                if let Some(idx) = active_grade_version {
+                    if mb_ui.button("Update active version with current").clicked() {
+                        cmds.push(AppCommand::UpdateActiveGradeVersion { clip_id });
+                        mb_ui.close_menu();
+                    }
+                    if mb_ui.button("Delete active version").clicked() {
+                        cmds.push(AppCommand::DeleteGradeVersion {
+                            clip_id,
+                            version_index: idx,
+                        });
+                        mb_ui.close_menu();
+                    }
                 }
-                if mb_ui.button("Delete active version").clicked() {
-                    cmds.push(AppCommand::DeleteGradeVersion {
-                        clip_id,
-                        version_index: idx,
-                    });
-                    mb_ui.close_menu();
-                }
+            }).response } else {
+                toolbar_ui.add_enabled(false, egui::Button::new(menu_label))
+            };
+            if keeps_versions {
+                menu_resp.on_hover_text(menu_tooltip);
+            } else {
+                menu_resp.on_disabled_hover_text("Versions are kept per clip; the timeline grade has none. Save it as a Look to keep a copy.");
             }
-        }).response } else {
-            toolbar_ui.add_enabled(false, egui::Button::new(menu_label))
-        };
-        if keeps_versions {
-            menu_resp.on_hover_text(menu_tooltip);
-        } else {
-            menu_resp.on_disabled_hover_text("Versions are kept per clip; the timeline grade has none. Save it as a Look to keep a copy.");
+            toolbar_ui.add_space(8.0);
         }
-        toolbar_ui.add_space(8.0);
         // Solo indicator — only visible when a node is currently
         // soloed. Shows the soloed node's label (so the user knows
         // which node they're previewing without scanning the canvas
@@ -910,7 +954,7 @@ impl NodeGraphV2Panel {
         // The trailing u8 is the *dynamic* input-port count — needed
         // because LayerMixer grows past its kind's static count and
         // the editor must render every wired port + accept new ones.
-        let mut node_rects: Vec<(NodeId, egui::Rect, egui::Color32, <G::Node as CanvasNode>::Kind, u8)> =
+        let mut node_rects: Vec<(NodeId, egui::Rect, egui::Color32, <G::Node as CanvasNode>::Kind<'_>, u8)> =
             Vec::with_capacity(graph.nodes().len());
         for node in graph.nodes() {
             let pos = graph.positions()
@@ -4074,6 +4118,10 @@ impl NodeGraphV2Panel {
         graph: &impl CanvasGraph,
         solo_node: Option<NodeId>,
     ) {
+        if !graph.grade_tools() && kind.is_terminal() {
+            self.node_menu = None;
+            return;
+        }
         let pos = self.node_menu.map(|(_, p)| p).unwrap_or_default();
         let menu_id = ui.id().with(("ngv2_node_menu", node_id));
         let mut close = false;
@@ -4127,7 +4175,7 @@ impl NodeGraphV2Panel {
                     // selection's external-edge shape and rejects
                     // gracefully (toast) if the v1 single-port
                     // restriction would be violated.
-                    if !is_structural && in_set && selected_set.len() >= 2 {
+                    if graph.grade_tools() && !is_structural && in_set && selected_set.len() >= 2 {
                         let label = format!(
                             "Group {} into Compound",
                             selected_set.len(),
@@ -4165,7 +4213,7 @@ impl NodeGraphV2Panel {
                     // on multi-selection), so right-clicking a
                     // compound always gets Ungroup regardless of
                     // how many other nodes happen to be selected.
-                    if kind.is_group()
+                    if graph.grade_tools() && kind.is_group()
                         && ui.button("Ungroup Compound").clicked() {
                             cmds.push(AppCommand::UngroupCompound {
                                 clip_id,
@@ -4185,8 +4233,8 @@ impl NodeGraphV2Panel {
                     let current_receives: Vec<Option<String>> = node_ref
                         .map(|n| n.input_links().to_vec()).unwrap_or_default();
                     let in_count = node_ref.map(|n| n.input_count()).unwrap_or(0);
-                    let can_send = !kind.is_output();
-                    let can_receive = !kind.is_source() && in_count > 0;
+                    let can_send = graph.grade_tools() && !kind.is_output();
+                    let can_receive = graph.grade_tools() && !kind.is_source() && in_count > 0;
                     let available_labels: Vec<String> = graph.nodes().iter()
                         .filter(|n| n.id() != node_id)
                         .filter_map(|n| n.output_link().map(str::to_owned))
