@@ -27,6 +27,7 @@ fn generated(t: &EffectType, json: &Value) -> (Vec<Row>, Vec<AppCommand>) {
     let ctx = egui::Context::default();
     let path = addr();
     let mut cmds = Vec::new();
+    let theme = klipp_ui::theme::KlippTheme::default();
     let presentation = |p: &ParamDesc| t.presentation(p);
     let stored = |p: &ParamDesc| effect_value(json, p);
     let keys = |_: &ParamDesc| (None, KeyState::default());
@@ -42,6 +43,8 @@ fn generated(t: &EffectType, json: &Value) -> (Vec<Row>, Vec<AppCommand>) {
                 entry: Some(generated::Entry { payload: json, fields_at: &[] }),
                 cmds: &mut cmds,
                 behaviours: None,
+                theme: &theme,
+                app: None,
             };
             generated::node_rows(ui, &mut rc, &rows);
         })

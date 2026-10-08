@@ -49,6 +49,10 @@ pub struct RowCtx<'a> {
     /// `inspector::modifier_ui` does) for the row's ⋯ menu; `None` leaves
     /// the menu out (IC9: only the generated rows have it).
     pub behaviours: Option<&'a dyn Fn(&mut egui::Ui, &klipp_core::ParamId, &mut Vec<AppCommand>)>,
+    /// The theme and the app, for a named editor that needs them (a
+    /// plug-in's warnings read the project's size).
+    pub theme: &'a crate::theme::KlippTheme,
+    pub app: Option<&'a crate::state::AppState>,
 }
 
 /// A node's stored entry, and where in it its parameters' fields sit.
@@ -471,7 +475,8 @@ mod tests {
     fn written(type_id: &str, key: &str, payload: &Value, new: Value) -> Vec<AppCommand> {
         let addr = NodePath::new(Root::Clip { clip: uuid::Uuid::nil() }, [uuid::Uuid::from_u128(1)]);
         let mut cmds = Vec::new();
-        let mut ctx = RowCtx { addr: &addr, clip_time_secs: 0.0, timeline_in_secs: 0.0, rate: 24, encoding: Encoding::Bt1886, entry: Some(Entry { payload, fields_at: &[] }), cmds: &mut cmds, behaviours: None };
+        let theme = crate::theme::KlippTheme::default();
+        let mut ctx = RowCtx { addr: &addr, clip_time_secs: 0.0, timeline_in_secs: 0.0, rate: 24, encoding: Encoding::Bt1886, entry: Some(Entry { payload, fields_at: &[] }), cmds: &mut cmds, behaviours: None, theme: &theme, app: None };
         assert!(write_stored(&mut ctx, desc(type_id, key), new));
         cmds
     }
