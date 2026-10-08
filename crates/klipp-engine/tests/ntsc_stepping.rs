@@ -8,12 +8,22 @@
 
 mod common;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use klipp_core::{AppCommand, Fps};
 
-fn settle(parked: &common::Parked) {
+/// Send `cmd`, wait for the playhead to report `want` (five seconds at the
+/// most), then for the picture to settle. Waiting on quiet alone raced on
+/// a loaded machine: a re-render of the old frame counted as the seek's
+/// frame, the buffer went quiet before the engine took the seek, and the
+/// test read the old playhead. A wrong frame still fails, after the wait.
+fn seek(parked: &common::Parked, cmd: AppCommand, want: f64) {
     let g = parked.generation();
+    parked.send(cmd);
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_secs(5) && !parked.frame_number().is_some_and(|f| (f - want).abs() < 0.01) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
     parked.settle_after(g, Duration::from_secs(5));
 }
 
@@ -38,8 +48,7 @@ fn steps_and_jumps_move_whole_frames_at_29_97() {
         (AppCommand::SeekRelative(12), 17.0),
     ] {
         let label = format!("{cmd:?}");
-        parked.send(cmd);
-        settle(&parked);
+        seek(&parked, cmd, want);
         let got = at(&parked);
         eprintln!("{label}: at frame {got:.3}, want {want}");
         assert!((got - want).abs() < 0.01, "{label}: the playhead is at frame {got:.3}, not {want}");
