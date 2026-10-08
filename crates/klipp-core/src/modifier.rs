@@ -19,6 +19,12 @@ pub enum ParamId {
         effect_index: usize,
         param_name: String,
     },
+    /// A parameter of the node at `addr`, by key (M3 step 2): what an
+    /// effect's `Effect { effect_index, .. }` names by place in its list.
+    Node {
+        addr: klipp_graph_format::path::NodePath,
+        key: klipp_graph_format::ParamKey,
+    },
 }
 
 /// How a modifier combines with the base value.
@@ -298,6 +304,13 @@ impl ParamId {
             ParamId::Effect { effect_index, param_name } => {
                 format!("effect:{}:{}", effect_index, param_name)
             }
+            // Never stored: a node's parameter is written under its effect's
+            // place (`Effect`) until keys are stored by path. Distinct, so a
+            // map built in memory can't merge it with another.
+            ParamId::Node { addr, key } => {
+                let ids: Vec<String> = addr.nodes.iter().map(|n| n.to_string()).collect();
+                format!("node:{}:{}", ids.join("/"), key)
+            }
         }
     }
 
@@ -338,6 +351,7 @@ impl ParamId {
             ParamId::Pan => "Pan".into(),
             ParamId::Gain => "Gain".into(),
             ParamId::Effect { param_name, .. } => param_name.clone(),
+            ParamId::Node { key, .. } => key.to_string(),
         }
     }
 }

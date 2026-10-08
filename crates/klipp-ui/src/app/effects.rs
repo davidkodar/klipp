@@ -56,7 +56,7 @@ impl KlippApp {
     }
 
     /// The clip's picture fields now, for a drag's ends.
-    fn picture_now(&self, clip_id: klipp_core::ClipId) -> Option<klipp_timeline::ClipPictureFields> {
+    pub(super) fn picture_now(&self, clip_id: klipp_core::ClipId) -> Option<klipp_timeline::ClipPictureFields> {
         self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).map(|c| c.picture.clone())
     }
 
@@ -97,33 +97,8 @@ impl KlippApp {
     /// undo entry from its "before" snapshot to the effect as it is
     /// now, or, when the effect has not moved (or the gesture is not
     /// an effect edit), by dropping it, so nothing bogus is pushed.
-    fn close_open_effect_drag(&mut self) {
-        let pending = self.state.active_history().pending_old_entry_ref().map(|e| e.command.clone());
-        if let Some(EditCommand::PictureEdit { clip_id, description, edit }) = &pending {
-            match self.picture_now(*clip_id) {
-                Some(after) => self.state.active_history_mut().end_drag(HistoryEntry {
-                    command: EditCommand::PictureEdit { clip_id: *clip_id, description, edit: Box::new(klipp_timeline::PictureEdit { before: edit.before.clone(), after }) },
-                }),
-                None => self.state.active_history_mut().abandon_pending_drag(),
-            }
-            return;
-        }
-        let Some(EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect, .. }) = pending else {
-            self.state.active_history_mut().abandon_pending_drag();
-            return;
-        };
-        let now = self.state.sequences[self.state.active_sequence_idx]
-            .all_clips()
-            .find(|c| c.id == clip_id)
-            .and_then(|c| c.builtin_effects().get(effect_index).cloned());
-        match now {
-            Some(new_effect) if new_effect != old_effect => {
-                self.state.active_history_mut().end_drag(HistoryEntry {
-                    command: EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect, new_effect },
-                });
-            }
-            _ => self.state.active_history_mut().abandon_pending_drag(),
-        }
+    pub(super) fn close_open_effect_drag(&mut self) {
+        self.state.close_open_drag();
     }
 
     pub(super) fn handle_effects_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
@@ -1038,6 +1013,48 @@ pub(super) fn fold_drag_into_add(
     }
 }
 
+/// Drags whose release was never seen, closed on the state alone, so the
+/// app's handlers and the path edits (M3 step 2) share one rule.
+impl crate::state::AppState {
+    /// The clip's picture fields now, on the active sequence.
+    pub(crate) fn picture_of(&self, clip_id: klipp_core::ClipId) -> Option<klipp_timeline::ClipPictureFields> {
+        self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id == clip_id).map(|c| c.picture.clone())
+    }
+
+    /// Close an effect gesture whose release was never seen: as one
+    /// undo entry from its "before" snapshot to the effect as it is
+    /// now, or, when the effect has not moved (or the gesture is not
+    /// an effect edit), by dropping it, so nothing bogus is pushed.
+    pub(crate) fn close_open_drag(&mut self) {
+        let pending = self.active_history().pending_old_entry_ref().map(|e| e.command.clone());
+        if let Some(EditCommand::PictureEdit { clip_id, description, edit }) = &pending {
+            match self.picture_of(*clip_id) {
+                Some(after) => self.active_history_mut().end_drag(HistoryEntry {
+                    command: EditCommand::PictureEdit { clip_id: *clip_id, description, edit: Box::new(klipp_timeline::PictureEdit { before: edit.before.clone(), after }) },
+                }),
+                None => self.active_history_mut().abandon_pending_drag(),
+            }
+            return;
+        }
+        let Some(EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect, .. }) = pending else {
+            self.active_history_mut().abandon_pending_drag();
+            return;
+        };
+        let now = self.sequences[self.active_sequence_idx]
+            .all_clips()
+            .find(|c| c.id == clip_id)
+            .and_then(|c| c.builtin_effects().get(effect_index).cloned());
+        match now {
+            Some(new_effect) if new_effect != old_effect => {
+                self.active_history_mut().end_drag(HistoryEntry {
+                    command: EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect, new_effect },
+                });
+            }
+            _ => self.active_history_mut().abandon_pending_drag(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod effect_toggle_tests {
     //! Pure-logic coverage for the per-effect enable/disable toggle. The
@@ -1168,8 +1185,30 @@ mod effects_undo_tests {
 /// `create` makes an empty one where there is none. Changed in `f`, which
 /// gives back what `f` returns; `None` where there is no stack (and none was
 /// made), and for an effect index past the list, which names no effect.
+/// The effect a `ParamId::Node` names on `clip`, and the name the effect
+/// animates that key under (M3 step 2): its id is its node's, kept since M3
+/// proposal 6. `None` when the node isn't one of this clip's effects.
+fn effect_param_of(clip: &mut klipp_timeline::Clip, addr: &klipp_graph_format::path::NodePath, key: &klipp_graph_format::ParamKey) -> Option<(klipp_timeline::EffectId, String)> {
+    if addr.root != (klipp_graph_format::path::Root::Clip { clip: clip.id.0 }) || addr.nodes.len() != 1 {
+        return None;
+    }
+    let id = klipp_timeline::EffectId::of_node(addr.node()?);
+    let len = clip.builtin_effects().len();
+    let index = (0..len).find(|&i| clip.effect_id_at(i) == Some(id))?;
+    let tag = serde_json::to_value(&clip.builtin_effects()[index]).ok()?.get("type")?.as_str()?.to_owned();
+    Some((id, klipp_graph_lift::lift::keyframe_name(&tag, key.as_str()).to_owned()))
+}
+
 fn with_modifiers<R>(clip: &mut klipp_timeline::Clip, param: &klipp_core::ParamId, create: bool, f: impl FnOnce(&mut klipp_core::ModifierStack) -> R) -> Option<R> {
     match param {
+        klipp_core::ParamId::Node { addr, key } => {
+            let (id, name) = effect_param_of(clip, addr, key)?;
+            if create {
+                clip.edit_effect_modifiers(id, &name, f)
+            } else {
+                clip.edit_existing_effect_modifiers(id, &name, f)
+            }
+        }
         klipp_core::ParamId::Effect { effect_index, param_name } => {
             // An index past the list names no effect: nothing is kept there
             // to animate whichever effect lands at it later.
@@ -1188,6 +1227,11 @@ fn with_modifiers<R>(clip: &mut klipp_timeline::Clip, param: &klipp_core::ParamI
 /// Take `param`'s modifier stack off `clip`, as [`modifiers_mut`] finds it.
 fn remove_modifiers(clip: &mut klipp_timeline::Clip, param: &klipp_core::ParamId) {
     match param {
+        klipp_core::ParamId::Node { addr, key } => {
+            if let Some((id, name)) = effect_param_of(clip, addr, key) {
+                clip.remove_effect_modifiers(id, &name);
+            }
+        }
         klipp_core::ParamId::Effect { effect_index, param_name } => {
             if let Some(id) = clip.effect_id_at(*effect_index) {
                 clip.remove_effect_modifiers(id, param_name);
@@ -1261,4 +1305,22 @@ mod modifier_target_tests {
         let _: Option<()> = with_modifiers(&mut c, &effect_param(3), false, |_: &mut ModifierStack| ());
         assert!(c.param_modifiers().is_empty());
     }
+
+    /// A modifier added by node path lands on the stack the effect's index
+    /// names (M3 step 2), and comes off by path too.
+    #[test]
+    fn a_modifier_by_node_path_is_the_effects() {
+        let mut c = clip();
+        c.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 });
+        let node = c.effect_id_at(0).unwrap().as_uuid();
+        let by_path = ParamId::Node { addr: klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, [node]), key: "radius".into() };
+        let by_index = ParamId::Effect { effect_index: 0, param_name: "radius".into() };
+        with_modifiers(&mut c, &by_path, true, |s| s.modifiers.push(klipp_core::Modifier::Clamp { min: 0.0, max: 1.0, enabled: true }));
+        assert_eq!(with_modifiers(&mut c, &by_index, false, |s| s.modifiers.len()), Some(1), "the effect's stack");
+        remove_modifiers(&mut c, &by_path);
+        assert_eq!(with_modifiers(&mut c, &by_index, false, |s| s.modifiers.len()), None, "gone by path");
+        let elsewhere = ParamId::Node { addr: klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: uuid::Uuid::nil() }, [node]), key: "radius".into() };
+        assert_eq!(with_modifiers(&mut c, &elsewhere, true, |s| s.modifiers.len()), None, "another clip's path names nothing here");
+    }
+
 }

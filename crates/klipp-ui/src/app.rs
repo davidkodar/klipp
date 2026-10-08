@@ -63,6 +63,7 @@ mod colour;
 mod audio;
 mod keyframes;
 mod graph_ops;
+mod path_commands;
 mod titles;
 mod poster_frames;
 mod links;
