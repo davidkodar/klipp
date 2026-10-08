@@ -663,3 +663,62 @@ fn soft_edge_alias_drag_cancels_static_and_animated_edits() {
         assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
     }
 }
+
+/// A clip with no Opacity effect yet, its Video tab in either view (#1364):
+/// the old view adds the effect as the drag starts, the generated view
+/// drags the clip's own opacity. Escape takes the whole drag back, the add
+/// with it; a press and release changes nothing; a drag commits, and undo
+/// takes it all back.
+#[test]
+fn a_clip_without_opacity_cancels_commits_and_undoes_its_first_drag() {
+    let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let bare = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+    for generated in [false, true] {
+        let start = |run: &mut Run| {
+            run.property = true;
+            run.frame(Vec::new(), egui::Modifiers::NONE);
+            run.row("Opacity").expect("the Video tab's Opacity row").1
+        };
+        // Escape mid-drag.
+        let mut run = Run::new(bare.clone(), generated);
+        let before = run.clip().picture_v2().unwrap();
+        let at = start(&mut run);
+        run.button(at, egui::PointerButton::Primary, true);
+        for dx in [-6.0, -12.0, -18.0] {
+            run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))], egui::Modifiers::NONE);
+        }
+        assert_ne!(run.clip().picture_v2().unwrap(), before, "generated={generated}: the drag edits");
+        run.key(egui::Key::Escape, egui::Modifiers::NONE);
+        run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(-30.0, 0.0))], egui::Modifiers::NONE);
+        run.button(at + egui::vec2(-30.0, 0.0), egui::PointerButton::Primary, false);
+        assert_eq!(run.clip().picture_v2().unwrap(), before, "generated={generated}: Escape leaves no effect behind");
+        assert_eq!(run.state.active_history().undo_count(), 0, "generated={generated}");
+        assert!(!run.state.any_drag_in_progress());
+        assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+        // A press and a release, nothing moved.
+        let mut run = Run::new(bare.clone(), generated);
+        let at = start(&mut run);
+        run.button(at, egui::PointerButton::Primary, true);
+        run.button(at, egui::PointerButton::Primary, false);
+        run.frame(Vec::new(), egui::Modifiers::NONE);
+        assert_eq!(run.clip().picture_v2().unwrap(), before, "generated={generated}: a click adds nothing");
+        assert_eq!(run.state.active_history().undo_count(), 0, "generated={generated}");
+        // A drag commits, and undo takes all of it back.
+        let mut run = Run::new(bare.clone(), generated);
+        let at = start(&mut run);
+        run.button(at, egui::PointerButton::Primary, true);
+        for dx in [-6.0, -12.0, -18.0] {
+            run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))], egui::Modifiers::NONE);
+        }
+        run.button(at + egui::vec2(-18.0, 0.0), egui::PointerButton::Primary, false);
+        run.frame(Vec::new(), egui::Modifiers::NONE);
+        let after = run.clip().picture_v2().unwrap();
+        assert_ne!(after, before, "generated={generated}: the drag is kept");
+        assert!(!run.state.any_drag_in_progress());
+        // One step in either view, the add and its value together (IC13).
+        assert_eq!(run.state.active_history().undo_count(), 1, "generated={generated}");
+        assert!(run.step(false));
+        assert_eq!(run.clip().picture_v2().unwrap(), before, "generated={generated}: undo takes it all back");
+        assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+    }
+}

@@ -719,32 +719,63 @@ fn show_clip_video(
     // gesture back, rather than committing it as a release does: the
     // drag's snapshot restores the picture, keys included, with no undo
     // step, and the pointer moving on changes nothing (#1364, IC14).
+    //
+    // A clip with no Opacity effect in the old view (the generated view
+    // drags the clip's own opacity, by path) has the effect added as the
+    // drag starts, and the drag opened on it: Escape then takes the add
+    // back too, and only an add this drag made (#1364).
+    let added_by_drag = egui::Id::new(&opacity_drag_key).with("added_by_drag");
     let opacity_escaped = r_op.drag_stopped
-        && opacity_index.is_some()
         && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
     if opacity_escaped {
-        cmds.push(AppCommand::AbandonEffectDrag { clip_id, effect_index: opacity_index.unwrap_or(0), added: false });
+        let added = ui.data_mut(|d| d.remove_temp::<(usize, f32)>(added_by_drag)).map(|(index, _)| index);
+        if let Some(idx) = opacity_index.or(added) {
+            cmds.push(AppCommand::AbandonEffectDrag { clip_id, effect_index: idx, added: added.is_some() });
+        }
         ui.ctx().stop_dragging();
     }
+    // The effect this frame's drag added, not yet on `clip`.
+    let mut started_index = None;
     if r_op.drag_started {
-        if let Some(idx) = opacity_index {
-            cmds.push(AppCommand::BeginEffectDrag {
-                key: opacity_drag_key.clone(),
-                clip_id,
-                effect_index: idx,
-                old_effect: BuiltinEffect::Opacity { value: base_opacity },
-            });
-        }
+        let index = opacity_index.unwrap_or_else(|| {
+            let index = clip.builtin_effects().len();
+            cmds.push(AppCommand::AddBuiltinEffect { clip_id, effect: BuiltinEffect::Opacity { value: base_opacity } });
+            // With the value it starts from: by the release the clip holds
+            // the dragged value, so only this tells a drag from a click.
+            ui.data_mut(|d| d.insert_temp(added_by_drag, (index, base_opacity)));
+            started_index = Some(index);
+            index
+        });
+        cmds.push(AppCommand::BeginEffectDrag {
+            key: opacity_drag_key.clone(),
+            clip_id,
+            effect_index: index,
+            old_effect: BuiltinEffect::Opacity { value: base_opacity },
+        });
         cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::Opacity));
     }
     if r_op.changed && !opacity_escaped {
-        emit_opacity(cmds, clip, clip_id, opacity);
+        match started_index {
+            Some(index) => cmds.push(AppCommand::UpdateBuiltinEffect { clip_id, index, effect: BuiltinEffect::Opacity { value: opacity } }),
+            None => emit_opacity(cmds, clip, clip_id, opacity),
+        }
         if !clip.opacity_keyframes().is_empty() {
             cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::Opacity, time_secs: clip_time_secs, value: opacity });
         }
     }
-    if r_op.drag_stopped && !opacity_escaped {
-        if let Some(idx) = opacity_index {
+    // A drag that added the effect and moved nothing (a press and a
+    // release) takes the add back: nothing was asked for.
+    let unmoved_add = if r_op.drag_stopped && !opacity_escaped {
+        ui.data_mut(|d| d.remove_temp::<(usize, f32)>(added_by_drag))
+            .filter(|(_, start)| (opacity - start).abs() < f32::EPSILON)
+            .map(|(index, _)| index)
+    } else {
+        None
+    };
+    if let Some(idx) = unmoved_add {
+        cmds.push(AppCommand::AbandonEffectDrag { clip_id, effect_index: idx, added: true });
+    } else if r_op.drag_stopped && !opacity_escaped {
+        if let Some(idx) = opacity_index.or(started_index) {
             cmds.push(AppCommand::EndEffectDrag {
                 key: opacity_drag_key,
                 clip_id,
