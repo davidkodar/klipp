@@ -89,14 +89,24 @@ pub fn evaluate_clip_own_transform(
     clip_time_secs: f64,
     eval_ctx: &klipp_core::EvalContext,
 ) -> ResolvedTransform {
-    let tdef = enabled_transform(clip).into_iter()
+    // A picture-truth clip's fields are only a compatibility view. Auto
+    // placement can be carried there by a disabled synthetic Transform;
+    // its authoritative properties must not be mistaken for a bypassed
+    // authored effect (#1207).
+    let picture = clip.is_picture_truth().then(|| clip.picture_v2().ok()).flatten();
+    let tdef = picture.as_ref().map(|p| {
+        let p = &p.picture.placement;
+        let scale = p.scale.unwrap_or(1.0);
+        (p.pos_x.unwrap_or(0.0), p.pos_y.unwrap_or(0.0), scale, scale,
+            p.rotation.unwrap_or(0.0), p.anchor_x.unwrap_or(0.5), p.anchor_y.unwrap_or(0.5))
+    }).unwrap_or_else(|| enabled_transform(clip).into_iter()
         .find_map(|e| match e {
             klipp_effects::BuiltinEffect::Transform {
                 position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, ..
             } => Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y)),
             _ => None,
         })
-        .unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5));
+        .unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5)));
     let px = eval_with_modifiers(clip.transform_pos_x_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::PositionX, clip_time_secs, tdef.0, eval_ctx);
     let py = eval_with_modifiers(clip.transform_pos_y_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::PositionY, clip_time_secs, tdef.1, eval_ctx);
     let sc = eval_with_modifiers(clip.transform_scale_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::Scale, clip_time_secs, tdef.2, eval_ctx);
@@ -277,15 +287,19 @@ pub fn resolve_clip_transform_depth(
     };
     let mut own = evaluate_clip_own_transform(clip, clip_time, &eval_ctx);
 
-    // Glyph-anchored focal-point override. Reads `focal_ref` off the
-    // first enabled `Transform` builtin on this clip; resolves to clip-space
+    // Glyph-anchored focal-point override. Read the picture's placement,
+    // or the first enabled Transform for a field clip; resolve to clip-space
     // `(focal_x, focal_y)` via the title's glyph layout + the
     // title's own resolved transform. Failed resolution falls back
     // to the static `anchor_x` / `anchor_y` (already in `own.5/6`).
-    let focal_ref = enabled_transform(clip).and_then(|e| match e {
-        klipp_effects::BuiltinEffect::Transform { focal_ref, .. } => focal_ref.as_ref().copied(),
-        _ => None,
-    });
+    let focal_ref = if clip.is_picture_truth() {
+        clip.picture_v2().ok().and_then(|p| p.picture.placement.focal_ref.clone()).and_then(|v| serde_json::from_value(v).ok())
+    } else {
+        enabled_transform(clip).and_then(|e| match e {
+            klipp_effects::BuiltinEffect::Transform { focal_ref, .. } => *focal_ref,
+            _ => None,
+        })
+    };
     if let Some(fr) = focal_ref {
         if let Some((fx, fy)) = resolve_focal_ref_to_clip_space(
             &fr, seq, playhead, fps, cache, glyph_cache, title_renderer, frame_w, frame_h, depth + 1,

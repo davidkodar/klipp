@@ -1,4 +1,4 @@
-//! A disabled Transform leaves automatic placement on both render routes (#1207).
+//! A disabled Transform leaves automatic placement on CPU and GPU (#1207).
 
 use std::sync::Arc;
 use klipp_compose::{eval, FrameSource, Inspect, RenderOptions, Renderer, SourceFrame, SourcePixels};
@@ -58,7 +58,7 @@ fn sequence() -> Sequence {
     let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i+1].id, to_port: 0 }).collect();
     c.set_grade(NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions: Default::default(),
         working_space_override: None, frames: vec![], sticky_notes: vec![] });
-    // A real effect after the grade makes plan-versus-legacy route coverage observable.
+    // A real effect after the grade makes the GPU plan route observable.
     c.set_effect_list(vec![E::Gamma { gamma: 1.2 }, transform(20.0)], vec![true, true]);
     let mut seq = Sequence::new_default();
     seq.resolution = klipp_core::Resolution { width: W, height: H };
@@ -68,19 +68,17 @@ fn sequence() -> Sequence {
     seq
 }
 
-fn render(seq: &Sequence, gpu: bool, legacy: bool) -> Vec<f32> {
+fn render(seq: &Sequence, gpu: bool) -> Vec<f32> {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(gpu);
-    r.set_legacy_effects(legacy);
     let (image, found) = r.render_inspected(seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default());
     assert_eq!(found.stats.effects_fallback_lists, 0);
-    if gpu && !legacy { assert_eq!(found.stats.effects_followed_grade, 1, "exercise the plan route"); }
-    if legacy { assert_eq!(found.stats.effects_followed_grade, 0); }
+    if gpu { assert_eq!(found.stats.effects_followed_grade, 1, "exercise the plan route"); }
     image
 }
 
 #[test]
-fn toggling_a_transform_changes_pixels_and_disabled_matches_absent_on_both_routes() {
+fn toggling_a_transform_changes_pixels_and_disabled_matches_absent() {
     let gpu = klipp_nodes::GraphExecutor::new().gpu_pipeline_or_init().is_some();
     assert!(gpu || std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none_or(|v| v != "1"), "required GPU unavailable");
     let enabled = sequence();
@@ -91,16 +89,29 @@ fn toggling_a_transform_changes_pixels_and_disabled_matches_absent_on_both_route
     let mut absent = enabled.clone();
     absent.tracks[0].clips[0].set_effect_list(vec![E::Gamma { gamma: 1.2 }], vec![true]);
     for use_gpu in [false, true].into_iter().filter(|v| !*v || gpu) {
-        let mut pictures = Vec::new();
-        for legacy in [false, true] {
-            let on = render(&enabled, use_gpu, legacy);
-            let off = render(&disabled, use_gpu, legacy);
-            let without = render(&absent, use_gpu, legacy);
-            assert_eq!(off, without, "disabled is automatic placement: gpu={use_gpu} legacy={legacy}");
-            assert!(on.iter().zip(&off).filter(|(a,b)| (*a-*b).abs() > 0.01).count() > (W*H) as usize,
-                "the toggle visibly changes the chart");
-            pictures.push((on, off));
-        }
-        assert_eq!(pictures[0], pictures[1], "both states agree between plan and legacy");
+        let on = render(&enabled, use_gpu);
+        let off = render(&disabled, use_gpu);
+        let without = render(&absent, use_gpu);
+        assert_eq!(off, without, "disabled is automatic placement: gpu={use_gpu}");
+        assert!(on.iter().zip(&off).filter(|(a,b)| (*a-*b).abs() > 0.01).count() > (W*H) as usize,
+            "the toggle visibly changes the chart");
     }
+}
+
+#[test]
+fn automatic_picture_truth_keeps_its_own_placement_properties() {
+    let mut c = clip();
+    let mut picture = (*c.picture_v2().unwrap()).clone();
+    picture.picture.requires.push(klipp_graph_format::lifted::PICTURE_TRUTH_CAPABILITY.into());
+    picture.picture.placement = klipp_graph_format::lifted::PlacementProps {
+        pos_x: Some(7.0), pos_y: Some(8.0), scale: Some(0.7), rotation: Some(9.0),
+        anchor_x: Some(0.2), anchor_y: Some(0.3), tilt_x: Some(12.0),
+        tilt_y: Some(13.0), perspective: Some(2.0), focal_ref: None,
+    };
+    c.adopt_stored_picture(picture).unwrap();
+    let ctx = eval::eval_context(&c, tc(1.0), 24.0);
+    assert_eq!(eval::evaluate_clip_own_transform(&c, 1.0, &ctx), (7.0, 8.0, 0.7, 0.7, 9.0, 0.2, 0.3));
+    let resolved = klipp_compose::resolve::resolve_effects(&c, &c.picture_v2().unwrap().picture, tc(1.0), 24.0, None, None).unwrap();
+    assert!(resolved.iter().any(|effect| matches!(effect, E::Transform { rotation_x, rotation_y, perspective, .. }
+        if (*rotation_x, *rotation_y, *perspective) == (12.0, 13.0, 2.0))));
 }

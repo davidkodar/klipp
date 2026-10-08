@@ -1,6 +1,6 @@
 {
-  "recorded_on": "c455b91b",
-  "reason": "#1077 adds four 'nothing chosen' corpus cases (DifferenceKey without a plate or switched off, ExternalMatte without an image or with a missing one); no existing frame changes",
+  "recorded_on": "6833e630",
+  "reason": "#1207: disabled Transform uses automatic placement; approved case-only correction, first enabled Transform supplies placement.",
   "frames": [
   {"case":"effect/Opacity","kind":"rgba","len":9216,"offset":0,"path":"cpu","t":"0.5"},
   {"case":"effect/Opacity","kind":"rgba","len":9216,"offset":9216,"path":"CpuWithGpu","t":"0.5"},
