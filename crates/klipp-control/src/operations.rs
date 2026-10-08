@@ -22,6 +22,7 @@ struct Outcome {
     revision: Option<u64>,
     reason: Option<String>,
     op_index: Option<usize>,
+    ungated: Vec<Value>,
     background_job: Option<&'static str>,
 }
 
@@ -98,6 +99,7 @@ pub(crate) fn queued(background_job: Option<&'static str>) -> String {
             revision: None,
             reason: None,
             op_index: None,
+            ungated: Vec::new(),
             background_job,
         },
     );
@@ -111,6 +113,10 @@ pub(crate) fn finished(id: &str, revision: u64, reason: Option<String>) {
 }
 
 pub(crate) fn finished_at_op(id: &str, revision: u64, reason: Option<String>, op_index: Option<usize>) {
+    finished_with_notices(id, revision, reason, op_index, Vec::new());
+}
+
+pub(crate) fn finished_with_notices(id: &str, revision: u64, reason: Option<String>, op_index: Option<usize>, ungated: Vec<Value>) {
     let (lock, _) = registry();
     let mut registry = lock.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(outcome) = registry.outcomes.get_mut(id) {
@@ -128,6 +134,7 @@ pub(crate) fn finished_at_op(id: &str, revision: u64, reason: Option<String>, op
         outcome.updated_at_ms = now;
         outcome.finished_at_ms = Some(now);
         outcome.revision = Some(revision);
+        outcome.ungated = if reason.is_none() { ungated } else { Vec::new() };
         outcome.reason = reason;
         outcome.op_index = op_index;
     }
@@ -152,6 +159,7 @@ pub(crate) fn status(id: &str) -> Result<Value, String> {
         "revision": outcome.revision,
         "reason": outcome.reason,
         "op_index": outcome.op_index,
+        "ungated": outcome.ungated,
         "progress": null,
         "completion_scope": "ui_command",
         "background_job": outcome.background_job,

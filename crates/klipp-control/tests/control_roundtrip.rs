@@ -133,6 +133,7 @@ fn harness() -> Harness {
                 }
                 // A plan made for another revision is refused, as the UI does.
                 let mut refused_op = None;
+                let mut ungated = Vec::new();
                 let mut refused = if let Some(want) = env.expected_project_identity {
                     if shared.project.lock().unwrap().identity != want {
                         Some(format!("project identity moved from {want}"))
@@ -155,8 +156,11 @@ fn harness() -> Harness {
                                 let root = ops.first().ok_or((None, "empty batch".to_owned()))?.path().root;
                                 let klipp_graph_format::path::Root::Clip { clip } = root else { return Err((Some(0), "only clip roots are supported".into())); };
                                 let clip = seq.tracks.iter_mut().flat_map(|t| &mut t.clips).find(|c| c.id.0 == clip).ok_or((None, "no clip".to_owned()))?;
+                                let before = serde_json::to_value(&clip.picture_v2().unwrap().picture).unwrap();
                                 match clip.apply_picture_ops_indexed(ops) {
                                     Ok(edit) => {
+                                        let after = serde_json::to_value(&clip.picture_v2().unwrap().picture).unwrap();
+                                        ungated = klipp_graph_lift::edit_planner::ungated_consumers(&klipp_graph_lift::ops::GraphEdit { root, before, after }, &klipp_timeline::RegistryCatalog).unwrap();
                                         edits_seen.lock().unwrap().push(klipp_document::history::EditCommand::PictureEdit { clip_id: clip.id, description: "Graph Edit", edit: Box::new(edit) });
                                         Ok(())
                                     }
@@ -202,7 +206,7 @@ fn harness() -> Harness {
                 }
                 let revision = if refused.is_none() { shared.bump_revision() } else { shared.revision() };
                 if let Some(ack) = env.ack {
-                    let _ = ack.send(klipp_document::control::ControlAck { revision, refused, refused_op, renamed: Vec::new() });
+                    let _ = ack.send(klipp_document::control::ControlAck { revision, refused, refused_op, renamed: Vec::new(), ungated });
                 }
             }
         });
@@ -774,6 +778,62 @@ fn graph_add_refuses_effect_labels_and_matte_splices_without_partial_edits() {
     }
     assert!(h.edits_seen.lock().unwrap().is_empty());
     assert_eq!(h.shared.revision(), graph["revision"].as_u64().unwrap());
+}
+
+#[test]
+fn removing_a_mask_reports_named_readers_over_the_socket() {
+    mask_notice_roundtrip(false);
+}
+
+#[test]
+fn removing_a_mask_reports_named_readers_after_a_timeout() {
+    mask_notice_roundtrip(true);
+}
+
+fn mask_notice_roundtrip(delayed: bool) {
+    let mut h = harness();
+    let (mask, reader) = {
+        let mut seq = h.sequence.write().unwrap();
+        let clip = &mut seq.tracks[0].clips[0];
+        let mut grade = clip.grade().clone();
+        let pair = grade.ensure_masked_secondary(klipp_nodes::NodeKind::Exposure);
+        let source = grade.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source).unwrap().id;
+        grade.edges.iter_mut().filter(|e| e.to_node == pair.0 && e.to_port == 0).for_each(|e| e.from_node = source);
+        grade.nodes.iter_mut().find(|n| n.id == pair.1).unwrap().label = "Face exposure".into();
+        grade.nodes.iter_mut().find(|n| n.id.to_string() == h.ids.corrector_a).unwrap().label = "Primary correction".into();
+        grade.edges.push(klipp_nodes::Edge { from_node: pair.0, from_port: 0, to_node: h.ids.corrector_a.parse().unwrap(), to_port: 1 });
+        clip.set_grade(grade);
+        pair
+    };
+    let root = json!({"clip":h.ids.clip_a});
+    let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let group = graph["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.group").unwrap()["id"].clone();
+    let count = h.edits_seen.lock().unwrap().len();
+    let before = h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture.clone();
+    let revision = h.shared.revision();
+    let refusal = h.call(json!({"method":"graph_ops","ops":[{"op":"remove","path":{"root":root,"nodes":[group,reader]}}]}));
+    assert_eq!(refusal["ok"], false, "{refusal}");
+    assert!(refusal["error"].as_str().unwrap().contains("This branch is shared. Open in node view"));
+    assert_eq!(h.shared.revision(), revision);
+    assert_eq!(h.edits_seen.lock().unwrap().len(), count);
+    assert_eq!(h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture, before);
+    if delayed { h.ack_delay_ms.store(3000, std::sync::atomic::Ordering::Relaxed); }
+    let result = h.ok(json!({"method":"graph_ops","ops":[{"op":"remove","path":{"root":root,"nodes":[group,mask]}}]}));
+    assert_eq!(result["applied"], !delayed, "{result}");
+    let started = std::time::Instant::now();
+    let status = loop {
+        let status = h.ok(json!({"method":"operation_status","operation_id":result["operation_id"]}));
+        if status["state"] != "queued" { break status; }
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "ack did not arrive");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert_eq!(status["state"], "applied", "{status}");
+    if !delayed { assert_eq!(status["ungated"], result["ungated"]); }
+    let notices = status["ungated"].as_array().unwrap();
+    assert_eq!(notices.len(), 2);
+    assert!(notices.contains(&json!({"path":{"root":root,"nodes":[group,reader]},"label":"Face exposure"})), "{notices:?}");
+    assert!(notices.contains(&json!({"path":{"root":root,"nodes":[group,h.ids.corrector_a]},"label":"Primary correction"})), "{notices:?}");
+    assert_eq!(h.edits_seen.lock().unwrap().len(), count + 1);
 }
 
 #[test]

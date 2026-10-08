@@ -166,7 +166,7 @@ impl crate::state::AppState {
         };
         if let [GraphOp::SetParam { path, key, .. }] = ops {
             if self.active_history().is_dragging(&drag_key(path, key)) {
-                let (edit, _) = graph_ops::graph_ops_edit(&self.sequences[self.active_sequence_idx], ops).map_err(refused)?;
+                let graph_ops::GraphOpsOutcome { edit, .. } = graph_ops::graph_ops_edit(&self.sequences[self.active_sequence_idx], ops).map_err(refused)?;
                 if let EditCommand::PictureEdit { clip_id, edit, .. } = edit {
                     self.set_picture(clip_id, &edit.after);
                 }
@@ -176,13 +176,14 @@ impl crate::state::AppState {
         if self.active_history().is_any_drag_in_progress() {
             self.close_open_drag();
         }
-        let (edit, _) = graph_ops::graph_ops_edit(&self.sequences[self.active_sequence_idx], ops).map_err(refused)?;
+        let graph_ops::GraphOpsOutcome { edit, ungated, .. } = graph_ops::graph_ops_edit(&self.sequences[self.active_sequence_idx], ops).map_err(refused)?;
         if let EditCommand::PictureEdit { clip_id, edit, .. } = &edit {
             self.set_picture(*clip_id, &edit.after);
         }
         self.active_history_mut().begin_batch();
         self.push_history(edit);
         self.active_history_mut().end_batch_as(label);
+        self.show_ungated(&ungated);
         Ok(())
     }
 
@@ -633,6 +634,28 @@ mod tests {
         assert_eq!(s.selected_node_addr, Some(at(id, &[ids[1]])), "the selection still names it");
     }
 
+    #[test]
+    fn removing_a_mask_by_path_reports_its_reader_and_undo_restores_it() {
+        let mut c = fixture(&[]);
+        let mut grade = klipp_nodes::NodeGraph::default();
+        let (mask, reader) = grade.ensure_masked_secondary(klipp_nodes::NodeKind::Corrector);
+        grade.nodes.iter_mut().find(|n| n.id == reader).unwrap().label = "Skin correction".into();
+        c.set_grade(grade);
+        let p = c.picture_v2().unwrap();
+        let group = p.picture.graph.nodes.iter().find(|n| n.group.as_ref().is_some_and(|b| b.graph.nodes.iter().any(|n| n.id == mask))).unwrap().id;
+        let addr = at(c.id, &[group, mask]);
+        let mut s = with(std::slice::from_ref(&c));
+        let before = picture(&s, c.id);
+        let outcome = graph_ops::graph_ops_edit(&s.sequences[0], &[GraphOp::RemoveNode { path: addr.clone() }]).unwrap();
+        assert_eq!(outcome.ungated, vec![klipp_graph_lift::edit_planner::Ungated { path: at(c.id, &[group, reader]), label: "Skin correction".into() }]);
+        let count = s.active_history().undo_count();
+        run(&mut s, AppCommand::RemoveNodeAt { addr });
+        assert_eq!(s.active_history().undo_count(), count + 1);
+        assert_eq!(s.toast.message_for_test(), Some("1 node lost their mask: Skin correction"));
+        undo(&mut s);
+        assert_eq!(picture(&s, c.id), before);
+    }
+
     /// A clip with a Corrector in its grade, and the Corrector's address:
     /// inside the clip's grade group.
     fn graded() -> (klipp_timeline::Clip, NodePath) {
@@ -835,7 +858,7 @@ mod tests {
         run(&mut s, AppCommand::SetParamAt { addr: blur.clone(), key: "radius".into(), value: ParamValue::Float(9.0) });
         let dragged = picture(&s, c.id);
         s.close_path_drag_before_edit();
-        let (edit, _) = graph_ops::graph_ops_edit(&s.sequences[0], &[GraphOp::SetEnabled { path: at(c.id, &[ids[1]]), enabled: false }]).unwrap();
+        let graph_ops::GraphOpsOutcome { edit, .. } = graph_ops::graph_ops_edit(&s.sequences[0], &[GraphOp::SetEnabled { path: at(c.id, &[ids[1]]), enabled: false }]).unwrap();
         if let EditCommand::PictureEdit { clip_id, edit: e, .. } = &edit {
             s.set_picture(*clip_id, &e.after);
         }

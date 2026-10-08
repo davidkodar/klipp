@@ -394,7 +394,8 @@ pub(crate) fn send_with_reply(
     match rx.recv_timeout(ACK_TIMEOUT) {
         Ok(ack) => {
             let op_index = ack.refused_op.and_then(|at| source_indices.as_ref().and_then(|indices| indices.get(at)).copied());
-            operations::finished_at_op(&operation_id, ack.revision, ack.refused.clone(), op_index);
+            let ungated = ungated_notice_values(&ack);
+            operations::finished_with_notices(&operation_id, ack.revision, ack.refused.clone(), op_index, ungated.clone());
             if let Some(why) = ack.refused {
                 if source_indices.is_some() {
                     return Ok(json!({"accepted":false,"applied":false,"operation_id":operation_id,"revision":ack.revision,"op_index":op_index,"why":why}));
@@ -414,6 +415,9 @@ pub(crate) fn send_with_reply(
             if !ack.renamed.is_empty() {
                 reply["renamed"] = json!(ack.renamed.iter().map(|(was, now)| [was.to_string(), now.to_string()]).collect::<Vec<_>>());
             }
+            if !ack.ungated.is_empty() {
+                reply["ungated"] = json!(ungated);
+            }
             Ok(reply)
         }
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -422,7 +426,8 @@ pub(crate) fn send_with_reply(
             std::thread::spawn(move || match rx.recv() {
                 Ok(ack) => {
                     let op_index = ack.refused_op.and_then(|at| source_indices.as_ref().and_then(|indices| indices.get(at)).copied());
-                    operations::finished_at_op(&pending_id, ack.revision, ack.refused, op_index);
+                    let ungated = ungated_notice_values(&ack);
+                    operations::finished_with_notices(&pending_id, ack.revision, ack.refused, op_index, ungated);
                 }
                 Err(_) => operations::finished(&pending_id, shared.revision(), Some("UI acknowledgement channel closed".into())),
             });
@@ -441,4 +446,8 @@ pub(crate) fn send_with_reply(
             Err(format!("not applied (operation {operation_id}): UI acknowledgement channel closed"))
         }
     }
+}
+
+fn ungated_notice_values(ack: &ControlAck) -> Vec<serde_json::Value> {
+    ack.ungated.iter().map(|n| json!({"path": crate::graph_wire::GraphPath::from(n.path.clone()), "label": n.label})).collect()
 }

@@ -374,3 +374,27 @@ fn the_display_boundary_cannot_be_removed_or_moved() {
         refused(boundary_graph(), request(20, action), "cannot");
     }
 }
+
+#[test]
+fn a_grade_group_cannot_be_removed_or_moved_as_a_whole() {
+    let mut g = graph();
+    let mut body = graph();
+    body.nodes[0].type_id = lt::GROUP_INPUT.into();
+    body.nodes[3].type_id = lt::GROUP_OUTPUT.into();
+    g.nodes[1].type_id = lt::GROUP.into();
+    g.nodes[1].group = Some(Box::new(klipp_graph_format::GroupBody {
+        graph: body, ports: Vec::new(), interface: Vec::new(),
+    }));
+    for action in [Action::Remove, Action::MoveAfter(id(3))] {
+        refused(g.clone(), request(2, action), "structural");
+    }
+}
+
+#[test]
+fn shared_refusal_reveals_the_shared_dependency() {
+    let mut g = masked();
+    g.edges.push(edge(10, 3, "mask"));
+    let refusal = edit_planner::propose(&docs(g), request(2, Action::Remove), 1, &Catalog).unwrap_err();
+    assert_eq!(refusal.reveal, path(10));
+    assert_eq!(refusal.reason, "This branch is shared. Open in node view");
+}

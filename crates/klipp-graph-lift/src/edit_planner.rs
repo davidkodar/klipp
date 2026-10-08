@@ -60,16 +60,16 @@ pub fn propose(
         reason,
         reveal: request.path.clone(),
     };
-    let before = ops::snapshot(docs, request.path.root).map_err(&refusal)?;
+    let before = ops::snapshot(docs, request.path.root).map_err(refusal)?;
     // Retain the precise boundary path for an Open in node view action.
     // The ops call below validates the complete root as well as this level.
-    if let Some((graph, interface)) = level_for(docs, &request.path).map_err(&refusal)? {
+    if let Some((graph, interface)) = level_for(docs, &request.path).map_err(refusal)? {
         rewrite(&mut graph.clone(), &request, Some(catalog), interface)?;
     }
     let mut copy = Documents::default();
-    ops::put(&mut copy, request.path.root, &before).map_err(&refusal)?;
-    let edit = ops::apply_with_catalog(&mut copy, &request.op(), catalog).map_err(&refusal)?;
-    let ungated = ungated_consumers(&edit, catalog).map_err(&refusal)?;
+    ops::put(&mut copy, request.path.root, &before).map_err(refusal)?;
+    let edit = ops::apply_with_catalog(&mut copy, &request.op(), catalog).map_err(refusal)?;
+    let ungated = ungated_consumers(&edit, catalog).map_err(refusal)?;
     Ok(Proposal {
         revision,
         request,
@@ -213,7 +213,7 @@ pub(crate) fn rewrite(
         return Err(refuse(
             *target,
             &format!(
-                "{} [{}]: the graph's structural nodes and Placement cannot be removed or moved",
+                "{} [{}]: the graph's ends, structural nodes and Placement cannot be removed or moved",
                 node.label, node.type_id
             ),
         ));
@@ -492,10 +492,9 @@ pub fn ungated_consumers(
             if lost {
                 out.push(Ungated {
                     path: path.clone(),
-                    label: if node.label.is_empty() {
-                        node.type_id.to_string()
-                    } else {
-                        node.label.clone()
+                    label: match crate::topology::node_label(node) {
+                        "" => node.type_id.to_string(),
+                        label => label.to_owned(),
                     },
                 });
             }

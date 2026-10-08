@@ -40,4 +40,6 @@ pub struct ControlAck {
     /// in, a clip whose fields keep no effect ids. The reply's paths are
     /// renamed through it.
     pub renamed: Vec<(klipp_graph_format::NodeId, klipp_graph_format::NodeId)>,
+    /// Surviving nodes whose mask was removed by this applied batch.
+    pub ungated: Vec<klipp_graph_lift::edit_planner::Ungated>,
 }

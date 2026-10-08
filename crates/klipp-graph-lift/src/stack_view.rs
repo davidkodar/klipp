@@ -182,7 +182,7 @@ impl Projection<'_> {
             let mut row = Row {
                 addr: self.addr(id),
                 type_id: node.type_id.clone(),
-                label: node.label.clone(),
+                label: crate::topology::node_label(node).to_owned(),
                 section,
                 enabled: node
                     .legacy_flags
@@ -233,7 +233,7 @@ impl Projection<'_> {
                         input: port.clone(),
                         source: self.addr(*source),
                         output: output.clone(),
-                        label: self.nodes[source].label.clone(),
+                        label: crate::topology::node_label(self.nodes[source]).to_owned(),
                     });
                 } else {
                     row.sub_stacks.push(Branch {

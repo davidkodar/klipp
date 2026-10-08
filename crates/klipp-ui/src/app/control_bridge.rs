@@ -24,6 +24,7 @@ impl KlippApp {
             let mut refused = None;
             let mut refused_op = None;
             let mut renamed = Vec::new();
+            let mut ungated = Vec::new();
             // A graph-ops batch travels alone (node-graph M2 step 15d): one
             // batch and nothing else, so nothing of the envelope lands
             // before the batch is refused. It is checked against the
@@ -43,7 +44,7 @@ impl KlippApp {
                         refused = Some(format!("the document is at revision {now}, the ops were checked at {r}; check them again"));
                     } else {
                         match self.apply_graph_ops(&ops, &label) {
-                            Ok(ids) => renamed = ids,
+                            Ok(outcome) => { renamed = outcome.renamed; ungated = outcome.ungated; },
                             Err((at, why)) => {
                                 refused = Some(why);
                                 refused_op = at;
@@ -127,7 +128,7 @@ impl KlippApp {
                 // the position from before it and put the playhead back
                 // there. What this envelope sought is where the user is.
                 self.publish_transport(sought);
-                let _ = ack.send(klipp_document::control::ControlAck { revision: self.state.control_shared.revision(), refused, refused_op, renamed });
+                let _ = ack.send(klipp_document::control::ControlAck { revision: self.state.control_shared.revision(), refused, refused_op, renamed, ungated });
             }
         }
     }
