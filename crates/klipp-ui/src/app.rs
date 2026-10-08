@@ -53,6 +53,7 @@ mod playback;
 mod stabilization;
 mod effects;
 mod inspector_edit_host;
+mod command_writes;
 #[cfg(test)]
 mod inspector_parity;
 mod media;

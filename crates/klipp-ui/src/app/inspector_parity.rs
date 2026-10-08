@@ -100,6 +100,9 @@ impl Run {
 
     fn apply(&mut self, cmd: AppCommand) {
         if is_side(&cmd) {
+            // An analysis the row asks for passes the dispatch boundary as in
+            // the app, which must not close the row's drag.
+            self.state.before_dispatch(&cmd);
             self.side.push(format!("{cmd:?}"));
             return;
         }
