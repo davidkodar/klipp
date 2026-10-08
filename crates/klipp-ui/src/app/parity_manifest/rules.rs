@@ -8,6 +8,106 @@ use klipp_effects::registry::presentation::Widget;
 use klipp_effects::registry::ParamKind;
 use std::collections::BTreeSet;
 
+pub(super) const GRAPH_INSPECTOR_EXCLUSION: &str =
+    "#1347: picture-graph selection does not reveal an effect inspector in either view";
+
+/// These catalog capabilities have no inspector control in either view.
+/// Keep the list narrow: a new port must receive an explicit decision.
+pub(super) fn entry_exclusion(entry: &CatalogEntry) -> Option<&'static str> {
+    match &entry.value {
+        CatalogValue::Port { port: "mask", desc } if desc.key == "channel" =>
+            Some("#1348: mask.channel is command-tested but neither inspector exposes it"),
+        CatalogValue::Mix if entry.grade =>
+            Some("#1348: implicit grade-node mix is command-tested but neither inspector exposes it"),
+        CatalogValue::Parameter { .. } if entry.type_id == "klipp.grade.primaries_matrix" =>
+            Some("#1351: PrimariesMatrix parameter controls have no reachable inspector route in either view"),
+        CatalogValue::Enabled if entry.type_id == "klipp.grade.input_transform" =>
+            Some("#1351: InputTransform selection reaches camera encoding before the bypass header in both views"),
+        _ => None,
+    }
+}
+
+pub(super) const NARROW_WHEEL_EXCLUSION: &str =
+    "#1351: WheelSatBri parameter controls are exposed in wide bottom wheels, not the narrow inspector";
+
+/// Require each location actually exposed by the production layouts.
+/// Families select fixture variants, but cannot silently omit a panel.
+pub(super) fn surfaces(entry: &CatalogEntry) -> Result<BTreeSet<Surface>, String> {
+    use Surface::*;
+    if entry_exclusion(entry).is_some() {
+        return Ok(BTreeSet::new());
+    }
+    let mut required = BTreeSet::new();
+    if !entry.grade {
+        let ty = klipp_effects::registry::effect_types()
+            .find(|t| t.desc.id == entry.type_id)
+            .ok_or_else(|| format!("{}: unclassified effect surfaces", entry.type_id))?;
+        required.insert(if crate::inspector::stack_view::is_placed_kind(ty.tag) {
+            VideoTab
+        } else {
+            EffectsStack
+        });
+    } else {
+        use klipp_nodes::NodeKind::*;
+        let kind = klipp_nodes::registry::node_types()
+            .find(|t| t.desc.id == entry.type_id)
+            .ok_or_else(|| format!("{}: unclassified grade surfaces", entry.type_id))?
+            .kind;
+        // main_layout::per_node_kind selects these, for both generations.
+        match kind {
+            Mask | Qualifier | LumaKey | SoftClip | FilmGrain | Lut3D | ColorMatch | LayerMixer
+            | ExternalMatte | DifferenceKey | Denoise | ColorWarper | Source | Output | Layer
+            | Blend | CombineMattes | ApplyMatte | Compound | RGBSplitter | RGBCombiner => {
+                required.insert(GradePerNode);
+            }
+            Corrector | Exposure | Contrast | Saturation | ToneControls | ColorBalance
+            | ColorWheels | RGBCurves | HueSatCurves | InputTransform => {
+                required.extend([GradeTabbedRight, GradeBottomTools]);
+            }
+            WheelSatBri => {
+                required.insert(GradeBottomTools);
+            }
+            // Only their bypass entry remains after the parameter exclusions.
+            PrimariesMatrix | MaskCutout | Reroute => {
+                if matches!(entry.value, CatalogValue::Enabled) {
+                    required.extend([GradeTabbedRight, GradeBottomTools]);
+                } else {
+                    return Err(format!(
+                        "{} / {}: unclassified grade surfaces",
+                        entry.type_id, entry.parameter
+                    ));
+                }
+            }
+            _ => return Err(format!("{}: unclassified grade surfaces", entry.type_id)),
+        }
+        // These controls are also reached through tabs, independently of
+        // the selected-node layout: Masks, Noise Reduction and Warper.
+        if matches!(kind, Mask | Denoise | ColorWarper)
+            && !matches!(entry.value, CatalogValue::Enabled)
+        {
+            required.extend([GradeTabbedRight, GradeBottomTools]);
+        }
+        // The bottom Adjustments bypass strip targets any selected node
+        // when a Corrector is present. The right strip is available only
+        // when selection has not switched that panel to per-node mode.
+        if matches!(entry.value, CatalogValue::Enabled) {
+            required.insert(GradeBottomTools);
+            if !required.contains(&GradePerNode) {
+                required.insert(GradeTabbedRight);
+            }
+        }
+        // snapshot_for disables generated rows for both kinds of root;
+        // require real fallback cases and block deletion while they remain.
+        required.extend([NestedGrade, NonClipGrade]);
+    }
+    if matches!(entry.value, CatalogValue::Parameter { desc, .. } if desc.keyframable)
+        || (entry.grade && matches!(entry.value, CatalogValue::Enabled))
+    {
+        required.insert(CurveEditor);
+    }
+    Ok(required)
+}
+
 /// Reviewed absent affordances stay obligations with explicit exclusions,
 /// not silently omitted interactions. One decision covers every fixture.
 pub(super) fn key_exclusion(entry: &CatalogEntry, surface: Surface) -> Option<&'static str> {
@@ -50,7 +150,6 @@ pub(super) fn interactions(
     if surface == Surface::CurveEditor {
         let kind = match entry.value {
             CatalogValue::Parameter { desc, .. } if desc.keyframable => desc.kind,
-            CatalogValue::Mix => ParamKind::Float,
             CatalogValue::Enabled => ParamKind::Bool,
             _ => {
                 return Err(format!(
@@ -69,7 +168,7 @@ pub(super) fn interactions(
             Pixels,
         ]);
         required.insert(Interpolation(KeyInterpolation::Step));
-        if kind == ParamKind::Float {
+        if matches!(kind, ParamKind::Float | ParamKind::Colour) {
             required.extend([
                 Interpolation(KeyInterpolation::Linear),
                 Interpolation(KeyInterpolation::Bezier),
@@ -136,7 +235,7 @@ pub(super) fn interactions(
             if desc.keyframable && presentation.widget != Widget::Hidden {
                 required.extend([AddKey, EditKey, RemoveKey, PreviousKey, NextKey]);
                 match desc.kind {
-                    ParamKind::Float => required.extend([
+                    ParamKind::Float | ParamKind::Colour => required.extend([
                         Interpolation(KeyInterpolation::Linear),
                         Interpolation(KeyInterpolation::Step),
                         Interpolation(KeyInterpolation::Bezier),
@@ -144,7 +243,7 @@ pub(super) fn interactions(
                     ParamKind::Whole | ParamKind::Bool | ParamKind::Choice(_) => {
                         required.insert(Interpolation(KeyInterpolation::Step));
                     }
-                    ParamKind::Colour | ParamKind::Other => {}
+                    ParamKind::Other => {}
                 }
             }
             if presentation.visible_if.is_some() {
@@ -158,20 +257,22 @@ pub(super) fn interactions(
             required.extend((0..desc.options.len()).map(ComboSelect));
             required.extend([UndoRedo, Pixels]);
         }
-        CatalogValue::Mix => required.extend([
-            TypeNumber,
-            Drag,
-            CancelDrag,
-            Reset,
-            AddKey,
-            EditKey,
-            RemoveKey,
-            PreviousKey,
-            NextKey,
-            UndoRedo,
-            Pixels,
-        ]),
-        CatalogValue::Enabled => required.extend([Toggle(false), Toggle(true), UndoRedo, Pixels]),
+        CatalogValue::Mix => {
+            required.extend([TypeNumber, Drag, CancelDrag, Reset, UndoRedo, Pixels])
+        }
+        CatalogValue::Enabled => {
+            required.extend([Toggle(false), Toggle(true), UndoRedo, Pixels]);
+            if entry.grade {
+                required.extend([
+                    AddKey,
+                    EditKey,
+                    RemoveKey,
+                    PreviousKey,
+                    NextKey,
+                    Interpolation(KeyInterpolation::Step),
+                ]);
+            }
+        }
         CatalogValue::Workflow(id) => required.extend(specialist(id)?),
     }
     Ok(required)
