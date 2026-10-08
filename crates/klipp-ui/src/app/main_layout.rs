@@ -1526,3 +1526,68 @@ fn per_node_kind(kind: klipp_nodes::NodeKind) -> bool {
         | klipp_nodes::NodeKind::RGBCombiner
     )
 }
+
+/// The control socket's `show_panel` test hook (M3 step 18): the named
+/// workspace and inspector tab, and the inspector shown whatever was named,
+/// a workspace alone or nothing. Layout only, never the document. Whether
+/// the saved layout changed.
+pub(super) fn show_panel(state: &mut crate::state::AppState, layout: &mut crate::layout_state::LayoutState, workspace: Option<&str>, inspector_tab: Option<&str>) -> bool {
+    use crate::layout_state::InspectorTab;
+    use crate::state::Workspace;
+    match workspace {
+        Some("edit") => state.active_workspace = Workspace::Edit,
+        Some("colour" | "color") => state.active_workspace = Workspace::Color,
+        Some("export") => state.active_workspace = Workspace::Export,
+        _ => {}
+    }
+    let tab = match inspector_tab {
+        Some("video") => Some(InspectorTab::Video),
+        Some("audio") => Some(InspectorTab::Audio),
+        Some("colour" | "color") => Some(InspectorTab::Color),
+        Some("effects") => Some(InspectorTab::Effects),
+        Some("title") => Some(InspectorTab::Title),
+        Some("generator") => Some(InspectorTab::Generator),
+        Some("info") => Some(InspectorTab::Info),
+        _ => None,
+    };
+    if let Some(tab) = tab {
+        layout.active_inspector_tab = tab;
+    }
+    // As `KlippApp::set_inspector_visible(true)`.
+    state.show_inspector_panel = true;
+    !std::mem::replace(&mut layout.inspector_visible, true)
+}
+
+#[cfg(test)]
+mod show_panel_tests {
+    use super::show_panel;
+    use crate::layout_state::{InspectorTab, LayoutState};
+    use crate::state::{AppState, Workspace};
+
+    fn hidden() -> (AppState, LayoutState) {
+        let (mut state, mut layout) = (AppState::default(), LayoutState::default());
+        state.show_inspector_panel = false;
+        layout.inspector_visible = false;
+        (state, layout)
+    }
+
+    #[test]
+    fn a_hidden_inspector_is_shown_whatever_is_named() {
+        for (workspace, tab) in [(Some("colour"), Some("effects")), (Some("colour"), None), (None, None)] {
+            let (mut state, mut layout) = hidden();
+            assert!(show_panel(&mut state, &mut layout, workspace, tab), "{workspace:?} {tab:?}: the saved layout changed");
+            assert!(state.show_inspector_panel && layout.inspector_visible, "{workspace:?} {tab:?}: the inspector is shown");
+        }
+    }
+
+    #[test]
+    fn the_named_workspace_and_tab_are_shown() {
+        let (mut state, mut layout) = hidden();
+        show_panel(&mut state, &mut layout, Some("colour"), Some("effects"));
+        assert_eq!((state.active_workspace, layout.active_inspector_tab), (Workspace::Color, InspectorTab::Effects));
+        show_panel(&mut state, &mut layout, Some("edit"), None);
+        assert_eq!((state.active_workspace, layout.active_inspector_tab), (Workspace::Edit, InspectorTab::Effects), "a workspace alone keeps the tab");
+        assert!(!show_panel(&mut state, &mut layout, None, Some("info")), "already shown: the saved layout is unchanged");
+        assert_eq!(layout.active_inspector_tab, InspectorTab::Info);
+    }
+}

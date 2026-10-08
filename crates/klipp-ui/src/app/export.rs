@@ -2451,6 +2451,9 @@ impl KlippApp {
             project.dirty = self.state.dirty;
             project.undo = self.state.active_history().undo_label().map(str::to_owned);
             project.redo = self.state.active_history().redo_label().map(str::to_owned);
+            project.undo_depth = self.state.active_history().undo_count();
+            project.redo_depth = self.state.active_history().redo_count();
+            project.generated_stack = self.state.use_generated_stack;
         }
         // And where the user is, so a frame read can put the playhead back.
         // Not while a seek is on its way: the playhead has not reached it
@@ -2682,6 +2685,12 @@ impl KlippApp {
                 self.state.clip_properties_media_id = Some(*media_id);
                 self.state.clip_properties_tab = crate::state::ClipPropertiesTab::default();
                 self.state.show_clip_properties = true;
+                true
+            }
+            AppCommand::ShowPanel { workspace, inspector_tab } => {
+                if super::main_layout::show_panel(&mut self.state, &mut self.layout, workspace.as_deref(), inspector_tab.as_deref()) {
+                    self.layout_dirty = true;
+                }
                 true
             }
             AppCommand::ApplyBuiltinWorkspaceLayout { index } => {

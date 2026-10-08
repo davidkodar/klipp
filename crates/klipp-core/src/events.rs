@@ -1289,6 +1289,12 @@ pub enum AppCommand {
     /// backward). Emitted by the transport-bar jog wheel widget.
     JogFrames { frames: i32 },
 
+    /// Show a workspace (`"edit"`, `"colour"`, `"export"`) and an inspector
+    /// tab (`"video"`, `"audio"`, `"colour"`, `"effects"`, `"title"`,
+    /// `"generator"`, `"info"`), the inspector made visible: the layout
+    /// only, never the document. For harnesses driving the app (the
+    /// control socket's `show_panel`, test hooks only).
+    ShowPanel { workspace: Option<String>, inspector_tab: Option<String> },
     // Workspace layout presets (#39)
     /// Apply one of the 5 built-in workspace layouts by index into
     /// `builtin_workspace_layouts()`. Writes visibility flags + sizes.
@@ -4566,6 +4572,16 @@ pub struct ProjectStatus {
     pub undo: Option<String>,
     #[serde(default)]
     pub redo: Option<String>,
+    /// How many steps Undo and Redo can take now, for a client checking
+    /// that something wrote no history.
+    #[serde(default)]
+    pub undo_depth: usize,
+    #[serde(default)]
+    pub redo_depth: usize,
+    /// Whether the inspector draws the generated view (M3), as the app
+    /// runs it, not as the environment asked for it.
+    #[serde(default)]
+    pub generated_stack: bool,
     /// The project's global LUT, kept when its file is missing (#1019),
     /// so `check` can say so.
     #[serde(default)]
@@ -4574,7 +4590,7 @@ pub struct ProjectStatus {
 
 impl Default for ProjectStatus {
     fn default() -> Self {
-        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None, undo: None, redo: None, global_lut: None }
+        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None, undo: None, redo: None, undo_depth: 0, redo_depth: 0, generated_stack: false, global_lut: None }
     }
 }
 

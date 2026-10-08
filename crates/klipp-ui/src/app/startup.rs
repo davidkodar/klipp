@@ -280,6 +280,11 @@ impl KlippApp {
         app.state.show_browser_panel = restore_browser;
         app.last_workspace = app.state.active_workspace;
         app.state.show_inspector_panel = restore_inspector;
+        // The inspector's generated view (M3), as KLIPP_GENERATED_STACK
+        // asks; unset keeps the default.
+        if let Some(on) = crate::state::generated_stack_switch(std::env::var("KLIPP_GENERATED_STACK").ok().as_deref()) {
+            app.state.use_generated_stack = on;
+        }
         app.state.false_color_lut = app.prefs.viewer.false_color_palette.build_lut();
         // Probe audio backend status
         app.state.audio_sample_rate = app.cpal_sample_rate;

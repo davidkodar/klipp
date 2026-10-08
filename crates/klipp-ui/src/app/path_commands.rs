@@ -1571,6 +1571,25 @@ mod tests {
     /// `GraphOps` batch close it; the drag's own commands, transport and
     /// what only the viewer, the timeline and the panels show don't. Then, end to end: a drag, an old toggle, the drag's end are
     /// two steps, each undoing its own change.
+    /// `show_panel` (a harness's way to open a clip's inspector, M3 step
+    /// 18) sets the layout only: classified as writing nothing, it leaves
+    /// an open path drag open, and the history, the document and its
+    /// unsaved state as they were.
+    #[test]
+    fn showing_a_panel_writes_nothing_and_keeps_a_drag_open() {
+        let (mut s, id) = state(&[E::GaussianBlur { radius: 3.0 }]);
+        let blur = effects(&s, id)[0];
+        let show = AppCommand::ShowPanel { workspace: Some("colour".into()), inspector_tab: Some("effects".into()) };
+        assert!(!super::super::command_writes::writes(&show));
+        assert_eq!(s.path_command(&AppCommand::BeginParamEditAt { addr: at(id, &[blur]), key: "radius".into() }), Some(false));
+        let (before, steps, dirty) = (picture(&s, id), s.active_history().undo_count(), s.dirty);
+        assert!(!s.closes_path_drag(&show), "the drag stays open");
+        s.before_dispatch(&show);
+        assert_eq!(s.path_command(&show), None, "not a path command: the app's layout handles it");
+        assert!(s.active_history().is_any_drag_in_progress(), "the drag stays open");
+        assert_eq!((picture(&s, id), s.active_history().undo_count(), s.dirty), (before, steps, dirty));
+    }
+
     #[test]
     fn any_other_command_closes_an_open_path_drag() {
         let c = fixture(&[E::GaussianBlur { radius: 3.0 }, E::Sharpen { amount: 0.5 }]);

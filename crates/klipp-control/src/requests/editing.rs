@@ -192,6 +192,18 @@ pub(crate) fn respond(
         }
 
         #[cfg(feature = "test-hooks")]
+        ControlCommand::ShowPanel { workspace, inspector_tab } => {
+            const WORKSPACES: [&str; 4] = ["edit", "colour", "color", "export"];
+            const TABS: [&str; 8] = ["video", "audio", "colour", "color", "effects", "title", "generator", "info"];
+            if let Some(w) = workspace.as_deref().filter(|w| !WORKSPACES.contains(w)) {
+                return Err(format!("no workspace {w:?}: edit, colour or export"));
+            }
+            if let Some(t) = inspector_tab.as_deref().filter(|t| !TABS.contains(t)) {
+                return Err(format!("no inspector tab {t:?}: video, audio, colour, effects, title, generator or info"));
+            }
+            send(AppCommand::ShowPanel { workspace, inspector_tab })
+        }
+        #[cfg(feature = "test-hooks")]
         ControlCommand::EffectCommand { clip_id, action, index, to, effect } => {
             use crate::protocol::EffectAction as A;
             let clip_id = existing_clip_id(ctx, &clip_id)?;

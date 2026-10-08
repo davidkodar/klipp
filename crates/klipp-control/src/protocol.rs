@@ -225,6 +225,16 @@ pub enum ControlCommand {
         /// The effect an `add`, `update` or drag step carries, as saved.
         #[serde(default)] effect: Option<serde_json::Value>,
     },
+    /// Show a workspace and an inspector tab, the inspector made visible:
+    /// the layout only, never the document, for a harness that opens every
+    /// clip's inspector (M3 step 18). `workspace`: `edit`, `colour`,
+    /// `export`; `inspector_tab`: `video`, `audio`, `colour`, `effects`,
+    /// `title`, `generator`, `info`. Test hooks only (`test-hooks`).
+    #[cfg(feature = "test-hooks")]
+    ShowPanel {
+        #[serde(default)] workspace: Option<String>,
+        #[serde(default)] inspector_tab: Option<String>,
+    },
     /// Timeline → Detect Scene Cuts for a clip (#616): its picture changes
     /// found in the background and the clip split there with its linked
     /// sound, one undoable edit. Returns at once; the split shows on the
