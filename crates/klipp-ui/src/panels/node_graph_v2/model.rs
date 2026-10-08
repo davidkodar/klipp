@@ -20,20 +20,20 @@ pub(super) trait CanvasKind: Copy {
     fn is_terminal(self) -> bool { self.is_source() || self.is_output() }
     fn palette(self) -> Palette;
     fn glyph(self) -> &'static str;
-    fn display_name(&self) -> &'static str;
+    fn display_name(&self) -> &str;
     fn inputs(self) -> &'static [PortDesc];
     fn outputs(self) -> &'static [PortDesc];
     fn output_port_count(&self) -> u8;
     fn input_port_role(&self, port: u8) -> PortRole;
     fn output_port_role(&self, port: u8) -> PortRole;
-    fn input_port_label(&self, port: u8) -> &'static str;
-    fn output_port_label(&self, port: u8) -> &'static str;
+    fn input_port_label(&self, port: u8) -> &str;
+    fn output_port_label(&self, port: u8) -> &str;
 }
 
 pub(super) trait CanvasNode {
-    type Kind: CanvasKind;
+    type Kind<'a>: CanvasKind where Self: 'a;
     fn id(&self) -> NodeId;
-    fn kind(&self) -> Self::Kind;
+    fn kind(&self) -> Self::Kind<'_>;
     fn label(&self) -> &str;
     fn enabled(&self) -> bool;
     fn effective_enabled(&self, time: f64) -> bool;
@@ -58,6 +58,7 @@ pub(super) trait CanvasGraph {
     fn signal_role(&self, node: NodeId, port: u8) -> PortRole;
     fn add_menu(&self) -> &[MenuCategory];
     fn command(&self, command: AppCommand) -> Option<AppCommand>;
+    fn grade_tools(&self) -> bool { true }
 }
 
 pub(super) struct GradeCanvas<'a>(pub &'a NodeGraph);
@@ -75,7 +76,7 @@ impl CanvasGraph for GradeCanvas<'_> {
 }
 
 impl CanvasNode for Node {
-    type Kind = NodeKind;
+    type Kind<'a> = NodeKind;
     fn id(&self) -> NodeId { self.id }
     fn kind(&self) -> NodeKind { self.kind }
     fn label(&self) -> &str { &self.label }
@@ -137,7 +138,7 @@ fn grade_menu() -> &'static [MenuCategory] {
 /// Catalog categories supply the palette for new canvas roots. Grade's
 /// historical sub-families below are presentation overrides: every grade
 /// descriptor has Category::Grade, but its existing colours must stay put.
-fn category_palette(category: Category) -> Palette {
+pub(super) fn category_palette(category: Category) -> Palette {
     match category {
         Category::Colour | Category::Grade => Palette::Grade,
         Category::Key => Palette::Matte,
