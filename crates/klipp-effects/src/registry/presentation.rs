@@ -18,6 +18,7 @@ mod blur;
 mod colour;
 mod film;
 mod geometry;
+mod light;
 
 /// How a parameter is shown.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -205,8 +206,8 @@ pub struct TypeEntry {
 
 /// The effects' entries, one table per family (M3 step 0b), transcribed
 /// from today's hand-written rows.
-pub static PARAMS: &[&[ParamEntry]] = &[colour::PARAMS, geometry::PARAMS, film::PARAMS, blur::PARAMS];
-pub static TYPES: &[&[TypeEntry]] = &[colour::TYPES, geometry::TYPES, film::TYPES, blur::TYPES];
+pub static PARAMS: &[&[ParamEntry]] = &[colour::PARAMS, geometry::PARAMS, film::PARAMS, blur::PARAMS, light::PARAMS];
+pub static TYPES: &[&[TypeEntry]] = &[colour::TYPES, geometry::TYPES, film::TYPES, blur::TYPES, light::TYPES];
 
 /// Every effect entry, family by family.
 pub fn params() -> impl Iterator<Item = &'static ParamEntry> {

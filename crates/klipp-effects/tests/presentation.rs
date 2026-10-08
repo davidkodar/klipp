@@ -220,7 +220,12 @@ fn presentation_matches_the_old_rows() {
             let widget = match r["widget"].as_str().unwrap() {
                 "scrubby" | "drag_value" => "Scrub",
                 "choice" => "Combo",
-                "colour" => if pres.widget == Widget::ColourRgb { "ColourRgb" } else { "ColourRgba" },
+                // RGB or RGBA by what today's picker holds, never by ours.
+                "colour" => match r["value"].as_array().map(Vec::len) {
+                    Some(4) => "ColourRgba",
+                    Some(3) => "ColourRgb",
+                    n => panic!("{}/{key}: a colour of {n:?} channels", t.desc.id),
+                },
                 "checkbox" => "Toggle",
                 "slider" => "Slider",
                 other => other,
@@ -270,5 +275,96 @@ fn hidden_is_not_fixed() {
         let t = effect_types().find(|t| t.desc.id == *id).unwrap();
         let p = t.desc.params.iter().find(|p| p.key == *key).unwrap();
         assert_eq!(t.presentation(p).widget, Widget::Hidden, "{id}/{key}");
+    }
+}
+
+/// Every effect type has today's rows in its family's table (M3 step 0b
+/// complete).
+#[test]
+fn every_effect_type_is_covered() {
+    let missing: Vec<&str> = effect_types().filter(|t| !presentation::params().any(|e| e.type_id == t.desc.id) && !t.desc.params.is_empty()).map(|t| t.desc.id).collect();
+    assert!(missing.is_empty(), "no rows for {missing:?}");
+}
+
+/// Every effect parameter the catalog can't describe (`Other`) is drawn by
+/// a named editor, or is a listed system value (M3 step 0d).
+#[test]
+fn every_other_param_names_a_custom_editor() {
+    let mut named = std::collections::BTreeSet::new();
+    for t in effect_types() {
+        for p in t.desc.params.iter().filter(|p| p.kind == ParamKind::Other) {
+            match t.presentation(p).widget {
+                Widget::Custom(id) if !id.is_empty() => {
+                    named.insert(id);
+                }
+                Widget::Hidden if HIDDEN.contains(&(t.desc.id, p.key)) => {}
+                w => panic!("{}/{}: {w:?}, not a named editor", t.desc.id, p.key),
+            }
+        }
+    }
+    assert_eq!(named.into_iter().collect::<Vec<_>>(), ["frei0r_plugin"]);
+}
+
+/// The adapters drawing what rows can't, by type (M3 step 6): exactly the
+/// breakdown's list.
+#[test]
+fn the_adapters_are_named() {
+    let mut adapters: Vec<(&str, &str)> = presentation::types().filter_map(|e| e.pres.extra_ui.map(|a| (e.type_id, a))).collect();
+    adapters.sort();
+    assert_eq!(
+        adapters,
+        [
+            ("klipp.fx.color_fade", "color_fade"),
+            ("klipp.fx.corner_pin", "corner_pin"),
+            ("klipp.fx.deflicker", "deflicker"),
+            ("klipp.fx.focus_blur", "focus_blur"),
+            ("klipp.fx.speed_ramp", "speed_ramp"),
+            ("klipp.fx.temporal_denoise", "temporal_denoise"),
+            ("klipp.fx.video_stabilization", "video_stabilization"),
+        ]
+    );
+}
+
+/// Today's choice labels, from the effects tab's combos
+/// (`inspector/effects_tab.rs`), and IC5's new one: what each choice's
+/// presentation must name, independently of the tables.
+const CHOICE_LABELS: &[(&str, &str, &[&str])] = &[
+    ("klipp.fx.color_fade", "mode", &["Fade From", "Fade To"]),
+    ("klipp.fx.letterbox", "bar_color", &["Black", "White"]),
+    ("klipp.fx.chroma_key", "spill_method", &["None", "Channel Clamp", "Hawk"]),
+    ("klipp.fx.speed_ramp", "blend_mode", &["Nearest", "Linear"]),
+    ("klipp.fx.speed_ramp", "ramp_curve", &["Constant", "Ease In", "Ease Out", "Ease In-Out", "S-Curve"]),
+    ("klipp.fx.radial_blur", "mode", &["Zoom", "Spin"]),
+];
+
+/// Today's sub-headers (the channel mixer's per-output groups).
+const GROUPS: &[(&str, &str, &str)] = &[
+    ("klipp.fx.channel_mixer", "red_red", "Red Output"),
+    ("klipp.fx.channel_mixer", "red_green", "Red Output"),
+    ("klipp.fx.channel_mixer", "red_blue", "Red Output"),
+    ("klipp.fx.channel_mixer", "green_red", "Green Output"),
+    ("klipp.fx.channel_mixer", "green_green", "Green Output"),
+    ("klipp.fx.channel_mixer", "green_blue", "Green Output"),
+    ("klipp.fx.channel_mixer", "blue_red", "Blue Output"),
+    ("klipp.fx.channel_mixer", "blue_green", "Blue Output"),
+    ("klipp.fx.channel_mixer", "blue_blue", "Blue Output"),
+    ("klipp.fx.frei0r", "type_id", "Plug-in"),
+    ("klipp.fx.frei0r", "params", "Plug-in"),
+];
+
+/// Every choice drawn as a combo names today's labels, and every group is
+/// today's sub-header: held to the lists above, not to the tables.
+#[test]
+fn choice_labels_and_groups_are_todays() {
+    for t in effect_types() {
+        for p in t.desc.params {
+            let pres = t.presentation(p);
+            let want = CHOICE_LABELS.iter().find(|(id, k, _)| *id == t.desc.id && *k == p.key).map(|(_, _, l)| *l);
+            if pres.widget == Widget::Combo || want.is_some() {
+                assert_eq!(pres.labels, want, "{}/{}: choice labels", t.desc.id, p.key);
+            }
+            let group = GROUPS.iter().find(|(id, k, _)| *id == t.desc.id && *k == p.key).map(|(_, _, g)| *g);
+            assert_eq!(pres.group, group, "{}/{}: group", t.desc.id, p.key);
+        }
     }
 }
