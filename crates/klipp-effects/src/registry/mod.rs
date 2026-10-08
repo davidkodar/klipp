@@ -110,6 +110,11 @@ pub const MASK_CHANNEL: PortParamDesc = PortParamDesc {
     migrated: "red",
 };
 
+/// A grade correction's gate channel (M3 step 17a): as [`MASK_CHANNEL`],
+/// except that a new gate connection writes none, so a gate reads red, as
+/// every gate always has, until a channel is picked; its default is red.
+pub const GATE_CHANNEL: PortParamDesc = PortParamDesc { default: "red", ..MASK_CHANNEL };
+
 /// The single picture input every built-in effect has.
 pub const IMAGE_IN: &[PortDesc] = &[PortDesc { key: "in", ty: PortType::Image, optional: false, params: &[] }];
 /// A mixable node's inputs: its picture, and an optional mask limiting
@@ -118,12 +123,17 @@ pub const MIXABLE_IN: &[PortDesc] = &[
     PortDesc { key: "in", ty: PortType::Image, optional: false, params: &[] },
     PortDesc { key: "mask", ty: PortType::Matte, optional: true, params: &[MASK_CHANNEL] },
 ];
+/// A gateable grade correction's inputs: its picture, and the optional
+/// matte gating it, with its channel setting.
+pub const GATE_IN: &[PortDesc] = &[
+    PortDesc { key: "in", ty: PortType::Image, optional: false, params: &[] },
+    PortDesc { key: "mask", ty: PortType::Matte, optional: true, params: &[GATE_CHANNEL] },
+];
 /// The single picture output every built-in effect has.
 pub const IMAGE_OUT: &[PortDesc] = &[PortDesc { key: "out", ty: PortType::Image, optional: false, params: &[] }];
 
 /// `desc` as a mixable node: it takes a `mask` and a `mix` amount, and
-/// its result is blended over its input by them (#1089, M2: declared;
-/// nothing executes it yet).
+/// its result is blended over its input by them (#1089).
 pub const fn mixable(desc: NodeTypeDesc) -> NodeTypeDesc {
     NodeTypeDesc { mixable: true, inputs: MIXABLE_IN, ..desc }
 }
@@ -354,7 +364,8 @@ pub struct NodeTypeDesc {
     /// Has a CPU implementation.
     pub cpu: bool,
     /// A single-picture node whose result can be limited by a `mask` and
-    /// faded by `mix` against its input; then its inputs are [`MIXABLE_IN`].
+    /// faded by `mix` against its input; then its inputs are [`MIXABLE_IN`]
+    /// (an effect) or [`GATE_IN`] (a grade correction).
     pub mixable: bool,
 }
 

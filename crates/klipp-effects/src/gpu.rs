@@ -4866,12 +4866,13 @@ impl GpuEffectsPipeline {
     ///
     /// The caller must have called `keep_chain_input` before the
     /// secondary's nodes ran, and written the matte to `matte_buf`.
-    pub fn apply_matte_chain(&mut self, in_is_a: bool, width: u32, height: u32, mix: f32) {
+    pub fn apply_matte_chain(&mut self, in_is_a: bool, width: u32, height: u32, mix: f32, channel: crate::mask_mix::MaskChannel) {
         if self.is_device_lost() {
             return;
         }
         let slot = self.next_params_slot();
-        self.write_chain_params(slot, &GpuGradeMixParams { width, height, mix, _pad: 0 });
+        let [luma_yr, luma_yg, luma_yb] = self.luma_coefs;
+        self.write_chain_params(slot, &GpuApplyMatteParams { width, height, mix, channel: channel as u32, luma_yr, luma_yg, luma_yb, _pad: 0 });
         let (a, b) = (
             self.buf_a.as_ref().expect(Self::CHAIN_BG_EXPECT),
             self.buf_b.as_ref().expect(Self::CHAIN_BG_EXPECT),
@@ -7767,6 +7768,22 @@ struct GpuGradeMixParams {
     width: u32,
     height: u32,
     mix: f32,
+    _pad: u32,
+}
+
+/// A gate's blend: its mix, and which channel of its matte is the
+/// coverage (`MaskChannel` as numbered: red, luminance, alpha), with the
+/// working space's luma weights for the second.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuApplyMatteParams {
+    width: u32,
+    height: u32,
+    mix: f32,
+    channel: u32,
+    luma_yr: f32,
+    luma_yg: f32,
+    luma_yb: f32,
     _pad: u32,
 }
 
@@ -15965,13 +15982,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 /// selects, the frame kept from before the secondary where it does not.
 ///
 /// `mix` scales the whole matte, so a secondary can be dialled back
-/// without touching the key. The matte is its red channel clamped to
-/// [0, 1], and alpha is left at 1.0 — the same conventions the CPU twin
-/// in `klipp_nodes::executor` follows, because the two are compared
-/// against each other.
+/// without touching the key. The matte's coverage is its red channel
+/// unless its correction picks luminance or alpha (M3 step 17a), the
+/// product clamped to [0, 1], and alpha is left at 1.0 — the same
+/// conventions the CPU twin in `klipp_nodes::executor` follows, because
+/// the two are compared against each other.
 const SHADER_APPLY_MATTE_CHAIN: &str = concat!(
     "
-struct Params { width: u32, height: u32, mix: f32, _pad: u32, }
+struct Params { width: u32, height: u32, mix: f32, channel: u32, luma: vec3<f32>, _pad: u32, }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
@@ -15986,7 +16004,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.width * params.height { return; }
     let graded = unpack(input[idx]);
     let plain = unpack(kept[idx]);
-    let k = clamp(unpack(matte[idx]).x * params.mix, 0.0, 1.0);
+    let m = unpack(matte[idx]);
+    var c = m.x;
+    if params.channel == 1u { c = dot(m.xyz, params.luma); } else if params.channel == 2u { c = m.w; }
+    let k = clamp(c * params.mix, 0.0, 1.0);
     output[idx] = pack(vec4<f32>(
         plain.x + (graded.x - plain.x) * k,
         plain.y + (graded.y - plain.y) * k,

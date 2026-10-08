@@ -293,7 +293,15 @@ fn ops_reach_every_root_and_undo_keeps_to_its_own() {
     assert!(resolve(&d, &timeline).unwrap().legacy.as_ref().unwrap().payload["params"].get("exposure").is_none());
     assert!(resolve(&d, &NodePath::new(stage.root, [Uuid::from_u128(0x71)])).is_ok(), "another root's edit is untouched");
     undo(&mut d, &b).unwrap();
-    apply(&mut d, &GraphOp::SetEnabled { path: track, enabled: true }).unwrap();
+    apply(&mut d, &GraphOp::SetEnabled { path: track.clone(), enabled: true }).unwrap();
+    // Only a clip's picture keeps a correction's mix or mask channel (M3
+    // step 17a): these roots refuse both, rather than drop them.
+    for path in [&timeline, &stage, &track] {
+        for op in [GraphOp::SetMix { path: path.clone(), mix: Some(0.5) }, GraphOp::SetMaskChannel { path: path.clone(), channel: Some("alpha".into()) }] {
+            let why = apply_with_catalog(&mut d, &op, &RegistryCatalog).unwrap_err();
+            assert!(why.contains("only a clip's grade"), "{op:?}: {why}");
+        }
+    }
     assert_eq!(serde_json::to_value((&d.timeline, d.stages.iter().collect::<Vec<_>>(), &d.track_grades)).unwrap(), start, "every root as it was");
 }
 
@@ -577,8 +585,12 @@ fn migrated_grade_docs() -> Documents {
     Documents::of(&revision2::project(&project).unwrap().0).unwrap()
 }
 
+/// A lifted gate has no channel and reads red (IC10); a channel and a
+/// mix are set only when picked (M3 step 17a), an unknown channel and a
+/// node that isn't a correction are refused, and rewiring the gate
+/// writes no channel.
 #[test]
-fn lifted_grade_masks_stay_red_and_refuse_a_channel_setting() {
+fn lifted_grade_masks_read_red_and_take_a_channel_when_picked() {
     let mut d = migrated_grade_docs();
     let g = group(&d);
     let matte = Uuid::from_u128(MATTE_ID);
@@ -588,17 +600,39 @@ fn lifted_grade_masks_stay_red_and_refuse_a_channel_setting() {
     assert_eq!(klipp_effects::registry::MASK_CHANNEL.migrated, "red");
     d.clips[&u(CLIP)].graph.check_lifted_with_catalog(false, &RegistryCatalog).unwrap();
     let before = snapshot(&d);
-    let error = apply_with_catalog(&mut d, &GraphOp::SetMaskChannel { path: path.clone(), channel: Some("alpha".into()) }, &RegistryCatalog).unwrap_err();
-    assert!(error.contains("reads red"), "{error}");
-    assert_eq!(snapshot(&d), before);
-    // Reconnecting a grade mask remains red-only, even though effects
-    // with the channel setting start a new connection at luminance.
+    // Rewiring a migrated gate writes no channel: it reads red, as it did.
     let flags = resolve(&d, &path).unwrap().legacy_flags.clone();
     let edit = apply_with_catalog(&mut d, &GraphOp::Connect { from: clip_path([g, matte]), from_port: "out".into(), to: path.clone(), to_port: "mask".into() }, &RegistryCatalog).unwrap();
     assert!(!resolve(&d, &path).unwrap().params.contains_key(&"mask.channel".into()));
     assert_eq!(resolve(&d, &path).unwrap().legacy_flags, flags, "rewiring a migrated mask preserves every flag");
     undo(&mut d, &edit).unwrap();
     assert_eq!(snapshot(&d), before);
+    // Picked: the channel and the mix land, and undo takes them back.
+    let channel = apply_with_catalog(&mut d, &GraphOp::SetMaskChannel { path: path.clone(), channel: Some("alpha".into()) }, &RegistryCatalog).unwrap();
+    let mix = apply_with_catalog(&mut d, &GraphOp::SetMix { path: path.clone(), mix: Some(0.25) }, &RegistryCatalog).unwrap();
+    let n = resolve(&d, &path).unwrap();
+    assert_eq!(n.params.get(&"mask.channel".into()), Some(&ParamValue::Text("alpha".into())));
+    assert_eq!(n.mix, Some(0.25));
+    assert_eq!(d.clips[&u(CLIP)].requires, [klipp_graph_format::lifted::GRADE_MIX_CAPABILITY], "a reader must know them");
+    d.clips[&u(CLIP)].graph.check_lifted_with_catalog(false, &RegistryCatalog).unwrap();
+    undo(&mut d, &mix).unwrap();
+    assert_eq!(d.clips[&u(CLIP)].requires, [klipp_graph_format::lifted::GRADE_MIX_CAPABILITY], "the channel is still set");
+    undo(&mut d, &channel).unwrap();
+    assert!(d.clips[&u(CLIP)].requires.is_empty());
+    assert_eq!(snapshot(&d), before);
+    // Cleared by ops, the mark goes with them.
+    apply_with_catalog(&mut d, &GraphOp::SetMix { path: path.clone(), mix: Some(0.5) }, &RegistryCatalog).unwrap();
+    apply_with_catalog(&mut d, &GraphOp::SetMix { path: path.clone(), mix: None }, &RegistryCatalog).unwrap();
+    assert!(d.clips[&u(CLIP)].requires.is_empty());
+    assert_eq!(snapshot(&d), before);
+    // An unknown channel, and a mix on the matte (not a correction).
+    for op in [
+        GraphOp::SetMaskChannel { path: path.clone(), channel: Some("green".into()) },
+        GraphOp::SetMix { path: clip_path([g, matte]), mix: Some(0.5) },
+    ] {
+        assert!(apply_with_catalog(&mut d, &op, &RegistryCatalog).is_err(), "{op:?} is refused");
+        assert_eq!(snapshot(&d), before);
+    }
 }
 
 

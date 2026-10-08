@@ -122,3 +122,42 @@ fn a_reader_from_before_the_mark_refuses_it_as_an_unknown_field() {
     let err = serde_json::from_value::<klipp_graph_format::lifted::ClipPicture>(picture).expect_err("an unknown field is refused");
     assert!(err.to_string().contains("unknown field"), "{err}");
 }
+
+/// M3 step 17a: a grade correction's mix and mask channel are saved in the
+/// clip's picture, which then requires `grade-mix-1` as well, read back
+/// whole (the renderer's grade carrying them again), and saved again the
+/// same. A reader whose capabilities don't include it refuses the picture.
+#[test]
+fn a_corrections_mix_saves_with_its_capability_and_reopens_the_same() {
+    let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+    let mut c = Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
+    let mut g = NodeGraph::default();
+    let corrector = g.ensure_corrector();
+    c.set_grade(g);
+    let p = c.picture_v2().unwrap().picture.clone();
+    let group = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP).unwrap().id;
+    let path = NodePath::new(Root::Clip { clip: c.id.0 }, [group, corrector]);
+    c.apply_picture_ops(&[GraphOp::SetMix { path: path.clone(), mix: Some(0.4) }, GraphOp::SetMaskChannel { path, channel: Some("luminance".into()) }]).unwrap();
+    let mut seq = Sequence::new_default();
+    seq.tracks[0].clips = vec![c.clone()];
+    let first = scratch("grade_mix_first");
+    save_project(&first, std::slice::from_ref(&seq), &MediaPool::new()).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(first.join("project.json")).unwrap()).unwrap();
+    let requires = clips(&json)[0]["graph_v2"]["requires"].clone();
+    assert_eq!(requires, serde_json::json!(["picture-truth-1", "grade-mix-1"]));
+    let names: Vec<String> = serde_json::from_value(requires).unwrap();
+    assert_eq!(klipp_graph_format::lifted::unknown_capability(&names, &["picture-truth-1"]), Some("grade-mix-1"), "a reader before it refuses the picture");
+
+    let loaded = load_project(&first).unwrap();
+    let reopened = loaded.0[0].tracks[0].clips[0].clone();
+    assert_eq!(reopened.picture_v2().unwrap().picture, c.picture_v2().unwrap().picture);
+    let run = reopened.grade_to_run();
+    let blend = run.nodes.iter().find(|n| n.id == corrector).unwrap().params.correction_blend.expect("the mix, run again");
+    assert_eq!((blend.mix, blend.channel), (0.4, klipp_effects::mask_mix::MaskChannel::Luminance));
+
+    let second = scratch("grade_mix_second");
+    save_project(&second, &loaded.0, &loaded.1).unwrap();
+    assert_eq!(project_text(&second), project_text(&first), "saved again byte for byte");
+    let _ = std::fs::remove_dir_all(&first);
+    let _ = std::fs::remove_dir_all(&second);
+}

@@ -2575,12 +2575,12 @@ impl Renderer {
         let input = self.matte_input.clone()?;
         let (mut g, from, port) = match mask {
             MaskSource::Grade { node, port } => {
-                let g = clip.grade().clone();
+                let g = clip.grade_to_run().into_owned();
                 g.nodes.iter().any(|n| n.id == *node).then_some(())?;
                 (g, *node, *port)
             }
             MaskSource::Side { node, port, input: reads } => {
-                let mut g = if *reads == SideInput::Graded { clip.grade().clone() } else { self.passthrough.clone() };
+                let mut g = if *reads == SideInput::Graded { clip.grade_to_run().into_owned() } else { self.passthrough.clone() };
                 let feed = match reads {
                     SideInput::Graded => g.input_of(g.output_node_id, 0)?,
                     SideInput::Source => g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source)?.id,
@@ -3155,9 +3155,11 @@ impl Renderer {
         // The grade's pixel-sized settings are authored at the
         // sequence's size, as the effects' are (#1012).
         self.executor.set_render_scale(self.px_scale);
+        // The grade with its corrections' mixes (M3 step 17a).
+        let to_run = clip.grade_to_run();
         if !inspecting {
             let graph = if self.run_effects.is_empty() && self.run_display.is_none() {
-                clip.grade()
+                &*to_run
             } else {
                 // An identity grade is the source straight to the output:
                 // the effects alone (step 11b).
@@ -3171,7 +3173,7 @@ impl Renderer {
         // with it, the grade's nodes still tapped (step 9c-2). A
         // scene-referred clip's display step runs in it either way.
         let graph = if self.run_effects.is_empty() && self.run_display.is_none() {
-            clip.grade()
+            &*to_run
         } else {
             self.splice_run(clip);
             &self.spliced
@@ -3214,7 +3216,8 @@ impl Renderer {
         // and not when the grade tools read its nodes (#1274).
         let reads_the_grade = self.run_blends.iter().flatten().any(|b| matches!(b.mask, Some(crate::resolve::MaskSource::Grade { .. })));
         let tapped = self.inspects_the_grade_of(clip);
-        let base = if clip.grade_is_identity() && !reads_the_grade && !tapped { &self.passthrough } else { clip.grade() };
+        let to_run = clip.grade_to_run();
+        let base = if clip.grade_is_identity() && !reads_the_grade && !tapped { &self.passthrough } else { &*to_run };
         self.spliced.clone_from(base);
         let source = self.spliced.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source).map(|n| n.id);
         let graded = self.spliced.input_of(self.spliced.output_node_id, 0);

@@ -1190,6 +1190,11 @@ impl KlippApp {
                     return true;
                 }
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
+                // The nodes would be copied without their mixes (M3 step 17a).
+                if seq.all_clips().any(|c| c.id == *clip_id && c.holds_grade_mix()) {
+                    self.state.toast.show(GRADE_MIX_NOT_COPIED);
+                    return true;
+                }
                 let clipboard = seq.tracks.iter()
                     .flat_map(|t| t.clips.iter())
                     .find(|c| c.id == *clip_id)
@@ -2224,8 +2229,15 @@ impl KlippApp {
             // Grade stills (reference frame comparison)
             AppCommand::CaptureGradeStill { ref name } => {
                 if let Some(still) = self.capture_grade_still(name.clone()) {
+                    // A grade holding a correction's mix isn't kept with
+                    // the still (M3 step 17a), so it can't be applied from it.
+                    let mixed = still_source_clip(self.state.sequence(), self.state.playhead, self.state.selected_clip).is_some_and(|c| c.holds_grade_mix());
                     self.state.grade_stills.push(still);
-                    self.state.toast.show(format!("Grade still '{}' captured", name));
+                    if mixed {
+                        self.state.toast.show(format!("Grade still '{name}' captured without its grade, which can't be applied from it: a correction's mix or mask channel can't be copied yet"));
+                    } else {
+                        self.state.toast.show(format!("Grade still '{}' captured", name));
+                    }
                     self.persist_grade_stills();
                 }
                 true
@@ -2359,7 +2371,9 @@ impl KlippApp {
             width: tw,
             height: th,
             source,
-            grade: clip.map(|c| c.grade().clone()),
+            // A grade with a correction's mix (M3 step 17a) would be
+            // applied from the still without it: the still keeps no grade.
+            grade: clip.filter(|c| !c.holds_grade_mix()).map(|c| c.grade().clone()),
             texture: None,
         })
     }
@@ -2442,7 +2456,8 @@ impl KlippApp {
 
                 let graph = {
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    seq.all_clips().find(|c| c.id == clip_id).map(|c| c.grade().clone())
+                    // As it draws, its corrections' mixes in (M3 step 17a).
+                    seq.all_clips().find(|c| c.id == clip_id).map(|c| c.grade_to_run().into_owned())
                 };
                 let Some(graph) = graph else {
                     self.state.toast.show("Bake failed — clip not found");
@@ -2480,38 +2495,16 @@ impl KlippApp {
             }
 
             // Grade versions
-            AppCommand::SaveGradeVersion { clip_id, name } => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
-                    let version = klipp_timeline::GradeVersion::new(name.clone(), clip.grade().clone());
-                    let index = clip.edit_grade_versions(|vs| {
-                        vs.push(version);
-                        vs.len() - 1
-                    });
-                    clip.set_active_grade_version(Some(index));
-                }
-                self.state.dirty = true;
+            AppCommand::SaveGradeVersion { .. } => {
+                self.state.grade_version_command(cmd);
                 true
             }
-            AppCommand::SwitchGradeVersion { clip_id, version_index } => {
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
-                    // Save current graph back to active version slot before switching
-                    if let Some(active_idx) = clip.active_grade_version() {
-                        if active_idx < clip.grade_versions().len() {
-                            let grade = clip.grade().clone();
-                            clip.edit_grade_versions(|vs| vs[active_idx].set_grade(grade));
-                        }
-                    }
-                    // Load the target version
-                    if let Some(grade) = clip.grade_versions().get(*version_index).map(|v| v.grade().clone()) {
-                        clip.set_grade(grade);
-                        clip.set_active_grade_version(Some(*version_index));
-                    }
+            AppCommand::SwitchGradeVersion { .. } => {
+                // sync_and_refresh_frame for an immediate visual update,
+                // even when paused.
+                if self.state.grade_version_command(cmd) {
+                    *needs_refresh = true;
                 }
-                self.state.dirty = true;
-                // Use sync_and_refresh_frame for immediate visual update (even when paused)
-                *needs_refresh = true;
                 true
             }
             AppCommand::DeleteGradeVersion { clip_id, version_index } => {
@@ -2549,6 +2542,10 @@ impl KlippApp {
                 };
                 let snapshot = {
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    if seq.all_clips().any(|c| c.id == clip_id && c.holds_grade_mix()) {
+                        self.state.toast.show(GRADE_MIX_NOT_COPIED);
+                        return true;
+                    }
                     seq.all_clips().find(|c| c.id == clip_id).map(|c| c.grade().clone())
                 };
                 let Some(node_graph) = snapshot else {

@@ -22,6 +22,14 @@ pub struct NodeParams {
     #[serde(skip)]
     pub effect_blend: Option<EffectBlend>,
 
+    /// A gateable correction: how its result is mixed back over its input,
+    /// by `mix` and by its gate's matte read from `channel` (M3 step 17a);
+    /// on the gate the executor inserts after it, the same. `None` takes
+    /// the result whole where the matte is, its red channel. The run's
+    /// own setting, never saved: a clip's picture holds it.
+    #[serde(skip)]
+    pub correction_blend: Option<EffectBlend>,
+
     /// `SceneToDisplay`: the display step it runs (phase 2b M2, step 11c).
     /// The run's own setting, never saved.
     #[serde(skip)]

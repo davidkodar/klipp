@@ -78,9 +78,24 @@ pub struct ClipPicture {
 /// The capability a picture-truth clip's stored picture requires.
 pub const PICTURE_TRUTH_CAPABILITY: &str = "picture-truth-1";
 
+/// The capability a picture requires when a correction in its grade has a
+/// mix or a mask channel (M3 step 17a): only the picture holds them, so a
+/// reader that doesn't know them refuses the picture rather than draws
+/// the grade without them.
+pub const GRADE_MIX_CAPABILITY: &str = "grade-mix-1";
+
+/// The capabilities this reader understands.
+pub const KNOWN_CAPABILITIES: &[&str] = &[PICTURE_TRUTH_CAPABILITY, GRADE_MIX_CAPABILITY];
+
+/// `requires`, if a reader that understands `known` reads it whole; else
+/// the first capability it doesn't.
+pub fn unknown_capability<'a>(requires: &'a [String], known: &[&str]) -> Option<&'a str> {
+    requires.iter().map(String::as_str).find(|r| !known.contains(r))
+}
+
 fn known_capabilities<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
     let requires = Vec::<String>::deserialize(deserializer)?;
-    match requires.iter().find(|r| r.as_str() != PICTURE_TRUTH_CAPABILITY) {
+    match unknown_capability(&requires, KNOWN_CAPABILITIES) {
         Some(unknown) => Err(serde::de::Error::custom(format!("unsupported picture capability: {unknown}"))),
         None => Ok(requires),
     }
@@ -90,6 +105,36 @@ impl ClipPicture {
     /// Whether this is a picture-truth clip's picture.
     pub fn is_truth(&self) -> bool {
         self.requires.iter().any(|r| r == PICTURE_TRUTH_CAPABILITY)
+    }
+
+    /// Whether a node inside one of the picture's grades has a mix or a
+    /// mask channel that changes it: a mix other than whole, a channel
+    /// other than red. Whole and red are what an absent setting reads, so
+    /// a grade set back to them draws, and is read, as one without them.
+    pub fn grade_mix_used(&self) -> bool {
+        fn changes(n: &crate::Node) -> bool {
+            n.mix.is_some_and(|m| m != 1.0)
+                || n.params.get(&crate::ParamKey::from("mask.channel")).is_some_and(|c| *c != crate::ParamValue::Text("red".into()))
+        }
+        fn inside(nodes: &[crate::Node], in_grade: bool) -> bool {
+            nodes.iter().any(|n| (in_grade && changes(n)) || n.group.as_ref().is_some_and(|g| inside(&g.graph.nodes, true)))
+        }
+        inside(&self.graph.nodes, false)
+    }
+
+    /// `requires` names [`GRADE_MIX_CAPABILITY`] exactly when
+    /// [`grade_mix_used`](Self::grade_mix_used), in the order of
+    /// [`KNOWN_CAPABILITIES`] whichever route marked it first, so a
+    /// picture saves the same bytes however it was made.
+    pub fn mark_grade_mix(&mut self) {
+        let used = self.grade_mix_used();
+        let has = self.requires.iter().any(|r| r == GRADE_MIX_CAPABILITY);
+        if used && !has {
+            self.requires.push(GRADE_MIX_CAPABILITY.into());
+        } else if !used && has {
+            self.requires.retain(|r| r != GRADE_MIX_CAPABILITY);
+        }
+        self.requires.sort_by_key(|r| KNOWN_CAPABILITIES.iter().position(|k| k == r));
     }
 }
 

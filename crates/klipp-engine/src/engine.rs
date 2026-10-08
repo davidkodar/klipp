@@ -8042,7 +8042,8 @@ impl PlaybackEngine {
         let graph = match cached {
             Some(arc) => arc,
             None => {
-                let arc = Arc::new(clip.grade().clone());
+                // With its corrections' mixes (M3 step 17a).
+                let arc = Arc::new(clip.grade_to_run().into_owned());
                 self.current_graph_arc = Some(Arc::clone(&arc));
                 self.current_grade_clip_id = Some(clip.id);
                 arc

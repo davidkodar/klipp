@@ -488,11 +488,23 @@ mod node_types_tests {
         assert_eq!(all["publication"]["available"], false);
         assert_eq!(invert["mixable"], false);
         assert_eq!(invert["inputs"], serde_json::json!([{ "key": "in", "type": "Image", "optional": false }]));
-        assert_eq!(types.iter().filter(|t| t["mixable"] == true).count(), 33);
-        // The grade nodes' own mask inputs keep their revision-1 meaning, with no setting.
+        // 33 effects and the 8 gateable grade corrections (M3 step 17a).
+        assert_eq!(types.iter().filter(|t| t["mixable"] == true).count(), 41);
+        // A correction's gate reads red until a channel is picked: a new
+        // connection writes none, and an absent one is red.
         let corrector = find("Corrector");
-        assert_eq!(corrector["mixable"], false);
-        assert_eq!(corrector["inputs"][1], serde_json::json!({ "key": "mask", "type": "Matte", "optional": true }));
-        assert!(types.iter().filter(|t| t["category"] == "Grade").all(|t| t["mixable"] == false));
+        assert_eq!(corrector["mixable"], true);
+        assert_eq!(
+            corrector["inputs"][1],
+            serde_json::json!({ "key": "mask", "type": "Matte", "optional": true,
+                "channels": ["red", "luminance", "alpha"], "default_channel": "red", "absent_channel": "red", "params": [
+                    { "key": "channel", "saved_as": "mask.channel", "label": "Channel",
+                      "options": ["red", "luminance", "alpha"], "default": "red", "migrated": "red" }
+                ] })
+        );
+        let gates = ["Corrector", "ColorBalance", "Exposure", "Contrast", "Saturation", "ColorWheels", "ToneControls", "RGBCurves"];
+        for t in types.iter().filter(|t| t["category"] == "Grade") {
+            assert_eq!(t["mixable"] == true, gates.contains(&t["tag"].as_str().unwrap()), "{}", t["tag"]);
+        }
     }
 }

@@ -24,7 +24,10 @@
 //! * Sizes in pixels are the sequence's pixels, which the executor scales
 //!   to the rendered frame ([`Scaling::Executor`], #1012).
 //! * A correction a matte can limit (port 1, `NodeGraph::with_gates_applied`)
-//!   has an optional `mask` input beyond its port count.
+//!   has an optional `mask` input beyond its port count, with the mask's
+//!   channel setting, and is mixable: faded by `mix` against its input
+//!   (M3 step 17a). Its inputs are [`GATE_IN`]: a gate reads red until a
+//!   channel is picked.
 //!
 //! Each kind is described as the code behaves, including where two places
 //! disagree; those are filed, not resolved here:
@@ -47,7 +50,7 @@
 
 use crate::NodeKind;
 use klipp_effects::registry::{
-    Alpha, Category, ColourDomain, NodeTypeDesc, ParamDesc, ParamKind, PortDesc, PortType, Scaling, Spatial, Temporal, Unit,
+    Alpha, Category, ColourDomain, NodeTypeDesc, ParamDesc, ParamKind, PortDesc, PortType, Scaling, Spatial, Temporal, Unit, GATE_IN,
 };
 
 #[path = "registry_presentation.rs"]
@@ -408,7 +411,7 @@ static TYPES: &[NodeType] = &[
             id: "klipp.grade.corrector",
             name: "Corrector",
             category: Category::Grade,
-            inputs: &[PortDesc { key: "in", ty: PortType::Image, optional: false, params: &[] }, PortDesc { key: "mask", ty: PortType::Matte, optional: true, params: &[] }],
+            inputs: GATE_IN,
             outputs: &[PortDesc { key: "out", ty: PortType::Image, optional: false, params: &[] }],
             params: P_CORRECTOR,
             domain: ColourDomain::GradeEncoded,
@@ -418,7 +421,7 @@ static TYPES: &[NodeType] = &[
             draws_outside: false,
             gpu: true,
             cpu: true,
-            mixable: false,
+            mixable: true,
         },
     },
     NodeType {
@@ -427,7 +430,7 @@ static TYPES: &[NodeType] = &[
             id: "klipp.grade.exposure",
             name: "Exposure",
             category: Category::Grade,
-            inputs: &[PortDesc { key: "in", ty: PortType::Image, optional: false, params: &[] }, PortDesc { key: "mask", ty: PortType::Matte, optional: true, params: &[] }],
+            inputs: GATE_IN,
             outputs: &[PortDesc { key: "out", ty: PortType::Image, optional: false, params: &[] }],
             params: P_EXPOSURE,
             domain: ColourDomain::Linear,
@@ -437,7 +440,7 @@ static TYPES: &[NodeType] = &[
             draws_outside: false,
             gpu: true,
             cpu: true,
-            mixable: false,
+            mixable: true,
         },
     },
     NodeType {
@@ -446,7 +449,7 @@ static TYPES: &[NodeType] = &[
             id: "klipp.grade.contrast",
             name: "Contrast",
             category: Category::Grade,
-            inputs: &[PortDesc { key: "in", ty: PortType::Image, optional: false, params: &[] }, PortDesc { key: "mask", ty: PortType::Matte, optional: true, params: &[] }],
+            inputs: GATE_IN,
             outputs: &[PortDesc { key: "out", ty: PortType::Image, optional: false, params: &[] }],
             params: P_CONTRAST,
             domain: ColourDomain::GradeEncoded,
@@ -456,7 +459,7 @@ static TYPES: &[NodeType] = &[
             draws_outside: false,
             gpu: true,
             cpu: true,
-            mixable: false,
+            mixable: true,
         },
     },
     NodeType {
@@ -465,7 +468,7 @@ static TYPES: &[NodeType] = &[
             id: "klipp.grade.saturation",
             name: "Saturation",
             category: Category::Grade,
-            inputs: &[PortDesc { key: "in", ty: PortType::Image, optional: false, params: &[] }, PortDesc { key: "mask", ty: PortType::Matte, optional: true, params: &[] }],
+            inputs: GATE_IN,
             outputs: &[PortDesc { key: "out", ty: PortType::Image, optional: false, params: &[] }],
             params: P_SATURATION,
             domain: ColourDomain::Linear,
@@ -475,7 +478,7 @@ static TYPES: &[NodeType] = &[
             draws_outside: false,
             gpu: true,
             cpu: true,
-            mixable: false,
+            mixable: true,
         },
     },
     NodeType {
@@ -484,7 +487,7 @@ static TYPES: &[NodeType] = &[
             id: "klipp.grade.tone_controls",
             name: "Tone Controls",
             category: Category::Grade,
-            inputs: &[PortDesc { key: "in", ty: PortType::Image, optional: false, params: &[] }, PortDesc { key: "mask", ty: PortType::Matte, optional: true, params: &[] }],
+            inputs: GATE_IN,
             outputs: &[PortDesc { key: "out", ty: PortType::Image, optional: false, params: &[] }],
             params: P_TONE_CONTROLS,
             domain: ColourDomain::GradeEncoded,
@@ -494,7 +497,7 @@ static TYPES: &[NodeType] = &[
             draws_outside: false,
             gpu: true,
             cpu: true,
-            mixable: false,
+            mixable: true,
         },
     },
     NodeType {
@@ -503,7 +506,7 @@ static TYPES: &[NodeType] = &[
             id: "klipp.grade.color_wheels",
             name: "Color Wheels",
             category: Category::Grade,
-            inputs: &[PortDesc { key: "in", ty: PortType::Image, optional: false, params: &[] }, PortDesc { key: "mask", ty: PortType::Matte, optional: true, params: &[] }],
+            inputs: GATE_IN,
             outputs: &[PortDesc { key: "out", ty: PortType::Image, optional: false, params: &[] }],
             params: P_COLOR_WHEELS,
             domain: ColourDomain::GradeEncoded,
@@ -513,7 +516,7 @@ static TYPES: &[NodeType] = &[
             draws_outside: false,
             gpu: true,
             cpu: true,
-            mixable: false,
+            mixable: true,
         },
     },
     NodeType {
@@ -541,7 +544,7 @@ static TYPES: &[NodeType] = &[
             id: "klipp.grade.rgb_curves",
             name: "RGB Curves",
             category: Category::Grade,
-            inputs: &[PortDesc { key: "in", ty: PortType::Image, optional: false, params: &[] }, PortDesc { key: "mask", ty: PortType::Matte, optional: true, params: &[] }],
+            inputs: GATE_IN,
             outputs: &[PortDesc { key: "out", ty: PortType::Image, optional: false, params: &[] }],
             params: P_RGB_CURVES,
             domain: ColourDomain::DisplayEncoded,
@@ -551,7 +554,7 @@ static TYPES: &[NodeType] = &[
             draws_outside: false,
             gpu: true,
             cpu: true,
-            mixable: false,
+            mixable: true,
         },
     },
     NodeType {
@@ -579,7 +582,7 @@ static TYPES: &[NodeType] = &[
             id: "klipp.grade.color_balance",
             name: "Color Balance",
             category: Category::Grade,
-            inputs: &[PortDesc { key: "in", ty: PortType::Image, optional: false, params: &[] }, PortDesc { key: "mask", ty: PortType::Matte, optional: true, params: &[] }],
+            inputs: GATE_IN,
             outputs: &[PortDesc { key: "out", ty: PortType::Image, optional: false, params: &[] }],
             params: P_COLOR_BALANCE,
             domain: ColourDomain::Linear,
@@ -589,7 +592,7 @@ static TYPES: &[NodeType] = &[
             draws_outside: false,
             gpu: true,
             cpu: true,
-            mixable: false,
+            mixable: true,
         },
     },
     NodeType {
