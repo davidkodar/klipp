@@ -282,6 +282,9 @@ impl KlippApp {
                                     .get(&format!("{effect_index}:{param_name}"))
                                     .and_then(|kfs| kfs.get(sk.keyframe_index).map(|kf| kf.time_secs))
                             }
+                            crate::state::KeyframeParamKind::Node { path, key } => {
+                                clip.node_key_state(path, key).and_then(|s| s.keys.get(sk.keyframe_index).map(|kf| kf.time_secs))
+                            }
                         };
                         if let Some(time_secs) = kf_time {
                             match &sk.param_kind {
@@ -299,6 +302,9 @@ impl KlippApp {
                                         param_name: param_name.clone(),
                                         time_secs,
                                     });
+                                }
+                                crate::state::KeyframeParamKind::Node { path, key } => {
+                                    cmds.push(AppCommand::RemoveKeyAt { addr: path.clone(), key: key.clone(), time_secs });
                                 }
                             }
                             keyframe_deleted = true;

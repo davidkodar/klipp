@@ -98,6 +98,17 @@ fn resolve_with<'a>(
     clip_for: impl Fn(klipp_core::ClipId) -> Option<&'a Clip>,
 ) {
     use AppCommand::*;
+    // A key added by path carries its time in its own record (M3 step 3).
+    if let AddKeyAt { addr, key, keyframe } = command {
+        let Some(c) = addr.root_clip().and_then(|id| clip_for(klipp_core::ClipId(id))) else { return };
+        let (Some(state), Some(t)) = (c.node_key_state(addr, key), keyframe.get("time_secs").and_then(serde_json::Value::as_f64)) else { return };
+        if let Some(i) = nearest(&state.keys, t, tolerance) {
+            keyframe["time_secs"] = serde_json::json!(state.keys[i].time_secs);
+        }
+        return;
+    }
+    // A node's keys, read by path into this, for the arm that does.
+    let node_keys: Vec<Keyframe>;
     let (keys, time): (&[Keyframe], &mut f64) = match command {
         AddVideoKeyframe {
             clip_id,
@@ -159,13 +170,13 @@ fn resolve_with<'a>(
             time_secs,
         } => {
             let Some(c) = clip_for(*clip_id) else { return };
-            (
-                c.effect_keyframes()
-                    .get(&format!("{effect_index}:{param_name}"))
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]),
-                time_secs,
-            )
+            (c.effect_param_keyframes(*effect_index, param_name), time_secs)
+        }
+        // A key removed by path: the node's keys, by path and key.
+        RemoveKeyAt { addr, key, time_secs } => {
+            let Some(c) = addr.root_clip().and_then(|id| clip_for(klipp_core::ClipId(id))) else { return };
+            node_keys = c.node_key_state(addr, key).map(|s| s.keys).unwrap_or_default();
+            (&node_keys, time_secs)
         }
         AddAudioEffectKeyframe {
             clip_id,

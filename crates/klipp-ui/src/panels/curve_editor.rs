@@ -14,9 +14,11 @@ pub enum CurveParam {
     Video(VideoParam),
     /// Playback speed envelope.
     Speed,
-    /// Video effect parameter keyframe track, identified by
-    /// "{effect_index}:{param_name}".
-    Effect(String),
+    /// An effect parameter's keyframe track, by its node's path in the
+    /// clip's picture and the parameter's key (M3 step 3): it follows the
+    /// node through a reorder. `tag` is the effect's saved tag, which
+    /// names and ranges the track from the catalog.
+    Node { path: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey, tag: String },
     /// Audio effect parameter keyframe track, identified by
     /// "{effect_index}:{param_name}". Reserved param names: "__bypass"
     /// and "__wetdry".
@@ -24,6 +26,19 @@ pub enum CurveParam {
     /// One of the sequence camera's moving values: the sequence's own
     /// curve, over the sequence's time, shown when no clip is selected.
     Camera(CameraParam),
+}
+
+/// An effect parameter as the catalog describes it, by the effect's saved
+/// tag and the parameter's key in its node (its field, or an element's
+/// key): the effect's name, the parameter's label as the inspector shows
+/// it, and its (min, max, default) on the curve (M3 step 3).
+fn node_param(tag: &str, key: &klipp_graph_format::ParamKey) -> Option<(&'static str, &'static str, (f32, f32, f32))> {
+    let t = klipp_effects::registry::effect_type(tag)?;
+    let p = t.desc.params.iter().find(|p| (if p.index.is_some() { p.key } else { p.field }) == key.as_str())?;
+    let label = t.presentation(p).label.unwrap_or(p.label);
+    let (lo, hi) = p.soft.or(p.range)?;
+    let default = if p.default.is_finite() { p.default } else { lo };
+    Some((t.desc.name, label, (lo, hi, default)))
 }
 
 impl CurveParam {
@@ -43,13 +58,10 @@ impl CurveParam {
             CurveParam::Video(VideoParam::MatteFeather) => "Matte Feather".into(),
             CurveParam::Video(VideoParam::MatteChoke) => "Matte Choke".into(),
             CurveParam::Speed => "Speed".into(),
-            CurveParam::Effect(key) => {
-                if let Some((_idx, name)) = key.split_once(':') {
-                    format!("FX: {name}")
-                } else {
-                    format!("FX: {key}")
-                }
-            }
+            CurveParam::Node { key, tag, .. } => match node_param(tag, key) {
+                Some((effect, label, _)) => format!("{effect}: {label}"),
+                None => format!("FX: {key}"),
+            },
             CurveParam::AudioEffect(key) => {
                 if let Some((_idx, name)) = key.split_once(':') {
                     let pretty = match name {
@@ -64,6 +76,13 @@ impl CurveParam {
             }
             CurveParam::Camera(p) => format!("Camera {}", p.label()),
         }
+    }
+
+    /// (min, max, default) for this parameter, for a test outside this
+    /// module.
+    #[cfg(test)]
+    pub(crate) fn curve_range(&self) -> (f32, f32, f32) {
+        self.range()
     }
 
     /// (min, max, default) for this parameter.
@@ -82,7 +101,8 @@ impl CurveParam {
             CurveParam::Video(VideoParam::MatteFeather) => (0.0, 50.0, 0.0),
             CurveParam::Video(VideoParam::MatteChoke) => (0.0, 50.0, 0.0),
             CurveParam::Speed => (0.1, 4.0, 1.0),
-            CurveParam::Effect(_) => (0.0, 1.0, 0.5),
+            // The catalog's: the slider's range, or the accepted one.
+            CurveParam::Node { key, tag, .. } => node_param(tag, key).map_or((0.0, 1.0, 0.5), |(_, _, range)| range),
             CurveParam::AudioEffect(key) => {
                 // Reserved keys have known ranges; per-param ranges are
                 // unknowable here without the AudioEffect descriptor (we
@@ -390,17 +410,10 @@ impl CurveEditorPanel {
                                 // Speed keyframes: directly modify clip
                                 // (no dedicated AppCommand yet — add inline)
                             }
-                            CurveParam::Effect(key) => {
-                                if let Some((idx_str, param_name)) = key.split_once(':') {
-                                    if let Ok(effect_index) = idx_str.parse::<usize>() {
-                                        cmds.push(AppCommand::AddEffectKeyframe {
-                                            clip_id,
-                                            effect_index,
-                                            param_name: param_name.to_string(),
-                                            time_secs: t,
-                                            value: v,
-                                        });
-                                    }
+                            CurveParam::Node { path, key, .. } => {
+                                let keyframe = klipp_core::keyframe::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+                                if let Ok(keyframe) = serde_json::to_value(keyframe) {
+                                    cmds.push(AppCommand::AddKeyAt { addr: path.clone(), key: key.clone(), keyframe });
                                 }
                             }
                             CurveParam::AudioEffect(key) => {
@@ -543,7 +556,7 @@ impl CurveEditorPanel {
                     CurveParam::Video(VideoParam::MatteFeather) => clip.matte_feather_keyframes.clone(),
                     CurveParam::Video(VideoParam::MatteChoke) => clip.matte_choke_keyframes.clone(),
                     CurveParam::Speed => clip.speed_keyframes.clone(),
-                    CurveParam::Effect(key) => clip.effect_keyframes().get(key).cloned().unwrap_or_default(),
+                    CurveParam::Node { path, key, .. } => clip.node_key_state(path, key).map(|s| s.keys).unwrap_or_default(),
                     CurveParam::AudioEffect(key) => clip.audio_effect_keyframes.get(key).cloned().unwrap_or_default(),
                     CurveParam::Camera(_) => Vec::new(),
                 };
@@ -628,10 +641,9 @@ impl CurveEditorPanel {
         if let Some(cid) = state.selected_clip {
             let seq = &state.sequences[state.active_sequence_idx];
             if let Some(clip) = seq.all_clips().find(|c| c.id == cid) {
-                let mut effect_keys: Vec<String> = clip.effect_keyframes().keys().cloned().collect();
-                effect_keys.sort();
-                for key in effect_keys {
-                    params.push(CurveParam::Effect(key));
+                // By node, in the order the picture runs them.
+                for (path, key, tag) in clip.animated_effect_keys() {
+                    params.push(CurveParam::Node { path, key, tag });
                 }
                 let mut audio_effect_keys: Vec<String> =
                     clip.audio_effect_keyframes.keys().cloned().collect();
@@ -1079,6 +1091,10 @@ impl CurveEditorPanel {
                                     keyframe_index: i,
                                     handle: None,
                                 });
+                                // A node's key dragged: one undo step (M3 step 3).
+                                if let CurveParam::Node { path, key, .. } = &self.param {
+                                    cmds.push(AppCommand::BeginParamEditAt { addr: path.clone(), key: key.clone() });
+                                }
                                 state.selected_keyframe = Some(SelectedKeyframe {
                                     clip_id,
                                     param_kind: self.param_to_kind(),
@@ -1129,8 +1145,13 @@ impl CurveEditorPanel {
                                         cmds.push(param.move_keyframe(clip_id, *object_id, kf_idx, new_t, new_v));
                                         moved_title_index = Some(keyframes.iter().enumerate().filter(|(i, k)| *i != kf_idx && (k.time_secs < new_t || (k.time_secs == new_t && *i < kf_idx))).count());
                                     }
+                                    // By the key's time now; the keys stay in time
+                                    // order, so the dragged one's place follows.
+                                    CurveParam::Node { path, key, .. } => {
+                                        cmds.push(AppCommand::MoveKeyAt { addr: path.clone(), key: key.clone(), time_secs: kf.time_secs, new_time_secs: new_t, value: new_v });
+                                        moved_title_index = Some(keyframes.iter().enumerate().filter(|(i, k)| *i != kf_idx && (k.time_secs < new_t || (k.time_secs == new_t && *i < kf_idx))).count());
+                                    }
                                     CurveParam::Speed
-                                    | CurveParam::Effect(_)
                                     | CurveParam::AudioEffect(_)
                                     | CurveParam::Camera(_) => {
                                         // Speed/effect keyframe move not yet wired to commands
@@ -1169,7 +1190,7 @@ impl CurveEditorPanel {
                                     }
                                     CurveParam::Title { object_id, param } => cmds.push(param.tangent(clip_id, *object_id, kf_idx, tangent_in, tangent_out)),
                                     CurveParam::Speed
-                                    | CurveParam::Effect(_)
+                                    | CurveParam::Node { .. }
                                     | CurveParam::AudioEffect(_)
                                     | CurveParam::Camera(_) => {
                                         // Tangent editing not yet wired for speed/effects
@@ -1187,6 +1208,9 @@ impl CurveEditorPanel {
             state.selected_keyframe = Some(SelectedKeyframe { clip_id, param_kind: self.param_to_kind(), keyframe_index: index });
         }
         if response.drag_stopped() {
+            if let (Some(CurveDrag { handle: None, .. }), CurveParam::Node { path, key, .. }) = (&self.drag, &self.param) {
+                cmds.push(AppCommand::EndParamEditAt { addr: path.clone(), key: key.clone() });
+            }
             self.drag = None;
         }
 
@@ -1381,7 +1405,8 @@ impl CurveEditorPanel {
                 }
                 KeyframeParamKind::Video(VideoParam::Opacity)
             }
-            CurveParam::Speed | CurveParam::Effect(_) | CurveParam::Camera(_) => {
+            CurveParam::Node { path, key, .. } => KeyframeParamKind::Node { path: path.clone(), key: key.clone() },
+            CurveParam::Speed | CurveParam::Camera(_) => {
                 KeyframeParamKind::Video(VideoParam::Opacity) // fallback
             }
         }
@@ -1395,6 +1420,7 @@ impl CurveEditorPanel {
             (CurveParam::AudioEffect(key), KeyframeParamKind::AudioEffect { effect_index, param_name }) => {
                 key == &format!("{effect_index}:{param_name}")
             }
+            (CurveParam::Node { path: a, key: k, .. }, KeyframeParamKind::Node { path: b, key: l }) => a == b && k == l,
             _ => false,
         }
     }
@@ -1454,6 +1480,18 @@ mod curve_param_tests {
         assert_eq!(panel.param.label(), "Glow 2 · radius");
         panel.param = CurveParam::Title { object_id: 7, param: TitleCurveParam::Position(klipp_core::TitlePositionAxis::X) };
         assert_eq!(panel.param.range(), (-1.0, 2.0, 0.5));
+    }
+
+    /// M3 step 3: the curve editor and keyframe selection read an
+    /// effect's keys by its node, never by its place in the list.
+    #[test]
+    fn no_positional_effect_keys_in_these_files() {
+        for (name, text) in [("curve_editor.rs", include_str!("curve_editor.rs")), ("keyframe_selection.rs", include_str!("../inspector/keyframe_selection.rs"))] {
+            let code = text.split("#[cfg(test)]").next().unwrap_or(text);
+            for positional in [".effect_keyframes()", "CurveParam::Effect("] {
+                assert!(!code.contains(positional), "{name} reads an effect's keys by its place: {positional}");
+            }
+        }
     }
 
     #[test]

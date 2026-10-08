@@ -232,3 +232,86 @@ impl Clip {
         }
     }
 }
+
+impl Clip {
+    /// The keys of parameter `param` of the effect at `index` of the
+    /// clip's list: the old inspector's index commands' (until step 19);
+    /// a reader by node reads [`Clip::node_key_state`].
+    pub fn effect_param_keyframes(&self, index: usize, param: &str) -> &[Keyframe] {
+        self.effect_keyframes().get(&format!("{index}:{param}")).map_or(&[], Vec::as_slice)
+    }
+}
+
+/// A node's animated parameter, read by path from the clip's picture
+/// (M3 step 3): its keys, its value where nothing animates it, and the
+/// effect it belongs to (its saved tag), which names and ranges it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeKeyState {
+    pub keys: Vec<Keyframe>,
+    pub value: Option<f32>,
+    pub tag: Option<String>,
+}
+
+impl NodeKeyState {
+    /// The parameter's value at clip time `t`: its keys', or its own.
+    pub fn value_at(&self, t: f64) -> f32 {
+        klipp_core::keyframe::evaluate(&self.keys, t, self.value.unwrap_or(0.0))
+    }
+}
+
+impl Clip {
+    /// The node of the clip's picture `path` names: a node of its top
+    /// level, the clip's own (a spliced one isn't the clip's to edit).
+    fn picture_node<R>(&self, path: &klipp_graph_format::path::NodePath, f: impl FnOnce(&klipp_graph_format::Node) -> R) -> Option<R> {
+        use klipp_graph_format::path::Root;
+        if path.root != (Root::Clip { clip: self.id.0 }) || path.nodes.len() != 1 {
+            return None;
+        }
+        let lifted = self.picture_v2().ok()?;
+        lifted.picture.graph.nodes.iter().find(|n| Some(n.id) == path.node() && n.origin.is_none()).map(f)
+    }
+
+    /// The keys of the parameter `key` of the node at `path` in the clip's
+    /// picture, its value where nothing animates it, and its effect's tag
+    /// (M3 step 3): what the curve editor and keyframe selection read in
+    /// place of the effect list's `"{index}:{param}"` keys. `None` when the
+    /// path names no node of the clip.
+    pub fn node_key_state(&self, path: &klipp_graph_format::path::NodePath, key: &klipp_graph_format::ParamKey) -> Option<NodeKeyState> {
+        self.picture_node(path, |n| {
+            let keys = n.anim.get(key).map(|a| a.keys.iter().filter_map(|k| serde_json::from_value::<Keyframe>(k.clone()).ok()).collect()).unwrap_or_default();
+            let value = match n.params.get(key) {
+                Some(klipp_graph_format::ParamValue::Float(v)) => Some(*v),
+                Some(klipp_graph_format::ParamValue::Int(v)) => Some(*v as f32),
+                _ => None,
+            };
+            NodeKeyState { keys, value, tag: klipp_graph_lift::effect_params::tag(n).map(str::to_owned) }
+        })
+    }
+
+    /// Every animated parameter of the clip's effects, by node path and
+    /// key, in the order the picture runs them, with each effect's tag.
+    pub fn animated_effect_keys(&self) -> Vec<(klipp_graph_format::path::NodePath, klipp_graph_format::ParamKey, String)> {
+        use klipp_graph_format::path::{NodePath, Root};
+        let Ok(lifted) = self.picture_v2() else { return Vec::new() };
+        let graph = &lifted.picture.graph;
+        // Back from the output along each node's primary input.
+        let mut spine = Vec::new();
+        let mut at = Some(graph.output);
+        while let Some(id) = at.filter(|id| !spine.contains(id)) {
+            spine.push(id);
+            at = graph.edges.iter().find(|e| e.to == (id, "in".into())).map(|e| e.from.0);
+        }
+        spine.reverse();
+        let mut out = Vec::new();
+        for id in spine {
+            let Some(n) = graph.nodes.iter().find(|n| n.id == id && n.origin.is_none() && n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT) else { continue };
+            let Some(tag) = klipp_graph_lift::effect_params::tag(n) else { continue };
+            for (key, anim) in &n.anim {
+                if !anim.keys.is_empty() {
+                    out.push((NodePath::new(Root::Clip { clip: self.id.0 }, [n.id]), key.clone(), tag.to_owned()));
+                }
+            }
+        }
+        out
+    }
+}

@@ -2134,6 +2134,7 @@ impl TimelinePanel {
                                                 klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                             },
                                             crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id),
+                                            crate::state::KeyframeParamKind::Node { .. } => &[],
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 clip.audio_effect_keyframes
                                                     .get(&format!("{effect_index}:{param_name}"))
@@ -2161,7 +2162,7 @@ impl TimelinePanel {
                                                     param: *param,
                                                 });
                                             }
-                                            crate::state::KeyframeParamKind::Title { .. } => {}
+                                            crate::state::KeyframeParamKind::Title { .. } | crate::state::KeyframeParamKind::Node { .. } => {}
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 cmds.push(AppCommand::CopyAudioEffectKeyframes {
                                                     clip_id: ctx_menu.clip_id,
@@ -2189,7 +2190,7 @@ impl TimelinePanel {
                                                     param: *param,
                                                 });
                                             }
-                                            crate::state::KeyframeParamKind::Title { .. } => {}
+                                            crate::state::KeyframeParamKind::Title { .. } | crate::state::KeyframeParamKind::Node { .. } => {}
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 cmds.push(AppCommand::PasteAudioEffectKeyframes {
                                                     clip_id: ctx_menu.clip_id,
@@ -2225,6 +2226,7 @@ impl TimelinePanel {
                                                 klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                             },
                                             crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id),
+                                            crate::state::KeyframeParamKind::Node { .. } => &[],
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 clip.audio_effect_keyframes
                                                     .get(&format!("{effect_index}:{param_name}"))
@@ -2251,7 +2253,7 @@ impl TimelinePanel {
                                                     param: *param,
                                                 });
                                             }
-                                            crate::state::KeyframeParamKind::Title { .. } => {}
+                                            crate::state::KeyframeParamKind::Title { .. } | crate::state::KeyframeParamKind::Node { .. } => {}
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 cmds.push(AppCommand::ReverseAudioEffectKeyframes {
                                                     clip_id: ctx_menu.clip_id,
@@ -2295,6 +2297,7 @@ impl TimelinePanel {
                                             klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                         },
                                         crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id),
+                                            crate::state::KeyframeParamKind::Node { .. } => &[],
                                         crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                             clip.audio_effect_keyframes
                                                 .get(&format!("{effect_index}:{param_name}"))
@@ -2305,6 +2308,11 @@ impl TimelinePanel {
                                     kfs.get(ctx_menu.keyframe_index).map(|kf| kf.interpolation)
                                 });
 
+                            // A node's key is set by its time (M3 step 3).
+                            let node_key_time = match &ctx_menu.param_kind {
+                                crate::state::KeyframeParamKind::Node { path, key } => state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == ctx_menu.clip_id).and_then(|c| c.node_key_state(path, key)).and_then(|s| s.keys.get(ctx_menu.keyframe_index).map(|k| k.time_secs)),
+                                _ => None,
+                            };
                             // Helper closure: emit interpolation command
                             let emit_interp = |cmds: &mut Vec<AppCommand>, interp: klipp_core::Interpolation| {
                                 match &ctx_menu.param_kind {
@@ -2325,6 +2333,11 @@ impl TimelinePanel {
                                         });
                                     }
                                     crate::state::KeyframeParamKind::Title { object_id, param } => { cmds.push(param.interpolation(ctx_menu.clip_id, *object_id, ctx_menu.keyframe_index, interp)); }
+                                    crate::state::KeyframeParamKind::Node { path, key } => {
+                                        if let Some(time_secs) = node_key_time {
+                                            cmds.push(AppCommand::SetInterpKeyAt { addr: path.clone(), key: key.clone(), time_secs, interpolation: interp });
+                                        }
+                                    }
                                     crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                         cmds.push(AppCommand::SetAudioEffectKeyframeInterpolation {
                                             clip_id: ctx_menu.clip_id,
@@ -2362,6 +2375,7 @@ impl TimelinePanel {
                                                 klipp_core::VideoParam::MatteChoke => clip.matte_choke_keyframes.clone(),
                                             },
                                             crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id).to_vec(),
+                                            crate::state::KeyframeParamKind::Node { path, key } => clip.node_key_state(path, key).map(|s| s.keys).unwrap_or_default(),
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 clip.audio_effect_keyframes
                                                     .get(&format!("{effect_index}:{param_name}"))
@@ -2401,6 +2415,7 @@ impl TimelinePanel {
                                                 });
                                             }
                                             crate::state::KeyframeParamKind::Title { object_id, param } => { cmds.push(param.tangent(ctx_menu.clip_id, *object_id, idx, t_in, t_out)); }
+                                            crate::state::KeyframeParamKind::Node { .. } => {}
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 cmds.push(AppCommand::SetAudioEffectKeyframeTangent {
                                                     clip_id: ctx_menu.clip_id,
@@ -2506,6 +2521,7 @@ impl TimelinePanel {
                                             klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                         },
                                         crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id),
+                                            crate::state::KeyframeParamKind::Node { .. } => &[],
                                         crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                             clip.audio_effect_keyframes
                                                 .get(&format!("{effect_index}:{param_name}"))
@@ -2529,7 +2545,7 @@ impl TimelinePanel {
                                             clip_id: ctx_menu.clip_id, param: *param, factor: 2.0,
                                         });
                                     }
-                                    crate::state::KeyframeParamKind::Title { .. } => {}
+                                    crate::state::KeyframeParamKind::Title { .. } | crate::state::KeyframeParamKind::Node { .. } => {}
                                     crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                         cmds.push(AppCommand::ScaleAudioEffectKeyframeTiming {
                                             clip_id: ctx_menu.clip_id,
@@ -2553,7 +2569,7 @@ impl TimelinePanel {
                                             clip_id: ctx_menu.clip_id, param: *param, factor: 0.5,
                                         });
                                     }
-                                    crate::state::KeyframeParamKind::Title { .. } => {}
+                                    crate::state::KeyframeParamKind::Title { .. } | crate::state::KeyframeParamKind::Node { .. } => {}
                                     crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                         cmds.push(AppCommand::ScaleAudioEffectKeyframeTiming {
                                             clip_id: ctx_menu.clip_id,
@@ -2582,7 +2598,7 @@ impl TimelinePanel {
                                                 clip_id: ctx_menu.clip_id, param: *param, factor: fit_factor,
                                             });
                                         }
-                                        crate::state::KeyframeParamKind::Title { .. } => {}
+                                        crate::state::KeyframeParamKind::Title { .. } | crate::state::KeyframeParamKind::Node { .. } => {}
                                         crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                             cmds.push(AppCommand::ScaleAudioEffectKeyframeTiming {
                                                 clip_id: ctx_menu.clip_id,
@@ -2626,6 +2642,7 @@ impl TimelinePanel {
                                                 klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                             },
                                             crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id),
+                                            crate::state::KeyframeParamKind::Node { .. } => &[],
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 clip.audio_effect_keyframes
                                                     .get(&format!("{effect_index}:{param_name}"))
@@ -2653,6 +2670,7 @@ impl TimelinePanel {
                                                     klipp_core::VideoParam::MatteChoke => clip.matte_source.as_ref().map(|b| b.choke_px).unwrap_or(0.0),
                                                 },
                                                 crate::state::KeyframeParamKind::Title { param, .. } => param.range().2,
+                                                crate::state::KeyframeParamKind::Node { path, key } => clip.node_key_state(path, key).and_then(|s| s.value).unwrap_or(0.0),
                                                 crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                     clip.audio_effects.get(*effect_index)
                                                         .and_then(|inst| inst.params.iter()
@@ -2692,7 +2710,7 @@ impl TimelinePanel {
                                             klipp_core::VideoParam::MatteFeather => (base_val + 5.0).min(50.0),
                                             klipp_core::VideoParam::MatteChoke => (base_val + 2.0).min(50.0),
                                         },
-                                        crate::state::KeyframeParamKind::Title { .. } => base_val + 0.1,
+                                        crate::state::KeyframeParamKind::Title { .. } | crate::state::KeyframeParamKind::Node { .. } => base_val + 0.1,
                                         crate::state::KeyframeParamKind::AudioEffect { param_name, .. } => match param_name.as_str() {
                                             // Reserved keys are 0..1 toggles; bumping
                                             // from 0 → 1 makes "punch in this effect for
@@ -2721,7 +2739,7 @@ impl TimelinePanel {
                                                     duration_secs: 0.5, ramp_secs: 0.15,
                                                 });
                                             }
-                                            crate::state::KeyframeParamKind::Title { .. } => {}
+                                            crate::state::KeyframeParamKind::Title { .. } | crate::state::KeyframeParamKind::Node { .. } => {}
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 cmds.push(AppCommand::InsertAudioEffectKeyframeBump {
                                                     clip_id: ctx_menu.clip_id,

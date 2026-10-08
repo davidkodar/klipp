@@ -423,6 +423,9 @@ pub enum KeyframeParamKind {
     /// param name, same as `audio_effect_keyframes` HashMap keys.
     /// Reserved keys `__bypass` / `__wetdry` route here too.
     AudioEffect { effect_index: usize, param_name: String },
+    /// An effect node's parameter, by the node's path and its key (M3
+    /// step 3).
+    Node { path: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey },
 }
 
 /// State for the keyframe interpolation context menu (right-click on diamond).

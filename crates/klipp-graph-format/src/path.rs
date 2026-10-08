@@ -65,6 +65,14 @@ impl NodePath {
     pub fn node(&self) -> Option<NodeId> {
         self.nodes.last().copied()
     }
+
+    /// The clip whose picture the path is in, when it is a clip's.
+    pub fn root_clip(&self) -> Option<Uuid> {
+        match self.root {
+            Root::Clip { clip } => Some(clip),
+            _ => None,
+        }
+    }
 }
 
 /// One parameter of one node set to a value, the unit a live edit and the
