@@ -5989,8 +5989,9 @@ impl GpuEffectsPipeline {
     }
 
     /// Draw `key`'s matte from `from`, a kept picture, into a pool slot of
-    /// its own, recorded in the chain's encoder: a grade secondary's key
-    /// (M3 step 17b). `None` as [`Self::key_into_matte_slot`].
+    /// its own, recorded in the chain's encoder: a grade secondary's key,
+    /// drawn just before its gate reads it (M3 step 17b). `None` as
+    /// [`Self::key_into_matte_slot`].
     pub fn key_kept_into_matte_slot(&mut self, key: &GpuKey, from: &KeptPicture, width: u32, height: u32) -> Option<KeyedMatte> {
         if self.is_device_lost() || self.chain_encoder.is_none() {
             return None;
@@ -6035,6 +6036,15 @@ impl GpuEffectsPipeline {
         self.upload_frame(self.slot_pool.buffer(id), bytemuck::cast_slice(px));
         self.slot_pool.mark_cpu_written(id);
         Some(KeptPicture(id))
+    }
+
+    /// A kept picture's pixels, read back for a reader off the chain.
+    /// `None` while the chain that keeps it is still being recorded.
+    pub fn read_picture(&self, picture: &KeptPicture, pixel_count: usize) -> Option<Vec<f32>> {
+        if self.is_device_lost() || self.chain_encoder.is_some() {
+            return None;
+        }
+        Some(self.download_linear_rgba_f32(self.slot_pool.buffer(picture.0), pixel_count)).filter(|v| v.len() == pixel_count * 4)
     }
 
     /// Give a kept picture's slot back: its last reader is recorded.
