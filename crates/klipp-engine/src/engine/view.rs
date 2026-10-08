@@ -802,14 +802,8 @@ impl PlaybackEngine {
         };
 
         let compare = if self.compare_effect_active {
-            let (index, is_ofx) = (self.compare_effect_index, self.compare_effect_is_ofx);
-            alt_render(self, &|c: &mut Clip| {
-                if is_ofx {
-                    c.edit_ofx_effect(index, |e| e.enabled = !e.enabled).is_some()
-                } else {
-                    toggle_builtin_effect(c, index)
-                }
-            }, self.compare_effect_clip_id)
+            let node = self.compare_effect_node;
+            alt_render(self, &|c: &mut Clip| node.is_some_and(|n| c.toggle_effect_node(n)), self.compare_effect_clip_id)
         } else {
             Vec::new()
         };
@@ -1158,12 +1152,6 @@ fn disable_stabilization(c: &mut Clip) -> bool {
     !ids.is_empty()
 }
 
-/// Resolve the inspector's index once, then toggle that entry by identity.
-fn toggle_builtin_effect(c: &mut Clip, index: usize) -> bool {
-    let Some((id, _, enabled)) = c.effect_entries().nth(index) else { return false };
-    c.set_effect_enabled(id, !enabled)
-}
-
 /// The inspector's matte preview: the mask as a small grey tile.
 /// The mean of the 5×5 patch of an RGBA frame around `(nx, ny)` (0..=1
 /// over it), clipped to the frame: one noisy pixel does not set a key.
@@ -1253,13 +1241,14 @@ mod effect_comparison_tests {
                 let mut compared = original.clone();
                 let mut expected: Vec<_> = original.effect_entries().map(|(_, _, on)| on).collect();
                 expected[index] = !expected[index];
-                assert!(toggle_builtin_effect(&mut compared, index));
+                let node = original.effect_node_at(false, index).unwrap();
+                assert!(compared.toggle_effect_node(node));
                 assert_eq!(compared.effect_entries().map(|(_, _, on)| on).collect::<Vec<_>>(), expected);
                 assert_only_flags_changed(&mut original, &mut compared);
             }
             let before = state(&original);
-            assert!(!toggle_builtin_effect(&mut original, 3));
-            assert_eq!(state(&original), before, "a stale inspector index is a no-op");
+            assert!(!original.toggle_effect_node(uuid::Uuid::new_v4()));
+            assert_eq!(state(&original), before, "a node the clip doesn't hold is a no-op");
         }
     }
 

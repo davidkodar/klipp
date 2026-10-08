@@ -2060,14 +2060,6 @@ pub struct AppState {
     // Mutually exclusive with before_after_active and grade_still_compare.
     pub stabilization_compare_active: bool,
 
-    /// Per-effect split compare. `Some((clip_id, effect_index, is_ofx))`
-    /// when a single effect is being A/B'd in the viewer — left half of
-    /// the split renders that effect bypassed, right half renders it on.
-    /// `is_ofx` distinguishes `clip.ofx_effects()[idx]` (true) from
-    /// `clip.builtin_effects()[idx]` (false). Mutually exclusive with
-    /// before_after_active / stabilization_compare_active (handler sets
-    /// only one at a time). None = inactive.
-    pub split_compare_effect: Option<(ClipId, usize, bool)>,
 
     // M3's node-addressed UI state, declared once here (step 2) so the
     // inspector and graph-dock steps that read and set it never edit this
@@ -4130,7 +4122,6 @@ impl Default for AppState {
             solo_node: None,
             before_after_active: false,
             stabilization_compare_active: false,
-            split_compare_effect: None,
             use_generated_stack: false,
             selected_node_addr: None,
             split_compare_node: None,

@@ -4,6 +4,8 @@
 
 #[allow(unused_imports)]
 use super::*;
+use klipp_graph_format::path::{NodePath, Root};
+use klipp_graph_lift::ops::GraphOp;
 
 pub(super) fn apply_hyperzoom_plan_to_clip(
     seq: &mut klipp_timeline::Sequence,
@@ -58,8 +60,8 @@ pub(super) fn apply_hyperzoom_plan_to_clip(
 ///   their existing values (preserves user tweaks); when inserting
 ///   a fresh RadialBlur we use the standard zoom-blur defaults
 ///   (samples=12, mode=0 = zoom).
-/// * Replace `clip.effect_keyframes["{idx}:amount"]` with the
-///   planned ramp so re-applying is idempotent.
+/// * Replace the effect node's `amount` animation (by path, M3 step 4)
+///   with the planned ramp so re-applying is idempotent.
 ///
 /// No-ops with a debug log if the clip can't be located. Same
 /// fault-tolerance contract as `apply_hyperzoom_plan_to_clip`.
@@ -75,10 +77,10 @@ pub(super) fn apply_hyperzoom_radial_blur_to_clip(
         return;
     };
 
-    // Update existing RadialBlur if present, else append a fresh one.
-    let id = find_or_push(
+    // Update existing RadialBlur if present, else add a fresh one.
+    let Some(id) = upsert_effect(
         clip,
-        |e| matches!(e, klipp_effects::BuiltinEffect::RadialBlur { .. }),
+        "radial_blur",
         |e| {
             if let klipp_effects::BuiltinEffect::RadialBlur { center_x, center_y, amount, .. } = e {
                 *center_x = center.0;
@@ -98,8 +100,8 @@ pub(super) fn apply_hyperzoom_radial_blur_to_clip(
             samples: 12,
             mode: 0,
         },
-    );
-    set_keyframes(clip, id, "amount", amount_kfs);
+    ) else { return };
+    set_anim(clip, id, "amount", amount_kfs);
 }
 
 /// Mirror of [`apply_hyperzoom_radial_blur_to_clip`] for the
@@ -113,8 +115,8 @@ pub(super) fn apply_hyperzoom_radial_blur_to_clip(
 ///   and `blue_shift` are also rewritten to ±peak so the static
 ///   fallback matches the keyframes' peak values; the keyframes
 ///   then drive the actual animation.
-/// * Replace `clip.effect_keyframes["{idx}:red_shift"]` and
-///   `[".. blue_shift"]` with the planned ramps. Re-applying
+/// * Replace the effect node's `red_shift` and `blue_shift`
+///   animations (by path) with the planned ramps. Re-applying
 ///   replaces the old keyframes wholesale — idempotent.
 ///
 /// **First-match-wins disambiguation** (mirrors radial-blur):
@@ -141,9 +143,9 @@ pub(super) fn apply_hyperzoom_chromatic_aberration_to_clip(
         tracing::debug!("apply_hyperzoom_chromatic_aberration_to_clip: clip {clip_id:?} no longer in sequence");
         return;
     };
-    let id = find_or_push(
+    let Some(id) = upsert_effect(
         clip,
-        |e| matches!(e, klipp_effects::BuiltinEffect::ChromaticAberration { .. }),
+        "chromatic_aberration",
         |e| {
             if let klipp_effects::BuiltinEffect::ChromaticAberration { red_shift, blue_shift, center_x, center_y } = e {
                 *center_x = center.0;
@@ -160,12 +162,12 @@ pub(super) fn apply_hyperzoom_chromatic_aberration_to_clip(
             center_x: center.0,
             center_y: center.1,
         },
-    );
+    ) else { return };
     // Pin: red before blue. If an audit changes this order, the
     // ordering test will flag it before snapshot tests start
     // diffing nondeterministically.
-    set_keyframes(clip, id, "red_shift", red_kfs);
-    set_keyframes(clip, id, "blue_shift", blue_kfs);
+    set_anim(clip, id, "red_shift", red_kfs);
+    set_anim(clip, id, "blue_shift", blue_kfs);
 }
 
 /// Mirror of [`apply_hyperzoom_radial_blur_to_clip`] for the
@@ -178,8 +180,8 @@ pub(super) fn apply_hyperzoom_chromatic_aberration_to_clip(
 ///   existing values so a user-tweaked halation isn't blown
 ///   away by re-apply. Fresh inserts use trailer-aesthetic
 ///   defaults (warm hue ≈ 0.15, moderate threshold + radius).
-/// * Replace `clip.effect_keyframes["{idx}:intensity"]` with the
-///   planned ramp.
+/// * Replace the effect node's `intensity` animation (by path) with
+///   the planned ramp.
 ///
 /// Same first-match-wins disambiguation as radial-blur — a user-
 /// added FilmHalation gets its intensity rewritten by the
@@ -196,9 +198,9 @@ pub(super) fn apply_hyperzoom_light_leak_to_clip(
         tracing::debug!("apply_hyperzoom_light_leak_to_clip: clip {clip_id:?} no longer in sequence");
         return;
     };
-    let id = find_or_push(
+    let Some(id) = upsert_effect(
         clip,
-        |e| matches!(e, klipp_effects::BuiltinEffect::FilmHalation { .. }),
+        "film_halation",
         |e| {
             if let klipp_effects::BuiltinEffect::FilmHalation { intensity, .. } = e {
                 *intensity = peak_intensity;
@@ -214,8 +216,8 @@ pub(super) fn apply_hyperzoom_light_leak_to_clip(
             // params after applying.
             hue: 0.15,
         },
-    );
-    set_keyframes(clip, id, "intensity", intensity_kfs);
+    ) else { return };
+    set_anim(clip, id, "intensity", intensity_kfs);
 }
 
 /// Write a `FocalRef` onto the clip's `BuiltinEffect::Transform`.
@@ -280,12 +282,65 @@ fn find_or_push(
     }
 }
 
-/// Replace the keyframes of the effect's `param` with `keys`, so applying
-/// again gives the same ramp.
-fn set_keyframes(clip: &mut klipp_timeline::Clip, id: klipp_timeline::EffectId, param: &str, keys: &[klipp_core::keyframe::Keyframe]) {
-    clip.edit_effect_keyframes_of(id, param, |k| {
-        *k = keys.to_vec();
-    });
+/// The first effect of type `tag` on `clip`'s picture spine, its stored
+/// entry edited by `edit` (`SetPayload` by path); with none, `fresh` added
+/// as a node after the last before the output (`AddNode`, which the list
+/// takes at its end). Its node id either way; `None`, said, when the
+/// picture refuses the edit.
+fn upsert_effect(
+    clip: &mut klipp_timeline::Clip,
+    tag: &str,
+    edit: impl FnOnce(&mut klipp_effects::BuiltinEffect),
+    fresh: impl FnOnce() -> klipp_effects::BuiltinEffect,
+) -> Option<klipp_graph_format::NodeId> {
+    let at = |clip: &klipp_timeline::Clip, id| NodePath::new(Root::Clip { clip: clip.id.0 }, [id]);
+    let op = match crate::multi_edit::first_on_the_spine(clip, tag) {
+        Some(id) => {
+            let index = clip.index_of(id)?;
+            let mut effect = clip.builtin_effects()[index].clone();
+            edit(&mut effect);
+            let payload = serde_json::to_value(&effect).ok()?;
+            (GraphOp::SetPayload { path: at(clip, id.as_uuid()), payload }, id.as_uuid())
+        }
+        None => {
+            let effect = fresh();
+            let id = uuid::Uuid::new_v4();
+            let lifted = clip.picture_v2().ok()?;
+            let graph = &lifted.picture.graph;
+            let last = graph.edges.iter().find(|e| e.to == (graph.output, "in".into()))?.from.0;
+            let node: klipp_graph_format::Node = serde_json::from_value(serde_json::json!({
+                "id": id,
+                "type_id": klipp_graph_lift::to_v2::effect_node_type(tag),
+                "legacy": { "payload": effect },
+            }))
+            .ok()?;
+            (GraphOp::AddNode { after: at(clip, last), node: Box::new(node) }, id)
+        }
+    };
+    match clip.apply_picture_ops(std::slice::from_ref(&op.0)) {
+        Ok(_) => Some(op.1),
+        Err(why) => {
+            tracing::warn!("hyperzoom: clip {:?}: {tag}: {why}", clip.id);
+            None
+        }
+    }
+}
+
+/// Replace the animation of the effect node `id`'s `param` with `keys`
+/// (`SetAnim` by path), keeping its modifier stack, so applying again
+/// gives the same ramp.
+fn set_anim(clip: &mut klipp_timeline::Clip, id: klipp_graph_format::NodeId, param: &str, keys: &[klipp_core::keyframe::Keyframe]) {
+    let key = klipp_graph_format::ParamKey::from(param);
+    let modifiers = clip.picture_v2().ok().and_then(|p| p.picture.graph.nodes.iter().find(|n| n.id == id).and_then(|n| n.anim.get(&key)).and_then(|a| a.modifiers.clone()));
+    let keys = keys.iter().filter_map(|k| serde_json::to_value(k).ok()).collect();
+    let op = GraphOp::SetAnim {
+        path: NodePath::new(Root::Clip { clip: clip.id.0 }, [id]),
+        key,
+        anim: Some(klipp_graph_format::Animation { keys, modifiers }),
+    };
+    if let Err(why) = clip.apply_picture_ops(&[op]) {
+        tracing::warn!("hyperzoom: clip {:?}: {param}'s keys: {why}", clip.id);
+    }
 }
 
 #[cfg(test)]
@@ -402,6 +457,66 @@ mod hyperzoom_handler_tests {
         let same = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|x| x.id == c.id).unwrap();
         assert!(same.transform_scale_keyframes().is_empty());
         assert!(same.builtin_effects().iter().all(|e| !matches!(e, BuiltinEffect::Transform { .. })));
+    }
+
+    /// M3 step 4: the effect layers, written as graph edits by path, build
+    /// the picture the list writes built: the same effects in the same
+    /// places with the same keys, the full typed picture equal once each
+    /// new effect's id is read as the other's (ids are random on both).
+    /// On a clip without the layers and on one that has them already.
+    #[test]
+    fn hyperzoom_builds_the_same_picture() {
+        use super::{apply_hyperzoom_chromatic_aberration_to_clip, apply_hyperzoom_light_leak_to_clip};
+        // The list writes as they were before step 4.
+        fn old_layer(clip: &mut Clip, kind: fn(&BuiltinEffect) -> bool, edit: impl FnOnce(&mut BuiltinEffect), fresh: BuiltinEffect, keys: &[(&str, Vec<Keyframe>)]) {
+            let found = clip.effect_entries().find(|(_, e, _)| kind(e)).map(|(id, _, _)| id);
+            let id = match found {
+                Some(id) => {
+                    clip.edit_effect(id, edit);
+                    id
+                }
+                None => clip.push_effect(fresh),
+            };
+            for (param, k) in keys {
+                clip.edit_effect_keyframes_of(id, param, |v| *v = k.clone());
+            }
+        }
+        let ramp = |peak: f32| vec![kf(0.0, 0.0), kf(0.5, peak)];
+        let starts = [
+            fresh_clip(),
+            {
+                let mut c = fresh_clip();
+                c.push_effect(BuiltinEffect::Gamma { gamma: 1.1 });
+                c.push_effect(BuiltinEffect::RadialBlur { center_x: 0.1, center_y: 0.1, amount: 3.0, samples: 24, mode: 1 });
+                c.push_effect(BuiltinEffect::FilmHalation { threshold: 0.5, radius: 9.0, intensity: 0.2, hue: 0.6 });
+                c
+            },
+        ];
+        for (n, start) in starts.into_iter().enumerate() {
+            let cid = start.id;
+            let mut old = start.clone();
+            old_layer(&mut old, |e| matches!(e, BuiltinEffect::RadialBlur { .. }), |e| if let BuiltinEffect::RadialBlur { center_x, center_y, amount, .. } = e { (*center_x, *center_y, *amount) = (0.3, 0.7, 15.0) },
+                BuiltinEffect::RadialBlur { center_x: 0.3, center_y: 0.7, amount: 15.0, samples: 12, mode: 0 }, &[("amount", ramp(15.0))]);
+            old_layer(&mut old, |e| matches!(e, BuiltinEffect::ChromaticAberration { .. }), |e| if let BuiltinEffect::ChromaticAberration { red_shift, blue_shift, center_x, center_y } = e { (*center_x, *center_y, *red_shift, *blue_shift) = (0.3, 0.7, -4.0, 4.0) },
+                BuiltinEffect::ChromaticAberration { red_shift: -4.0, blue_shift: 4.0, center_x: 0.3, center_y: 0.7 }, &[("red_shift", ramp(-4.0)), ("blue_shift", ramp(4.0))]);
+            old_layer(&mut old, |e| matches!(e, BuiltinEffect::FilmHalation { .. }), |e| if let BuiltinEffect::FilmHalation { intensity, .. } = e { *intensity = 0.8 },
+                BuiltinEffect::FilmHalation { threshold: 0.75, radius: 15.0, intensity: 0.8, hue: 0.15 }, &[("intensity", ramp(0.8))]);
+
+            let mut seq = seq_with_clips(vec![start]);
+            apply_hyperzoom_radial_blur_to_clip(&mut seq, cid, (0.3, 0.7), 15.0, &ramp(15.0));
+            apply_hyperzoom_chromatic_aberration_to_clip(&mut seq, cid, (0.3, 0.7), 4.0, &ramp(-4.0), &ramp(4.0));
+            apply_hyperzoom_light_leak_to_clip(&mut seq, cid, 0.8, &ramp(0.8));
+            let mut new = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap().clone();
+
+            assert_eq!(format!("{:?}", new.builtin_effects()), format!("{:?}", old.builtin_effects()), "case {n}: the list");
+            let mut picture = serde_json::to_string(&new.picture_v2().unwrap().picture).unwrap();
+            for i in 0..old.builtin_effects().len() {
+                let (was, now) = (new.effect_id_at(i).unwrap().as_uuid(), old.effect_id_at(i).unwrap().as_uuid());
+                picture = picture.replace(&was.to_string(), &now.to_string());
+            }
+            let old_picture = serde_json::to_string(&old.picture_v2().unwrap().picture).unwrap();
+            assert_eq!(picture, old_picture, "case {n}: the picture");
+        }
     }
 
     use super::apply_hyperzoom_radial_blur_to_clip;

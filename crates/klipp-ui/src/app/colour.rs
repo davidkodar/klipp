@@ -2199,39 +2199,14 @@ impl KlippApp {
                         let _ = self.cmd_tx.send(AppCommand::ToggleBeforeAfter);
                     }
                     self.state.grade_still_compare = false;
-                    if self.state.split_compare_effect.is_some() {
-                        self.state.split_compare_effect = None;
-                        let _ = self.cmd_tx.send(AppCommand::SetSplitCompareEffect {
-                            clip_id: None,
-                            effect_index: 0,
-                            is_ofx: false,
-                        });
+                    if self.state.split_compare_node.is_some() {
+                        self.state.split_compare_node = None;
+                        let _ = self.cmd_tx.send(AppCommand::SetSplitCompareNode { clip_id: None, path: None });
                     }
                 }
                 let _ = self.cmd_tx.send(cmd.clone());
                 true
             }
-            AppCommand::SetSplitCompareEffect { clip_id, effect_index, is_ofx } => {
-                // Mutate UI state and mirror the command to the engine. The
-                // engine reads clip_id.is_some() as the activation signal.
-                let activating = clip_id.is_some();
-                self.state.split_compare_effect = clip_id.map(|id| (id, *effect_index, *is_ofx));
-                if activating {
-                    // Mutually exclusive with the other compare modes.
-                    if self.state.before_after_active {
-                        self.state.before_after_active = false;
-                        let _ = self.cmd_tx.send(AppCommand::ToggleBeforeAfter);
-                    }
-                    if self.state.stabilization_compare_active {
-                        self.state.stabilization_compare_active = false;
-                        let _ = self.cmd_tx.send(AppCommand::ToggleStabilizationCompare);
-                    }
-                    self.state.grade_still_compare = false;
-                }
-                let _ = self.cmd_tx.send(cmd.clone());
-                true
-            }
-
             _ => false,
         }
     }

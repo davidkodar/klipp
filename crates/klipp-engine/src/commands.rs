@@ -40,7 +40,7 @@ engine_commands!(
     SetPlayhead, SetRenderCacheEnabled, SetScopeBloom, SetScopeLowPass,
     SetScopeRenderMode, SetScopeSettings, SetScopeSizes, SetScopesVisible,
     SetScrubAudioEnabled, SetSdrTransfer, SetSourceMedia, SetSpeed,
-    SetSplitCompareEffect, SetTrackMute, SetTrackPan, SetTrackSolo, SetTrackVolume,
+    SetSplitCompareNode, SetTrackMute, SetTrackPan, SetTrackSolo, SetTrackVolume,
     SetUseProxies, SetVisibleNodeThumbs, StepSource, Stop, StopSource,
     ToggleBeforeAfter, ToggleStabilizationCompare
 );
