@@ -1962,7 +1962,7 @@ impl GraphExecutor {
                 sec.apply == node_id
                     && kept.contains_key(&sec.source)
                     && match sec.keyed {
-                        Some(picture) => kept.contains_key(&picture),
+                        Some(picture) => kept.contains_key(&picture) && node_by_id.get(&sec.matte).is_some_and(|k| effective_enabled(k, clip_time_secs)),
                         None => secondary_matte.as_ref().is_some_and(|(m, _)| *m == sec.matte),
                     }
             });
@@ -2132,7 +2132,10 @@ impl GraphExecutor {
                 || Some(node_id) == matte_preview_node
                 || Some(node_id) == self.solo_node
                 || visible_nodes.is_some_and(|v| v.contains(&node_id));
-            if !looked_at && secondaries.iter().any(|sec| sec.matte == node_id && sec.keyed.is_some()) {
+            // A key switched off at this frame (its enabled track) runs in
+            // its turn too, bypassed as any switched-off node is, and its
+            // gate reads that.
+            if !looked_at && effective_enabled(node, clip_time_secs) && secondaries.iter().any(|sec| sec.matte == node_id && sec.keyed.is_some()) {
                 node_outputs.insert(node_id, Arc::new(Vec::new()));
                 per_node_ms.push((format!("{node_kind_name}#key_at_gate"), t_node.elapsed().as_secs_f64() * 1000.0));
                 continue;
@@ -2177,6 +2180,19 @@ impl GraphExecutor {
                 self.effect_mask = graph.input_of(node_id, 1).and_then(|id| node_outputs.get(&id)).filter(|m| !m.is_empty()).cloned();
             }
 
+            // A picture that is only in a slot kept for a gate (M3 step
+            // 17b): the chain moved past it (and is flushed by now), so it
+            // is read back for a reader off the chain, a bypassed one too
+            // (a gate whose key is looked at, a key switched off here).
+            for port in 0..3u8 {
+                let Some(id) = graph.input_of(node_id, port) else { continue };
+                if node_outputs.get(&id).is_some_and(|a| a.is_empty()) {
+                    let pixels = kept.get(&id).and_then(|(picture, _)| self.gpu.as_ref()?.read_picture(picture, (width as usize) * (height as usize)));
+                    if let Some(pixels) = pixels {
+                        node_outputs.insert(id, Arc::new(pixels));
+                    }
+                }
+            }
             if bypass && node.kind != NodeKind::Source && node.kind != NodeKind::Output {
                 let passthrough = match primary_input_id.and_then(|id| node_outputs.get(&id)) {
                     Some(v) => v.clone(),
@@ -2626,21 +2642,9 @@ impl GraphExecutor {
             }
 
             // ── CPU / unchained path ────────────────────────────────────
-            // A picture that is only in a slot kept for a gate (M3 step
-            // 17b): the chain moved past it, so it is read back for a
-            // reader off the chain (a gate whose key is looked at).
-            for port in 0..3u8 {
-                let Some(id) = graph.input_of(node_id, port) else { continue };
-                if node_outputs.get(&id).is_some_and(|a| a.is_empty()) {
-                    let pixels = kept.get(&id).and_then(|(picture, _)| self.gpu.as_ref()?.read_picture(picture, (width as usize) * (height as usize)));
-                    if let Some(pixels) = pixels {
-                        node_outputs.insert(id, Arc::new(pixels));
-                    }
-                }
-            }
             // A gate off the chain whose key waited for it: keyed here on the
             // CPU, from its picture's pixels (read back above if kept).
-            if let Some(sec) = secondaries.iter().find(|sec| sec.apply == node_id && sec.keyed.is_some()).copied() {
+            if let Some(sec) = secondaries.iter().find(|sec| sec.apply == node_id && sec.keyed.is_some() && node_by_id.get(&sec.matte).is_some_and(|k| effective_enabled(k, clip_time_secs))).copied() {
                 let picture = sec.keyed.expect("checked");
                 if node_outputs.get(&sec.matte).is_some_and(|m| m.is_empty()) {
                     if node_outputs.get(&picture).is_some_and(|a| a.is_empty()) {

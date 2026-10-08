@@ -768,3 +768,61 @@ fn peak_slots_does_not_grow_with_n() {
     assert!(peaks.iter().all(|p| *p == peaks[0]), "the peak grows with the gates: {peaks:?}");
     assert!(peaks[0] <= 3, "the frame, a gate's picture and a matte: {peaks:?}");
 }
+
+/// Lead decision 3's check (M3 step 17b): the pool's slots and the
+/// chain's other kept buffers never alias. Two gates keyed off the frame,
+/// each correction mixing over its own input (its Keep/Mix pair, on the
+/// Corrector's own buffer, written and read inside the gate's branch)
+/// while the frame, the first gate's picture and a matte sit in slots:
+/// the chain carries it all (one readback, the slots held at once), and
+/// the picture is the CPU's. (Composites beside a secondary and a mixed
+/// Corrector: `composite_gpu_parity`.)
+#[test]
+fn leased_and_secondary_never_alias() {
+    let (mut graph, _) = gates_keyed_off_the_frame(2);
+    for n in graph.nodes.iter_mut().filter(|n| n.kind == NodeKind::Corrector) {
+        n.params.global_mix = Some(0.6);
+    }
+    let Some((stats, worst)) = against_the_cpu(&graph, None) else { return };
+    eprintln!("gates with mixed correctors: {stats:?}, worst {worst}");
+    assert!(worst < 1e-3, "a slot aliased another value: GPU differs from the CPU by {worst}");
+    assert_eq!(stats.flushes, 1, "the gates and the mixes ride one chain: {stats:?}");
+    assert!(stats.peak_slots >= 3, "the frame, a gate's picture and a matte held at once: {stats:?}");
+}
+
+/// A key switched off at this frame by its enabled track (though on in its
+/// settings) is bypassed, as any switched-off node is: its gate isn't
+/// drawn from a key the GPU keyed anyway, and the picture is the CPU's at
+/// a frame where it is off and one where it is on.
+#[test]
+fn a_key_switched_off_by_its_track_is_bypassed_at_its_gate() {
+    // Keyed off the frame, and (rewired to the first correction, which
+    // the gates turn into the first gate's picture) off a kept picture the
+    // chain has moved past by the time the key's turn comes.
+    for off_a_gate in [false, true] {
+        let (mut graph, keys) = gates_keyed_off_the_frame(2);
+        if off_a_gate {
+            let first = graph.edges.iter().find(|e| e.from_node == keys[0] && e.to_port == 1).unwrap().to_node;
+            for e in graph.edges.iter_mut().filter(|e| e.to_node == keys[1]) {
+                e.from_node = first;
+            }
+        }
+        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Step, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        if let Some(n) = graph.nodes.iter_mut().find(|n| n.id == keys[1]) {
+            n.keyframes.tracks.push(klipp_nodes::params::NodeKeyframeTrack { param_name: klipp_nodes::executor::ENABLED_TRACK.into(), keyframes: vec![key(0.0, 0.0), key(1.0, 1.0)] });
+        }
+        for t in [0.0, 1.5] {
+            let mut cpu = GraphExecutor::new_cpu_only();
+            let want = cpu.execute_linear(&frame(), &graph, W, H, t, 0, None, None).expect("graph runs").0;
+            let mut gpu = GraphExecutor::new();
+            if gpu.gpu_pipeline_or_init().is_none() {
+                return;
+            }
+            let got = gpu.execute_linear(&frame(), &graph, W, H, t, 0, None, None).expect("graph runs").0;
+            let worst = want.iter().zip(&got).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            eprintln!("key off until 1 s (off a gate: {off_a_gate}), at {t} s: {:?}, worst {worst}", gpu.last_run_chain_stats());
+            assert!(worst < 1e-3, "off a gate {off_a_gate}, at {t} s the GPU differs from the CPU by {worst}");
+        }
+    }
+}
+
