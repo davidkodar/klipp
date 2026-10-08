@@ -59,22 +59,23 @@ fn the_placement_row_never_duplicates_a_transform() {
         .collect();
     assert_eq!(
         rows.iter().map(|r| r.type_id.as_str()).collect::<Vec<_>>(),
+        // The one enabled Opacity is the clip's opacity property: no card
+        // (M3 step 13).
         [
             types::LEGACY_TRANSFORM,
             types::LEGACY_EFFECT,
             lt::PLACEMENT,
             types::LEGACY_TRANSFORM,
-            types::LEGACY_OPACITY,
             types::LEGACY_SPEED_RAMP
         ]
     );
     assert_eq!(
         rows.iter().map(|r| r.enabled).collect::<Vec<_>>(),
-        [false, true, true, true, true, true]
+        [false, true, true, true, true]
     );
     assert_eq!(
         rows.iter().map(|r| r.placed).collect::<Vec<_>>(),
-        [true, false, false, true, true, true]
+        [true, false, false, true, true]
     );
     assert_eq!(view.rows().filter(|r| r.placement.is_some()).count(), 1);
     assert_eq!(picture, before);
@@ -258,4 +259,24 @@ fn grade_cards_and_mask_chips_keep_their_authored_labels() {
     let row = view.rows().find(|r| r.addr.nodes.last() == Some(&reader)).unwrap();
     assert_eq!(row.label, "Skin correction");
     assert!(row.mask_chips.iter().any(|b| b.label == "Skin key"));
+}
+
+/// M3 step 13, the twin of the placement rule: the Opacity entry the clip
+/// reads as its opacity (the last enabled one) is the clip's property and
+/// never also a card; every other Opacity entry, on or off, is a card.
+#[test]
+fn opacity_property_never_duplicates_a_card() {
+    let mut c = clip();
+    c.push_effect(E::Opacity { value: 0.9 }); // On, but not the last on: a card.
+    c.push_effect(E::GaussianBlur { radius: 2.0 });
+    let property = c.push_effect(E::Opacity { value: 0.5 }); // The clip's opacity.
+    let off = c.push_effect(E::Opacity { value: 0.2 }); // Off: a card.
+    c.set_effect_enabled(off, false);
+    let picture = c.picture_v2().unwrap().picture.clone();
+    assert_eq!(c.video_param_value(klipp_core::VideoParam::Opacity), 0.5, "the property is the last enabled entry");
+    let view = project(Root::Clip { clip: c.id.0 }, &picture.graph, &RegistryCatalog, None).unwrap();
+    let opacity_rows: Vec<_> = view.rows().filter(|r| r.type_id.as_str() == types::LEGACY_OPACITY).collect();
+    assert_eq!(opacity_rows.len(), 2, "two cards, the property not among them");
+    assert!(opacity_rows.iter().all(|r| r.addr.node() != Some(property.as_uuid())));
+    assert_eq!(opacity_rows.iter().map(|r| r.enabled).collect::<Vec<_>>(), [true, false]);
 }

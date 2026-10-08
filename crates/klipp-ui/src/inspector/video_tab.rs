@@ -124,7 +124,17 @@ pub fn show(
     cmds: &mut Vec<AppCommand>,
 ) {
     match clip_ctx {
-        Some((clip, clip_time_secs, is_timeline)) => show_clip_video(ui, theme, state, clip, cmds, clip_time_secs, is_timeline),
+        Some((clip, clip_time_secs, is_timeline)) => {
+            let start = cmds.len();
+            // Behind the switch, the clip's placement and opacity are its
+            // properties, read from its picture and set by path (M3 step 13).
+            let by_path = state.use_generated_stack && !is_timeline;
+            show_clip_video(ui, theme, state, clip, cmds, clip_time_secs, is_timeline, by_path);
+            if by_path {
+                let mine = cmds.split_off(start);
+                cmds.extend(super::placement_by_path::by_path(mine, clip));
+            }
+        }
         None => {
             if let Some(media) = bin_media {
                 show_bin_media_video(ui, theme, state, media, cmds);
@@ -203,7 +213,7 @@ fn show_bin_media_video(
         precomp: None,
     };
     // is_timeline = false → no Speed Ramp, no amber banner
-    show_clip_video(ui, theme, state, &temp_clip, cmds, 0.0, false);
+    show_clip_video(ui, theme, state, &temp_clip, cmds, 0.0, false, false);
 }
 
 fn show_clip_video(
@@ -214,6 +224,7 @@ fn show_clip_video(
     cmds: &mut Vec<AppCommand>,
     clip_time_secs: f64,
     is_timeline: bool,
+    by_path: bool,
 ) {
     let keyframe_tolerance = crate::inspector::keyframe_selection::frame_tolerance(state.sequence());
     let clip_id = clip.id;
@@ -228,8 +239,15 @@ fn show_clip_video(
     ui.add_space(8.0);
 
     // ── TRANSFORM ──
-    // Read current transform from clip's builtin effects (immutable)
-    let transform = get_transform(clip);
+    // Read current transform from clip's builtin effects (immutable);
+    // behind the switch, from the clip's placement and opacity as its
+    // picture holds them, which the card's edits are compared against
+    // (M3 step 13).
+    let transform = if by_path { super::placement_by_path::placement(clip) } else { get_transform(clip) };
+    let base_opacity = if by_path { super::placement_by_path::opacity(clip) } else { get_opacity(clip) };
+    // By path a drag is the placement node's, whatever entry holds it.
+    let transform_index = find_transform_index(clip).or(by_path.then_some(0));
+    let opacity_index = find_opacity_index(clip).or(by_path.then_some(0));
     let transform_drag_key = format!("{:?}:video_transform", clip_id);
 
     // Keyframed values at playhead
@@ -253,7 +271,7 @@ fn show_clip_video(
 
     // Opacity
     let opacity_drag_key = format!("{:?}:video_opacity", clip_id);
-    let mut opacity = crate::inspector::keyframe_selection::editable_value(clip.opacity_keyframes(), clip_time_secs, get_opacity(clip), keyframe_tolerance);
+    let mut opacity = crate::inspector::keyframe_selection::editable_value(clip.opacity_keyframes(), clip_time_secs, base_opacity, keyframe_tolerance);
     let opacity_ks = keyframe_state(clip.opacity_keyframes(), clip_time_secs, keyframe_tolerance);
 
     // We need to collect scrubby results inside the card, then handle commands after
@@ -323,7 +341,7 @@ fn show_clip_video(
         crate::widgets::inspector_group::paint_section_header(ui, header_rect, title, is_open, None, header_resp.hovered(), theme);
 
         // Reset button in header (right side, before caret)
-        let opacity_preview = get_opacity(clip);
+        let opacity_preview = base_opacity;
         let is_default = (transform.position_x.abs() < f32::EPSILON)
             && (transform.position_y.abs() < f32::EPSILON)
             && ((transform.scale_x - 1.0).abs() < f32::EPSILON)
@@ -473,7 +491,7 @@ fn show_clip_video(
 
     // Undo coalescing for transform drags
     if r_px.drag_started || r_py.drag_started || r_sc.drag_started || r_ro.drag_started || tilt_started {
-        if let Some(idx) = find_transform_index(clip) {
+        if let Some(idx) = transform_index {
             cmds.push(AppCommand::BeginEffectDrag {
                 key: transform_drag_key.clone(),
                 clip_id,
@@ -523,7 +541,7 @@ fn show_clip_video(
     }
 
     if r_px.drag_stopped || r_py.drag_stopped || r_sc.drag_stopped || r_ro.drag_stopped || tilt_stopped {
-        if let Some(idx) = find_transform_index(clip) {
+        if let Some(idx) = transform_index {
             let mut t = transform;
             t.position_x = pos_x;
             t.position_y = pos_y;
@@ -693,12 +711,12 @@ fn show_clip_video(
 
     // ── Opacity keyframe/drag handling ──
     if r_op.drag_started {
-        if let Some(idx) = find_opacity_index(clip) {
+        if let Some(idx) = opacity_index {
             cmds.push(AppCommand::BeginEffectDrag {
                 key: opacity_drag_key.clone(),
                 clip_id,
                 effect_index: idx,
-                old_effect: BuiltinEffect::Opacity { value: get_opacity(clip) },
+                old_effect: BuiltinEffect::Opacity { value: base_opacity },
             });
         }
         cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::Opacity));
@@ -710,7 +728,7 @@ fn show_clip_video(
         }
     }
     if r_op.drag_stopped {
-        if let Some(idx) = find_opacity_index(clip) {
+        if let Some(idx) = opacity_index {
             cmds.push(AppCommand::EndEffectDrag {
                 key: opacity_drag_key,
                 clip_id,
@@ -4371,7 +4389,7 @@ mod tilt_tests {
         let out = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let mut cmds = Vec::new();
-                show_clip_video(ui, &theme, &state, clip, &mut cmds, 0.5, true);
+                show_clip_video(ui, &theme, &state, clip, &mut cmds, 0.5, true, false);
             });
         });
         fn walk(shape: &egui::Shape, out: &mut String) {

@@ -5707,8 +5707,18 @@ impl TimelinePanel {
 
         // FX badge — show if clip has non-Transform effects applied
         if clip_rect.width() > 40.0 {
+            // Behind the switch, any effect but the clip's two properties
+            // (its placement's Transform and its opacity's entry, M3 step 13).
             let has_fx = !clip.ofx_effects().is_empty()
-                || clip.builtin_effects().iter().any(|e| !matches!(e, klipp_effects::BuiltinEffect::Transform { .. }));
+                || if state.use_generated_stack {
+                    let on = |i: usize| clip.builtin_effects_enabled().get(i).copied().unwrap_or(true);
+                    let fx = clip.builtin_effects();
+                    let placement = (0..fx.len()).find(|i| matches!(fx[*i], klipp_effects::BuiltinEffect::Transform { .. }) && on(*i));
+                    let opacity = (0..fx.len()).rev().find(|i| matches!(fx[*i], klipp_effects::BuiltinEffect::Opacity { .. }) && on(*i));
+                    (0..fx.len()).any(|i| Some(i) != placement && Some(i) != opacity)
+                } else {
+                    clip.builtin_effects().iter().any(|e| !matches!(e, klipp_effects::BuiltinEffect::Transform { .. }))
+                };
             if has_fx {
                 let fx_font = egui::FontId::proportional(10.0);
                 let fx_galley = painter.layout_no_wrap(

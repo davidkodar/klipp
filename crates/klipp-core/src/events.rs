@@ -1006,10 +1006,17 @@ pub enum AppCommand {
     /// Feed the mask port of the effect at `addr` from `from`'s `from_port`.
     ConnectMaskAt { addr: klipp_graph_format::path::NodePath, from: klipp_graph_format::path::NodePath, from_port: klipp_graph_format::PortKey },
     SetMaskChannelAt { addr: klipp_graph_format::path::NodePath, channel: Option<String> },
-    /// Open a drag of `(addr, key)`: the `SetParamAt`s on it until its
-    /// `EndParamEditAt` are one undo step.
+    /// Open a drag of `(addr, key)`: the `SetParamAt`s on it (and its key
+    /// edits) until its `EndParamEditAt` are one undo step. An empty `key`
+    /// opens a drag over the node's parameters together (a corner pin's
+    /// handle moves two at once).
     BeginParamEditAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey },
     EndParamEditAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey },
+    /// Take the open drag of `(addr, key)` back without recording it: the
+    /// clip's picture returns to what it was when the drag opened, values
+    /// and keys alike. For a gesture that cannot close as an edit (Escape,
+    /// the pointer leaving the window, its release never seen).
+    AbandonParamEditAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey },
     /// Add a key to `(addr, key)`: `keyframe` as the node's animation
     /// holds one.
     AddKeyAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey, keyframe: serde_json::Value },

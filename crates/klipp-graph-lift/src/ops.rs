@@ -583,7 +583,14 @@ fn apply_pending(docs: &mut Documents, op: &GraphOp, catalog: Option<&dyn PortCa
         Root::Clip { .. } => {
             let mut picture: klipp_graph_format::lifted::ClipPicture = serde_json::from_value(copy).map_err(err)?;
             let interface = if matches!(op, GraphOp::RemoveNode { .. } | GraphOp::MoveAfter { .. }) { containing_interface(&picture.graph, through)? } else { Vec::new() };
-            apply_graph(level(&mut picture.graph, through)?, op, last, catalog, &interface)?;
+            // The clip's placement and opacity are its picture's, set
+            // through its PLACEMENT node (M3 step 13); every other op edits
+            // its graph.
+            if crate::clip_properties::property_of(&picture, op).is_some() {
+                crate::clip_properties::apply(&mut picture, op)?;
+            } else {
+                apply_graph(level(&mut picture.graph, through)?, op, last, catalog, &interface)?;
+            }
             tolerate(if let Some(catalog) = catalog { picture.graph.check_lifted_with_catalog(false, catalog) } else { picture.graph.check_lifted(false) }, pending)
                 .map_err(|e| unwired_beside(op, &e).unwrap_or_else(|| format!("that would leave the clip's graph invalid: {e}")))?;
             serde_json::to_value(picture).map_err(err)?

@@ -18,8 +18,15 @@ const PATH_DRAG: &str = "at:";
 
 /// The history key a path drag is held under.
 fn drag_key(addr: &NodePath, key: &ParamKey) -> String {
+    format!("{}{key}", node_drag(addr))
+}
+
+/// The key of a drag over the node at `addr`'s parameters together, begun
+/// with an empty key (a corner pin's handle moves two of them at once, M3
+/// step 13); every other drag is on its one parameter.
+fn node_drag(addr: &NodePath) -> String {
     let ids: Vec<String> = addr.nodes.iter().map(|n| n.to_string()).collect();
-    format!("{PATH_DRAG}{:?}:{}:{}", addr.root, ids.join("/"), key)
+    format!("{PATH_DRAG}{:?}:{}:", addr.root, ids.join("/"))
 }
 
 /// The graph ops a path-addressed edit is, and its undo label; `None` for
@@ -105,6 +112,7 @@ impl crate::state::AppState {
                 self.end_param_edit_at(addr, key);
                 Ok(false)
             }
+            AppCommand::AbandonParamEditAt { addr, key } => Ok(self.abandon_param_edit_at(addr, key)),
             AppCommand::RevealGraph { path, select } => self.reveal_graph(path, *select).map(|()| false),
             AppCommand::SetGraphDockRoot { root } => self.set_graph_dock_root(*root).map(|()| false),
             AppCommand::SetSplitCompareNode { clip_id, path } => self.set_split_compare_node(*clip_id, path.as_ref()).map(|()| false),
@@ -135,8 +143,8 @@ impl crate::state::AppState {
     }
 
     /// Whether `cmd`, arriving while a path drag is open, closes it first:
-    /// every command but the drag's own (`BeginParamEditAt`, `SetParamAt`
-    /// and `EndParamEditAt` of its `(addr, key)`) and those that change no
+    /// every command but the drag's own (`BeginParamEditAt`, `SetParamAt`,
+    /// `EndParamEditAt` and `AbandonParamEditAt` of its `(addr, key)`) and those that change no
     /// picture (transport, a refresh, the dock and compare state). An edit
     /// by any route, old or new, is then its own step, never folded into
     /// the drag's snapshot nor taken as one of its live steps. A command
@@ -145,10 +153,12 @@ impl crate::state::AppState {
     pub(crate) fn closes_path_drag(&self, cmd: &AppCommand) -> bool {
         let Some(open) = self.active_history().pending_drag_key().filter(|k| k.starts_with(PATH_DRAG)) else { return false };
         match cmd {
-            AppCommand::BeginParamEditAt { addr, key }
-            | AppCommand::SetParamAt { addr, key, .. }
-            | AppCommand::MoveKeyAt { addr, key, .. }
-            | AppCommand::EndParamEditAt { addr, key } => drag_key(addr, key) != open,
+            AppCommand::BeginParamEditAt { addr, key } | AppCommand::EndParamEditAt { addr, key } | AppCommand::AbandonParamEditAt { addr, key } => drag_key(addr, key) != open,
+            // An edit of the dragged parameter, its value or its keys, is
+            // part of the drag; of any of the node's, in a drag over them all.
+            AppCommand::SetParamAt { addr, key, .. } | AppCommand::MoveKeyAt { addr, key, .. } | AppCommand::AddKeyAt { addr, key, .. } | AppCommand::RemoveKeyAt { addr, key, .. } => {
+                drag_key(addr, key) != open && node_drag(addr) != open
+            }
             AppCommand::Play
             | AppCommand::Pause
             | AppCommand::Stop
@@ -183,16 +193,17 @@ impl crate::state::AppState {
     }
 
     /// `ops` as one undo step named `label`, or live inside the open drag
-    /// of the one `(addr, key)` they set: a value, or (a key dragged on a
-    /// curve, M3 step 3) its animation. Any other edit closes an open drag
-    /// first, as its own step.
+    /// of the one parameter they set (or of its node's, in a drag over them
+    /// all): a value, or (a key dragged on a curve, M3 step 3) its
+    /// animation, or a key added or taken off. Any other edit closes an
+    /// open drag first, as its own step.
     pub(crate) fn apply_path_ops(&mut self, ops: &[GraphOp], label: &str) -> Result<(), String> {
         let refused = |(at, why): (Option<usize>, String)| match at {
             Some(i) if ops.len() > 1 => format!("{label}: op {i}: {why}"),
             _ => format!("{label}: {why}"),
         };
-        if let [GraphOp::SetParam { path, key, .. } | GraphOp::SetAnim { path, key, .. }] = ops {
-            if self.active_history().is_dragging(&drag_key(path, key)) {
+        if let [GraphOp::SetParam { path, key, .. } | GraphOp::SetAnim { path, key, .. } | GraphOp::AddKeyAt { path, key, .. } | GraphOp::RemoveKeyAt { path, key, .. }] = ops {
+            if self.active_history().pending_drag_key().is_some_and(|open| open == drag_key(path, key) || open == node_drag(path)) {
                 let graph_ops::GraphOpsOutcome { edit, .. } = graph_ops::graph_ops_edit(&self.sequences[self.active_sequence_idx], ops).map_err(refused)?;
                 if let EditCommand::PictureEdit { clip_id, edit, .. } = edit {
                     self.set_picture(clip_id, &edit.after);
@@ -250,6 +261,22 @@ impl crate::state::AppState {
         self.close_open_drag();
     }
 
+    /// Take the open drag of `(addr, key)` back: the clip's picture as the
+    /// drag found it, and no history entry. Whether a picture changed.
+    fn abandon_param_edit_at(&mut self, addr: &NodePath, key: &ParamKey) -> bool {
+        if !self.active_history().is_dragging(&drag_key(addr, key)) {
+            return false;
+        }
+        let before = match self.active_history().pending_old_entry_ref().map(|e| &e.command) {
+            Some(EditCommand::PictureEdit { clip_id, edit, .. }) => Some((*clip_id, edit.before.clone())),
+            _ => None,
+        };
+        self.active_history_mut().abandon_pending_drag();
+        let Some((clip_id, before)) = before else { return false };
+        self.set_picture(clip_id, &before);
+        true
+    }
+
     /// The one op that changes the key of `(addr, key)` at `time_secs` by
     /// `edit`: the parameter's whole animation, written back in time order.
     fn key_edit(&self, addr: &NodePath, key: &ParamKey, time_secs: f64, edit: impl FnOnce(&mut serde_json::Value)) -> Result<Vec<GraphOp>, String> {
@@ -289,6 +316,12 @@ impl crate::state::AppState {
         let Root::Clip { clip } = path.root else { return Err("only a clip's graph is shown by path so far".into()) };
         let c = self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id.0 == clip).ok_or_else(|| format!("no clip {clip} on this sequence"))?;
         let lifted = c.picture_v2().map_err(|e| e.to_string())?;
+        // The placement by its stable address (M3 step 13).
+        if path.nodes == [klipp_graph_lift::clip_properties::placement_id(clip)] {
+            if let Some(n) = klipp_graph_lift::clip_properties::placement_node(&lifted.picture) {
+                return Ok(n.clone());
+            }
+        }
         walk(&lifted.picture.graph.nodes, &path.nodes).cloned().ok_or_else(|| format!("{:?} names no node of the clip's graph", path.nodes))
     }
 
@@ -722,6 +755,268 @@ mod tests {
         assert_eq!(s.path_command(&AppCommand::EndParamEditAt { addr: addr.clone(), key: key.clone() }), Some(false));
         undo(&mut s);
         assert_eq!(keys(&s), before, "undone, both keys as they were");
+    }
+
+    /// M3 step 13: the corner pin's handle, by path (the commands
+    /// `panels/viewer.rs` sends behind the switch): a drag sets both of a
+    /// corner's element keys and keys the keyed one, all one undo step on
+    /// the pin's node, and a reorder between two drags leaves them on the
+    /// same node.
+    #[test]
+    fn a_cornerpin_handle_drag_keys_the_same_node() {
+        let pin = (klipp_effects::registry::effect_type("corner_pin").unwrap().sample)();
+        let (mut s, id) = state(&[pin, E::Gamma { gamma: 1.2 }]);
+        let pin_node = clip(&s, id).effect_node_at(false, 0).unwrap();
+        let addr = at(id, &[pin_node]);
+        let key = |t: f64, v: f32| serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).unwrap();
+        // tl_x keyed before the drags.
+        run(&mut s, AppCommand::AddKeyAt { addr: addr.clone(), key: "tl_x".into(), keyframe: key(0.0, 0.0) });
+        let drag = |s: &mut AppState, t: f64, x: f32, y: f32| {
+            let steps = s.active_history().undo_count();
+            // A drag over the pin's parameters together (an empty key).
+            assert_eq!(s.path_command(&AppCommand::BeginParamEditAt { addr: addr.clone(), key: "".into() }), Some(false));
+            for (k, v) in [("tl_x", x), ("tl_y", y)] {
+                run(s, AppCommand::SetParamAt { addr: addr.clone(), key: k.into(), value: ParamValue::Float(v) });
+            }
+            run(s, AppCommand::AddKeyAt { addr: addr.clone(), key: "tl_x".into(), keyframe: key(t, x) });
+            assert_eq!(s.path_command(&AppCommand::EndParamEditAt { addr: addr.clone(), key: "".into() }), Some(false));
+            assert_eq!(s.active_history().undo_count(), steps + 1, "one undo step a drag");
+        };
+        drag(&mut s, 1.0, 0.1, 0.05);
+        let fx = effects(&s, id);
+        run(&mut s, AppCommand::MoveNodeAt { addr: addr.clone(), after: fx[1] });
+        drag(&mut s, 1.5, 0.2, 0.1);
+        let c = clip(&s, id);
+        assert_eq!(c.effect_node_at(false, 1), Some(pin_node), "the pin moved after the gamma");
+        let keys = c.node_key_state(&addr, &"tl_x".into()).unwrap().keys;
+        assert_eq!(keys.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>(), [(0.0, 0.0), (1.0, 0.1), (1.5, 0.2)], "every key on the pin's node");
+        assert!(matches!(c.builtin_effects()[1], E::CornerPin { tl, .. } if tl[1] == 0.1), "{:?}", c.builtin_effects()[1]);
+    }
+
+    /// A pin drag taken back (Escape) leaves the picture exactly as the
+    /// drag found it, the static axis's value and the keyed axis's new
+    /// key alike, and records no step.
+    #[test]
+    fn an_abandoned_cornerpin_drag_leaves_the_picture_as_it_was() {
+        let pin = (klipp_effects::registry::effect_type("corner_pin").unwrap().sample)();
+        let (mut s, id) = state(&[pin]);
+        let addr = at(id, &[clip(&s, id).effect_node_at(false, 0).unwrap()]);
+        let key = |t: f64, v: f32| serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).unwrap();
+        run(&mut s, AppCommand::AddKeyAt { addr: addr.clone(), key: "tl_x".into(), keyframe: key(0.0, 0.0) });
+        let picture = |s: &AppState| serde_json::to_string(&clip(s, id).picture_v2().unwrap().picture).unwrap();
+        let (before, steps) = (picture(&s), s.active_history().undo_count());
+        assert_eq!(s.path_command(&AppCommand::BeginParamEditAt { addr: addr.clone(), key: "".into() }), Some(false));
+        for frame in 1..=3 {
+            let v = 0.1 * frame as f32;
+            run(&mut s, AppCommand::SetParamAt { addr: addr.clone(), key: "tl_x".into(), value: ParamValue::Float(v) });
+            run(&mut s, AppCommand::SetParamAt { addr: addr.clone(), key: "tl_y".into(), value: ParamValue::Float(v) });
+            run(&mut s, AppCommand::AddKeyAt { addr: addr.clone(), key: "tl_x".into(), keyframe: key(1.0, v) });
+        }
+        assert_ne!(picture(&s), before, "the drag moved the pin");
+        assert_eq!(s.path_command(&AppCommand::AbandonParamEditAt { addr: addr.clone(), key: "".into() }), Some(true));
+        assert_eq!(picture(&s), before, "values and keys as the drag found them");
+        assert_eq!(s.active_history().undo_count(), steps, "no step recorded");
+        assert!(!s.active_history().is_any_drag_in_progress());
+    }
+
+    /// The gizmo's abandon by path, after it moved the clip, leaves the
+    /// placement as the drag found it and records no step.
+    #[test]
+    fn an_abandoned_gizmo_drag_leaves_the_placement_as_it_was() {
+        let (mut s, id) = state(&[E::Gamma { gamma: 1.1 }, transform(5.0, 1.0)]);
+        let c = clip(&s, id).clone();
+        let picture = |s: &AppState| serde_json::to_string(&clip(s, id).picture_v2().unwrap().picture).unwrap();
+        let (before, steps) = (picture(&s), s.active_history().undo_count());
+        let mut cmds = gizmo_drag(&c, transform(5.0, 1.0), transform(40.0, 0.6));
+        let end = cmds.pop();
+        assert!(matches!(end, Some(AppCommand::EndEffectDrag { .. })));
+        cmds.push(AppCommand::AbandonEffectDrag { clip_id: id, effect_index: 1, added: false });
+        for cmd in crate::inspector::placement_by_path::by_path(cmds, &c) {
+            s.before_dispatch(&cmd);
+            assert!(s.path_command(&cmd).is_some(), "{cmd:?} is a path command");
+        }
+        assert_eq!(picture(&s), before);
+        assert_eq!(s.active_history().undo_count(), steps, "no step recorded");
+    }
+
+    /// The card by path reads what the clip draws: the first enabled
+    /// Transform past a switched-off one, the last enabled of several
+    /// Opacity entries. A scale edit built from what it shows sets the
+    /// scale alone; the enabled Transform's position and rotation stay.
+    #[test]
+    fn the_card_shows_and_keeps_the_entries_the_clip_reads() {
+        let tf = |x: f32, rotation: f32| E::Transform { position_x: x, position_y: 2.0, scale_x: 1.0, scale_y: 1.0, rotation, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+        let mut c = fixture(&[]);
+        c.set_effect_list(vec![tf(20.0, 45.0), tf(8.0, 10.0), E::Opacity { value: 0.3 }, E::Opacity { value: 0.6 }, E::Opacity { value: 0.9 }], vec![false, true, true, true, false]);
+        let id = c.id;
+        let mut s = with(&[c]);
+        let c = clip(&s, id).clone();
+        let shown = crate::inspector::placement_by_path::placement(&c);
+        assert_eq!((shown.position_x, shown.rotation), (8.0, 10.0), "the enabled Transform's");
+        assert_eq!(crate::inspector::placement_by_path::opacity(&c), 0.6, "the last enabled Opacity's");
+        let mut t = shown;
+        (t.scale_x, t.scale_y) = (0.5, 0.5);
+        let cmds = crate::inspector::placement_by_path::by_path(vec![AppCommand::UpdateBuiltinEffect { clip_id: id, index: 1, effect: t.to_builtin_effect() }], &c);
+        assert!(matches!(&cmds[..], [AppCommand::SetParamAt { key, .. }] if key.as_str() == "scale"), "{cmds:?}");
+        for cmd in cmds {
+            run(&mut s, cmd);
+        }
+        let p = clip(&s, id).picture_v2().unwrap().picture.placement.clone();
+        assert_eq!((p.pos_x, p.rotation, p.scale), (Some(8.0), Some(10.0), Some(0.5)));
+    }
+
+    /// A key put by path where one already is keeps that key's time and
+    /// curve shape, as the lanes' own upsert does: the card's placement
+    /// and opacity keys, field-backed and on a picture-truth clip, and the
+    /// pin's keys as the viewer builds them.
+    #[test]
+    fn a_key_set_by_path_keeps_its_curve_shape() {
+        let bezier = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Bezier, tangent_out: (0.1, 0.2), tangent_in: (-0.3, 0.4) };
+        for truth in [false, true] {
+            let mut c = fixture(&[E::GaussianBlur { radius: 2.0 }]);
+            c.edit_video_param_keyframes(klipp_core::VideoParam::PositionX, |k| k.push(bezier(0.5, 1.0)));
+            c.edit_video_param_keyframes(klipp_core::VideoParam::Opacity, |k| k.push(bezier(0.5, 0.4)));
+            let id = c.id;
+            let mut s = with(&[c]);
+            if truth {
+                let blur = effects(&s, id)[0];
+                run(&mut s, AppCommand::SetMixAt { addr: at(id, &[blur]), mix: Some(0.5) });
+                assert!(clip(&s, id).is_picture_truth());
+            }
+            let c = clip(&s, id).clone();
+            let card = vec![
+                AppCommand::AddVideoKeyframe { clip_id: id, param: klipp_core::VideoParam::PositionX, time_secs: 0.5 + 1e-8, value: 7.0 },
+                AppCommand::AddVideoKeyframe { clip_id: id, param: klipp_core::VideoParam::Opacity, time_secs: 0.5 + 1e-8, value: 0.8 },
+            ];
+            for cmd in crate::inspector::placement_by_path::by_path(card, &c) {
+                run(&mut s, cmd);
+            }
+            let picture = clip(&s, id).picture_v2().unwrap();
+            let p = &picture.picture;
+            for (anim, value) in [(&p.placement_anim[&ParamKey::from("pos_x")], 7.0), (p.opacity_anim.as_ref().unwrap(), 0.8)] {
+                let keys: Vec<klipp_core::Keyframe> = anim.keys.iter().map(|k| serde_json::from_value(k.clone()).unwrap()).collect();
+                assert_eq!(keys, [klipp_core::Keyframe { value, ..bezier(0.5, 0.0) }], "truth {truth}");
+            }
+        }
+        // The pin's: its keys as the viewer reads them (by its node), the
+        // key built from them.
+        let pin = (klipp_effects::registry::effect_type("corner_pin").unwrap().sample)();
+        let (mut s, id) = state(&[pin]);
+        let addr = at(id, &[clip(&s, id).effect_node_at(false, 0).unwrap()]);
+        run(&mut s, AppCommand::AddKeyAt { addr: addr.clone(), key: "tl_x".into(), keyframe: serde_json::to_value(bezier(0.5, 0.1)).unwrap() });
+        let keys = clip(&s, id).node_key_state(&addr, &"tl_x".into()).unwrap().keys;
+        let keyframe = serde_json::to_value(klipp_core::keyframe::upserted(&keys, 0.5 + 1e-8, 0.3)).unwrap();
+        run(&mut s, AppCommand::AddKeyAt { addr: addr.clone(), key: "tl_x".into(), keyframe });
+        assert_eq!(clip(&s, id).node_key_state(&addr, &"tl_x".into()).unwrap().keys, [klipp_core::Keyframe { value: 0.3, ..bezier(0.5, 0.0) }]);
+    }
+
+    /// The engine's side of an edit, left out: these tests read the state.
+    struct NoSide;
+    impl super::super::inspector_edit_host::InspectorSideEffects for NoSide {
+        fn sync_sequence(&self, _: &AppState) {}
+        fn send(&self, _: AppCommand) {}
+    }
+
+    /// The commands the viewer's gizmo sends for one drag that moves and
+    /// scales the clip (`panels/viewer.rs`), from `initial` to `moved`.
+    fn gizmo_drag(c: &klipp_timeline::Clip, initial: E, moved: E) -> Vec<AppCommand> {
+        let index = c.builtin_effects().iter().position(|e| matches!(e, E::Transform { .. }));
+        let key = format!("viewer_transform_{}", c.id.0);
+        let idx = index.unwrap_or(c.builtin_effects().len());
+        let mut cmds = Vec::new();
+        if index.is_none() {
+            cmds.push(AppCommand::AddBuiltinEffect { clip_id: c.id, effect: initial.clone() });
+        }
+        cmds.push(AppCommand::BeginEffectDrag { key: key.clone(), clip_id: c.id, effect_index: idx, old_effect: initial });
+        cmds.push(AppCommand::UpdateBuiltinEffect { clip_id: c.id, index: idx, effect: moved.clone() });
+        cmds.push(AppCommand::UpdateBuiltinEffect { clip_id: c.id, index: idx, effect: moved.clone() });
+        cmds.push(AppCommand::EndEffectDrag { key, clip_id: c.id, effect_index: idx, new_effect: moved });
+        cmds
+    }
+
+    fn transform(x: f32, scale: f32) -> E {
+        E::Transform { position_x: x, position_y: -4.0, scale_x: scale, scale_y: scale, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None }
+    }
+
+    /// M3 step 13: the gizmo's drag by path (behind the switch) gives the
+    /// picture the old drag gave, though the old one added a Transform
+    /// entry and the new one sets the clip's placement: the typed pictures
+    /// equal (each added entry's id read as the other's), one undo step
+    /// each, from a clip with a Transform and from one without.
+    #[test]
+    fn a_gizmo_drag_gives_the_same_picture() {
+        for start in [vec![E::Gamma { gamma: 1.1 }], vec![E::Gamma { gamma: 1.1 }, transform(5.0, 1.0)]] {
+            let c0 = fixture(&start);
+            let id = c0.id;
+            let (mut old, mut new) = (with(std::slice::from_ref(&c0)), with(std::slice::from_ref(&c0)));
+            let c = clip(&old, id).clone();
+            let identity = crate::inspector::video_tab::TransformParams::default().to_builtin_effect();
+            let initial = c.builtin_effects().iter().find(|e| matches!(e, E::Transform { .. })).cloned().unwrap_or(identity);
+            let cmds = gizmo_drag(&c, initial, transform(40.0, 0.6));
+            let steps = old.active_history().undo_count();
+            for cmd in &cmds {
+                old.before_dispatch(cmd);
+                assert!(super::super::inspector_edit_host::InspectorEditHost { state: &mut old, side: &NoSide }.apply(cmd), "{cmd:?}");
+            }
+            for cmd in crate::inspector::placement_by_path::by_path(cmds, &c) {
+                new.before_dispatch(&cmd);
+                assert!(new.path_command(&cmd).is_some(), "{cmd:?} is a path command");
+            }
+            assert_eq!(old.active_history().undo_count(), steps + 1);
+            assert_eq!(new.active_history().undo_count(), steps + 1, "one undo step");
+            let (a, b) = (clip(&old, id), clip(&new, id));
+            let mut pb = serde_json::to_string(&b.picture_v2().unwrap().picture).unwrap();
+            for i in 0..a.builtin_effects().len() {
+                if let (Some(x), Some(y)) = (b.effect_node_at(false, i), a.effect_node_at(false, i)) {
+                    pb = pb.replace(&x.to_string(), &y.to_string());
+                }
+            }
+            assert_eq!(pb, serde_json::to_string(&a.picture_v2().unwrap().picture).unwrap(), "from {start:?}");
+            assert_eq!(b.picture_v2().unwrap().picture.placement.pos_x, Some(40.0));
+        }
+    }
+
+    /// The card's keys by path land on the placement node: the picture's
+    /// placement animation, from the clip's lane.
+    #[test]
+    fn video_tab_keys_land_on_the_placement_node() {
+        let (mut s, id) = state(&[E::Gamma { gamma: 1.1 }]);
+        let c = clip(&s, id).clone();
+        let card = vec![AppCommand::AddVideoKeyframe { clip_id: id, param: klipp_core::VideoParam::PositionX, time_secs: 0.5, value: 12.0 }];
+        let cmds = crate::inspector::placement_by_path::by_path(card, &c);
+        assert!(matches!(&cmds[..], [AppCommand::AddKeyAt { key, .. }] if key.as_str() == "pos_x"), "{cmds:?}");
+        for cmd in &cmds {
+            run(&mut s, cmd.clone());
+        }
+        let picture = clip(&s, id).picture_v2().unwrap();
+        let keys = &picture.picture.placement_anim[&ParamKey::from("pos_x")].keys;
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0]["value"], serde_json::json!(12.0));
+    }
+
+    /// IC3: the card's reset and a generated row's reset of the
+    /// perspective set the same value, the catalog's default (0, read as
+    /// 1), so the two never disagree.
+    #[test]
+    fn perspective_row_and_card_reset_agree() {
+        let mut tilted = transform(0.0, 1.0);
+        if let E::Transform { perspective, .. } = &mut tilted {
+            *perspective = 2.0;
+        }
+        let c0 = fixture(&[tilted]);
+        let id = c0.id;
+        let (mut card, mut row) = (with(std::slice::from_ref(&c0)), with(std::slice::from_ref(&c0)));
+        let c = clip(&card, id).clone();
+        let reset = vec![AppCommand::UpdateBuiltinEffect { clip_id: id, index: 0, effect: crate::inspector::video_tab::TransformParams::default().to_builtin_effect() }];
+        for cmd in crate::inspector::placement_by_path::by_path(reset, &c) {
+            run(&mut card, cmd);
+        }
+        let default = klipp_effects::registry::effect_type("transform").unwrap().desc.params.iter().find(|p| p.field == "perspective").unwrap().default;
+        let addr = c.placement_path().unwrap();
+        run(&mut row, AppCommand::SetParamAt { addr, key: "perspective".into(), value: ParamValue::Float(default) });
+        let read = |s: &AppState| clip(s, id).picture_v2().unwrap().picture.placement.perspective;
+        assert_eq!(read(&card), Some(0.0));
+        assert_eq!(read(&card), read(&row));
     }
 
     /// State held by address belongs to the clip it names: a selection,

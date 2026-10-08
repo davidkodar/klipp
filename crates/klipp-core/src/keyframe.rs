@@ -95,6 +95,16 @@ pub fn upsert_keyframe(kfs: &mut Vec<Keyframe>, time_secs: f64, value: f32) {
     upsert_keyframe_with_interpolation(kfs, time_secs, value, Interpolation::Linear);
 }
 
+/// The key [`upsert_keyframe`] would leave at `time_secs` in `kfs`: the
+/// matching key with `value`, its stored time, interpolation and tangents
+/// kept, or a new Linear key. For a write that puts one whole key in place
+/// (a path's `AddKeyAt`).
+pub fn upserted(kfs: &[Keyframe], time_secs: f64, value: f32) -> Keyframe {
+    let mut one: Vec<Keyframe> = kfs.iter().find(|k| (k.time_secs - time_secs).abs() < KEYFRAME_TIME_EPSILON).cloned().into_iter().collect();
+    upsert_keyframe(&mut one, time_secs, value);
+    one.remove(0)
+}
+
 /// As [`upsert_keyframe`], with a default interpolation for newly inserted keys.
 /// Existing keys keep their curve shape, including when editing Step parameters.
 pub fn upsert_keyframe_with_interpolation(kfs: &mut Vec<Keyframe>, time_secs: f64, value: f32, default: Interpolation) {
@@ -336,6 +346,21 @@ mod tests {
 
     fn kf_linear(time: f64, value: f32) -> Keyframe {
         kf(time, value, Interpolation::Linear)
+    }
+
+    /// `upserted` is the key `upsert_keyframe` leaves: a matching key's
+    /// time and shape with the new value, else a new Linear key.
+    #[test]
+    fn upserted_is_the_key_upsert_leaves() {
+        let shaped = Keyframe { tangent_out: (0.1, 0.2), tangent_in: (-0.3, 0.4), ..kf(0.5, 1.0, Interpolation::Bezier) };
+        let keys = vec![kf_linear(0.0, 0.0), shaped.clone()];
+        for (t, v) in [(0.5 + 1e-8, 3.0), (0.9, 2.0)] {
+            let mut upserted_all = keys.clone();
+            upsert_keyframe(&mut upserted_all, t, v);
+            let left = upserted_all.iter().find(|k| (k.time_secs - t).abs() < KEYFRAME_TIME_EPSILON).unwrap();
+            assert_eq!(&upserted(&keys, t, v), left);
+        }
+        assert_eq!(upserted(&keys, 0.5, 3.0), Keyframe { value: 3.0, ..shaped });
     }
 
     fn kf_step(time: f64, value: f32) -> Keyframe {

@@ -161,13 +161,24 @@ impl Projection<'_> {
         }
         path.reverse();
         let shared: BTreeSet<_> = stop.iter().copied().chain(path.iter().copied()).collect();
+        // The Opacity entry the lift reads as the clip's opacity (the last
+        // enabled one) is the clip's property, edited as one (the Video
+        // tab): no card of its own, or one value shows twice (M3 step 13).
+        // Every other Opacity entry is a card.
+        let was_on = |n: &Node| n.legacy_flags.as_ref().and_then(|f| f.was_enabled).unwrap_or(n.enabled);
+        let opacity_property = path
+            .iter()
+            .rev()
+            .find(|id| self.nodes[*id].type_id.as_str() == klipp_graph_format::types::LEGACY_OPACITY && was_on(self.nodes[*id]))
+            .copied();
         let mut rows = Vec::new();
         for id in path {
             let node = self.nodes[&id];
             if matches!(
                 node.type_id.as_str(),
                 lt::SOURCE | lt::OUTPUT | lt::GROUP_INPUT | lt::GROUP_OUTPUT | lt::GROUP_FRAME
-            ) {
+            ) || Some(id) == opacity_property
+            {
                 continue;
             }
             let section = if self.catalog.needs_source_neighbours(node) {

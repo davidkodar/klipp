@@ -320,3 +320,16 @@ impl Clip {
         out
     }
 }
+
+impl Clip {
+    /// The path of the clip's PLACEMENT node, through which its placement
+    /// and its opacity are set as clip properties (M3 step 13): its keys
+    /// are `klipp_graph_lift::clip_properties`'.
+    pub fn placement_path(&self) -> Option<klipp_graph_format::path::NodePath> {
+        use klipp_graph_format::path::{NodePath, Root};
+        let lifted = self.picture_v2().ok()?;
+        klipp_graph_lift::clip_properties::placement_node(&lifted.picture)?;
+        // The stable address, whatever the node's id is now.
+        Some(NodePath::new(Root::Clip { clip: self.id.0 }, [klipp_graph_lift::clip_properties::placement_id(self.id.0)]))
+    }
+}

@@ -1766,7 +1766,16 @@ impl ViewerPanel {
             && state.eyedropper_mode == crate::state::EyedropperMode::None
             && !state.has_modal_open()
         {
+            let start = cmds.len();
             self.draw_transform_controls(ui, state, image_rect, frame.viewer_rect, video_w, video_h, cmds);
+            // Behind the switch, the gizmo moves the clip's placement by
+            // path, and adds no Transform (M3 step 13).
+            if state.use_generated_stack {
+                if let Some(clip) = state.selected_clip.and_then(|id| state.sequence().all_clips().find(|c| c.id == id).cloned()) {
+                    let mine = cmds.split_off(start);
+                    cmds.extend(crate::inspector::placement_by_path::by_path(mine, &clip));
+                }
+            }
             self.draw_corner_pin_handles(ui, state, image_rect, frame.viewer_rect, cmds);
             self.draw_surface_outlines(ui, state, image_rect);
         }
@@ -4314,7 +4323,10 @@ impl ViewerPanel {
             return;
         }
 
-        let transform = get_transform(clip);
+        // Behind the switch, the clip's placement as its picture holds it
+        // (M3 step 13).
+        let by_path = state.use_generated_stack;
+        let transform = if by_path { crate::inspector::placement_by_path::placement(clip) } else { get_transform(clip) };
         let effect_index = find_transform_index(clip);
         let n_builtin_effects = clip.builtin_effects().len();
 
@@ -4567,6 +4579,8 @@ impl ViewerPanel {
                     // edit's undo entry (#409). One that never opened
                     // (a click) has nothing to take back.
                     if drag.started {
+                        // By path, `placement_by_path` takes this as the
+                        // placement drag's abandon.
                         cmds.push(AppCommand::AbandonEffectDrag { clip_id, effect_index: idx, added: drag.added });
                     }
                 }
@@ -4889,12 +4903,24 @@ impl ViewerPanel {
         let Some(effect_index) = clip.builtin_effects().iter().position(|e| matches!(e, klipp_effects::BuiltinEffect::CornerPin { .. })) else { return };
         let Some(base) = corners(&clip.builtin_effects()[effect_index]) else { return };
         let clip_time = (state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
-        let keys_of = |name: &str| clip.effect_keyframes().get(&format!("{effect_index}:{name}")).filter(|k| !k.is_empty());
+        // Behind the switch, the pin is its node, its corners its element
+        // keys, edited by path (M3 step 13).
+        let by_path = state.use_generated_stack;
+        let addr = clip.effect_node_at(false, effect_index).map(|n| klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip_id.0 }, [n]));
+        let node_keys: Vec<Vec<klipp_core::Keyframe>> = PARAMS.iter().flatten().map(|name| addr.as_ref().and_then(|a| clip.node_key_state(a, &(*name).into())).map(|s| s.keys).unwrap_or_default()).collect();
+        let keys_of = |name: &str| -> Option<Vec<klipp_core::Keyframe>> {
+            if by_path {
+                let at = PARAMS.iter().flatten().position(|n| *n == name)?;
+                Some(node_keys[at].clone()).filter(|k| !k.is_empty())
+            } else {
+                clip.effect_keyframes().get(&format!("{effect_index}:{name}")).filter(|k| !k.is_empty()).cloned()
+            }
+        };
         let mut shown = base;
         for (corner, names) in shown.iter_mut().zip(PARAMS) {
             for axis in 0..2 {
                 if let Some(keys) = keys_of(names[axis]) {
-                    corner[axis] = klipp_core::keyframe::evaluate(keys, clip_time, corner[axis]);
+                    corner[axis] = klipp_core::keyframe::evaluate(&keys, clip_time, corner[axis]);
                 }
             }
         }
@@ -4938,8 +4964,16 @@ impl ViewerPanel {
             } else {
                 gizmo_step(drag.started, drag.drag_start_pos, pointer_pos, down, released)
             };
+            // The drag by path: one parameter edit at a time on the pin's
+            // node, in a drag over its parameters together (an empty key).
+            let path_key = |corner: usize, axis: usize| klipp_graph_format::ParamKey::from(PARAMS[corner][axis]);
+            let whole = klipp_graph_format::ParamKey::from("");
+            let path = addr.clone().filter(|_| by_path);
             if matches!(step, GizmoStep::Start | GizmoStep::End) && !drag.started {
-                cmds.push(AppCommand::BeginEffectDrag { key: drag_key.clone(), clip_id, effect_index, old_effect });
+                match &path {
+                    Some(a) => cmds.push(AppCommand::BeginParamEditAt { addr: a.clone(), key: whole.clone() }),
+                    None => cmds.push(AppCommand::BeginEffectDrag { key: drag_key.clone(), clip_id, effect_index, old_effect }),
+                }
                 drag.started = true;
             }
             match step {
@@ -4952,16 +4986,35 @@ impl ViewerPanel {
                         let (nx, ny) = viewer_screen_to_norm(image_rect, p);
                         let mut next = drag.corners;
                         next[drag.corner] = [nx.clamp(-2.0, 3.0), ny.clamp(-2.0, 3.0)];
-                        cmds.push(AppCommand::UpdateBuiltinEffect { clip_id, index: effect_index, effect: with_corners(next) });
-                        for axis in 0..2 {
-                            if keyed[drag.corner][axis] {
-                                cmds.push(AppCommand::AddEffectKeyframe {
-                                    clip_id,
-                                    effect_index,
-                                    param_name: PARAMS[drag.corner][axis].to_string(),
-                                    time_secs: clip_time,
-                                    value: next[drag.corner][axis],
-                                });
+                        match &path {
+                            Some(a) => {
+                                for axis in 0..2 {
+                                    let value = next[drag.corner][axis];
+                                    cmds.push(AppCommand::SetParamAt { addr: a.clone(), key: path_key(drag.corner, axis), value: klipp_graph_format::ParamValue::Float(value) });
+                                    if keyed[drag.corner][axis] {
+                                        // A key already there keeps its time
+                                        // and curve shape, as the old route's
+                                        // upsert kept them.
+                                        let key = klipp_core::keyframe::upserted(&node_keys[drag.corner * 2 + axis], clip_time, value);
+                                        if let Ok(keyframe) = serde_json::to_value(key) {
+                                            cmds.push(AppCommand::AddKeyAt { addr: a.clone(), key: path_key(drag.corner, axis), keyframe });
+                                        }
+                                    }
+                                }
+                            }
+                            None => {
+                                cmds.push(AppCommand::UpdateBuiltinEffect { clip_id, index: effect_index, effect: with_corners(next) });
+                                for axis in 0..2 {
+                                    if keyed[drag.corner][axis] {
+                                        cmds.push(AppCommand::AddEffectKeyframe {
+                                            clip_id,
+                                            effect_index,
+                                            param_name: PARAMS[drag.corner][axis].to_string(),
+                                            time_secs: clip_time,
+                                            value: next[drag.corner][axis],
+                                        });
+                                    }
+                                }
                             }
                         }
                         drag.corners = next;
@@ -4971,17 +5024,25 @@ impl ViewerPanel {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                         ui.ctx().request_repaint();
                     } else {
-                        cmds.push(AppCommand::EndEffectDrag {
-                            key: drag_key,
-                            clip_id,
-                            effect_index,
-                            new_effect: with_corners(drag.corners),
-                        });
+                        match &path {
+                            Some(a) => cmds.push(AppCommand::EndParamEditAt { addr: a.clone(), key: whole.clone() }),
+                            None => cmds.push(AppCommand::EndEffectDrag {
+                                key: drag_key,
+                                clip_id,
+                                effect_index,
+                                new_effect: with_corners(drag.corners),
+                            }),
+                        }
                     }
                 }
                 GizmoStep::Abandon => {
                     if drag.started {
-                        cmds.push(AppCommand::AbandonEffectDrag { clip_id, effect_index, added: false });
+                        match &path {
+                            // The pin as the drag found it, its values and
+                            // keys, and no step recorded.
+                            Some(a) => cmds.push(AppCommand::AbandonParamEditAt { addr: a.clone(), key: whole.clone() }),
+                            None => cmds.push(AppCommand::AbandonEffectDrag { clip_id, effect_index, added: false }),
+                        }
                     }
                 }
             }
