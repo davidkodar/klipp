@@ -272,3 +272,50 @@ fn hidden_is_not_fixed() {
         assert_eq!(t.presentation(p).widget, Widget::Hidden, "{id}/{key}");
     }
 }
+
+/// Every effect type has today's rows in its family's table (M3 step 0b
+/// complete).
+#[test]
+fn every_effect_type_is_covered() {
+    let missing: Vec<&str> = effect_types().filter(|t| !presentation::params().any(|e| e.type_id == t.desc.id) && !t.desc.params.is_empty()).map(|t| t.desc.id).collect();
+    assert!(missing.is_empty(), "no rows for {missing:?}");
+}
+
+/// Every effect parameter the catalog can't describe (`Other`) is drawn by
+/// a named editor, or is a listed system value (M3 step 0d).
+#[test]
+fn every_other_param_names_a_custom_editor() {
+    let mut named = std::collections::BTreeSet::new();
+    for t in effect_types() {
+        for p in t.desc.params.iter().filter(|p| p.kind == ParamKind::Other) {
+            match t.presentation(p).widget {
+                Widget::Custom(id) if !id.is_empty() => {
+                    named.insert(id);
+                }
+                Widget::Hidden if HIDDEN.contains(&(t.desc.id, p.key)) => {}
+                w => panic!("{}/{}: {w:?}, not a named editor", t.desc.id, p.key),
+            }
+        }
+    }
+    assert_eq!(named.into_iter().collect::<Vec<_>>(), ["frei0r_plugin"]);
+}
+
+/// The adapters drawing what rows can't, by type (M3 step 6): exactly the
+/// breakdown's list.
+#[test]
+fn the_adapters_are_named() {
+    let mut adapters: Vec<(&str, &str)> = presentation::types().filter_map(|e| e.pres.extra_ui.map(|a| (e.type_id, a))).collect();
+    adapters.sort();
+    assert_eq!(
+        adapters,
+        [
+            ("klipp.fx.color_fade", "color_fade"),
+            ("klipp.fx.corner_pin", "corner_pin"),
+            ("klipp.fx.deflicker", "deflicker"),
+            ("klipp.fx.focus_blur", "focus_blur"),
+            ("klipp.fx.speed_ramp", "speed_ramp"),
+            ("klipp.fx.temporal_denoise", "temporal_denoise"),
+            ("klipp.fx.video_stabilization", "video_stabilization"),
+        ]
+    );
+}

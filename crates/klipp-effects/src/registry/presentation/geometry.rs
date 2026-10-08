@@ -63,4 +63,8 @@ pub(super) static PARAMS: &[ParamEntry] = &[
     at(PIN, "bl_y", P::scrub(0.002, 3).label("Bottom Left Y")),
 ];
 
-pub(super) static TYPES: &[TypeEntry] = &[];
+pub(super) static TYPES: &[TypeEntry] = &[TypeEntry {
+    type_id: PIN,
+    // The viewer's corner handles (M3 step 6).
+    pres: super::TypePresentation { notice: None, extra_ui: Some("corner_pin") },
+}];
