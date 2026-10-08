@@ -1165,10 +1165,27 @@ impl Renderer {
         self.executor.set_working_colorspace(self.working);
         self.executor.set_render_scale(self.px_scale);
         if clip.grade_is_identity() {
-            let GradeInput::Gpu(g) = &input else { return Single::Refused("an identity grade of a frame not on the GPU") };
-            if !g.seed(&mut self.executor, width, height)
-                || !self.executor.take_seeded_input_as_output()
-            {
+            // Seeded where it is: a decoded frame's own seed, or a
+            // scene-referred frame's codes decoded on the GPU as `grade`
+            // seeds them for a real graph. Refusing the second sent every
+            // frame of ungraded HDR, HLG or log footage down the CPU
+            // composite (#1275).
+            let seeded = match &input {
+                GradeInput::Gpu(g) => g.seed(&mut self.executor, width, height),
+                GradeInput::Scene { codes, transfer, source_to_working } => {
+                    self.allow_gpu
+                        && self.executor.prime_chain_from_hdr10_codes(
+                            codes,
+                            width,
+                            height,
+                            transfer.transfer_id(),
+                            transfer.scene_scale(),
+                            klipp_effects::color_wgsl::pack_primaries_matrix(*source_to_working),
+                        )
+                }
+                GradeInput::Cpu(_) => return Single::Refused("an identity grade of a frame not on the GPU"),
+            };
+            if !seeded || !self.executor.take_seeded_input_as_output() {
                 return Single::Refused("the source could not seed the chain");
             }
             let target = klipp_effects::gpu::Yuv420Target {
