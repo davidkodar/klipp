@@ -270,6 +270,7 @@ pub struct NodeGraphV2Panel {
     /// far beyond the canvas's visible window at zoom=1.
     last_fit_clip: Option<ClipId>,
     last_picture_level: Option<klipp_graph_format::path::NodePath>,
+    picture_move_root: Option<klipp_graph_format::path::Root>,
     /// Set by the toolbar's "Fit" button or programmatically
     /// (clip switch). Consumed at the top of the next `show()`.
     fit_pending: bool,
@@ -388,6 +389,7 @@ impl Default for NodeGraphV2Panel {
             node_menu_opened_frame: 0,
             last_fit_clip: None,
             last_picture_level: None,
+            picture_move_root: None,
             fit_pending: false,
             matte_thumbs: std::collections::HashMap::new(),
             output_thumbs: std::collections::HashMap::new(),
@@ -469,10 +471,17 @@ impl NodeGraphV2Panel {
             self.fit_pending = true;
             self.last_visible_thumb_nodes.clear();
         }
-        self.show_canvas(ui, selected_node, selected_set, &GradeCanvas(graph), clip_id, theme,
+        let mut cmds = Vec::new();
+        if let Some(root) = self.picture_move_root.take() {
+            self.drag_node = None;
+            self.drag_frame = None;
+            cmds.push(AppCommand::EndNodeLayoutEdit { root });
+        }
+        cmds.extend(self.show_canvas(ui, selected_node, selected_set, &GradeCanvas(graph), clip_id, theme,
             engine_node_thumbs, engine_node_thumbs_gen, deferred_drops, descent_path,
             breadcrumb_labels, grade_version_names, active_grade_version, clip_time_secs,
-            port_snap_enabled, port_snap_radius_px, solo_node)
+            port_snap_enabled, port_snap_radius_px, solo_node));
+        cmds
     }
 
     /// Draw the clip's actual picture graph at `level`. Navigation stays
@@ -487,17 +496,25 @@ impl NodeGraphV2Panel {
         selected_set: &mut std::collections::HashSet<NodeId>,
         theme: &KlippTheme,
         clip_time_secs: f64,
+        keyboard_enabled: bool,
     ) -> Result<Vec<AppCommand>, String> {
         if level.root_clip() != Some(clip.id.0) {
             return Err("The graph belongs to a different clip".into());
         }
         let lifted = clip.picture_v2().map_err(|e| e.to_string())?;
+        let mut cmds = Vec::new();
+        if self.last_picture_level.as_ref() != Some(level) || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.drag_node = None;
+            self.drag_frame = None;
+            if let Some(root) = self.picture_move_root.take() { cmds.push(AppCommand::AbandonNodeLayoutEdit { root }); }
+        }
         if self.last_picture_level.as_ref() != Some(level) {
             self.fit_pending = true;
             self.last_visible_thumb_nodes.clear();
             self.last_picture_level = Some(level.clone());
         }
-        let graph = picture::PictureCanvas::new(&lifted.picture.graph, level.clone(), *selected_node)?;
+        let mut graph = picture::PictureCanvas::new(&lifted.picture.graph, level.clone(), *selected_node)?;
+        graph.keyboard_enabled = keyboard_enabled;
         let mut labels = Vec::new();
         let mut body = &lifted.picture.graph;
         for id in &level.nodes {
@@ -505,9 +522,20 @@ impl NodeGraphV2Panel {
             labels.push(if n.label.is_empty() { "Group".to_owned() } else { n.label.clone() });
             body = &n.group.as_ref().ok_or("The selected node is not a group")?.graph;
         }
-        Ok(self.show_canvas(ui, selected_node, selected_set, &graph, clip.id, theme,
+        let updates = self.show_canvas(ui, selected_node, selected_set, &graph, clip.id, theme,
             &Default::default(), 0, &mut Vec::new(), &mut level.nodes, &labels, None, None,
-            clip_time_secs, false, 0.0, None))
+            clip_time_secs, false, 0.0, None);
+        // A click without movement must not create an undo entry. Begin
+        // only when the first position update is about to be dispatched.
+        if self.picture_move_root.is_none() && updates.iter().any(|cmd| matches!(cmd, AppCommand::SetNodePositionAt { .. })) {
+            self.picture_move_root = Some(level.root);
+            cmds.push(AppCommand::BeginNodeLayoutEdit { root: level.root });
+        }
+        cmds.extend(updates);
+        if self.drag_node.is_none() && self.drag_frame.is_none() {
+            if let Some(root) = self.picture_move_root.take() { cmds.push(AppCommand::EndNodeLayoutEdit { root }); }
+        }
+        Ok(cmds)
     }
 
     fn show_canvas<G: CanvasGraph>(
@@ -897,7 +925,7 @@ impl NodeGraphV2Panel {
         // First-paint auto-fit per clip + on-demand fit via toolbar
         // or `F` shortcut. Done before any rendering so the first
         // frame is already framed instead of needing a second pass.
-        let f_pressed = ui.input(|i| {
+        let f_pressed = graph.keyboard_enabled() && ui.input(|i| {
             i.key_pressed(egui::Key::F)
                 && !i.modifiers.ctrl
                 && !i.modifiers.command
@@ -2779,7 +2807,7 @@ impl NodeGraphV2Panel {
         // ids that the engine just removed. Gated on `wants_keyboard_
         // input` so the user typing into a slider doesn't accidentally
         // wipe nodes.
-        if !ui.ctx().wants_keyboard_input()
+        if graph.keyboard_enabled() && !ui.ctx().wants_keyboard_input()
             && ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
             && !selected_set.is_empty()
         {
@@ -2810,7 +2838,7 @@ impl NodeGraphV2Panel {
         // a "set me first" toast instead of silently doing nothing —
         // confirms the binding registered even when no jump
         // happened.
-        if !any_menu_open && !ui.ctx().wants_keyboard_input() {
+        if graph.keyboard_enabled() && !any_menu_open && !ui.ctx().wants_keyboard_input() {
             const NUM_KEYS: [egui::Key; 9] = [
                 egui::Key::Num1, egui::Key::Num2, egui::Key::Num3,
                 egui::Key::Num4, egui::Key::Num5, egui::Key::Num6,
@@ -2846,7 +2874,7 @@ impl NodeGraphV2Panel {
         // semantics in most editors. Skipped when other text
         // inputs are focused (rename popup, description editor)
         // so typing Ctrl+F into a TextEdit doesn't yank focus.
-        let f_with_mod = ui.input(|i| {
+        let f_with_mod = graph.keyboard_enabled() && ui.input(|i| {
             i.key_pressed(egui::Key::F) && (i.modifiers.ctrl || i.modifiers.command)
         });
         if f_with_mod && !self.frame_rename_editor.is_some()

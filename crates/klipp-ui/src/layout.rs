@@ -113,10 +113,10 @@ pub(crate) fn compute_layout(
     // strip stay gated to Color since they're Color-specific tooling.
     let in_color_ws = state.show_color_panel;
     let show_scopes_bar = state.scopes_docked();
-    let nodes_on_right = in_color_ws && state.show_node_strip
+    let nodes_on_right = state.graph_is_visible()
         && layout.node_graph_placement == crate::layout_state::NodeGraphPlacement::Right
         && center_w >= 640.0;
-    let show_nodes_bar = in_color_ws && state.show_node_strip && !nodes_on_right;
+    let show_nodes_bar = state.graph_is_visible() && !nodes_on_right;
 
     // In Color workspace: allocate bottom space for toggle + scopes + nodes
     // Use ratio to split between viewer+timeline and bottom panels

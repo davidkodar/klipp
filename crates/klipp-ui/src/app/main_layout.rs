@@ -139,7 +139,7 @@ impl KlippApp {
                     let center_w = right_resizer_rect.min.x - left_resizer_rect.max.x;
                     let in_color_ws = self.state.show_color_panel;
                     let show_scopes_bar = self.state.scopes_docked();
-                    let show_nodes_bar = in_color_ws && self.state.show_node_strip && !nodes_on_right;
+                    let show_nodes_bar = self.state.graph_is_visible() && !nodes_on_right;
                     let toggle_bar_h = toggle_bar_rect.height();
                     let scopes_h = scopes_rect.height();
                     let nodes_h = if nodes_on_right { 0.0 } else { nodes_rect.height() };
@@ -288,8 +288,8 @@ impl KlippApp {
                     // when scopes are toggled on from any other workspace.
                     // The render function gates the Color-only chrome
                     // internally on `toggle_bar_h > 0` and `color_tools_bottom`.
-                    if in_color_ws || show_scopes_bar {
-                        let stood_in = self.stand_in_timeline_grade();
+                    if in_color_ws || show_scopes_bar || self.state.graph_dock_open {
+                        let stood_in = if self.state.graph_dock_open { None } else { self.stand_in_timeline_grade() };
                         self.render_color_workspace_bottom(
                             ctx,
                             ui,

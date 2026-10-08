@@ -16,6 +16,8 @@ use klipp_graph_lift::ops::GraphOp;
 /// What every path drag's history key starts with.
 const PATH_DRAG: &str = "at:";
 
+fn layout_drag(root: Root) -> String { format!("{PATH_DRAG}{root:?}:layout") }
+
 /// The history key a path drag is held under.
 fn drag_key(addr: &NodePath, key: &ParamKey) -> String {
     format!("{}{key}", node_drag(addr))
@@ -34,6 +36,7 @@ fn node_drag(addr: &NodePath) -> String {
 /// split view's state, and every other command).
 pub(crate) fn path_ops(cmd: &AppCommand) -> Option<(Vec<GraphOp>, &'static str)> {
     Some(match cmd {
+        AppCommand::SetNodePositionAt { addr, position } => (vec![GraphOp::SetNodeMeta { path: addr.clone(), label: None, position: Some(serde_json::json!({"x":position.0,"y":position.1})) }], "Move Nodes"),
         AppCommand::AddNodeAt { after, node } => (vec![GraphOp::AddNode { after: after.clone(), node: node.clone() }], "Add Node"),
         AppCommand::RemoveNodeAt { addr } => (vec![GraphOp::RemoveNode { path: addr.clone() }], "Remove Node"),
         AppCommand::MoveNodeAt { addr, after } => (vec![GraphOp::MoveAfter { path: addr.clone(), after: *after }], "Move Node"),
@@ -120,12 +123,20 @@ impl crate::state::AppState {
     /// sequence). A refusal is said in a toast and changes nothing.
     pub(crate) fn path_command(&mut self, cmd: &AppCommand) -> Option<bool> {
         let result = match cmd {
+            AppCommand::SetNodePositionAt { position, .. } if !position.0.is_finite() || !position.1.is_finite() => Err("Node positions must be finite".into()),
+            AppCommand::BeginNodeLayoutEdit { root } => self.begin_node_layout_edit(*root).map(|()| false),
+            AppCommand::EndNodeLayoutEdit { root } => {
+                self.end_node_layout_edit(*root);
+                Ok(false)
+            }
+            AppCommand::AbandonNodeLayoutEdit { root } => Ok(self.abandon_node_layout_edit(*root)),
             AppCommand::BeginParamEditAt { addr, key } => self.begin_param_edit_at(addr, key).map(|()| false),
             AppCommand::EndParamEditAt { addr, key } => {
                 self.end_param_edit_at(addr, key);
                 Ok(false)
             }
             AppCommand::AbandonParamEditAt { addr, key } => Ok(self.abandon_param_edit_at(addr, key)),
+            AppCommand::ToggleGraphDock => { self.toggle_graph_dock(); Ok(false) },
             AppCommand::RevealGraph { path, select } => self.reveal_graph(path, *select).map(|()| false),
             AppCommand::SetGraphDockRoot { root } => self.set_graph_dock_root(*root).map(|()| false),
             AppCommand::SetSplitCompareNode { clip_id, path } => self.set_split_compare_node(*clip_id, path.as_ref()).map(|()| false),
@@ -167,6 +178,8 @@ impl crate::state::AppState {
     pub(crate) fn closes_path_drag(&self, cmd: &AppCommand) -> bool {
         let Some(open) = self.active_history().pending_drag_key().filter(|k| k.starts_with(PATH_DRAG)) else { return false };
         match cmd {
+            AppCommand::BeginNodeLayoutEdit { root } | AppCommand::EndNodeLayoutEdit { root } | AppCommand::AbandonNodeLayoutEdit { root } => layout_drag(*root) != open,
+            AppCommand::SetNodePositionAt { addr, .. } => layout_drag(addr.root) != open,
             AppCommand::BeginParamEditAt { addr, key } | AppCommand::EndParamEditAt { addr, key } | AppCommand::AbandonParamEditAt { addr, key } => drag_key(addr, key) != open,
             // An edit of the dragged parameter, its value or its keys, is
             // part of the drag; of any of the node's, in a drag over them all.
@@ -207,6 +220,13 @@ impl crate::state::AppState {
             Some(i) if ops.len() > 1 => format!("{label}: op {i}: {why}"),
             _ => format!("{label}: {why}"),
         };
+        if let [GraphOp::SetNodeMeta { path, label: None, position: Some(_) }] = ops {
+            if self.active_history().is_dragging(&layout_drag(path.root)) {
+                let graph_ops::GraphOpsOutcome { edit, .. } = graph_ops::graph_ops_edit(&self.sequences[self.active_sequence_idx], ops).map_err(refused)?;
+                if let EditCommand::PictureEdit { clip_id, edit, .. } = edit { self.set_picture(clip_id, &edit.after); }
+                return Ok(());
+            }
+        }
         if let [GraphOp::SetParam { path, key, .. } | GraphOp::SetAnim { path, key, .. } | GraphOp::AddKeyAt { path, key, .. } | GraphOp::RemoveKeyAt { path, key, .. }] = ops {
             if self.active_history().pending_drag_key().is_some_and(|open| open == drag_key(path, key) || open == node_drag(path)) {
                 let graph_ops::GraphOpsOutcome { edit, .. } = graph_ops::graph_ops_edit(&self.sequences[self.active_sequence_idx], ops).map_err(refused)?;
@@ -238,6 +258,43 @@ impl crate::state::AppState {
             self.dirty = true;
             self.media_usage_cache_dirty = true;
         }
+    }
+
+    fn begin_node_layout_edit(&mut self, root: Root) -> Result<(), String> {
+        let Root::Clip { clip } = root else { return Err("Only a clip's canvas can be arranged".into()) };
+        let clip_id = ClipId(clip);
+        let before = self.picture_of(clip_id).ok_or_else(|| format!("No clip {clip} on this sequence"))?;
+        if self.active_history().is_any_drag_in_progress() { self.close_open_drag(); }
+        self.active_history_mut().begin_drag(layout_drag(root), HistoryEntry {
+            command: EditCommand::PictureEdit { clip_id, description: "Move Nodes", edit: Box::new(klipp_timeline::PictureEdit { before: before.clone(), after: before }) },
+        });
+        Ok(())
+    }
+
+    fn end_node_layout_edit(&mut self, root: Root) {
+        if !self.active_history().is_dragging(&layout_drag(root)) { return; }
+        let unchanged = match self.active_history().pending_old_entry_ref().map(|e| &e.command) {
+            Some(EditCommand::PictureEdit { clip_id, edit, .. }) => self.sequence().all_clips().find(|c| c.id == *clip_id).is_some_and(|clip| {
+                let Ok(now) = clip.picture_v2() else { return false };
+                let mut before = clip.clone();
+                before.restore_picture(&edit.before);
+                before.picture_v2().is_ok_and(|picture| picture == now)
+            }),
+            _ => false,
+        };
+        if unchanged { self.active_history_mut().abandon_pending_drag(); } else { self.close_open_drag(); }
+    }
+
+    fn abandon_node_layout_edit(&mut self, root: Root) -> bool {
+        if !self.active_history().is_dragging(&layout_drag(root)) { return false; }
+        let before = match self.active_history().pending_old_entry_ref().map(|e| &e.command) {
+            Some(EditCommand::PictureEdit { clip_id, edit, .. }) => Some((*clip_id, edit.before.clone())),
+            _ => None,
+        };
+        self.active_history_mut().abandon_pending_drag();
+        let Some((clip_id, before)) = before else { return false };
+        self.set_picture(clip_id, &before);
+        true
     }
 
     fn begin_param_edit_at(&mut self, addr: &NodePath, key: &ParamKey) -> Result<(), String> {
@@ -332,12 +389,24 @@ impl crate::state::AppState {
 
     fn reveal_graph(&mut self, path: &NodePath, select: bool) -> Result<(), String> {
         self.node_at(path)?;
+        let parent = &path.nodes[..path.nodes.len() - 1];
+        if self.graph_dock_root != Some(path.root) || self.graph_dock_path != parent {
+            self.graph_descent_path.clear();
+            self.selected_node_addr = None;
+            self.selected_node_id = None;
+            self.selected_node_ids.clear();
+        }
+        self.selected_clip = path.root_clip().map(ClipId);
         self.graph_dock_open = true;
         self.graph_dock_root = Some(path.root);
         self.graph_dock_path = path.nodes[..path.nodes.len() - 1].to_vec();
         if select {
             self.selected_node_addr = Some(path.clone());
+            self.selected_node_id = path.node();
+            self.selected_node_ids.clear();
+            self.selected_node_ids.extend(path.node());
         }
+        self.focus_graph_dock();
         Ok(())
     }
 
@@ -346,8 +415,15 @@ impl crate::state::AppState {
         if !self.sequences[self.active_sequence_idx].all_clips().any(|c| c.id.0 == clip) {
             return Err(format!("no clip {clip} on this sequence"));
         }
+        self.selected_clip = Some(ClipId(clip));
+        self.graph_dock_open = true;
         self.graph_dock_root = Some(root);
         self.graph_dock_path.clear();
+        self.graph_descent_path.clear();
+        self.selected_node_addr = None;
+        self.selected_node_id = None;
+        self.selected_node_ids.clear();
+        self.focus_graph_dock();
         Ok(())
     }
 
@@ -456,6 +532,69 @@ mod tests {
 
     fn run(state: &mut AppState, cmd: AppCommand) {
         assert_eq!(state.path_command(&cmd), Some(true), "{cmd:?} applied");
+    }
+
+    fn layout_command(s: &mut AppState, cmd: AppCommand) {
+        s.before_dispatch(&cmd);
+        assert!(s.path_command(&cmd).is_some(), "{cmd:?}");
+    }
+
+    #[test]
+    fn a_node_layout_gesture_moves_several_nodes_and_undoes_once() {
+        let (mut s, id) = state(&[E::GaussianBlur { radius: 3.0 }, E::Sharpen { amount: 0.5 }]);
+        let ids = effects(&s, id);
+        let root = Root::Clip { clip: id.0 };
+        let before = picture(&s, id);
+        layout_command(&mut s, AppCommand::BeginNodeLayoutEdit { root });
+        for x in [10.0, 20.0, 30.0] {
+            for (i, node) in ids.iter().enumerate() {
+                layout_command(&mut s, AppCommand::SetNodePositionAt { addr: at(id, &[*node]), position: (x, i as f32 * 100.0) });
+            }
+            s.before_dispatch(&AppCommand::SetScopesVisible(true));
+            assert_eq!(s.active_history().undo_count(), 0);
+        }
+        layout_command(&mut s, AppCommand::EndNodeLayoutEdit { root });
+        assert_eq!(s.active_history().undo_count(), 1);
+        for (i, node) in ids.iter().enumerate() {
+            assert_eq!(picture(&s, id).picture.graph.ui.positions[node], serde_json::json!({"x":30.0,"y":i as f32 * 100.0}));
+        }
+        undo(&mut s);
+        assert_eq!(picture(&s, id), before);
+    }
+
+    #[test]
+    fn an_unrelated_edit_closes_a_node_layout_gesture() {
+        let (mut s, id) = state(&[E::GaussianBlur { radius: 3.0 }]);
+        let node = effects(&s, id)[0];
+        let root = Root::Clip { clip: id.0 };
+        let before = picture(&s, id);
+        layout_command(&mut s, AppCommand::BeginNodeLayoutEdit { root });
+        layout_command(&mut s, AppCommand::SetNodePositionAt { addr: at(id, &[node]), position: (10.0, 20.0) });
+        let moved = picture(&s, id);
+        layout_command(&mut s, AppCommand::SetNodeEnabledAt { addr: at(id, &[node]), enabled: false });
+        assert!(!s.active_history().is_any_drag_in_progress());
+        assert_eq!(s.active_history().undo_count(), 2);
+        layout_command(&mut s, AppCommand::EndNodeLayoutEdit { root });
+        undo(&mut s);
+        assert_eq!(picture(&s, id), moved);
+        undo(&mut s);
+        assert_eq!(picture(&s, id), before);
+    }
+
+    #[test]
+    fn cancelled_and_empty_node_layout_gestures_record_nothing() {
+        let (mut s, id) = state(&[E::GaussianBlur { radius: 3.0 }]);
+        let node = effects(&s, id)[0];
+        let root = Root::Clip { clip: id.0 };
+        let before = picture(&s, id);
+        layout_command(&mut s, AppCommand::BeginNodeLayoutEdit { root });
+        layout_command(&mut s, AppCommand::EndNodeLayoutEdit { root });
+        assert_eq!(s.active_history().undo_count(), 0);
+        layout_command(&mut s, AppCommand::BeginNodeLayoutEdit { root });
+        layout_command(&mut s, AppCommand::SetNodePositionAt { addr: at(id, &[node]), position: (10.0, 20.0) });
+        layout_command(&mut s, AppCommand::AbandonNodeLayoutEdit { root });
+        assert_eq!(s.active_history().undo_count(), 0);
+        assert_eq!(picture(&s, id), before);
     }
 
     /// Every index command on a clip's effect list has a path twin: a new

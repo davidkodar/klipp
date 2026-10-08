@@ -16,12 +16,13 @@ impl KlippApp {
         } else {
             self.state.show_color_panel
         };
-        let side_nodes = colour_visible && self.state.show_node_strip
+        let side_nodes = (self.state.graph_dock_open || (colour_visible && self.state.show_node_strip))
             && self.layout.node_graph_placement == crate::layout_state::NodeGraphPlacement::Right;
         // Release the nested node borrow before the workspace restores its
         // browser, and take it only after the workspace has settled.
         self.node_browser_borrow.leave_if_inactive(side_nodes, &mut self.state.show_browser_panel);
         self.reconcile_workspace();
+        self.state.repair_graph_dock();
         self.node_browser_borrow.enter_if_active(side_nodes, &mut self.state.show_browser_panel);
         if let Some(text) = self.state.system_clipboard_text.take() {
             ctx.copy_text(text);
