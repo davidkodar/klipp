@@ -12,6 +12,7 @@
 //! the generated rows (step 5). UI-free: no egui types here.
 
 use super::{EffectType, ParamDesc, ParamKind, Unit};
+use klipp_grade_model::Encoding;
 
 mod colour;
 mod geometry;
@@ -27,8 +28,9 @@ pub struct Presentation {
     /// Shown and stored differ (the contrast pivot is stored linear and
     /// shown encoded). `None`: shown as stored.
     pub display: Option<DisplayMap>,
-    /// A choice's labels, by index. They name the stored choices for the
-    /// eye and never rename them (the stored value is the index).
+    /// A choice's labels, by index, or a switch's, off then on. They name
+    /// the stored values for the eye and never rename them (the stored
+    /// value is the index).
     pub labels: Option<&'static [&'static str]>,
     /// The row's label where it differs from [`ParamDesc::label`], kept
     /// only to hold today's wording.
@@ -82,11 +84,13 @@ impl Suffix {
 }
 
 /// A shown value made from a stored one and back: a pair of pure
-/// functions, each the other's inverse over the parameter's slider range.
+/// functions, each the other's inverse over the parameter's slider range,
+/// given the grade encoding in force (a contrast pivot is shown in it;
+/// a map that doesn't depend on it ignores it).
 #[derive(Debug, Clone, Copy)]
 pub struct DisplayMap {
-    pub to_shown: fn(f32) -> f32,
-    pub to_stored: fn(f32) -> f32,
+    pub to_shown: fn(f32, Encoding) -> f32,
+    pub to_stored: fn(f32, Encoding) -> f32,
 }
 
 impl PartialEq for DisplayMap {
@@ -96,18 +100,34 @@ impl PartialEq for DisplayMap {
 }
 
 impl DisplayMap {
-    /// How far, in units in the last place, a stored value may come back
-    /// from shown: a power curve's round trip in `f32` drifts by two.
-    pub const ROUND_TRIP_ULPS: u32 = 4;
+    /// How far, relative to itself, a stored value may come back from
+    /// shown: a log encoding's round trip in `f32` (ACEScc's `log2` and
+    /// `exp2`) drifts by about 1e-6, a power curve's by two ulps; a shown
+    /// value has three decimals at most, so this is far below a step.
+    pub const ROUND_TRIP_REL: f32 = 1e-5;
 
-    /// The first stored value in `range`, of `samples` across it, that
-    /// doesn't come back from shown within [`Self::ROUND_TRIP_ULPS`] of
-    /// itself, if any.
+    /// Every grade encoding a map is shown under.
+    pub const ENCODINGS: [Encoding; 3] = {
+        // A new encoding fails this match, so it's added here too.
+        const fn every(e: Encoding) -> Encoding {
+            match e {
+                Encoding::Bt1886 | Encoding::AcesCct | Encoding::AcesCc => e,
+            }
+        }
+        [every(Encoding::Bt1886), every(Encoding::AcesCct), every(Encoding::AcesCc)]
+    };
+
+    /// The first stored value in `range`, of `samples` across it, under
+    /// any of [`Self::ENCODINGS`], that doesn't come back from shown within
+    /// [`Self::ROUND_TRIP_REL`] of itself, if any.
     pub fn round_trip_fault(&self, range: (f32, f32), samples: usize) -> Option<(f32, f32)> {
         let n = samples.max(2);
-        (0..n).map(|i| range.0 + (range.1 - range.0) * i as f32 / (n - 1) as f32).find_map(|stored| {
-            let back = (self.to_stored)((self.to_shown)(stored));
-            (back.to_bits().abs_diff(stored.to_bits()) > Self::ROUND_TRIP_ULPS).then_some((stored, back))
+        Self::ENCODINGS.into_iter().find_map(|enc| {
+            (0..n).map(|i| range.0 + (range.1 - range.0) * i as f32 / (n - 1) as f32).find_map(|stored| {
+                let back = (self.to_stored)((self.to_shown)(stored, enc), enc);
+                let off = (back - stored).abs();
+                (off.is_nan() || off > Self::ROUND_TRIP_REL * stored.abs().max(1e-3)).then_some((stored, back))
+            })
         })
     }
 }
@@ -227,6 +247,16 @@ impl Presentation {
     /// No row; the value is kept.
     pub const fn hidden() -> Self {
         Self::shown_as(Widget::Hidden)
+    }
+
+    pub const fn widget(mut self, widget: Widget) -> Self {
+        self.widget = widget;
+        self
+    }
+
+    pub const fn display(mut self, display: DisplayMap) -> Self {
+        self.display = Some(display);
+        self
     }
 
     pub const fn label(mut self, label: &'static str) -> Self {
@@ -379,8 +409,10 @@ pub fn param_problems(type_id: &str, p: &ParamDesc, pres: &Presentation) -> Vec<
     }
     match (p.kind, pres.labels) {
         (ParamKind::Choice(names), Some(labels)) if labels.len() != names.len() => out.push(format!("{at}: {} labels for {} choices", labels.len(), names.len())),
-        (ParamKind::Choice(_), _) | (_, None) => {}
-        (_, Some(_)) => out.push(format!("{at}: labels on a parameter that isn't a choice")),
+        // A switch's two states, off then on, named.
+        (ParamKind::Bool, Some(labels)) if labels.len() != 2 => out.push(format!("{at}: {} labels for a switch", labels.len())),
+        (ParamKind::Choice(_) | ParamKind::Bool, _) | (_, None) => {}
+        (_, Some(_)) => out.push(format!("{at}: labels on a parameter that isn't a choice or a switch")),
     }
     // A toggle is said, never implied: a switch, or a choice of two
     // (off and on) shown as one.

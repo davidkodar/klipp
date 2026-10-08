@@ -63,13 +63,13 @@ fn a_suffix_comes_from_the_unit_unless_given() {
     assert_eq!(Suffix::None.text(Unit::Degrees), "");
 }
 
-fn encode(v: f32) -> f32 {
+fn encode(v: f32, _: klipp_grade_model::Encoding) -> f32 {
     v.max(0.0).powf(1.0 / 2.4)
 }
-fn decode(v: f32) -> f32 {
+fn decode(v: f32, _: klipp_grade_model::Encoding) -> f32 {
     v.max(0.0).powf(2.4)
 }
-fn halve(v: f32) -> f32 {
+fn halve(v: f32, _: klipp_grade_model::Encoding) -> f32 {
     v * 0.5
 }
 
