@@ -59,6 +59,8 @@ pub(crate) mod node_thumbnails;
 #[cfg(test)]
 mod inspector_parity;
 #[cfg(test)]
+mod parity_manifest;
+#[cfg(test)]
 mod grade_inspector_tests;
 mod media;
 mod compound;
