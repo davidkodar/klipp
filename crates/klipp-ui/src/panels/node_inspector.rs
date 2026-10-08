@@ -1829,7 +1829,12 @@ impl NodeInspectorPanel {
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
     ) {
-        let huesat = params.huesat.get_or_insert_with(Default::default);
+        // Unset curves are shown as their defaults and stored only by an
+        // edit's command: drawing them wrote them into the project
+        // unrecorded, and an edit written here as well left its step
+        // starting from itself, so undo changed nothing (#1392).
+        let mut edited = params.huesat.clone().unwrap_or_default();
+        let huesat = &mut edited;
 
         // All six curves the pipeline implements.
         //
@@ -1982,7 +1987,9 @@ impl NodeInspectorPanel {
         }
 
         if huesat_changed {
-            cmds.push(AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat: huesat.clone() });
+            // The command writes it, so its step starts from the grade
+            // before the edit and an undo leaves it as it was (#1392).
+            cmds.push(AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat: edited });
         }
     }
 
@@ -2059,7 +2066,12 @@ impl NodeInspectorPanel {
         ui.add_space(6.0);
 
         // Curve editor — fill available width, make it roughly square
-        let curves = params.curves.get_or_insert_with(Default::default);
+        // Unset curves are shown as their defaults and stored only by an
+        // edit's command: drawing them wrote them into the project
+        // unrecorded, and an edit written here as well left its step
+        // starting from itself, so undo changed nothing (#1392).
+        let mut edited = params.curves.clone().unwrap_or_default();
+        let curves = &mut edited;
         let curve_w = ui.available_width() - PAD * 2.0;
         let curve_h = curve_w.clamp(100.0, 500.0);
         let ch = self.active_curve_channel;
@@ -2081,7 +2093,9 @@ impl NodeInspectorPanel {
             });
         }
         if curves_changed {
-            cmds.push(AppCommand::SetNodeCurves { clip_id, node_id, curves: curves.clone() });
+            // The command writes it, so its step starts from the grade
+            // before the edit and an undo leaves it as it was (#1392).
+            cmds.push(AppCommand::SetNodeCurves { clip_id, node_id, curves: edited });
         }
         ui.add_space(6.0);
         } // is_open
@@ -2657,8 +2671,10 @@ impl NodeInspectorPanel {
                 }
             }
             NodeKind::Mask => {
+                let unset = params.masks.is_none();
                 let masks = params.masks.get_or_insert_with(Default::default);
                 Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, frame, &[]);
+                keep_unset(&mut params.masks, unset);
             }
             NodeKind::FilmGrain => {
                 // As the qualifier: a copy, sent once when it changed (#894).
@@ -2800,13 +2816,17 @@ impl NodeInspectorPanel {
                 self.show_external_matte_widget(ui, node_id, params, clip_id, cmds, theme);
             }
             NodeKind::DifferenceKey => {
+                let unset = params.difference_key.is_none();
                 self.show_difference_key_widget(ui, node_id, params, clip_id, cmds, theme);
+                keep_unset(&mut params.difference_key, unset);
             }
             NodeKind::ColorMatch => {
                 self.show_color_match_widget(ui, node_id, params, clip_id, cmds, theme);
             }
             NodeKind::LayerMixer => {
+                let unset = params.layer_mixer.is_none();
                 self.show_layer_mixer_widget(ui, node_id, params, clip_id, cmds, theme);
+                keep_unset(&mut params.layer_mixer, unset);
             }
             NodeKind::Corrector => {
                 // Corrector params are surfaced through the colour-grade
@@ -3245,7 +3265,11 @@ impl NodeInspectorPanel {
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
     ) {
-        let warper = params.warper_params.get_or_insert_with(Default::default);
+        // An unset warper is shown as its default and stored only through a
+        // sector's command (`SetNodeParam`, which creates it): drawing it
+        // wrote it into the project unrecorded (#1392).
+        let mut edited = params.warper_params.clone().unwrap_or_default();
+        let warper = &mut edited;
         #[cfg(any(test, feature = "row-recorder"))]
         crate::widgets::row_recorder::control(ui.next_auto_id(), "colour_warper", "warper_params", "Colour Warper", &*warper);
 
@@ -4655,6 +4679,18 @@ fn grade_slider(
         cmds.push(AppCommand::EndNodeParamEdit { clip_id });
     }
     changed
+}
+
+/// A node's settings put back to unset when they were unset before its
+/// editor drew and are still their defaults after: the old per-node panel
+/// draws in place over the clip's grade, and an editor's
+/// `get_or_insert_with(Default::default)` would otherwise store them on
+/// the first draw, unrecorded (#1392). An edit, which differs from the
+/// defaults, is kept, and so is a value that was set.
+fn keep_unset<T: PartialEq + Default>(field: &mut Option<T>, was_unset: bool) {
+    if was_unset && field.as_ref() == Some(&T::default()) {
+        *field = None;
+    }
 }
 
 /// Push a single atomic node-param edit wrapped in a `BeginNodeParamEdit` /
