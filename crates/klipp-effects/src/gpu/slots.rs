@@ -17,6 +17,10 @@
 //!   its return until the encoder holding its readers has been submitted
 //!   ([`SlotPool::submitted`]). Otherwise a later upload into it would
 //!   decide what an earlier reader saw.
+//! - The same holds the other way: a write that lands before the open
+//!   encoder (an upload, a pass submitted on its own) takes only a slot
+//!   nothing in that encoder has used ([`SlotPool::lease_for_upload`]),
+//!   or it would change what an earlier pass of the encoder reads.
 //! - At the end of a run every slot is free again, and a slot no run has
 //!   leased for [`SlotPool::EVICT_AFTER_RUNS`] runs is dropped: sizes
 //!   come and go (the viewer, thumbnails, an export at its delivery
@@ -24,9 +28,10 @@
 //! - At most `max_slots` slots exist at once, whatever their sizes; a
 //!   lease past that is refused and the caller segments.
 //!
-//! In M2 the pool serves the new mask and mix values only. The chain's
-//! own kept picture, composite input and matte buffers stay the legacy
-//! paths' (decision D3), and no slot is ever one of them.
+//! In M2 the pool served the new mask and mix values only (decision D3).
+//! Since M3 step 17b it holds the chain's kept pictures, composite
+//! inputs and secondary mattes too; the fixed matte buffer is left to
+//! the mask cutout and the layer stack.
 //!
 //! The pool is generic over the buffer so its bookkeeping is tested
 //! without a GPU; the pipeline's is a `SlotPool<wgpu::Buffer>`.
@@ -70,6 +75,8 @@ struct Slot<B> {
     state: State,
     /// The run that last leased it.
     last_run: u64,
+    /// Leased since the last submit: a pass in the open encoder may use it.
+    pending: bool,
 }
 
 /// Slots leased to a run's values; see the module's rules.
@@ -112,10 +119,21 @@ impl<B> SlotPool<B> {
     /// A free slot made for `key`, or a new one from `make`; refused when
     /// every slot the budget allows is leased.
     pub fn lease(&mut self, key: SlotKey, make: impl FnOnce(SlotKey) -> B) -> Result<SlotId, OverBudget> {
-        let id = match self.slots.iter().position(|s| s.key == key && s.state == State::Free) {
+        self.lease_where(key, make, |_| true)
+    }
+
+    /// As [`Self::lease`], for a slot to be written ahead of the open
+    /// encoder (an upload, a pass submitted on its own): only a slot no
+    /// pass of that encoder has used, or a new one.
+    pub fn lease_for_upload(&mut self, key: SlotKey, make: impl FnOnce(SlotKey) -> B) -> Result<SlotId, OverBudget> {
+        self.lease_where(key, make, |s| !s.pending)
+    }
+
+    fn lease_where(&mut self, key: SlotKey, make: impl FnOnce(SlotKey) -> B, usable: impl Fn(&Slot<B>) -> bool) -> Result<SlotId, OverBudget> {
+        let id = match self.slots.iter().position(|s| s.key == key && s.state == State::Free && usable(s)) {
             Some(i) => i,
             None => {
-                let slot = Slot { key, buf: make_checked(&self.slots, self.max_slots, key, make)?, state: State::Free, last_run: self.run };
+                let slot = Slot { key, buf: make_checked(&self.slots, self.max_slots, key, make)?, state: State::Free, last_run: self.run, pending: false };
                 self.created += 1;
                 if self.slots.len() < self.max_slots {
                     self.slots.push(slot);
@@ -132,6 +150,7 @@ impl<B> SlotPool<B> {
         let slot = &mut self.slots[id];
         slot.state = State::Leased { cpu_written: false };
         slot.last_run = self.run;
+        slot.pending = true;
         self.leased += 1;
         self.peak = self.peak.max(self.leased);
         Ok(SlotId(id))
@@ -161,6 +180,12 @@ impl<B> SlotPool<B> {
             if s.state == State::Held {
                 s.state = State::Free;
             }
+            // A slot still leased may be read again by a pass of the next
+            // encoder, before it is returned: it stays pending until a
+            // submit finds it returned.
+            if !matches!(s.state, State::Leased { .. }) {
+                s.pending = false;
+            }
         }
     }
 
@@ -170,6 +195,7 @@ impl<B> SlotPool<B> {
     pub fn end_run(&mut self) -> usize {
         for s in &mut self.slots {
             s.state = State::Free;
+            s.pending = false;
         }
         self.leased = 0;
         let run = self.run;
@@ -251,6 +277,37 @@ mod tests {
         p.release(img);
         assert_eq!(p.end_run(), 3, "the peak");
         assert_eq!(p.end_run(), 0, "and it starts over each run");
+    }
+
+    /// A slot a pass of the open encoder used isn't given to a write that
+    /// lands before that encoder: the pass would read the later write.
+    #[test]
+    fn an_upload_never_takes_a_slot_the_open_encoder_used() {
+        let (mut p, mut make) = pool();
+        let read = p.lease(MATTE, &mut make).unwrap();
+        p.release(read);
+        assert_eq!(p.lease(MATTE, &mut make), Ok(read), "a GPU write may follow in the same encoder");
+        p.release(read);
+        let upload = p.lease_for_upload(MATTE, &mut make).unwrap();
+        assert_ne!(upload, read, "an upload takes another slot");
+        p.release(upload);
+        p.submitted();
+        assert_eq!(p.lease_for_upload(MATTE, &mut make), Ok(read), "after the submit, the first is free for one");
+    }
+
+    /// A slot leased across a submit may be read by the next encoder's
+    /// passes: returned there, it isn't given to an upload until that
+    /// encoder is submitted too.
+    #[test]
+    fn a_slot_held_across_a_submit_stays_pending_until_the_next() {
+        let (mut p, mut make) = pool();
+        let kept = p.lease(IMG, &mut make).unwrap();
+        p.submitted();
+        // Read by a pass of the new encoder, then returned.
+        p.release(kept);
+        assert_ne!(p.lease_for_upload(IMG, &mut make), Ok(kept), "the new encoder read it");
+        p.submitted();
+        assert_eq!(p.lease_for_upload(IMG, &mut make), Ok(kept), "free once that encoder is submitted");
     }
 
     #[test]

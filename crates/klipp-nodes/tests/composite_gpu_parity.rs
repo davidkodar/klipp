@@ -236,8 +236,9 @@ fn layer_composites_the_alpha_rather_than_saturating_it() {
 /// features that keep a picture on the GPU: the Corrector's own
 /// Keep/Mix pair (`global_mix`) and a qualifier secondary.
 ///
-/// This is the ordering test. `composite_src` is written by a queued
-/// upload in some routes and by an in-encoder copy in others, and the
+/// This is the ordering test. A composite's kept picture is written by
+/// a queued upload in some routes and by an in-encoder copy in others
+/// (pool slots, M3 step 17b), and the
 /// two land at different points relative to the dispatches that read
 /// them. The executor's rule — one queued upload per chain segment,
 /// in-encoder keeps unrestricted — is what keeps that straight, and
@@ -248,8 +249,8 @@ fn layer_composites_the_alpha_rather_than_saturating_it() {
 /// What must not happen is a composite reading someone else's picture.
 ///
 /// It is also the regression test for the keyer gate. This graph used
-/// to panic in `qualifier_to_matte_buf_chain` with "keep_chain_input
-/// first": a secondary whose source had run on the CPU still let its
+/// to panic in the secondary's keyer with "keep_chain_input first": a
+/// secondary whose source had run on the CPU still let its
 /// keyer dispatch, because the gate asked only whether *a* chain was
 /// live, not whether the kept buffer held this secondary's source.
 /// First frame it panicked; later frames it would have keyed the

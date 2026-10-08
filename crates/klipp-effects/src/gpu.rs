@@ -280,18 +280,11 @@ pub struct GpuEffectsPipeline {
     deflicker_pipeline: wgpu::ComputePipeline,
     blend_mix_pipeline: wgpu::ComputePipeline,
     layer_over_pipeline: wgpu::ComputePipeline,
+    /// The picture a Corrector's mix over all its stages blends against
+    /// (its Keep/Mix stage pair, within the one node). A grade
+    /// secondary's kept picture and a composite's second picture are
+    /// pool slots ([`KeptPicture`], M3 step 17b).
     grade_mix_src: Option<wgpu::Buffer>,
-    /// Port-1 picture for a chain-resident Blend or Layer.
-    ///
-    /// Deliberately NOT `grade_mix_src`. That buffer is claimed by
-    /// the Corrector's own Keep/Mix stage pair and by the
-    /// qualifier-secondary machinery, both of which copy into it
-    /// mid-encoder. A composite's second input arrives by
-    /// `write_buffer`, which lands before the whole encoder rather
-    /// than in sequence with it, so sharing one buffer would let a
-    /// later in-encoder copy decide what an earlier dispatch read.
-    /// A separate buffer makes the two independent.
-    composite_src: Option<wgpu::Buffer>,
     // Compute pipeline — qualifier (secondary color correction)
     qualifier_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — standalone luminance-threshold key (matte
@@ -722,14 +715,33 @@ pub enum GpuKey {
 #[derive(Debug, PartialEq, Eq)]
 pub struct KeyedMatte(slots::SlotId);
 
+/// A picture the chain keeps beside its pair, in a pool slot of its own
+/// (M3 step 17b): a grade secondary's ungraded picture, which its key
+/// reads and its gate blends against, or a composite's second picture.
+/// Kept by [`GpuEffectsPipeline::keep_picture`] or uploaded by
+/// [`GpuEffectsPipeline::upload_picture`]; the caller gives it back with
+/// [`GpuEffectsPipeline::release_picture`] once its last reader is
+/// recorded (the run's end frees it too).
+#[derive(Debug, PartialEq, Eq)]
+pub struct KeptPicture(slots::SlotId);
+
 /// Where a key reads its picture and writes its matte.
 #[derive(Clone, Copy)]
 enum KeyRoute {
-    /// The picture [`GpuEffectsPipeline::keep_chain_input`] kept, into
-    /// `matte_buf`: a grade secondary's.
-    KeptToMatteBuf,
+    /// A kept picture, into a slot: a grade secondary's.
+    KeptToSlot(slots::SlotId, slots::SlotId),
     /// The chain's picture in `buf_a` (`true`) or `buf_b`, into a slot.
     ChainToSlot(bool, slots::SlotId),
+}
+
+/// A pool slot's buffer, of the frame's size.
+fn slot_buffer(device: &wgpu::Device, k: SlotKey) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(match k.usage { SlotUsage::Image => "slot_image", SlotUsage::Matte => "slot_matte" }),
+        size: u64::from(k.width) * u64::from(k.height) * 16,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    })
 }
 
 impl GpuEffectsPipeline {
@@ -1502,7 +1514,6 @@ impl GpuEffectsPipeline {
             blend_mix_pipeline,
             layer_over_pipeline,
             grade_mix_src: None,
-            composite_src: None,
             mask_pipeline,
             color_balance_pipeline,
             wheel_sat_bri_pipeline,
@@ -4621,85 +4632,20 @@ impl GpuEffectsPipeline {
         Self::record_compute_dispatch(enc, &self.grade_mix_pipeline, &bind_group, workgroups);
     }
 
-    /// Put a two-input node's port-1 picture where the chain can reach
-    /// it, for [`Self::apply_blend_chain`] / [`Self::apply_over_chain`].
-    ///
-    /// `queue.write_buffer` rather than a recorded copy, because the
-    /// pixels are coming from the CPU: the other branch has already
-    /// been read back, or it is the source frame the caller handed in.
-    /// One upload beats what it replaces — a chain flush, a full-frame
-    /// lerp on the CPU and a fresh chain start.
-    ///
-    /// The ordering caveat that shapes the caller's gate: a queued
-    /// write is applied before the next submit, NOT in sequence with
-    /// the encoder's recorded commands. Two uploads into one chain
-    /// segment would therefore both land before either dispatch runs,
-    /// and the second would win for both. The executor allows one per
-    /// segment and sends any further composite down the CPU path.
-    pub fn upload_composite_src_linear(&mut self, px: &[f32], width: u32, height: u32) -> bool {
-        if self.is_device_lost() {
-            return false;
-        }
-        let size = (width as u64) * (height as u64) * 16;
-        if (px.len() * 4) as u64 != size {
-            return false;
-        }
-        if self.composite_src.as_ref().is_none_or(|b| b.size() < size) {
-            self.composite_src = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("composite_src"),
-                size,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-        }
-        let dst = self.composite_src.as_ref().unwrap();
-        self.upload_frame(dst, bytemuck::cast_slice(px));
-        true
-    }
-
-    /// Keep the chain's current picture as a composite's port-1
-    /// input, GPU to GPU.
-    ///
-    /// The counterpart to [`Self::upload_composite_src_linear`] for
-    /// the case where port 1 never left the GPU — a second graded
-    /// branch, or the source picture kept at chain start before the
-    /// grade overwrites it. Recorded into the chain encoder, so it is
-    /// ordered against the dispatches around it rather than jumping
-    /// ahead of them the way a queued write does.
-    pub fn keep_composite_src(&mut self, in_is_a: bool, width: u32, height: u32) {
-        if self.is_device_lost() {
-            return;
-        }
-        let size = (width as u64) * (height as u64) * 16;
-        if self.composite_src.as_ref().is_none_or(|b| b.size() < size) {
-            self.composite_src = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("composite_src"),
-                size,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-        }
-        let src = if in_is_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() }
-            .expect(Self::CHAIN_BG_EXPECT);
-        let dst = self.composite_src.as_ref().unwrap();
-        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        enc.copy_buffer_to_buffer(src, 0, dst, 0, size);
-    }
-
     /// Dispatch-only Blend: `a + (b - a) * mix`, `a` the chain's
-    /// picture and `b` the one [`Self::upload_composite_src_linear`]
-    /// uploaded. Alpha mixes with the rest.
-    pub fn apply_blend_chain(&mut self, in_is_a: bool, width: u32, height: u32, mix: f32) {
-        self.dispatch_composite(in_is_a, width, height, mix, /* over = */ false);
+    /// picture and `b` the kept picture `other` (M3 step 17b). Alpha
+    /// mixes with the rest.
+    pub fn apply_blend_chain(&mut self, in_is_a: bool, width: u32, height: u32, mix: f32, other: &KeptPicture) {
+        self.dispatch_composite(in_is_a, width, height, mix, /* over = */ false, other);
     }
 
     /// Dispatch-only Layer: the over operator, foreground from the
-    /// chain and background from the composite buffer.
-    pub fn apply_over_chain(&mut self, in_is_a: bool, width: u32, height: u32) {
-        self.dispatch_composite(in_is_a, width, height, 1.0, /* over = */ true);
+    /// chain and background the kept picture `other`.
+    pub fn apply_over_chain(&mut self, in_is_a: bool, width: u32, height: u32, other: &KeptPicture) {
+        self.dispatch_composite(in_is_a, width, height, 1.0, /* over = */ true, other);
     }
 
-    fn dispatch_composite(&mut self, in_is_a: bool, width: u32, height: u32, mix: f32, over: bool) {
+    fn dispatch_composite(&mut self, in_is_a: bool, width: u32, height: u32, mix: f32, over: bool, other: &KeptPicture) {
         if self.is_device_lost() {
             return;
         }
@@ -4710,10 +4656,7 @@ impl GpuEffectsPipeline {
             self.buf_b.as_ref().expect(Self::CHAIN_BG_EXPECT),
         );
         let (input, output) = if in_is_a { (a, b) } else { (b, a) };
-        let other = self
-            .composite_src
-            .as_ref()
-            .expect("upload_composite_src_linear first");
+        let other = self.slot_pool.buffer(other.0);
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("chain_bg_composite"),
             layout: &self.huesat_bgl,
@@ -4730,44 +4673,6 @@ impl GpuEffectsPipeline {
         Self::record_compute_dispatch(enc, pipeline, &bind_group, workgroups);
     }
 
-    /// Dispatch-only qualifier: key the picture
-    /// [`Self::keep_chain_input`] kept, writing the HSL matte into
-    /// `matte_buf` for [`Self::apply_matte_chain`].
-    ///
-    /// It reads the kept copy rather than a chain slot on purpose. A
-    /// secondary keys the picture *before* its grade branch, and the
-    /// branch may well have run first — the execution order among the
-    /// two is not ours to choose — by which point the slot holds the
-    /// branch's output. The kept buffer always holds the right frame.
-    ///
-    /// Unlike [`Self::apply_qualifier_gpu`] this neither uploads nor
-    /// downloads — the picture is already in a chain slot and the matte
-    /// never needs to reach the CPU. That is the whole point: a
-    /// secondary used to cost an upload, a full pipeline stall and a
-    /// download for this one node.
-    ///
-    /// Hue values are degrees here, as everywhere the caller sees them;
-    /// the shader's are turns.
-    #[allow(clippy::too_many_arguments)]
-    pub fn qualifier_to_matte_buf_chain(
-        &mut self,
-        width: u32,
-        height: u32,
-        hue_center: f32, hue_width: f32, hue_soft: f32,
-        sat_low: f32, sat_high: f32, sat_soft: f32,
-        lum_low: f32, lum_high: f32, lum_soft: f32,
-        invert: bool,
-    ) {
-        if self.is_device_lost() {
-            return;
-        }
-        let key = GpuKey::Qualifier { hue_center, hue_width, hue_soft, sat_low, sat_high, sat_soft, lum_low, lum_high, lum_soft, invert };
-        self.record_key(&key, KeyRoute::KeptToMatteBuf, width, height);
-    }
-
-    /// Dispatch-only luminance key: the same as
-    /// [`Self::qualifier_to_matte_buf_chain`] for the simpler keyer —
-    /// reads the kept picture, writes the matte to `matte_buf`.
     /// Upload the difference key's clean plate, already resized to the
     /// frame and in linear light, unless the same one is already there.
     ///
@@ -4821,52 +4726,10 @@ impl GpuEffectsPipeline {
         self.plate_buf.is_some() && self.plate_key == Some(key)
     }
 
-    /// Dispatch-only difference key: read the kept picture, compare it
-    /// against the uploaded plate, write the matte to `matte_buf`.
-    ///
-    /// Same shape as [`Self::luma_key_to_matte_buf_chain`] — the keyer
-    /// reads the *kept* copy of its source, not the chain's current
-    /// picture, because the graded branch may already have moved that
-    /// on.
-    pub fn difference_key_to_matte_buf_chain(
-        &mut self,
-        width: u32,
-        height: u32,
-        tolerance: f32,
-        soft: f32,
-        invert: bool,
-        luminance_match: bool,
-    ) -> bool {
-        if self.is_device_lost() || self.plate_buf.is_none() {
-            return false;
-        }
-        self.record_key(&GpuKey::DifferenceKey { tolerance, soft, invert, luminance: luminance_match }, KeyRoute::KeptToMatteBuf, width, height);
-        true
-    }
-
-    pub fn luma_key_to_matte_buf_chain(
-        &mut self,
-        width: u32,
-        height: u32,
-        low: f32,
-        high: f32,
-        soft: f32,
-        invert: bool,
-    ) {
-        if self.is_device_lost() {
-            return;
-        }
-        self.record_key(&GpuKey::LumaKey { low, high, soft, invert }, KeyRoute::KeptToMatteBuf, width, height);
-    }
-
     /// Dispatch-only ApplyMatte: blend the chain's picture (graded) with
-    /// the one [`Self::keep_chain_input`] kept (ungraded), through
-    /// `matte_buf`. Standard chain conventions — reads the `in_is_a`
-    /// slot, writes the opposite.
-    ///
-    /// The caller must have called `keep_chain_input` before the
-    /// secondary's nodes ran, and written the matte to `matte_buf`.
-    pub fn apply_matte_chain(&mut self, in_is_a: bool, width: u32, height: u32, mix: f32, channel: crate::mask_mix::MaskChannel) {
+    /// `kept` (ungraded), through `matte` (M3 step 17b). Standard chain
+    /// conventions — reads the `in_is_a` slot, writes the opposite.
+    pub fn apply_matte_chain(&mut self, in_is_a: bool, width: u32, height: u32, mix: f32, channel: crate::mask_mix::MaskChannel, kept: &KeptPicture, matte: &KeyedMatte) {
         if self.is_device_lost() {
             return;
         }
@@ -4878,8 +4741,7 @@ impl GpuEffectsPipeline {
             self.buf_b.as_ref().expect(Self::CHAIN_BG_EXPECT),
         );
         let (input, output) = if in_is_a { (a, b) } else { (b, a) };
-        let kept = self.grade_mix_src.as_ref().expect("keep_chain_input first");
-        let matte = self.matte_buf.as_ref().expect("matte_buf populated by ensure_buffers");
+        let (kept, matte) = (self.slot_pool.buffer(kept.0), self.slot_pool.buffer(matte.0));
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("chain_bg_apply_matte"),
             layout: &self.apply_matte_bgl,
@@ -6121,18 +5983,92 @@ impl GpuEffectsPipeline {
             return None;
         }
         let device = &self.device;
-        let id = self
-            .slot_pool
-            .lease(SlotKey { width, height, usage: SlotUsage::Matte }, |k| {
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("slot_matte"),
-                    size: u64::from(k.width) * u64::from(k.height) * 16,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-                    mapped_at_creation: false,
-                })
-            })
-            .ok()?;
+        let id = self.slot_pool.lease(SlotKey { width, height, usage: SlotUsage::Matte }, |k| slot_buffer(device, k)).ok()?;
         self.record_key(key, KeyRoute::ChainToSlot(in_is_a, id), width, height);
+        Some(KeyedMatte(id))
+    }
+
+    /// Draw `key`'s matte from `from`, a kept picture, into a pool slot of
+    /// its own, recorded in the chain's encoder: a grade secondary's key,
+    /// drawn just before its gate reads it (M3 step 17b). `None` as
+    /// [`Self::key_into_matte_slot`].
+    pub fn key_kept_into_matte_slot(&mut self, key: &GpuKey, from: &KeptPicture, width: u32, height: u32) -> Option<KeyedMatte> {
+        if self.is_device_lost() || self.chain_encoder.is_none() {
+            return None;
+        }
+        if matches!(key, GpuKey::DifferenceKey { .. }) && self.plate_buf.is_none() {
+            return None;
+        }
+        let device = &self.device;
+        let id = self.slot_pool.lease(SlotKey { width, height, usage: SlotUsage::Matte }, |k| slot_buffer(device, k)).ok()?;
+        self.record_key(key, KeyRoute::KeptToSlot(from.0, id), width, height);
+        Some(KeyedMatte(id))
+    }
+
+    /// Keep the chain's picture (in `buf_a` when `in_is_a`) in a pool slot
+    /// of its own, copied in the chain's encoder, so it is ordered against
+    /// the passes around it. `None` when there is no chain or the pool's
+    /// budget refuses.
+    pub fn keep_picture(&mut self, in_is_a: bool, width: u32, height: u32) -> Option<KeptPicture> {
+        if self.is_device_lost() || self.chain_encoder.is_none() {
+            return None;
+        }
+        let device = &self.device;
+        let id = self.slot_pool.lease(SlotKey { width, height, usage: SlotUsage::Image }, |k| slot_buffer(device, k)).ok()?;
+        let size = u64::from(width) * u64::from(height) * 16;
+        let src = if in_is_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() }.expect(Self::CHAIN_BG_EXPECT);
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        enc.copy_buffer_to_buffer(src, 0, self.slot_pool.buffer(id), 0, size);
+        Some(KeptPicture(id))
+    }
+
+    /// `px`, a picture from the CPU (a composite's second picture, read
+    /// back or the source frame), in a pool slot of its own. Uploaded, so
+    /// it lands before the open encoder: the slot is one no pass of it has
+    /// used, held after its return until that encoder is submitted. `None`
+    /// when the size is wrong or the budget refuses.
+    pub fn upload_picture(&mut self, px: &[f32], width: u32, height: u32) -> Option<KeptPicture> {
+        if self.is_device_lost() || (px.len() * 4) as u64 != u64::from(width) * u64::from(height) * 16 {
+            return None;
+        }
+        let device = &self.device;
+        let id = self.slot_pool.lease_for_upload(SlotKey { width, height, usage: SlotUsage::Image }, |k| slot_buffer(device, k)).ok()?;
+        self.upload_frame(self.slot_pool.buffer(id), bytemuck::cast_slice(px));
+        self.slot_pool.mark_cpu_written(id);
+        Some(KeptPicture(id))
+    }
+
+    /// A kept picture's pixels, read back for a reader off the chain.
+    /// `None` while the chain that keeps it is still being recorded.
+    pub fn read_picture(&self, picture: &KeptPicture, pixel_count: usize) -> Option<Vec<f32>> {
+        if self.is_device_lost() || self.chain_encoder.is_some() {
+            return None;
+        }
+        Some(self.download_linear_rgba_f32(self.slot_pool.buffer(picture.0), pixel_count)).filter(|v| v.len() == pixel_count * 4)
+    }
+
+    /// Give a kept picture's slot back: its last reader is recorded.
+    pub fn release_picture(&mut self, picture: KeptPicture) {
+        self.slot_pool.release(picture.0);
+    }
+
+    /// A window's matte (`masks`, as drawn now) in a pool slot of its own,
+    /// for a grade secondary's gate (M3 step 17b). Drawn by a pass
+    /// submitted on its own, ahead of the open encoder, so the slot is one
+    /// no pass of that encoder has used. `None` when the budget refuses.
+    pub fn mask_into_matte_slot(&mut self, width: u32, height: u32, masks: &[GpuMaskDef]) -> Option<KeyedMatte> {
+        if self.is_device_lost() {
+            return None;
+        }
+        let device = &self.device;
+        let id = self.slot_pool.lease_for_upload(SlotKey { width, height, usage: SlotUsage::Matte }, |k| slot_buffer(device, k)).ok()?;
+        self.slot_pool.mark_cpu_written(id);
+        let (records, points) = Self::build_mask_storage(masks);
+        let records_bytes = (records.len() * std::mem::size_of::<MaskRecord>()) as u64;
+        let points_bytes = (points.len() * std::mem::size_of::<[f32; 2]>()) as u64;
+        self.ensure_mask_storage_buffers(records_bytes, points_bytes);
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        self.dispatch_mask_v2(width, height, &records, &points, masks.len() as u32, self.slot_pool.buffer(id), workgroups);
         Some(KeyedMatte(id))
     }
 
@@ -6205,10 +6141,7 @@ impl GpuEffectsPipeline {
             }
         };
         let (input, output) = match route {
-            KeyRoute::KeptToMatteBuf => (
-                self.grade_mix_src.as_ref().expect("keep_chain_input first"),
-                self.matte_buf.as_ref().expect("matte_buf populated by ensure_buffers"),
-            ),
+            KeyRoute::KeptToSlot(kept, id) => (self.slot_pool.buffer(kept), self.slot_pool.buffer(id)),
             KeyRoute::ChainToSlot(in_is_a, id) => (
                 if in_is_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() }.expect("chain buffers"),
                 self.slot_pool.buffer(id),
@@ -6303,7 +6236,9 @@ impl GpuEffectsPipeline {
             Some(EffectMatte::Shapes(_)) | None => None,
             Some(source) => {
                 let device = &self.device;
-                match self.slot_pool.lease(SlotKey { usage: SlotUsage::Matte, ..image }, |k| make(device, k)) {
+                // Uploaded, so it lands before the open encoder: a slot no
+                // pass of it has used (a keyed matte read earlier in it).
+                match self.slot_pool.lease_for_upload(SlotKey { usage: SlotUsage::Matte, ..image }, |k| make(device, k)) {
                     Ok(id) => {
                         match source {
                             EffectMatte::Pixels(data) => {

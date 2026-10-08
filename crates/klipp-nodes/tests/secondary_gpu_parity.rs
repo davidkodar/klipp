@@ -652,3 +652,177 @@ fn a_keyframed_refinement_in_a_secondary_matches_the_cpu() {
     let off = worst(&cpu, &gpu);
     assert!(off < 0.001, "a keyed refinement differs between CPU and GPU by {off}");
 }
+
+/// The shape a lifted grade gives `n` gated corrections (M3 step 17b):
+/// each correction's port 1 is a qualifier keying the clip's frame, not
+/// the correction's own input, so a later gate's matte is keyed from the
+/// source while earlier gates' pictures are still in flight. Gives the
+/// graph and the keys, in gate order.
+fn gates_keyed_off_the_frame(n: usize) -> (NodeGraph, Vec<NodeId>) {
+    let (src, out) = (NodeId::new_v4(), NodeId::new_v4());
+    let windows = [window(), klipp_core::QualifierSettings { enabled: true, hue_center: 200.0, hue_width: 60.0, hue_soft: 15.0, sat_low: 0.05, sat_high: 1.0, sat_soft: 0.05, lum_low: 0.05, lum_high: 1.0, lum_soft: 0.05, ..Default::default() }, klipp_core::QualifierSettings { enabled: true, hue_center: 100.0, hue_width: 80.0, hue_soft: 20.0, sat_low: 0.0, sat_high: 1.0, sat_soft: 0.05, lum_low: 0.0, lum_high: 1.0, lum_soft: 0.05, ..Default::default() }];
+    let grades = [NodeParams { temperature: Some(-40.0), ..Default::default() }, NodeParams { saturation: Some(0.4), ..Default::default() }, NodeParams { contrast: Some(0.3), ..Default::default() }];
+    let mut nodes = vec![node(src, NodeKind::Source, Default::default())];
+    let mut edges = Vec::new();
+    let (mut keys, mut prev) = (Vec::new(), src);
+    for g in 0..n {
+        let (c, q) = (NodeId::new_v4(), NodeId::new_v4());
+        nodes.push(node(q, NodeKind::Qualifier, NodeParams { qualifier: Some(windows[g % 3].clone()), ..Default::default() }));
+        nodes.push(node(c, NodeKind::Corrector, grades[g % 3].clone()));
+        edges.push(Edge { from_node: prev, from_port: 0, to_node: c, to_port: 0 });
+        edges.push(Edge { from_node: src, from_port: 0, to_node: q, to_port: 0 });
+        edges.push(Edge { from_node: q, from_port: 0, to_node: c, to_port: 1 });
+        keys.push(q);
+        prev = c;
+    }
+    nodes.push(node(out, NodeKind::Output, Default::default()));
+    edges.push(Edge { from_node: prev, from_port: 0, to_node: out, to_port: 0 });
+    let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 160.0, y: 0.0 })).collect();
+    (NodeGraph { nodes, edges, output_node_id: out, node_positions, working_space_override: None, frames: Vec::new(), sticky_notes: Vec::new() }, keys)
+}
+
+/// `graph` on the CPU and the GPU: the GPU's picture, its counters, and
+/// its worst difference from the CPU's. `None` without a usable GPU.
+fn against_the_cpu(graph: &NodeGraph, matte_tap: Option<NodeId>) -> Option<(klipp_nodes::executor::ChainStats, f32)> {
+    let mut cpu = GraphExecutor::new_cpu_only();
+    let want = cpu.execute_linear(&frame(), graph, W, H, 0.0, 0, matte_tap, None).expect("graph runs").0;
+    let mut gpu = GraphExecutor::new();
+    gpu.gpu_pipeline_or_init()?;
+    let got = gpu.execute_linear(&frame(), graph, W, H, 0.0, 0, matte_tap, None).expect("graph runs").0;
+    let worst = want.iter().zip(&got).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    Some((gpu.last_run_chain_stats(), worst))
+}
+
+/// IC11: two and three gated corrections with different mattes, keyed off
+/// the frame as a lifted grade keys them, ride one chain: the frame goes up
+/// once, every key, correction and gate is a chain step, and it comes back
+/// once (on main: two readbacks, five nodes on the CPU). Each keeps its
+/// own picture and matte in slots, released after their gate, so the peak
+/// stays small, and the picture is the CPU's.
+#[test]
+fn two_gated_corrections_with_different_mattes_do_not_flush() {
+    for n in [2, 3] {
+        let (graph, _) = gates_keyed_off_the_frame(n);
+        let Some((stats, worst)) = against_the_cpu(&graph, None) else {
+            eprintln!("skipping: no usable GPU");
+            return;
+        };
+        eprintln!("{n} gates keyed off the frame: {stats:?}, worst {worst}");
+        assert!(worst < 1e-3, "{n} gates: GPU differs from the CPU by {worst}");
+        assert_eq!(stats.flushes, 1, "{n} gates: one readback, at the end: {stats:?}");
+        assert!(stats.cpu_nodes <= 1, "{n} gates: only the source off the chain: {stats:?}");
+        // Each key, gate and correction is a chain step, the first
+        // correction starting the chain.
+        assert!(stats.extends as usize >= 3 * n - 1, "{n} gates: each key, correction and gate is a chain step: {stats:?}");
+        assert!(stats.peak_slots <= 4, "{n} gates: slots go back after their gate: {stats:?}");
+    }
+}
+
+/// A key that reads a picture no secondary keeps (here a side correction
+/// of the frame, drawn by no gate) doesn't make a recognised secondary: a
+/// slot would have to hold a picture nothing keeps, or a stale one. That
+/// gate runs off the chain, and the picture is still the CPU's.
+#[test]
+fn a_key_of_a_picture_written_later_falls_back() {
+    let (mut graph, keys) = gates_keyed_off_the_frame(2);
+    let src = graph.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
+    let side = node(NodeId::new_v4(), NodeKind::Corrector, NodeParams { contrast: Some(0.5), ..Default::default() });
+    graph.edges.push(Edge { from_node: src, from_port: 0, to_node: side.id, to_port: 0 });
+    for e in &mut graph.edges {
+        if e.to_node == keys[1] {
+            e.from_node = side.id;
+        }
+    }
+    graph.nodes.push(side);
+    let (_, alone) = against_the_cpu(&gates_keyed_off_the_frame(1).0, None).unwrap_or_default();
+    let Some((stats, worst)) = against_the_cpu(&graph, None) else { return };
+    eprintln!("a key of a picture nothing keeps: {stats:?} (one gate alone: worst {alone})");
+    assert!(worst < 1e-3, "GPU differs from the CPU by {worst}");
+    assert!(stats.cpu_nodes >= 2, "the second gate runs off the chain: {stats:?}");
+}
+
+/// A key whose matte is looked at (tapped) keeps its pixels on the CPU:
+/// its gate reads them there, and the picture is still the CPU's.
+#[test]
+fn a_tapped_key_falls_back() {
+    let (graph, keys) = gates_keyed_off_the_frame(2);
+    let Some((stats, worst)) = against_the_cpu(&graph, Some(keys[1])) else { return };
+    eprintln!("a tapped key: {stats:?}");
+    assert!(worst < 1e-3, "GPU differs from the CPU by {worst}");
+}
+
+/// More gates keyed off one frame cost no more slots (M3 step 17b): the
+/// frame, the previous gate's picture and one key's matte at a time, each
+/// key drawn just before its gate and given back after it.
+#[test]
+fn peak_slots_does_not_grow_with_n() {
+    let mut peaks = Vec::new();
+    for n in 2..=5 {
+        let (graph, _) = gates_keyed_off_the_frame(n);
+        let Some((stats, worst)) = against_the_cpu(&graph, None) else { return };
+        assert!(worst < 1e-3, "{n} gates: GPU differs from the CPU by {worst}");
+        assert_eq!(stats.flushes, 1, "{n} gates ride one chain: {stats:?}");
+        peaks.push(stats.peak_slots);
+    }
+    eprintln!("peak slots for 2..=5 gates: {peaks:?}");
+    assert!(peaks.iter().all(|p| *p == peaks[0]), "the peak grows with the gates: {peaks:?}");
+    assert!(peaks[0] <= 3, "the frame, a gate's picture and a matte: {peaks:?}");
+}
+
+/// Lead decision 3's check (M3 step 17b): the pool's slots and the
+/// chain's other kept buffers never alias. Two gates keyed off the frame,
+/// each correction mixing over its own input (its Keep/Mix pair, on the
+/// Corrector's own buffer, written and read inside the gate's branch)
+/// while the frame, the first gate's picture and a matte sit in slots:
+/// the chain carries it all (one readback, the slots held at once), and
+/// the picture is the CPU's. (Composites beside a secondary and a mixed
+/// Corrector: `composite_gpu_parity`.)
+#[test]
+fn leased_and_secondary_never_alias() {
+    let (mut graph, _) = gates_keyed_off_the_frame(2);
+    for n in graph.nodes.iter_mut().filter(|n| n.kind == NodeKind::Corrector) {
+        n.params.global_mix = Some(0.6);
+    }
+    let Some((stats, worst)) = against_the_cpu(&graph, None) else { return };
+    eprintln!("gates with mixed correctors: {stats:?}, worst {worst}");
+    assert!(worst < 1e-3, "a slot aliased another value: GPU differs from the CPU by {worst}");
+    assert_eq!(stats.flushes, 1, "the gates and the mixes ride one chain: {stats:?}");
+    assert!(stats.peak_slots >= 3, "the frame, a gate's picture and a matte held at once: {stats:?}");
+}
+
+/// A key switched off at this frame by its enabled track (though on in its
+/// settings) is bypassed, as any switched-off node is: its gate isn't
+/// drawn from a key the GPU keyed anyway, and the picture is the CPU's at
+/// a frame where it is off and one where it is on.
+#[test]
+fn a_key_switched_off_by_its_track_is_bypassed_at_its_gate() {
+    // Keyed off the frame, and (rewired to the first correction, which
+    // the gates turn into the first gate's picture) off a kept picture the
+    // chain has moved past by the time the key's turn comes.
+    for off_a_gate in [false, true] {
+        let (mut graph, keys) = gates_keyed_off_the_frame(2);
+        if off_a_gate {
+            let first = graph.edges.iter().find(|e| e.from_node == keys[0] && e.to_port == 1).unwrap().to_node;
+            for e in graph.edges.iter_mut().filter(|e| e.to_node == keys[1]) {
+                e.from_node = first;
+            }
+        }
+        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Step, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        if let Some(n) = graph.nodes.iter_mut().find(|n| n.id == keys[1]) {
+            n.keyframes.tracks.push(klipp_nodes::params::NodeKeyframeTrack { param_name: klipp_nodes::executor::ENABLED_TRACK.into(), keyframes: vec![key(0.0, 0.0), key(1.0, 1.0)] });
+        }
+        for t in [0.0, 1.5] {
+            let mut cpu = GraphExecutor::new_cpu_only();
+            let want = cpu.execute_linear(&frame(), &graph, W, H, t, 0, None, None).expect("graph runs").0;
+            let mut gpu = GraphExecutor::new();
+            if gpu.gpu_pipeline_or_init().is_none() {
+                return;
+            }
+            let got = gpu.execute_linear(&frame(), &graph, W, H, t, 0, None, None).expect("graph runs").0;
+            let worst = want.iter().zip(&got).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            eprintln!("key off until 1 s (off a gate: {off_a_gate}), at {t} s: {:?}, worst {worst}", gpu.last_run_chain_stats());
+            assert!(worst < 1e-3, "off a gate {off_a_gate}, at {t} s the GPU differs from the CPU by {worst}");
+        }
+    }
+}
+
