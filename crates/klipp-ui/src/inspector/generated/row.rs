@@ -273,13 +273,13 @@ fn numeric_row(ui: &mut egui::Ui, ctx: &mut RowCtx, input: RowInput) -> RowOutco
     let to_shown = |v: f32| pres.display.map_or(v, |m| (m.to_shown)(v, encoding));
     let to_stored = |v: f32| pres.display.map_or(v, |m| (m.to_stored)(v, encoding));
     let mut shown = to_shown(shown_at_t.unwrap_or(stored_number));
-    // A stored value outside the slider's range (a transform's perspective
-    // at 0, "unset") widens it rather than being clamped: drawing never
-    // writes.
+    // Include both the stored and reset values (perspective's 0 means
+    // "unset"). The DragValue must not clamp a label reset back into the
+    // soft range later in the same frame; drawing never writes either.
     let (lo, hi) = shown_range(desc, pres, ctx.encoding);
-    let (lo, hi) = (lo.min(shown), hi.max(shown));
-    let before = shown;
     let reset = to_shown(reset_value(desc, pres));
+    let (lo, hi) = (lo.min(shown).min(reset), hi.max(shown).max(reset));
+    let before = shown;
     let suffix = match pres.suffix {
         Suffix::None => String::new(),
         s => {
