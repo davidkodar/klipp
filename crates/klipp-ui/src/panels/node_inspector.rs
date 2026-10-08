@@ -1829,7 +1829,12 @@ impl NodeInspectorPanel {
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
     ) {
-        let huesat = params.huesat.get_or_insert_with(Default::default);
+        // Unset curves are shown as their defaults and stored only by an
+        // edit's command: drawing them wrote them into the project
+        // unrecorded, and an edit written here as well left its step
+        // starting from itself, so undo changed nothing (#1392).
+        let mut edited = params.huesat.clone().unwrap_or_default();
+        let huesat = &mut edited;
 
         // All six curves the pipeline implements.
         //
@@ -1982,7 +1987,9 @@ impl NodeInspectorPanel {
         }
 
         if huesat_changed {
-            cmds.push(AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat: huesat.clone() });
+            // The command writes it, so its step starts from the grade
+            // before the edit and an undo leaves it as it was (#1392).
+            cmds.push(AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat: edited });
         }
     }
 
@@ -2059,7 +2066,12 @@ impl NodeInspectorPanel {
         ui.add_space(6.0);
 
         // Curve editor — fill available width, make it roughly square
-        let curves = params.curves.get_or_insert_with(Default::default);
+        // Unset curves are shown as their defaults and stored only by an
+        // edit's command: drawing them wrote them into the project
+        // unrecorded, and an edit written here as well left its step
+        // starting from itself, so undo changed nothing (#1392).
+        let mut edited = params.curves.clone().unwrap_or_default();
+        let curves = &mut edited;
         let curve_w = ui.available_width() - PAD * 2.0;
         let curve_h = curve_w.clamp(100.0, 500.0);
         let ch = self.active_curve_channel;
@@ -2081,7 +2093,9 @@ impl NodeInspectorPanel {
             });
         }
         if curves_changed {
-            cmds.push(AppCommand::SetNodeCurves { clip_id, node_id, curves: curves.clone() });
+            // The command writes it, so its step starts from the grade
+            // before the edit and an undo leaves it as it was (#1392).
+            cmds.push(AppCommand::SetNodeCurves { clip_id, node_id, curves: edited });
         }
         ui.add_space(6.0);
         } // is_open
@@ -3245,7 +3259,12 @@ impl NodeInspectorPanel {
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
     ) {
-        let warper = params.warper_params.get_or_insert_with(Default::default);
+        // An unset warper is shown as its default and stored only once a
+        // sector is moved: drawing it wrote it into the project unrecorded
+        // (#1392).
+        let sent = cmds.len();
+        let mut edited = params.warper_params.clone().unwrap_or_default();
+        let warper = &mut edited;
         #[cfg(any(test, feature = "row-recorder"))]
         crate::widgets::row_recorder::control(ui.next_auto_id(), "colour_warper", "warper_params", "Colour Warper", &*warper);
 
@@ -3498,6 +3517,9 @@ impl NodeInspectorPanel {
         let active_count = (0..12).filter(|&i| warper.hue_shifts[i].abs() > 0.1 || warper.sat_shifts[i].abs() > 0.01).count();
         if active_count > 0 {
             ui.label(egui::RichText::new(format!("{active_count} sector(s) adjusted")).size(10.0).color(theme.text_dim));
+        }
+        if cmds.len() > sent || params.warper_params.is_some() {
+            params.warper_params = Some(edited);
         }
     }
 

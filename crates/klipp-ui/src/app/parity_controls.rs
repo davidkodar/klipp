@@ -293,6 +293,26 @@ struct Grade {
     panel: crate::panels::node_inspector::NodeInspectorPanel,
     generated: bool,
     unapplied: Vec<String>,
+    /// Which of the grade's pages draws the node.
+    page: Page,
+    /// The grade as it was before this frame's input: what an old-panel
+    /// gesture's step starts from, as the app keeps it
+    /// (`keep_graph_before_input`), since the panel writes its value into
+    /// the live graph before the gesture's Begin arrives.
+    before_input: Option<klipp_nodes::NodeGraph>,
+    /// An old-panel gesture's start (`BeginNodeParamEdit`).
+    gesture: Option<klipp_nodes::NodeGraph>,
+}
+
+/// The grade pages a node's controls are drawn on.
+#[derive(Clone, Copy, Debug)]
+enum Page {
+    /// The per-node layout (`grade_view` and the old panel's `show`).
+    PerNode,
+    /// The Corrector's tabbed page in the right inspector, on a tab.
+    Tabbed(crate::state::ColorTab),
+    /// The Colour page's bottom tools, the same rows laid out wide.
+    Bottom(crate::state::ColorTab),
 }
 
 impl Grade {
@@ -301,7 +321,7 @@ impl Grade {
         // filling the panel, which pushes the rows off it.
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
-        Grade { state, clip, node, ctx, clock: 0.0, panel: Default::default(), generated, unapplied: Vec::new() }
+        Grade { state, clip, node, ctx, clock: 0.0, panel: Default::default(), generated, unapplied: Vec::new(), page: Page::PerNode, before_input: None, gesture: None }
     }
 
     /// A fresh state, no history, holding a clone of this one's clip.
@@ -309,7 +329,7 @@ impl Grade {
         let mut state = AppState::default();
         let track = self.state.sequences[0].tracks.iter().position(|t| t.clips.iter().any(|c| c.id == self.clip)).unwrap();
         state.sequences[0].tracks[track].clips.push(self.clip().clone());
-        Grade::new(state, self.clip, self.node, generated)
+        Grade { page: self.page, ..Grade::new(state, self.clip, self.node, generated) }
     }
 
     fn clip(&self) -> &klipp_timeline::Clip {
@@ -329,16 +349,33 @@ impl Grade {
         let frame = crate::inspector::keyframe_selection::FrameSelection { time_secs: 0.5, tolerance: 0.02 };
         let theme = KlippTheme::default();
         let mut cmds = Vec::new();
-        let Grade { state, clip, node, ctx, panel, generated, .. } = self;
-        let (clip_id, node) = (*clip, *node);
+        self.before_input = Some(self.clip().grade().clone());
+        let Grade { state, clip, node, ctx, panel, generated, page, .. } = self;
+        let (clip_id, node, page) = (*clip, *node, *page);
         let out = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                if *generated {
+            egui::CentralPanel::default().show(ctx, |ui| match page {
+                Page::PerNode if *generated => {
                     let clip = state.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap().clone();
                     crate::inspector::grade_view::show(ui, &theme, &clip, node, &mut cmds, frame, Some(panel));
-                } else {
+                }
+                Page::PerNode => {
                     let clip = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
                     cmds.extend(clip.edit_grade(|g| panel.show(ui, &Some(node), g, clip_id, &theme, frame)));
+                }
+                // The tabbed page and the bottom tools as the app draws them
+                // (`main_layout`): the panel over the clip's grade, its
+                // shared rows the generated ones when `generated`.
+                Page::Tabbed(tab) | Page::Bottom(tab) => {
+                    let clip = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
+                    panel.generated = crate::inspector::grade_view::snapshot_for(clip, *generated, false, false);
+                    let (mut selected, mut tab) = (Some(node), tab);
+                    let wide = matches!(page, Page::Bottom(_));
+                    cmds.extend(clip.edit_grade(|g| if wide {
+                        panel.show_simple_horizontal(ui, g, clip_id, &mut selected, &mut tab, &theme, frame)
+                    } else {
+                        panel.show_simple(ui, g, clip_id, &mut selected, &mut tab, &theme, frame)
+                    }));
+                    panel.generated = None;
                 }
             });
         });
@@ -355,11 +392,40 @@ impl Grade {
                     }
                 }
                 None => {
+                    // An old-panel gesture, recorded as the colour dispatch
+                    // records it: one graph step, from the grade as it was
+                    // before the input that began it.
+                    match &cmd {
+                        AppCommand::BeginNodeParamEdit { .. } => {
+                            if self.gesture.is_none() {
+                                self.gesture = self.before_input.clone();
+                            }
+                            continue;
+                        }
+                        AppCommand::EndNodeParamEdit { .. } => {
+                            if let Some(old_graph) = self.gesture.take() {
+                                let new_graph = self.clip().grade().clone();
+                                self.state.active_history_mut().push(crate::history::HistoryEntry { command: crate::history::EditCommand::SetNodeGraph { clip_id: self.clip, old_graph, new_graph } });
+                            }
+                            continue;
+                        }
+                        _ => {}
+                    }
                     // The old panel's number, as the colour dispatch writes
                     // it (`apply_override`; the history is its gesture's).
                     if let AppCommand::SetNodeParam { node_id, param, value, .. } = &cmd {
                         let clip = self.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(self.clip)).unwrap();
                         clip.edit_grade(|g| g.nodes.iter_mut().filter(|n| n.id == *node_id).for_each(|n| { n.params.apply_override(param, *value); }));
+                        continue;
+                    }
+                    // A curves editor's edit, as the colour dispatch writes
+                    // it: the curves set, the node on, one graph step.
+                    if let AppCommand::SetNodeCurves { node_id, curves, .. } = &cmd {
+                        let clip = self.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(self.clip)).unwrap();
+                        let old_graph = clip.grade().clone();
+                        clip.edit_grade(|g| g.nodes.iter_mut().filter(|n| n.id == *node_id).for_each(|n| { n.params.curves = Some(curves.clone()); n.enabled = true; }));
+                        let new_graph = clip.grade().clone();
+                        self.state.active_history_mut().push(crate::history::HistoryEntry { command: crate::history::EditCommand::SetNodeGraph { clip_id: self.clip, old_graph, new_graph } });
                         continue;
                     }
                     // A per-node editor's settings, as the app's colour
@@ -408,7 +474,15 @@ impl Grade {
         let (label, shows, item) = if self.generated { (label.to_owned(), shows, item) } else { old_menu(label, shows, item) };
         let label = label.as_str();
         let drawn = self.drawn();
-        let row = drawn.iter().rev().find(|(t, _)| t == label).map(|(_, p)| *p).ok_or_else(|| format!("no row {label:?}"))?;
+        let Some(row) = drawn.iter().rev().find(|(t, _)| t == label).map(|(_, p)| *p) else {
+            // A choice drawn as buttons side by side, with no row label (the
+            // tabbed page's Linear / Log): the item is clicked where it is.
+            let item_at = drawn.iter().rev().find(|(t, _)| t == item).map(|(_, p)| *p);
+            let beside = item_at.is_some_and(|i| drawn.iter().any(|(t, p)| t == shows && (p.y - i.y).abs() < 6.0));
+            let Some(item_at) = item_at.filter(|_| beside) else { return Err(format!("no row {label:?}")) };
+            self.click_at(item_at);
+            return Ok(());
+        };
         let at = drawn.iter().filter(|(t, p)| t == shows && (p.y - row.y).abs() < 6.0 && p.x > row.x).map(|(_, p)| *p).next().ok_or_else(|| format!("row {label:?} doesn't show {shows:?}"))?;
         self.click_at(at);
         let item_at = self.drawn().into_iter().rev().find(|(t, _)| t == item).map(|(_, p)| p).ok_or_else(|| format!("{item:?} isn't in the menu"))?;
@@ -467,6 +541,10 @@ fn old_menu<'a>(label: &str, shows: &'a str, item: &'a str) -> (String, &'a str,
 /// in one undo step there, undone and redone exactly.
 fn grade_case(start: &Grade, drive: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
     let (mut new, mut old) = (start.twin(true), start.twin(false));
+    // The picture as the page shows it, drawn once (a page may write on
+    // its first draw, as the tabbed page's curves do).
+    new.drawn();
+    old.drawn();
     let before = new.picture();
     drive(&mut new)?;
     drive(&mut old).map_err(|e| format!("the old panel: {e}"))?;
@@ -557,75 +635,124 @@ pub(super) fn run_grade(report: &mut Report) {
         };
         let base = Grade::new(state, clip, node, true);
         for desc in ty.desc.params {
-            let pres = ty.presentation(desc);
-            if !matches!(pres.widget, Widget::Toggle | Widget::Combo) {
-                continue;
-            }
-            let label = pres.label.unwrap_or(desc.label);
-            // Meet the row's conditions by clicking their switches.
-            let mut shown = base.twin(true);
-            let mut variant = "sample";
-            let mut setup = Ok(());
-            for Cond::ParamIs { key, value } in [pres.visible_if, pres.enabled_if].into_iter().flatten() {
-                let Some(cond) = ty.desc.params.iter().find(|p| p.key == key) else {
-                    setup = Err(format!("its condition names {key:?}, not a parameter"));
-                    break;
-                };
-                if shown_index(cond, &shown.value(cond)) != Some(value as usize) {
-                    let cond_label = ty.presentation(cond).label.unwrap_or(cond.label);
-                    setup = shown.switch(cond_label);
-                    variant = "conditions met";
-                }
-            }
-            if setup.is_ok() && !shown.unapplied.is_empty() {
-                setup = Err(format!("meeting its conditions: unapplied {:?}", shown.unapplied));
-            }
-            if let Err(e) = setup {
-                report.case(&format!("{id} {}", desc.key), [], || Err(e));
-                continue;
-            }
-            let key = |interaction| CoverageKey::new(id, desc.key, Surface::GradePerNode, variant, interaction);
-            match pres.widget {
-                Widget::Toggle => {
-                    let is_on = shown_index(desc, &shown.value(desc)) == Some(1);
-                    for on in [false, true] {
-                        let name = format!("{id} {} switched {}", desc.key, if on { "on" } else { "off" });
-                        report.case(&name, [key(Interaction::Toggle(on)), key(Interaction::UndoRedo)], || {
-                            // From the other way, so the click turns it `on`.
-                            let mut start = shown.twin(true);
-                            if is_on == on {
-                                start.switch(label)?;
-                            }
-                            if !start.unapplied.is_empty() {
-                                return Err(format!("from the other way: unapplied {:?}", start.unapplied));
-                            }
-                            grade_case(&start.twin(true), |g| g.switch(label))
-                        });
-                    }
-                }
-                Widget::Combo => {
-                    let labels = menu_labels(desc, &pres);
-                    let current = shown_index(desc, &shown.value(desc)).unwrap_or(0);
-                    for (i, item) in labels.iter().enumerate() {
-                        let name = format!("{id} {} picks {item:?}", desc.key);
-                        report.case(&name, [key(Interaction::ComboSelect(i)), key(Interaction::UndoRedo)], || {
-                            // From another item, so the pick changes it.
-                            let mut start = shown.twin(true);
-                            let from = if i == current { (i + 1) % labels.len() } else { current };
-                            if from != current {
-                                start.pick(label, labels[current], labels[from])?;
-                            }
-                            if !start.unapplied.is_empty() {
-                                return Err(format!("from another item: unapplied {:?}", start.unapplied));
-                            }
-                            grade_case(&start.twin(true), |g| g.pick(label, labels[from], item))
-                        });
-                    }
-                }
-                _ => {}
-            }
+            discrete_cases(report, ty, desc, &base, Surface::GradePerNode);
         }
     }
+}
+
+/// A grade node's switch or menu row (`desc`), drawn on `base`'s page and
+/// counted on `surface`: clicked both ways or every item picked, each
+/// from the other value, through the generated view and the old panel;
+/// nothing for a row of another widget.
+fn discrete_cases(report: &mut Report, ty: &klipp_nodes::registry::NodeType, desc: &'static ParamDesc, base: &Grade, surface: Surface) {
+    let id = ty.desc.id;
+    let pres = ty.presentation(desc);
+    if !matches!(pres.widget, Widget::Toggle | Widget::Combo) {
+        return;
+    }
+    let label = pres.label.unwrap_or(desc.label);
+    // Meet the row's conditions by clicking their switches.
+    let mut shown = base.twin(true);
+    let mut variant = "sample";
+    let mut setup = Ok(());
+    for Cond::ParamIs { key, value } in [pres.visible_if, pres.enabled_if].into_iter().flatten() {
+        let Some(cond) = ty.desc.params.iter().find(|p| p.key == key) else {
+            setup = Err(format!("its condition names {key:?}, not a parameter"));
+            break;
+        };
+        if shown_index(cond, &shown.value(cond)) != Some(value as usize) {
+            let cond_label = ty.presentation(cond).label.unwrap_or(cond.label);
+            setup = shown.switch(cond_label);
+            variant = "conditions met";
+        }
+    }
+    if setup.is_ok() && !shown.unapplied.is_empty() {
+        setup = Err(format!("meeting its conditions: unapplied {:?}", shown.unapplied));
+    }
+    if let Err(e) = setup {
+        report.case(&format!("{id} {}", desc.key), [], || Err(e));
+        return;
+    }
+    let key = |interaction| CoverageKey::new(id, desc.key, surface, variant, interaction);
+    match pres.widget {
+        Widget::Toggle => {
+            let is_on = shown_index(desc, &shown.value(desc)) == Some(1);
+            for on in [false, true] {
+                let name = format!("{id} {} on {surface:?} switched {}", desc.key, if on { "on" } else { "off" });
+                report.case(&name, [key(Interaction::Toggle(on)), key(Interaction::UndoRedo)], || {
+                    // From the other way, so the click turns it `on`.
+                    let mut start = shown.twin(true);
+                    if is_on == on {
+                        start.switch(label)?;
+                    }
+                    if !start.unapplied.is_empty() {
+                        return Err(format!("from the other way: unapplied {:?}", start.unapplied));
+                    }
+                    grade_case(&start.twin(true), |g| g.switch(label))
+                });
+            }
+        }
+        Widget::Combo => {
+            let labels = menu_labels(desc, &pres);
+            let current = shown_index(desc, &shown.value(desc)).unwrap_or(0);
+            for (i, item) in labels.iter().enumerate() {
+                let name = format!("{id} {} on {surface:?} picks {item:?}", desc.key);
+                report.case(&name, [key(Interaction::ComboSelect(i)), key(Interaction::UndoRedo)], || {
+                    // From another item, so the pick changes it.
+                    let mut start = shown.twin(true);
+                    let from = if i == current { (i + 1) % labels.len() } else { current };
+                    if from != current {
+                        start.pick(label, labels[current], labels[from])?;
+                    }
+                    if !start.unapplied.is_empty() {
+                        return Err(format!("from another item: unapplied {:?}", start.unapplied));
+                    }
+                    grade_case(&start.twin(true), |g| g.pick(label, labels[from], item))
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The Corrector's tab for each of its switches and menus, as the tabbed
+/// page lays them out.
+const CORRECTOR_TABS: &[(&str, crate::state::ColorTab)] = &[("wheels_log_mode", crate::state::ColorTab::Wheels), ("curves_preserve_luma", crate::state::ColorTab::Curves)];
+
+/// The Corrector's switches and menus on the pages that share its rows:
+/// the tabbed page in the right inspector, and the Colour page's bottom
+/// tools. A real Corrector, on its tab, through the generated rows and
+/// the old page alike.
+pub(super) fn run_grade_pages(report: &mut Report) {
+    let ty = klipp_nodes::registry::node_type(klipp_nodes::NodeKind::Corrector).unwrap();
+    let Some((state, clip, node)) = super::grade_inspector_tests::graded(klipp_nodes::NodeKind::Corrector) else {
+        report.case(ty.desc.id, [], || Err("the grade won't take a Corrector".into()));
+        return;
+    };
+    let base = Grade::new(state, clip, node, true);
+    for desc in ty.desc.params {
+        if !matches!(ty.presentation(desc).widget, Widget::Toggle | Widget::Combo) {
+            continue;
+        }
+        let Some(&(_, tab)) = CORRECTOR_TABS.iter().find(|(k, _)| *k == desc.key) else {
+            report.case(&format!("{} {}", ty.desc.id, desc.key), [], || Err("no tab known for it".into()));
+            continue;
+        };
+        for (page, surface) in [(Page::Tabbed(tab), Surface::GradeTabbedRight), (Page::Bottom(tab), Surface::GradeBottomTools)] {
+            let on_page = Grade { page, ..base.twin(true) };
+            discrete_cases(report, ty, desc, &on_page, surface);
+        }
+    }
+}
+
+/// The Corrector's switches and menus on its tabbed page and the bottom
+/// tools edit as the old page does.
+#[test]
+fn corrector_page_switches_and_menus_edit_as_the_old_page() {
+    let mut report = Report::default();
+    report.family("grade pages", run_grade_pages);
+    report.family_result().unwrap();
+    assert!(!report.passed.is_empty(), "no switch or menu row was driven");
 }
 
 /// Every switch and menu row of a per-node grade yields its cases, so a
@@ -637,3 +764,71 @@ fn grade_switches_and_menus_edit_as_the_old_panel() {
     report.family_result().unwrap();
     assert!(!report.passed.is_empty(), "no switch or menu row was driven");
 }
+
+/// The tabbed page's tabs, each drawn on both pages.
+const TABS: [crate::state::ColorTab; 5] = [crate::state::ColorTab::Adjustments, crate::state::ColorTab::Wheels, crate::state::ColorTab::Curves, crate::state::ColorTab::HueSat, crate::state::ColorTab::Warper];
+
+/// Opening any tab of the Corrector's pages writes nothing, in either
+/// view: the picture as it was before the first draw, no step, nothing
+/// sent that wasn't applied. The Curves, Hue/Sat and Warper editors wrote
+/// their defaults on their first draw (#1392).
+#[test]
+fn opening_a_corrector_page_tab_writes_nothing() {
+    let (state, clip, node) = super::grade_inspector_tests::graded(klipp_nodes::NodeKind::Corrector).unwrap();
+    let base = Grade::new(state, clip, node, true);
+    let mut wrote = Vec::new();
+    for tab in TABS {
+        for page in [Page::Tabbed(tab), Page::Bottom(tab)] {
+            for generated in [false, true] {
+                let mut g = Grade { page, ..base.twin(generated) };
+                let before = g.picture();
+                g.drawn();
+                g.drawn();
+                if g.picture() != before || g.state.active_history().undo_count() != 0 || !g.unapplied.is_empty() {
+                    wrote.push(format!("{page:?} generated {generated}: steps {}, unapplied {:?}", g.state.active_history().undo_count(), g.unapplied));
+                }
+            }
+        }
+    }
+    assert!(wrote.is_empty(), "opening wrote:\n{}", wrote.join("\n"));
+}
+
+/// A curve edited after its tab is opened (a point dragged in) is one
+/// undo step in each view,
+/// and undoing it leaves the curves unset, as they were, not their
+/// stored defaults (#1392).
+#[test]
+fn a_curve_edit_after_opening_is_one_step_back_to_unset() {
+    let (state, clip, node) = super::grade_inspector_tests::graded(klipp_nodes::NodeKind::Corrector).unwrap();
+    let base = Grade::new(state, clip, node, true);
+    let curves = |g: &Grade| g.clip().grade().nodes.iter().find(|n| n.id == g.node).map(|n| n.params.curves.clone()).unwrap();
+    for page in [Page::Tabbed(crate::state::ColorTab::Curves), Page::Bottom(crate::state::ColorTab::Curves)] {
+        for generated in [false, true] {
+            let mut g = Grade { page, ..base.twin(generated) };
+            assert!(curves(&g).is_none(), "the fixture's curves are unset");
+            let drawn = g.drawn();
+            // A point dragged up from an empty place in the editor's square,
+            // below its channel strip: a drag there adds a point and moves it.
+            let strip = drawn.iter().filter(|(t, _)| ["M", "R", "G", "B"].contains(&t.as_str())).map(|(_, p)| p.y).fold(f32::MIN, f32::max);
+            assert!(strip > f32::MIN, "{page:?}: no channel strip");
+            let mut y = strip + 60.0;
+            while curves(&g).is_none() && y < strip + 400.0 {
+                let at = egui::pos2(150.0, y);
+                let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+                // One move: the editor writes each tick of a drag as its
+                // own command, and the colour dispatch each as a step.
+                g.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
+                g.frame(vec![egui::Event::PointerMoved(at - egui::vec2(0.0, 24.0))]);
+                g.frame(vec![button(at - egui::vec2(0.0, 24.0), false)]);
+                g.frame(vec![egui::Event::PointerGone]);
+                y += 40.0;
+            }
+            assert!(curves(&g).is_some(), "{page:?} generated {generated}: no click edited the curve");
+            assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+            assert_eq!(g.state.active_history().undo_count(), 1, "{page:?} generated {generated}: one step");
+            g.step(false).unwrap();
+            assert!(curves(&g).is_none(), "{page:?} generated {generated}: undo leaves the curves unset");
+        }
+    }
+}
+
