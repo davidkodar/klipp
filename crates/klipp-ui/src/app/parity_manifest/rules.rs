@@ -42,11 +42,18 @@ pub(super) fn surfaces(entry: &CatalogEntry) -> Result<BTreeSet<Surface>, String
         let ty = klipp_effects::registry::effect_types()
             .find(|t| t.desc.id == entry.type_id)
             .ok_or_else(|| format!("{}: unclassified effect surfaces", entry.type_id))?;
-        required.insert(if crate::inspector::stack_view::is_placed_kind(ty.tag) {
-            VideoTab
-        } else {
-            EffectsStack
-        });
+        // Placed kinds still expose their own cards. In particular a
+        // non-anchor Opacity remains a card; only the final enabled one
+        // becomes the clip property, so its value needs both fixtures.
+        required.insert(EffectsStack);
+        if matches!(&entry.value, CatalogValue::Parameter { desc, .. }
+            if (ty.tag == "opacity" && desc.key == "value")
+                || (ty.tag == "transform" && matches!(desc.key,
+                    "position_x" | "position_y" | "scale_x" | "scale_y"
+                    | "rotation" | "rotation_x" | "rotation_y" | "perspective")))
+        {
+            required.insert(VideoTab);
+        }
     } else {
         use klipp_nodes::NodeKind::*;
         let kind = klipp_nodes::registry::node_types()
