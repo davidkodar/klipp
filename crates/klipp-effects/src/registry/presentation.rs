@@ -14,6 +14,7 @@
 use super::{EffectType, ParamDesc, ParamKind, Unit};
 
 mod colour;
+mod geometry;
 
 /// How a parameter is shown.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -112,7 +113,7 @@ impl DisplayMap {
 }
 
 /// The control a row draws. Two choices never imply a toggle: a
-/// [`Widget::Toggle`] is always said.
+/// [`Widget::Toggle`] is always said, on a switch or a choice of two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Widget {
     /// The label-drag scrub and its number.
@@ -182,8 +183,8 @@ pub struct TypeEntry {
 
 /// The effects' entries, one table per family (M3 step 0b), transcribed
 /// from today's hand-written rows.
-pub static PARAMS: &[&[ParamEntry]] = &[colour::PARAMS];
-pub static TYPES: &[&[TypeEntry]] = &[colour::TYPES];
+pub static PARAMS: &[&[ParamEntry]] = &[colour::PARAMS, geometry::PARAMS];
+pub static TYPES: &[&[TypeEntry]] = &[colour::TYPES, geometry::TYPES];
 
 /// Every effect entry, family by family.
 pub fn params() -> impl Iterator<Item = &'static ParamEntry> {
@@ -342,7 +343,7 @@ impl EffectType {
 /// What is wrong with a catalog's tables, one line each: an entry naming
 /// no parameter of `types` (each type's id and parameters), two entries for one parameter, decimals over
 /// 3, a step that doesn't move a number, labels that don't match a
-/// choice's count, a toggle for anything but a switch, a display map that
+/// choice's count, a toggle for anything but a switch or a choice of two, a display map that
 /// doesn't round-trip over the slider range, a type entry naming no type.
 /// Both catalogs' coverage tests hold their tables to it.
 pub fn problems(types: &[(&str, &[ParamDesc])], params: &[ParamEntry], type_entries: &[TypeEntry]) -> Vec<String> {
@@ -381,7 +382,10 @@ pub fn param_problems(type_id: &str, p: &ParamDesc, pres: &Presentation) -> Vec<
         (ParamKind::Choice(_), _) | (_, None) => {}
         (_, Some(_)) => out.push(format!("{at}: labels on a parameter that isn't a choice")),
     }
-    if pres.widget == Widget::Toggle && p.kind != ParamKind::Bool {
+    // A toggle is said, never implied: a switch, or a choice of two
+    // (off and on) shown as one.
+    let two = matches!(p.kind, ParamKind::Choice(c) if c.len() == 2);
+    if pres.widget == Widget::Toggle && p.kind != ParamKind::Bool && !two {
         out.push(format!("{at}: a toggle for a {:?}", p.kind));
     }
     if let (Some(map), Some(range)) = (pres.display, p.soft) {

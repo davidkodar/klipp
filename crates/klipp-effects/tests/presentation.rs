@@ -98,8 +98,12 @@ fn presentation_never_changes_stored_values() {
     let mut pres = Presentation::derived(cp);
     pres.labels = Some(&["only one"]);
     assert_eq!(n == 1, presentation::param_problems(ct.desc.id, cp, &pres).is_empty());
+    pres.labels = None;
     pres.widget = Widget::Toggle;
-    assert!(presentation::param_problems(ct.desc.id, cp, &pres).iter().any(|e| e.contains("a toggle")), "a choice is never a toggle");
+    // Said on a choice of two (off and on) it's allowed; on more, refused.
+    assert_eq!(presentation::param_problems(ct.desc.id, cp, &pres).iter().any(|e| e.contains("a toggle")), n != 2, "{}/{}", ct.desc.id, cp.key);
+    let (mt, mp) = effect_types().find_map(|t| t.desc.params.iter().find(|p| matches!(p.kind, ParamKind::Choice(c) if c.len() > 2)).map(|p| (t, p))).unwrap();
+    assert!(presentation::param_problems(mt.desc.id, mp, &pres).iter().any(|e| e.contains("a toggle")), "a choice of more than two is never a toggle");
 }
 
 #[test]
@@ -131,6 +135,16 @@ fn a_covered_type_names_every_param() {
 const MEANT: &[(&str, &str, &str)] = &[
     // IC2: Vibrance resets to its catalog default, 0, not 0.5.
     ("klipp.fx.vibrance", "amount", "reset"),
+    // IC12: a Transform effect card shows its own tilt and perspective
+    // rows (today drawn in the video tab, which shows only the clip's
+    // placement then).
+    ("klipp.fx.transform", "rotation_x", "row"),
+    ("klipp.fx.transform", "rotation_y", "row"),
+    ("klipp.fx.transform", "perspective", "row"),
+    // IC5: Letterbox's bar colour is a choice of two colours, not a 0-to-1
+    // slider whose label explains the numbers.
+    ("klipp.fx.letterbox", "bar_color", "widget"),
+    ("klipp.fx.letterbox", "bar_color", "label"),
 ];
 
 /// Every covered type's rows are today's: the same parameters in the same
@@ -148,7 +162,7 @@ fn presentation_matches_the_old_rows() {
         // The order: by `order`, then the catalog's, hidden rows left out.
         let mut shown: Vec<(u16, usize, &ParamDesc)> = t.desc.params.iter().enumerate().map(|(i, p)| (t.presentation(p).order, i, p)).filter(|(_, _, p)| t.presentation(p).widget != Widget::Hidden).collect();
         shown.sort_by_key(|(o, i, _)| (*o, *i));
-        let order: Vec<&str> = shown.iter().map(|(_, _, p)| p.key).collect();
+        let order: Vec<&str> = shown.iter().map(|(_, _, p)| p.key).filter(|k| !MEANT.contains(&(t.desc.id, k, "row"))).collect();
         let recorded: Vec<&str> = rows.iter().map(|r| r["parameter"].as_str().unwrap()).collect();
         if order != recorded {
             differ.push(format!("{}: rows {order:?}, today {recorded:?}", t.desc.id));
@@ -190,4 +204,23 @@ fn presentation_matches_the_old_rows() {
     }
     assert!(differ.is_empty(), "{} differences:\n{}", differ.len(), differ.join("\n"));
     assert!(compared > 0 || covered().is_empty());
+}
+
+/// System values kept as they are, hidden by name: never because they're
+/// fixed (fixed means not keyframable, and a fixed parameter is still
+/// edited by hand).
+const HIDDEN: &[(&str, &str)] = &[("klipp.fx.transform", "focal_ref")];
+
+#[test]
+fn hidden_is_not_fixed() {
+    for e in presentation::params().filter(|e| e.pres.widget == Widget::Hidden) {
+        let t = effect_types().find(|t| t.desc.id == e.type_id).unwrap();
+        let p = t.desc.params.iter().find(|p| p.key == e.key).unwrap();
+        assert!(p.derived || HIDDEN.contains(&(e.type_id, e.key)), "{}/{}: hidden, but neither derived nor a listed system value", e.type_id, e.key);
+    }
+    for (id, key) in HIDDEN {
+        let t = effect_types().find(|t| t.desc.id == *id).unwrap();
+        let p = t.desc.params.iter().find(|p| p.key == *key).unwrap();
+        assert_eq!(t.presentation(p).widget, Widget::Hidden, "{id}/{key}");
+    }
 }
