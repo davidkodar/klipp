@@ -3,24 +3,46 @@
 use super::*;
 use klipp_compose::InspectAt;
 use klipp_engine::node_thumbnails::PreviewQuality;
-use std::sync::Arc;
+use klipp_timeline::SequenceRevision;
 
 #[derive(Default)]
 pub(crate) struct ThumbnailState {
     request: u64,
     clip: Option<ClipId>,
     wanted: Vec<InspectAt>,
-    snapshot: Option<Arc<klipp_timeline::Sequence>>,
-    frame: Option<klipp_core::RationalTime>,
+    revision: Option<SequenceRevision>,
+    frame: Option<i64>,
     publication: u64,
     source_sent: Option<(u64, usize)>,
     pub quality: Option<PreviewQuality>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum RequestUpdate {
+    Parked,
+    Current,
+    Send(u64),
+}
+
+impl ThumbnailState {
+    fn update_request(&mut self, revision: SequenceRevision, frame: i64, parked: bool) -> RequestUpdate {
+        // A drained slider tick can advance the sequence with an empty
+        // queue while its drag remains open. Request just once on release.
+        if parked { return RequestUpdate::Parked; }
+        if self.revision == Some(revision) && self.frame == Some(frame) {
+            return RequestUpdate::Current;
+        }
+        self.request = self.request.wrapping_add(1);
+        self.revision = Some(revision);
+        self.frame = Some(frame);
+        RequestUpdate::Send(self.request)
+    }
+}
+
 impl AppState {
     pub(crate) fn invalidate_node_thumbnails(&mut self) {
         self.node_thumbnail_state.request = self.node_thumbnail_state.request.wrapping_add(1);
-        self.node_thumbnail_state.snapshot = None;
+        self.node_thumbnail_state.revision = None;
         self.clear_node_thumbnails();
     }
 
@@ -46,9 +68,8 @@ impl KlippApp {
         true
     }
 
-    /// Snapshot identity changes on every shared-sequence write while a
-    /// request retains the old snapshot. Also reject while a UI parameter
-    /// change has not reached that shared sequence yet.
+    /// Revisions reject old answers without retaining a sequence. Requests
+    /// wait until both the drag and its queued parameter writes are done.
     pub(super) fn refresh_node_thumbnails(&mut self) {
         self.node_graph_v2_panel.thumbnail_quality = None;
         let visible = (self.state.graph_dock_open || (self.state.show_color_panel && self.state.show_node_strip))
@@ -67,27 +88,26 @@ impl KlippApp {
             return;
         }
         let Some(clip_id) = selected else { return };
-        if !self.param_change_queue.is_empty() {
-            self.state.clear_node_thumbnails();
-            return;
-        }
-        let snapshot = self.sequence.snapshot();
-        let frame = self.state.playhead;
-        let fresh_context = self.state.node_thumbnail_state.frame != Some(frame)
-            || !self.state.node_thumbnail_state.snapshot.as_ref().is_some_and(|old| Arc::ptr_eq(old, &snapshot));
-        if fresh_context {
-            self.state.invalidate_node_thumbnails();
-            self.state.node_thumbnail_state.snapshot = Some(snapshot.clone());
-            self.state.node_thumbnail_state.frame = Some(frame);
-            let _ = self.cmd_tx.send(AppCommand::SetVisibleNodeThumbs {
-                request: self.state.node_thumbnail_state.request, clip_id,
-                at: self.state.node_thumbnail_state.wanted.clone(),
-            });
+        let revision = self.sequence.revision();
+        let frame = klipp_engine::node_thumbnails::frame_index(self.state.playhead, self.state.sequence().fps);
+        let parked = self.state.any_drag_in_progress() || !self.param_change_queue.is_empty();
+        match self.state.node_thumbnail_state.update_request(revision, frame, parked) {
+            RequestUpdate::Parked => {
+                self.state.clear_node_thumbnails();
+                return;
+            }
+            RequestUpdate::Send(request) => {
+                self.state.clear_node_thumbnails();
+                let _ = self.cmd_tx.send(AppCommand::SetVisibleNodeThumbs {
+                    request, clip_id, at: self.state.node_thumbnail_state.wanted.clone(),
+                });
+            }
+            RequestUpdate::Current => {}
         }
         {
             let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             let batch = fb.node_thumbnail_batch.as_ref().filter(|b|
-                b.matches(self.state.node_thumbnail_state.request, frame, &snapshot));
+                b.matches(self.state.node_thumbnail_state.request, frame, revision));
             if let Some(batch) = batch {
                 if self.state.node_thumbnail_state.publication != fb.node_thumbs_gen {
                     self.state.node_thumbs = batch.images.clone();
@@ -125,6 +145,29 @@ impl KlippApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thumbnail_requests_wait_for_all_drag_steps_and_send_once_on_release() {
+        let shared = klipp_timeline::SharedSequence::new(klipp_timeline::Sequence::new_default());
+        let mut state = ThumbnailState::default();
+        assert!(matches!(state.update_request(shared.revision(), 12, false), RequestUpdate::Send(_)));
+        let request = state.request;
+        for step in 0..20 {
+            shared.write().unwrap().name = format!("drained step {step}");
+            // The engine has drained its queue, but the UI drag is open.
+            assert_eq!(state.update_request(shared.revision(), 12, true), RequestUpdate::Parked);
+            assert_eq!(state.request, request, "no extra regrade or filmstrip request while dragging");
+        }
+        assert!(matches!(state.update_request(shared.revision(), 12, false), RequestUpdate::Send(_)));
+        let released = state.request;
+        for _ in 0..4 {
+            assert_eq!(state.update_request(shared.revision(), 12, false), RequestUpdate::Current);
+        }
+        assert_eq!(released, request + 1);
+        shared.write().unwrap().name = "pending final write".into();
+        assert_eq!(state.update_request(shared.revision(), 12, true), RequestUpdate::Parked);
+        assert!(matches!(state.update_request(shared.revision(), 12, false), RequestUpdate::Send(_)));
+    }
 
     #[test]
     fn a_live_writer_invalidates_thumbnails_before_an_undo_step_exists() {

@@ -7455,6 +7455,9 @@ impl PlaybackEngine {
         if request != self.thumbnail_request || self.inspect_clip != Some(clip_id) || self.visible_node_thumbs.is_empty() {
             return;
         }
+        // Drain before capturing the revision: a late queued edit must
+        // never produce an answer labelled with the pre-edit token. The
+        // UI rejects it until it observes that revision and requests again.
         self.drain_param_changes();
         if src_rgba.len() != (src_w as usize) * (src_h as usize) * 4 {
             return;
@@ -7464,7 +7467,7 @@ impl PlaybackEngine {
         // plan, each thumbnail named by path, each node evaluated at the
         // playhead's time. A copy of the sequence, so the render doesn't
         // hold its lock.
-        let seq = self.sequence.snapshot();
+        let (seq, revision) = self.sequence.snapshot_with_revision();
         if !seq.all_clips().any(|c| c.id == clip_id) {
             return;
         }
@@ -7486,8 +7489,8 @@ impl PlaybackEngine {
             tracing::debug!("node thumbnail {at:?}: {why}");
         }
         let batch = crate::node_thumbnails::ThumbnailBatch::new(
-            request, playhead, crate::node_thumbnails::PreviewQuality::Filmstrip,
-            seq, &self.thumbnail_priority, found.thumbs,
+            request, crate::node_thumbnails::frame_index(playhead, seq.fps), crate::node_thumbnails::PreviewQuality::Filmstrip,
+            revision, &self.thumbnail_priority, found.thumbs,
         );
         self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).publish_node_thumbnails(batch);
     }

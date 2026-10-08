@@ -22,13 +22,31 @@
 
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, LockResult, Mutex, MutexGuard, TryLockError, TryLockResult};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::Sequence;
 
 /// See the module docs.
 #[derive(Debug)]
 pub struct SharedSequence {
-    current: Mutex<Arc<Sequence>>,
+    current: Mutex<Current>,
+}
+
+/// Identity of a published sequence revision, without retaining its data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SequenceRevision(u64);
+
+impl SequenceRevision {
+    fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+#[derive(Debug)]
+struct Current {
+    sequence: Arc<Sequence>,
+    revision: SequenceRevision,
 }
 
 /// The sequence as it was when read: holds no lock.
@@ -52,33 +70,51 @@ impl SequenceRead {
 /// The sequence open for a change: holds the short lock, and copies the
 /// sequence on its first change if a reader still holds the snapshot.
 #[derive(Debug)]
-pub struct SequenceWrite<'a>(MutexGuard<'a, Arc<Sequence>>);
+pub struct SequenceWrite<'a> {
+    current: MutexGuard<'a, Current>,
+    touched: bool,
+}
 
 impl Deref for SequenceWrite<'_> {
     type Target = Sequence;
     fn deref(&self) -> &Sequence {
-        &self.0
+        &self.current.sequence
     }
 }
 
 impl DerefMut for SequenceWrite<'_> {
     fn deref_mut(&mut self) -> &mut Sequence {
-        Arc::make_mut(&mut self.0)
+        if !self.touched {
+            self.current.revision = SequenceRevision::next();
+            self.touched = true;
+        }
+        Arc::make_mut(&mut self.current.sequence)
     }
 }
 
 impl SharedSequence {
     pub fn new(seq: Sequence) -> Self {
-        Self { current: Mutex::new(Arc::new(seq)) }
+        Self { current: Mutex::new(Current { sequence: Arc::new(seq), revision: SequenceRevision::next() }) }
     }
 
-    fn lock(&self) -> MutexGuard<'_, Arc<Sequence>> {
+    fn lock(&self) -> MutexGuard<'_, Current> {
         self.current.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The sequence as it stands, held without a lock.
     pub fn snapshot(&self) -> Arc<Sequence> {
-        Arc::clone(&self.lock())
+        Arc::clone(&self.lock().sequence)
+    }
+
+    /// Read the snapshot and its token under the same lock. Keep the
+    /// snapshot only while rendering; caches can retain just the token.
+    pub fn snapshot_with_revision(&self) -> (Arc<Sequence>, SequenceRevision) {
+        let current = self.lock();
+        (Arc::clone(&current.sequence), current.revision)
+    }
+
+    pub fn revision(&self) -> SequenceRevision {
+        self.lock().revision
     }
 
     /// [`Self::snapshot`] in `RwLock::read`'s shape. Never an error.
@@ -89,35 +125,57 @@ impl SharedSequence {
     /// [`Self::read`], or `WouldBlock` while a writer is making its change.
     pub fn try_read(&self) -> TryLockResult<SequenceRead> {
         match self.current.try_lock() {
-            Ok(current) => Ok(SequenceRead(Arc::clone(&current))),
-            Err(TryLockError::Poisoned(e)) => Ok(SequenceRead(Arc::clone(&e.into_inner()))),
+            Ok(current) => Ok(SequenceRead(Arc::clone(&current.sequence))),
+            Err(TryLockError::Poisoned(e)) => Ok(SequenceRead(Arc::clone(&e.into_inner().sequence))),
             Err(TryLockError::WouldBlock) => Err(TryLockError::WouldBlock),
         }
     }
 
     /// The sequence for a change. Waits only for another writer.
     pub fn write(&self) -> LockResult<SequenceWrite<'_>> {
-        Ok(SequenceWrite(self.lock()))
+        Ok(SequenceWrite { current: self.lock(), touched: false })
     }
 
     /// [`Self::write`], or `WouldBlock` while another writer has it.
     pub fn try_write(&self) -> TryLockResult<SequenceWrite<'_>> {
         match self.current.try_lock() {
-            Ok(g) => Ok(SequenceWrite(g)),
-            Err(TryLockError::Poisoned(e)) => Ok(SequenceWrite(e.into_inner())),
+            Ok(g) => Ok(SequenceWrite { current: g, touched: false }),
+            Err(TryLockError::Poisoned(e)) => Ok(SequenceWrite { current: e.into_inner(), touched: false }),
             Err(TryLockError::WouldBlock) => Err(TryLockError::WouldBlock),
         }
     }
 
     /// Put `seq` in place whole: what a publish of an edited sequence does.
     pub fn replace(&self, seq: Sequence) {
-        *self.lock() = Arc::new(seq);
+        *self.lock() = Current { sequence: Arc::new(seq), revision: SequenceRevision::next() };
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revisions_track_mutation_without_retaining_a_snapshot() {
+        let shared = SharedSequence::new(Sequence::new_default());
+        let revision = shared.revision();
+        let pointer = Arc::as_ptr(&shared.snapshot());
+        drop(shared.write().unwrap());
+        drop(shared.try_write().unwrap());
+        assert_eq!(shared.revision(), revision, "an unused write guard is not a change");
+        shared.write().unwrap().name = "edited".into();
+        assert_ne!(shared.revision(), revision);
+        assert_eq!(Arc::as_ptr(&shared.snapshot()), pointer, "a token does not force copy-on-write");
+        let (snapshot, at_render) = shared.snapshot_with_revision();
+        assert_eq!(at_render, shared.revision());
+        shared.try_write().unwrap().name = "later edit".into();
+        assert_eq!(snapshot.name, "edited");
+        assert_ne!(shared.revision(), at_render);
+        let before_replace = shared.revision();
+        shared.replace(Sequence::new_default());
+        assert_ne!(shared.revision(), before_replace);
+        assert_ne!(shared.revision(), SharedSequence::new(Sequence::new_default()).revision(), "another project has a distinct token");
+    }
 
     /// #690: a reader holding the sequence through a long frame never keeps
     /// a writer waiting, and finishes from the sequence it read.

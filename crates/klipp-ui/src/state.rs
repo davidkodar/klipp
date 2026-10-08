@@ -2120,7 +2120,6 @@ pub struct AppState {
     pub node_thumbs_gen: u64,
     pub(crate) node_thumbnail_state: crate::app::node_thumbnails::ThumbnailState,
 
-
     /// Project-level reusable colour grades. Persisted to
     /// `.klipp/looks/{id}.json` on save, loaded back into this Vec
     /// on project open.

@@ -283,7 +283,7 @@ impl FrameBuffer {
         if batch.quality == PreviewQuality::Filmstrip
             && self.node_thumbnail_batch.as_ref().is_some_and(|old|
                 old.quality == PreviewQuality::Viewer
-                    && old.matches(batch.request, batch.frame, &batch.snapshot))
+                    && old.matches(batch.request, batch.frame, batch.revision))
         {
             return;
         }

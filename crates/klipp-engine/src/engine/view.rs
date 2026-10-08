@@ -583,11 +583,8 @@ impl PlaybackEngine {
             let wait = if self.is_scrubbing { Duration::ZERO } else { Duration::from_millis(150) };
             self.wait_for_streams(wait);
         }
-        let (snapshot, primary_clip) = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            let id = primary.as_ref().and(self.v1_clip_id(&seq));
-            (seq.into_arc(), id)
-        };
+        let (snapshot, revision) = self.sequence.snapshot_with_revision();
+        let primary_clip = primary.as_ref().and(self.v1_clip_id(&snapshot));
         let seq = klipp_compose::frame_snapshot(&snapshot, self.playhead);
         let seq_size = (seq.resolution.width, seq.resolution.height);
         let (w, h) = match &primary {
@@ -759,8 +756,8 @@ impl PlaybackEngine {
         let (linear, mut found) = self.render_timeline(&seq, primary_ref, w, h, inspect);
         if thumbs_requested {
             let batch = crate::node_thumbnails::ThumbnailBatch::new(
-                self.thumbnail_request, self.playhead, crate::node_thumbnails::PreviewQuality::Viewer,
-                snapshot, &self.thumbnail_priority, std::mem::take(&mut found.thumbs),
+                self.thumbnail_request, crate::node_thumbnails::frame_index(self.playhead, snapshot.fps), crate::node_thumbnails::PreviewQuality::Viewer,
+                revision, &self.thumbnail_priority, std::mem::take(&mut found.thumbs),
             );
             self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).publish_node_thumbnails(batch);
         }

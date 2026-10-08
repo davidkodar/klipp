@@ -1,10 +1,10 @@
 //! Bounded node previews, tied to the snapshot and request they answer.
 
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
-use klipp_core::RationalTime;
+use klipp_core::{Fps, RationalTime};
 use klipp_compose::InspectAt as NodeOutput;
-use klipp_timeline::Sequence;
+use klipp_timeline::SequenceRevision;
 
 pub const WIDTH: usize = 192;
 pub const HEIGHT: usize = 108;
@@ -30,15 +30,14 @@ impl PreviewQuality {
     }
 }
 
-/// Keep the actual immutable source snapshot alive. A later write then
-/// copies it, so pointer identity is an exact revision token, including
-/// edits made during an open drag before an undo step is recorded.
+/// The sequence revision and frame this answer rendered. Keeping only a
+/// token lets later sequence writes remain in place between renders.
 #[derive(Clone, Debug)]
 pub struct ThumbnailBatch {
     pub request: u64,
-    pub frame: RationalTime,
+    pub frame: i64,
     pub quality: PreviewQuality,
-    pub snapshot: Arc<Sequence>,
+    pub revision: SequenceRevision,
     pub images: HashMap<NodeOutput, Vec<u8>>,
 }
 
@@ -47,9 +46,9 @@ impl ThumbnailBatch {
     /// An empty batch is meaningful: the old previews must disappear.
     pub fn new(
         request: u64,
-        frame: RationalTime,
+        frame: i64,
         quality: PreviewQuality,
-        snapshot: Arc<Sequence>,
+        revision: SequenceRevision,
         wanted: &[NodeOutput],
         mut found: HashMap<NodeOutput, Vec<u8>>,
     ) -> Self {
@@ -57,18 +56,24 @@ impl ThumbnailBatch {
             let bytes = found.remove(at)?;
             (bytes.len() == BYTES_PER_THUMB).then(|| (at.clone(), bytes))
         }).collect();
-        Self { request, frame, quality, snapshot, images }
+        Self { request, frame, quality, revision, images }
     }
 
-    pub fn matches(&self, request: u64, frame: RationalTime, snapshot: &Arc<Sequence>) -> bool {
-        self.request == request && self.frame == frame && Arc::ptr_eq(&self.snapshot, snapshot)
+    pub fn matches(&self, request: u64, frame: i64, revision: SequenceRevision) -> bool {
+        self.request == request && self.frame == frame && self.revision == revision
     }
+}
+
+/// Canonical frame identity, including fractional sequence rates. A UI
+/// seek in seconds and an engine tick on the frame grid name one frame.
+pub fn frame_index(time: RationalTime, fps: Fps) -> i64 {
+    (time.to_secs_f64() * fps.as_f64()).round() as i64
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use klipp_timeline::SharedSequence;
+    use klipp_timeline::{Sequence, SharedSequence};
 
     fn at(group: u128, node: u128) -> NodeOutput {
         let mut at = klipp_compose::inspect::grade_node(
@@ -77,18 +82,48 @@ mod tests {
         at
     }
 
-    fn frame() -> RationalTime { RationalTime::from_frames(12, 24) }
+    fn frame() -> i64 { 12 }
+
+    fn revision() -> SequenceRevision { SharedSequence::new(Sequence::new_default()).revision() }
+
+    #[test]
+    fn viewer_and_socket_times_match_at_integer_and_ntsc_frame_rates() {
+        for fps in [Fps::film_24(), Fps::ntsc_23976(), Fps::ntsc_29970()] {
+            for index in [0, 1, 48, 180_001] {
+                let engine_time = RationalTime::from_frames(index * i64::from(fps.den), fps.num);
+                let socket_time = RationalTime::from_secs_f64(engine_time.to_secs_f64(), 1_000_000);
+                let revision = revision();
+                let batch = ThumbnailBatch::new(1, frame_index(engine_time, fps), PreviewQuality::Viewer,
+                    revision, &[], HashMap::new());
+                assert!(batch.matches(1, frame_index(socket_time, fps), revision));
+                assert!(!batch.matches(1, frame_index(engine_time, fps) + 1, revision));
+            }
+        }
+        assert_eq!(frame_index(RationalTime::from_frames(48, 24), Fps::film_24()),
+            frame_index(RationalTime::from_frames(2, 1), Fps::film_24()));
+    }
+
+    #[test]
+    fn keeping_a_batch_does_not_make_the_next_edit_copy_the_sequence() {
+        let shared = SharedSequence::new(Sequence::new_default());
+        let pointer = std::sync::Arc::as_ptr(&shared.snapshot());
+        let batch = ThumbnailBatch::new(1, frame(), PreviewQuality::Viewer,
+            shared.revision(), &[], HashMap::new());
+        shared.write().unwrap().name = "live slider edit".into();
+        assert_eq!(std::sync::Arc::as_ptr(&shared.snapshot()), pointer);
+        assert!(!batch.matches(1, frame(), shared.revision()));
+    }
 
     #[test]
     fn a_stale_thumbnail_is_dropped_after_an_edit() {
         let sequence = SharedSequence::new(Sequence::new_default());
         let batch = ThumbnailBatch::new(1, frame(), PreviewQuality::Viewer,
-            sequence.snapshot(), &[], HashMap::new());
-        assert!(batch.matches(1, frame(), &sequence.snapshot()));
+            sequence.revision(), &[], HashMap::new());
+        assert!(batch.matches(1, frame(), sequence.revision()));
         sequence.write().unwrap().name = "edited while rendering".into();
-        assert!(!batch.matches(1, frame(), &sequence.snapshot()));
-        assert!(!batch.matches(2, frame(), &batch.snapshot));
-        assert!(!batch.matches(1, RationalTime::from_frames(13, 24), &batch.snapshot));
+        assert!(!batch.matches(1, frame(), sequence.revision()));
+        assert!(!batch.matches(2, frame(), batch.revision));
+        assert!(!batch.matches(1, 13, batch.revision));
     }
 
     #[test]
@@ -97,7 +132,7 @@ mod tests {
         let found = wanted.iter().enumerate().map(|(i, at)|
             (at.clone(), vec![i as u8; BYTES_PER_THUMB])).collect();
         let batch = ThumbnailBatch::new(1, frame(), PreviewQuality::Viewer,
-            Arc::new(Sequence::new_default()), &wanted, found);
+            revision(), &wanted, found);
         assert_eq!(batch.images.len(), MAX_THUMBS);
         assert_eq!(batch.images.values().map(Vec::len).sum::<usize>(), MAX_THUMBS * BYTES_PER_THUMB);
         assert_eq!(batch.images[&wanted[0]][0], 0);
@@ -115,17 +150,17 @@ mod tests {
     fn unavailable_and_malformed_results_leave_no_old_image() {
         let wanted = [at(2, 3)];
         let batch = ThumbnailBatch::new(1, frame(), PreviewQuality::Viewer,
-            Arc::new(Sequence::new_default()), &wanted,
+            revision(), &wanted,
             [(wanted[0].clone(), vec![0; 4])].into());
         assert!(batch.images.is_empty());
     }
 
     #[test]
     fn publication_clears_missing_results_and_keeps_the_better_preview() {
-        let snapshot = Arc::new(Sequence::new_default());
+        let revision = revision();
         let wanted = [at(2, 3)];
         let batch = |request, quality, found| ThumbnailBatch::new(
-            request, frame(), quality, snapshot.clone(), &wanted, found);
+            request, frame(), quality, revision, &wanted, found);
         let mut fb = crate::texture::FrameBuffer::new(1, 1);
         fb.publish_node_thumbnails(batch(1, PreviewQuality::Viewer,
             [(wanted[0].clone(), vec![11; BYTES_PER_THUMB])].into()));
