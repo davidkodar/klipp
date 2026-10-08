@@ -12,8 +12,10 @@
 //! for the same clip and time, so the renderer can take its effects from
 //! the picture without a picture changing.
 //!
-//! Effect node ids are derived from the clip and the effect's place in
-//! the list: they are not a persistent key, and nothing here keeps one.
+//! Where the clip's transform goes ([`placement_cut`]) is one rule, read by
+//! both renderer routes (this and `place_and_finish` on a list) and by the
+//! inspector ([`resolved_placement`], M3 step 8), so the inspector never
+//! reimplements it.
 
 use klipp_core::Timecode;
 use klipp_effects::BuiltinEffect;
@@ -98,9 +100,62 @@ pub fn resolve_effects_blended(
     pin: Option<klipp_timeline::surface::Quad>,
     scale: f32,
 ) -> Result<Vec<(BuiltinEffect, Option<Blend>)>, String> {
+    let w = walk(clip, picture, time, fps, resolved, pin)?;
+    let (mut fx, mut blends) = (w.fx, w.blends);
+    match w.cut {
+        PlacementCut::Fixed { at } | PlacementCut::Auto { at, .. } => {
+            fx.insert(at, transform_effect(w.xf, w.three_d));
+            blends.insert(at, None);
+        }
+        PlacementCut::Identity => {}
+    }
+    Ok(fx.into_iter().zip(blends).filter(|(e, _)| !klipp_effects::is_identity_effect(e)).map(|(e, b)| (e.at_render_scale(scale), b)).collect())
+}
+
+/// Where the clip's transform goes among its pixel effects (R2-R4), the
+/// one rule both renderer routes and the inspector read (M3 step 8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlacementCut {
+    /// Fixed: at `at`, where the first enabled Transform was.
+    Fixed { at: usize },
+    /// Automatic: before the first effect drawn outside the picture
+    /// (`outside`, then `at == outside`), which draws in the margin the
+    /// move leaves; at the end (`at` is the count) when none does.
+    Auto { at: usize, outside: Option<usize> },
+    /// Nothing to place: an identity move and no fixed Transform.
+    Identity,
+}
+
+/// The cut for pixel effects `fx`: fixed at `fixed_at` when the clip has a
+/// fixed Transform there, else nothing when the move is an identity, else
+/// before the first effect drawn outside the picture.
+pub fn placement_cut(fx: &[BuiltinEffect], fixed_at: Option<usize>, identity: bool) -> PlacementCut {
+    match fixed_at {
+        Some(at) => PlacementCut::Fixed { at },
+        None if identity => PlacementCut::Identity,
+        None => {
+            let outside = fx.iter().position(klipp_effects::draws_outside_the_picture);
+            PlacementCut::Auto { at: outside.unwrap_or(fx.len()), outside }
+        }
+    }
+}
+
+/// A clip's chain read for one frame: its pixel effects in order, with the
+/// node each came from and its blend, and the transform's cut.
+struct Walk {
+    fx: Vec<BuiltinEffect>,
+    nodes: Vec<NodeId>,
+    blends: Vec<Option<Blend>>,
+    cut: PlacementCut,
+    xf: (f32, f32, f32, f32, f32, f32, f32),
+    three_d: (f32, f32, f32),
+}
+
+fn walk(clip: &Clip, picture: &ClipPicture, time: Timecode, fps: f64, resolved: Option<ResolvedTransform>, pin: Option<klipp_timeline::surface::Quad>) -> Result<Walk, String> {
     let t = crate::render::eval_clip_time(clip, time);
     let ctx = eval::eval_context(clip, time, fps);
     let mut fx = Vec::new();
+    let mut nodes = Vec::new();
     let mut blends: Vec<Option<Blend>> = Vec::new();
     let mut pinned = false;
     // The clip's transform (R2-R4): the placement node, at the first
@@ -127,29 +182,135 @@ pub fn resolve_effects_blended(
         let mut effect = decode(node, payload, t, &ctx)?;
         frame_inputs(clip, &mut effect, t, fps, pin, &mut pinned);
         fx.push(effect);
+        nodes.push(node.id);
         blends.push(blend_of(picture, node));
     }
     let xf = resolved.unwrap_or_else(|| eval::evaluate_clip_own_transform(clip, t, &ctx));
     let fixed = placement.as_ref().and_then(|(_, f)| f.clone());
     let three_d = tilt(clip, fixed.as_slice(), t);
     let identity = xf == (0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5) && three_d.0 == 0.0 && three_d.1 == 0.0;
-    match placement {
-        // Fixed: where the first enabled Transform was.
-        Some((at, Some(_))) => {
-            fx.insert(at, transform_effect(xf, three_d));
-            blends.insert(at, None);
-        }
-        // Automatic: the lift keeps the node at the chain's end; the move
-        // goes before the first effect drawn outside the picture, which
-        // draws in the margin the move leaves (R4).
-        Some((_, None)) if !identity => {
-            let at = fx.iter().position(klipp_effects::draws_outside_the_picture).unwrap_or(fx.len());
-            fx.insert(at, transform_effect(xf, three_d));
-            blends.insert(at, None);
-        }
-        _ => {}
+    // The lift keeps an automatic placement node at the chain's end; only
+    // a fixed one's place says where the move goes. No placement node:
+    // nothing is placed.
+    let cut = match placement {
+        Some((at, Some(_))) => placement_cut(&fx, Some(at), identity),
+        Some((_, None)) => placement_cut(&fx, None, identity),
+        None => PlacementCut::Identity,
+    };
+    Ok(Walk { fx, nodes, blends, cut, xf, three_d })
+}
+
+/// Where `clip`'s placement applies at `time`, as the renderer decides it
+/// ([`placement_cut`] over the same walk of its picture): the node the move
+/// goes before, or the end, why, and whose node that is (the clip's own,
+/// or its track's). `None` when the clip's picture has no placement. What
+/// the inspector's Placement row shows (M3 step 8); it never decides it.
+///
+/// `clip` is the render copy the renderer draws (its track's effects
+/// baked after its own, [`klipp_timeline::Sequence::baked_for_render`]),
+/// `picture` its lifted picture, and `track` the track it sits on: a node
+/// past the clip's own effects is that track's. `resolved` is the move as
+/// the renderer resolves it (a parent's, the camera's), or the clip's own
+/// when `None`. [`placement_in`] gives all of these from a sequence.
+pub fn resolved_placement(
+    clip: &Clip,
+    picture: &ClipPicture,
+    time: Timecode,
+    fps: f64,
+    resolved: Option<ResolvedTransform>,
+    track: Option<klipp_core::TrackId>,
+) -> Result<Option<klipp_graph_lift::stack_view::ResolvedPlacement>, String> {
+    use klipp_graph_format::lifted::Origin;
+    use klipp_graph_format::path::{NodePath, Root, TrackPart};
+    use klipp_graph_lift::ids::{entry_id, RootKind};
+    use klipp_graph_lift::stack_view::{PlacementBoundary, ResolvedPlacement};
+    if !picture.graph.nodes.iter().any(|n| n.type_id.as_str() == lt::PLACEMENT) {
+        return Ok(None);
     }
-    Ok(fx.into_iter().zip(blends).filter(|(e, _)| !klipp_effects::is_identity_effect(e)).map(|(e, b)| (e.at_render_scale(scale), b)).collect())
+    let w = walk(clip, picture, time, fps, resolved, None)?;
+    // Each walked node by the path that names it beyond this copy: the
+    // clip's own by the clip, a track's by the track. The copy's track
+    // effects follow its own and are given new ids at each bake, so one at
+    // slot `own + k` is addressed as the track's `k`th effect.
+    let own = clip.own_effects().map(|o| o.builtin_effects.len());
+    let mut probe = clip.clone();
+    let addresses: Vec<(NodePath, Option<Origin>)> = w
+        .nodes
+        .iter()
+        .map(|id| {
+            let origin = picture.graph.nodes.iter().find(|n| n.id == *id).and_then(|n| n.origin);
+            let slot = probe.index_of(klipp_timeline::EffectId::of_node(*id));
+            match (origin, own, track, slot) {
+                (None, Some(own), Some(track), Some(i)) if i >= own => {
+                    let k = entry_id(RootKind::Track, track.0, "effects", i - own);
+                    (NodePath::new(Root::Track { track: track.0, part: TrackPart::Effects }, [k]), Some(Origin::Track { track: track.0 }))
+                }
+                (Some(Origin::Track { track }), ..) => (NodePath::new(Root::Track { track, part: TrackPart::Effects }, [*id]), origin),
+                _ => (NodePath::new(Root::Clip { clip: clip.id.0 }, [*id]), origin),
+            }
+        })
+        .collect();
+    let before = |at: usize| match addresses.get(at) {
+        Some((path, origin)) => (PlacementBoundary::Before(path.clone()), *origin),
+        None => (PlacementBoundary::End, None),
+    };
+    let name = |at: usize| {
+        let label = w.nodes.get(at).and_then(|id| picture.graph.nodes.iter().find(|n| n.id == *id)).map(|n| n.label.clone()).unwrap_or_default();
+        if label.is_empty() { w.fx.get(at).map(effect_name).unwrap_or_default() } else { label }
+    };
+    let (boundary, provenance, reason) = match w.cut {
+        PlacementCut::Fixed { at } => {
+            let (b, o) = before(at);
+            (b, o, if at < w.fx.len() { format!("Fixed · before {}", name(at)) } else { "Fixed · end".into() })
+        }
+        PlacementCut::Auto { at, outside: Some(_) } => {
+            let (b, o) = before(at);
+            (b, o, format!("Auto · before {}, which draws outside the picture", name(at)))
+        }
+        PlacementCut::Auto { .. } => (PlacementBoundary::End, None, "Auto · end".into()),
+        PlacementCut::Identity => (PlacementBoundary::End, None, "Auto · nothing to move".into()),
+    };
+    let plan_revision = plan_revision(&w, &addresses);
+    Ok(Some(ResolvedPlacement { boundary, reason, provenance, plan_revision }))
+}
+
+/// [`resolved_placement`] for the clip `id` of `seq` at `time`: on its
+/// render copy, its track named. `None` when no track holds `id` or its
+/// picture has no placement.
+pub fn placement_in(
+    seq: &klipp_timeline::Sequence,
+    id: klipp_core::ClipId,
+    time: Timecode,
+    fps: f64,
+    resolved: Option<ResolvedTransform>,
+) -> Result<Option<klipp_graph_lift::stack_view::ResolvedPlacement>, String> {
+    let baked = seq.baked_for_render();
+    let Some((track, clip)) = baked.tracks.iter().find_map(|t| t.clips.iter().find(|c| c.id == id).map(|c| (t.id, c))) else {
+        return Ok(None);
+    };
+    let lifted = clip.picture_v2()?;
+    resolved_placement(clip, &lifted.picture, time, fps, resolved, Some(track))
+}
+
+/// An effect's name as the browser shows it, for a reason a person reads.
+fn effect_name(effect: &BuiltinEffect) -> String {
+    let tag = serde_json::to_value(effect).ok().and_then(|v| v.get("type").and_then(serde_json::Value::as_str).map(str::to_owned));
+    tag.as_deref().and_then(klipp_effects::registry::effect_type).map_or_else(|| tag.unwrap_or_else(|| "an effect".into()), |t| t.desc.name.to_owned())
+}
+
+/// A revision of the resolution: it changes whenever the chain the move
+/// is placed in does (which effects are drawn, in what order, by which
+/// node) or the cut does, and not when a value animates, so a view
+/// holding an older one knows to read again.
+fn plan_revision(w: &Walk, addresses: &[(klipp_graph_format::path::NodePath, Option<klipp_graph_format::lifted::Origin>)]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for ((path, _), effect) in addresses.iter().zip(&w.fx) {
+        path.hash(&mut h);
+        effect_name(effect).hash(&mut h);
+    }
+    format!("{:?}", w.cut).hash(&mut h);
+    h.finish()
 }
 
 /// `node`'s mix and mask, if it has either.

@@ -3980,34 +3980,32 @@ pub(crate) fn place_and_finish(
         .collect();
 
     let xf = resolved.unwrap_or_else(|| eval::evaluate_clip_own_transform(clip, t, ctx));
-    let has_transform = fx.iter().any(|e| matches!(e, BuiltinEffect::Transform { .. }));
+    let first = fx.iter().position(|e| matches!(e, BuiltinEffect::Transform { .. }));
     let three_d = tilt(clip, &fx, t);
     let identity = xf == (0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5) && three_d.0 == 0.0 && three_d.1 == 0.0;
-    if has_transform {
-        // The clip's transform goes where its first Transform effect is,
-        // once (#995): every Transform effect used to become it, so two
-        // moved, scaled and turned the clip twice. Later ones are dropped
-        // here, and `check` says so.
-        let mut placed = false;
-        fx.retain_mut(|e| {
-            if !matches!(e, BuiltinEffect::Transform { .. }) {
-                return true;
-            }
-            if placed {
-                return false;
-            }
-            *e = transform_effect(xf, three_d);
-            placed = true;
-            true
-        });
-    } else if !identity {
-        // A shadow or a glow draws in the transparent margin the
-        // transform leaves around a placed layer, so it has to run after
-        // the transform that made the margin. Everything else — rounded
+    // The one placement rule (`placement_cut`), as the picture route and
+    // the inspector read it (M3 step 8).
+    match crate::resolve::placement_cut(&fx, first, identity) {
+        crate::resolve::PlacementCut::Fixed { at } => {
+            // The clip's transform goes where its first Transform effect
+            // is, once (#995): every Transform effect used to become it,
+            // so two moved, scaled and turned the clip twice. Later ones
+            // are dropped here, and `check` says so.
+            fx[at] = transform_effect(xf, three_d);
+            let mut i = 0;
+            fx.retain(|e| {
+                let keep = i <= at || !matches!(e, BuiltinEffect::Transform { .. });
+                i += 1;
+                keep
+            });
+        }
+        // A shadow or a glow draws in the transparent margin the transform
+        // leaves around a placed layer, so it has to run after the
+        // transform that made the margin. Everything else — rounded
         // corners included — runs before it, with the picture, so it
         // scales with the layer.
-        let at = fx.iter().position(klipp_effects::draws_outside_the_picture).unwrap_or(fx.len());
-        fx.insert(at, transform_effect(xf, three_d));
+        crate::resolve::PlacementCut::Auto { at, .. } => fx.insert(at, transform_effect(xf, three_d)),
+        crate::resolve::PlacementCut::Identity => {}
     }
     fx.retain(|e| !klipp_effects::is_identity_effect(e));
     fx
