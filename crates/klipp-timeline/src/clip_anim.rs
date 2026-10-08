@@ -275,7 +275,9 @@ impl Clip {
     /// picture, its value where nothing animates it, and its effect's tag
     /// (M3 step 3): what the curve editor and keyframe selection read in
     /// place of the effect list's `"{index}:{param}"` keys. `None` when the
-    /// path names no node of the clip.
+    /// path names no node of the clip's top level: a clip's effects are
+    /// there, and a grade node's animation is its grade's keys, not a
+    /// node's `anim`.
     pub fn node_key_state(&self, path: &klipp_graph_format::path::NodePath, key: &klipp_graph_format::ParamKey) -> Option<NodeKeyState> {
         self.picture_node(path, |n| {
             let keys = n.anim.get(key).map(|a| a.keys.iter().filter_map(|k| serde_json::from_value::<Keyframe>(k.clone()).ok()).collect()).unwrap_or_default();
@@ -294,12 +296,15 @@ impl Clip {
         use klipp_graph_format::path::{NodePath, Root};
         let Ok(lifted) = self.picture_v2() else { return Vec::new() };
         let graph = &lifted.picture.graph;
-        // Back from the output along each node's primary input.
+        // Back from the output along each node's primary input, as the
+        // catalog names it (a merge's is its background).
+        use klipp_graph_format::PortCatalog;
         let mut spine = Vec::new();
         let mut at = Some(graph.output);
         while let Some(id) = at.filter(|id| !spine.contains(id)) {
             spine.push(id);
-            at = graph.edges.iter().find(|e| e.to == (id, "in".into())).map(|e| e.from.0);
+            let primary = graph.nodes.iter().find(|n| n.id == id).and_then(|n| crate::RegistryCatalog.primary_input(n));
+            at = primary.and_then(|p| graph.edges.iter().find(|e| e.to == (id, p.clone())).map(|e| e.from.0));
         }
         spine.reverse();
         let mut out = Vec::new();
