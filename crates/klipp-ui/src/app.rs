@@ -74,6 +74,8 @@ mod parity_video_transform;
 #[cfg(test)]
 mod parity_specialists;
 #[cfg(test)]
+mod placement_row_tests;
+#[cfg(test)]
 mod grade_inspector_tests;
 mod media;
 mod compound;
