@@ -85,7 +85,11 @@ pub fn node_rows(ui: &mut egui::Ui, ctx: &mut RowCtx, rows: &NodeRows) -> Vec<(&
         let enabled = pres.enabled_if.as_ref().is_none_or(|c| holds(rows, c));
         let stored = (rows.stored)(desc);
         let (shown_at_t, keys) = (rows.keys)(desc);
-        let outcome = ui.add_enabled_ui(enabled, |ui| param_row(ui, ctx, RowInput { desc, pres: &pres, stored: &stored, shown_at_t, keys })).inner;
+        // Each row in its own scope, which counts as one widget however
+        // much it draws: a row that grows or shrinks mid-drag leaves the
+        // rows after it their ids and a held drag.
+        let addr = ctx.addr.clone();
+        let outcome = ui.push_id((addr, desc.key), |ui| ui.add_enabled_ui(enabled, |ui| param_row(ui, ctx, RowInput { desc, pres: &pres, stored: &stored, shown_at_t, keys })).inner).inner;
         if let Some(help) = pres.help {
             ui.label(egui::RichText::new(help).size(10.0).color(ctx.theme.text_dim));
         }

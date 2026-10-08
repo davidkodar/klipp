@@ -66,7 +66,10 @@ pub fn effect_card(ui: &mut egui::Ui, row: &mut RowCtx, rows: &NodeRows, ty: &kl
     }
     let adapter = tp.extra_ui.and_then(adapter);
     if let Some(a) = adapter {
-        a.before_rows(ui, &mut AdapterCtx { theme, clip, state, cmds: row.cmds });
+        // In a scope, which counts as one widget however much it draws, so
+        // a status that changes mid-drag (an analysis's result drawing its
+        // graph) leaves the rows below their ids and a held drag.
+        ui.scope(|ui| a.before_rows(ui, &mut AdapterCtx { theme, clip, state, cmds: row.cmds }));
     }
     let outcomes = node_rows(ui, row, rows);
     if let Some(a) = adapter {

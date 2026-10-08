@@ -33,6 +33,8 @@ struct Analysis {
     complete: fn(ClipId) -> AppEvent,
     /// The undo steps a drag held past a result leaves: old view, new.
     result_drag_steps: (usize, usize),
+    /// The old view loses a drag held past this result (#1377).
+    old_drops_drag: bool,
 }
 
 const ANALYSES: &[Analysis] = &[
@@ -52,6 +54,7 @@ const ANALYSES: &[Analysis] = &[
         },
         complete: |clip_id| AppEvent::DeflickerComplete { clip_id },
         result_drag_steps: (1, 2),
+        old_drops_drag: false,
     },
     Analysis {
         tag: "video_stabilization",
@@ -62,7 +65,7 @@ const ANALYSES: &[Analysis] = &[
         measured: |clip| {
             use klipp_effects::rolling_shutter::Homography;
             use klipp_effects::stabilization::{accumulate_trajectory, decompose_homography, smooth_trajectory, StabilizationData};
-            let step = |i: usize| Homography { h: [[1.0, 0.0, if i % 2 == 0 { 2.0 } else { -1.5 }], [0.0, 1.0, 0.5], [0.0, 0.0, 1.0]] };
+            let step = |i: usize| Homography { h: [[1.0, 0.0, if i.is_multiple_of(2) { 2.0 } else { -1.5 }], [0.0, 1.0, 0.5], [0.0, 0.0, 1.0]] };
             let frame_transforms: Vec<Homography> = (0..47).map(step).collect();
             let accumulated = accumulate_trajectory(&frame_transforms);
             let trajectory = accumulated.iter().map(decompose_homography).collect();
@@ -74,7 +77,9 @@ const ANALYSES: &[Analysis] = &[
             state.stabilization_in_progress.insert(clip);
         },
         complete: |clip_id| AppEvent::StabilizationComplete { clip_id },
-        result_drag_steps: (0, 1),
+        // The old view's 0 is #1377.
+        result_drag_steps: (0, 2),
+        old_drops_drag: true,
     },
 ];
 
@@ -217,8 +222,12 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
             if !super::proxies::apply_analysis_result(&mut run.state, Some(&flat), &event) {
                 return Err("the result wasn't applied".into());
             }
+            let at_result = run.clip().builtin_effects().to_vec();
             for dx in [18.0, 24.0, 30.0, 36.0] {
                 run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))], egui::Modifiers::NONE);
+            }
+            if run.state.use_generated_stack && run.clip().builtin_effects() == at_result.as_slice() {
+                return Err("the generated view's drag stopped at the result".into());
             }
             run.button(at + egui::vec2(36.0, 0.0), egui::PointerButton::Primary, false);
             run.frame(Vec::new(), egui::Modifiers::NONE);
@@ -236,9 +245,10 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
         // the generated view closes its path drag as its own step before
         // the result and goes on as one more; the old index drag is never
         // closed by a result. A stabilization result draws its trajectory
-        // above the rows, which moves egui's ids under the held slider and
-        // ends its drag in both views: the generated view's half is one
-        // step; the old view's drag is left open, no step at all.
+        // above the rows, which moves the old view's ids under the held
+        // slider and drops its drag, open and unrecorded: no step at all
+        // (#1377). The generated rows' ids are their own, so its drag
+        // goes on.
         let (want_old, want_new) = a.result_drag_steps;
         let (uo, un) = (old.state.active_history().undo_count(), new.state.active_history().undo_count());
         if (uo, un) != (want_old, want_new) {
@@ -248,11 +258,16 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
         if !old.unapplied.is_empty() || !new.unapplied.is_empty() {
             return Err(format!("unapplied: old {:?}, new {:?}", old.unapplied, new.unapplied));
         }
-        if old.clip().picture_v2()? != new.clip().picture_v2()? {
-            return Err(format!("the pictures differ: old {:?}, new {:?}", old.clip().builtin_effects(), new.clip().builtin_effects()));
-        }
-        if old.side != new.side {
-            return Err(format!("side commands old {:?}, new {:?}", old.side, new.side));
+        // The old view that drops its drag at the result (#1377) stops
+        // there; the generated view goes on, so their pictures differ by
+        // the part after the result, and the side commands it implied.
+        if !a.old_drops_drag {
+            if old.clip().picture_v2()? != new.clip().picture_v2()? {
+                return Err(format!("the pictures differ: old {:?}, new {:?}", old.clip().builtin_effects(), new.clip().builtin_effects()));
+            }
+            if old.side != new.side {
+                return Err(format!("side commands old {:?}, new {:?}", old.side, new.side));
+            }
         }
         // Undo all the way back: the picture before the drag, and the
         // measurement still on the clip; redo: the picture after.

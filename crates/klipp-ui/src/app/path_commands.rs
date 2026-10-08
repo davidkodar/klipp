@@ -1630,14 +1630,35 @@ mod tests {
         assert_eq!(picture(&s, c.id), picture1, "undo takes back the part after the result");
         undo(&mut s);
         assert_eq!(picture(&s, c.id), picture0, "then the part before");
-        // Released with no tick after the result: one step, nothing left.
+        // Released, or cancelled, with no tick after the result: one step,
+        // and the drag forgotten, so a later typed edit of the row is its
+        // own step and reopens no gesture.
+        for close in [AppCommand::EndParamEditAt { addr: blur.clone(), key: "radius".into() }, AppCommand::AbandonParamEditAt { addr: blur.clone(), key: "radius".into() }] {
+            let mut s = with(std::slice::from_ref(&c));
+            s.path_command(&AppCommand::BeginParamEditAt { addr: blur.clone(), key: "radius".into() });
+            tick(&mut s, 5.0);
+            s.close_path_drag_before_edit();
+            s.path_command(&close);
+            assert_eq!(s.active_history().undo_count(), 1, "{close:?}");
+            assert!(s.resumable_path_drag.is_none(), "{close:?} forgets the drag");
+            tick(&mut s, 7.0);
+            assert_eq!(s.active_history().undo_count(), 2, "a later edit is its own step");
+            assert!(!s.active_history().is_any_drag_in_progress(), "and opens no drag");
+        }
+        // Escape after moving on past the result: the picture as the result
+        // left it; the part before it, and its step, stay.
         let mut s = with(std::slice::from_ref(&c));
         s.path_command(&AppCommand::BeginParamEditAt { addr: blur.clone(), key: "radius".into() });
         tick(&mut s, 5.0);
         s.close_path_drag_before_edit();
-        s.path_command(&AppCommand::EndParamEditAt { addr: blur.clone(), key: "radius".into() });
-        assert_eq!(s.active_history().undo_count(), 1);
+        let after_result = picture(&s, c.id);
+        tick(&mut s, 8.0);
+        s.path_command(&AppCommand::AbandonParamEditAt { addr: blur.clone(), key: "radius".into() });
+        assert_eq!(picture(&s, c.id), after_result, "Escape takes back the part after the result alone");
+        assert_eq!(s.active_history().undo_count(), 1, "the part before keeps its step");
         assert!(s.resumable_path_drag.is_none());
+        undo(&mut s);
+        assert_eq!(picture(&s, c.id), picture0, "which undoes to the start");
     }
 
     /// An effect's keys by path and by index: adding one (`AddKeyAt`,
