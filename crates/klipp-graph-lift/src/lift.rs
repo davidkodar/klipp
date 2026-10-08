@@ -685,11 +685,11 @@ fn opacity(record: &ClipRecordV2, effects: &[&Node], ctx: &LiftCtx, notes: &mut 
     }
 }
 
-/// The clip's placement values, by the three rules over its own Transform
-/// entries, and their animation from the clip's transform keyframes.
+/// The clip's placement values from its first enabled Transform (#1207),
+/// and their animation from the clip's transform keyframes.
 fn placement(record: &ClipRecordV2, transforms: &[&Node], notes: &mut Vec<LiftNote>) -> (PlacementProps, BTreeMap<ParamKey, Animation>) {
     let mut p = PlacementProps::default();
-    if let Some(first) = transforms.first() {
+    if let Some(first) = transforms.iter().find(|n| n.enabled) {
         let v = payload(first);
         p.pos_x = num(v, "position_x");
         p.pos_y = num(v, "position_y");
@@ -700,14 +700,11 @@ fn placement(record: &ClipRecordV2, transforms: &[&Node], notes: &mut Vec<LiftNo
         if num(v, "scale_y") != num(v, "scale_x") {
             notes.push(LiftNote::DroppedField { what: "transform".into(), field: "scale_y".into() });
         }
-    }
-    if let Some(first_on) = transforms.iter().find(|n| n.enabled) {
-        let v = payload(first_on);
         p.tilt_x = num(v, "rotation_x");
         p.tilt_y = num(v, "rotation_y");
         p.perspective = num(v, "perspective");
+        p.focal_ref = v.get("focal_ref").filter(|f| !f.is_null()).cloned();
     }
-    p.focal_ref = transforms.iter().find_map(|n| payload(n).get("focal_ref").filter(|f| !f.is_null()).cloned());
 
     let lc = &record.legacy_clip;
     let mut anim = BTreeMap::new();
@@ -914,4 +911,41 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
     // Each effect's values held in its map from here on (M3-2).
     crate::effect_params::picture_into_memory(&mut picture)?;
     Ok((picture, notes))
+}
+
+#[cfg(test)]
+mod placement_bypass_tests {
+    use super::*;
+
+    fn transform(enabled: bool, x: f32, focal: Value) -> Node {
+        node(Uuid::new_v4(), types::LEGACY_TRANSFORM, enabled, Some(Legacy {
+            slot: None, keyframes: None, modifiers: BTreeMap::new(),
+            payload: json!({"type":"transform", "position_x":x, "position_y":x+1.0,
+                "scale_x":x+2.0, "scale_y":x+2.0, "rotation":x+3.0,
+                "anchor_x":x+4.0, "anchor_y":x+5.0, "rotation_x":x+6.0,
+                "rotation_y":x+7.0, "perspective":x+8.0, "focal_ref":focal}),
+        }))
+    }
+
+    #[test]
+    fn every_placement_value_comes_from_the_first_enabled_transform() {
+        let mut record = ClipRecordV2 { graph: Graph {
+            graph_version: klipp_graph_format::GRAPH_VERSION, nodes: Vec::new(), edges: Vec::new(),
+            output: Uuid::nil(), ui: Default::default(), working_space_override: None,
+        }, legacy_clip: Default::default() };
+        record.legacy_clip.fields.insert("transform_pos_x_keyframes".into(), json!([{"time_secs":0.0,"value":4.0}]));
+        let off = transform(false, 20.0, json!({"old":"disabled"}));
+        let on = transform(true, 2.0, Value::Null);
+        let later = transform(true, 30.0, json!({"old":"later"}));
+        let mut notes = Vec::new();
+        let absent = placement(&record, &[], &mut notes);
+        assert_eq!(placement(&record, &[&off], &mut notes), absent);
+        let expected = placement(&record, &[&on], &mut notes);
+        assert_eq!(placement(&record, &[&off, &on, &later], &mut notes), expected);
+        assert_eq!(expected.0.pos_x, Some(2.0));
+        assert_eq!(expected.0.tilt_x, Some(8.0));
+        assert_eq!(expected.0.perspective, Some(10.0));
+        assert_eq!(expected.0.focal_ref, None, "later focal refs cannot override the selected Transform");
+        assert_eq!(expected.1, absent.1, "clip animation survives bypass");
+    }
 }

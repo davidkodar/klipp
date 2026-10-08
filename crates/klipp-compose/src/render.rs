@@ -4123,13 +4123,17 @@ pub(crate) fn clip_opacity(clip: &Clip, time: Timecode, fps: f64) -> f32 {
 /// perspective given is seen in moderate perspective (1), since flat it
 /// would only squash the picture rather than lean it.
 pub(crate) fn tilt(clip: &Clip, fx: &[BuiltinEffect], t: f64) -> (f32, f32, f32) {
-    let (rx, ry, persp) = fx
+    let picture = clip.is_picture_truth().then(|| clip.picture_v2().ok()).flatten();
+    let (rx, ry, persp) = picture.as_ref().map(|p| {
+        let p = &p.picture.placement;
+        (p.tilt_x.unwrap_or(0.0), p.tilt_y.unwrap_or(0.0), p.perspective.unwrap_or(0.0))
+    }).unwrap_or_else(|| fx
         .iter()
         .find_map(|e| match e {
             BuiltinEffect::Transform { rotation_x, rotation_y, perspective, .. } => Some((*rotation_x, *rotation_y, *perspective)),
             _ => None,
         })
-        .unwrap_or((0.0, 0.0, 0.0));
+        .unwrap_or((0.0, 0.0, 0.0)));
     let rx = klipp_core::keyframe::evaluate(clip.transform_tilt_x_keyframes(), t, rx);
     let ry = klipp_core::keyframe::evaluate(clip.transform_tilt_y_keyframes(), t, ry);
     // Keyframed, or set still in the inspector: either way a tilt.

@@ -608,7 +608,8 @@ fn rule_cases() -> Vec<Case> {
     let f = Frames::default().with(&base, 0);
     out.push(Case::new("rule/adjustment first opacity", sequence(vec![track("Adj", TrackKind::Video, vec![adj]), track("V1", TrackKind::Video, vec![base])]), f));
 
-    // Transform: a disabled Transform still carries the clip's position.
+    // A disabled Transform carries stored values but must not place the
+    // clip (#1207). Keep the historical case name to identify its baseline.
     let base = media(0.0, 4.0);
     let mut top = media(0.0, 4.0);
     top.set_effect_list(vec![transform(0.5, 12.0, 6.0)], vec![false]);
@@ -1528,7 +1529,36 @@ fn every_path_draws_its_recorded_frames() {
     assert!(problems.is_empty(), "{}", problems.join("\n"));
     if let Ok(reason) = std::env::var("KLIPP_RECORD_GOLDENS") {
         assert!(!reason.trim().is_empty(), "say why the frames are recorded again");
-        record(&frames, &reason);
+        if let Ok(case) = std::env::var("KLIPP_RECORD_GOLDEN_CASE") {
+            // A reviewed rule change may replace one case only. All
+            // other stored bytes stay exact, and must still agree with
+            // today's render before any reference is written.
+            let mut old = stored();
+            let mut selected = frames.clone();
+            let mut count = 0;
+            for (key, drawn) in &mut selected {
+                let previous = old.remove(key).expect("a case-only recording cannot add frames");
+                if key.0 == case {
+                    count += 1;
+                    match (&previous, drawn.as_ref()) {
+                        (Some(w), Some(d)) => println!("re-record {} @{} {}: {:?}", key.0, key.1, key.2, d.against(w)),
+                        _ => println!("re-record {} @{} {}: route availability changed", key.0, key.1, key.2),
+                    }
+                } else {
+                    assert!(match (&previous, drawn.as_ref()) {
+                        (None, None) => true,
+                        (Some(w), Some(d)) => d.against(w).is_some_and(|(worst, _)| worst <= TOLERANCE),
+                        _ => false,
+                    }, "an unselected golden changed: {key:?}");
+                    *drawn = previous;
+                }
+            }
+            assert!(count > 0, "no frames of {case:?}");
+            assert!(old.is_empty(), "a case-only recording cannot remove frames");
+            record(&selected, &reason);
+        } else {
+            record(&frames, &reason);
+        }
         return;
     }
     let mut want = stored();
