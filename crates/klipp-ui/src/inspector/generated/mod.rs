@@ -6,6 +6,7 @@
 //!
 //! Nothing calls it while `AppState::use_generated_stack` is off.
 
+pub mod adapters;
 pub mod custom;
 pub mod row;
 
@@ -53,10 +54,11 @@ pub fn shown<'a>(rows: &NodeRows<'a>) -> Vec<(&'a ParamDesc, Presentation)> {
     out.into_iter().map(|(_, p, pres)| (p, pres)).collect()
 }
 
-/// Draw a node's rows under their sub-headers, and push the path commands
-/// they imply. A named editor drawing several parameters (a wheel's
+/// Draw a node's rows under their sub-headers, each with its help under
+/// it, and push the path commands they imply; each drawn row's key and
+/// what it did. A named editor drawing several parameters (a wheel's
 /// parts, a group sharing one editor) is drawn once, at its first.
-pub fn node_rows(ui: &mut egui::Ui, ctx: &mut RowCtx, rows: &NodeRows) -> Vec<RowOutcome> {
+pub fn node_rows(ui: &mut egui::Ui, ctx: &mut RowCtx, rows: &NodeRows) -> Vec<(&'static str, RowOutcome)> {
     let mut outcomes = Vec::new();
     let mut header: Option<&str> = None;
     let mut drawn_editors: Vec<(Widget, Option<&str>)> = Vec::new();
@@ -79,7 +81,10 @@ pub fn node_rows(ui: &mut egui::Ui, ctx: &mut RowCtx, rows: &NodeRows) -> Vec<Ro
         let stored = (rows.stored)(desc);
         let (shown_at_t, keys) = (rows.keys)(desc);
         let outcome = ui.add_enabled_ui(enabled, |ui| param_row(ui, ctx, RowInput { desc, pres: &pres, stored: &stored, shown_at_t, keys })).inner;
-        outcomes.push(outcome);
+        if let Some(help) = pres.help {
+            ui.label(egui::RichText::new(help).size(10.0).color(ctx.theme.text_dim));
+        }
+        outcomes.push((desc.key, outcome));
     }
     outcomes
 }

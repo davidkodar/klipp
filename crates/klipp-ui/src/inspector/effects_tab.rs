@@ -2002,54 +2002,10 @@ fn show_builtin_effect_params(
                 .size(10.0)
                 .color(theme.text_dim),
             );
-            ui.label(
-                egui::RichText::new(
-                    "A clip using this is rendered on the CPU rather than the GPU: the frames it averages against are decoded there.",
-                )
-                .size(10.0)
-                .color(theme.text_dim),
-            );
+            ui.label(egui::RichText::new(TEMPORAL_DENOISE_CPU_NOTE).size(10.0).color(theme.text_dim));
         }
         klipp_effects::BuiltinEffect::Deflicker { strength, window_secs, .. } => {
-            let has_data = clip.deflicker_data.is_some();
-            let is_analyzing = state.deflicker_in_progress.contains(&clip_id);
-
-            if is_analyzing {
-                let progress = state.deflicker_progress.get(&clip_id).copied().unwrap_or(0.0);
-                ui.add(egui::ProgressBar::new(progress).text(format!("Measuring {:.0}%", progress * 100.0)));
-                if ui.small_button("Cancel").clicked() {
-                    cmds.push(AppCommand::CancelDeflicker { clip_id });
-                }
-            } else if has_data {
-                ui.horizontal(|ui| {
-                    ui.colored_label(theme.marker_success, "Analysis complete");
-                    if ui.small_button("Re-analyse").clicked() {
-                        cmds.push(AppCommand::AnalyzeDeflicker { clip_id });
-                    }
-                });
-                // What it found, so "nothing happened" is answerable.
-                if let Some(gains) = clip.deflicker_gains.as_ref() {
-                    let worst = gains
-                        .gains
-                        .iter()
-                        .map(|g| (g - 1.0).abs())
-                        .fold(0.0f32, f32::max);
-                    let (colour, text) = if worst < 0.01 {
-                        (theme.text_dim, "No flicker found — the shot is already steady".to_string())
-                    } else {
-                        (
-                            theme.marker_success,
-                            format!("Flicker found: up to {:.1}% per frame", worst * 100.0),
-                        )
-                    };
-                    ui.colored_label(colour, egui::RichText::new(text).size(11.0));
-                }
-            } else {
-                ui.colored_label(theme.text_dim, egui::RichText::new("Not analysed — the clip's light has to be measured first").size(11.0));
-                if ui.button("Analyse").clicked() {
-                    cmds.push(AppCommand::AnalyzeDeflicker { clip_id });
-                }
-            }
+            deflicker_status(ui, theme, clip, state, cmds);
 
             let ks_s = keyframe_state_if(&animatable, clip, effect_index, "strength", clip_time_secs, keyframe_tolerance);
             let r_s = scrubby_param_row(ui, "Strength", strength, 0.0..=1.0, 0.8, 0.01, 2, "", ks_s);
@@ -2064,134 +2020,10 @@ fn show_builtin_effect_params(
                 cmds.push(AppCommand::RegainDeflicker { clip_id });
                 changed = true;
             }
-            ui.label(
-                egui::RichText::new(
-                    "Variation faster than the window is flicker and goes; slower is the shot's own brightness and stays.",
-                )
-                .size(10.0)
-                .color(theme.text_dim),
-            );
+            ui.label(egui::RichText::new(DEFLICKER_WINDOW_HINT).size(10.0).color(theme.text_dim));
         }
         klipp_effects::BuiltinEffect::VideoStabilization { smoothing, crop_ratio, zoom } => {
-            // Analysis status
-            let has_data = clip.stabilization_data.is_some();
-            let is_analyzing = state.stabilization_in_progress.contains(&clip_id);
-
-            if is_analyzing {
-                let progress = state.stabilization_progress.get(&clip_id).copied().unwrap_or(0.0);
-                ui.add(egui::ProgressBar::new(progress).text(format!("Analyzing {:.0}%", progress * 100.0)));
-                if ui.small_button("Cancel").clicked() {
-                    cmds.push(AppCommand::CancelStabilization { clip_id });
-                }
-            } else if has_data {
-                ui.horizontal(|ui| {
-                    ui.colored_label(theme.marker_success, "Analysis complete");
-                    if ui.small_button("Re-analyze").clicked() {
-                        cmds.push(AppCommand::AnalyzeStabilization { clip_id });
-                    }
-                    let compare_on = state.stabilization_compare_active;
-                    let compare_label = if compare_on { "Exit Compare" } else { "Compare" };
-                    let compare_btn = ui.small_button(compare_label)
-                        .on_hover_text("Split-view raw vs stabilized. Drag the divider on the viewer to compare.");
-                    if compare_btn.clicked() {
-                        cmds.push(AppCommand::ToggleStabilizationCompare);
-                    }
-                });
-                // Quality metric: how much shake the smoothing actually removed.
-                if let Some(smoothed) = clip.smoothed_trajectory.as_ref() {
-                    let pct = smoothed.jitter_reduction_pct();
-                    let (label_color, headline) = if smoothed.raw_jitter_px < 0.25 {
-                        // Source was already smooth — nothing to remove.
-                        (theme.text_dim, "Source already smooth — minimal shake detected".to_string())
-                    } else if pct >= 60.0 {
-                        (theme.marker_success, format!("Shake reduced by {pct:.0}%"))
-                    } else if pct >= 25.0 {
-                        (theme.marker_warning, format!("Shake reduced by {pct:.0}%"))
-                    } else {
-                        (theme.marker_error, format!("Shake reduced by {pct:.0}%"))
-                    };
-                    ui.colored_label(label_color, egui::RichText::new(headline).size(11.0));
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Jitter: {:.1} → {:.1} px/frame",
-                            smoothed.raw_jitter_px, smoothed.smoothed_jitter_px
-                        ))
-                        .size(10.0)
-                        .color(theme.text_dim),
-                    );
-
-                    // Trajectory graph: raw camera tx (jagged) vs smoothed tx (clean).
-                    // Visualizes what stabilization is actually doing.
-                    if let Some(data) = clip.stabilization_data.as_ref() {
-                        let raw: Vec<f32> = data.trajectory.iter().map(|p| p.tx as f32).collect();
-                        let smooth: Vec<f32> = smoothed.smoothed.iter().map(|p| p.tx as f32).collect();
-                        if raw.len() >= 2 && smooth.len() == raw.len() {
-                            let avail = ui.available_width();
-                            let (rect, _) = ui.allocate_exact_size(
-                                egui::vec2(avail, 64.0),
-                                egui::Sense::hover(),
-                            );
-                            let p = ui.painter_at(rect);
-                            // Background
-                            p.rect_filled(rect, 2.0, theme.bg_deep);
-                            p.rect_stroke(rect, 2.0, egui::Stroke::new(0.5_f32, theme.border));
-
-                            // Y range covers both lines with small padding.
-                            let mut lo = f32::INFINITY;
-                            let mut hi = f32::NEG_INFINITY;
-                            for &v in raw.iter().chain(smooth.iter()) {
-                                if v < lo { lo = v; }
-                                if v > hi { hi = v; }
-                            }
-                            let span = (hi - lo).max(1.0);
-                            let pad_y = 4.0;
-                            let inner = rect.shrink2(egui::vec2(4.0, pad_y));
-
-                            let to_pt = |i: usize, v: f32| -> egui::Pos2 {
-                                let x = inner.left() + (i as f32 / (raw.len() - 1) as f32) * inner.width();
-                                let t = (v - lo) / span;
-                                let y = inner.bottom() - t * inner.height();
-                                egui::pos2(x, y)
-                            };
-
-                            // Zero/baseline reference line at the smoothed midpoint.
-                            let mid = (lo + hi) * 0.5;
-                            let mid_y = inner.bottom() - ((mid - lo) / span) * inner.height();
-                            p.line_segment(
-                                [egui::pos2(inner.left(), mid_y), egui::pos2(inner.right(), mid_y)],
-                                egui::Stroke::new(0.5_f32, theme.border),
-                            );
-
-                            let raw_pts: Vec<egui::Pos2> = raw.iter().enumerate().map(|(i, &v)| to_pt(i, v)).collect();
-                            let smooth_pts: Vec<egui::Pos2> = smooth.iter().enumerate().map(|(i, &v)| to_pt(i, v)).collect();
-                            // Raw trajectory: dim, thin
-                            p.add(egui::Shape::line(raw_pts, egui::Stroke::new(1.0_f32, theme.text_dim)));
-                            // Smoothed trajectory: bright accent, thicker
-                            p.add(egui::Shape::line(smooth_pts, egui::Stroke::new(1.6_f32, theme.accent)));
-
-                            // Tiny legend
-                            p.text(
-                                egui::pos2(rect.left() + 6.0, rect.top() + 4.0),
-                                egui::Align2::LEFT_TOP,
-                                "raw",
-                                egui::FontId::proportional(8.5),
-                                theme.text_dim,
-                            );
-                            p.text(
-                                egui::pos2(rect.left() + 28.0, rect.top() + 4.0),
-                                egui::Align2::LEFT_TOP,
-                                "smoothed",
-                                egui::FontId::proportional(8.5),
-                                theme.accent,
-                            );
-                        }
-                    }
-                }
-            } else {
-                if ui.button("Analyze Clip").clicked() {
-                    cmds.push(AppCommand::AnalyzeStabilization { clip_id });
-                }
-            }
+            stabilization_status(ui, theme, clip, state, cmds);
 
             ui.add_space(4.0);
 
@@ -2642,132 +2474,7 @@ fn show_builtin_effect_params(
             track_scrubby!("center_y", r_cy, *center_y);
         }
         klipp_effects::BuiltinEffect::Frei0r { type_id, params } => {
-            // Resolution-warning banner: surfaces above the params when
-            // the project frame size doesn't fit frei0r's spec
-            // constraints for THIS plugin (8-aligned, ≤2048 unless
-            // tilable). Temporal plugins (delay0r, baltan) refuse 4K
-            // even with tiling on. Pulled from the live registry so a
-            // missing-plugin clip falls through quietly.
-            let plugin_info = klipp_effects::frei0r_effect::lookup(type_id);
-            let resolution = state.sequence().resolution;
-            let project_w = resolution.width;
-            let project_h = resolution.height;
-            if let Some(ref info) = plugin_info {
-                if !klipp_effects::frei0r_effect::supports_resolution(
-                    &info.name,
-                    project_w,
-                    project_h,
-                ) {
-                    let why = if !project_w.is_multiple_of(8) || !project_h.is_multiple_of(8) {
-                        format!(
-                            "frei0r requires 8-aligned dimensions; project is {}×{}",
-                            project_w, project_h
-                        )
-                    } else {
-                        format!(
-                            "{} doesn't support {}×{} (frei0r {} can't tile temporal effects above 2048)",
-                            info.name, project_w, project_h, info.name
-                        )
-                    };
-                    ui.colored_label(theme.marker_warning, format!("⚠ {why}"));
-                    ui.add_space(4.0);
-                }
-            } else {
-                ui.colored_label(
-                    theme.marker_warning,
-                    format!("⚠ Plugin not installed: {}", type_id),
-                );
-                ui.add_space(4.0);
-            }
-
-            // Per-param widgets — typed by the plugin's declared kind.
-            // We read declared param info from the registry; if the
-            // plugin disappeared, fall through to passthrough (no
-            // widgets).
-            let Some(plugin_info) = plugin_info else {
-                return if changed { Some(updated) } else { None };
-            };
-
-            for (i, param_info) in plugin_info.params.iter().enumerate() {
-                // Lazily extend params Vec if a plugin grew between
-                // saves (defensive — plugins shouldn't change shape
-                // across versions, but covers the case cleanly).
-                while params.len() <= i {
-                    params.push(klipp_frei0r::Frei0rValue::default_for(
-                        plugin_info.params[params.len()].kind,
-                    ));
-                    changed = true;
-                }
-                let value = &mut params[i];
-                ui.horizontal(|ui| {
-                    ui.label(&param_info.name);
-                    match (param_info.kind, value) {
-                        (klipp_frei0r::ParamKind::Bool, klipp_frei0r::Frei0rValue::Bool(b)) => {
-                            if ui.checkbox(b, "").changed() {
-                                changed = true;
-                            }
-                        }
-                        (
-                            klipp_frei0r::ParamKind::Double,
-                            klipp_frei0r::Frei0rValue::Double(d),
-                        ) => {
-                            // Spec: f0r_param_double range is [0, 1].
-                            if ui.add(egui::Slider::new(d, 0.0..=1.0)).changed() {
-                                changed = true;
-                            }
-                        }
-                        (
-                            klipp_frei0r::ParamKind::Color,
-                            klipp_frei0r::Frei0rValue::Color(rgb),
-                        ) => {
-                            let mut color = [
-                                (rgb[0].clamp(0.0, 1.0) * 255.0) as u8,
-                                (rgb[1].clamp(0.0, 1.0) * 255.0) as u8,
-                                (rgb[2].clamp(0.0, 1.0) * 255.0) as u8,
-                            ];
-                            if ui.color_edit_button_srgb(&mut color).changed() {
-                                rgb[0] = color[0] as f32 / 255.0;
-                                rgb[1] = color[1] as f32 / 255.0;
-                                rgb[2] = color[2] as f32 / 255.0;
-                                changed = true;
-                            }
-                        }
-                        (
-                            klipp_frei0r::ParamKind::Position,
-                            klipp_frei0r::Frei0rValue::Position(xy),
-                        ) => {
-                            ui.label("X");
-                            if ui
-                                .add(egui::Slider::new(&mut xy[0], 0.0..=1.0))
-                                .changed()
-                            {
-                                changed = true;
-                            }
-                            ui.label("Y");
-                            if ui
-                                .add(egui::Slider::new(&mut xy[1], 0.0..=1.0))
-                                .changed()
-                            {
-                                changed = true;
-                            }
-                        }
-                        (
-                            klipp_frei0r::ParamKind::String,
-                            klipp_frei0r::Frei0rValue::String(s),
-                        ) => {
-                            if ui.text_edit_singleline(s).changed() {
-                                changed = true;
-                            }
-                        }
-                        _ => {
-                            // Type/value mismatch — render a clear
-                            // disabled hint instead of silently
-                            // ignoring the row.
-                            ui.colored_label(theme.text_dim, "(unsupported param type)");
-                        }
-                    }
-                });
-            }
+            changed |= frei0r_body(ui, theme, state, type_id.as_str(), params);
         }
     }
 
@@ -2849,4 +2556,320 @@ fn show_builtin_effect_params(
     }
 
     if changed { Some(updated) } else { None }
+}
+
+/// The line under Deflicker's window row: what the window decides.
+pub(crate) const DEFLICKER_WINDOW_HINT: &str =
+    "Variation faster than the window is flicker and goes; slower is the shot's own brightness and stays.";
+
+/// Temporal Noise Reduction's note on where it renders.
+pub(crate) const TEMPORAL_DENOISE_CPU_NOTE: &str =
+    "A clip using this is rendered on the CPU rather than the GPU: the frames it averages against are decoded there.";
+
+/// Deflicker's analysis: measuring (with Cancel), done (with Re-analyse
+/// and what it found), or not yet (with Analyse). Shared by the effects
+/// tab and the generated stack's adapter (M3 step 6).
+pub(crate) fn deflicker_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, state: &AppState, cmds: &mut Vec<AppCommand>) {
+    let clip_id = clip.id;
+    let has_data = clip.deflicker_data.is_some();
+    let is_analyzing = state.deflicker_in_progress.contains(&clip_id);
+
+    if is_analyzing {
+        let progress = state.deflicker_progress.get(&clip_id).copied().unwrap_or(0.0);
+        ui.add(egui::ProgressBar::new(progress).text(format!("Measuring {:.0}%", progress * 100.0)));
+        if ui.small_button("Cancel").clicked() {
+            cmds.push(AppCommand::CancelDeflicker { clip_id });
+        }
+    } else if has_data {
+        ui.horizontal(|ui| {
+            ui.colored_label(theme.marker_success, "Analysis complete");
+            if ui.small_button("Re-analyse").clicked() {
+                cmds.push(AppCommand::AnalyzeDeflicker { clip_id });
+            }
+        });
+        // What it found, so "nothing happened" is answerable.
+        if let Some(gains) = clip.deflicker_gains.as_ref() {
+            let worst = gains
+                .gains
+                .iter()
+                .map(|g| (g - 1.0).abs())
+                .fold(0.0f32, f32::max);
+            let (colour, text) = if worst < 0.01 {
+                (theme.text_dim, "No flicker found — the shot is already steady".to_string())
+            } else {
+                (
+                    theme.marker_success,
+                    format!("Flicker found: up to {:.1}% per frame", worst * 100.0),
+                )
+            };
+            ui.colored_label(colour, egui::RichText::new(text).size(11.0));
+        }
+    } else {
+        ui.colored_label(theme.text_dim, egui::RichText::new("Not analysed — the clip's light has to be measured first").size(11.0));
+        if ui.button("Analyse").clicked() {
+            cmds.push(AppCommand::AnalyzeDeflicker { clip_id });
+        }
+    }
+}
+
+/// Video Stabilization's analysis: analysing (with Cancel), done (with
+/// Re-analyse, Compare, the shake it removed and the trajectory plot), or
+/// not yet (with Analyse). Shared by the effects tab and the generated
+/// stack's adapter (M3 step 6).
+pub(crate) fn stabilization_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, state: &AppState, cmds: &mut Vec<AppCommand>) {
+    let clip_id = clip.id;
+    // Analysis status
+    let has_data = clip.stabilization_data.is_some();
+    let is_analyzing = state.stabilization_in_progress.contains(&clip_id);
+
+    if is_analyzing {
+        let progress = state.stabilization_progress.get(&clip_id).copied().unwrap_or(0.0);
+        ui.add(egui::ProgressBar::new(progress).text(format!("Analyzing {:.0}%", progress * 100.0)));
+        if ui.small_button("Cancel").clicked() {
+            cmds.push(AppCommand::CancelStabilization { clip_id });
+        }
+    } else if has_data {
+        ui.horizontal(|ui| {
+            ui.colored_label(theme.marker_success, "Analysis complete");
+            if ui.small_button("Re-analyze").clicked() {
+                cmds.push(AppCommand::AnalyzeStabilization { clip_id });
+            }
+            let compare_on = state.stabilization_compare_active;
+            let compare_label = if compare_on { "Exit Compare" } else { "Compare" };
+            let compare_btn = ui.small_button(compare_label)
+                .on_hover_text("Split-view raw vs stabilized. Drag the divider on the viewer to compare.");
+            if compare_btn.clicked() {
+                cmds.push(AppCommand::ToggleStabilizationCompare);
+            }
+        });
+        // Quality metric: how much shake the smoothing actually removed.
+        if let Some(smoothed) = clip.smoothed_trajectory.as_ref() {
+            let pct = smoothed.jitter_reduction_pct();
+            let (label_color, headline) = if smoothed.raw_jitter_px < 0.25 {
+                // Source was already smooth — nothing to remove.
+                (theme.text_dim, "Source already smooth — minimal shake detected".to_string())
+            } else if pct >= 60.0 {
+                (theme.marker_success, format!("Shake reduced by {pct:.0}%"))
+            } else if pct >= 25.0 {
+                (theme.marker_warning, format!("Shake reduced by {pct:.0}%"))
+            } else {
+                (theme.marker_error, format!("Shake reduced by {pct:.0}%"))
+            };
+            ui.colored_label(label_color, egui::RichText::new(headline).size(11.0));
+            ui.label(
+                egui::RichText::new(format!(
+                    "Jitter: {:.1} → {:.1} px/frame",
+                    smoothed.raw_jitter_px, smoothed.smoothed_jitter_px
+                ))
+                .size(10.0)
+                .color(theme.text_dim),
+            );
+
+            // Trajectory graph: raw camera tx (jagged) vs smoothed tx (clean).
+            // Visualizes what stabilization is actually doing.
+            if let Some(data) = clip.stabilization_data.as_ref() {
+                let raw: Vec<f32> = data.trajectory.iter().map(|p| p.tx as f32).collect();
+                let smooth: Vec<f32> = smoothed.smoothed.iter().map(|p| p.tx as f32).collect();
+                if raw.len() >= 2 && smooth.len() == raw.len() {
+                    let avail = ui.available_width();
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(avail, 64.0),
+                        egui::Sense::hover(),
+                    );
+                    let p = ui.painter_at(rect);
+                    // Background
+                    p.rect_filled(rect, 2.0, theme.bg_deep);
+                    p.rect_stroke(rect, 2.0, egui::Stroke::new(0.5_f32, theme.border));
+
+                    // Y range covers both lines with small padding.
+                    let mut lo = f32::INFINITY;
+                    let mut hi = f32::NEG_INFINITY;
+                    for &v in raw.iter().chain(smooth.iter()) {
+                        if v < lo { lo = v; }
+                        if v > hi { hi = v; }
+                    }
+                    let span = (hi - lo).max(1.0);
+                    let pad_y = 4.0;
+                    let inner = rect.shrink2(egui::vec2(4.0, pad_y));
+
+                    let to_pt = |i: usize, v: f32| -> egui::Pos2 {
+                        let x = inner.left() + (i as f32 / (raw.len() - 1) as f32) * inner.width();
+                        let t = (v - lo) / span;
+                        let y = inner.bottom() - t * inner.height();
+                        egui::pos2(x, y)
+                    };
+
+                    // Zero/baseline reference line at the smoothed midpoint.
+                    let mid = (lo + hi) * 0.5;
+                    let mid_y = inner.bottom() - ((mid - lo) / span) * inner.height();
+                    p.line_segment(
+                        [egui::pos2(inner.left(), mid_y), egui::pos2(inner.right(), mid_y)],
+                        egui::Stroke::new(0.5_f32, theme.border),
+                    );
+
+                    let raw_pts: Vec<egui::Pos2> = raw.iter().enumerate().map(|(i, &v)| to_pt(i, v)).collect();
+                    let smooth_pts: Vec<egui::Pos2> = smooth.iter().enumerate().map(|(i, &v)| to_pt(i, v)).collect();
+                    // Raw trajectory: dim, thin
+                    p.add(egui::Shape::line(raw_pts, egui::Stroke::new(1.0_f32, theme.text_dim)));
+                    // Smoothed trajectory: bright accent, thicker
+                    p.add(egui::Shape::line(smooth_pts, egui::Stroke::new(1.6_f32, theme.accent)));
+
+                    // Tiny legend
+                    p.text(
+                        egui::pos2(rect.left() + 6.0, rect.top() + 4.0),
+                        egui::Align2::LEFT_TOP,
+                        "raw",
+                        egui::FontId::proportional(8.5),
+                        theme.text_dim,
+                    );
+                    p.text(
+                        egui::pos2(rect.left() + 28.0, rect.top() + 4.0),
+                        egui::Align2::LEFT_TOP,
+                        "smoothed",
+                        egui::FontId::proportional(8.5),
+                        theme.accent,
+                    );
+                }
+            }
+        }
+    } else {
+        if ui.button("Analyze Clip").clicked() {
+            cmds.push(AppCommand::AnalyzeStabilization { clip_id });
+        }
+    }
+}
+
+/// A frei0r effect's body: the resolution warning or the missing-plug-in
+/// one, then a widget per declared plug-in parameter, editing `params` in
+/// place. Whether anything changed. Shared by the effects tab and the
+/// generated stack's editor (M3 step 6).
+pub(crate) fn frei0r_body(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, type_id: &str, params: &mut Vec<klipp_frei0r::Frei0rValue>) -> bool {
+    let mut changed = false;
+    // Resolution-warning banner: surfaces above the params when
+    // the project frame size doesn't fit frei0r's spec
+    // constraints for THIS plugin (8-aligned, ≤2048 unless
+    // tilable). Temporal plugins (delay0r, baltan) refuse 4K
+    // even with tiling on. Pulled from the live registry so a
+    // missing-plugin clip falls through quietly.
+    let plugin_info = klipp_effects::frei0r_effect::lookup(type_id);
+    let resolution = state.sequence().resolution;
+    let project_w = resolution.width;
+    let project_h = resolution.height;
+    if let Some(ref info) = plugin_info {
+        if !klipp_effects::frei0r_effect::supports_resolution(
+            &info.name,
+            project_w,
+            project_h,
+        ) {
+            let why = if !project_w.is_multiple_of(8) || !project_h.is_multiple_of(8) {
+                format!(
+                    "frei0r requires 8-aligned dimensions; project is {}×{}",
+                    project_w, project_h
+                )
+            } else {
+                format!(
+                    "{} doesn't support {}×{} (frei0r {} can't tile temporal effects above 2048)",
+                    info.name, project_w, project_h, info.name
+                )
+            };
+            ui.colored_label(theme.marker_warning, format!("⚠ {why}"));
+            ui.add_space(4.0);
+        }
+    } else {
+        ui.colored_label(
+            theme.marker_warning,
+            format!("⚠ Plugin not installed: {}", type_id),
+        );
+        ui.add_space(4.0);
+    }
+
+    // Per-param widgets — typed by the plugin's declared kind.
+    // We read declared param info from the registry; if the
+    // plugin disappeared, fall through to passthrough (no
+    // widgets).
+    let Some(plugin_info) = plugin_info else {
+        return changed;
+    };
+
+    for (i, param_info) in plugin_info.params.iter().enumerate() {
+        // Lazily extend params Vec if a plugin grew between
+        // saves (defensive — plugins shouldn't change shape
+        // across versions, but covers the case cleanly).
+        while params.len() <= i {
+            params.push(klipp_frei0r::Frei0rValue::default_for(
+                plugin_info.params[params.len()].kind,
+            ));
+            changed = true;
+        }
+        let value = &mut params[i];
+        ui.horizontal(|ui| {
+            ui.label(&param_info.name);
+            match (param_info.kind, value) {
+                (klipp_frei0r::ParamKind::Bool, klipp_frei0r::Frei0rValue::Bool(b)) => {
+                    if ui.checkbox(b, "").changed() {
+                        changed = true;
+                    }
+                }
+                (
+                    klipp_frei0r::ParamKind::Double,
+                    klipp_frei0r::Frei0rValue::Double(d),
+                ) => {
+                    // Spec: f0r_param_double range is [0, 1].
+                    if ui.add(egui::Slider::new(d, 0.0..=1.0)).changed() {
+                        changed = true;
+                    }
+                }
+                (
+                    klipp_frei0r::ParamKind::Color,
+                    klipp_frei0r::Frei0rValue::Color(rgb),
+                ) => {
+                    let mut color = [
+                        (rgb[0].clamp(0.0, 1.0) * 255.0) as u8,
+                        (rgb[1].clamp(0.0, 1.0) * 255.0) as u8,
+                        (rgb[2].clamp(0.0, 1.0) * 255.0) as u8,
+                    ];
+                    if ui.color_edit_button_srgb(&mut color).changed() {
+                        rgb[0] = color[0] as f32 / 255.0;
+                        rgb[1] = color[1] as f32 / 255.0;
+                        rgb[2] = color[2] as f32 / 255.0;
+                        changed = true;
+                    }
+                }
+                (
+                    klipp_frei0r::ParamKind::Position,
+                    klipp_frei0r::Frei0rValue::Position(xy),
+                ) => {
+                    ui.label("X");
+                    if ui
+                        .add(egui::Slider::new(&mut xy[0], 0.0..=1.0))
+                        .changed()
+                    {
+                        changed = true;
+                    }
+                    ui.label("Y");
+                    if ui
+                        .add(egui::Slider::new(&mut xy[1], 0.0..=1.0))
+                        .changed()
+                    {
+                        changed = true;
+                    }
+                }
+                (
+                    klipp_frei0r::ParamKind::String,
+                    klipp_frei0r::Frei0rValue::String(s),
+                ) => {
+                    if ui.text_edit_singleline(s).changed() {
+                        changed = true;
+                    }
+                }
+                _ => {
+                    // Type/value mismatch — render a clear
+                    // disabled hint instead of silently
+                    // ignoring the row.
+                    ui.colored_label(theme.text_dim, "(unsupported param type)");
+                }
+            }
+        });
+    }
+    changed
 }
