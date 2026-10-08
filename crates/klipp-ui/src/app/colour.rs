@@ -1901,39 +1901,7 @@ impl KlippApp {
                 true
             }
             AppCommand::SetClipLogFormat { clip_id, log_format } => {
-                let mut media_id_for_writeback: Option<klipp_core::MediaId> = None;
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        // `set_input_log_format` splices an
-                        // InputTransform into the default Source →
-                        // Corrector → Output graph if one isn't
-                        // present yet — covers the common case
-                        // where the user picks a format on a freshly
-                        // added clip whose default graph has no IDT.
-                        clip.set_input_log_format(*log_format);
-                        media_id_for_writeback = clip.media_id();
-                        break;
-                    }
-                }
-                // The format belongs to the file, not the clip: a camera
-                // file has one encoding, and the decoder — which does the
-                // conversion — works per file. So set it on the media and
-                // on every clip of that media. (This used to write back only
-                // when the media was still on the default, so re-picking a
-                // format on a clip changed its node but not what the
-                // decoder did: nothing visible happened.)
-                if let Some(mid) = media_id_for_writeback {
-                    if let Some(item) = self.state.media_pool.get_mut(&mid) {
-                        item.log_format = *log_format;
-                        item.log_format_user_set = true;
-                    }
-                    for seq in &mut self.state.sequences {
-                        for clip in seq.all_clips_mut() {
-                            if clip.media_id() == Some(mid) {
-                                clip.set_input_log_format(*log_format);
-                            }
-                        }
-                    }
+                if let Some(mid) = self.state.set_clip_log_format(*clip_id, *log_format) {
                     // Sequence first: the media sync makes the engine
                     // re-decode, and that frame must be graded — and
                     // cached — under the clips' new graphs, not the old.
@@ -1944,7 +1912,6 @@ impl KlippApp {
                     // makes the pictures for the new one.
                     self.refresh_media_pictures(mid);
                 }
-                self.state.dirty = true;
                 *needs_refresh = true;
                 true
             }
