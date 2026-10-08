@@ -13,6 +13,7 @@
 
 use crate::inspector::generated::{grade_value, keys_at, node_rows, row, Entry, NodeRows, RowCtx};
 use crate::inspector::keyframe_selection::FrameSelection;
+use crate::panels::node_inspector::NodeInspectorPanel;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
 use klipp_effects::registry::ParamDesc;
@@ -33,12 +34,32 @@ pub fn grade_node(clip: &Clip, node: NodeId) -> Option<(NodePath, Node)> {
 /// Draw the clip's grade node `node` and push the commands its edits
 /// imply: `false`, drawing nothing, when the node isn't in the clip's own
 /// grade or its kind has no catalog type.
-pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, node: NodeId, cmds: &mut Vec<AppCommand>, frame: FrameSelection) -> bool {
+///
+/// The specialist editors (the wheels, the curves, the warper, the masks,
+/// a LUT's file, and the nodes whose own widget draws all their
+/// parameters) are the per-node layout's, drawn through `panel`, which
+/// keeps their state; without it those rows are read-only.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, node: NodeId, cmds: &mut Vec<AppCommand>, frame: FrameSelection, mut panel: Option<&mut NodeInspectorPanel>) -> bool {
     let Some(v1) = clip.grade().nodes.iter().find(|n| n.id == node) else { return false };
     let Some(ty) = klipp_nodes::registry::node_type(v1.kind) else { return false };
     let Some((addr, lifted)) = grade_node(clip, node) else { return false };
     let start = cmds.len();
     crate::panels::node_inspector::node_header(ui, &v1.kind, v1.enabled, &v1.keyframes, node, clip.id, cmds, theme, frame);
+    // The widgets edit a copy and push the grade's own commands.
+    let mut params = v1.params.clone();
+    if let Some(p) = panel.as_deref_mut() {
+        if ui.indent(("grade_node", node), |ui| p.grade_whole_node(ui, v1.kind, &mut params, node, clip.id, cmds, theme)).inner {
+            return true;
+        }
+    }
+    if v1.kind == klipp_nodes::NodeKind::Qualifier {
+        let pick = ui.add(egui::Button::image(crate::icons::Icon::Eyedropper.image(12.0).tint(theme.overlay(160))).min_size(egui::vec2(22.0, 18.0)))
+            .on_hover_text("Pick a colour: click it in the viewer to key it");
+        if pick.clicked() {
+            cmds.push(AppCommand::PickQualifierColour { clip_id: clip.id, node_id: node });
+        }
+    }
     let entry = lifted.legacy.as_ref().map(|l| l.payload.clone()).unwrap_or(serde_json::Value::Null);
     let presentation = |p: &ParamDesc| ty.presentation(p);
     let stored = |p: &ParamDesc| grade_value(&entry, p);
@@ -47,6 +68,19 @@ pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, node: Nod
         keys_at(&lifted, p, base, frame.time_secs, frame.tolerance)
     };
     let rows = NodeRows { params: ty.desc.params, presentation: &presentation, stored: &stored, keys: &keys };
+    // Each editor once: a wheel's parts are one block.
+    let mut done: Vec<String> = Vec::new();
+    let mut hook = |ui: &mut egui::Ui, id: &str, _: &ParamDesc, cmds: &mut Vec<AppCommand>| -> bool {
+        let Some(p) = panel.as_deref_mut() else { return false };
+        if done.iter().any(|d| d == id) {
+            return true;
+        }
+        let drawn = p.grade_editor(ui, id, ty, &mut params, node, clip.id, cmds, theme, frame);
+        if drawn {
+            done.push(id.to_owned());
+        }
+        drawn
+    };
     let mut ctx = RowCtx {
         addr: &addr,
         clip_time_secs: frame.time_secs,
@@ -59,10 +93,14 @@ pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, node: Nod
         behaviours: None,
         theme,
         app: None,
+        custom: Some(&mut hook),
     };
     let drawn = ui.indent(("grade_node", node), |ui| node_rows(ui, &mut ctx, &rows)).inner;
     if drawn.is_empty() {
         ui.label(egui::RichText::new("No parameters").color(theme.text_dim));
+    }
+    if v1.kind == klipp_nodes::NodeKind::Corrector {
+        crate::panels::node_inspector::cdl_buttons(ui, &v1.params, node, clip.id);
     }
     // A key the rows name at the playhead is the stored key in its frame.
     for cmd in &mut cmds[start..] {

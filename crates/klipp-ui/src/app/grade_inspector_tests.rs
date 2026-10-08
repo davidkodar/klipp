@@ -49,12 +49,15 @@ struct Run {
     node: NodeId,
     time: f64,
     clock: f64,
+    /// The per-node layout's panel, for the specialist editors; `None`
+    /// draws those rows read-only.
+    panel: Option<crate::panels::node_inspector::NodeInspectorPanel>,
 }
 
 impl Run {
     fn new(kind: NodeKind) -> Option<Self> {
         let (state, clip, node) = graded(kind)?;
-        Some(Self { ctx: egui::Context::default(), state, clip, node, time: 0.5, clock: 0.0 })
+        Some(Self { ctx: egui::Context::default(), state, clip, node, time: 0.5, clock: 0.0, panel: None })
     }
 
     /// One frame with `events`: the commands it pushed, the rows it drew
@@ -69,7 +72,7 @@ impl Run {
         let frame = FrameSelection { time_secs: self.time, tolerance: 0.02 };
         let out = self.ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                drawn = crate::inspector::grade_view::show(ui, &theme, &clip, self.node, &mut cmds, frame);
+                drawn = crate::inspector::grade_view::show(ui, &theme, &clip, self.node, &mut cmds, frame, self.panel.as_mut());
             });
         });
         let texts = out.shapes.iter().filter_map(|s| match &s.shape {
@@ -297,3 +300,67 @@ fn an_off_grid_grade_key_is_the_one_its_row_edits() {
     assert_eq!(times(&run), Vec::<(f64, f32)>::new(), "the key at 0.49 s is gone");
 }
 
+impl Run {
+    /// As `new`, with the per-node layout's panel, so the specialist
+    /// editors are drawn.
+    fn with_panel(kind: NodeKind) -> Option<Self> {
+        let mut run = Self::new(kind)?;
+        run.panel = Some(Default::default());
+        Some(run)
+    }
+
+    /// One frame's commands and drawn controls, as the row recorder saw
+    /// them.
+    fn recorded(&mut self) -> (Vec<AppCommand>, Vec<crate::widgets::row_recorder::Row>) {
+        let ((cmds, _, _), rows) = crate::widgets::row_recorder::capture(|| self.frame(Vec::new()));
+        (cmds, rows)
+    }
+}
+
+/// With the panel, every specialist editor a grade row names is drawn by
+/// the per-node layout's widget: no row is left read-only, and opening
+/// writes nothing.
+#[test]
+fn every_grade_editor_is_drawn_with_the_panel() {
+    let mut drawn = 0;
+    for (kind, _) in kinds() {
+        let Some(mut run) = Run::with_panel(kind) else { continue };
+        run.frame(Vec::new());
+        let (cmds, rows) = run.recorded();
+        assert!(cmds.is_empty(), "{kind:?} wrote on open: {cmds:?}");
+        let read_only: Vec<_> = rows.iter().filter(|r| r.widget == "read_only").map(|r| r.parameter.clone()).collect();
+        assert!(read_only.is_empty(), "{kind:?} left {read_only:?} read-only");
+        drawn += 1;
+    }
+    assert!(drawn > 25, "only {drawn} kinds drawn");
+}
+
+/// The wheels are one block: four wheels, each with its saturation and
+/// brightness where the type has them (a Corrector), and without where
+/// it hasn't (a Colour Wheels node, whose stage reads none: #1295).
+#[test]
+fn wheels_carry_sat_and_bri_only_where_the_type_has_them() {
+    for (kind, sliders) in [(NodeKind::Corrector, 8), (NodeKind::ColorWheels, 0)] {
+        let mut run = Run::with_panel(kind).unwrap();
+        run.frame(Vec::new());
+        let (_, rows) = run.recorded();
+        let wheels = rows.iter().filter(|r| r.widget == "colour_wheel").count();
+        let sat_bri = rows.iter().filter(|r| r.widget == "wheel_slider").count();
+        assert_eq!((wheels, sat_bri), (4, sliders), "{kind:?}");
+    }
+}
+
+/// A node whose own widget draws all its parameters is drawn by that
+/// widget in place of rows.
+#[test]
+fn whole_node_widgets_stand_in_for_rows() {
+    // Each widget's own control (a difference key shows its plate once
+    // it's on, so its switch).
+    for (kind, widget, parameter) in [(NodeKind::ExternalMatte, "image_picker", "matte_image_path"), (NodeKind::DifferenceKey, "checkbox", "difference_key.enabled"), (NodeKind::LayerMixer, "layer_mixer", "layer_mixer")] {
+        let Some(mut run) = Run::with_panel(kind) else { panic!("{kind:?} isn't drawn") };
+        run.frame(Vec::new());
+        let (_, rows) = run.recorded();
+        let drawn: Vec<_> = rows.iter().map(|r| (r.widget.as_str(), r.parameter.as_deref())).collect();
+        assert!(drawn.contains(&(widget, Some(parameter))), "{kind:?}: {drawn:?}");
+    }
+}

@@ -338,6 +338,7 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
                 behaviours: Some(&behaviours),
                 theme,
                 app: Some(state),
+                custom: None,
             };
             ui.indent(("stack_row", row.addr.clone()), |ui| effect_card(ui, &mut rc, &rows, ty, clip, state));
             if placed {

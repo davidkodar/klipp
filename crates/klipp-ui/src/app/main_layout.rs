@@ -1259,7 +1259,7 @@ impl KlippApp {
                     let drawn = generated_node.is_some_and(|nid| {
                         egui::ScrollArea::vertical()
                             .id_salt("node_inspector_scroll")
-                            .show(ui, |ui| crate::inspector::grade_view::show(ui, &self.theme, clip, nid, &mut generated_cmds, mask_frame))
+                            .show(ui, |ui| crate::inspector::grade_view::show(ui, &self.theme, clip, nid, &mut generated_cmds, mask_frame, Some(&mut self.node_inspector_panel)))
                             .inner
                     });
                     let panel_cmds = if drawn { generated_cmds } else { clip.edit_grade(|root| {
