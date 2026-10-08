@@ -162,7 +162,18 @@ fn write_stored(ctx: &mut RowCtx, desc: &ParamDesc, new: Value) -> bool {
                 let Some(next) = at.get_mut(*step) else { return false };
                 at = next;
             }
-            let Some(field) = at.get_mut(desc.field) else { return false };
+            // A grade field may sit in a struct: `grain.amount`.
+            let mut steps = desc.field.split('.').peekable();
+            let mut field = None;
+            while let Some(step) = steps.next() {
+                let Some(next) = at.get_mut(step) else { return false };
+                if steps.peek().is_none() {
+                    field = Some(next);
+                    break;
+                }
+                at = next;
+            }
+            let Some(field) = field else { return false };
             match desc.index {
                 Some(i) => match field.get_mut(i) {
                     Some(slot) => *slot = new,

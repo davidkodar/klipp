@@ -1249,7 +1249,20 @@ impl KlippApp {
                     // if the descent path has gone stale (self-heal
                     // on the next frame).
                     let path = self.state.graph_descent_path.clone();
-                    let panel_cmds = clip.edit_grade(|root| {
+                    // The generated layout (M3 step 11) draws a node of the
+                    // clip's own grade from its catalog type, by path.
+                    let generated = self.state.use_generated_stack && path.is_empty() && !grading_timeline;
+                    let generated_node = self.state.selected_node_id.filter(|nid| {
+                        generated && klipp_timeline::GradeAccess::grade(&*clip).nodes.iter().any(|n| n.id == *nid && per_node_kind(n.kind))
+                    });
+                    let mut generated_cmds = Vec::new();
+                    let drawn = generated_node.is_some_and(|nid| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("node_inspector_scroll")
+                            .show(ui, |ui| crate::inspector::grade_view::show(ui, &self.theme, clip, nid, &mut generated_cmds, mask_frame))
+                            .inner
+                    });
+                    let panel_cmds = if drawn { generated_cmds } else { clip.edit_grade(|root| {
                         let graph: &mut klipp_nodes::NodeGraph =
                             match Self::resolve_graph_at_path_mut(root, &path) {
                                 Ok(g) => g,
@@ -1257,36 +1270,7 @@ impl KlippApp {
                             };
                         let use_per_node_inspector = self.state.selected_node_id
                             .and_then(|nid| graph.nodes.iter().find(|n| n.id == nid))
-                            .map(|n| matches!(n.kind,
-                                klipp_nodes::NodeKind::Mask
-                                | klipp_nodes::NodeKind::Qualifier
-                                | klipp_nodes::NodeKind::LumaKey
-                                | klipp_nodes::NodeKind::SoftClip
-                                | klipp_nodes::NodeKind::FilmGrain
-                                | klipp_nodes::NodeKind::Lut3D
-                                | klipp_nodes::NodeKind::ColorMatch
-                                | klipp_nodes::NodeKind::LayerMixer
-                                | klipp_nodes::NodeKind::ExternalMatte
-                                | klipp_nodes::NodeKind::DifferenceKey
-                                | klipp_nodes::NodeKind::Denoise
-                                | klipp_nodes::NodeKind::ColorWarper
-                                // Source / Output / composite-only nodes:
-                                // no params, but showing the grade tabs
-                                // for them misleads users into thinking
-                                // clicking one does something. Route to
-                                // the per-node inspector which falls
-                                // through to a plain "No parameters" /
-                                // node-specific placeholder label.
-                                | klipp_nodes::NodeKind::Source
-                                | klipp_nodes::NodeKind::Output
-                                | klipp_nodes::NodeKind::Layer
-                                | klipp_nodes::NodeKind::Blend
-                                | klipp_nodes::NodeKind::CombineMattes
-                                | klipp_nodes::NodeKind::ApplyMatte
-                                | klipp_nodes::NodeKind::Compound
-                                | klipp_nodes::NodeKind::RGBSplitter
-                                | klipp_nodes::NodeKind::RGBCombiner
-                            ))
+                            .map(|n| per_node_kind(n.kind))
                             .unwrap_or(false);
                         if use_per_node_inspector {
                             self.node_inspector_panel.show(
@@ -1302,7 +1286,7 @@ impl KlippApp {
                                 mask_frame,
                             )
                         }
-                    });
+                    }) };
                     all_cmds.extend(panel_cmds);
                 }
             } else {
@@ -1493,4 +1477,40 @@ impl KlippApp {
             crate::panels::status_bar::show(ui, &self.state, &self.theme);
         });
     }
+}
+
+/// Whether a selected grade node of `kind` is shown in its own layout
+/// rather than the grade tabs: the nodes with their own widget, and the
+/// ones with none (whose tabs would mislead).
+fn per_node_kind(kind: klipp_nodes::NodeKind) -> bool {
+    matches!(kind,
+        klipp_nodes::NodeKind::Mask
+        | klipp_nodes::NodeKind::Qualifier
+        | klipp_nodes::NodeKind::LumaKey
+        | klipp_nodes::NodeKind::SoftClip
+        | klipp_nodes::NodeKind::FilmGrain
+        | klipp_nodes::NodeKind::Lut3D
+        | klipp_nodes::NodeKind::ColorMatch
+        | klipp_nodes::NodeKind::LayerMixer
+        | klipp_nodes::NodeKind::ExternalMatte
+        | klipp_nodes::NodeKind::DifferenceKey
+        | klipp_nodes::NodeKind::Denoise
+        | klipp_nodes::NodeKind::ColorWarper
+        // Source / Output / composite-only nodes:
+        // no params, but showing the grade tabs
+        // for them misleads users into thinking
+        // clicking one does something. Route to
+        // the per-node inspector which falls
+        // through to a plain "No parameters" /
+        // node-specific placeholder label.
+        | klipp_nodes::NodeKind::Source
+        | klipp_nodes::NodeKind::Output
+        | klipp_nodes::NodeKind::Layer
+        | klipp_nodes::NodeKind::Blend
+        | klipp_nodes::NodeKind::CombineMattes
+        | klipp_nodes::NodeKind::ApplyMatte
+        | klipp_nodes::NodeKind::Compound
+        | klipp_nodes::NodeKind::RGBSplitter
+        | klipp_nodes::NodeKind::RGBCombiner
+    )
 }

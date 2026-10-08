@@ -28,12 +28,16 @@ pub struct NodeRows<'a> {
 }
 
 /// Whether `cond` holds on the node's stored values (never its animated
-/// ones, so a keyed switch doesn't make rows come and go).
+/// ones, so a keyed switch doesn't make rows come and go). An unset value
+/// reads as its default, as the node does.
 pub fn holds(rows: &NodeRows, cond: &Cond) -> bool {
     match cond {
         Cond::ParamIs { key, value } => {
             let Some(p) = rows.params.iter().find(|p| p.key == *key) else { return false };
             let stored = (rows.stored)(p);
+            if stored.is_null() {
+                return p.default == *value;
+            }
             row::number(&stored).or_else(|| row::choice_index(p, &stored).map(|i| i as f32)) == Some(*value)
         }
     }
@@ -97,4 +101,59 @@ pub fn effect_value(effect_json: &Value, desc: &ParamDesc) -> Value {
         Some(i) => v.get(i).cloned().unwrap_or(Value::Null),
         None => v,
     }
+}
+
+/// A grade node's stored value for `desc`: the field of its v1 entry's
+/// parameters a dotted `field` names (`grain.amount` is the grain's
+/// amount), or the element of it a keyed array names. An unset number,
+/// switch or choice is its default, as the node reads it; anything else
+/// unset is `Null`.
+pub fn grade_value(entry: &Value, desc: &ParamDesc) -> Value {
+    use klipp_effects::registry::ParamKind;
+    let mut at = entry.get("params");
+    for step in desc.field.split('.') {
+        at = at.and_then(|v| v.get(step));
+    }
+    let v = at.cloned().unwrap_or(Value::Null);
+    let v = match desc.index {
+        Some(i) => v.get(i).cloned().unwrap_or(Value::Null),
+        None => v,
+    };
+    if !v.is_null() || !desc.default.is_finite() {
+        return v;
+    }
+    match desc.kind {
+        ParamKind::Float => serde_json::json!(desc.default),
+        ParamKind::Whole | ParamKind::Choice(_) => serde_json::json!(desc.default as i64),
+        ParamKind::Bool => Value::Bool(desc.default != 0.0),
+        _ => Value::Null,
+    }
+}
+
+/// A node's keys for `desc` around `t` (the clip's seconds): the value
+/// they give there, with `base` (its stored value) where they don't, and
+/// where they are. `(None, default)` when it has none.
+pub fn keys_at(node: &klipp_graph_format::Node, desc: &ParamDesc, base: f32, t: f64, tolerance: f64) -> (Option<f32>, KeyState) {
+    use crate::inspector::keyframe_selection;
+    let kfs = node_keys(node, desc.key);
+    if kfs.is_empty() {
+        return (None, KeyState::default());
+    }
+    let s = keyframe_selection::state(&kfs, t, tolerance);
+    let shown = Some(keyframe_selection::editable_value(&kfs, t, base, tolerance));
+    (shown, KeyState { any: s.has_any_keyframes, at_playhead: s.has_keyframe_at_playhead, in_frame: s.keys_in_frame, prev: s.prev_keyframe_time, next: s.next_keyframe_time, interpolation: s.current_interpolation })
+}
+
+/// A node's keys for `key`: its animation's, or for a grade node its v1
+/// keyframe track on its record (a grade node, or a merge lifted from
+/// one), where a grade node keeps its keys.
+pub fn node_keys(node: &klipp_graph_format::Node, key: &str) -> Vec<klipp_core::Keyframe> {
+    if matches!(node.type_id.as_str(), klipp_graph_format::types::LEGACY_NODE | klipp_graph_format::lifted::types::MERGE) {
+        let tracks: klipp_nodes::NodeKeyframeTracks = node.legacy.as_ref().and_then(|l| l.keyframes.clone()).and_then(|k| serde_json::from_value(k).ok()).unwrap_or_default();
+        return tracks.tracks.into_iter().find(|t| t.param_name == key).map(|t| t.keyframes).unwrap_or_default();
+    }
+    node.anim
+        .get(&klipp_graph_format::ParamKey::new(key))
+        .map(|a| a.keys.iter().filter_map(|k| serde_json::from_value(k.clone()).ok()).collect())
+        .unwrap_or_default()
 }
