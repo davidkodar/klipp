@@ -1686,6 +1686,514 @@ impl NodeInspectorPanel {
         self.show_inspector_layout(ui, node_id, kind, enabled, params, keyframes, clip_id, cmds, theme, frame, false)
     }
 
+    /// The generated grade layout's specialist editors (M3 step 11): the
+    /// editor a row names by `id`, drawn by the per-node layout's own
+    /// widget, unchanged. The wheels (`"wheels"`, any wheel's part) are
+    /// drawn as one block, with saturation and brightness under each where
+    /// the node's type has them. Whether it drew one.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn grade_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: &str,
+        ty: &klipp_nodes::registry::NodeType,
+        params: &mut NodeParams,
+        node_id: NodeId,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+        frame: FrameSelection,
+    ) -> bool {
+        match id {
+            "wheels" => {
+                let avail_w = ui.available_width();
+                let columns = if avail_w >= 252.0 { 2 } else { 1 };
+                let cell_w = ((avail_w - 12.0 * (columns - 1) as f32) / columns as f32).min(194.0);
+                let wheel_d = (cell_w - 14.0).min(180.0);
+                let log_mode = params.wheels_log_mode.unwrap_or(false);
+                let with_sat_bri = ty.desc.params.iter().any(|p| p.key == "lift_sat");
+                self.wheel_block(ui, params, log_mode, node_id, clip_id, cmds, theme, (columns, cell_w, wheel_d), with_sat_bri);
+            }
+            "curves" => {
+                self.curves_block(ui, params, true, node_id, clip_id, cmds, theme);
+            }
+            "huesat_curves" => self.huesat_block(ui, params, node_id, clip_id, cmds, theme),
+            "colour_warper" => self.warper_block(ui, params, node_id, clip_id, cmds, theme),
+            "mask_stack" => {
+                let masks = params.masks.get_or_insert_with(Default::default);
+                Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, frame, &[]);
+            }
+            "lut_file" => lut_picker(ui, params, node_id, clip_id, cmds, theme),
+            "camera_encoding" => self.show_input_colour_space(ui, clip_id, cmds, theme),
+            "compound_body" => compound_summary(ui, params, theme),
+            _ => return false,
+        }
+        true
+    }
+
+    /// A grade node whose own widget draws every one of its parameters
+    /// (an external matte, a difference key, a colour match, a layer
+    /// mixer), drawn by that widget, unchanged, in place of its rows.
+    /// Whether `kind` is one.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn grade_whole_node(
+        &mut self,
+        ui: &mut egui::Ui,
+        kind: NodeKind,
+        params: &mut NodeParams,
+        node_id: NodeId,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+    ) -> bool {
+        match kind {
+            NodeKind::ExternalMatte => self.show_external_matte_widget(ui, node_id, params, clip_id, cmds, theme),
+            NodeKind::DifferenceKey => self.show_difference_key_widget(ui, node_id, params, clip_id, cmds, theme),
+            NodeKind::ColorMatch => self.show_color_match_widget(ui, node_id, params, clip_id, cmds, theme),
+            NodeKind::LayerMixer => self.show_layer_mixer_widget(ui, node_id, params, clip_id, cmds, theme),
+            _ => return false,
+        }
+        true
+    }
+
+    /// A Colour Warper's section, with its reset, and its wheel.
+    pub(crate) fn warper_block(&mut self, ui: &mut egui::Ui, params: &mut NodeParams, node_id: NodeId, clip_id: ClipId, cmds: &mut Vec<AppCommand>, theme: &KlippTheme) {
+    // The same header every other grade section uses, so
+    // the warper resets where a colourist already looks for
+    // it. Its reset was a text button under the wheel,
+    // alone in the panel in using that shape.
+    let (reset, _open) = section_header(ui, "COLOUR WARPER", true, theme);
+    if reset {
+        if let Some(w) = params.warper_params.as_mut() {
+            w.hue_shifts = [0.0; 12];
+            w.sat_shifts = [0.0; 12];
+        }
+        atomic_node_edit_batch(cmds, clip_id, |c| {
+            for s in 0..12 {
+                c.push(AppCommand::SetNodeParam {
+                    clip_id, node_id, param: format!("warper_hue_{s}"), value: 0.0,
+                });
+                c.push(AppCommand::SetNodeParam {
+                    clip_id, node_id, param: format!("warper_sat_{s}"), value: 0.0,
+                });
+            }
+        });
+    }
+    self.show_warper_widget(ui, node_id, params, clip_id, cmds, theme);
+    }
+
+    /// A hue/sat curves node's six curves, each with its eyedropper,
+    /// reset and axis strip.
+    pub(crate) fn huesat_block(
+        &mut self,
+        ui: &mut egui::Ui,
+        params: &mut NodeParams,
+        node_id: NodeId,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+    ) {
+        let huesat = params.huesat.get_or_insert_with(Default::default);
+
+        // All six curves the pipeline implements.
+        //
+        // Two were missing here and only here: the data model
+        // has carried `sat_vs_sat` and `orange_vs_sat` all
+        // along, the CPU executor builds all six into its
+        // LUT, and the compute shader samples all
+        // six — the comment below the table even said "Plus SvS
+        // and OvS as additional curves". Only the table stopped
+        // at four, so two working tools were unreachable. Sat
+        // vs Sat in particular is what tames an oversaturated
+        // red without touching its hue.
+        //
+        // Named for what they do, too. These were labelled
+        // LUMA / RED / GREEN / BLUE, which are channel names
+        // borrowed from the RGB curves tab — but none of these
+        // is a channel curve, and a colourist reading "RED"
+        // here would reasonably expect the red channel rather
+        // than Hue vs Sat. The colours stay as a way to tell
+        // the rows apart; the words now say what each curve is.
+        let curve_entries: Vec<(&str, egui::Color32, CurveChannel, usize)> = vec![
+            ("HUE vs HUE", egui::Color32::from_rgb(0xcc, 0xcc, 0xcc), CurveChannel::Master, 0),
+            ("HUE vs SAT", egui::Color32::from_rgb(0xff, 0x50, 0x50), CurveChannel::Red, 1),
+            ("HUE vs LUM", egui::Color32::from_rgb(0x40, 0xcc, 0x50), CurveChannel::Green, 2),
+            ("LUM vs SAT", egui::Color32::from_rgb(0x50, 0x60, 0xff), CurveChannel::Blue, 3),
+            ("SAT vs SAT", egui::Color32::from_rgb(0xe0, 0xa0, 0x40), CurveChannel::Master, 4),
+            ("ORANGE vs SAT", egui::Color32::from_rgb(0xff, 0x90, 0x40), CurveChannel::Master, 5),
+            // Brightness by saturation — the direction the
+            // other six leave out. It is how a neon sign or a
+            // saturated sky is kept from reading too bright.
+            ("SAT vs LUM", egui::Color32::from_rgb(0x90, 0xd0, 0xc0), CurveChannel::Master, 6),
+        ];
+
+        let curve_h = 90.0_f32;
+
+        let mut huesat_changed = false;
+
+        for (label, color, channel, curve_idx) in &curve_entries {
+            // Header: colored dot + label + reset icon + eyedropper
+            let mut reset_clicked = false;
+            ui.horizontal(|ui| {
+                ui.add_space(PAD);
+                // Colored dot
+                let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                ui.painter().circle_filled(dot_rect.center(), 4.0, *color);
+                // Label
+                ui.label(egui::RichText::new(*label).size(10.0)
+                    .color(theme.overlay(180)));
+
+                // Push icons to the right
+                let remaining = ui.available_width() - PAD;
+                if remaining > 60.0 {
+                    ui.add_space(remaining - 56.0);
+
+                    // Eyedropper: on the three curves read by hue, a
+                    // click in the viewer puts a range round the hue
+                    // picked (#612). The others read brightness or
+                    // saturation and keep the space empty.
+                    let picks_hue = *curve_idx <= 2;
+                    let ed_resp = ui.allocate_rect(
+                        ui.cursor().with_max_x(ui.cursor().min.x + 22.0).with_max_y(ui.cursor().min.y + 18.0),
+                        if picks_hue { egui::Sense::click() } else { egui::Sense::hover() },
+                    );
+                    if picks_hue {
+                        let ed_tint = if ed_resp.hovered() {
+                            theme.text_accent
+                        } else {
+                            theme.overlay(100)
+                        };
+                        let ed_icon_rect = egui::Rect::from_center_size(ed_resp.rect.center(), egui::vec2(12.0, 12.0));
+                        Icon::Eyedropper.image(12.0).tint(ed_tint).paint_at(ui, ed_icon_rect);
+                        let ed_resp = ed_resp.clone().on_hover_text("Pick a colour in the viewer: three points round its hue, the middle one to drag");
+                        if ed_resp.clicked() {
+                            cmds.push(AppCommand::PickHueCurve { clip_id, node_id, curve: *curve_idx as u8 });
+                        }
+                    }
+                    ui.advance_cursor_after_rect(ed_resp.rect);
+
+                    ui.add_space(4.0);
+
+                    // Reset icon button (Phosphor ArrowCounterClockwise)
+                    let rs_resp = ui.allocate_rect(
+                        ui.cursor().with_max_x(ui.cursor().min.x + 22.0).with_max_y(ui.cursor().min.y + 18.0),
+                        egui::Sense::click(),
+                    );
+                    let rs_tint = if rs_resp.hovered() {
+                        theme.text_accent
+                    } else {
+                        theme.overlay(100)
+                    };
+                    let rs_icon_rect = egui::Rect::from_center_size(rs_resp.rect.center(), egui::vec2(12.0, 12.0));
+                    Icon::ArrowCounterClockwise.image(12.0).tint(rs_tint).paint_at(ui, rs_icon_rect);
+                    ui.advance_cursor_after_rect(rs_resp.rect);
+
+                    if rs_resp.clicked() {
+                        reset_clicked = true;
+                    }
+                }
+            });
+
+            // Handle reset
+            if reset_clicked {
+                match curve_idx {
+                    0 => huesat.hue_vs_hue.clear(),
+                    1 => huesat.hue_vs_sat.clear(),
+                    2 => huesat.hue_vs_lum.clear(),
+                    3 => huesat.lum_vs_sat.clear(),
+                    4 => huesat.sat_vs_sat.clear(),
+                    5 => huesat.orange_vs_sat.clear(),
+                    _ => huesat.sat_vs_lum.clear(),
+                }
+                huesat_changed = true;
+            }
+
+            // Curve editor
+            let points = match curve_idx {
+                0 => &mut huesat.hue_vs_hue,
+                1 => &mut huesat.hue_vs_sat,
+                2 => &mut huesat.hue_vs_lum,
+                3 => &mut huesat.lum_vs_sat,
+                4 => &mut huesat.sat_vs_sat,
+                5 => &mut huesat.orange_vs_sat,
+                _ => &mut huesat.sat_vs_lum,
+            };
+
+            // Hue/Sat curves read against luma: their x axis is
+            // hue, luma or saturation, so the luma distribution
+            // is the useful backdrop rather than a per-primary one.
+            let hist = self.curve_histogram.as_ref().map(|h| h.luma);
+            // What the horizontal axis of each curve measures.
+            // Named on the row above; drawn as a strip below, so
+            // the oranges are findable by eye.
+            let x_axis = match curve_idx {
+                0..=2 => curves_editor::CurveAxis::Hue,
+                3 => curves_editor::CurveAxis::Luma,
+                // 4, 5 and 6 all read the incoming saturation.
+                _ => curves_editor::CurveAxis::Saturation,
+            };
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::control(ui.next_auto_id(), "huesat_curve", &format!("huesat/{curve_idx}"), label, &*points);
+            let resp = curves_editor::curves_editor_in(
+                ui, theme, *channel, points, curve_h, hist.as_ref(),
+                // Relative: the pipeline fills these LUTs with
+                // 0.5 and reads them as (v - 0.5) * 2.
+                curves_editor::CurveSpace::Relative,
+                x_axis,
+            );
+            if resp.changed { huesat_changed = true; }
+            ui.add_space(4.0);
+        }
+
+        if huesat_changed {
+            cmds.push(AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat: huesat.clone() });
+        }
+    }
+
+    /// A curves node's RGB curves: the section with its reset, the
+    /// channel pills and the curve editor over the viewer's histogram.
+    /// Whether the section is open.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn curves_block(
+        &mut self,
+        ui: &mut egui::Ui,
+        params: &mut NodeParams,
+        enabled: bool,
+        node_id: NodeId,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+    ) -> bool {
+        // Section header: "RGB CURVES" with reset + enable
+        let (reset, is_open) = section_header(ui, "RGB CURVES", enabled, theme);
+        if is_open && reset {
+            // Reset all curves to identity (2 points: [0,0] and [1,1]),
+            // with Mix and Preserve Luma, as one undo step made by the
+            // commands rather than written into the node here (#894).
+            let mut curves = params.curves.clone().unwrap_or_default();
+            curves.master = vec![[0.0, 0.0], [1.0, 1.0]];
+            curves.red = vec![[0.0, 0.0], [1.0, 1.0]];
+            curves.green = vec![[0.0, 0.0], [1.0, 1.0]];
+            curves.blue = vec![[0.0, 0.0], [1.0, 1.0]];
+            atomic_node_edit_batch(cmds, clip_id, |cmds| {
+                cmds.push(AppCommand::SetNodeCurves { clip_id, node_id, curves });
+                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "curves_mix".into(), value: 1.0 });
+                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "curves_preserve_luma".into(), value: 0.0 });
+            });
+        }
+
+        if is_open {
+        // Channel selector pills + eyedropper icon
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(PAD);
+            for (ch, label, color) in [
+                (CurveChannel::Master, "M", theme.text_accent),
+                (CurveChannel::Red, "R", egui::Color32::from_rgb(0xc0, 0x60, 0x60)),
+                (CurveChannel::Green, "G", egui::Color32::from_rgb(0x60, 0xb0, 0x60)),
+                (CurveChannel::Blue, "B", egui::Color32::from_rgb(0x60, 0x70, 0xc0)),
+            ] {
+                let active = self.active_curve_channel == ch;
+                let size = egui::vec2(26.0, 22.0);
+                let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+                let bg = if active { color } else { theme.overlay(18) };
+                let text_color = if active { theme.text_on_accent } else { color };
+                ui.painter().rect_filled(rect, 4.0, bg);
+                ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(0.5_f32,
+                    theme.overlay(30)));
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER,
+                    label, egui::FontId::proportional(11.0), text_color);
+                if resp.clicked() { self.active_curve_channel = ch; }
+            }
+
+            // Eyedropper button — pushed to the right
+            let remaining = ui.available_width() - PAD;
+            if remaining > 22.0 {
+                ui.add_space(remaining - 22.0);
+                let (r, resp) = ui.allocate_exact_size(egui::vec2(22.0, 18.0), egui::Sense::click());
+                let icon_tint = if resp.hovered() {
+                    theme.text_accent
+                } else {
+                    theme.overlay(100)
+                };
+                let icon_rect = egui::Rect::from_center_size(r.center(), egui::vec2(12.0, 12.0));
+                Icon::Eyedropper.image(12.0).tint(icon_tint).paint_at(ui, icon_rect);
+            }
+        });
+        ui.add_space(6.0);
+
+        // Curve editor — fill available width, make it roughly square
+        let curves = params.curves.get_or_insert_with(Default::default);
+        let curve_w = ui.available_width() - PAD * 2.0;
+        let curve_h = curve_w.clamp(100.0, 500.0);
+        let ch = self.active_curve_channel;
+        let mut curves_changed = false;
+        {
+            let points = match ch {
+                CurveChannel::Master => &mut curves.master, CurveChannel::Red => &mut curves.red,
+                CurveChannel::Green => &mut curves.green, CurveChannel::Blue => &mut curves.blue,
+            };
+            ui.horizontal(|ui| {
+                ui.add_space(PAD);
+                let hist = self.histogram_for(ch).copied();
+                #[cfg(any(test, feature = "row-recorder"))]
+                crate::widgets::row_recorder::control(ui.next_auto_id(), "rgb_curve", &format!("curves/{ch:?}"), &format!("{ch:?}"), &*points);
+                let resp = curves_editor::curves_editor_sized(
+                    ui, theme, ch, points, curve_h, hist.as_ref(),
+                );
+                if resp.changed { curves_changed = true; }
+            });
+        }
+        if curves_changed {
+            cmds.push(AppCommand::SetNodeCurves { clip_id, node_id, curves: curves.clone() });
+        }
+        ui.add_space(6.0);
+        } // is_open
+        is_open
+    }
+
+    /// A grade node's colour wheels, laid out in `columns` cells of
+    /// `cell_w` with wheels `wheel_d` across: the three log wheels in log
+    /// mode, else the four primaries, each with its saturation and
+    /// brightness under it when `with_sat_bri` (a type that has them).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn wheel_block(
+        &mut self,
+        ui: &mut egui::Ui,
+        params: &mut NodeParams,
+        log_mode: bool,
+        node_id: NodeId,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+        (columns, cell_w, wheel_d): (usize, f32, f32),
+        with_sat_bri: bool,
+    ) {
+        // Keep each wheel's saturation/brightness controls in its
+        // own cell. Log wheels have no per-wheel sat/bri fields.
+        let satbri_h = if with_sat_bri { 52.0 } else { 0.0 };
+        let mut show_wheel = |ui: &mut egui::Ui, label: &str,
+            state: &mut ColorWheelState,
+            x: &mut Option<f32>, y: &mut Option<f32>, m: &mut Option<f32>,
+            satbri: Option<(&mut Option<f32>, &mut Option<f32>)>,
+            prefix: &str|
+        {
+            let mut offset = [x.unwrap_or(0.0), y.unwrap_or(0.0)];
+            let mut master = m.unwrap_or(0.0);
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::control(ui.next_auto_id(), "colour_wheel", prefix, label, (offset, master));
+            let resp = color_wheel::color_wheel_sized(
+                ui, state, theme, label, &mut offset, &mut master, wheel_d, Some(cell_w),
+            );
+            if resp.drag_started {
+                cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+            }
+            if resp.changed {
+                *x = Some(offset[0]); *y = Some(offset[1]); *m = Some(master);
+                push_wheel_cmds(cmds, clip_id, node_id, prefix, offset, master);
+            }
+            if resp.drag_ended {
+                cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+            }
+
+            let Some((sat, bri)) = satbri else { return };
+            // The sliders share the wheel's centre and width.
+            let controls = ui.allocate_exact_size(egui::vec2(wheel_d, 40.0), egui::Sense::hover()).0;
+            let mut controls_ui = ui.new_child(egui::UiBuilder::new()
+                .max_rect(controls).layout(egui::Layout::top_down(egui::Align::Min)));
+            {
+                let ui = &mut controls_ui;
+                ui.spacing_mut().item_spacing = egui::vec2(3.0, 2.0);
+                // One letter each: the cell is only as wide as
+                // the wheel, and the wheel's own title directly
+                // above already says which one this is. S and B
+                // are the wide layout's labels, so the two
+                // layouts agree.
+                // Every part of the row is given an exact width,
+                // so letter + slider + value always add up to
+                // the wheel's own width. Left to size itself the
+                // value label pushed the row wider than the cell
+                // and sat on the slider's right end.
+                const LETTER_W: f32 = 10.0;
+                const VALUE_W: f32 = 34.0;
+                let slider_w = (wheel_d - LETTER_W - VALUE_W - 6.0).max(28.0);
+                // `Slider` takes its length from `slider_width`,
+                // not from the rect `add_sized` gives it — left
+                // alone it draws the full available width and
+                // pushes the value label out past the cell and
+                // onto the next wheel's column.
+                ui.spacing_mut().slider_width = slider_w;
+                for (letter, field, suffix, hover) in [
+                    ("S", sat, "sat", "Saturation"),
+                    ("B", bri, "bri", "Brightness"),
+                ] {
+                    let mut v = field.unwrap_or(0.0);
+                    #[cfg(any(test, feature = "row-recorder"))]
+                    {
+                        crate::widgets::row_recorder::next_parameter(&format!("{prefix}_{suffix}"));
+                        crate::widgets::row_recorder::numeric(ui.next_auto_id(), "wheel_slider", letter, v, &(-1.0..=1.0), None, None, Some(2), "", None);
+                    }
+                    let r = ui.horizontal(|ui| {
+                        ui.add_sized(
+                            [LETTER_W, 14.0],
+                            egui::Label::new(
+                                egui::RichText::new(letter).size(10.0).color(theme.text_dim),
+                            ),
+                        )
+                        .on_hover_text(hover);
+                        let r = ui.add_sized(
+                            [slider_w, 14.0],
+                            egui::Slider::new(&mut v, -1.0..=1.0).show_value(false),
+                        );
+                        ui.add_sized(
+                            [VALUE_W, 14.0],
+                            egui::Label::new(
+                                egui::RichText::new(format!("{v:+.2}"))
+                                    .size(10.0)
+                                    .color(theme.text_dim),
+                            ),
+                        );
+                        r
+                    }).inner;
+                    if r.drag_started() {
+                        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+                    }
+                    if r.changed() {
+                        *field = Some(v);
+                        let param = format!("{prefix}_{suffix}");
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param, value: v });
+                    }
+                    if r.drag_stopped() {
+                        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+                    }
+                }
+            }
+        };
+
+        if log_mode {
+            let mut wheels = [
+                ("Low", &mut self.log_low_wheel, &mut params.log_low_x, &mut params.log_low_y, &mut params.log_low_master, "log_low"),
+                ("Mid", &mut self.log_mid_wheel, &mut params.log_mid_x, &mut params.log_mid_y, &mut params.log_mid_master, "log_mid"),
+                ("High", &mut self.log_high_wheel, &mut params.log_high_x, &mut params.log_high_y, &mut params.log_high_master, "log_high"),
+            ];
+            centred_wheel_rows(ui, 3, columns, cell_w, wheel_d + 56.0, |ui, i| {
+                let (label, state, x, y, m, prefix) = &mut wheels[i];
+                show_wheel(ui, label, state, x, y, m, None, prefix);
+            });
+        } else {
+            let mut wheels = [
+                ("Lift", &mut self.lift_wheel, &mut params.lift_x, &mut params.lift_y, &mut params.lift_master, &mut params.lift_sat, &mut params.lift_bri, "lift"),
+                ("Gamma", &mut self.gamma_wheel, &mut params.gamma_x, &mut params.gamma_y, &mut params.gamma_master, &mut params.gamma_sat, &mut params.gamma_bri, "gamma"),
+                ("Gain", &mut self.gain_wheel, &mut params.gain_x, &mut params.gain_y, &mut params.gain_master, &mut params.gain_sat, &mut params.gain_bri, "gain"),
+                ("Offset", &mut self.offset_wheel, &mut params.offset_x, &mut params.offset_y, &mut params.offset_master, &mut params.offset_sat, &mut params.offset_bri, "offset"),
+            ];
+            centred_wheel_rows(ui, 4, columns, cell_w, wheel_d + 56.0 + satbri_h, |ui, i| {
+                let (label, state, x, y, m, sat, bri, prefix) = &mut wheels[i];
+                show_wheel(ui, label, state, x, y, m, with_sat_bri.then_some((sat, bri)), prefix);
+            });
+        }
+    }
+
     fn show_inspector_layout(
         &mut self,
         ui: &mut egui::Ui,
@@ -1822,129 +2330,7 @@ impl NodeInspectorPanel {
                 wheel_shape_sliders(ui, params, log_mode, node_id, cmds, clip_id, theme);
                 ui.add_space(4.0);
 
-                // Keep each wheel's saturation/brightness controls in its
-                // own cell. Log wheels have no per-wheel sat/bri fields.
-                let satbri_h = 52.0;
-                let mut show_wheel = |ui: &mut egui::Ui, label: &str,
-                    state: &mut ColorWheelState,
-                    x: &mut Option<f32>, y: &mut Option<f32>, m: &mut Option<f32>,
-                    satbri: Option<(&mut Option<f32>, &mut Option<f32>)>,
-                    prefix: &str|
-                {
-                    let mut offset = [x.unwrap_or(0.0), y.unwrap_or(0.0)];
-                    let mut master = m.unwrap_or(0.0);
-                    #[cfg(any(test, feature = "row-recorder"))]
-                    crate::widgets::row_recorder::control(ui.next_auto_id(), "colour_wheel", prefix, label, (offset, master));
-                    let resp = color_wheel::color_wheel_sized(
-                        ui, state, theme, label, &mut offset, &mut master, wheel_d, Some(cell_w),
-                    );
-                    if resp.drag_started {
-                        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
-                    }
-                    if resp.changed {
-                        *x = Some(offset[0]); *y = Some(offset[1]); *m = Some(master);
-                        push_wheel_cmds(cmds, clip_id, node_id, prefix, offset, master);
-                    }
-                    if resp.drag_ended {
-                        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
-                    }
-
-                    let Some((sat, bri)) = satbri else { return };
-                    // The sliders share the wheel's centre and width.
-                    let controls = ui.allocate_exact_size(egui::vec2(wheel_d, 40.0), egui::Sense::hover()).0;
-                    let mut controls_ui = ui.new_child(egui::UiBuilder::new()
-                        .max_rect(controls).layout(egui::Layout::top_down(egui::Align::Min)));
-                    {
-                        let ui = &mut controls_ui;
-                        ui.spacing_mut().item_spacing = egui::vec2(3.0, 2.0);
-                        // One letter each: the cell is only as wide as
-                        // the wheel, and the wheel's own title directly
-                        // above already says which one this is. S and B
-                        // are the wide layout's labels, so the two
-                        // layouts agree.
-                        // Every part of the row is given an exact width,
-                        // so letter + slider + value always add up to
-                        // the wheel's own width. Left to size itself the
-                        // value label pushed the row wider than the cell
-                        // and sat on the slider's right end.
-                        const LETTER_W: f32 = 10.0;
-                        const VALUE_W: f32 = 34.0;
-                        let slider_w = (wheel_d - LETTER_W - VALUE_W - 6.0).max(28.0);
-                        // `Slider` takes its length from `slider_width`,
-                        // not from the rect `add_sized` gives it — left
-                        // alone it draws the full available width and
-                        // pushes the value label out past the cell and
-                        // onto the next wheel's column.
-                        ui.spacing_mut().slider_width = slider_w;
-                        for (letter, field, suffix, hover) in [
-                            ("S", sat, "sat", "Saturation"),
-                            ("B", bri, "bri", "Brightness"),
-                        ] {
-                            let mut v = field.unwrap_or(0.0);
-                            #[cfg(any(test, feature = "row-recorder"))]
-                            {
-                                crate::widgets::row_recorder::next_parameter(&format!("{prefix}_{suffix}"));
-                                crate::widgets::row_recorder::numeric(ui.next_auto_id(), "wheel_slider", letter, v, &(-1.0..=1.0), None, None, Some(2), "", None);
-                            }
-                            let r = ui.horizontal(|ui| {
-                                ui.add_sized(
-                                    [LETTER_W, 14.0],
-                                    egui::Label::new(
-                                        egui::RichText::new(letter).size(10.0).color(theme.text_dim),
-                                    ),
-                                )
-                                .on_hover_text(hover);
-                                let r = ui.add_sized(
-                                    [slider_w, 14.0],
-                                    egui::Slider::new(&mut v, -1.0..=1.0).show_value(false),
-                                );
-                                ui.add_sized(
-                                    [VALUE_W, 14.0],
-                                    egui::Label::new(
-                                        egui::RichText::new(format!("{v:+.2}"))
-                                            .size(10.0)
-                                            .color(theme.text_dim),
-                                    ),
-                                );
-                                r
-                            }).inner;
-                            if r.drag_started() {
-                                cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
-                            }
-                            if r.changed() {
-                                *field = Some(v);
-                                let param = format!("{prefix}_{suffix}");
-                                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param, value: v });
-                            }
-                            if r.drag_stopped() {
-                                cmds.push(AppCommand::EndNodeParamEdit { clip_id });
-                            }
-                        }
-                    }
-                };
-
-                if log_mode {
-                    let mut wheels = [
-                        ("Low", &mut self.log_low_wheel, &mut params.log_low_x, &mut params.log_low_y, &mut params.log_low_master, "log_low"),
-                        ("Mid", &mut self.log_mid_wheel, &mut params.log_mid_x, &mut params.log_mid_y, &mut params.log_mid_master, "log_mid"),
-                        ("High", &mut self.log_high_wheel, &mut params.log_high_x, &mut params.log_high_y, &mut params.log_high_master, "log_high"),
-                    ];
-                    centred_wheel_rows(ui, 3, columns, cell_w, wheel_d + 56.0, |ui, i| {
-                        let (label, state, x, y, m, prefix) = &mut wheels[i];
-                        show_wheel(ui, label, state, x, y, m, None, prefix);
-                    });
-                } else {
-                    let mut wheels = [
-                        ("Lift", &mut self.lift_wheel, &mut params.lift_x, &mut params.lift_y, &mut params.lift_master, &mut params.lift_sat, &mut params.lift_bri, "lift"),
-                        ("Gamma", &mut self.gamma_wheel, &mut params.gamma_x, &mut params.gamma_y, &mut params.gamma_master, &mut params.gamma_sat, &mut params.gamma_bri, "gamma"),
-                        ("Gain", &mut self.gain_wheel, &mut params.gain_x, &mut params.gain_y, &mut params.gain_master, &mut params.gain_sat, &mut params.gain_bri, "gain"),
-                        ("Offset", &mut self.offset_wheel, &mut params.offset_x, &mut params.offset_y, &mut params.offset_master, &mut params.offset_sat, &mut params.offset_bri, "offset"),
-                    ];
-                    centred_wheel_rows(ui, 4, columns, cell_w, wheel_d + 56.0 + satbri_h, |ui, i| {
-                        let (label, state, x, y, m, sat, bri, prefix) = &mut wheels[i];
-                        show_wheel(ui, label, state, x, y, m, Some((sat, bri)), prefix);
-                    });
-                }
+                self.wheel_block(ui, params, log_mode, node_id, clip_id, cmds, theme, (columns, cell_w, wheel_d), true);
             }
             NodeKind::WheelSatBri => {
                 let groups = [
@@ -2038,91 +2424,8 @@ impl NodeInspectorPanel {
                 }
             }
             NodeKind::RGBCurves => {
-                // Section header: "RGB CURVES" with reset + enable
-                let (reset, is_open) = section_header(ui, "RGB CURVES", *enabled, theme);
-                if is_open && reset {
-                    // Reset all curves to identity (2 points: [0,0] and [1,1]),
-                    // with Mix and Preserve Luma, as one undo step made by the
-                    // commands rather than written into the node here (#894).
-                    let mut curves = params.curves.clone().unwrap_or_default();
-                    curves.master = vec![[0.0, 0.0], [1.0, 1.0]];
-                    curves.red = vec![[0.0, 0.0], [1.0, 1.0]];
-                    curves.green = vec![[0.0, 0.0], [1.0, 1.0]];
-                    curves.blue = vec![[0.0, 0.0], [1.0, 1.0]];
-                    atomic_node_edit_batch(cmds, clip_id, |cmds| {
-                        cmds.push(AppCommand::SetNodeCurves { clip_id, node_id, curves });
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "curves_mix".into(), value: 1.0 });
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "curves_preserve_luma".into(), value: 0.0 });
-                    });
-                }
-
+                let is_open = self.curves_block(ui, params, *enabled, node_id, clip_id, cmds, theme);
                 if is_open {
-                // Channel selector pills + eyedropper icon
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(PAD);
-                    for (ch, label, color) in [
-                        (CurveChannel::Master, "M", theme.text_accent),
-                        (CurveChannel::Red, "R", egui::Color32::from_rgb(0xc0, 0x60, 0x60)),
-                        (CurveChannel::Green, "G", egui::Color32::from_rgb(0x60, 0xb0, 0x60)),
-                        (CurveChannel::Blue, "B", egui::Color32::from_rgb(0x60, 0x70, 0xc0)),
-                    ] {
-                        let active = self.active_curve_channel == ch;
-                        let size = egui::vec2(26.0, 22.0);
-                        let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-                        let bg = if active { color } else { theme.overlay(18) };
-                        let text_color = if active { theme.text_on_accent } else { color };
-                        ui.painter().rect_filled(rect, 4.0, bg);
-                        ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(0.5_f32,
-                            theme.overlay(30)));
-                        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER,
-                            label, egui::FontId::proportional(11.0), text_color);
-                        if resp.clicked() { self.active_curve_channel = ch; }
-                    }
-
-                    // Eyedropper button — pushed to the right
-                    let remaining = ui.available_width() - PAD;
-                    if remaining > 22.0 {
-                        ui.add_space(remaining - 22.0);
-                        let (r, resp) = ui.allocate_exact_size(egui::vec2(22.0, 18.0), egui::Sense::click());
-                        let icon_tint = if resp.hovered() {
-                            theme.text_accent
-                        } else {
-                            theme.overlay(100)
-                        };
-                        let icon_rect = egui::Rect::from_center_size(r.center(), egui::vec2(12.0, 12.0));
-                        Icon::Eyedropper.image(12.0).tint(icon_tint).paint_at(ui, icon_rect);
-                    }
-                });
-                ui.add_space(6.0);
-
-                // Curve editor — fill available width, make it roughly square
-                let curves = params.curves.get_or_insert_with(Default::default);
-                let curve_w = ui.available_width() - PAD * 2.0;
-                let curve_h = curve_w.clamp(100.0, 500.0);
-                let ch = self.active_curve_channel;
-                let mut curves_changed = false;
-                {
-                    let points = match ch {
-                        CurveChannel::Master => &mut curves.master, CurveChannel::Red => &mut curves.red,
-                        CurveChannel::Green => &mut curves.green, CurveChannel::Blue => &mut curves.blue,
-                    };
-                    ui.horizontal(|ui| {
-                        ui.add_space(PAD);
-                        let hist = self.histogram_for(ch).copied();
-                        #[cfg(any(test, feature = "row-recorder"))]
-                        crate::widgets::row_recorder::control(ui.next_auto_id(), "rgb_curve", &format!("curves/{ch:?}"), &format!("{ch:?}"), &*points);
-                        let resp = curves_editor::curves_editor_sized(
-                            ui, theme, ch, points, curve_h, hist.as_ref(),
-                        );
-                        if resp.changed { curves_changed = true; }
-                    });
-                }
-                if curves_changed {
-                    cmds.push(AppCommand::SetNodeCurves { clip_id, node_id, curves: curves.clone() });
-                }
-                ui.add_space(6.0);
-
                 // Preserve Luma checkbox
                 ui.horizontal(|ui| {
                     ui.add_space(PAD);
@@ -2149,161 +2452,7 @@ impl NodeInspectorPanel {
                 } // is_open
             }
             NodeKind::HueSatCurves => {
-                let huesat = params.huesat.get_or_insert_with(Default::default);
-
-                // All six curves the pipeline implements.
-                //
-                // Two were missing here and only here: the data model
-                // has carried `sat_vs_sat` and `orange_vs_sat` all
-                // along, the CPU executor builds all six into its
-                // LUT, and the compute shader samples all
-                // six — the comment below the table even said "Plus SvS
-                // and OvS as additional curves". Only the table stopped
-                // at four, so two working tools were unreachable. Sat
-                // vs Sat in particular is what tames an oversaturated
-                // red without touching its hue.
-                //
-                // Named for what they do, too. These were labelled
-                // LUMA / RED / GREEN / BLUE, which are channel names
-                // borrowed from the RGB curves tab — but none of these
-                // is a channel curve, and a colourist reading "RED"
-                // here would reasonably expect the red channel rather
-                // than Hue vs Sat. The colours stay as a way to tell
-                // the rows apart; the words now say what each curve is.
-                let curve_entries: Vec<(&str, egui::Color32, CurveChannel, usize)> = vec![
-                    ("HUE vs HUE", egui::Color32::from_rgb(0xcc, 0xcc, 0xcc), CurveChannel::Master, 0),
-                    ("HUE vs SAT", egui::Color32::from_rgb(0xff, 0x50, 0x50), CurveChannel::Red, 1),
-                    ("HUE vs LUM", egui::Color32::from_rgb(0x40, 0xcc, 0x50), CurveChannel::Green, 2),
-                    ("LUM vs SAT", egui::Color32::from_rgb(0x50, 0x60, 0xff), CurveChannel::Blue, 3),
-                    ("SAT vs SAT", egui::Color32::from_rgb(0xe0, 0xa0, 0x40), CurveChannel::Master, 4),
-                    ("ORANGE vs SAT", egui::Color32::from_rgb(0xff, 0x90, 0x40), CurveChannel::Master, 5),
-                    // Brightness by saturation — the direction the
-                    // other six leave out. It is how a neon sign or a
-                    // saturated sky is kept from reading too bright.
-                    ("SAT vs LUM", egui::Color32::from_rgb(0x90, 0xd0, 0xc0), CurveChannel::Master, 6),
-                ];
-
-                let curve_h = 90.0_f32;
-
-                let mut huesat_changed = false;
-
-                for (label, color, channel, curve_idx) in &curve_entries {
-                    // Header: colored dot + label + reset icon + eyedropper
-                    let mut reset_clicked = false;
-                    ui.horizontal(|ui| {
-                        ui.add_space(PAD);
-                        // Colored dot
-                        let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                        ui.painter().circle_filled(dot_rect.center(), 4.0, *color);
-                        // Label
-                        ui.label(egui::RichText::new(*label).size(10.0)
-                            .color(theme.overlay(180)));
-
-                        // Push icons to the right
-                        let remaining = ui.available_width() - PAD;
-                        if remaining > 60.0 {
-                            ui.add_space(remaining - 56.0);
-
-                            // Eyedropper: on the three curves read by hue, a
-                            // click in the viewer puts a range round the hue
-                            // picked (#612). The others read brightness or
-                            // saturation and keep the space empty.
-                            let picks_hue = *curve_idx <= 2;
-                            let ed_resp = ui.allocate_rect(
-                                ui.cursor().with_max_x(ui.cursor().min.x + 22.0).with_max_y(ui.cursor().min.y + 18.0),
-                                if picks_hue { egui::Sense::click() } else { egui::Sense::hover() },
-                            );
-                            if picks_hue {
-                                let ed_tint = if ed_resp.hovered() {
-                                    theme.text_accent
-                                } else {
-                                    theme.overlay(100)
-                                };
-                                let ed_icon_rect = egui::Rect::from_center_size(ed_resp.rect.center(), egui::vec2(12.0, 12.0));
-                                Icon::Eyedropper.image(12.0).tint(ed_tint).paint_at(ui, ed_icon_rect);
-                                let ed_resp = ed_resp.clone().on_hover_text("Pick a colour in the viewer: three points round its hue, the middle one to drag");
-                                if ed_resp.clicked() {
-                                    cmds.push(AppCommand::PickHueCurve { clip_id, node_id, curve: *curve_idx as u8 });
-                                }
-                            }
-                            ui.advance_cursor_after_rect(ed_resp.rect);
-
-                            ui.add_space(4.0);
-
-                            // Reset icon button (Phosphor ArrowCounterClockwise)
-                            let rs_resp = ui.allocate_rect(
-                                ui.cursor().with_max_x(ui.cursor().min.x + 22.0).with_max_y(ui.cursor().min.y + 18.0),
-                                egui::Sense::click(),
-                            );
-                            let rs_tint = if rs_resp.hovered() {
-                                theme.text_accent
-                            } else {
-                                theme.overlay(100)
-                            };
-                            let rs_icon_rect = egui::Rect::from_center_size(rs_resp.rect.center(), egui::vec2(12.0, 12.0));
-                            Icon::ArrowCounterClockwise.image(12.0).tint(rs_tint).paint_at(ui, rs_icon_rect);
-                            ui.advance_cursor_after_rect(rs_resp.rect);
-
-                            if rs_resp.clicked() {
-                                reset_clicked = true;
-                            }
-                        }
-                    });
-
-                    // Handle reset
-                    if reset_clicked {
-                        match curve_idx {
-                            0 => huesat.hue_vs_hue.clear(),
-                            1 => huesat.hue_vs_sat.clear(),
-                            2 => huesat.hue_vs_lum.clear(),
-                            3 => huesat.lum_vs_sat.clear(),
-                            4 => huesat.sat_vs_sat.clear(),
-                            5 => huesat.orange_vs_sat.clear(),
-                            _ => huesat.sat_vs_lum.clear(),
-                        }
-                        huesat_changed = true;
-                    }
-
-                    // Curve editor
-                    let points = match curve_idx {
-                        0 => &mut huesat.hue_vs_hue,
-                        1 => &mut huesat.hue_vs_sat,
-                        2 => &mut huesat.hue_vs_lum,
-                        3 => &mut huesat.lum_vs_sat,
-                        4 => &mut huesat.sat_vs_sat,
-                        5 => &mut huesat.orange_vs_sat,
-                        _ => &mut huesat.sat_vs_lum,
-                    };
-
-                    // Hue/Sat curves read against luma: their x axis is
-                    // hue, luma or saturation, so the luma distribution
-                    // is the useful backdrop rather than a per-primary one.
-                    let hist = self.curve_histogram.as_ref().map(|h| h.luma);
-                    // What the horizontal axis of each curve measures.
-                    // Named on the row above; drawn as a strip below, so
-                    // the oranges are findable by eye.
-                    let x_axis = match curve_idx {
-                        0..=2 => curves_editor::CurveAxis::Hue,
-                        3 => curves_editor::CurveAxis::Luma,
-                        // 4, 5 and 6 all read the incoming saturation.
-                        _ => curves_editor::CurveAxis::Saturation,
-                    };
-                    #[cfg(any(test, feature = "row-recorder"))]
-                    crate::widgets::row_recorder::control(ui.next_auto_id(), "huesat_curve", &format!("huesat/{curve_idx}"), label, &*points);
-                    let resp = curves_editor::curves_editor_in(
-                        ui, theme, *channel, points, curve_h, hist.as_ref(),
-                        // Relative: the pipeline fills these LUTs with
-                        // 0.5 and reads them as (v - 0.5) * 2.
-                        curves_editor::CurveSpace::Relative,
-                        x_axis,
-                    );
-                    if resp.changed { huesat_changed = true; }
-                    ui.add_space(4.0);
-                }
-
-                if huesat_changed {
-                    cmds.push(AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat: huesat.clone() });
-                }
+                self.huesat_block(ui, params, node_id, clip_id, cmds, theme);
 
                 // No Preserve Luma here: it is the RGB curves' setting, which
                 // hue/sat curves never read, and on a Corrector it toggled the
@@ -2511,48 +2660,7 @@ impl NodeInspectorPanel {
                 }
             }
             NodeKind::Lut3D => {
-                #[cfg(any(test, feature = "row-recorder"))]
-                crate::widgets::row_recorder::control(ui.next_auto_id(), "lut_picker", "lut_path", "LUT", &params.lut_path);
-                if let Some(path) = &params.lut_path {
-                    let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| path.display().to_string());
-                    ui.label(egui::RichText::new(name).size(11.0)).on_hover_text(path.display().to_string());
-                } else {
-                    ui.label(egui::RichText::new("No LUT loaded").size(10.0).color(theme.text_dim));
-                }
-                // Choosing the node's LUT (#892): a file, or one of the
-                // bundled looks; Clear takes it off.
-                ui.horizontal(|ui| {
-                    if ui.button("Browse\u{2026}").on_hover_text("Load a .cube, .3dl or .csp file into this node").clicked() {
-                        crate::file_dialog::spawn(move || {
-                            rfd::FileDialog::new()
-                                .set_title("LUT for this node")
-                                .add_filter("LUT files", &["cube", "3dl", "csp"])
-                                .pick_file()
-                                .map(|path| vec![AppCommand::SetNodeLut { clip_id, node_id, path: Some(path) }])
-                                .unwrap_or_default()
-                        });
-                    }
-                    if let Some(dir) = klipp_core::assets::bundled_luts_dir() {
-                        ui.menu_button("Bundled", |ui| {
-                            egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                                for (category, files) in bundled_luts(dir) {
-                                    ui.menu_button(category, |ui| {
-                                        for path in files {
-                                            let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-                                            if ui.selectable_label(params.lut_path.as_ref() == Some(&path), name).clicked() {
-                                                cmds.push(AppCommand::SetNodeLut { clip_id, node_id, path: Some(path) });
-                                                ui.close_menu();
-                                            }
-                                        }
-                                    });
-                                }
-                            });
-                        });
-                    }
-                    if params.lut_path.is_some() && ui.button("Clear").clicked() {
-                        cmds.push(AppCommand::SetNodeLut { clip_id, node_id, path: None });
-                    }
-                });
+                lut_picker(ui, params, node_id, clip_id, cmds, theme);
                 let mut opacity = params.lut_opacity.unwrap_or(1.0);
                 #[cfg(any(test, feature = "row-recorder"))]
                 crate::widgets::row_recorder::next_parameter("lut_opacity");
@@ -2618,28 +2726,7 @@ impl NodeInspectorPanel {
                 }
             }
             NodeKind::ColorWarper => {
-                // The same header every other grade section uses, so
-                // the warper resets where a colourist already looks for
-                // it. Its reset was a text button under the wheel,
-                // alone in the panel in using that shape.
-                let (reset, _open) = section_header(ui, "COLOUR WARPER", true, theme);
-                if reset {
-                    if let Some(w) = params.warper_params.as_mut() {
-                        w.hue_shifts = [0.0; 12];
-                        w.sat_shifts = [0.0; 12];
-                    }
-                    atomic_node_edit_batch(cmds, clip_id, |c| {
-                        for s in 0..12 {
-                            c.push(AppCommand::SetNodeParam {
-                                clip_id, node_id, param: format!("warper_hue_{s}"), value: 0.0,
-                            });
-                            c.push(AppCommand::SetNodeParam {
-                                clip_id, node_id, param: format!("warper_sat_{s}"), value: 0.0,
-                            });
-                        }
-                    });
-                }
-                self.show_warper_widget(ui, node_id, params, clip_id, cmds, theme);
+                self.warper_block(ui, params, node_id, clip_id, cmds, theme);
             }
             NodeKind::CombineMattes => {
                 let current = params.matte_combine_op.unwrap_or_default();
@@ -2698,74 +2785,7 @@ impl NodeInspectorPanel {
                     ).color(theme.text_dim).small()
                 );
                 ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui
-                        .button("Import CDL…")
-                        .on_hover_text("Put an ASC CDL file's slope, offset, power and saturation on this node's wheels")
-                        .clicked()
-                    {
-                        crate::file_dialog::spawn(move || {
-                            let Some(path) = rfd::FileDialog::new().add_filter("ASC CDL", &["cdl", "cc", "ccc"]).pick_file() else {
-                                return Vec::new();
-                            };
-                            let read = std::fs::read_to_string(&path)
-                                .map_err(|e| e.to_string())
-                                .and_then(|t| klipp_grade_model::cdl::Cdl::parse(&t));
-                            match read {
-                                Ok(cdl) => {
-                                    let mut cmds = Vec::new();
-                                    let (lift, gamma, gain, offset) = cdl.wheel_amounts();
-                                    for (name, amounts) in [("lift", lift), ("gamma", gamma), ("gain", gain), ("offset", offset)] {
-                                        let (x, y, m) = klipp_color::rgb_to_wheel_offset((amounts[0], amounts[1], amounts[2]));
-                                        for (suffix, v) in [("x", x), ("y", y), ("master", m)] {
-                                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: format!("{name}_{suffix}"), value: v });
-                                        }
-                                    }
-                                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "saturation".into(), value: cdl.saturation });
-                                    tracing::info!("Imported CDL from {}", path.display());
-                                    cmds
-                                }
-                                Err(e) => {
-                                    tracing::warn!("CDL import failed for {}: {e}", path.display());
-                                    crate::file_dialog::notify(format!("Could not import the CDL: {e}"));
-                                    Vec::new()
-                                }
-                            }
-                        });
-                    }
-                    if ui
-                        .button("Export CDL…")
-                        .on_hover_text("Write this node's wheels and saturation as an ASC CDL file")
-                        .clicked()
-                    {
-                        // The grade is taken now, as the button was pressed;
-                        // only the file is written once a place is chosen.
-                        let wheel = |x: Option<f32>, y: Option<f32>, m: Option<f32>| {
-                            let (r, g, b) = klipp_color::wheel_offset_to_rgb(x.unwrap_or(0.0), y.unwrap_or(0.0), m.unwrap_or(0.0));
-                            [r, g, b]
-                        };
-                        let cdl = klipp_grade_model::cdl::Cdl::from_wheels(
-                            wheel(params.lift_x, params.lift_y, params.lift_master),
-                            wheel(params.gamma_x, params.gamma_y, params.gamma_master),
-                            wheel(params.gain_x, params.gain_y, params.gain_master),
-                            wheel(params.offset_x, params.offset_y, params.offset_master),
-                            params.saturation.unwrap_or(1.0),
-                        );
-                        crate::file_dialog::spawn(move || {
-                            if let Some(path) = rfd::FileDialog::new().add_filter("ASC CDL", &["cdl"]).set_file_name("grade.cdl").save_file() {
-                                let id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "klipp".into());
-                                match std::fs::write(&path, cdl.to_xml(&id)) {
-                                    Ok(()) => tracing::info!("Exported CDL to {}", path.display()),
-                                    Err(e) => {
-                                        tracing::warn!("CDL export failed for {}: {e}", path.display());
-                                        crate::file_dialog::notify(format!("Could not write the CDL: {e}"));
-                                    }
-                                }
-                            }
-                            Vec::new()
-                        });
-                    }
-                });
+                cdl_buttons(ui, params, node_id, clip_id);
             }
             NodeKind::Source | NodeKind::Output | NodeKind::Layer
             | NodeKind::RGBSplitter | NodeKind::RGBCombiner
@@ -2805,28 +2825,7 @@ impl NodeInspectorPanel {
                 });
             }
             NodeKind::Compound => {
-                // Compound nodes hold a sub-graph; the parameters
-                // panel is intentionally minimal — editing the sub-
-                // graph happens via descend (stage 4 will wire the
-                // double-click + breadcrumb). For now we just tell
-                // the user how many nodes are nested so the inspector
-                // isn't a blank panel.
-                let count = params.compound_subgraph
-                    .as_ref()
-                    .map(|g| g.nodes.len())
-                    .unwrap_or(0);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Compound subgraph — {count} node{}",
-                        if count == 1 { "" } else { "s" },
-                    ))
-                    .color(theme.text_dim),
-                );
-                ui.label(
-                    egui::RichText::new("Double-click it in the graph to open it")
-                        .small()
-                        .color(theme.text_dim),
-                );
+                compound_summary(ui, params, theme);
             }
         }
     }
@@ -3609,6 +3608,151 @@ const ROW_H: f32 = 28.0;
 /// Returns true if the reset button was clicked.
 /// Collapsible section header matching the inspector card style.
 /// Returns (reset_clicked, is_open).
+/// A Compound node's summary: how many nodes it holds, and how to open it.
+pub(crate) fn compound_summary(ui: &mut egui::Ui, params: &NodeParams, theme: &KlippTheme) {
+    // Compound nodes hold a sub-graph; the parameters
+    // panel is intentionally minimal — editing the sub-
+    // graph happens via descend (stage 4 will wire the
+    // double-click + breadcrumb). For now we just tell
+    // the user how many nodes are nested so the inspector
+    // isn't a blank panel.
+    let count = params.compound_subgraph
+        .as_ref()
+        .map(|g| g.nodes.len())
+        .unwrap_or(0);
+    ui.label(
+        egui::RichText::new(format!(
+            "Compound subgraph — {count} node{}",
+            if count == 1 { "" } else { "s" },
+        ))
+        .color(theme.text_dim),
+    );
+    ui.label(
+        egui::RichText::new("Double-click it in the graph to open it")
+            .small()
+            .color(theme.text_dim),
+    );
+}
+
+/// A Corrector's ASC CDL import (onto its wheels and saturation) and
+/// export (of them).
+pub(crate) fn cdl_buttons(ui: &mut egui::Ui, params: &NodeParams, node_id: NodeId, clip_id: ClipId) {
+    ui.horizontal(|ui| {
+        if ui
+            .button("Import CDL…")
+            .on_hover_text("Put an ASC CDL file's slope, offset, power and saturation on this node's wheels")
+            .clicked()
+        {
+            crate::file_dialog::spawn(move || {
+                let Some(path) = rfd::FileDialog::new().add_filter("ASC CDL", &["cdl", "cc", "ccc"]).pick_file() else {
+                    return Vec::new();
+                };
+                let read = std::fs::read_to_string(&path)
+                    .map_err(|e| e.to_string())
+                    .and_then(|t| klipp_grade_model::cdl::Cdl::parse(&t));
+                match read {
+                    Ok(cdl) => {
+                        let mut cmds = Vec::new();
+                        let (lift, gamma, gain, offset) = cdl.wheel_amounts();
+                        for (name, amounts) in [("lift", lift), ("gamma", gamma), ("gain", gain), ("offset", offset)] {
+                            let (x, y, m) = klipp_color::rgb_to_wheel_offset((amounts[0], amounts[1], amounts[2]));
+                            for (suffix, v) in [("x", x), ("y", y), ("master", m)] {
+                                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: format!("{name}_{suffix}"), value: v });
+                            }
+                        }
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "saturation".into(), value: cdl.saturation });
+                        tracing::info!("Imported CDL from {}", path.display());
+                        cmds
+                    }
+                    Err(e) => {
+                        tracing::warn!("CDL import failed for {}: {e}", path.display());
+                        crate::file_dialog::notify(format!("Could not import the CDL: {e}"));
+                        Vec::new()
+                    }
+                }
+            });
+        }
+        if ui
+            .button("Export CDL…")
+            .on_hover_text("Write this node's wheels and saturation as an ASC CDL file")
+            .clicked()
+        {
+            // The grade is taken now, as the button was pressed;
+            // only the file is written once a place is chosen.
+            let wheel = |x: Option<f32>, y: Option<f32>, m: Option<f32>| {
+                let (r, g, b) = klipp_color::wheel_offset_to_rgb(x.unwrap_or(0.0), y.unwrap_or(0.0), m.unwrap_or(0.0));
+                [r, g, b]
+            };
+            let cdl = klipp_grade_model::cdl::Cdl::from_wheels(
+                wheel(params.lift_x, params.lift_y, params.lift_master),
+                wheel(params.gamma_x, params.gamma_y, params.gamma_master),
+                wheel(params.gain_x, params.gain_y, params.gain_master),
+                wheel(params.offset_x, params.offset_y, params.offset_master),
+                params.saturation.unwrap_or(1.0),
+            );
+            crate::file_dialog::spawn(move || {
+                if let Some(path) = rfd::FileDialog::new().add_filter("ASC CDL", &["cdl"]).set_file_name("grade.cdl").save_file() {
+                    let id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "klipp".into());
+                    match std::fs::write(&path, cdl.to_xml(&id)) {
+                        Ok(()) => tracing::info!("Exported CDL to {}", path.display()),
+                        Err(e) => {
+                            tracing::warn!("CDL export failed for {}: {e}", path.display());
+                            crate::file_dialog::notify(format!("Could not write the CDL: {e}"));
+                        }
+                    }
+                }
+                Vec::new()
+            });
+        }
+    });
+}
+
+/// A LUT node's file: its name, and Browse, the bundled looks and Clear.
+pub(crate) fn lut_picker(ui: &mut egui::Ui, params: &NodeParams, node_id: NodeId, clip_id: ClipId, cmds: &mut Vec<AppCommand>, theme: &KlippTheme) {
+    #[cfg(any(test, feature = "row-recorder"))]
+    crate::widgets::row_recorder::control(ui.next_auto_id(), "lut_picker", "lut_path", "LUT", &params.lut_path);
+    if let Some(path) = &params.lut_path {
+        let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| path.display().to_string());
+        ui.label(egui::RichText::new(name).size(11.0)).on_hover_text(path.display().to_string());
+    } else {
+        ui.label(egui::RichText::new("No LUT loaded").size(10.0).color(theme.text_dim));
+    }
+    // Choosing the node's LUT (#892): a file, or one of the
+    // bundled looks; Clear takes it off.
+    ui.horizontal(|ui| {
+        if ui.button("Browse\u{2026}").on_hover_text("Load a .cube, .3dl or .csp file into this node").clicked() {
+            crate::file_dialog::spawn(move || {
+                rfd::FileDialog::new()
+                    .set_title("LUT for this node")
+                    .add_filter("LUT files", &["cube", "3dl", "csp"])
+                    .pick_file()
+                    .map(|path| vec![AppCommand::SetNodeLut { clip_id, node_id, path: Some(path) }])
+                    .unwrap_or_default()
+            });
+        }
+        if let Some(dir) = klipp_core::assets::bundled_luts_dir() {
+            ui.menu_button("Bundled", |ui| {
+                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                    for (category, files) in bundled_luts(dir) {
+                        ui.menu_button(category, |ui| {
+                            for path in files {
+                                let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                                if ui.selectable_label(params.lut_path.as_ref() == Some(&path), name).clicked() {
+                                    cmds.push(AppCommand::SetNodeLut { clip_id, node_id, path: Some(path) });
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    }
+                });
+            });
+        }
+        if params.lut_path.is_some() && ui.button("Clear").clicked() {
+            cmds.push(AppCommand::SetNodeLut { clip_id, node_id, path: None });
+        }
+    });
+}
+
 /// A grade node's header: its name, its on switch, and the diamond that
 /// keys the switch. Shared by the per-node layout and the generated one
 /// (M3 step 11).

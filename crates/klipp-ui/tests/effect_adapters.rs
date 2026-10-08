@@ -53,6 +53,7 @@ fn card(ctx: &egui::Context, t: &EffectType, clip: &Clip, state: &AppState, even
                 behaviours: None,
                 theme: &theme,
                 app: Some(state),
+                custom: None,
             };
             effect_card(ui, &mut rc, &rows, t, clip, state);
         });

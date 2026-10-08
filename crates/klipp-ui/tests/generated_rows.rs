@@ -45,6 +45,7 @@ fn generated(t: &EffectType, json: &Value) -> (Vec<Row>, Vec<AppCommand>) {
                 behaviours: None,
                 theme: &theme,
                 app: None,
+                custom: None,
             };
             generated::node_rows(ui, &mut rc, &rows);
         })

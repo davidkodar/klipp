@@ -53,7 +53,17 @@ pub struct RowCtx<'a> {
     /// plug-in's warnings read the project's size).
     pub theme: &'a crate::theme::KlippTheme,
     pub app: Option<&'a crate::state::AppState>,
+    /// The view's own specialist editors, asked first for a named editor
+    /// (`Widget::Custom`) or a wheel's part (as `"wheels"`): whether it
+    /// drew the row. A view whose editors need its own state (the grade
+    /// inspector's wheels and curves) answers here; `None` leaves the
+    /// registered editors.
+    pub custom: Option<&'a mut CustomHook<'a>>,
 }
+
+/// A view's specialist editors (`RowCtx::custom`): given the editor's id,
+/// the parameter and the commands to push into, whether it drew it.
+pub type CustomHook<'a> = dyn FnMut(&mut egui::Ui, &str, &ParamDesc, &mut Vec<AppCommand>) -> bool + 'a;
 
 /// A node's stored entry, and where in it its parameters' fields sit.
 #[derive(Clone, Copy)]
@@ -215,6 +225,8 @@ pub fn param_row(ui: &mut egui::Ui, ctx: &mut RowCtx, input: RowInput) -> RowOut
     let RowInput { desc, pres, stored, shown_at_t, keys } = input;
     match pres.widget {
         Widget::Hidden => RowOutcome::Nothing,
+        Widget::Custom(id) if ctx.custom.as_mut().is_some_and(|hook| hook(ui, id, desc, ctx.cmds)) => RowOutcome::Nothing,
+        Widget::WheelPart(_) if ctx.custom.as_mut().is_some_and(|hook| hook(ui, "wheels", desc, ctx.cmds)) => RowOutcome::Nothing,
         Widget::Custom(id) => match custom::editor(id) {
             Some(editor) => {
                 editor.show(ui, ctx, desc, stored);
@@ -495,7 +507,7 @@ mod tests {
         let addr = NodePath::new(Root::Clip { clip: uuid::Uuid::nil() }, [uuid::Uuid::from_u128(1)]);
         let mut cmds = Vec::new();
         let theme = crate::theme::KlippTheme::default();
-        let mut ctx = RowCtx { addr: &addr, clip_time_secs: 0.0, timeline_in_secs: 0.0, rate: 24, encoding: Encoding::Bt1886, entry: Some(Entry { payload, fields_at: &[] }), cmds: &mut cmds, behaviours: None, theme: &theme, app: None };
+        let mut ctx = RowCtx { addr: &addr, clip_time_secs: 0.0, timeline_in_secs: 0.0, rate: 24, encoding: Encoding::Bt1886, entry: Some(Entry { payload, fields_at: &[] }), cmds: &mut cmds, behaviours: None, theme: &theme, app: None, custom: None };
         assert!(write_stored(&mut ctx, desc(type_id, key), new));
         cmds
     }
