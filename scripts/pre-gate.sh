@@ -28,7 +28,8 @@
 # new run.
 #
 # A heavy job: it refuses to start while two other cargo jobs run on the
-# machine. KLIPP_PRE_GATE_FORCE=1 starts it anyway.
+# machine. KLIPP_PRE_GATE_FORCE="<why>" starts it anyway; the reason is
+# printed and kept in skips.log.
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "pre-gate: not in a git checkout" >&2; exit 1; }
 cd "$ROOT" || exit 1
@@ -134,11 +135,20 @@ fi
 
 # A heavy job only when there is something to build: a change to the
 # scripts or the documentation runs no cargo at all.
-if [ -n "$_check_args$_test_args" ] && [ "${KLIPP_PRE_GATE_FORCE:-}" != "1" ] && command -v pgrep >/dev/null 2>&1; then
+# Two at a time is the hard limit (more ran the machine out of memory):
+# starting a third names its reason, kept beside the push skips.
+if [ -n "$_check_args$_test_args" ] && command -v pgrep >/dev/null 2>&1; then
     _jobs=$(for p in $(pgrep -x cargo); do readlink "/proc/$p/cwd"; done 2>/dev/null | grep -vxF "$ROOT" | sort -u)
     if [ "$(printf '%s' "$_jobs" | grep -c .)" -ge 2 ]; then
         printf '%s\n' "$_jobs" | sed 's/^/              running: /' >&2
-        refuse "two cargo jobs are already running on this machine. Wait for a free slot (KLIPP_PRE_GATE_FORCE=1 starts anyway)."
+        case "${KLIPP_PRE_GATE_FORCE:-}" in
+            ''|1|yes|true|' '*)
+                refuse "two cargo jobs are already running on this machine. Wait for a free slot; to start a third anyway, give the reason: KLIPP_PRE_GATE_FORCE=\"<why>\" scripts/pre-gate.sh" ;;
+            *)
+                say "starting a THIRD heavy job: $KLIPP_PRE_GATE_FORCE"
+                printf '%s %s %s forced a third job: %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$(git rev-parse --short HEAD)" \
+                    "$(git symbolic-ref --short -q HEAD || echo detached)" "$KLIPP_PRE_GATE_FORCE" >>"$_stamps/skips.log" ;;
+        esac
     fi
 fi
 
@@ -149,7 +159,8 @@ step() {
     _name=$1; shift
     say "$_name ..."
     _t=$(date +%s)
-    if "$@" >>"$_log" 2>&1; then
+    # Stdin closed: a test that spawns a hook reading it would wait forever.
+    if "$@" >>"$_log" 2>&1 </dev/null; then
         say "$_name passed ($(( $(date +%s) - _t ))s)"
         return 0
     fi

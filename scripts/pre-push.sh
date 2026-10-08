@@ -112,10 +112,18 @@ if [ ! -t 0 ]; then
         # would end the gate without a word.
         _stamps=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || _stamps=
         _stamps="$_stamps/klipp-pre-gate"
-        _tree=$(git rev-parse --verify --quiet "HEAD^{tree}" 2>/dev/null) || _tree=
+        # Each pushed commit's own tree, not HEAD's: a push can name a
+        # commit other than the one checked out.
+        _unstamped=$(printf '%s\n' "$_refs" | while read -r _ref _sha _remote _remote_sha; do
+            [ -n "$_sha" ] || continue
+            case "$_sha" in *[!0]*) ;; *) continue ;; esac
+            case "$_remote" in refs/tags/*) continue ;; esac
+            _tree=$(git rev-parse --verify --quiet "$_sha^{tree}" 2>/dev/null) || _tree=
+            [ -n "$_tree" ] && [ -f "$_stamps/$_tree" ] || printf '%s\n' "$_sha"
+        done; true)
         case "${KLIPP_SKIP_PRE_GATE:-}" in
-            '') if [ -z "$_tree" ] || [ ! -f "$_stamps/$_tree" ]; then
-                    printf '\n  pre-push: %s has not passed scripts/pre-gate.sh — push refused.\n' "$(git rev-parse --short HEAD 2>/dev/null)" >&2
+            '') if [ -n "$_unstamped" ]; then
+                    printf '\n  pre-push: %s has not passed scripts/pre-gate.sh — push refused.\n' "$(git rev-parse --short "$(printf '%s\n' "$_unstamped" | head -n 1)" 2>/dev/null)" >&2
                     printf '            Run it here first (minutes; a failed gate run costs everyone\n' >&2
                     printf '            queued behind it a whole run), then push again:\n\n' >&2
                     printf '              scripts/pre-gate.sh\n\n' >&2

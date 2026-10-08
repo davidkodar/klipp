@@ -856,6 +856,37 @@ class PreGateTests(RealGitGate):
         self.assertNotIn("pre-gate.sh", result.stderr)
         self.assertIn("clippy --workspace --all-targets -- -D warnings", self.calls(), "the checks ran")
 
+    def test_a_stamped_head_does_not_let_another_unstamped_commit_through(self):
+        self.assertEqual(self.pre_gate().returncode, 0)
+        stamped = self.git(self.root, "rev-parse", "HEAD").strip()
+        self.git(self.root, "checkout", "-q", "-b", "other", "HEAD~1")
+        (self.root / "crates/b/src/lib.rs").write_text("unstamped\n")
+        self.commit(self.root, "an unstamped commit")
+        unstamped = self.git(self.root, "rev-parse", "HEAD").strip()
+        self.git(self.root, "checkout", "-q", "fix/branch")
+        self.assertEqual(self.git(self.root, "rev-parse", "HEAD").strip(), stamped)
+        (Path(self.temp.name) / "cargo-calls").unlink(missing_ok=True)
+        result = self.run_gate_with(f"refs/heads/other {unstamped} refs/heads/other {'0' * 40}\n")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(self.calls(), [], "nothing built")
+
+    def test_a_third_heavy_job_needs_a_reason_and_is_kept(self):
+        # Two other cargo jobs, as pgrep and /proc show them.
+        sleepers = [subprocess.Popen(["sleep", "30"], cwd=d) for d in (self.other, Path(self.temp.name))]
+        self.addCleanup(lambda: [p.kill() for p in sleepers])
+        pids = " ".join(str(p.pid) for p in sleepers)
+        self.script(self.bin / "pgrep", f'[ "$1 $2" = "-x cargo" ] && echo "{pids}" | tr " " "\\n"')
+        result = self.pre_gate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("two cargo jobs are already running", result.stderr)
+        self.env["KLIPP_PRE_GATE_FORCE"] = "1"
+        self.assertIn("give the reason", self.pre_gate().stderr)
+        self.env["KLIPP_PRE_GATE_FORCE"] = "the lead asked for it now"
+        result = self.pre_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("starting a THIRD heavy job: the lead asked for it now", result.stdout)
+        self.assertIn("forced a third job: the lead asked for it now", (self.root / ".git/klipp-pre-gate/skips.log").read_text())
+
     def test_a_deletion_needs_no_stamp(self):
         result = self.run_gate_with(f"(delete) {'0' * 40} refs/heads/old {'1' * 40}\n")
         self.assertEqual(result.returncode, 0, result.stderr)
