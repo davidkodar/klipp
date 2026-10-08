@@ -485,3 +485,70 @@ fn perspective_label_reset_restores_unset_below_its_soft_range() {
     assert_eq!(run.clip().picture_v2().unwrap(), after);
     assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
 }
+
+fn plain_slider_cases() -> Vec<(BuiltinEffect, BuiltinEffect, &'static str)> {
+    [("noise_generator", "seed", 1000), ("radial_blur", "samples", 24)]
+        .into_iter().map(|(tag, key, value)| {
+            let ty = klipp_effects::registry::effect_type(tag).unwrap();
+            let desc = ty.desc.params.iter().find(|p| p.key == key).unwrap();
+            let mut json = serde_json::to_value((ty.sample)()).unwrap();
+            json[desc.field] = serde_json::json!(value);
+            let changed = serde_json::from_value(json.clone()).unwrap();
+            json[desc.field] = serde_json::json!(desc.default as u32);
+            (changed, serde_json::from_value(json).unwrap(), desc.label)
+        }).collect()
+}
+
+/// IC15: plain sliders gain the same label reset as other number rows.
+#[test]
+fn plain_slider_labels_reset_with_exact_undo_and_redo() {
+    for (effect, reset, label) in plain_slider_cases() {
+        let clip = fixture(&effect);
+        let mut run = Run::new(clip.clone(), true);
+        let mut oracle = Run::new(clip, false);
+        let before = run.clip().picture_v2().unwrap();
+        run.frame(Vec::new(), egui::Modifiers::NONE);
+        let (at, _) = run.row(label).expect("slider row");
+        run.button(at, egui::PointerButton::Primary, true);
+        run.button(at, egui::PointerButton::Primary, false);
+        oracle.apply(AppCommand::UpdateBuiltinEffect { clip_id: oracle.clip, index: 0, effect: reset });
+        let after = run.clip().picture_v2().unwrap();
+        assert_ne!(after, before, "{label}");
+        assert_eq!(after, oracle.clip().picture_v2().unwrap(), "{label}");
+        assert_eq!(run.state.active_history().undo_count(), 1);
+        assert!(run.step(false));
+        assert_eq!(run.clip().picture_v2().unwrap(), before);
+        assert!(run.step(true));
+        assert_eq!(run.clip().picture_v2().unwrap(), after);
+        assert!(!run.state.any_drag_in_progress());
+        assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+    }
+}
+
+/// IC14 covers both the slider rail and its editable number.
+#[test]
+fn plain_slider_escape_cancels_rail_and_number_drags() {
+    for (effect, _, label) in plain_slider_cases() {
+        for rail in [false, true] {
+            let mut run = Run::new(fixture(&effect), true);
+            let before = run.clip().picture_v2().unwrap();
+            run.frame(Vec::new(), egui::Modifiers::NONE);
+            let (_, number) = run.row(label).expect("slider row");
+            let at = if rail {
+                number - egui::vec2(run.ctx.style().spacing.slider_width * 0.6, 0.0)
+            } else { number };
+            run.button(at, egui::PointerButton::Primary, true);
+            for dx in [6.0, 12.0, 18.0] {
+                run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))], egui::Modifiers::NONE);
+            }
+            assert_ne!(run.clip().picture_v2().unwrap(), before, "{label}, rail={rail}");
+            run.key(egui::Key::Escape, egui::Modifiers::NONE);
+            run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(28.0, 0.0))], egui::Modifiers::NONE);
+            run.button(at + egui::vec2(28.0, 0.0), egui::PointerButton::Primary, false);
+            assert_eq!(run.clip().picture_v2().unwrap(), before, "{label}, rail={rail}");
+            assert_eq!(run.state.active_history().undo_count(), 0);
+            assert!(!run.state.any_drag_in_progress());
+            assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+        }
+    }
+}
