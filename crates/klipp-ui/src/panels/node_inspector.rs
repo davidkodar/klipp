@@ -1871,6 +1871,7 @@ impl NodeInspectorPanel {
         let curve_h = 90.0_f32;
 
         let mut huesat_changed = false;
+        let mut gesture: (bool, Option<fn(ClipId) -> AppCommand>) = (false, None);
 
         for (label, color, channel, curve_idx) in &curve_entries {
             // Header: colored dot + label + reset icon + eyedropper
@@ -1983,13 +1984,24 @@ impl NodeInspectorPanel {
                 x_axis,
             );
             if resp.changed { huesat_changed = true; }
+            let (began, ended) = gesture_of(ui, resp.drag_started, resp.drag_ended);
+            gesture.0 |= began;
+            gesture.1 = gesture.1.or(ended);
             ui.add_space(4.0);
         }
 
+        // A drag is one gesture, one undo step (IC13): begun as it starts,
+        // ended on release, taken back on Escape.
+        if gesture.0 {
+            cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+        }
         if huesat_changed {
             // The command writes it, so its step starts from the grade
             // before the edit and an undo leaves it as it was (#1392).
             cmds.push(AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat: edited });
+        }
+        if let Some(end) = gesture.1 {
+            cmds.push(end(clip_id));
         }
     }
 
@@ -2076,6 +2088,7 @@ impl NodeInspectorPanel {
         let curve_h = curve_w.clamp(100.0, 500.0);
         let ch = self.active_curve_channel;
         let mut curves_changed = false;
+        let mut gesture = (false, None);
         {
             let points = match ch {
                 CurveChannel::Master => &mut curves.master, CurveChannel::Red => &mut curves.red,
@@ -2090,12 +2103,21 @@ impl NodeInspectorPanel {
                     ui, theme, ch, points, curve_h, hist.as_ref(),
                 );
                 if resp.changed { curves_changed = true; }
+                gesture = gesture_of(ui, resp.drag_started, resp.drag_ended);
             });
+        }
+        // A drag is one gesture, one undo step (IC13): begun as it starts,
+        // ended on release, taken back on Escape.
+        if gesture.0 {
+            cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
         }
         if curves_changed {
             // The command writes it, so its step starts from the grade
             // before the edit and an undo leaves it as it was (#1392).
             cmds.push(AppCommand::SetNodeCurves { clip_id, node_id, curves: edited });
+        }
+        if let Some(end) = gesture.1 {
+            cmds.push(end(clip_id));
         }
         ui.add_space(6.0);
         } // is_open
@@ -2142,8 +2164,9 @@ impl NodeInspectorPanel {
                 *x = Some(offset[0]); *y = Some(offset[1]); *m = Some(master);
                 push_wheel_cmds(cmds, clip_id, node_id, prefix, offset, master);
             }
-            if resp.drag_ended {
-                cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+            // Released, the drag is one step; ended by Escape, taken back.
+            if let (_, Some(end)) = gesture_of(ui, false, resp.drag_ended) {
+                cmds.push(end(clip_id));
             }
 
             let Some((sat, bri)) = satbri else { return };
@@ -2213,8 +2236,8 @@ impl NodeInspectorPanel {
                         let param = format!("{prefix}_{suffix}");
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param, value: v });
                     }
-                    if r.drag_stopped() {
-                        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+                    if let (_, Some(end)) = gesture_of(ui, false, r.drag_stopped()) {
+                        cmds.push(end(clip_id));
                     }
                 }
             }
@@ -4691,6 +4714,22 @@ fn keep_unset<T: PartialEq + Default>(field: &mut Option<T>, was_unset: bool) {
     if was_unset && field.as_ref() == Some(&T::default()) {
         *field = None;
     }
+}
+
+/// A grade editor's drag (a curve, a wheel, its sliders) as a node-param
+/// gesture: whether it began this
+/// frame, and how it ended, if it did: committed on release
+/// (`EndNodeParamEdit`), or taken back when Escape ended it
+/// (`AbandonNodeParamEdit`), as the other rows' drags are.
+fn gesture_of(ui: &mut egui::Ui, started: bool, ended: bool) -> (bool, Option<fn(ClipId) -> AppCommand>) {
+    let end: Option<fn(ClipId) -> AppCommand> = ended.then(|| {
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            (|clip_id| AppCommand::AbandonNodeParamEdit { clip_id }) as fn(ClipId) -> AppCommand
+        } else {
+            |clip_id| AppCommand::EndNodeParamEdit { clip_id }
+        }
+    });
+    (started, end)
 }
 
 /// Push a single atomic node-param edit wrapped in a `BeginNodeParamEdit` /

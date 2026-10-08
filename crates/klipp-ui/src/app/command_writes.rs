@@ -415,6 +415,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::PrinterLight { .. }
         | AppCommand::BeginNodeParamEdit { .. }
         | AppCommand::EndNodeParamEdit { .. }
+        | AppCommand::AbandonNodeParamEdit { .. }
         | AppCommand::SetNodeCurves { .. }
         | AppCommand::SetNodeHueSatCurves { .. }
         | AppCommand::SetNodeQualifier { .. }

@@ -29,7 +29,7 @@ macro_rules! engine_commands {
 
 engine_commands!(
     BeginNodeParamEdit, BeginScrub, CleanOrphanedCaches, ClearGlobalLut, ClearRenderCache, CancelRenderRange,
-    EndNodeParamEdit, EndScrub, LoadGlobalLut, LoadMediaFile, MediaDecodeChanged, Pause,
+    AbandonNodeParamEdit, EndNodeParamEdit, EndScrub, LoadGlobalLut, LoadMediaFile, MediaDecodeChanged, Pause,
     PauseSource, Play, PlaySource, Quit, RenderNodeThumbsFromSource,
     RenderScopesForFrame, RenderScopeSnapshot, ResetEngine, ResetLufsMeter,
     RenderRange, SampleNodeInput, SeekRelative, SeekSource, SeekTo, SequenceUpdated,

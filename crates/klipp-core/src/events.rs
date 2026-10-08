@@ -1889,6 +1889,10 @@ pub enum AppCommand {
     /// the snapshot taken at the matching BeginNodeParamEdit as a single
     /// `SetNodeGraph` history entry covering the whole gesture.
     EndNodeParamEdit { clip_id: ClipId },
+    /// Called when the user cancels a color-grading parameter drag
+    /// (Escape): the graph goes back to the snapshot taken at the matching
+    /// BeginNodeParamEdit, and no history entry is recorded.
+    AbandonNodeParamEdit { clip_id: ClipId },
     SetNodeCurves { clip_id: ClipId, node_id: uuid::Uuid, curves: crate::color_grade::CurveSet },
     SetNodeHueSatCurves { clip_id: ClipId, node_id: uuid::Uuid, huesat: crate::color_grade::HueSatCurves },
     SetNodeQualifier { clip_id: ClipId, node_id: uuid::Uuid, qualifier: crate::color_grade::QualifierSettings },
