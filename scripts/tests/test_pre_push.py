@@ -918,7 +918,8 @@ class PreGateTests(RealGitGate):
         self.assertIn("check --all-targets -p a -p b", calls, "b is built on a: compiled")
         self.assertIn("test --no-fail-fast -p a", calls, "only the touched crate's tests, to the end")
         self.assertIn("clippy --all-targets -p a -- -D warnings", calls)
-        self.assertFalse(any(c.startswith("doc") or "clippy --workspace" in c for c in calls), "rustdoc and workspace clippy are the gate's")
+        self.assertIn("doc -j 1 --no-deps -p a", calls, "rustdoc on the touched crate, one job")
+        self.assertFalse(any(c.startswith("doc") and "-p b" in c or "--workspace" in c for c in calls), "rustdoc of what it reaches and workspace clippy are the gate's")
         self.assertFalse(any("effect_entry_readers" in c for c in calls), "a is not an effect or grade crate")
 
     def test_an_effect_crate_change_runs_the_scans_it_could_break(self):

@@ -17,10 +17,12 @@
 #      repo-wide source scans (effect_entry_readers, legacy_route_gone)
 #      when an effect or grade crate changed;
 #   4. clippy -D warnings on the touched crates;
-#   5. the scripts' own tests when scripts/ changed.
+#   5. rustdoc -D warnings on the touched crates (--no-deps, one job as
+#      the gate runs it: rustdoc is memory-hungry);
+#   6. the scripts' own tests when scripts/ changed.
 #
-# Workspace clippy, rustdoc and the tests of the crates built on the
-# touched ones stay the gate's.
+# Workspace clippy, rustdoc of the crates built on the touched ones and
+# their tests stay the gate's.
 #
 # On a pass it stamps the commit's tree, and the pre-push hook refuses a
 # push without that stamp. A tree, not a commit: a reworded message keeps
@@ -185,6 +187,9 @@ if [ -n "$_test_args" ]; then
         done
     fi
     step "clippy on $_touched" cargo clippy --all-targets $_test_args -- -D warnings
+    # A public doc linking a private item, or a bare [0,1] in prose,
+    # passes clippy and every test and fails only the gate's rustdoc.
+    step "rustdoc on $_touched" env RUSTDOCFLAGS="-D warnings" cargo doc -j 1 --no-deps $_test_args
     _passed=$(grep '^test result' "$_log" | awk '{p += $4} END {print p + 0}')
     say "$_passed tests passed"
 fi
