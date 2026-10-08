@@ -8,8 +8,16 @@ impl AppState {
         self.graph_dock_open = !self.graph_dock_open;
         if self.graph_dock_open {
             self.repair_graph_dock();
-            self.active_panel = Some(if self.graph_dock_path.is_empty() { crate::state::PanelKind::PictureGraph } else { crate::state::PanelKind::NodeGraph });
+            self.focus_graph_dock();
         } else if matches!(self.active_panel, Some(crate::state::PanelKind::PictureGraph | crate::state::PanelKind::NodeGraph)) { self.active_panel = None; }
+    }
+
+    pub(crate) fn focus_graph_dock(&mut self) {
+        let in_grade = self.graph_dock_root.and_then(|root| match root { Root::Clip { clip } => Some(ClipId(clip)), _ => None })
+            .and_then(|id| self.sequence().all_clips().find(|c| c.id == id))
+            .and_then(|c| c.picture_v2().ok())
+            .is_some_and(|p| p.picture.graph.nodes.iter().any(|n| self.graph_dock_path.first() == Some(&n.id) && n.type_id.as_str() == klipp_graph_format::lifted::types::GROUP));
+        self.active_panel = Some(if in_grade { crate::state::PanelKind::NodeGraph } else { crate::state::PanelKind::PictureGraph });
     }
 
     /// Follow clip selection and retain the longest surviving group path.
@@ -60,25 +68,25 @@ impl KlippApp {
         let mut header_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true)));
         {
             let ui = &mut header_ui;
-                if ui.selectable_label(!in_grade, "Picture").clicked() {
-                    self.state.active_panel = Some(crate::state::PanelKind::PictureGraph);
-                    if let Some(root) = root { cmds.push(AppCommand::SetGraphDockRoot { root }); }
+            if ui.selectable_label(!in_grade, "Picture").clicked() {
+                self.state.active_panel = Some(crate::state::PanelKind::PictureGraph);
+                if let Some(root) = root { cmds.push(AppCommand::SetGraphDockRoot { root }); }
+            }
+            if ui.add_enabled(grade.is_some(), egui::Button::new("Grade").selected(in_grade)).clicked() {
+                if let (Some(root), Some((group, output))) = (root, grade) {
+                    self.state.active_panel = Some(crate::state::PanelKind::NodeGraph);
+                    self.state.graph_descent_path.clear();
+                    cmds.push(AppCommand::RevealGraph { path: NodePath::new(root, [group, output]), select: false });
                 }
-                if ui.add_enabled(grade.is_some(), egui::Button::new("Grade").selected(in_grade)).clicked() {
-                    if let (Some(root), Some((group, output))) = (root, grade) {
-                        self.state.active_panel = Some(crate::state::PanelKind::NodeGraph);
-                        self.state.graph_descent_path.clear();
-                        cmds.push(AppCommand::RevealGraph { path: NodePath::new(root, [group, output]), select: false });
-                    }
+            }
+            ui.separator();
+            for (placement, label) in [(crate::layout_state::NodeGraphPlacement::Below, "Below"), (crate::layout_state::NodeGraphPlacement::Right, "Right")] {
+                if ui.selectable_label(self.layout.node_graph_placement == placement, label).clicked() {
+                    self.layout.node_graph_placement = placement;
+                    self.layout_dirty = true;
                 }
-                ui.separator();
-                for (placement, label) in [(crate::layout_state::NodeGraphPlacement::Below, "Below"), (crate::layout_state::NodeGraphPlacement::Right, "Right")] {
-                    if ui.selectable_label(self.layout.node_graph_placement == placement, label).clicked() {
-                        self.layout.node_graph_placement = placement;
-                        self.layout_dirty = true;
-                    }
-                }
-                if ui.small_button("×").on_hover_text("Close graph").clicked() { cmds.push(AppCommand::ToggleGraphDock); }
+            }
+            if ui.small_button("×").on_hover_text("Close graph").clicked() { cmds.push(AppCommand::ToggleGraphDock); }
         }
         let header_height = header_ui.min_rect().height().max(28.0);
         let body = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.top() + header_height), rect.max);

@@ -1387,6 +1387,56 @@ fn selection_span(state: &AppState) -> Option<(klipp_core::Timecode, klipp_core:
 }
 
 #[cfg(test)]
+mod graph_menu_tests {
+    use super::*;
+
+    #[test]
+    fn open_graph_is_reachable_from_the_toolbar_and_window_menu() {
+        for workspace in [Workspace::Edit, Workspace::Color] {
+            for menu in [false, true] {
+                let ctx = egui::Context::default();
+                let mut panel = ToolbarPanel { logo_texture: None };
+                let mut state = AppState { active_workspace: workspace, ..Default::default() };
+                let mut time = 0.0;
+                let mut frame = |state: &mut AppState, events| {
+                    time += 0.1;
+                    let mut cmds = Vec::new();
+                    let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))), time: Some(time), events, ..Default::default() }, |ctx| {
+                        egui::TopBottomPanel::top("toolbar").exact_height(40.0).show(ctx, |ui| {
+                            cmds = panel.show(ui, state, &[], &KlippTheme::default(), &crate::keybindings::KeyBindings::default());
+                        });
+                    });
+                    let texts: Vec<_> = output.shapes.iter().filter_map(|s| match &s.shape {
+                        egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)), _ => None,
+                    }).collect();
+                    (cmds, texts)
+                };
+                let button = |at, pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+                for open in [true, false] {
+                    let mut texts = Vec::new();
+                    for _ in 0..3 { texts = frame(&mut state, Vec::new()).1; }
+                    if menu {
+                        let at = texts.iter().find(|(s, _)| s == "Window").unwrap().1;
+                        frame(&mut state, vec![egui::Event::PointerMoved(at), button(at, true)]);
+                        frame(&mut state, vec![button(at, false)]);
+                        for _ in 0..3 { texts = frame(&mut state, Vec::new()).1; }
+                    }
+                    let label = if menu || open { "Open graph" } else { "Close graph" };
+                    let at = texts.iter().rev().find(|(s, _)| s.trim_start_matches([' ', '✔']) == label).unwrap_or_else(|| panic!("{label}: {texts:?}")).1;
+                    frame(&mut state, vec![egui::Event::PointerMoved(at), button(at, true)]);
+                    let cmds = frame(&mut state, vec![button(at, false)]).0;
+                    assert!(matches!(cmds.as_slice(), [AppCommand::ToggleGraphDock]), "{cmds:?}");
+                    state.path_command(&cmds[0]);
+                    assert_eq!(state.graph_dock_open, open);
+                    assert_eq!(state.active_workspace, workspace);
+                    assert!(!state.dirty);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod shortcut_label_tests {
     //! The menus must not write a key combo down themselves.
     //!

@@ -489,6 +489,91 @@ mod tests {
         assert_eq!(*restored.picture_v2().unwrap(), before);
     }
 
+    #[test]
+    fn delete_only_edits_the_picture_when_its_canvas_has_focus() {
+        for focused in [false, true] {
+            let c = clip();
+            let p = c.picture_v2().unwrap();
+            let effect = p.picture.graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+            let ctx = egui::Context::default();
+            let mut panel = super::super::NodeGraphV2Panel::default();
+            let mut level = root(&c);
+            let mut selected = Some(effect);
+            let mut set = [effect].into_iter().collect();
+            let mut cmds = Vec::new();
+            let _ = ctx.run(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 700.0))),
+                events: vec![egui::Event::Key { key: egui::Key::Delete, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
+                ..Default::default()
+            }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    cmds = panel.show_picture(ui, &c, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, focused).unwrap();
+                });
+            });
+            if focused { assert!(matches!(cmds.as_slice(), [AppCommand::RemoveNodeAt { addr }] if addr.node() == Some(effect)), "{cmds:?}"); }
+            else { assert!(cmds.is_empty(), "{cmds:?}"); }
+            assert_eq!(c.picture_v2().unwrap(), p);
+        }
+    }
+
+    #[test]
+    fn a_picture_canvas_pointer_drag_is_one_cancellable_undo_step() {
+        for cancel in [false, true] {
+            let c = clip();
+            let id = c.id;
+            let before = c.picture_v2().unwrap();
+            let effect = before.picture.graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+            let label = PictureCanvas::new(&before.picture.graph, root(&c), None).unwrap().nodes.into_iter().find(|n| n.id() == effect).unwrap().label;
+            let mut state = crate::state::AppState::default();
+            state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(c.clone());
+            let ctx = egui::Context::default();
+            let mut panel = super::super::NodeGraphV2Panel::default();
+            let mut level = root(&c);
+            let (mut selected, mut set, mut time) = (None, Default::default(), 0.0);
+            let mut frame = |state: &mut crate::state::AppState, events| {
+                time += 0.05;
+                let clip = state.sequence().all_clips().find(|c| c.id == id).unwrap();
+                let mut cmds = Vec::new();
+                let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 700.0))), time: Some(time), events, ..Default::default() }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        cmds = panel.show_picture(ui, clip, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, true).unwrap();
+                    });
+                });
+                for cmd in &cmds {
+                    state.before_dispatch(cmd);
+                    assert!(state.path_command(cmd).is_some(), "{cmd:?}");
+                }
+                let texts: Vec<_> = output.shapes.iter().filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)), _ => None,
+                }).collect();
+                (cmds, texts)
+            };
+            let mut texts = Vec::new();
+            for _ in 0..3 { texts = frame(&mut state, Vec::new()).1; }
+            let at = texts.iter().find(|(s, _)| s == &label).unwrap().1 + egui::vec2(0.0, 18.0);
+            let button = |at, pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            let mut sent = frame(&mut state, vec![egui::Event::PointerMoved(at), button(at, true)]).0;
+            for distance in [30.0, 60.0, 90.0] {
+                sent.extend(frame(&mut state, vec![egui::Event::PointerMoved(at + egui::vec2(distance, 20.0))]).0);
+            }
+            assert_ne!(state.sequence().all_clips().find(|c| c.id == id).unwrap().picture_v2().unwrap(), before);
+            if cancel {
+                sent.extend(frame(&mut state, vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]).0);
+            }
+            sent.extend(frame(&mut state, vec![button(at + egui::vec2(90.0, 20.0), false)]).0);
+            assert_eq!(sent.iter().filter(|c| matches!(c, AppCommand::BeginNodeLayoutEdit { .. })).count(), 1, "{sent:?}");
+            assert_eq!(state.active_history().undo_count(), usize::from(!cancel));
+            if !cancel {
+                assert_eq!(sent.iter().filter(|c| matches!(c, AppCommand::EndNodeLayoutEdit { .. })).count(), 1);
+                let mut command = state.active_history_mut().undo().unwrap().command;
+                while let crate::history::EditCommand::Named { edit, .. } = command { command = *edit; }
+                let crate::history::EditCommand::PictureEdit { edit, .. } = command else { panic!("picture undo") };
+                state.sequences[0].all_clips_mut().find(|c| c.id == id).unwrap().restore_picture(&edit.before);
+            }
+            assert_eq!(state.sequence().all_clips().find(|c| c.id == id).unwrap().picture_v2().unwrap(), before);
+        }
+    }
+
     /// Local validation corpus, never checked into the repository.
     #[test]
     #[ignore = "requires KLIPP_CANVAS_PROJECT_LIST naming the 18-project corpus"]

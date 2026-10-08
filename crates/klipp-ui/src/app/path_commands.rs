@@ -274,7 +274,12 @@ impl crate::state::AppState {
     fn end_node_layout_edit(&mut self, root: Root) {
         if !self.active_history().is_dragging(&layout_drag(root)) { return; }
         let unchanged = match self.active_history().pending_old_entry_ref().map(|e| &e.command) {
-            Some(EditCommand::PictureEdit { clip_id, edit, .. }) => self.picture_of(*clip_id).is_some_and(|now| now == edit.before),
+            Some(EditCommand::PictureEdit { clip_id, edit, .. }) => self.sequence().all_clips().find(|c| c.id == *clip_id).is_some_and(|clip| {
+                let Ok(now) = clip.picture_v2() else { return false };
+                let mut before = clip.clone();
+                before.restore_picture(&edit.before);
+                before.picture_v2().is_ok_and(|picture| picture == now)
+            }),
             _ => false,
         };
         if unchanged { self.active_history_mut().abandon_pending_drag(); } else { self.close_open_drag(); }
@@ -401,6 +406,7 @@ impl crate::state::AppState {
             self.selected_node_ids.clear();
             self.selected_node_ids.extend(path.node());
         }
+        self.focus_graph_dock();
         Ok(())
     }
 
@@ -413,9 +419,11 @@ impl crate::state::AppState {
         self.graph_dock_open = true;
         self.graph_dock_root = Some(root);
         self.graph_dock_path.clear();
+        self.graph_descent_path.clear();
         self.selected_node_addr = None;
         self.selected_node_id = None;
         self.selected_node_ids.clear();
+        self.focus_graph_dock();
         Ok(())
     }
 
