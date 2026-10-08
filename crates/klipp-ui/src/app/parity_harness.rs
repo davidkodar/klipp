@@ -83,7 +83,8 @@ impl InspectorSideEffects for Sink {
 }
 
 /// The commands a view sends that neither the state nor the host applies,
-/// and that the parity compares: the analysis side commands.
+/// and that the parity compares: the analysis side commands, a
+/// measurement's cancelling among them, and the stabilization compare.
 fn is_side(cmd: &AppCommand) -> bool {
     matches!(
         cmd,
@@ -91,6 +92,9 @@ fn is_side(cmd: &AppCommand) -> bool {
             | AppCommand::RegainDeflicker { .. }
             | AppCommand::AnalyzeStabilization { .. }
             | AppCommand::AnalyzeDeflicker { .. }
+            | AppCommand::CancelStabilization { .. }
+            | AppCommand::CancelDeflicker { .. }
+            | AppCommand::ToggleStabilizationCompare
     )
 }
 

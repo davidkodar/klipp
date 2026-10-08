@@ -2090,6 +2090,10 @@ pub struct AppState {
     pub use_generated_stack: bool,
     /// The node the inspector and the graph dock show, by path.
     pub selected_node_addr: Option<klipp_graph_format::path::NodePath>,
+    /// The path drag a background result closed while its row was still
+    /// held (`close_path_drag_before_edit`): the row's next tick reopens
+    /// it, so the rest of the gesture is one more step, not one per tick.
+    pub resumable_path_drag: Option<String>,
     /// The split view's compared node: its clip, and the node whose
     /// picture the "before" half stops at.
     pub split_compare_node: Option<(ClipId, klipp_graph_format::path::NodePath)>,
@@ -4146,6 +4150,7 @@ impl Default for AppState {
             before_after_active: false,
             stabilization_compare_active: false,
             use_generated_stack: false,
+            resumable_path_drag: None,
             selected_node_addr: None,
             split_compare_node: None,
             graph_dock_open: false,

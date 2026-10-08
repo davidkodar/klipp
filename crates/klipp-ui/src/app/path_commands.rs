@@ -125,6 +125,13 @@ impl crate::state::AppState {
     /// one, else whether a picture changed (the engine wants the
     /// sequence). A refusal is said in a toast and changes nothing.
     pub(crate) fn path_command(&mut self, cmd: &AppCommand) -> Option<bool> {
+        // A tick of a row whose drag an edit closed under it: the rest of
+        // the gesture is one drag again.
+        if let AppCommand::SetParamAt { addr, key, .. } = cmd {
+            if self.resumable_path_drag.as_deref() == Some(drag_key(addr, key).as_str()) && !self.active_history().is_any_drag_in_progress() {
+                let _ = self.begin_param_edit_at(addr, key);
+            }
+        }
         let result = match cmd {
             AppCommand::SetNodePositionAt { position, .. } if !position.0.is_finite() || !position.1.is_finite() => Err("Node positions must be finite".into()),
             AppCommand::BeginNodeLayoutEdit { root } => self.begin_node_layout_edit(*root).map(|()| false),
@@ -199,10 +206,14 @@ impl crate::state::AppState {
     /// ops, edit plans, and the app's own whole edits). Such an edit is
     /// never part of a path drag, whose steps are written live, so any
     /// open one is closed, as its own step, before the edit is applied.
+    ///
+    /// The row may still be held: its next tick reopens the drag
+    /// (`resumable_path_drag`), so the gesture is two steps, the part
+    /// before the edit and the part after, never one per tick.
     pub(crate) fn close_path_drag_before_edit(&mut self) {
-        if self.active_history().pending_drag_key().is_some_and(|k| k.starts_with(PATH_DRAG)) {
-            self.close_open_drag();
-        }
+        let Some(open) = self.active_history().pending_drag_key().filter(|k| k.starts_with(PATH_DRAG)).map(str::to_owned) else { return };
+        self.close_open_drag();
+        self.resumable_path_drag = Some(open);
     }
 
     /// The dispatch boundary every command passes (M3 step 2): an open path
@@ -309,6 +320,7 @@ impl crate::state::AppState {
     }
 
     fn begin_param_edit_at(&mut self, addr: &NodePath, key: &ParamKey) -> Result<(), String> {
+        self.resumable_path_drag = None;
         if self.active_history().is_any_drag_in_progress() {
             self.close_open_drag();
         }
@@ -326,6 +338,9 @@ impl crate::state::AppState {
     }
 
     fn end_param_edit_at(&mut self, addr: &NodePath, key: &ParamKey) {
+        if self.resumable_path_drag.as_deref() == Some(drag_key(addr, key).as_str()) {
+            self.resumable_path_drag = None;
+        }
         if !self.active_history().is_dragging(&drag_key(addr, key)) {
             return;
         }
@@ -337,6 +352,9 @@ impl crate::state::AppState {
     /// Take the open drag of `(addr, key)` back: the clip's picture as the
     /// drag found it, and no history entry. Whether a picture changed.
     fn abandon_param_edit_at(&mut self, addr: &NodePath, key: &ParamKey) -> bool {
+        if self.resumable_path_drag.as_deref() == Some(drag_key(addr, key).as_str()) {
+            self.resumable_path_drag = None;
+        }
         if !self.active_history().is_dragging(&drag_key(addr, key)) {
             return false;
         }
@@ -1583,6 +1601,43 @@ mod tests {
         step(&mut s, false);
         step(&mut s, false);
         assert_eq!((picture(&s, c.id), audio(&s)), (picture1, audio1), "redo puts both back");
+    }
+
+    /// A drag a result closes while its row is still held (#1338) goes on
+    /// as one more drag: the rest of its ticks are one step, not one each,
+    /// and each half undoes exactly.
+    #[test]
+    fn a_drag_held_past_a_result_is_two_steps() {
+        let c = fixture(&[E::GaussianBlur { radius: 3.0 }]);
+        let ids = effects(&with(std::slice::from_ref(&c)), c.id);
+        let blur = at(c.id, &[ids[0]]);
+        let mut s = with(std::slice::from_ref(&c));
+        let tick = |s: &mut AppState, r: f32| run(s, AppCommand::SetParamAt { addr: blur.clone(), key: "radius".into(), value: ParamValue::Float(r) });
+        let picture0 = picture(&s, c.id);
+        s.path_command(&AppCommand::BeginParamEditAt { addr: blur.clone(), key: "radius".into() });
+        tick(&mut s, 5.0);
+        s.close_path_drag_before_edit();
+        let picture1 = picture(&s, c.id);
+        for r in [6.0, 7.0, 8.0] {
+            tick(&mut s, r);
+        }
+        let picture2 = picture(&s, c.id);
+        s.path_command(&AppCommand::EndParamEditAt { addr: blur.clone(), key: "radius".into() });
+        assert_eq!(picture(&s, c.id), picture2, "the release keeps the last tick");
+        assert_eq!(s.active_history().undo_count(), 2, "before the result and after it, two steps");
+        assert!(s.resumable_path_drag.is_none(), "the release forgets the drag");
+        undo(&mut s);
+        assert_eq!(picture(&s, c.id), picture1, "undo takes back the part after the result");
+        undo(&mut s);
+        assert_eq!(picture(&s, c.id), picture0, "then the part before");
+        // Released with no tick after the result: one step, nothing left.
+        let mut s = with(std::slice::from_ref(&c));
+        s.path_command(&AppCommand::BeginParamEditAt { addr: blur.clone(), key: "radius".into() });
+        tick(&mut s, 5.0);
+        s.close_path_drag_before_edit();
+        s.path_command(&AppCommand::EndParamEditAt { addr: blur.clone(), key: "radius".into() });
+        assert_eq!(s.active_history().undo_count(), 1);
+        assert!(s.resumable_path_drag.is_none());
     }
 
     /// An effect's keys by path and by index: adding one (`AddKeyAt`,
