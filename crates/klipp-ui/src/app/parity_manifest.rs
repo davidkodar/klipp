@@ -12,6 +12,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use klipp_effects::registry::presentation::Presentation;
 use klipp_effects::registry::{ParamDesc, PortParamDesc};
 
+mod rules;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 pub(super) enum Surface {
     EffectsStack,
@@ -22,6 +24,7 @@ pub(super) enum Surface {
     GradeBottomTools,
     NestedGrade,
     NonClipGrade,
+    CurveEditor,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
@@ -72,6 +75,15 @@ pub(super) enum Interaction {
     AutoWhiteBalance,
     Eyedropper,
     ColourMatch,
+    SelectEncoding,
+    AddMask,
+    EditMask,
+    RemoveMask,
+    AddLayer,
+    EditLayer,
+    RemoveLayer,
+    CapturePlate,
+    CaptureReference,
     AddKey,
     RemoveKey,
     EditKey,
@@ -222,6 +234,19 @@ pub(super) fn catalog() -> Vec<CatalogEntry> {
             ty.type_presentation().extra_ui,
         );
     }
+    // Whole-node tools have no ordinary parameter row or extra_ui entry.
+    for (type_id, id) in [
+        ("klipp.grade.corrector", "white_balance"),
+        ("klipp.grade.qualifier", "qualifier_picker"),
+        ("klipp.grade.color_match", "colour_match"),
+    ] {
+        out.push(CatalogEntry {
+            type_id,
+            parameter: format!("@workflow/{id}"),
+            grade: true,
+            value: CatalogValue::Workflow(id),
+        });
+    }
     out
 }
 
@@ -232,6 +257,8 @@ pub(super) fn catalog() -> Vec<CatalogEntry> {
 pub(super) struct Manifest {
     pub required: BTreeSet<CoverageKey>,
     pub exclusions: BTreeMap<(String, String), String>,
+    pub excluded_keys: BTreeMap<CoverageKey, String>,
+    registration_failures: Vec<String>,
 }
 
 impl Manifest {
@@ -239,13 +266,134 @@ impl Manifest {
         self.required.insert(key);
     }
 
+    /// Families choose concrete fixtures, not how little behavior counts
+    /// as coverage. The central rules expand their interaction obligations.
+    pub fn require_fixture(&mut self, entry: &CatalogEntry, surface: Surface, variant: &str) {
+        let interactions = match rules::interactions(entry, surface) {
+            Ok(interactions) => interactions,
+            Err(error) => {
+                self.registration_failures.push(format!(
+                    "{} / {} / {surface:?} / {variant}: {error}",
+                    entry.type_id, entry.parameter
+                ));
+                return;
+            }
+        };
+        for interaction in interactions {
+            let key = CoverageKey::new(
+                entry.type_id,
+                &entry.parameter,
+                surface,
+                variant,
+                interaction,
+            );
+            if let Some(reason) =
+                rules::key_exclusion(entry, surface).filter(|_| rules::is_key(interaction))
+            {
+                self.exclude_key(key, reason);
+            } else {
+                self.require(key);
+            }
+        }
+    }
+
     pub fn exclude(&mut self, type_id: &str, parameter: &str, reason: &str) {
         assert!(
-            !reason.trim().is_empty(),
-            "an exclusion must name its decision and reason"
+            cited(reason),
+            "an exclusion must cite an issue or m3-decisions entry and its reason"
         );
         self.exclusions
             .insert((type_id.into(), parameter.into()), reason.into());
+    }
+
+    /// Exempt a deliberate absent affordance without hiding the rest of
+    /// the parameter. The required key remains in the manifest for audit.
+    pub fn exclude_key(&mut self, key: CoverageKey, reason: &str) {
+        assert!(
+            cited(reason),
+            "an exclusion must cite an issue or m3-decisions entry and its reason"
+        );
+        self.required.insert(key.clone());
+        self.excluded_keys.insert(key, reason.into());
+    }
+
+    pub fn exclusion_lines(&self) -> Vec<String> {
+        self.exclusions
+            .iter()
+            .map(|((ty, param), reason)| format!("excluded: {ty} / {param}: {reason}"))
+            .chain(
+                self.excluded_keys
+                    .iter()
+                    .map(|(key, reason)| format!("excluded: {key:?}: {reason}")),
+            )
+            .collect()
+    }
+
+    fn rule_errors(&self, entries: &[CatalogEntry]) -> Vec<String> {
+        let catalog: BTreeMap<_, _> = entries
+            .iter()
+            .map(|e| ((e.type_id, e.parameter.as_str()), e))
+            .collect();
+        let mut errors = self.registration_failures.clone();
+        let mut contexts = BTreeSet::new();
+        for key in &self.required {
+            let Some(entry) = catalog.get(&(key.type_id.as_str(), key.parameter.as_str())) else {
+                errors.push(format!("required key outside catalog: {key:?}"));
+                continue;
+            };
+            if !contexts.insert((
+                key.type_id.as_str(),
+                key.parameter.as_str(),
+                key.surface,
+                key.variant.as_str(),
+            )) {
+                continue;
+            }
+            match rules::interactions(entry, key.surface) {
+                Ok(interactions) => {
+                    for interaction in interactions {
+                        let required = CoverageKey::new(
+                            entry.type_id,
+                            &entry.parameter,
+                            key.surface,
+                            &key.variant,
+                            interaction,
+                        );
+                        if !self.required.contains(&required) {
+                            errors.push(format!("missing obligation: {required:?}"));
+                        }
+                    }
+                }
+                Err(error) => errors.push(error),
+            }
+        }
+        for ((ty, parameter), reason) in &self.exclusions {
+            if !catalog.contains_key(&(ty.as_str(), parameter.as_str())) {
+                errors.push(format!("stale exclusion: {ty} / {parameter}"));
+            }
+            if !cited(reason) {
+                errors.push(format!("uncited exclusion: {ty} / {parameter}"));
+            }
+            if self
+                .required
+                .iter()
+                .any(|k| k.type_id == *ty && k.parameter == *parameter)
+            {
+                errors.push(format!("both required and excluded: {ty} / {parameter}"));
+            }
+        }
+        for (key, reason) in &self.excluded_keys {
+            if !self.required.contains(key) {
+                errors.push(format!("excluded key was not required: {key:?}"));
+            }
+            if !catalog.contains_key(&(key.type_id.as_str(), key.parameter.as_str())) {
+                errors.push(format!("stale excluded key: {key:?}"));
+            }
+            if !cited(reason) {
+                errors.push(format!("uncited exclusion: {key:?}"));
+            }
+        }
+        errors
     }
 
     /// A new catalog parameter must be explicitly classified even before
@@ -317,6 +465,7 @@ impl Report {
 
     pub fn complete(&self, manifest: &Manifest, entries: &[CatalogEntry]) -> Result<(), String> {
         let mut errors = self.failures.clone();
+        errors.extend(manifest.rule_errors(entries));
         errors.extend(
             manifest
                 .unclassified(entries)
@@ -327,6 +476,7 @@ impl Report {
             manifest
                 .required
                 .difference(&self.passed)
+                .filter(|key| !manifest.excluded_keys.contains_key(*key))
                 .map(|key| format!("missing: {key:?}")),
         );
         errors.extend(
@@ -334,12 +484,36 @@ impl Report {
                 .difference(&manifest.required)
                 .map(|key| format!("unexpected: {key:?}")),
         );
+        errors.extend(
+            self.passed
+                .iter()
+                .filter(|key| manifest.excluded_keys.contains_key(*key))
+                .map(|key| format!("excluded case counted as passed: {key:?}")),
+        );
+        let exclusions = manifest.exclusion_lines();
+        for line in &exclusions {
+            eprintln!("{line}");
+        }
         if errors.is_empty() {
             Ok(())
         } else {
+            errors.extend(exclusions);
             Err(errors.join("\n"))
         }
     }
+}
+
+fn cited(reason: &str) -> bool {
+    let issue = reason
+        .split('#')
+        .skip(1)
+        .any(|tail| tail.starts_with(|c: char| c.is_ascii_digit()));
+    let decision = reason.contains("m3-decisions")
+        && reason
+            .split("IC")
+            .skip(1)
+            .any(|tail| tail.starts_with(|c: char| c.is_ascii_digit()));
+    (issue || decision) && reason.split_whitespace().count() > 1
 }
 
 fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
@@ -362,6 +536,191 @@ mod tests {
             "sample",
             Interaction::Drag,
         )
+    }
+
+    fn slider() -> CatalogEntry {
+        let mut entry = catalog()
+            .into_iter()
+            .find(|e| e.type_id == "klipp.fx.gaussian_blur" && e.parameter == "radius")
+            .unwrap();
+        if let CatalogValue::Parameter { presentation, .. } = &mut entry.value {
+            presentation.widget = klipp_effects::registry::presentation::Widget::Slider;
+        }
+        entry
+    }
+
+    #[test]
+    fn opening_a_slider_does_not_satisfy_its_interaction_obligations() {
+        let entry = slider();
+        let mut manifest = Manifest::default();
+        let opened = CoverageKey {
+            interaction: Interaction::OpenWithoutWrite,
+            ..key("radius")
+        };
+        manifest.require(opened.clone());
+        let mut report = Report::default();
+        report.case("only opened", [opened], || Ok(()));
+        let errors = report
+            .complete(&manifest, std::slice::from_ref(&entry))
+            .unwrap_err();
+        for missing in [
+            "TypeNumber",
+            "Drag",
+            "CancelDrag",
+            "Reset",
+            "AddKey",
+            "EditKey",
+            "RemoveKey",
+            "UndoRedo",
+            "Pixels",
+        ] {
+            assert!(errors.contains(missing), "missing {missing}: {errors}");
+        }
+        manifest.require_fixture(&entry, Surface::EffectsStack, "sample");
+        assert!(
+            report
+                .complete(&manifest, std::slice::from_ref(&entry))
+                .unwrap_err()
+                .contains("missing:"),
+            "registering requirements earns no evidence"
+        );
+        report.case(
+            "assertions completed",
+            manifest.required.iter().cloned(),
+            || Ok(()),
+        );
+        assert!(report.complete(&manifest, &[entry]).is_ok());
+    }
+
+    #[test]
+    fn every_catalog_editor_has_a_central_rule_and_new_specialists_fail_closed() {
+        for entry in catalog() {
+            rules::interactions(&entry, Surface::EffectsStack)
+                .unwrap_or_else(|why| panic!("{} / {}: {why}", entry.type_id, entry.parameter));
+        }
+        let mut unknown = slider();
+        unknown.value = CatalogValue::Workflow("new_editor");
+        assert!(rules::interactions(&unknown, Surface::EffectsStack)
+            .unwrap_err()
+            .contains("unclassified specialist"));
+        let mut manifest = Manifest::default();
+        manifest.require_fixture(&unknown, Surface::EffectsStack, "new");
+        manifest.require_fixture(&slider(), Surface::EffectsStack, "later");
+        assert!(
+            !manifest.required.is_empty(),
+            "an unknown editor cannot stop later registration"
+        );
+        assert!(Report::default()
+            .complete(&manifest, &[unknown])
+            .unwrap_err()
+            .contains("unclassified specialist"));
+    }
+
+    #[test]
+    fn an_exclusion_is_cited_visible_and_never_earned_coverage() {
+        let entry = slider();
+        let mut manifest = Manifest::default();
+        manifest.require_fixture(&entry, Surface::EffectsStack, "sample");
+        let excluded = CoverageKey {
+            interaction: Interaction::CancelDrag,
+            ..key("radius")
+        };
+        manifest.exclude_key(
+            excluded.clone(),
+            "#997: synthetic exception for this accounting test",
+        );
+        let mut report = Report::default();
+        report.case(
+            "remaining assertions",
+            manifest
+                .required
+                .iter()
+                .filter(|k| **k != excluded)
+                .cloned(),
+            || Ok(()),
+        );
+        assert!(report
+            .complete(&manifest, std::slice::from_ref(&entry))
+            .is_ok());
+        assert!(manifest.exclusion_lines()[0].contains("#997"));
+        assert!(!report.passed.contains(&excluded));
+        report.case("wrongly credited", [excluded], || Ok(()));
+        let error = report.complete(&manifest, &[entry]).unwrap_err();
+        assert!(error.contains("excluded case counted as passed"));
+        assert!(error.contains("#997: synthetic exception"));
+        assert!(!cited("not supported yet"));
+        assert!(!cited("#997"), "a reference alone is not a reason");
+        assert!(cited("m3-decisions IC13: explicit undo difference"));
+    }
+
+    #[test]
+    fn removed_catalog_entries_cannot_be_required_or_excluded_silently() {
+        let mut manifest = Manifest::default();
+        manifest.require(key("removed"));
+        manifest.exclude("removed.type", "gone", "#997: fixture removed");
+        let mut report = Report::default();
+        report.case("obsolete", [key("removed")], || Ok(()));
+        let errors = report.complete(&manifest, &[]).unwrap_err();
+        assert!(errors.contains("required key outside catalog"));
+        assert!(errors.contains("stale exclusion"));
+        assert!(errors.contains("#997: fixture removed"));
+    }
+
+    #[test]
+    fn reviewed_key_exclusions_are_narrow_and_leave_curve_editor_keys_required() {
+        use klipp_effects::registry::presentation::Widget;
+        let mut excluded = 0;
+        let mut wheel_tracks = 0;
+        for entry in catalog() {
+            let mut manifest = Manifest::default();
+            manifest.require_fixture(&entry, Surface::GradePerNode, "sample");
+            for (key, reason) in &manifest.excluded_keys {
+                assert!(rules::is_key(key.interaction), "non-key exclusion: {key:?}");
+                assert!(
+                    matches!(entry.value, CatalogValue::Parameter { presentation, .. }
+                    if matches!(presentation.widget, Widget::Toggle | Widget::Combo | Widget::WheelPart(_))),
+                    "other widget excluded: {key:?}"
+                );
+                assert!(reason.contains("#1318"));
+                excluded += 1;
+            }
+            assert!(!manifest
+                .excluded_keys
+                .keys()
+                .any(|k| k.interaction == Interaction::Pixels));
+            if matches!(entry.value, CatalogValue::Parameter { desc, presentation }
+                if desc.keyframable && matches!(presentation.widget, Widget::WheelPart(_)))
+            {
+                let mut curves = Manifest::default();
+                curves.require_fixture(&entry, Surface::CurveEditor, "wheel-track");
+                assert!(curves.excluded_keys.is_empty());
+                for action in [
+                    Interaction::AddKey,
+                    Interaction::EditKey,
+                    Interaction::RemoveKey,
+                ] {
+                    assert!(curves.required.contains(&CoverageKey::new(
+                        entry.type_id,
+                        &entry.parameter,
+                        Surface::CurveEditor,
+                        "wheel-track",
+                        action
+                    )));
+                }
+                assert!(
+                    !curves
+                        .required
+                        .iter()
+                        .any(|k| matches!(k.interaction, Interaction::WheelDrag(_))),
+                    "the curve editor does not draw a wheel"
+                );
+                wheel_tracks += 1;
+            }
+        }
+        assert!(
+            excluded > 0 && wheel_tracks > 0,
+            "exercise both actual catalog classes"
+        );
     }
 
     #[test]
