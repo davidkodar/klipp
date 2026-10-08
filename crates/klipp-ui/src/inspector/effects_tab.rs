@@ -1111,8 +1111,9 @@ fn show_builtin_effect_params(
     let kf_tolerance = keyframe_tolerance;
 
     // ── Preset selector ──
-    let effect_key = crate::effect_presets::builtin_effect_key(effect);
-    let presets = state.preset_manager.presets_for(effect_key);
+    // Presets by the effect's catalog type id, as the generated stack's.
+    let effect_key = crate::effect_presets::preset_type_id(effect).unwrap_or_else(|| crate::effect_presets::builtin_effect_key(effect));
+    let presets = state.preset_manager.presets_for_type(effect_key);
     if !presets.is_empty() {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Preset").size(10.0).color(theme.text_dim));

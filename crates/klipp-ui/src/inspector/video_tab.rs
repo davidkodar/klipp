@@ -442,6 +442,11 @@ fn show_clip_video(
 
                 r_op_out = Some(scrubby_param_row(ui, "Opacity", &mut opacity, 0.0..=1.0, 1.0, 0.005, 2, "", Some(opacity_ks)));
             });
+            // Behind the switch opacity is the clip's property, edited here
+            // and not on a card, so its presets are offered here (M3 step 14).
+            if by_path {
+                opacity_presets(ui, theme, state, clip_id, opacity_index.unwrap_or(0), base_opacity, cmds);
+            }
 
             let body_end_y = ui.cursor().min.y;
             ui.painter().rect_filled(
@@ -4445,4 +4450,62 @@ mod tilt_tests {
         keyframe_controls(&mut cmds, &r, &[], &ks, VideoParam::TiltX, 0.0, clip_id, 1.0, (0.0, 24), keyframe_tolerance);
         assert!(cmds.is_empty());
     }
+}
+
+/// The opacity's presets and Save, under its row: what the Opacity card
+/// offers, for the clip's opacity property. A preset is sent as the
+/// opacity entry's update, which the Video tab turns into the opacity
+/// anchor's one path edit.
+fn opacity_presets(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip_id: klipp_core::ClipId, index: usize, current: f32, cmds: &mut Vec<AppCommand>) {
+    const OPACITY: &str = "klipp.fx.opacity";
+    let presets = state.preset_manager.presets_for_type(OPACITY);
+    let id = ui.make_persistent_id(("opacity_presets", clip_id));
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Preset").size(10.0).color(theme.text_dim));
+        ui.add_space(4.0);
+        egui::ComboBox::from_id_salt(id.with("combo"))
+            .selected_text("Select preset...")
+            .width((ui.available_width() - 80.0).max(60.0))
+            .show_ui(ui, |ui| {
+                let (builtins, user): (Vec<&crate::effect_presets::EffectPreset>, Vec<&crate::effect_presets::EffectPreset>) = presets.iter().copied().partition(|p| p.is_builtin);
+                for (i, preset) in builtins.iter().chain(user.iter()).enumerate() {
+                    if i == builtins.len() && !builtins.is_empty() {
+                        ui.separator();
+                    }
+                    ui.horizontal(|ui| {
+                        let r = ui.selectable_label(false, &preset.name);
+                        let r = if preset.description.is_empty() { r } else { r.on_hover_text(&preset.description) };
+                        if r.clicked() {
+                            if let Some(effect) = preset.builtin.clone() {
+                                cmds.push(AppCommand::UpdateBuiltinEffect { clip_id, index, effect });
+                            }
+                        }
+                        if !preset.is_builtin && ui.small_button("\u{00d7}").on_hover_text("Delete preset").clicked() {
+                            cmds.push(AppCommand::DeleteBuiltinEffectPreset { effect_key: preset.effect_key.clone(), name: preset.name.clone() });
+                        }
+                    });
+                }
+            });
+        let popup = id.with("save");
+        let button = ui.small_button("Save...");
+        if button.clicked() {
+            ui.memory_mut(|m| m.toggle_popup(popup));
+        }
+        egui::popup_below_widget(ui, popup, &button, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+            ui.set_min_width(200.0);
+            ui.label(egui::RichText::new("Save Preset").size(11.0).strong());
+            let buffer = id.with("name");
+            let mut name: String = ui.data_mut(|d| d.get_temp(buffer).unwrap_or_default());
+            ui.horizontal(|ui| {
+                ui.label("Name:");
+                ui.text_edit_singleline(&mut name);
+            });
+            ui.data_mut(|d| d.insert_temp(buffer, name.clone()));
+            if ui.add_enabled(!name.trim().is_empty(), egui::Button::new("Save")).clicked() {
+                cmds.push(AppCommand::SaveBuiltinEffectPreset { name: name.trim().to_owned(), description: String::new(), effect_key: OPACITY.to_owned(), effect: BuiltinEffect::Opacity { value: current } });
+                ui.data_mut(|d| d.remove::<String>(buffer));
+                ui.memory_mut(|m| m.close_popup());
+            }
+        });
+    });
 }

@@ -47,6 +47,16 @@ pub struct EffectEntry {
 }
 
 impl EffectEntry {
+    /// A built-in entry's catalog type id (`"klipp.fx.bloom"`), its
+    /// identity: its presets and what an add puts in a clip are found by
+    /// it. `None` for a look, a plug-in or an audio effect.
+    pub fn type_id(&self) -> Option<&'static str> {
+        match &self.source {
+            EffectSource::Builtin(effect) => crate::effect_presets::preset_type_id(effect),
+            _ => None,
+        }
+    }
+
     /// Whether this effect has a GPU implementation that runs on the
     /// video preview path. Drives the on-thumbnail GPU/CPU badge and the
     /// "GPU only" filter pill.

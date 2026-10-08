@@ -555,7 +555,7 @@ pub fn show(
                                 } else {
                                     push_recent(recent_effects, &fx.name);
                                     let source = fx.source.clone();
-                                    cmds.extend(crate::effect_targets::commands(&targets, |clip_id| effect_commands(&source, clip_id)));
+                                    cmds.extend(crate::effect_targets::commands(&targets, |clip_id| effect_commands_in(state, &source, clip_id)));
                                     state.toast.show(crate::effect_targets::said(&fx.name, &targets));
                                 }
                             }
@@ -1939,6 +1939,19 @@ fn paint_effect_preview(
             painter.rect_filled(rect, 0.0, dim);
         }
     }
+}
+
+/// The commands that put `source` on `clip_id`, as [`effect_commands`];
+/// behind the switch a built-in effect is added by path, after the clip's
+/// stack (M3 step 14), with the entry's own values.
+fn effect_commands_in(state: &AppState, source: &EffectSource, clip_id: klipp_core::ClipId) -> Vec<AppCommand> {
+    if let (true, EffectSource::Builtin(effect)) = (state.use_generated_stack, source) {
+        let clip = state.sequence().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id);
+        if let Some(cmd) = clip.and_then(|c| crate::inspector::stack_view::add_effect_command(state, c, effect)) {
+            return vec![cmd];
+        }
+    }
+    effect_commands(source, clip_id)
 }
 
 /// The commands that put `source` on `clip_id`: a look's every effect, a

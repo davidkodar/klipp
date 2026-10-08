@@ -1471,6 +1471,28 @@ mod tests {
         }
     }
 
+    /// An opacity preset picked on the Video tab of a clip with no
+    /// Opacity effect and another effect (a Blur) first in its list: the
+    /// tab sends the opacity entry's update at index 0 (its fallback behind
+    /// the switch), and its by-path translation sets the clip's opacity
+    /// anchor, never that index's effect. The Blur is unchanged, the opacity
+    /// takes the preset's value, and it is one undo step (M3 step 14).
+    #[test]
+    fn an_opacity_preset_without_an_opacity_effect_leaves_the_first_effect_alone() {
+        let c = fixture(&[E::GaussianBlur { radius: 3.0 }]);
+        let mut s = with(std::slice::from_ref(&c));
+        let blur = clip(&s, c.id).builtin_effects()[0].clone();
+        let sent = vec![AppCommand::UpdateBuiltinEffect { clip_id: c.id, index: 0, effect: E::Opacity { value: 0.4 } }];
+        let translated = crate::inspector::placement_by_path::by_path(sent, clip(&s, c.id));
+        assert!(translated.iter().all(|cmd| !matches!(cmd, AppCommand::UpdateBuiltinEffect { .. })), "by path, never the list's index: {translated:?}");
+        for cmd in &translated {
+            run(&mut s, cmd.clone());
+        }
+        assert_eq!(clip(&s, c.id).builtin_effects()[0], blur, "the Blur at index 0 is unchanged");
+        assert!((crate::inspector::placement_by_path::opacity(clip(&s, c.id)) - 0.4).abs() < 1e-6, "the opacity takes the preset");
+        assert_eq!(s.active_history().undo_count(), 1, "one undo step");
+    }
+
     /// An effect's keys by path and by index: adding one (`AddKeyAt`,
     /// `AddEffectKeyframe`), moving it and setting its interpolation, and
     /// removing it give the same picture each time.

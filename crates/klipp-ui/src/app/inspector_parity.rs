@@ -449,3 +449,85 @@ fn card_edits_are_the_same_through_both_views() {
     assert!(differ.is_empty(), "{} differences in {compared} runs:\n{}", differ.len(), differ.join("\n"));
     assert!(compared > 150, "{compared} runs");
 }
+
+/// S7 (M3 step 14): every built-in preset, picked from the card's Preset
+/// menu in each view (the old card's by its index, the generated card's by
+/// its path; a clip property's, Opacity's, from its row in the Video tab):
+/// the same picture, the same undo depth.
+#[test]
+fn a_preset_picked_from_the_card_is_the_same_through_both_views() {
+    let presets = crate::effect_presets::PresetManager::with_user_dir(std::path::PathBuf::from("/nonexistent/klipp-presets"));
+    let mut differ = Vec::new();
+    let mut compared = 0;
+    for t in klipp_effects::registry::effect_types() {
+        let builtins: Vec<_> = presets.presets_for_type(t.desc.id).into_iter().filter(|p| p.is_builtin).collect();
+        if builtins.is_empty() {
+            continue;
+        }
+        for preset in builtins {
+            let clip = fixture(&(t.sample)());
+            let (mut old, mut new) = (Run::new(clip.clone(), false), Run::new(clip, true));
+            new.property = PROPERTIES.contains(&t.desc.id);
+            let (o, n) = (
+                old.click_text("", "Select preset...") && old.click_menu_item(&preset.name),
+                new.click_text("", "Select preset...") && new.click_menu_item(&preset.name),
+            );
+            if !(o && n) {
+                differ.push(format!("{} {:?}: picked old {o}, new {n}", t.desc.id, preset.name));
+                continue;
+            }
+            if old.clip().picture_v2().unwrap() != new.clip().picture_v2().unwrap() {
+                differ.push(format!("{} {:?}: the pictures differ: old {:?}, new {:?}", t.desc.id, preset.name, old.clip().builtin_effects(), new.clip().builtin_effects()));
+            }
+            let (uo, un) = (old.state.active_history().undo_count(), new.state.active_history().undo_count());
+            if (uo, un) != (1, 1) {
+                differ.push(format!("{} {:?}: undo depth old {uo}, new {un}", t.desc.id, preset.name));
+            }
+            if !old.unapplied.is_empty() || !new.unapplied.is_empty() {
+                differ.push(format!("{} {:?}: unapplied old {:?}, new {:?}", t.desc.id, preset.name, old.unapplied, new.unapplied));
+            }
+            compared += 1;
+        }
+    }
+    assert!(differ.is_empty(), "{} differences in {compared} presets:\n{}", differ.len(), differ.join("\n"));
+    assert_eq!(compared, 135, "every built-in preset compared");
+}
+
+/// M3 step 14: every built-in entry of the effects browser is a catalog
+/// type, and adding it behind the switch (by path, after the clip's stack)
+/// leaves the clip the same effects, in the same order and with the same
+/// values (the entry's own, not the catalog's sample), as adding it to the
+/// effect list does.
+#[test]
+fn a_browser_add_is_the_same_by_path() {
+    let registry = crate::browser::effect_registry::EffectRegistry::new();
+    let mut differ = Vec::new();
+    let mut compared = 0;
+    for entry in &registry.effects {
+        let crate::browser::effect_registry::EffectSource::Builtin(effect) = &entry.source else { continue };
+        if entry.type_id().is_none() {
+            differ.push(format!("{}: no catalog type", entry.name));
+            continue;
+        }
+        let clip = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
+        let (mut old, mut new) = (Run::new(clip.clone(), false), Run::new(clip, true));
+        let id = old.clip;
+        old.apply(AppCommand::AddBuiltinEffect { clip_id: id, effect: effect.clone() });
+        let Some(by_path) = crate::inspector::stack_view::add_effect_command(&new.state, new.clip(), effect) else {
+            differ.push(format!("{}: no add by path", entry.name));
+            continue;
+        };
+        new.apply(by_path);
+        let list = |r: &Run| serde_json::to_value(r.clip().builtin_effects()).unwrap();
+        if list(&old) != list(&new) {
+            differ.push(format!("{}: old {}, new {}", entry.name, list(&old), list(&new)));
+        }
+        if !old.unapplied.is_empty() || !new.unapplied.is_empty() {
+            differ.push(format!("{}: unapplied old {:?}, new {:?}", entry.name, old.unapplied, new.unapplied));
+        }
+        compared += 1;
+    }
+    assert!(differ.is_empty(), "{} differences in {compared} entries:\n{}", differ.len(), differ.join("\n"));
+    assert!(compared > 40, "only {compared} entries compared");
+}
+
