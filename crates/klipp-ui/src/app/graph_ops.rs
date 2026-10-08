@@ -11,6 +11,8 @@ use klipp_graph_lift::ops::GraphOp;
 impl KlippApp {
     pub(super) fn handle_graph_ops_commands(&mut self, cmd: &AppCommand) -> bool {
         let AppCommand::GraphOps { ops, label } = cmd else { return false };
+        // A path drag left open is its own step, not this batch's.
+        self.state.close_path_drag();
         if let Err((at, why)) = self.apply_graph_ops(ops, label) {
             tracing::warn!(?at, %why, "graph ops refused");
             let location = at.map(|i| format!("op {i}")).unwrap_or_else(|| "batch".into());

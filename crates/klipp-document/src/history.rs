@@ -1128,6 +1128,11 @@ impl CommandHistory {
         self.pending_coalesce_key.as_deref() == Some(key)
     }
 
+    /// The key the open drag was begun under, if one is open.
+    pub fn pending_drag_key(&self) -> Option<&str> {
+        self.pending_coalesce_key.as_deref()
+    }
+
     /// Whether an open drag is editing built-in effect `index` on
     /// `clip_id`, whatever key it was opened under. The viewer's
     /// transform gizmo and the inspector's transform rows each opened

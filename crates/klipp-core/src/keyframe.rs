@@ -31,6 +31,39 @@ pub enum Interpolation {
     Bezier,
 }
 
+/// Set the interpolation of the key at `index` as the keyframe editor does:
+/// that key and the one before it take `interpolation` (the segment into
+/// the key and the one out of it), and for Bezier each of the two gets
+/// tangents a third of the way to its neighbours where it has none yet.
+/// An index past the end changes only the key before it, as before.
+pub fn set_interpolation_at(keyframes: &mut [Keyframe], index: usize, interpolation: Interpolation) {
+    let len = keyframes.len();
+    if index < len {
+        keyframes[index].interpolation = interpolation;
+    }
+    if index > 0 && index - 1 < len {
+        keyframes[index - 1].interpolation = interpolation;
+    }
+    if interpolation == Interpolation::Bezier {
+        for idx in [index.saturating_sub(1), index] {
+            if idx >= len {
+                continue;
+            }
+            let prev_t = if idx > 0 { keyframes[idx - 1].time_secs } else { keyframes[idx].time_secs - 1.0 };
+            let next_t = if idx + 1 < len { keyframes[idx + 1].time_secs } else { keyframes[idx].time_secs + 1.0 };
+            let span_out = (next_t - keyframes[idx].time_secs).abs() * 0.33;
+            let span_in = (keyframes[idx].time_secs - prev_t).abs() * 0.33;
+            let kf = &mut keyframes[idx];
+            if kf.tangent_out == (0.0, 0.0) || kf.tangent_out.0.abs() < 0.5 {
+                kf.tangent_out = (span_out, 0.0);
+            }
+            if kf.tangent_in == (0.0, 0.0) || kf.tangent_in.0.abs() < 0.5 {
+                kf.tangent_in = (-span_in, 0.0);
+            }
+        }
+    }
+}
+
 /// A single keyframe: a value at a specific time.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Keyframe {

@@ -13,10 +13,13 @@ use klipp_graph_format::path::{NodePath, Root};
 use klipp_graph_format::{Node, ParamKey};
 use klipp_graph_lift::ops::GraphOp;
 
+/// What every path drag's history key starts with.
+const PATH_DRAG: &str = "at:";
+
 /// The history key a path drag is held under.
 fn drag_key(addr: &NodePath, key: &ParamKey) -> String {
     let ids: Vec<String> = addr.nodes.iter().map(|n| n.to_string()).collect();
-    format!("at:{:?}:{}:{}", addr.root, ids.join("/"), key)
+    format!("{PATH_DRAG}{:?}:{}:{}", addr.root, ids.join("/"), key)
 }
 
 /// The graph ops a path-addressed edit is, and its undo label; `None` for
@@ -90,7 +93,7 @@ impl crate::state::AppState {
                 .and_then(|ops| self.apply_path_ops(&ops, "Move Keyframe"))
                 .map(|()| true),
             AppCommand::SetInterpKeyAt { addr, key, time_secs, interpolation } => self
-                .key_edit(addr, key, *time_secs, |k| k["interpolation"] = serde_json::to_value(interpolation).unwrap_or_default())
+                .interpolation_edit(addr, key, *time_secs, *interpolation)
                 .and_then(|ops| self.apply_path_ops(&ops, "Keyframe Interpolation"))
                 .map(|()| true),
             _ => {
@@ -105,6 +108,16 @@ impl crate::state::AppState {
                 self.toast.show(why);
                 Some(false)
             }
+        }
+    }
+
+    /// Close an open path drag as its own step, before an edit by another
+    /// route records one: the old commands and `GraphOps` must neither
+    /// merge into a path drag nor be swallowed by it. A drag the old
+    /// commands opened is theirs, and left as it is.
+    pub(crate) fn close_path_drag(&mut self) {
+        if self.active_history().pending_drag_key().is_some_and(|k| k.starts_with(PATH_DRAG)) {
+            self.close_open_drag();
         }
     }
 
@@ -183,6 +196,20 @@ impl crate::state::AppState {
         let at = anim.keys.iter().position(|k| time(k).is_some_and(|t| (t - time_secs).abs() < 1e-9)).ok_or_else(|| format!("{key} has no key at {time_secs} s"))?;
         edit(&mut anim.keys[at]);
         anim.keys.sort_by(|a, b| time(a).unwrap_or(0.0).total_cmp(&time(b).unwrap_or(0.0)));
+        Ok(vec![GraphOp::SetAnim { path: addr.clone(), key: key.clone(), anim: Some(anim) }])
+    }
+
+    /// The one op that sets the interpolation at the key of `(addr, key)` at
+    /// `time_secs` as the keyframe editor sets it
+    /// ([`klipp_core::keyframe::set_interpolation_at`]): that key and the
+    /// one before it, with Bezier tangents where they have none.
+    fn interpolation_edit(&self, addr: &NodePath, key: &ParamKey, time_secs: f64, interpolation: klipp_core::Interpolation) -> Result<Vec<GraphOp>, String> {
+        let node = self.node_at(addr)?;
+        let mut anim = node.anim.get(key).cloned().ok_or_else(|| format!("{key} isn't animated"))?;
+        let mut keys: Vec<klipp_core::Keyframe> = anim.keys.iter().map(|k| serde_json::from_value(k.clone()).map_err(|e| format!("a key of {key}: {e}"))).collect::<Result<_, _>>()?;
+        let at = keys.iter().position(|k| (k.time_secs - time_secs).abs() < 1e-9).ok_or_else(|| format!("{key} has no key at {time_secs} s"))?;
+        klipp_core::keyframe::set_interpolation_at(&mut keys, at, interpolation);
+        anim.keys = keys.iter().map(|k| serde_json::to_value(k).map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
         Ok(vec![GraphOp::SetAnim { path: addr.clone(), key: key.clone(), anim: Some(anim) }])
     }
 
@@ -674,6 +701,83 @@ mod tests {
         assert_eq!(picture(&s, c.id), picture(&with(std::slice::from_ref(&c)), c.id), "removed");
         assert_eq!(s.active_history().undo_count(), 4, "one step each");
         assert_eq!(s.path_command(&AppCommand::MoveKeyAt { addr, key: "radius".into(), time_secs: 3.0, new_time_secs: 1.0, value: 1.0 }), Some(false), "no key there: refused");
+    }
+
+
+    /// Setting a key's interpolation by path is the keyframe editor's rule,
+    /// as by index: the key and the one before it change, and Bezier gives
+    /// both tangents. Two and three keys, Step and Bezier, on the middle and
+    /// the last key.
+    #[test]
+    fn interpolation_by_path_is_the_editors_rule() {
+        let c = fixture(&[E::GaussianBlur { radius: 3.0 }]);
+        let node = effects(&with(std::slice::from_ref(&c)), c.id)[0];
+        let addr = at(c.id, &[node]);
+        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        for keys in [vec![key(0.0, 2.0), key(1.0, 9.0)], vec![key(0.0, 2.0), key(1.0, 9.0), key(1.5, 4.0)]] {
+            for interpolation in [klipp_core::Interpolation::Step, klipp_core::Interpolation::Bezier] {
+                for index in 1..keys.len() {
+                    let seeded = |keys: Vec<klipp_core::Keyframe>| {
+                        let mut s = with(std::slice::from_ref(&c));
+                        let clip = s.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
+                        let id = clip.effect_id_at(0).unwrap();
+                        clip.edit_effect_keyframes_of(id, "radius", |v| *v = keys);
+                        s
+                    };
+                    let mut want = keys.clone();
+                    klipp_core::keyframe::set_interpolation_at(&mut want, index, interpolation);
+                    let mut s = seeded(keys.clone());
+                    run(&mut s, AppCommand::SetInterpKeyAt { addr: addr.clone(), key: "radius".into(), time_secs: keys[index].time_secs, interpolation });
+                    assert_eq!(picture(&s, c.id), picture(&seeded(want.clone()), c.id), "{} keys, {interpolation:?} at {index}", keys.len());
+                    // The rule itself: the key before changes too, and Bezier
+                    // gives both tangents.
+                    assert_eq!(want[index - 1].interpolation, interpolation);
+                    if interpolation == klipp_core::Interpolation::Bezier {
+                        assert_ne!(want[index].tangent_in, (0.0, 0.0));
+                        assert_ne!(want[index - 1].tangent_out, (0.0, 0.0));
+                    }
+                }
+            }
+        }
+    }
+
+
+    /// A path drag left open while an edit comes by another route (the old
+    /// `UpdateBuiltinEffect`, or a `GraphOps` batch): that route closes the
+    /// drag first, so the edit is neither swallowed as a live step of the
+    /// drag nor merged into it. Two steps, each undoing its own change.
+    #[test]
+    fn an_old_route_edit_closes_an_open_path_drag() {
+        let c = fixture(&[E::GaussianBlur { radius: 3.0 }, E::Sharpen { amount: 0.5 }]);
+        let ids = effects(&with(std::slice::from_ref(&c)), c.id);
+        let blur = at(c.id, &[ids[0]]);
+        for route in ["UpdateBuiltinEffect", "GraphOps"] {
+            let mut s = with(std::slice::from_ref(&c));
+            let original = picture(&s, c.id);
+            s.path_command(&AppCommand::BeginParamEditAt { addr: blur.clone(), key: "radius".into() });
+            run(&mut s, AppCommand::SetParamAt { addr: blur.clone(), key: "radius".into(), value: ParamValue::Float(9.0) });
+            let dragged = picture(&s, c.id);
+            // What each route's handler does first, then its edit.
+            s.close_path_drag();
+            assert!(!s.active_history().is_dragging_picture(c.id), "{route}: the old handler then records its own step");
+            match route {
+                "UpdateBuiltinEffect" => old(&mut s, c.id, EffectEdit::Update(1, &E::Sharpen { amount: 0.9 })),
+                _ => {
+                    let ops = [GraphOp::SetEnabled { path: at(c.id, &[ids[1]]), enabled: false }];
+                    let (edit, _) = graph_ops::graph_ops_edit(&s.sequences[0], &ops).unwrap();
+                    if let EditCommand::PictureEdit { clip_id, edit: e, .. } = &edit {
+                        s.set_picture(*clip_id, &e.after);
+                    }
+                    s.push_history(edit);
+                }
+            }
+            s.path_command(&AppCommand::EndParamEditAt { addr: blur.clone(), key: "radius".into() });
+            assert_eq!(s.active_history().undo_count(), 2, "{route}: the drag and the edit, two steps");
+            undo(&mut s);
+            assert_eq!(picture(&s, c.id), dragged, "{route}: undo takes back the edit alone");
+            undo(&mut s);
+            assert_eq!(picture(&s, c.id), original, "{route}: then the drag");
+        }
     }
 
 }
