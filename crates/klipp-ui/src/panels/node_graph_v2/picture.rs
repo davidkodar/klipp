@@ -490,6 +490,87 @@ mod tests {
     }
 
     #[test]
+    fn opening_selecting_panning_and_zooming_the_picture_writes_nothing() {
+        let c = clip();
+        let before = c.picture_v2().unwrap();
+        let model = PictureCanvas::new(&before.picture.graph, root(&c), None).unwrap();
+        let effect = model.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n.node) == Some("gaussian_blur")).unwrap();
+        let (id, label) = (effect.id(), effect.label.clone());
+        let ctx = egui::Context::default();
+        let mut panel = super::super::NodeGraphV2Panel::default();
+        let mut level = root(&c);
+        let (mut selected, mut set, mut time) = (None, Default::default(), 0.0);
+        let mut frame = |events| {
+            time += 0.1;
+            let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 700.0))), time: Some(time), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let commands = panel.show_picture(ui, &c, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, true).unwrap();
+                    assert!(commands.iter().all(|cmd| matches!(cmd, AppCommand::SetVisibleNodeThumbs { .. })), "{commands:?}");
+                });
+            });
+            let texts: Vec<_> = output.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)), _ => None,
+            }).collect();
+            (texts, panel.pan, panel.zoom, selected)
+        };
+        let mut texts = Vec::new();
+        for _ in 0..3 { texts = frame(Vec::new()).0; }
+        let at = texts.iter().find(|(s, _)| s == &label).unwrap().1;
+        let button = |at, button, pressed| egui::Event::PointerButton { pos: at, button, pressed, modifiers: egui::Modifiers::NONE };
+        frame(vec![egui::Event::PointerMoved(at), button(at, egui::PointerButton::Primary, true)]);
+        assert_eq!(frame(vec![button(at, egui::PointerButton::Primary, false)]).3, Some(id));
+        let at = egui::pos2(40.0, 620.0);
+        frame(vec![egui::Event::PointerMoved(at)]);
+        let pan = frame(vec![button(at, egui::PointerButton::Middle, true)]).1;
+        let moved = at + egui::vec2(60.0, 20.0);
+        assert_ne!(frame(vec![egui::Event::PointerMoved(moved)]).1, pan);
+        let zoom = frame(vec![button(moved, egui::PointerButton::Middle, false)]).2;
+        assert_ne!(frame(vec![egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, 80.0), modifiers: egui::Modifiers::NONE }]).2, zoom);
+        assert_eq!(c.picture_v2().unwrap(), before);
+    }
+
+    #[test]
+    fn moving_and_renaming_picture_nodes_keeps_rendered_pixels() {
+        struct Chart;
+        impl klipp_compose::FrameSource for Chart {
+            fn frame(&mut self, _: &Clip, _: f64, w: u32, h: u32) -> Option<klipp_compose::SourceFrame> {
+                let pixels = (0..h).flat_map(|y| (0..w).flat_map(move |x| [x as f32 / w as f32, y as f32 / h as f32, if (x / 6 + y / 6) % 2 == 0 { 0.8 } else { 0.1 }, 1.0])).collect();
+                Some(klipp_compose::SourceFrame { pixels: klipp_compose::SourcePixels::Linear(std::sync::Arc::new(pixels)), width: w, height: h, pts: None })
+            }
+        }
+        let render = |clip: &Clip| {
+            let mut seq = klipp_timeline::Sequence::new_default();
+            seq.resolution = klipp_core::Resolution { width: 96, height: 54 };
+            seq.tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(clip.clone());
+            let mut renderer = klipp_compose::Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            renderer.set_gpu_enabled(false);
+            renderer.render(&seq, klipp_core::RationalTime::from_secs_f64(1.0, 25), 96, 54, &mut Chart, Default::default())
+        };
+        let c = clip();
+        let id = c.id;
+        let before = render(&c);
+        assert!(before.chunks_exact(4).any(|p| p[0] > 0.1 && p[1] > 0.1));
+        let p = c.picture_v2().unwrap();
+        let model = PictureCanvas::new(&p.picture.graph, root(&c), None).unwrap();
+        let node = model.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n.node) == Some("gaussian_blur")).unwrap().id();
+        let mut control = c.clone();
+        control.apply_picture_ops(&[GraphOp::SetEnabled { path: model.path(node), enabled: false }]).unwrap();
+        assert!(render(&control) != before, "the source and effect must exercise the renderer");
+        let mut state = crate::state::AppState::default();
+        state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(c);
+        for command in [AppCommand::MoveNode { clip_id: id, node_id: node, delta_x: 100.0, delta_y: 50.0 }, AppCommand::RenameNode { clip_id: id, node_id: node, label: "Softness".into() }] {
+            let command = model.command(command).unwrap();
+            state.before_dispatch(&command);
+            if let AppCommand::GraphOps { ops, label } = &command { state.apply_path_ops(ops, label).unwrap(); }
+            else { assert_eq!(state.path_command(&command), Some(true), "{command:?}"); }
+            let after = render(state.sequence().all_clips().find(|c| c.id == id).unwrap());
+            assert_eq!(before.len(), after.len());
+            let error = before.iter().zip(&after).map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+            assert!(error <= 1e-6, "metadata changed a rendered channel by {error}");
+        }
+    }
+
+    #[test]
     fn delete_only_edits_the_picture_when_its_canvas_has_focus() {
         for focused in [false, true] {
             let c = clip();
@@ -510,6 +591,7 @@ mod tests {
                     cmds = panel.show_picture(ui, &c, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, focused).unwrap();
                 });
             });
+            cmds.retain(|cmd| !matches!(cmd, AppCommand::SetVisibleNodeThumbs { .. }));
             if focused { assert!(matches!(cmds.as_slice(), [AppCommand::RemoveNodeAt { addr }] if addr.node() == Some(effect)), "{cmds:?}"); }
             else { assert!(cmds.is_empty(), "{cmds:?}"); }
             assert_eq!(c.picture_v2().unwrap(), p);
@@ -539,6 +621,7 @@ mod tests {
                         cmds = panel.show_picture(ui, clip, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, true).unwrap();
                     });
                 });
+                cmds.retain(|cmd| !matches!(cmd, AppCommand::SetVisibleNodeThumbs { .. }));
                 for cmd in &cmds {
                     state.before_dispatch(cmd);
                     assert!(state.path_command(cmd).is_some(), "{cmd:?}");
