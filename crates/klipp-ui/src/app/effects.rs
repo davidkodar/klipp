@@ -338,9 +338,6 @@ impl KlippApp {
                 true
             }
             AppCommand::UpdateBuiltinEffect { clip_id, index, ref effect } => {
-                // A path drag left open is its own step, not this edit's live
-                // step (M3 step 2).
-                self.state.close_path_drag();
                 // A drag's steps record nothing; its end records the drag.
                 let drag_key = format!("{:?}:builtin:{}", clip_id, index);
                 let history = self.state.active_history();

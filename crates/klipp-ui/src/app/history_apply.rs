@@ -8,6 +8,10 @@ impl KlippApp {
         if edits.is_empty() {
             return;
         }
+        // An open path drag is its own step, closed before this edit is
+        // applied (M3 step 2): the socket's edits reach here without passing
+        // the dispatch boundary.
+        self.state.close_path_drag_before_edit();
         self.state.active_history_mut().begin_batch();
         for e in edits {
             self.apply_edit_forward(e);

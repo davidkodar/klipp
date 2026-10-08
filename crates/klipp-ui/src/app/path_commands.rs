@@ -111,12 +111,47 @@ impl crate::state::AppState {
         }
     }
 
-    /// Close an open path drag as its own step, before an edit by another
-    /// route records one: the old commands and `GraphOps` must neither
-    /// merge into a path drag nor be swallowed by it. A drag the old
-    /// commands opened is theirs, and left as it is.
-    pub(crate) fn close_path_drag(&mut self) {
+    /// Whether `cmd`, arriving while a path drag is open, closes it first:
+    /// every command but the drag's own (`BeginParamEditAt`, `SetParamAt`
+    /// and `EndParamEditAt` of its `(addr, key)`) and those that change no
+    /// picture (transport, a refresh, the dock and compare state). An edit
+    /// by any route, old or new, is then its own step, never folded into
+    /// the drag's snapshot nor taken as one of its live steps. A command
+    /// missing from the list only splits a drag into more steps; it can't
+    /// mix two edits.
+    pub(crate) fn closes_path_drag(&self, cmd: &AppCommand) -> bool {
+        let Some(open) = self.active_history().pending_drag_key().filter(|k| k.starts_with(PATH_DRAG)) else { return false };
+        match cmd {
+            AppCommand::BeginParamEditAt { addr, key } | AppCommand::SetParamAt { addr, key, .. } | AppCommand::EndParamEditAt { addr, key } => drag_key(addr, key) != open,
+            AppCommand::Play
+            | AppCommand::Pause
+            | AppCommand::Stop
+            | AppCommand::SeekTo(_)
+            | AppCommand::SeekRelative(_)
+            | AppCommand::SequenceUpdated
+            | AppCommand::RevealGraph { .. }
+            | AppCommand::SetGraphDockRoot { .. }
+            | AppCommand::SetSplitCompareNode { .. } => false,
+            _ => true,
+        }
+    }
+
+    /// Close an open path drag before an edit applied outside the dispatch
+    /// boundary (`apply_edits_as_one`: the control socket's edits and graph
+    /// ops, edit plans, and the app's own whole edits). Such an edit is
+    /// never part of a path drag, whose steps are written live, so any
+    /// open one is closed, as its own step, before the edit is applied.
+    pub(crate) fn close_path_drag_before_edit(&mut self) {
         if self.active_history().pending_drag_key().is_some_and(|k| k.starts_with(PATH_DRAG)) {
+            self.close_open_drag();
+        }
+    }
+
+    /// The dispatch boundary every command passes (M3 step 2): an open path
+    /// drag that `cmd` doesn't belong to is closed as its own step before
+    /// any handler runs.
+    pub(crate) fn before_dispatch(&mut self, cmd: &AppCommand) {
+        if self.closes_path_drag(cmd) {
             self.close_open_drag();
         }
     }
@@ -742,42 +777,75 @@ mod tests {
     }
 
 
-    /// A path drag left open while an edit comes by another route (the old
-    /// `UpdateBuiltinEffect`, or a `GraphOps` batch): that route closes the
-    /// drag first, so the edit is neither swallowed as a live step of the
-    /// drag nor merged into it. Two steps, each undoing its own change.
+    /// A path drag left open while a command of any other route arrives:
+    /// the dispatch boundary closes the drag first, so the edit is its own
+    /// step, neither taken as one of the drag's live steps nor folded into
+    /// its snapshot. Every old effect command, a keyframe edit and a
+    /// `GraphOps` batch close it; the drag's own commands and transport
+    /// don't. Then, end to end: a drag, an old toggle, the drag's end are
+    /// two steps, each undoing its own change.
     #[test]
-    fn an_old_route_edit_closes_an_open_path_drag() {
+    fn any_other_command_closes_an_open_path_drag() {
         let c = fixture(&[E::GaussianBlur { radius: 3.0 }, E::Sharpen { amount: 0.5 }]);
         let ids = effects(&with(std::slice::from_ref(&c)), c.id);
         let blur = at(c.id, &[ids[0]]);
-        for route in ["UpdateBuiltinEffect", "GraphOps"] {
-            let mut s = with(std::slice::from_ref(&c));
-            let original = picture(&s, c.id);
-            s.path_command(&AppCommand::BeginParamEditAt { addr: blur.clone(), key: "radius".into() });
-            run(&mut s, AppCommand::SetParamAt { addr: blur.clone(), key: "radius".into(), value: ParamValue::Float(9.0) });
-            let dragged = picture(&s, c.id);
-            // What each route's handler does first, then its edit.
-            s.close_path_drag();
-            assert!(!s.active_history().is_dragging_picture(c.id), "{route}: the old handler then records its own step");
-            match route {
-                "UpdateBuiltinEffect" => old(&mut s, c.id, EffectEdit::Update(1, &E::Sharpen { amount: 0.9 })),
-                _ => {
-                    let ops = [GraphOp::SetEnabled { path: at(c.id, &[ids[1]]), enabled: false }];
-                    let (edit, _) = graph_ops::graph_ops_edit(&s.sequences[0], &ops).unwrap();
-                    if let EditCommand::PictureEdit { clip_id, edit: e, .. } = &edit {
-                        s.set_picture(*clip_id, &e.after);
-                    }
-                    s.push_history(edit);
-                }
-            }
-            s.path_command(&AppCommand::EndParamEditAt { addr: blur.clone(), key: "radius".into() });
-            assert_eq!(s.active_history().undo_count(), 2, "{route}: the drag and the edit, two steps");
-            undo(&mut s);
-            assert_eq!(picture(&s, c.id), dragged, "{route}: undo takes back the edit alone");
-            undo(&mut s);
-            assert_eq!(picture(&s, c.id), original, "{route}: then the drag");
+        let mut s = with(std::slice::from_ref(&c));
+        assert!(!s.closes_path_drag(&AppCommand::ToggleBuiltinEffectEnabled { clip_id: c.id, index: 1 }), "no drag open, nothing to close");
+        s.path_command(&AppCommand::BeginParamEditAt { addr: blur.clone(), key: "radius".into() });
+        let others = [
+            AppCommand::ToggleBuiltinEffectEnabled { clip_id: c.id, index: 1 },
+            AppCommand::RemoveBuiltinEffect { clip_id: c.id, index: 1 },
+            AppCommand::ReorderBuiltinEffect { clip_id: c.id, from_index: 1, to_index: 0 },
+            AppCommand::UpdateBuiltinEffect { clip_id: c.id, index: 1, effect: E::Sharpen { amount: 0.9 } },
+            AppCommand::AddEffectKeyframe { clip_id: c.id, effect_index: 1, param_name: "amount".into(), time_secs: 0.5, value: 0.7 },
+            AppCommand::GraphOps { ops: vec![GraphOp::SetEnabled { path: at(c.id, &[ids[1]]), enabled: false }], label: "x".into() },
+            AppCommand::SetParamAt { addr: at(c.id, &[ids[1]]), key: "amount".into(), value: ParamValue::Float(0.7) },
+            AppCommand::SetParamAt { addr: blur.clone(), key: "other".into(), value: ParamValue::Float(0.7) },
+        ];
+        for cmd in &others {
+            assert!(s.closes_path_drag(cmd), "{cmd:?} closes the drag");
         }
+        for cmd in [
+            AppCommand::SetParamAt { addr: blur.clone(), key: "radius".into(), value: ParamValue::Float(5.0) },
+            AppCommand::EndParamEditAt { addr: blur.clone(), key: "radius".into() },
+            AppCommand::SeekTo(klipp_core::RationalTime::from_secs_f64(0.0, 25)),
+            AppCommand::Play,
+        ] {
+            assert!(!s.closes_path_drag(&cmd), "{cmd:?} leaves the drag open");
+        }
+        // End to end: the drag's step, then an old toggle at the boundary.
+        let original = picture(&s, c.id);
+        run(&mut s, AppCommand::SetParamAt { addr: blur.clone(), key: "radius".into(), value: ParamValue::Float(9.0) });
+        let dragged = picture(&s, c.id);
+        let toggle = AppCommand::ToggleBuiltinEffectEnabled { clip_id: c.id, index: 1 };
+        s.before_dispatch(&toggle);
+        assert!(!s.active_history().is_any_drag_in_progress(), "closed before the toggle's handler runs");
+        old(&mut s, c.id, EffectEdit::SetEnabled(1, false));
+        s.path_command(&AppCommand::EndParamEditAt { addr: blur.clone(), key: "radius".into() });
+        assert_eq!(s.active_history().undo_count(), 2, "the drag and the toggle, two steps");
+        undo(&mut s);
+        assert_eq!(picture(&s, c.id), dragged, "undo takes back the toggle alone");
+        undo(&mut s);
+        assert_eq!(picture(&s, c.id), original, "then the drag");
+        // The socket's route: a whole edit applied without passing the
+        // dispatch boundary (`apply_edits_as_one` closes the drag first).
+        let mut s = with(std::slice::from_ref(&c));
+        let original = picture(&s, c.id);
+        s.path_command(&AppCommand::BeginParamEditAt { addr: blur.clone(), key: "radius".into() });
+        run(&mut s, AppCommand::SetParamAt { addr: blur.clone(), key: "radius".into(), value: ParamValue::Float(9.0) });
+        let dragged = picture(&s, c.id);
+        s.close_path_drag_before_edit();
+        let (edit, _) = graph_ops::graph_ops_edit(&s.sequences[0], &[GraphOp::SetEnabled { path: at(c.id, &[ids[1]]), enabled: false }]).unwrap();
+        if let EditCommand::PictureEdit { clip_id, edit: e, .. } = &edit {
+            s.set_picture(*clip_id, &e.after);
+        }
+        s.push_history(edit);
+        s.path_command(&AppCommand::EndParamEditAt { addr: blur.clone(), key: "radius".into() });
+        assert_eq!(s.active_history().undo_count(), 2, "socket route: two steps");
+        undo(&mut s);
+        assert_eq!(picture(&s, c.id), dragged, "socket route: the edit undoes alone");
+        undo(&mut s);
+        assert_eq!(picture(&s, c.id), original, "socket route: then the drag");
     }
 
 }
