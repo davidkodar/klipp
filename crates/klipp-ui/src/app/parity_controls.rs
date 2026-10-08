@@ -832,3 +832,80 @@ fn a_curve_edit_after_opening_is_one_step_back_to_unset() {
     }
 }
 
+
+/// A Colour Warper sector moved on the Corrector's pages is one step in
+/// each view, and undoing it leaves the warper unset, as it was: its
+/// sector commands (`SetNodeParam`, inside the drag's gesture) carry the
+/// edit, and the gesture starts from the grade before the press (#1392).
+#[test]
+fn a_warper_move_after_opening_is_one_step_back_to_unset() {
+    let (state, clip, node) = super::grade_inspector_tests::graded(klipp_nodes::NodeKind::Corrector).unwrap();
+    let base = Grade::new(state, clip, node, true);
+    let warper = |g: &Grade| g.clip().grade().nodes.iter().find(|n| n.id == g.node).map(|n| n.params.warper_params.clone()).unwrap();
+    const SECTORS: [&str; 12] = ["R", "O", "Y", "YG", "G", "CG", "C", "CB", "B", "BM", "M", "MR"];
+    for page in [Page::Tabbed(crate::state::ColorTab::Warper), Page::Bottom(crate::state::ColorTab::Warper)] {
+        for generated in [false, true] {
+            let mut g = Grade { page, ..base.twin(generated) };
+            assert!(warper(&g).is_none(), "the fixture's warper is unset");
+            let drawn = g.drawn();
+            // The wheel's centre, among its sector labels; its points lie
+            // between the centre and each label.
+            let labels: Vec<egui::Pos2> = drawn.iter().filter(|(t, _)| SECTORS.contains(&t.as_str())).map(|(_, p)| *p).collect();
+            assert!(labels.len() >= 12, "{page:?}: the sector labels aren't drawn");
+            let centre = labels.iter().fold(egui::Vec2::ZERO, |s, p| s + p.to_vec2()) / labels.len() as f32;
+            let centre = centre.to_pos2();
+            let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            'found: for label in &labels {
+                for k in [0.2, 0.35, 0.5, 0.65, 0.8] {
+                    let at = centre + (*label - centre) * k;
+                    let dir = (*label - centre).normalized() * 6.0;
+                    g.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
+                    for i in 1..=3 {
+                        g.frame(vec![egui::Event::PointerMoved(at + dir * i as f32)]);
+                    }
+                    g.frame(vec![button(at + dir * 3.0, false)]);
+                    g.frame(vec![egui::Event::PointerGone]);
+                    if warper(&g).is_some() {
+                        break 'found;
+                    }
+                }
+            }
+            assert!(warper(&g).is_some(), "{page:?} generated {generated}: no drag moved a sector");
+            assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+            assert_eq!(g.state.active_history().undo_count(), 1, "{page:?} generated {generated}: one step");
+            g.step(false).unwrap();
+            assert!(warper(&g).is_none(), "{page:?} generated {generated}: undo leaves the warper unset");
+        }
+    }
+}
+
+/// Opening any grade node the per-node layout draws writes nothing, in
+/// either view: the picture as it was before the first draw, no step,
+/// nothing sent. The old panel draws in place over the clip's grade, so a
+/// default it stores on draw (a mask stack, a difference key, a layer
+/// mixer) would change the project unrecorded (the class of #1392).
+#[test]
+fn opening_a_per_node_grade_writes_nothing_in_either_view() {
+    let mut wrote = Vec::new();
+    let mut opened = 0;
+    for ty in klipp_nodes::registry::node_types() {
+        if !super::main_layout::per_node_kind(ty.kind) {
+            continue;
+        }
+        let Some((state, clip, node)) = placed(ty.kind) else { continue };
+        let base = Grade::new(state, clip, node, true);
+        for generated in [false, true] {
+            let mut g = base.twin(generated);
+            let before = g.picture();
+            g.drawn();
+            g.drawn();
+            if g.picture() != before || g.state.active_history().undo_count() != 0 || !g.unapplied.is_empty() {
+                let params = |p: &klipp_timeline::LiftedPicture| format!("{p:?}").len();
+                wrote.push(format!("{} generated {generated}: steps {}, unapplied {:?} ({} → {} bytes)", ty.desc.id, g.state.active_history().undo_count(), g.unapplied, params(&before), params(&g.picture())));
+            }
+            opened += 1;
+        }
+    }
+    assert!(wrote.is_empty(), "opening wrote:\n{}", wrote.join("\n"));
+    assert!(opened > 20, "only {opened} opened");
+}
