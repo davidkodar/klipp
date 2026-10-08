@@ -449,23 +449,27 @@ fn run_frei0r(report: &mut Report) {
     // Each of its values edited through its own control in both views:
     // the same picture, one step, undone and redone exactly.
     type Drive = fn(&mut Run) -> Result<(), String>;
-    let edits: [(&str, Drive); 5] = [
+    // What each edit must leave: the declared defaults with that one value
+    // set, every other value as it was.
+    type Want = fn(&mut [klipp_frei0r::Frei0rValue]);
+    use klipp_frei0r::Frei0rValue as V;
+    let edits: [(&str, Drive, Want); 5] = [
         ("Amount", |r| {
             let at = number_right_of(r, "Amount").ok_or("no number for Amount")?;
             type_into(r, at, "0.4");
             Ok(())
-        }),
-        ("Active", |r| if click_right_of(r, "Active") { Ok(()) } else { Err("no switch for Active".into()) }),
+        }, |p| p[0] = V::Double(0.4)),
+        ("Active", |r| if click_right_of(r, "Active") { Ok(()) } else { Err("no switch for Active".into()) }, |p| p[1] = V::Bool(true)),
         ("Centre X", |r| {
             let at = number_right_of(r, "X").ok_or("no number for X")?;
             type_into(r, at, "0.3");
             Ok(())
-        }),
+        }, |p| p[2] = V::Position([0.3, 0.5])),
         ("Centre Y", |r| {
             let at = number_right_of(r, "Y").ok_or("no number for Y")?;
             type_into(r, at, "0.7");
             Ok(())
-        }),
+        }, |p| p[2] = V::Position([0.5, 0.7])),
         ("Caption", |r| {
             let drawn = r.frame(Vec::new(), egui::Modifiers::NONE);
             let at = drawn.iter().rev().find(|(t, _)| t == "Caption").map(|(_, p)| *p).ok_or("no Caption")?;
@@ -476,9 +480,9 @@ fn run_frei0r(report: &mut Report) {
             r.key(egui::Key::Enter, egui::Modifiers::NONE);
             r.frame(Vec::new(), egui::Modifiers::NONE);
             Ok(())
-        }),
+        }, |p| p[3] = V::String("hi".into())),
     ];
-    let colour: (&str, Drive) = ("Tint", |r| {
+    let colour: (&str, Drive, Want) = ("Tint", |r| {
         // Its button opens the picker; its R value typed there, then the
         // picker closed by a click away from it, as a user does.
         let drawn = r.frame(Vec::new(), egui::Modifiers::NONE);
@@ -503,23 +507,27 @@ fn run_frei0r(report: &mut Report) {
         r.button(away, egui::PointerButton::Primary, false);
         r.frame(Vec::new(), egui::Modifiers::NONE);
         Ok(())
-    });
+    // The picker's bytes, as the editor stores them: R 128 of 255.
+    }, |p| p[4] = V::Color([128.0 / 255.0, 1.0, 1.0]));
     let mut edits = edits.to_vec();
     edits.push(colour);
-    for (what, drive) in edits {
+    for (what, drive, want) in edits {
         report.case(&format!("frei0r {what}"), [key(Interaction::PluginParameter), key(Interaction::UndoRedo)], || {
             let (mut old, mut new) = both(&clip, |_| {});
             let before = new.clip().picture_v2()?;
             drive(&mut old).map_err(|e| format!("old: {e}"))?;
             drive(&mut new).map_err(|e| format!("new: {e}"))?;
             let after = new.clip().picture_v2()?;
-            if after == before {
-                return Err(format!("{what} changed nothing: {:?}", new.clip().builtin_effects()));
+            let mut params = defaults.clone();
+            want(&mut params);
+            let expected = [BuiltinEffect::Frei0r { type_id: plugin.type_id(), params }];
+            for (view, run) in [("old", &old), ("new", &new)] {
+                if run.clip().builtin_effects() != expected.as_slice() {
+                    return Err(format!("{view}: {:?}, want {expected:?}", run.clip().builtin_effects()));
+                }
             }
-            let depth = old.state.active_history().undo_count();
-            if depth == 0 {
-                return Err("the old view's edit left no step".into());
-            }
+            // One edit, one step, in each view.
+            let depth = 1;
             agree(&old, &new, depth, &[])?;
             for _ in 0..depth {
                 if !new.step(false) {
