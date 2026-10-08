@@ -4608,11 +4608,26 @@ pub struct ProjectStatus {
     /// so `check` can say so.
     #[serde(default)]
     pub global_lut: Option<PathBuf>,
+    /// Every sequence in the project, in the order its tabs list them,
+    /// and which one is open: a client can reach each (M3 step 18).
+    #[serde(default)]
+    pub sequences: Vec<SequenceSummary>,
+    #[serde(default)]
+    pub active_sequence: usize,
+}
+
+/// One sequence of the project, as a client lists it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SequenceSummary {
+    pub id: String,
+    pub name: String,
+    /// Clips on all its tracks.
+    pub clips: usize,
 }
 
 impl Default for ProjectStatus {
     fn default() -> Self {
-        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None, undo: None, redo: None, undo_depth: 0, redo_depth: 0, global_lut: None }
+        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None, undo: None, redo: None, undo_depth: 0, redo_depth: 0, sequences: Vec::new(), active_sequence: 0, global_lut: None }
     }
 }
 

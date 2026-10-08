@@ -689,6 +689,7 @@ fn handle(
         cmd @ (ControlCommand::NewProject { .. }
             | ControlCommand::NewSequence { .. }
             | ControlCommand::RenameSequence { .. }
+            | ControlCommand::SwitchSequence { .. }
             | ControlCommand::AppendClip { .. }
             | ControlCommand::RemoveClip { .. }
             | ControlCommand::AttachAudio { .. }

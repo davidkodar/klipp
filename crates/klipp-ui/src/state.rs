@@ -504,6 +504,19 @@ pub enum RangeDragKind {
     RulerCreate { anchor_secs: f64 },
 }
 
+impl AppState {
+    /// Every sequence of the project, as the control socket lists them,
+    /// and the open one's index (M3 step 18).
+    pub fn sequence_summaries(&self) -> (Vec<klipp_core::SequenceSummary>, usize) {
+        let list = self.sequences.iter().map(|seq| klipp_core::SequenceSummary {
+            id: seq.id.to_string(),
+            name: seq.name.clone(),
+            clips: seq.tracks.iter().map(|t| t.clips.len()).sum(),
+        }).collect();
+        (list, self.active_sequence_idx)
+    }
+}
+
 /// Workspace mode — determines panel arrangement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Workspace {
@@ -6096,6 +6109,26 @@ mod paste_speed_tests {
         let lane = crate::state::placement_anims(&target);
         let pos_x = lane.get("pos_x").expect("the source's lane");
         assert_eq!(pos_x.keys.len(), 1, "the source's lane replaced the target's: {pos_x:?}");
+    }
+}
+
+#[cfg(test)]
+mod sequence_summaries_tests {
+    use super::AppState;
+
+    #[test]
+    fn every_sequence_is_listed_with_its_clips_and_the_open_one() {
+        let mut state = AppState::default();
+        let mut second = state.sequences[0].clone();
+        second.id = klipp_core::SequenceId::new();
+        second.name = "Social cut".into();
+        state.sequences.push(second);
+        state.active_sequence_idx = 1;
+        let (list, active) = state.sequence_summaries();
+        assert_eq!(list.len(), 2);
+        assert_eq!((list[1].name.as_str(), list[1].id.clone()), ("Social cut", state.sequences[1].id.to_string()));
+        assert_eq!(list[0].clips, state.sequences[0].tracks.iter().map(|t| t.clips.len()).sum::<usize>());
+        assert_eq!(active, 1);
     }
 }
 

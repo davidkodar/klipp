@@ -106,6 +106,15 @@ pub(crate) fn respond(
                     "next_undo": project.undo,
                     "next_redo": project.redo,
                 },
+                // Every sequence of the project, the open one marked:
+                // `switch_sequence` opens another (M3 step 18).
+                "sequences": project.sequences.iter().enumerate().map(|(index, s)| json!({
+                    "index": index,
+                    "id": s.id,
+                    "name": s.name,
+                    "clips": s.clips,
+                    "active": index == project.active_sequence,
+                })).collect::<Vec<_>>(),
                 "project": {
                     "path": project.path.as_ref().map(|p| p.to_string_lossy().to_string()),
                     "unsaved_changes": project.dirty,

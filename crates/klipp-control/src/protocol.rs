@@ -1066,6 +1066,16 @@ pub enum ControlCommand {
     /// and in the project. A new project's sequence keeps a default name
     /// until someone names it.
     RenameSequence { name: String },
+    /// Open another of the project's sequences, as clicking its tab does:
+    /// by `index` or `sequence_id`, the `index` and `id` `status`'s
+    /// `sequences` lists (`id` itself names the request). It records the
+    /// playhead of the one left, so it counts as an edit.
+    SwitchSequence {
+        #[serde(default)]
+        index: Option<usize>,
+        #[serde(default)]
+        sequence_id: Option<String>,
+    },
     /// Start an empty project `name` in the folder `location` (made
     /// `<location>/<name>.klipp`), with its first sequence at `width` x
     /// `height` and `fps` (a rate like 25, 29.97, 30, 59.94; left out,
