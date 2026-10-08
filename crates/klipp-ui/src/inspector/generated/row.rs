@@ -378,32 +378,39 @@ fn slider_row(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc, pres: &Pres
     let label = pres.label.unwrap_or(desc.label);
     let Some(mut v) = number(stored) else { return read_only(ui, desc.key, label, stored, "") };
     let (lo, hi) = shown_range(desc, pres, ctx.encoding);
-    let (lo, hi) = (lo.min(v), hi.max(v));
+    let reset = reset_value(desc, pres);
+    let (lo, hi) = (lo.min(v).min(reset), hi.max(v).max(reset));
     #[cfg(any(test, feature = "row-recorder"))]
     {
         crate::widgets::row_recorder::numeric(ui.next_auto_id(), "slider", label, v, &(lo..=hi), None, None, None, "", None);
         crate::widgets::row_recorder::parameter(desc.key);
     }
     let before = v;
-    let r = ui
+    let (r, reset_clicked) = ui
         .horizontal(|ui| {
-            ui.label(label);
+            let reset_clicked = ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked();
+            if reset_clicked { v = reset; }
             let slider = egui::Slider::new(&mut v, lo..=hi);
-            ui.add(if desc.kind == ParamKind::Whole { slider.integer() } else { slider })
+            (ui.add(if desc.kind == ParamKind::Whole { slider.integer() } else { slider }), reset_clicked)
         })
         .inner;
     let key = ParamKey::new(desc.key);
+    if r.drag_stopped() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        ctx.cmds.push(AppCommand::AbandonParamEditAt { addr: ctx.addr.clone(), key });
+        ui.ctx().stop_dragging();
+        return RowOutcome::Nothing;
+    }
     if r.drag_started() {
         ctx.cmds.push(AppCommand::BeginParamEditAt { addr: ctx.addr.clone(), key: key.clone() });
     }
-    let edited = r.changed() && v != before;
+    let edited = (r.changed() || reset_clicked) && v != before;
     if edited {
         set(ctx, desc, number_value(desc, v));
     }
     if r.drag_stopped() {
         ctx.cmds.push(AppCommand::EndParamEditAt { addr: ctx.addr.clone(), key });
     }
-    if edited { RowOutcome::Edited } else { RowOutcome::Nothing }
+    if edited && reset_clicked { RowOutcome::Reset } else if edited { RowOutcome::Edited } else { RowOutcome::Nothing }
 }
 
 /// A switch, or a choice of two (off then on) shown as one.
