@@ -13,6 +13,9 @@ const TOAST_FADE_IN: f64 = 0.15;
 const TOAST_FADE_OUT: f64 = 0.2;
 
 impl ToastState {
+    #[cfg(test)]
+    pub(crate) fn message_for_test(&self) -> Option<&str> { self.message.as_deref() }
+
     /// Show a new toast message. Replaces any existing toast.
     pub fn show(&mut self, message: impl Into<String>) {
         self.message = Some(message.into());

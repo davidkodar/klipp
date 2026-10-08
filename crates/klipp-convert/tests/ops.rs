@@ -339,7 +339,7 @@ fn a_move_that_would_loop_is_refused() {
     let before = snapshot(&d);
     let g = group(&d);
     let r = apply(&mut d, &GraphOp::MoveAfter { path: clip_path([g, u(K)]), after: u(E) });
-    assert!(r.unwrap_err().contains("Cycle"), "the key would read Exposure, whose mask it feeds");
+    assert!(r.unwrap_err().contains("not on an image chain"), "a matte producer cannot enter the image chain; here it would also form a cycle");
     assert_eq!(snapshot(&d), before, "nothing moved");
 }
 

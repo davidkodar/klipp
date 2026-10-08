@@ -182,7 +182,7 @@ impl Projection<'_> {
             let mut row = Row {
                 addr: self.addr(id),
                 type_id: node.type_id.clone(),
-                label: node.label.clone(),
+                label: crate::topology::node_label(node).to_owned(),
                 section,
                 enabled: node
                     .legacy_flags
@@ -233,7 +233,7 @@ impl Projection<'_> {
                         input: port.clone(),
                         source: self.addr(*source),
                         output: output.clone(),
-                        label: self.nodes[source].label.clone(),
+                        label: crate::topology::node_label(self.nodes[source]).to_owned(),
                     });
                 } else {
                     row.sub_stacks.push(Branch {
@@ -300,7 +300,7 @@ pub fn project_at(
             return Err(ProjectionError::DuplicateNode(node.id));
         }
     }
-    for edge in &graph.edges {
+    for edge in &crate::topology::effective_edges(graph) {
         for id in [edge.from.0, edge.to.0] {
             if !p.nodes.contains_key(&id) {
                 return Err(ProjectionError::MissingNode(id));
@@ -316,23 +316,6 @@ pub fn project_at(
                 node: edge.to.0,
                 port: edge.to.1.clone(),
             });
-        }
-    }
-    // As lifted validation and rendering do: a drawn edge wins over a
-    // wireless input; the first matching sender supplies an unwired port.
-    for node in &graph.nodes {
-        for (port, name) in &node.wireless.input_links {
-            let inputs = p.inputs.entry(node.id).or_default();
-            if inputs.contains_key(port) {
-                continue;
-            }
-            if let Some(sender) = graph
-                .nodes
-                .iter()
-                .find(|n| n.id != node.id && n.wireless.output_link.as_ref() == Some(name))
-            {
-                inputs.insert(port.clone(), (sender.id, "out".into()));
-            }
         }
     }
     // Check all visible-level dependencies, including chips and wireless

@@ -125,14 +125,19 @@ fn every_effect_op_written_through_the_fields_is_the_engines() {
     for op in ops {
         same_both_ways(&c, op);
     }
-    // Before the display transform, where the engine can put one, a
-    // clip's list can't hold it.
-    for op in [
-        GraphOp::MoveAfter { path: at(&c, [fx[2]]), after: g },
-        GraphOp::AddNode { after: at(&c, [g]), node: new_effect(0xa4, &bloom, BTreeMap::new()) },
+    // Moving across the display boundary is refused by the planner;
+    // adding there is refused when writing back to the clip's list.
+    for (op, reason) in [
+        (GraphOp::MoveAfter { path: at(&c, [fx[2]]), after: g }, "cannot move from display-referred to scene-referred"),
+        (GraphOp::AddNode { after: at(&c, [g]), node: new_effect(0xa4, &bloom, BTreeMap::new()) }, "display transform"),
     ] {
-        let err = c.clone().apply_picture_ops(std::slice::from_ref(&op)).unwrap_err();
-        assert!(err.contains("display transform"), "{op:?}: {err}");
+        let mut unchanged = c.clone();
+        let before = unchanged.picture_v2().unwrap();
+        let stored_before = saved(&unchanged);
+        let err = unchanged.apply_picture_ops(std::slice::from_ref(&op)).unwrap_err();
+        assert!(err.contains(reason), "{op:?}: {err}");
+        assert_eq!(unchanged.picture_v2().unwrap(), before, "a refused {op:?} must not change the graph");
+        assert_eq!(saved(&unchanged), stored_before, "a refused {op:?} must not change the saved fields");
     }
 }
 

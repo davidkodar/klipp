@@ -242,3 +242,20 @@ fn stack_projection_matches_the_effect_list_on_the_18() {
     assert!(clips > 0);
     eprintln!("18 projects: {clips} clips, {cards} built-in cards checked");
 }
+
+#[test]
+fn grade_cards_and_mask_chips_keep_their_authored_labels() {
+    use klipp_timeline::GradeAccess;
+    let mut c = clip();
+    let mut grade = klipp_nodes::NodeGraph::default();
+    let (mask, reader) = grade.ensure_masked_secondary(klipp_nodes::NodeKind::Corrector);
+    grade.nodes.iter_mut().find(|n| n.id == mask).unwrap().label = "Skin key".into();
+    grade.nodes.iter_mut().find(|n| n.id == reader).unwrap().label = "Skin correction".into();
+    c.set_grade(grade);
+    let picture = c.picture_v2().unwrap();
+    let group = picture.picture.graph.nodes.iter().find(|n| n.group.as_ref().is_some_and(|b| b.graph.nodes.iter().any(|n| n.id == reader))).unwrap();
+    let view = klipp_graph_lift::stack_view::project_at(Root::Clip { clip: c.id.0 }, &[group.id], &group.group.as_ref().unwrap().graph, &RegistryCatalog, None).unwrap();
+    let row = view.rows().find(|r| r.addr.nodes.last() == Some(&reader)).unwrap();
+    assert_eq!(row.label, "Skin correction");
+    assert!(row.mask_chips.iter().any(|b| b.label == "Skin key"));
+}

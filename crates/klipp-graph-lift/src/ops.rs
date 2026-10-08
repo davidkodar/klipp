@@ -37,7 +37,7 @@ fn path_of(op: &GraphOp) -> &NodePath {
 }
 
 /// A root's picture, taken out as JSON to edit a copy of.
-fn snapshot(docs: &Documents, root: Root) -> Result<Value, String> {
+pub(crate) fn snapshot(docs: &Documents, root: Root) -> Result<Value, String> {
     let v = match root {
         Root::Clip { clip } => serde_json::to_value(docs.clips.get(&clip).ok_or("no such clip")?),
         Root::TimelineGrade { sequence } => serde_json::to_value(docs.timeline.get(&sequence).ok_or("no such timeline grade")?),
@@ -49,7 +49,7 @@ fn snapshot(docs: &Documents, root: Root) -> Result<Value, String> {
 }
 
 /// Put a root's picture back from JSON.
-fn put(docs: &mut Documents, root: Root, v: &Value) -> Result<(), String> {
+pub(crate) fn put(docs: &mut Documents, root: Root, v: &Value) -> Result<(), String> {
     let e = |e: serde_json::Error| e.to_string();
     match root {
         Root::Clip { clip } => {
@@ -79,6 +79,19 @@ fn level<'a>(mut g: &'a mut Graph, through: &[NodeId]) -> Result<&'a mut Graph, 
         g = &mut n.group.as_mut().ok_or_else(|| format!("{step} isn't a group"))?.graph;
     }
     Ok(g)
+}
+
+/// The containing group's published child bindings are external references
+/// when a planner edits the body. They must survive even without local wires.
+fn containing_interface(mut graph: &Graph, through: &[NodeId]) -> Result<Vec<GroupPort>, String> {
+    let mut interface = Vec::new();
+    for step in through {
+        let node = graph.nodes.iter().find(|n| n.id == *step).ok_or_else(|| format!("{step} isn't in the graph"))?;
+        let body = node.group.as_ref().ok_or_else(|| format!("{step} isn't a group"))?;
+        interface = body.interface.clone();
+        graph = &body.graph;
+    }
+    Ok(interface)
 }
 
 fn kind(n: &Node) -> &str {
@@ -314,7 +327,7 @@ fn held_node(node: &Node) -> Result<Node, String> {
 }
 
 /// The edits on a graph level.
-fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn PortCatalog>) -> Result<(), String> {
+fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn PortCatalog>, interface: &[GroupPort]) -> Result<(), String> {
     let find = |g: &Graph, id: NodeId| g.nodes.iter().position(|n| n.id == id).ok_or_else(|| format!("{id} isn't in the graph"));
     match op {
         GraphOp::AddNode { node, .. } => {
@@ -341,47 +354,11 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn
             find(g, target)?;
             g.nodes.push(held_node(node)?);
         }
-        GraphOp::RemoveNode { .. } => {
-            let at = find(g, target)?;
-            if is_end(&g.nodes[at]) {
-                return Err("a graph's ends can't be removed".into());
-            }
-            let port = primary(&g.nodes[at]);
-            let feed = g.edges.iter().find(|e| e.to == (target, port.clone())).map(|e| e.from.clone());
-            g.edges.retain(|e| e.to.0 != target);
-            // Its readers' pictures take its input back; anything else it fed
-            // (a gate's matte, a merge's second picture) is disconnected,
-            // not handed a picture it never was.
-            let primaries: Vec<(NodeId, PortKey)> = g.nodes.iter().map(|n| (n.id, primary(n))).collect();
-            let reads_picture = |e: &Edge| primaries.iter().any(|(id, p)| *id == e.to.0 && *p == e.to.1);
-            let mut unmasked = Vec::new();
-            g.edges.retain_mut(|e| {
-                if e.from.0 != target {
-                    return true;
-                }
-                match &feed {
-                    Some(feed) if reads_picture(e) => {
-                        e.from = feed.clone();
-                        true
-                    }
-                    _ => {
-                        if e.to.1.as_str() == "mask" {
-                            unmasked.push(e.to.0);
-                        }
-                        false
-                    }
-                }
-            });
-            // A correction that lost its matte isn't gated any more.
-            for n in g.nodes.iter_mut().filter(|n| unmasked.contains(&n.id)) {
-                if let Some(f) = n.legacy_flags.as_mut() {
-                    f.alpha_one = false;
-                    if *f == LegacyFlags::default() {
-                        n.legacy_flags = None;
-                    }
-                }
-            }
-            g.nodes.remove(at);
+        GraphOp::RemoveNode { path } => {
+            if is_end(&g.nodes[find(g, target)?]) { return Err("a graph's ends can't be removed".into()); }
+            crate::edit_planner::rewrite(g, &crate::edit_planner::Request {
+                path: path.clone(), action: crate::edit_planner::Action::Remove,
+            }, catalog, interface).map_err(|e| e.to_string())?;
         }
         GraphOp::Connect { from, from_port, to_port, .. } => {
             let from_id = from.node().ok_or("an empty path")?;
@@ -461,27 +438,10 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn
             let at = find(g, target)?;
             set_payload(&mut g.nodes[at], payload)?;
         }
-        GraphOp::MoveAfter { after, .. } => {
-            let node = g.nodes[find(g, target)?].clone();
-            // Its other inputs (a gate's mask, a merge's second picture)
-            // move with it; only the primary is rewired. A loop this makes
-            // is refused by the check that follows every op.
-            let port = primary(&node);
-            let others: Vec<Edge> = g.edges.iter().filter(|e| e.to.0 == target && e.to.1 != port).cloned().collect();
-            // And what it feeds other than a picture (its matte into a gate)
-            // stays its own, where the removal would disconnect it.
-            let primaries: Vec<(NodeId, PortKey)> = g.nodes.iter().map(|n| (n.id, primary(n))).collect();
-            let outs: Vec<Edge> = g.edges.iter().filter(|e| e.from.0 == target && !primaries.iter().any(|(id, p)| *id == e.to.0 && *p == e.to.1)).cloned().collect();
-            let gated: Vec<(NodeId, Option<LegacyFlags>)> = outs.iter().filter_map(|e| g.nodes.iter().find(|n| n.id == e.to.0)).map(|n| (n.id, n.legacy_flags.clone())).collect();
-            apply_graph(g, &GraphOp::RemoveNode { path: NodePath::new(Root::Clip { clip: uuid::Uuid::nil() }, [target]) }, target, catalog)?;
-            apply_graph(g, &GraphOp::AddNode { after: NodePath::new(Root::Clip { clip: uuid::Uuid::nil() }, [*after]), node: Box::new(node) }, *after, catalog)?;
-            g.edges.extend(others);
-            g.edges.extend(outs);
-            for (id, flags) in gated {
-                if let Some(n) = g.nodes.iter_mut().find(|n| n.id == id) {
-                    n.legacy_flags = flags;
-                }
-            }
+        GraphOp::MoveAfter { path, after } => {
+            crate::edit_planner::rewrite(g, &crate::edit_planner::Request {
+                path: path.clone(), action: crate::edit_planner::Action::MoveAfter(*after),
+            }, catalog, interface).map_err(|e| e.to_string())?;
         }
     }
     Ok(())
@@ -622,14 +582,16 @@ fn apply_pending(docs: &mut Documents, op: &GraphOp, catalog: Option<&dyn PortCa
         }
         Root::Clip { .. } => {
             let mut picture: klipp_graph_format::lifted::ClipPicture = serde_json::from_value(copy).map_err(err)?;
-            apply_graph(level(&mut picture.graph, through)?, op, last, catalog)?;
+            let interface = if matches!(op, GraphOp::RemoveNode { .. } | GraphOp::MoveAfter { .. }) { containing_interface(&picture.graph, through)? } else { Vec::new() };
+            apply_graph(level(&mut picture.graph, through)?, op, last, catalog, &interface)?;
             tolerate(if let Some(catalog) = catalog { picture.graph.check_lifted_with_catalog(false, catalog) } else { picture.graph.check_lifted(false) }, pending)
                 .map_err(|e| unwired_beside(op, &e).unwrap_or_else(|| format!("that would leave the clip's graph invalid: {e}")))?;
             serde_json::to_value(picture).map_err(err)?
         }
         _ => {
             let mut body: Graph = serde_json::from_value(std::mem::take(&mut copy)).map_err(err)?;
-            apply_graph(level(&mut body, through)?, op, last, catalog)?;
+            let interface = if matches!(op, GraphOp::RemoveNode { .. } | GraphOp::MoveAfter { .. }) { containing_interface(&body, through)? } else { Vec::new() };
+            apply_graph(level(&mut body, through)?, op, last, catalog, &interface)?;
             tolerate(if let Some(catalog) = catalog { body.check_lifted_body_with_catalog(catalog) } else { body.check_lifted_body() }, pending)
                 .map_err(|e| unwired_beside(op, &e).unwrap_or_else(|| format!("that would leave the grade invalid: {e}")))?;
             serde_json::to_value(body).map_err(err)?
