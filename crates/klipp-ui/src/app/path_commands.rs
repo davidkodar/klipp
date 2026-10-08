@@ -1163,7 +1163,7 @@ mod tests {
     fn a_grade_param_by_path_is_the_param_by_id() {
         let (c, addr) = graded();
         let node = addr.node().unwrap();
-        for (param, value) in [("exposure", 0.7f32), ("contrast", 0.2), ("saturation", 1.4)] {
+        for (param, value) in [("exposure", 0.7f32), ("contrast", 0.2), ("saturation", 1.4), ("exposure", 0.0), ("qual_hue_width", 40.0), ("luma_key_low", 0.2), ("wheels_log_mode", 1.0)] {
             let mut a = with(std::slice::from_ref(&c));
             let seq = &mut a.sequences[0];
             let clip_a = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
@@ -1213,6 +1213,81 @@ mod tests {
         assert_eq!(picture(&b, c.id), picture(&with(std::slice::from_ref(&c)), c.id), "undone");
     }
 
+
+    /// A grade node's struct field set by path (`SetParamAt` with
+    /// `struct.field`) is that struct set whole by id, made at its default
+    /// when the node had none.
+    #[test]
+    fn a_grade_struct_field_by_path_is_the_struct_by_id() {
+        let (c, addr) = graded();
+        let node = addr.node().unwrap();
+        let mut a = with(std::slice::from_ref(&c));
+        let clip_a = a.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
+        clip_a.edit_grade(|root| {
+            let params = &mut root.nodes.iter_mut().find(|n| n.id == node).unwrap().params;
+            params.grain = Some(klipp_core::FilmGrainSettings { amount: 0.4, ..Default::default() });
+        });
+        let mut b = with(std::slice::from_ref(&c));
+        run(&mut b, AppCommand::SetParamAt { addr: addr.clone(), key: "grain.amount".into(), value: ParamValue::Float(0.4) });
+        assert_eq!(picture(&a, c.id), picture(&b, c.id), "the grain's amount by path as the grain by id");
+    }
+
+    /// A grade node's key by path (`AddKeyAt`, `RemoveKeyAt` on
+    /// `[group, node]`) is its key by id (`AddKeyframe`, `RemoveKeyframe`):
+    /// the same picture, the key on the node's own track.
+    #[test]
+    fn a_grade_key_by_path_is_the_key_by_id() {
+        let (c, addr) = graded();
+        let node = addr.node().unwrap();
+        let key = klipp_core::Keyframe { time_secs: 0.5, value: 0.7, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        let mut a = with(std::slice::from_ref(&c));
+        let clip_a = a.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
+        clip_a.edit_grade(|root| root.nodes.iter_mut().find(|n| n.id == node).unwrap().keyframes.track_mut("exposure").set_keyframe(0.5, 0.7));
+        let mut b = with(std::slice::from_ref(&c));
+        run(&mut b, AppCommand::AddKeyAt { addr: addr.clone(), key: "exposure".into(), keyframe: serde_json::to_value(key).unwrap() });
+        assert_eq!(picture(&a, c.id), picture(&b, c.id), "keyed by path as by id");
+        let tracks = &klipp_timeline::GradeAccess::grade(clip(&b, c.id)).nodes.iter().find(|n| n.id == node).unwrap().keyframes;
+        assert_eq!(tracks.evaluate_all(0.5), vec![("exposure".to_string(), 0.7)], "the key is on the node's track");
+        let clip_a = a.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
+        clip_a.edit_grade(|root| root.nodes.iter_mut().find(|n| n.id == node).unwrap().keyframes.track_mut("exposure").remove_keyframe(0.5));
+        run(&mut b, AppCommand::RemoveKeyAt { addr: addr.clone(), key: "exposure".into(), time_secs: 0.5 });
+        assert_eq!(picture(&a, c.id), picture(&b, c.id), "the key taken out by path as by id");
+    }
+
+    /// A grade key set by path is kept: it comes back with the project
+    /// after a save and a load, and the grade renders it, the keyed
+    /// frame the same as one graded to that value outright.
+    #[test]
+    fn a_grade_key_by_path_survives_a_save_and_renders() {
+        let (c, addr) = graded();
+        let node = addr.node().unwrap();
+        let mut s = with(std::slice::from_ref(&c));
+        for (t, v) in [(0.0, 0.0f32), (1.0, 1.0)] {
+            let key = klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+            run(&mut s, AppCommand::AddKeyAt { addr: addr.clone(), key: "exposure".into(), keyframe: serde_json::to_value(key).unwrap() });
+        }
+        let dir = std::env::temp_dir().join(format!("klipp_grade_key_by_path_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        klipp_project::save_project(&dir, &s.sequences, &s.media_pool).unwrap();
+        let (sequences, ..) = klipp_project::load_project(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let loaded = sequences[0].all_clips().find(|x| x.id == c.id).unwrap();
+        let graph = klipp_timeline::GradeAccess::grade(loaded).clone();
+        let keys = &graph.nodes.iter().find(|n| n.id == node).unwrap().keyframes;
+        assert_eq!(keys.evaluate_all(0.5), vec![("exposure".to_string(), 0.5)], "the key came back with the project");
+        // Rendered at 0.5 s, the keyed grade is the grade at +0.5 stops.
+        let mut outright = graph.clone();
+        let n = outright.nodes.iter_mut().find(|n| n.id == node).unwrap();
+        n.keyframes = Default::default();
+        n.params.apply_override("exposure", 0.5);
+        let frame: Vec<u8> = (0..16 * 16).flat_map(|i| [(i % 251) as u8, 90, 160, 255]).collect();
+        let mut ex = klipp_nodes::executor::GraphExecutor::new_cpu_only();
+        let (keyed, _) = ex.execute(&frame, &graph, 16, 16, 0.5, 12, None, None).unwrap();
+        let (set, _) = ex.execute(&frame, &outright, 16, 16, 0.5, 12, None, None).unwrap();
+        assert_ne!(keyed, frame, "the key grades the frame");
+        assert_eq!(keyed, set, "the keyed frame is the frame graded to the key's value");
+    }
 
     /// An effect's keys by path and by index: adding one (`AddKeyAt`,
     /// `AddEffectKeyframe`), moving it and setting its interpolation, and
