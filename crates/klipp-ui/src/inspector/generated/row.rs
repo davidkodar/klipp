@@ -274,7 +274,7 @@ fn numeric_row(ui: &mut egui::Ui, ctx: &mut RowCtx, input: RowInput) -> RowOutco
     });
     #[cfg(any(test, feature = "row-recorder"))]
     crate::widgets::row_recorder::next_parameter(desc.key);
-    let r = scrubby_param_row(ui, label, &mut shown, lo..=hi, reset, f64::from(pres.step), usize::from(pres.decimals), &suffix, diamond);
+    let r = scrubby_param_row(ui, label, &mut shown, lo..=hi, reset, drag_speed(pres.step), usize::from(pres.decimals), &suffix, diamond);
     if has_diamond(desc) {
         behaviours_menu(ui, ctx, desc);
     }
@@ -331,6 +331,14 @@ fn behaviours_menu(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc) {
     let param = klipp_core::ParamId::Node { addr: ctx.addr.clone(), key: ParamKey::new(desc.key) };
     let cmds = &mut *ctx.cmds;
     ui.menu_button("⋯", |ui| show(ui, &param, cmds)).response.on_hover_text("Behaviours");
+}
+
+/// The drag speed for a declared step, as the hand-written rows pass it:
+/// the step's decimal value, so 0.01 is 0.01, not the `f32`'s widening
+/// (0.009999999776), which a drag's rounding would show as one step lost
+/// every few (the parity harness, M3 step 1c, found it).
+pub fn drag_speed(step: f32) -> f64 {
+    step.to_string().parse().unwrap_or(f64::from(step))
 }
 
 /// A plain slider over the shown range, for a value set by hand and never
@@ -503,6 +511,16 @@ mod tests {
         let [AppCommand::SetPayloadAt { payload: p, .. }] = cmds.as_slice() else { panic!("{cmds:?}") };
         assert_eq!(p["color"], serde_json::json!([10, 20, 30, 200]));
         assert_eq!(p["progress"], payload["progress"], "the hidden progress is kept");
+    }
+
+    /// A row drags at its step's decimal value, exactly as a hand-written
+    /// row's literal: 0.01 is 0.01.
+    #[test]
+    fn a_row_drags_at_its_declared_step_exactly() {
+        for (step, want) in [(0.01f32, 0.01f64), (0.005, 0.005), (0.002, 0.002), (0.05, 0.05), (1.0, 1.0), (0.0075, 0.0075)] {
+            assert_eq!(drag_speed(step), want);
+        }
+        assert_ne!(f64::from(0.01f32), 0.01, "why the widening isn't enough");
     }
 
     /// A number or a switch goes by `SetParamAt`, in its stored kind.
