@@ -2012,6 +2012,9 @@ impl GraphExecutor {
                 && mask_cutout_matte_ready
                 && Some(node_id) != matte_preview_node
                 && Some(node_id) != matte_tap
+                // A soloed node's output is the picture shown: a real
+                // buffer, never a chain's placeholder (M3 step 16a).
+                && Some(node_id) != self.solo_node
                 && !thumb_needs_cpu;
 
             // Bypass tunnel: a bypass node whose primary input IS the
@@ -2031,6 +2034,9 @@ impl GraphExecutor {
                 && primary_is_chain_tail
                 && fan_out.get(&node.id).copied().unwrap_or(0) <= 1
                 && Some(node_id) != matte_tap
+                // A soloed node's output is the picture shown: a real
+                // buffer, never a chain's placeholder (M3 step 16a).
+                && Some(node_id) != self.solo_node
                 && Some(node_id) != matte_preview_node;
             if bypass_tunnelable {
                 // Tunnel: chain stays on GPU, tail renames to this node.
@@ -2171,6 +2177,9 @@ impl GraphExecutor {
             if node.kind == NodeKind::Source
                 && gpu_resident_source
                 && Some(node_id) != matte_tap
+                // A soloed node's output is the picture shown: a real
+                // buffer, never a chain's placeholder (M3 step 16a).
+                && Some(node_id) != self.solo_node
                 && Some(node_id) != matte_preview_node
                 && !thumb_needs_cpu
             {
@@ -2394,6 +2403,9 @@ impl GraphExecutor {
                 && mask_cutout_can_start
                 && Some(node_id) != matte_preview_node
                 && Some(node_id) != matte_tap
+                // A soloed node's output is the picture shown: a real
+                // buffer, never a chain's placeholder (M3 step 16a).
+                && Some(node_id) != self.solo_node
                 // Same visible-thumb gate as can_extend_chain: if the
                 // node needs a CPU-side output for thumb capture, it
                 // must go through the per-node CPU dispatch path.

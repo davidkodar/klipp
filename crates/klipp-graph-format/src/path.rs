@@ -30,6 +30,23 @@ pub enum TrackPart {
     Effects,
 }
 
+/// One output of a node, by the node's path and the output's port: what
+/// an inspection reads (a thumbnail, the scope's tap, a solo, a matte;
+/// M3 step 16a).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeOutput {
+    pub path: NodePath,
+    pub port: crate::PortKey,
+}
+
+impl NodeOutput {
+    /// The node at `path`, at its picture output.
+    pub fn out(path: NodePath) -> Self {
+        Self { path, port: crate::PortKey::from("out") }
+    }
+}
+
 /// A node, by its root and the node ids from the root's graph down: each
 /// id but the last names a group node whose body holds the next.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

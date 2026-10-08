@@ -345,13 +345,15 @@ impl PlaybackEngine {
             && !self.thumb_capture_suspended
             && !self.in_node_param_edit)
             .then(|| self.visible_node_thumbs.clone());
+        // The matte view's node is the clip's own grade's (M3 step 16a).
+        let at = |node: klipp_nodes::NodeId| clip.map(|c| klipp_compose::inspect::grade_node(c, node));
         Inspect {
             clip,
             thumbs,
             // An eyedropper read borrows the tap for one render.
-            scope_tap: self.node_sample.map(|s| s.tap),
-            matte_view,
-            solo: self.solo_node,
+            scope_tap: self.node_sample.map(|s| klipp_compose::inspect::grade_node(s.clip, s.tap)),
+            matte_view: matte_view.and_then(at),
+            solo: self.solo.clone(),
             ungraded: self.bypass_color_grade,
             matte_of: self.inspector_matte_preview_target,
             only: self.measure_only_clip,
@@ -390,7 +392,7 @@ impl PlaybackEngine {
     /// frames by grade.
     fn render_cache_key(&mut self, seq: &Sequence, primary: Option<ClipId>, size: (u32, u32)) -> Option<crate::render_cache::RenderCacheKey> {
         if self.in_node_param_edit
-            || self.solo_node.is_some()
+            || self.solo.is_some()
             || self.matte_preview
             // The cache holds display bytes of the SDR picture; HDR
             // monitoring shows another picture entirely.
@@ -836,7 +838,7 @@ impl PlaybackEngine {
                 fb.scope_data = klipp_effects::linear_f32_rgba_to_srgb_u8(tap);
             }
             if !found.thumbs.is_empty() {
-                fb.node_thumbs = found.thumbs.clone();
+                fb.node_thumbs = found.thumbs.iter().filter_map(|(at, bytes)| Some((at.path.node()?, bytes.clone()))).collect();
                 fb.node_thumbs_gen = fb.node_thumbs_gen.wrapping_add(1);
             }
         }

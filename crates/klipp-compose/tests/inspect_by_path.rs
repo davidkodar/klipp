@@ -1,0 +1,272 @@
+//! Inspection by path (M3 step 16a): what the grade tools ask of the
+//! inspected clip (a soloed node, the scope's tap, thumbnails, a matte)
+//! named by the node's path in the clip's picture and its output port.
+//!
+//! A path into a stage of the clip's grade group reads that stage's node
+//! as the clip runs it, fed from outside the stage; two nodes of one id
+//! (the clip's own and a stage's) are two answers; a matte's output shows
+//! the matte; the clip's picture before its grade means what it did; and
+//! a path that names nothing is said to be unavailable, the picture left
+//! as it is. None of it changes a render that inspects nothing.
+//!
+//! Each runs with CPU paths and with the GPU where there is one.
+
+use klipp_timeline::GradeAccess;
+use std::sync::Arc;
+
+use klipp_compose::{FrameSource, Inspect, InspectAt, RenderOptions, Renderer, SourceFrame, SourcePixels};
+use klipp_core::{ClipId, RationalTime, Timecode};
+use klipp_graph_format::lifted::Stage;
+use klipp_graph_format::path::{NodePath, Root};
+use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams, NodePos};
+use klipp_timeline::{Clip, ClipKind, GradeGroup, GradeStage, Sequence, Track, TrackKind};
+
+const W: u32 = 32;
+const H: u32 = 18;
+
+fn tc(secs: f64) -> Timecode {
+    RationalTime::from_secs_f64(secs, 24)
+}
+
+/// Source → `kind` → Output, the middle node of id `id`.
+fn graph(kind: NodeKind, params: NodeParams, id: NodeId) -> NodeGraph {
+    let node = |id, kind, params| Node { id, kind, label: format!("{kind:?}"), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![] };
+    let nodes = vec![
+        node(NodeId::new_v4(), NodeKind::Source, NodeParams::default()),
+        node(id, kind, params),
+        node(NodeId::new_v4(), NodeKind::Output, NodeParams::default()),
+    ];
+    let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
+    let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
+    NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions, working_space_override: None, frames: vec![], sticky_notes: vec![] }
+}
+
+fn exposure(stops: f32, id: NodeId) -> NodeGraph {
+    graph(NodeKind::Exposure, NodeParams { exposure: Some(stops), ..Default::default() }, id)
+}
+
+struct Grey(f32);
+
+impl FrameSource for Grey {
+    fn frame(&mut self, _clip: &Clip, _secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        let v = self.0;
+        Some(SourceFrame { pixels: SourcePixels::Linear(Arc::new([v, v, v, 1.0].repeat((width * height) as usize))), width, height, pts: None })
+    }
+}
+
+/// One graded media clip on a sequence, in a grade group whose pre stage
+/// is `pre`; the render copy, as the engine renders it.
+fn sequence(grade: NodeGraph, pre: Option<NodeGraph>) -> (Sequence, ClipId, GradeGroup) {
+    let mut clip = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+    clip.set_grade(grade);
+    let mut group = GradeGroup::new("Group");
+    group.stage_slot(GradeStage::Pre).set(pre);
+    clip.grade_group = Some(group.id);
+    let id = clip.id;
+    let mut seq = Sequence::new_default();
+    seq.grade_groups.push(group.clone());
+    let mut track = Track::new("V1", TrackKind::Video);
+    track.clips = vec![clip];
+    seq.tracks = vec![track];
+    (seq.baked_for_render().into_owned(), id, group)
+}
+
+fn draw(seq: &Sequence, gpu: bool, inspect: Inspect) -> (Vec<f32>, klipp_compose::Inspection) {
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(gpu);
+    r.render_inspected(seq, tc(1.0), W, H, &mut Grey(0.18), RenderOptions::default(), inspect)
+}
+
+/// The picture as the viewer and the export render it, read back.
+fn plain(seq: &Sequence, gpu: bool) -> Vec<f32> {
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(gpu);
+    r.render(seq, tc(1.0), W, H, &mut Grey(0.18), RenderOptions::default())
+}
+
+fn close(label: &str, a: &[f32], b: &[f32]) {
+    let worst = a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+    assert_eq!(a.len(), b.len(), "{label}: frames of different sizes");
+    assert!(worst <= 1e-4, "{label}: differs by {worst}");
+}
+
+fn far(label: &str, a: &[f32], b: &[f32]) {
+    let worst = a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+    assert!(!a.is_empty() && a.len() == b.len() && worst > 1e-2, "{label}: the same picture ({} and {} values)", a.len(), b.len());
+}
+
+fn stage(group: &GradeGroup, node: NodeId) -> InspectAt {
+    InspectAt::out(NodePath::new(Root::GroupStage { group: group.id.0, stage: Stage::Pre }, [node]))
+}
+
+#[test]
+fn tap_and_solo_leave_export_unchanged() {
+    let x = NodeId::new_v4();
+    let (seq, clip, group) = sequence(exposure(1.0, x), Some(exposure(-0.5, NodeId::new_v4())));
+    let p = seq.grade_groups[0].stage(GradeStage::Pre).unwrap().nodes[1].id;
+    for gpu in [false, true] {
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(gpu);
+        let before = r.render(&seq, tc(1.0), W, H, &mut Grey(0.18), RenderOptions::default());
+        let inspect = Inspect {
+            clip: Some(clip),
+            solo: Some(stage(&group, p)),
+            scope_tap: Some(klipp_compose::inspect::grade_node(clip, x)),
+            thumbs: Some([klipp_compose::inspect::grade_node(clip, x), stage(&group, p)].into_iter().collect()),
+            ..Default::default()
+        };
+        let (_, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut Grey(0.18), RenderOptions::default(), inspect);
+        assert!(found.unavailable.is_empty(), "gpu {gpu}: {:?}", found.unavailable);
+        let after = r.render(&seq, tc(1.0), W, H, &mut Grey(0.18), RenderOptions::default());
+        assert_eq!(after, before, "gpu {gpu}: an inspected render leaves the next plain one as it was");
+    }
+}
+
+#[test]
+fn a_nested_tap_sees_its_external_inputs() {
+    // The pre stage's node reads the clip's source from outside its stage:
+    // soloed, it shows that source through it alone, before the clip's own.
+    let p = NodeId::new_v4();
+    let (seq, clip, group) = sequence(exposure(1.0, NodeId::new_v4()), Some(exposure(-0.5, p)));
+    let (only_the_stage, _, _) = sequence(exposure(-0.5, NodeId::new_v4()), None);
+    for gpu in [false, true] {
+        let (soloed, found) = draw(&seq, gpu, Inspect { clip: Some(clip), solo: Some(stage(&group, p)), ..Default::default() });
+        assert!(found.unavailable.is_empty(), "{:?}", found.unavailable);
+        close(&format!("gpu {gpu}: the stage's node on the clip's source"), &soloed, &plain(&only_the_stage, gpu));
+        far(&format!("gpu {gpu}: not the output"), &soloed, &plain(&seq, gpu));
+    }
+}
+
+#[test]
+fn same_local_id_in_two_groups_gives_two_results() {
+    // The clip's own node and the pre stage's share an id.
+    let x = NodeId::new_v4();
+    let (seq, clip, group) = sequence(exposure(1.0, x), Some(exposure(-0.5, x)));
+    for gpu in [false, true] {
+        let solo = |at: InspectAt| draw(&seq, gpu, Inspect { clip: Some(clip), solo: Some(at), ..Default::default() });
+        let (own, a) = solo(klipp_compose::inspect::grade_node(clip, x));
+        let (pre, b) = solo(stage(&group, x));
+        assert!(a.unavailable.is_empty() && b.unavailable.is_empty(), "{:?} {:?}", a.unavailable, b.unavailable);
+        far(&format!("gpu {gpu}: two nodes, two pictures"), &own, &pre);
+        close(&format!("gpu {gpu}: the clip's own node ends the grade"), &own, &plain(&seq, gpu));
+    }
+}
+
+#[test]
+fn a_mask_output_tap_uses_the_matte_visualisation() {
+    let q = NodeId::new_v4();
+    let (seq, clip, _) = sequence(graph(NodeKind::Qualifier, NodeParams::default(), q), None);
+    for gpu in [false, true] {
+        let (soloed, found) = draw(&seq, gpu, Inspect { clip: Some(clip), solo: Some(klipp_compose::inspect::grade_node(clip, q)), ..Default::default() });
+        assert!(found.unavailable.is_empty(), "{:?}", found.unavailable);
+        let (matte, _) = draw(&seq, gpu, Inspect { clip: Some(clip), matte_view: Some(klipp_compose::inspect::grade_node(clip, q)), ..Default::default() });
+        close(&format!("gpu {gpu}: a qualifier soloed shows its matte"), &soloed, &matte);
+    }
+}
+
+#[test]
+fn ungraded_keeps_its_meaning() {
+    let x = NodeId::new_v4();
+    let (seq, clip, _) = sequence(exposure(1.0, x), Some(exposure(-0.5, NodeId::new_v4())));
+    for gpu in [false, true] {
+        let (_, plain_found) = draw(&seq, gpu, Inspect { clip: Some(clip), ungraded: true, ..Default::default() });
+        let (_, soloed) = draw(&seq, gpu, Inspect { clip: Some(clip), ungraded: true, solo: Some(klipp_compose::inspect::grade_node(clip, x)), ..Default::default() });
+        let (a, b) = (plain_found.ungraded.expect("the picture before the grade"), soloed.ungraded.expect("the picture before the grade"));
+        close(&format!("gpu {gpu}: before the grade, whatever is soloed"), &a, &b);
+    }
+}
+
+#[test]
+fn a_missing_path_is_unavailable_not_stale() {
+    let x = NodeId::new_v4();
+    let (seq, clip, group) = sequence(exposure(1.0, x), Some(exposure(-0.5, NodeId::new_v4())));
+    let grade = klipp_graph_lift::ids::entry_id(klipp_graph_lift::ids::RootKind::Clip, clip.0, "grade", 0);
+    let compound = InspectAt::out(NodePath::new(Root::Clip { clip: clip.0 }, [grade, x, NodeId::new_v4()]));
+    for gpu in [false, true] {
+        for missing in [klipp_compose::inspect::grade_node(clip, NodeId::new_v4()), stage(&group, NodeId::new_v4()), compound.clone()] {
+            let (shown, found) = draw(&seq, gpu, Inspect { clip: Some(clip), solo: Some(missing.clone()), thumbs: Some([missing.clone()].into_iter().collect()), ..Default::default() });
+            assert!(found.unavailable.iter().any(|(at, _)| *at == missing), "gpu {gpu}: {missing:?} said to be unavailable: {:?}", found.unavailable);
+            assert!(found.thumbs.is_empty(), "no thumbnail stands in for it");
+            close(&format!("gpu {gpu}: the picture, not another node's"), &shown, &plain(&seq, gpu));
+        }
+        let (_, found) = draw(&seq, gpu, Inspect { clip: Some(clip), solo: Some(compound.clone()), ..Default::default() });
+        assert!(found.unavailable.iter().any(|(_, why)| why.contains("compound")), "{:?}", found.unavailable);
+    }
+}
+
+/// A soloed node the GPU would run in a chain with the next (the first
+/// of two exposures, a stage's node before the clip's own) is read back:
+/// its picture is the one shown, never a chain's empty placeholder.
+#[test]
+fn a_soloed_node_inside_a_gpu_chain_is_shown() {
+    // Source -> E1 -> E2 -> Output, no group: solo E1.
+    let mut g = exposure(1.0, NodeId::new_v4());
+    let e1 = g.nodes[1].id;
+    let e2 = NodeId::new_v4();
+    let out = g.output_node_id;
+    g.nodes.insert(2, Node { id: e2, kind: NodeKind::Exposure, label: "E2".into(), enabled: true, params: NodeParams { exposure: Some(-0.5), ..Default::default() }, keyframes: Default::default(), output_link: None, input_links: vec![] });
+    g.edges.retain(|e| e.to_node != out);
+    g.edges.push(Edge { from_node: e1, from_port: 0, to_node: e2, to_port: 0 });
+    g.edges.push(Edge { from_node: e2, from_port: 0, to_node: out, to_port: 0 });
+    let (seq, clip, _) = sequence(g, None);
+    let (only_e1, _, _) = sequence(exposure(1.0, NodeId::new_v4()), None);
+    for gpu in [false, true] {
+        let (shown, found) = draw(&seq, gpu, Inspect { clip: Some(clip), solo: Some(klipp_compose::inspect::grade_node(clip, e1)), ..Default::default() });
+        assert!(found.unavailable.is_empty(), "{:?}", found.unavailable);
+        close(&format!("gpu {gpu}: E1's picture"), &shown, &plain(&only_e1, gpu));
+    }
+}
+
+/// Time context (M3 step 16a): a keyframed node inspected the way the
+/// engine's thumbnails from a filmstrip frame are (the clip alone, at the
+/// playhead) is read at that frame's clip time: its picture is the one
+/// its value there gives, at two frames with two values.
+///
+/// A source-neighbour node (a temporal denoise, a frame blend) runs before
+/// the grade, outside the plan: a request on one is unavailable, and says
+/// so, until it is a node of the plan (#1305).
+#[test]
+fn a_source_neighbour_node_tap_has_its_time_context() {
+    // Source -> exposure keyed 0 at 0 s, 2 at 2 s -> exposure 0.5 -> Output.
+    let e = NodeId::new_v4();
+    let mut g = exposure(0.0, e);
+    let mut keys = Vec::new();
+    klipp_core::keyframe::upsert_keyframe(&mut keys, 0.0, 0.0);
+    klipp_core::keyframe::upsert_keyframe(&mut keys, 2.0, 2.0);
+    g.nodes[1].keyframes.tracks.push(klipp_nodes::NodeKeyframeTrack { param_name: "exposure".into(), keyframes: keys });
+    let (out, after) = (g.output_node_id, NodeId::new_v4());
+    g.nodes.insert(2, Node { id: after, kind: NodeKind::Exposure, label: "after".into(), enabled: true, params: NodeParams { exposure: Some(0.5), ..Default::default() }, keyframes: Default::default(), output_link: None, input_links: vec![] });
+    g.edges.retain(|x| x.to_node != out);
+    g.edges.push(Edge { from_node: e, from_port: 0, to_node: after, to_port: 0 });
+    g.edges.push(Edge { from_node: after, from_port: 0, to_node: out, to_port: 0 });
+    let (seq, clip, _) = sequence(g, None);
+    for gpu in [false, true] {
+        for (t, stops) in [(0.5, 0.5), (1.5, 1.5)] {
+            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(gpu);
+            let inspect = Inspect { clip: Some(clip), only: Some(clip), solo: Some(klipp_compose::inspect::grade_node(clip, e)), ..Default::default() };
+            let (shown, found) = r.render_inspected(&seq, tc(t), W, H, &mut Grey(0.18), RenderOptions::default(), inspect);
+            assert!(found.unavailable.is_empty(), "{:?}", found.unavailable);
+            let (still, _, _) = sequence(exposure(stops, NodeId::new_v4()), None);
+            let mut plain_r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            plain_r.set_gpu_enabled(gpu);
+            let want = plain_r.render(&still, tc(t), W, H, &mut Grey(0.18), RenderOptions::default());
+            close(&format!("gpu {gpu}: the keyed node at {t} s"), &shown, &want);
+        }
+    }
+
+    // A temporal denoise: unavailable, never another node's picture.
+    let mut c = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+    let denoise = (klipp_effects::registry::effect_type("temporal_denoise").unwrap().sample)();
+    c.set_effect_list(vec![denoise], vec![true]);
+    let id = c.id;
+    let node = c.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::TEMPORAL_DENOISE).expect("a temporal denoise node").id;
+    let mut seq = Sequence::new_default();
+    let mut track = Track::new("V1", TrackKind::Video);
+    track.clips = vec![c];
+    seq.tracks = vec![track];
+    let at = InspectAt::out(NodePath::new(Root::Clip { clip: id.0 }, [node]));
+    let (_, found) = draw(&seq, false, Inspect { clip: Some(id), solo: Some(at.clone()), ..Default::default() });
+    let why = found.unavailable.iter().find(|(a, _)| *a == at).map(|(_, w)| w.clone()).expect("said to be unavailable");
+    assert!(why.contains("before the grade") && why.contains("#1305"), "{why}");
+}

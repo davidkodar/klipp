@@ -1768,9 +1768,10 @@ pub enum AppCommand {
     /// final image, so the user can preview any mid-chain node as
     /// if it were the Output. `None` clears solo and restores the
     /// normal Output-node-input result. Single global slot (one
-    /// active clip at a time); auto-inactive when the soloed id
-    /// doesn't exist in the current clip's graph.
-    SetNodeSolo { node_id: Option<uuid::Uuid> },
+    /// active clip at a time). The node by its path in the inspected
+    /// clip's picture and its output (M3 step 16a); one the clip's run
+    /// doesn't hold is said to be unavailable, never shown as the output.
+    SetNodeSolo { at: Option<klipp_graph_format::path::NodeOutput> },
     /// Set node-graph view bookmark slot `slot` (0..8 corresponding
     /// to hotkeys 1..9) to the panel's current pan + zoom. Routed to
     /// the panel directly in the dispatcher because the bookmark
@@ -1905,7 +1906,9 @@ pub enum AppCommand {
     /// Sent when the viewport's node set changes (pan / zoom / add /
     /// remove). Playback path skips capture entirely to avoid the N
     /// extra GPU readbacks per frame.
-    SetVisibleNodeThumbs { clip_id: ClipId, node_ids: Vec<uuid::Uuid> },
+    /// Each node by its path in `clip_id`'s picture and its output (M3
+    /// step 16a).
+    SetVisibleNodeThumbs { clip_id: ClipId, at: Vec<klipp_graph_format::path::NodeOutput> },
     /// Render per-node thumbnails by running the clip's node graph on a
     /// caller-supplied pre-grade source bitmap (typically the filmstrip
     /// tile nearest the playhead). Used by the V2 canvas to populate

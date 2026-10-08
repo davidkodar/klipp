@@ -176,7 +176,7 @@ fn oracle(window: Window) -> Vec<f32> {
     let graded = render(&mut r, &sequence(graded_clip.clone()), Inspect::default()).0;
     let blurred = render(&mut r, &sequence(blurred_clip), Inspect::default()).0;
     let id = graded_clip.id;
-    let matte = render(&mut r, &sequence(graded_clip), Inspect { clip: Some(id), matte_view: w, ..Default::default() }).0;
+    let matte = render(&mut r, &sequence(graded_clip), Inspect { clip: Some(id), matte_view: w.map(|w| klipp_compose::inspect::grade_node(id, w)), ..Default::default() }).0;
     let _ = window;
     graded
         .chunks_exact(4)

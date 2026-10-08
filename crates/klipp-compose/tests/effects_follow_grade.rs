@@ -820,7 +820,7 @@ fn an_inspected_clip_shows_the_picture_the_render_draws() {
     let seq = graded(colour_family());
     let clip = &seq.tracks[0].clips[0];
     let id = clip.id;
-    let nodes: std::collections::HashSet<_> = clip.grade().nodes.iter().map(|n| n.id).collect();
+    let nodes: std::collections::HashSet<_> = clip.grade().nodes.iter().map(|n| klipp_compose::inspect::grade_node(id, n.id)).collect();
     let on_gpu = gpu();
     let (normal, followed) = render(&seq, false);
     assert_eq!(followed, u32::from(on_gpu), "the normal render takes the plan route when there is a GPU");
@@ -864,7 +864,7 @@ fn an_inspected_scene_referred_clip_keeps_its_display_step() {
     fx.push(E::Glow { radius: 6.0, intensity: 0.5 });
     let seq = graded(fx);
     let clip = &seq.tracks[0].clips[0];
-    let nodes: std::collections::HashSet<_> = clip.grade().nodes.iter().map(|n| n.id).collect();
+    let nodes: std::collections::HashSet<_> = clip.grade().nodes.iter().map(|n| klipp_compose::inspect::grade_node(clip.id, n.id)).collect();
     let tapped_node = clip.grade().nodes.iter().find(|n| n.kind == NodeKind::Exposure).expect("the graded clip's Exposure").id;
     let on_gpu = gpu();
     for (name, transfer) in transfers() {
@@ -879,7 +879,7 @@ fn an_inspected_scene_referred_clip_keeps_its_display_step() {
         // What the tools read is the grade's own output, as the CPU
         // renderer reads it: thumbnails and the scope's tap on a grade node,
         // before the display step and the effects.
-        let tools = Inspect { clip: Some(clip.id), thumbs: Some(nodes.clone()), scope_tap: Some(tapped_node), ..Default::default() };
+        let tools = Inspect { clip: Some(clip.id), thumbs: Some(nodes.clone()), scope_tap: Some(klipp_compose::inspect::grade_node(clip.id, tapped_node)), ..Default::default() };
         let (tapped, found) = draw(tools.clone());
         let mut cpu_r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
         cpu_r.set_gpu_enabled(false);
@@ -888,7 +888,7 @@ fn an_inspected_scene_referred_clip_keeps_its_display_step() {
         assert_eq!(found.stats.effects_on_cpu_kernels, u32::from(!on_gpu), "{name}: on the GPU when there is one");
         assert!(within_cpu_gpu_bar(&tapped, &plain), "{name}: the inspected picture keeps its display step");
         assert!(within_cpu_gpu_bar(&tapped, &want), "{name}: and is the CPU renderer's");
-        assert_eq!(found.thumbs.keys().collect::<std::collections::BTreeSet<_>>(), want_found.thumbs.keys().collect(), "{name}: the same thumbnails");
+        assert_eq!(found.thumbs.keys().collect::<std::collections::HashSet<_>>(), want_found.thumbs.keys().collect(), "{name}: the same thumbnails");
         for (id, px) in &found.thumbs {
             let worst = px.iter().zip(&want_found.thumbs[id]).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
             assert!(worst <= 1, "{name}: node {id:?}'s thumbnail is {worst} levels from the CPU renderer's");
@@ -909,7 +909,7 @@ fn a_soloed_scene_referred_clip_keeps_its_display_step() {
     let seq = graded(fx);
     let clip = &seq.tracks[0].clips[0];
     let exposure = clip.grade().nodes.iter().find(|n| n.kind == NodeKind::Exposure).expect("the graded clip's Exposure").id;
-    let solo = Inspect { clip: Some(clip.id), solo: Some(exposure), ..Default::default() };
+    let solo = Inspect { clip: Some(clip.id), solo: Some(klipp_compose::inspect::grade_node(clip.id, exposure)), ..Default::default() };
     assert!(solo.reads_the_grade());
     let on_gpu = gpu();
     for (name, transfer) in transfers() {

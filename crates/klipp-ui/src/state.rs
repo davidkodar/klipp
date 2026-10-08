@@ -2049,7 +2049,7 @@ pub struct AppState {
     /// mid-chain node as if it were the Output. Mirrors the same
     /// field on the engine; UI uses it to paint the yellow halo +
     /// "S" badge on the soloed node and the toolbar's "SOLO: …"
-    /// indicator. Cleared by AppCommand::SetNodeSolo { node_id: None }.
+    /// indicator. Cleared by AppCommand::SetNodeSolo { at: None }.
     pub solo_node: Option<klipp_nodes::NodeId>,
 
     // Before/After split view
