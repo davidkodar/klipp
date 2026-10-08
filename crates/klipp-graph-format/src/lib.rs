@@ -370,6 +370,11 @@ pub trait PortCatalog {
         Some("in".into())
     }
 
+    /// Explicit permission to move across the scene-to-display boundary.
+    /// A numeric kernel's working encoding is not this capability. Unknown
+    /// types and catalogs without a dual-domain declaration refuse the move.
+    fn allows_both_picture_domains(&self, _node: &Node) -> bool { false }
+
     /// Whether the node reads neighbouring source frames, rather than
     /// neighbours on the effect chain. Analysis-driven effects are not
     /// source-neighbour nodes. Existing op validation does not call this.
