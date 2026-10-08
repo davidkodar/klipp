@@ -31,6 +31,12 @@ pub fn grade_node(clip: &Clip, node: NodeId) -> Option<(NodePath, Node)> {
     Some((NodePath::new(Root::Clip { clip: clip.id.0 }, [group.id, node]), inner.clone()))
 }
 
+/// A grade node's stored entry (its kind, its v1 params): what its rows
+/// read their values from.
+fn entry_of(node: &Node) -> serde_json::Value {
+    node.legacy.as_ref().map(|l| l.payload.clone()).unwrap_or(serde_json::Value::Null)
+}
+
 /// Draw the clip's grade node `node` and push the commands its edits
 /// imply: `false`, drawing nothing, when the node isn't in the clip's own
 /// grade or its kind has no catalog type.
@@ -60,7 +66,7 @@ pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, node: Nod
             cmds.push(AppCommand::PickQualifierColour { clip_id: clip.id, node_id: node });
         }
     }
-    let entry = lifted.legacy.as_ref().map(|l| l.payload.clone()).unwrap_or(serde_json::Value::Null);
+    let entry = entry_of(&lifted);
     let presentation = |p: &ParamDesc| ty.presentation(p);
     let stored = |p: &ParamDesc| grade_value(&entry, p);
     let keys = |p: &ParamDesc| {
@@ -121,6 +127,15 @@ pub(crate) struct GradeSnapshot {
     rate: u32,
 }
 
+/// The snapshot a tabbed page draws its shared rows from this frame: the
+/// clip's own grade, with the generated inspector on (`on`); `None` for a
+/// nested grade (descended into a compound) or a stand-in's (the timeline
+/// grade, a group's stage), which keep the old rows. Every caller of the
+/// tabbed page takes it the same way, each frame, and drops it after.
+pub(crate) fn snapshot_for(clip: &Clip, on: bool, nested: bool, stand_in: bool) -> Option<GradeSnapshot> {
+    (on && !nested && !stand_in).then(|| GradeSnapshot::of(clip)).flatten()
+}
+
 impl GradeSnapshot {
     /// The clip's grade nodes, or `None` when its picture has no grade
     /// group.
@@ -142,7 +157,7 @@ impl GradeSnapshot {
         let Some(desc) = ty.desc.params.iter().find(|p| p.key == key) else { return false };
         let pres = ty.presentation(desc);
         let addr = NodePath::new(Root::Clip { clip: self.clip.0 }, [self.group, node]);
-        let entry = lifted.legacy.as_ref().map(|l| l.payload.clone()).unwrap_or(serde_json::Value::Null);
+        let entry = entry_of(lifted);
         let stored = grade_value(&entry, desc);
         let base = row::number(&stored).unwrap_or(desc.default);
         let (shown_at_t, keys) = keys_at(lifted, desc, base, frame.time_secs, frame.tolerance);

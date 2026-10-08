@@ -373,9 +373,15 @@ const SHARED: &[&str] = &["exposure", "contrast", "contrast_pivot", "clarity", "
 /// `selected` the canvas selection: its commands, what the recorder saw
 /// and its texts.
 fn tabbed(run: &mut Run, generated: bool, selected: Option<NodeId>, events: Vec<egui::Event>) -> (Vec<AppCommand>, Vec<crate::widgets::row_recorder::Row>, Vec<(String, egui::Pos2)>) {
+    tabbed_in(run, generated, false, selected, events)
+}
+
+/// As [`tabbed`], in the right inspector's layout or (`wide`) the Colour
+/// page's bottom tools'.
+fn tabbed_in(run: &mut Run, generated: bool, wide: bool, selected: Option<NodeId>, events: Vec<egui::Event>) -> (Vec<AppCommand>, Vec<crate::widgets::row_recorder::Row>, Vec<(String, egui::Pos2)>) {
     let c = clip(&run.state, run.clip).clone();
     let mut panel = run.panel.take().unwrap_or_default();
-    panel.generated = generated.then(|| crate::inspector::grade_view::GradeSnapshot::of(&c)).flatten();
+    panel.generated = crate::inspector::grade_view::snapshot_for(&c, generated, false, false);
     let mut graph = c.grade().clone();
     let theme = crate::theme::KlippTheme::default();
     let frame = FrameSelection { time_secs: run.time, tolerance: 0.02 };
@@ -388,7 +394,11 @@ fn tabbed(run: &mut Run, generated: bool, selected: Option<NodeId>, events: Vec<
             egui::CentralPanel::default().show(ctx, |ui| {
                 let mut sel = selected;
                 let mut tab = crate::state::ColorTab::Adjustments;
-                cmds = panel.show_simple(ui, &mut graph, c.id, &mut sel, &mut tab, &theme, frame);
+                cmds = if wide {
+                    panel.show_simple_horizontal(ui, &mut graph, c.id, &mut sel, &mut tab, &theme, frame)
+                } else {
+                    panel.show_simple(ui, &mut graph, c.id, &mut sel, &mut tab, &theme, frame)
+                };
             });
         });
         texts = out.shapes.iter().filter_map(|s| match &s.shape {
@@ -396,6 +406,8 @@ fn tabbed(run: &mut Run, generated: bool, selected: Option<NodeId>, events: Vec<
             _ => None,
         }).collect();
     });
+    // Each caller drops the snapshot after the draw, so none is reused.
+    panel.generated = None;
     run.panel = Some(panel);
     (cmds, rows, texts)
 }
@@ -453,3 +465,42 @@ fn tabbed_targeting_is_unchanged() {
         assert_eq!(set, vec![want], "selected {selected:?}: {cmds:?}");
     }
 }
+
+/// A tabbed page draws its shared rows from a snapshot only of the clip's
+/// own grade with the generated inspector on; a nested grade or a
+/// stand-in's (the timeline grade, a group's stage) keeps the old rows.
+#[test]
+fn the_shared_rows_fall_back_for_nested_and_stand_in_grades() {
+    let run = Run::new(NodeKind::Corrector).unwrap();
+    let c = clip(&run.state, run.clip);
+    use crate::inspector::grade_view::snapshot_for;
+    assert!(snapshot_for(c, true, false, false).is_some(), "the clip's own grade");
+    assert!(snapshot_for(c, false, false, false).is_none(), "the switch off");
+    assert!(snapshot_for(c, true, true, false).is_none(), "a nested grade");
+    assert!(snapshot_for(c, true, false, true).is_none(), "a stand-in's grade");
+}
+
+/// The Colour page's bottom tools draw the shared rows from this frame's
+/// snapshot, as the right inspector does: a value changed between draws
+/// (by path, as an edit there sends it) shows at once, never a snapshot
+/// left by an earlier draw.
+#[test]
+fn the_bottom_tools_draw_the_current_values() {
+    let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
+    let (addr, _) = crate::inspector::grade_view::grade_node(clip(&run.state, run.clip), run.node).unwrap();
+    // The generated row has a keyframe diamond; the old one hasn't.
+    let exposure = |rows: &[crate::widgets::row_recorder::Row]| rows.iter().find(|r| r.parameter.as_deref() == Some("exposure")).map(|r| (r.keyframe_state.is_some(), r.value.clone()));
+    for v in [0.3f32, 0.6] {
+        run.apply(&[AppCommand::SetParamAt { addr: addr.clone(), key: "exposure".into(), value: klipp_graph_format::ParamValue::Float(v) }]);
+        let (_, right, _) = tabbed_in(&mut run, true, false, None, Vec::new());
+        let (cmds, bottom, _) = tabbed_in(&mut run, true, true, None, Vec::new());
+        assert!(cmds.is_empty(), "the bottom tools wrote on open: {cmds:?}");
+        assert_eq!(exposure(&bottom), exposure(&right), "the bottom tools' exposure row is the right inspector's");
+        assert_eq!(exposure(&bottom).map(|(_, value)| value), Some(serde_json::json!(v)), "the current value, {v}");
+    }
+    // With the generated rows off (no snapshot this frame), the bottom
+    // tools draw the old row, not one left from the last draw.
+    let (_, off, _) = tabbed_in(&mut run, false, true, None, Vec::new());
+    assert_ne!(exposure(&off).map(|(w, _)| w), exposure(&tabbed_in(&mut run, true, true, None, Vec::new()).1).map(|(w, _)| w), "no snapshot reused");
+}
+

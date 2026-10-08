@@ -398,11 +398,17 @@ impl KlippApp {
                 self.node_inspector_panel.printer_point = self.prefs.color.printer_point;
                 self.node_inspector_panel.input_colour_space =
                     crate::inspector::color_and_luts::clip_input_colour_space(&self.state, clip_id);
+                let grading_timeline = GradeStandIn::of(&self.state.sequences[seq_idx], clip_id).is_some();
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
                     let mask_frame = crate::inspector::keyframe_selection::FrameSelection::new(self.state.playhead, clip.timeline_in, mask_tolerance);
                     let path = self.state.graph_descent_path.clone();
+                    // The shared rows are the generated ones, as on the right
+                    // inspector (M3 step 11c): this frame's snapshot of the
+                    // clip's own grade, under the same guards, or none.
+                    let generated = self.state.use_generated_stack && path.is_empty() && !grading_timeline;
+                    self.node_inspector_panel.generated = crate::inspector::grade_view::snapshot_for(clip, self.state.use_generated_stack, !path.is_empty(), grading_timeline);
                     let panel_cmds = clip.edit_grade(|root| {
                         let graph: &mut klipp_nodes::NodeGraph =
                             match Self::resolve_graph_at_path_mut(root, &path) {
@@ -417,6 +423,15 @@ impl KlippApp {
                             mask_frame,
                         )
                     });
+                    self.node_inspector_panel.generated = None;
+                    // A key the generated rows name at the playhead is the
+                    // stored key in its frame.
+                    let mut panel_cmds = panel_cmds;
+                    if generated {
+                        for cmd in &mut panel_cmds {
+                            crate::inspector::keyframe_selection::resolve_for_clip(clip, mask_tolerance, cmd);
+                        }
+                    }
                     all_cmds.extend(panel_cmds);
                 }
             } else {
