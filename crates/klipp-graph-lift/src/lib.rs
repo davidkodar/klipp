@@ -9,6 +9,7 @@
 //! functions over the files' JSON and `klipp-graph-format`: the app may
 //! depend on this crate, and it depends on no app crate.
 pub mod canon;
+pub mod clip_properties;
 pub mod delift;
 pub mod edit_planner;
 pub mod effect_params;

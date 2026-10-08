@@ -35,6 +35,7 @@ use klipp_graph_format::path::Root;
 use klipp_graph_format::{types, Node, NodeId, ParamValue};
 use klipp_graph_lift::ops::{apply_in_batch, check_batch_end, GraphOp};
 use klipp_graph_lift::paths::Documents;
+use klipp_effects::BuiltinEffect;
 use serde_json::Value;
 
 /// What a batch of ops did to a clip's picture: its fields before and
@@ -68,6 +69,9 @@ fn path_of(op: &GraphOp) -> &klipp_graph_format::path::NodePath {
 
 /// Where an op lands on the clip's fields.
 enum Target {
+    /// The clip's placement or opacity, set through its PLACEMENT node (M3
+    /// step 13): the fields that place it.
+    Placement,
     /// Inside the grade group: the grade is written back whole.
     Grade,
     /// A built-in effect entry, by its node.
@@ -84,6 +88,10 @@ fn node(p: &ClipPicture, id: NodeId) -> Option<&Node> {
 /// publishes (for a mask inside the grade to reach an effect), and a node
 /// beside the clip's chain (a window, a key) with anything done to it.
 fn picture_only(p: &ClipPicture, op: &GraphOp) -> bool {
+    // The clip's placement and opacity are fields (M3 step 13).
+    if klipp_graph_lift::clip_properties::property_of(p, op).is_some() {
+        return false;
+    }
     let path = path_of(op);
     let Some(first) = path.nodes.first().and_then(|id| node(p, *id)) else {
         // A node this batch adds beside the chain: only the picture has it.
@@ -129,6 +137,11 @@ fn side_wiring_refusal(p: &ClipPicture, op: &GraphOp) -> Option<String> {
 
 /// Where `op` lands, or why it can't be written to the fields.
 fn target(p: &ClipPicture, op: &GraphOp) -> Result<Target, String> {
+    // The clip's placement or opacity, by its placement node's stable
+    // address or its id (M3 step 13).
+    if klipp_graph_lift::clip_properties::property_of(p, op).is_some() {
+        return Ok(Target::Placement);
+    }
     let path = path_of(op);
     let first = path.nodes.first().copied().ok_or("an empty path names no node")?;
     let first = node(p, first).ok_or_else(|| format!("{first} isn't in the clip's picture"))?;
@@ -437,8 +450,12 @@ impl Clip {
         let mut order = list_order(&lifted.picture, self.builtin_effects().len());
         let written = (|| {
             for (index, (op, (t, post))) in ops.iter().zip(&steps).enumerate() {
-                if let Some(Target::Effect) = t {
-                    self.write_effect_op(op, post, &mut order).map_err(|why| (Some(index), why))?;
+                match t {
+                    Some(Target::Effect) => self.write_effect_op(op, post, &mut order).map_err(|why| (Some(index), why))?,
+                    // A picture-truth clip's placement is its picture's,
+                    // set on the copy; its fields are the picture's view.
+                    Some(Target::Placement) if !truth => self.write_placement_op(op).map_err(|why| (Some(index), why))?,
+                    _ => {}
                 }
             }
             if grade {
@@ -547,6 +564,119 @@ impl Clip {
         let v1 = klipp_graph_lift::to_v1::clip(&serde_json::to_value(&record).map_err(|e| e.to_string())?)?;
         let graph: klipp_nodes::NodeGraph = serde_json::from_value(v1.get("node_graph").cloned().unwrap_or_default()).map_err(|e| format!("the edited grade: {e}"))?;
         self.set_grade(graph);
+        Ok(())
+    }
+
+    /// One op on the clip's placement or opacity (M3 step 13), written to
+    /// the fields the lift reads them from: a placement value to the first
+    /// enabled Transform entry (one added at the list's end, an identity,
+    /// when there's none), the opacity to the entry the lift reads as the
+    /// clip's (the last enabled Opacity; an adjustment layer's first), and
+    /// their keys to the clip's placement and opacity lanes.
+    fn write_placement_op(&mut self, op: &GraphOp) -> Result<(), String> {
+        use klipp_core::VideoParam as P;
+        let (GraphOp::SetParam { key, .. } | GraphOp::AddKeyAt { key, .. } | GraphOp::RemoveKeyAt { key, .. } | GraphOp::SetAnim { key, .. }) = op else {
+            return Err("not an op on a clip property".into());
+        };
+        let on = |c: &Self, i: usize| c.builtin_effects_enabled().get(i).copied().unwrap_or(true);
+        if let GraphOp::SetParam { value: ParamValue::Float(v), .. } = op {
+            let v = *v;
+            if key.as_str() == "opacity" {
+                let is_opacity = |e: &BuiltinEffect| matches!(e, BuiltinEffect::Opacity { .. });
+                let at = if matches!(self.kind, crate::ClipKind::AdjustmentLayer) {
+                    self.builtin_effects().iter().position(is_opacity)
+                } else {
+                    (0..self.builtin_effects().len()).rev().find(|i| is_opacity(&self.builtin_effects()[*i]) && on(self, *i))
+                };
+                let id = match at {
+                    Some(i) => self.effect_id_at(i).ok_or("the opacity entry is gone")?,
+                    None => self.push_effect(BuiltinEffect::Opacity { value: v }),
+                };
+                self.edit_effect(id, |e| {
+                    if let BuiltinEffect::Opacity { value } = e {
+                        *value = v;
+                    }
+                });
+                return Ok(());
+            }
+            let at = (0..self.builtin_effects().len()).find(|i| matches!(self.builtin_effects()[*i], BuiltinEffect::Transform { .. }) && on(self, *i));
+            let id = match at {
+                Some(i) => self.effect_id_at(i).ok_or("the transform entry is gone")?,
+                None => self.push_effect(BuiltinEffect::Transform {
+                    position_x: 0.0,
+                    position_y: 0.0,
+                    scale_x: 1.0,
+                    scale_y: 1.0,
+                    rotation: 0.0,
+                    anchor_x: 0.5,
+                    anchor_y: 0.5,
+                    rotation_x: 0.0,
+                    rotation_y: 0.0,
+                    perspective: 0.0,
+                    focal_ref: None,
+                }),
+            };
+            let name = key.as_str().to_owned();
+            self.edit_effect(id, |e| {
+                if let BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, rotation_x, rotation_y, perspective, .. } = e {
+                    match name.as_str() {
+                        "pos_x" => *position_x = v,
+                        "pos_y" => *position_y = v,
+                        "scale" => (*scale_x, *scale_y) = (v, v),
+                        "rotation" => *rotation = v,
+                        "anchor_x" => *anchor_x = v,
+                        "anchor_y" => *anchor_y = v,
+                        "tilt_x" => *rotation_x = v,
+                        "tilt_y" => *rotation_y = v,
+                        _ => *perspective = v,
+                    }
+                }
+            });
+            return Ok(());
+        }
+        if let GraphOp::SetParam { value, .. } = op {
+            return Err(format!("{key} takes a number, not {value:?}"));
+        }
+        let lane = match key.as_str() {
+            "pos_x" => P::PositionX,
+            "pos_y" => P::PositionY,
+            "scale" => P::Scale,
+            "rotation" => P::Rotation,
+            "tilt_x" => P::TiltX,
+            "tilt_y" => P::TiltY,
+            "opacity" => P::Opacity,
+            other => return Err(format!("{other} doesn't take keyframes")),
+        };
+        let parse = |k: &Value| serde_json::from_value::<klipp_core::Keyframe>(k.clone()).map_err(|e| format!("a key: {e}"));
+        match op {
+            GraphOp::AddKeyAt { keyframe, .. } => {
+                let k = parse(keyframe)?;
+                self.edit_video_param_keyframes(lane, |keys| {
+                    keys.retain(|x| (x.time_secs - k.time_secs).abs() > 1e-9);
+                    let at = keys.iter().position(|x| x.time_secs > k.time_secs).unwrap_or(keys.len());
+                    keys.insert(at, k);
+                });
+            }
+            GraphOp::RemoveKeyAt { time_secs, .. } => {
+                let t = *time_secs;
+                let found = self.edit_video_param_keyframes(lane, |keys| {
+                    let before = keys.len();
+                    keys.retain(|x| (x.time_secs - t).abs() > 1e-9);
+                    keys.len() != before
+                });
+                if !found {
+                    return Err(format!("{key} has no key at {t} s"));
+                }
+            }
+            GraphOp::SetAnim { anim, .. } => {
+                if anim.as_ref().is_some_and(|a| a.modifiers.is_some()) {
+                    return Err(format!("{key}'s modifiers are set on its own lane, not with its keys"));
+                }
+                let keys = anim.iter().flat_map(|a| &a.keys).map(parse).collect::<Result<Vec<_>, _>>()?;
+                self.edit_video_param_keyframes(lane, |k| *k = keys);
+            }
+            _ => {}
+        }
         Ok(())
     }
 

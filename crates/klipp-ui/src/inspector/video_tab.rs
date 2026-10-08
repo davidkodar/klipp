@@ -124,7 +124,16 @@ pub fn show(
     cmds: &mut Vec<AppCommand>,
 ) {
     match clip_ctx {
-        Some((clip, clip_time_secs, is_timeline)) => show_clip_video(ui, theme, state, clip, cmds, clip_time_secs, is_timeline),
+        Some((clip, clip_time_secs, is_timeline)) => {
+            let start = cmds.len();
+            show_clip_video(ui, theme, state, clip, cmds, clip_time_secs, is_timeline);
+            // Behind the switch, the clip's placement and opacity are its
+            // properties, set by path (M3 step 13).
+            if state.use_generated_stack && !is_timeline {
+                let mine = cmds.split_off(start);
+                cmds.extend(super::placement_by_path::by_path(mine, clip));
+            }
+        }
         None => {
             if let Some(media) = bin_media {
                 show_bin_media_video(ui, theme, state, media, cmds);

@@ -1006,8 +1006,10 @@ pub enum AppCommand {
     /// Feed the mask port of the effect at `addr` from `from`'s `from_port`.
     ConnectMaskAt { addr: klipp_graph_format::path::NodePath, from: klipp_graph_format::path::NodePath, from_port: klipp_graph_format::PortKey },
     SetMaskChannelAt { addr: klipp_graph_format::path::NodePath, channel: Option<String> },
-    /// Open a drag of `(addr, key)`: the `SetParamAt`s on it until its
-    /// `EndParamEditAt` are one undo step.
+    /// Open a drag of `(addr, key)`: the `SetParamAt`s on it (and its key
+    /// edits) until its `EndParamEditAt` are one undo step. An empty `key`
+    /// opens a drag over the node's parameters together (a corner pin's
+    /// handle moves two at once).
     BeginParamEditAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey },
     EndParamEditAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey },
     /// Add a key to `(addr, key)`: `keyframe` as the node's animation
