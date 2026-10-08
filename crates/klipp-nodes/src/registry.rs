@@ -50,6 +50,9 @@ use klipp_effects::registry::{
     Alpha, Category, ColourDomain, NodeTypeDesc, ParamDesc, ParamKind, PortDesc, PortType, Scaling, Spatial, Temporal, Unit,
 };
 
+#[path = "registry_presentation.rs"]
+pub mod presentation;
+
 /// A grade node's description, tied to its kind.
 #[derive(Debug, Clone, Copy)]
 pub struct NodeType {
