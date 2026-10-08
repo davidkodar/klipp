@@ -333,3 +333,87 @@ fn a_browser_add_is_the_same_by_path() {
     assert!(compared > 40, "only {compared} entries compared");
 }
 
+
+/// Start a real drag on the header's Mix slider. Its numeric value is
+/// drawn between the rail and the Mix label; use that observed row and
+/// egui's configured rail width, not an absolute screen coordinate.
+fn start_header_mix_drag(run: &mut Run) -> egui::Pos2 {
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
+    let label = drawn
+        .iter()
+        .find(|(text, _)| text == "Mix")
+        .map(|(_, at)| *at)
+        .expect("Mix label");
+    let number = drawn
+        .iter()
+        .filter(|(text, at)| {
+            (at.y - label.y).abs() < 6.0 && at.x < label.x && text.parse::<f32>().is_ok()
+        })
+        .max_by(|a, b| a.1.x.total_cmp(&b.1.x))
+        .map(|(_, at)| *at)
+        .unwrap_or_else(|| panic!("Mix value: {drawn:?}"));
+    let at = number - egui::vec2(run.ctx.style().spacing.slider_width * 0.6, 0.0);
+    run.button(at, egui::PointerButton::Primary, true);
+    for dx in [6.0, 12.0, 18.0] {
+        run.frame(
+            vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))],
+            egui::Modifiers::NONE,
+        );
+    }
+    at + egui::vec2(18.0, 0.0)
+}
+
+#[test]
+fn a_header_mix_drag_is_one_exact_undo_step() {
+    let mut run = Run::new(fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 }), true);
+    let before = run.clip().picture_v2().unwrap();
+    let at = start_header_mix_drag(&mut run);
+    run.button(at, egui::PointerButton::Primary, false);
+    let after = run.clip().picture_v2().unwrap();
+    assert_ne!(
+        after, before,
+        "the real Mix control must change the picture"
+    );
+    assert_eq!(
+        run.state.active_history().undo_count(),
+        1,
+        "one drag, not one step per frame"
+    );
+    assert!(!run.state.any_drag_in_progress());
+    assert!(run.step(false));
+    assert_eq!(run.clip().picture_v2().unwrap(), before);
+    assert!(run.step(true));
+    assert_eq!(run.clip().picture_v2().unwrap(), after);
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+}
+
+#[test]
+fn escape_abandons_a_header_mix_drag_even_if_the_pointer_keeps_moving() {
+    let mut run = Run::new(fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 }), true);
+    let before = run.clip().picture_v2().unwrap();
+    let at = start_header_mix_drag(&mut run);
+    assert_ne!(
+        run.clip().picture_v2().unwrap(),
+        before,
+        "the real Mix control must change the picture"
+    );
+    run.key(egui::Key::Escape, egui::Modifiers::NONE);
+    run.frame(
+        vec![egui::Event::PointerMoved(at + egui::vec2(10.0, 0.0))],
+        egui::Modifiers::NONE,
+    );
+    run.button(
+        at + egui::vec2(10.0, 0.0),
+        egui::PointerButton::Primary,
+        false,
+    );
+    assert_eq!(
+        run.clip().picture_v2().unwrap(),
+        before,
+        "Escape restores the full picture"
+    );
+    assert_eq!(run.state.active_history().undo_count(), 0);
+    assert!(!run.state.any_drag_in_progress());
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+}

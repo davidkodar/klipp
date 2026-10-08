@@ -312,8 +312,36 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
         let mix = node.and_then(|n| n.mix).unwrap_or(1.0);
         let mut v = mix;
         let r = ui.add_enabled(!row.read_only, egui::Slider::new(&mut v, 0.0..=1.0).text("Mix"));
-        if r.changed() && v != mix {
-            cmds.push(AppCommand::SetMixAt { addr: row.addr.clone(), mix: (v < 1.0).then_some(v) });
+        let key = klipp_graph_format::ParamKey::from(AppState::NODE_MIX_DRAG_KEY);
+        if r.drag_started() {
+            cmds.push(AppCommand::BeginParamEditAt {
+                addr: row.addr.clone(),
+                key: key.clone(),
+            });
+        }
+        // egui reports drag_stopped on Escape before the widget is drawn.
+        if (r.dragged() || r.drag_stopped()) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            cmds.push(AppCommand::AbandonParamEditAt {
+                addr: row.addr.clone(),
+                key,
+            });
+            // Escape also releases egui's capture so held-pointer movement
+            // cannot begin writing a second edit before the button is released.
+            ui.ctx().stop_dragging();
+        } else {
+            if r.changed() && v != mix {
+                cmds.push(AppCommand::SetMixAt {
+                    addr: row.addr.clone(),
+                    mix: (v < 1.0).then_some(v),
+                });
+            }
+            if r.drag_stopped() {
+                cmds.push(AppCommand::EndParamEditAt {
+                    addr: row.addr.clone(),
+                    key,
+                });
+            }
         }
     }
     for chip in &row.mask_chips {
