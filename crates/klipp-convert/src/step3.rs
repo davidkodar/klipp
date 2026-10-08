@@ -98,14 +98,21 @@ impl Manifest {
 }
 
 /// The files of `dir` the manifest covers, sorted. A link among them is a
-/// stop: the run never follows one out of the project.
-fn inventory(dir: &Path) -> Result<Vec<Item>, String> {
+/// stop: the run never follows one out of the project. An excluded
+/// project's linked side folder isn't followed either, but isn't a stop:
+/// the run never writes an excluded project, and its other files are
+/// still held to their hashes.
+fn inventory(dir: &Path, excluded: bool) -> Result<Vec<Item>, String> {
     // A linked folder would take every file under it out of the project,
     // whatever the files themselves are.
+    let mut linked = Vec::new();
     for rel in ["media", "looks", ".recovery"] {
         let d = dir.join(rel);
         if std::fs::symlink_metadata(&d).is_ok_and(|m| !m.is_dir()) {
-            return Err(format!("{} isn't a plain folder (a link?): left for a person to settle", d.display()));
+            if !excluded {
+                return Err(format!("{} isn't a plain folder (a link?): left for a person to settle", d.display()));
+            }
+            linked.push(d);
         }
     }
     let mut paths = Vec::new();
@@ -113,7 +120,11 @@ fn inventory(dir: &Path) -> Result<Vec<Item>, String> {
     for rel in ["project.json", "media/manifest.json", "media/stills.json"] {
         paths.push(named(rel));
     }
+    let under_link = |p: &Path| linked.iter().any(|l| p.starts_with(l));
     let listed = |d: &Path, keep: &dyn Fn(&str) -> bool| -> Result<Vec<PathBuf>, String> {
+        if under_link(d) {
+            return Ok(Vec::new());
+        }
         match std::fs::read_dir(d) {
             Ok(es) => es.map(|e| e.map(|e| e.path()).map_err(|e| io_err("listing", d, e))).filter(|p| p.as_ref().map_or(true, |p| p.file_name().is_some_and(|n| keep(&n.to_string_lossy())))).collect(),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
@@ -135,7 +146,7 @@ fn inventory(dir: &Path) -> Result<Vec<Item>, String> {
         }
     }
     let mut items = Vec::new();
-    for p in paths {
+    for p in paths.into_iter().filter(|p| !under_link(p)) {
         let m = match std::fs::symlink_metadata(&p) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -158,7 +169,7 @@ fn read_json(p: &Path) -> Result<Value, String> {
 
 /// Settle one candidate, or say why it stops.
 fn settle(dir: &Path, excluded: bool) -> Result<Candidate, String> {
-    let items = inventory(dir)?;
+    let items = inventory(dir, excluded)?;
     let candidate = |decision, reason: String, revision| Candidate { dir: dir.to_path_buf(), decision, reason, revision, items: items.clone() };
     if excluded {
         return Ok(candidate(Decision::Excluded, "excluded by --exclude".into(), None));
