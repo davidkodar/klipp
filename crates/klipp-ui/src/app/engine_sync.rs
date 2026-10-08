@@ -190,6 +190,7 @@ impl KlippApp {
             // A path drag the command doesn't belong to is closed as its own
             // step before any handler runs (M3 step 2).
             self.state.before_dispatch(&cmd);
+            if self.handle_node_thumbnail_request(&cmd) { continue; }
             // Several clips selected and the Inspector's clip edited: the
             // others take the change too (#843).
             let multi = self.multi_edit_pre(&cmd);

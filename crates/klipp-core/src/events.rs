@@ -1921,8 +1921,9 @@ pub enum AppCommand {
     /// remove). Playback path skips capture entirely to avoid the N
     /// extra GPU readbacks per frame.
     /// Each node by its path in `clip_id`'s picture and its output (M3
-    /// step 16a).
-    SetVisibleNodeThumbs { clip_id: ClipId, at: Vec<klipp_graph_format::path::NodeOutput> },
+    /// step 16a). `request` identifies the UI context; replies retain it
+    /// so delayed results cannot populate a newer graph or frame.
+    SetVisibleNodeThumbs { request: u64, clip_id: ClipId, at: Vec<klipp_graph_format::path::NodeOutput> },
     /// Render per-node thumbnails by running the clip's node graph on a
     /// caller-supplied pre-grade source bitmap (typically the filmstrip
     /// tile nearest the playhead). Used by the V2 canvas to populate
@@ -1930,8 +1931,10 @@ pub enum AppCommand {
     /// is sRGB u8 RGBA at the given width × height; engine evaluates
     /// time-keyed grade params at `playhead` so keyframes remain
     /// frame-accurate even though the source bitmap came from a
-    /// slightly different timestamp.
+    /// slightly different timestamp. `request` must match the active
+    /// visible-node request. These results are marked as low-resolution.
     RenderNodeThumbsFromSource {
+        request: u64,
         clip_id: ClipId,
         playhead: crate::RationalTime,
         src_rgba: Vec<u8>,

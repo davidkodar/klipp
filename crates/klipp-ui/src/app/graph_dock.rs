@@ -82,6 +82,7 @@ impl AppState {
 impl KlippApp {
     pub(super) fn render_graph_dock(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, rect: egui::Rect, theme: &KlippTheme) {
         self.state.repair_graph_dock();
+        self.refresh_node_thumbnails();
         let root = self.state.graph_dock_root;
         let clip_id = root.and_then(|root| match root { Root::Clip { clip } => Some(ClipId(clip)), _ => None });
         let grade = clip_id.and_then(|id| self.state.sequence().all_clips().find(|c| c.id == id)).and_then(|c| c.picture_v2().ok()).and_then(|p| p.picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::GROUP).and_then(|n| n.group.as_ref().map(|g| (n.id, g.graph.output))));
@@ -125,7 +126,7 @@ impl KlippApp {
             let mut level = NodePath::new(root.unwrap(), self.state.graph_dock_path.clone());
             let time = (self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
             let keyboard_enabled = self.state.active_panel == Some(crate::state::PanelKind::PictureGraph);
-            match self.node_graph_v2_panel.show_picture(ui, clip, &mut level, &mut self.state.selected_node_id, &mut self.state.selected_node_ids, theme, time, keyboard_enabled) {
+            match self.node_graph_v2_panel.show_picture(ui, clip, &mut level, &mut self.state.selected_node_id, &mut self.state.selected_node_ids, theme, time, keyboard_enabled, &self.state.node_thumbs, self.state.node_thumbs_gen, &mut self.state.deferred_texture_drops[self.state.deferred_texture_drops_slot]) {
                 Ok(updates) => cmds.extend(updates),
                 Err(why) => { ui.label(why); }
             }

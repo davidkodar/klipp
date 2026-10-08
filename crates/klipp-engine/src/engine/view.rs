@@ -583,11 +583,9 @@ impl PlaybackEngine {
             let wait = if self.is_scrubbing { Duration::ZERO } else { Duration::from_millis(150) };
             self.wait_for_streams(wait);
         }
-        let (seq, primary_clip) = {
-            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            let id = primary.as_ref().and(self.v1_clip_id(&seq));
-            (klipp_compose::frame_snapshot(&seq, self.playhead), id)
-        };
+        let (snapshot, revision) = self.sequence.snapshot_with_revision();
+        let primary_clip = primary.as_ref().and(self.v1_clip_id(&snapshot));
+        let seq = klipp_compose::frame_snapshot(&snapshot, self.playhead);
         let seq_size = (seq.resolution.width, seq.resolution.height);
         let (w, h) = match &primary {
             Some(p) => viewer_canvas((p.width, p.height), seq_size),
@@ -754,7 +752,15 @@ impl PlaybackEngine {
             self.note_composite_path(if inspect_is_plain(&inspect) { "CPU (display blockers)" } else { "CPU (inspection)" });
         }
 
-        let (linear, found) = self.render_timeline(&seq, primary_ref, w, h, inspect);
+        let thumbs_requested = inspect.thumbs.is_some() && !progress;
+        let (linear, mut found) = self.render_timeline(&seq, primary_ref, w, h, inspect);
+        if thumbs_requested {
+            let batch = crate::node_thumbnails::ThumbnailBatch::new(
+                self.thumbnail_request, crate::node_thumbnails::frame_index(self.playhead, snapshot.fps), crate::node_thumbnails::PreviewQuality::Viewer,
+                revision, &self.thumbnail_priority, std::mem::take(&mut found.thumbs),
+            );
+            self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).publish_node_thumbnails(batch);
+        }
         let cached = cache_key
             .filter(|_| self.state != PlaybackState::Playing)
             .map(|key| (key, super::linear_rgba_to_u8(&linear)));
@@ -832,15 +838,9 @@ impl PlaybackEngine {
         // A tap borrowed for the read is not the scopes' to show,
         // answered or not.
         let scope_tap = found.scope_tap.as_ref().filter(|_| borrowed.is_none());
-        if scope_tap.is_some() || !found.thumbs.is_empty() {
+        if let Some(tap) = scope_tap {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(tap) = scope_tap {
-                fb.scope_data = klipp_effects::linear_f32_rgba_to_srgb_u8(tap);
-            }
-            if !found.thumbs.is_empty() {
-                fb.node_thumbs = found.thumbs.iter().filter_map(|(at, bytes)| Some((at.path.node()?, bytes.clone()))).collect();
-                fb.node_thumbs_gen = fb.node_thumbs_gen.wrapping_add(1);
-            }
+            fb.scope_data = klipp_effects::linear_f32_rgba_to_srgb_u8(tap);
         }
         if let (Some(mask), Some(consumer)) = (&found.matte_mask, self.inspector_matte_preview_target) {
             let _ = self.event_tx.send(matte_preview_event(consumer, mask, w, h));

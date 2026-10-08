@@ -23,6 +23,7 @@ impl KlippApp {
         self.node_browser_borrow.leave_if_inactive(side_nodes, &mut self.state.show_browser_panel);
         self.reconcile_workspace();
         self.state.repair_graph_dock();
+        self.refresh_node_thumbnails();
         self.node_browser_borrow.enter_if_active(side_nodes, &mut self.state.show_browser_panel);
         if let Some(text) = self.state.system_clipboard_text.take() {
             ctx.copy_text(text);

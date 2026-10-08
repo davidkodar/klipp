@@ -260,14 +260,10 @@ pub struct FrameBuffer {
     /// The device and queue `gpu_output` lives on, to read it back.
     gpu_output_queue: Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>,
 
-    /// Per-node output thumbnails for the V2 canvas, keyed by node
-    /// id. Each entry is a ~96×54 sRGB u8 RGBA buffer. Populated by
-    /// the engine on paused / post-seek re-grades when the UI has
-    /// sent a non-empty `SetVisibleNodeThumbs` list. `node_thumbs_gen`
-    /// bumps whenever the map changes so the V2 panel can skip
-    /// texture re-uploads between no-op updates.
-    pub node_thumbs: std::collections::HashMap<klipp_nodes::NodeId, Vec<u8>>,
+    /// Advances on each complete thumbnail publication, including empty results.
     pub node_thumbs_gen: u64,
+    /// Full node addresses and the immutable render snapshot they answer.
+    pub node_thumbnail_batch: Option<crate::node_thumbnails::ThumbnailBatch>,
 }
 
 /// The format to sample [`FrameBuffer::gpu_output`] through. The texture
@@ -280,6 +276,21 @@ pub struct FrameBuffer {
 pub const GPU_VIEWER_SAMPLE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 impl FrameBuffer {
+    /// Publish a complete answer, including an empty answer. A nearby
+    /// filmstrip image must not replace the same request's viewer render.
+    pub fn publish_node_thumbnails(&mut self, batch: crate::node_thumbnails::ThumbnailBatch) {
+        use crate::node_thumbnails::PreviewQuality;
+        if batch.quality == PreviewQuality::Filmstrip
+            && self.node_thumbnail_batch.as_ref().is_some_and(|old|
+                old.quality == PreviewQuality::Viewer
+                    && old.matches(batch.request, batch.frame, batch.revision))
+        {
+            return;
+        }
+        self.node_thumbnail_batch = Some(batch);
+        self.node_thumbs_gen = self.node_thumbs_gen.wrapping_add(1);
+    }
+
     pub fn new(width: u32, height: u32) -> Self {
         Self {
             data: vec![0u8; (width * height * 4) as usize],
@@ -325,8 +336,8 @@ impl FrameBuffer {
             trail: std::collections::VecDeque::new(),
             gpu_output_queue: None,
             gpu_output_frame: 0,
-            node_thumbs: std::collections::HashMap::new(),
             node_thumbs_gen: 0,
+            node_thumbnail_batch: None,
         }
     }
 

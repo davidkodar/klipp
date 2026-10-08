@@ -1281,6 +1281,8 @@ pub struct PlaybackEngine {
     /// previews. Empty during playback (capturing N readbacks per
     /// frame would cost more than the grade itself).
     visible_node_thumbs: std::collections::HashSet<klipp_compose::InspectAt>,
+    thumbnail_request: u64,
+    thumbnail_priority: Vec<klipp_compose::InspectAt>,
     /// The clip the grade panel is on, from the node canvas's and scope
     /// tap's commands. The grade tools follow it when it is on screen.
     inspect_clip: Option<klipp_core::ClipId>,
@@ -2102,6 +2104,8 @@ impl PlaybackEngine {
             solo: None,
             fast_solo: None,
             visible_node_thumbs: std::collections::HashSet::new(),
+            thumbnail_request: 0,
+            thumbnail_priority: Vec::new(),
             inspect_clip: None,
             pending_stream_refresh: false,
             pending_audio_reposition: None,
@@ -3270,15 +3274,17 @@ impl PlaybackEngine {
                 self.solo = at;
                 debug!("Solo node: {:?}", self.solo);
             }
-            AppCommand::SetVisibleNodeThumbs { clip_id, at } => {
+            AppCommand::SetVisibleNodeThumbs { request, clip_id, at } => {
                 self.inspect_clip = Some(clip_id);
-                self.visible_node_thumbs = at.into_iter().collect();
+                self.thumbnail_request = request;
+                self.thumbnail_priority = at.into_iter().take(crate::node_thumbnails::MAX_THUMBS).collect();
+                self.visible_node_thumbs = self.thumbnail_priority.iter().cloned().collect();
                 // Clear the old thumb cache so the next re-grade is
                 // what the UI sees (stale thumbs from a different node
                 // set would confuse the user mid-transition).
                 {
                     let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                    fb.node_thumbs.clear();
+                    fb.node_thumbnail_batch = None;
                     fb.node_thumbs_gen = fb.node_thumbs_gen.wrapping_add(1);
                 }
                 // Force a re-grade of the current frame so the thumbs
@@ -3292,6 +3298,7 @@ impl PlaybackEngine {
                 }
             }
             AppCommand::RenderNodeThumbsFromSource {
+                request,
                 clip_id,
                 playhead,
                 src_rgba,
@@ -3299,7 +3306,7 @@ impl PlaybackEngine {
                 src_h,
             } => {
                 self.render_node_thumbs_from_source(
-                    clip_id, playhead, src_rgba, src_w, src_h,
+                    request, clip_id, playhead, src_rgba, src_w, src_h,
                 );
             }
 
@@ -7426,8 +7433,8 @@ impl PlaybackEngine {
     /// thumbnails for the V2 canvas — without waiting on a full-res
     /// decoder seek. Grade params are still evaluated at `playhead` so
     /// keyframed values match exactly; only the source pixels come
-    /// from a nearby timestamp (visually indistinguishable at 192×108
-    /// and way more reliable than the decode-then-capture path).
+    /// from a nearby timestamp. The UI marks this as a low-resolution
+    /// preview, and a viewer render of the same request takes precedence.
     ///
     /// Source is sRGB u8 RGBA at `src_w × src_h`. The renderer runs the
     /// clip at that size through its inspected render (M3 step 16a), and
@@ -7438,15 +7445,20 @@ impl PlaybackEngine {
     /// missing, or the source payload has the wrong length.
     fn render_node_thumbs_from_source(
         &mut self,
+        request: u64,
         clip_id: klipp_core::ClipId,
         playhead: klipp_core::RationalTime,
         src_rgba: Vec<u8>,
         src_w: u32,
         src_h: u32,
     ) {
-        if self.visible_node_thumbs.is_empty() {
+        if request != self.thumbnail_request || self.inspect_clip != Some(clip_id) || self.visible_node_thumbs.is_empty() {
             return;
         }
+        // Drain before capturing the revision: a late queued edit must
+        // never produce an answer labelled with the pre-edit token. The
+        // UI rejects it until it observes that revision and requests again.
+        self.drain_param_changes();
         if src_rgba.len() != (src_w as usize) * (src_h as usize) * 4 {
             return;
         }
@@ -7455,7 +7467,7 @@ impl PlaybackEngine {
         // plan, each thumbnail named by path, each node evaluated at the
         // playhead's time. A copy of the sequence, so the render doesn't
         // hold its lock.
-        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let (seq, revision) = self.sequence.snapshot_with_revision();
         if !seq.all_clips().any(|c| c.id == clip_id) {
             return;
         }
@@ -7476,12 +7488,11 @@ impl PlaybackEngine {
         for (at, why) in &found.unavailable {
             tracing::debug!("node thumbnail {at:?}: {why}");
         }
-        if found.thumbs.is_empty() {
-            return;
-        }
-        let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-        fb.node_thumbs = found.thumbs.iter().filter_map(|(at, bytes)| Some((at.path.node()?, bytes.clone()))).collect();
-        fb.node_thumbs_gen = fb.node_thumbs_gen.wrapping_add(1);
+        let batch = crate::node_thumbnails::ThumbnailBatch::new(
+            request, crate::node_thumbnails::frame_index(playhead, seq.fps), crate::node_thumbnails::PreviewQuality::Filmstrip,
+            revision, &self.thumbnail_priority, found.thumbs,
+        );
+        self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).publish_node_thumbnails(batch);
     }
 
 

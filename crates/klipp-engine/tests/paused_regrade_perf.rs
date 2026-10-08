@@ -50,6 +50,7 @@ fn paused_4k_pq_regrade() {
     // The node editor open: it asks for a thumbnail of every node but
     // Output, on every paused frame.
     parked.send(AppCommand::SetVisibleNodeThumbs {
+        request: 0,
         clip_id: parked.clip_id,
         at: [parked.source_node, parked.exposure_node].into_iter().map(|n| klipp_compose::inspect::grade_node(parked.clip_id, n)).collect(),
     });
