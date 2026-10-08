@@ -299,3 +299,21 @@ fn projects_in_a_test_runs_scratch_are_counted_not_listed() {
         let _ = std::fs::remove_dir_all(d);
     }
 }
+
+/// A folder holding the scratch mark is a harness's output: every project
+/// under it, however deep, is counted as scratch and never listed.
+#[test]
+fn projects_under_a_scratch_mark_are_counted_not_listed() {
+    let home = temp("scratch-mark");
+    let kept = project(&home.join("Videos/Trip.klipp"));
+    let run = home.join("Notes/ab-run");
+    project(&run.join("a1/project-copy.klipp"));
+    project(&run.join("deeper/b2/projects/fx.klipp"));
+    std::fs::write(run.join(klipp_convert::scan::SCRATCH_MARK), b"").unwrap();
+    // A project beside the marked folder, not under it, is still found.
+    let beside = project(&home.join("Notes/Real.klipp"));
+    let d = discover(&home);
+    assert_eq!(d.projects, vec![beside, kept]);
+    assert_eq!(d.scratch, 2);
+    let _ = std::fs::remove_dir_all(&home);
+}

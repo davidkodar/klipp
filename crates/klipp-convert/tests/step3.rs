@@ -730,3 +730,39 @@ fn the_strict_loader_refuses_a_stored_picture_that_disagrees() {
     assert!(e.contains("clip ") && e.contains("differs"), "{e}");
     let _ = std::fs::remove_dir_all(&r);
 }
+
+/// An excluded project's linked media, looks or .recovery folder isn't a
+/// stop, and isn't followed: the run never writes an excluded project.
+/// Its other files are still in the manifest, and a run holds them to
+/// their hashes while it converts the rest.
+#[test]
+fn an_excluded_projects_linked_side_folder_is_not_followed_or_a_stop() {
+    for rel in ["media", "looks", ".recovery"] {
+        let r = root(&format!("exlink-{}", rel.trim_start_matches('.')));
+        let (a, b) = (plain(&r, "A"), plain(&r, "B"));
+        let real = r.join("real");
+        let at = b.join(rel);
+        if at.exists() {
+            std::fs::rename(&at, &real).unwrap();
+        } else {
+            std::fs::create_dir(&real).unwrap();
+        }
+        std::fs::write(real.join("behind-the-link.json"), b"{}").unwrap();
+        std::os::unix::fs::symlink(&real, &at).unwrap();
+        let s = settings(&r, vec![a.clone(), b.clone()], vec![b.clone()], "2026-10-07");
+        let m = step3::preflight(&s);
+        assert!(m.stops.is_empty(), "{rel}: {:?}", m.stops);
+        let excluded = m.candidates.iter().find(|c| c.dir == b).unwrap();
+        assert_eq!(excluded.decision, Decision::Excluded);
+        assert!(excluded.items.iter().all(|i| !i.path.starts_with(&at)), "{rel}: nothing under the link: {:?}", excluded.items);
+        assert!(excluded.items.iter().any(|i| i.path == b.join("project.json")), "its own files are held");
+        let before = std::fs::read(b.join("project.json")).unwrap();
+        let report = step3::run(&s, &approved(&s), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap();
+        assert_eq!((report.converted, report.excluded), (vec![a.clone()], vec![b.clone()]));
+        assert_eq!(std::fs::read(b.join("project.json")).unwrap(), before);
+        // Not excluded, the same link stops it.
+        let m = step3::preflight(&settings(&r, vec![b.clone()], vec![], "2026-10-08"));
+        assert!(m.stops.iter().any(|s| s.contains("isn't a plain folder")), "{rel}: {:?}", m.stops);
+        let _ = std::fs::remove_dir_all(&r);
+    }
+}

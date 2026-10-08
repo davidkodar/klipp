@@ -39,6 +39,13 @@ pub fn backup_root_v3(home: &Path) -> PathBuf {
 /// Folder names whose contents are never a project to convert in place.
 const SKIPPED_DIRS: &[&str] = &["target", "node_modules", ".cache", ".klipp-cache"];
 
+/// The file that marks a folder as a harness's or a test run's scratch: a
+/// script that copies projects to work on (an A/B run, a bisect, an MCP
+/// run) writes it at the top of its output, and every project under it is
+/// counted as scratch, never listed, so the conversion never takes those
+/// copies for a user's projects.
+pub const SCRATCH_MARK: &str = ".klipp-scratch";
+
 /// Whether `path`, found scanning `home`, is in a test run's scratch: in
 /// a folder named `tmp`, or starting `tmp-` or `tmp_`, below `home` (or
 /// below the system's temporary folder), or anywhere in the system's
@@ -111,7 +118,7 @@ pub fn discover(home: &Path) -> Discovered {
         if dir != home && skipped(&dir, home) {
             continue;
         }
-        let in_scratch = in_scratch || is_scratch(&dir, home);
+        let in_scratch = in_scratch || is_scratch(&dir, home) || dir.join(SCRATCH_MARK).exists();
         if is_klipp_project(&dir) {
             if in_scratch {
                 scratch += 1;
