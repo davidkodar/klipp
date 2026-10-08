@@ -1621,7 +1621,7 @@ impl TimelinePanel {
         self.handle_audio_effect_bezier_tangent_drag(ui, state, &mut cmds, pointer_released, pointer_down);
 
         // ── Keyframe interpolation context menu popup ───────────────────────
-        self.show_keyframe_context_menu(ui, state, &mut cmds);
+        Self::show_keyframe_context_menu(ui, state, &mut cmds);
 
         // ── Automation lane param picker popup ─────────────────────────────
         self.show_automation_lane_param_menu(ui, state, &mut cmds);
@@ -2089,8 +2089,9 @@ impl TimelinePanel {
         ui.ctx().request_repaint();
     }
 
-    fn show_keyframe_context_menu(
-        &mut self,
+    /// The keyframe context menu, where a keyframe was right-clicked (on a
+    /// lane, or in the curve editor): drawn by the timeline for both.
+    pub(crate) fn show_keyframe_context_menu(
         ui: &mut egui::Ui,
         state: &mut AppState,
         cmds: &mut Vec<AppCommand>,

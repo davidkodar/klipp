@@ -740,6 +740,13 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
 mod tests {
     use super::*;
 
+    /// The keys a family can earn: every required key but those excluded
+    /// with a citation, which stay in the manifest for audit and must never
+    /// count as passed.
+    fn earnable(manifest: &Manifest) -> Vec<CoverageKey> {
+        manifest.required.iter().filter(|k| !manifest.excluded_keys.contains_key(*k)).cloned().collect()
+    }
+
     fn key(parameter: &str) -> CoverageKey {
         CoverageKey::new(
             "klipp.fx.gaussian_blur",
@@ -885,7 +892,7 @@ mod tests {
         let mut mislabeled = Report::default();
         mislabeled.case(
             "all labelled new",
-            manifest.required.iter().cloned(),
+            earnable(&manifest),
             || Ok(()),
         );
         assert!(mislabeled
@@ -899,16 +906,12 @@ mod tests {
         let mut report = Report::default();
         report.case(
             "generated",
-            manifest
-                .required
-                .iter()
-                .filter(|key| !fallback(key))
-                .cloned(),
+            earnable(&manifest).iter().filter(|key| !fallback(key)).cloned(),
             || Ok(()),
         );
         report.case_via_fallback(
             "legacy roots",
-            manifest.required.iter().filter(fallback).cloned(),
+            earnable(&manifest).iter().filter(fallback).cloned(),
             "#997: nested/nonclip rows retain their legacy route",
             || Ok(()),
         );
@@ -991,7 +994,7 @@ mod tests {
         let mut report = Report::default();
         report.case_via_fallback(
             "old path",
-            manifest.required.iter().cloned(),
+            earnable(&manifest),
             "#997: legacy fixture still required",
             || Ok(()),
         );
@@ -1015,7 +1018,7 @@ mod tests {
         assert!(errors.contains("#997: legacy fixture still required"));
 
         let mut converted = Report::default();
-        converted.case("new path", manifest.required.iter().cloned(), || Ok(()));
+        converted.case("new path", earnable(&manifest), || Ok(()));
         assert!(converted.complete_for_deletion(&manifest, &[entry]).is_ok());
     }
 
@@ -1071,7 +1074,7 @@ mod tests {
         );
         report.case(
             "assertions completed",
-            manifest.required.iter().cloned(),
+            earnable(&manifest),
             || Ok(()),
         );
         assert!(report.complete(&manifest, &[entry]).is_ok());
@@ -1119,11 +1122,7 @@ mod tests {
         let mut report = Report::default();
         report.case(
             "remaining assertions",
-            manifest
-                .required
-                .iter()
-                .filter(|k| **k != excluded)
-                .cloned(),
+            earnable(&manifest),
             || Ok(()),
         );
         assert!(report
@@ -1189,9 +1188,9 @@ mod tests {
             let key = |action| CoverageKey::new(entry.type_id, &entry.parameter, Surface::CurveEditor, "track", action);
             if entry.grade {
                 // A grade track, a wheel's parts among them: keyed in no
-                // view today (#891), excluded centrally, not required.
-                for action in actions {
-                    assert!(!curves.required.contains(&key(action)), "{key:?}", key = key(action));
+                // view today (#891), excluded centrally (kept in the
+                // manifest for audit, never earned).
+                for action in actions.into_iter().filter(|a| curves.required.contains(&key(*a))) {
                     assert!(curves.excluded_keys.get(&key(action)).is_some_and(|r| r.contains("#891")), "{:?}", key(action));
                 }
                 if matches!(presentation.widget, Widget::WheelPart(_)) {
