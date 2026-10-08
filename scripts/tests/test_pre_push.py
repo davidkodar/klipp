@@ -28,7 +28,9 @@ class ScratchGateTests(unittest.TestCase):
         self.script(self.bin / "df", 'printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\nfixture 9000000 1 %s 1%% /scratch\\n" "$TEST_FREE"')
         self.script(self.bin / "cargo", 'printf "%s|%s\\n" "$*" "$TMPDIR" >> "$TEST_ROOT/cargo-calls"\nfor fd in 8 9; do [ -e "/proc/$$/fd/$fd" ] && echo "$fd $*" >> "$TEST_ROOT/cargo-held-fd"; done\nif [ "$1" = clippy ]; then\n printf "%s\\n" "${TEST_TAG:-gate}" >> "$TEST_ROOT/gate-order"\n [ -n "$TEST_HOLD" ] && sleep "$TEST_HOLD"\nfi\nif [ "$*" = "test --workspace" ]; then exit "${TEST_EXIT:-0}"; fi')
         self.env = {k: v for k, v in os.environ.items() if not k.startswith(("KLIPP_", "CARGO_")) and k != "TMPDIR"}
-        self.env.update(PATH=f"{self.bin}:{os.environ['PATH']}", TEST_ROOT=str(self.root), TEST_FREE="8000000", TEST_GITDIR=str(self.gitdir))
+        self.env.update(PATH=f"{self.bin}:{os.environ['PATH']}", TEST_ROOT=str(self.root), TEST_FREE="8000000", TEST_GITDIR=str(self.gitdir),
+                        # The local pre-gate stamp (#1341) has tests of its own below.
+                        KLIPP_SKIP_PRE_GATE="1")
         # cargo-deny is there and its advisory list was fetched just now,
         # so a gate that does not test the audit passes it (#928): the
         # fake cargo answers `cargo deny` with nothing and success.
@@ -408,7 +410,7 @@ class RealGitGate(unittest.TestCase):
         self.root = top / "work"
         self.other = top / "other"
         self.env = {k: v for k, v in os.environ.items() if not k.startswith(("KLIPP_", "CARGO_", "GIT_")) and k != "TMPDIR"}
-        self.env.update(PATH=f"{self.bin}:{os.environ['PATH']}", TEST_ROOT=str(top), GIT_AUTHOR_NAME="T", GIT_AUTHOR_EMAIL="t@t",
+        self.env.update(PATH=f"{self.bin}:{os.environ['PATH']}", TEST_ROOT=str(top), KLIPP_SKIP_PRE_GATE="1", GIT_AUTHOR_NAME="T", GIT_AUTHOR_EMAIL="t@t",
                         GIT_COMMITTER_NAME="T", GIT_COMMITTER_EMAIL="t@t", GIT_CONFIG_NOSYSTEM="1", HOME=str(top))
         # cargo records what the tree it builds holds: the shared file's
         # text and whether main's new file is there.
@@ -791,6 +793,105 @@ class TestScopeTests(RealGitGate):
         self.env["KLIPP_GATE_FULL"] = "1"
         self.run_gate()
         self.assertEqual(self.tests_run()[-1], "test --workspace", "asked for")
+
+
+class PreGateTests(RealGitGate):
+    """A push needs its tree to have passed scripts/pre-gate.sh, the gate's
+    checks run locally first (#1341), and the script stamps only a pass of
+    a committed tree that holds the newest main."""
+
+    run_gate_with = PushedCommitIsCheckedOutTests.run_gate_with
+
+    def setUp(self):
+        super().setUp()
+        del self.env["KLIPP_SKIP_PRE_GATE"]
+        shutil.copy(Path(__file__).resolve().parents[1] / "pre-gate.sh", self.root / "scripts/pre-gate.sh")
+        (self.root / "shared.txt").write_text("one\nbranch\n")
+        self.commit(self.root, "the branch's change")
+
+    def push_refs(self):
+        head = self.git(self.root, "rev-parse", "HEAD").strip()
+        return f"refs/heads/fix/branch {head} refs/heads/fix/branch {'0' * 40}\n"
+
+    def pre_gate(self):
+        return subprocess.run(["sh", str(self.root / "scripts/pre-gate.sh")], cwd=self.root, env=self.env, text=True, capture_output=True, stdin=subprocess.DEVNULL)
+
+    def stamp(self):
+        tree = self.git(self.root, "rev-parse", "HEAD^{tree}").strip()
+        return self.root / ".git" / "klipp-pre-gate" / tree
+
+    def test_a_push_without_a_stamp_is_refused_before_anything_is_built(self):
+        result = self.run_gate_with(self.push_refs())
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("has not passed scripts/pre-gate.sh", result.stderr)
+        self.assertEqual(self.built(), [], "nothing built")
+
+    def test_a_deletion_needs_no_stamp(self):
+        result = self.run_gate_with(f"(delete) {'0' * 40} refs/heads/old {'1' * 40}\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("pre-gate.sh", result.stderr)
+
+    def test_the_skip_lets_a_push_through_without_a_stamp(self):
+        self.env["KLIPP_SKIP_PRE_GATE"] = "1"
+        result = self.run_gate_with(self.push_refs())
+        self.assertNotIn("has not passed scripts/pre-gate.sh", result.stderr)
+        self.assertNotEqual(self.built(), [], "the gate ran")
+
+    def test_a_pass_stamps_the_tree_and_the_push_goes_on_to_the_gate(self):
+        result = self.pre_gate()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASSED", result.stdout)
+        self.assertTrue(self.stamp().exists())
+        self.assertIn(self.git(self.root, "rev-parse", "HEAD").strip(), self.stamp().read_text())
+        result = self.run_gate_with(self.push_refs())
+        self.assertNotIn("has not passed scripts/pre-gate.sh", result.stderr)
+        self.assertNotEqual(self.built(), [], "the gate ran")
+
+    def test_a_new_message_keeps_the_stamp_and_a_code_change_needs_a_new_run(self):
+        self.assertEqual(self.pre_gate().returncode, 0)
+        self.git(self.root, "commit", "-q", "--amend", "-m", "reworded")
+        self.assertTrue(self.stamp().exists(), "the same tree")
+        (self.root / "shared.txt").write_text("one\nchanged again\n")
+        self.commit(self.root, "more")
+        self.assertFalse(self.stamp().exists())
+        self.assertIn("has not passed", self.run_gate_with(self.push_refs()).stderr)
+
+    def test_failing_tests_stamp_nothing(self):
+        self.script(self.bin / "cargo", 'if [ "$1" = test ]; then echo "test broken ... FAILED"; exit 101; fi\nexit 0')
+        result = self.pre_gate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("tests FAILED", result.stderr)
+        self.assertIn("test broken ... FAILED", result.stderr)
+        self.assertFalse(self.stamp().exists())
+
+    def test_the_tests_run_to_the_end(self):
+        self.script(self.bin / "cargo", 'echo "$*" >> "$TEST_ROOT/cargo-calls"\nexit 0')
+        self.assertEqual(self.pre_gate().returncode, 0)
+        calls = (Path(self.temp.name) / "cargo-calls").read_text()
+        self.assertIn("test --no-fail-fast", calls)
+        self.assertIn("clippy --workspace --all-targets -- -D warnings", calls)
+
+    def test_uncommitted_changes_are_refused(self):
+        (self.root / "shared.txt").write_text("not committed\n")
+        result = self.pre_gate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("uncommitted or untracked", result.stderr)
+        self.assertEqual(self.built(), [])
+
+    def test_a_branch_behind_main_is_told_to_rebase(self):
+        self.main_moves_on()
+        result = self.pre_gate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("behind main", result.stderr)
+        self.assertIn("git rebase origin/main", result.stderr)
+        self.assertEqual(self.built(), [], "nothing built")
+        self.assertFalse(self.stamp().exists())
+
+    def test_a_conflict_with_main_is_named(self):
+        self.main_moves_on(name="shared.txt", text="one\nmain's line\n")
+        result = self.pre_gate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("conflict: shared.txt", result.stderr)
 
 
 if __name__ == "__main__":

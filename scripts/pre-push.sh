@@ -49,6 +49,11 @@
 # `git push --no-verify` also works and skips the LFS hook too, which is
 # why the explicit variable exists — it skips these checks and nothing
 # else.
+#
+# A push also needs the commit to have passed scripts/pre-gate.sh, the
+# same checks run locally first (#1341). To push without it:
+#
+#     KLIPP_SKIP_PRE_GATE=1 git push
 
 set -e
 
@@ -92,6 +97,24 @@ if [ ! -t 0 ]; then
             printf '            Check it out, or add a worktree for it, and push from there.\n\n' >&2
         fi
         exit 1
+    fi
+    # And it passed the gate's checks locally first (scripts/pre-gate.sh,
+    # #1341): the gate is for what a local run can't show, not for a
+    # forgotten integration test or a rebase that no longer compiles,
+    # which cost the whole queue a run each. The stamp is the commit's
+    # tree, so only a code change needs a new local run.
+    if [ "${KLIPP_SKIP_PRE_GATE:-}" != "1" ] \
+        && printf '%s\n' "$_refs" | awk '$2 !~ /^0+$/ && $3 !~ /^refs\/tags\// { code = 1 } END { exit !code }'; then
+        _tree=$(git rev-parse --verify --quiet "HEAD^{tree}" 2>/dev/null) || _tree=
+        _stamps="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/klipp-pre-gate"
+        if [ -z "$_tree" ] || [ ! -f "$_stamps/$_tree" ]; then
+            printf '\n  pre-push: %s has not passed scripts/pre-gate.sh — push refused.\n' "$(git rev-parse --short HEAD 2>/dev/null)" >&2
+            printf '            Run it here first (it takes minutes; a failed gate run costs\n' >&2
+            printf '            everyone queued behind it about 16), then push again:\n\n' >&2
+            printf '              scripts/pre-gate.sh\n\n' >&2
+            printf '            KLIPP_SKIP_PRE_GATE=1 git push   skips it (say why on the PR).\n\n' >&2
+            exit 1
+        fi
     fi
 fi
 
