@@ -270,3 +270,32 @@ fn a_source_neighbour_node_tap_has_its_time_context() {
     let why = found.unavailable.iter().find(|(a, _)| *a == at).map(|(_, w)| w.clone()).expect("said to be unavailable");
     assert!(why.contains("before the grade") && why.contains("#1305"), "{why}");
 }
+
+/// An identity grade the tools read inside still runs, so its nodes'
+/// thumbnails come back (a plain clip's Source), and a request it doesn't
+/// hold (an identity effect, dropped from the run) is said to be
+/// unavailable rather than met with silence.
+#[test]
+fn an_identity_grade_still_answers_its_inspection() {
+    let mut clip = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+    clip.set_effect_list(vec![klipp_effects::BuiltinEffect::Gamma { gamma: 1.0 }], vec![true]);
+    let source = clip.grade().nodes.iter().find(|n| n.kind == NodeKind::Source).expect("a source").id;
+    assert!(clip.grade_is_identity());
+    let effect = clip.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT).unwrap().id;
+    let id = clip.id;
+    let mut seq = Sequence::new_default();
+    let mut track = Track::new("V1", TrackKind::Video);
+    track.clips = vec![clip];
+    seq.tracks = vec![track];
+    let gamma = InspectAt::out(NodePath::new(Root::Clip { clip: id.0 }, [effect]));
+    for gpu in [false, true] {
+        let thumbs = [klipp_compose::inspect::grade_node(id, source), gamma.clone()].into_iter().collect();
+        let (_, found) = draw(&seq, gpu, Inspect { clip: Some(id), only: Some(id), thumbs: Some(thumbs), ..Default::default() });
+        assert!(found.thumbs.contains_key(&klipp_compose::inspect::grade_node(id, source)), "gpu {gpu}: the source's thumbnail: {:?}", found.unavailable);
+        assert!(found.unavailable.iter().any(|(at, _)| *at == gamma), "gpu {gpu}: the identity effect is said to be unavailable: {:?}", found.unavailable);
+        // The scope's tap on it too: the source's picture.
+        let (_, found) = draw(&seq, gpu, Inspect { clip: Some(id), scope_tap: Some(klipp_compose::inspect::grade_node(id, source)), ..Default::default() });
+        let tapped = found.scope_tap.unwrap_or_else(|| panic!("gpu {gpu}: a tap on the identity grade's source: {:?}", found.unavailable));
+        assert!(tapped.chunks_exact(4).all(|p| (p[0] - 0.18).abs() < 1e-3), "gpu {gpu}: the source's grey");
+    }
+}

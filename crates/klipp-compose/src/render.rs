@@ -3070,8 +3070,10 @@ impl Renderer {
         let inspecting = self.inspects_the_grade_of(clip);
         let matte_view = if inspecting { self.resolved.matte_view } else { None };
         // An identity grade with effects queued still runs: the effects are
-        // the plan's nodes (step 11b).
-        if clip.grade_is_identity() && matte_view.is_none() && self.run_effects.is_empty() && self.run_display.is_none() {
+        // the plan's nodes (step 11b). So does one the tools read inside: its
+        // run is what takes their thumbnails and taps, and says which of
+        // their requests it doesn't hold (M3 step 16a).
+        if clip.grade_is_identity() && !inspecting && self.run_effects.is_empty() && self.run_display.is_none() {
             // Take the buffer rather than clone the handle: a layer this
             // renderer just made is held once, and moves out for free.
             return match input {
