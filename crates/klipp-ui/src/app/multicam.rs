@@ -154,6 +154,7 @@ impl KlippApp {
     /// Lay out a synced multicam: each angle on its own tracks at its
     /// place after `at_secs`, then grouped, as one undo step.
     pub(super) fn apply_multicam_plan(&mut self, plan: klipp_core::MulticamPlan, sequence_id: klipp_core::SequenceId, at_secs: f64) {
+        self.close_drag_for_result();
         let seq_idx = self.state.active_sequence_idx;
         if self.state.sequences[seq_idx].id != sequence_id {
             self.state.toast.show("The sequence changed while the angles were syncing, so the multicam was not placed");

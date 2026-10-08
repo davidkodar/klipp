@@ -96,6 +96,7 @@ impl KlippApp {
                     );
                 }
                 AppEvent::MediaLoaded(payload) => {
+                    self.close_drag_for_result();
                     let klipp_core::MediaLoadedPayload {
                         media_id,
                         path,

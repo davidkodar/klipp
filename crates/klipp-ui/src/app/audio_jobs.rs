@@ -279,6 +279,20 @@ impl KlippApp {
             .ok();
     }
 
+    /// Close any open path drag before a background job's result writes
+    /// the document (#1327). A result arrives from a drained event, not
+    /// through the dispatch boundary that closes a drag before any writer
+    /// (`closes_path_drag`), so a drag left open would take the result into
+    /// its step, or have the result's own step land inside it. Called at
+    /// the top of each result that writes: a media load, a proxy, an audio
+    /// conform, an audio sync, scene cuts, a learnt noise profile, a
+    /// multicam plan. (A transcript goes to the analysis store, not the
+    /// project, and an edit plan or the socket's edits go through
+    /// `apply_edits_as_one`, which closes it already.)
+    pub(super) fn close_drag_for_result(&mut self) {
+        self.state.close_path_drag_before_edit();
+    }
+
     /// Apply a completed audio-sync result: shift the target clip's timeline
     /// position so its audio lines up with the reference.
     pub(super) fn apply_audio_sync_result(
@@ -287,6 +301,7 @@ impl KlippApp {
         offset_samples: i64,
         ref_timeline_in_secs: f64,
     ) {
+        self.close_drag_for_result();
         const SR: f64 = 48_000.0;
         let offset_secs = offset_samples as f64 / SR;
 
@@ -339,6 +354,7 @@ impl KlippApp {
         while let Ok(result) = self.audio_conform_rx.try_recv() {
             match result {
                 AudioConformResult::Complete { media_id, entry } => {
+                    self.close_drag_for_result();
                     tracing::info!(
                         "Audio conform complete for {:?}: {:.1}s, {} peaks",
                         media_id,
@@ -417,5 +433,40 @@ impl KlippApp {
                 let _ = tx.send(AppEvent::MediaSyncComplete { video_id, sync });
             })
             .ok();
+    }
+}
+
+#[cfg(test)]
+mod result_drag_tests {
+    /// Each background result that writes the document closes an open path
+    /// drag first (#1327): the call is at the top of its handler, before
+    /// anything is written. (The app the handlers run on is the whole
+    /// window, so this holds the code, and `close_path_drag_before_edit`
+    /// is held by the path-command tests.)
+    #[test]
+    fn every_result_that_writes_closes_an_open_drag_first() {
+        let sources = [
+            ("engine_events.rs", include_str!("engine_events.rs")),
+            ("proxies.rs", include_str!("proxies.rs")),
+            ("multicam.rs", include_str!("multicam.rs")),
+            ("audio_jobs.rs", include_str!("audio_jobs.rs")),
+        ];
+        let handlers = [
+            ("engine_events.rs", "AppEvent::MediaLoaded(payload) => {"),
+            ("proxies.rs", "AppEvent::ProxyGenerationComplete { media_id, path } => {"),
+            ("proxies.rs", "AppEvent::DenoiserProfileLearned { clip_id, effect_index, params, source_secs } => {"),
+            ("proxies.rs", "if split {"),
+            ("multicam.rs", "pub(super) fn apply_multicam_plan("),
+            ("audio_jobs.rs", "AudioConformResult::Complete { media_id, entry } => {"),
+            ("audio_jobs.rs", "pub(super) fn apply_audio_sync_result("),
+        ];
+        for (file, opening) in handlers {
+            let src = sources.iter().find(|(f, _)| *f == file).unwrap().1;
+            let at = src.find(opening).unwrap_or_else(|| panic!("{file}: no `{opening}`"));
+            // The handler's first lines (a scene result closes it just
+            // before its split, after the checks that write nothing).
+            let head: String = src[..at].lines().rev().take(3).chain(src[at..].lines().take(9)).collect::<Vec<_>>().join("\n");
+            assert!(head.contains("self.close_drag_for_result();"), "{file}: `{opening}` doesn't close an open drag first");
+        }
     }
 }
