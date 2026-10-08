@@ -1,0 +1,372 @@
+//! An effect node's values as its `params` map (M3 step 10, amendment
+//! M3-2): the lift reads a stored effect entry into the map, and the
+//! writer that stores a picture (the delift, the save) writes the entry
+//! back from it. In between the map is the node's only truth: a value
+//! edit is a map write, as on any other node, and the renderer builds the
+//! effect from the map.
+//!
+//! The map holds the entry losslessly, so a picture read and stored again
+//! is the same bytes. Each field is keyed as the node's animation keys it
+//! (its saved name; an element of an array field that the catalog keys
+//! element by element, by that element's key: a corner pin's `tl_x`) and
+//! held as the [`ParamValue`] its kind describes: a number as `Float` or
+//! `Int`, a choice as `Enum`, an sRGB colour as `Color`. A value that kind
+//! can't give back exactly (a colour with alpha, a path, a field the
+//! catalog doesn't describe) is held as its JSON in `Text`, which a
+//! catalog field never is. Keys with a `.` are the node's own
+//! (`mask.channel`), never an entry's field.
+
+use std::collections::BTreeMap;
+
+use klipp_effects::registry::{effect_type, ParamDesc, ParamKind};
+use klipp_graph_format::lifted::ClipPicture;
+use klipp_graph_format::{types, Graph, Node, ParamKey, ParamValue};
+use serde_json::{Map, Value};
+
+/// The colour space a [`ParamValue::Color`] of an effect is in: sRGB, as
+/// the effect stores it in bytes.
+pub const SRGB: &str = "srgb";
+
+/// The key an entry's field, or one element of it, is held under.
+fn key_of(desc: &ParamDesc) -> &'static str {
+    if desc.index.is_some() {
+        desc.key
+    } else {
+        desc.field
+    }
+}
+
+/// Whether `key` names a field of the entry rather than the node.
+pub fn is_field_key(key: &ParamKey) -> bool {
+    !key.as_str().contains('.')
+}
+
+/// The descriptions of the effect saved under `tag`; empty when the
+/// catalog doesn't describe it.
+fn descs(tag: &str) -> &'static [ParamDesc] {
+    effect_type(tag).map_or(&[], |t| t.desc.params)
+}
+
+/// How the effect stores `field` when it is reset: the form a choice is
+/// written in (its name, or its number).
+fn form(tag: &str, field: &str) -> Option<Value> {
+    let sample = serde_json::to_value((effect_type(tag)?.sample)()).ok()?;
+    sample.get(field).cloned()
+}
+
+/// `value` as the kind `kind` describes it, when that gives it back
+/// exactly; else its JSON.
+fn encode(kind: Option<ParamKind>, value: &Value, form: Option<&Value>) -> ParamValue {
+    let typed = match (kind, value) {
+        (Some(ParamKind::Choice(names)), Value::String(s)) => names.iter().position(|n| n == s).map(|i| ParamValue::Enum(i as u32)),
+        (Some(ParamKind::Choice(_)), Value::Number(n)) => n.as_u64().and_then(|n| u32::try_from(n).ok()).map(ParamValue::Enum),
+        (Some(ParamKind::Colour), Value::Array(a)) if a.len() == 3 => {
+            let bytes: Option<Vec<u8>> = a.iter().map(|c| c.as_u64().and_then(|c| u8::try_from(c).ok())).collect();
+            bytes.map(|b| ParamValue::Color { rgb: [b[0] as f32 / 255.0, b[1] as f32 / 255.0, b[2] as f32 / 255.0], space: SRGB.into() })
+        }
+        (_, Value::Bool(b)) => Some(ParamValue::Bool(*b)),
+        (_, Value::Number(n)) if n.is_f64() => n.as_f64().map(|f| ParamValue::Float(f as f32)),
+        (_, Value::Number(n)) => n.as_i64().and_then(|i| i32::try_from(i).ok()).map(ParamValue::Int),
+        _ => None,
+    };
+    match typed {
+        Some(p) if decode(kind, &p, form).as_ref() == Ok(value) => p,
+        _ => ParamValue::Text(value.to_string()),
+    }
+}
+
+/// The stored JSON of `value`, a field of the kind `kind` stored as
+/// `form`.
+fn decode(kind: Option<ParamKind>, value: &ParamValue, form: Option<&Value>) -> Result<Value, String> {
+    Ok(match (kind, value) {
+        (_, ParamValue::Text(json)) => serde_json::from_str(json).map_err(|e| format!("{json:?} isn't a stored value: {e}"))?,
+        (Some(ParamKind::Choice(names)), ParamValue::Enum(i)) => match form {
+            Some(Value::String(_)) => Value::from(*names.get(*i as usize).ok_or_else(|| format!("choice {i} is past the last, {}", names.len().saturating_sub(1)))?),
+            _ => Value::from(*i),
+        },
+        (_, ParamValue::Enum(i)) => Value::from(*i),
+        (_, ParamValue::Color { rgb, space }) if space == SRGB => {
+            let byte = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+            Value::from(rgb.iter().map(|c| byte(*c)).collect::<Vec<u8>>())
+        }
+        (_, ParamValue::Color { space, .. }) => return Err(format!("an effect's colour is sRGB, not {space}")),
+        (_, ParamValue::Bool(b)) => Value::Bool(*b),
+        (_, ParamValue::Float(f)) => serde_json::to_value(f).map_err(|e| e.to_string())?,
+        (_, ParamValue::Int(i)) => Value::from(*i),
+        (_, other) => return Err(format!("{other:?} isn't an effect's value")),
+    })
+}
+
+/// The stored value `value` of the effect `tag`'s field (or element)
+/// `key`, as its map holds it.
+pub fn held(tag: &str, key: &ParamKey, value: &Value) -> ParamValue {
+    let descs = descs(tag);
+    match descs.iter().find(|d| d.index.is_some() && d.key == key.as_str()) {
+        Some(d) => encode(Some(d.kind), value, form(tag, d.field).as_ref().and_then(|f| f.get(d.index.unwrap_or_default()))),
+        None => {
+            let kind = descs.iter().find(|d| d.field == key.as_str() && d.index.is_none()).map(|d| d.kind);
+            encode(kind, value, form(tag, key.as_str()).as_ref())
+        }
+    }
+}
+
+/// A stored effect entry (`{"type": tag, field: value, ...}`) as its tag
+/// and its values.
+pub fn to_params(entry: &Value) -> Result<(String, BTreeMap<ParamKey, ParamValue>), String> {
+    let fields = entry.as_object().ok_or("an effect entry is an object")?;
+    let tag = fields.get("type").and_then(Value::as_str).ok_or("an effect entry has a type")?.to_owned();
+    let descs = descs(&tag);
+    let mut map = BTreeMap::new();
+    for (field, value) in fields {
+        if field == "type" {
+            continue;
+        }
+        if field.contains('.') {
+            return Err(format!("{tag}'s field {field:?} would read as the node's own"));
+        }
+        let form = form(&tag, field);
+        let elements: Vec<&ParamDesc> = descs.iter().filter(|d| d.field == field && d.index.is_some()).collect();
+        // An array keyed element by element, when every element is held
+        // exactly and the array is no longer than its keys.
+        if !elements.is_empty() {
+            if let Value::Array(items) = value {
+                let held: Option<Vec<(ParamKey, ParamValue)>> = (items.len() == elements.len())
+                    .then(|| {
+                        elements
+                            .iter()
+                            .map(|d| {
+                                let i = d.index?;
+                                let item = items.get(i)?;
+                                let p = encode(Some(d.kind), item, form.as_ref().and_then(|f| f.get(i)));
+                                (!matches!(p, ParamValue::Text(_))).then(|| (ParamKey::from(key_of(d)), p))
+                            })
+                            .collect()
+                    })
+                    .flatten();
+                if let Some(held) = held {
+                    map.extend(held);
+                    continue;
+                }
+            }
+        }
+        let kind = descs.iter().find(|d| d.field == field && d.index.is_none()).map(|d| d.kind);
+        map.insert(ParamKey::from(field.as_str()), encode(kind, value, form.as_ref()));
+    }
+    Ok((tag, map))
+}
+
+/// The stored entry of the effect `tag` whose values are `params`: what
+/// [`to_params`] read it from. The node's own keys are passed over.
+pub fn from_params(tag: &str, params: &BTreeMap<ParamKey, ParamValue>) -> Result<Value, String> {
+    let descs = descs(tag);
+    let mut fields = Map::new();
+    fields.insert("type".into(), Value::from(tag));
+    let mut arrays: BTreeMap<&'static str, Vec<Option<Value>>> = BTreeMap::new();
+    for (key, value) in params.iter().filter(|(k, _)| is_field_key(k)) {
+        let key = key.as_str();
+        if let Some(d) = descs.iter().find(|d| d.index.is_some() && d.key == key) {
+            let i = d.index.unwrap_or_default();
+            let form = form(tag, d.field);
+            let item = decode(Some(d.kind), value, form.as_ref().and_then(|f| f.get(i)))?;
+            let slots = arrays.entry(d.field).or_default();
+            if slots.len() <= i {
+                slots.resize(i + 1, None);
+            }
+            slots[i] = Some(item);
+            continue;
+        }
+        let kind = descs.iter().find(|d| d.field == key && d.index.is_none()).map(|d| d.kind);
+        fields.insert(key.to_owned(), decode(kind, value, form(tag, key).as_ref())?);
+    }
+    for (field, slots) in arrays {
+        let items: Option<Vec<Value>> = slots.into_iter().collect();
+        let items = items.ok_or_else(|| format!("{tag}'s {field} is missing an element"))?;
+        if fields.insert(field.to_owned(), Value::Array(items)).is_some() {
+            return Err(format!("{tag}'s {field} is held both whole and by element"));
+        }
+    }
+    Ok(Value::Object(fields))
+}
+
+/// The effect `tag` whose values are `params`, as the renderer runs it.
+pub fn effect(tag: &str, params: &BTreeMap<ParamKey, ParamValue>) -> Result<klipp_effects::BuiltinEffect, String> {
+    serde_json::from_value(from_params(tag, params)?).map_err(|e| format!("{tag}: {e}"))
+}
+
+/// The saved tag of the effect node `n` (`"gaussian_blur"`): the one
+/// reader of an effect node's entry after the lift, which holds only the
+/// tag there.
+pub fn tag(n: &Node) -> Option<&str> {
+    n.legacy.as_ref()?.payload.get("type")?.as_str()
+}
+
+/// The effect node `n` as the renderer runs it, built from its map. A
+/// node still holding its stored entry is refused: its values are read
+/// from one place.
+pub fn effect_of(n: &Node) -> Result<klipp_effects::BuiltinEffect, String> {
+    if !in_memory(n) {
+        return Err(format!("effect node {} holds its stored entry, not its values", n.id));
+    }
+    let tag = tag(n).ok_or_else(|| format!("effect node {} has no type", n.id))?;
+    effect(tag, &n.params).map_err(|e| format!("effect node {}: {e}", n.id))
+}
+
+/// The effect node `n`'s entry as it would be stored: written from its
+/// map when its values are held there, its stored entry as it is when they
+/// aren't yet. What a reader that shows the entry (the socket's graph
+/// read) reads, so it reads one place.
+pub fn entry_of(n: &Node) -> Result<Value, String> {
+    if !in_memory(n) {
+        return n.legacy.as_ref().map(|l| l.payload.clone()).ok_or_else(|| format!("effect node {} has no entry", n.id));
+    }
+    from_params(tag(n).ok_or_else(|| format!("effect node {} has no type", n.id))?, &n.params)
+}
+
+fn is_effect(n: &Node) -> bool {
+    n.type_id.as_str() == types::LEGACY_EFFECT
+}
+
+/// Whether the effect node's entry holds only its tag: its values are in
+/// its map.
+fn in_memory(n: &Node) -> bool {
+    n.legacy.as_ref().and_then(|l| l.payload.as_object()).is_some_and(|o| o.len() == 1)
+}
+
+/// The effect node `n` as it is held in memory: its stored entry's values
+/// moved into its map, the entry left holding its tag. A node already
+/// held so, or no effect node, is left as it is.
+pub fn into_memory(n: &mut Node) -> Result<(), String> {
+    if !is_effect(n) || in_memory(n) {
+        return Ok(());
+    }
+    let Some(legacy) = n.legacy.as_mut() else { return Ok(()) };
+    let (tag, values) = to_params(&legacy.payload)?;
+    if let Some(k) = values.keys().find(|k| n.params.contains_key(*k)) {
+        return Err(format!("effect node {}: {k} is both stored and held", n.id));
+    }
+    legacy.payload = serde_json::json!({ "type": tag });
+    n.params.extend(values);
+    Ok(())
+}
+
+/// A node an edit adds, held in memory: one that brings its stored entry
+/// brings its values there, so any field keys it also carries (a copy of
+/// another effect's node, its entry replaced) are left behind for the
+/// entry's.
+pub fn added_into_memory(n: &mut Node) -> Result<(), String> {
+    if is_effect(n) && !in_memory(n) {
+        n.params.retain(|k, _| !is_field_key(k));
+    }
+    into_memory(n)
+}
+
+/// The effect node `n` as it is stored: its entry written from its map,
+/// and only the node's own keys left there. The inverse of
+/// [`into_memory`]; a node already stored, or no effect node, is left.
+pub fn into_stored(n: &mut Node) -> Result<(), String> {
+    if !is_effect(n) || !in_memory(n) {
+        return Ok(());
+    }
+    let tag = tag(n).ok_or_else(|| format!("effect node {} has no type", n.id))?.to_owned();
+    let entry = from_params(&tag, &n.params)?;
+    n.params.retain(|k, _| !is_field_key(k));
+    if let Some(legacy) = n.legacy.as_mut() {
+        legacy.payload = entry;
+    }
+    Ok(())
+}
+
+/// Each effect node of `graph`, and of every group body in it, through `f`.
+pub fn each_effect_node(graph: &mut Graph, f: &mut dyn FnMut(&mut Node) -> Result<(), String>) -> Result<(), String> {
+    for n in &mut graph.nodes {
+        if let Some(body) = n.group.as_mut() {
+            each_effect_node(&mut body.graph, f)?;
+        }
+        f(n)?;
+    }
+    Ok(())
+}
+
+/// A picture's effect nodes held in memory ([`into_memory`]).
+pub fn picture_into_memory(picture: &mut ClipPicture) -> Result<(), String> {
+    each_effect_node(&mut picture.graph, &mut into_memory)
+}
+
+/// A picture's effect nodes as stored ([`into_stored`]).
+pub fn picture_into_stored(picture: &mut ClipPicture) -> Result<(), String> {
+    each_effect_node(&mut picture.graph, &mut into_stored)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use klipp_effects::registry::effect_types;
+
+    /// Every described effect, at its reset values and at values moved off
+    /// them, goes to the map and back the same, typed where its catalog
+    /// kind can hold it.
+    #[test]
+    fn from_params_round_trips_every_effect() {
+        let mut n = 0;
+        for t in effect_types() {
+            let entry = serde_json::to_value((t.sample)()).unwrap();
+            let (tag, map) = to_params(&entry).unwrap();
+            assert_eq!(tag, t.tag);
+            assert_eq!(from_params(&tag, &map).unwrap(), entry, "{}", t.tag);
+            assert_eq!(serde_json::to_value(effect(&tag, &map).unwrap()).unwrap(), entry, "{}", t.tag);
+            for d in t.desc.params.iter().filter(|d| !d.derived) {
+                let held = map.get(&ParamKey::from(key_of(d))).unwrap_or_else(|| panic!("{}: {} isn't held", t.tag, key_of(d)));
+                let typed = match d.kind {
+                    ParamKind::Float => matches!(held, ParamValue::Float(_)),
+                    ParamKind::Whole => matches!(held, ParamValue::Int(_)),
+                    ParamKind::Bool => matches!(held, ParamValue::Bool(_)),
+                    ParamKind::Choice(_) => matches!(held, ParamValue::Enum(_)),
+                    ParamKind::Colour => matches!(held, ParamValue::Color { .. } | ParamValue::Text(_)),
+                    ParamKind::Other => true,
+                };
+                assert!(typed, "{}: {} is held as {held:?}", t.tag, key_of(d));
+            }
+            // Each float moved: still the same entry back.
+            let mut moved = entry.clone();
+            for d in t.desc.params.iter().filter(|d| d.kind == ParamKind::Float && d.index.is_none()) {
+                if let Some(v) = moved.get_mut(d.field).filter(|v| v.is_f64()) {
+                    *v = serde_json::to_value(v.as_f64().unwrap() as f32 + 0.1).unwrap();
+                }
+            }
+            let (_, map) = to_params(&moved).unwrap();
+            assert_eq!(from_params(t.tag, &map).unwrap(), moved, "{} moved", t.tag);
+            n += 1;
+        }
+        assert_eq!(n, 54, "every described effect");
+    }
+
+    #[test]
+    fn the_spill_alias_and_elements_are_keyed_as_the_animation_is() {
+        let key = serde_json::json!({"type": "chroma_key", "key_color": [20, 200, 40], "tolerance": 0.3, "soft_edge": 0.1, "spill_method": "none", "spill_strength": 0.5});
+        let (_, map) = to_params(&key).unwrap();
+        assert!(map.contains_key(&ParamKey::from("soft_edge")) && !map.contains_key(&ParamKey::from("spill")));
+        let pin = serde_json::to_value(effect_type("corner_pin").map(|t| (t.sample)()).unwrap()).unwrap();
+        let (_, map) = to_params(&pin).unwrap();
+        assert!(map.contains_key(&ParamKey::from("tl_x")), "{map:?}");
+        assert_eq!(from_params("corner_pin", &map).unwrap(), pin);
+    }
+
+    #[test]
+    fn what_a_kind_cant_hold_is_held_as_its_json() {
+        // A colour with alpha, an integer where a float is described, and
+        // a field the catalog doesn't know.
+        let fade = serde_json::json!({"type": "color_fade", "duration_secs": 1, "mode": "out", "color": [0, 0, 0, 255], "progress": 0.0, "extra": {"a": [1]}});
+        let (_, map) = to_params(&fade).unwrap();
+        assert_eq!(map[&ParamKey::from("color")], ParamValue::Text("[0,0,0,255]".into()));
+        assert_eq!(map[&ParamKey::from("extra")], ParamValue::Text("{\"a\":[1]}".into()));
+        assert_eq!(from_params("color_fade", &map).unwrap(), fade);
+    }
+
+    #[test]
+    fn the_nodes_own_keys_are_not_fields() {
+        let entry = serde_json::json!({"type": "invert", "mix": 0.5});
+        let (_, mut map) = to_params(&entry).unwrap();
+        map.insert(ParamKey::from("mask.channel"), ParamValue::Text("green".into()));
+        assert_eq!(from_params("invert", &map).unwrap(), entry);
+    }
+}

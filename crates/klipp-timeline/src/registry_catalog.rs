@@ -36,8 +36,7 @@ impl PortCatalog for RegistryCatalog {
             return true;
         }
         let effect = if node.type_id.as_str() == types::LEGACY_EFFECT {
-            node.legacy.as_ref().and_then(|l| l.payload.get("type")).and_then(serde_json::Value::as_str)
-                .and_then(klipp_effects::registry::effect_type)
+            klipp_graph_lift::effect_params::tag(node).and_then(klipp_effects::registry::effect_type)
         } else {
             klipp_effects::registry::effect_types().find(|t| t.desc.id == node.type_id.as_str())
         };
@@ -69,7 +68,7 @@ impl PortCatalog for RegistryCatalog {
             return Some(spec);
         }
         if node.type_id.as_str() == types::LEGACY_EFFECT {
-            let tag = node.legacy.as_ref()?.payload.get("type")?.as_str()?;
+            let tag = klipp_graph_lift::effect_params::tag(node)?;
             return klipp_effects::registry::effect_type(tag).map(|t| Self::describe(&t.desc));
         }
         self.node(node.type_id.as_str())

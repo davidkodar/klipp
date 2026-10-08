@@ -160,7 +160,10 @@ pub fn clip(p: &ClipPicture) -> Result<ClipRecordV2, Refusal> {
             types::LEGACY_OFX => ofx.push(n.clone()),
             t @ (types::LEGACY_EFFECT | types::LEGACY_OPACITY | types::LEGACY_TRANSFORM | types::LEGACY_SPEED_RAMP) => {
                 let t = t.to_owned();
-                builtins.push((slot(n)?, restore(n.clone(), &t)));
+                // An effect's entry written back from its values (M3-2).
+                let mut stored = n.clone();
+                crate::effect_params::into_stored(&mut stored)?;
+                builtins.push((slot(n)?, restore(stored, &t)));
             }
             other => return Err(format!("node {} is a {other}, which the lift does not put in a clip's chain", n.id)),
         }

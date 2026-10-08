@@ -60,7 +60,7 @@ pub fn clip(p: &ClipPicture, ctx: &LiftCtx) -> Result<Value, Refusal> {
     for n in nodes {
         // What the splice put in from the track, as the bake appends it.
         if n.origin.is_some() && n.type_id.as_str() != lt::GROUP {
-            fx.push(payload(n)?.clone(), n.enabled, &BTreeMap::new());
+            fx.push(entry(n)?, n.enabled, &BTreeMap::new());
             continue;
         }
         match n.type_id.as_str() {
@@ -115,7 +115,7 @@ pub fn clip(p: &ClipPicture, ctx: &LiftCtx) -> Result<Value, Refusal> {
             // Kept off for the record: every Opacity entry (the clip's
             // opacity property renders), a speed ramp that doesn't blend.
             types::LEGACY_OPACITY | types::LEGACY_SPEED_RAMP if !n.enabled => {}
-            types::LEGACY_EFFECT => fx.push(payload(n)?.clone(), n.enabled, &n.anim),
+            types::LEGACY_EFFECT => fx.push(entry(n)?, n.enabled, &n.anim),
             other => return Err(format!("node {} is a {other}, which the lift does not put in a clip's chain", n.id)),
         }
     }
@@ -247,6 +247,14 @@ fn transform(p: &PlacementProps, with_tilt: bool) -> Value {
         "perspective": tilt(p.perspective),
         "focal_ref": p.focal_ref.clone().unwrap_or(Value::Null),
     })
+}
+
+/// A list entry as stored: an effect's written from its map (M3-2).
+fn entry(n: &Node) -> Result<Value, Refusal> {
+    if n.type_id.as_str() == types::LEGACY_EFFECT {
+        return klipp_graph_lift::effect_params::entry_of(n);
+    }
+    payload(n).cloned()
 }
 
 fn payload(n: &Node) -> Result<&Value, Refusal> {

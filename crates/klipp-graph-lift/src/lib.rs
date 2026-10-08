@@ -10,6 +10,7 @@
 //! depend on this crate, and it depends on no app crate.
 pub mod canon;
 pub mod delift;
+pub mod effect_params;
 pub mod ids;
 pub mod journal;
 pub mod lift;

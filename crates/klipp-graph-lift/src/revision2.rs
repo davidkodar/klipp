@@ -233,6 +233,10 @@ pub fn project_with(raw: &Value, stored: StoredPictures<'_>) -> Result<(Value, V
                 for (version, b) in objects(clip.get_mut("grade_versions")).zip(versions) {
                     version.insert(V2_FIELD.into(), b);
                 }
+                // Each effect's entry written from its values: the file
+                // keeps the entry, the map is memory's (M3-2).
+                let mut picture = picture;
+                crate::effect_params::picture_into_stored(&mut picture)?;
                 clip.insert(V2_FIELD.into(), serde_json::to_value(picture).map_err(err)?);
             }
         }

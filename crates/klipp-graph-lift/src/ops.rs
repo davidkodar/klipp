@@ -127,6 +127,26 @@ fn as_v1(value: &ParamValue) -> Option<Value> {
 /// read as the frozen v1 types read it; any other node's own parameters.
 fn set_param(n: &mut Node, key: &ParamKey, value: &ParamValue) -> Result<(), String> {
     let t = n.type_id.as_str().to_owned();
+    // An effect's values are its map (M3-2): the value is written there,
+    // and the entry the map stores must still read.
+    if t == types::LEGACY_EFFECT && crate::effect_params::tag(n).is_some() && n.legacy.as_ref().and_then(|l| l.payload.as_object()).is_some_and(|o| o.len() == 1) {
+        if matches!(key.as_str(), "kind" | "type") {
+            return Err(format!("{key} names what the node is, and isn't set"));
+        }
+        let v = as_v1(value).ok_or_else(|| format!("{key} is set through the effect's own editor until effects become nodes"))?;
+        if !crate::effect_params::is_field_key(key) {
+            return Err(format!("{key} is the node's own, not a setting of its effect"));
+        }
+        let tag = crate::effect_params::tag(n).unwrap_or_default().to_owned();
+        let mut params = n.params.clone();
+        params.insert(key.clone(), crate::effect_params::held(&tag, key, &v));
+        let entry = crate::effect_params::from_params(&tag, &params)?;
+        if serde_json::from_value::<crate::v1::effects::BuiltinEffect>(entry).is_err() {
+            return Err(format!("{key} doesn't take {value:?}"));
+        }
+        n.params = params;
+        return Ok(());
+    }
     let Some(legacy) = n.legacy.as_mut().filter(|_| t.starts_with("klipp.legacy.") || t == lt::MERGE) else {
         // A placement's mode is one of its two.
         if t == lt::PLACEMENT && key.as_str() == "mode" && !matches!(value, ParamValue::Enum(m) if *m == lt::PLACEMENT_FIXED || *m == lt::PLACEMENT_AUTO) {
@@ -264,6 +284,13 @@ fn set_payload(n: &mut Node, payload: &Value) -> Result<(), String> {
     if !reads {
         return Err("that payload doesn't read as the entry it replaces".into());
     }
+    // An effect held in memory takes the payload's values into its map.
+    if t == types::LEGACY_EFFECT && legacy.payload.as_object().is_some_and(|o| o.len() == 1) && payload.as_object().is_some_and(|o| o.len() > 1) {
+        let (_, values) = crate::effect_params::to_params(payload)?;
+        n.params.retain(|k, _| !crate::effect_params::is_field_key(k));
+        n.params.extend(values);
+        return Ok(());
+    }
     legacy.payload = payload.clone();
     Ok(())
 }
@@ -276,6 +303,14 @@ fn set_label(n: &mut Node, label: &str) {
         Some(legacy) => legacy.payload["label"] = Value::String(label.to_owned()),
         None => n.label = label.to_owned(),
     }
+}
+
+/// A node added to a lifted picture, an effect's values held in its map
+/// as the lift holds them (M3-2), whichever form it came in.
+fn held_node(node: &Node) -> Result<Node, String> {
+    let mut n = node.clone();
+    crate::effect_params::added_into_memory(&mut n)?;
+    Ok(n)
 }
 
 /// The edits on a graph level.
@@ -294,7 +329,7 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn
                 e.from = (node.id, "out".into());
             }
             g.edges.push(Edge { from: (target, "out".into()), to: (node.id, primary(node)) });
-            g.nodes.insert(at + 1, (**node).clone());
+            g.nodes.insert(at + 1, held_node(node)?);
         }
         GraphOp::AddNodeBeside { node, .. } => {
             if g.nodes.iter().any(|n| n.id == node.id) {
@@ -304,7 +339,7 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn
                 return Err("a graph's ends can't be added".into());
             }
             find(g, target)?;
-            g.nodes.push((**node).clone());
+            g.nodes.push(held_node(node)?);
         }
         GraphOp::RemoveNode { .. } => {
             let at = find(g, target)?;

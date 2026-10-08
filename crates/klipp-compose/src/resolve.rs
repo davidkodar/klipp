@@ -5,7 +5,7 @@
 //! the display conversion, OFX plug-ins, the built-in effects, and the
 //! placement where the transform goes. [`resolve_effects`] walks it from
 //! the display conversion to the output and resolves each enabled effect
-//! node for the frame: its payload decoded, its own animation applied
+//! node for the frame: its values read, its own animation applied
 //! (the node's `anim`, keyed by parameter name), then what the frame
 //! gives it (`frame_inputs`), and the clip's transform where the lift
 //! placed it. It answers what [`crate::render::clip_effects`] answers
@@ -123,8 +123,8 @@ pub fn resolve_effects_blended(
         if !node.enabled || kind != types::LEGACY_EFFECT {
             continue;
         }
-        let payload = &node.legacy.as_ref().ok_or_else(|| format!("effect node {} has no payload", node.id))?.payload;
-        let mut effect = decode(node, payload, t, &ctx)?;
+        let mut effect = klipp_graph_lift::effect_params::effect_of(node)?;
+        EffectNodeAnim::of(node)?.animate(&mut effect, t, &ctx);
         frame_inputs(clip, &mut effect, t, fps, pin, &mut pinned);
         fx.push(effect);
         blends.push(blend_of(picture, node));
@@ -230,7 +230,8 @@ fn side_node(n: &Node) -> Result<klipp_nodes::Node, String> {
     graph.nodes.into_iter().find(|m| m.id == n.id).ok_or_else(|| "the node didn't come back from its record".into())
 }
 
-/// An effect node's payload as its effect, animated for the frame.
+/// A fixed placement's Transform entry as its effect, animated for the
+/// frame.
 fn decode(node: &Node, payload: &serde_json::Value, t: f64, ctx: &klipp_core::EvalContext) -> Result<BuiltinEffect, String> {
     let mut effect: BuiltinEffect = serde_json::from_value(payload.clone()).map_err(|e| format!("effect node {}: {e}", node.id))?;
     EffectNodeAnim::of(node)?.animate(&mut effect, t, ctx);
