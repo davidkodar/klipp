@@ -1109,8 +1109,16 @@ impl Renderer {
         let clip_time = eval_clip_time(clip, time);
         let at = source_secs(clip, time, fps);
         let Some(f) = src.frame(clip, at, width, height) else { return Single::Refused("the source has no frame") };
+        // A source of another size is the stack's to fit, as it fits a
+        // layer of another size (`place_layer`): this path converts at the
+        // frame's own size. Refusing it sent every frame of, say, a vertical
+        // clip on a 16:9 sequence down the CPU composite (#1277). A
+        // scene-referred one the stack can't place yet.
         if (f.width, f.height) != (width, height) {
-            return Single::Refused("the source frame is another size");
+            return match f.pixels {
+                SourcePixels::SceneReferred { .. } => Single::Refused("a scene-referred source of another size"),
+                _ => Single::ForTheStack,
+            };
         }
         let input = match f.pixels {
             SourcePixels::Gpu(g) => GradeInput::Gpu(g),
