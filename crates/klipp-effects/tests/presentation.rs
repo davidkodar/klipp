@@ -145,6 +145,8 @@ const MEANT: &[(&str, &str, &str)] = &[
     // slider whose label explains the numbers.
     ("klipp.fx.letterbox", "bar_color", "widget"),
     ("klipp.fx.letterbox", "bar_color", "label"),
+    // IC2: Sharpen resets to its catalog default, 0, not 0.5.
+    ("klipp.fx.sharpen", "amount", "reset"),
     // IC5: Noise's monochrome is a switch, not a 0-to-1 slider.
     ("klipp.fx.noise_generator", "monochrome", "widget"),
 ];
@@ -251,6 +253,10 @@ const HIDDEN: &[(&str, &str)] = &[
     ("klipp.fx.old_film", "seed"),
     ("klipp.fx.vhs", "seed"),
     ("klipp.fx.deflicker", "gain"),
+    // Set by a title's roll from its focus band, in the Title tab.
+    ("klipp.fx.focus_blur", "radius"),
+    ("klipp.fx.focus_blur", "vertical"),
+    ("klipp.fx.focus_blur", "band"),
 ];
 
 #[test]
