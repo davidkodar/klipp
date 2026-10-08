@@ -719,6 +719,64 @@ fn a_clip_without_opacity_cancels_commits_and_undoes_its_first_drag() {
         assert_eq!(run.state.active_history().undo_count(), 1, "generated={generated}");
         assert!(run.step(false));
         assert_eq!(run.clip().picture_v2().unwrap(), before, "generated={generated}: undo takes it all back");
+        assert!(run.step(true));
+        let redone = run.clip().picture_v2().unwrap();
+        if generated {
+            assert_eq!(redone, after, "generated={generated}: redo puts it back exactly");
+        } else {
+            // The old view's redo gives the re-added Opacity node a new id
+            // (#1373); everything else comes back exactly.
+            let without_opacity_id = |p: &klipp_timeline::LiftedPicture| {
+                let text = serde_json::to_string(&p.picture).unwrap();
+                let id = p.picture.graph.nodes.iter().find(|n| n.type_id.as_str() == "klipp.legacy.opacity").expect("an Opacity node").id.to_string();
+                text.replace(&id, "OPACITY")
+            };
+            assert_eq!(without_opacity_id(&redone), without_opacity_id(&after), "redo puts it back, but for the node id (#1373)");
+        }
+        assert!(run.step(false));
+        assert_eq!(run.clip().picture_v2().unwrap(), before, "generated={generated}: undo takes it all back");
         assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
     }
+}
+
+/// A first drag that adds Opacity and ends unseen by its row (released
+/// while the row isn't drawn) leaves no mark of its add. Later the user
+/// removes that effect and adds their own; a drag on it cancelled by
+/// Escape keeps it, though an add is the last step in the history (#1364).
+#[test]
+fn an_unseen_end_of_an_adding_drag_never_lets_escape_remove_a_kept_opacity() {
+    let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let bare = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+    let mut run = Run::new(bare, false);
+    run.property = true;
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    let (_, at) = run.row("Opacity").expect("the Video tab's Opacity row");
+    run.button(at, egui::PointerButton::Primary, true);
+    for dx in [-6.0, -12.0] {
+        run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))], egui::Modifiers::NONE);
+    }
+    // Released while the row isn't drawn: it never sees the drag stop.
+    run.property = false;
+    run.button(at + egui::vec2(-12.0, 0.0), egui::PointerButton::Primary, false);
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    // The user removes that effect and adds their own Opacity: an add is
+    // now the history's last step.
+    let index = crate::inspector::video_tab::find_opacity_index(run.clip()).expect("the first drag added Opacity");
+    run.apply(AppCommand::RemoveBuiltinEffect { clip_id: run.clip, index });
+    run.apply(AppCommand::AddBuiltinEffect { clip_id: run.clip, effect: BuiltinEffect::Opacity { value: 0.5 } });
+    run.property = true;
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    let kept = run.clip().picture_v2().unwrap();
+    // A drag on it, cancelled by Escape.
+    let (_, at) = run.row("Opacity").expect("the Opacity row");
+    run.button(at, egui::PointerButton::Primary, true);
+    for dx in [-6.0, -12.0, -18.0] {
+        run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))], egui::Modifiers::NONE);
+    }
+    run.key(egui::Key::Escape, egui::Modifiers::NONE);
+    run.button(at + egui::vec2(-18.0, 0.0), egui::PointerButton::Primary, false);
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    assert!(crate::inspector::video_tab::find_opacity_index(run.clip()).is_some(), "Escape keeps the user's own Opacity");
+    assert_eq!(run.clip().picture_v2().unwrap(), kept, "and the picture as it was before the drag");
+    assert!(!run.state.any_drag_in_progress());
 }

@@ -737,6 +737,11 @@ fn show_clip_video(
     // The effect this frame's drag added, not yet on `clip`.
     let mut started_index = None;
     if r_op.drag_started {
+        // Every gesture starts clean: a gesture that ended without this
+        // row seeing it (the row not drawn on the release) must not leave
+        // its add to a later Escape, which would take an effect the user
+        // kept. The key is the clip's, so no other clip reads it.
+        ui.data_mut(|d| d.remove_temp::<(usize, f32)>(added_by_drag));
         let index = opacity_index.unwrap_or_else(|| {
             let index = clip.builtin_effects().len();
             cmds.push(AppCommand::AddBuiltinEffect { clip_id, effect: BuiltinEffect::Opacity { value: base_opacity } });
