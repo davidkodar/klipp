@@ -608,7 +608,8 @@ fn rule_cases() -> Vec<Case> {
     let f = Frames::default().with(&base, 0);
     out.push(Case::new("rule/adjustment first opacity", sequence(vec![track("Adj", TrackKind::Video, vec![adj]), track("V1", TrackKind::Video, vec![base])]), f));
 
-    // Transform: a disabled Transform still carries the clip's position.
+    // A disabled Transform carries stored values but must not place the
+    // clip (#1207). Keep the historical case name to identify its baseline.
     let base = media(0.0, 4.0);
     let mut top = media(0.0, 4.0);
     top.set_effect_list(vec![transform(0.5, 12.0, 6.0)], vec![false]);

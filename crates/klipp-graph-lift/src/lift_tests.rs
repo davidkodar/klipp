@@ -229,7 +229,7 @@ fn opacity_follows_todays_three_rules() {
 }
 
 #[test]
-fn placement_takes_the_three_rules_and_one_position() {
+fn placement_takes_the_first_enabled_transform_and_one_position() {
     let tf = |x: f64, tilt: f64| json!({"type": "transform", "position_x": x, "position_y": 0.0, "scale_x": 1.5, "scale_y": 1.5, "rotation": 0.0,
                                        "anchor_x": 0.5, "anchor_y": 0.5, "rotation_x": tilt, "rotation_y": 0.0, "perspective": 0.0});
     let blur = json!({"type": "gaussian_blur", "radius": 3.0});
@@ -238,9 +238,8 @@ fn placement_takes_the_three_rules_and_one_position() {
                     "transform_pos_x_keyframes": [{"time_secs": 0.0, "value": 0.0}], "param_modifiers": {"position_x": {"modifiers": []}}})),
         ClipKind::Media,
     );
-    // Values from the first Transform of any state; tilt from the first
-    // enabled.
-    assert_eq!((p.placement.pos_x, p.placement.scale, p.placement.tilt_x), (Some(0.1), Some(1.5), Some(9.0)));
+    // All placement values come from the first enabled Transform (#1207).
+    assert_eq!((p.placement.pos_x, p.placement.scale, p.placement.tilt_x), (Some(0.2), Some(1.5), Some(9.0)));
     assert!(p.placement_anim.contains_key(&klipp_graph_format::ParamKey::from("pos_x")));
     // Fixed at the first enabled Transform's place; the disabled first one
     // is kept off, for the record.
