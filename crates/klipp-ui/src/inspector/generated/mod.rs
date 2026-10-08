@@ -139,13 +139,18 @@ pub fn grade_value(entry: &Value, desc: &ParamDesc) -> Value {
 /// they give there, with `base` (its stored value) where they don't, and
 /// where they are. `(None, default)` when it has none.
 pub fn keys_at(node: &klipp_graph_format::Node, desc: &ParamDesc, base: f32, t: f64, tolerance: f64) -> (Option<f32>, KeyState) {
-    use crate::inspector::keyframe_selection;
     let kfs = node_keys(node, desc.key);
+    keys_from_lane(&kfs, base, t, tolerance)
+}
+
+/// The same row state for a placed effect's retained legacy lane.
+pub(super) fn keys_from_lane(kfs: &[klipp_core::Keyframe], base: f32, t: f64, tolerance: f64) -> (Option<f32>, KeyState) {
+    use crate::inspector::keyframe_selection;
     if kfs.is_empty() {
         return (None, KeyState::default());
     }
-    let s = keyframe_selection::state(&kfs, t, tolerance);
-    let shown = Some(keyframe_selection::editable_value(&kfs, t, base, tolerance));
+    let s = keyframe_selection::state(kfs, t, tolerance);
+    let shown = Some(keyframe_selection::editable_value(kfs, t, base, tolerance));
     (shown, KeyState { any: s.has_any_keyframes, at_playhead: s.has_keyframe_at_playhead, in_frame: s.keys_in_frame, prev: s.prev_keyframe_time, next: s.next_keyframe_time, interpolation: s.current_interpolation })
 }
 
