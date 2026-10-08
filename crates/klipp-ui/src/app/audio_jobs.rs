@@ -279,6 +279,20 @@ impl KlippApp {
             .ok();
     }
 
+    /// Close any open path drag before a background job's result writes
+    /// the document (#1327). A result arrives from a drained event, not
+    /// through the dispatch boundary that closes a drag before any writer
+    /// (`closes_path_drag`), so a drag left open would take the result into
+    /// its step, or have the result's own step land inside it. Called at
+    /// the top of each result that writes: a media load, a proxy, an audio
+    /// conform, an audio sync, a media sync, scene cuts, a tracked point (and
+    /// the keys made from it), a learnt noise profile, a multicam plan. (A transcript goes to the analysis store, not the
+    /// project, and an edit plan or the socket's edits go through
+    /// `apply_edits_as_one`, which closes it already.)
+    pub(super) fn close_drag_for_result(&mut self) {
+        self.state.close_path_drag_before_edit();
+    }
+
     /// Apply a completed audio-sync result: shift the target clip's timeline
     /// position so its audio lines up with the reference.
     pub(super) fn apply_audio_sync_result(
@@ -339,6 +353,7 @@ impl KlippApp {
         while let Ok(result) = self.audio_conform_rx.try_recv() {
             match result {
                 AudioConformResult::Complete { media_id, entry } => {
+                    self.close_drag_for_result();
                     tracing::info!(
                         "Audio conform complete for {:?}: {:.1}s, {} peaks",
                         media_id,

@@ -54,6 +54,7 @@ mod stabilization;
 mod effects;
 mod inspector_edit_host;
 mod command_writes;
+mod event_writes;
 mod graph_dock;
 pub(crate) mod node_thumbnails;
 #[cfg(test)]

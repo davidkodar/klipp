@@ -160,6 +160,9 @@ impl KlippApp {
 
     pub(super) fn drain_proxy_events(&mut self) {
         while let Ok(event) = self.proxy_event_rx.try_recv() {
+            if super::event_writes::event_writes(&event) {
+                self.close_drag_for_result();
+            }
             match event {
                 AppEvent::ProxyGenerationStarted { media_id } => {
                     let filename = self.state.media_pool.get(&media_id)
