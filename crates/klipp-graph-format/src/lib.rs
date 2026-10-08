@@ -344,6 +344,38 @@ pub trait PortCatalog {
     fn node_spec(&self, node: &Node) -> Option<NodeSpec> {
         self.node(node.type_id.as_str())
     }
+
+    /// The declared picture input followed by a stack projection. This
+    /// reads descriptors, never edge order. A source has no primary input.
+    /// Adapters can override it for registered types with another spine.
+    fn primary_input(&self, node: &Node) -> Option<PortKey> {
+        use lifted::types as lt;
+        if matches!(node.type_id.as_str(), lt::SOURCE | lt::GROUP_INPUT | lt::GROUP_FRAME) {
+            return None;
+        }
+        if let Some(spec) = self.node_spec(node) {
+            return spec.inputs.iter().find(|p| p.key == "bg")
+                .or_else(|| spec.inputs.iter().find(|p| p.key == "in"))
+                .or_else(|| spec.inputs.iter().find(|p| p.ty == PortType::Image))
+                .map(|p| PortKey::new(&p.key));
+        }
+        if matches!(node.type_id.as_str(), types::LEGACY_NODE | lt::MERGE | lt::GROUP_OUTPUT) {
+            let kind = node.legacy.as_ref().and_then(|l| l.payload.get("kind")).and_then(Value::as_str).unwrap_or("");
+            return match kind {
+                "Source" | "ExternalMatte" => None,
+                "Layer" => Some("bg".into()),
+                _ => Some(ports::input_key(kind, 0)),
+            };
+        }
+        Some("in".into())
+    }
+
+    /// Whether the node reads neighbouring source frames, rather than
+    /// neighbours on the effect chain. Analysis-driven effects are not
+    /// source-neighbour nodes. Existing op validation does not call this.
+    fn needs_source_neighbours(&self, node: &Node) -> bool {
+        matches!(node.type_id.as_str(), lifted::types::TEMPORAL_DENOISE | lifted::types::FRAME_BLEND)
+    }
 }
 
 /// An old entry, exactly as it was read. Each part is JSON so that no
