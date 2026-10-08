@@ -1048,14 +1048,20 @@ pub fn apply_param_changes(
             continue;
         }
         // A drag on a grade group's pre-clip or post-clip node (#237). The
-        // engine's copy runs each member with its group's grade baked in,
-        // node ids kept, so the node is found in every member's graph.
+        // engine's copy runs each member with its group's grade baked in.
         if let Some((group, stage)) = seq.grade_group_stage_of(change.clip_id) {
+            // The stage's node runs in each member's grade under the id the
+            // bake gave it, its own unless the member's grade (or the
+            // other stage) held that id already (M3 step 16a): the drag
+            // goes to that node, never to another of the same id.
+            let mut wrapping = None;
             if let Some(g) = seq.grade_groups.iter_mut().find(|g| g.id == group) {
                 g.stage_slot(stage).edit(|graph| apply_override_recursive(graph, change.node_id, &change.param, change.value));
+                wrapping = Some(g.clone());
             }
             for clip in seq.all_clips_mut().filter(|c| c.grade_group == Some(group)) {
-                if clip.edit_grade(|graph| apply_override_recursive(graph, change.node_id, &change.param, change.value)) {
+                let target = wrapping.as_ref().and_then(|g| g.wrap_mapped(clip.own_grade()).1.get(&(stage, change.node_id)).copied()).unwrap_or(change.node_id);
+                if clip.edit_grade(|graph| apply_override_recursive(graph, target, &change.param, change.value)) {
                     applied += 1;
                 }
             }

@@ -287,14 +287,30 @@ impl GradeGroup {
     /// out too rather than shifting the colour (the splice refuses it and
     /// changes nothing).
     pub fn wrap(&self, clip_graph: &klipp_nodes::NodeGraph) -> klipp_nodes::NodeGraph {
+        self.wrap_mapped(clip_graph).0
+    }
+
+    /// [`GradeGroup::wrap`], and where each stage's nodes are in the
+    /// wrapped graph, by stage and their own id. A stage node keeps its id
+    /// unless the graph it joins already holds it (a grade copied into a
+    /// stage): then it takes [`klipp_nodes::graph::spliced_id`]'s, by the
+    /// stage's clip id (M3 step 16a), so two nodes of one id never run.
+    pub fn wrap_mapped(&self, clip_graph: &klipp_nodes::NodeGraph) -> (klipp_nodes::NodeGraph, HashMap<(GradeStage, klipp_nodes::NodeId), klipp_nodes::NodeId>) {
         let mut g = clip_graph.clone();
-        if let Some(pre) = self.stage(GradeStage::Pre).filter(|p| !p.is_identity()) {
-            let _ = g.prepend_keeping_ids(pre);
+        let mut placed = HashMap::new();
+        for stage in [GradeStage::Pre, GradeStage::Post] {
+            let Some(graph) = self.stage(stage).filter(|p| !p.is_identity()) else { continue };
+            let held: std::collections::HashSet<_> = g.nodes.iter().map(|n| n.id).collect();
+            let (graph, renamed) = graph.with_unique_ids(self.stage_clip_id(stage).0, |id| held.contains(&id));
+            let joined = if stage == GradeStage::Pre { g.prepend_keeping_ids(&graph) } else { g.append_keeping_ids(&graph) };
+            if joined.is_ok() {
+                let own = |id: klipp_nodes::NodeId| renamed.iter().find(|(_, now)| **now == id).map_or(id, |(was, _)| *was);
+                for n in graph.nodes.iter().filter(|n| !held.contains(&n.id) && g.nodes.iter().any(|m| m.id == n.id)) {
+                    placed.insert((stage, own(n.id)), n.id);
+                }
+            }
         }
-        if let Some(post) = self.stage(GradeStage::Post).filter(|p| !p.is_identity()) {
-            let _ = g.append_keeping_ids(post);
-        }
-        g
+        (g, placed)
     }
 
     /// Whether this group grades anything.
@@ -446,11 +462,65 @@ impl Sequence {
                         if clip.picture.view().own_node_graph.is_none() {
                             clip.view_mut().own_node_graph = Some(Box::new(clip.picture.view().node_graph.0.clone()));
                         }
-                        let _ = clip.view_mut().node_graph.0.append_keeping_ids(grade);
+                        append_track_grade(&mut clip.view_mut().node_graph.0, track.id, grade);
                     }
                 }
                 clip.audio_effects.extend(fx.audio.iter().cloned());
             }
+        }
+    }
+
+    /// The node of `clip_id`'s grade, as a render copy runs it (see
+    /// [`Sequence::render_grade`]), that `path` names (M3 step 16a): what
+    /// an inspection (a thumbnail, a tap, a solo) reads. A node of the
+    /// clip's own grade group keeps its id; a group stage's or the track
+    /// grade's has the id its bake gave it. Works on the sequence and on
+    /// its render copy alike. `Err` says why the path names nothing to
+    /// inspect, never a stand-in: a node inside a compound (not a group of
+    /// the picture yet), the timeline grade (graded after the clips), a
+    /// stage that does nothing here, or a node that isn't there.
+    pub fn grade_node_at(&self, clip_id: ClipId, path: &klipp_graph_format::path::NodePath) -> Result<klipp_nodes::NodeId, String> {
+        use klipp_graph_format::lifted::Stage;
+        use klipp_graph_format::path::{Root, TrackPart};
+        let (track, clip) = self
+            .tracks
+            .iter()
+            .find_map(|t| t.clips.iter().find(|c| c.id == clip_id).map(|c| (t, c)))
+            .ok_or_else(|| format!("no clip {} on this sequence's tracks", clip_id.0))?;
+        let own = clip.own_grade();
+        let held = |g: &klipp_nodes::NodeGraph, id: klipp_nodes::NodeId| g.nodes.iter().any(|n| n.id == id);
+        let group = clip.grade_group.and_then(|g| self.grade_group(g)).filter(|g| g.grades());
+        let one = |nodes: &[klipp_nodes::NodeId]| match nodes {
+            [inner] => Ok(*inner),
+            [] => Err("an empty path names no node".to_string()),
+            _ => Err("that node is inside a compound, which can't be inspected until compounds are groups of the picture".to_string()),
+        };
+        match path.root {
+            Root::Clip { clip: c } if c == clip_id.0 => {
+                let grade = klipp_graph_lift::ids::entry_id(klipp_graph_lift::ids::RootKind::Clip, c, "grade", 0);
+                match path.nodes.split_first() {
+                    Some((first, rest)) if *first == grade => {
+                        let inner = one(rest)?;
+                        if held(own, inner) { Ok(inner) } else { Err(format!("{inner} isn't in the clip's grade")) }
+                    }
+                    Some((first, _)) => Err(format!("{first} isn't the clip's grade group; only grade nodes are inspected")),
+                    None => Err("an empty path names no node".into()),
+                }
+            }
+            Root::GroupStage { group: g, stage } if clip.grade_group.map(|id| id.0) == Some(g) => {
+                let inner = one(&path.nodes)?;
+                let group = group.ok_or("the clip's grade group grades nothing")?;
+                let stage = if stage == Stage::Pre { GradeStage::Pre } else { GradeStage::Post };
+                group.wrap_mapped(own).1.get(&(stage, inner)).copied().ok_or_else(|| format!("{inner} doesn't run in that stage for this clip"))
+            }
+            Root::Track { track: t, part: TrackPart::Grade } if t == track.id.0 => {
+                let inner = one(&path.nodes)?;
+                let grade = track.effects.grade_onto(track.kind, clip).ok_or("the track's grade doesn't run on this clip")?;
+                let mut base = group.map_or_else(|| own.clone(), |g| g.wrap(own));
+                append_track_grade(&mut base, track.id, grade).get(&inner).copied().ok_or_else(|| format!("{inner} doesn't run in the track's grade"))
+            }
+            Root::TimelineGrade { .. } => Err("the timeline grade runs after the clips, not in a clip's grade".into()),
+            _ => Err("that path is in another clip's picture".into()),
         }
     }
 
@@ -467,7 +537,7 @@ impl Sequence {
             None => std::borrow::Cow::Borrowed(&clip.picture.view().node_graph.0),
         };
         if let Some(grade) = track.effects.grade_onto(track.kind, clip) {
-            let _ = graph.to_mut().append_keeping_ids(grade);
+            append_track_grade(graph.to_mut(), track.id, grade);
         }
         Some(graph)
     }
@@ -1242,6 +1312,20 @@ impl TrackEffects {
         }
         self.track_grade().filter(|g| !g.is_identity())
     }
+}
+
+/// A track's grade after a clip's in `graph`: its nodes keep their ids
+/// unless `graph` holds one already, which takes
+/// [`klipp_nodes::graph::spliced_id`]'s by the track's id (M3 step 16a).
+/// Where each of its nodes is in `graph`, by its own id.
+pub fn append_track_grade(graph: &mut klipp_nodes::NodeGraph, track: TrackId, grade: &klipp_nodes::NodeGraph) -> HashMap<klipp_nodes::NodeId, klipp_nodes::NodeId> {
+    let held: std::collections::HashSet<_> = graph.nodes.iter().map(|n| n.id).collect();
+    let (grade, renamed) = grade.with_unique_ids(track.0, |id| held.contains(&id));
+    if graph.append_keeping_ids(&grade).is_err() {
+        return HashMap::new();
+    }
+    let own = |id: klipp_nodes::NodeId| renamed.iter().find(|(_, now)| **now == id).map_or(id, |(was, _)| *was);
+    grade.nodes.iter().filter(|n| !held.contains(&n.id) && graph.nodes.iter().any(|m| m.id == n.id)).map(|n| (own(n.id), n.id)).collect()
 }
 
 /// What Copy Track Attributes carries (#846): a track's levels and its

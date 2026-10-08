@@ -1226,6 +1226,35 @@ impl NodeGraph {
         Ok(())
     }
 
+    /// This graph made ready to splice into a graph that already holds
+    /// the ids `taken` names: each node of one of those ids takes
+    /// [`spliced_id`]'s instead, the same every time, and every edge,
+    /// position and frame membership follows it. Other nodes keep their
+    /// ids. Without this, two stages holding a node of the same id (a
+    /// grade copied into a group) put two nodes of one id in the graph the
+    /// executor runs (M3 step 16a). The renamed ids, old to new.
+    pub fn with_unique_ids(&self, scope: Uuid, taken: impl Fn(NodeId) -> bool) -> (NodeGraph, HashMap<NodeId, NodeId>) {
+        let id_map: HashMap<NodeId, NodeId> = self.nodes.iter().filter(|n| taken(n.id)).map(|n| (n.id, spliced_id(scope, n.id))).collect();
+        if id_map.is_empty() {
+            return (self.clone(), id_map);
+        }
+        let to = |id: NodeId| id_map.get(&id).copied().unwrap_or(id);
+        let mut g = self.clone();
+        for node in &mut g.nodes {
+            node.id = to(node.id);
+        }
+        for edge in &mut g.edges {
+            edge.from_node = to(edge.from_node);
+            edge.to_node = to(edge.to_node);
+        }
+        g.output_node_id = to(self.output_node_id);
+        g.node_positions = self.node_positions.iter().map(|(id, p)| (to(*id), *p)).collect();
+        for frame in &mut g.frames {
+            frame.contained_node_ids = frame.contained_node_ids.iter().map(|id| to(*id)).collect();
+        }
+        (g, id_map)
+    }
+
     /// This graph with fresh ids throughout: every node, and every edge,
     /// position and frame membership that names one; frames and notes
     /// get new ids of their own. For a copied graph pasted onto another
@@ -1261,6 +1290,14 @@ impl NodeGraph {
         }
         new_graph
     }
+}
+
+/// The id a node of id `id`, spliced from the graph named by `scope` (a
+/// group's stage, a track's grade) into a graph that already holds `id`,
+/// takes there: derived from both, so every bake and every reader that
+/// resolves a path into that stage agree on it.
+pub fn spliced_id(scope: Uuid, id: NodeId) -> NodeId {
+    Uuid::new_v5(&scope, id.as_bytes())
 }
 
 /// Walk back through any chain of `NodeKind::Reroute` to find the

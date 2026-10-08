@@ -233,3 +233,37 @@ fn the_timeline_grade_node_is_reached() {
     assert_eq!(occurrences(&copy, node), [("timeline", 2.0)]);
 }
 
+
+/// M3 step 16a: a stage node of the same id as a member's own node (a
+/// grade copied into the stage) runs in the member under its spliced id,
+/// and a drag reaches the node it was made on, never the other.
+#[test]
+fn a_stage_node_sharing_a_members_node_id_reaches_only_itself() {
+    let mut p = project();
+    let (stage_clip, stage_node) = p.a_group_post;
+    // The member's own Corrector takes the stage node's id.
+    let own_node = p.own_node;
+    let member = p.a.all_clips_mut().find(|c| c.id == p.own_clip).unwrap();
+    member.edit_grade(|g| {
+        g.nodes.iter_mut().filter(|n| n.id == own_node).for_each(|n| n.id = stage_node);
+        g.edges.iter_mut().for_each(|e| {
+            if e.from_node == own_node {
+                e.from_node = stage_node;
+            }
+            if e.to_node == own_node {
+                e.to_node = stage_node;
+            }
+        });
+    });
+    let group = p.a.grade_groups[0].clone();
+    let spliced = klipp_nodes::graph::spliced_id(group.stage_clip_id(GradeStage::Post).0, stage_node);
+    // The stage's node, dragged: the member's runs it under the spliced id.
+    let (copy, applied) = dragged(&p, stage_clip, stage_node);
+    assert_eq!(applied, 1);
+    assert_eq!(occurrences(&copy, stage_node), [("top", 0.3)], "the member's own node is untouched");
+    assert_eq!(occurrences(&copy, spliced), [("top", 2.0)], "the stage's node took the drag");
+    // The member's own node, dragged: the stage's is untouched.
+    let (copy, _) = dragged(&p, p.own_clip, stage_node);
+    assert_eq!(occurrences(&copy, stage_node), [("top", 2.0)]);
+    assert_eq!(occurrences(&copy, spliced), [("top", 0.4)]);
+}
