@@ -66,6 +66,8 @@ mod parity_controls;
 #[cfg(test)]
 mod parity_harness;
 #[cfg(test)]
+mod parity_numeric;
+#[cfg(test)]
 mod grade_inspector_tests;
 mod media;
 mod compound;

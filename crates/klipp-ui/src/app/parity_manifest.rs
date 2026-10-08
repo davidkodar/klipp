@@ -724,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn required_surfaces_follow_placed_kinds_and_reviewed_grade_routes() {
+    fn required_surfaces_follow_actual_effect_controls_and_reviewed_grade_routes() {
         let entries = catalog();
         for ty in klipp_effects::registry::effect_types() {
             let entry = entries
@@ -732,18 +732,43 @@ mod tests {
                 .find(|e| e.type_id == ty.desc.id && matches!(e.value, CatalogValue::Enabled))
                 .unwrap();
             let surfaces = rules::surfaces(entry).unwrap();
-            let placed = matches!(
-                ty.tag,
-                "transform" | "opacity" | "speed_ramp" | "temporal_denoise"
-            );
-            assert_eq!(surfaces.contains(&Surface::VideoTab), placed, "{}", ty.tag);
-            assert_eq!(
-                surfaces.contains(&Surface::EffectsStack),
-                !placed,
-                "{}",
+            assert!(
+                !surfaces.contains(&Surface::VideoTab),
+                "{} has no Video bypass",
                 ty.tag
             );
+            assert!(surfaces.contains(&Surface::EffectsStack), "{}", ty.tag);
             assert!(!surfaces.contains(&Surface::GraphInspector));
+        }
+        for (ty, parameter, video) in [
+            ("opacity", "value", true),
+            ("transform", "position_x", true),
+            ("transform", "position_y", true),
+            ("transform", "scale_x", true),
+            ("transform", "scale_y", true),
+            ("transform", "rotation", true),
+            ("transform", "rotation_x", true),
+            ("transform", "rotation_y", true),
+            ("transform", "perspective", true),
+            ("transform", "anchor_x", false),
+            ("transform", "anchor_y", false),
+            ("speed_ramp", "speed", false),
+            ("temporal_denoise", "strength", false),
+        ] {
+            let entry = entries
+                .iter()
+                .find(|e| e.type_id == format!("klipp.fx.{ty}") && e.parameter == parameter)
+                .unwrap();
+            let surfaces = rules::surfaces(entry).unwrap();
+            assert!(
+                surfaces.contains(&Surface::EffectsStack),
+                "{ty} / {parameter}"
+            );
+            assert_eq!(
+                surfaces.contains(&Surface::VideoTab),
+                video,
+                "{ty} / {parameter}"
+            );
         }
         let wheel = entries
             .iter()
