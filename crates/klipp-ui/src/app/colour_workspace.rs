@@ -679,6 +679,9 @@ impl KlippApp {
         nodes_rect: egui::Rect,
         theme: &KlippTheme,
     ) {
+        if self.state.repair_grade_descent() {
+            self.node_graph_v2_panel.request_fit();
+        }
         // Sync per-node thumbs from the engine's FrameBuffer into
         // AppState at the start of the panel render. Engine bumps
         // `node_thumbs_gen` whenever it refreshes the map on a paused
@@ -704,31 +707,6 @@ impl KlippApp {
                 if let Some(clip) = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(cid))
                 {
-                    // Self-heal: if any id in the descent path doesn't
-                    // resolve against the current clip's graph (clip
-                    // switch, upstream RemoveNode, etc.) clear the
-                    // path so the V2 panel renders the root graph on
-                    // this frame. Selection clears alongside so the
-                    // inspector doesn't linger on a ghost.
-                    let path_valid = {
-                        let mut cursor = clip.grade();
-                        self.state.graph_descent_path.iter().all(|id| {
-                            match cursor.nodes.iter().find(|n| n.id == *id) {
-                                Some(n) if n.kind == klipp_nodes::NodeKind::Compound => {
-                                    match n.params.compound_subgraph.as_ref() {
-                                        Some(sub) => { cursor = sub; true }
-                                        None => false,
-                                    }
-                                }
-                                _ => false,
-                            }
-                        })
-                    };
-                    if !path_valid {
-                        self.state.graph_descent_path.clear();
-                        self.state.selected_node_ids.clear();
-                        self.state.selected_node_id = None;
-                    }
                     // Build breadcrumb labels by walking the descent
                     // path through each compound's subgraph. Done
                     // BEFORE the mutable resolve so the clip grade

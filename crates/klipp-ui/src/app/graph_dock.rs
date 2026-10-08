@@ -1,8 +1,30 @@
 //! Explicit graph access in either workspace; navigation is session state.
 use super::*;
 use klipp_graph_format::path::{NodePath, Root};
+use klipp_timeline::GradeAccess;
 
 impl AppState {
+    /// Keep the deepest surviving ancestor after deleting a compound or
+    /// switching grade versions. This repairs navigation, never the grade.
+    pub(crate) fn repair_grade_descent(&mut self) -> bool {
+        let mut valid = 0;
+        if let Some(clip) = self.selected_clip.and_then(|id| self.sequence().all_clips().find(|c| c.id == id)) {
+            let mut graph = clip.grade();
+            for id in &self.graph_descent_path {
+                let Some(node) = graph.nodes.iter().find(|n| n.id == *id && n.kind == klipp_nodes::NodeKind::Compound) else { break };
+                let Some(body) = node.params.compound_subgraph.as_ref() else { break };
+                graph = body;
+                valid += 1;
+            }
+        }
+        if valid == self.graph_descent_path.len() { return false; }
+        self.graph_descent_path.truncate(valid);
+        self.selected_node_id = None;
+        self.selected_node_ids.clear();
+        self.selected_node_addr = None;
+        true
+    }
+
     pub(crate) fn toggle_graph_dock(&mut self) {
         self.close_path_drag_before_edit();
         self.graph_dock_open = !self.graph_dock_open;
@@ -129,6 +151,63 @@ mod tests {
         state.sequences[0].tracks[0].clips.push(clip);
         state.selected_clip = Some(id);
         (state, id, path)
+    }
+
+    fn nested_grade() -> (AppState, ClipId, Vec<klipp_nodes::NodeId>) {
+        fn wrap(body: klipp_nodes::NodeGraph) -> (klipp_nodes::NodeGraph, klipp_nodes::NodeId) {
+            let mut graph = klipp_nodes::NodeGraph::default();
+            let id = graph.ensure_corrector();
+            let node = graph.nodes.iter_mut().find(|n| n.id == id).unwrap();
+            node.kind = klipp_nodes::NodeKind::Compound;
+            node.params = klipp_nodes::NodeParams { compound_subgraph: Some(body), ..Default::default() };
+            (graph, id)
+        }
+        let (inner, inner_id) = wrap(Default::default());
+        let (outer, outer_id) = wrap(inner);
+        let (mut s, id, _) = state();
+        s.sequences[0].all_clips_mut().find(|c| c.id == id).unwrap().set_grade(outer);
+        s.graph_descent_path = vec![outer_id, inner_id];
+        (s, id, vec![outer_id, inner_id])
+    }
+
+    #[test]
+    fn a_grade_version_switch_keeps_a_valid_path() {
+        let (mut s, id, path) = nested_grade();
+        for name in ["First", "Second"] {
+            assert!(s.grade_version_command(&AppCommand::SaveGradeVersion { clip_id: id, name: name.into() }));
+        }
+        for version_index in [0, 1] {
+            assert!(s.grade_version_command(&AppCommand::SwitchGradeVersion { clip_id: id, version_index }));
+            let before = s.sequence().all_clips().find(|c| c.id == id).unwrap().picture_v2().unwrap();
+            let dirty = s.dirty;
+            assert!(!s.repair_grade_descent());
+            assert_eq!(s.graph_descent_path, path);
+            assert_eq!(s.selected_clip, Some(id));
+            assert_eq!(s.dirty, dirty);
+            assert_eq!(s.sequence().all_clips().find(|c| c.id == id).unwrap().picture_v2().unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn deleted_groups_repair_the_crumbs_to_the_nearest_ancestor() {
+        let (mut s, id, path) = nested_grade();
+        s.selected_node_id = Some(uuid::Uuid::new_v4());
+        s.selected_node_ids.extend(s.selected_node_id);
+        s.sequences[0].all_clips_mut().find(|c| c.id == id).unwrap().edit_grade(|g| {
+            g.nodes.iter_mut().find(|n| n.id == path[0]).unwrap().params.compound_subgraph = Some(Default::default());
+        });
+        let before = s.sequence().all_clips().find(|c| c.id == id).unwrap().picture_v2().unwrap();
+        assert!(s.repair_grade_descent());
+        assert_eq!(s.graph_descent_path, path[..1]);
+        assert!(s.selected_node_id.is_none() && s.selected_node_ids.is_empty());
+        assert!(!s.dirty);
+        assert_eq!(s.active_history().undo_count(), 0);
+        assert_eq!(s.sequence().all_clips().find(|c| c.id == id).unwrap().picture_v2().unwrap(), before);
+        s.sequences[0].all_clips_mut().find(|c| c.id == id).unwrap().set_grade(Default::default());
+        assert!(s.repair_grade_descent());
+        assert!(s.graph_descent_path.is_empty());
+        assert_eq!(s.selected_clip, Some(id));
+        assert!(!s.repair_grade_descent());
     }
 
     #[test]
