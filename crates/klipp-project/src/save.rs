@@ -672,6 +672,16 @@ pub fn iso8601_now() -> String {
     format!("{y:04}-{:02}-{:02}T{h:02}:{m:02}:{s:02}Z", mo + 1, d + 1)
 }
 
+/// Whether `a` and `b` would save the same: what a project's media
+/// manifest holds for each. A file re-probed when its project opens, and
+/// found as it was stored, leaves nothing to save (#1353), while what is
+/// only in memory (whether the probe has run, its caches) doesn't count.
+pub fn media_items_save_alike(a: &MediaItem, b: &MediaItem) -> bool {
+    let dir = Path::new("");
+    let saved = |item: &MediaItem| serde_json::to_value(media_item_to_json(item, dir)).ok();
+    saved(a).is_some() && saved(a) == saved(b)
+}
+
 fn media_item_to_json(item: &MediaItem, project_dir: &Path) -> MediaItemJson {
     MediaItemJson {
         id: item.id.to_string(),
@@ -896,4 +906,35 @@ fn revision2_text(project: &ProjectJson, sequences: &[Sequence]) -> Result<Strin
         return Err(format!("Saving would lose part of the project ({n:?}), so it was not saved"));
     }
     serde_json::to_string_pretty(&v2).map_err(|e| format!("Failed to serialize project: {e}"))
+}
+
+#[cfg(test)]
+mod save_alike_tests {
+    use super::media_items_save_alike;
+    use klipp_media::MediaItem;
+
+    fn item() -> MediaItem {
+        MediaItem::synthetic_for_test(std::path::PathBuf::from("/media/a.mp4"), None)
+    }
+
+    #[test]
+    fn a_reprobe_that_finds_what_was_stored_saves_alike() {
+        let stored = item();
+        let mut probed = stored.clone();
+        // What only the open's re-probe changes: whether it has run.
+        probed.metadata_read = !stored.metadata_read;
+        probed.needs_reprobe = !stored.needs_reprobe;
+        assert!(media_items_save_alike(&stored, &probed));
+    }
+
+    #[test]
+    fn a_file_changed_while_closed_or_new_metadata_saves_differently() {
+        let stored = item();
+        let mut touched = stored.clone();
+        touched.file_modified_at = stored.file_modified_at.map(|t| t + 1).or(Some(1));
+        assert!(!media_items_save_alike(&stored, &touched), "the file changed");
+        let mut read = stored.clone();
+        read.shot.reel_name = Some("A001".into());
+        assert!(!media_items_save_alike(&stored, &read), "the probe found a reel");
+    }
 }
