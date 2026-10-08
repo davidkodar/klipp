@@ -101,8 +101,9 @@ impl KlippApp {
         }
 
         // Node strip panel — read live state
-        if self.state.show_node_strip && nodes_rect.is_positive() {
-            self.render_color_ws_node_strip(ui, all_cmds, nodes_rect, &theme);
+        if self.state.graph_is_visible() && nodes_rect.is_positive() {
+            if self.state.graph_dock_open { self.render_graph_dock(ui, all_cmds, nodes_rect, &theme); }
+            else { self.render_color_ws_node_strip(ui, all_cmds, nodes_rect, &theme); }
         }
     }
 
@@ -671,7 +672,7 @@ impl KlippApp {
         }
     }
 
-    fn render_color_ws_node_strip(
+    pub(super) fn render_color_ws_node_strip(
         &mut self,
         ui: &mut egui::Ui,
         all_cmds: &mut Vec<AppCommand>,

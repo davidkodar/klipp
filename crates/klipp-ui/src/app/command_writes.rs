@@ -21,6 +21,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         // recompute a clip's cached analysis from the parameter being
         // dragged, as it goes, so a drag's step holds what they write.
         AppCommand::SetSplitCompareNode { .. }
+        | AppCommand::ToggleGraphDock
         | AppCommand::RevealGraph { .. }
         | AppCommand::SetGraphDockRoot { .. }
         | AppCommand::Play
@@ -254,7 +255,11 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         // Write the picture, the project or the history, start a step of
         // their own, or aren't known to write nothing. The path edits are
         // among them; a path drag takes its own (`closes_path_drag`).
-        AppCommand::GraphOps { .. }
+        AppCommand::BeginNodeLayoutEdit { .. }
+        | AppCommand::EndNodeLayoutEdit { .. }
+        | AppCommand::AbandonNodeLayoutEdit { .. }
+        | AppCommand::SetNodePositionAt { .. }
+        | AppCommand::GraphOps { .. }
         | AppCommand::AddNodeAt { .. }
         | AppCommand::RemoveNodeAt { .. }
         | AppCommand::MoveNodeAt { .. }

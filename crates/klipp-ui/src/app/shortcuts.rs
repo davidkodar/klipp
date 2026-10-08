@@ -13,7 +13,9 @@ impl KlippApp {
         // Ctrl+ shortcuts still work (standard convention: Ctrl combos always fire).
         let text_editing = ctx.wants_keyboard_input() || self.state.editing_timecode || self.state.viewer_text_edit;
         self.shortcuts_ctrl_global(ctx, &mut cmds);
-        if text_editing {
+        if text_editing || self.state.active_panel == Some(crate::state::PanelKind::PictureGraph) {
+            // The picture canvas owns its editing keys. Timeline and grade
+            // shortcuts must not operate on the selected clip behind it.
             return cmds;
         }
         // A trim amount being typed for the selected edit points takes the
@@ -158,7 +160,7 @@ impl KlippApp {
             }
 
             // Group selected clips
-            if kb.is_action_pressed("group_clips", i) {
+            if self.state.active_panel != Some(crate::state::PanelKind::PictureGraph) && kb.is_action_pressed("group_clips", i) {
                 let mut ids = self.state.selected_clips.clone();
                 if let Some(primary) = self.state.selected_clip {
                     if !ids.contains(&primary) {
@@ -170,7 +172,7 @@ impl KlippApp {
                 }
             }
             // Ungroup
-            if kb.is_action_pressed("ungroup_clips", i) {
+            if self.state.active_panel != Some(crate::state::PanelKind::PictureGraph) && kb.is_action_pressed("ungroup_clips", i) {
                 if let Some(primary) = self.state.selected_clip {
                     let gid = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
                         .flat_map(|t| t.clips.iter())

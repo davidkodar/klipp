@@ -20,6 +20,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PanelKind {
     NodeGraph,
+    /// Picture canvas: its shortcuts must not edit timeline clips.
+    PictureGraph,
     NodeInspector,
     /// The whole browser dock — Files, Media, and Library tabs are
     /// the same widget so they share one panel kind. The browser's
@@ -3725,6 +3727,12 @@ impl AttributesClipboard {
 }
 
 impl AppState {
+    /// The explicit dock works in either workspace; Colour keeps its
+    /// existing grade strip when the new dock is closed.
+    pub fn graph_is_visible(&self) -> bool {
+        self.graph_dock_open || (self.show_color_panel && self.show_node_strip)
+    }
+
     /// The scope dock under the viewer exists only in the Color
     /// workspace, where the timeline is hidden. Elsewhere it would take
     /// the timeline's rows, so the dock flag is ignored there.

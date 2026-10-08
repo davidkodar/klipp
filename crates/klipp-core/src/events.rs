@@ -1032,8 +1032,15 @@ pub enum AppCommand {
     /// Show the graph dock at the level holding the node at `path`, and
     /// select the node when `select`. Idempotent: it never closes the dock.
     RevealGraph { path: klipp_graph_format::path::NodePath, select: bool },
+    /// Open or close the graph without changing workspaces.
+    ToggleGraphDock,
     /// Show `root`'s top level in the graph dock.
     SetGraphDockRoot { root: klipp_graph_format::path::Root },
+    /// Move one or several canvas nodes as a single undoable gesture.
+    BeginNodeLayoutEdit { root: klipp_graph_format::path::Root },
+    EndNodeLayoutEdit { root: klipp_graph_format::path::Root },
+    AbandonNodeLayoutEdit { root: klipp_graph_format::path::Root },
+    SetNodePositionAt { addr: klipp_graph_format::path::NodePath, position: (f32, f32) },
     // Transport
     Play,
     Pause,

@@ -30,6 +30,7 @@ pub(super) struct PictureCanvas<'a> {
     frames: Vec<NodeFrame>,
     notes: Vec<NodeStickyNote>,
     after: Option<NodeId>,
+    pub(super) keyboard_enabled: bool,
 }
 
 fn image_port(key: &str) -> PortSpec {
@@ -147,7 +148,7 @@ impl<'a> PictureCanvas<'a> {
             .or_else(|| add_after(graph));
         Ok(Self { graph, level, nodes, edges, positions,
             frames: graph.ui.frames.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect(),
-            notes: graph.ui.sticky_notes.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect(), after })
+            notes: graph.ui.sticky_notes.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect(), after, keyboard_enabled: true })
     }
 
     fn path(&self, node: NodeId) -> NodePath {
@@ -259,12 +260,13 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
     fn signal_role(&self, node: NodeId, port: u8) -> PortRole { self.nodes.iter().find(|n| n.node.id == node).map_or(PortRole::Primary, |n| n.kind().output_port_role(port)) }
     fn add_menu(&self) -> &[MenuCategory] { picture_menu() }
     fn grade_tools(&self) -> bool { false }
+    fn keyboard_enabled(&self) -> bool { self.keyboard_enabled }
     fn command(&self, command: AppCommand) -> Option<AppCommand> {
         let single = |op, label: &str| Some(AppCommand::GraphOps { ops: vec![op], label: label.into() });
         match command {
             AppCommand::MoveNode { node_id, delta_x, delta_y, .. } => {
                 let p = self.positions.get(&node_id)?;
-                single(GraphOp::SetNodeMeta { path: self.path(node_id), label: None, position: Some(serde_json::json!({"x":p.x + delta_x,"y":p.y + delta_y})) }, "Move node")
+                Some(AppCommand::SetNodePositionAt { addr: self.path(node_id), position: (p.x + delta_x, p.y + delta_y) })
             }
             AppCommand::RenameNode { node_id, label, .. } => single(GraphOp::SetNodeMeta { path: self.path(node_id), label: Some(label), position: None }, "Rename node"),
             AppCommand::RemoveNode { node_id, .. } => Some(AppCommand::RemoveNodeAt { addr: self.path(node_id) }),
@@ -448,7 +450,7 @@ mod tests {
             let mut cmds = Vec::new();
             let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 700.0))), time: Some(time), events, ..Default::default() }, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    cmds = panel.show_picture(ui, &c, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0).unwrap();
+                    cmds = panel.show_picture(ui, &c, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, true).unwrap();
                 });
             });
             let texts: Vec<_> = out.shapes.iter().filter_map(|s| match &s.shape {

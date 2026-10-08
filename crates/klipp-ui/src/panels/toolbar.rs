@@ -54,6 +54,14 @@ impl ToolbarPanel {
         styled_tooltip(&resp, theme, "Render Queue", None);
         if resp.clicked() { cmds.push(AppCommand::ShowRenderQueue); }
 
+        if matches!(state.active_workspace, Workspace::Edit | Workspace::Color) {
+            rx -= 96.0;
+            let rect = egui::Rect::from_min_size(egui::pos2(rx, cy - 14.0), egui::vec2(92.0, 28.0));
+            if ui.put(rect, egui::Button::new(if state.graph_dock_open { "Close graph" } else { "Open graph" }).selected(state.graph_dock_open)).clicked() {
+                cmds.push(AppCommand::ToggleGraphDock);
+            }
+        }
+
         let right_edge = rx - 10.0;
 
         // ═══════════════════════════════════════════
@@ -1165,6 +1173,7 @@ impl ToolbarPanel {
             // Panels
             ui.label(egui::RichText::new("PANELS").size(10.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
             let toggle_label = |active: bool, name: &str| if active { format!("\u{2714} {name}") } else { format!("  {name}") };
+            if ui.button(toggle_label(state.graph_dock_open, "Open graph")).clicked() { cmds.push(AppCommand::ToggleGraphDock); ui.close_menu(); }
             if ui.add(egui::Button::new(toggle_label(state.show_inspector_panel, "Inspector")).shortcut_text(kb.display_for("toggle_inspector_panel"))).clicked() { cmds.push(AppCommand::ToggleInspectorPanel); ui.close_menu(); }
             if ui.add(egui::Button::new(toggle_label(state.show_browser_panel, "Browser")).shortcut_text(kb.display_for("toggle_browser_panel"))).clicked() { cmds.push(AppCommand::ToggleBrowserPanel); ui.close_menu(); }
             if ui.add(egui::Button::new(toggle_label(state.show_curve_editor, "Curve Editor")).shortcut_text(kb.display_for("toggle_keyframe_editor"))).clicked() { state.show_curve_editor = !state.show_curve_editor; ui.close_menu(); }

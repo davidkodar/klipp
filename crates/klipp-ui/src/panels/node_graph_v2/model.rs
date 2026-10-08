@@ -59,6 +59,7 @@ pub(super) trait CanvasGraph {
     fn add_menu(&self) -> &[MenuCategory];
     fn command(&self, command: AppCommand) -> Option<AppCommand>;
     fn grade_tools(&self) -> bool { true }
+    fn keyboard_enabled(&self) -> bool { true }
 }
 
 pub(super) struct GradeCanvas<'a>(pub &'a NodeGraph);

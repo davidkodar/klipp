@@ -288,8 +288,8 @@ impl KlippApp {
                     // when scopes are toggled on from any other workspace.
                     // The render function gates the Color-only chrome
                     // internally on `toggle_bar_h > 0` and `color_tools_bottom`.
-                    if in_color_ws || show_scopes_bar {
-                        let stood_in = self.stand_in_timeline_grade();
+                    if in_color_ws || show_scopes_bar || self.state.graph_dock_open {
+                        let stood_in = if self.state.graph_dock_open { None } else { self.stand_in_timeline_grade() };
                         self.render_color_workspace_bottom(
                             ctx,
                             ui,
