@@ -417,3 +417,40 @@ fn escape_abandons_a_header_mix_drag_even_if_the_pointer_keeps_moving() {
     assert!(!run.state.any_drag_in_progress());
     assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
 }
+
+/// Escape is an intended improvement over the old card: its drag commits,
+/// while the generated row must restore the whole picture without history.
+#[test]
+fn escape_cancels_a_generated_number_drag_while_legacy_keeps_its_edit() {
+    for (effect, label) in [
+        (BuiltinEffect::GaussianBlur { radius: 3.0 }, "Radius"),
+        (BuiltinEffect::TemporalDenoise { strength: 0.5, threshold: 0.02 }, "Strength"),
+    ] {
+        for generated in [false, true] {
+            let mut run = Run::new(fixture(&effect), generated);
+            let before = run.clip().picture_v2().unwrap();
+            run.frame(Vec::new(), egui::Modifiers::NONE);
+            let (_, at) = run.row(label).expect("numeric row");
+            run.button(at, egui::PointerButton::Primary, true);
+            for dx in [6.0, 12.0, 18.0] {
+                run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))], egui::Modifiers::NONE);
+            }
+            let during = run.clip().picture_v2().unwrap();
+            assert_ne!(during, before, "the real control must edit before Escape");
+            run.key(egui::Key::Escape, egui::Modifiers::NONE);
+            run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(28.0, 0.0))], egui::Modifiers::NONE);
+            run.button(at + egui::vec2(28.0, 0.0), egui::PointerButton::Primary, false);
+            let expected = if generated { &before } else { &during };
+            assert_eq!(&run.clip().picture_v2().unwrap(), expected, "Escape in generated={generated}");
+            assert_eq!(run.state.active_history().undo_count(), usize::from(!generated));
+            assert!(!run.state.any_drag_in_progress());
+            assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+            if !generated {
+                assert!(run.step(false));
+                assert_eq!(run.clip().picture_v2().unwrap(), before);
+                assert!(run.step(true));
+                assert_eq!(run.clip().picture_v2().unwrap(), during);
+            }
+        }
+    }
+}

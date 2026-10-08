@@ -229,6 +229,7 @@ pub fn to_effect_list(clip: &Clip, ty: &klipp_effects::registry::EffectType, nod
         match cmd {
             AppCommand::BeginParamEditAt { .. } => out.push(AppCommand::BeginEffectDrag { key: key.clone(), clip_id, effect_index: index, old_effect: current.clone() }),
             AppCommand::EndParamEditAt { .. } => out.push(AppCommand::EndEffectDrag { key: key.clone(), clip_id, effect_index: index, new_effect: current.clone() }),
+            AppCommand::AbandonParamEditAt { .. } => out.push(AppCommand::AbandonEffectDrag { clip_id, effect_index: index, added: false }),
             AppCommand::SetParamAt { key: pk, value, .. } => {
                 let Some(p) = field(pk.as_str()) else { continue };
                 let v = match value {
