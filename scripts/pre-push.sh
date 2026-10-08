@@ -51,9 +51,10 @@
 # else.
 #
 # A push also needs the commit to have passed scripts/pre-gate.sh, the
-# same checks run locally first (#1341). To push without it:
+# cheap local checks run first (#1341). To push without it, give the
+# reason, which the push's log keeps:
 #
-#     KLIPP_SKIP_PRE_GATE=1 git push
+#     KLIPP_SKIP_PRE_GATE="<why>" git push
 
 set -e
 
@@ -98,23 +99,40 @@ if [ ! -t 0 ]; then
         fi
         exit 1
     fi
-    # And it passed the gate's checks locally first (scripts/pre-gate.sh,
+    # And it passed the cheap local checks first (scripts/pre-gate.sh,
     # #1341): the gate is for what a local run can't show, not for a
-    # forgotten integration test or a rebase that no longer compiles,
-    # which cost the whole queue a run each. The stamp is the commit's
-    # tree, so only a code change needs a new local run.
-    if [ "${KLIPP_SKIP_PRE_GATE:-}" != "1" ] \
-        && printf '%s\n' "$_refs" | awk '$2 !~ /^0+$/ && $3 !~ /^refs\/tags\// { code = 1 } END { exit !code }'; then
+    # forgotten integration test, a rebase that no longer compiles or a
+    # conflict with main, which cost the whole queue a run each. The
+    # stamp is the commit's tree, so only a code change needs a new run.
+    # A skip names its reason, which this push's log and skips.log keep.
+    # Only a line that names a commit counts: run by hand there is no
+    # list, and an empty line is not a push.
+    if printf '%s\n' "$_refs" | awk 'NF >= 4 && $2 !~ /^0+$/ && $3 !~ /^refs\/tags\// { code = 1 } END { exit !code }'; then
+        # Assigned apart: under set -e a failing git inside the assignment
+        # would end the gate without a word.
+        _stamps=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || _stamps=
+        _stamps="$_stamps/klipp-pre-gate"
         _tree=$(git rev-parse --verify --quiet "HEAD^{tree}" 2>/dev/null) || _tree=
-        _stamps="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/klipp-pre-gate"
-        if [ -z "$_tree" ] || [ ! -f "$_stamps/$_tree" ]; then
-            printf '\n  pre-push: %s has not passed scripts/pre-gate.sh — push refused.\n' "$(git rev-parse --short HEAD 2>/dev/null)" >&2
-            printf '            Run it here first (it takes minutes; a failed gate run costs\n' >&2
-            printf '            everyone queued behind it about 16), then push again:\n\n' >&2
-            printf '              scripts/pre-gate.sh\n\n' >&2
-            printf '            KLIPP_SKIP_PRE_GATE=1 git push   skips it (say why on the PR).\n\n' >&2
-            exit 1
-        fi
+        case "${KLIPP_SKIP_PRE_GATE:-}" in
+            '') if [ -z "$_tree" ] || [ ! -f "$_stamps/$_tree" ]; then
+                    printf '\n  pre-push: %s has not passed scripts/pre-gate.sh — push refused.\n' "$(git rev-parse --short HEAD 2>/dev/null)" >&2
+                    printf '            Run it here first (minutes; a failed gate run costs everyone\n' >&2
+                    printf '            queued behind it a whole run), then push again:\n\n' >&2
+                    printf '              scripts/pre-gate.sh\n\n' >&2
+                    printf '            To push without it, give the reason:\n' >&2
+                    printf '              KLIPP_SKIP_PRE_GATE="<why>" git push\n\n' >&2
+                    exit 1
+                fi ;;
+            1|yes|true|' '*)
+                printf '\n  pre-push: KLIPP_SKIP_PRE_GATE needs the reason, not a flag — push refused:\n' >&2
+                printf '              KLIPP_SKIP_PRE_GATE="<why>" git push\n\n' >&2
+                exit 1 ;;
+            *)
+                printf '\n  pre-push: pushed WITHOUT scripts/pre-gate.sh: %s\n\n' "$KLIPP_SKIP_PRE_GATE" >&2
+                mkdir -p "$_stamps" 2>/dev/null && printf '%s %s %s %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" \
+                    "$(git rev-parse --short HEAD 2>/dev/null)" "$(git symbolic-ref --short -q HEAD || echo detached)" \
+                    "$KLIPP_SKIP_PRE_GATE" >>"$_stamps/skips.log" ;;
+        esac
     fi
 fi
 

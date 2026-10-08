@@ -1,21 +1,31 @@
 #!/bin/sh
-# The gate's checks, run locally before a push, so a gate run is never
-# spent finding what a few local minutes would have (#1341).
+# The cheap local checks that catch what most often fails a gate run,
+# run before a push so the gate isn't spent finding them (#1341).
 #
 #     scripts/pre-gate.sh
 #
-# Run it in the branch's own checkout, with everything committed, once
-# the branch is rebased onto the newest main. It works out what the
-# branch touches exactly as the gate does (scripts/affected_crates.py),
-# then runs the gate's checks on it: clippy on the workspace, rustdoc and
-# every test target (unit, integration and doc tests) of the crates
-# touched and those built on them, and the scripts' own tests when
-# scripts/ changed. Unlike the gate, the tests run to the end
-# (--no-fail-fast), so one failure doesn't hide the next.
+# Run it in the branch's own checkout with everything committed. It does
+# what a few local minutes can, and leaves the rest to the gate:
+#
+#   1. a merge check against the newest main (no build): a conflict is
+#      refused here, with the files named;
+#   2. cargo check --all-targets on the crates the change can affect, as
+#      scripts/affected_crates.py works them out for the gate: a broken
+#      compile anywhere they reach;
+#   3. cargo test (every target: unit, integration, doc) on the crates the
+#      change itself touches, to the end (--no-fail-fast), plus the
+#      repo-wide source scans (effect_entry_readers, legacy_route_gone)
+#      when an effect or grade crate changed;
+#   4. clippy -D warnings on the touched crates;
+#   5. the scripts' own tests when scripts/ changed.
+#
+# Workspace clippy, rustdoc and the tests of the crates built on the
+# touched ones stay the gate's.
 #
 # On a pass it stamps the commit's tree, and the pre-push hook refuses a
-# push without that stamp. A tree, not a commit: a reworded message
-# keeps its stamp, and a rebase that changes the code needs a new run.
+# push without that stamp. A tree, not a commit: a reworded message keeps
+# its stamp; a code change, or a rebase that changes the code, needs a
+# new run.
 #
 # A heavy job: it refuses to start while two other cargo jobs run on the
 # machine. KLIPP_PRE_GATE_FORCE=1 starts it anyway.
@@ -35,29 +45,33 @@ if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
     refuse "uncommitted or untracked changes here — commit them (or move them away) first; the stamp is for the commit."
 fi
 
-# The branch must hold the newest main, as the squash merge will: a
-# conflict, or a test main changed meanwhile, shows here, not in the gate.
+# 1. The merge with the newest main, as the squash merge will make it.
+_main=
 if git remote get-url origin >/dev/null 2>&1; then
     timeout 60 git fetch --quiet origin main || refuse "main could not be fetched; nothing was checked."
     _main=$(git rev-parse --verify origin/main) || refuse "no origin/main"
     if ! git merge-base --is-ancestor "$_main" HEAD; then
-        _conflicts=$(git merge-tree --name-only --write-tree HEAD "$_main" 2>/dev/null | awk 'NR > 1 && /^$/ { exit } NR > 1')
-        [ -n "$_conflicts" ] && printf '%s\n' "$_conflicts" | sed 's/^/              conflict: /' >&2
-        refuse "this branch is behind main ($(git rev-parse --short "$_main")). Rebase it, then run this again:
+        _mt=0
+        _conflicts=$(git merge-tree --name-only --write-tree HEAD "$_main" 2>/dev/null) || _mt=$?
+        if [ "$_mt" -eq 1 ]; then
+            printf '%s\n' "$_conflicts" | awk 'NR > 1 && /^$/ { exit } NR > 1' | sed 's/^/              conflict: /' >&2
+            refuse "this branch no longer merges onto main ($(git rev-parse --short "$_main")). Rebase it, then run this again:
 
               git fetch origin && git rebase origin/main"
+        fi
+        say "behind main ($(git rev-parse --short "$_main")) but merges cleanly; the gate tests the merge"
     fi
-else
-    _main=
 fi
 
-if [ "${KLIPP_PRE_GATE_FORCE:-}" != "1" ] && command -v pgrep >/dev/null 2>&1; then
-    _jobs=$(for p in $(pgrep -x cargo); do readlink "/proc/$p/cwd"; done 2>/dev/null | grep -vxF "$ROOT" | sort -u)
-    if [ "$(printf '%s' "$_jobs" | grep -c .)" -ge 2 ]; then
-        printf '%s\n' "$_jobs" | sed 's/^/              running: /' >&2
-        refuse "two cargo jobs are already running on this machine. Wait for a free slot (KLIPP_PRE_GATE_FORCE=1 starts anyway)."
-    fi
-fi
+_head=$(git rev-parse HEAD)
+_tree=$(git rev-parse "HEAD^{tree}")
+_log="$_stamps/logs/$(git rev-parse --short HEAD).log"
+: >"$_log"
+TMPDIR=${TMPDIR:-$ROOT/target/test-scratch}
+mkdir -p "$TMPDIR" && TMPDIR=$(cd "$TMPDIR" && pwd) || refuse "cannot create the scratch directory $TMPDIR"
+export TMPDIR
+CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-3}
+export CARGO_BUILD_JOBS
 
 # A new worktree starts from the main checkout's build, copy-on-write, as
 # the gate's checkout does; only this tree's crates rebuild. Its own
@@ -74,35 +88,62 @@ if [ -z "${CARGO_TARGET_DIR:-}" ] && [ "$_main_checkout" != "$ROOT" ] \
     fi
 fi
 
-_head=$(git rev-parse HEAD)
-_tree=$(git rev-parse "HEAD^{tree}")
-_log="$_stamps/logs/$(git rev-parse --short HEAD).log"
-: >"$_log"
-TMPDIR=${TMPDIR:-$ROOT/target/test-scratch}
-mkdir -p "$TMPDIR" && TMPDIR=$(cd "$TMPDIR" && pwd) || refuse "cannot create the scratch directory $TMPDIR"
-export TMPDIR
-CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-3}
-export CARGO_BUILD_JOBS
+# What the branch changes, against where it left main.
+_fork=$(git merge-base "${_main:-HEAD}" HEAD)
+_changed=$(git diff --name-only "$_fork" HEAD)
 
-# The scope, worked out as the gate works it out.
-_scope_args=--workspace
-_scope=full
-_scope_why="the scope could not be worked out"
-_fork=${_main:+$(git merge-base "$_main" HEAD)}
-_changed=
-if [ -n "$_fork" ] && _meta=$(cargo metadata --no-deps --format-version 1 --offline 2>/dev/null) \
+# The crates it touches: a changed path inside a crate's folder, named by
+# that folder's Cargo.toml.
+_touched=$(printf '%s\n' "$_changed" | python3 -c '
+import sys, tomllib
+from pathlib import Path
+names = set()
+for line in sys.stdin:
+    parts = Path(line.strip()).parts
+    for depth in range(len(parts) - 1, 0, -1):
+        manifest = Path(*parts[:depth]) / "Cargo.toml"
+        if manifest.is_file():
+            package = tomllib.loads(manifest.read_text()).get("package")
+            if package:
+                names.add(package["name"])
+            break
+print(" ".join(sorted(names)))
+')
+
+# The crates it can affect, as the gate works them out: these are checked
+# (compiled), not tested.
+_check_args=
+_check_why="the crates it touches"
+if _meta=$(cargo metadata --no-deps --format-version 1 --offline 2>/dev/null) \
     && _metafile=$(mktemp) && printf '%s' "$_meta" >"$_metafile" \
-    && _changed=$(git diff --name-only "$_fork" HEAD) \
     && _decision=$(printf '%s\n' "$_changed" | python3 "$ROOT/scripts/affected_crates.py" "$_metafile" --git "$_fork" HEAD 2>/dev/null); then
     case "$_decision" in
-        packages\ *) _scope=packages; _scope_why="${_decision#packages }"
-            _scope_args=$(printf '%s' "${_decision#packages }" | sed 's/[^ ][^ ]*/-p &/g') ;;
-        none\ *) _scope=none; _scope_why="${_decision#none }" ;;
-        full\ *) _scope_why="${_decision#full }" ;;
+        packages\ *) _check_args=$(printf '%s' "${_decision#packages }" | sed 's/[^ ][^ ]*/-p &/g'); _check_why="${_decision#packages }" ;;
+        full\ *) _check_args=--workspace; _check_why="${_decision#full }" ;;
+        none\ *) _check_why="${_decision#none }" ;;
     esac
 fi
 [ -n "${_metafile:-}" ] && rm -f "$_metafile"
-say "checking $(git rev-parse --short HEAD) ($_scope: $_scope_why); log: $_log"
+_test_args=$(printf '%s' "$_touched" | sed 's/[^ ][^ ]*/-p &/g')
+[ -n "$_check_args" ] || _check_args=$_test_args
+# The gate runs everything for a change to its own scripts (#873); here
+# nothing a crate builds changed, and the scripts' tests below are the check.
+if [ -z "$_touched" ] && ! printf '%s\n' "$_changed" | grep -qvE '^(scripts/|packaging/|docs/|\.github/)|\.md$|^$'; then
+    _check_args=
+fi
+
+# A heavy job only when there is something to build: a change to the
+# scripts or the documentation runs no cargo at all.
+if [ -n "$_check_args$_test_args" ] && [ "${KLIPP_PRE_GATE_FORCE:-}" != "1" ] && command -v pgrep >/dev/null 2>&1; then
+    _jobs=$(for p in $(pgrep -x cargo); do readlink "/proc/$p/cwd"; done 2>/dev/null | grep -vxF "$ROOT" | sort -u)
+    if [ "$(printf '%s' "$_jobs" | grep -c .)" -ge 2 ]; then
+        printf '%s\n' "$_jobs" | sed 's/^/              running: /' >&2
+        refuse "two cargo jobs are already running on this machine. Wait for a free slot (KLIPP_PRE_GATE_FORCE=1 starts anyway)."
+    fi
+fi
+
+say "checking $(git rev-parse --short HEAD); log: $_log"
+say "touched: ${_touched:-no crate}"
 
 step() {
     _name=$1; shift
@@ -116,21 +157,31 @@ step() {
     refuse "$_name FAILED — nothing stamped. The whole output is in $_log"
 }
 
-# Nothing a test reads changed (documentation, the gate's own scripts):
-# no lint can change, but a document can be included into the docs.
-[ "$_scope" = none ] || step clippy cargo clippy --workspace --all-targets -- -D warnings
-step rustdoc env RUSTDOCFLAGS="-D warnings" cargo doc -j "${KLIPP_GATE_DOC_JOBS:-1}" $([ "$_scope" = none ] && echo --workspace || echo $_scope_args) --no-deps
-if [ -d "$ROOT/scripts/tests" ] && { [ "$_scope" = full ] || printf '%s\n' "$_changed" | grep -q '^\(scripts\|packaging\)/'; }; then
-    step "the scripts' tests" python3 -m unittest discover -s "$ROOT/scripts/tests" -p 'test_*.py'
+# shellcheck disable=SC2086
+if [ -n "$_check_args" ]; then
+    step "cargo check ($_check_why)" cargo check --all-targets $_check_args
 fi
-if [ "$_scope" != none ]; then
-    # shellcheck disable=SC2086
-    step tests cargo test --no-fail-fast $_scope_args
+if [ -n "$_test_args" ]; then
+    step "tests of $_touched" cargo test --no-fail-fast $_test_args
+    # A change in an effect or grade crate can add a reader these scans
+    # forbid, in a crate other than the one they live in.
+    if printf ' %s ' "$_touched" | grep -qE ' (klipp-effects|klipp-nodes|klipp-graph-format|klipp-graph-lift|klipp-compose|klipp-timeline|klipp-engine|klipp-ui) '; then
+        for _scan in klipp-graph-lift:effect_entry_readers klipp-compose:legacy_route_gone; do
+            _crate=${_scan%%:*}
+            printf ' %s ' "$_touched" | grep -q " $_crate " && continue
+            [ -f "crates/$_crate/tests/${_scan#*:}.rs" ] || continue
+            step "the ${_scan#*:} scan" cargo test -p "$_crate" --test "${_scan#*:}"
+        done
+    fi
+    step "clippy on $_touched" cargo clippy --all-targets $_test_args -- -D warnings
     _passed=$(grep '^test result' "$_log" | awk '{p += $4} END {print p + 0}')
     say "$_passed tests passed"
+fi
+if [ -d "$ROOT/scripts/tests" ] && printf '%s\n' "$_changed" | grep -q '^\(scripts\|packaging\)/'; then
+    step "the scripts' tests" env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "$ROOT/scripts/tests" -p 'test_*.py'
 fi
 
 [ "$(git rev-parse HEAD)" = "$_head" ] && [ -z "$(git status --porcelain --untracked-files=normal)" ] \
     || refuse "the checkout changed while it was checked — nothing stamped. Run it again."
-printf 'commit %s\nmain %s\nscope %s %s\nat %s\n' "$_head" "${_main:-none}" "$_scope" "$_scope_why" "$(date +%s)" >"$_stamps/$_tree"
+printf 'commit %s\nmain %s\ntouched %s\nat %s\n' "$_head" "${_main:-none}" "${_touched:-none}" "$(date +%s)" >"$_stamps/$_tree"
 printf '\n  pre-gate: PASSED — %s is stamped; push it to the gate.\n\n' "$(git rev-parse --short HEAD)"
