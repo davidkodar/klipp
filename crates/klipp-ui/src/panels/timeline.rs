@@ -3105,8 +3105,15 @@ impl TimelinePanel {
                                         })
                                         .unwrap_or_default();
                                     if !effects.is_empty() {
+                                        // Behind the switch a single built-in effect is
+                                        // added by path, as the browser adds it.
+                                        let by_path = state.use_generated_stack && effects.len() == 1;
                                         cmds.extend(crate::effect_targets::commands(&targets, |clip_id| {
-                                            effects.iter().map(|effect| AppCommand::AddBuiltinEffect { clip_id, effect: effect.clone() }).collect()
+                                            let clip = state.sequence().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id);
+                                            effects.iter().map(|effect| {
+                                                by_path.then(|| clip.and_then(|c| crate::inspector::stack_view::add_effect_command(state, c, effect))).flatten()
+                                                    .unwrap_or_else(|| AppCommand::AddBuiltinEffect { clip_id, effect: effect.clone() })
+                                            }).collect()
                                         }));
                                         state.toast.show(crate::effect_targets::said(&name, &targets));
                                     }

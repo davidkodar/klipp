@@ -128,7 +128,12 @@ pub fn add_after(view: &StackView) -> Option<NodePath> {
 /// an add puts in the clip's picture.
 pub fn new_effect_node(tag: &str) -> Option<Node> {
     let ty = effect_types().find(|t| t.tag == tag)?;
-    let payload = serde_json::to_value((ty.sample)()).ok()?;
+    effect_node(tag, &(ty.sample)())
+}
+
+/// A new effect node for `effect`, with its values, saved as `tag`.
+fn effect_node(tag: &str, effect: &klipp_effects::BuiltinEffect) -> Option<Node> {
+    let payload = serde_json::to_value(effect).ok()?;
     serde_json::from_value(serde_json::json!({
         "id": uuid::Uuid::new_v4(),
         "type_id": klipp_graph_lift::to_v2::effect_node_type(tag),
@@ -152,6 +157,22 @@ pub fn add_command(clip: &Clip, after: &NodePath, tag: &str) -> Option<AppComman
         return Some(AppCommand::AddBuiltinEffect { clip_id: clip.id, effect: (ty.sample)() });
     }
     new_effect_node(tag).map(|node| AppCommand::AddNodeAt { after: after.clone(), node: Box::new(node) })
+}
+
+/// What adding `effect`, with its own values, to `clip` sends behind the
+/// switch: a node after the stack's last effect (as its Add menu adds), or
+/// a placed kind through the clip's effect list. `None` when the clip's
+/// stack can't be read, so the caller adds it to the list as before.
+pub fn add_effect_command(state: &AppState, clip: &Clip, effect: &klipp_effects::BuiltinEffect) -> Option<AppCommand> {
+    let tag = serde_json::to_value(effect).ok()?.get("type")?.as_str()?.to_owned();
+    if is_placed_kind(&tag) {
+        return Some(AppCommand::AddBuiltinEffect { clip_id: clip.id, effect: effect.clone() });
+    }
+    let lifted = clip.picture_v2().ok()?;
+    let view = project(Root::Clip { clip: clip.id.0 }, &lifted.picture.graph, &klipp_timeline::RegistryCatalog, placement(state, clip).as_ref()).ok()?;
+    let after = add_after(&view)?;
+    let node = effect_node(&tag, effect)?;
+    Some(AppCommand::AddNodeAt { after, node: Box::new(node) })
 }
 
 fn add_menu(ui: &mut egui::Ui, clip: &Clip, view: &StackView, cmds: &mut Vec<AppCommand>) {

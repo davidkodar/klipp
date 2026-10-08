@@ -493,7 +493,7 @@ mod overwrite_tests {
 #[cfg(test)]
 mod conversion_tests {
     use super::*;
-    use crate::effect_presets::{builtin_effect_key, EffectPreset, PresetManager};
+    use crate::effect_presets::{preset_type_id, EffectPreset, PresetManager};
 
     fn ok_parity(_: &serde_json::Value, _: klipp_convert::StoreKind) -> Result<(), String> {
         Ok(())
@@ -513,7 +513,7 @@ mod conversion_tests {
         let tool_dir = colour.join(tool_dir_name(&ToolScope::Wheels));
         save_tool_preset_in(&tool_dir, &tool).unwrap();
         let effect = klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 };
-        let key = builtin_effect_key(&effect);
+        let key = preset_type_id(&effect).unwrap();
         let saved = EffectPreset { name: "Soft".into(), description: "a soft blur".into(), effect_key: key.into(), builtin: Some(effect), ofx_params: None, is_builtin: false };
         PresetManager::with_user_dir(config.join("effect_presets")).save_user_preset(saved.clone());
         let mut graph = NodeGraph::default();

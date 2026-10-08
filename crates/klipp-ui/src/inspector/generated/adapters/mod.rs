@@ -58,6 +58,7 @@ pub fn adapter(id: &str) -> Option<&'static dyn Adapter> {
 /// An effect's card body in the generated stack: its notice, its adapter
 /// around its rows, and the side commands its rows' edits imply.
 pub fn effect_card(ui: &mut egui::Ui, row: &mut RowCtx, rows: &NodeRows, ty: &klipp_effects::registry::EffectType, clip: &Clip, state: &AppState) {
+    super::presets::preset_row(ui, row, ty, state);
     let tp = ty.type_presentation();
     let theme = row.theme;
     if let Some(notice) = tp.notice {

@@ -8,6 +8,7 @@
 
 pub mod adapters;
 pub mod custom;
+pub mod presets;
 pub mod row;
 
 pub use row::{param_row, Entry, KeyState, RowCtx, RowInput, RowOutcome};
