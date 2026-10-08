@@ -1272,13 +1272,9 @@ impl KlippApp {
 
     fn handle_color_node_config(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         match cmd {
-            AppCommand::SetNodeLut { clip_id, node_id, path } => {
-                let node_id = *node_id;
-                let path = path.clone();
+            AppCommand::SetNodeLut { clip_id, .. } => {
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        node.params.lut_path = path;
-                    }
+                    write_node_settings(graph, cmd);
                 });
                 true
             }
@@ -1517,13 +1513,9 @@ impl KlippApp {
             AppCommand::SetNodeMasks { clip_id, node_id, masks } => {
                 let node_id = *node_id;
                 let clip_id_val = *clip_id;
-                let masks = masks.clone();
                 let new_len = masks.masks.len();
                 self.with_current_clip_graph_mut(clip_id_val, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        node.params.masks = Some(masks);
-                        node.enabled = true;
-                    }
+                    write_node_settings(graph, cmd);
                 });
                 // Defensive tracker cleanup: any TrackPoint bound to
                 // (node_id, mask_index) where mask_index now points
@@ -1598,25 +1590,13 @@ impl KlippApp {
                 }
                 true
             }
-            AppCommand::AddMaskShape { clip_id, shape } => {
-                let clip_id = *clip_id;
-                let shape = shape.clone();
-                self.with_current_clip_graph_mut(clip_id, needs_refresh, |graph| {
-                    // ensure_mask_cutout lazy-creates BOTH the Mask
-                    // matte generator and the MaskCutout that
-                    // composites source × matte → Output. Users who
-                    // added a mask from the Color tab see the
-                    // clip-in-shape effect immediately; power users
-                    // can still rewire / delete the cutout in the
-                    // node canvas.
-                    let (mask_node_id, _cutout_id) = graph.ensure_mask_cutout();
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == mask_node_id) {
-                        let masks = node.params.masks.get_or_insert_with(Default::default);
-                        masks.masks.push(klipp_core::Mask {
-                            shape,
-                            ..Default::default()
-                        });
-                    }
+            AppCommand::AddMaskShape { clip_id, .. } => {
+                // The shape onto the grade's Mask node, made with its
+                // cutout when there's none (`ensure_mask_cutout` composites
+                // source × matte → Output), so a mask added from the Color
+                // tab clips the picture at once.
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    write_node_settings(graph, cmd);
                 });
                 true
             }
@@ -1647,13 +1627,7 @@ impl KlippApp {
                         .find(|n| n.kind == klipp_nodes::NodeKind::Mask)
                         .map(|n| n.id));
                 self.with_current_clip_graph_mut(clip_id, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.kind == klipp_nodes::NodeKind::Mask) {
-                        if let Some(masks) = &mut node.params.masks {
-                            if mask_index < masks.masks.len() {
-                                masks.masks.remove(mask_index);
-                            }
-                        }
-                    }
+                    write_node_settings(graph, cmd);
                 });
                 if let Some(nid) = mask_node_id {
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
@@ -3269,11 +3243,33 @@ mod add_node_tests {
 
 /// A per-node editor's settings command written to its node in `graph`:
 /// the qualifier, luma key, difference key, soft clip, grain, external
-/// matte channel or matte combine that the command carries. One place, so
-/// the app's dispatch and the inspector parity apply them alike. `false`
-/// when `cmd` is none of these.
+/// matte channel, matte combine, LUT file or mask stack that the command
+/// carries, or a mask shape added to (or removed from) the grade's Mask
+/// node. One place, so the app's dispatch and the inspector parity apply
+/// them alike. `false` when `cmd` is none of these.
 pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppCommand) -> bool {
+    // A mask shape added or removed names its clip, not its node: the
+    // grade's Mask node takes it, made (with its cutout) when there's none.
+    match cmd {
+        AppCommand::AddMaskShape { shape, .. } => {
+            let (mask_node_id, _cutout_id) = graph.ensure_mask_cutout();
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == mask_node_id) {
+                node.params.masks.get_or_insert_with(Default::default).masks.push(klipp_core::Mask { shape: shape.clone(), ..Default::default() });
+            }
+            return true;
+        }
+        AppCommand::RemoveMaskShape { mask_index, .. } => {
+            if let Some(masks) = graph.nodes.iter_mut().find(|n| n.kind == klipp_nodes::NodeKind::Mask).and_then(|n| n.params.masks.as_mut()) {
+                if *mask_index < masks.masks.len() {
+                    masks.masks.remove(*mask_index);
+                }
+            }
+            return true;
+        }
+        _ => {}
+    }
     let node_id = match cmd {
+        AppCommand::SetNodeLut { node_id, .. } | AppCommand::SetNodeMasks { node_id, .. } => *node_id,
         AppCommand::SetNodeQualifier { node_id, .. }
         | AppCommand::SetNodeLumaKey { node_id, .. }
         | AppCommand::SetNodeDifferenceKey { node_id, .. }
@@ -3290,6 +3286,11 @@ pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppC
         AppCommand::SetNodeLumaKey { luma_key, .. } => params.luma_key = Some(luma_key.clone()),
         AppCommand::SetNodeDifferenceKey { difference_key, .. } => {
             params.difference_key = Some(difference_key.clone());
+            node.enabled = true;
+        }
+        AppCommand::SetNodeLut { path, .. } => params.lut_path = path.clone(),
+        AppCommand::SetNodeMasks { masks, .. } => {
+            params.masks = Some(masks.clone());
             node.enabled = true;
         }
         AppCommand::SetNodeSoftClip { soft_clip, .. } => params.soft_clip = Some(soft_clip.clone()),

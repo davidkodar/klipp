@@ -293,6 +293,9 @@ pub(super) struct Grade {
     panel: crate::panels::node_inspector::NodeInspectorPanel,
     generated: bool,
     pub(super) unapplied: Vec<String>,
+    /// Requests the app runs off the panel (a mask region tracked, its
+    /// tracker taken off), recorded here, in order, not applied.
+    pub(super) side: Vec<String>,
     /// Which of the grade's pages draws the node.
     pub(super) page: Page,
     /// The grade as it was before this frame's input: what an old-panel
@@ -321,15 +324,23 @@ impl Grade {
         // filling the panel, which pushes the rows off it.
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
-        Grade { state, clip, node, ctx, clock: 0.0, panel: Default::default(), generated, unapplied: Vec::new(), page: Page::PerNode, before_input: None, gesture: None }
+        Grade { state, clip, node, ctx, clock: 0.0, panel: Default::default(), generated, unapplied: Vec::new(), side: Vec::new(), page: Page::PerNode, before_input: None, gesture: None }
     }
 
-    /// A fresh state, no history, holding a clone of this one's clip.
+    /// A fresh state, no history, holding a clone of this one's clip and files.
     pub(super) fn twin(&self, generated: bool) -> Self {
         let mut state = AppState::default();
         let track = self.state.sequences[0].tracks.iter().position(|t| t.clips.iter().any(|c| c.id == self.clip)).unwrap();
         state.sequences[0].tracks[track].clips.push(self.clip().clone());
+        // Its files too: a clip's file settings (its camera encoding) are
+        // the file's.
+        state.media_pool = self.state.media_pool.clone();
         Grade { page: self.page, ..Grade::new(state, self.clip, self.node, generated) }
+    }
+
+    /// The same, on `page`.
+    pub(super) fn on(self, page: Page) -> Self {
+        Grade { page, ..self }
     }
 
     pub(super) fn clip(&self) -> &klipp_timeline::Clip {
@@ -392,6 +403,10 @@ impl Grade {
                     }
                 }
                 None => {
+                    if matches!(cmd, AppCommand::TrackMaskRegion { .. } | AppCommand::RemoveMaskTracking { .. }) {
+                        self.side.push(format!("{cmd:?}"));
+                        continue;
+                    }
                     // An old-panel gesture, recorded as the colour dispatch
                     // records it: one graph step, from the grade as it was
                     // before the input that began it.
@@ -423,16 +438,6 @@ impl Grade {
                     if let AppCommand::SetNodeParam { node_id, param, value, .. } = &cmd {
                         let clip = self.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(self.clip)).unwrap();
                         clip.edit_grade(|g| g.nodes.iter_mut().filter(|n| n.id == *node_id).for_each(|n| { n.params.apply_override(param, *value); }));
-                        continue;
-                    }
-                    // A LUT node's file, as the colour dispatch writes it:
-                    // the path set or taken off, one graph step.
-                    if let AppCommand::SetNodeLut { node_id, path, .. } = &cmd {
-                        let clip = self.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(self.clip)).unwrap();
-                        let old_graph = clip.grade().clone();
-                        clip.edit_grade(|g| g.nodes.iter_mut().filter(|n| n.id == *node_id).for_each(|n| n.params.lut_path = path.clone()));
-                        let new_graph = clip.grade().clone();
-                        self.state.active_history_mut().push(crate::history::HistoryEntry { command: crate::history::EditCommand::SetNodeGraph { clip_id: self.clip, old_graph, new_graph } });
                         continue;
                     }
                     // A curves editor's edit, as the colour dispatch writes

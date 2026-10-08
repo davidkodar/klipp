@@ -64,6 +64,11 @@ pub struct NodeInspectorPanel {
     /// it shares with the per-node layout as their generated rows from it
     /// (M3 step 11c). `None` draws them as before.
     pub(crate) generated: Option<crate::inspector::grade_view::GradeSnapshot>,
+    /// The masks of the node being drawn that a tracker drives, by index,
+    /// so the mask list offers them Re-track and Untrack. Set by the
+    /// generated view (`grade_view::show`, which has the clip) for its
+    /// draw, as the inspector's Colour tab passes its own.
+    pub(crate) tracked_masks: Vec<usize>,
 }
 
 impl Default for NodeInspectorPanel {
@@ -90,6 +95,7 @@ impl Default for NodeInspectorPanel {
             preset_save_error: None,
             input_colour_space: (klipp_core::LogFormat::Srgb, false),
             generated: None,
+            tracked_masks: Vec::new(),
         }
     }
 }
@@ -1757,7 +1763,8 @@ impl NodeInspectorPanel {
             "colour_warper" => self.warper_block(ui, params, node_id, clip_id, cmds, theme),
             "mask_stack" => {
                 let masks = params.masks.get_or_insert_with(Default::default);
-                Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, frame, &[]);
+                let tracked = self.tracked_masks.clone();
+                Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, frame, &tracked);
             }
             "lut_file" => lut_picker(ui, params, node_id, clip_id, cmds, theme),
             "camera_encoding" => self.show_input_colour_space(ui, clip_id, cmds, theme),
@@ -2694,10 +2701,13 @@ impl NodeInspectorPanel {
                 }
             }
             NodeKind::Mask => {
-                let unset = params.masks.is_none();
-                let masks = params.masks.get_or_insert_with(Default::default);
-                Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, frame, &[]);
-                keep_unset(&mut params.masks, unset);
+                // Drawn on a copy: an edit reaches the grade only through
+                // its `SetNodeMasks`, so the step's "before" really is
+                // before it and an undo takes it back. Written in place as
+                // well, the step started from the edit itself (as the
+                // curves' did, #1392).
+                let mut masks = params.masks.clone().unwrap_or_default();
+                Self::render_masks_body(ui, &mut masks, node_id, clip_id, cmds, theme, frame, &[]);
             }
             NodeKind::FilmGrain => {
                 // As the qualifier: a copy, sent once when it changed (#894).
@@ -2839,17 +2849,21 @@ impl NodeInspectorPanel {
                 self.show_external_matte_widget(ui, node_id, params, clip_id, cmds, theme);
             }
             NodeKind::DifferenceKey => {
-                let unset = params.difference_key.is_none();
-                self.show_difference_key_widget(ui, node_id, params, clip_id, cmds, theme);
-                keep_unset(&mut params.difference_key, unset);
+                // On a copy, as the generated view draws it: its edits
+                // reach the grade through their commands, so a step starts
+                // from the grade before them and nothing is stored on draw.
+                let mut copy = params.clone();
+                self.show_difference_key_widget(ui, node_id, &mut copy, clip_id, cmds, theme);
             }
             NodeKind::ColorMatch => {
                 self.show_color_match_widget(ui, node_id, params, clip_id, cmds, theme);
             }
             NodeKind::LayerMixer => {
-                let unset = params.layer_mixer.is_none();
-                self.show_layer_mixer_widget(ui, node_id, params, clip_id, cmds, theme);
-                keep_unset(&mut params.layer_mixer, unset);
+                // On a copy, as the generated view draws it: its edits
+                // reach the grade through their commands, so a step starts
+                // from the grade before them and nothing is stored on draw.
+                let mut copy = params.clone();
+                self.show_layer_mixer_widget(ui, node_id, &mut copy, clip_id, cmds, theme);
             }
             NodeKind::Corrector => {
                 // Corrector params are surfaced through the colour-grade
@@ -4682,8 +4696,9 @@ fn grade_slider(
     if drag_value_started {
         cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
     }
-    if drag_value_ended {
-        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+    // Released, the drag is one step; ended by Escape, taken back.
+    if let (_, Some(end)) = gesture_of(ui, false, drag_value_ended) {
+        cmds.push(end(clip_id));
     }
     ui.horizontal(|ui| {
         ui.add_space(pad);
@@ -4698,22 +4713,11 @@ fn grade_slider(
     if drag_slider_started {
         cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
     }
-    if drag_slider_ended {
-        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+    // Released, the drag is one step; ended by Escape, taken back.
+    if let (_, Some(end)) = gesture_of(ui, false, drag_slider_ended) {
+        cmds.push(end(clip_id));
     }
     changed
-}
-
-/// A node's settings put back to unset when they were unset before its
-/// editor drew and are still their defaults after: the old per-node panel
-/// draws in place over the clip's grade, and an editor's
-/// `get_or_insert_with(Default::default)` would otherwise store them on
-/// the first draw, unrecorded (#1392). An edit, which differs from the
-/// defaults, is kept, and so is a value that was set.
-fn keep_unset<T: PartialEq + Default>(field: &mut Option<T>, was_unset: bool) {
-    if was_unset && field.as_ref() == Some(&T::default()) {
-        *field = None;
-    }
 }
 
 /// A grade editor's drag (a curve, a wheel, its sliders) as a node-param

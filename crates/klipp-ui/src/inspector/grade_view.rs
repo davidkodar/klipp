@@ -81,7 +81,10 @@ pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, node: Nod
         if done.iter().any(|d| d == id) {
             return true;
         }
+        // The node's masks a tracker drives: Re-track and Untrack for them.
+        p.tracked_masks = clip.track_points.iter().filter_map(|tp| tp.linked_mask.filter(|(n, _)| *n == node).map(|(_, i)| i)).collect();
         let drawn = p.grade_editor(ui, id, ty, &mut params, node, clip.id, cmds, theme, frame);
+        p.tracked_masks.clear();
         if drawn {
             done.push(id.to_owned());
         }
