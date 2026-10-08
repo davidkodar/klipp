@@ -652,3 +652,48 @@ fn a_keyframed_refinement_in_a_secondary_matches_the_cpu() {
     let off = worst(&cpu, &gpu);
     assert!(off < 0.001, "a keyed refinement differs between CPU and GPU by {off}");
 }
+
+/// The shape a lifted grade gives two gated corrections (M3 step 17b):
+/// each correction's port 1 is a qualifier keying the clip's frame, not
+/// the correction's own input, so the second gate's matte is keyed from
+/// the source while the first gate's picture is still in flight.
+fn two_gates_keyed_off_the_frame() -> NodeGraph {
+    let (src, c1, c2, q1, q2, out) = (NodeId::new_v4(), NodeId::new_v4(), NodeId::new_v4(), NodeId::new_v4(), NodeId::new_v4(), NodeId::new_v4());
+    let other = klipp_core::QualifierSettings { enabled: true, hue_center: 200.0, hue_width: 60.0, hue_soft: 15.0, sat_low: 0.05, sat_high: 1.0, sat_soft: 0.05, lum_low: 0.05, lum_high: 1.0, lum_soft: 0.05, ..Default::default() };
+    let nodes = vec![
+        node(src, NodeKind::Source, Default::default()),
+        node(q1, NodeKind::Qualifier, NodeParams { qualifier: Some(window()), ..Default::default() }),
+        node(c1, NodeKind::Corrector, NodeParams { temperature: Some(-40.0), ..Default::default() }),
+        node(q2, NodeKind::Qualifier, NodeParams { qualifier: Some(other), ..Default::default() }),
+        node(c2, NodeKind::Corrector, NodeParams { saturation: Some(0.4), ..Default::default() }),
+        node(out, NodeKind::Output, Default::default()),
+    ];
+    let edges = vec![
+        Edge { from_node: src, from_port: 0, to_node: c1, to_port: 0 },
+        Edge { from_node: c1, from_port: 0, to_node: c2, to_port: 0 },
+        Edge { from_node: c2, from_port: 0, to_node: out, to_port: 0 },
+        Edge { from_node: src, from_port: 0, to_node: q1, to_port: 0 },
+        Edge { from_node: q1, from_port: 0, to_node: c1, to_port: 1 },
+        Edge { from_node: src, from_port: 0, to_node: q2, to_port: 0 },
+        Edge { from_node: q2, from_port: 0, to_node: c2, to_port: 1 },
+    ];
+    let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 160.0, y: 0.0 })).collect();
+    NodeGraph { nodes, edges, output_node_id: out, node_positions, working_space_override: None, frames: Vec::new(), sticky_notes: Vec::new() }
+}
+
+/// IC11: two gated corrections with different mattes, keyed off the
+/// frame as a lifted grade keys them, match the CPU. (A probe for now:
+/// it prints the chain's counters.)
+#[test]
+fn two_gated_corrections_with_different_mattes_do_not_flush() {
+    let graph = two_gates_keyed_off_the_frame();
+    let (cpu, _) = run(&graph, false);
+    let (gpu, stats) = run(&graph, true);
+    if stats.extends == 0 && stats.flushes == 0 {
+        eprintln!("skipping: no usable GPU");
+        return;
+    }
+    eprintln!("two gates keyed off the frame: {stats:?}");
+    let worst = cpu.iter().zip(&gpu).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    assert!(worst < 1e-3, "GPU differs from the CPU by {worst}");
+}

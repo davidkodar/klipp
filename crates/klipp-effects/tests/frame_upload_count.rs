@@ -39,7 +39,8 @@ fn each_per_node_entry_point_counts_one_frame_up() {
     ups("apply_rgb_curves_gpu", &mut gpu, &|g| {
         g.apply_rgb_curves_gpu(&px, W, H, &lut, false, 1.0);
     });
-    ups("upload_composite_src_linear", &mut gpu, &|g| {
-        assert!(g.upload_composite_src_linear(&px, W, H));
+    ups("upload_picture", &mut gpu, &|g| {
+        let picture = g.upload_picture(&px, W, H).expect("a slot for it");
+        g.release_picture(picture);
     });
 }

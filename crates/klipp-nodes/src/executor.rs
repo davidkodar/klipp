@@ -267,6 +267,9 @@ pub struct GraphExecutor {
     /// Mixed effect nodes whose mix or mask couldn't be read, skipped
     /// (`ChainStats::effect_mixes_refused`).
     run_mix_refused: u32,
+    /// The picture `start_chain` kept for a composite before its first
+    /// dispatch, handed to the run (M3 step 17b).
+    start_kept: Option<klipp_effects::gpu::KeptPicture>,
     /// The matte the next mixed effect node's mask reads, handed from the
     /// run to its dispatch (step 9c).
     effect_mask: Option<Arc<Vec<f32>>>,
@@ -677,6 +680,7 @@ impl GraphExecutor {
             keep_output_on_gpu: false,
             run_effect_breaks: 0,
             run_mix_refused: 0,
+            start_kept: None,
             effect_mask: None,
             effect_window: None,
             effect_keyed: None,
@@ -749,6 +753,7 @@ impl GraphExecutor {
             keep_output_on_gpu: false,
             run_effect_breaks: 0,
             run_mix_refused: 0,
+            start_kept: None,
             effect_mask: None,
             effect_window: None,
             effect_keyed: None,
@@ -1684,19 +1689,23 @@ impl GraphExecutor {
         let fan_out = &plan.fan_out;
         let secondaries = &plan.secondaries;
         let composite_port1 = &plan.composite_port1;
-        // Whose picture `composite_src` holds, and how many times this
-        // chain segment has written it. Same shape as `matte_in_buf`:
-        // the gate is an identity check, not a hope.
-        let mut composite_src_holds: Option<NodeId> = None;
-        // And whose picture `grade_mix_src` holds. A secondary's keyer
-        // and its ApplyMatte both read that buffer rather than the
-        // chain's current slot, so "a chain is live" was never enough
-        // to let them dispatch — the kept picture has to be this
-        // secondary's source. Without the check, a graph where the
-        // source ran on the CPU sent the keyer at a buffer nobody had
-        // filled, which panicked outright when it was the first frame
-        // and read the previous frame's picture when it was not.
-        let mut kept_picture: Option<NodeId> = None;
+        // The composite input the run keeps, in a pool slot (M3 step
+        // 17b), and whose picture it is; and how many times this chain
+        // segment has made one. Same shape as `matte_in_buf`: the gate is
+        // an identity check, not a hope.
+        let mut composite: Option<(NodeId, klipp_effects::gpu::KeptPicture)> = None;
+        // And the picture kept for a secondary, and whose. A secondary's
+        // keyer and its ApplyMatte both read it rather than the chain's
+        // current slot, so "a chain is live" was never enough to let
+        // them dispatch — the kept picture has to be this secondary's
+        // source. Without the check, a graph where the source ran on the
+        // CPU sent the keyer at a picture nobody had kept, which panicked
+        // outright when it was the first frame and read the previous
+        // frame's picture when it was not.
+        let mut kept: Option<(NodeId, klipp_effects::gpu::KeptPicture)> = None;
+        // And the matte a secondary's keyer (or window) drew for its
+        // gate, and whose.
+        let mut secondary_matte: Option<(NodeId, klipp_effects::gpu::KeyedMatte)> = None;
         let mut segment_composite_writes: u32 = 0;
 
         // Output-on-GPU is single-shot, like the seed: take the request
@@ -1890,7 +1899,7 @@ impl GraphExecutor {
                         return Err(if is_source { ExecutorError::CpuSourceRequired } else { ExecutorError::MaskUnavailable(node_id) });
                     };
                     let key_params = params_for_frame(key_node, clip_time_secs);
-                    let matte = self.execute_node(key, &key_node.kind, &key_params, pixels, None, None, width, height, source_frame, frame_number, clip_time_secs, false);
+                    let matte = self.execute_node(key, &key_node.kind, &key_params, pixels, None, None, width, height, source_frame, frame_number, clip_time_secs, None);
                     node_outputs.insert(key, Arc::new(matte));
                     cpu_fallback_count += 1;
                 }
@@ -1937,11 +1946,14 @@ impl GraphExecutor {
             };
             // The keyer and ApplyMatte of a recognised secondary are
             // chain ops for this graph even though the kinds are not
-            // chainable in general: one writes `matte_buf`, the other
-            // reads it alongside the kept picture.
+            // chainable in general: one draws the matte, the other reads
+            // it alongside the kept picture, both in pool slots (M3 step
+            // 17b). The gate needs its secondary's matte drawn.
+            let kept_is = |id: NodeId| kept.as_ref().is_some_and(|(k, _)| *k == id);
             let secondary_chain_node = secondaries.iter().any(|sec| {
-                (sec.matte == node_id || sec.apply == node_id)
-                    && kept_picture == Some(sec.source)
+                kept_is(sec.source)
+                    && (sec.matte == node_id
+                        || (sec.apply == node_id && secondary_matte.as_ref().is_some_and(|(m, _)| *m == sec.matte)))
             });
             // The secondary's keyer reads the kept copy of its source,
             // not the chain's current picture, so it does not need to be
@@ -1951,7 +1963,7 @@ impl GraphExecutor {
                 sec.matte == node_id
                     && chain_tail.is_some()
                     && primary_input_id == Some(sec.source)
-                    && kept_picture == Some(sec.source)
+                    && kept_is(sec.source)
             });
             // A composite can ride the chain when port 0 is the tail
             // (`primary_is_chain_tail`, below) and port 1's picture is
@@ -1962,7 +1974,7 @@ impl GraphExecutor {
                 None
             };
             let composite_route = composite_port1_id.and_then(|src_id| {
-                if composite_src_holds == Some(src_id) {
+                if composite.as_ref().is_some_and(|(id, _)| *id == src_id) {
                     Some(CompositeRoute::Resident)
                 } else if segment_composite_writes == 0 {
                     node_outputs
@@ -2219,28 +2231,31 @@ impl GraphExecutor {
                     || self.node_supports_gpu_chain(&node.kind, params))
                 && self.gpu.is_some()
             {
-                // Blend / Layer: port 0 is the chain's picture, port 1 is
-                // in `composite_src`. One dispatch, no readback, where
+                // Blend / Layer: port 0 is the chain's picture, port 1 a
+                // kept picture in a pool slot. One dispatch, no readback, where
                 // the CPU path costs a flush and a full-frame lerp.
                 if let Some(route) = composite_route {
                     let placed = match &route {
                         CompositeRoute::Resident => true,
-                        CompositeRoute::Upload(px) => self
-                            .gpu
-                            .as_mut()
-                            .is_some_and(|g| g.upload_composite_src_linear(px, width, height)),
+                        CompositeRoute::Upload(px) => match self.gpu.as_mut().and_then(|g| g.upload_picture(px, width, height)) {
+                            Some(picture) => {
+                                segment_composite_writes += 1;
+                                self.keep_as(&mut composite, composite_port1_id.map(|id| (id, picture)));
+                                true
+                            }
+                            None => false,
+                        },
                     };
                     if placed {
-                        if matches!(route, CompositeRoute::Upload(_)) {
-                            segment_composite_writes += 1;
-                            composite_src_holds = composite_port1_id;
-                        }
-                        let gpu = self.gpu.as_mut().expect("gpu checked above");
-                        if node.kind == NodeKind::Blend {
-                            let mix = params.mix.unwrap_or(0.5).clamp(0.0, 1.0);
-                            gpu.apply_blend_chain(chain_slot_a, width, height, mix);
-                        } else {
-                            gpu.apply_over_chain(chain_slot_a, width, height);
+                        {
+                            let other = &composite.as_ref().expect("placed above").1;
+                            let gpu = self.gpu.as_mut().expect("gpu checked above");
+                            if node.kind == NodeKind::Blend {
+                                let mix = params.mix.unwrap_or(0.5).clamp(0.0, 1.0);
+                                gpu.apply_blend_chain(chain_slot_a, width, height, mix, other);
+                            } else {
+                                gpu.apply_over_chain(chain_slot_a, width, height, other);
+                            }
                         }
                         chain_slot_a = !chain_slot_a;
                         chain_tail = Some(node_id);
@@ -2255,22 +2270,18 @@ impl GraphExecutor {
                         // exactly that and panicked in the keyer, which
                         // reads a picture nobody had kept.
                         if secondaries.iter().any(|sec| sec.source == node_id) {
-                            if let Some(gpu) = self.gpu.as_mut() {
-                                gpu.keep_chain_input(chain_slot_a, width, height);
-                            }
-                            kept_picture = Some(node_id);
+                            let picture = self.gpu.as_mut().and_then(|g| g.keep_picture(chain_slot_a, width, height));
+                            self.keep_as(&mut kept, picture.map(|p| (node_id, p)));
                         } else if takes_the_kept_buffer(&node.kind, params) {
-                            kept_picture = None;
+                            self.keep_as(&mut kept, None);
                         }
                         if composite_port1.contains_key(&node_id) {
-                            if let Some(gpu) = self.gpu.as_mut() {
-                                gpu.keep_composite_src(chain_slot_a, width, height);
-                            }
-                            composite_src_holds = Some(node_id);
+                            let picture = self.gpu.as_mut().and_then(|g| g.keep_picture(chain_slot_a, width, height));
+                            self.keep_as(&mut composite, picture.map(|p| (node_id, p)));
                             segment_composite_writes += 1;
                         }
                         if secondaries.iter().any(|sec| sec.apply == node_id) {
-                            matte_in_buf = None;
+                            self.matte_as(&mut secondary_matte, None);
                         }
                         if node_is_visible_for_thumbs {
                             if let Some(i) = take_thumb(self, chain_slot_a) {
@@ -2295,16 +2306,36 @@ impl GraphExecutor {
                 // Saturation with both sat+vibrance) issue TWO internal
                 // sub-dispatches in sequence — the return value reports
                 // how many slot flips the caller needs to mirror.
-                match self.dispatch_chain_node_slots(
-                    node_id, &node.kind, params, width, height, frame_number,
-                    /* in_is_a = */ chain_slot_a,
-                ) {
+                // A recognised secondary's key and gate, on the pictures the
+                // run keeps (M3 step 17b); any other node its own way.
+                let secondary_part = secondaries.iter().copied().find(|sec| sec.matte == node_id || sec.apply == node_id).filter(|_| secondary_chain_node);
+                let dispatched = match secondary_part {
+                    Some(sec) if sec.matte == node_id => {
+                        let matte = kept.as_ref().and_then(|(_, picture)| self.key_secondary(&node.kind, params, picture, width, height));
+                        matte.map(|m| {
+                            self.matte_as(&mut secondary_matte, Some((node_id, m)));
+                            0
+                        })
+                    }
+                    Some(_) => match (kept.as_ref(), secondary_matte.as_ref(), self.gpu.as_mut()) {
+                        (Some((_, picture)), Some((_, matte)), Some(gpu)) => {
+                            let channel = params.correction_blend.map_or(klipp_effects::mask_mix::MaskChannel::Red, |b| b.channel);
+                            gpu.apply_matte_chain(chain_slot_a, width, height, params.mix.unwrap_or(1.0), channel, picture, matte);
+                            Some(1)
+                        }
+                        _ => None,
+                    },
+                    None => self.dispatch_chain_node_slots(
+                        node_id, &node.kind, params, width, height, frame_number,
+                        /* in_is_a = */ chain_slot_a,
+                    ),
+                };
+                match dispatched {
                     // Zero flips means the node wrote something other
-                    // than the picture — a secondary's Qualifier filling
-                    // `matte_buf`. The chain's tail and slot are
-                    // unchanged: the picture is still the source's.
+                    // than the picture — a secondary's key drawing its
+                    // matte. The chain's tail and slot are unchanged: the
+                    // picture is still the source's.
                     Some(0) => {
-                        matte_in_buf = Some(node_id);
                         node_outputs.insert(node_id, Arc::new(Vec::new()));
                         chain_extend_count += 1;
                         per_node_ms.push((
@@ -2325,25 +2356,21 @@ impl GraphExecutor {
                         // still find it once the branch has overwritten
                         // the other slot.
                         if secondaries.iter().any(|sec| sec.source == node_id) {
-                            if let Some(gpu) = self.gpu.as_mut() {
-                                gpu.keep_chain_input(chain_slot_a, width, height);
-                            }
-                            kept_picture = Some(node_id);
+                            let picture = self.gpu.as_mut().and_then(|g| g.keep_picture(chain_slot_a, width, height));
+                            self.keep_as(&mut kept, picture.map(|p| (node_id, p)));
                         } else if takes_the_kept_buffer(&node.kind, params) {
-                            kept_picture = None;
+                            self.keep_as(&mut kept, None);
                         }
                         // Same idea for a composite: this node's output is
                         // some Blend's port 1, so park it before the chain
                         // moves on. GPU to GPU, recorded in sequence.
                         if composite_port1.contains_key(&node_id) {
-                            if let Some(gpu) = self.gpu.as_mut() {
-                                gpu.keep_composite_src(chain_slot_a, width, height);
-                            }
-                            composite_src_holds = Some(node_id);
+                            let picture = self.gpu.as_mut().and_then(|g| g.keep_picture(chain_slot_a, width, height));
+                            self.keep_as(&mut composite, picture.map(|p| (node_id, p)));
                             segment_composite_writes += 1;
                         }
                         if secondaries.iter().any(|sec| sec.apply == node_id) {
-                            matte_in_buf = None;
+                            self.matte_as(&mut secondary_matte, None);
                         }
                         if node_is_visible_for_thumbs {
                             if let Some(i) = take_thumb(self, chain_slot_a) {
@@ -2441,18 +2468,17 @@ impl GraphExecutor {
                     node_outputs.insert(node_id, Arc::new(Vec::new()));
                     self.draw_keys_of(node_id, chain_slot_a, &mut pending_keys, &mut served, graph, width, height);
                     if keep_for_composite {
-                        composite_src_holds = primary_input_id;
+                        let picture = self.start_kept.take();
+                        self.keep_as(&mut composite, picture.zip(primary_input_id).map(|(p, id)| (id, p)));
                         segment_composite_writes += 1;
                     }
                     // As in the extend path: a secondary's source keeps
                     // its picture for ApplyMatte to blend against.
                     if secondaries.iter().any(|sec| sec.source == node_id) {
-                        if let Some(gpu) = self.gpu.as_mut() {
-                            gpu.keep_chain_input(chain_slot_a, width, height);
-                        }
-                        kept_picture = Some(node_id);
+                        let picture = self.gpu.as_mut().and_then(|g| g.keep_picture(chain_slot_a, width, height));
+                        self.keep_as(&mut kept, picture.map(|p| (node_id, p)));
                     } else if takes_the_kept_buffer(&node.kind, params) {
-                        kept_picture = None;
+                        self.keep_as(&mut kept, None);
                     }
                     if node_is_visible_for_thumbs {
                         if let Some(i) = take_thumb(self, chain_slot_a) {
@@ -2514,13 +2540,28 @@ impl GraphExecutor {
                 // forced the entire stack to fall through to CPU
                 // even for one bezier — now removed.
                 if single_cutout_target && !gpu_ready_masks.is_empty() {
-                    if let Some(gpu) = self.gpu.as_mut() {
-                        gpu.generate_mask_gpu_to_matte_buf(width, height, &gpu_ready_masks);
+                    // A secondary's window goes to a matte of its own (M3
+                    // step 17b); a cutout's to `matte_buf`.
+                    let drawn = if secondaries.iter().any(|sec| sec.matte == node_id) {
+                        match self.gpu.as_mut().and_then(|g| g.mask_into_matte_slot(width, height, &gpu_ready_masks)) {
+                            Some(matte) => {
+                                self.matte_as(&mut secondary_matte, Some((node_id, matte)));
+                                true
+                            }
+                            None => false,
+                        }
+                    } else {
+                        if let Some(gpu) = self.gpu.as_mut() {
+                            gpu.generate_mask_gpu_to_matte_buf(width, height, &gpu_ready_masks);
+                        }
+                        matte_in_buf = Some(node_id);
+                        true
+                    };
+                    if drawn {
+                        node_outputs.insert(node_id, Arc::new(Vec::new()));
+                        per_node_ms.push((format!("{node_kind_name}#matte_buf"), t_node.elapsed().as_secs_f64() * 1000.0));
+                        continue;
                     }
-                    matte_in_buf = Some(node_id);
-                    node_outputs.insert(node_id, Arc::new(Vec::new()));
-                    per_node_ms.push((format!("{node_kind_name}#matte_buf"), t_node.elapsed().as_secs_f64() * 1000.0));
-                    continue;
                 }
             }
 
@@ -2601,7 +2642,7 @@ impl GraphExecutor {
             let secondary_slice = match graph.input_of(node_id, 1).filter(|id| secondary_slice.is_none() && window_mattes.contains_key(id)).and_then(|id| node_by_id.get(&id).copied()) {
                 Some(window) => {
                     let window_params = params_for_frame(window, clip_time_secs);
-                    window_on_cpu = self.execute_node(window.id, &NodeKind::Mask, &window_params, primary_slice, None, None, width, height, source_frame, frame_number, clip_time_secs, false);
+                    window_on_cpu = self.execute_node(window.id, &NodeKind::Mask, &window_params, primary_slice, None, None, width, height, source_frame, frame_number, clip_time_secs, None);
                     cpu_fallback_count += 1;
                     Some(window_on_cpu.as_slice())
                 }
@@ -2641,7 +2682,7 @@ impl GraphExecutor {
                 source_frame,
                 frame_number,
                 clip_time_secs,
-                matte_in_buf.is_some() && graph.input_of(node.id, 1) == matte_in_buf,
+                secondary_matte.as_ref().filter(|(id, _)| graph.input_of(node.id, 1) == Some(*id)).map(|(_, m)| m),
             );
 
             // Matte preview — return greyscale matte early
@@ -2700,6 +2741,7 @@ impl GraphExecutor {
             effect_mixes_refused: std::mem::take(&mut self.run_mix_refused),
             peak_slots: u32::try_from(peak_slots).unwrap_or(u32::MAX),
         };
+        chain_stats_ledger(&self.last_run_chain_stats);
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
         if total_ms > 5.0 {
             // Roll up per-node timings: kind#path → total ms across this frame.
@@ -2955,6 +2997,34 @@ impl GraphExecutor {
         }
     }
 
+    /// `value` in `held`, giving back the slot of the picture it held.
+    fn keep_as(&mut self, held: &mut Option<(NodeId, klipp_effects::gpu::KeptPicture)>, value: Option<(NodeId, klipp_effects::gpu::KeptPicture)>) {
+        if let (Some((_, old)), Some(gpu)) = (std::mem::replace(held, value), self.gpu.as_mut()) {
+            gpu.release_picture(old);
+        }
+    }
+
+    /// `value` in `held`, giving back the slot of the matte it held.
+    fn matte_as(&mut self, held: &mut Option<(NodeId, klipp_effects::gpu::KeyedMatte)>, value: Option<(NodeId, klipp_effects::gpu::KeyedMatte)>) {
+        if let (Some((_, old)), Some(gpu)) = (std::mem::replace(held, value), self.gpu.as_mut()) {
+            gpu.release_keyed_matte(old);
+        }
+    }
+
+    /// A grade secondary's key (`kind` with `params`, as at this frame),
+    /// drawn on the GPU from the picture kept for it into a matte of its
+    /// own (M3 step 17b). `None` when it can't be: a refinement, a
+    /// difference key's plate missing, the pool's budget.
+    fn key_secondary(&mut self, kind: &NodeKind, params: &NodeParams, from: &klipp_effects::gpu::KeptPicture, width: u32, height: u32) -> Option<klipp_effects::gpu::KeyedMatte> {
+        let key = gpu_key(kind, params)?;
+        if let (NodeKind::DifferenceKey, Some(dk)) = (kind, params.difference_key.as_ref()) {
+            if !self.difference_plate_on_gpu(dk, width, height) {
+                return None;
+            }
+        }
+        self.gpu.as_mut()?.key_kept_into_matte_slot(&key, from, width, height)
+    }
+
     /// Start a new GPU chain: upload `primary_input` to `buf_a`, dispatch
     /// this first node. Returns `Some(n)` where `n` is the number of
     /// sub-dispatches issued (≥1 on success — the caller must flip
@@ -3016,7 +3086,7 @@ impl GraphExecutor {
         // it. Park it first — this is the case a Blend against the
         // ungraded source hits, and it is the common one.
         if keep_input_for_composite {
-            gpu.keep_composite_src(/* in_is_a = */ true, width, height);
+            self.start_kept = gpu.keep_picture(/* in_is_a = */ true, width, height);
         }
         // Keys of the input, for effects' masks (#1266), read it here.
         keys_of_input(self);
@@ -3036,6 +3106,9 @@ impl GraphExecutor {
             // a no-op fence.
             if let Some(gpu) = self.gpu.as_mut() {
                 gpu.submit_chain();
+                if let Some(picture) = self.start_kept.take() {
+                    gpu.release_picture(picture);
+                }
             }
         }
         dispatches
@@ -3119,11 +3192,12 @@ fn denoise_sigmas(luma: f32, chroma: f32, radius_px: f32) -> (f32, f32) {
     (radius_px.max(0.001), ((luma + chroma) * 0.5).max(0.001))
 }
 
-/// Does this node's dispatch take `grade_mix_src` over for itself?
+/// Does this node's dispatch keep a picture of its own to mix against?
 ///
-/// A Corrector with a `global_mix` other than 1 keeps its own input
-/// there to mix against later, which overwrites whatever a secondary
-/// had parked in it.
+/// A Corrector with a `global_mix` other than 1 keeps its own input to
+/// mix against later. That once overwrote whatever a secondary had parked
+/// in the same buffer; the secondary's picture is a pool slot of its own
+/// now (M3 step 17b), and the run still drops it here, as it did.
 fn takes_the_kept_buffer(kind: &NodeKind, params: &NodeParams) -> bool {
     *kind == NodeKind::Corrector
         && (params.global_mix.unwrap_or(1.0) - 1.0).abs() > f32::EPSILON
@@ -3131,8 +3205,8 @@ fn takes_the_kept_buffer(kind: &NodeKind, params: &NodeParams) -> bool {
 
 /// Where a chain-resident composite's port-1 picture comes from.
 enum CompositeRoute {
-    /// Already in `composite_src`: kept there on the GPU when its
-    /// producer ran, so there is nothing to move.
+    /// Already kept on the GPU, in a pool slot, when its producer ran:
+    /// there is nothing to move.
     Resident,
     /// On the CPU, to be uploaded. Allowed once per chain segment —
     /// a queued write lands before the whole encoder rather than in
@@ -3177,6 +3251,25 @@ pub struct ChainStats {
     /// own pair) the run held at once: the bounded scratch D10 holds to a
     /// constant, and L7 prices at 4K.
     pub peak_slots: u32,
+}
+
+/// Each run's [`ChainStats`], one line per run under the name of the
+/// thread that ran it (a test's name), appended to the file
+/// `KLIPP_CHAIN_STATS_LEDGER` names when it is set: two builds' ledgers
+/// over the same suites, diffed, show which counters a change moved.
+fn chain_stats_ledger(stats: &ChainStats) {
+    static LEDGER: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+    let ledger = LEDGER.get_or_init(|| {
+        let path = std::env::var_os("KLIPP_CHAIN_STATS_LEDGER")?;
+        std::fs::OpenOptions::new().create(true).append(true).open(path).ok().map(std::sync::Mutex::new)
+    });
+    if let Some(file) = ledger {
+        use std::io::Write;
+        let name = std::thread::current().name().unwrap_or("?").to_owned();
+        if let Ok(mut f) = file.lock() {
+            let _ = writeln!(f, "{name}\t{stats:?}");
+        }
+    }
 }
 
 /// Whether `node` keyframes any of a qualifier's matte refinements. The
@@ -3233,11 +3326,11 @@ impl SecondaryChain {
     /// a flush and an upload (`flushes=2 starts=2 cpu=3` against
     /// `flushes=1 starts=1 cpu=1`).
     ///
-    /// Stacked secondaries need no extra GPU buffers, which is why
-    /// collecting them all is enough on its own: the shapes are
-    /// sequential, not concurrent. The second one's source is the first
-    /// one's ApplyMatte, so by the time it asks for the kept picture and
-    /// `matte_buf`, the first shape has finished with both.
+    /// Stacked secondaries are found in turn, each keeping its picture
+    /// and its matte in pool slots of their own (M3 step 17b): the shapes
+    /// here are sequential, not concurrent. The second one's source is
+    /// the first one's ApplyMatte, so the first has finished with its
+    /// picture and matte by the time the second keeps its own.
     pub(crate) fn detect_all(
         graph: &NodeGraph,
         order: &[NodeId],
@@ -3341,8 +3434,8 @@ impl SecondaryChain {
                 continue;
             }
             // Nothing foreign may run between the source and the blend.
-            // The matte sits in `matte_buf` and the picture in the kept
-            // buffer across that stretch; a node that flushed the chain
+            // The matte and the picture sit in their slots across that
+            // stretch; a node that flushed the chain
             // in between would leave ApplyMatte on the CPU, where the
             // matte has to be read back — correct, but the transfer is
             // the whole thing we are avoiding.
@@ -3522,71 +3615,8 @@ impl GraphExecutor {
             return Some(if run.in_a == in_is_a { 2 } else { 1 });
         }
 
-        // DifferenceKey first, because it needs the plate caches on
-        // `self` and the `gpu` borrow below would rule them out. The
-        // plate is resolved and uploaded here; the dispatch reads it from
-        // VRAM like any other binding.
-        if let NodeKind::DifferenceKey = kind {
-            let dk = params.difference_key.as_ref()?;
-            if !dk.enabled {
-                return None;
-            }
-            let path = dk.plate_path.as_ref()?.clone();
-            let key = Self::plate_gpu_key(&path, width, height);
-            // Resident already: skip the resize entirely, not just the
-            // upload. This is the steady state during playback.
-            let resident = self.gpu.as_ref().is_some_and(|g| g.has_difference_key_plate(key));
-            if !resident {
-                let plate = self.resized_plate(&path, width, height)?;
-                let gpu = self.gpu.as_mut()?;
-                gpu.upload_difference_key_plate(&plate, key);
-            }
-            let gpu = self.gpu.as_mut()?;
-            let luminance = matches!(
-                dk.match_space,
-                klipp_core::DifferenceKeyMatchSpace::Luminance
-            );
-            // A plate that failed to upload leaves the node to the CPU
-            // path rather than keying against nothing.
-            if !gpu.difference_key_to_matte_buf_chain(
-                width, height, dk.tolerance, dk.soft, dk.invert, luminance,
-            ) {
-                return None;
-            }
-            return Some(0);
-        }
-
         let gpu = self.gpu.as_mut()?;
-        // A recognised secondary's two nodes. The caller has checked the
-        // shape; here we only dispatch. The Qualifier reports zero slot
-        // flips because it writes the matte, not the picture.
         match kind {
-            NodeKind::Qualifier => {
-                let q = params.qualifier.as_ref()?;
-                if !q.enabled {
-                    return None;
-                }
-                gpu.qualifier_to_matte_buf_chain(
-                    width, height,
-                    q.hue_center, q.hue_width, q.hue_soft,
-                    q.sat_low, q.sat_high, q.sat_soft,
-                    q.lum_low, q.lum_high, q.lum_soft,
-                    q.invert,
-                );
-                return Some(0);
-            }
-            NodeKind::LumaKey => {
-                let k = params.luma_key.as_ref()?;
-                if !k.enabled {
-                    return None;
-                }
-                gpu.luma_key_to_matte_buf_chain(width, height, k.low, k.high, k.soft, k.invert);
-                return Some(0);
-            }
-            NodeKind::ApplyMatte => {
-                gpu.apply_matte_chain(in_is_a, width, height, params.mix.unwrap_or(1.0), params.correction_blend.map_or(klipp_effects::mask_mix::MaskChannel::Red, |b| b.channel));
-                return Some(1);
-            }
             NodeKind::SceneToDisplay => {
                 let step = params.scene_to_display.as_ref()?;
                 let t = step.transfer;
@@ -4107,7 +4137,7 @@ impl GraphExecutor {
         clip_time_secs: f64,
         // The node wiring this one's matte port left its matte in GPU
         // memory rather than on the CPU. Only ApplyMatte cares.
-        matte_in_gpu: bool,
+        gpu_matte: Option<&klipp_effects::gpu::KeyedMatte>,
     ) -> Vec<f32> {
         match kind {
             NodeKind::Source => source_frame.to_vec(),
@@ -4873,14 +4903,13 @@ impl GraphExecutor {
                 // then could not stay on the chain. Reading it back costs
                 // a transfer; not reading it would drop the secondary
                 // from the picture without saying so.
-                let downloaded = if matte_in_gpu && secondary_input.is_none_or(|m| m.len() != n) {
-                    self.gpu.as_ref().map(|g| g.read_matte_buf_linear(n / 4)).filter(|m| m.len() == n)
-                } else {
-                    None
+                let downloaded = match gpu_matte.filter(|_| secondary_input.is_none_or(|m| m.len() != n)) {
+                    Some(m) => self.gpu.as_ref().and_then(|g| g.read_keyed_matte(m, n / 4)),
+                    None => None,
                 };
                 // The gate after a correction with a mix and no matte
                 // (M3 step 17a) takes the whole frame by the mix.
-                let whole = params.correction_blend.is_some() && !matte_in_gpu && secondary_input.is_none();
+                let whole = params.correction_blend.is_some() && gpu_matte.is_none() && secondary_input.is_none();
                 let matte = match (downloaded.as_deref(), secondary_input) {
                     (Some(m), _) => Some(m),
                     (None, Some(m)) if m.len() == n => Some(m),
