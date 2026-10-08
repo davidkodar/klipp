@@ -345,13 +345,16 @@ impl PlaybackEngine {
             && !self.thumb_capture_suspended
             && !self.in_node_param_edit)
             .then(|| self.visible_node_thumbs.clone());
+        // The grade tools name nodes of the clip's own grade; the renderer
+        // takes them by path (M3 step 16a).
+        let at = |node: klipp_nodes::NodeId| clip.map(|c| klipp_compose::InspectAt::grade_node(c, node));
         Inspect {
             clip,
-            thumbs,
+            thumbs: thumbs.map(|t| t.into_iter().filter_map(at).collect()),
             // An eyedropper read borrows the tap for one render.
-            scope_tap: self.node_sample.map(|s| s.tap),
-            matte_view,
-            solo: self.solo_node,
+            scope_tap: self.node_sample.map(|s| klipp_compose::InspectAt::grade_node(s.clip, s.tap)),
+            matte_view: matte_view.and_then(at),
+            solo: self.solo_node.and_then(at),
             ungraded: self.bypass_color_grade,
             matte_of: self.inspector_matte_preview_target,
             only: self.measure_only_clip,
@@ -836,7 +839,7 @@ impl PlaybackEngine {
                 fb.scope_data = klipp_effects::linear_f32_rgba_to_srgb_u8(tap);
             }
             if !found.thumbs.is_empty() {
-                fb.node_thumbs = found.thumbs.clone();
+                fb.node_thumbs = found.thumbs.iter().filter_map(|(at, bytes)| Some((at.path.node()?, bytes.clone()))).collect();
                 fb.node_thumbs_gen = fb.node_thumbs_gen.wrapping_add(1);
             }
         }

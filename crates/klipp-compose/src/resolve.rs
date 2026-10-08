@@ -100,16 +100,39 @@ pub fn resolve_effects_blended(
     pin: Option<klipp_timeline::surface::Quad>,
     scale: f32,
 ) -> Result<Vec<(BuiltinEffect, Option<Blend>)>, String> {
+    resolve_effect_nodes(clip, picture, time, fps, resolved, pin, scale).map(|fx| fx.into_iter().map(|(e, b, _)| (e, b)).collect())
+}
+
+/// [`resolve_effects_blended`], each effect with the picture node it came
+/// from (M3 step 16a): the placement's for the clip's transform. The node
+/// a run of the effects gives it, so an inspection by path names it.
+pub fn resolve_effect_nodes(
+    clip: &Clip,
+    picture: &ClipPicture,
+    time: Timecode,
+    fps: f64,
+    resolved: Option<ResolvedTransform>,
+    pin: Option<klipp_timeline::surface::Quad>,
+    scale: f32,
+) -> Result<Vec<(BuiltinEffect, Option<Blend>, Option<NodeId>)>, String> {
     let w = walk(clip, picture, time, fps, resolved, pin)?;
     let (mut fx, mut blends) = (w.fx, w.blends);
+    let mut nodes: Vec<Option<NodeId>> = w.nodes.into_iter().map(Some).collect();
     match w.cut {
         PlacementCut::Fixed { at } | PlacementCut::Auto { at, .. } => {
             fx.insert(at, transform_effect(w.xf, w.three_d));
             blends.insert(at, None);
+            nodes.insert(at, w.placement);
         }
         PlacementCut::Identity => {}
     }
-    Ok(fx.into_iter().zip(blends).filter(|(e, _)| !klipp_effects::is_identity_effect(e)).map(|(e, b)| (e.at_render_scale(scale), b)).collect())
+    Ok(fx
+        .into_iter()
+        .zip(blends)
+        .zip(nodes)
+        .filter(|((e, _), _)| !klipp_effects::is_identity_effect(e))
+        .map(|((e, b), n)| (e.at_render_scale(scale), b, n))
+        .collect())
 }
 
 /// Where the clip's transform goes among its pixel effects (R2-R4), the
@@ -145,6 +168,8 @@ pub fn placement_cut(fx: &[BuiltinEffect], fixed_at: Option<usize>, identity: bo
 struct Walk {
     fx: Vec<BuiltinEffect>,
     nodes: Vec<NodeId>,
+    /// The placement node, where the clip's transform is placed.
+    placement: Option<NodeId>,
     blends: Vec<Option<Blend>>,
     cut: PlacementCut,
     xf: (f32, f32, f32, f32, f32, f32, f32),
@@ -161,11 +186,13 @@ fn walk(clip: &Clip, picture: &ClipPicture, time: Timecode, fps: f64, resolved: 
     // The clip's transform (R2-R4): the placement node, at the first
     // enabled Transform's place (fixed, with that Transform), or automatic.
     let mut placement: Option<(usize, Option<BuiltinEffect>)> = None;
+    let mut placement_node: Option<NodeId> = None;
     let chain = chain(picture)?;
     let start = chain.iter().position(|n| n.type_id.as_str() == lt::SCENE_TO_DISPLAY).map_or(0, |i| i + 1);
     for node in &chain[start..] {
         let kind = node.type_id.as_str();
         if kind == lt::PLACEMENT {
+            placement_node = Some(node.id);
             let fixed = match &node.legacy {
                 Some(l) if node.enabled => Some(decode(node, &l.payload, t, &ctx)?),
                 _ => None,
@@ -197,7 +224,7 @@ fn walk(clip: &Clip, picture: &ClipPicture, time: Timecode, fps: f64, resolved: 
         Some((_, None)) => placement_cut(&fx, None, identity),
         None => PlacementCut::Identity,
     };
-    Ok(Walk { fx, nodes, blends, cut, xf, three_d })
+    Ok(Walk { fx, nodes, placement: placement_node, blends, cut, xf, three_d })
 }
 
 /// Where `clip`'s placement applies at `time`, as the renderer decides it

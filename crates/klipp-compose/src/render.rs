@@ -58,6 +58,7 @@ use std::time::Instant;
 use klipp_core::{BlendMode, ClipId, Timecode, WorkingColorspace};
 use klipp_effects::BuiltinEffect;
 use klipp_nodes::NodeId;
+pub use crate::inspect::InspectAt;
 use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, Track, TrackKind};
 
 use crate::eval::{self, ResolvedTransform};
@@ -193,14 +194,14 @@ pub trait FrameSource {
 #[derive(Default, Clone)]
 pub struct Inspect {
     pub clip: Option<ClipId>,
-    /// Nodes whose outputs to capture as thumbnails.
-    pub thumbs: Option<HashSet<NodeId>>,
-    /// Node whose output the scope reads instead of the graph's.
-    pub scope_tap: Option<NodeId>,
-    /// Node whose matte the grade shows instead of the picture.
-    pub matte_view: Option<NodeId>,
-    /// Node whose output the grade shows instead of the graph's.
-    pub solo: Option<NodeId>,
+    /// Node outputs to capture as thumbnails, by path (M3 step 16a).
+    pub thumbs: Option<HashSet<InspectAt>>,
+    /// The node output the scope reads instead of the graph's.
+    pub scope_tap: Option<InspectAt>,
+    /// The node whose matte the grade shows instead of the picture.
+    pub matte_view: Option<InspectAt>,
+    /// The node output the grade shows instead of the graph's.
+    pub solo: Option<InspectAt>,
     /// Also return the clip's picture before its grade.
     pub ungraded: bool,
     /// A clip whose track-matte mask to return (the inspector's matte
@@ -228,7 +229,10 @@ impl Inspect {
 #[derive(Default)]
 pub struct Inspection {
     pub scope_tap: Option<Vec<f32>>,
-    pub thumbs: HashMap<NodeId, Vec<u8>>,
+    pub thumbs: HashMap<InspectAt, Vec<u8>>,
+    /// Each request that names nothing the render ran, and why: never
+    /// answered with another node's output or the picture's (M3 step 16a).
+    pub unavailable: Vec<(InspectAt, String)>,
     /// The inspected clip before its grade: display-referred linear RGBA
     /// at the output size (scene-referred sources tone-mapped).
     pub ungraded: Option<Vec<f32>>,
@@ -526,6 +530,11 @@ pub struct Renderer {
     /// The mixes and masks of the effects the last `plan_effects` gave,
     /// by place, for its caller to take.
     planned_blends: Vec<Option<crate::resolve::Blend>>,
+    /// The picture node each planned effect of a clip came from (M3 step
+    /// 16a), for its spliced node's id.
+    planned_nodes: HashMap<ClipId, Vec<Option<klipp_nodes::NodeId>>>,
+    /// The inspection being rendered, resolved to the nodes that run.
+    resolved: crate::inspect::Resolved,
     /// An executor on the CPU alone: a masked or mixed clip's plan runs on
     /// it again when its GPU run can't apply an effect, since the CPU
     /// kernels can't mask or mix (step 9c-2).
@@ -658,6 +667,8 @@ impl Renderer {
             run_effects: Vec::new(),
             run_blends: Vec::new(),
             planned_blends: Vec::new(),
+            planned_nodes: HashMap::new(),
+            resolved: Default::default(),
             cpu_executor: None,
             matte_input: None,
             run_display: None,
@@ -853,11 +864,13 @@ impl Renderer {
         inspect: Inspect,
     ) -> (Vec<f32>, Inspection) {
         let t0 = Instant::now();
-        self.inspect = inspect;
         self.found = Inspection::default();
+        self.resolved = crate::inspect::resolve(seq, &inspect, &mut self.found.unavailable);
+        self.inspect = inspect;
         self.hdr_peak = opts.hdr_peak_nits;
         let out = self.render_stack(seq, time, width, height, src, opts);
         self.inspect = Inspect::default();
+        self.resolved = Default::default();
         self.hdr_peak = None;
         // A solo belongs to the inspected clip; leave the executor clean
         // for whoever drives it next.
@@ -2646,12 +2659,19 @@ impl Renderer {
     /// in when the picture can't be read, which is said.
     fn plan_effects(&mut self, clip: &Clip, time: Timecode, fps: f64, transforms: &HashMap<ClipId, ResolvedTransform>, fallback: &[BuiltinEffect], stats: &mut RenderStats) -> Vec<BuiltinEffect> {
         self.planned_blends.clear();
+        self.planned_nodes.remove(&clip.id);
         let resolved = clip.picture_v2().and_then(|p| {
-            crate::resolve::resolve_effects_blended(clip, &p.picture, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied(), 1.0)
+            crate::resolve::resolve_effect_nodes(clip, &p.picture, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied(), 1.0)
         });
         match resolved {
-            Ok(pairs) => {
-                let (mut fx, blends): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+            Ok(triples) => {
+                let (mut fx, mut blends, mut nodes) = (Vec::new(), Vec::new(), Vec::new());
+                for (e, b, n) in triples {
+                    fx.push(e);
+                    blends.push(b);
+                    nodes.push(n);
+                }
+                self.planned_nodes.insert(clip.id, nodes);
                 self.authored_colours(&mut fx);
                 self.at_render_scale(&mut fx);
                 self.planned_blends = blends;
@@ -3048,7 +3068,7 @@ impl Renderer {
         self.grade_ran = false;
         // Only a grade the tools read inside runs with its taps (#1274).
         let inspecting = self.inspects_the_grade_of(clip);
-        let matte_view = if inspecting { self.inspect.matte_view } else { None };
+        let matte_view = if inspecting { self.resolved.matte_view } else { None };
         // An identity grade with effects queued still runs: the effects are
         // the plan's nodes (step 11b).
         if clip.grade_is_identity() && matte_view.is_none() && self.run_effects.is_empty() && self.run_display.is_none() {
@@ -3066,7 +3086,7 @@ impl Renderer {
         self.executor.set_render_scale(self.px_scale);
         self.executor.set_lut_tetrahedral(self.lut_tetrahedral);
         self.executor.set_current_clip_track_points(&clip.track_points);
-        self.executor.set_solo_node(if inspecting { self.inspect.solo } else { None });
+        self.executor.set_solo_node(if inspecting { self.resolved.solo } else { None });
         let frame = grade_frame(clip_time, fps);
         let out = match &input {
             GradeInput::Cpu(p) => self.run_graph(clip, p, width, height, clip_time, frame, inspecting, matte_view),
@@ -3154,14 +3174,30 @@ impl Renderer {
             self.splice_run(clip);
             &self.spliced
         };
-        let thumbs = self.inspect.thumbs.take();
-        let r = self.executor.execute_linear_with_thumbs(
-            source, graph, width, height, clip_time, frame, self.inspect.scope_tap, matte_view, thumbs.as_ref(),
-        );
-        self.inspect.thumbs = thumbs;
+        // A request whose node this run doesn't hold (an effect fused
+        // into the one before it, a node gone since) is unavailable, never
+        // answered by another node or the output (M3 step 16a).
+        let held: HashSet<NodeId> = graph.nodes.iter().map(|n| n.id).collect();
+        for (node, at) in self.resolved.asked.iter().filter(|(n, _)| !held.contains(n)) {
+            if !self.found.unavailable.iter().any(|(a, _)| a == at) {
+                self.found.unavailable.push((at.clone(), format!("{node} doesn't run in this frame's picture")));
+            }
+            if self.resolved.solo == Some(*node) {
+                self.executor.set_solo_node(None);
+            }
+        }
+        let scope_tap = self.resolved.scope_tap.filter(|n| held.contains(n));
+        let matte_view = matte_view.filter(|n| held.contains(n));
+        let thumbs = self.resolved.thumbs.take();
+        let r = self.executor.execute_linear_with_thumbs(source, graph, width, height, clip_time, frame, scope_tap, matte_view, thumbs.as_ref());
+        self.resolved.thumbs = thumbs;
         r.map(|(out, tapped, thumbs)| {
             self.found.scope_tap = tapped;
-            self.found.thumbs = thumbs;
+            for (node, bytes) in thumbs {
+                for at in self.resolved.thumb_of.get(&node).into_iter().flatten() {
+                    self.found.thumbs.insert(at.clone(), bytes.clone());
+                }
+            }
             out
         })
     }
@@ -3183,8 +3219,13 @@ impl Renderer {
         if let Some(step) = self.run_display {
             self.spliced.splice_before_output(scene_to_display_node(clip, step));
         }
+        // Each effect's node is the picture's node it came from, so an
+        // inspection by path names it (M3 step 16a); an effect without one
+        // (the list route) keeps an id derived from its place.
         let base = clip.id.0.as_u128() ^ (0x00ef_fec7_u128 << 64);
-        let unavailable = splice_blended(&mut self.spliced, &self.run_effects, &self.run_blends, |i| klipp_nodes::NodeId::from_u128(base ^ i as u128), source, graded);
+        let nodes = self.planned_nodes.get(&clip.id).filter(|n| n.len() == self.run_effects.len()).cloned().unwrap_or_default();
+        let id = |i: usize| nodes.get(i).copied().flatten().unwrap_or_else(|| klipp_nodes::NodeId::from_u128(base ^ i as u128));
+        let unavailable = splice_blended(&mut self.spliced, &self.run_effects, &self.run_blends, id, source, graded);
         self.masks_unavailable(clip, unavailable);
     }
 
@@ -3820,7 +3861,8 @@ fn scene_to_display_node(clip: &Clip, step: klipp_color::hdr::SceneToDisplay) ->
 /// chain built into the run reading `source` (the clip's source) or
 /// `graded` (the grade's picture). A matte the run can't give leaves its
 /// effect bypassed (its mix 0: the picture as it came in); the reasons
-/// come back, one an effect.
+/// come back, one an effect. `id` names the node of the group an effect
+/// heads, by that effect's place in `fx`.
 fn splice_blended(
     graph: &mut klipp_nodes::NodeGraph,
     fx: &[BuiltinEffect],
@@ -3833,16 +3875,20 @@ fn splice_blended(
     let blend = |i: usize| blends.get(i).and_then(Option::as_ref);
     let spills = |e: &BuiltinEffect| klipp_effects::layer::Spill::of(e).is_some();
     let mut groups: Vec<(klipp_nodes::NodeKind, &[BuiltinEffect], Option<&crate::resolve::Blend>)> = Vec::new();
+    // Each group's node is named by its first effect (M3 step 16a).
+    let mut starts = Vec::new();
     let mut i = 0;
     while i < fx.len() {
         let kind = if spills(&fx[i]) { klipp_nodes::NodeKind::EffectSegment } else { klipp_nodes::NodeKind::Effect };
         // A blended effect stands alone; spills run together otherwise.
         let len = if blend(i).is_some() || !spills(&fx[i]) { 1 } else { fx[i..].iter().enumerate().take_while(|(k, e)| spills(e) && blend(i + k).is_none()).count() };
         groups.push((kind, &fx[i..i + len], blend(i)));
+        starts.push(i);
         i += len;
     }
+    let id = |g: usize| id(starts[g]);
     let plain: Vec<_> = groups.iter().map(|(k, e, _)| (*k, *e)).collect();
-    graph.splice_effects_before_output(&plain, &id);
+    graph.splice_effects_before_output(&plain, id);
     let mut unavailable = Vec::new();
     for (g, (_, _, b)) in groups.iter().enumerate() {
         let Some(b) = b else { continue };
