@@ -136,16 +136,18 @@ pub fn number(stored: &Value) -> Option<f32> {
     }
 }
 
+/// A choice's name as stored names are matched against it: its letters
+/// and digits, whatever the case ("Rec.709 linear" is stored as
+/// "Rec709Linear", "Box Blur" as "box_blur").
+pub fn plain_name(name: &str) -> String {
+    name.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect()
+}
+
 /// `stored` as a choice's index: stored by name or by index.
 pub fn choice_index(desc: &ParamDesc, stored: &Value) -> Option<usize> {
     let ParamKind::Choice(names) = desc.kind else { return None };
     match stored {
-        // By its letters and digits, whatever the case: "Rec.709 linear"
-        // is stored as "Rec709Linear", "Box Blur" as "box_blur".
-        Value::String(s) => {
-            let plain = |t: &str| t.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect::<String>();
-            names.iter().position(|n| plain(n) == plain(s))
-        }
+        Value::String(s) => names.iter().position(|n| plain_name(n) == plain_name(s)),
         Value::Number(n) => n.as_u64().map(|i| i as usize).filter(|i| *i < names.len()),
         Value::Bool(b) => Some(usize::from(*b)).filter(|i| *i < names.len()),
         _ => None,
@@ -538,6 +540,27 @@ mod tests {
         let mut ctx = RowCtx { addr: &addr, clip_time_secs: 0.0, timeline_in_secs: 0.0, rate: 24, encoding: Encoding::Bt1886, entry: Some(Entry { payload, fields_at: &[], choices_by_index: false }), cmds: &mut cmds, behaviours: None, theme: &theme, app: None, custom: None };
         assert!(write_stored(&mut ctx, desc(type_id, key), new));
         cmds
+    }
+
+    /// Every choice in the effect and grade catalogs keeps its names apart
+    /// as stored names are matched (`plain_name`): two that read alike
+    /// would make a stored name pick the wrong one.
+    #[test]
+    fn every_choice_name_is_its_own_by_letters_and_digits() {
+        let params = effect_types().flat_map(|t| t.desc.params.iter().map(move |p| (t.desc.id, p)));
+        let grade = klipp_nodes::registry::node_types().flat_map(|t| t.desc.params.iter().map(move |p| (t.desc.id, p)));
+        let mut checked = 0;
+        for (id, p) in params.chain(grade) {
+            let ParamKind::Choice(names) = p.kind else { continue };
+            let mut seen = std::collections::BTreeMap::new();
+            for name in names {
+                if let Some(other) = seen.insert(plain_name(name), name) {
+                    panic!("{id} {}: {other:?} and {name:?} read alike", p.key);
+                }
+            }
+            checked += 1;
+        }
+        assert!(checked > 10, "only {checked} choices");
     }
 
     /// A choice the effect stores by name is written by its catalog name,
