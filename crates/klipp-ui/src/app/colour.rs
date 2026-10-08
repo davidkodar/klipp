@@ -1447,6 +1447,22 @@ impl KlippApp {
                 // matching comment on BeginNodeParamEdit.
                 false
             }
+            AppCommand::AbandonNodeParamEdit { clip_id } => {
+                // The gesture taken back: the graph as Begin found it, and
+                // no history entry.
+                if let Some((snap_clip_id, old_graph)) = self.node_param_edit_snapshot.take() {
+                    if snap_clip_id == *clip_id {
+                        let seq = self.state.active_sequence_idx;
+                        if let Some(clip) = self.state.sequences[seq].tracks.iter_mut().find_map(|t| t.find_clip_mut(*clip_id)) {
+                            clip.set_grade(old_graph);
+                            *needs_refresh = true;
+                        }
+                    }
+                }
+                // Forwarded to the engine, as EndNodeParamEdit is, to end
+                // its drag state.
+                false
+            }
             AppCommand::SetNodeCurves { clip_id, node_id, curves } => {
                 let resolved = self.resolve_phantom_node_id(*clip_id, *node_id);
                 let node_id = resolved;

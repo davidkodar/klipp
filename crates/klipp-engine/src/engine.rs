@@ -3444,7 +3444,8 @@ impl PlaybackEngine {
                 self.drag_downsampled_count = 0;
                 tracing::debug!("DRAG_BEGIN downsample_enabled={}", drag_downsample_enabled());
             }
-            AppCommand::EndNodeParamEdit { .. } => {
+            // An abandoned gesture ends the drag as a committed one does.
+            AppCommand::EndNodeParamEdit { .. } | AppCommand::AbandonNodeParamEdit { .. } => {
                 self.in_node_param_edit = false;
                 // Trigger one full-resolution regrade so the viewer
                 // recovers cleanly from the last downsampled frame
