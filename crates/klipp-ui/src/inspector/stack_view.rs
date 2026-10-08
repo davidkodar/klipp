@@ -334,8 +334,11 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
             };
             // A placed kind's edits go through the clip's effect list, which
             // places it: drawn into a scratch list, then translated.
+            // The clip's placement node, where a fixed Transform is drawn,
+            // is placed as well: it holds the Transform's entry.
+            let placed = row.placed || n.type_id.as_str() == klipp_graph_format::lifted::types::PLACEMENT;
             let mut scratch = Vec::new();
-            let out: &mut Vec<AppCommand> = if row.placed { &mut scratch } else { cmds };
+            let out: &mut Vec<AppCommand> = if placed { &mut scratch } else { cmds };
             let mut rc = RowCtx {
                 addr: &row.addr,
                 clip_time_secs,
@@ -349,7 +352,7 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
                 app: Some(state),
             };
             ui.indent(("stack_row", row.addr.clone()), |ui| effect_card(ui, &mut rc, &rows, ty, clip, state));
-            if row.placed {
+            if placed {
                 cmds.extend(to_effect_list(clip, ty, n.id, &entry, scratch));
             }
         }
