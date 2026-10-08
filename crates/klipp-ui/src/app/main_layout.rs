@@ -1257,7 +1257,7 @@ impl KlippApp {
                     });
                     // The tabbed page draws what it shares with the
                     // per-node layout as the same generated rows (11c).
-                    self.node_inspector_panel.generated = crate::inspector::grade_view::snapshot_for(clip, self.state.use_generated_stack, !path.is_empty(), grading_timeline);
+                    self.node_inspector_panel.generated = crate::inspector::grade_view::snapshot_for(clip, self.state.use_generated_stack, !path.is_empty(), grading_timeline, &mut self.state.pending_corrector);
                     let mut generated_cmds = Vec::new();
                     let drawn = generated_node.is_some_and(|nid| {
                         egui::ScrollArea::vertical()

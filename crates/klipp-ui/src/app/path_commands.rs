@@ -66,6 +66,16 @@ fn walk<'a>(mut nodes: &'a [Node], ids: &[klipp_graph_format::NodeId]) -> Option
     nodes.iter().find(|n| n.id == *last)
 }
 
+/// The node an edit of one node's values names: its parameter, payload,
+/// mix, keys, switch or mask channel. `None` for the ops that make,
+/// remove, move or wire nodes.
+fn edited_path(op: &GraphOp) -> Option<&NodePath> {
+    match op {
+        GraphOp::SetParam { path, .. } | GraphOp::SetPayload { path, .. } | GraphOp::SetMix { path, .. } | GraphOp::AddKeyAt { path, .. } | GraphOp::RemoveKeyAt { path, .. } | GraphOp::SetAnim { path, .. } | GraphOp::SetEnabled { path, .. } | GraphOp::SetMaskChannel { path, .. } => Some(path),
+        _ => None,
+    }
+}
+
 impl KlippApp {
     pub(super) fn handle_path_commands(&mut self, cmd: &AppCommand) -> bool {
         match self.state.path_command(cmd) {
@@ -163,7 +173,7 @@ impl crate::state::AppState {
                 .map(|()| true),
             _ => {
                 let (ops, label) = path_ops(cmd)?;
-                self.apply_path_ops(&ops, label).map(|()| true)
+                self.with_pending_corrector(ops).and_then(|ops| self.apply_path_ops(&ops, label)).map(|()| true)
             }
         };
         match result {
@@ -266,7 +276,10 @@ impl crate::state::AppState {
             }
         }
         let mix_key = Self::NODE_MIX_DRAG_KEY.into();
-        let dragged = match ops {
+        // A first edit of the pending Corrector makes it first: the edit is
+        // still the one it names, so a drag's first tick stays the drag's.
+        let made = self.pending_corrector_ops(ops);
+        let dragged = match &ops[made..] {
             [GraphOp::SetParam { path, key, .. } | GraphOp::SetAnim { path, key, .. } | GraphOp::AddKeyAt { path, key, .. } | GraphOp::RemoveKeyAt { path, key, .. }] => Some((path, key)),
             [GraphOp::SetMix { path, .. }] => Some((path, &mix_key)),
             _ => None,
@@ -295,7 +308,7 @@ impl crate::state::AppState {
     }
 
     /// Write `picture` to the clip, with no history entry of its own.
-    fn set_picture(&mut self, clip_id: ClipId, picture: &klipp_timeline::ClipPictureFields) {
+    pub(super) fn set_picture(&mut self, clip_id: ClipId, picture: &klipp_timeline::ClipPictureFields) {
         let seq = &mut self.sequences[self.active_sequence_idx];
         if let Some(clip) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) {
             clip.restore_picture(picture);
@@ -347,7 +360,9 @@ impl crate::state::AppState {
             self.close_open_drag();
         }
         let Root::Clip { clip } = addr.root else { return Err("only a clip's graph takes edits by path so far".into()) };
-        self.node_at(addr)?;
+        if !self.names_pending_corrector(addr) {
+            self.node_at(addr)?;
+        }
         let clip_id = ClipId(clip);
         let before = self.picture_of(clip_id).ok_or_else(|| format!("no clip {clip} on this sequence"))?;
         self.active_history_mut().begin_drag(
@@ -425,6 +440,53 @@ impl crate::state::AppState {
 
     /// The node `path` names, on this sequence: only a clip's graph so far,
     /// as `GraphOps` takes.
+    /// Whether `addr` names the Corrector the tabbed page reserved for the
+    /// clip (`pending_corrector`) and the clip doesn't hold it yet.
+    fn names_pending_corrector(&self, addr: &NodePath) -> bool {
+        let Some((clip, id)) = self.pending_corrector else { return false };
+        addr.root == (Root::Clip { clip: clip.0 }) && addr.nodes.len() == 2 && addr.nodes[1] == id && self.node_at(addr).is_err()
+    }
+
+    /// `ops` with the pending Corrector made first when the first of them
+    /// edits it (M3 step 19): added in the grade where
+    /// `NodeGraph::ensure_corrector` puts one, between the grade's output
+    /// and what fed it, and placed as it places one, so the edit and the node it makes are one step,
+    /// and undoing it leaves the grade as it was.
+    fn with_pending_corrector(&self, ops: Vec<GraphOp>) -> Result<Vec<GraphOp>, String> {
+        let Some(addr) = ops.first().and_then(edited_path).filter(|a| self.names_pending_corrector(a)).cloned() else { return Ok(ops) };
+        let (group, id) = (addr.nodes[0], addr.nodes[1]);
+        let at = |node| NodePath::new(addr.root, [group, node]);
+        let node = self.node_at(&NodePath::new(addr.root, [group]))?;
+        let body = &node.group.as_ref().ok_or("the grade isn't a group")?.graph;
+        let output = body.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::GROUP_OUTPUT).ok_or("the grade has no output")?.id;
+        let input = klipp_graph_format::ports::input_key("Output", 0);
+        let fed = body.edges.iter().find(|e| e.to == (output, input.clone())).ok_or("nothing feeds the grade's output")?;
+        // Just before the output on the canvas, as `ensure_corrector` puts it.
+        let xy = |v: &serde_json::Value, k: &str| v.get(k).and_then(serde_json::Value::as_f64);
+        let place = match body.ui.positions.get(&output) {
+            Some(p) => serde_json::json!({"x": xy(p, "x").unwrap_or(440.0) - 220.0, "y": xy(p, "y").unwrap_or(0.0)}),
+            None => serde_json::json!({"x": 220.0, "y": 0.0}),
+        };
+        let mut made = vec![
+            GraphOp::AddNodeBeside { at: at(fed.from.0), node: Box::new(crate::inspector::grade_view::pending_corrector(id)) },
+            GraphOp::Connect { from: at(fed.from.0), from_port: fed.from.1.clone(), to: at(id), to_port: klipp_graph_format::ports::input_key("Corrector", 0) },
+            GraphOp::Connect { from: at(id), from_port: klipp_graph_format::ports::output_key("Corrector", 0), to: at(output), to_port: input },
+            GraphOp::SetNodeMeta { path: at(id), label: None, position: Some(place) },
+        ];
+        made.extend(ops);
+        Ok(made)
+    }
+
+    /// How many of `ops`, at their start, make the pending Corrector (see
+    /// [`AppState::with_pending_corrector`]): none, or the four.
+    fn pending_corrector_ops(&self, ops: &[GraphOp]) -> usize {
+        let pending = self.pending_corrector.map(|(_, id)| id);
+        match ops {
+            [GraphOp::AddNodeBeside { node, .. }, _, _, _, _, ..] if Some(node.id) == pending => 4,
+            _ => 0,
+        }
+    }
+
     fn node_at(&self, path: &NodePath) -> Result<Node, String> {
         let Root::Clip { clip } = path.root else { return Err("only a clip's graph is shown by path so far".into()) };
         let c = self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id.0 == clip).ok_or_else(|| format!("no clip {clip} on this sequence"))?;

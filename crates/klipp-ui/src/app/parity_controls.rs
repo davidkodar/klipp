@@ -382,7 +382,7 @@ impl Grade {
                 // shared rows the generated ones when `generated`.
                 Page::Tabbed(tab) | Page::Bottom(tab) => {
                     let clip = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
-                    panel.generated = crate::inspector::grade_view::snapshot_for(clip, *generated, false, false);
+                    panel.generated = crate::inspector::grade_view::snapshot_for(clip, *generated, false, false, &mut state.pending_corrector);
                     let (mut selected, mut tab) = (Some(node), tab);
                     let wide = matches!(page, Page::Bottom(_));
                     cmds.extend(clip.edit_grade(|g| if wide {

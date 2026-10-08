@@ -408,7 +408,7 @@ impl KlippApp {
                     // inspector (M3 step 11c): this frame's snapshot of the
                     // clip's own grade, under the same guards, or none.
                     let generated = self.state.use_generated_stack && path.is_empty() && !grading_timeline;
-                    self.node_inspector_panel.generated = crate::inspector::grade_view::snapshot_for(clip, self.state.use_generated_stack, !path.is_empty(), grading_timeline);
+                    self.node_inspector_panel.generated = crate::inspector::grade_view::snapshot_for(clip, self.state.use_generated_stack, !path.is_empty(), grading_timeline, &mut self.state.pending_corrector);
                     let panel_cmds = clip.edit_grade(|root| {
                         let graph: &mut klipp_nodes::NodeGraph =
                             match Self::resolve_graph_at_path_mut(root, &path) {

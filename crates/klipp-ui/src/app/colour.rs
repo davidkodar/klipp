@@ -1190,16 +1190,14 @@ impl KlippApp {
     /// without the inspector having to know whether a real node
     /// exists. Returns the original id unchanged when it's not the
     /// phantom sentinel.
+    ///
+    /// The generated tabbed page (M3 step 19) names the Corrector it will
+    /// make by the id it reserved for the clip (`pending_corrector`): an
+    /// edit there makes an enabled Corrector under that id, even beside a
+    /// disabled one, so the edit shows and both the page's rows and its
+    /// editors write one node (IC16).
     fn resolve_phantom_node_id(&mut self, clip_id: klipp_core::ClipId, node_id: klipp_nodes::NodeId) -> klipp_nodes::NodeId {
-        if node_id != klipp_nodes::PHANTOM_CORRECTOR_ID {
-            return node_id;
-        }
-        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-            if let Some(clip) = track.find_clip_mut(clip_id) {
-                return clip.edit_grade(|g| g.ensure_corrector());
-            }
-        }
-        node_id
+        self.state.resolve_phantom_node_id(clip_id, node_id)
     }
 
     fn handle_color_node_config(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
@@ -3317,6 +3315,28 @@ fn graph_path_for(root: &klipp_nodes::NodeGraph, nodes: &[klipp_nodes::NodeId], 
     let mut paths = nodes.iter().filter_map(|id| root.path_to_node(*id));
     let Some(first) = paths.next() else { return Some(descent.to_vec()) };
     paths.all(|p| p == first).then_some(first)
+}
+
+impl crate::state::AppState {
+    /// See [`KlippApp::resolve_phantom_node_id`].
+    pub(crate) fn resolve_phantom_node_id(&mut self, clip_id: klipp_core::ClipId, node_id: klipp_nodes::NodeId) -> klipp_nodes::NodeId {
+        let reserved = self.pending_corrector == Some((clip_id, node_id));
+        if node_id != klipp_nodes::PHANTOM_CORRECTOR_ID && !reserved {
+            return node_id;
+        }
+        for track in &mut self.sequences[self.active_sequence_idx].tracks {
+            if let Some(clip) = track.find_clip_mut(clip_id) {
+                if reserved {
+                    if !clip.grade().nodes.iter().any(|n| n.id == node_id) {
+                        clip.edit_grade(|g| g.insert_corrector(node_id));
+                    }
+                    return node_id;
+                }
+                return clip.edit_grade(|g| g.ensure_corrector());
+            }
+        }
+        node_id
+    }
 }
 
 #[cfg(test)]

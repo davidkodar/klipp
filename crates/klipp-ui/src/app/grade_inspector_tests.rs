@@ -379,9 +379,14 @@ fn tabbed(run: &mut Run, generated: bool, selected: Option<NodeId>, events: Vec<
 /// As [`tabbed`], in the right inspector's layout or (`wide`) the Colour
 /// page's bottom tools'.
 fn tabbed_in(run: &mut Run, generated: bool, wide: bool, selected: Option<NodeId>, events: Vec<egui::Event>) -> (Vec<AppCommand>, Vec<crate::widgets::row_recorder::Row>, Vec<(String, egui::Pos2)>) {
+    tabbed_on(run, generated, wide, crate::state::ColorTab::Adjustments, selected, events)
+}
+
+/// As [`tabbed_in`], on the tab `on`.
+fn tabbed_on(run: &mut Run, generated: bool, wide: bool, on: crate::state::ColorTab, selected: Option<NodeId>, events: Vec<egui::Event>) -> (Vec<AppCommand>, Vec<crate::widgets::row_recorder::Row>, Vec<(String, egui::Pos2)>) {
     let c = clip(&run.state, run.clip).clone();
     let mut panel = run.panel.take().unwrap_or_default();
-    panel.generated = crate::inspector::grade_view::snapshot_for(&c, generated, false, false);
+    panel.generated = crate::inspector::grade_view::snapshot_for(&c, generated, false, false, &mut run.state.pending_corrector);
     let mut graph = c.grade().clone();
     let theme = crate::theme::KlippTheme::default();
     let frame = FrameSelection { time_secs: run.time, tolerance: 0.02 };
@@ -393,7 +398,7 @@ fn tabbed_in(run: &mut Run, generated: bool, wide: bool, selected: Option<NodeId
         let out = run.ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let mut sel = selected;
-                let mut tab = crate::state::ColorTab::Adjustments;
+                let mut tab = on;
                 cmds = if wide {
                     panel.show_simple_horizontal(ui, &mut graph, c.id, &mut sel, &mut tab, &theme, frame)
                 } else {
@@ -474,10 +479,10 @@ fn the_shared_rows_fall_back_for_nested_and_stand_in_grades() {
     let run = Run::new(NodeKind::Corrector).unwrap();
     let c = clip(&run.state, run.clip);
     use crate::inspector::grade_view::snapshot_for;
-    assert!(snapshot_for(c, true, false, false).is_some(), "the clip's own grade");
-    assert!(snapshot_for(c, false, false, false).is_none(), "the switch off");
-    assert!(snapshot_for(c, true, true, false).is_none(), "a nested grade");
-    assert!(snapshot_for(c, true, false, true).is_none(), "a stand-in's grade");
+    assert!(snapshot_for(c, true, false, false, &mut None).is_some(), "the clip's own grade");
+    assert!(snapshot_for(c, false, false, false, &mut None).is_none(), "the switch off");
+    assert!(snapshot_for(c, true, true, false, &mut None).is_none(), "a nested grade");
+    assert!(snapshot_for(c, true, false, true, &mut None).is_none(), "a stand-in's grade");
 }
 
 /// The Colour page's bottom tools draw the shared rows from this frame's
@@ -502,5 +507,237 @@ fn the_bottom_tools_draw_the_current_values() {
     // tools draw the old row, not one left from the last draw.
     let (_, off, _) = tabbed_in(&mut run, false, true, None, Vec::new());
     assert_ne!(exposure(&off).map(|(w, _)| w), exposure(&tabbed_in(&mut run, true, true, None, Vec::new()).1).map(|(w, _)| w), "no snapshot reused");
+}
+
+/// A clip whose grade has no enabled Corrector: none at all (its Source
+/// straight to its Output), or (`disabled`) one turned off.
+fn without_corrector(disabled: bool) -> Run {
+    let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
+    let corrector = run.node;
+    let c = run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap();
+    c.edit_grade(|g| {
+        if disabled {
+            g.nodes.iter_mut().find(|n| n.id == corrector).unwrap().enabled = false;
+            return;
+        }
+        let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
+        let output = g.output_node_id;
+        g.nodes.retain(|n| n.id != corrector);
+        g.edges.retain(|e| e.from_node != corrector && e.to_node != corrector);
+        g.edges.push(klipp_nodes::Edge { from_node: source, from_port: 0, to_node: output, to_port: 0 });
+        g.node_positions.remove(&corrector);
+    });
+    run
+}
+
+/// The clip as it is saved: its fields and its stored picture.
+fn saved(state: &AppState, id: ClipId) -> String {
+    let c = clip(state, id);
+    format!("{}{}", serde_json::to_string(c).unwrap(), serde_json::to_string(&c.picture_v2().unwrap().picture).unwrap())
+}
+
+/// The commands, each through the dispatch boundary and then applied as a
+/// path edit, as the app applies the tabbed page's.
+fn dispatch(run: &mut Run, cmds: &[AppCommand]) {
+    for cmd in cmds {
+        run.state.before_dispatch(cmd);
+        assert!(run.state.path_command(cmd).is_some(), "{cmd:?} is a path edit");
+    }
+}
+
+/// A drag of the row labelled `label` on tab `on`: pressed on its value,
+/// moved `dx` in three steps, then released, or (`escape`) Escape before
+/// the release. The commands each frame pushed, applied as they come.
+fn drag_row(run: &mut Run, on: crate::state::ColorTab, label: &str, dx: f32, escape: bool) -> Vec<AppCommand> {
+    tabbed_on(run, true, false, on, None, Vec::new());
+    let texts = tabbed_on(run, true, false, on, None, Vec::new()).2;
+    let label_at = texts.iter().filter(|(t, _)| t == label).map(|(_, p)| *p).next_back().unwrap_or_else(|| panic!("no {label} row: {texts:?}"));
+    let value_at = texts.iter()
+        .filter(|(t, p)| (p.y - label_at.y).abs() < 4.0 && p.x > label_at.x && t.trim_start_matches('-').starts_with(|c: char| c.is_ascii_digit()))
+        .map(|(_, p)| *p).min_by(|a, b| a.x.total_cmp(&b.x)).unwrap_or_else(|| panic!("no value on the {label} row"));
+    let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    let mut all = Vec::new();
+    let mut step = |run: &mut Run, events| {
+        let cmds = tabbed_on(run, true, false, on, None, events).0;
+        dispatch(run, &cmds);
+        all.extend(cmds);
+    };
+    step(run, vec![egui::Event::PointerMoved(value_at)]);
+    step(run, vec![button(value_at, true)]);
+    for i in 1..=3 {
+        step(run, vec![egui::Event::PointerMoved(value_at + egui::vec2(dx * i as f32 / 3.0, 0.0))]);
+    }
+    let end = value_at + egui::vec2(dx, 0.0);
+    if escape {
+        step(run, vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+    }
+    step(run, vec![button(end, false)]);
+    step(run, vec![egui::Event::PointerGone]);
+    all
+}
+
+fn undo_once(state: &mut AppState) {
+    let entry = state.active_history_mut().undo().expect("a step to undo");
+    let mut command = entry.command;
+    if let klipp_document::history::EditCommand::Named { edit, .. } = command { command = *edit; }
+    let klipp_document::history::EditCommand::PictureEdit { clip_id, edit, .. } = command else { panic!("a picture edit") };
+    state.set_picture(clip_id, &edit.before);
+}
+
+fn redo_once(state: &mut AppState) {
+    let entry = state.active_history_mut().redo().expect("a step to redo");
+    let mut command = entry.command;
+    if let klipp_document::history::EditCommand::Named { edit, .. } = command { command = *edit; }
+    let klipp_document::history::EditCommand::PictureEdit { clip_id, edit, .. } = command else { panic!("a picture edit") };
+    state.set_picture(clip_id, &edit.after);
+}
+
+/// The enabled Correctors of the clip's grade.
+fn correctors(run: &Run) -> Vec<Node> {
+    clip(&run.state, run.clip).grade().nodes.iter().filter(|n| n.kind == NodeKind::Corrector && n.enabled).cloned().collect()
+}
+
+/// A clip with no enabled Corrector opens every tab that makes one
+/// generated, drawn from the Corrector's defaults under one reserved id,
+/// and writes nothing: no command, the clip saved as it was, and no node
+/// added (M3 step 19).
+#[test]
+fn a_clip_without_a_corrector_opens_its_tabs_writing_nothing() {
+    use crate::state::ColorTab;
+    for disabled in [false, true] {
+        let mut run = without_corrector(disabled);
+        let before = saved(&run.state, run.clip);
+        for tab in [ColorTab::Wheels, ColorTab::Curves, ColorTab::HueSat, ColorTab::Warper] {
+            let (first, _, _) = tabbed_on(&mut run, true, false, tab, None, Vec::new());
+            let reserved = run.state.pending_corrector;
+            let (cmds, rows, _) = tabbed_on(&mut run, true, false, tab, None, Vec::new());
+            assert!(first.is_empty() && cmds.is_empty(), "{tab:?} wrote on open: {first:?} {cmds:?}");
+            assert!(matches!(reserved, Some((c, _)) if c == run.clip), "{tab:?}: a Corrector reserved for the clip");
+            assert_eq!(run.state.pending_corrector, reserved, "{tab:?}: the same id every frame");
+            assert!(!rows.is_empty() && rows.iter().all(|r| r.widget != "read_only"), "{tab:?} drew {:?}", rows.iter().map(|r| &r.widget).collect::<Vec<_>>());
+        }
+        assert_eq!(saved(&run.state, run.clip), before, "disabled {disabled}: nothing written");
+        assert!(correctors(&run).is_empty());
+    }
+}
+
+/// The first edit of a clip with no enabled Corrector makes it, under the
+/// id the page reserved, as one step with the edit; undo leaves the clip
+/// saved as it was, and redo brings the Corrector back under that id. A
+/// disabled Corrector is left as it was (IC16).
+#[test]
+fn the_first_edit_makes_the_corrector_in_the_same_step() {
+    use crate::state::ColorTab;
+    for disabled in [false, true] {
+        let mut run = without_corrector(disabled);
+        let before = saved(&run.state, run.clip);
+        let off = clip(&run.state, run.clip).grade().nodes.iter().find(|n| n.kind == NodeKind::Corrector).cloned();
+        tabbed_on(&mut run, true, false, ColorTab::Curves, None, Vec::new());
+        let (_, reserved) = run.state.pending_corrector.expect("a Corrector reserved");
+        let cmds = drag_row(&mut run, ColorTab::Curves, "Mix", -60.0, false);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::SetParamAt { addr, .. } if addr.node() == Some(reserved))), "the row edits the reserved Corrector: {cmds:?}");
+        let made = correctors(&run);
+        assert_eq!(made.len(), 1, "disabled {disabled}: one enabled Corrector made");
+        assert_eq!(made[0].id, reserved, "under the reserved id");
+        assert!(made[0].params.curves_mix.is_some_and(|m| m < 1.0), "the drag's value: {:?}", made[0].params.curves_mix);
+        let now = clip(&run.state, run.clip).grade().nodes.iter().find(|n| Some(n.id) == off.as_ref().map(|o| o.id)).cloned();
+        assert_eq!(now, off, "a disabled Corrector is left as it was");
+        assert_eq!(run.state.active_history().undo_count(), 1, "one step");
+        let after = saved(&run.state, run.clip);
+        undo_once(&mut run.state);
+        assert_eq!(saved(&run.state, run.clip), before, "undo: the clip as it was");
+        redo_once(&mut run.state);
+        assert_eq!(saved(&run.state, run.clip), after, "redo: the same Corrector back");
+        // Made, the reservation is spent: the tab now draws the Corrector.
+        tabbed_on(&mut run, true, false, ColorTab::Curves, None, Vec::new());
+        assert_eq!(run.state.pending_corrector, None);
+    }
+}
+
+/// Escape during the first drag takes the drag and the Corrector it made
+/// back: the clip saved as it was, no step. A press and release that move
+/// nothing leave nothing either.
+#[test]
+fn escape_or_a_still_click_on_the_first_edit_leaves_no_corrector() {
+    use crate::state::ColorTab;
+    for (dx, escape) in [(-60.0, true), (0.0, false)] {
+        let mut run = without_corrector(false);
+        let before = saved(&run.state, run.clip);
+        let cmds = drag_row(&mut run, ColorTab::Curves, "Mix", dx, escape);
+        // The gesture reached the row: a drag edited it, then Escape took it back.
+        let set = cmds.iter().any(|c| matches!(c, AppCommand::SetParamAt { .. }));
+        let abandoned = cmds.iter().any(|c| matches!(c, AppCommand::AbandonParamEditAt { .. }));
+        assert_eq!((set, abandoned), (escape, escape), "dx {dx}, escape {escape}: {cmds:?}");
+        assert_eq!(saved(&run.state, run.clip), before, "dx {dx}, escape {escape}: as it was");
+        assert_eq!(run.state.active_history().undo_count(), 0, "no step");
+        assert!(!run.state.active_history().is_any_drag_in_progress());
+    }
+}
+
+/// An editor's own command on the reserved Corrector makes it under that
+/// id too (beside a disabled one: IC16), so the rows and the editors
+/// write one node; the old page's phantom still writes the first
+/// Corrector it finds, a disabled one included.
+#[test]
+fn an_editor_command_on_the_reserved_corrector_makes_that_node() {
+    for disabled in [false, true] {
+        let mut run = without_corrector(disabled);
+        tabbed_on(&mut run, true, false, crate::state::ColorTab::Wheels, None, Vec::new());
+        let (_, reserved) = run.state.pending_corrector.unwrap();
+        assert_eq!(run.state.resolve_phantom_node_id(run.clip, reserved), reserved);
+        assert_eq!(correctors(&run).iter().map(|n| n.id).collect::<Vec<_>>(), vec![reserved], "disabled {disabled}");
+        assert_eq!(run.state.resolve_phantom_node_id(run.clip, reserved), reserved, "a second write, the same node");
+        assert_eq!(correctors(&run).len(), 1);
+
+        // The old page's phantom: the first Corrector, whatever its state.
+        let mut old = without_corrector(disabled);
+        let id = old.state.resolve_phantom_node_id(old.clip, klipp_nodes::PHANTOM_CORRECTOR_ID);
+        let n = clip(&old.state, old.clip).grade().nodes.iter().find(|n| n.id == id).cloned().unwrap();
+        assert_eq!((n.kind, n.enabled), (NodeKind::Corrector, !disabled), "old: into the disabled one when there is one");
+    }
+}
+
+/// A reservation is spent once its Corrector is made: if that node goes,
+/// the next one the page reserves is a new id, never one a node had.
+#[test]
+fn a_spent_reservation_is_never_reused() {
+    let mut run = without_corrector(false);
+    let tab = crate::state::ColorTab::Wheels;
+    tabbed_on(&mut run, true, false, tab, None, Vec::new());
+    let (_, first) = run.state.pending_corrector.unwrap();
+    run.state.resolve_phantom_node_id(run.clip, first);
+    tabbed_on(&mut run, true, false, tab, None, Vec::new());
+    assert_eq!(run.state.pending_corrector, None);
+    let c = run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap();
+    c.edit_grade(|g| g.nodes.iter_mut().find(|n| n.id == first).unwrap().enabled = false);
+    tabbed_on(&mut run, true, false, tab, None, Vec::new());
+    let (_, second) = run.state.pending_corrector.unwrap();
+    assert_ne!(second, first);
+}
+
+/// On a clip with a Corrector, each tab is that Corrector's generated rows
+/// in the tab's band, its editors registered: the same parameters the old
+/// page drew there, written by path to the Corrector.
+#[test]
+fn a_corrector_s_tabs_are_its_generated_rows() {
+    use crate::state::ColorTab;
+    let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
+    for (tab, want) in [
+        (ColorTab::Wheels, &["wheels_log_mode", "luma_mix"][..]),
+        (ColorTab::Curves, &["curves_preserve_luma", "curves_mix"][..]),
+        (ColorTab::HueSat, &["huesat_mix"][..]),
+    ] {
+        let (cmds, rows, _) = tabbed_on(&mut run, true, false, tab, None, Vec::new());
+        assert!(cmds.is_empty(), "{tab:?} wrote on open");
+        let drawn: Vec<_> = rows.iter().filter_map(|r| r.parameter.as_deref()).collect();
+        for key in want {
+            assert!(drawn.contains(key), "{tab:?} has no {key}: {drawn:?}");
+        }
+        assert!(!drawn.iter().any(|k| ["exposure", "temperature", "global_mix"].contains(k)), "{tab:?} drew another tab's rows: {drawn:?}");
+    }
+    let cmds = drag_row(&mut run, ColorTab::HueSat, "Mix", -60.0, false);
+    assert!(cmds.iter().any(|c| matches!(c, AppCommand::SetParamAt { addr, key, .. } if addr.node() == Some(run.node) && key.as_str() == "huesat_mix")), "{cmds:?}");
+    assert!(run.v1().params.huesat_mix.is_some_and(|m| m < 1.0));
+    assert_eq!(run.state.active_history().undo_count(), 1);
 }
 

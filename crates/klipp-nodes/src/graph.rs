@@ -328,7 +328,13 @@ impl NodeGraph {
         if let Some(idx) = self.nodes.iter().position(|n| n.kind == NodeKind::Corrector) {
             return self.nodes[idx].id;
         }
-        let new_id = NodeId::new_v4();
+        self.insert_corrector(NodeId::new_v4())
+    }
+
+    /// Add an enabled Corrector under `new_id` where [`Self::ensure_corrector`]
+    /// puts one, whatever Correctors the graph holds already: between the
+    /// Output and what fed it, placed just before the Output on the canvas.
+    pub fn insert_corrector(&mut self, new_id: NodeId) -> NodeId {
         let output_id = self.output_node_id;
         let insert_at = self.nodes.iter().position(|n| n.id == output_id)
             .unwrap_or(self.nodes.len());
