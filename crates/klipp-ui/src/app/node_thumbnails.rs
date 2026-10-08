@@ -12,7 +12,7 @@ pub(crate) struct ThumbnailState {
     wanted: Vec<InspectAt>,
     revision: Option<SequenceRevision>,
     frame: Option<i64>,
-    publication: u64,
+    publication: Option<u64>,
     source_sent: Option<(u64, usize)>,
     pub quality: Option<PreviewQuality>,
 }
@@ -51,6 +51,7 @@ impl AppState {
             self.node_thumbs.clear();
             self.node_thumbs_gen = self.node_thumbs_gen.wrapping_add(1);
         }
+        self.node_thumbnail_state.publication = None;
         self.node_thumbnail_state.quality = None;
     }
 }
@@ -109,10 +110,10 @@ impl KlippApp {
             let batch = fb.node_thumbnail_batch.as_ref().filter(|b|
                 b.matches(self.state.node_thumbnail_state.request, frame, revision));
             if let Some(batch) = batch {
-                if self.state.node_thumbnail_state.publication != fb.node_thumbs_gen {
+                if self.state.node_thumbnail_state.publication != Some(fb.node_thumbs_gen) {
                     self.state.node_thumbs = batch.images.clone();
                     self.state.node_thumbs_gen = self.state.node_thumbs_gen.wrapping_add(1);
-                    self.state.node_thumbnail_state.publication = fb.node_thumbs_gen;
+                    self.state.node_thumbnail_state.publication = Some(fb.node_thumbs_gen);
                     self.state.node_thumbnail_state.quality = Some(batch.quality);
                 }
             } else {
@@ -145,6 +146,16 @@ impl KlippApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clearing_for_an_unchanged_drag_allows_the_same_publication_to_return() {
+        let mut state = AppState::default();
+        state.node_thumbnail_state.publication = Some(7);
+        state.node_thumbnail_state.quality = Some(PreviewQuality::Viewer);
+        state.clear_node_thumbnails();
+        assert_ne!(state.node_thumbnail_state.publication, Some(7), "the unchanged viewer answer must be copied back after release");
+        assert_eq!(state.node_thumbnail_state.quality, None);
+    }
 
     #[test]
     fn thumbnail_requests_wait_for_all_drag_steps_and_send_once_on_release() {
