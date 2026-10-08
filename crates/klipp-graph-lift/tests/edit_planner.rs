@@ -398,3 +398,53 @@ fn shared_refusal_reveals_the_shared_dependency() {
     assert_eq!(refusal.reveal, path(10));
     assert_eq!(refusal.reason, "This branch is shared. Open in node view");
 }
+
+#[test]
+fn a_changed_mask_removal_preview_requires_review_even_without_a_revision_bump() {
+    for revision in [1, 2] {
+        let mut d = docs(masked());
+        let p = edit_planner::propose(&d, request(10, Action::Remove), 1, &Catalog).unwrap();
+        d.clips.get_mut(&id(100)).unwrap().graph.edges.push(edge(10, 3, "mask"));
+        let before = current(&d).clone();
+        let error = edit_planner::apply(&mut d, &p, revision, &Catalog).unwrap_err();
+        assert!(error.reason.contains("Review the edit again"));
+        assert_eq!(error.reveal, path(10));
+        assert_eq!(current(&d), &before);
+    }
+}
+
+#[test]
+fn a_revision_change_with_the_same_result_can_apply() {
+    let mut d = docs(graph());
+    let p = edit_planner::propose(&d, request(2, Action::Remove), 1, &Catalog).unwrap();
+    let applied = edit_planner::apply(&mut d, &p, 2, &Catalog).unwrap();
+    assert_eq!(applied.revision, 2);
+    assert_eq!(applied.edit, p.edit);
+}
+
+#[test]
+fn a_matte_producer_cannot_be_moved_into_the_image_chain() {
+    refused(masked(), request(10, Action::MoveAfter(id(3))), "not on an image chain");
+    let mut d = docs(masked());
+    let before = current(&d).clone();
+    let error = ops::apply(&mut d, &ops::GraphOp::MoveAfter { path: path(10), after: id(3) }).unwrap_err();
+    assert!(error.contains("not on an image chain"));
+    assert_eq!(current(&d), &before);
+}
+
+#[test]
+fn a_different_owned_branch_requires_review_even_if_the_result_is_identical() {
+    let mut d = docs(masked());
+    let p = edit_planner::propose(&d, request(2, Action::Remove), 1, &Catalog).unwrap();
+    let g = &mut d.clips.get_mut(&id(100)).unwrap().graph;
+    g.nodes.iter_mut().find(|n| n.id == id(10)).unwrap().id = id(20);
+    for edge in &mut g.edges {
+        if edge.from.0 == id(10) { edge.from.0 = id(20); }
+        if edge.to.0 == id(10) { edge.to.0 = id(20); }
+    }
+    let changed = edit_planner::propose(&d, request(2, Action::Remove), 2, &Catalog).unwrap();
+    assert_eq!(changed.edit.after, p.edit.after, "both exclusive branches disappear");
+    let before = current(&d).clone();
+    assert!(edit_planner::apply(&mut d, &p, 2, &Catalog).unwrap_err().reason.contains("Review the edit again"));
+    assert_eq!(current(&d), &before);
+}

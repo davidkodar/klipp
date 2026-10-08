@@ -80,6 +80,9 @@ pub fn propose(
 
 /// Revalidate even when a caller forgot to advance its revision. The returned
 /// proposal describes the actual edit, including its live before snapshot.
+/// If the before/after pictures or named readers differ from the preview, refuse
+/// and require a new preview. A revision change alone is harmless when the
+/// validated edit is identical.
 pub fn apply(
     docs: &mut Documents,
     proposal: &Proposal,
@@ -87,6 +90,12 @@ pub fn apply(
     catalog: &dyn PortCatalog,
 ) -> Result<Proposal, Refusal> {
     let checked = propose(docs, proposal.request.clone(), revision, catalog)?;
+    if checked.edit != proposal.edit || checked.ungated != proposal.ungated {
+        return Err(Refusal {
+            reason: "The graph changed since this edit was previewed. Review the edit again".into(),
+            reveal: checked.request.path.clone(),
+        });
+    }
     ops::put(docs, checked.edit.root, &checked.edit.after).map_err(|reason| Refusal {
         reason,
         reveal: checked.request.path.clone(),
@@ -330,6 +339,9 @@ pub(crate) fn rewrite(
         Action::MoveAfter(destination) => {
             if destination == *target {
                 return Ok(());
+            }
+            if images.is_empty() {
+                return Err(refuse(*target, "This node is not on an image chain. Open in node view"));
             }
             if owned.contains(&destination) {
                 return Err(shared(destination));

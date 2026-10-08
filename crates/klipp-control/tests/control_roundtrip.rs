@@ -672,6 +672,8 @@ fn graph_effect_persistence_refusals_map_expanded_indices_and_change_nothing() {
     // Refused after the add expands (an effect's mix or mask makes the clip
     // picture-truth since M2 step 9c, so those go through).
     for refused_op in [json!({"op":"enable","path":after,"enabled":false}), json!({"op":"move_after","path":after,"after":{"new":0}})] {
+        let preflight = refused_op["op"] == "move_after";
+        let envelopes = h.envelopes.lock().unwrap().len();
         let refused = h.call(json!({"method":"graph_ops","ops":[
             {"op":"add","after":after,"type":"klipp.fx.gaussian_blur","params":{"radius":3.0}},
             refused_op
@@ -679,11 +681,16 @@ fn graph_effect_persistence_refusals_map_expanded_indices_and_change_nothing() {
         assert_eq!(refused["ok"], false, "{refused}");
         assert_eq!(refused["op_index"], 1, "expanded initial params must not shift the caller's index: {refused}");
         assert!(!refused["error"].as_str().unwrap().starts_with("op "), "the prose must not contradict the caller's index: {refused}");
-        let operation = refused["result"]["operation_id"].as_str().expect("app-thread refusal");
-        let status = h.ok(json!({"method":"operation_status","operation_id":operation}));
-        assert_eq!(status["op_index"], 1);
-        assert_eq!(status["state"], "refused");
-        assert_eq!(status["reason"], refused["error"]);
+        if preflight {
+            assert!(refused["result"]["operation_id"].is_null(), "protected moves are refused before dispatch");
+            assert_eq!(h.envelopes.lock().unwrap().len(), envelopes);
+        } else {
+            let operation = refused["result"]["operation_id"].as_str().expect("app-thread refusal");
+            let status = h.ok(json!({"method":"operation_status","operation_id":operation}));
+            assert_eq!(status["op_index"], 1);
+            assert_eq!(status["state"], "refused");
+            assert_eq!(status["reason"], refused["error"]);
+        }
     }
     assert!(h.edits_seen.lock().unwrap().is_empty());
     assert_eq!(h.shared.revision(), graph["revision"].as_u64().unwrap());
@@ -706,6 +713,8 @@ fn graph_commit_refusal_after_a_beside_node_names_the_actual_operation() {
     let display = nodes.iter().find(|n| n["type"] == "klipp.colour.scene_to_display").unwrap()["id"].clone();
     let display = json!({"root":root,"nodes":[display]});
     for bad in [json!({"op":"enable","path":display,"enabled":false}), json!({"op":"remove","path":display})] {
+        let preflight = bad["op"] == "remove";
+        let envelopes = h.envelopes.lock().unwrap().len();
         let refused = h.call(json!({"method":"graph_ops","ops":[
             {"op":"add_beside","at":at,"type":"klipp.grade.exposure","params":{"exposure":0.5}},
             {"op":"connect","from":at,"from_port":"out","to":new,"to_port":"in"},
@@ -714,10 +723,15 @@ fn graph_commit_refusal_after_a_beside_node_names_the_actual_operation() {
         ]}));
         assert_eq!(refused["ok"], false, "{refused}");
         assert_eq!(refused["op_index"], 3, "the incomplete add prefix must not hide the actual refusal: {refused}");
-        let operation = refused["result"]["operation_id"].as_str().expect("app-thread refusal");
-        let status = h.ok(json!({"method":"operation_status","operation_id":operation}));
-        assert_eq!(status["op_index"], 3);
-        assert_eq!(status["state"], "refused");
+        if preflight {
+            assert!(refused["result"]["operation_id"].is_null(), "protected removal is refused before dispatch");
+            assert_eq!(h.envelopes.lock().unwrap().len(), envelopes);
+        } else {
+            let operation = refused["result"]["operation_id"].as_str().expect("app-thread refusal");
+            let status = h.ok(json!({"method":"operation_status","operation_id":operation}));
+            assert_eq!(status["op_index"], 3);
+            assert_eq!(status["state"], "refused");
+        }
     }
     assert!(h.edits_seen.lock().unwrap().is_empty());
     assert_eq!(h.shared.revision(), graph["revision"].as_u64().unwrap());
