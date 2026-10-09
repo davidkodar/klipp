@@ -2336,7 +2336,13 @@ impl TimelinePanel {
                                     crate::state::KeyframeParamKind::Title { object_id, param } => { cmds.push(param.interpolation(ctx_menu.clip_id, *object_id, ctx_menu.keyframe_index, interp)); }
                                     crate::state::KeyframeParamKind::Node { path, key } => {
                                         if let Some(time_secs) = node_key_time {
-                                            cmds.push(AppCommand::SetInterpKeyAt { addr: path.clone(), key: key.clone(), time_secs, interpolation: interp });
+                                            let set = AppCommand::SetInterpKeyAt { addr: path.clone(), key: key.clone(), time_secs, interpolation: interp };
+                                            // A placed kind's key (a Temporal Denoise's)
+                                            // through the clip's effect list (#1419).
+                                            match state.sequence().all_clips().find(|c| c.id == ctx_menu.clip_id) {
+                                                Some(clip) => cmds.extend(crate::inspector::stack_view::route_placed(clip, vec![set])),
+                                                None => cmds.push(set),
+                                            }
                                         }
                                     }
                                     crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {

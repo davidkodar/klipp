@@ -181,9 +181,39 @@ fn route_knife_edges_agree() {
         let fx = [effect];
         let (cpu, on_gpu) = (apply_effects(&fx, input.clone(), w, h), gpu.apply_effects(&fx, &input, w, h));
         let (worst, mean) = diff(&cpu, &on_gpu);
-        eprintln!("{name:28} {w}x{h} CPU vs GPU worst {worst:3} mean {mean:6.3}");
+        eprintln!("{name:28} {w}x{h} {fx:?} CPU vs GPU worst {worst:3} mean {mean:6.3}");
         if worst > 1 {
-            failures.push(format!("{name} at {w}x{h}: CPU and GPU differ by {worst} levels"));
+            failures.push(format!("{name} at {w}x{h} ({fx:?}): CPU and GPU differ by {worst} levels"));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Posterize at fractional levels, as between two keys, over values spaced
+/// finely from black to two and a half times white. A value within a few
+/// ULPs of a band edge fell in the next band on the GPU, whose `pow`
+/// encodes only approximately: 7, 6, 6 and 4 levels apart at these levels
+/// before both routes found bands against one set of edges (#1443). A
+/// sweep of 348 levels from 2 to 256 found 39 apart then, and none now.
+#[test]
+fn posterize_band_edges_agree() {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else {
+        eprintln!("skipping: no GPU");
+        return;
+    };
+    let (w, h) = (320u32, 180u32);
+    let n = (w * h) as usize;
+    let ramp: Vec<f32> = (0..n).flat_map(|i| {
+        let v = i as f32 / n as f32 * 2.5;
+        [v, v * 0.97 + 0.001, v * 1.03, 1.0]
+    }).collect();
+    let mut failures = Vec::new();
+    for levels in [36.357014f32, 39.28101, 45.86, 75.831024] {
+        let fx = [BuiltinEffect::Posterize { levels }];
+        let (worst, mean) = diff(&apply_effects(&fx, ramp.clone(), w, h), &gpu.apply_effects(&fx, &ramp, w, h));
+        eprintln!("Posterize {levels:10} CPU vs GPU worst {worst:3} mean {mean:6.3}");
+        if worst > 1 {
+            failures.push(format!("Posterize at {levels} levels: CPU and GPU differ by {worst} levels"));
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");

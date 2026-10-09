@@ -12,12 +12,11 @@ impl KlippApp {
         // applied (M3 step 2): the socket's edits reach here without passing
         // the dispatch boundary.
         self.state.close_path_drag_before_edit();
-        self.state.active_history_mut().begin_batch();
         for e in edits {
             self.apply_edit_forward(e);
-            self.state.push_history(e.clone());
         }
-        self.state.active_history_mut().end_batch_as(label);
+        // One step, or the open batch's edits (a socket or agent batch).
+        self.state.push_edits_as_one(edits, label);
         self.state.dirty = true;
         self.state.media_usage_cache_dirty = true;
         self.sync_sequence_to_engine();

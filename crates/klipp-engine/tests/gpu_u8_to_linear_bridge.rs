@@ -31,7 +31,7 @@ fn test_pattern(width: u32, height: u32) -> Vec<u8> {
 }
 
 #[test]
-fn u8_to_linear_gpu_matches_cpu_within_epsilon() {
+fn u8_to_linear_gpu_matches_cpu_exactly() {
     // Dedicated context — cargo runs integration tests in parallel
     // and `shared()` caches a single one across tests, which races
     // the descriptor-pool exhaustion on NVIDIA Vulkan.
@@ -71,18 +71,41 @@ fn u8_to_linear_gpu_matches_cpu_within_epsilon() {
 
     assert_eq!(gpu_linear.len(), cpu_linear.len(), "length mismatch");
 
-    // The sRGB transfer uses `pow`, which differs by an LSB or two
-    // between CPU's f64 intermediate and GPU's f32. One LSB in a
-    // 10-bit perceptual space is ≈ 0.001 in [0, 1]; allow ≈ 0.003
-    // to cover the pow() round-off across the ramp.
-    let eps = 0.003_f32;
+    // Bit for bit: the bridge looks each code up in the CPU's own decode
+    // of it, where the shader's `pow` was only near it. A frame seeded on
+    // the GPU then meets a step in the chain (a Posterize band edge on a
+    // code) exactly as the CPU does.
     for (i, (g, c)) in gpu_linear.iter().zip(cpu_linear.iter()).enumerate() {
-        let delta = (g - c).abs();
-        assert!(
-            delta < eps,
-            "pixel {i}: gpu={g:.6} cpu={c:.6} delta={delta:.6} exceeds {eps}"
-        );
+        assert!(g.to_bits() == c.to_bits(), "value {i}: gpu={g:e} cpu={c:e}, not the CPU's to the bit");
     }
+}
+
+/// Every 8-bit code, in each channel, decodes on the GPU to the CPU's
+/// value exactly.
+#[test]
+fn every_code_decodes_as_on_the_cpu() {
+    let Some(ctx) = GpuContext::new() else {
+        eprintln!("skipping: no usable GpuContext");
+        return;
+    };
+    let Some(mut pipeline) = GpuEffectsPipeline::with_context(&ctx) else {
+        eprintln!("skipping: GpuEffectsPipeline unavailable");
+        return;
+    };
+    let bytes: Vec<u8> = (0..=255u8).flat_map(|c| [c, 255 - c, c.wrapping_mul(7), c]).collect();
+    let cpu_linear = u8_rgba_to_linear(&bytes);
+    let input_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("u8_bridge_codes"),
+        size: bytes.len() as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    ctx.queue.write_buffer(&input_buf, 0, &bytes);
+    ctx.device.poll(wgpu::Maintain::Poll);
+    assert!(pipeline.bridge_u8_to_linear_into_chain(&input_buf, 256, 1), "bridge call must succeed");
+    let gpu_linear = pipeline.download_chain_output_linear(true, 256);
+    let off: Vec<_> = gpu_linear.iter().zip(&cpu_linear).enumerate().filter(|(_, (g, c))| g.to_bits() != c.to_bits()).map(|(i, (g, c))| (i, *g, *c)).collect();
+    assert!(off.is_empty(), "codes the GPU decodes otherwise: {:?}", &off[..off.len().min(8)]);
 }
 
 #[test]

@@ -236,6 +236,11 @@ pub fn param_row(ui: &mut egui::Ui, ctx: &mut RowCtx, input: RowInput) -> RowOut
     let RowInput { desc, pres, stored, shown_at_t, keys } = input;
     match pres.widget {
         Widget::Hidden => RowOutcome::Nothing,
+        // Shown to the presentation's decimals, never edited here (#1421).
+        Widget::Readout => {
+            let shown = number(stored).map(|v| serde_json::Value::String(format!("{v:.*}", pres.decimals as usize))).unwrap_or_else(|| stored.clone());
+            read_only(ui, desc.key, pres.label.unwrap_or(desc.label), &shown, "Measured by the node's tool")
+        }
         Widget::Custom(id) if ctx.custom.as_mut().is_some_and(|hook| hook(ui, id, desc, ctx.cmds)) => RowOutcome::Nothing,
         Widget::WheelPart(_) if ctx.custom.as_mut().is_some_and(|hook| hook(ui, "wheels", desc, ctx.cmds)) => RowOutcome::Nothing,
         Widget::Custom(id) => match custom::editor(id) {

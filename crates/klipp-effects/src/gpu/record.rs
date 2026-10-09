@@ -148,6 +148,21 @@ impl GpuEffectsPipeline {
         if let Some(outcome) = self.record_multi_pass(effect, src, dst, scratch, width, height, rec) {
             return outcome;
         }
+        // Posterize reads its ladder's edges from its slot's table, the
+        // ones the CPU finds bands against (#1443).
+        if let BuiltinEffect::Posterize { levels } = effect {
+            // The ladder is made and uploaded only when the slot doesn't
+            // hold this one already (`claim_with_table`, keyed by levels).
+            let levels = crate::cpu::PosterizeLadder::clamped(*levels);
+            let params = PosterizeParams { width, height, levels, above_count: crate::cpu::PosterizeLadder::above_count(levels) };
+            let table = || {
+                let ladder = crate::cpu::PosterizeLadder::new(levels);
+                ladder.inside.iter().chain(&ladder.above).copied().collect()
+            };
+            let Some(slot) = rec.slots.claim_with_table(q, &params, u64::from(levels.to_bits()), table) else { return Recorded::OutOfSlots };
+            self.record_with_table(rec, &self.posterize_pipeline, src, dst, slot, width, height);
+            return Recorded::Done;
+        }
         // One pass each: its pipeline, and its parameters in a slot of
         // their own, claimed before anything is recorded.
         let (pipeline, slot) = match effect {
@@ -164,11 +179,6 @@ impl GpuEffectsPipeline {
                 }
                 let slot = rec.slots.claim(q, &InvertParams { width, height, mix: *mix, _pad: 0 });
                 (&self.invert_pipeline, slot)
-            }
-            BuiltinEffect::Posterize { levels } => {
-                // At least two, as on the CPU (#1020).
-                let slot = rec.slots.claim(q, &PosterizeParams { width, height, levels: levels.max(2.0), _pad: 0 });
-                (&self.posterize_pipeline, slot)
             }
             BuiltinEffect::ChannelMixer {
                 red_red, red_green, red_blue,
@@ -981,6 +991,32 @@ impl GpuEffectsPipeline {
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: rec.slots.buffer(slot).as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: side.as_entire_binding() },
+            ],
+        });
+        Self::record_compute_dispatch(rec.encoder, pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
+    }
+
+    /// One pass of a pipeline that reads its slot's table after its params
+    /// (input, output, params, table).
+    #[allow(clippy::too_many_arguments)]
+    fn record_with_table(
+        &self,
+        rec: &mut EffectRecording<'_>,
+        pipeline: &wgpu::ComputePipeline,
+        input: &wgpu::Buffer,
+        output: &wgpu::Buffer,
+        slot: usize,
+        width: u32,
+        height: u32,
+    ) {
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("recorded_effect_table"),
+            layout: &self.huesat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: rec.slots.buffer(slot).as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Buffer(rec.slots.table(slot)) },
             ],
         });
         Self::record_compute_dispatch(rec.encoder, pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));

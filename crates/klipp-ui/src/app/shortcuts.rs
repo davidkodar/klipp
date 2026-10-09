@@ -252,8 +252,8 @@ impl KlippApp {
             let mut keyframe_deleted = false;
             if kb.is_action_pressed("delete_clip", i) {
                 if let Some(sk) = self.state.selected_keyframe.take() {
-                    if let Some(cmd) = remove_selected_keyframe(&self.state, &sk) {
-                        cmds.push(cmd);
+                    if let Some(remove) = remove_selected_keyframe(&self.state, &sk) {
+                        cmds.extend(remove);
                         keyframe_deleted = true;
                     }
                 }
@@ -1051,98 +1051,16 @@ impl KlippApp {
             }
             // Alt+Left — Navigate to previous keyframe
             if kb.is_action_pressed("prev_keyframe", i) {
-                if let Some(clip_id) = self.state.selected_clip {
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    let clip_and_kind = seq.tracks.iter().find_map(|t| {
-                        t.clips.iter().find(|c| c.id == clip_id).map(|c| (c, t.kind))
-                    });
-                    if let Some((clip, track_kind)) = clip_and_kind {
-                        let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
-                        let empty_kfs: Vec<klipp_core::Keyframe> = Vec::new();
-                        let keyframes: &[klipp_core::Keyframe] = if track_kind == klipp_timeline::TrackKind::Audio {
-                            match &self.state.rubber_band_param {
-                                crate::state::RubberBandParam::ClipParam(param) => match param {
-                                    klipp_core::AudioParam::Volume => &clip.volume_keyframes,
-                                    klipp_core::AudioParam::Pan => &clip.pan_keyframes,
-                                    klipp_core::AudioParam::Gain => &clip.gain_keyframes,
-                                },
-                                crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
-                                    clip.audio_effect_keyframes
-                                        .get(&format!("{effect_index}:{param_name}"))
-                                        .unwrap_or(&empty_kfs)
-                                }
-                            }
-                        } else {
-                            match self.state.video_rubber_band_param {
-                                klipp_core::VideoParam::Opacity => clip.opacity_keyframes(),
-                                klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes(),
-                                klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes(),
-                                klipp_core::VideoParam::Scale => clip.transform_scale_keyframes(),
-                                klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes(),
-                                klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes(),
-                                klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes(),
-                                klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
-                                klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
-                            }
-                        };
-                        // Find previous keyframe (strictly before current time with tolerance)
-                        let prev = crate::inspector::keyframe_selection::state(keyframes, clip_time_secs,
-                            crate::inspector::keyframe_selection::frame_tolerance(seq)).prev_keyframe_time;
-                        if let Some(time) = prev {
-                            let abs_secs = clip.timeline_in.to_secs_f64() + time;
-                            let rate = self.state.playhead.rate;
-                            self.state.playhead = klipp_core::Timecode::from_secs_f64(abs_secs, rate);
-                            let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
-                        }
-                    }
+                if let Some(to) = keyframe_jump(&self.state, false) {
+                    self.state.playhead = to;
+                    let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
                 }
             }
             // Alt+Right — Navigate to next keyframe
             if kb.is_action_pressed("next_keyframe", i) {
-                if let Some(clip_id) = self.state.selected_clip {
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    let clip_and_kind = seq.tracks.iter().find_map(|t| {
-                        t.clips.iter().find(|c| c.id == clip_id).map(|c| (c, t.kind))
-                    });
-                    if let Some((clip, track_kind)) = clip_and_kind {
-                        let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
-                        let empty_kfs: Vec<klipp_core::Keyframe> = Vec::new();
-                        let keyframes: &[klipp_core::Keyframe] = if track_kind == klipp_timeline::TrackKind::Audio {
-                            match &self.state.rubber_band_param {
-                                crate::state::RubberBandParam::ClipParam(param) => match param {
-                                    klipp_core::AudioParam::Volume => &clip.volume_keyframes,
-                                    klipp_core::AudioParam::Pan => &clip.pan_keyframes,
-                                    klipp_core::AudioParam::Gain => &clip.gain_keyframes,
-                                },
-                                crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
-                                    clip.audio_effect_keyframes
-                                        .get(&format!("{effect_index}:{param_name}"))
-                                        .unwrap_or(&empty_kfs)
-                                }
-                            }
-                        } else {
-                            match self.state.video_rubber_band_param {
-                                klipp_core::VideoParam::Opacity => clip.opacity_keyframes(),
-                                klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes(),
-                                klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes(),
-                                klipp_core::VideoParam::Scale => clip.transform_scale_keyframes(),
-                                klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes(),
-                                klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes(),
-                                klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes(),
-                                klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
-                                klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
-                            }
-                        };
-                        // Find next keyframe (strictly after current time with tolerance)
-                        let next = crate::inspector::keyframe_selection::state(keyframes, clip_time_secs,
-                            crate::inspector::keyframe_selection::frame_tolerance(seq)).next_keyframe_time;
-                        if let Some(time) = next {
-                            let abs_secs = clip.timeline_in.to_secs_f64() + time;
-                            let rate = self.state.playhead.rate;
-                            self.state.playhead = klipp_core::Timecode::from_secs_f64(abs_secs, rate);
-                            let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
-                        }
-                    }
+                if let Some(to) = keyframe_jump(&self.state, true) {
+                    self.state.playhead = to;
+                    let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
                 }
             }
             // In the source viewer, marks go on the pool clip: M a note at
@@ -1285,11 +1203,54 @@ impl KlippApp {
     }
 }
 
+/// Where Alt+← (`forward` false) or Alt+→ takes the playhead: the previous
+/// or next key, by the inspector rows' rule (`keyframe_selection::state`),
+/// of the track being looked at on the selected clip. That is the curve
+/// editor's selected effect track while it shows one on that clip (#1401),
+/// else the clip's rubber-band parameter. `None` when there's no key that
+/// way.
+pub(super) fn keyframe_jump(state: &crate::state::AppState, forward: bool) -> Option<klipp_core::Timecode> {
+    let clip_id = state.selected_clip?;
+    let seq = &state.sequences[state.active_sequence_idx];
+    let (clip, track_kind) = seq.tracks.iter().find_map(|t| t.clips.iter().find(|c| c.id == clip_id).map(|c| (c, t.kind)))?;
+    let empty: Vec<klipp_core::Keyframe> = Vec::new();
+    let node_keys: Vec<klipp_core::Keyframe>;
+    let keyframes: &[klipp_core::Keyframe] = match &state.curve_editor_track {
+        Some((on, path, key)) if *on == clip_id && state.show_curve_editor => {
+            node_keys = clip.node_key_state(path, key).map(|s| s.keys).unwrap_or_default();
+            &node_keys
+        }
+        _ if track_kind == klipp_timeline::TrackKind::Audio => match &state.rubber_band_param {
+            crate::state::RubberBandParam::ClipParam(param) => match param {
+                klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+            },
+            crate::state::RubberBandParam::EffectParam { effect_index, param_name } => clip.audio_effect_keyframes.get(&format!("{effect_index}:{param_name}")).unwrap_or(&empty),
+        },
+        _ => match state.video_rubber_band_param {
+            klipp_core::VideoParam::Opacity => clip.opacity_keyframes(),
+            klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes(),
+            klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes(),
+            klipp_core::VideoParam::Scale => clip.transform_scale_keyframes(),
+            klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes(),
+            klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes(),
+            klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes(),
+            klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
+            klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
+        },
+    };
+    let clip_time_secs = state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
+    let around = crate::inspector::keyframe_selection::state(keyframes, clip_time_secs, crate::inspector::keyframe_selection::frame_tolerance(seq));
+    let time = if forward { around.next_keyframe_time } else { around.prev_keyframe_time }?;
+    Some(klipp_core::Timecode::from_secs_f64(clip.timeline_in.to_secs_f64() + time, state.playhead.rate))
+}
+
 /// The command that takes the selected keyframe `sk` off its track, as
 /// Delete does: by the time of its key, which the track holds at its
 /// index. `None` when the clip or the key is gone. One place, so the
-/// shortcut and the curve editor's parity apply it alike.
-pub(super) fn remove_selected_keyframe(state: &crate::state::AppState, sk: &crate::state::SelectedKeyframe) -> Option<AppCommand> {
+/// shortcut and the curve editor's family apply it alike.
+pub(super) fn remove_selected_keyframe(state: &crate::state::AppState, sk: &crate::state::SelectedKeyframe) -> Option<Vec<AppCommand>> {
     let seq = &state.sequences[state.active_sequence_idx];
     let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == sk.clip_id)?;
     let kf_time = match &sk.param_kind {
@@ -1326,7 +1287,7 @@ pub(super) fn remove_selected_keyframe(state: &crate::state::AppState, sk: &crat
         }
     };
     let time_secs = kf_time?;
-    Some(match &sk.param_kind {
+    let cmd = match &sk.param_kind {
         crate::state::KeyframeParamKind::Title { object_id, param } => param.remove(sk.clip_id, *object_id, time_secs),
         crate::state::KeyframeParamKind::Audio(param) => {
             AppCommand::RemoveAudioKeyframe { clip_id: sk.clip_id, param: *param, time_secs }
@@ -1345,5 +1306,8 @@ pub(super) fn remove_selected_keyframe(state: &crate::state::AppState, sk: &crat
         crate::state::KeyframeParamKind::Node { path, key } => {
             AppCommand::RemoveKeyAt { addr: path.clone(), key: key.clone(), time_secs }
         }
-    })
+    };
+    // A placed kind's key (a Temporal Denoise's) goes through the clip's
+    // effect list, as its card takes one off (#1419).
+    Some(crate::inspector::stack_view::route_placed(clip, vec![cmd])).filter(|c| !c.is_empty())
 }

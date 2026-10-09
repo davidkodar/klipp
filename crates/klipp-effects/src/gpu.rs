@@ -335,6 +335,8 @@ pub struct GpuEffectsPipeline {
     /// [`Self::bridge_u8_fit_to_linear_into_chain`]: the same decode, from
     /// a frame of another size, fitted into the chain's.
     bridge_u8_fit_pipeline: wgpu::ComputePipeline,
+    /// The 8-bit bridges' decode table (`srgb8_to_linear`), alpha's after.
+    srgb8_lut: wgpu::Buffer,
     /// The same bridge at 16 bits a sample, with the source primaries
     /// folded in: sRGB-encoded RGBA64 → linear working-space f32. This
     /// is how a software-decoded export frame reaches the chain, since
@@ -922,7 +924,6 @@ impl GpuEffectsPipeline {
         let anamorphic_streak_pipeline = create_pipeline(&device, &pipeline_layout, "anamorphic_streak", SHADER_ANAMORPHIC_STREAK);
         let film_halation_blend_pipeline = create_pipeline(&device, &transition_pl, "film_halation_blend", SHADER_FILM_HALATION);
         let invert_pipeline = create_pipeline(&device, &pipeline_layout, "invert", SHADER_INVERT);
-        let posterize_pipeline = create_pipeline(&device, &pipeline_layout, "posterize", SHADER_POSTERIZE);
         let mosaic_pipeline = create_pipeline(&device, &pipeline_layout, "mosaic", SHADER_MOSAIC);
         let edge_detect_pipeline = create_pipeline(&device, &pipeline_layout, "edge_detect", SHADER_EDGE_DETECT);
         let channel_mixer_pipeline = create_pipeline(&device, &pipeline_layout, "channel_mixer", SHADER_CHANNEL_MIXER);
@@ -1127,6 +1128,8 @@ impl GpuEffectsPipeline {
         });
         let huesat_pipeline = create_pipeline(&device, &huesat_pl, "huesat", SHADER_HUESAT);
         let lut3d_pipeline = create_pipeline(&device, &huesat_pl, "lut3d", SHADER_LUT3D);
+        // Posterize reads its ladder's band edges from a table (#1443).
+        let posterize_pipeline = create_pipeline(&device, &huesat_pl, "posterize", SHADER_POSTERIZE);
         let equalize_pipeline = create_pipeline(&device, &huesat_pl, "equalize", SHADER_EQUALIZE);
         let rsc_pipeline = create_pipeline(&device, &huesat_pl, "rolling_shutter", SHADER_ROLLING_SHUTTER);
         let stabilization_pipeline = create_pipeline(&device, &huesat_pl, "stabilization", SHADER_STABILIZATION);
@@ -1191,14 +1194,28 @@ impl GpuEffectsPipeline {
         // Output buffer is 4× smaller than input; readback dominates
         // wall time on this op so the smaller output is the win.
         let bridge_u8_pipeline = create_pipeline(&device, &pipeline_layout, "bridge_u8", SHADER_LINEAR_TO_U8);
-        // Same bind-group layout (3-binding: input, output, params),
-        // shader flipped to read u8 and write linear.
+        // The 4-binding layout (input, output, params, then the 8-bit
+        // codes' decode table), shader flipped to read u8 and write linear.
         let bridge_u8_to_linear_pipeline = create_pipeline(
-            &device, &pipeline_layout, "bridge_u8_to_linear", SHADER_U8_TO_LINEAR,
+            &device, &huesat_pl, "bridge_u8_to_linear", SHADER_U8_TO_LINEAR,
         );
         let bridge_u8_fit_pipeline = create_pipeline(
-            &device, &pipeline_layout, "bridge_u8_fit_to_linear", SHADER_U8_FIT_TO_LINEAR,
+            &device, &huesat_pl, "bridge_u8_fit_to_linear", SHADER_U8_FIT_TO_LINEAR,
         );
+        // Each 8-bit code's linear value, decoded once here as every CPU
+        // route decodes it (`srgb8_to_linear`), so a
+        // frame put on the GPU as 8-bit codes is the CPU's bit for bit.
+        // The shaders' `pow` only approximates it, and a step in the chain
+        // (Posterize's band edge, at a code that sits on one) then went
+        // one way on the GPU and the other on the CPU.
+        let srgb8_lut = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("srgb8_to_linear"),
+            size: 512 * 4,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: true,
+        });
+        srgb8_lut.slice(..).get_mapped_range_mut().copy_from_slice(bytemuck::cast_slice(&srgb8_to_linear()));
+        srgb8_lut.unmap();
         // Same again at 16 bits a sample, for the export's software-decoded
         // frames — two u32 of input per pixel instead of one.
         let bridge_rgba64_to_linear_pipeline = create_pipeline(
@@ -1535,6 +1552,7 @@ impl GpuEffectsPipeline {
             bridge_u8_pipeline,
             bridge_u8_to_linear_pipeline,
             bridge_u8_fit_pipeline,
+            srgb8_lut,
             bridge_rgba64_to_linear_pipeline,
             linear_to_yuv420_pipeline,
             aces_rec709_pipeline,
@@ -2415,7 +2433,7 @@ impl GpuEffectsPipeline {
 
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bridge_u8_to_linear_bg"),
-            layout: &self.bind_group_layout,
+            layout: &self.huesat_bgl,
             entries: &[
                 // binding 0: input u8 buffer (external, read-only)
                 wgpu::BindGroupEntry { binding: 0, resource: input_u8.as_entire_binding() },
@@ -2423,6 +2441,8 @@ impl GpuEffectsPipeline {
                 wgpu::BindGroupEntry { binding: 1, resource: buf_a.as_entire_binding() },
                 // binding 2: params uniform
                 wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
+                // binding 3: the codes' decode table
+                wgpu::BindGroupEntry { binding: 3, resource: self.srgb8_lut.as_entire_binding() },
             ],
         });
 
@@ -2471,11 +2491,12 @@ impl GpuEffectsPipeline {
         self.write_params(&BridgeU8FitParams { src_w, src_h, out_w: width, out_h: height, dst_w, dst_h, x_off, y_off });
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bridge_u8_fit_bg"),
-            layout: &self.bind_group_layout,
+            layout: &self.huesat_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input_u8.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.srgb8_lut.as_entire_binding() },
             ],
         });
         let workgroups = (pixel_count as u32).div_ceil(WORKGROUP_SIZE);
@@ -7944,8 +7965,10 @@ struct InvertParams {
 struct PosterizeParams {
     width: u32,
     height: u32,
+    /// Clamped to [2, 256] (`PosterizeLadder`).
     levels: f32,
-    _pad: u32,
+    /// How many of the table's above-white edges are edges.
+    above_count: u32,
 }
 
 #[repr(C)]
@@ -10103,6 +10126,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
+/// Each 8-bit sRGB code's linear value, as every CPU route decodes one
+/// (this crate's `srgb_u8_to_linear_f32_rgba` and
+/// `klipp_color::transfer::srgb_to_linear` of the code over 255, the same
+/// arithmetic): what the 8-bit bridges look a code up in, so a frame put
+/// on the GPU is the CPU's to the bit.
+///
+/// Then each code over 255, alpha's value, as the CPU divides it: the
+/// shader's division is good only to 2.5 ULP.
+fn srgb8_to_linear() -> [f32; 512] {
+    std::array::from_fn(|i| if i < 256 { srgb_to_linear_scalar(i as f32 / 255.0) } else { (i - 256) as f32 / 255.0 })
+}
+
 const SHADER_U8_TO_LINEAR: &str = concat!(
     shader_pixel_storage_wgsl!(),
     "
@@ -10110,27 +10145,18 @@ struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32 }
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
-
-fn srgb_to_linear_c(c: f32) -> f32 {
-    if (c <= 0.04045) { return c / 12.92; }
-    return pow((c + 0.055) / 1.055, 2.4);
-}
+// Each 8-bit code's linear value, as the CPU decodes it, then each code
+// over 255, alpha's value, as the CPU divides it (`srgb8_to_linear`).
+@group(0) @binding(3) var<storage, read> srgb8: array<f32>;
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let packed = input[idx];
-    let r_u = (packed >> 0u) & 0xFFu;
-    let g_u = (packed >> 8u) & 0xFFu;
-    let b_u = (packed >> 16u) & 0xFFu;
-    let a_u = (packed >> 24u) & 0xFFu;
-    let r = f32(r_u) / 255.0;
-    let g = f32(g_u) / 255.0;
-    let b = f32(b_u) / 255.0;
-    let a = f32(a_u) / 255.0;
-    // sRGB transfer on RGB; alpha stays linear per sRGB spec.
-    output[idx] = pack(vec4<f32>(srgb_to_linear_c(r), srgb_to_linear_c(g), srgb_to_linear_c(b), a));
+    let a = srgb8[256u + ((packed >> 24u) & 0xFFu)];
+    // sRGB transfer on RGB, looked up: alpha stays linear per sRGB spec.
+    output[idx] = pack(vec4<f32>(srgb8[packed & 0xFFu], srgb8[(packed >> 8u) & 0xFFu], srgb8[(packed >> 16u) & 0xFFu], a));
 }
 "
 );
@@ -10150,19 +10176,14 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
-
-fn srgb_to_linear_c(c: f32) -> f32 {
-    if (c <= 0.04045) { return c / 12.92; }
-    return pow((c + 0.055) / 1.055, 2.4);
-}
+// Each 8-bit code's linear value, as the CPU decodes it, then each code
+// over 255, alpha's value, as the CPU divides it (`srgb8_to_linear`).
+@group(0) @binding(3) var<storage, read> srgb8: array<f32>;
 
 fn tap(x: u32, y: u32) -> vec4<f32> {
     let packed = input[y * params.src_w + x];
-    let r = f32((packed >> 0u) & 0xFFu) / 255.0;
-    let g = f32((packed >> 8u) & 0xFFu) / 255.0;
-    let b = f32((packed >> 16u) & 0xFFu) / 255.0;
-    let a = f32((packed >> 24u) & 0xFFu) / 255.0;
-    return vec4<f32>(srgb_to_linear_c(r), srgb_to_linear_c(g), srgb_to_linear_c(b), a);
+    let a = srgb8[256u + ((packed >> 24u) & 0xFFu)];
+    return vec4<f32>(srgb8[packed & 0xFFu], srgb8[(packed >> 8u) & 0xFFu], srgb8[(packed >> 16u) & 0xFFu], a);
 }
 
 @compute @workgroup_size(256)
@@ -14032,29 +14053,52 @@ struct Params {
     width: u32,
     height: u32,
     levels: f32,
-    _pad: u32,
+    above_count: u32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
+// The ladder's band edges as linear values, ascending, padded with the
+// largest float (`PosterizeLadder`): 256 below white, then 256 above it.
+@group(0) @binding(3) var<storage, read> edges: array<f32>;
 ",
     shader_linear_helpers_wgsl!(),
     "
+// How many of the 256 edges from `base` are at or below `v`, as the CPU's
+// `PosterizeLadder::count` counts them.
+fn count_at_or_below(base: u32, v: f32) -> u32 {
+    var lo = 0u;
+    var hi = 256u;
+    loop {
+        if lo >= hi { break; }
+        let mid = (lo + hi) / 2u;
+        if edges[base + mid] <= v { lo = mid + 1u; } else { hi = mid; }
+    }
+    return lo;
+}
+
+// The band `v` falls in, found against the edges the CPU finds it against
+// (bit for bit the same band on both routes, #1443), then its value.
+// Bands are even on the display scale; above white the ladder carries on
+// at the same spacing, instead of every highlight landing on white.
+fn band(v: f32) -> f32 {
+    let div = params.levels - 1.0;
+    let m = f32(count_at_or_below(0u, v));
+    var j = count_at_or_below(256u, v);
+    if j == params.above_count && params.above_count == 256u {
+        // Past the table: the step from the encoding, never below it.
+        j = max(j, u32(max(floor((linear_to_srgb_component(v) - 1.0) * params.levels), 0.0)));
+    }
+    return srgb_to_linear_component(min(m, div) / div + f32(j) / div);
+}
+
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
-    let lvl = params.levels;
-    let div = lvl - 1.0;
-    let e = enc3(p.xyz);
-    let banded = min(floor(clamp(e, vec3<f32>(0.0), vec3<f32>(1.0)) * lvl), vec3<f32>(div)) / div;
-    // Above white the ladder carries on at the same spacing, instead of
-    // every highlight landing on white.
-    let over = floor(max(e - vec3<f32>(1.0), vec3<f32>(0.0)) * lvl) / div;
-    let out = banded + over;
-    output[idx] = pack(vec4<f32>(dec3(out), p.w));
+    output[idx] = pack(vec4<f32>(band(p.x), band(p.y), band(p.z), p.w));
 }
 "
 );

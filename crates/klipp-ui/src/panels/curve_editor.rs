@@ -207,6 +207,26 @@ impl CurveEditorPanel {
         state: &mut AppState,
         theme: &KlippTheme,
     ) -> Vec<AppCommand> {
+        let cmds = self.show_inner(ui, state, theme);
+        // The effect track shown, for Previous / Next keyframe (#1401).
+        state.curve_editor_track = match (&self.param, state.selected_clip) {
+            (CurveParam::Node { path, key, .. }, Some(clip)) => Some((clip, path.clone(), key.clone())),
+            _ => None,
+        };
+        // A placed kind's track (a Temporal Denoise's) is edited through
+        // the clip's effect list, as its card edits it (#1419).
+        match state.selected_clip.and_then(|id| state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == id)) {
+            Some(clip) => crate::inspector::stack_view::route_placed(clip, cmds),
+            None => cmds,
+        }
+    }
+
+    fn show_inner(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        theme: &KlippTheme,
+    ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         if self.selected_clip != state.selected_clip {
             self.selected_clip = state.selected_clip;

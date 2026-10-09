@@ -55,7 +55,8 @@ fn numeric(ty: &NodeType, desc: &ParamDesc) -> bool {
     matches!(ty.presentation(desc).widget, Widget::Scrub | Widget::Slider | Widget::Gradient(_) | Widget::HueRainbow | Widget::Vec2)
         // The warper's sectors and the wheels' saturation and brightness
         // cells are the wheels family's; Colour Match's values are readouts
-        // (#1421).
+        // (#1421), held beside the tool that writes them (the workflows
+        // family).
         && !matches!(ty.kind, NodeKind::ColorWarper | NodeKind::WheelSatBri | NodeKind::ColorMatch)
         && !(desc.key.ends_with("_sat") || desc.key.ends_with("_bri"))
         // The log wheels' ranges sit under the wheels (`wheel_shape_sliders`).

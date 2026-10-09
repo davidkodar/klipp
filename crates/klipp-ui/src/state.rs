@@ -2078,6 +2078,11 @@ pub struct AppState {
     /// more step, not one per tick. Forgotten as soon as the gesture can't
     /// be going on (`forget_stale_path_drag`).
     pub resumable_path_drag: Option<(String, Option<ClipId>)>,
+    /// The effect track the keyframe curve editor shows, on which clip,
+    /// while it is drawn and shows one: what Previous / Next keyframe walk
+    /// then (#1401). Set by the panel each frame it's drawn, cleared when
+    /// it isn't.
+    pub curve_editor_track: Option<(ClipId, klipp_graph_format::path::NodePath, klipp_graph_format::ParamKey)>,
     /// The id a clip's Corrector takes when the tabbed page's first edit
     /// makes it (M3 step 19): reserved, for the clip selected, while its
     /// grade has no enabled Corrector, so the rows and editors drawn before
@@ -4147,6 +4152,7 @@ impl Default for AppState {
             before_after_active: false,
             stabilization_compare_active: false,
             resumable_path_drag: None,
+            curve_editor_track: None,
             pending_corrector: None,
             root_grade_start: None,
             selected_node_addr: None,
@@ -4623,6 +4629,21 @@ impl AppState {
         self.active_history_mut().push(HistoryEntry { command });
         self.history_ops_since_save = self.history_ops_since_save.saturating_add(1);
     }
+    /// `edits`, already applied, recorded as one undo step named `label`,
+    /// or, inside a batch already open (an agent's, a socket batch), as
+    /// one more edit of that batch, which then names the step. Opening a
+    /// batch of its own there threw away what the open one had collected,
+    /// as the path edits' recorder did (#1446). Each edit counts towards
+    /// autosave, as when they were pushed one by one.
+    pub fn push_edits_as_one(&mut self, edits: &[EditCommand], label: &str) {
+        let edit = match edits {
+            [] => return,
+            [one] => one.clone(),
+            many => EditCommand::Batch(many.to_vec()),
+        };
+        self.push_history(EditCommand::Named { label: label.to_string(), edit: Box::new(edit) });
+        self.history_ops_since_save = self.history_ops_since_save.saturating_add(edits.len() as u64 - 1);
+    }
     /// Reset the project-level autosave counter. Call from the
     /// project-save path.
     pub fn reset_ops_since_save(&mut self) {
@@ -4708,6 +4729,30 @@ mod tests {
     use super::{
         borrow_released_by_hand, browser_borrow_for, BrowserBorrow, Workspace,
     };
+
+    /// Edits recorded as one inside a batch already open (a socket or an
+    /// agent batch) join it: the batch keeps its earlier edit and is one
+    /// step. A batch opened of their own threw that edit away, the class
+    /// of #1446's path-edit bug. With no batch open they are one step,
+    /// named.
+    #[test]
+    fn edits_as_one_inside_an_open_batch_join_it() {
+        use crate::history::EditCommand;
+        let mark = |l: &str| EditCommand::Named { label: l.into(), edit: Box::new(EditCommand::Batch(vec![])) };
+        let mut s = super::AppState::default();
+        s.active_history_mut().begin_batch();
+        s.push_history(mark("first"));
+        s.push_edits_as_one(&[mark("second"), mark("third")], "Paste Attributes");
+        s.active_history_mut().end_batch();
+        assert_eq!(s.active_history().undo_count(), 1, "one step");
+        let entry = s.active_history_mut().undo().expect("the batch's step");
+        let EditCommand::Batch(inner) = &entry.command else { panic!("not the open batch's step: {:?}", entry.command) };
+        assert_eq!(inner.len(), 2, "the batch kept its first edit: {inner:?}");
+        let mut alone = super::AppState::default();
+        alone.push_edits_as_one(&[mark("a"), mark("b")], "Paste Attributes");
+        assert_eq!(alone.active_history().undo_count(), 1);
+        assert_eq!(alone.active_history().undo_label(), Some("Paste Attributes"));
+    }
 
     /// Edit is where you drag effects from, so it is the one workspace
     /// that keeps the browser.

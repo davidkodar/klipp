@@ -305,7 +305,9 @@ impl Clip {
     }
 
     /// Every animated parameter of the clip's effects, by node path and
-    /// key, in the order the picture runs them, with each effect's tag.
+    /// key, in the order the picture runs them, with each effect's tag: a
+    /// Temporal Denoise's too, which the clip places at the head of its
+    /// chain as a node of its own type (#1419).
     pub fn animated_effect_keys(&self) -> Vec<(klipp_graph_format::path::NodePath, klipp_graph_format::ParamKey, String)> {
         use klipp_graph_format::path::{NodePath, Root};
         let Ok(lifted) = self.picture_v2() else { return Vec::new() };
@@ -323,7 +325,8 @@ impl Clip {
         spine.reverse();
         let mut out = Vec::new();
         for id in spine {
-            let Some(n) = graph.nodes.iter().find(|n| n.id == id && n.origin.is_none() && n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT) else { continue };
+            let effect = |n: &&klipp_graph_format::Node| matches!(n.type_id.as_str(), klipp_graph_format::types::LEGACY_EFFECT | klipp_graph_format::lifted::types::TEMPORAL_DENOISE);
+            let Some(n) = graph.nodes.iter().find(|n| n.id == id && n.origin.is_none() && effect(n)) else { continue };
             let Some(tag) = klipp_graph_lift::effect_params::tag(n) else { continue };
             for (key, anim) in &n.anim {
                 if !anim.keys.is_empty() {
