@@ -3322,6 +3322,17 @@ dependencies = [
 [[package]]
 name = "klipp-readiness"
 version = "0.1.0"
+dependencies = [
+ "klipp-convert",
+ "klipp-core",
+ "klipp-effects",
+ "klipp-graph-format",
+ "klipp-media",
+ "klipp-nodes",
+ "klipp-project",
+ "klipp-timeline",
+ "serde_json",
+]
 
 [[package]]
 name = "klipp-render"

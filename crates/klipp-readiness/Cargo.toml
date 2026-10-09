@@ -15,6 +15,16 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
+# The Format family's cases convert real projects (M4 step F).
+klipp-convert = { path = "../klipp-convert" }
+klipp-core = { path = "../klipp-core" }
+klipp-effects = { path = "../klipp-effects" }
+klipp-graph-format = { workspace = true }
+klipp-media = { path = "../klipp-media" }
+klipp-nodes = { path = "../klipp-nodes" }
+klipp-project = { path = "../klipp-project" }
+klipp-timeline = { path = "../klipp-timeline" }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true
