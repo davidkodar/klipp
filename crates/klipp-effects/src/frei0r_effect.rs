@@ -3,17 +3,16 @@
 //!
 //! Owns the process-global runtime cache that maps a frei0r `type_id`
 //! (`"frei0r:{path}:{name}"`) to a single dlopened `Arc<Frei0rPlugin>`.
-//! Per-clip rendering constructs a fresh `Frei0rEffect` against the
-//! cached plugin each frame at the resolution it needs — frei0r
-//! instances are bound to a (width, height) pair, and per-frame
-//! reconstruction is cheap (just `f0r_construct`).
+//! Each frame still renders through a fresh `Frei0rInstanceSet`, so a
+//! plug-in that keeps history never sees it (#1468); instances kept
+//! across frames arrive with the frei0r node (M4 step 5).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use klipp_frei0r::ffi::F0R_MAX_DIM;
-use klipp_frei0r::{temporal, Frei0rPlugin, Frei0rPluginInfo, Frei0rValue};
+use klipp_frei0r::{temporal, Frei0rInstanceSet, Frei0rPlugin, Frei0rPluginInfo, Frei0rValue};
 
 // ─── Process-global runtime cache ─────────────────────────────────────────
 
@@ -91,17 +90,14 @@ fn get_or_load(type_id: &str) -> Option<Arc<Frei0rPlugin>> {
 
 // ─── Public API ───────────────────────────────────────────────────────────
 
-/// Apply one frei0r effect to a frame. Honours the spec's resolution
-/// constraints and the temporal-plugin allowlist:
+/// Apply one frei0r effect to a frame. A size frei0r can't take is
+/// padded and cropped back (`Fallback::Padded`); above 2048 the frame
+/// is tiled, except for a plug-in that keeps frame history.
 ///
-///   - Width / height ≤ 2048 and 8-aligned → straight render.
-///   - Width / height > 2048 with NON-temporal plugin → tiled render
-///     via `klipp_frei0r::tile::render`.
-///   - Width / height > 2048 with TEMPORAL plugin (delay0r etc.)  →
-///     passthrough + `tracing::warn!`. The inspector blocks this case
-///     at apply time so the warn here is purely defensive.
-///   - Plugin not in registry → passthrough + `tracing::warn!`.
-///   - Plugin failed to dlopen → passthrough (cached in `failed`).
+/// A refusal (a temporal plug-in above 2048, an instance the plug-in
+/// won't make) and a plug-in that isn't available still return the
+/// frame unchanged, with a `warn!`, until the frei0r node declines
+/// them visibly (M4 steps 5 and 10).
 ///
 /// Never panics. Callers always get back a frame of the same size.
 pub fn apply(
@@ -116,30 +112,17 @@ pub fn apply(
         tracing::warn!("frei0r: plugin '{type_id}' not available — passthrough");
         return rgba;
     };
-
-    // Reject temporal plugins above the spec cap. Tiling fragments
-    // their per-instance frame history.
-    if (width > F0R_MAX_DIM || height > F0R_MAX_DIM)
-        && temporal::is_temporal(&plugin.info.name)
-    {
-        tracing::warn!(
-            "frei0r: '{}' is temporal and cannot tile above {F0R_MAX_DIM}px — passthrough",
-            plugin.info.name
-        );
-        return rgba;
-    }
-
-    // Snapshot params for the apply_params closure. The closure is
-    // invoked once per (sub-)instance the renderer constructs (one
-    // for the no-tile path, N for the tile path).
-    let params_snapshot: Vec<Frei0rValue> = params.to_vec();
-    let apply_params = move |effect: &klipp_frei0r::Frei0rEffect| {
-        for (i, value) in params_snapshot.iter().enumerate() {
-            effect.set_param(i, value);
+    let rendered = Frei0rInstanceSet::new(plugin, width, height).and_then(|mut set| {
+        set.set_params(params);
+        set.render(time_secs, &rgba)
+    });
+    match rendered {
+        Ok(r) => r.rgba,
+        Err(refusal) => {
+            tracing::warn!("frei0r: {refusal} — passthrough");
+            rgba
         }
-    };
-
-    klipp_frei0r::render(plugin, width, height, time_secs, &rgba, &apply_params)
+    }
 }
 
 /// Look up a plugin's metadata for inspector / project-doctor use.
@@ -160,19 +143,11 @@ pub fn registry_snapshot() -> Vec<Frei0rPluginInfo> {
         .clone()
 }
 
-/// Returns true when the project's frame size cleanly fits into
-/// frei0r's resolution constraints — used by the inspector to decide
-/// whether to surface a "this plugin can't run at this size" toast
-/// before dispatching the apply.
-pub fn supports_resolution(plugin_name: &str, width: u32, height: u32) -> bool {
-    if !width.is_multiple_of(8) || !height.is_multiple_of(8) {
-        return false;
-    }
-    if width > F0R_MAX_DIM || height > F0R_MAX_DIM {
-        // Tiled path covers non-temporal plugins; temporals can't tile.
-        return !temporal::is_temporal(plugin_name);
-    }
-    true
+/// Whether `plugin` can render `width × height` frames: every size but
+/// one above 2048 for a plug-in that keeps frame history, which can't
+/// be tiled. Other sizes frei0r can't take are padded and cropped back.
+pub fn supports_resolution(plugin: &Frei0rPluginInfo, width: u32, height: u32) -> bool {
+    !(temporal::is_temporal(plugin) && (width > F0R_MAX_DIM || height > F0R_MAX_DIM))
 }
 
 /// Test-only: clear the runtime cache. Used by integration tests to
@@ -279,22 +254,30 @@ mod tests {
         assert!(matches!(params[1], Frei0rValue::Bool(_)));
     }
 
+    fn at(path: &str) -> Frei0rPluginInfo {
+        Frei0rPluginInfo { path: PathBuf::from(path), ..fake_info() }
+    }
+
     #[test]
-    fn supports_resolution_enforces_8_alignment() {
-        assert!(supports_resolution("Cartoon", 1920, 1080));
-        assert!(!supports_resolution("Cartoon", 1920, 1081));
-        assert!(!supports_resolution("Cartoon", 1921, 1080));
+    fn supports_resolution_takes_unaligned_sizes() {
+        // Padded and cropped back, not refused (#1469).
+        assert!(supports_resolution(&at("/x/cartoon.so"), 1920, 1080));
+        assert!(supports_resolution(&at("/x/cartoon.so"), 1920, 1081));
+        assert!(supports_resolution(&at("/x/cartoon.so"), 960, 540));
     }
 
     #[test]
     fn supports_resolution_allows_4k_for_non_temporal() {
-        assert!(supports_resolution("Cartoon", 3840, 2160));
+        assert!(supports_resolution(&at("/x/cartoon.so"), 3840, 2160));
     }
 
     #[test]
     fn supports_resolution_blocks_4k_for_temporal() {
-        assert!(!supports_resolution("Delay0r", 3840, 2160));
-        assert!(!supports_resolution("Baltan", 3840, 2160));
+        assert!(!supports_resolution(&at("/usr/lib/frei0r-1/delay0r.so"), 3840, 2160));
+        assert!(!supports_resolution(&at("/usr/lib/frei0r-1/baltan.so"), 3840, 2160));
+        // By file, whatever the display name (#1472).
+        assert!(!supports_resolution(&Frei0rPluginInfo { name: "Light Graffiti".into(), ..at("/usr/lib/frei0r-1/lightgraffiti.so") }, 3840, 2160));
+        assert!(supports_resolution(&at("/usr/lib/frei0r-1/delay0r.so"), 1920, 1080));
     }
 
     #[test]

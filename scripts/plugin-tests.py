@@ -65,13 +65,20 @@ FREI0R_SCENARIOS = {
     # Wider or taller than frei0r's 2048 limit, so the host must tile.
     "tile-wide": ("neighbour", 2064, 16, (0.0,), []),
     "tile-tall": ("neighbour", 16, 2064, (0.0,), []),
-    # Not a multiple of 8: the host must refuse it, never return the picture unchanged.
+    # History kept per tile, frame to frame, across the seams.
+    "tile-history": ("history", 2064, 16, (0.0, 0.04, 0.08), []),
+    # Not a multiple of 8: padded by repeating the edges, rendered and
+    # cropped back, a declared fallback, never the picture unchanged (#1469).
     "unaligned": ("colour", WIDTH, HEIGHT, (0.0,), []),
+    # 1080p at half Playback Quality, and the grade-drag downsample: 540
+    # isn't a multiple of 8. A geometry-reading case shows the padded frame.
+    "half-size": ("colour", 960, 540, (0.0,), []),
+    "half-size-cut": ("params", 960, 540, (0.0,), [[3, {"Position": [0.5, 0.25]}]]),
 }
 FREI0R_CONTROLS = ("wrong-output", "passthrough", "missing", "hang", "no-trace")
 # Scenarios the host fails today, each with its issue and the failure it shows.
 # A pin that starts passing fails the suite until it is removed here.
-FREI0R_PINS = {"history": ("#1468", "wrong-output"), "unaligned": ("#1469", "unchanged-picture")}
+FREI0R_PINS = {}
 
 
 def diagnostic_sized(seed, width, height):
@@ -93,7 +100,25 @@ def clamp8(value):
     return 0 if value <= 0 else 255 if value >= 255 else int(value + 0.5)
 
 
+def padded(value):
+    return max(8, -(-value // 8) * 8)
+
+
 def frei0r_expected(scenario, sources, frame, frame_time, width, height):
+    """The expected frame. A size frei0r can't take is worked on the frame
+    padded by repeating its last column and row, then cropped back."""
+    pw, ph = padded(width), padded(height)
+    if (pw, ph) == (width, height):
+        return frei0r_expected_aligned(scenario, sources, frame, frame_time, width, height)
+    def pad(source):
+        rows = [source[y * width * 4:(y + 1) * width * 4] for y in range(height)]
+        rows = [row + row[-4:] * (pw - width) for row in rows]
+        return b"".join(rows + [rows[-1]] * (ph - height))
+    out = frei0r_expected_aligned(scenario, [pad(s) for s in sources], frame, frame_time, pw, ph)
+    return b"".join(out[y * pw * 4:y * pw * 4 + width * 4] for y in range(height))
+
+
+def frei0r_expected_aligned(scenario, sources, frame, frame_time, width, height):
     # Independent oracle: deliberately not shared with the native fixture or host.
     source = sources[frame]
     pixels = [list(source[i:i + 4]) for i in range(0, len(source), 4)]
@@ -178,7 +203,8 @@ def run_frei0r_case(args, host, plugins, output, scenario, control, index):
             code = None
     log = log_path.read_bytes()
     if code:
-        reason = "missing-plugin" if b"required fixture missing" in log else "worker-failed"
+        reason = ("missing-plugin" if b"required fixture missing" in log else
+                  "refused" if code == 3 and b"KLIPP_HOST_REFUSED" in log else "worker-failed")
         result.update(status="failed", reason=reason, exit_code=code)
     elif code == 0:
         renders = [(float(t), int(w), int(h)) for n, t, w, h in
@@ -189,13 +215,6 @@ def run_frei0r_case(args, host, plugins, output, scenario, control, index):
             frame_renders = [(w, h) for t, w, h in renders if t == frame_time]
             entry = {"time": frame_time, "actual": str(actual_path), "renders": frame_renders}
             result["frames"].append(entry)
-            if scenario == "unaligned":
-                # No expected picture: anything but a refusal fails.
-                if actual == sources[frame]:
-                    result.update(status="failed", reason="unchanged-picture")
-                else:
-                    result.update(status="failed", reason="not-refused")
-                break
             expected = frei0r_expected(scenario, sources, frame, frame_time, width, height)
             (case / f"{frame}-expected.rgba").write_bytes(expected)
             entry["mismatched_bytes"] = sum(a != b for a, b in zip(actual, expected)) + abs(len(actual) - len(expected))
@@ -204,6 +223,15 @@ def run_frei0r_case(args, host, plugins, output, scenario, control, index):
                 break
             if not frame_renders:
                 result.update(status="failed", reason="render-not-observed")
+                break
+            # A padded size declares its fallback; any other size doesn't.
+            pw, ph = padded(width), padded(height)
+            fallback = f"KLIPP_HOST_FALLBACK padded {width}x{height} {pw}x{ph}\n".encode()
+            if (pw, ph) != (width, height) and fallback not in log:
+                result.update(status="failed", reason="fallback-not-declared")
+                break
+            if (pw, ph) == (width, height) and b"KLIPP_HOST_FALLBACK" in log:
+                result.update(status="failed", reason="undeclared-fallback")
                 break
             if scenario.startswith("tile-") and (len(frame_renders) < 2 or
                                                  any(w > 2048 or h > 2048 for w, h in frame_renders)):

@@ -197,6 +197,9 @@ cargo test -p klipp-engine --lib   # a single crate's lib tests
 The view-parity tests in `klipp-ui` draw a real frei0r plug-in, so
 `cargo test -p klipp-ui` needs `frei0r-plugins` installed (an optional
 dependency of the package); without it the frei0r case fails and says so.
+`cargo test -p klipp-frei0r` probes every installed frei0r filter for frame
+history (`tests/temporal_probe.rs`, one child process per plug-in); without
+the package it says so and skips.
 
 The plug-in fixtures that `scripts/plugin-tests.py` runs (`--format ofx`,
 `--format frei0r`) are C sources under `crates/*/tests/fixtures/`, compiled
