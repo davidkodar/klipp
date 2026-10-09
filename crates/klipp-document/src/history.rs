@@ -528,6 +528,17 @@ pub enum EditCommand {
         new: Box<klipp_timeline::Clip>,
     },
 
+    /// A file's camera encoding (its input colour space) changed: the
+    /// media's format and whether the user set it, before and after, and
+    /// every clip of the file, in every sequence, with its grade before
+    /// and after (an Input Transform may have been put in) (#1396).
+    SetMediaLogFormat {
+        media_id: Option<MediaId>,
+        old: (klipp_core::LogFormat, bool),
+        new: (klipp_core::LogFormat, bool),
+        grades: Vec<(ClipId, klipp_nodes::NodeGraph, klipp_nodes::NodeGraph)>,
+    },
+
     // === NODE GRAPH (color grading) ===
     SetNodeGraph {
         clip_id: ClipId,
@@ -836,6 +847,7 @@ impl EditCommand {
             EditCommand::AddTransition { .. } => "Add Transition",
             EditCommand::RemoveTransition { .. } => "Remove Transition",
             EditCommand::SetNodeGraph { .. } => "Color Grade",
+            EditCommand::SetMediaLogFormat { .. } => "Camera Encoding",
             EditCommand::PictureEdit { description, .. } => description,
             EditCommand::ReplaceClip { description, .. } => description,
             EditCommand::EditKeyframes { description, .. } => description,
@@ -1379,13 +1391,13 @@ fn combine_old_new(old_entry: HistoryEntry, new_entry: HistoryEntry) -> HistoryE
 }
 
 #[cfg(test)]
-mod bin_undo_tests {
+pub(crate) mod bin_undo_tests {
     use super::*;
     use klipp_core::{BinId, MediaId, RationalTime};
     use klipp_media::{MediaItem, MediaItemKind, MediaPool};
 
     /// Helper: create a minimal MediaItem for testing bin operations.
-    fn test_media_item(id: MediaId) -> MediaItem {
+    pub(crate) fn test_media_item(id: MediaId) -> MediaItem {
         MediaItem {
             id,
             path: std::path::PathBuf::from("/test/video.mp4"),

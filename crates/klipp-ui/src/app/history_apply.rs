@@ -78,8 +78,13 @@ impl KlippApp {
         if effects.set_playhead {
             let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
         }
-        for clip_id in effects.rerender_titles {
+        for &clip_id in &effects.rerender_titles {
             self.render_title_to_viewer(clip_id);
+        }
+        // After the media sync: the pictures are made for the settings
+        // the file has now.
+        for media_id in self.state.pictures_to_remake(&effects) {
+            self.refresh_media_pictures(media_id);
         }
     }
 

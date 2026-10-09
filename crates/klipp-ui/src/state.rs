@@ -4564,6 +4564,67 @@ impl AppState {
         }
         h
     }
+    /// A clip's input colour space set to `log_format`, as the grade's
+    /// Input Colour Space menu sets it (`SetClipLogFormat`), recorded as
+    /// one step (#1396): the clip's Input Transform (put in after its
+    /// Source when it has none), and, since the format belongs to the file
+    /// (a camera file has one encoding, and the decoder converts per file),
+    /// the file's own format and every clip of it, in every sequence. The
+    /// file, when the clip has one, for the caller to bring the engine and
+    /// its pictures alongside.
+    pub fn set_clip_log_format(&mut self, clip_id: klipp_core::ClipId, log_format: klipp_core::LogFormat) -> Option<klipp_core::MediaId> {
+        let active = self.active_sequence_idx;
+        let media = self.sequences[active].all_clips().find(|c| c.id == clip_id)?.media_id();
+        let format_of = |state: &Self| media.and_then(|m| state.media_pool.get(&m)).map_or((Default::default(), false), |i| (i.log_format, i.log_format_user_set));
+        let old = format_of(self);
+        let of_file = |c: &klipp_timeline::Clip| c.id == clip_id || (media.is_some() && c.media_id() == media);
+        let before: Vec<(klipp_core::ClipId, klipp_nodes::NodeGraph)> = self.sequences.iter().flat_map(|s| s.all_clips()).filter(|c| of_file(c)).map(|c| (c.id, c.grade().clone())).collect();
+        if let Some(clip) = self.sequences[active].all_clips_mut().find(|c| c.id == clip_id) {
+            clip.set_input_log_format(log_format);
+        }
+        if let Some(mid) = media {
+            if let Some(item) = self.media_pool.get_mut(&mid) {
+                item.log_format = log_format;
+                item.log_format_user_set = true;
+            }
+            for clip in self.sequences.iter_mut().flat_map(|s| s.all_clips_mut()).filter(|c| c.media_id() == Some(mid)) {
+                clip.set_input_log_format(log_format);
+            }
+        }
+        let grades = before.into_iter().filter_map(|(id, was)| {
+            let now = self.sequences.iter().find_map(|s| s.all_clips().find(|c| c.id == id))?.grade().clone();
+            Some((id, was, now))
+        }).collect();
+        let new = format_of(self);
+        self.push_history(EditCommand::SetMediaLogFormat { media_id: media, old, new, grades });
+        self.dirty = true;
+        media
+    }
+
+    /// Forget a file's thumbnail and filmstrip, so they are made again for
+    /// its current decode settings: the cached filmstrip emptied, its
+    /// textures taken out (returned, for the caller to drop once they are
+    /// off screen) and its filmstrip no longer counted as in progress.
+    pub(crate) fn forget_media_pictures(&mut self, media_id: klipp_core::MediaId) -> Vec<egui::TextureHandle> {
+        self.thumbnail_cache.set_filmstrip(media_id, Vec::new());
+        self.filmstrip_in_progress.remove(&media_id);
+        let strip = self.filmstrip_textures.remove(&media_id).into_iter().flatten().map(|(_, t)| t);
+        strip.chain(self.thumbnail_textures.remove(&media_id)).collect()
+    }
+
+    /// The files whose pictures a document edit asks to have made again
+    /// (`Effects::refresh_media_pictures`), each once, that the pool still
+    /// holds.
+    pub(crate) fn pictures_to_remake(&self, effects: &klipp_document::apply::Effects) -> Vec<klipp_core::MediaId> {
+        let mut ids: Vec<klipp_core::MediaId> = Vec::new();
+        for id in &effects.refresh_media_pictures {
+            if !ids.contains(id) && self.media_pool.get(id).is_some() {
+                ids.push(*id);
+            }
+        }
+        ids
+    }
+
     /// Push a single edit onto the active sequence's undo stack and
     /// bump the project-level autosave counter. Replaces the prior
     /// `state.active_history_mut().push(HistoryEntry { sequence_idx, command })`
@@ -5727,3 +5788,86 @@ mod generated_stack_switch_tests {
     }
 }
 
+
+#[cfg(test)]
+mod log_format_undo_tests {
+    use super::*;
+
+    /// Picking a file's camera encoding sets the file and every clip of it,
+    /// in every sequence, as one step, and one undo takes it all back
+    /// (#1396).
+    #[test]
+    fn a_camera_encoding_pick_is_one_step_undone_whole() {
+        let mut state = AppState::default();
+        let media = klipp_core::MediaId::new();
+        let fps = state.sequences[0].fps;
+        let item = klipp_media::MediaItem::new_synthetic_title(media, "shot".into(), klipp_core::RationalTime::from_secs_f64(2.0, 24), fps);
+        state.media_pool.add(item);
+        let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let clip = || klipp_timeline::Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        state.sequences.push(state.sequences[0].clone());
+        let (a, b) = (clip(), clip());
+        let (a_id, b_id) = (a.id, b.id);
+        state.sequences[0].tracks[0].clips.push(a);
+        state.sequences[1].tracks[0].clips.push(b);
+        let picture = |s: &AppState, id| serde_json::to_value(s.sequences.iter().find_map(|q| q.all_clips().find(|c| c.id == id)).unwrap().grade()).unwrap();
+        let format = |s: &AppState| s.media_pool.get(&media).map(|i| (i.log_format, i.log_format_user_set)).unwrap();
+        let before = (picture(&state, a_id), picture(&state, b_id), format(&state));
+        assert_eq!(state.set_clip_log_format(a_id, klipp_core::LogFormat::SLog3), Some(media));
+        assert_eq!(format(&state), (klipp_core::LogFormat::SLog3, true));
+        assert_ne!(picture(&state, b_id), before.1, "the other sequence's clip of the file too");
+        assert_eq!(state.active_history().undo_count(), 1, "one step");
+        let after = (picture(&state, a_id), picture(&state, b_id), format(&state));
+        let entry = state.active_history_mut().undo().unwrap();
+        let active = state.active_sequence_idx;
+        let mut doc = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps };
+        doc.apply_inverse(&entry.command);
+        assert_eq!((picture(&state, a_id), picture(&state, b_id), format(&state)), before, "undo takes it all back");
+        let entry = state.active_history_mut().redo().unwrap();
+        let mut doc = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps };
+        doc.apply_forward(&entry.command);
+        assert_eq!((picture(&state, a_id), picture(&state, b_id), format(&state)), after, "redo puts it back");
+    }
+
+    /// Undoing (and redoing) a camera encoding has the file's pictures made
+    /// again, so the thumbnail and filmstrip shown are the restored
+    /// encoding's, not the undone one's: the step names the file, and the
+    /// pictures made for the other encoding are forgotten, as the app's
+    /// undo forgets them before it asks for new ones (#1396).
+    #[test]
+    fn undoing_a_camera_encoding_remakes_the_files_pictures() {
+        let mut state = AppState::default();
+        let media = klipp_core::MediaId::new();
+        let fps = state.sequences[0].fps;
+        state.media_pool.add(klipp_media::MediaItem::new_synthetic_title(media, "shot".into(), klipp_core::RationalTime::from_secs_f64(2.0, 24), fps));
+        let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let clip = klipp_timeline::Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        let id = clip.id;
+        state.sequences[0].tracks[0].clips.push(clip);
+        state.set_clip_log_format(id, klipp_core::LogFormat::SLog3);
+        let ctx = egui::Context::default();
+        let texture = |name: &str| ctx.load_texture(name, egui::ColorImage::new([1, 1], egui::Color32::BLACK), Default::default());
+        let active = state.active_sequence_idx;
+        for undo in [true, false] {
+            // The pictures made for the encoding the step leaves.
+            state.thumbnail_textures.insert(media, texture("thumbnail"));
+            state.filmstrip_textures.insert(media, vec![(0.0, texture("filmstrip"))]);
+            state.thumbnail_cache.set_filmstrip(media, vec![klipp_media::FilmstripFrame { time_secs: 0.0, rgba: vec![0; 4], width: 1, height: 1 }]);
+            state.filmstrip_in_progress.insert(media);
+            let effects = if undo {
+                let entry = state.active_history_mut().undo().unwrap();
+                klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command)
+            } else {
+                let entry = state.active_history_mut().redo().unwrap();
+                klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(&entry.command)
+            };
+            let remake = state.pictures_to_remake(&effects);
+            assert_eq!(remake, vec![media], "undo {undo}: the file's pictures are made again");
+            let dropped: usize = remake.into_iter().map(|m| state.forget_media_pictures(m).len()).sum();
+            assert_eq!(dropped, 2, "undo {undo}: its thumbnail and filmstrip textures let go");
+            assert!(!state.thumbnail_textures.contains_key(&media) && !state.filmstrip_textures.contains_key(&media), "undo {undo}");
+            assert!(state.thumbnail_cache.filmstrip(&media).is_some_and(|f| f.is_empty()), "undo {undo}: the old filmstrip is not shown");
+            assert!(!state.filmstrip_in_progress.contains(&media), "undo {undo}: a new filmstrip may start");
+        }
+    }
+}

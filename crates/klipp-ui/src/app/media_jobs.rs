@@ -75,14 +75,8 @@ impl KlippApp {
         else {
             return;
         };
-        self.state.thumbnail_cache.set_filmstrip(media_id, Vec::new());
-        if let Some(strip) = self.state.filmstrip_textures.remove(&media_id) {
-            self.defer_drop_textures(strip.into_iter().map(|(_, t)| t));
-        }
-        if let Some(thumb) = self.state.thumbnail_textures.remove(&media_id) {
-            self.defer_drop_textures(std::iter::once(thumb));
-        }
-        self.state.filmstrip_in_progress.remove(&media_id);
+        let stale = self.state.forget_media_pictures(media_id);
+        self.defer_drop_textures(stale);
         self.spawn_thumbnail(media_id, path.clone(), duration);
         self.spawn_filmstrip(media_id, path, duration);
     }

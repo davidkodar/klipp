@@ -23,8 +23,8 @@ pub struct DocumentView<'a> {
 
 /// What a host does once a command has run: push the sequence or the
 /// media pool to the engine, tell it the sequence changed, re-seat the
-/// playhead, re-render a title's overlay. Merged across a batch, so a
-/// host performs each once.
+/// playhead, re-render a title's overlay, make a file's pictures again.
+/// Merged across a batch, so a host performs each once.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Effects {
     pub sync_sequence: bool,
@@ -32,6 +32,9 @@ pub struct Effects {
     pub notify_engine: bool,
     pub set_playhead: bool,
     pub rerender_titles: Vec<ClipId>,
+    /// Files whose decode settings changed (a camera encoding), so their
+    /// thumbnail and filmstrip are made again for the new ones.
+    pub refresh_media_pictures: Vec<MediaId>,
 }
 
 impl Effects {
@@ -41,6 +44,7 @@ impl Effects {
         self.notify_engine |= other.notify_engine;
         self.set_playhead |= other.set_playhead;
         self.rerender_titles.extend(other.rerender_titles);
+        self.refresh_media_pictures.extend(other.refresh_media_pictures);
     }
 }
 
@@ -68,7 +72,82 @@ fn set_node_graph(seq: &mut klipp_timeline::Sequence, clip_id: ClipId, graph: &k
     }
 }
 
+/// The format `graph`'s Input Transform holds, if it has one.
+fn input_transform(graph: &klipp_nodes::NodeGraph) -> Option<Option<klipp_core::LogFormat>> {
+    graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::InputTransform).map(|n| n.params.log_format)
+}
+
+/// `graph` given `to`'s camera encoding and nothing else, for a clip
+/// graded since the step left it at `from`: its Input Transform's format
+/// set to `to`'s, or, when `to` has none (the step put it in), taken out
+/// as the splice put it in: what it feeds fed from the Source again, in
+/// place, and the Source's edge into it gone. Every other node stays as
+/// the later edits left it.
+///
+/// The Input Transform is the step's only while it is still as the step
+/// left it, its node and its wiring. One edited since (another format,
+/// its params, or rewired) is the later work, and is left as it is.
+fn encoding_only(graph: &mut klipp_nodes::NodeGraph, from: &klipp_nodes::NodeGraph, to: &klipp_nodes::NodeGraph) {
+    let it_of = |g: &klipp_nodes::NodeGraph| g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::InputTransform).cloned();
+    let wiring = |g: &klipp_nodes::NodeGraph, id| g.edges.iter().filter(|e| e.from_node == id || e.to_node == id).map(|e| (e.from_node, e.from_port, e.to_node, e.to_port)).collect::<Vec<_>>();
+    let (Some(now), Some(was)) = (it_of(graph), it_of(from)) else { return };
+    if now != was || wiring(graph, now.id) != wiring(from, was.id) {
+        return;
+    }
+    let id = now.id;
+    match input_transform(to) {
+        Some(format) => {
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == id) {
+                node.params.log_format = format;
+            }
+        }
+        None => {
+            let fed: Vec<_> = graph.edges.iter().filter(|e| e.to_node == id).map(|e| (e.from_node, e.from_port)).collect();
+            let [(source, source_port)] = fed[..] else { return };
+            graph.edges.retain(|e| e.to_node != id);
+            for edge in graph.edges.iter_mut().filter(|e| e.from_node == id) {
+                edge.from_node = source;
+                edge.from_port = source_port;
+            }
+            graph.nodes.retain(|n| n.id != id);
+            graph.node_positions.remove(&id);
+        }
+    }
+}
+
 impl DocumentView<'_> {
+    /// A file's camera encoding set to `format` (with whether the user set
+    /// it), and each of its clips, in whichever sequence holds it, from the
+    /// grade the step left (`from`) to the one it goes to (`to`).
+    ///
+    /// The step spans sequences, but each sequence keeps its own history,
+    /// so a clip may have been graded since, in a sequence whose stack
+    /// knows nothing of this step. A clip still as the step left it takes
+    /// `to` whole; one graded since takes only `to`'s encoding, and keeps
+    /// the later work.
+    fn set_media_log_format<'g>(&mut self, media_id: Option<MediaId>, (format, user_set): (klipp_core::LogFormat, bool), grades: impl Iterator<Item = (ClipId, &'g klipp_nodes::NodeGraph, &'g klipp_nodes::NodeGraph)>) -> Effects {
+        if let Some(item) = media_id.and_then(|id| self.media_pool.get_mut(&id)) {
+            item.log_format = format;
+            item.log_format_user_set = user_set;
+        }
+        // NodeGraph has no PartialEq: compared as saved.
+        let same = |a: &klipp_nodes::NodeGraph, b: &klipp_nodes::NodeGraph| serde_json::to_value(a).ok() == serde_json::to_value(b).ok();
+        for (clip_id, from, to) in grades {
+            if let Some(clip) = self.sequences.iter_mut().find_map(|s| s.all_clips_mut().find(|c| c.id == clip_id)) {
+                if same(clip.grade(), from) {
+                    clip.set_grade(to.clone());
+                } else if let (None, Some(Some(format))) = (input_transform(clip.grade()), input_transform(to)) {
+                    // Graded since without one: put the Input Transform in,
+                    // as the step did.
+                    clip.set_input_log_format(format);
+                } else {
+                    clip.edit_grade(|graph| encoding_only(graph, from, to));
+                }
+            }
+        }
+        Effects { sync_sequence: true, sync_media_pool: media_id.is_some(), notify_engine: true, refresh_media_pictures: media_id.into_iter().collect(), ..Default::default() }
+    }
+
     pub fn apply_inverse(&mut self, cmd: &EditCommand) -> Effects {
         let mut effects = Effects::default();
         match cmd {
@@ -631,6 +710,9 @@ impl DocumentView<'_> {
             }
             EditCommand::SetNodeGraph { clip_id, old_graph, .. } => {
                 set_node_graph(&mut self.sequences[self.active], *clip_id, old_graph);
+            }
+            EditCommand::SetMediaLogFormat { media_id, old, grades, .. } => {
+                effects.merge(self.set_media_log_format(*media_id, *old, grades.iter().map(|(id, before, after)| (*id, after, before))));
             }
             EditCommand::PictureEdit { clip_id, edit, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
@@ -1322,6 +1404,9 @@ impl DocumentView<'_> {
             EditCommand::SetNodeGraph { clip_id, new_graph, .. } => {
                 set_node_graph(&mut self.sequences[self.active], *clip_id, new_graph);
             }
+            EditCommand::SetMediaLogFormat { media_id, new, grades, .. } => {
+                effects.merge(self.set_media_log_format(*media_id, *new, grades.iter().map(|(id, before, after)| (*id, before, after))));
+            }
             EditCommand::PictureEdit { clip_id, edit, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -1489,6 +1574,146 @@ fn toggle_effect(clip: &mut klipp_timeline::Clip, index: usize) {
     if let Some(id) = clip.effect_id_at(index) {
         let on = clip.effect_entries().nth(index).is_none_or(|(_, _, on)| on);
         clip.set_effect_enabled(id, !on);
+    }
+}
+
+#[cfg(test)]
+mod media_log_format_tests {
+    use super::*;
+
+    /// A file's camera encoding is one step across its clips in every
+    /// sequence: undo puts back the media's format and each clip's grade
+    /// (an Input Transform taken out again), redo puts the new ones (#1396).
+    #[test]
+    fn a_camera_encoding_change_undoes_and_redoes_whole() {
+        let media = MediaId::new();
+        let mut pool = MediaPool::new();
+        pool.add(crate::history::bin_undo_tests::test_media_item(media));
+        let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let clip = || klipp_timeline::Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        let mut sequences = vec![Sequence::new_default(), Sequence::new_default()];
+        let (a, b) = (clip(), clip());
+        let (a_id, b_id) = (a.id, b.id);
+        sequences[0].tracks[0].clips.push(a);
+        sequences[1].tracks[0].clips.push(b);
+        let grade = |seqs: &[Sequence], id| seqs.iter().find_map(|s| s.all_clips().find(|c| c.id == id)).unwrap().grade().clone();
+        let before = (grade(&sequences, a_id), grade(&sequences, b_id));
+        // What the change makes: an Input Transform on each clip, S-Log3.
+        let mut after_seqs = sequences.clone();
+        for s in &mut after_seqs {
+            for c in s.all_clips_mut() {
+                c.set_input_log_format(klipp_core::LogFormat::SLog3);
+            }
+        }
+        let after = (grade(&after_seqs, a_id), grade(&after_seqs, b_id));
+        let user = |p: &MediaPool| p.get(&media).map(|i| (i.log_format, i.log_format_user_set)).unwrap();
+        let old = user(&pool);
+        let edit = EditCommand::SetMediaLogFormat {
+            media_id: Some(media),
+            old,
+            new: (klipp_core::LogFormat::SLog3, true),
+            grades: vec![(a_id, before.0.clone(), after.0.clone()), (b_id, before.1.clone(), after.1.clone())],
+        };
+        let mut fps = sequences[0].fps;
+        let mut view = DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        let effects = view.apply_forward(&edit);
+        assert!(effects.sync_sequence && effects.sync_media_pool);
+        assert_eq!(effects.refresh_media_pictures, vec![media], "the file's pictures made again");
+        let json = |g: &klipp_nodes::NodeGraph| serde_json::to_value(g).unwrap();
+        assert_eq!(user(view.media_pool), (klipp_core::LogFormat::SLog3, true));
+        assert_eq!(json(&grade(view.sequences, a_id)), json(&after.0));
+        assert_eq!(json(&grade(view.sequences, b_id)), json(&after.1), "the other sequence's clip too");
+        view.apply_inverse(&edit);
+        assert_eq!(user(view.media_pool), old);
+        assert_eq!(json(&grade(view.sequences, a_id)), json(&before.0));
+        assert_eq!(json(&grade(view.sequences, b_id)), json(&before.1));
+        assert_ne!(json(&before.0), json(&after.0), "the change put an Input Transform in");
+    }
+
+    /// Undoing a camera encoding in one sequence leaves alone the grade
+    /// work done since on the file's clip in another, whose own history
+    /// knows nothing of the step: that clip loses only the step's Input
+    /// Transform, and redo gives it back without undoing the work either.
+    #[test]
+    fn undoing_a_camera_encoding_keeps_later_grade_work_in_another_sequence() {
+        let media = MediaId::new();
+        let mut pool = MediaPool::new();
+        pool.add(crate::history::bin_undo_tests::test_media_item(media));
+        let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let clip = || klipp_timeline::Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        let mut sequences = vec![Sequence::new_default(), Sequence::new_default()];
+        let (a, b) = (clip(), clip());
+        let (a_id, b_id) = (a.id, b.id);
+        sequences[0].tracks[0].clips.push(a);
+        sequences[1].tracks[0].clips.push(b);
+        let grade = |seqs: &[Sequence], id| seqs.iter().find_map(|s| s.all_clips().find(|c| c.id == id)).unwrap().grade().clone();
+        let before = (grade(&sequences, a_id), grade(&sequences, b_id));
+        let mut after_seqs = sequences.clone();
+        for s in &mut after_seqs {
+            for c in s.all_clips_mut() {
+                c.set_input_log_format(klipp_core::LogFormat::SLog3);
+            }
+        }
+        let after = (grade(&after_seqs, a_id), grade(&after_seqs, b_id));
+        let edit = EditCommand::SetMediaLogFormat {
+            media_id: Some(media),
+            old: (pool.get(&media).unwrap().log_format, pool.get(&media).unwrap().log_format_user_set),
+            new: (klipp_core::LogFormat::SLog3, true),
+            grades: vec![(a_id, before.0.clone(), after.0.clone()), (b_id, before.1.clone(), after.1.clone())],
+        };
+        let mut fps = sequences[0].fps;
+        let mut view = DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        view.apply_forward(&edit);
+        // Later, in the other sequence: B's Corrector graded.
+        let graded = |g: &klipp_nodes::NodeGraph| g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).and_then(|n| n.params.exposure);
+        let input_transform = |g: &klipp_nodes::NodeGraph| g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::InputTransform).map(|n| n.params.log_format);
+        let b_clip = view.sequences[1].all_clips_mut().find(|c| c.id == b_id).unwrap();
+        b_clip.edit_grade(|g| g.nodes.iter_mut().filter(|n| n.kind == klipp_nodes::NodeKind::Corrector).for_each(|n| n.params.exposure = Some(1.5)));
+        assert_eq!(graded(&grade(view.sequences, b_id)), Some(1.5));
+        view.apply_inverse(&edit);
+        let json = |g: &klipp_nodes::NodeGraph| serde_json::to_value(g).unwrap();
+        assert_eq!(json(&grade(view.sequences, a_id)), json(&before.0), "A, untouched since, back whole");
+        let b_now = grade(view.sequences, b_id);
+        // B as it was before the step, with the work done since: the
+        // same, byte for byte, as saved.
+        let mut expected = before.1.clone();
+        expected.nodes.iter_mut().filter(|n| n.kind == klipp_nodes::NodeKind::Corrector).for_each(|n| n.params.exposure = Some(1.5));
+        assert_eq!(json(&b_now), json(&expected), "B keeps the work done since and loses only the step's Input Transform");
+        view.apply_forward(&edit);
+        let b_again = grade(view.sequences, b_id);
+        assert_eq!(graded(&b_again), Some(1.5), "redo keeps B's work too");
+        assert_eq!(input_transform(&b_again), Some(Some(klipp_core::LogFormat::SLog3)), "redo gives B the encoding");
+    }
+
+    /// An Input Transform the step put in, then edited in another
+    /// sequence (set to another format there), is that sequence's later
+    /// work: undoing the step leaves it, and the rest of that grade,
+    /// exactly as they are.
+    #[test]
+    fn undoing_a_camera_encoding_keeps_an_input_transform_edited_since() {
+        let media = MediaId::new();
+        let mut pool = MediaPool::new();
+        pool.add(crate::history::bin_undo_tests::test_media_item(media));
+        let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let clip = klipp_timeline::Clip::media(media, tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        let id = clip.id;
+        let mut sequences = vec![Sequence::new_default(), Sequence::new_default()];
+        sequences[1].tracks[0].clips.push(clip);
+        let grade = |seqs: &[Sequence]| seqs[1].all_clips().find(|c| c.id == id).unwrap().grade().clone();
+        let before = grade(&sequences);
+        let mut after = sequences.clone();
+        after[1].all_clips_mut().for_each(|c| c.set_input_log_format(klipp_core::LogFormat::SLog3));
+        let after = grade(&after);
+        let edit = EditCommand::SetMediaLogFormat { media_id: Some(media), old: (klipp_core::LogFormat::Srgb, false), new: (klipp_core::LogFormat::SLog3, true), grades: vec![(id, before, after)] };
+        let mut fps = sequences[0].fps;
+        let mut view = DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        view.apply_forward(&edit);
+        view.sequences[1].all_clips_mut().find(|c| c.id == id).unwrap().edit_grade(|g| {
+            g.nodes.iter_mut().filter(|n| n.kind == klipp_nodes::NodeKind::InputTransform).for_each(|n| n.params.log_format = Some(klipp_core::LogFormat::LogC3));
+        });
+        let edited = serde_json::to_value(grade(view.sequences)).unwrap();
+        view.apply_inverse(&edit);
+        assert_eq!(serde_json::to_value(grade(view.sequences)).unwrap(), edited, "the edited Input Transform, and the grade, as they were");
     }
 }
 
