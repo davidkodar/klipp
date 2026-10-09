@@ -288,7 +288,7 @@ const BLOCKED: &[(&str, &str)] = &[];
 /// The effect types whose production route is the CPU by design, each
 /// with the M4 step that moves it: their Pixels are drawn on the CPU route
 /// alone, the GPU half declared not applicable (never BLOCKED).
-const CPU_BY_DESIGN: &[(&str, &str)] = &[
+pub(super) const CPU_BY_DESIGN: &[(&str, &str)] = &[
     ("klipp.fx.temporal_denoise", "M4 step 6 (temporal denoise as a source-boundary node): the GPU stack declines a frame with temporal noise reduction"),
     ("klipp.fx.video_stabilization", "M4 step 9 (analysis effects as nodes) deletes the stack's temporal gate (klipp-compose render.rs), which draws a stabilised layer on the CPU"),
     ("klipp.fx.rolling_shutter_correction", "M4 step 9 (analysis effects as nodes) deletes the stack's temporal gate (klipp-compose render.rs), which draws a corrected layer on the CPU"),
@@ -313,7 +313,7 @@ const PIXEL_CONTEXT: &[(&str, &[(&str, &str)], bool)] = &[
 /// The effect types drawn at the delivery size: their strength is scaled
 /// to the frame, so the oracle's small frame rounds it away (a gate weave
 /// of a few pixels at 1920 wide is under one at 320).
-const AT_FULL_SIZE: &[&str] = &["film_grain", "old_film"];
+pub(super) const AT_FULL_SIZE: &[&str] = &["film_grain", "old_film"];
 
 /// The routes a type's Pixels are drawn on, and the declared reason when
 /// it is the CPU alone ([`CPU_BY_DESIGN`]).

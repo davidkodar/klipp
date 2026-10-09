@@ -25,6 +25,7 @@ fn manifest() -> Manifest {
     super::parity_video_transform::require(&mut m);
     super::parity_curve_editor::require(&mut m);
     super::parity_controls::require(&mut m);
+    super::parity_stack_switches::require(&mut m);
     super::parity_grade_specialists::require(&mut m);
     super::parity_grade_numeric::require(&mut m);
     super::parity_grade_workflows::require(&mut m);
@@ -44,6 +45,7 @@ fn run_all(report: &mut Report) {
     report.family("video opacity keys", super::parity_video_transform::anchor_opacity_keys);
     report.family("curve editor", super::parity_curve_editor::run);
     report.family("effect controls", super::parity_controls::run);
+    report.family("effect eyes and mixes", super::parity_stack_switches::run);
     // The grade families, on the clip's grade and on the sequence's grades
     // (`on_roots`), where they earn `NonClipGrade`.
     use super::parity_controls::on_roots;
@@ -150,7 +152,7 @@ fn the_flip_manifest_has_only_the_pinned_rule_errors() {
 #[test]
 fn every_parity_family_is_in_the_flip() {
     let this = include_str!("parity_flip.rs");
-    let families: [(&str, &str); 14] = [
+    let families: [(&str, &str); 15] = [
         ("parity_numeric", include_str!("parity_numeric.rs")),
         ("parity_effect_keys", include_str!("parity_effect_keys.rs")),
         ("parity_keyed_pixels", include_str!("parity_keyed_pixels.rs")),
@@ -160,6 +162,7 @@ fn every_parity_family_is_in_the_flip() {
         ("parity_video_transform", include_str!("parity_video_transform.rs")),
         ("parity_curve_editor", include_str!("parity_curve_editor.rs")),
         ("parity_controls", include_str!("parity_controls.rs")),
+        ("parity_stack_switches", include_str!("parity_stack_switches.rs")),
         ("parity_grade_specialists", include_str!("parity_grade_specialists.rs")),
         ("parity_grade_workflows", include_str!("parity_grade_workflows.rs")),
         ("parity_grade_numeric", include_str!("parity_grade_numeric.rs")),

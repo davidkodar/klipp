@@ -64,6 +64,8 @@ mod parity_manifest;
 #[cfg(test)]
 mod parity_controls;
 #[cfg(test)]
+mod parity_stack_switches;
+#[cfg(test)]
 mod parity_grade_specialists;
 #[cfg(test)]
 mod parity_grade_workflows;

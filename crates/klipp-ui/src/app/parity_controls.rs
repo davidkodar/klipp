@@ -32,7 +32,7 @@ impl InspectorSideEffects for Sink {
 
 /// One clip holding one effect: a clone each for the stack and its twin,
 /// so their pictures compare down to every id.
-fn fixture(effect: &BuiltinEffect) -> klipp_timeline::Clip {
+pub(super) fn fixture(effect: &BuiltinEffect) -> klipp_timeline::Clip {
     let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
     let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
     clip.push_effect(effect.clone());
@@ -40,16 +40,16 @@ fn fixture(effect: &BuiltinEffect) -> klipp_timeline::Clip {
 }
 
 /// One state, the generated stack drawn over its clip and driven.
-struct Stack {
-    state: AppState,
-    clip: ClipId,
-    ctx: egui::Context,
+pub(super) struct Stack {
+    pub(super) state: AppState,
+    pub(super) clip: ClipId,
+    pub(super) ctx: egui::Context,
     time: f64,
-    unapplied: Vec<String>,
+    pub(super) unapplied: Vec<String>,
 }
 
 impl Stack {
-    fn new(clip: klipp_timeline::Clip) -> Self {
+    pub(super) fn new(clip: klipp_timeline::Clip) -> Self {
         let id = clip.id;
         let mut state = AppState::default();
         state.sequences[0].tracks[0].clips.push(clip);
@@ -57,17 +57,17 @@ impl Stack {
         Stack { state, clip: id, ctx: egui::Context::default(), time: 0.0, unapplied: Vec::new() }
     }
 
-    fn clip(&self) -> &klipp_timeline::Clip {
+    pub(super) fn clip(&self) -> &klipp_timeline::Clip {
         self.state.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap()
     }
 
-    fn picture(&self) -> klipp_timeline::LiftedPicture {
+    pub(super) fn picture(&self) -> klipp_timeline::LiftedPicture {
         (*self.clip().picture_v2().unwrap()).clone()
     }
 
     /// One frame with `events`: the text drawn, at its centre. The
     /// commands the stack sent are applied as the app applies them.
-    fn frame(&mut self, events: Vec<egui::Event>) -> Vec<(String, egui::Pos2)> {
+    pub(super) fn frame(&mut self, events: Vec<egui::Event>) -> Vec<(String, egui::Pos2)> {
         self.time += 0.05;
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(520.0, 3000.0))), time: Some(self.time), events, ..Default::default() };
         let mut cmds = Vec::new();
@@ -88,7 +88,7 @@ impl Stack {
 
     /// `cmd` as the app applies it, past the dispatch boundary: a path
     /// command by the state, an index command by the inspector edit host.
-    fn apply(&mut self, cmd: &AppCommand) {
+    pub(super) fn apply(&mut self, cmd: &AppCommand) {
         self.state.before_dispatch(cmd);
         self.state.toast = Default::default();
         if self.state.path_command(cmd).is_some() {
@@ -104,7 +104,7 @@ impl Stack {
 
     /// Click `text`: its last drawn occurrence (an open menu is drawn over
     /// the panel), after a frame to settle.
-    fn click(&mut self, text: &str) -> Result<(), String> {
+    pub(super) fn click(&mut self, text: &str) -> Result<(), String> {
         self.frame(Vec::new());
         let at = self.frame(Vec::new()).into_iter().rev().find(|(t, _)| t == text).map(|(_, p)| p).ok_or_else(|| format!("{text:?} isn't drawn"))?;
         let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
@@ -115,7 +115,7 @@ impl Stack {
     }
 
     /// Undo (or redo) one step, through the document as the app does.
-    fn step(&mut self, forward: bool) -> Result<(), String> {
+    pub(super) fn step(&mut self, forward: bool) -> Result<(), String> {
         // The undo or redo passes the dispatch boundary first, as the app's
         // does, which closes any drag still open.
         self.state.before_dispatch(&if forward { AppCommand::Redo } else { AppCommand::Undo });
@@ -240,10 +240,9 @@ pub(super) fn require(manifest: &mut Manifest) {
         }
     };
     let discrete = |w: Widget| matches!(w, Widget::Toggle | Widget::Combo);
+    // A placed kind's card too (Speed Ramp's switches and menus): its rows
+    // are drawn on the stack and sent through the clip's effect list.
     for ty in effect_types() {
-        if crate::inspector::stack_view::is_placed_kind(ty.tag) {
-            continue;
-        }
         for desc in ty.desc.params {
             let pres = ty.presentation(desc);
             if discrete(pres.widget) {
@@ -287,11 +286,9 @@ pub(super) fn grade_variant(ty: &klipp_nodes::registry::NodeType, desc: &ParamDe
 /// Every switch clicked both ways and every menu item picked, on every
 /// effect the stack draws as a card, each against the old route.
 pub(super) fn run(report: &mut Report) {
+    // A placed kind's card included: its rows are drawn on the stack, their
+    // commands sent through the clip's effect list (`to_effect_list`).
     for ty in effect_types() {
-        // A placed kind is the clip's own property, edited in the Video tab.
-        if crate::inspector::stack_view::is_placed_kind(ty.tag) {
-            continue;
-        }
         for desc in ty.desc.params {
             let pres = ty.presentation(desc);
             if !matches!(pres.widget, Widget::Toggle | Widget::Combo) {
