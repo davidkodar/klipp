@@ -12,6 +12,15 @@ use std::collections::BTreeSet;
 /// old route to compare: the `NonClipGrade` surface's track variant.
 pub(super) const TRACK_GRADE_EXCLUSION: &str = "#1408 (a track's grade has no inspector surface yet; nothing to compare or delete)";
 
+/// A RETAINED old route, not a dead one: nested grade compounds keep the
+/// old rows until M4 step 1b (#1391), so the surface earns nothing and
+/// blocks nothing, and step 19's deletion keeps the code nested editing
+/// uses.
+pub(super) const NESTED_GRADE_EXCLUSION: &str = "#1391: RETAINED old route: nested grade compounds keep the old rows until M4 step 1b (none in the 348-project corpus); step 19 keeps the code nested grade editing uses";
+
+/// A grade row's track in the curve editor: grade keyframing isn't M3's.
+pub(super) const GRADE_CURVE_EXCLUSION: &str = "#891 (grade keyframing: phase 4; the curve editor lists effect tracks only)";
+
 pub(super) const GRAPH_INSPECTOR_EXCLUSION: &str =
     "#1347: picture-graph selection does not reveal an effect inspector in either view";
 
@@ -124,17 +133,16 @@ pub(super) fn surfaces(entry: &CatalogEntry) -> Result<BTreeSet<Surface>, String
                 required.insert(GradeTabbedRight);
             }
         }
-        // Nested grades keep the old rows (the #1391 boundary): required,
-        // and labelled fallback, which blocks deletion. The timeline grade
-        // and a group's stages draw generated at their own roots (M3 step
-        // 19); the grade families earn their keys by running on them
-        // (`parity_controls::on_roots`). A track's grade has no surface
-        // (TRACK_GRADE_EXCLUSION).
-        required.extend([NestedGrade, NonClipGrade]);
+        // Nested grades keep the old rows, the boundary step 19 keeps
+        // (NESTED_GRADE_EXCLUSION), so they're no surface to earn. The
+        // timeline grade and a group's stages draw generated at their own
+        // roots (M3 step 19); the grade families earn their keys by
+        // running on them (`parity_controls::on_roots`). A track's grade
+        // has no surface (TRACK_GRADE_EXCLUSION).
+        required.insert(NonClipGrade);
     }
-    if matches!(entry.value, CatalogValue::Parameter { desc, .. } if desc.keyframable)
-        || (entry.grade && matches!(entry.value, CatalogValue::Enabled))
-    {
+    // A grade row's track isn't in the curve editor (GRADE_CURVE_EXCLUSION).
+    if !entry.grade && matches!(entry.value, CatalogValue::Parameter { desc, .. } if desc.keyframable) {
         required.insert(CurveEditor);
     }
     Ok(required)
