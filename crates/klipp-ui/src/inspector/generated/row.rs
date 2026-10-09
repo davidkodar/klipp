@@ -703,7 +703,7 @@ mod tests {
     #[test]
     fn numbers_and_switches_go_by_set_param() {
         let payload = serde_json::json!({});
-        let cmds = written("klipp.fx.speed_ramp", "freeze", &payload, Value::Bool(true));
+        let cmds = written("klipp.fx.video_stabilization", "zoom", &payload, Value::Bool(true));
         assert!(matches!(cmds.as_slice(), [AppCommand::SetParamAt { value: ParamValue::Bool(true), .. }]), "{cmds:?}");
         let cmds = written("klipp.fx.radial_blur", "samples", &payload, Value::from(16u32));
         assert!(matches!(cmds.as_slice(), [AppCommand::SetParamAt { value: ParamValue::Int(16), .. }]), "{cmds:?}");

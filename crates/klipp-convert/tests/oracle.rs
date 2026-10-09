@@ -100,7 +100,19 @@ fn grade_graph(r: &mut Rng) -> Value {
 
 /// The built-in effects the registry describes, as v1 saves them.
 fn effect_payloads() -> Vec<Value> {
-    klipp_effects::registry::effect_types().map(|t| serde_json::to_value((t.sample)()).expect("an effect serialises")).collect()
+    klipp_effects::registry::effect_types()
+        .map(|t| {
+            let mut v = serde_json::to_value((t.sample)()).expect("an effect serialises");
+            // A v1 Speed Ramp carries the fields picture revision 4 drops
+            // (#1409), which the frozen reader requires.
+            if v["type"] == "speed_ramp" {
+                for (k, x) in [("ramp_curve", json!(0)), ("ramp_start", json!(0.0)), ("ramp_end", json!(1.0)), ("reverse", json!(false)), ("freeze_at", json!(0.0)), ("freeze", json!(false))] {
+                    v[k] = x;
+                }
+            }
+            v
+        })
+        .collect()
 }
 
 /// One v1 clip picture.

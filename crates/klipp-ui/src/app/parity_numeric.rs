@@ -464,6 +464,13 @@ fn pixel_case(routes: super::parity_pixels::Routes, ty: &EffectType, surface: Su
         let mut c = clip.clone();
         let id = c.effect_id_at(index).ok_or("the edited effect")?;
         c.replace_effect(id, with_field(&clip.builtin_effects()[index], desc, target.clone())?);
+        // A Speed Ramp's speed retimes the clip, as the effect's update
+        // does (`inspector_edit_host`).
+        if let BuiltinEffect::SpeedRamp { speed, .. } = c.builtin_effects()[index] {
+            c.speed = f64::from(speed).clamp(0.1, 16.0);
+            let length = klipp_core::RationalTime::from_secs_f64(c.source_duration().to_secs_f64() / c.speed, c.timeline_in.rate);
+            c.timeline_out = c.timeline_in + length;
+        }
         regain(&mut c);
         Ok(c)
     };
