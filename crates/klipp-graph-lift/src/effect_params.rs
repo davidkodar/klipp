@@ -280,6 +280,12 @@ pub fn into_stored(n: &mut Node) -> Result<(), String> {
     Ok(())
 }
 
+/// A stored `klipp.frei0r` node as the effect entry it holds, for a reader
+/// of stored entries (the delift); any other node is left as it is.
+pub fn frei0r_entry(n: &mut Node) -> Result<(), String> {
+    frei0r::from_stored(n)
+}
+
 /// A frei0r plug-in's stored form (picture revision 4, d9's fields): a
 /// `klipp.frei0r` node whose `plugin` is the entry's `type_id` and whose
 /// `p{i}` is its `i`th value by ABI type (a double and a position as f64,

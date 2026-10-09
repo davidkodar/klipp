@@ -139,6 +139,17 @@ fn compound(mut n: Node) -> Result<Node, Refusal> {
 
 /// A lifted, unspliced clip picture back to its revision-1 record.
 pub fn clip(p: &ClipPicture) -> Result<ClipRecordV2, Refusal> {
+    // A frei0r plug-in stored as `klipp.frei0r` (picture revision 4) is
+    // read as the entry it holds.
+    let mut entries = None;
+    if p.graph.nodes.iter().any(|n| n.type_id.as_str() == lt::FREI0R) {
+        let mut q = p.clone();
+        for n in &mut q.graph.nodes {
+            crate::effect_params::frei0r_entry(n)?;
+        }
+        entries = Some(q);
+    }
+    let p = entries.as_ref().unwrap_or(p);
     let mut grade = None;
     let mut ofx = Vec::new();
     let mut builtins: Vec<(u32, Node)> = Vec::new();
