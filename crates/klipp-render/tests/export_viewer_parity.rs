@@ -40,7 +40,7 @@ fn media(path: PathBuf, log_format: Option<LogFormat>) -> TestClip {
     let id = MediaId::new();
     TestClip {
         clip: base_clip(klipp_timeline::ClipKind::Media { media_id: id }),
-        media: Some((id, MediaFile { path, log_format, source_rotation: 0 })),
+        media: Some((id, MediaFile { path, log_format, source_rotation: 0, ..Default::default() })),
     }
 }
 

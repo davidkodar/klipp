@@ -47,7 +47,7 @@ fn export(src: &Path, seq: (u32, u32), asked: Option<(u32, u32)>, out: &Path) {
     let mut t = klipp_timeline::Track::new("V", klipp_timeline::TrackKind::Video);
     t.clips = vec![klipp_timeline::Clip::media(id, tc(0), tc(5), tc(0), tc(5))];
     video.sequence.tracks.push(t);
-    video.media.insert(id, MediaFile { path: src.to_path_buf(), log_format: None, source_rotation: 0 });
+    video.media.insert(id, MediaFile { path: src.to_path_buf(), log_format: None, source_rotation: 0, ..Default::default() });
     let snapshot = SequenceSnapshot {
         fps: 25.0, fps_num: 25, fps_den: 1, width: seq.0, height: seq.1, sample_rate: 48000,
         duration_frames: 5, export_range: None, video,

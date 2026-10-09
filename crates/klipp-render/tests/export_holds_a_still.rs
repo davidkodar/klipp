@@ -77,7 +77,7 @@ fn export(media: &Path, source_in_frames: i64, out: &Path) -> Result<(), RenderE
     let mut track = klipp_timeline::Track::new("V", klipp_timeline::TrackKind::Video);
     track.clips = vec![clip];
     video.sequence.tracks.push(track);
-    video.media.insert(id, MediaFile { path: media.to_path_buf(), log_format: None, source_rotation: 0 });
+    video.media.insert(id, MediaFile { path: media.to_path_buf(), log_format: None, source_rotation: 0, ..Default::default() });
     let snapshot = SequenceSnapshot {
         fps: 25.0, fps_num: 25, fps_den: 1, width: 64, height: 64, sample_rate: 48000,
         duration_frames: N as u64, export_range: None, video,

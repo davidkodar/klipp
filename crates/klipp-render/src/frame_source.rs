@@ -606,7 +606,7 @@ mod temporal_frames_tests {
     ) -> (HashMap<MediaId, MediaFile>, Clip) {
         let id = MediaId::new();
         let mut media = HashMap::new();
-        media.insert(id, MediaFile { path, log_format: None, source_rotation: 0 });
+        media.insert(id, MediaFile { path, log_format: None, source_rotation: 0, ..Default::default() });
         let tc = |f: i64| klipp_core::RationalTime::from_frames(f, 24);
         let clip = Clip {
             id: ClipId::new(),

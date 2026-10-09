@@ -85,7 +85,7 @@ impl Default for VideoTimeline {
 }
 
 /// A media file as export decodes it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct MediaFile {
     pub path: PathBuf,
     /// The media's camera log format, when it is one (S-Log3, V-Log, ...).

@@ -39,7 +39,7 @@ fn export_pq(src: &Path, out: &Path) {
     let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
     track.clips = vec![clip];
     video.sequence.tracks.push(track);
-    video.media.insert(id, MediaFile { path: src.to_path_buf(), log_format: None, source_rotation: 0, duration_secs: None });
+    video.media.insert(id, MediaFile { path: src.to_path_buf(), log_format: None, source_rotation: 0, ..Default::default() });
     let snapshot = klipp_render::SequenceSnapshot {
         fps: common::FPS as f64, fps_num: common::FPS, fps_den: 1, width: common::BANDS_W, height: common::BANDS_H, sample_rate: 48000,
         duration_frames: 12, export_range: None, video, audio_tracks: vec![],
