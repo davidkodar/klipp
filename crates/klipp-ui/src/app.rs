@@ -72,6 +72,8 @@ mod parity_effect_keys;
 #[cfg(test)]
 mod parity_video_transform;
 #[cfg(test)]
+mod parity_pixels;
+#[cfg(test)]
 mod parity_specialists;
 #[cfg(test)]
 mod placement_row_tests;

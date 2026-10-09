@@ -1,6 +1,7 @@
 //! Video Transform controls are a separate surface: their Scale writes
 //! both axes and Perspective resets to the displayed default of one.
-//! These scalar cases earn no keyframe or pixel evidence.
+//! Each edit is also drawn by the real renderer (`parity_pixels`) on the
+//! CPU and the native GPU stack; these cases earn no keyframe evidence.
 
 use super::parity_harness::{fixture, Run};
 use super::parity_manifest::{catalog, CoverageKey, Interaction, Manifest, Report, Surface};
@@ -178,6 +179,7 @@ fn value(run: &Run, key: &str) -> f32 {
 fn edit_case(control: Control, edit: Edit) -> Result<(), String> {
     let clip = clip();
     let before = clip.picture_v2().unwrap();
+    let start = clip.clone();
     let (mut old, mut new) = (run(clip.clone(), false), run(clip, true));
     play(&mut old, control, edit)?;
     play(&mut new, control, edit)?;
@@ -219,7 +221,8 @@ fn edit_case(control: Control, edit: Edit) -> Result<(), String> {
     if !new.step(true) || new.clip().picture_v2().unwrap() != after {
         return Err("redo is not exact".into());
     }
-    Ok(())
+    // The edit as the renderer draws it, on each route.
+    super::parity_pixels::same_edit(&start, old.clip(), new.clip())
 }
 
 fn cancel_case(
@@ -279,7 +282,8 @@ pub(super) fn exercise(report: &mut Report) {
         ] {
             let earned = keys(control, interaction)
                 .into_iter()
-                .chain(keys(control, Interaction::UndoRedo));
+                .chain(keys(control, Interaction::UndoRedo))
+                .chain(keys(control, Interaction::Pixels));
             report.case(&name(&format!("{edit:?}")), earned, || {
                 edit_case(control, edit)
             });
