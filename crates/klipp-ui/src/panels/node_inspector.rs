@@ -1520,6 +1520,11 @@ impl NodeInspectorPanel {
                         ("Whites", "whites", 0.0),
                         ("Blacks", "blacks", 0.0),
                     ] {
+                        // The Corrector's and Tone Controls' tone rows
+                        // are registered like the rows above (#1420).
+                        if self.shared_row(ui, nid, param_name, cmds, theme, frame) {
+                            continue;
+                        }
                         let mut val = match param_name {
                             "highlights" => node.params.highlights.unwrap_or(default),
                             "shadows" => node.params.shadows.unwrap_or(default),
