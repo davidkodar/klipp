@@ -502,63 +502,26 @@ impl KlippApp {
     ) where
         F: FnOnce(&mut klipp_nodes::NodeGraph),
     {
-        let seq_idx = self.state.active_sequence_idx;
-        let mut applied = false;
-        let mut old_top_graph: Option<klipp_nodes::NodeGraph> = None;
-        let mut new_top_graph: Option<klipp_nodes::NodeGraph> = None;
-        let mut path_went_stale = false;
-        for track in &mut self.state.sequences[seq_idx].tracks {
-            if let Some(clip) = track.find_clip_mut(clip_id) {
-                let old = clip.grade().clone();
-                let resolve = clip.edit_grade(|root| Self::resolve_graph_at_path_mut(root, path).map(mutate));
-                match resolve {
-                    Ok(()) => {}
-                    Err(_e) => {
-                        path_went_stale = true;
-                        break;
-                    }
-                }
-                new_top_graph = Some(clip.grade().clone());
-                old_top_graph = Some(old);
-                applied = true;
-                break;
+        // Skip the per-call history step while a node-param edit gesture
+        // is open (BeginNodeParamEdit took the snapshot, EndNodeParamEdit
+        // commits the whole gesture as ONE entry). Without this, dragging a
+        // mask handle on the viewer pushed one full SetNodeGraph entry per
+        // frame: hundreds of graph clones a second, which flooded the undo
+        // stack and set off engine resyncs that desynced the master clock
+        // ("playback walks off on its own").
+        let record = self.node_param_edit_snapshot.is_none();
+        match edit_clip_graph(&mut self.state, clip_id, path, record, mutate) {
+            Some(Ok(())) => *needs_refresh = true,
+            Some(Err(())) => {
+                // Descent path went stale (upstream remove, clip switch
+                // we missed). Reset to root so future commands hit the
+                // normal path; the user loses nothing except their
+                // current descent position.
+                self.state.graph_descent_path.clear();
+                self.state.selected_node_ids.clear();
+                self.state.selected_node_id = None;
             }
-        }
-        if path_went_stale {
-            // Descent path went stale (upstream remove, clip switch
-            // we missed). Reset to root so future commands hit the
-            // normal path; the user loses nothing except their
-            // current descent position.
-            self.state.graph_descent_path.clear();
-            self.state.selected_node_ids.clear();
-            self.state.selected_node_id = None;
-            return;
-        }
-        if applied {
-            // Skip per-call history push while a node-param edit
-            // gesture is in progress (BeginNodeParamEdit took the
-            // snapshot, EndNodeParamEdit will commit the whole
-            // gesture as ONE entry). Without this guard, dragging a
-            // mask handle on the viewer pushed one full SetNodeGraph
-            // entry per frame — hundreds of clones per second of the
-            // entire graph, which floods the undo stack and triggers
-            // heavy engine resyncs that desync the master clock and
-            // cause "playback walks off on its own" symptoms.
-            let in_gesture = self.node_param_edit_snapshot.is_some();
-            if !in_gesture {
-                if let (Some(old_graph), Some(new_graph)) =
-                    (old_top_graph, new_top_graph)
-                {
-                    self.state.active_history_mut().push(crate::history::HistoryEntry {
-                        command: crate::history::EditCommand::SetNodeGraph {
-                            clip_id,
-                            old_graph,
-                            new_graph,
-                        },
-                    });
-                }
-            }
-            *needs_refresh = true;
+            None => {}
         }
     }
 
@@ -1272,13 +1235,9 @@ impl KlippApp {
 
     fn handle_color_node_config(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         match cmd {
-            AppCommand::SetNodeLut { clip_id, node_id, path } => {
-                let node_id = *node_id;
-                let path = path.clone();
+            AppCommand::SetNodeLut { clip_id, .. } => {
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        node.params.lut_path = path;
-                    }
+                    write_node_settings(graph, cmd);
                 });
                 true
             }
@@ -1335,18 +1294,7 @@ impl KlippApp {
                 // new value. This mutates `self.state.sequences[...]` only,
                 // not the shared `Arc<klipp_timeline::SharedSequence>` the engine reads.
                 let path = self.state.graph_descent_path.clone();
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.edit_grade(|root| {
-                            if let Ok(graph) = Self::resolve_graph_at_path_mut(root, &path) {
-                                if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                                    node.params.apply_override(param, *value);
-                                }
-                            }
-                        });
-                        break;
-                    }
-                }
+                write_node_param(&mut self.state, *clip_id, &path, *node_id, param, *value);
                 // Push the change onto the engine's lock-free queue. The
                 // engine drains it at the start of each frame with a SINGLE
                 // write-lock acquisition for the whole batch, avoiding the
@@ -1423,23 +1371,7 @@ impl KlippApp {
             AppCommand::EndNodeParamEdit { clip_id } => {
                 if let Some((snap_clip_id, old_graph)) = self.node_param_edit_snapshot.take() {
                     if snap_clip_id == *clip_id {
-                        for track in &self.state.sequences[self.state.active_sequence_idx].tracks {
-                            if let Some(clip) = track.find_clip(*clip_id) {
-                                let new_graph = clip.grade().clone();
-                                // NodeGraph doesn't impl PartialEq, so we push
-                                // unconditionally; undoing a no-op gesture just
-                                // restores an identical graph.
-                                self.state.active_history_mut().push(crate::history::HistoryEntry {
-                                    command: crate::history::EditCommand::SetNodeGraph {
-                                        clip_id: snap_clip_id,
-                                        old_graph,
-                                        new_graph,
-                                    },
-                                });
-                                self.state.dirty = true;
-                                break;
-                            }
-                        }
+                        close_gesture(&mut self.state, snap_clip_id, old_graph);
                     }
                 }
                 // Forward to engine so it clears `in_node_param_edit` and
@@ -1451,12 +1383,8 @@ impl KlippApp {
                 // The gesture taken back: the graph as Begin found it, and
                 // no history entry.
                 if let Some((snap_clip_id, old_graph)) = self.node_param_edit_snapshot.take() {
-                    if snap_clip_id == *clip_id {
-                        let seq = self.state.active_sequence_idx;
-                        if let Some(clip) = self.state.sequences[seq].tracks.iter_mut().find_map(|t| t.find_clip_mut(*clip_id)) {
-                            clip.set_grade(old_graph);
-                            *needs_refresh = true;
-                        }
+                    if snap_clip_id == *clip_id && abandon_gesture(&mut self.state, snap_clip_id, old_graph) {
+                        *needs_refresh = true;
                     }
                 }
                 // Forwarded to the engine, as EndNodeParamEdit is, to end
@@ -1464,26 +1392,18 @@ impl KlippApp {
                 false
             }
             AppCommand::SetNodeCurves { clip_id, node_id, curves } => {
-                let resolved = self.resolve_phantom_node_id(*clip_id, *node_id);
-                let node_id = resolved;
-                let curves = curves.clone();
+                let node_id = self.resolve_phantom_node_id(*clip_id, *node_id);
+                let cmd = AppCommand::SetNodeCurves { clip_id: *clip_id, node_id, curves: curves.clone() };
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        node.params.curves = Some(curves);
-                        node.enabled = true;
-                    }
+                    write_node_settings(graph, &cmd);
                 });
                 true
             }
             AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat } => {
-                let resolved = self.resolve_phantom_node_id(*clip_id, *node_id);
-                let node_id = resolved;
-                let huesat = huesat.clone();
+                let node_id = self.resolve_phantom_node_id(*clip_id, *node_id);
+                let cmd = AppCommand::SetNodeHueSatCurves { clip_id: *clip_id, node_id, huesat: huesat.clone() };
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        node.params.huesat = Some(huesat);
-                        node.enabled = true;
-                    }
+                    write_node_settings(graph, &cmd);
                 });
                 true
             }
@@ -1517,13 +1437,9 @@ impl KlippApp {
             AppCommand::SetNodeMasks { clip_id, node_id, masks } => {
                 let node_id = *node_id;
                 let clip_id_val = *clip_id;
-                let masks = masks.clone();
                 let new_len = masks.masks.len();
                 self.with_current_clip_graph_mut(clip_id_val, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        node.params.masks = Some(masks);
-                        node.enabled = true;
-                    }
+                    write_node_settings(graph, cmd);
                 });
                 // Defensive tracker cleanup: any TrackPoint bound to
                 // (node_id, mask_index) where mask_index now points
@@ -1598,25 +1514,13 @@ impl KlippApp {
                 }
                 true
             }
-            AppCommand::AddMaskShape { clip_id, shape } => {
-                let clip_id = *clip_id;
-                let shape = shape.clone();
-                self.with_current_clip_graph_mut(clip_id, needs_refresh, |graph| {
-                    // ensure_mask_cutout lazy-creates BOTH the Mask
-                    // matte generator and the MaskCutout that
-                    // composites source × matte → Output. Users who
-                    // added a mask from the Color tab see the
-                    // clip-in-shape effect immediately; power users
-                    // can still rewire / delete the cutout in the
-                    // node canvas.
-                    let (mask_node_id, _cutout_id) = graph.ensure_mask_cutout();
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == mask_node_id) {
-                        let masks = node.params.masks.get_or_insert_with(Default::default);
-                        masks.masks.push(klipp_core::Mask {
-                            shape,
-                            ..Default::default()
-                        });
-                    }
+            AppCommand::AddMaskShape { clip_id, .. } => {
+                // The shape onto the grade's Mask node, made with its
+                // cutout when there's none (`ensure_mask_cutout` composites
+                // source × matte → Output), so a mask added from the Color
+                // tab clips the picture at once.
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    write_node_settings(graph, cmd);
                 });
                 true
             }
@@ -1647,13 +1551,7 @@ impl KlippApp {
                         .find(|n| n.kind == klipp_nodes::NodeKind::Mask)
                         .map(|n| n.id));
                 self.with_current_clip_graph_mut(clip_id, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.kind == klipp_nodes::NodeKind::Mask) {
-                        if let Some(masks) = &mut node.params.masks {
-                            if mask_index < masks.masks.len() {
-                                masks.masks.remove(mask_index);
-                            }
-                        }
-                    }
+                    write_node_settings(graph, cmd);
                 });
                 if let Some(nid) = mask_node_id {
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
@@ -3268,12 +3166,35 @@ mod add_node_tests {
 }
 
 /// A per-node editor's settings command written to its node in `graph`:
-/// the qualifier, luma key, difference key, soft clip, grain, external
-/// matte channel or matte combine that the command carries. One place, so
-/// the app's dispatch and the inspector parity apply them alike. `false`
-/// when `cmd` is none of these.
+/// the curves, hue curves, qualifier, luma key, difference key, soft clip,
+/// grain, external matte channel, matte combine, LUT file or mask stack
+/// that the command carries, or a mask shape added to (or removed from) the grade's Mask
+/// node. One place, so the app's dispatch and the inspector parity apply
+/// them alike. `false` when `cmd` is none of these.
 pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppCommand) -> bool {
+    // A mask shape added or removed names its clip, not its node: the
+    // grade's Mask node takes it, made (with its cutout) when there's none.
+    match cmd {
+        AppCommand::AddMaskShape { shape, .. } => {
+            let (mask_node_id, _cutout_id) = graph.ensure_mask_cutout();
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == mask_node_id) {
+                node.params.masks.get_or_insert_with(Default::default).masks.push(klipp_core::Mask { shape: shape.clone(), ..Default::default() });
+            }
+            return true;
+        }
+        AppCommand::RemoveMaskShape { mask_index, .. } => {
+            if let Some(masks) = graph.nodes.iter_mut().find(|n| n.kind == klipp_nodes::NodeKind::Mask).and_then(|n| n.params.masks.as_mut()) {
+                if *mask_index < masks.masks.len() {
+                    masks.masks.remove(*mask_index);
+                }
+            }
+            return true;
+        }
+        _ => {}
+    }
     let node_id = match cmd {
+        AppCommand::SetNodeLut { node_id, .. } | AppCommand::SetNodeMasks { node_id, .. } => *node_id,
+        AppCommand::SetNodeCurves { node_id, .. } | AppCommand::SetNodeHueSatCurves { node_id, .. } => *node_id,
         AppCommand::SetNodeQualifier { node_id, .. }
         | AppCommand::SetNodeLumaKey { node_id, .. }
         | AppCommand::SetNodeDifferenceKey { node_id, .. }
@@ -3286,10 +3207,23 @@ pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppC
     let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) else { return true };
     let params = &mut node.params;
     match cmd {
+        AppCommand::SetNodeCurves { curves, .. } => {
+            params.curves = Some(curves.clone());
+            node.enabled = true;
+        }
+        AppCommand::SetNodeHueSatCurves { huesat, .. } => {
+            params.huesat = Some(huesat.clone());
+            node.enabled = true;
+        }
         AppCommand::SetNodeQualifier { qualifier, .. } => params.qualifier = Some(qualifier.clone()),
         AppCommand::SetNodeLumaKey { luma_key, .. } => params.luma_key = Some(luma_key.clone()),
         AppCommand::SetNodeDifferenceKey { difference_key, .. } => {
             params.difference_key = Some(difference_key.clone());
+            node.enabled = true;
+        }
+        AppCommand::SetNodeLut { path, .. } => params.lut_path = path.clone(),
+        AppCommand::SetNodeMasks { masks, .. } => {
+            params.masks = Some(masks.clone());
             node.enabled = true;
         }
         AppCommand::SetNodeSoftClip { soft_clip, .. } => params.soft_clip = Some(soft_clip.clone()),
@@ -3313,6 +3247,74 @@ pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppC
         }
         _ => {}
     }
+    true
+}
+
+/// A graph edit as the colour dispatch lands it: `mutate` run on the graph
+/// at `path` in `clip_id`'s grade (an empty path is its top-level graph),
+/// and, when `record`, one `SetNodeGraph` step of the whole top-level
+/// graph. `record` is false while a node-param gesture is open, whose close
+/// records the step. `None` when the active sequence has no such clip,
+/// `Err` when `path` no longer leads to a graph (nothing is written).
+pub(super) fn edit_clip_graph(
+    state: &mut AppState,
+    clip_id: klipp_core::ClipId,
+    path: &[klipp_nodes::NodeId],
+    record: bool,
+    mutate: impl FnOnce(&mut klipp_nodes::NodeGraph),
+) -> Option<Result<(), ()>> {
+    let seq = state.active_sequence_idx;
+    let clip = state.sequences[seq].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id))?;
+    let old_graph = clip.grade().clone();
+    if clip.edit_grade(|root| KlippApp::resolve_graph_at_path_mut(root, path).map(mutate)).is_err() {
+        return Some(Err(()));
+    }
+    let new_graph = clip.grade().clone();
+    if record {
+        state.active_history_mut().push(crate::history::HistoryEntry {
+            command: crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph },
+        });
+    }
+    Some(Ok(()))
+}
+
+/// A grade number as the colour dispatch writes it: `param` set to `value`
+/// on `node_id` in the graph at `path` in `clip_id`'s grade, in place and
+/// with no step (a drag's gesture records one when it closes).
+pub(super) fn write_node_param(state: &mut AppState, clip_id: klipp_core::ClipId, path: &[klipp_nodes::NodeId], node_id: klipp_nodes::NodeId, param: &str, value: f32) {
+    let seq = state.active_sequence_idx;
+    if let Some(clip) = state.sequences[seq].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) {
+        clip.edit_grade(|root| {
+            if let Ok(graph) = KlippApp::resolve_graph_at_path_mut(root, path) {
+                if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                    node.params.apply_override(param, value);
+                }
+            }
+        });
+    }
+}
+
+/// A node-param gesture closed: one `SetNodeGraph` step from `old_graph`,
+/// the grade as the gesture found it, to `clip_id`'s grade now. NodeGraph
+/// has no PartialEq, so the step is pushed even for a gesture that changed
+/// nothing; undoing it restores an identical graph.
+pub(super) fn close_gesture(state: &mut AppState, clip_id: klipp_core::ClipId, old_graph: klipp_nodes::NodeGraph) {
+    let seq = state.active_sequence_idx;
+    let Some(clip) = state.sequences[seq].tracks.iter().find_map(|t| t.find_clip(clip_id)) else { return };
+    let new_graph = clip.grade().clone();
+    state.active_history_mut().push(crate::history::HistoryEntry {
+        command: crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph },
+    });
+    state.dirty = true;
+}
+
+/// A node-param gesture taken back: `clip_id`'s grade restored to
+/// `old_graph`, the grade as the gesture found it, with no step. `false`
+/// when the active sequence has no such clip.
+pub(super) fn abandon_gesture(state: &mut AppState, clip_id: klipp_core::ClipId, old_graph: klipp_nodes::NodeGraph) -> bool {
+    let seq = state.active_sequence_idx;
+    let Some(clip) = state.sequences[seq].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) else { return false };
+    clip.set_grade(old_graph);
     true
 }
 
