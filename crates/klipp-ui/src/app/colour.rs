@@ -1182,23 +1182,6 @@ impl KlippApp {
         }
     }
 
-    /// Translate the inspector's `PHANTOM_CORRECTOR_ID` to a real
-    /// Corrector node id on the target clip, materialising the node
-    /// in the graph if it doesn't exist yet. Used at the top of every
-    /// `SetNode*` handler so widgets that rendered against a scratch
-    /// NodeParams (clip has no grade node) can land their first write
-    /// without the inspector having to know whether a real node
-    /// exists. Returns the original id unchanged when it's not the
-    /// phantom sentinel.
-    ///
-    /// The generated tabbed page (M3 step 19) names the Corrector it will
-    /// make by the id it reserved for the clip (`pending_corrector`): an
-    /// edit there makes an enabled Corrector under that id, even beside a
-    /// disabled one, so the edit shows and both the page's rows and its
-    /// editors write one node (IC16).
-    fn resolve_phantom_node_id(&mut self, clip_id: klipp_core::ClipId, node_id: klipp_nodes::NodeId) -> klipp_nodes::NodeId {
-        self.state.resolve_phantom_node_id(clip_id, node_id)
-    }
 
     fn handle_color_node_config(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         match cmd {
@@ -1254,14 +1237,14 @@ impl KlippApp {
                 // phantom Corrector id (no grade node existed on this
                 // clip when the widget rendered), materialise a real
                 // Corrector now and route the write to it.
-                let resolved = self.resolve_phantom_node_id(*clip_id, *node_id);
-                let node_id = &resolved;
+                let target = self.state.phantom_target(*clip_id, *node_id);
+                let node_id = &target.0;
                 // Update the UI-local sequence mirror — required so the UI's
                 // own scope-preview re-grade (runs on this thread) sees the
                 // new value. This mutates `self.state.sequences[...]` only,
                 // not the shared `Arc<klipp_timeline::SharedSequence>` the engine reads.
                 let path = self.state.graph_descent_path.clone();
-                write_node_param(&mut self.state, *clip_id, &path, *node_id, param, *value);
+                write_node_param(&mut self.state, *clip_id, &path, target, param, *value);
                 // Push the change onto the engine's lock-free queue. The
                 // engine drains it at the start of each frame with a SINGLE
                 // write-lock acquisition for the whole batch, avoiding the
@@ -1359,17 +1342,19 @@ impl KlippApp {
                 false
             }
             AppCommand::SetNodeCurves { clip_id, node_id, curves } => {
-                let node_id = self.resolve_phantom_node_id(*clip_id, *node_id);
-                let cmd = AppCommand::SetNodeCurves { clip_id: *clip_id, node_id, curves: curves.clone() };
+                let target = self.state.phantom_target(*clip_id, *node_id);
+                let cmd = AppCommand::SetNodeCurves { clip_id: *clip_id, node_id: target.0, curves: curves.clone() };
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    make_phantom(graph, target);
                     write_node_settings(graph, &cmd);
                 });
                 true
             }
             AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat } => {
-                let node_id = self.resolve_phantom_node_id(*clip_id, *node_id);
-                let cmd = AppCommand::SetNodeHueSatCurves { clip_id: *clip_id, node_id, huesat: huesat.clone() };
+                let target = self.state.phantom_target(*clip_id, *node_id);
+                let cmd = AppCommand::SetNodeHueSatCurves { clip_id: *clip_id, node_id: target.0, huesat: huesat.clone() };
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    make_phantom(graph, target);
                     write_node_settings(graph, &cmd);
                 });
                 true
@@ -3265,13 +3250,20 @@ pub(super) fn edit_clip_graph(
 }
 
 /// A grade number as the colour dispatch writes it: `param` set to `value`
-/// on `node_id` in the graph at `path` in `clip_id`'s grade, in place and
+/// on the node `target` names in the graph at `path` in `clip_id`'s grade, in place and
 /// with no step (a drag's gesture records one when it closes).
-pub(super) fn write_node_param(state: &mut AppState, clip_id: klipp_core::ClipId, path: &[klipp_nodes::NodeId], node_id: klipp_nodes::NodeId, param: &str, value: f32) {
+///
+/// `target` is the node as [`AppState::phantom_target`] decided it: made
+/// here first when it must be, in the same write. A bare `SetNodeParam`
+/// records no step of its own, so that node is undone with the gesture
+/// around it, as the value is.
+pub(super) fn write_node_param(state: &mut AppState, clip_id: klipp_core::ClipId, path: &[klipp_nodes::NodeId], target: (klipp_nodes::NodeId, bool), param: &str, value: f32) {
     let seq = state.active_sequence_idx;
+    let node_id = target.0;
     if let Some(clip) = state.sequences[seq].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) {
         clip.edit_grade(|root| {
             if let Ok(graph) = KlippApp::resolve_graph_at_path_mut(root, path) {
+                make_phantom(graph, target);
                 if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
                     node.params.apply_override(param, value);
                 }
@@ -3318,24 +3310,42 @@ fn graph_path_for(root: &klipp_nodes::NodeGraph, nodes: &[klipp_nodes::NodeId], 
 }
 
 impl crate::state::AppState {
-    /// See [`KlippApp::resolve_phantom_node_id`].
-    pub(crate) fn resolve_phantom_node_id(&mut self, clip_id: klipp_core::ClipId, node_id: klipp_nodes::NodeId) -> klipp_nodes::NodeId {
+    /// The node a grade command's `node_id` writes, and whether that node
+    /// must be made first: an editor drawn before the clip had a Corrector
+    /// names one that doesn't exist yet. Decides only, changing nothing:
+    /// the handler makes the node ([`make_phantom`]) inside the edit it
+    /// records, so undoing that edit takes the node back too.
+    ///
+    /// - The old page's `PHANTOM_CORRECTOR_ID`: the grade's first
+    ///   Corrector, as `NodeGraph::ensure_corrector` finds it (a disabled
+    ///   one included), else a new one.
+    /// - The id the generated tabbed page reserved for the clip
+    ///   (`pending_corrector`, M3 step 19): that node, made enabled even
+    ///   beside a disabled Corrector, so the edit shows and the page's
+    ///   rows and editors write one node (IC16).
+    /// - Any other id: itself.
+    pub(crate) fn phantom_target(&self, clip_id: klipp_core::ClipId, node_id: klipp_nodes::NodeId) -> (klipp_nodes::NodeId, bool) {
         let reserved = self.pending_corrector == Some((clip_id, node_id));
         if node_id != klipp_nodes::PHANTOM_CORRECTOR_ID && !reserved {
-            return node_id;
+            return (node_id, false);
         }
-        for track in &mut self.sequences[self.active_sequence_idx].tracks {
-            if let Some(clip) = track.find_clip_mut(clip_id) {
-                if reserved {
-                    if !clip.grade().nodes.iter().any(|n| n.id == node_id) {
-                        clip.edit_grade(|g| g.insert_corrector(node_id));
-                    }
-                    return node_id;
-                }
-                return clip.edit_grade(|g| g.ensure_corrector());
-            }
+        let Some(clip) = self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id == clip_id) else { return (node_id, false) };
+        let nodes = &clip.grade().nodes;
+        if reserved {
+            return (node_id, !nodes.iter().any(|n| n.id == node_id));
         }
-        node_id
+        match nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector) {
+            Some(n) => (n.id, false),
+            None => (klipp_nodes::NodeId::new_v4(), true),
+        }
+    }
+}
+
+/// Make the Corrector [`crate::state::AppState::phantom_target`] said
+/// must be made, in `graph`: the graph the command then writes.
+pub(super) fn make_phantom(graph: &mut klipp_nodes::NodeGraph, (id, make): (klipp_nodes::NodeId, bool)) {
+    if make && !graph.nodes.iter().any(|n| n.id == id) {
+        graph.insert_corrector(id);
     }
 }
 

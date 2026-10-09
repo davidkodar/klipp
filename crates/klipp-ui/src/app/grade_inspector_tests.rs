@@ -674,6 +674,28 @@ fn escape_or_a_still_click_on_the_first_edit_leaves_no_corrector() {
     }
 }
 
+/// An editor's `SetNode*` command as the colour dispatch writes it: the
+/// node it names decided first, changing nothing, then made (when it must
+/// be) in the same recorded graph edit as the write, one `SetNodeGraph`
+/// step from the grade as it was. The node it wrote.
+fn editor_write(run: &mut Run, named: NodeId, write: impl FnOnce(&mut Node)) -> NodeId {
+    let before = saved(&run.state, run.clip);
+    let target = run.state.phantom_target(run.clip, named);
+    assert_eq!(saved(&run.state, run.clip), before, "deciding the node changes nothing");
+    let clip_id = run.clip;
+    let c = run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
+    let old_graph = c.grade().clone();
+    c.edit_grade(|g| {
+        super::colour::make_phantom(g, target);
+        if let Some(n) = g.nodes.iter_mut().find(|n| n.id == target.0) {
+            write(n);
+        }
+    });
+    let new_graph = c.grade().clone();
+    run.state.active_history_mut().push(crate::history::HistoryEntry { command: crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph } });
+    target.0
+}
+
 /// An editor's own command on the reserved Corrector makes it under that
 /// id too (beside a disabled one: IC16), so the rows and the editors
 /// write one node; the old page's phantom still writes the first
@@ -684,16 +706,37 @@ fn an_editor_command_on_the_reserved_corrector_makes_that_node() {
         let mut run = without_corrector(disabled);
         tabbed_on(&mut run, true, false, crate::state::ColorTab::Wheels, None, Vec::new());
         let (_, reserved) = run.state.pending_corrector.unwrap();
-        assert_eq!(run.state.resolve_phantom_node_id(run.clip, reserved), reserved);
+        assert_eq!(editor_write(&mut run, reserved, |_| {}), reserved);
         assert_eq!(correctors(&run).iter().map(|n| n.id).collect::<Vec<_>>(), vec![reserved], "disabled {disabled}");
-        assert_eq!(run.state.resolve_phantom_node_id(run.clip, reserved), reserved, "a second write, the same node");
+        assert_eq!(editor_write(&mut run, reserved, |_| {}), reserved, "a second write, the same node");
         assert_eq!(correctors(&run).len(), 1);
 
         // The old page's phantom: the first Corrector, whatever its state.
         let mut old = without_corrector(disabled);
-        let id = old.state.resolve_phantom_node_id(old.clip, klipp_nodes::PHANTOM_CORRECTOR_ID);
+        let id = editor_write(&mut old, klipp_nodes::PHANTOM_CORRECTOR_ID, |_| {});
         let n = clip(&old.state, old.clip).grade().nodes.iter().find(|n| n.id == id).cloned().unwrap();
         assert_eq!((n.kind, n.enabled), (NodeKind::Corrector, !disabled), "old: into the disabled one when there is one");
+    }
+}
+
+/// A bare editor command (no Begin/End around it, as the Hue-Sat
+/// eyedropper sends `SetNodeHueSatCurves`) on a Corrector that isn't made
+/// yet is one step with the node it makes: undoing it leaves the clip
+/// saved as it was, for the reserved id and the old phantom alike.
+#[test]
+fn undoing_a_bare_editor_command_takes_back_the_corrector_it_made() {
+    for (disabled, reserve) in [(false, true), (true, true), (false, false)] {
+        let mut run = without_corrector(disabled);
+        tabbed_on(&mut run, true, false, crate::state::ColorTab::HueSat, None, Vec::new());
+        let named = if reserve { run.state.pending_corrector.unwrap().1 } else { klipp_nodes::PHANTOM_CORRECTOR_ID };
+        let before = saved(&run.state, run.clip);
+        let made = editor_write(&mut run, named, |n| { n.params.huesat = Some(Default::default()); n.enabled = true; });
+        assert!(clip(&run.state, run.clip).grade().nodes.iter().any(|n| n.id == made), "made");
+        assert_eq!(run.state.active_history().undo_count(), 1);
+        let entry = run.state.active_history_mut().undo().unwrap();
+        let crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, .. } = entry.command else { panic!("a graph step") };
+        run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().set_grade(old_graph);
+        assert_eq!(saved(&run.state, run.clip), before, "disabled {disabled}, reserved {reserve}: as it was");
     }
 }
 
@@ -705,7 +748,7 @@ fn a_spent_reservation_is_never_reused() {
     let tab = crate::state::ColorTab::Wheels;
     tabbed_on(&mut run, true, false, tab, None, Vec::new());
     let (_, first) = run.state.pending_corrector.unwrap();
-    run.state.resolve_phantom_node_id(run.clip, first);
+    editor_write(&mut run, first, |_| {});
     tabbed_on(&mut run, true, false, tab, None, Vec::new());
     assert_eq!(run.state.pending_corrector, None);
     let c = run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap();

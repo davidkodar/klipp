@@ -438,8 +438,6 @@ impl crate::state::AppState {
         Ok(vec![GraphOp::SetAnim { path: addr.clone(), key: key.clone(), anim: Some(anim) }])
     }
 
-    /// The node `path` names, on this sequence: only a clip's graph so far,
-    /// as `GraphOps` takes.
     /// Whether `addr` names the Corrector the tabbed page reserved for the
     /// clip (`pending_corrector`) and the clip doesn't hold it yet.
     fn names_pending_corrector(&self, addr: &NodePath) -> bool {
@@ -487,6 +485,8 @@ impl crate::state::AppState {
         }
     }
 
+    /// The node `path` names, on this sequence: only a clip's graph so far,
+    /// as `GraphOps` takes.
     fn node_at(&self, path: &NodePath) -> Result<Node, String> {
         let Root::Clip { clip } = path.root else { return Err("only a clip's graph is shown by path so far".into()) };
         let c = self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id.0 == clip).ok_or_else(|| format!("no clip {clip} on this sequence"))?;
