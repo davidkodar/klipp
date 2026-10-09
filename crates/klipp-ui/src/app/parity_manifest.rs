@@ -1153,7 +1153,7 @@ mod tests {
         report.case_via_fallback(
             "legacy roots",
             earnable(&manifest).iter().filter(fallback).cloned(),
-            "#997: nested/nonclip rows retain their legacy route",
+            "#997: nonclip rows retain their legacy route",
             || Ok(()),
         );
         assert!(report
