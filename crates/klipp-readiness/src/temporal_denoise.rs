@@ -76,6 +76,7 @@ fn scene(from: i64, to: i64, speed: f64, strength: f32) -> (Arc<Scene>, Clip) {
     let mut pool = klipp_media::MediaPool::new();
     let mut item = klipp_media::MediaItem::synthetic_for_test("/known/ramp.mov".into(), None);
     item.duration = RationalTime { value: MEDIA_FRAMES, rate: FPS };
+    item.fps = klipp_core::Fps::new(FPS, 1);
     let media = item.id;
     pool.add(item);
     let tc = |f: i64| RationalTime { value: f, rate: FPS };
@@ -88,7 +89,7 @@ fn scene(from: i64, to: i64, speed: f64, strength: f32) -> (Arc<Scene>, Clip) {
     let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
     v1.clips = vec![clip.clone()];
     sequence.tracks = vec![v1];
-    (Arc::new(Scene { sequence, pool, width: W, height: H }), clip)
+    (Arc::new(Scene { sequence, pool, width: W, height: H, plugin_dirs: Vec::new() }), clip)
 }
 
 /// What timeline frame `frame` of `clip` must be: its source frame,
@@ -106,14 +107,6 @@ fn expected(clip: &Clip, source: &Ramp, frame: i64, strength: f32) -> Vec<f32> {
     klipp_effects::temporal_denoise::denoise_frame(&flat(grey(at)), &refs, THRESHOLD, strength)
 }
 
-/// How far `got` is from `want`, the largest channel difference.
-fn apart(got: &[f32], want: &[f32]) -> f32 {
-    if got.len() != want.len() {
-        return f32::INFINITY;
-    }
-    got.iter().zip(want).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max)
-}
-
 /// `frames` of the scene on `route`, the GPU `gpu`, each held to its
 /// expectation, in the order given.
 fn holds(route: Route, gpu: bool, scene: (Arc<Scene>, Clip), source: Ramp, frames: &[i64], strength: f32) -> Result<(), String> {
@@ -122,9 +115,10 @@ fn holds(route: Route, gpu: bool, scene: (Arc<Scene>, Clip), source: Ramp, frame
     let mut s = Session::new(route, gpu, scene, Arc::clone(&source) as Arc<dyn Source>);
     for &f in frames {
         let got = s.frame(f);
-        let linear = got.linear.ok_or_else(|| format!("frame {f}: no linear frame ({:?})", got.notes))?;
-        let off = apart(&linear, &expected(&clip, &source, f, strength));
-        if off > 1e-4 {
+        // The viewer's GPU stack draws display bytes only: within a byte.
+        let tolerance = if got.display_only() { 1.0 / 255.0 } else { 1e-4 };
+        let off = got.off(&expected(&clip, &source, f, strength));
+        if off > tolerance {
             return Err(format!("frame {f}: {off} from the expected denoise"));
         }
     }
