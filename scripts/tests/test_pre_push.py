@@ -822,7 +822,7 @@ class PreGateTests(RealGitGate):
                 '{"name":"a","manifest_path":"%s/crates/a/Cargo.toml","dependencies":[]},'
                 '{"name":"b","manifest_path":"%s/crates/b/Cargo.toml","dependencies":[{"name":"a","path":"%s/crates/a"}]},'
                 '{"name":"klipp-graph-lift","manifest_path":"%s/crates/klipp-graph-lift/Cargo.toml","dependencies":[]}]}')
-        self.script(self.bin / "cargo", f'case "$1" in\n metadata) printf \'{meta}\' "$PWD" "$PWD" "$PWD" "$PWD" "$PWD";;\n *) echo "$*" >> "$TEST_ROOT/cargo-calls";;\nesac\n'
+        self.script(self.bin / "cargo", f'case "$1" in\n metadata) [ -n "$TEST_NO_METADATA" ] && exit 1; printf \'{meta}\' "$PWD" "$PWD" "$PWD" "$PWD" "$PWD";;\n *) echo "$*" >> "$TEST_ROOT/cargo-calls";;\nesac\n'
                     'if [ "$1" = test ] && [ -n "$TEST_FAIL" ]; then echo "test broken ... FAILED"; exit 101; fi\nexit 0')
         self.change("crates/a/src/lib.rs")
 
@@ -1059,6 +1059,15 @@ class PreGateTests(RealGitGate):
         self.assertIn("git rebase origin/main", result.stderr)
         self.assertFalse(any(c.startswith("test") for c in self.calls()), "nothing tested")
         self.assertFalse(self.stamp().exists())
+
+    def test_behind_main_with_an_unknown_scope_needs_a_rebase(self):
+        # Without cargo's metadata the gate tests the whole workspace, so a
+        # main commit in any crate is untested here: never skipped silently.
+        self.env["TEST_NO_METADATA"] = "1"
+        self.main_moves_on(name="crates/klipp-graph-lift/src/other.rs", text="main's lift\n")
+        result = self.pre_gate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("main has moved in crates the gate will test", result.stderr)
 
     def test_behind_main_outside_the_gates_scope_is_checked(self):
         self.main_moves_on(name="crates/klipp-graph-lift/src/other.rs", text="main's lift\n")
