@@ -46,19 +46,24 @@ pub fn generate_luma_key_matte(
     }
 
     for (i, chunk) in rgba.chunks_exact(4).enumerate() {
-        let r = chunk[0] as f32 / 255.0;
-        let g = chunk[1] as f32 / 255.0;
-        let b = chunk[2] as f32 / 255.0;
-        let y = luma[0] * r + luma[1] * g + luma[2] * b;
-
-        let mut m = soft_range(y, k.low, k.high, k.soft);
-        if k.invert {
-            m = 1.0 - m;
-        }
-        matte[i] = m;
+        matte[i] = luma_key_value([chunk[0], chunk[1], chunk[2]].map(|c| c as f32 / 255.0), k, luma);
     }
 
     matte
+}
+
+/// One pixel's matte, from its encoded colour `e`: each channel clamped
+/// to `[0, 1]` before it is weighted, so a highlight above white keys as
+/// white. A window up to `1.0` (the whole range, the default) then holds
+/// every pixel, as it does on the GPU, which clamps the same (#1439);
+/// left unclamped there, a highlight fell out of a whole-range key.
+/// Callers keying the float picture pass its encoding, not an 8-bit copy
+/// of it, so a soft edge isn't stepped by the 8-bit rounding either.
+pub fn luma_key_value(e: [f32; 3], k: &LumaKeySettings, luma: [f32; 3]) -> f32 {
+    let e = e.map(|c| c.clamp(0.0, 1.0));
+    let y = luma[0] * e[0] + luma[1] * e[1] + luma[2] * e[2];
+    let m = soft_range(y, k.low, k.high, k.soft);
+    if k.invert { 1.0 - m } else { m }
 }
 
 /// `1.0` inside `[lo, hi]`; ramps from `1.0` to `0.0` across `soft`

@@ -7002,7 +7002,9 @@ struct FilmGrainParams {
     width: u32,
     height: u32,
     amount: f32,
-    size: f32,
+    /// Grain cells per pixel (`cpu::grain_cells_per_px`), not the size:
+    /// the shader multiplies by it, as the CPU does (#1441).
+    per_px: f32,
     color: u32,
     shadows: f32,
     seed: u32,
@@ -13270,7 +13272,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // project needs AP1's row (0.272/0.674/0.054) and Rec.709's
     // under-weights green. They arrive via `set_luma_coefs`, which the
     // executor installs from the loaded project.
-    let e = enc3(orig.xyz);
+    // Each channel clamped to [0, 1], as the CPU keys it
+    // (`luma_key_value`): unclamped, a highlight above white fell out of
+    // a window up to 1.0, the whole range (#1439).
+    let e = clamp(enc3(orig.xyz), vec3<f32>(0.0), vec3<f32>(1.0));
     let y = dot(e, params.luma.xyz);
 
     var matte = soft_range(y, params.low, params.high, params.soft);
@@ -14676,7 +14681,7 @@ const SHADER_FILM_GRAIN: &str = concat!(
     shader_pixel_storage_wgsl!(),
     "
 struct Params {
-    width: u32, height: u32, amount: f32, size: f32,
+    width: u32, height: u32, amount: f32, per_px: f32,
     color: u32, shadows: f32, seed: u32, luma_yr: f32,
     luma_yg: f32, luma_yb: f32, _pad: u32, _pad2: u32,
 }
@@ -14700,9 +14705,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = idx % params.width;
     let y = idx / params.width;
     let v = unpack(input[idx]);
-    let cell = max(params.size * f32(params.height) / 1080.0, 1.0);
-    let gx = u32(f32(x) / cell);
-    let gy = u32(f32(y) / cell);
+    // A product, as the CPU works it (`grain_cells_per_px`): a division
+    // here is good to 2.5 ULP, and an edge then fell in the next cell on
+    // this route alone (#1441).
+    let gx = u32(f32(x) * params.per_px);
+    let gy = u32(f32(y) * params.per_px);
     let base = gx * 7919u + gy * 104729u + params.seed * 15485863u;
     let l = clamp(dot(v.xyz, vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb)), 0.0, 1.0);
     let depth = params.amount * 0.35 * (1.0 - params.shadows * l);
@@ -15053,10 +15060,22 @@ struct Params {
 ",
     shader_linear_helpers_wgsl!(),
     "
-fn sample_linear_rgb(sx: i32, sy: i32, w: u32, h: u32) -> vec3<f32> {
-    let cx = u32(clamp(sx, 0, i32(w) - 1));
-    let cy = u32(clamp(sy, 0, i32(h) - 1));
-    return unpack(input[cy * w + cx]).xyz;
+// Bilinear, clamped at the edges, as the CPU's `bilinear` mixes: a
+// nearest pixel flips on the last bit of a position landing on a half
+// (a fused multiply-add here, the approximate sin and cos), and the two
+// routes then read different pixels at every edge (#1440).
+fn sample_linear_rgb(fx: f32, fy: f32, w: u32, h: u32) -> vec3<f32> {
+    let x0 = u32(clamp(i32(floor(fx)), 0, i32(w) - 1));
+    let x1 = u32(clamp(i32(floor(fx)) + 1, 0, i32(w) - 1));
+    let y0 = u32(clamp(i32(floor(fy)), 0, i32(h) - 1));
+    let y1 = u32(clamp(i32(floor(fy)) + 1, 0, i32(h) - 1));
+    let dx = fract(fx);
+    let dy = fract(fy);
+    let tl = unpack(input[y0 * w + x0]).xyz;
+    let tr = unpack(input[y0 * w + x1]).xyz;
+    let bl = unpack(input[y1 * w + x0]).xyz;
+    let br = unpack(input[y1 * w + x1]).xyz;
+    return mix(mix(tl, tr, dx), mix(bl, br, dx), dy);
 }
 
 @compute @workgroup_size(256)
@@ -15081,9 +15100,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let scale = params.amount / 100.0;
         for (var i = 0u; i < s; i = i + 1u) {
             let t = (f32(i) / f32(s) - 0.5) * 2.0;
-            let sx = i32(round(x + dx * t * scale));
-            let sy = i32(round(y + dy * t * scale));
-            sum = sum + sample_linear_rgb(sx, sy, w, h);
+            sum = sum + sample_linear_rgb(x + dx * t * scale, y + dy * t * scale, w, h);
         }
     } else {
         // Spin blur
@@ -15093,9 +15110,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let ang = t * half_arc;
             let cos_a = cos(ang);
             let sin_a = sin(ang);
-            let sx = i32(round(cx + dx * cos_a - dy * sin_a));
-            let sy = i32(round(cy + dx * sin_a + dy * cos_a));
-            sum = sum + sample_linear_rgb(sx, sy, w, h);
+            sum = sum + sample_linear_rgb(cx + dx * cos_a - dy * sin_a, cy + dx * sin_a + dy * cos_a, w, h);
         }
     }
 
@@ -15281,6 +15296,24 @@ struct Params {
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 
+// Bilinear, clamped at the edges, as the CPU's `bilinear` mixes: a
+// nearest pixel flips on the last bit of a position landing on a half
+// (the division, the square root), and the two routes then read
+// different pixels at edges (#1442).
+fn sample_bilinear(fx: f32, fy: f32, w: u32, h: u32) -> vec4<f32> {
+    let x0 = u32(clamp(i32(floor(fx)), 0, i32(w) - 1));
+    let x1 = u32(clamp(i32(floor(fx)) + 1, 0, i32(w) - 1));
+    let y0 = u32(clamp(i32(floor(fy)), 0, i32(h) - 1));
+    let y1 = u32(clamp(i32(floor(fy)) + 1, 0, i32(h) - 1));
+    let dx = fract(fx);
+    let dy = fract(fy);
+    let tl = unpack(input[y0 * w + x0]);
+    let tr = unpack(input[y0 * w + x1]);
+    let bl = unpack(input[y1 * w + x0]);
+    let br = unpack(input[y1 * w + x1]);
+    return mix(mix(tl, tr, dx), mix(bl, br, dx), dy);
+}
+
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
@@ -15300,9 +15333,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Red channel: sample shifted
     let r_scale = 1.0 + params.red_shift * norm_dist / max_dist;
-    let r_sx = clamp(i32(round(cx + dx * r_scale)), 0, i32(w) - 1);
-    let r_sy = clamp(i32(round(cy + dy * r_scale)), 0, i32(h) - 1);
-    let r_val = unpack(input[u32(r_sy) * w + u32(r_sx)]).x;
+    let r_val = sample_bilinear(cx + dx * r_scale, cy + dy * r_scale, w, h).x;
 
     // Green channel: original position
     let g_pixel = unpack(input[idx]);
@@ -15311,9 +15342,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Blue channel: sample shifted
     let b_scale = 1.0 + params.blue_shift * norm_dist / max_dist;
-    let b_sx = clamp(i32(round(cx + dx * b_scale)), 0, i32(w) - 1);
-    let b_sy = clamp(i32(round(cy + dy * b_scale)), 0, i32(h) - 1);
-    let b_val = unpack(input[u32(b_sy) * w + u32(b_sx)]).z;
+    let b_val = sample_bilinear(cx + dx * b_scale, cy + dy * b_scale, w, h).z;
 
     output[idx] = pack(vec4<f32>(r_val, g_val, b_val, a_val));
 }

@@ -132,6 +132,63 @@ fn diff(a: &[f32], b: &[f32]) -> (i32, f64) {
     (worst, sum as f64 / (a.len() / 4 * 3) as f64)
 }
 
+/// A coarse checker over ramps, `w` by `h`: hard edges everywhere, where a
+/// sample that lands on the wrong pixel shows.
+fn checker(w: u32, h: u32) -> Vec<f32> {
+    let mut v = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
+            let check = if (x / 8 + y / 8) % 2 == 0 { 0.25 } else { 0.0 };
+            v.extend_from_slice(&[fx * 0.8 + check, fy * 0.7, (1.0 - fx) * 0.6 + check, 1.0]);
+        }
+    }
+    v
+}
+
+/// The settings where an operation that reads the same on both routes
+/// rounded differently on the GPU, and a last-bit difference picked another
+/// pixel or cell. Each drew more than a level apart before its fix, on this
+/// frame at this size:
+/// - Radial Blur at its sample settings: 16 levels at 160x90, 12 at
+///   320x180, its zoom positions landing on halves (nearest-pixel samples,
+///   the GPU's fused multiply-add; #1440).
+/// - Film Grain of a fractional cell, as a size between two keys gives
+///   (1.2 pixels at 160x90, 2.4 at 320x180): 144 levels, the GPU's
+///   division putting an edge pixel in the next cell with an unrelated
+///   grain value (#1441).
+/// - Chromatic Aberration at its sample settings: 4 levels at a few edge
+///   pixels (nearest-pixel samples; #1442).
+#[test]
+fn route_knife_edges_agree() {
+    use BuiltinEffect::*;
+    let Some(mut gpu) = GpuEffectsPipeline::new() else {
+        eprintln!("skipping: no GPU");
+        return;
+    };
+    let radial = RadialBlur { center_x: 0.5, center_y: 0.5, amount: 10.0, samples: 12, mode: 0 };
+    let cases = [
+        ((160, 90), "RadialBlur sample", radial.clone()),
+        ((320, 180), "RadialBlur sample", radial),
+        ((320, 180), "RadialBlur 20", RadialBlur { center_x: 0.5, center_y: 0.5, amount: 20.0, samples: 16, mode: 0 }),
+        ((160, 90), "FilmGrain 1.2-pixel cell", FilmGrain { amount: 0.5, size: 14.4, color: 0, shadows: 0.6, seed: 13 }),
+        ((320, 180), "FilmGrain 2.4-pixel cell", FilmGrain { amount: 0.5, size: 14.4, color: 0, shadows: 0.6, seed: 13 }),
+        ((320, 180), "ChromaticAberration sample", ChromaticAberration { red_shift: 2.0, blue_shift: -2.0, center_x: 0.5, center_y: 0.5 }),
+    ];
+    let mut failures = Vec::new();
+    for ((w, h), name, effect) in cases {
+        let input = checker(w, h);
+        let fx = [effect];
+        let (cpu, on_gpu) = (apply_effects(&fx, input.clone(), w, h), gpu.apply_effects(&fx, &input, w, h));
+        let (worst, mean) = diff(&cpu, &on_gpu);
+        eprintln!("{name:28} {w}x{h} CPU vs GPU worst {worst:3} mean {mean:6.3}");
+        if worst > 1 {
+            failures.push(format!("{name} at {w}x{h}: CPU and GPU differ by {worst} levels"));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 #[test]
 fn every_effect_matches_between_cpu_and_gpu() {
     let Some(mut gpu) = GpuEffectsPipeline::new() else {

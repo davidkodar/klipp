@@ -99,14 +99,31 @@ fn a_luma_keys_matte_is_opaque_on_both() {
     };
     assert!(cpu.chunks_exact(4).all(|p| p[3] == 1.0), "the CPU matte is opaque");
     assert!(gpu.chunks_exact(4).all(|p| p[3] == 1.0), "the GPU matte carried the input's alpha");
-    // The CPU keys the 8-bit encoded picture (`generate_luma_key_matte`
-    // speaks u8) and the shader keys floats, so one 8-bit step of input
-    // can move the matte by a step over the soft edge: (1/255)/soft. That
-    // precision gap predates #1037 (it is the same with an opaque input)
-    // and is held to its bound here; the alpha above is #1037's point.
-    let bound = (1.0 / 255.0) / lk.soft + 1e-4;
+    // Both key the float picture's encoding (#1439): the CPU used to key
+    // an 8-bit copy, a step over the soft edge for one 8-bit step of input.
     let d = worst(&cpu, &gpu);
-    assert!(d <= bound, "luma key CPU and GPU differ by {d}, beyond the 8-bit keying bound {bound}");
+    assert!(d < 1e-3, "luma key CPU and GPU differ by {d}");
+}
+
+/// A whole-range luma key (its default window, 0 to 1) selects every
+/// pixel on both routes, a highlight above white included (#1439): the
+/// GPU left the highlight unclamped, so it fell out of the window, and
+/// a secondary keyed on it skipped the brightest parts of the picture.
+#[test]
+fn a_whole_range_luma_key_holds_highlights_above_white_on_both() {
+    let lk = klipp_core::LumaKeySettings { enabled: true, ..Default::default() };
+    let graph = key_graph(NodeKind::LumaKey, NodeParams { luma_key: Some(lk), ..Default::default() });
+    let bright: Vec<f32> = frame().chunks_exact(4).flat_map(|p| [p[0] + 1.5, p[1] + 1.5, p[2] + 1.5, 1.0]).collect();
+    let run = |mut exec: GraphExecutor| exec.execute_linear(&bright, &graph, W, H, 0.0, 0, None, None).expect("graph runs").0;
+    let cpu = run(GraphExecutor::new_cpu_only());
+    assert!(cpu.chunks_exact(4).all(|p| p[0] == 1.0), "the CPU dropped a highlight from a whole-range key");
+    let mut gpu_exec = GraphExecutor::new();
+    if gpu_exec.gpu_pipeline_or_init().is_none() {
+        eprintln!("skipping the GPU half: no usable GPU");
+        return;
+    }
+    let gpu = run(gpu_exec);
+    assert!(gpu.chunks_exact(4).all(|p| p[0] == 1.0), "the GPU dropped a highlight from a whole-range key");
 }
 
 fn plate() -> std::path::PathBuf {

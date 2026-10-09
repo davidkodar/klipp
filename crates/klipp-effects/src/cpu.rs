@@ -709,15 +709,20 @@ pub(crate) fn apply(
                 let mut sum = [0.0f32; 3];
                 for i in 0..s {
                     let t = (i as f32 / s as f32 - 0.5) * 2.0;
+                    // Sampled bilinearly, as the shader samples: a nearest
+                    // pixel flips on the last bit of a position that lands
+                    // on a half (the shader's fused multiply-add, its
+                    // sin and cos), and the two routes then read different
+                    // pixels at every edge (#1440).
                     let (sx, sy) = if mode == 0 {
                         let scale = amount / 100.0;
-                        (round(xf + dx * t * scale), round(yf + dy * t * scale))
+                        (xf + dx * t * scale, yf + dy * t * scale)
                     } else {
                         let ang = t * (amount * std::f32::consts::PI / 180.0 * 0.5);
                         let (sin_a, cos_a) = ang.sin_cos();
-                        (round(cx + dx * cos_a - dy * sin_a), round(cy + dx * sin_a + dy * cos_a))
+                        (cx + dx * cos_a - dy * sin_a, cy + dx * sin_a + dy * cos_a)
                     };
-                    let q = f.clamped(sx, sy);
+                    let q = bilinear(f, sx, sy);
                     (0..3).for_each(|c| sum[c] += q[c]);
                 }
                 let inv = 1.0 / s as f32;
@@ -775,11 +780,11 @@ pub(crate) fn apply(
             if amount < f32::EPSILON {
                 return p;
             }
-            let cell = (size * hf / 1080.0).max(1.0);
+            let per_px = grain_cells_per_px(size, h);
             each_pixel(&p, w, h, |x, y, f| {
                 let o = f.at(x, y);
-                let gx = (x as f32 / cell) as u32;
-                let gy = (y as f32 / cell) as u32;
+                let gx = (x as f32 * per_px) as u32;
+                let gy = (y as f32 * per_px) as u32;
                 let base = gx.wrapping_mul(7919).wrapping_add(gy.wrapping_mul(104729)).wrapping_add(seed.wrapping_mul(15485863));
                 let l = luma(o, yw).clamp(0.0, 1.0);
                 let depth = amount * 0.35 * (1.0 - shadows * l);
@@ -921,9 +926,12 @@ pub(crate) fn apply(
             each_pixel(&p, w, h, |x, y, f| {
                 let (dx, dy) = (x as f32 - cx, y as f32 - cy);
                 let norm = (dx * dx + dy * dy).sqrt() / max_dist;
+                // Sampled bilinearly, as the shader samples: a nearest
+                // pixel flips on the last bit of a position landing on a
+                // half (#1442).
                 let shifted = |shift: f32, c: usize| {
                     let k = 1.0 + shift * norm / max_dist;
-                    f.clamped(round(cx + dx * k), round(cy + dy * k))[c]
+                    bilinear(f, cx + dx * k, cy + dy * k)[c]
                 };
                 let g = f.at(x, y);
                 [shifted(red_shift, 0), g[1], shifted(blue_shift, 2), g[3]]
@@ -936,6 +944,17 @@ pub(crate) fn apply(
         RollingShutterCorrection { .. } | VideoStabilization { .. } | SpeedRamp { .. } | Frei0r { .. }
         | TemporalDenoise { .. } => p,
     }
+}
+
+/// Film Grain's grain cells per pixel at `size` (a cell is `size` pixels
+/// of a 1080-line frame, at least one pixel), worked out once here for
+/// both routes. Each pixel's cell is its position times this: a product
+/// rounds the same on the CPU and in WGSL, where a division (`x / cell`)
+/// is only good to 2.5 ULP, and a position landing on a cell's edge then
+/// fell in the next cell on one route alone, with an unrelated grain
+/// value, whenever the size was fractional, as between two keys (#1441).
+pub(crate) fn grain_cells_per_px(size: f32, height: u32) -> f32 {
+    1.0 / (size * height as f32 / 1080.0).max(1.0)
 }
 
 /// The motion shaders' bilinear sample: clamp-to-edge corners around
