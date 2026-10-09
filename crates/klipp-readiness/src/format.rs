@@ -283,7 +283,7 @@ pub fn run(report: &mut Report) {
         let [outer] = outer.as_slice() else { return Err(format!("{} groups in the grade's body, not the one compound", outer.len())) };
         let inner: Vec<Value> = body(outer).into_iter().filter(|n| group(&n)).collect();
         let [inner] = inner.as_slice() else { return Err(format!("{} groups in the compound's body, not the one inside it", inner.len())) };
-        if !body(inner).iter().any(|n| n["legacy"]["payload"]["params"]["exposure"] == 0.4) {
+        if !body(inner).iter().any(|n| n["legacy"]["payload"]["params"]["exposure"].as_f64().is_some_and(|e| (e - 0.4).abs() < 1e-6)) {
             return Err("the innermost body doesn't keep its Corrector's exposure 0.4".into());
         }
         if picture(v)?.to_string().contains("compound_subgraph") {
