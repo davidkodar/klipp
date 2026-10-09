@@ -334,34 +334,24 @@ fn a_browser_add_is_the_same_by_path() {
 }
 
 
-/// Start a real drag on the header's Mix slider. Its numeric value is
-/// drawn between the rail and the Mix label; use that observed row and
-/// egui's configured rail width, not an absolute screen coordinate.
+/// Start a real drag on the header's Mix: its label, a number row's
+/// scrubbing handle, pressed and dragged left (from full, its top).
 fn start_header_mix_drag(run: &mut Run) -> egui::Pos2 {
     run.frame(Vec::new(), egui::Modifiers::NONE);
     let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
-    let label = drawn
+    let at = drawn
         .iter()
         .find(|(text, _)| text == "Mix")
         .map(|(_, at)| *at)
-        .expect("Mix label");
-    let number = drawn
-        .iter()
-        .filter(|(text, at)| {
-            (at.y - label.y).abs() < 6.0 && at.x < label.x && text.parse::<f32>().is_ok()
-        })
-        .max_by(|a, b| a.1.x.total_cmp(&b.1.x))
-        .map(|(_, at)| *at)
-        .unwrap_or_else(|| panic!("Mix value: {drawn:?}"));
-    let at = number - egui::vec2(run.ctx.style().spacing.slider_width * 0.6, 0.0);
+        .unwrap_or_else(|| panic!("Mix label: {drawn:?}"));
     run.button(at, egui::PointerButton::Primary, true);
-    for dx in [6.0, 12.0, 18.0] {
+    for dx in [-6.0, -12.0, -18.0] {
         run.frame(
             vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))],
             egui::Modifiers::NONE,
         );
     }
-    at + egui::vec2(18.0, 0.0)
+    at + egui::vec2(-18.0, 0.0)
 }
 
 #[test]

@@ -379,17 +379,20 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
     if row.mixable {
         let mix = node.and_then(|n| n.mix).unwrap_or(1.0);
         let mut v = mix;
-        let r = ui.add_enabled(!row.read_only, egui::Slider::new(&mut v, 0.0..=1.0).text("Mix"));
+        // A number row like the card's others: dragged, typed, and reset
+        // from its label to full (IC15).
+        let r = ui
+            .add_enabled_ui(!row.read_only, |ui| crate::widgets::scrubby_param::scrubby_param_row(ui, "Mix", &mut v, 0.0..=1.0, 1.0, 0.005, 2, "", None))
+            .inner;
         let key = klipp_graph_format::ParamKey::from(AppState::NODE_MIX_DRAG_KEY);
-        if r.drag_started() {
+        if r.drag_started {
             cmds.push(AppCommand::BeginParamEditAt {
                 addr: row.addr.clone(),
                 key: key.clone(),
             });
         }
         // egui reports drag_stopped on Escape before the widget is drawn.
-        if (r.dragged() || r.drag_stopped()) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
-        {
+        if r.drag_stopped && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             cmds.push(AppCommand::AbandonParamEditAt {
                 addr: row.addr.clone(),
                 key,
@@ -398,13 +401,13 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
             // cannot begin writing a second edit before the button is released.
             ui.ctx().stop_dragging();
         } else {
-            if r.changed() && v != mix {
+            if r.changed && v != mix {
                 cmds.push(AppCommand::SetMixAt {
                     addr: row.addr.clone(),
                     mix: (v < 1.0).then_some(v),
                 });
             }
-            if r.drag_stopped() {
+            if r.drag_stopped {
                 cmds.push(AppCommand::EndParamEditAt {
                     addr: row.addr.clone(),
                     key,
