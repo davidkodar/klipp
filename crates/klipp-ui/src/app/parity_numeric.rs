@@ -757,3 +757,4 @@ fn the_speed_ramp_speed_row_retimes_its_clip() {
     assert!((after - 2.0 * before).abs() < 1e-6, "the source is read at {after} s, not twice {before} s");
     assert_eq!(run.state.active_history().undo_count(), 1, "one step");
 }
+
