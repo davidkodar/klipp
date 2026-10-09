@@ -66,7 +66,7 @@ impl Source for Ramp {
         }
         let (w, h) = if self.wrong_size.iter().any(|t| near(*t, source_secs)) { (W * 2, H * 2) } else { (W, H) };
         let v = grey(source_secs);
-        Some(KnownFrame { linear: [v, v, v, 1.0].repeat((w * h) as usize), width: w, height: h })
+        Some(KnownFrame { linear: [v, v, v, 1.0].repeat((w * h) as usize), width: w, height: h, pts: None })
     }
 }
 
