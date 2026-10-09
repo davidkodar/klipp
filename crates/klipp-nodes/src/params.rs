@@ -553,11 +553,11 @@ impl NodeParams {
             "offset_sat" => self.offset_sat = n,
             "offset_bri" => self.offset_bri = n,
             "hue" => self.hue = n,
-            "global_mix" => self.global_mix = n,
-            "curves_mix" => self.curves_mix = n,
+            "global_mix" => self.global_mix = Some(value), // default is 1.0: 0 is a value, not "unset"
+            "curves_mix" => self.curves_mix = Some(value), // default is 1.0: 0 is a value, not "unset"
             "curves_preserve_luma" => self.curves_preserve_luma = Some(value > 0.5),
-            "huesat_mix" => self.huesat_mix = n,
-            "lut_opacity" => self.lut_opacity = n,
+            "huesat_mix" => self.huesat_mix = Some(value), // default is 1.0: 0 is a value, not "unset"
+            "lut_opacity" => self.lut_opacity = Some(value), // default is 1.0: 0 is a value, not "unset"
             "lut_input_space" => {
                 // Encoded as the WorkingColorspace::as_u8 tag in
                 // f32. Any other value (the catalog's "Use LUT default"
@@ -600,7 +600,7 @@ impl NodeParams {
                     None
                 };
             }
-            "mix" => self.mix = n,
+            "mix" => self.mix = Some(value), // default isn't 0: 0 is a value, not "unset"
             // The index is part of the name, so a bad one is a bad name
             // rather than a no-op on a good one.
             p if p.starts_with("warper_hue_") => {
