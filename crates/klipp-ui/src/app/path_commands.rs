@@ -330,9 +330,10 @@ impl crate::state::AppState {
         if let EditCommand::PictureEdit { clip_id, edit, .. } = &edit {
             self.set_picture(*clip_id, &edit.after);
         }
-        self.active_history_mut().begin_batch();
-        self.push_history(edit);
-        self.active_history_mut().end_batch_as(label);
+        // One step named `label`, or one edit of a batch already open (a
+        // look's chain, an agent's action), which then names the step:
+        // opening a batch of its own here would drop what that one held.
+        self.push_history(EditCommand::Named { label: label.to_string(), edit: Box::new(edit) });
         self.show_ungated(&ungated);
         Ok(())
     }
@@ -364,9 +365,9 @@ impl crate::state::AppState {
         if live {
             return Ok(());
         }
-        self.active_history_mut().begin_batch();
-        self.push_history(EditCommand::SetRootGrade { description: "Edit Grade", root, old: old.map(Box::new), new: Some(Box::new(new)) });
-        self.active_history_mut().end_batch_as(label);
+        // Named as `apply_path_ops` names its step, inside any open batch.
+        let edit = EditCommand::SetRootGrade { description: "Edit Grade", root, old: old.map(Box::new), new: Some(Box::new(new)) };
+        self.push_history(EditCommand::Named { label: label.to_string(), edit: Box::new(edit) });
         Ok(())
     }
 
@@ -753,6 +754,44 @@ mod tests {
 
     fn run(state: &mut AppState, cmd: AppCommand) {
         assert_eq!(state.path_command(&cmd), Some(true), "{cmd:?} applied");
+    }
+
+    /// A socket batch (the control bridge's `expand_control_commands`,
+    /// batched) of two path edits and an index edit, dispatched as the app
+    /// dispatches it, is one undo step that undoes all three exactly. A
+    /// path edit used to open a batch of its own, which threw away what
+    /// the socket's batch had collected and made each edit its own step.
+    #[test]
+    fn a_socket_batch_of_path_and_index_edits_is_one_step() {
+        let (mut s, id) = state(&[E::GaussianBlur { radius: 3.0 }, E::Sharpen { amount: 0.5 }]);
+        let ids = effects(&s, id);
+        let (before, steps) = (picture(&s, id), s.active_history().undo_count());
+        let invert = E::Invert { mix: 1.0 };
+        let cmds = super::super::control_bridge::expand_control_commands(
+            vec![
+                AppCommand::SetParamAt { addr: at(id, &[ids[0]]), key: "radius".into(), value: ParamValue::Float(7.0) },
+                AppCommand::SetParamAt { addr: at(id, &[ids[1]]), key: "amount".into(), value: ParamValue::Float(0.9) },
+                AppCommand::AddBuiltinEffect { clip_id: id, effect: invert.clone() },
+            ],
+            true,
+        );
+        for cmd in cmds {
+            s.before_dispatch(&cmd);
+            match cmd {
+                AppCommand::BeginHistoryBatch => s.active_history_mut().begin_batch(),
+                AppCommand::EndHistoryBatch => s.active_history_mut().end_batch(),
+                // The index add, as the app's old handler lands it.
+                AppCommand::AddBuiltinEffect { .. } => old(&mut s, id, EffectEdit::Add(&invert)),
+                cmd => run(&mut s, cmd),
+            }
+        }
+        let list = |s: &AppState| serde_json::to_value(clip(s, id).builtin_effects()).unwrap();
+        assert_eq!(list(&s), serde_json::to_value([E::GaussianBlur { radius: 7.0 }, E::Sharpen { amount: 0.9 }, invert.clone()]).unwrap(), "all three applied");
+        assert_eq!(s.active_history().undo_count(), steps + 1, "one step");
+        let entry = s.active_history_mut().undo().expect("the batch's step");
+        let mut doc = klipp_document::apply::DocumentView { sequences: &mut s.sequences, active: s.active_sequence_idx, media_pool: &mut s.media_pool, fps: &mut s.fps };
+        doc.apply_inverse(&entry.command);
+        assert_eq!(picture(&s, id), before, "undone, all three, exactly");
     }
 
     fn layout_command(s: &mut AppState, cmd: AppCommand) {

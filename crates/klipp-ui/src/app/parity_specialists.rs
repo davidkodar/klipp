@@ -410,17 +410,15 @@ fn run_frei0r(report: &mut Report) {
     });
 
     // Picked from the effects browser, as its double-click and drop do:
-    // the effect added, with the plug-in's declared defaults. The browser
-    // still adds a plug-in by its index (`effect_commands_in` routes only
-    // built-in effects by path): its add moves to a path when plug-ins
-    // become nodes, M4 step 5 (frei0r as a node).
+    // the effect added, with the plug-in's declared defaults, by path as a
+    // legacy effect node (M3 step 19).
     report.case("frei0r picked", key(Interaction::PluginSelect), || {
         let base = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
         let mut new = one(&base, |_| {});
         let source = crate::browser::effect_registry::EffectSource::Frei0r(plugin.clone());
         {
             let run = &mut new;
-            let cmds = crate::browser::effects_tab::effect_commands_in(&run.state, &source, run.clip);
+            let cmds = crate::browser::effects_tab::effect_commands_in(&run.state, &source, run.clip)?;
             for cmd in cmds {
                 run.apply(cmd);
             }

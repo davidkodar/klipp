@@ -218,20 +218,31 @@ pub fn add_command(clip: &Clip, after: &NodePath, tag: &str) -> Option<AppComman
     new_effect_node(tag).map(|node| AppCommand::AddNodeAt { after: after.clone(), node: Box::new(node) })
 }
 
-/// What adding `effect`, with its own values, to `clip` sends behind the
-/// switch: a node after the stack's last effect (as its Add menu adds), or
-/// a placed kind through the clip's effect list. `None` when the clip's
-/// stack can't be read, so the caller adds it to the list as before.
-pub fn add_effect_command(state: &AppState, clip: &Clip, effect: &klipp_effects::BuiltinEffect) -> Option<AppCommand> {
-    let tag = serde_json::to_value(effect).ok()?.get("type")?.as_str()?.to_owned();
-    if is_placed_kind(&tag) {
-        return Some(AppCommand::AddBuiltinEffect { clip_id: clip.id, effect: effect.clone() });
+/// What adding `effects`, in order and with their own values, to `clip`
+/// sends behind the switch (M3 step 19): each a node after the one before,
+/// the first after the stack's last effect (as its Add menu adds), a
+/// placed kind through the clip's effect list, which places it (until the
+/// placement producers move). Several are one undo step where they're
+/// sent (`effect_targets::commands`). Or why the clip can't take them,
+/// which the caller says: never the old index add instead.
+pub fn add_effects_command(state: &AppState, clip: &Clip, effects: &[klipp_effects::BuiltinEffect]) -> Result<Vec<AppCommand>, String> {
+    let lifted = clip.picture_v2().map_err(|e| format!("its picture can't be read ({e})"))?;
+    let view = project(Root::Clip { clip: clip.id.0 }, &lifted.picture.graph, &klipp_timeline::RegistryCatalog, placement(state, clip).as_ref()).map_err(|e| format!("its stack can't be read ({e})"))?;
+    let mut after = add_after(&view).ok_or("its stack has no place to add after")?;
+    let mut adds = Vec::new();
+    let mut placed = Vec::new();
+    for effect in effects {
+        let tag = serde_json::to_value(effect).ok().and_then(|v| v.get("type")?.as_str().map(str::to_owned)).ok_or("an effect without a type")?;
+        if is_placed_kind(&tag) {
+            placed.push(AppCommand::AddBuiltinEffect { clip_id: clip.id, effect: effect.clone() });
+            continue;
+        }
+        let node = effect_node(&tag, effect).ok_or_else(|| format!("a {tag} can't be made a node"))?;
+        let next = NodePath::new(Root::Clip { clip: clip.id.0 }, [node.id]);
+        adds.push(AppCommand::AddNodeAt { after: std::mem::replace(&mut after, next), node: Box::new(node) });
     }
-    let lifted = clip.picture_v2().ok()?;
-    let view = project(Root::Clip { clip: clip.id.0 }, &lifted.picture.graph, &klipp_timeline::RegistryCatalog, placement(state, clip).as_ref()).ok()?;
-    let after = add_after(&view)?;
-    let node = effect_node(&tag, effect)?;
-    Some(AppCommand::AddNodeAt { after, node: Box::new(node) })
+    adds.extend(placed);
+    Ok(adds)
 }
 
 fn add_menu(ui: &mut egui::Ui, clip: &Clip, view: &StackView, cmds: &mut Vec<AppCommand>) {
