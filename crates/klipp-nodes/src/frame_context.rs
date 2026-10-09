@@ -115,6 +115,10 @@ pub const NEIGHBOUR_CEILING: usize = 32;
 /// frame not at `size` is [`Missing::WrongSize`], and past the node's
 /// declared budget (at most [`NEIGHBOUR_CEILING`]) it is
 /// [`Missing::OverBudget`].
+///
+/// One is made for each frame rendered: the budget is a node's for one
+/// frame, so the next frame's requests are counted afresh by the next
+/// one, never against this one's.
 pub struct BoundedSources<'s> {
     inner: &'s mut dyn SourceProvider,
     size: (u32, u32),
@@ -439,6 +443,22 @@ mod tests {
         assert_eq!(s.linear(2.5), Neighbour::Missing(Missing::OverBudget));
         let mut none = BoundedSources::new(&mut fake, 1, 1);
         assert_eq!(none.linear(2.5), Neighbour::Missing(Missing::OverBudget), "no node named");
+    }
+
+    /// The budget is per frame: the next frame's bounded sources give a
+    /// node its full budget again.
+    #[test]
+    fn each_frames_bounded_sources_count_afresh() {
+        let mut fake = Fake { size: (1, 1), asked: 0 };
+        let n = node();
+        for frame in 0..3 {
+            let mut s = BoundedSources::new(&mut fake, 1, 1);
+            s.for_node(n, 2);
+            assert!(matches!(s.linear(2.1), Neighbour::Frame(_)), "frame {frame}");
+            assert!(matches!(s.linear(2.2), Neighbour::Frame(_)), "frame {frame}");
+            assert_eq!(s.linear(2.3), Neighbour::Missing(Missing::OverBudget), "frame {frame}");
+        }
+        assert_eq!(fake.asked, 6, "two a frame, three frames");
     }
 
     /// No analysis is absent; a stored one is ready at its schema and
