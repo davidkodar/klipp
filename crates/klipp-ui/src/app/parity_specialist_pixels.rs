@@ -18,7 +18,7 @@
 use super::parity_manifest::{CoverageKey, Interaction, Manifest, Report, Surface};
 use super::parity_numeric::routes_for;
 use super::parity_pixels::{same_edit_on, Routes, SMALL};
-use super::parity_specialists::{both, effect_type, frei0r_entry, number_right_of, type_into, Analysis, ANALYSES, VARIANT};
+use super::parity_specialists::{both, effect_type, number_right_of, type_into, Analysis, ANALYSES, VARIANT};
 use super::parity_harness::fixture;
 use klipp_effects::BuiltinEffect;
 
@@ -102,12 +102,13 @@ pub(super) fn run(report: &mut Report) {
             _ => report.case_or_blocked(&name, [analysis_key(a)], || analysis_case(a, Routes::Both)),
         }
     }
-    match frei0r_entry() {
-        Some(entry) => {
-            let key = CoverageKey::new(entry.type_id, &entry.parameter, Surface::EffectsStack, VARIANT, Interaction::Pixels);
-            report.case_cpu_by_design("frei0r editor / pixels", [key], FREI0R_ROUTE, frei0r_case);
-        }
-        None => report.case("frei0r editor / pixels", [], || Err("no catalog entry draws the frei0r editor".into())),
+    // The editor's one picture, earned on each entry it draws.
+    let entries = super::parity_specialists::frei0r_entries();
+    if entries.is_empty() {
+        report.case("frei0r editor / pixels", [], || Err("no catalog entry draws the frei0r editor".into()));
+    } else {
+        let keys: Vec<_> = entries.iter().map(|e| CoverageKey::new(e.type_id, &e.parameter, Surface::EffectsStack, VARIANT, Interaction::Pixels)).collect();
+        report.case_cpu_by_design("frei0r editor / pixels", keys, FREI0R_ROUTE, frei0r_case);
     }
 }
 
