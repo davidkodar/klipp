@@ -273,8 +273,8 @@ pub fn node_at<'a>(graph: &'a Graph, addr: &NodePath) -> Option<&'a Node> {
 
 /// A placed kind's row commands as the clip's effect-list commands, which
 /// place it: a drag's bracket as the effect drag, a value as the effect
-/// with it changed, a key as the effect's key. What has no list form (a
-/// seek) passes through.
+/// with it changed, a key as the effect's key, its eye as the effect's
+/// switch. What has no list form (a seek) passes through.
 pub fn to_effect_list(clip: &Clip, ty: &klipp_effects::registry::EffectType, node: klipp_graph_format::NodeId, entry: &serde_json::Value, cmds: Vec<AppCommand>) -> Vec<AppCommand> {
     let Some((false, index)) = clip.effect_slot_of_node(node) else { return Vec::new() };
     let clip_id = clip.id;
@@ -321,6 +321,12 @@ pub fn to_effect_list(clip: &Clip, ty: &klipp_effects::registry::EffectType, nod
                 }
             }
             AppCommand::RemoveKeyAt { key: pk, time_secs, .. } => out.push(AppCommand::RemoveEffectKeyframe { clip_id, effect_index: index, param_name: pk.as_str().to_owned(), time_secs }),
+            // Its eye: the effect switched as the old card's eye switches it.
+            AppCommand::SetNodeEnabledAt { enabled, .. } => {
+                if clip.builtin_effects_enabled().get(index).copied().unwrap_or(true) != enabled {
+                    out.push(AppCommand::ToggleBuiltinEffectEnabled { clip_id, index });
+                }
+            }
             AppCommand::SetInterpKeyAt { key: pk, time_secs, interpolation, .. } => {
                 let lanes = clip.effect_keyframes();
                 if let Some(keys) = lanes.get(&format!("{index}:{}", pk.as_str())) {
@@ -365,7 +371,15 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
     ui.horizontal(|ui| {
         let mut on = row.enabled;
         if ui.add_enabled(!row.read_only, egui::Checkbox::without_text(&mut on)).on_hover_text(if on { "Turn off" } else { "Turn on" }).changed() {
-            cmds.push(AppCommand::SetNodeEnabledAt { addr: row.addr.clone(), enabled: on });
+            let toggle = AppCommand::SetNodeEnabledAt { addr: row.addr.clone(), enabled: on };
+            // A placed kind's eye goes through the clip's effect list, as
+            // the rest of its card does (`to_effect_list`).
+            let placed = row.placed || node.is_some_and(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::PLACEMENT);
+            let effect = node.and_then(|n| klipp_graph_lift::effect_params::tag(n).and_then(|tag| effect_types().find(|t| t.tag == tag)).map(|ty| (n, ty)));
+            match effect.filter(|_| placed) {
+                Some((n, ty)) => cmds.extend(to_effect_list(clip, ty, n.id, &klipp_graph_lift::effect_params::entry_of(n).unwrap_or(serde_json::Value::Null), vec![toggle])),
+                None => cmds.push(toggle),
+            }
         }
         let name = egui::RichText::new(display_name(graph, &row.addr, &row.label, row.is_group)).strong();
         ui.label(if row.enabled { name } else { name.color(theme.text_dim) });
