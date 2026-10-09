@@ -931,6 +931,32 @@ class PreGateTests(RealGitGate):
         self.assertEqual(self.pre_gate().returncode, 0)
         self.assertIn("test -p klipp-graph-lift --test effect_entry_readers", self.calls())
 
+    def test_a_pixel_crate_change_checks_the_render_references(self):
+        # golden_corpus lives in klipp-compose, downstream of the effect
+        # crates: a changed effect passes its own crate and fails only it.
+        for name in ("klipp-effects", "klipp-title"):
+            (self.root / f"crates/{name}/src").mkdir(parents=True)
+            (self.root / f"crates/{name}/Cargo.toml").write_text(f'[package]\nname = "{name}"\n')
+        (self.root / "crates/klipp-compose/tests").mkdir(parents=True)
+        (self.root / "crates/klipp-compose/tests/golden_corpus.rs").write_text("\n")
+        # Compose's manifest names its klipp dependencies; it isn't a crate
+        # this test touches (no src), so only the dependency is "touched".
+        (self.root / "crates/klipp-compose/Cargo.toml").write_text('[package]\nname = "klipp-compose"\n[dependencies]\nklipp-effects = { path = "../klipp-effects" }\nklipp-title = { path = "../klipp-title" }\n')
+        # On main already, so the change touches only the dependency.
+        self.commit(self.root, "compose and its dependencies")
+        self.git(self.root, "push", "-q", "origin", "HEAD:main")
+        for changed in ("crates/klipp-effects/src/lib.rs", "crates/klipp-title/src/lib.rs"):
+            self.change(changed, f"// {changed}\n")
+            self.assertEqual(self.pre_gate().returncode, 0)
+            self.assertIn("test -p klipp-compose --test golden_corpus", self.calls(), changed)
+
+    def test_a_change_elsewhere_does_not_run_the_render_references(self):
+        (self.root / "crates/klipp-compose/tests").mkdir(parents=True)
+        (self.root / "crates/klipp-compose/tests/golden_corpus.rs").write_text("\n")
+        self.change("crates/a/src/lib.rs", "changed\n")
+        self.assertEqual(self.pre_gate().returncode, 0)
+        self.assertFalse(any("golden_corpus" in c for c in self.calls()))
+
     def test_a_scripts_only_change_builds_nothing_and_runs_the_scripts_tests(self):
         (self.root / "scripts/tests").mkdir()
         (self.root / "scripts/tests/test_nothing.py").write_text("import unittest\nclass T(unittest.TestCase):\n    def test_it(self): pass\n")

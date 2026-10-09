@@ -205,6 +205,24 @@ if [ -n "$_test_args" ]; then
             step "the ${_scan#*:} scan" cargo test -p "$_crate" --test "${_scan#*:}"
         done
     fi
+    # golden_corpus renders through every crate klipp-compose builds on
+    # (effects, nodes, colour, titles, transitions, the lift, ...): a
+    # change in one passes that crate's tests and fails only the gate's
+    # recorded references (#1445's posterize). Run them when the change
+    # touches one of compose's own klipp dependencies and not compose.
+    if [ -f crates/klipp-compose/tests/golden_corpus.rs ] && ! printf ' %s ' "$_touched" | grep -q ' klipp-compose '; then
+        _compose_deps=$(python3 -c '
+import tomllib
+m = tomllib.load(open("crates/klipp-compose/Cargo.toml", "rb"))
+print(" ".join(sorted(k for k in m.get("dependencies", {}) if k.startswith("klipp-"))))
+' 2>/dev/null)
+        for _dep in $_compose_deps; do
+            if printf ' %s ' "$_touched" | grep -q " $_dep "; then
+                step "the render references (golden_corpus)" cargo test -p klipp-compose --test golden_corpus
+                break
+            fi
+        done
+    fi
     step "clippy on $_touched" cargo clippy --all-targets $_test_args -- -D warnings
     # A public doc linking a private item, or a bare [0,1] in prose,
     # passes clippy and every test and fails only the gate's rustdoc.
