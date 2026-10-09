@@ -222,6 +222,9 @@ impl crate::state::AppState {
                 drag_key(addr, key) != open && node_drag(addr) != open
             }
             AppCommand::SetMixAt { addr, .. } => drag_key(addr, &Self::NODE_MIX_DRAG_KEY.into()) != open && node_drag(addr) != open,
+            // A whole entry written (a colour dragged in its popup) is part
+            // of a drag over the node's values.
+            AppCommand::SetPayloadAt { addr, .. } => node_drag(addr) != open,
             _ => super::command_writes::writes(cmd),
         }
     }
@@ -300,12 +303,15 @@ impl crate::state::AppState {
             }
         }
         let mix_key = Self::NODE_MIX_DRAG_KEY.into();
+        let node_key = ParamKey::from("");
         // A first edit of the pending Corrector makes it first: the edit is
         // still the one it names, so a drag's first tick stays the drag's.
         let made = self.pending_corrector_ops(ops);
         let dragged = match &ops[made..] {
             [GraphOp::SetParam { path, key, .. } | GraphOp::SetAnim { path, key, .. } | GraphOp::AddKeyAt { path, key, .. } | GraphOp::RemoveKeyAt { path, key, .. }] => Some((path, key)),
             [GraphOp::SetMix { path, .. }] => Some((path, &mix_key)),
+            // A whole entry, inside a drag over the node's values.
+            [GraphOp::SetPayload { path, .. }] => Some((path, &node_key)),
             _ => None,
         };
         if let Some((path, key)) = dragged {
@@ -340,10 +346,13 @@ impl crate::state::AppState {
         let root = ops[0].path().root;
         let start = self.root_grade_start.as_ref().filter(|(r, _)| *r == root).map(|(_, g)| g.clone());
         let mix_key: ParamKey = Self::NODE_MIX_DRAG_KEY.into();
+        let node_key = ParamKey::from("");
         let made = self.pending_corrector_ops(ops);
         let dragged = match &ops[made..] {
             [GraphOp::SetParam { path, key, .. } | GraphOp::SetAnim { path, key, .. } | GraphOp::AddKeyAt { path, key, .. } | GraphOp::RemoveKeyAt { path, key, .. }] => Some((path, key)),
             [GraphOp::SetMix { path, .. }] => Some((path, &mix_key)),
+            // A whole entry, inside a drag over the node's values.
+            [GraphOp::SetPayload { path, .. }] => Some((path, &node_key)),
             _ => None,
         };
         let live = dragged.is_some_and(|(path, key)| self.active_history().pending_drag_key().is_some_and(|open| open == drag_key(path, key) || open == node_drag(path)));

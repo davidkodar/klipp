@@ -594,8 +594,29 @@ fn colour_row(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc, pres: &Pres
             }
         }
     });
-    let Some(new) = changed else { return RowOutcome::Nothing };
-    if write_stored(ctx, desc, Value::from(new)) { RowOutcome::Edited } else { RowOutcome::Nothing }
+    // A drag in the popup (a channel's number dragged, the colour field
+    // pressed and moved) is one gesture, one undo step: a drag over the
+    // node's values (an empty key) begun with its first change while the
+    // pointer is held, ended once it is let go.
+    let drag = ui.id().with(("colour_drag", desc.key));
+    let held = ui.input(|i| i.pointer.primary_down());
+    let dragging = ui.data(|d| d.get_temp::<bool>(drag)).unwrap_or(false);
+    let node_key = klipp_graph_format::ParamKey::from("");
+    let mut outcome = RowOutcome::Nothing;
+    if let Some(new) = changed {
+        if held && !dragging {
+            ctx.cmds.push(AppCommand::BeginParamEditAt { addr: ctx.addr.clone(), key: node_key.clone() });
+            ui.data_mut(|d| d.insert_temp(drag, true));
+        }
+        if write_stored(ctx, desc, Value::from(new)) {
+            outcome = RowOutcome::Edited;
+        }
+    }
+    if !held && ui.data(|d| d.get_temp::<bool>(drag)).unwrap_or(false) {
+        ctx.cmds.push(AppCommand::EndParamEditAt { addr: ctx.addr.clone(), key: node_key });
+        ui.data_mut(|d| d.remove::<bool>(drag));
+    }
+    outcome
 }
 
 #[cfg(test)]
