@@ -23,6 +23,7 @@
 //! makes what a model that can see or hear is shown: contact sheets
 //! and audio excerpts, on demand.
 
+pub mod assets;
 pub mod audio;
 pub mod audio_sync;
 pub mod beats;
