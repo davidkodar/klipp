@@ -477,8 +477,8 @@ impl Sequence {
     /// clip's own grade group keeps its id; a group stage's or the track
     /// grade's has the id its bake gave it. Works on the sequence and on
     /// its render copy alike. `Err` says why the path names nothing to
-    /// inspect, never a stand-in: a node inside a compound (not a group of
-    /// the picture yet), the timeline grade (graded after the clips), a
+    /// inspect, never a stand-in: a node inside a compound (no inspection
+    /// there yet, #1475), the timeline grade (graded after the clips), a
     /// stage that does nothing here, or a node that isn't there.
     pub fn grade_node_at(&self, clip_id: ClipId, path: &klipp_graph_format::path::NodePath) -> Result<klipp_nodes::NodeId, String> {
         use klipp_graph_format::lifted::Stage;
@@ -494,7 +494,7 @@ impl Sequence {
         let one = |nodes: &[klipp_nodes::NodeId]| match nodes {
             [inner] => Ok(*inner),
             [] => Err("an empty path names no node".to_string()),
-            _ => Err("that node is inside a compound, which can't be inspected until compounds are groups of the picture".to_string()),
+            _ => Err("that node is inside a compound, whose nodes have no thumbnail, solo or scope tap yet (#1475)".to_string()),
         };
         match path.root {
             Root::Clip { clip: c } if c == clip_id.0 => {

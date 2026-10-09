@@ -54,7 +54,7 @@ fn node_of(seq: &Sequence, clip: ClipId, at: &InspectAt) -> Result<(NodeId, bool
             return Err("the timeline grade is read through its own proxy, not a clip".into());
         }
         let [node] = at.path.nodes.as_slice() else {
-            return Err("that node is inside a compound, which can't be inspected until compounds are groups of the picture".into());
+            return Err("that node is inside a compound, whose nodes have no thumbnail, solo or scope tap yet (#1475)".into());
         };
         let kind = seq.timeline_grade().and_then(|g| g.nodes.iter().find(|n| n.id == *node)).map(|n| n.kind).ok_or_else(|| format!("{node} isn't in the timeline grade"))?;
         let name = serde_json::to_value(kind).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
