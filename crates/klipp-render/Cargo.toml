@@ -16,6 +16,7 @@ klipp-nodes    = { workspace = true }
 klipp-plugin   = { workspace = true }
 klipp-title    = { workspace = true }
 klipp-compose  = { workspace = true }
+klipp-analysis = { workspace = true }
 ffmpeg-next    = { workspace = true }
 bytemuck       = { workspace = true }
 wgpu           = { workspace = true }

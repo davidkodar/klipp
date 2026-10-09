@@ -3336,7 +3336,7 @@ impl Renderer {
         use klipp_analysis::assets::{lookup, Found};
         let mut out = ClipAnalysis::default();
         let enabled = |i: usize| clip.builtin_effects_enabled().get(i).copied().unwrap_or(true);
-        for (i, effect) in clip.builtin_effects().iter().enumerate().filter(|(i, _)| enabled(*i)) {
+        for (_, effect) in clip.builtin_effects().iter().enumerate().filter(|(i, _)| enabled(*i)) {
             let (Some(kind), Some(params)) = (asset_kind(effect), klipp_effects::node_analysis::derivation_params(effect)) else { continue };
             if out.found.iter().any(|(k, _)| *k == (kind, params)) {
                 continue;
@@ -3360,7 +3360,6 @@ impl Renderer {
                     derived.map(|d| klipp_nodes::frame_context::AnalysisBlob { schema: klipp_nodes::frame_context::NODE_ANALYSIS_SCHEMA, data: d })
                 }
             };
-            let _ = i;
             out.found.push(((kind, params), blob));
         }
         out
