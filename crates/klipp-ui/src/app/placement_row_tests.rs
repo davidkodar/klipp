@@ -212,10 +212,3 @@ fn a_picture_truth_placement_changes_mode_keeping_its_mix() {
     assert!(mixed, "the blur's mix is kept");
 }
 
-/// The node after the placement in the clip's chain.
-fn placement_after(run: &Run) -> klipp_graph_format::NodeId {
-    let picture = run.clip().picture_v2().unwrap();
-    let id = placement(run).id;
-    let edge = picture.picture.graph.edges.iter().find(|e| e.from.0 == id && e.from.1.as_str() == "out").expect("the placement feeds a node");
-    edge.to.0
-}
