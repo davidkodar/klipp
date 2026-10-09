@@ -198,4 +198,22 @@ mod tests {
         assert_eq!(key_for(AssetKind::Deflicker, &dir.join("gone.mov"), 480, 270, (24, 1)), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// A file at another path (moved, or a project opened on another
+    /// machine) is another key: its asset is absent, to analyse again,
+    /// never read as the old one.
+    #[test]
+    fn a_moved_file_finds_no_asset() {
+        let dir = std::env::temp_dir().join(format!("klipp-asset-moved-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("there")).unwrap();
+        let (here, there) = (dir.join("clip.mov"), dir.join("there/clip.mov"));
+        std::fs::write(&here, b"frames").unwrap();
+        let mut s = MemoryStore::default();
+        let k = key_for(AssetKind::Stabilisation, &here, 480, 270, (24, 1)).unwrap();
+        store(&mut s, k, serde_json::json!([1.0])).unwrap();
+        std::fs::rename(&here, &there).unwrap();
+        let moved = key_for(AssetKind::Stabilisation, &there, 480, 270, (24, 1)).unwrap();
+        assert_eq!(lookup(&s, &moved), Found::Absent);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
