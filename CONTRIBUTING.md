@@ -249,7 +249,8 @@ checkout, before the gate spends a run on them:
 2. `cargo check --all-targets` on every crate the change can affect;
 3. every test target (unit, integration, doc) of the crates the change
    touches, plus the repository's source scans when an effect or grade
-   crate changed;
+   crate changed, and the render references (`klipp-compose`'s
+   `golden_corpus`) when a crate `klipp-compose` builds on changed;
 4. clippy and rustdoc with `-D warnings` on those crates;
 5. the scripts' own tests, when `scripts/` changed.
 
