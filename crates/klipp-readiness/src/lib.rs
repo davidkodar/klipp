@@ -18,6 +18,7 @@
 //! deleted stage gone.
 
 pub mod families;
+pub mod format;
 pub mod rules;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -179,9 +180,18 @@ impl Manifest {
 pub struct Report {
     pub passed: BTreeSet<Key>,
     pub failures: Vec<String>,
+    /// Each format row's declared changes: what of which project it
+    /// changes, for the report's DECLARED-CHANGE lines (#1465).
+    pub declared: BTreeMap<String, Vec<String>>,
 }
 
 impl Report {
+    /// `row` declares that it changes `what` (a project, a clip): listed
+    /// apart, never counted as earned or missing.
+    pub fn declare(&mut self, row: &str, what: impl Into<String>) {
+        self.declared.entry(row.into()).or_default().push(what.into());
+    }
+
     /// A case: `run` held to its expectation earns `keys` when it passes.
     pub fn case(&mut self, name: &str, keys: impl IntoIterator<Item = Key>, run: impl FnOnce() -> Result<(), String>) {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
@@ -220,6 +230,7 @@ impl Report {
         lines.push(String::new());
         lines.extend(open);
         lines.extend(manifest.excluded.iter().map(|(k, r)| format!("EXCLUDED {k:?}: {r}")));
+        lines.extend(self.declared.iter().map(|(row, what)| format!("DECLARED-CHANGE {row}: {} ({})", what.len(), what.join(", "))));
         lines.join("\n")
     }
 }

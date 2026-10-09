@@ -83,7 +83,7 @@ pub const ALL: &[FamilyEntry] = &[
     FamilyEntry { family: Family::Stabilisation, require: require_stabilisation, run: none_yet },
     FamilyEntry { family: Family::Deflicker, require: require_deflicker, run: none_yet },
     FamilyEntry { family: Family::LegacyChain, require: require_legacy_chain, run: none_yet },
-    FamilyEntry { family: Family::Format, require: require_format, run: none_yet },
+    FamilyEntry { family: Family::Format, require: require_format, run: super::format::run },
 ];
 
 /// The renderer stages each family deletes, by symbol, as its step lands
