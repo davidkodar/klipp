@@ -826,7 +826,7 @@ impl Report {
             // labelled fallback.
             let legacy = key.surface == Surface::NonClipGrade && !on_a_sequence_grade(&key.variant);
             if legacy && !self.fallback.contains_key(key) {
-                errors.push(format!("fallback evidence not labelled: {key:?} (#997: nested layouts and unnamed non-clip roots still use the legacy path)"));
+                errors.push(format!("fallback evidence not labelled: {key:?} (#997: unnamed non-clip roots still use the legacy path)"));
             }
         }
         let mut exclusions = manifest.exclusion_lines();
