@@ -46,70 +46,10 @@ fn entry_of(node: &Node) -> serde_json::Value {
 /// parameters) are the per-node layout's, drawn through `panel`, which
 /// keeps their state; without it those rows are read-only.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, node: NodeId, cmds: &mut Vec<AppCommand>, frame: FrameSelection, mut panel: Option<&mut NodeInspectorPanel>) -> bool {
-    let Some(v1) = clip.grade().nodes.iter().find(|n| n.id == node) else { return false };
-    let Some(ty) = klipp_nodes::registry::node_type(v1.kind) else { return false };
-    let Some((addr, lifted)) = grade_node(clip, node) else { return false };
+pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, node: NodeId, cmds: &mut Vec<AppCommand>, frame: FrameSelection, panel: Option<&mut NodeInspectorPanel>) -> bool {
     let start = cmds.len();
-    crate::panels::node_inspector::node_header(ui, &v1.kind, v1.enabled, &v1.keyframes, node, clip.id, cmds, theme, frame);
-    // The widgets edit a copy and push the grade's own commands.
-    let mut params = v1.params.clone();
-    if let Some(p) = panel.as_deref_mut() {
-        if ui.indent(("grade_node", node), |ui| p.grade_whole_node(ui, v1.kind, &mut params, node, clip.id, cmds, theme)).inner {
-            return true;
-        }
-    }
-    if v1.kind == klipp_nodes::NodeKind::Qualifier {
-        let pick = ui.add(egui::Button::image(crate::icons::Icon::Eyedropper.image(12.0).tint(theme.overlay(160))).min_size(egui::vec2(22.0, 18.0)))
-            .on_hover_text("Pick a colour: click it in the viewer to key it");
-        if pick.clicked() {
-            cmds.push(AppCommand::PickQualifierColour { clip_id: clip.id, node_id: node });
-        }
-    }
-    let entry = entry_of(&lifted);
-    let presentation = |p: &ParamDesc| ty.presentation(p);
-    let stored = |p: &ParamDesc| grade_value(&entry, p);
-    let keys = |p: &ParamDesc| {
-        let base = row::number(&grade_value(&entry, p)).unwrap_or(p.default);
-        keys_at(&lifted, p, base, frame.time_secs, frame.tolerance)
-    };
-    let rows = NodeRows { params: ty.desc.params, presentation: &presentation, stored: &stored, keys: &keys };
-    // Each editor once: a wheel's parts are one block.
-    let mut done: Vec<String> = Vec::new();
-    let mut hook = |ui: &mut egui::Ui, id: &str, _: &ParamDesc, cmds: &mut Vec<AppCommand>| -> bool {
-        let Some(p) = panel.as_deref_mut() else { return false };
-        if done.iter().any(|d| d == id) {
-            return true;
-        }
-        // The node's masks a tracker drives: Re-track and Untrack for them.
-        p.tracked_masks = clip.track_points.iter().filter_map(|tp| tp.linked_mask.filter(|(n, _)| *n == node).map(|(_, i)| i)).collect();
-        let drawn = p.grade_editor(ui, id, ty, &mut params, node, clip.id, cmds, theme, frame);
-        p.tracked_masks.clear();
-        if drawn {
-            done.push(id.to_owned());
-        }
-        drawn
-    };
-    let mut ctx = RowCtx {
-        addr: &addr,
-        clip_time_secs: frame.time_secs,
-        timeline_in_secs: clip.timeline_in.to_secs_f64(),
-        rate: clip.timeline_in.rate,
-        encoding: klipp_grade_model::Encoding::from_u8(klipp_core::grade_encoding().effective(klipp_engine::video_decoder::working_colorspace()).as_u8()),
-        entry: Some(Entry { payload: &entry, fields_at: &["params"], choices_by_index: true }),
-        cmds: &mut *cmds,
-        // A grade parameter's Behaviours aren't kept yet.
-        behaviours: None,
-        theme,
-        app: None,
-        custom: Some(&mut hook),
-    };
-    let drawn = ui.indent(("grade_node", node), |ui| node_rows(ui, &mut ctx, &rows)).inner;
-    if drawn.is_empty() {
-        ui.label(egui::RichText::new("No parameters").color(theme.text_dim));
-    }
-    if v1.kind == klipp_nodes::NodeKind::Corrector {
-        crate::panels::node_inspector::cdl_buttons(ui, &v1.params, node, clip.id);
+    if !GradeSnapshot::of(clip, None).is_some_and(|s| s.page(ui, theme, node, cmds, frame, panel)) {
+        return false;
     }
     // A key the rows name at the playhead is the stored key in its frame.
     for cmd in &mut cmds[start..] {
@@ -123,9 +63,19 @@ pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, node: Nod
 /// no clip to read): what lets that page draw a parameter it shares with
 /// the per-node layout as the same generated row (M3 step 11c).
 pub(crate) struct GradeSnapshot {
+    /// The clip the grade's own commands name: the clip, or the stand-in
+    /// a sequence's grade is edited through (`GradeStandIn`).
     clip: klipp_core::ClipId,
-    group: klipp_graph_format::NodeId,
+    /// Where the grade's nodes are by path: a clip's under its grade group
+    /// (`prefix` that group), the timeline grade's and a group stage's at
+    /// their root's top (M3 step 19).
+    root: Root,
+    prefix: Vec<klipp_graph_format::NodeId>,
     nodes: Vec<(klipp_nodes::NodeKind, Node)>,
+    /// The grade's nodes as stored, for their headers and editors.
+    v1: Vec<klipp_nodes::Node>,
+    /// The node masks a tracker drives, as `(node, mask)`.
+    tracked: Vec<(NodeId, usize)>,
     /// The Corrector the clip's first edit on the tabbed page makes, when
     /// its grade has no enabled one: drawn from its defaults, under the id
     /// it will take, and written nowhere until that edit.
@@ -160,6 +110,40 @@ pub(crate) fn snapshot_for(clip: &Clip, on: bool, nested: bool, stand_in: bool, 
     GradeSnapshot::of(clip, reserved)
 }
 
+/// [`snapshot_for`] for a stand-in (M3 step 19): `stand_in`, the clip the
+/// timeline grade or a group stage is edited through, as the grade at
+/// `root`. With the generated inspector on and not nested (a compound's
+/// grade is the #1391 boundary), its nodes are addressed at `root`, and
+/// its pending Corrector is reserved as a clip's is, under the stand-in's
+/// id. While the root has no grade yet, the stand-in's (the graph it was
+/// put on with) is the one drawn, and `start` keeps it for the first
+/// edit to begin from, so that edit's ids are the ones drawn.
+pub(crate) fn snapshot_for_root(
+    seq: &klipp_timeline::Sequence,
+    stand_in: klipp_core::ClipId,
+    root: Root,
+    on: bool,
+    nested: bool,
+    pending: &mut Option<(klipp_core::ClipId, NodeId)>,
+    start: &mut Option<(Root, klipp_nodes::NodeGraph)>,
+) -> Option<GradeSnapshot> {
+    if !on || nested {
+        return None;
+    }
+    let clip = seq.all_clips().find(|c| c.id == stand_in)?;
+    let stored = seq.root_grade(root).ok()?;
+    *start = stored.is_none().then(|| (root, clip.grade().clone()));
+    let grade = stored.unwrap_or(clip.grade());
+    let has = grade.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Corrector && n.enabled);
+    let reserved = match *pending {
+        _ if has => None,
+        Some((c, id)) if c == stand_in && !grade.nodes.iter().any(|n| n.id == id) => Some(id),
+        _ => Some(NodeId::new_v4()),
+    };
+    *pending = reserved.map(|id| (stand_in, id));
+    GradeSnapshot::of_root(seq, clip, root, reserved)
+}
+
 /// The Corrector a tabbed page's first edit adds, as its picture holds it
 /// (M3 step 19): a grade node of its catalog type with every parameter
 /// unset, as `NodeGraph::ensure_corrector` makes one, under `id`.
@@ -182,7 +166,120 @@ impl GradeSnapshot {
         if let Some(id) = pending {
             nodes.push((klipp_nodes::NodeKind::Corrector, pending_corrector(id)));
         }
-        Some(Self { clip: clip.id, group: group.id, nodes, pending, timeline_in_secs: clip.timeline_in.to_secs_f64(), rate: clip.timeline_in.rate })
+        Some(Self {
+            clip: clip.id,
+            root: Root::Clip { clip: clip.id.0 },
+            prefix: vec![group.id],
+            nodes,
+            v1: clip.grade().nodes.clone(),
+            tracked: clip.track_points.iter().filter_map(|tp| tp.linked_mask).collect(),
+            pending,
+            timeline_in_secs: clip.timeline_in.to_secs_f64(),
+            rate: clip.timeline_in.rate,
+        })
+    }
+
+    /// The grade of `root`, one of the sequence's own (the timeline grade,
+    /// a group stage), as drawn through its stand-in clip: its nodes by
+    /// their paths at the root, read from the grade stored there, or from
+    /// the stand-in's while the root has none yet (`stored` is `None`).
+    /// The Corrector `pending` names is added as in [`GradeSnapshot::of`].
+    pub(crate) fn of_root(seq: &klipp_timeline::Sequence, stand_in: &Clip, root: Root, pending: Option<NodeId>) -> Option<Self> {
+        let grade = seq.root_grade(root).ok()?.unwrap_or(stand_in.grade());
+        let lifted = seq.lift_root_grade(root, grade).ok()?;
+        let mut nodes: Vec<_> = grade.nodes.iter().filter_map(|v1| lifted.nodes.iter().find(|n| n.id == v1.id).map(|n| (v1.kind, n.clone()))).collect();
+        let pending = pending.filter(|id| !nodes.iter().any(|(_, n)| n.id == *id));
+        if let Some(id) = pending {
+            nodes.push((klipp_nodes::NodeKind::Corrector, pending_corrector(id)));
+        }
+        Some(Self {
+            clip: stand_in.id,
+            root,
+            prefix: Vec::new(),
+            nodes,
+            v1: grade.nodes.clone(),
+            tracked: Vec::new(),
+            pending,
+            timeline_in_secs: stand_in.timeline_in.to_secs_f64(),
+            rate: stand_in.timeline_in.rate,
+        })
+    }
+
+    /// The path of `node` in this grade.
+    fn addr(&self, node: NodeId) -> NodePath {
+        NodePath::new(self.root, self.prefix.iter().copied().chain([node]))
+    }
+
+    /// Draw `node`'s per-node page and push the commands its edits imply:
+    /// `false`, drawing nothing, when the grade doesn't hold it or its
+    /// kind has no catalog type. See [`show`].
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn page(&self, ui: &mut egui::Ui, theme: &KlippTheme, node: NodeId, cmds: &mut Vec<AppCommand>, frame: FrameSelection, mut panel: Option<&mut NodeInspectorPanel>) -> bool {
+        let Some(v1) = self.v1.iter().find(|n| n.id == node) else { return false };
+        let Some(ty) = klipp_nodes::registry::node_type(v1.kind) else { return false };
+        let Some((_, lifted)) = self.nodes.iter().find(|(_, n)| n.id == node) else { return false };
+        let addr = self.addr(node);
+        crate::panels::node_inspector::node_header(ui, &v1.kind, v1.enabled, &v1.keyframes, node, self.clip, cmds, theme, frame);
+        // The widgets edit a copy and push the grade's own commands.
+        let mut params = v1.params.clone();
+        if let Some(p) = panel.as_deref_mut() {
+            if ui.indent(("grade_node", node), |ui| p.grade_whole_node(ui, v1.kind, &mut params, node, self.clip, cmds, theme)).inner {
+                return true;
+            }
+        }
+        if v1.kind == klipp_nodes::NodeKind::Qualifier {
+            let pick = ui.add(egui::Button::image(crate::icons::Icon::Eyedropper.image(12.0).tint(theme.overlay(160))).min_size(egui::vec2(22.0, 18.0)))
+                .on_hover_text("Pick a colour: click it in the viewer to key it");
+            if pick.clicked() {
+                cmds.push(AppCommand::PickQualifierColour { clip_id: self.clip, node_id: node });
+            }
+        }
+        let entry = entry_of(lifted);
+        let presentation = |p: &ParamDesc| ty.presentation(p);
+        let stored = |p: &ParamDesc| grade_value(&entry, p);
+        let keys = |p: &ParamDesc| {
+            let base = row::number(&grade_value(&entry, p)).unwrap_or(p.default);
+            keys_at(lifted, p, base, frame.time_secs, frame.tolerance)
+        };
+        let rows = NodeRows { params: ty.desc.params, presentation: &presentation, stored: &stored, keys: &keys };
+        // Each editor once: a wheel's parts are one block.
+        let mut done: Vec<String> = Vec::new();
+        let mut hook = |ui: &mut egui::Ui, id: &str, _: &ParamDesc, cmds: &mut Vec<AppCommand>| -> bool {
+            let Some(p) = panel.as_deref_mut() else { return false };
+            if done.iter().any(|d| d == id) {
+                return true;
+            }
+            // The node's masks a tracker drives: Re-track and Untrack for them.
+            p.tracked_masks = self.tracked.iter().filter(|(n, _)| *n == node).map(|(_, i)| *i).collect();
+            let drawn = p.grade_editor(ui, id, ty, &mut params, node, self.clip, cmds, theme, frame);
+            p.tracked_masks.clear();
+            if drawn {
+                done.push(id.to_owned());
+            }
+            drawn
+        };
+        let mut ctx = RowCtx {
+            addr: &addr,
+            clip_time_secs: frame.time_secs,
+            timeline_in_secs: self.timeline_in_secs,
+            rate: self.rate,
+            encoding: klipp_grade_model::Encoding::from_u8(klipp_core::grade_encoding().effective(klipp_engine::video_decoder::working_colorspace()).as_u8()),
+            entry: Some(Entry { payload: &entry, fields_at: &["params"], choices_by_index: true }),
+            cmds: &mut *cmds,
+            // A grade parameter's Behaviours aren't kept yet.
+            behaviours: None,
+            theme,
+            app: None,
+            custom: Some(&mut hook),
+        };
+        let drawn = ui.indent(("grade_node", node), |ui| node_rows(ui, &mut ctx, &rows)).inner;
+        if drawn.is_empty() {
+            ui.label(egui::RichText::new("No parameters").color(theme.text_dim));
+        }
+        if v1.kind == klipp_nodes::NodeKind::Corrector {
+            crate::panels::node_inspector::cdl_buttons(ui, &v1.params, node, self.clip);
+        }
+        true
     }
 
     /// The Corrector this snapshot draws before it exists (see
@@ -201,7 +298,7 @@ impl GradeSnapshot {
     pub(crate) fn tab(&self, ui: &mut egui::Ui, theme: &KlippTheme, node: NodeId, band: Option<std::ops::RangeInclusive<u16>>, params: &mut klipp_nodes::NodeParams, panel: &mut NodeInspectorPanel, cmds: &mut Vec<AppCommand>, frame: FrameSelection) -> bool {
         let Some((kind, lifted)) = self.nodes.iter().find(|(_, n)| n.id == node) else { return false };
         let Some(ty) = klipp_nodes::registry::node_type(*kind) else { return false };
-        let addr = NodePath::new(Root::Clip { clip: self.clip.0 }, [self.group, node]);
+        let addr = self.addr(node);
         let entry = entry_of(lifted);
         let in_band: Vec<ParamDesc> = ty.desc.params.iter().filter(|p| band.as_ref().is_none_or(|b| b.contains(&ty.presentation(p).order))).copied().collect();
         let presentation = |p: &ParamDesc| ty.presentation(p);
@@ -249,7 +346,7 @@ impl GradeSnapshot {
         let Some(ty) = klipp_nodes::registry::node_type(*kind) else { return false };
         let Some(desc) = ty.desc.params.iter().find(|p| p.key == key) else { return false };
         let pres = ty.presentation(desc);
-        let addr = NodePath::new(Root::Clip { clip: self.clip.0 }, [self.group, node]);
+        let addr = self.addr(node);
         let entry = entry_of(lifted);
         let stored = grade_value(&entry, desc);
         let base = row::number(&stored).unwrap_or(desc.default);

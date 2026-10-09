@@ -585,6 +585,13 @@ impl crate::state::AppState {
     /// an effect edit), by dropping it, so nothing bogus is pushed.
     pub(crate) fn close_open_drag(&mut self) {
         let pending = self.active_history().pending_old_entry_ref().map(|e| e.command.clone());
+        // A drag on one of the sequence's own grades (M3 step 19): one step
+        // from the grade the drag began on to the grade now.
+        if let Some(EditCommand::SetRootGrade { description, root, old, .. }) = &pending {
+            let new = self.sequences[self.active_sequence_idx].root_grade(*root).ok().flatten().cloned().map(Box::new);
+            self.active_history_mut().end_drag(HistoryEntry { command: EditCommand::SetRootGrade { description, root: *root, old: old.clone(), new } });
+            return;
+        }
         if let Some(EditCommand::PictureEdit { clip_id, description, edit }) = &pending {
             match self.picture_of(*clip_id) {
                 Some(after) => self.active_history_mut().end_drag(HistoryEntry {

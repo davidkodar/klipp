@@ -84,6 +84,17 @@ impl GradeStandIn {
         }
     }
 
+    /// Where its nodes are by path (M3 step 19): the timeline grade's or
+    /// the group stage's own root, never the stand-in clip's.
+    pub(super) fn root(self, seq: &klipp_timeline::Sequence) -> klipp_graph_format::path::Root {
+        use klipp_graph_format::lifted::Stage;
+        use klipp_graph_format::path::Root;
+        match self {
+            Self::Timeline => Root::TimelineGrade { sequence: seq.id.0 },
+            Self::Group(g, s) => Root::GroupStage { group: g.0, stage: if s == klipp_timeline::GradeStage::Pre { Stage::Pre } else { Stage::Post } },
+        }
+    }
+
     /// What the panels call it.
     pub(super) fn title(self, seq: &klipp_timeline::Sequence) -> String {
         match self {

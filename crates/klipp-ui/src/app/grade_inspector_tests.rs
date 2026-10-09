@@ -52,12 +52,15 @@ struct Run {
     /// The per-node layout's panel, for the specialist editors; `None`
     /// draws those rows read-only.
     panel: Option<crate::panels::node_inspector::NodeInspectorPanel>,
+    /// The graph a stand-in is put on with while its root has no grade,
+    /// kept as the app keeps it (`timeline_grade_fresh`).
+    fresh: Option<(ClipId, NodeGraph)>,
 }
 
 impl Run {
     fn new(kind: NodeKind) -> Option<Self> {
         let (state, clip, node) = graded(kind)?;
-        Some(Self { ctx: egui::Context::default(), state, clip, node, time: 0.5, clock: 0.0, panel: None })
+        Some(Self { ctx: egui::Context::default(), state, clip, node, time: 0.5, clock: 0.0, panel: None, fresh: None })
     }
 
     /// One frame with `events`: the commands it pushed, the rows it drew
@@ -471,9 +474,10 @@ fn tabbed_targeting_is_unchanged() {
     }
 }
 
-/// A tabbed page draws its shared rows from a snapshot only of the clip's
-/// own grade with the generated inspector on; a nested grade or a
-/// stand-in's (the timeline grade, a group's stage) keeps the old rows.
+/// A clip's snapshot is taken only of its own grade with the generated
+/// inspector on; a nested grade keeps the old rows (the #1391 boundary),
+/// and a stand-in's (the timeline grade, a group's stage) is taken at its
+/// own root instead (`snapshot_for_root`, M3 step 19).
 #[test]
 fn the_shared_rows_fall_back_for_nested_and_stand_in_grades() {
     let run = Run::new(NodeKind::Corrector).unwrap();
@@ -549,8 +553,17 @@ fn dispatch(run: &mut Run, cmds: &[AppCommand]) {
 /// moved `dx` in three steps, then released, or (`escape`) Escape before
 /// the release. The commands each frame pushed, applied as they come.
 fn drag_row(run: &mut Run, on: crate::state::ColorTab, label: &str, dx: f32, escape: bool) -> Vec<AppCommand> {
-    tabbed_on(run, true, false, on, None, Vec::new());
-    let texts = tabbed_on(run, true, false, on, None, Vec::new()).2;
+    drag_with(run, &mut |run, events| tabbed_on(run, true, false, on, None, events), label, dx, escape)
+}
+
+/// What one drawn frame gave: its commands, the controls the recorder saw
+/// and the texts painted.
+type Drawn = (Vec<AppCommand>, Vec<crate::widgets::row_recorder::Row>, Vec<(String, egui::Pos2)>);
+
+/// [`drag_row`] on what `draw` draws each frame.
+fn drag_with(run: &mut Run, draw: &mut dyn FnMut(&mut Run, Vec<egui::Event>) -> Drawn, label: &str, dx: f32, escape: bool) -> Vec<AppCommand> {
+    draw(run, Vec::new());
+    let texts = draw(run, Vec::new()).2;
     let label_at = texts.iter().filter(|(t, _)| t == label).map(|(_, p)| *p).next_back().unwrap_or_else(|| panic!("no {label} row: {texts:?}"));
     let value_at = texts.iter()
         .filter(|(t, p)| (p.y - label_at.y).abs() < 4.0 && p.x > label_at.x && t.trim_start_matches('-').starts_with(|c: char| c.is_ascii_digit()))
@@ -558,7 +571,7 @@ fn drag_row(run: &mut Run, on: crate::state::ColorTab, label: &str, dx: f32, esc
     let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
     let mut all = Vec::new();
     let mut step = |run: &mut Run, events| {
-        let cmds = tabbed_on(run, true, false, on, None, events).0;
+        let cmds = draw(run, events).0;
         dispatch(run, &cmds);
         all.extend(cmds);
     };
@@ -682,17 +695,13 @@ fn editor_write(run: &mut Run, named: NodeId, write: impl FnOnce(&mut Node)) -> 
     let before = saved(&run.state, run.clip);
     let target = run.state.phantom_target(run.clip, named);
     assert_eq!(saved(&run.state, run.clip), before, "deciding the node changes nothing");
-    let clip_id = run.clip;
-    let c = run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
-    let old_graph = c.grade().clone();
-    c.edit_grade(|g| {
+    let written = super::colour::edit_clip_graph(&mut run.state, run.clip, &[], true, |g| {
         super::colour::make_phantom(g, target);
         if let Some(n) = g.nodes.iter_mut().find(|n| n.id == target.0) {
             write(n);
         }
     });
-    let new_graph = c.grade().clone();
-    run.state.active_history_mut().push(crate::history::HistoryEntry { command: crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph } });
+    assert_eq!(written, Some(Ok(())));
     target.0
 }
 
@@ -784,3 +793,213 @@ fn a_corrector_s_tabs_are_its_generated_rows() {
     assert_eq!(run.state.active_history().undo_count(), 1);
 }
 
+
+use super::timeline_grade::GradeStandIn;
+
+/// A run whose sequence has a grade group (`Night`), and the stand-ins of
+/// its own grades: the timeline grade and that group's two stages. Each
+/// with a stored grade (`stored`), or none yet.
+fn sequence_grades(stored: bool) -> (Run, Vec<GradeStandIn>) {
+    let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
+    let seq = &mut run.state.sequences[0];
+    let mut group = klipp_timeline::GradeGroup::new("Night");
+    if stored {
+        group.stage_slot(klipp_timeline::GradeStage::Pre).set(Some(NodeGraph::default()));
+        group.stage_slot(klipp_timeline::GradeStage::Post).set(Some(NodeGraph::default()));
+        seq.timeline_grade_slot().set(Some(NodeGraph::default()));
+    }
+    let g = group.id;
+    seq.grade_groups.push(group);
+    (run, vec![GradeStandIn::Timeline, GradeStandIn::Group(g, klipp_timeline::GradeStage::Pre), GradeStandIn::Group(g, klipp_timeline::GradeStage::Post)])
+}
+
+/// One frame of a sequence grade's tab `on`, as the app draws it (M3 step
+/// 19): its stand-in put on, the snapshot taken at its root, the page
+/// drawn over the stand-in's grade on the right or (`wide`) in the bottom
+/// tools, then the stand-in taken down. Its commands are not applied.
+fn stand_in_tab(run: &mut Run, which: GradeStandIn, wide: bool, on: crate::state::ColorTab, events: Vec<egui::Event>) -> Drawn {
+    let id = super::timeline_grade::stand_in_grade_on(&mut run.state.sequences[0], which, &mut run.fresh).expect("stood in");
+    let root = which.root(&run.state.sequences[0]);
+    let mut panel = run.panel.take().unwrap_or_default();
+    panel.generated = crate::inspector::grade_view::snapshot_for_root(&run.state.sequences[0], id, root, true, false, &mut run.state.pending_corrector, &mut run.state.root_grade_start);
+    let mut graph = clip(&run.state, id).grade().clone();
+    let theme = crate::theme::KlippTheme::default();
+    let frame = FrameSelection { time_secs: run.time, tolerance: 0.02 };
+    run.clock += 0.05;
+    let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(WIDTH, 2400.0))), time: Some(run.clock), events, ..Default::default() };
+    let mut cmds = Vec::new();
+    let mut texts = Vec::new();
+    let ((), rows) = crate::widgets::row_recorder::capture(|| {
+        let out = run.ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let (mut sel, mut tab) = (None, on);
+                cmds = if wide {
+                    panel.show_simple_horizontal(ui, &mut graph, id, &mut sel, &mut tab, &theme, frame)
+                } else {
+                    panel.show_simple(ui, &mut graph, id, &mut sel, &mut tab, &theme, frame)
+                };
+            });
+        });
+        texts = out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+            _ => None,
+        }).collect();
+    });
+    panel.generated = None;
+    run.panel = Some(panel);
+    super::timeline_grade::stand_down_timeline_grade_on(&mut run.state.sequences[0], &mut run.fresh);
+    (cmds, rows, texts)
+}
+
+/// The grade a stand-in stands for, as stored: its saved form, `None`
+/// included.
+fn stored(run: &Run, which: GradeStandIn) -> String {
+    let seq = &run.state.sequences[0];
+    serde_json::to_string(&seq.root_grade(which.root(seq)).unwrap()).unwrap()
+}
+
+/// The value a recorded row shows for `key`.
+fn row_value(rows: &[crate::widgets::row_recorder::Row], key: &str) -> Option<f64> {
+    rows.iter().find(|r| r.parameter.as_deref() == Some(key)).and_then(|r| r.value.as_f64())
+}
+
+/// Undo once, as the app does for a sequence grade's path edit.
+fn undo_root(state: &mut AppState) {
+    let entry = state.active_history_mut().undo().expect("a step to undo");
+    let mut command = entry.command;
+    if let klipp_document::history::EditCommand::Named { edit, .. } = command { command = *edit; }
+    let klipp_document::history::EditCommand::SetRootGrade { root, old, .. } = command else { panic!("a sequence grade step: {command:?}") };
+    state.sequences[0].set_root_grade(root, old.map(|g| *g)).unwrap();
+}
+
+/// The timeline grade and a group's pre and post stages draw their tabs
+/// generated (M3 step 19): opening writes nothing, and a row's edit names
+/// the node at the grade's own root, never the stand-in clip.
+#[test]
+fn a_sequence_grade_s_tabs_are_generated_at_its_root() {
+    use crate::state::ColorTab;
+    let (mut run, which) = sequence_grades(true);
+    for w in which {
+        let root = w.root(&run.state.sequences[0]);
+        let before = stored(&run, w);
+        for wide in [false, true] {
+            let (cmds, rows, _) = stand_in_tab(&mut run, w, wide, ColorTab::Curves, Vec::new());
+            assert!(cmds.is_empty(), "{w:?} wide {wide}: wrote on open: {cmds:?}");
+            let mix = rows.iter().find(|r| r.parameter.as_deref() == Some("curves_mix")).unwrap_or_else(|| panic!("{w:?}: no Mix row"));
+            assert!(mix.keyframe_state.is_some(), "{w:?} wide {wide}: Mix is the generated row");
+        }
+        assert_eq!(stored(&run, w), before, "{w:?}: opening wrote nothing");
+        let cmds = drag_with(&mut run, &mut |run, events| stand_in_tab(run, w, false, ColorTab::Curves, events), "Mix", -60.0, false);
+        let at: Vec<_> = cmds.iter().filter_map(|c| match c { AppCommand::SetParamAt { addr, .. } => Some(addr.root), _ => None }).collect();
+        assert!(!at.is_empty() && at.iter().all(|r| *r == root), "{w:?}: edits at {root:?}: {at:?}");
+    }
+}
+
+/// A path edit of a sequence grade, made outside the stand-in as the app
+/// dispatches it, shows on the next draw of both the right inspector's
+/// tabbed page and the bottom tools, as one step; undoing it puts the
+/// stored grade back byte-exact and both surfaces show the value before.
+#[test]
+fn a_sequence_grade_s_edit_shows_on_both_surfaces_and_undoes_exactly() {
+    use crate::state::ColorTab;
+    let (mut run, which) = sequence_grades(true);
+    for w in which {
+        let steps = run.state.active_history().undo_count();
+        let before = stored(&run, w);
+        let mix = |run: &mut Run, wide| row_value(&stand_in_tab(run, w, wide, ColorTab::Curves, Vec::new()).1, "curves_mix");
+        let was = (mix(&mut run, false), mix(&mut run, true));
+        drag_with(&mut run, &mut |run, events| stand_in_tab(run, w, false, ColorTab::Curves, events), "Mix", -60.0, false);
+        assert_eq!(run.state.active_history().undo_count(), steps + 1, "{w:?}: one step");
+        let seq = &run.state.sequences[0];
+        let now = seq.root_grade(w.root(seq)).unwrap().unwrap().nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().params.curves_mix;
+        assert!(now.is_some_and(|m| m < 1.0), "{w:?}: stored {now:?}");
+        let now = now.map(f64::from);
+        assert_eq!((mix(&mut run, false), mix(&mut run, true)), (now, now), "{w:?}: both surfaces show the edit");
+        undo_root(&mut run.state);
+        assert_eq!(stored(&run, w), before, "{w:?}: undo, byte-exact");
+        assert_eq!((mix(&mut run, false), mix(&mut run, true)), was, "{w:?}: both surfaces show the value before");
+    }
+}
+
+/// A sequence with no timeline grade, and a group with no stages, draw the
+/// graph their stand-in is put on with; the first edit begins the grade
+/// from it, with the ids drawn, and undoing it leaves no grade at all.
+#[test]
+fn a_first_edit_begins_a_sequence_grade_and_undo_takes_it_off() {
+    use crate::state::ColorTab;
+    let (mut run, which) = sequence_grades(false);
+    for w in which {
+        assert_eq!(stored(&run, w), "null", "{w:?}: no grade yet");
+        let (cmds, _, _) = stand_in_tab(&mut run, w, false, ColorTab::Curves, Vec::new());
+        assert!(cmds.is_empty(), "{w:?}: wrote on open");
+        let drawn = run.state.root_grade_start.clone().expect("the graph drawn kept").1;
+        drag_with(&mut run, &mut |run, events| stand_in_tab(run, w, false, ColorTab::Curves, events), "Mix", -60.0, false);
+        let seq = &run.state.sequences[0];
+        let made = seq.root_grade(w.root(seq)).unwrap().cloned().expect("the grade begun");
+        assert_eq!(made.nodes.iter().map(|n| n.id).collect::<Vec<_>>(), drawn.nodes.iter().map(|n| n.id).collect::<Vec<_>>(), "{w:?}: the ids drawn");
+        undo_root(&mut run.state);
+        assert_eq!(stored(&run, w), "null", "{w:?}: undo leaves no grade");
+    }
+}
+
+/// Escape during a drag on a sequence grade takes it back: the grade as
+/// stored before, no step.
+#[test]
+fn escape_on_a_sequence_grade_s_drag_takes_it_back() {
+    use crate::state::ColorTab;
+    let (mut run, which) = sequence_grades(true);
+    for w in which {
+        let (before, steps) = (stored(&run, w), run.state.active_history().undo_count());
+        let cmds = drag_with(&mut run, &mut |run, events| stand_in_tab(run, w, false, ColorTab::Curves, events), "Mix", -60.0, true);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::AbandonParamEditAt { .. })), "{w:?}: escaped");
+        assert_eq!((stored(&run, w), run.state.active_history().undo_count()), (before, steps), "{w:?}");
+    }
+}
+
+/// A correction's mix on a sequence grade is refused, said, and changes
+/// nothing (#1321).
+#[test]
+fn a_mix_edit_on_a_sequence_grade_is_refused() {
+    let (mut run, which) = sequence_grades(true);
+    let w = which[0];
+    let seq = &run.state.sequences[0];
+    let root = w.root(seq);
+    let node = seq.root_grade(root).unwrap().unwrap().nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
+    let before = stored(&run, w);
+    let cmd = AppCommand::SetMixAt { addr: klipp_graph_format::path::NodePath::new(root, [node]), mix: Some(0.5) };
+    assert_eq!(run.state.path_command(&cmd), Some(false));
+    assert!(run.state.toast.message_for_test().is_some_and(|m| m.contains("#1321")), "{:?}", run.state.toast.message_for_test());
+    assert_eq!(stored(&run, w), before);
+}
+
+/// Redo once, as the app does for a sequence grade's path edit.
+fn redo_root(state: &mut AppState) {
+    let entry = state.active_history_mut().redo().expect("a step to redo");
+    let mut command = entry.command;
+    if let klipp_document::history::EditCommand::Named { edit, .. } = command { command = *edit; }
+    let klipp_document::history::EditCommand::SetRootGrade { root, new, .. } = command else { panic!("a sequence grade step: {command:?}") };
+    state.sequences[0].set_root_grade(root, new.map(|g| *g)).unwrap();
+}
+
+/// A drag that closes (not Escape) on a sequence grade that has none yet
+/// is one step: undo takes the grade off again, and redo brings back the
+/// grade with the dragged value.
+#[test]
+fn a_closed_drag_on_a_sequence_grade_without_one_is_one_step() {
+    use crate::state::ColorTab;
+    let (mut run, which) = sequence_grades(false);
+    for w in which {
+        let steps = run.state.active_history().undo_count();
+        let cmds = drag_with(&mut run, &mut |run, events| stand_in_tab(run, w, false, ColorTab::Curves, events), "Mix", -60.0, false);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::EndParamEditAt { .. })), "{w:?}: the drag closed");
+        assert_eq!(run.state.active_history().undo_count(), steps + 1, "{w:?}: one step");
+        let dragged = stored(&run, w);
+        let seq = &run.state.sequences[0];
+        let mix = seq.root_grade(w.root(seq)).unwrap().unwrap().nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().params.curves_mix;
+        assert!(mix.is_some_and(|m| m < 1.0), "{w:?}: the dragged value, {mix:?}");
+        undo_root(&mut run.state);
+        assert_eq!(stored(&run, w), "null", "{w:?}: undo takes the grade off");
+        redo_root(&mut run.state);
+        assert_eq!(stored(&run, w), dragged, "{w:?}: redo brings back the dragged grade");
+    }
+}

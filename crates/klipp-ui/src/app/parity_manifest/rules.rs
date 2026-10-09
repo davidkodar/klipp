@@ -102,8 +102,10 @@ pub(super) fn surfaces(entry: &CatalogEntry) -> Result<BTreeSet<Surface>, String
                 required.insert(GradeTabbedRight);
             }
         }
-        // snapshot_for disables generated rows for both kinds of root;
-        // require real fallback cases and block deletion while they remain.
+        // Nested grades keep the old rows (the #1391 boundary); the
+        // timeline grade and group stages draw generated (M3 step 19) but
+        // no family covers them yet. Both stay required and labelled
+        // fallback, blocking deletion, until cases earn them.
         required.extend([NestedGrade, NonClipGrade]);
     }
     if matches!(entry.value, CatalogValue::Parameter { desc, .. } if desc.keyframable)

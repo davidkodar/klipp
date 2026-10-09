@@ -99,6 +99,33 @@ pub(crate) fn resolve_for_clip(clip: &Clip, tolerance: f64, command: &mut AppCom
     resolve_with(command, tolerance, |id| (id == clip.id).then_some(clip));
 }
 
+/// `command` resolved as [`resolve_command`] does, for a key named by
+/// path on `grade`, one of the sequence's own grades (the timeline grade, a
+/// group stage: M3 step 19), whose node keys are its v1 nodes' tracks: a
+/// key added or taken off within `tolerance` of a stored one is that key.
+pub(crate) fn resolve_for_grade(grade: &klipp_nodes::NodeGraph, tolerance: f64, command: &mut AppCommand) {
+    let keys = |addr: &klipp_graph_format::path::NodePath, key: &klipp_graph_format::ParamKey| -> Vec<Keyframe> {
+        let node = addr.nodes.last().and_then(|id| grade.nodes.iter().find(|n| n.id == *id));
+        node.and_then(|n| n.keyframes.tracks.iter().find(|t| t.param_name == key.as_str())).map(|t| t.keyframes.clone()).unwrap_or_default()
+    };
+    match command {
+        AppCommand::AddKeyAt { addr, key, keyframe } => {
+            let Some(t) = keyframe.get("time_secs").and_then(serde_json::Value::as_f64) else { return };
+            let stored = keys(addr, key);
+            if let Some(i) = nearest(&stored, t, tolerance) {
+                keyframe["time_secs"] = serde_json::json!(stored[i].time_secs);
+            }
+        }
+        AppCommand::RemoveKeyAt { addr, key, time_secs } => {
+            let stored = keys(addr, key);
+            if let Some(i) = nearest(&stored, *time_secs, tolerance) {
+                *time_secs = stored[i].time_secs;
+            }
+        }
+        _ => {}
+    }
+}
+
 fn resolve_with<'a>(
     command: &mut AppCommand,
     tolerance: f64,

@@ -978,6 +978,13 @@ impl KlippApp {
                 // A stand-in: the timeline grade or a grade group's stage.
                 let stand_in = GradeStandIn::of(&self.state.sequences[seq_idx], clip_id);
                 let stand_in_title = stand_in.map(|w| w.title(&self.state.sequences[seq_idx]));
+                // A stand-in's grade is drawn at its own root (M3 step 19),
+                // which takes the sequence to read: taken before the clip
+                // is borrowed to draw.
+                let mut stand_in_snapshot = stand_in.and_then(|w| {
+                    let seq = &self.state.sequences[seq_idx];
+                    crate::inspector::grade_view::snapshot_for_root(seq, clip_id, w.root(seq), self.state.use_generated_stack, !self.state.graph_descent_path.is_empty(), &mut self.state.pending_corrector, &mut self.state.root_grade_start)
+                });
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
@@ -1251,18 +1258,32 @@ impl KlippApp {
                     let path = self.state.graph_descent_path.clone();
                     // The generated layout (M3 step 11) draws a node of the
                     // clip's own grade from its catalog type, by path.
-                    let generated = self.state.use_generated_stack && path.is_empty() && !grading_timeline;
+                    // A stand-in's (the timeline grade, a group stage) too,
+                    // at its own root (M3 step 19).
+                    let generated = self.state.use_generated_stack && path.is_empty();
                     let generated_node = self.state.selected_node_id.filter(|nid| {
                         generated && klipp_timeline::GradeAccess::grade(&*clip).nodes.iter().any(|n| n.id == *nid && per_node_kind(n.kind))
                     });
                     // The tabbed page draws what it shares with the
                     // per-node layout as the same generated rows (11c).
-                    self.node_inspector_panel.generated = crate::inspector::grade_view::snapshot_for(clip, self.state.use_generated_stack, !path.is_empty(), grading_timeline, &mut self.state.pending_corrector);
+                    self.node_inspector_panel.generated = if grading_timeline {
+                        stand_in_snapshot.take()
+                    } else {
+                        crate::inspector::grade_view::snapshot_for(clip, self.state.use_generated_stack, !path.is_empty(), false, &mut self.state.pending_corrector)
+                    };
                     let mut generated_cmds = Vec::new();
                     let drawn = generated_node.is_some_and(|nid| {
                         egui::ScrollArea::vertical()
                             .id_salt("node_inspector_scroll")
-                            .show(ui, |ui| crate::inspector::grade_view::show(ui, &self.theme, clip, nid, &mut generated_cmds, mask_frame, Some(&mut self.node_inspector_panel)))
+                            .show(ui, |ui| {
+                                if !grading_timeline {
+                                    return crate::inspector::grade_view::show(ui, &self.theme, clip, nid, &mut generated_cmds, mask_frame, Some(&mut self.node_inspector_panel));
+                                }
+                                let snapshot = self.node_inspector_panel.generated.take();
+                                let drawn = snapshot.as_ref().is_some_and(|s| s.page(ui, &self.theme, nid, &mut generated_cmds, mask_frame, Some(&mut self.node_inspector_panel)));
+                                self.node_inspector_panel.generated = snapshot;
+                                drawn
+                            })
                             .inner
                     });
                     let panel_cmds = if drawn { generated_cmds } else { clip.edit_grade(|root| {
@@ -1295,8 +1316,15 @@ impl KlippApp {
                     // stored key in its frame.
                     let mut panel_cmds = panel_cmds;
                     if generated {
+                        // A stand-in's keys are its root's, stored in the
+                        // grade the stand-in was put on with.
+                        let grade = clip.grade().clone();
                         for cmd in &mut panel_cmds {
-                            crate::inspector::keyframe_selection::resolve_for_clip(clip, mask_tolerance, cmd);
+                            if grading_timeline {
+                                crate::inspector::keyframe_selection::resolve_for_grade(&grade, mask_tolerance, cmd);
+                            } else {
+                                crate::inspector::keyframe_selection::resolve_for_clip(clip, mask_tolerance, cmd);
+                            }
                         }
                     }
                     all_cmds.extend(panel_cmds);

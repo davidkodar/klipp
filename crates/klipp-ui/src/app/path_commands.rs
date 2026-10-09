@@ -76,6 +76,19 @@ fn edited_path(op: &GraphOp) -> Option<&NodePath> {
     }
 }
 
+/// Whether `root` is one of a sequence's own grades, edited by path at
+/// its root rather than in a clip's picture (M3 step 19).
+fn is_sequence_grade(root: Root) -> bool {
+    matches!(root, Root::TimelineGrade { .. } | Root::GroupStage { .. })
+}
+
+fn grade_stage(stage: klipp_graph_format::lifted::Stage) -> klipp_timeline::GradeStage {
+    match stage {
+        klipp_graph_format::lifted::Stage::Pre => klipp_timeline::GradeStage::Pre,
+        klipp_graph_format::lifted::Stage::Post => klipp_timeline::GradeStage::Post,
+    }
+}
+
 impl KlippApp {
     pub(super) fn handle_path_commands(&mut self, cmd: &AppCommand) -> bool {
         match self.state.path_command(cmd) {
@@ -264,6 +277,9 @@ impl crate::state::AppState {
     /// animation, or a key added or taken off. Any other edit closes an
     /// open drag first, as its own step.
     pub(crate) fn apply_path_ops(&mut self, ops: &[GraphOp], label: &str) -> Result<(), String> {
+        if ops.first().is_some_and(|op| is_sequence_grade(op.path().root)) {
+            return self.apply_root_path_ops(ops, label);
+        }
         let refused = |(at, why): (Option<usize>, String)| match at {
             Some(i) if ops.len() > 1 => format!("{label}: op {i}: {why}"),
             _ => format!("{label}: {why}"),
@@ -304,6 +320,36 @@ impl crate::state::AppState {
         self.push_history(edit);
         self.active_history_mut().end_batch_as(label);
         self.show_ungated(&ungated);
+        Ok(())
+    }
+
+    /// [`AppState::apply_path_ops`] on one of the sequence's own grades
+    /// (M3 step 19): applied to the stored grade (or, while it has none,
+    /// to the graph its stand-in drew), live inside the open drag of the
+    /// one parameter it sets, else as one step that undoes to the grade as
+    /// it was, `None` included.
+    fn apply_root_path_ops(&mut self, ops: &[GraphOp], label: &str) -> Result<(), String> {
+        let root = ops[0].path().root;
+        let start = self.root_grade_start.as_ref().filter(|(r, _)| *r == root).map(|(_, g)| g.clone());
+        let mix_key: ParamKey = Self::NODE_MIX_DRAG_KEY.into();
+        let made = self.pending_corrector_ops(ops);
+        let dragged = match &ops[made..] {
+            [GraphOp::SetParam { path, key, .. } | GraphOp::SetAnim { path, key, .. } | GraphOp::AddKeyAt { path, key, .. } | GraphOp::RemoveKeyAt { path, key, .. }] => Some((path, key)),
+            [GraphOp::SetMix { path, .. }] => Some((path, &mix_key)),
+            _ => None,
+        };
+        let live = dragged.is_some_and(|(path, key)| self.active_history().pending_drag_key().is_some_and(|open| open == drag_key(path, key) || open == node_drag(path)));
+        if !live && self.active_history().is_any_drag_in_progress() {
+            self.close_open_drag();
+        }
+        let (old, new) = self.sequences[self.active_sequence_idx].apply_root_grade_ops(ops, start.as_ref())?;
+        self.dirty = true;
+        if live {
+            return Ok(());
+        }
+        self.active_history_mut().begin_batch();
+        self.push_history(EditCommand::SetRootGrade { description: "Edit Grade", root, old: old.map(Box::new), new: Some(Box::new(new)) });
+        self.active_history_mut().end_batch_as(label);
         Ok(())
     }
 
@@ -359,10 +405,18 @@ impl crate::state::AppState {
         if self.active_history().is_any_drag_in_progress() {
             self.close_open_drag();
         }
-        let Root::Clip { clip } = addr.root else { return Err("only a clip's graph takes edits by path so far".into()) };
         if !self.names_pending_corrector(addr) {
             self.node_at(addr)?;
         }
+        if is_sequence_grade(addr.root) {
+            let before = self.sequences[self.active_sequence_idx].root_grade(addr.root)?.cloned().map(Box::new);
+            self.active_history_mut().begin_drag(
+                drag_key(addr, key),
+                HistoryEntry { command: EditCommand::SetRootGrade { description: "Edit Parameter", root: addr.root, old: before.clone(), new: before } },
+            );
+            return Ok(());
+        }
+        let Root::Clip { clip } = addr.root else { return Err("only a clip's graph takes edits by path so far".into()) };
         let clip_id = ClipId(clip);
         let before = self.picture_of(clip_id).ok_or_else(|| format!("no clip {clip} on this sequence"))?;
         self.active_history_mut().begin_drag(
@@ -394,6 +448,12 @@ impl crate::state::AppState {
         }
         if !self.active_history().is_dragging(&drag_key(addr, key)) {
             return false;
+        }
+        if let Some(EditCommand::SetRootGrade { root, old, .. }) = self.active_history().pending_old_entry_ref().map(|e| e.command.clone()) {
+            self.active_history_mut().abandon_pending_drag();
+            let _ = self.sequences[self.active_sequence_idx].set_root_grade(root, old.map(|g| *g));
+            self.dirty = true;
+            return true;
         }
         let before = match self.active_history().pending_old_entry_ref().map(|e| &e.command) {
             Some(EditCommand::PictureEdit { clip_id, edit, .. }) => Some((*clip_id, edit.before.clone())),
@@ -442,7 +502,32 @@ impl crate::state::AppState {
     /// clip (`pending_corrector`) and the clip doesn't hold it yet.
     fn names_pending_corrector(&self, addr: &NodePath) -> bool {
         let Some((clip, id)) = self.pending_corrector else { return false };
-        addr.root == (Root::Clip { clip: clip.0 }) && addr.nodes.len() == 2 && addr.nodes[1] == id && self.node_at(addr).is_err()
+        // A clip's grade nodes are under its grade group; a sequence
+        // grade's at its root's top (M3 step 19).
+        let depth = if matches!(addr.root, Root::Clip { .. }) { 2 } else { 1 };
+        self.editing_clip(addr.root) == Some(clip) && addr.nodes.len() == depth && addr.nodes.last() == Some(&id) && self.node_at(addr).is_err()
+    }
+
+    /// The clip a root's grade commands name: the clip, or the stand-in a
+    /// sequence's own grade is edited through (`GradeStandIn`).
+    fn editing_clip(&self, root: Root) -> Option<ClipId> {
+        let seq = &self.sequences[self.active_sequence_idx];
+        match root {
+            Root::Clip { clip } => Some(ClipId(clip)),
+            Root::TimelineGrade { sequence } if sequence == seq.id.0 => Some(seq.timeline_grade_clip_id()),
+            Root::GroupStage { group, stage } => seq.grade_group(klipp_core::GradeGroupId(group)).map(|g| g.stage_clip_id(grade_stage(stage))),
+            _ => None,
+        }
+    }
+
+    /// The grade of one of the sequence's own roots as its paths address
+    /// it: the one stored, or while it has none, the graph its stand-in
+    /// was put on with (`root_grade_start`).
+    fn root_grade_doc(&self, root: Root) -> Result<klipp_graph_format::Graph, String> {
+        let seq = &self.sequences[self.active_sequence_idx];
+        let start = self.root_grade_start.as_ref().filter(|(r, _)| *r == root).map(|(_, g)| g);
+        let grade = seq.root_grade(root)?.or(start).ok_or("this grade doesn't exist yet")?;
+        seq.lift_root_grade(root, grade)
     }
 
     /// `ops` with the pending Corrector made first when the first of them
@@ -452,10 +537,13 @@ impl crate::state::AppState {
     /// and undoing it leaves the grade as it was.
     fn with_pending_corrector(&self, ops: Vec<GraphOp>) -> Result<Vec<GraphOp>, String> {
         let Some(addr) = ops.first().and_then(edited_path).filter(|a| self.names_pending_corrector(a)).cloned() else { return Ok(ops) };
-        let (group, id) = (addr.nodes[0], addr.nodes[1]);
-        let at = |node| NodePath::new(addr.root, [group, node]);
-        let node = self.node_at(&NodePath::new(addr.root, [group]))?;
-        let body = &node.group.as_ref().ok_or("the grade isn't a group")?.graph;
+        let (prefix, id) = (&addr.nodes[..addr.nodes.len() - 1], *addr.nodes.last().expect("a node"));
+        let at = |node| NodePath::new(addr.root, prefix.iter().copied().chain([node]));
+        let body = match prefix {
+            [] => self.root_grade_doc(addr.root)?,
+            _ => self.node_at(&NodePath::new(addr.root, prefix.iter().copied()))?.group.ok_or("the grade isn't a group")?.graph,
+        };
+        let body = &body;
         let output = body.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::GROUP_OUTPUT).ok_or("the grade has no output")?.id;
         let input = klipp_graph_format::ports::input_key("Output", 0);
         let fed = body.edges.iter().find(|e| e.to == (output, input.clone())).ok_or("nothing feeds the grade's output")?;
@@ -488,6 +576,9 @@ impl crate::state::AppState {
     /// The node `path` names, on this sequence: only a clip's graph so far,
     /// as `GraphOps` takes.
     fn node_at(&self, path: &NodePath) -> Result<Node, String> {
+        if is_sequence_grade(path.root) {
+            return walk(&self.root_grade_doc(path.root)?.nodes, &path.nodes).cloned().ok_or_else(|| format!("{:?} names no node of the grade", path.nodes));
+        }
         let Root::Clip { clip } = path.root else { return Err("only a clip's graph is shown by path so far".into()) };
         let c = self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id.0 == clip).ok_or_else(|| format!("no clip {clip} on this sequence"))?;
         let lifted = c.picture_v2().map_err(|e| e.to_string())?;

@@ -60,6 +60,7 @@ mod edit_plan;
 mod effect_slots;
 mod other_effect_slots;
 mod grade_access;
+mod grade_roots;
 pub use grade_access::{Grade, GradeAccess, GradeSlot};
 mod render_gates;
 pub use effect_slots::{EffectId, EffectList, EffectsState};
