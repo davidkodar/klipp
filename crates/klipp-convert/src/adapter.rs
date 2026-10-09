@@ -248,7 +248,7 @@ fn animate(out: &mut Map<String, Value>, modifiers: &mut Map<String, Value>, fie
 }
 
 fn has_values(p: &PlacementProps) -> bool {
-    [p.pos_x, p.pos_y, p.scale, p.rotation, p.anchor_x, p.anchor_y].iter().any(Option::is_some)
+    [p.pos_x, p.pos_y, p.scale, p.aspect, p.rotation, p.anchor_x, p.anchor_y].iter().any(Option::is_some)
 }
 
 /// A Transform effect holding the placement, each value it lacks at the
@@ -261,7 +261,8 @@ fn transform(p: &PlacementProps, with_tilt: bool) -> Value {
         "position_x": p.pos_x.unwrap_or(0.0),
         "position_y": p.pos_y.unwrap_or(0.0),
         "scale_x": scale,
-        "scale_y": scale,
+        // The height keeps the clip's aspect under the width (#1406).
+        "scale_y": scale * p.aspect.unwrap_or(1.0),
         "rotation": p.rotation.unwrap_or(0.0),
         "anchor_x": p.anchor_x.unwrap_or(0.5),
         "anchor_y": p.anchor_y.unwrap_or(0.5),

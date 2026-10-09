@@ -422,6 +422,22 @@ fn temp(label: &str) -> PathBuf {
 /// The first re-derived rule, held to the executor: an unwired input that
 /// `reads_source_when_unwired` says reads the source gives the same
 /// picture as an edge from the Source node.
+/// An uneven Transform comes back from the adapter with its height: the
+/// lift keeps the aspect (#1406), and the adapter writes Scale Y as the
+/// width times it, so the picture it hands the renderer is the original's.
+#[test]
+fn the_adapter_keeps_an_uneven_transforms_height() {
+    let clip = json!({
+        "id": "00000000-0000-4000-8000-0000000014a6",
+        "builtin_effects": [{"type": "transform", "position_x": 3.0, "position_y": 0.0, "scale_x": 1.25, "scale_y": 1.6, "rotation": 0.0,
+                             "anchor_x": 0.5, "anchor_y": 0.5, "rotation_x": 0.0, "rotation_y": 0.0, "perspective": 0.0, "focal_ref": null}]
+    });
+    let back = lifted(&clip).unwrap();
+    let tf = back["builtin_effects"].as_array().unwrap().iter().find(|e| e["type"] == "transform").expect("a Transform");
+    let (x, y) = (tf["scale_x"].as_f64().unwrap(), tf["scale_y"].as_f64().unwrap());
+    assert!((x - 1.25).abs() < 1e-6 && (y - 1.6).abs() < 1e-6, "scale ({x}, {y})");
+}
+
 #[test]
 fn the_ports_that_read_the_source_unwired_are_the_executors() {
     use klipp_nodes::graph::{Edge, Node, NodeId};
