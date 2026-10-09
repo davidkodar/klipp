@@ -1,6 +1,6 @@
 use klipp_timeline::GradeAccess;
 use crate::icons::Icon;
-use crate::inspector::video_tab::{find_transform_index, get_transform, TransformParams};
+use crate::inspector::video_tab::{find_transform_index, TransformParams};
 use crate::state::{AppState, TransformHandle, ViewerTransformDrag};
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, Fps, RationalTime, ViewerMode};
@@ -1768,13 +1768,11 @@ impl ViewerPanel {
         {
             let start = cmds.len();
             self.draw_transform_controls(ui, state, image_rect, frame.viewer_rect, video_w, video_h, cmds);
-            // Behind the switch, the gizmo moves the clip's placement by
-            // path, and adds no Transform (M3 step 13).
-            if state.use_generated_stack {
-                if let Some(clip) = state.selected_clip.and_then(|id| state.sequence().all_clips().find(|c| c.id == id).cloned()) {
-                    let mine = cmds.split_off(start);
-                    cmds.extend(crate::inspector::placement_by_path::by_path(mine, &clip));
-                }
+            // The gizmo moves the clip's placement by path, and adds no
+            // Transform (M3 step 13).
+            if let Some(clip) = state.selected_clip.and_then(|id| state.sequence().all_clips().find(|c| c.id == id).cloned()) {
+                let mine = cmds.split_off(start);
+                cmds.extend(crate::inspector::placement_by_path::by_path(mine, &clip));
             }
             self.draw_corner_pin_handles(ui, state, image_rect, frame.viewer_rect, cmds);
             self.draw_surface_outlines(ui, state, image_rect);
@@ -4323,10 +4321,8 @@ impl ViewerPanel {
             return;
         }
 
-        // Behind the switch, the clip's placement as its picture holds it
-        // (M3 step 13).
-        let by_path = state.use_generated_stack;
-        let transform = if by_path { crate::inspector::placement_by_path::placement(clip) } else { get_transform(clip) };
+        // The clip's placement as its picture holds it (M3 step 13).
+        let transform = crate::inspector::placement_by_path::placement(clip);
         let effect_index = find_transform_index(clip);
         let n_builtin_effects = clip.builtin_effects().len();
 
@@ -4903,18 +4899,13 @@ impl ViewerPanel {
         let Some(effect_index) = clip.builtin_effects().iter().position(|e| matches!(e, klipp_effects::BuiltinEffect::CornerPin { .. })) else { return };
         let Some(base) = corners(&clip.builtin_effects()[effect_index]) else { return };
         let clip_time = (state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
-        // Behind the switch, the pin is its node, its corners its element
-        // keys, edited by path (M3 step 13).
-        let by_path = state.use_generated_stack;
+        // The pin is its node, its corners its element keys, edited by
+        // path (M3 step 13).
         let addr = clip.effect_node_at(false, effect_index).map(|n| klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip_id.0 }, [n]));
         let node_keys: Vec<Vec<klipp_core::Keyframe>> = PARAMS.iter().flatten().map(|name| addr.as_ref().and_then(|a| clip.node_key_state(a, &(*name).into())).map(|s| s.keys).unwrap_or_default()).collect();
         let keys_of = |name: &str| -> Option<Vec<klipp_core::Keyframe>> {
-            if by_path {
-                let at = PARAMS.iter().flatten().position(|n| *n == name)?;
-                Some(node_keys[at].clone()).filter(|k| !k.is_empty())
-            } else {
-                clip.effect_keyframes().get(&format!("{effect_index}:{name}")).filter(|k| !k.is_empty()).cloned()
-            }
+            let at = PARAMS.iter().flatten().position(|n| *n == name)?;
+            Some(node_keys[at].clone()).filter(|k| !k.is_empty())
         };
         let mut shown = base;
         for (corner, names) in shown.iter_mut().zip(PARAMS) {
@@ -4968,7 +4959,7 @@ impl ViewerPanel {
             // node, in a drag over its parameters together (an empty key).
             let path_key = |corner: usize, axis: usize| klipp_graph_format::ParamKey::from(PARAMS[corner][axis]);
             let whole = klipp_graph_format::ParamKey::from("");
-            let path = addr.clone().filter(|_| by_path);
+            let path = addr.clone();
             if matches!(step, GizmoStep::Start | GizmoStep::End) && !drag.started {
                 match &path {
                     Some(a) => cmds.push(AppCommand::BeginParamEditAt { addr: a.clone(), key: whole.clone() }),

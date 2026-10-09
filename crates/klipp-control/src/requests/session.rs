@@ -106,8 +106,6 @@ pub(crate) fn respond(
                     "next_undo": project.undo,
                     "next_redo": project.redo,
                 },
-                // Which inspector view the app draws, as it runs.
-                "inspector": { "generated_stack": project.generated_stack },
                 "project": {
                     "path": project.path.as_ref().map(|p| p.to_string_lossy().to_string()),
                     "unsaved_changes": project.dirty,

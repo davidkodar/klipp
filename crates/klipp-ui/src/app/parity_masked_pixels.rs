@@ -159,7 +159,7 @@ fn case(kind: Kind) -> Result<(), String> {
         return Err("the masked frame is the unmasked one".into());
     }
     // The view types the radius; the expected clip has it set by path.
-    let mut run = Run::new(start.clone(), true);
+    let mut run = Run::new(start.clone());
     type_value(&mut run, RowLabel { text: "Radius", group: None }, "12")?;
     if !run.unapplied.is_empty() {
         return Err(format!("unapplied {:?}", run.unapplied));

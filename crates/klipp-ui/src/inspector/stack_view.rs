@@ -1,8 +1,7 @@
 //! The generated Effects tab (M3 step 12): the clip's picture as a stack,
 //! read from its graph by the projection (`klipp_graph_lift::stack_view`,
 //! M3 step 7), each node drawn by the generated rows (step 5) and its
-//! adapter (step 6), every edit a path command. Drawn instead of the
-//! hand-written effects tab while `AppState::use_generated_stack` is on.
+//! adapter (step 6), every edit a path command.
 //!
 //! What a row shows: its eye, its name, its mix where the node is
 //! mixable, a chip for each mask feeding it (which reveals the mask's

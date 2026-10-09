@@ -45,7 +45,7 @@ fn click_icon_by(g: &mut Grade, label: &str, want: &str) -> Result<(), String> {
     let right = (0..40).map(|i| egui::pos2(at.x + 4.0 + 4.0 * i as f32, at.y));
     let above = (1..=3).flat_map(|row| (0..50).map(move |i| egui::pos2(4.0 + 4.0 * i as f32, at.y - 20.0 * row as f32)));
     for p in right.chain(above) {
-        let mut t = g.twin(true);
+        let mut t = g.twin();
         t.drawn();
         let before = t.picture();
         t.click_at(p);
@@ -76,7 +76,7 @@ fn hold_drag(g: &mut Grade, label: &str) -> Result<egui::Pos2, String> {
     // On the label's line, or the one under it (a slider's rail).
     for (dy, i) in [0.0, 16.0, 22.0].into_iter().flat_map(|dy| (0..30).map(move |i| (dy, i))) {
         let p = egui::pos2(at.x + 30.0 + 8.0 * i as f32, at.y + dy);
-        let mut t = g.twin(true);
+        let mut t = g.twin();
         t.drawn();
         let before = t.picture();
         drag(&mut t, p);
@@ -100,7 +100,7 @@ fn release(g: &mut Grade, at: egui::Pos2) {
 
 /// Opened: drawing the tool's page writes nothing.
 fn opened(start: &Grade) -> Result<(), String> {
-    let mut g = start.twin(true);
+    let mut g = start.twin();
     let before = g.picture();
     g.drawn();
     g.drawn();
@@ -118,7 +118,7 @@ fn flat(rgb: [u8; 3], w: u32, h: u32) -> Vec<u8> {
 /// The trigger: driving `control` sends the one request `want`, and
 /// writes nothing.
 fn trigger(start: &Grade, want: &str, control: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
-    let mut g = start.twin(true);
+    let mut g = start.twin();
     g.drawn();
     let before = g.picture();
     control(&mut g)?;
@@ -138,7 +138,7 @@ fn trigger(start: &Grade, want: &str, control: impl Fn(&mut Grade) -> Result<(),
 /// `read` is what it set; one step, `read` is `want`, and undo gives back
 /// what was there.
 fn lands<T: PartialEq + std::fmt::Debug>(start: &Grade, land: impl Fn(&mut Grade) -> Result<(), String>, read: impl Fn(&Grade) -> T, want: impl Fn(&T) -> bool) -> Result<(), String> {
-    let mut g = start.twin(true);
+    let mut g = start.twin();
     let before = read(&g);
     land(&mut g)?;
     if !g.unapplied.is_empty() {
@@ -181,7 +181,7 @@ fn labels(g: &mut Grade) -> Vec<String> {
 /// drag, and undoing every step gives back the grade before, the result's
 /// step undoing the result alone.
 fn result_during_drag<T: PartialEq + std::fmt::Debug>(start: &Grade, label: &str, land: impl Fn(&mut Grade) -> Result<(), String>, read: impl Fn(&Grade) -> T) -> Result<(), String> {
-    let mut g = start.twin(true);
+    let mut g = start.twin();
     let (before, result_before) = (g.picture(), read(&g));
     let at = hold_drag(&mut g, label)?;
     land(&mut g).map_err(|e| format!("landing: {e}"))?;
@@ -284,7 +284,7 @@ fn run_white_balance(report: &mut Report, type_id: &str, surface: Surface, page:
         report.case(&format!("white balance on {surface:?}"), [], || Err("the grade won't take a Corrector".into()));
         return;
     };
-    let start = Grade::new(state, clip, node, true).on(page);
+    let start = Grade::new(state, clip, node).on(page);
     report.case(&format!("white balance opened on {surface:?}"), [k(Interaction::OpenWithoutWrite)], || opened(&start));
     // A grey card under a warm light, kept under chroma 8, where the frame
     // is surely grey; a warmer one reads as skin, never balanced on (#403).
@@ -319,7 +319,7 @@ fn run_qualifier(report: &mut Report, type_id: &str, surface: Surface, page: Pag
     if let Some(c) = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)) {
         klipp_timeline::GradeAccess::edit_grade(c, |g| g.nodes.iter_mut().filter(|n| n.id == node).for_each(|n| n.params.qualifier.get_or_insert_with(Default::default).enabled = true));
     }
-    let start = Grade::new(state, clip, node, true).on(page);
+    let start = Grade::new(state, clip, node).on(page);
     report.case(&format!("qualifier picker opened on {surface:?}"), [k(Interaction::OpenWithoutWrite)], || opened(&start));
     // On a sequence grade the pick is refused by the engine (`ROOT_PICK`):
     // its trigger alone, a behaviour check that earns nothing.
@@ -357,7 +357,7 @@ fn run_colour_match(report: &mut Report, type_id: &str, surface: Surface, page: 
         report.case(&format!("colour match on {surface:?}"), [], || Err("the grade won't take a Colour Match node".into()));
         return;
     };
-    let start = Grade::new(state, clip, node, true).on(page);
+    let start = Grade::new(state, clip, node).on(page);
     report.case(&format!("colour match opened on {surface:?}"), [k(Interaction::OpenWithoutWrite)], || opened(&start));
     let matched = |g: &Grade| g.grade().nodes.iter().find(|n| n.kind == NodeKind::ColorMatch).and_then(|n| n.params.color_match);
     // A frame darker than its reference: the match brightens it.
@@ -382,9 +382,9 @@ fn run_colour_match(report: &mut Report, type_id: &str, surface: Surface, page: 
     report.case(&format!("colour match reset on {surface:?}"), [k(Interaction::Reset), k(Interaction::UndoRedo)], || {
         // From a match, its Reset: the match cleared, one step, undone
         // exactly.
-        let mut from = start.twin(true);
+        let mut from = start.twin();
         land(&mut from)?;
-        let mut g = from.twin(true);
+        let mut g = from.twin();
         let before = g.picture();
         click(&mut g, "Reset")?;
         if !g.unapplied.is_empty() {
@@ -406,7 +406,7 @@ fn run_colour_match(report: &mut Report, type_id: &str, surface: Surface, page: 
         // The drag held on the grade's Corrector, on its Adjustments tab:
         // the Colour Match page has no slider of its own.
         let corrector = start.grade().nodes.iter().find(|n| n.kind == NodeKind::Corrector).map(|n| n.id).ok_or("no Corrector")?;
-        let on_corrector = start.twin(true).on_node(corrector).on(Page::Tabbed(ColorTab::Adjustments));
+        let on_corrector = start.twin().on_node(corrector).on(Page::Tabbed(ColorTab::Adjustments));
         result_during_drag(&on_corrector, "Saturation", land, matched)
     });
 }

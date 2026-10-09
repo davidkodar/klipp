@@ -1,8 +1,9 @@
 //! The generated grade inspector (M3 step 11): a grade node's own layout,
 //! drawn by the generated rows from what its catalog type describes
 //! (`klipp_nodes::registry`) and how that is shown (its presentation),
-//! writing by the node's path. It stands in for the per-node layout
-//! (`panels::node_inspector`) while `AppState::use_generated_stack` is on.
+//! writing by the node's path. A grade nested in a compound is still drawn
+//! by the per-node layout (`panels::node_inspector`) until M4 step 1b
+//! (#1391).
 //!
 //! It reads the clip's picture and never writes it: a clip's grade node is
 //! at `[grade group, node]` under the clip, its stored values are its v1
@@ -85,7 +86,7 @@ pub(crate) struct GradeSnapshot {
 }
 
 /// The snapshot a tabbed page draws its shared rows from this frame: the
-/// clip's own grade, with the generated inspector on (`on`); `None` for a
+/// clip's own grade; `None` for a
 /// nested grade (descended into a compound) or a stand-in's (the timeline
 /// grade, a group's stage), which keep the old rows. Every caller of the
 /// tabbed page takes it the same way, each frame, and drops it after.
@@ -94,8 +95,8 @@ pub(crate) struct GradeSnapshot {
 /// have yet (`AppState::pending_corrector`): kept while the clip's grade
 /// has no enabled Corrector, so every frame and the edit that makes it
 /// name one node, and a fresh id for each clip that needs one.
-pub(crate) fn snapshot_for(clip: &Clip, on: bool, nested: bool, stand_in: bool, pending: &mut Option<(klipp_core::ClipId, NodeId)>) -> Option<GradeSnapshot> {
-    if !on || nested || stand_in {
+pub(crate) fn snapshot_for(clip: &Clip, nested: bool, stand_in: bool, pending: &mut Option<(klipp_core::ClipId, NodeId)>) -> Option<GradeSnapshot> {
+    if nested || stand_in {
         return None;
     }
     // Once the clip has its Corrector the reservation is spent: a later
@@ -112,7 +113,7 @@ pub(crate) fn snapshot_for(clip: &Clip, on: bool, nested: bool, stand_in: bool, 
 
 /// [`snapshot_for`] for a stand-in (M3 step 19): `stand_in`, the clip the
 /// timeline grade or a group stage is edited through, as the grade at
-/// `root`. With the generated inspector on and not nested (a compound's
+/// `root`. Not nested (a compound's
 /// grade is the #1391 boundary), its nodes are addressed at `root`, and
 /// its pending Corrector is reserved as a clip's is, under the stand-in's
 /// id. While the root has no grade yet, the stand-in's (the graph it was
@@ -122,12 +123,11 @@ pub(crate) fn snapshot_for_root(
     seq: &klipp_timeline::Sequence,
     stand_in: klipp_core::ClipId,
     root: Root,
-    on: bool,
     nested: bool,
     pending: &mut Option<(klipp_core::ClipId, NodeId)>,
     start: &mut Option<(Root, klipp_nodes::NodeGraph)>,
 ) -> Option<GradeSnapshot> {
-    if !on || nested {
+    if nested {
         return None;
     }
     let clip = seq.all_clips().find(|c| c.id == stand_in)?;

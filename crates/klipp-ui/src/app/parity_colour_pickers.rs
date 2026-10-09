@@ -57,7 +57,7 @@ fn open(run: &mut Run, label: &str) -> Result<(), String> {
     let at = drawn.iter().find(|(t, _)| t == label).map(|(_, p)| *p).ok_or_else(|| format!("no {label:?} row"))?;
     for i in 0..80 {
         let p = egui::pos2(at.x + 10.0 + 6.0 * i as f32, at.y);
-        let mut t = Run::new(run.clip().clone(), true);
+        let mut t = Run::new(run.clip().clone());
         t.frame(Vec::new(), egui::Modifiers::NONE);
         click(&mut t, p);
         if field(&mut t, "R ").is_some() {
@@ -124,7 +124,7 @@ fn with_colour(start: &klipp_timeline::Clip, ty: &EffectType, desc: &ParamDesc, 
 /// `start`: the stored colour changed (to what `expect` makes of the colour
 /// before, when it says), one step, an exact undo. The clip after it.
 fn edit(start: &klipp_timeline::Clip, ty: &EffectType, desc: &ParamDesc, label: &str, drive: impl Fn(&mut Run) -> Result<(), String>, expect: Option<&dyn Fn(&serde_json::Value) -> serde_json::Value>, edits: usize) -> Result<klipp_timeline::Clip, String> {
-    let mut run = Run::new(start.clone(), true);
+    let mut run = Run::new(start.clone());
     let before = run.clip().picture_v2().map_err(|e| e.to_string())?;
     let was = colour(&run, ty, desc);
     open(&mut run, label)?;
@@ -179,7 +179,7 @@ pub(super) fn run(report: &mut Report) {
         let start = fixture(&(ty.sample)());
         let name = |what: &str| format!("{} {} {what}", ty.tag, desc.key);
         report.case(&name("opened"), [key(Interaction::OpenWithoutWrite)], || {
-            let mut run = Run::new(start.clone(), true);
+            let mut run = Run::new(start.clone());
             let before = run.clip().picture_v2().map_err(|e| e.to_string())?;
             open(&mut run, label)?;
             close(&mut run);
@@ -206,7 +206,7 @@ pub(super) fn run(report: &mut Report) {
         // Escape inside the popup, mid-typing: the popup closes, and what
         // it keeps is nothing, or one step undone exactly.
         report.case(&name("escaped"), [], || {
-            let mut run = Run::new(start.clone(), true);
+            let mut run = Run::new(start.clone());
             let before = run.clip().picture_v2().map_err(|e| e.to_string())?;
             open(&mut run, label)?;
             let at = field(&mut run, "B ").ok_or("no B in the popup")?;

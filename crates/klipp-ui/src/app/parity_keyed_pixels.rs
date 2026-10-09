@@ -137,7 +137,7 @@ fn case(entry: &CatalogEntry, interpolation: Interpolation, picks: &mut Picks) -
     // The view types the third value at the second key; the expected clip
     // has that key set on its lane directly.
     let t0 = std::time::Instant::now();
-    let mut run = Run::new(clip.clone(), true);
+    let mut run = Run::new(clip.clone());
     run.state.playhead = Timecode::from_secs_f64(T2, clip.timeline_in.rate);
     type_value(&mut run, label, &typed)?;
     super::parity_pixels::timing::add(&super::parity_pixels::timing::DRIVING, t0);

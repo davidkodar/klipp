@@ -62,7 +62,8 @@ const CONTROLS: &[Control] = &[
         keys: &["perspective"],
         label: "Perspective",
         typed: "2.10",
-        reset: 1.0,
+        // Shown as 1, stored unset, as the card resets it (#1381).
+        reset: 0.0,
     },
 ];
 
@@ -84,7 +85,7 @@ fn clip() -> klipp_timeline::Clip {
 }
 
 fn run(clip: klipp_timeline::Clip) -> Run {
-    let mut run = Run::new(clip, true);
+    let mut run = Run::new(clip);
     run.property = true;
     run
 }

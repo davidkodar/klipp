@@ -17,11 +17,8 @@ fn a_menu_edit_can_be_undone_and_redone_through_the_shared_driver() {
         .into_iter()
         .find(|p| p.is_builtin)
         .expect("blur preset");
-    for generated in [false, true] {
-        let mut run = Run::new(
-            fixture(&BuiltinEffect::GaussianBlur { radius: 3.125 }),
-            generated,
-        );
+    {
+        let mut run = Run::new(fixture(&BuiltinEffect::GaussianBlur { radius: 3.125 }));
         let before = run.clip().picture_v2().unwrap();
         assert!(!run.step(false), "new fixture has no undo step");
         assert!(run.click_last("Select preset..."));
@@ -43,7 +40,7 @@ fn a_menu_edit_can_be_undone_and_redone_through_the_shared_driver() {
 #[test]
 fn undo_during_a_path_drag_closes_the_drag_before_taking_its_step() {
     use klipp_graph_format::path::{NodePath, Root};
-    let mut run = Run::new(fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 }), true);
+    let mut run = Run::new(fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 }));
     let before = run.clip().picture_v2().unwrap();
     let node = before
         .picture
@@ -212,11 +209,10 @@ impl Run {
         true
     }
 
-    pub(super) fn new(clip: klipp_timeline::Clip, generated: bool) -> Self {
+    pub(super) fn new(clip: klipp_timeline::Clip) -> Self {
         let id = clip.id;
         let mut state = AppState::default();
         state.sequences[0].tracks[0].clips.push(clip);
-        state.use_generated_stack = generated;
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
         Run {
@@ -271,8 +267,8 @@ impl Run {
                 let theme = KlippTheme::default();
                 let clip_time =
                     (state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
-                // The Video tab, in either view, when the effect is a clip
-                // property there (the old view's Video tab included).
+                // The Video tab when the effect is a clip property there,
+                // else the stack.
                 if property {
                     crate::inspector::video_tab::show(
                         ui,
@@ -282,13 +278,9 @@ impl Run {
                         None,
                         &mut cmds,
                     );
-                } else if state.use_generated_stack {
+                } else {
                     crate::inspector::stack_view::show(
                         ui, &theme, state, clip, &mut cmds, clip_time,
-                    );
-                } else {
-                    crate::inspector::effects_tab::show(
-                        ui, &theme, state, clip, &mut cmds, &mut false, &mut false, clip_time,
                     );
                 }
             });
@@ -431,80 +423,4 @@ impl Run {
         true
     }
 
-    /// Click `label` in an open menu: its last drawn occurrence (a menu is
-    /// drawn over the panel), scrolling the menu down until it shows.
-    pub(super) fn click_menu_item(&mut self, label: &str) -> bool {
-        let mut scroll_at = None;
-        for _ in 0..40 {
-            let drawn = self.frame(Vec::new(), egui::Modifiers::NONE);
-            if drawn.iter().rev().any(|(s, _)| s == label) {
-                // Let a scroll settle, then find it again, so the click lands
-                // where it is drawn.
-                for _ in 0..10 {
-                    self.frame(Vec::new(), egui::Modifiers::NONE);
-                }
-                let drawn = self.frame(Vec::new(), egui::Modifiers::NONE);
-                let Some(at) = drawn
-                    .iter()
-                    .rev()
-                    .find(|(s, _)| s == label)
-                    .map(|(_, p)| *p)
-                else {
-                    continue;
-                };
-                self.button(at, egui::PointerButton::Primary, true);
-                self.button(at, egui::PointerButton::Primary, false);
-                self.frame(Vec::new(), egui::Modifiers::NONE);
-                return true;
-            }
-            // Over the menu's own items: the first of its sorted names.
-            let first = klipp_effects::registry::effect_types()
-                .map(|t| t.desc.name)
-                .min()
-                .unwrap_or_default();
-            let Some(at) = scroll_at.or_else(|| {
-                drawn
-                    .iter()
-                    .rev()
-                    .find(|(s, _)| s == first)
-                    .map(|(_, p)| *p)
-            }) else {
-                return false;
-            };
-            scroll_at = Some(at);
-            self.frame(
-                vec![
-                    egui::Event::PointerMoved(at),
-                    egui::Event::MouseWheel {
-                        unit: egui::MouseWheelUnit::Point,
-                        delta: egui::vec2(0.0, -60.0),
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-                egui::Modifiers::NONE,
-            );
-        }
-        false
-    }
-
-    /// The new view's eye on the row named `row`: left of its name.
-    pub(super) fn click_eye(&mut self, row: &str) -> bool {
-        let drawn = self.frame(Vec::new(), egui::Modifiers::NONE);
-        let Some(at) = drawn
-            .iter()
-            .find(|(s, _)| s == row)
-            .map(|(_, p)| egui::pos2(14.0, p.y))
-        else {
-            return false;
-        };
-        self.button(at, egui::PointerButton::Primary, true);
-        self.button(at, egui::PointerButton::Primary, false);
-        self.frame(Vec::new(), egui::Modifiers::NONE);
-        true
-    }
-
-    /// An index command, as the old card's own control sends it.
-    pub(super) fn send(&mut self, cmd: AppCommand) {
-        self.apply(cmd);
-    }
 }

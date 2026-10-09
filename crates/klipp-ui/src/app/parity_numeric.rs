@@ -135,8 +135,8 @@ pub(super) fn fixture_on(effect: &BuiltinEffect, surface: Surface) -> klipp_time
     clip
 }
 
-fn run_for(surface: Surface, clip: klipp_timeline::Clip, generated: bool) -> Run {
-    let mut run = Run::new(clip, generated);
+fn run_for(surface: Surface, clip: klipp_timeline::Clip) -> Run {
+    let mut run = Run::new(clip);
     run.property = surface == Surface::VideoTab;
     run
 }
@@ -248,8 +248,8 @@ fn edit_case(
     // The view driven, and the oracle: the document command alone,
     // applied to the same clip, never a view.
     let (mut new, mut oracle) = (
-        run_for(surface, clip.clone(), true),
-        run_for(surface, clip, true),
+        run_for(surface, clip.clone()),
+        run_for(surface, clip),
     );
     drive(&mut new)?;
     commands_applied(&new)?;
@@ -481,7 +481,7 @@ fn pixel_case(routes: super::parity_pixels::Routes, ty: &EffectType, surface: Su
     }
     let (typed, target) = chosen.ok_or("the edit doesn't change the CPU frame at any value tried")?;
     let start = clip.clone();
-    let mut new = run_for(surface, clip, true);
+    let mut new = run_for(surface, clip);
     type_value(&mut new, label, &typed)?;
     commands_applied(&new)?;
     // The row asks the app to bring its analysis up to the edit; `regain`
@@ -556,7 +556,7 @@ fn run_entry(report: &mut Report, entry: &CatalogEntry, surface: Surface, varian
     };
 
     report.case(&name("open"), [key(Interaction::OpenWithoutWrite)], || {
-        let mut run = run_for(surface, fixture_on(&effect, surface), true);
+        let mut run = run_for(surface, fixture_on(&effect, surface));
         let before = run.clip().picture_v2().unwrap();
         let dirty = run.state.dirty;
         ready(&mut run, label)?;
@@ -635,7 +635,7 @@ fn run_entry(report: &mut Report, entry: &CatalogEntry, surface: Surface, varian
         },
     );
     report.case(&name("cancel"), [key(Interaction::CancelDrag)], || {
-        let mut run = run_for(surface, fixture_on(&editing, surface), true);
+        let mut run = run_for(surface, fixture_on(&editing, surface));
         let before = run.clip().picture_v2().unwrap();
         let at = start_drag(&mut run, label, drag_px(desc, pres), matches!(pres.widget, Widget::Slider))?;
         if run.clip().picture_v2().unwrap() == before {

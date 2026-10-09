@@ -197,11 +197,11 @@ pub(super) fn shown_on(base: &Grade, ty: &NodeType, desc: &ParamDesc, wide: bool
         _ => None,
     };
     for tab in TABS.into_iter().filter(|t| only.is_none_or(|o| o == *t)) {
-        let on = base.twin(true).on(if wide { Page::Bottom(tab) } else { Page::Tabbed(tab) });
+        let on = base.twin().on(if wide { Page::Bottom(tab) } else { Page::Tabbed(tab) });
         match meet_conditions(&on, ty, desc) {
             Ok((mut shown, variant)) => {
                 if shown.drawn().iter().any(|(t, _)| t == label) {
-                    return Ok((shown.twin(true), variant));
+                    return Ok((shown.twin(), variant));
                 }
             }
             Err(e) => last = format!("on {tab:?}: {e}"),
@@ -236,7 +236,7 @@ fn drag_once(g: &mut Grade, label: &str, n: usize, dx: f32, escape: bool) -> Res
 pub(super) fn shown_in_frame(start: &Grade, ty: &NodeType, desc: &ParamDesc) -> Grade {
     use klipp_core::color_grade::{CurveSet, FilmGrainSettings, HueSatCurves};
     use klipp_core::AppCommand;
-    let mut g = start.twin(true);
+    let mut g = start.twin();
     let (clip_id, node_id) = (g.clip, g.node);
     let param = |param: &str, value: f32| AppCommand::SetNodeParam { clip_id, node_id, param: param.into(), value };
     let mut cmds = match desc.key {
@@ -267,7 +267,7 @@ pub(super) fn shown_in_frame(start: &Grade, ty: &NodeType, desc: &ParamDesc) -> 
     for cmd in cmds {
         g.apply(cmd);
     }
-    g.twin(true)
+    g.twin()
 }
 
 /// One row's cases on `start` (the row drawn), counted on `surface`: the
@@ -303,7 +303,7 @@ pub(super) fn row_cases(report: &mut Report, ty: &NodeType, desc: &'static Param
     let dx = if to_shown(current) > (lo + hi) / 2.0 { -reach } else { reach };
 
     report.case(&name("opened"), vec![k(Interaction::OpenWithoutWrite)], || {
-        let mut g = start.twin(true);
+        let mut g = start.twin();
         let before = g.picture();
         g.drawn();
         g.drawn();
@@ -320,7 +320,7 @@ pub(super) fn row_cases(report: &mut Report, ty: &NodeType, desc: &'static Param
     // the GPU does, through the stage the grade is on.
     let pixels = || {
         let start = &shown_in_frame(start, ty, desc);
-        let mut new = start.twin(true);
+        let mut new = start.twin();
         new.drawn();
         type_into(&mut new, label, n, &typed)?;
         super::parity_pixels::edit_drawn(&start.frame_sequence(), &new.frame_sequence())
@@ -341,24 +341,24 @@ pub(super) fn row_cases(report: &mut Report, ty: &NodeType, desc: &'static Param
         // would otherwise round down to.
         let step = if desc.kind == klipp_effects::registry::ParamKind::Whole { 1.0 } else { 10f32.powi(-i32::from(pres.decimals)) };
         let near = format!("{:.*}", usize::from(pres.decimals), slo + ((shi - slo) * 0.06).max(step));
-        let mut set = start.twin(true);
+        let mut set = start.twin();
         type_into(&mut set, label, n, &near)?;
-        let near_end = set.twin(true);
+        let near_end = set.twin();
         let from = number(&near_end)?;
         oracle_case(&near_end, desc, dragged_to(from, -100.0), |g| drag_once(g, label, n, -100.0, false))
     });
     report.case(&name("reset"), vec![k(Interaction::Reset), k(Interaction::UndoRedo)], || {
         // From the typed value, so the reset changes it.
-        let mut away = start.twin(true);
+        let mut away = start.twin();
         type_into(&mut away, label, n, &typed)?;
         if !away.unapplied.is_empty() {
             return Err(format!("setting it away: unapplied {:?}", away.unapplied));
         }
-        oracle_case(&away.twin(true), desc, row::reset_value(desc, &pres), |g| reset(g, label, n))
+        oracle_case(&away.twin(), desc, row::reset_value(desc, &pres), |g| reset(g, label, n))
     });
     report.case(&name("cancelled"), vec![k(Interaction::CancelDrag)], || {
         // Escape takes the drag back: the picture from before it, no step.
-        let mut g = start.twin(true);
+        let mut g = start.twin();
         g.drawn();
         let before = g.picture();
         drag(&mut g, label, n, dx, true)?;
@@ -379,7 +379,7 @@ pub(super) fn run(report: &mut Report) {
             report.case(ty.desc.id, [], || Err("the grade won't take one".into()));
             continue;
         };
-        let base = Grade::new(state, clip, node, true);
+        let base = Grade::new(state, clip, node);
         for desc in rows {
             match meet_conditions(&base, ty, desc) {
                 Ok((shown, variant)) => row_cases(report, ty, desc, &shown, Surface::GradePerNode, variant),
@@ -400,7 +400,7 @@ pub(super) fn run(report: &mut Report) {
                 klipp_timeline::GradeAccess::edit_grade(c, |g| g.nodes.iter_mut().filter(|n| n.kind == NodeKind::Corrector).for_each(|n| n.enabled = false));
             }
         }
-        let base = Grade::new(state, clip, node, true);
+        let base = Grade::new(state, clip, node);
         for desc in ty.desc.params.iter().filter(|d| numeric(ty, d)) {
             for surface in *surfaces {
                 match shown_on(&base, ty, desc, *surface == Surface::GradeBottomTools) {
@@ -431,64 +431,6 @@ fn grade_numeric_rows_store_what_each_edit_must_on_the_sequences_grades() {
 
 
 
-
-/// A value typed into the old per-node panel's number (`grade_slider`'s
-/// DragValue) is one undo step, which undo takes back exactly: it used to
-/// go out as a bare `SetNodeParam`, outside any gesture, with no step at
-/// all. Now it's a one-shot gesture, as `slider_interact`'s are.
-#[test]
-fn a_value_typed_in_the_old_panel_is_one_undo_step() {
-    let (state, clip, node) = placed(NodeKind::Blend).expect("a Blend in the grade");
-    let ty = klipp_nodes::registry::node_type(NodeKind::Blend).unwrap();
-    let mix = ty.desc.params.iter().find(|d| d.key == "mix").unwrap();
-    let mut old = Grade::new(state, clip, node, false);
-    old.drawn();
-    let before = old.picture();
-    type_into(&mut old, "Mix", 0, "0.30").unwrap();
-    assert!(old.unapplied.is_empty(), "{:?}", old.unapplied);
-    assert!((old.value(mix).as_f64().unwrap() - 0.3).abs() < 1e-6, "the typed value is stored");
-    assert_eq!(old.state.active_history().undo_count(), 1, "one step");
-    let after = old.picture();
-    old.step(false).unwrap();
-    assert!(old.picture() == before, "undo gives back the value before");
-    old.step(true).unwrap();
-    assert!(old.picture() == after, "redo gives back the typed value");
-}
-
-
-/// The old panel's one-shot producers that used to send their sets bare,
-/// with no undo step: each click is one step now, which undo takes back.
-/// The LUT's colour-space dropdown, the wide wheels' saturation rail and a
-/// per-node wheel's S rail, each found from the text drawn by it.
-#[test]
-fn the_old_panel_s_one_shot_producers_are_one_undo_step_each() {
-    type Find = fn(&[(String, egui::Pos2)]) -> Option<egui::Pos2>;
-    let cases: [(&str, NodeKind, Page, bool, Find, Option<&str>); 3] = [
-        ("the LUT's colour space", NodeKind::Lut3D, Page::PerNode, false, |d| d.iter().find(|(t, _)| t == "Use LUT default").map(|(_, p)| *p), Some("ACEScg")),
-        ("the wide wheels' saturation rail", NodeKind::Corrector, Page::Bottom(ColorTab::Wheels), true, |d| d.iter().filter(|(t, _)| t == "Saturation").map(|(_, p)| *p).find(|p| d.iter().any(|(t, b)| t == "Brightness" && (b.x - p.x).abs() < 2.0 && b.y > p.y && b.y - p.y < 50.0)).map(|p| p + egui::vec2(-15.0, 15.0)), None),
-        ("a wheel's S rail", NodeKind::ColorWheels, Page::PerNode, false, |d| d.iter().find(|(t, _)| t == "S").map(|(_, p)| *p + egui::vec2(28.0, 0.0)), None),
-    ];
-    for (what, kind, page, on_page, find, then) in cases {
-        let fixture = if on_page { super::grade_inspector_tests::graded(kind) } else { placed(kind) };
-        let (state, clip, node) = fixture.unwrap_or_else(|| panic!("{what}: no fixture"));
-        let mut old = Grade::new(state, clip, node, false).on(page);
-        let drawn = old.drawn();
-        let before = old.picture();
-        let at = find(&drawn).unwrap_or_else(|| panic!("{what}: not drawn: {drawn:?}"));
-        old.click_at(at);
-        if let Some(item) = then {
-            let drawn = old.drawn();
-            let at = drawn.iter().find(|(t, _)| t == item).map(|(_, p)| *p).unwrap_or_else(|| panic!("{what}: no {item:?} item: {drawn:?}"));
-            old.click_at(at);
-        }
-        old.frame(Vec::new());
-        assert!(old.unapplied.is_empty(), "{what}: unapplied {:?}", old.unapplied);
-        assert!(old.picture() != before, "{what}: the click changed nothing");
-        assert_eq!(old.state.active_history().undo_count(), 1, "{what}: one step");
-        old.step(false).unwrap();
-        assert!(old.picture() == before, "{what}: undo gives back the picture before");
-    }
-}
 
 /// A grade edited under the same clip id draws anew on a renderer kept
 /// across frames, on both routes, as the app's renderer is kept while a

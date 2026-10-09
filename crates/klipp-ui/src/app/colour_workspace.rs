@@ -404,7 +404,7 @@ impl KlippApp {
                 // before the clip is borrowed to draw.
                 let mut stand_in_snapshot = stand_in.and_then(|w| {
                     let seq = &self.state.sequences[seq_idx];
-                    crate::inspector::grade_view::snapshot_for_root(seq, clip_id, w.root(seq), self.state.use_generated_stack, !self.state.graph_descent_path.is_empty(), &mut self.state.pending_corrector, &mut self.state.root_grade_start)
+                    crate::inspector::grade_view::snapshot_for_root(seq, clip_id, w.root(seq), !self.state.graph_descent_path.is_empty(), &mut self.state.pending_corrector, &mut self.state.root_grade_start)
                 });
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
@@ -414,11 +414,11 @@ impl KlippApp {
                     // The shared rows are the generated ones, as on the right
                     // inspector (M3 step 11c): this frame's snapshot of the
                     // clip's own grade, under the same guards, or none.
-                    let generated = self.state.use_generated_stack && path.is_empty();
+                    let generated = path.is_empty();
                     self.node_inspector_panel.generated = if grading_timeline {
                         stand_in_snapshot.take()
                     } else {
-                        crate::inspector::grade_view::snapshot_for(clip, self.state.use_generated_stack, !path.is_empty(), false, &mut self.state.pending_corrector)
+                        crate::inspector::grade_view::snapshot_for(clip, !path.is_empty(), false, &mut self.state.pending_corrector)
                     };
                     let panel_cmds = clip.edit_grade(|root| {
                         let graph: &mut klipp_nodes::NodeGraph =

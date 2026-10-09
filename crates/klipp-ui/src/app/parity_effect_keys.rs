@@ -275,7 +275,7 @@ pub(super) fn exercise_on(entry: &CatalogEntry, surface: Surface, action: Action
         Action::Previous | Action::Next => {}
     });
     let expected = oracle.picture_v2()?;
-    let mut run = Run::new(clip.clone(), true);
+    let mut run = Run::new(clip.clone());
     run.property = surface == Surface::VideoTab;
     run.state.playhead = Timecode::from_secs_f64(at, clip.timeline_in.rate);
     match action {

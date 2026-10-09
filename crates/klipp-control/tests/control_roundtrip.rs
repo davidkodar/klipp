@@ -2751,13 +2751,11 @@ fn status_reports_history_and_the_inspector_view_and_writes_nothing() {
         p.redo_depth = 1;
         p.undo = Some("Add Effect".into());
         p.redo = Some("Remove Clip".into());
-        p.generated_stack = true;
     }
     let before = h.shared.revision();
     let a = h.ok(json!({"method": "status"}));
     let b = h.ok(json!({"method": "status"}));
     assert_eq!(a["history"], json!({"undo_depth": 3, "redo_depth": 1, "next_undo": "Add Effect", "next_redo": "Remove Clip"}));
-    assert_eq!(a["inspector"], json!({"generated_stack": true}));
     assert_eq!(a["revision"], b["revision"]);
     assert_eq!(h.shared.revision(), before, "reading the status writes nothing");
     assert!(h.cmd_rx.try_recv().is_err(), "and sends the app nothing");
