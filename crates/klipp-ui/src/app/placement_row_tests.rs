@@ -50,7 +50,7 @@ fn label(run: &Run) -> String {
 }
 
 fn generated(effects: &[E]) -> Run {
-    Run::new(clip(effects), true)
+    Run::new(clip(effects))
 }
 
 fn undos(run: &Run) -> usize {
@@ -128,13 +128,14 @@ fn choosing_auto_restores_it() {
     assert_eq!(moved.clip().picture_v2().unwrap().picture, before);
 }
 
-/// Moving a fixed placement down past an effect gives the picture the old
-/// tab's reorder of its Transform gives, one step each, down to every id.
+/// Moving a fixed placement down past an effect gives the picture the
+/// effect list's reorder of its Transform gives, one step each, down to
+/// every id.
 #[test]
 fn a_placement_move_matches_the_old_reorder() {
     let effects = [E::GaussianBlur { radius: 3.0 }, transform(40.0), E::Sharpen { amount: 0.5 }];
     let c = clip(&effects);
-    let (mut old, mut new) = (Run::new(c.clone(), false), Run::new(c, true));
+    let (mut old, mut new) = (Run::new(c.clone()), Run::new(c));
     let steps = undos(&old);
     old.apply(AppCommand::ReorderBuiltinEffect { clip_id: old.clip, from_index: 1, to_index: 2 });
     click(&mut new, "↓");

@@ -126,9 +126,10 @@ pub fn show(
     match clip_ctx {
         Some((clip, clip_time_secs, is_timeline)) => {
             let start = cmds.len();
-            // Behind the switch, the clip's placement and opacity are its
-            // properties, read from its picture and set by path (M3 step 13).
-            let by_path = state.use_generated_stack && !is_timeline;
+            // The clip's placement and opacity are its properties, read from
+            // its picture and set by path (M3 step 13); a timeline's
+            // stand-in keeps the effect-list commands.
+            let by_path = !is_timeline;
             show_clip_video(ui, theme, state, clip, cmds, clip_time_secs, is_timeline, by_path);
             if by_path {
                 let mine = cmds.split_off(start);
@@ -550,7 +551,7 @@ fn show_clip_video(
         t.rotation = rotation;
         t.rotation_x = tilt_x;
         t.rotation_y = tilt_y;
-        t.perspective = persp;
+        t.perspective = stored_perspective(persp);
         match transform_started_index {
             Some(index) => cmds.push(AppCommand::UpdateBuiltinEffect { clip_id, index, effect: t.to_builtin_effect() }),
             None => emit_transform(cmds, clip, clip_id, t),
@@ -595,7 +596,7 @@ fn show_clip_video(
             t.rotation = rotation;
             t.rotation_x = tilt_x;
             t.rotation_y = tilt_y;
-            t.perspective = persp;
+            t.perspective = stored_perspective(persp);
             cmds.push(AppCommand::EndEffectDrag {
                 key: transform_drag_key,
                 clip_id,
@@ -1243,7 +1244,7 @@ fn show_clip_video(
     // BuiltinEffect::ColorFade entries on the clip's effects chain;
     // the engine patches each effect's `progress` per-frame from
     // clip-time + duration + mode (same pattern as Opacity).
-    show_color_fade_section(ui, theme, clip, cmds, state.use_generated_stack);
+    show_color_fade_section(ui, theme, clip, cmds);
 
     ui.add_space(8.0);
 
@@ -3693,10 +3694,9 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
     });
 }
 
-/// `by_path`: the generated stack's switch. With it on, an edit writes the
-/// Colour Fade's node by its path, as the stack's own card does, so the
-/// two edit one source of truth (M3 step 6).
-fn show_color_fade_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: &mut Vec<AppCommand>, by_path: bool) {
+/// An edit writes the Colour Fade's node by its path, as the stack's own
+/// card does, so the two edit one source of truth (M3 step 6).
+fn show_color_fade_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: &mut Vec<AppCommand>) {
     section_card(ui, "COLOUR FADE", theme, |ui| {
         ui.add_space(4.0);
         egui::Frame::default()
@@ -3705,9 +3705,9 @@ fn show_color_fade_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, c
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
             .show(ui, |ui| {
-                color_fade_row(ui, theme, clip, cmds, klipp_effects::ColorFadeMode::In, "Fade From Colour", by_path);
+                color_fade_row(ui, theme, clip, cmds, klipp_effects::ColorFadeMode::In, "Fade From Colour");
                 ui.add_space(6.0);
-                color_fade_row(ui, theme, clip, cmds, klipp_effects::ColorFadeMode::Out, "Fade To Colour", by_path);
+                color_fade_row(ui, theme, clip, cmds, klipp_effects::ColorFadeMode::Out, "Fade To Colour");
             });
         ui.add_space(6.0);
     });
@@ -3724,10 +3724,9 @@ fn color_fade_row(
     cmds: &mut Vec<AppCommand>,
     mode: klipp_effects::ColorFadeMode,
     label: &str,
-    by_path: bool,
 ) {
     use klipp_effects::BuiltinEffect;
-    let update = |idx: usize, effect: BuiltinEffect| color_fade_update(clip, idx, effect, by_path);
+    let update = |idx: usize, effect: BuiltinEffect| color_fade_update(clip, idx, effect);
     let existing = clip.builtin_effects().iter().enumerate().find_map(|(i, e)| match e {
         BuiltinEffect::ColorFade { color, duration_secs, mode: m, .. } if *m == mode => {
             Some((i, *color, *duration_secs))
@@ -3787,10 +3786,9 @@ fn color_fade_row(
 }
 
 /// An edit of the clip's Colour Fade at `idx` of its effect list: its node
-/// by path when `by_path` (the generated stack's switch), else its place in
-/// the list.
-pub(crate) fn color_fade_update(clip: &Clip, idx: usize, effect: klipp_effects::BuiltinEffect, by_path: bool) -> AppCommand {
-    match clip.effect_node_at(false, idx).filter(|_| by_path) {
+/// by path, or its place in the list should the picture not name one.
+pub(crate) fn color_fade_update(clip: &Clip, idx: usize, effect: klipp_effects::BuiltinEffect) -> AppCommand {
+    match clip.effect_node_at(false, idx) {
         Some(node) => AppCommand::SetPayloadAt {
             addr: klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip.id.0 }, [node]),
             payload: serde_json::to_value(&effect).unwrap_or(serde_json::Value::Null),
@@ -3803,9 +3801,8 @@ pub(crate) fn color_fade_update(clip: &Clip, idx: usize, effect: klipp_effects::
 mod color_fade_tests {
     use super::*;
 
-    /// With the switch on, the Video tab's Colour Fade edit writes the very
-    /// node the generated stack's Colour Fade row addresses; off, it's the
-    /// list edit it always was.
+    /// The Video tab's Colour Fade edit writes the very node the stack's
+    /// Colour Fade row addresses.
     #[test]
     fn color_fade_has_one_source_of_truth() {
         let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
@@ -3816,14 +3813,13 @@ mod color_fade_tests {
         let lifted = clip.picture_v2().unwrap();
         let view = klipp_graph_lift::stack_view::project(klipp_graph_format::path::Root::Clip { clip: clip.id.0 }, &lifted.picture.graph, &klipp_timeline::RegistryCatalog, None).unwrap();
         let row = view.rows().find(|r| klipp_graph_lift::effect_params::tag(crate::inspector::stack_view::node_at(&lifted.picture.graph, &r.addr).unwrap()) == Some("color_fade")).expect("the fade's row");
-        match color_fade_update(&clip, 1, fade.clone(), true) {
+        match color_fade_update(&clip, 1, fade.clone()) {
             AppCommand::SetPayloadAt { addr, payload } => {
                 assert_eq!(addr, row.addr, "the stack's own node");
                 assert_eq!(payload["type"], "color_fade");
             }
             other => panic!("{other:?}"),
         }
-        assert!(matches!(color_fade_update(&clip, 1, fade, false), AppCommand::UpdateBuiltinEffect { index: 1, .. }));
     }
 }
 
@@ -3934,6 +3930,15 @@ fn emit_transform(cmds: &mut Vec<AppCommand>, clip: &Clip, clip_id: klipp_core::
             effect: params.to_builtin_effect(),
         });
     }
+}
+
+/// The Perspective the row stores for the value it shows: its default,
+/// 1, is unset (0), which the renderer draws as 1, as the stack's card
+/// resets it to the catalog's unset (#1381). So a reset of the row and a
+/// reset of the card store the same, and an edit of another transform
+/// value never writes a Perspective the clip didn't have.
+fn stored_perspective(shown: f32) -> f32 {
+    if shown == 1.0 { 0.0 } else { shown }
 }
 
 /// Emit an UpdateBuiltinEffect or AddBuiltinEffect for Opacity.
@@ -4497,6 +4502,15 @@ mod tilt_tests {
         let mut text = String::new();
         out.shapes.iter().for_each(|c| walk(&c.shape, &mut text));
         text
+    }
+
+    /// The Perspective row's shown default stores as unset, the value the
+    /// card's reset stores (#1381); any other value as itself.
+    #[test]
+    fn perspective_shown_as_one_is_stored_unset() {
+        assert_eq!(stored_perspective(1.0), 0.0);
+        assert_eq!(stored_perspective(1.7), 1.7);
+        assert_eq!(stored_perspective(0.1), 0.1);
     }
 
     #[test]

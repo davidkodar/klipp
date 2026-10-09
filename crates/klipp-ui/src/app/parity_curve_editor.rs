@@ -115,12 +115,11 @@ fn fixture(track: &Track) -> Result<klipp_timeline::Clip, String> {
 
 impl Curves {
     /// `clip` selected in a fresh state, drawn in the curve editor on its
-    /// track, with the generated inspector `generated`.
-    fn over(track: Track, clip: klipp_timeline::Clip, generated: bool) -> Result<Self, String> {
+    /// track.
+    fn over(track: Track, clip: klipp_timeline::Clip) -> Result<Self, String> {
         let id = clip.id;
         let mut state = AppState::default();
         state.sequences[0].tracks[0].clips.push(clip);
-        state.use_generated_stack = generated;
         state.selected_clip = Some(id);
         let mut panel = CurveEditorPanel::new();
         let param = match track.video {
@@ -145,10 +144,8 @@ impl Curves {
     /// its fixture needed an edit first.
     fn restart(&mut self) {
         let clip = self.clip().clone();
-        let generated = self.state.use_generated_stack;
         let mut state = AppState::default();
         state.sequences[0].tracks[0].clips.push(clip);
-        state.use_generated_stack = generated;
         state.selected_clip = Some(self.clip);
         self.state = state;
         self.frame(Vec::new());
@@ -276,7 +273,7 @@ fn case(track: Track, want: impl Fn(&[(f64, f32, klipp_core::Interpolation)]) ->
 /// As [`case`], from where `prepare` leaves the fixture, with a fresh
 /// history.
 fn case_from(track: Track, prepare: impl Fn(&mut Curves) -> Result<(), String>, want: impl Fn(&[(f64, f32, klipp_core::Interpolation)]) -> Result<(), String>, drive: impl Fn(&mut Curves) -> Result<(), String>) -> Result<(), String> {
-    let mut c = Curves::over(track, fixture(&track)?, true)?;
+    let mut c = Curves::over(track, fixture(&track)?)?;
     prepare(&mut c).map_err(|e| format!("preparing: {e}"))?;
     c.restart();
     let before = c.picture();
@@ -322,7 +319,7 @@ fn run_track(report: &mut Report, e: &super::parity_manifest::CatalogEntry, trac
     let name = |what: &str| format!("{} / {}: curve editor {what}", e.type_id, e.parameter);
 
     report.case(&name("opened"), [key(Interaction::OpenWithoutWrite)], || {
-        let mut c = Curves::over(track, fixture(&track)?, true)?;
+        let mut c = Curves::over(track, fixture(&track)?)?;
         let before = c.picture();
         c.frame(Vec::new());
         if c.picture() != before || c.state.active_history().undo_count() != 0 || !c.unapplied.is_empty() {
@@ -425,7 +422,7 @@ fn a_lane_bezier_handle_drag_is_one_step() {
         keys[1].tangent_out = (0.3, 0.0);
     });
     let tangent = |c: &Curves| c.clip().video_param_keyframes(VideoParam::Opacity)[1].tangent_out;
-    let mut c = Curves::over(track, clip, true).unwrap();
+    let mut c = Curves::over(track, clip).unwrap();
     // The key selected, so its handles are drawn and grabbed.
     let key = c.at(1.5, 0.8);
     c.click(key, egui::PointerButton::Primary);

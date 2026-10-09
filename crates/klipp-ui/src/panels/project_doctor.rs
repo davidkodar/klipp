@@ -78,10 +78,11 @@ pub enum FixAction {
     RemoveBuiltinEffectFromClip {
         clip_id: ClipId,
         effect_index: usize,
-        /// Behind the generated-stack switch, the entry's picture node,
-        /// as the scan found it: the fix removes that node by path (M3
-        /// step 19), and is refused if the node is gone by then, rather
-        /// than removing whatever sits at `effect_index` now.
+        /// The entry's picture node, as the scan found it: the fix removes
+        /// that node by path (M3 step 19), and is refused if the node is
+        /// gone by then, rather than removing whatever sits at
+        /// `effect_index` now. `None` only for a list the picture doesn't
+        /// name, removed by its place.
         node: Option<uuid::Uuid>,
     },
     ReEnableLadspaPlugin {
@@ -653,7 +654,7 @@ fn scan_project(state: &AppState) -> Vec<Finding> {
                                 action: FixAction::RemoveBuiltinEffectFromClip {
                                     clip_id: clip.id,
                                     effect_index,
-                                    node: clip.effect_node_at(false, effect_index).filter(|_| state.use_generated_stack),
+                                    node: clip.effect_node_at(false, effect_index),
                                 },
                             }],
                         });
@@ -737,7 +738,7 @@ fn report_as_text(findings: &[Finding]) -> String {
 mod tests {
     use super::*;
 
-    /// Behind the switch a missing frei0r plug-in's fix removes the node
+    /// A missing frei0r plug-in's fix removes the node
     /// the scan found, by path, one step: the right one even when the list
     /// moved under it since; and once that node is gone the fix is
     /// refused, changing nothing, rather than removing what sits at its
@@ -750,7 +751,7 @@ mod tests {
         clip.push_effect(E::GaussianBlur { radius: 3.0 });
         clip.push_effect(E::Frei0r { type_id: "frei0r:klipp-test-not-installed".into(), params: Vec::new() });
         let id = clip.id;
-        let mut state = AppState { use_generated_stack: true, ..Default::default() };
+        let mut state = AppState::default();
         let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
         state.sequences[0].tracks[v1].clips.push(clip);
         let fix = scan_project(&state).into_iter().flat_map(|f| f.fixes).find_map(|f| match f.action {

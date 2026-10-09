@@ -54,7 +54,6 @@ impl Stack {
         let id = clip.id;
         let mut state = AppState::default();
         state.sequences[0].tracks[0].clips.push(clip);
-        state.use_generated_stack = true;
         Stack { state, clip: id, ctx: egui::Context::default(), time: 0.0, unapplied: Vec::new() }
     }
 
@@ -352,8 +351,8 @@ fn effect_switches_and_menus_store_what_they_name() {
     assert!(!report.passed.is_empty(), "no switch or menu row was driven");
 }
 
-/// One grade node drawn by the per-node layout, the generated view's
-/// (`grade_view`) or the old panel's, and driven.
+/// One grade node drawn by the generated grade inspector (`grade_view`),
+/// or by a Colour page's tabs or bottom tools, and driven.
 pub(super) struct Grade {
     pub(super) state: AppState,
     pub(super) clip: ClipId,
@@ -361,7 +360,6 @@ pub(super) struct Grade {
     ctx: egui::Context,
     clock: f64,
     panel: crate::panels::node_inspector::NodeInspectorPanel,
-    generated: bool,
     pub(super) unapplied: Vec<String>,
     /// Requests the app runs off the panel, recorded here, in order, not
     /// applied: the sampling tools' (Auto White Balance, an eyedropper,
@@ -471,19 +469,19 @@ impl Drop for RootRun {
 }
 
 impl Grade {
-    /// A grade's node driven through both views: in the clip's own grade,
-    /// or, while [`on_roots`] runs a family, in the sequence grade it names.
-    pub(super) fn new(state: AppState, clip: ClipId, node: klipp_nodes::NodeId, generated: bool) -> Self {
-        Self::plain(state, clip, node, generated).on_root(ROOT.with(std::cell::Cell::get))
+    /// A grade's node driven: in the clip's own grade, or, while
+    /// [`on_roots`] runs a family, in the sequence grade it names.
+    pub(super) fn new(state: AppState, clip: ClipId, node: klipp_nodes::NodeId) -> Self {
+        Self::plain(state, clip, node).on_root(ROOT.with(std::cell::Cell::get))
     }
 
     /// [`Grade::new`] in the clip's own grade, whatever family runs.
-    fn plain(state: AppState, clip: ClipId, node: klipp_nodes::NodeId, generated: bool) -> Self {
+    fn plain(state: AppState, clip: ClipId, node: klipp_nodes::NodeId) -> Self {
         // The icons load as in the app: a failed one is drawn as a warning
         // filling the panel, which pushes the rows off it.
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
-        Grade { state, clip, node, ctx, clock: 0.0, panel: Default::default(), generated, unapplied: Vec::new(), side: Vec::new(), page: Page::PerNode, before_input: None, gesture: None, root: GradeRoot::Clip, group: None, home: clip, fresh: None, icons: Vec::new(), path_writes: Vec::new() }
+        Grade { state, clip, node, ctx, clock: 0.0, panel: Default::default(), unapplied: Vec::new(), side: Vec::new(), page: Page::PerNode, before_input: None, gesture: None, root: GradeRoot::Clip, group: None, home: clip, fresh: None, icons: Vec::new(), path_writes: Vec::new() }
     }
 
     /// The same node in `root` instead (M3 step 19): for a sequence grade,
@@ -552,7 +550,7 @@ impl Grade {
     }
 
     /// A fresh state, no history, holding a clone of this one's clip and files.
-    pub(super) fn twin(&self, generated: bool) -> Self {
+    pub(super) fn twin(&self) -> Self {
         let mut state = AppState::default();
         let home = self.state.sequences[0].all_clips().find(|c| c.id == self.home).unwrap();
         let track = self.state.sequences[0].tracks.iter().position(|t| t.clips.iter().any(|c| c.id == self.home)).unwrap();
@@ -566,7 +564,7 @@ impl Grade {
         state.sequences[0].id = self.state.sequences[0].id;
         state.sequences[0].timeline_grade_slot().set(self.state.sequences[0].timeline_grade().cloned());
         state.sequences[0].grade_groups = self.state.sequences[0].grade_groups.clone();
-        Grade { page: self.page, root: self.root, group: self.group, clip: self.clip, ..Grade::plain(state, self.home, self.node, generated) }
+        Grade { page: self.page, root: self.root, group: self.group, clip: self.clip, ..Grade::plain(state, self.home, self.node) }
     }
 
     /// The same, on `page`.
@@ -629,17 +627,17 @@ impl Grade {
     fn draw(&mut self, input: egui::RawInput, frame: crate::inspector::keyframe_selection::FrameSelection, theme: &KlippTheme) -> (Vec<AppCommand>, egui::FullOutput) {
         let mut cmds = Vec::new();
         let root = self.stand_in().map(|w| w.root(&self.state.sequences[0]));
-        let Grade { state, clip, node, ctx, panel, generated, page, .. } = self;
+        let Grade { state, clip, node, ctx, panel, page, .. } = self;
         let (clip_id, node, page) = (*clip, *node, *page);
         let out = ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| match page {
-                Page::PerNode if *generated => match root {
+                Page::PerNode => match root {
                     None => {
                         let clip = state.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap().clone();
                         crate::inspector::grade_view::show(ui, theme, &clip, node, &mut cmds, frame, Some(panel));
                     }
                     Some(root) => {
-                        let snapshot = crate::inspector::grade_view::snapshot_for_root(&state.sequences[0], clip_id, root, true, false, &mut state.pending_corrector, &mut state.root_grade_start);
+                        let snapshot = crate::inspector::grade_view::snapshot_for_root(&state.sequences[0], clip_id, root, false, &mut state.pending_corrector, &mut state.root_grade_start);
                         let mut panel_cmds = Vec::new();
                         // A node the grade doesn't hold draws nothing, as in the app.
                         let _ = snapshot.as_ref().is_some_and(|s| s.page(ui, theme, node, &mut panel_cmds, frame, Some(panel)));
@@ -650,19 +648,15 @@ impl Grade {
                         }
                     }
                 },
-                Page::PerNode => {
-                    let clip = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
-                    cmds.extend(clip.edit_grade(|g| panel.show(ui, &Some(node), g, clip_id, theme, frame)));
-                }
                 // The tabbed page and the bottom tools as the app draws them
                 // (`main_layout`): the panel over the clip's grade, its
-                // shared rows the generated ones when `generated`.
+                // shared rows the generated ones.
                 Page::Tabbed(tab) | Page::Bottom(tab) => {
                     // A sequence grade's snapshot is taken at its root, before
                     // the stand-in is borrowed to draw, as the app takes it.
-                    let at_root = root.and_then(|root| crate::inspector::grade_view::snapshot_for_root(&state.sequences[0], clip_id, root, *generated, false, &mut state.pending_corrector, &mut state.root_grade_start));
+                    let at_root = root.and_then(|root| crate::inspector::grade_view::snapshot_for_root(&state.sequences[0], clip_id, root, false, &mut state.pending_corrector, &mut state.root_grade_start));
                     let clip = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
-                    panel.generated = if root.is_some() { at_root } else { crate::inspector::grade_view::snapshot_for(clip, *generated, false, false, &mut state.pending_corrector) };
+                    panel.generated = if root.is_some() { at_root } else { crate::inspector::grade_view::snapshot_for(clip, false, false, &mut state.pending_corrector) };
                     let (mut selected, mut tab) = (Some(node), tab);
                     let wide = matches!(page, Page::Bottom(_));
                     cmds.extend(clip.edit_grade(|g| if wide {
@@ -797,8 +791,6 @@ impl Grade {
     /// right of the label, so two menus showing one name aren't confused)
     /// and pick `item` from it.
     fn pick(&mut self, label: &str, shows: &str, item: &str) -> Result<(), String> {
-        let (label, shows, item) = if self.generated { (label.to_owned(), shows, item) } else { old_menu(label, shows, item) };
-        let label = label.as_str();
         let drawn = self.drawn();
         let Some(row) = drawn.iter().rev().find(|(t, _)| t == label).map(|(_, p)| *p) else {
             // A choice drawn as buttons side by side, with no row label (the
@@ -832,33 +824,6 @@ impl Grade {
         let node = self.grade().nodes.iter().find(|n| n.id == self.node).cloned().unwrap();
         let entry = serde_json::json!({ "params": node.params });
         crate::inspector::generated::grade_value(&entry, desc)
-    }
-}
-
-/// The old panel's own words for a menu the generated row labels from the
-/// catalog: its row label and its item names, where they differ. The
-/// items are the same choices in the same order.
-/// - Combine names each operator with its sets ("Intersect (A and B)").
-/// - A LUT's spaces read "Rec.709 / sRGB" and "BT.2020", and the row
-///   label ends in a colon. Both menus offer "Use LUT default" (unset),
-///   the old one first and the generated row last, as the catalog's
-///   fourth choice.
-fn old_menu<'a>(label: &str, shows: &'a str, item: &'a str) -> (String, &'a str, &'a str) {
-    let combine = |s: &'a str| match s {
-        "Intersect" => "Intersect (A and B)",
-        "Union" => "Union (A or B)",
-        "Subtract" => "Subtract (A minus B)",
-        other => other,
-    };
-    let space = |s: &'a str| match s {
-        "Rec.709 linear" => "Rec.709 / sRGB",
-        "BT.2020 linear" => "BT.2020",
-        other => other,
-    };
-    match label {
-        "Combine" => (label.to_owned(), combine(shows), combine(item)),
-        "Input space" | "Output space" => (format!("{label}:"), space(shows), space(item)),
-        _ => (label.to_owned(), shows, item),
     }
 }
 
@@ -951,7 +916,7 @@ pub(super) fn stores(desc: &ParamDesc, stored: &serde_json::Value, want: f32) ->
 /// its stored value. Either way: the row's own node changed, one undo
 /// step, and undo and redo exact.
 pub(super) fn oracle_case(start: &Grade, desc: &ParamDesc, want: f32, drive: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
-    let mut new = start.twin(true);
+    let mut new = start.twin();
     new.drawn();
     let before = new.picture();
     let value_before = new.value(desc);
@@ -983,7 +948,7 @@ pub(super) fn oracle_case(start: &Grade, desc: &ParamDesc, want: f32, drive: imp
         None => nothing_else_changed(start.grade(), new.grade(), start.node, desc.key)?,
     }
     if let Some(addr) = addr {
-        let mut oracle = start.twin(true);
+        let mut oracle = start.twin();
         oracle.apply(AppCommand::SetParamAt { addr, key: klipp_graph_format::ParamKey::new(desc.key), value: param_value(desc, want) });
         if !oracle.unapplied.is_empty() {
             return Err(format!("the oracle's write: unapplied {:?}", oracle.unapplied));
@@ -1010,7 +975,7 @@ pub(super) fn oracle_case(start: &Grade, desc: &ParamDesc, want: f32, drive: imp
 /// the document (through a sequence grade's stand-in, as the app edits
 /// one): the picture an edit naming that change must leave.
 pub(super) fn expected_with(start: &Grade, edit: impl FnOnce(&mut klipp_nodes::Node) -> Result<(), String>) -> Result<GradePicture, String> {
-    let mut oracle = start.twin(true);
+    let mut oracle = start.twin();
     let node = oracle.node;
     let written = oracle.with_stand_in(|g| -> Result<(), String> {
         let clip_id = g.clip;
@@ -1040,7 +1005,7 @@ fn named_value(desc: &ParamDesc, index: usize) -> klipp_graph_format::ParamValue
 /// writing its node's settings by command is held to the item shown and
 /// to changing no other node.
 pub(super) fn grade_case(start: &Grade, desc: &ParamDesc, index: usize, drive: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
-    let mut new = start.twin(true);
+    let mut new = start.twin();
     // The picture as the page shows it, drawn once (a page may write on
     // its first draw, as the tabbed page's curves do).
     new.drawn();
@@ -1065,7 +1030,7 @@ pub(super) fn grade_case(start: &Grade, desc: &ParamDesc, index: usize, drive: i
             if addr.node() != Some(new.node) {
                 return Err(format!("the view wrote to {addr:?}, not this node"));
             }
-            let mut oracle = start.twin(true);
+            let mut oracle = start.twin();
             oracle.drawn();
             oracle.apply(AppCommand::SetParamAt { addr, key: klipp_graph_format::ParamKey::new(desc.key), value: named_value(desc, index) });
             if !oracle.unapplied.is_empty() {
@@ -1080,7 +1045,7 @@ pub(super) fn grade_case(start: &Grade, desc: &ParamDesc, index: usize, drive: i
         // Log) writes its node's settings by command, not by path: the
         // item shown (above), and nothing but this node changed.
         None => {
-            let mut was = start.twin(true);
+            let mut was = start.twin();
             was.drawn();
             let others = |g: &Grade| g.grade().nodes.iter().filter(|n| n.id != g.node).map(|n| (n.id, format!("{:?}", n.params), n.enabled)).collect::<Vec<_>>();
             if others(&new) != others(&was) {
@@ -1191,7 +1156,7 @@ pub(super) fn run_grade(report: &mut Report) {
             report.case(id, [], || Err("the grade won't take one".into()));
             continue;
         };
-        let base = Grade::new(state, clip, node, true);
+        let base = Grade::new(state, clip, node);
         for desc in ty.desc.params {
             discrete_cases(report, ty, desc, &base, Surface::GradePerNode);
         }
@@ -1203,7 +1168,7 @@ pub(super) fn run_grade(report: &mut Report) {
 /// be, else "sample".
 pub(super) fn meet_conditions(base: &Grade, ty: &klipp_nodes::registry::NodeType, desc: &ParamDesc) -> Result<(Grade, &'static str), String> {
     let pres = ty.presentation(desc);
-    let mut shown = base.twin(true);
+    let mut shown = base.twin();
     let mut variant = "sample";
     for Cond::ParamIs { key, value } in [pres.visible_if, pres.enabled_if].into_iter().flatten() {
         let cond = ty.desc.params.iter().find(|p| p.key == key).ok_or_else(|| format!("its condition names {key:?}, not a parameter"))?;
@@ -1245,7 +1210,7 @@ fn discrete_cases(report: &mut Report, ty: &klipp_nodes::registry::NodeType, des
                 let name = format!("{id} {} on {surface:?} switched {}", desc.key, if on { "on" } else { "off" });
                 report.case(&name, [key(Interaction::Toggle(on)), key(Interaction::UndoRedo)], || {
                     // From the other way, so the click turns it `on`.
-                    let mut start = shown.twin(true);
+                    let mut start = shown.twin();
                     if is_on == on {
                         start.switch(label)?;
                     }
@@ -1263,7 +1228,7 @@ fn discrete_cases(report: &mut Report, ty: &klipp_nodes::registry::NodeType, des
                 let name = format!("{id} {} on {surface:?} picks {item:?}", desc.key);
                 report.case(&name, [key(Interaction::ComboSelect(i)), key(Interaction::UndoRedo)], || {
                     // From another item, so the pick changes it.
-                    let mut start = shown.twin(true);
+                    let mut start = shown.twin();
                     let from = if i == current { (i + 1) % labels.len() } else { current };
                     if from != current {
                         start.pick(label, labels[current], labels[from])?;
@@ -1292,7 +1257,7 @@ pub(super) fn run_grade_pages(report: &mut Report) {
         report.case(ty.desc.id, [], || Err("the grade won't take a Corrector".into()));
         return;
     };
-    let base = Grade::new(state, clip, node, true);
+    let base = Grade::new(state, clip, node);
     for desc in ty.desc.params {
         if !matches!(ty.presentation(desc).widget, Widget::Toggle | Widget::Combo) {
             continue;
@@ -1302,7 +1267,7 @@ pub(super) fn run_grade_pages(report: &mut Report) {
             continue;
         };
         for (page, surface) in [(Page::Tabbed(tab), Surface::GradeTabbedRight), (Page::Bottom(tab), Surface::GradeBottomTools)] {
-            let on_page = Grade { page, ..base.twin(true) };
+            let on_page = Grade { page, ..base.twin() };
             discrete_cases(report, ty, desc, &on_page, surface);
         }
     }
@@ -1346,11 +1311,11 @@ const TABS: [crate::state::ColorTab; 5] = [crate::state::ColorTab::Adjustments, 
 #[test]
 fn opening_a_corrector_page_tab_writes_nothing() {
     let (state, clip, node) = super::grade_inspector_tests::graded(klipp_nodes::NodeKind::Corrector).unwrap();
-    let base = Grade::new(state, clip, node, true);
+    let base = Grade::new(state, clip, node);
     let mut wrote = Vec::new();
     for tab in TABS {
         for page in [Page::Tabbed(tab), Page::Bottom(tab)] {
-            let mut g = Grade { page, ..base.twin(true) };
+            let mut g = Grade { page, ..base.twin() };
             let before = g.picture();
             g.drawn();
             g.drawn();
@@ -1368,10 +1333,10 @@ fn opening_a_corrector_page_tab_writes_nothing() {
 #[test]
 fn a_curve_edit_after_opening_is_one_step_back_to_unset() {
     let (state, clip, node) = super::grade_inspector_tests::graded(klipp_nodes::NodeKind::Corrector).unwrap();
-    let base = Grade::new(state, clip, node, true);
+    let base = Grade::new(state, clip, node);
     let curves = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).map(|n| n.params.curves.clone()).unwrap();
     for page in [Page::Tabbed(crate::state::ColorTab::Curves), Page::Bottom(crate::state::ColorTab::Curves)] {
-        let mut g = Grade { page, ..base.twin(true) };
+        let mut g = Grade { page, ..base.twin() };
         assert!(curves(&g).is_none(), "the fixture's curves are unset");
         let drawn = g.drawn();
         // A point dragged up from an empty place in the editor's square,
@@ -1407,11 +1372,11 @@ fn a_curve_edit_after_opening_is_one_step_back_to_unset() {
 #[test]
 fn a_warper_move_after_opening_is_one_step_back_to_unset() {
     let (state, clip, node) = super::grade_inspector_tests::graded(klipp_nodes::NodeKind::Corrector).unwrap();
-    let base = Grade::new(state, clip, node, true);
+    let base = Grade::new(state, clip, node);
     let warper = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).map(|n| n.params.warper_params.clone()).unwrap();
     const SECTORS: [&str; 12] = ["R", "O", "Y", "YG", "G", "CG", "C", "CB", "B", "BM", "M", "MR"];
     for page in [Page::Tabbed(crate::state::ColorTab::Warper), Page::Bottom(crate::state::ColorTab::Warper)] {
-        let mut g = Grade { page, ..base.twin(true) };
+        let mut g = Grade { page, ..base.twin() };
         assert!(warper(&g).is_none(), "the fixture's warper is unset");
         let drawn = g.drawn();
         // The wheel's centre, among its sector labels; its points lie
@@ -1449,10 +1414,10 @@ fn a_warper_move_after_opening_is_one_step_back_to_unset() {
 #[test]
 fn escape_takes_back_a_curve_drag() {
     let (state, clip, node) = super::grade_inspector_tests::graded(klipp_nodes::NodeKind::Corrector).unwrap();
-    let base = Grade::new(state, clip, node, true);
+    let base = Grade::new(state, clip, node);
     let curves = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).map(|n| n.params.curves.clone()).unwrap();
     for page in [Page::Tabbed(crate::state::ColorTab::Curves), Page::Bottom(crate::state::ColorTab::Curves)] {
-        let mut g = Grade { page, ..base.twin(true) };
+        let mut g = Grade { page, ..base.twin() };
         let before = { g.drawn(); g.picture() };
         let drawn = g.drawn();
         let strip = drawn.iter().filter(|(t, _)| ["M", "R", "G", "B"].contains(&t.as_str())).map(|(_, p)| p.y).fold(f32::MIN, f32::max);
@@ -1486,8 +1451,8 @@ fn opening_a_per_node_grade_writes_nothing() {
             continue;
         }
         let Some((state, clip, node)) = placed(ty.kind) else { continue };
-        let base = Grade::new(state, clip, node, true);
-        let mut g = base.twin(true);
+        let base = Grade::new(state, clip, node);
+        let mut g = base.twin();
         let before = g.picture();
         g.drawn();
         g.drawn();
@@ -1508,10 +1473,10 @@ fn opening_a_per_node_grade_writes_nothing() {
 #[test]
 fn a_wheel_drag_is_one_step_and_escape_takes_it_back() {
     let Some((state, clip, node)) = super::grade_inspector_tests::graded(klipp_nodes::NodeKind::ColorWheels) else { panic!("a Color Wheels node") };
-    let base = Grade::new(state, clip, node, true);
+    let base = Grade::new(state, clip, node);
     let lift = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).map(|n| (n.params.lift_x, n.params.lift_y)).unwrap();
     for escape in [false, true] {
-        let mut g = base.twin(true);
+        let mut g = base.twin();
         let drawn = g.drawn();
         let before = g.picture();
         // The Lift wheel: its centre between its label and the readouts

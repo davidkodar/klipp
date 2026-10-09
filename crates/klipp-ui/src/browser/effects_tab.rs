@@ -1961,32 +1961,25 @@ pub(crate) fn picture_effects(source: &EffectSource) -> Option<Vec<klipp_effects
     }
 }
 
-/// The commands that put `source` on `clip_id`, as [`effect_commands`];
-/// behind the switch its picture effects are added by path, after the
-/// clip's stack (M3 steps 14 and 19), or refused with the clip's reason:
-/// never the old index add instead.
+/// The commands that put `source` on `clip_id`: its picture effects (a
+/// built-in effect, a look's every effect, a frei0r plug-in at its declared
+/// defaults) by path, after the clip's stack (M3 steps 14 and 19), or
+/// refused with the clip's reason; an OFX plug-in or a sound effect by its
+/// type.
 pub(crate) fn effect_commands_in(state: &AppState, source: &EffectSource, clip_id: klipp_core::ClipId) -> Result<Vec<AppCommand>, String> {
-    match picture_effects(source).filter(|_| state.use_generated_stack) {
-        Some(effects) => {
+    Ok(match source {
+        EffectSource::Builtin(_) | EffectSource::Look(_) | EffectSource::Frei0r(_) => {
+            let effects = picture_effects(source).unwrap_or_default();
             let clip = state.sequence().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id).ok_or("the clip isn't in the sequence")?;
-            crate::inspector::stack_view::add_effects_command(state, clip, &effects)
+            return crate::inspector::stack_view::add_effects_command(state, clip, &effects);
         }
-        None => Ok(effect_commands(source, clip_id)),
-    }
-}
-
-/// The commands that put `source` on `clip_id`: a look's every effect, a
-/// frei0r plugin with its declared defaults, an audio plugin by its type.
-fn effect_commands(source: &EffectSource, clip_id: klipp_core::ClipId) -> Vec<AppCommand> {
-    match source {
-        EffectSource::Builtin(_) | EffectSource::Look(_) | EffectSource::Frei0r(_) => picture_effects(source).unwrap_or_default().into_iter().map(|effect| AppCommand::AddBuiltinEffect { clip_id, effect }).collect(),
         EffectSource::Ofx(plugin_name) => vec![AppCommand::AddEffect { clip_id, plugin_name: plugin_name.clone() }],
         EffectSource::Audio(type_id) => vec![AppCommand::AddAudioEffect { clip_id, effect_type: type_id.clone() }],
         EffectSource::Ladspa(plugin) => vec![AppCommand::AddAudioEffect { clip_id, effect_type: format!("ladspa:{}:{}", plugin.path.display(), plugin.label) }],
         // LV2 and CLAP ride the same audio pipeline as LADSPA.
         EffectSource::Lv2(plugin) => vec![AppCommand::AddAudioEffect { clip_id, effect_type: plugin.type_id() }],
         EffectSource::Clap(plugin) => vec![AppCommand::AddAudioEffect { clip_id, effect_type: plugin.type_id() }],
-    }
+    })
 }
 
 #[cfg(test)]

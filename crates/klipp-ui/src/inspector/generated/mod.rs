@@ -3,8 +3,6 @@
 //! ([`ParamDesc`]) and their presentation ([`Presentation`], M3 step 0),
 //! and writes them by path, never by a place in a list. The effect stack,
 //! the grade inspector and the canvas inspector all draw through it.
-//!
-//! Nothing calls it while `AppState::use_generated_stack` is off.
 
 pub mod adapters;
 pub mod custom;

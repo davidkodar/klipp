@@ -4582,10 +4582,6 @@ pub struct ProjectStatus {
     pub undo_depth: usize,
     #[serde(default)]
     pub redo_depth: usize,
-    /// Whether the inspector draws the generated view (M3), as the app
-    /// runs it, not as the environment asked for it.
-    #[serde(default)]
-    pub generated_stack: bool,
     /// The project's global LUT, kept when its file is missing (#1019),
     /// so `check` can say so.
     #[serde(default)]
@@ -4594,7 +4590,7 @@ pub struct ProjectStatus {
 
 impl Default for ProjectStatus {
     fn default() -> Self {
-        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None, undo: None, redo: None, undo_depth: 0, redo_depth: 0, generated_stack: false, global_lut: None }
+        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None, undo: None, redo: None, undo_depth: 0, redo_depth: 0, global_lut: None }
     }
 }
 

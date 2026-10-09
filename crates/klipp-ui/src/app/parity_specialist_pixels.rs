@@ -40,7 +40,7 @@ fn analysis_key(a: &Analysis) -> CoverageKey {
 fn analysis_case(a: &Analysis, routes: Routes) -> Result<(), String> {
     let clip = fixture(&(effect_type(a.tag).sample)());
     let clip_id = clip.id;
-    let mut run = super::parity_harness::Run::new(clip.clone(), true);
+    let mut run = super::parity_harness::Run::new(clip.clone());
     if !run.click_text("", a.analyse) {
         return Err(format!("no {:?}", a.analyse));
     }
@@ -85,7 +85,7 @@ fn frei0r_case() -> Result<(), String> {
     let param = info.params.first().ok_or("saturat0r declares no parameter")?.name.clone();
     let params = info.params.iter().map(|p| klipp_frei0r::Frei0rValue::default_for(p.kind)).collect();
     let clip = fixture(&BuiltinEffect::Frei0r { type_id: info.type_id(), params });
-    let mut run = super::parity_harness::Run::new(clip.clone(), true);
+    let mut run = super::parity_harness::Run::new(clip.clone());
     let at = number_right_of(&mut run, &param).ok_or_else(|| format!("no number for {param}"))?;
     type_into(&mut run, at, "0.85");
     if !run.unapplied.is_empty() {

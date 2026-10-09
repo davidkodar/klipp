@@ -504,21 +504,6 @@ pub enum RangeDragKind {
     RulerCreate { anchor_secs: f64 },
 }
 
-/// What `KLIPP_GENERATED_STACK` (its value, if set) asks of the
-/// inspector's generated view (M3): `"1"` on, `"0"` off, unset nothing
-/// (the default stands). Any other value asks nothing either, and says so
-/// in the log: a mistyped switch is never read as one or the other.
-pub fn generated_stack_switch(value: Option<&str>) -> Option<bool> {
-    match value? {
-        "1" => Some(true),
-        "0" => Some(false),
-        other => {
-            tracing::warn!("KLIPP_GENERATED_STACK={other:?} is neither 0 nor 1; the inspector keeps its default view");
-            None
-        }
-    }
-}
-
 /// Workspace mode — determines panel arrangement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Workspace {
@@ -2085,10 +2070,6 @@ pub struct AppState {
     // inspector and graph-dock steps that read and set it never edit this
     // struct. Addresses are node paths, never list places: a clip with the
     // same local node id as another shares none of it.
-    /// The inspector draws its rows from the node catalog instead of the
-    /// hand-written tabs. On by default; `KLIPP_GENERATED_STACK=0` still
-    /// draws the old tabs until they're deleted (M3 step 19).
-    pub use_generated_stack: bool,
     /// The node the inspector and the graph dock show, by path.
     pub selected_node_addr: Option<klipp_graph_format::path::NodePath>,
     /// The path drag a background result closed while its row was still
@@ -4165,7 +4146,6 @@ impl Default for AppState {
             solo_node: None,
             before_after_active: false,
             stabilization_compare_active: false,
-            use_generated_stack: true,
             resumable_path_drag: None,
             pending_corrector: None,
             root_grade_start: None,
@@ -5781,23 +5761,6 @@ mod paste_speed_tests {
         assert!(!target.param_modifiers().contains_key(&wiggle), "an effect modifier came without its effect");
     }
 }
-
-#[cfg(test)]
-mod generated_stack_switch_tests {
-    /// KLIPP_GENERATED_STACK: 1 on, 0 off, unset nothing; anything else
-    /// nothing too, never guessed.
-    #[test]
-    fn the_switch_reads_one_zero_and_nothing_else() {
-        use super::generated_stack_switch as read;
-        assert_eq!(read(Some("1")), Some(true));
-        assert_eq!(read(Some("0")), Some(false));
-        assert_eq!(read(None), None);
-        for bad in ["true", "on", "", " 1", "2"] {
-            assert_eq!(read(Some(bad)), None, "{bad:?}");
-        }
-    }
-}
-
 
 #[cfg(test)]
 mod log_format_undo_tests {

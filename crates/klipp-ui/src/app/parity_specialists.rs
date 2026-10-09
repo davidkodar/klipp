@@ -115,7 +115,7 @@ fn require_frei0r(manifest: &mut Manifest) {
 /// The inspector over a clone of `clip`, `prepare`d (an analysis in
 /// progress, say).
 pub(super) fn one(clip: &klipp_timeline::Clip, prepare: impl Fn(&mut Run)) -> Run {
-    let mut run = Run::new(clip.clone(), true);
+    let mut run = Run::new(clip.clone());
     prepare(&mut run);
     run
 }

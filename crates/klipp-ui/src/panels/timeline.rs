@@ -3068,19 +3068,15 @@ impl TimelinePanel {
                                     // A built-in effect, a look's chain or a
                                     // frei0r plugin at its defaults, as the
                                     // browser puts them (`picture_effects`):
-                                    // behind the switch by path on every
-                                    // target as one step, or refused whole
-                                    // with the reason (M3 step 19).
+                                    // by path on every target as one step,
+                                    // or refused whole with the reason (M3
+                                    // step 19).
                                     let effects = state.effect_registry.effects.iter().find(|e| e.name == name).and_then(|e| crate::browser::effects_tab::picture_effects(&e.source)).unwrap_or_default();
                                     if !effects.is_empty() {
-                                        let adds = if state.use_generated_stack {
-                                            crate::effect_targets::all_or_none(&targets, |clip_id| {
-                                                let clip = state.sequence().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id).ok_or("the clip isn't in the sequence")?;
-                                                crate::inspector::stack_view::add_effects_command(state, clip, &effects)
-                                            })
-                                        } else {
-                                            Ok(crate::effect_targets::commands(&targets, |clip_id| effects.iter().map(|effect| AppCommand::AddBuiltinEffect { clip_id, effect: effect.clone() }).collect()))
-                                        };
+                                        let adds = crate::effect_targets::all_or_none(&targets, |clip_id| {
+                                            let clip = state.sequence().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id).ok_or("the clip isn't in the sequence")?;
+                                            crate::inspector::stack_view::add_effects_command(state, clip, &effects)
+                                        });
                                         match adds {
                                             Ok(adds) => {
                                                 cmds.extend(adds);
@@ -5686,18 +5682,15 @@ impl TimelinePanel {
 
         // FX badge — show if clip has non-Transform effects applied
         if clip_rect.width() > 40.0 {
-            // Behind the switch, any effect but the clip's two properties
-            // (its placement's Transform and its opacity's entry, M3 step 13).
-            let has_fx = !clip.ofx_effects().is_empty()
-                || if state.use_generated_stack {
-                    let on = |i: usize| clip.builtin_effects_enabled().get(i).copied().unwrap_or(true);
-                    let fx = clip.builtin_effects();
-                    let placement = (0..fx.len()).find(|i| matches!(fx[*i], klipp_effects::BuiltinEffect::Transform { .. }) && on(*i));
-                    let opacity = (0..fx.len()).rev().find(|i| matches!(fx[*i], klipp_effects::BuiltinEffect::Opacity { .. }) && on(*i));
-                    (0..fx.len()).any(|i| Some(i) != placement && Some(i) != opacity)
-                } else {
-                    clip.builtin_effects().iter().any(|e| !matches!(e, klipp_effects::BuiltinEffect::Transform { .. }))
-                };
+            // Any effect but the clip's two properties (its placement's
+            // Transform and its opacity's entry, M3 step 13).
+            let has_fx = !clip.ofx_effects().is_empty() || {
+                let on = |i: usize| clip.builtin_effects_enabled().get(i).copied().unwrap_or(true);
+                let fx = clip.builtin_effects();
+                let placement = (0..fx.len()).find(|i| matches!(fx[*i], klipp_effects::BuiltinEffect::Transform { .. }) && on(*i));
+                let opacity = (0..fx.len()).rev().find(|i| matches!(fx[*i], klipp_effects::BuiltinEffect::Opacity { .. }) && on(*i));
+                (0..fx.len()).any(|i| Some(i) != placement && Some(i) != opacity)
+            };
             if has_fx {
                 let fx_font = egui::FontId::proportional(10.0);
                 let fx_galley = painter.layout_no_wrap(

@@ -365,10 +365,8 @@ impl InspectorEditHost<'_> {
                 AppCommand::ApplyKenBurns { clip_id, start_scale, end_scale, start_pos_x, start_pos_y, end_pos_x, end_pos_y } => {
                     let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
                         .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
-                    // Behind the switch the keys are the placement's own, and
-                    // a clip always has a placement: no Transform to add (M3
-                    // step 13).
-                    let add_transform = !self.state.use_generated_stack;
+                    // The keys are the placement's own, and a clip always has
+                    // a placement: no Transform to add (M3 step 13).
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             let duration = clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64();
@@ -378,15 +376,6 @@ impl InspectorEditHost<'_> {
                             clip.edit_transform_scale_keyframes(|v| v.clear());
                             clip.edit_transform_pos_x_keyframes(|v| v.clear());
                             clip.edit_transform_pos_y_keyframes(|v| v.clear());
-
-                            // Ensure a Transform builtin effect exists
-                            if add_transform && !clip.builtin_effects().iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::Transform { .. })) {
-                                clip.push_effect(klipp_effects::BuiltinEffect::Transform {
-                                    position_x: 0.0, position_y: 0.0,
-                                    scale_x: *start_scale, scale_y: *start_scale,
-                                    rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
-                                    focal_ref: None });
-                            }
 
                             // Scale keyframes
                             clip.edit_transform_scale_keyframes(|v| v.push(klipp_core::Keyframe {

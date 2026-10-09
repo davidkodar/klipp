@@ -150,7 +150,7 @@ fn fixture(kind: NodeKind, desc: &ParamDesc, surface: Surface, sector: bool) -> 
         Surface::GradeTabbedRight => Page::Tabbed(tab),
         _ => Page::Bottom(tab),
     };
-    Ok(Grade::new(state, clip, node, true).on(page))
+    Ok(Grade::new(state, clip, node).on(page))
 }
 
 /// The wheel labelled `label`: its disc's centre, a point on its master's
@@ -348,7 +348,7 @@ fn control_cases(report: &mut Report, ty: &NodeType, desc: &'static ParamDesc, c
     let name = |what: &str| format!("{id} {} on {surface:?} {what}", desc.key);
     let number = |g: &Grade| g.value(desc).as_f64().map(|v| v as f32).ok_or_else(|| format!("{} isn't a number", desc.key));
     report.case(&name("opened"), vec![k(Interaction::OpenWithoutWrite)], || {
-        let mut g = start.twin(true);
+        let mut g = start.twin();
         let before = g.picture();
         g.drawn();
         g.drawn();
@@ -365,11 +365,11 @@ fn control_cases(report: &mut Report, ty: &NodeType, desc: &'static ParamDesc, c
         // the control's arithmetic doesn't decide. The value reached is
         // then only where the path write goes: the picture it leaves, one
         // step and nothing else changed are held by `oracle_case`.
-        let mut probe = start.twin(true);
+        let mut probe = start.twin();
         let want = match drag_rule(&mut probe, control, from)? {
             Some(want) => want,
             None => {
-                let mut back = start.twin(true);
+                let mut back = start.twin();
                 drag(&mut probe, control, false)?;
                 drag_by(&mut back, control, -1.0, false)?;
                 let (to, other) = (number(&probe)?, number(&back)?);
@@ -390,23 +390,23 @@ fn control_cases(report: &mut Report, ty: &NodeType, desc: &'static ParamDesc, c
     // to show set first (`shown_in_frame`).
     report.case_or_blocked(&name("pixels"), [k(Interaction::Pixels)], || {
         let start = &shown_in_frame(start, ty, desc);
-        let mut new = start.twin(true);
+        let mut new = start.twin();
         new.drawn();
         drag(&mut new, control, false)?;
         super::parity_pixels::edit_drawn(&start.frame_sequence(), &new.frame_sequence())
     });
     report.case(&name("reset"), vec![k(Interaction::Reset), k(Interaction::UndoRedo)], || {
         // From a dragged value, so the reset changes it.
-        let mut away = start.twin(true);
+        let mut away = start.twin();
         drag(&mut away, control, false)?;
         if !away.unapplied.is_empty() {
             return Err(format!("setting it away: unapplied {:?}", away.unapplied));
         }
-        oracle_case(&away.twin(true), desc, 0.0, |g| reset(g, control))
+        oracle_case(&away.twin(), desc, 0.0, |g| reset(g, control))
     });
     report.case(&name("cancelled"), vec![k(Interaction::CancelDrag)], || {
         // Escape takes the drag back: the picture from before it, no step.
-        let mut g = start.twin(true);
+        let mut g = start.twin();
         g.drawn();
         let before = g.picture();
         drag(&mut g, control, true)?;
