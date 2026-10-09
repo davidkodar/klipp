@@ -447,6 +447,12 @@ impl Grade {
                     }
                     _ => {}
                 }
+                // A file's camera encoding, as the colour dispatch applies
+                // it (#1396): the file and every clip of it, one step.
+                if let AppCommand::SetClipLogFormat { clip_id, log_format } = &cmd {
+                    self.state.set_clip_log_format(*clip_id, *log_format);
+                    return;
+                }
                 let path = self.state.graph_descent_path.clone();
                 // The old panel's number, as the colour dispatch writes
                 // it (the history is its gesture's).
