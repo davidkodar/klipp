@@ -29,6 +29,7 @@ fn manifest() -> Manifest {
     super::parity_grade_specialists::require(&mut m);
     super::parity_grade_numeric::require(&mut m);
     super::parity_grade_workflows::require(&mut m);
+    super::parity_grade_wheels::require(&mut m);
     m.require_representatives();
     m
 }
@@ -61,6 +62,8 @@ fn run_all(report: &mut Report) {
     report.family("grade numeric rows on the sequence's grades", |r| on_roots(r, super::parity_grade_numeric::run));
     report.family("grade workflows", super::parity_grade_workflows::run);
     report.family("grade workflows on the sequence's grades", |r| on_roots(r, super::parity_grade_workflows::run));
+    report.family("grade wheels", super::parity_grade_wheels::run);
+    report.family("grade wheels on the sequence's grades", |r| on_roots(r, super::parity_grade_wheels::run));
 }
 
 /// The report's lists, one line each, sorted: what the flip still lacks
@@ -152,7 +155,9 @@ fn the_flip_manifest_has_only_the_pinned_rule_errors() {
 #[test]
 fn every_parity_family_is_in_the_flip() {
     let this = include_str!("parity_flip.rs");
-    let families: [(&str, &str); 15] = [
+    // A slice, not an array of a stated length: a family added beside
+    // another never leaves a count to merge.
+    let families: &[(&str, &str)] = &[
         ("parity_numeric", include_str!("parity_numeric.rs")),
         ("parity_effect_keys", include_str!("parity_effect_keys.rs")),
         ("parity_keyed_pixels", include_str!("parity_keyed_pixels.rs")),
@@ -166,6 +171,7 @@ fn every_parity_family_is_in_the_flip() {
         ("parity_grade_specialists", include_str!("parity_grade_specialists.rs")),
         ("parity_grade_workflows", include_str!("parity_grade_workflows.rs")),
         ("parity_grade_numeric", include_str!("parity_grade_numeric.rs")),
+        ("parity_grade_wheels", include_str!("parity_grade_wheels.rs")),
         ("parity_pixels", include_str!("parity_pixels.rs")),
         ("parity_harness", include_str!("parity_harness.rs")),
     ];
@@ -175,7 +181,7 @@ fn every_parity_family_is_in_the_flip() {
     for m in &declared {
         assert!(families.iter().any(|(name, _)| name == m), "app.rs declares {m}, which this scan doesn't list");
     }
-    for (name, source) in families {
+    for &(name, source) in families {
         let entry = source.contains("pub(super) fn require(") || source.contains("(report: &mut Report)");
         if entry {
             assert!(this.contains(&format!("super::{name}::")), "{name} has a family entry the flip doesn't call");

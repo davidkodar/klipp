@@ -493,9 +493,15 @@ impl NodeInspectorPanel {
             graph.nodes.iter().position(|n| n.kind == NodeKind::WheelSatBri && n.enabled)
         );
 
+        // In log mode the grade reads the Low, Mid and High wheels and not
+        // the linear four (the executor's `corrector_stages`), so those
+        // are the wheels drawn: three columns, without saturation and
+        // brightness, which log wheels don't have.
+        let log_mode = wheels_idx.is_some_and(|wi| graph.nodes[wi].params.wheels_log_mode.unwrap_or(false));
+        let columns: f32 = if log_mode { 3.0 } else { 4.0 };
         let avail_w = ui.available_width();
-        // 4 columns with 2px gaps between them: 3 gaps = 6px
-        let cell_w = ((avail_w - 6.0) / 4.0).floor();
+        // The columns with 2px gaps between them.
+        let cell_w = ((avail_w - 2.0 * (columns - 1.0)) / columns).floor();
         let wheel_d = (cell_w - 14.0).clamp(50.0, 150.0);
 
         // Linear / Log toggle
@@ -534,14 +540,16 @@ impl NodeInspectorPanel {
         let wheels_node_id = wheels_idx.map(|i| graph.nodes[i].id);
         let satbri_node_id = satbri_idx.map(|i| graph.nodes[i].id);
 
-        // Define the 4 wheel groups: (label, wheel_state_accessor, param_prefix, sat_param, bri_param)
-        let groups: [(&str, &str); 4] = [
-            ("Lift", "lift"), ("Gamma", "gamma"), ("Gain", "gain"), ("Offset", "offset"),
-        ];
+        // The wheel groups: (label, param prefix).
+        let groups: &[(&str, &str)] = if log_mode {
+            &[("Low", "log_low"), ("Mid", "log_mid"), ("High", "log_high")]
+        } else {
+            &[("Lift", "lift"), ("Gamma", "gamma"), ("Gain", "gain"), ("Offset", "offset")]
+        };
 
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            for (label, prefix) in &groups {
+            for (label, prefix) in groups {
                 let col_rect = ui.allocate_exact_size(
                     egui::vec2(cell_w, wheel_d + 120.0),
                     egui::Sense::hover(),
@@ -556,6 +564,9 @@ impl NodeInspectorPanel {
                         "lift" => (&mut params.lift_x, &mut params.lift_y, &mut params.lift_master),
                         "gamma" => (&mut params.gamma_x, &mut params.gamma_y, &mut params.gamma_master),
                         "gain" => (&mut params.gain_x, &mut params.gain_y, &mut params.gain_master),
+                        "log_low" => (&mut params.log_low_x, &mut params.log_low_y, &mut params.log_low_master),
+                        "log_mid" => (&mut params.log_mid_x, &mut params.log_mid_y, &mut params.log_mid_master),
+                        "log_high" => (&mut params.log_high_x, &mut params.log_high_y, &mut params.log_high_master),
                         _ => (&mut params.offset_x, &mut params.offset_y, &mut params.offset_master),
                     };
                     let mut offset = [x_field.unwrap_or(0.0), y_field.unwrap_or(0.0)];
@@ -564,6 +575,9 @@ impl NodeInspectorPanel {
                         "lift" => &mut self.lift_wheel,
                         "gamma" => &mut self.gamma_wheel,
                         "gain" => &mut self.gain_wheel,
+                        "log_low" => &mut self.log_low_wheel,
+                        "log_mid" => &mut self.log_mid_wheel,
+                        "log_high" => &mut self.log_high_wheel,
                         _ => &mut self.offset_wheel,
                     };
                     #[cfg(any(test, feature = "row-recorder"))]
@@ -578,15 +592,22 @@ impl NodeInspectorPanel {
                         *x_field = Some(offset[0]);
                         *y_field = Some(offset[1]);
                         *m_field = Some(master);
-                        push_wheel_cmds(cmds, clip_id, node_id, prefix, offset, master);
+                        // A click, a reset or a typed pill is one step;
+                        // a drag's step is its gesture's.
+                        if resp.dragging {
+                            push_wheel_cmds(cmds, clip_id, node_id, prefix, offset, master);
+                        } else {
+                            atomic_node_edit_batch(cmds, clip_id, |c| push_wheel_cmds(c, clip_id, node_id, prefix, offset, master));
+                        }
                     }
-                    if resp.drag_ended {
-                        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+                    // Released, the drag is one step; ended by Escape, taken back.
+                    if let (_, Some(end)) = gesture_of(&mut col_ui, false, resp.drag_ended) {
+                        cmds.push(end(clip_id));
                     }
                 }
 
                 // Sat/Bri sliders painted manually below the wheel
-                if let Some(si) = satbri_idx {
+                if let Some(si) = satbri_idx.filter(|_| !log_mode) {
                     let params = &mut graph.nodes[si].params;
                     let node_id = satbri_node_id.unwrap();
                     let sat_name = format!("{prefix}_sat");
@@ -644,8 +665,8 @@ impl NodeInspectorPanel {
                     if sat_resp.drag_started() {
                         cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
                     }
-                    if sat_resp.drag_stopped() {
-                        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+                    if let (_, Some(end)) = gesture_of(&mut col_ui, false, sat_resp.drag_stopped()) {
+                        cmds.push(end(clip_id));
                     }
                     if sat_resp.dragged() || sat_resp.clicked() {
                         if let Some(pos) = sat_resp.interact_pointer_pos() {
@@ -703,8 +724,8 @@ impl NodeInspectorPanel {
                     if bri_resp.drag_started() {
                         cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
                     }
-                    if bri_resp.drag_stopped() {
-                        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+                    if let (_, Some(end)) = gesture_of(&mut col_ui, false, bri_resp.drag_stopped()) {
+                        cmds.push(end(clip_id));
                     }
                     if bri_resp.dragged() || bri_resp.clicked() {
                         if let Some(pos) = bri_resp.interact_pointer_pos() {
@@ -1818,13 +1839,20 @@ impl NodeInspectorPanel {
     ) -> bool {
         match id {
             "wheels" => {
-                let avail_w = ui.available_width();
-                let columns = if avail_w >= 252.0 { 2 } else { 1 };
-                let cell_w = ((avail_w - 12.0 * (columns - 1) as f32) / columns as f32).min(194.0);
-                let wheel_d = (cell_w - 14.0).min(180.0);
-                let log_mode = params.wheels_log_mode.unwrap_or(false);
-                let with_sat_bri = ty.desc.params.iter().any(|p| p.key == "lift_sat");
-                self.wheel_block(ui, params, log_mode, node_id, clip_id, cmds, theme, (columns, cell_w, wheel_d), with_sat_bri);
+                // Laid out from the width before the generated rows' indent,
+                // as the old page lays its wheels out: the same diameter, so
+                // a pixel moves a puck as far in either view.
+                let mut rect = ui.available_rect_before_wrap();
+                rect.min.x -= ui.spacing().indent;
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+                    let avail_w = ui.available_width();
+                    let columns = if avail_w >= 252.0 { 2 } else { 1 };
+                    let cell_w = ((avail_w - 12.0 * (columns - 1) as f32) / columns as f32).min(194.0);
+                    let wheel_d = (cell_w - 14.0).min(180.0);
+                    let log_mode = params.wheels_log_mode.unwrap_or(false);
+                    let with_sat_bri = ty.desc.params.iter().any(|p| p.key == "lift_sat");
+                    self.wheel_block(ui, params, log_mode, node_id, clip_id, cmds, theme, (columns, cell_w, wheel_d), with_sat_bri);
+                });
             }
             "curves" => {
                 self.curves_block(ui, params, true, node_id, clip_id, cmds, theme);
@@ -2239,7 +2267,13 @@ impl NodeInspectorPanel {
             }
             if resp.changed {
                 *x = Some(offset[0]); *y = Some(offset[1]); *m = Some(master);
-                push_wheel_cmds(cmds, clip_id, node_id, prefix, offset, master);
+                // A click, a reset or a typed pill is one step; a drag's
+                // step is its gesture's.
+                if resp.dragging {
+                    push_wheel_cmds(cmds, clip_id, node_id, prefix, offset, master);
+                } else {
+                    atomic_node_edit_batch(cmds, clip_id, |c| push_wheel_cmds(c, clip_id, node_id, prefix, offset, master));
+                }
             }
             // Released, the drag is one step; ended by Escape, taken back.
             if let (_, Some(end)) = gesture_of(ui, false, resp.drag_ended) {
@@ -2317,6 +2351,19 @@ impl NodeInspectorPanel {
                             // A press on the rail is a step of its own.
                             push_atomic_node_edit(cmds, clip_id, node_id, &param, v);
                         }
+                    }
+                    // A right click or a double click puts it back to
+                    // neutral, one step, as the wide layout's rails do. A
+                    // slider senses drags only, and asking it for clicks
+                    // too would hold a drag back to tell them apart, so the
+                    // pointer is read over it.
+                    let reset = ui.input(|i| {
+                        i.pointer.interact_pos().is_some_and(|p| r.rect.contains(p))
+                            && (i.pointer.button_clicked(egui::PointerButton::Secondary) || i.pointer.button_double_clicked(egui::PointerButton::Primary))
+                    });
+                    if reset {
+                        *field = Some(0.0);
+                        push_atomic_node_edit(cmds, clip_id, node_id, &format!("{prefix}_{suffix}"), 0.0);
                     }
                     if let (_, Some(end)) = gesture_of(ui, false, r.drag_stopped()) {
                         cmds.push(end(clip_id));
@@ -3399,7 +3446,7 @@ impl NodeInspectorPanel {
         // at radius + 12 and are centred on that point, so the longest
         // of them needs about another dozen pixels beyond that.
         let radius = side / 2.0 - 28.0;
-        let painter = ui.painter();
+        let painter = ui.painter().clone();
 
         // Background circle
         painter.circle_filled(center, radius + 4.0, theme.bg_deep);
@@ -3561,8 +3608,9 @@ impl NodeInspectorPanel {
         if resp.drag_started() {
             cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
         }
-        if resp.drag_stopped() {
-            cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+        // Released, the drag is one step; ended by Escape, taken back.
+        if let (_, Some(end)) = gesture_of(ui, false, resp.drag_stopped()) {
+            cmds.push(end(clip_id));
         }
         // Handle drag interaction
         if resp.dragged() {

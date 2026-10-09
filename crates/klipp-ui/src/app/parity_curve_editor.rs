@@ -423,6 +423,43 @@ fn pick(c: &mut Curves, item: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A clip lane's Bezier handle dragged in the curve editor is one step,
+/// undone exactly, in each view, as the lane's key drag is (#1424): the
+/// tangent handlers record nothing themselves.
+#[test]
+fn a_lane_bezier_handle_drag_is_one_step() {
+    use klipp_core::VideoParam;
+    let track = Track { tag: "opacity", key: "value", lo: 0.0, hi: 1.0, video: Some(VideoParam::Opacity) };
+    let mut clip = fixture(&track).unwrap();
+    clip.edit_video_param_keyframes(VideoParam::Opacity, |keys| {
+        keys[1].interpolation = klipp_core::Interpolation::Bezier;
+        keys[1].tangent_out = (0.3, 0.0);
+    });
+    let tangent = |c: &Curves| c.clip().video_param_keyframes(VideoParam::Opacity)[1].tangent_out;
+    for generated in [false, true] {
+        let mut c = Curves::over(track, clip.clone(), generated).unwrap();
+        // The key selected, so its handles are drawn and grabbed.
+        let key = c.at(1.5, 0.8);
+        c.click(key, egui::PointerButton::Primary);
+        let (steps, before) = (c.state.active_history().undo_count(), c.picture());
+        let (from, to) = (c.at(1.8, 0.8), c.at(1.8, 0.5));
+        c.button(from, egui::PointerButton::Primary, true);
+        // Just past egui's drag threshold first, still within the handle's
+        // eight pixels: the editor finds what's dragged where the drag starts.
+        c.frame(vec![egui::Event::PointerMoved(from + (to - from).normalized() * 7.0)]);
+        for k in 1..=4 {
+            c.frame(vec![egui::Event::PointerMoved(from + (to - from) * (k as f32 / 4.0))]);
+        }
+        c.button(to, egui::PointerButton::Primary, false);
+        c.frame(vec![egui::Event::PointerGone]);
+        assert!(c.unapplied.is_empty(), "generated {generated}: {:?}", c.unapplied);
+        assert_ne!(tangent(&c), (0.3, 0.0), "generated {generated}: the handle moved");
+        assert_eq!(c.state.active_history().undo_count(), steps + 1, "generated {generated}: one step");
+        c.step(false).unwrap();
+        assert!(c.picture() == before, "generated {generated}: undo gives back the tangent");
+    }
+}
+
 #[test]
 fn effect_tracks_edit_alike_in_the_curve_editor() {
     let mut report = Report::default();
