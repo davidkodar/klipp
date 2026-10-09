@@ -269,6 +269,12 @@ impl crate::state::AppState {
             self.resumable_path_drag = None;
         }
         if self.closes_path_drag(cmd) {
+            // A path drag closed by a write that isn't its own (a sampled
+            // result, a command over the socket) is its own step, as
+            // `close_path_drag_before_edit` closes one; its row may still be
+            // held, and its next tick resumes it, so the rest of the drag is
+            // one more step, never one per tick. Any other drag just closes.
+            self.close_path_drag_before_edit();
             self.close_open_drag();
         }
     }
@@ -976,6 +982,44 @@ mod tests {
         undo(&mut s);
         assert!(matches!(clip(&s, id).builtin_effects()[1], E::Sharpen { amount } if amount == 0.5), "the edit undoes alone");
         assert!(matches!(clip(&s, id).builtin_effects()[0], E::GaussianBlur { radius } if radius == 9.0), "the drag's step stays");
+    }
+
+    /// A write that isn't the drag's own, passing the dispatch boundary
+    /// while a row's drag is held (a sampled result, a command over the
+    /// socket), closes the drag as its own step; the held row's next ticks
+    /// resume it as one more step, never one step per tick.
+    #[test]
+    fn a_drag_held_past_a_write_at_the_boundary_is_three_steps() {
+        let (mut s, id) = state(&[E::GaussianBlur { radius: 3.0 }, E::Sharpen { amount: 0.5 }]);
+        let ids = effects(&s, id);
+        let (blur, sharpen) = (at(id, &[ids[0]]), at(id, &[ids[1]]));
+        let dispatch = |s: &mut AppState, cmd: AppCommand| {
+            s.before_dispatch(&cmd);
+            assert!(s.path_command(&cmd).is_some(), "{cmd:?}");
+        };
+        let radius = |v: f32| AppCommand::SetParamAt { addr: blur.clone(), key: "radius".into(), value: ParamValue::Float(v) };
+        let steps = s.active_history().undo_count();
+        dispatch(&mut s, AppCommand::BeginParamEditAt { addr: blur.clone(), key: "radius".into() });
+        dispatch(&mut s, radius(5.0));
+        // The write from elsewhere, mid-drag.
+        dispatch(&mut s, AppCommand::SetParamAt { addr: sharpen.clone(), key: "amount".into(), value: ParamValue::Float(0.9) });
+        // The row still held: ten more ticks, then its release.
+        for i in 0..10 {
+            dispatch(&mut s, radius(6.0 + i as f32));
+        }
+        dispatch(&mut s, AppCommand::EndParamEditAt { addr: blur.clone(), key: "radius".into() });
+        assert_eq!(s.active_history().undo_count(), steps + 3, "the drag before, the write, the drag after");
+        let values = |s: &AppState| match clip(s, id).builtin_effects() {
+            [E::GaussianBlur { radius }, E::Sharpen { amount }] => (*radius, *amount),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(values(&s), (15.0, 0.9));
+        undo(&mut s);
+        assert_eq!(values(&s), (5.0, 0.9), "the drag's rest undoes alone");
+        undo(&mut s);
+        assert_eq!(values(&s), (5.0, 0.5), "then the write");
+        undo(&mut s);
+        assert_eq!(values(&s), (3.0, 0.5), "then the drag's start");
     }
 
     /// An edit by path changes only the clip and node it names; a path
