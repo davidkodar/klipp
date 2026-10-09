@@ -871,6 +871,12 @@ impl Renderer {
         Some(self.titles.render_with_window(td, width, height, gpu, clip_time as f32, Some(total)))
     }
 
+    /// Source-boundary nodes this renderer has run (M4 step 6), each once
+    /// a frame of a clip that has one.
+    pub fn source_node_runs(&self) -> u64 {
+        self.executor.source_runs() + self.cpu_executor.as_ref().map_or(0, |e| e.source_runs())
+    }
+
     /// Use the GPU for grades, effects and transitions when available
     /// (default). Off, everything runs on the CPU paths — for tests, and
     /// machines without a usable GPU. The grade's executor opens its own

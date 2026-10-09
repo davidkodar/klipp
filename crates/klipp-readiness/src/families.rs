@@ -94,4 +94,8 @@ pub const ALL: &[FamilyEntry] = &[
 /// The renderer stages each family deletes, by symbol, as its step lands
 /// (M4 plan v2 §5, step 11's scan): a family adds its symbols in the
 /// change that deletes them, and `old_stages_stay_gone` holds them gone.
-pub const DELETED: &[(Family, &[&str])] = &[];
+pub const DELETED: &[(Family, &[&str])] = &[
+    // Step 6: the renderer's pre-grade denoise stage and its per-clip
+    // neighbour readers, replaced by the source-boundary node.
+    (Family::TemporalDenoise, &["fn temporal_denoise(", "tnr_frames"]),
+];
