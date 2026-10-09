@@ -28,6 +28,7 @@ members = [
     "crates/klipp-app",
     "crates/klipp-jobs",
     "crates/klipp-testing",
+    "crates/klipp-readiness",
     "crates/klipp-perf",
     "crates/klipp-smoke",
     "crates/klipp-control",
