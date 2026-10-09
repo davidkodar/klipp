@@ -18,7 +18,9 @@
 //! deleted stage gone.
 
 pub mod families;
+pub mod fixtures;
 pub mod format;
+pub mod route;
 pub mod rules;
 
 use std::collections::{BTreeMap, BTreeSet};
