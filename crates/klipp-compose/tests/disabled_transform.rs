@@ -106,7 +106,7 @@ fn automatic_picture_truth_keeps_its_own_placement_properties() {
     picture.picture.placement = klipp_graph_format::lifted::PlacementProps {
         pos_x: Some(7.0), pos_y: Some(8.0), scale: Some(0.7), rotation: Some(9.0),
         anchor_x: Some(0.2), anchor_y: Some(0.3), tilt_x: Some(12.0),
-        tilt_y: Some(13.0), perspective: Some(2.0), focal_ref: None,
+        tilt_y: Some(13.0), perspective: Some(2.0), focal_ref: None, aspect: None,
     };
     c.adopt_stored_picture(picture).unwrap();
     let ctx = eval::eval_context(&c, tc(1.0), 24.0);

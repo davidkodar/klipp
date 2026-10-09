@@ -1381,6 +1381,38 @@ mod tests {
         assert_eq!((p.pos_x, p.rotation, p.scale), (Some(8.0), Some(10.0), Some(0.5)));
     }
 
+    /// A width edit by path keeps the clip's aspect, and a height edit
+    /// sets the aspect alone (#1406).
+    #[test]
+    fn a_scale_edit_by_path_keeps_the_aspect() {
+        let mut c = fixture(&[]);
+        c.set_effect_list(vec![E::Transform { position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 0.5, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None }], vec![true]);
+        let id = c.id;
+        let mut s = with(&[c]);
+        let c = clip(&s, id).clone();
+        let mut t = crate::inspector::placement_by_path::placement(&c);
+        assert_eq!((t.scale_x, t.scale_y), (1.0, 0.5));
+        (t.scale_x, t.scale_y) = (0.8, crate::inspector::video_tab::keep_aspect(&t, 0.8));
+        let cmds = crate::inspector::placement_by_path::by_path(vec![AppCommand::UpdateBuiltinEffect { clip_id: id, index: 0, effect: t.to_builtin_effect() }], &c);
+        assert!(matches!(&cmds[..], [AppCommand::SetParamAt { key, .. }] if key.as_str() == "scale"), "{cmds:?}");
+        for cmd in cmds {
+            run(&mut s, cmd);
+        }
+        let c = clip(&s, id).clone();
+        let p = c.picture_v2().unwrap().picture.placement.clone();
+        assert_eq!((p.scale, p.aspect), (Some(0.8), Some(0.5)));
+        assert!(matches!(c.builtin_effects()[0], E::Transform { scale_x, scale_y, perspective, .. } if (scale_x, scale_y, perspective) == (0.8, 0.4, 0.0)));
+        let mut t = crate::inspector::placement_by_path::placement(&c);
+        t.scale_y = 0.8;
+        let cmds = crate::inspector::placement_by_path::by_path(vec![AppCommand::UpdateBuiltinEffect { clip_id: id, index: 0, effect: t.to_builtin_effect() }], &c);
+        assert!(matches!(&cmds[..], [AppCommand::SetParamAt { key, .. }] if key.as_str() == "scale_y"), "{cmds:?}");
+        for cmd in cmds {
+            run(&mut s, cmd);
+        }
+        let p = clip(&s, id).picture_v2().unwrap().picture.placement.clone();
+        assert_eq!((p.scale, p.aspect), (Some(0.8), None));
+    }
+
     /// A key put by path where one already is keeps that key's time and
     /// curve shape, as the lanes' own upsert does: the card's placement
     /// and opacity keys, field-backed and on a picture-truth clip, and the

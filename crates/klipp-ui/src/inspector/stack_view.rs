@@ -200,6 +200,14 @@ fn effect_node(tag: &str, effect: &klipp_effects::BuiltinEffect) -> Option<Node>
     .ok()
 }
 
+/// Whether a Transform card's Scale Y follows its Scale X: under keys on
+/// the clip's scale, which key the width with the height at the clip's
+/// aspect (#1406), so a static Scale Y there would disagree with the
+/// picture.
+pub(crate) fn height_follows_width(tag: &str, clip: &Clip) -> bool {
+    tag == "transform" && !clip.transform_scale_keyframes().is_empty()
+}
+
 /// The four kinds the clip places itself (a transform, an opacity, a
 /// speed ramp, a temporal denoise): a card of theirs is added through the
 /// clip's effect list, which places it (the placed-kinds ruling).
@@ -512,7 +520,11 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
                     .find(|(tag, from, _)| *tag == ty.tag && *from == p.key)
                     .map_or(p.key, |(_, _, to)| *to);
                 ParamDesc { key, ..*p }
-            }).collect();
+            })
+            // Under keys on the clip's scale, its height follows the width
+            // at the clip's aspect (#1406): no Scale Y of its own to edit.
+            .filter(|p| !(height_follows_width(ty.tag, clip) && p.key == "scale_y"))
+            .collect();
             let presentation = |p: &ParamDesc| {
                 let original = klipp_graph_lift::lift::keyframe_name(ty.tag, p.key);
                 ty.presentation(ty.desc.params.iter().find(|p| p.key == original).unwrap_or(p))
@@ -555,7 +567,13 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
                 app: Some(state),
                 custom: None,
             };
-            ui.indent(("stack_row", row.addr.clone()), |ui| effect_card(ui, &mut rc, &rows, ty, clip, state));
+            ui.indent(("stack_row", row.addr.clone()), |ui| {
+                effect_card(ui, &mut rc, &rows, ty, clip, state);
+                if height_follows_width(ty.tag, clip) {
+                    ui.label(egui::RichText::new("Scale Y follows Scale X's keys, at the clip's aspect").small().color(theme.text_dim))
+                        .on_hover_text("The clip's scale is keyed: its height keeps its aspect against the width.");
+                }
+            });
             if placed {
                 cmds.extend(to_effect_list(clip, ty, n.id, &entry, scratch));
             }

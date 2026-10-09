@@ -322,15 +322,20 @@ fn the_draws_outside_list_is_todays() {
     }
 }
 
-/// A transform whose two scales differ loses the vertical one, as the
-/// renderer ignores it, and says so.
+/// A transform whose two scales differ keeps its aspect (height against
+/// width) in the placement, and drops nothing (#1406); one whose scales
+/// agree keeps the one scale and no aspect; a width of 0 keeps none.
 #[test]
-fn a_dropped_vertical_scale_is_reported() {
-    let tf = json!({"type": "transform", "position_x": 0.0, "position_y": 0.0, "scale_x": 1.0, "scale_y": 2.0, "rotation": 0.0,
+fn a_vertical_scale_apart_from_the_width_is_kept() {
+    let tf = |y: f64| json!({"type": "transform", "position_x": 0.0, "position_y": 0.0, "scale_x": 1.0, "scale_y": y, "rotation": 0.0,
                     "anchor_x": 0.5, "anchor_y": 0.5, "rotation_x": 0.0, "rotation_y": 0.0, "perspective": 0.0});
-    let (p, notes) = lift(clip(json!({"builtin_effects": [tf]})), ClipKind::Media);
-    assert_eq!(p.placement.scale, Some(1.0));
-    assert!(notes.iter().any(|n| matches!(n, LiftNote::DroppedField { field, .. } if field == "scale_y")));
+    let (p, notes) = lift(clip(json!({"builtin_effects": [tf(2.0)]})), ClipKind::Media);
+    assert_eq!((p.placement.scale, p.placement.aspect), (Some(1.0), Some(2.0)));
+    assert!(!notes.iter().any(|n| matches!(n, LiftNote::DroppedField { field, .. } if field == "scale_y")), "{notes:?}");
+    let (p, _) = lift(clip(json!({"builtin_effects": [tf(1.0)]})), ClipKind::Media);
+    assert_eq!((p.placement.scale, p.placement.aspect), (Some(1.0), None));
+    assert_eq!(crate::lift::aspect(Some(0.0), Some(0.5)), None, "a width of 0 has no aspect");
+    assert_eq!(crate::lift::aspect(Some(2.0), Some(0.5)), Some(0.25));
 }
 
 /// Odd edges an old grade graph keeps get today's reading, each with its

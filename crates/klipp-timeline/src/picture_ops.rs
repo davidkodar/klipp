@@ -785,7 +785,12 @@ impl Clip {
                     match name.as_str() {
                         "pos_x" => *position_x = v,
                         "pos_y" => *position_y = v,
-                        "scale" => (*scale_x, *scale_y) = (v, v),
+                        // The width; the height keeps the aspect under it.
+                        "scale" => {
+                            let aspect = klipp_graph_lift::lift::aspect(Some(*scale_x), Some(*scale_y)).unwrap_or(1.0);
+                            (*scale_x, *scale_y) = (v, v * aspect);
+                        }
+                        "scale_y" => *scale_y = v,
                         "rotation" => *rotation = v,
                         "anchor_x" => *anchor_x = v,
                         "anchor_y" => *anchor_y = v,
