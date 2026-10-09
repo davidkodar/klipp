@@ -622,9 +622,17 @@ fn animation(keys: Option<&Value>, modifiers: Vec<Value>) -> Option<Animation> {
     Some(Animation { keys, modifiers })
 }
 
-/// The clip's opacity, by today's rules (`render.rs` `clip_effects`, and
-/// `eval.rs` for adjustment layers).
-fn opacity(record: &ClipRecordV2, effects: &[&Node], ctx: &LiftCtx, notes: &mut Vec<LiftNote>, clip_orphans: &mut BTreeMap<String, Value>) -> (f32, Option<Animation>) {
+/// The Opacity entry that is the clip's opacity property: the last enabled
+/// one, on a clip and an adjustment layer alike; a disabled one never
+/// counts. Every other enabled Opacity multiplies the clip's opacity,
+/// wherever it sits (#1386, picture revision 4).
+pub fn opacity_anchor(effects: &[&Node]) -> Option<NodeId> {
+    effects.iter().rfind(|n| n.type_id.as_str() == types::LEGACY_OPACITY && n.enabled).map(|n| n.id)
+}
+
+/// The clip's opacity, by one rule for a clip and an adjustment layer
+/// (`render.rs` `clip_opacity`).
+fn opacity(record: &ClipRecordV2, effects: &[&Node], notes: &mut Vec<LiftNote>, clip_orphans: &mut BTreeMap<String, Value>) -> (f32, Option<Animation>) {
     let lc = &record.legacy_clip;
     let clip_keys = lc.fields.get("opacity_keyframes");
     let clip_mods = stack_modifiers(lc.param_modifiers.get("opacity"));
@@ -653,18 +661,10 @@ fn opacity(record: &ClipRecordV2, effects: &[&Node], ctx: &LiftCtx, notes: &mut 
         }
     };
 
-    if ctx.kind == ClipKind::Adjustment {
-        // The first Opacity effect's value, enabled or not, with the clip's
-        // keys and modifiers; the effects' own keys never ran.
-        let base = opacities.first().map(|n| value(n)).unwrap_or(1.0);
-        for n in &opacities {
-            orphan(n, clip_orphans, notes);
-        }
-        return settled(base, animation(clip_keys, clip_mods));
-    }
     let enabled: Vec<&&&Node> = opacities.iter().filter(|n| n.enabled).collect();
-    for n in opacities.iter().filter(|n| !n.enabled || enabled.last().is_some_and(|l| l.id != n.id)) {
-        // Only the last enabled Opacity effect sets the result.
+    for n in opacities.iter().filter(|n| !n.enabled) {
+        // A disabled Opacity draws nothing; an enabled one other than the
+        // anchor multiplies in with its own keys (#1386), kept on it.
         orphan(n, clip_orphans, notes);
     }
     match enabled.last() {
@@ -783,6 +783,7 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
     let media = ctx.kind == ClipKind::Media;
     let mut head = Vec::new();
     let mut tnr_taken = false;
+    let anchor = opacity_anchor(&effects);
     for n in effects.iter().filter(|n| n.type_id.as_str() == types::LEGACY_TEMPORAL_DENOISE) {
         // The first enabled one is the clip's, whatever its strength: it
         // runs wherever its strength, keyframed or not, is above 0, and
@@ -819,7 +820,7 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
     }
 
     // The clip's opacity and placement become properties.
-    let (opacity, opacity_anim) = opacity(record, &effects, ctx, &mut notes, &mut clip_orphans);
+    let (opacity, opacity_anim) = opacity(record, &effects, &mut notes, &mut clip_orphans);
     let transforms: Vec<&Node> = effects.iter().copied().filter(|n| n.type_id.as_str() == types::LEGACY_TRANSFORM).collect();
     let (placement, placement_anim) = placement(record, &transforms);
     let fixed_at = transforms.iter().find(|n| n.enabled).map(|n| n.id);
@@ -854,6 +855,9 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
             // Kept off, for the record: every Opacity entry (the clip's
             // opacity property is what renders) and a speed ramp that
             // doesn't blend frames. The user put each in the list.
+            // An enabled Opacity other than the clip's anchor multiplies the
+            // clip's opacity (#1386): kept on, with its own keys.
+            types::LEGACY_OPACITY if n.enabled && Some(n.id) != anchor => chain.push((*n).clone()),
             types::LEGACY_OPACITY | types::LEGACY_SPEED_RAMP => {
                 let mut k = (*n).clone();
                 k.enabled = false;
