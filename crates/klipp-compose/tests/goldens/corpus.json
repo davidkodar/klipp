@@ -1,6 +1,6 @@
 {
-  "recorded_on": "6833e630",
-  "reason": "#1207: disabled Transform uses automatic placement; approved case-only correction, first enabled Transform supplies placement.",
+  "recorded_on": "cc798d4c",
+  "reason": "#1442: Chromatic Aberration samples bilinearly on both routes (it rounded each sample to the nearest pixel, which the GPU's arithmetic broke differently); case-only re-record",
   "frames": [
   {"case":"effect/Opacity","kind":"rgba","len":9216,"offset":0,"path":"cpu","t":"0.5"},
   {"case":"effect/Opacity","kind":"rgba","len":9216,"offset":9216,"path":"CpuWithGpu","t":"0.5"},

@@ -103,7 +103,10 @@ fn diffusion_desaturates_its_glow() {
 /// the centre: the centre stays sharp, the edges blur.
 #[test]
 fn zoom_blur_grows_with_distance_from_the_centre() {
-    let (w, h) = (41u32, 41u32);
+    // Even, so the centre (`0.5 * w`) is pixel 20 itself: at no distance
+    // it takes no blur. Half a pixel off it, it would take a little, as
+    // its distance says (samples are bilinear, #1440).
+    let (w, h) = (40u32, 40u32);
     let mut px = Vec::new();
     for y in 0..h {
         for x in 0..w {

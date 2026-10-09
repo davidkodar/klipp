@@ -4599,13 +4599,13 @@ impl GraphExecutor {
                             lk.low, lk.high, lk.soft, lk.invert,
                         )
                     } else {
-                        // CPU fallback. `generate_luma_key_matte` still
-                        // speaks u8, so the key is measured on the
-                        // encoded picture — which is the domain the
-                        // shader keys in too, so the two agree. Both take
-                        // the working space's luma row, so they also
-                        // agree on an ACEScg project, where Rec.709's
-                        // row under-weights green by a fifth.
+                        // CPU fallback, keying the encoded picture, each
+                        // channel clamped to [0, 1], as the shader keys it
+                        // (`luma_key_value`): from the floats, not an 8-bit
+                        // copy, so a soft edge isn't stepped by rounding
+                        // (#1439). Both take the working space's luma row,
+                        // so they also agree on an ACEScg project, where
+                        // Rec.709's row under-weights green by a fifth.
                         //
                         // The matte itself comes back as it is. It is a
                         // blend coefficient and not a colour: running it
@@ -4614,15 +4614,15 @@ impl GraphExecutor {
                         // half matte into 0.21. That put this path a
                         // quarter of a frame away from the shader, which
                         // `secondary_gpu_parity` caught.
-                        let primary_u8 = linear_rgba_to_u8(primary_input);
-                        let matte = klipp_color::luma_key::generate_luma_key_matte(
-                            &primary_u8,
-                            width,
-                            height,
-                            lk,
-                            klipp_color::linear::luma_coefs(self.working_colorspace),
-                        );
-                        matte.iter().flat_map(|&v| [v, v, v, 1.0]).collect()
+                        use klipp_color::transfer::linear_to_srgb;
+                        let coefs = klipp_color::linear::luma_coefs(self.working_colorspace);
+                        primary_input
+                            .chunks_exact(4)
+                            .flat_map(|p| {
+                                let v = klipp_color::luma_key::luma_key_value([p[0], p[1], p[2]].map(linear_to_srgb), lk, coefs);
+                                [v, v, v, 1.0]
+                            })
+                            .collect()
                     }
                 } else {
                     vec![1.0f32; (width * height * 4) as usize]

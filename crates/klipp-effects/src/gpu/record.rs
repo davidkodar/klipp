@@ -517,7 +517,7 @@ impl GpuEffectsPipeline {
                 }
                 let slot = rec.slots.claim(q, &FilmGrainParams {
                     width, height,
-                    amount: *amount, size: *size, color: *color, shadows: *shadows, seed: *seed,
+                    amount: *amount, per_px: crate::cpu::grain_cells_per_px(*size, height), color: *color, shadows: *shadows, seed: *seed,
                     luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2],
                     _pad: 0, _pad2: 0,
                 });
