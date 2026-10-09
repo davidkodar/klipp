@@ -37,7 +37,7 @@ fn media_timeline(path: &std::path::Path, from: i64, to: i64, fps: u32, source_i
     c.source_in = RationalTime::from_secs_f64(source_in_secs, fps);
     c.source_out = c.source_in + RationalTime::from_frames(to - from, fps);
     let mut v = one_track(fps, vec![c]);
-    v.media.insert(media_id, MediaFile { path: path.to_path_buf(), log_format: None, source_rotation: 0 });
+    v.media.insert(media_id, MediaFile { path: path.to_path_buf(), log_format: None, source_rotation: 0, duration_secs: None });
     v
 }
 

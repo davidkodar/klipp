@@ -345,6 +345,12 @@ impl FrameSource for ExportFrameSource<'_> {
         }))
     }
 
+    /// The whole media, from its start to its duration.
+    fn media_range(&mut self, clip: &Clip) -> Option<(f64, f64)> {
+        let ClipKind::Media { media_id } = &clip.kind else { return None };
+        Some((0.0, self.media.get(media_id)?.duration_secs?))
+    }
+
     /// The same frames in linear light, for the renderer's own use.
     fn temporal_frames_linear(
         &mut self,

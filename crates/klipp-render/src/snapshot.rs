@@ -103,6 +103,9 @@ pub struct MediaFile {
     /// the fallback for that, so a clip that never got its copy still
     /// renders the right way up.
     pub source_rotation: i32,
+    /// How long the media is, in seconds, when known: the source a
+    /// temporal node may read neighbours from, handles included.
+    pub duration_secs: Option<f64>,
 }
 
 /// A media item's camera log format for its export decoder: the same
@@ -499,6 +502,7 @@ impl SequenceSnapshot {
                     path: item.path.clone(),
                     log_format: camera_log_format(item),
                     source_rotation: item.source_rotation,
+                    duration_secs: Some(item.duration.to_secs_f64()),
                 });
             }
         }
@@ -1376,7 +1380,7 @@ mod tests {
         assert_eq!(snap.video.sequence.tracks[0].clips[0].id, seq.tracks[0].clips[0].id);
         assert_eq!(
             snap.video.media.get(&media_id),
-            Some(&MediaFile { path: PathBuf::from("/media/clip1.mp4"), log_format: None, source_rotation: 0 }),
+            Some(&MediaFile { path: PathBuf::from("/media/clip1.mp4"), log_format: None, source_rotation: 0, duration_secs: Some(pool.get(&media_id).unwrap().duration.to_secs_f64()) }),
         );
     }
 
