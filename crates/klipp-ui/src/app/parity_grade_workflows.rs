@@ -238,7 +238,19 @@ fn entries() -> Vec<(CatalogEntry, Vec<(Surface, Page)>)> {
     }).collect()
 }
 
+/// Colour Match's measured values: readouts on its page (#1421), held
+/// here beside the tool that writes them.
+fn match_values() -> Vec<CatalogEntry> {
+    catalog().into_iter().filter(|e| e.type_id == "klipp.grade.color_match" && matches!(e.value, super::parity_manifest::CatalogValue::Parameter { .. })).collect()
+}
+
 pub(super) fn require(manifest: &mut Manifest) {
+    for entry in match_values() {
+        manifest.require_fixture(&entry, Surface::GradePerNode, "sample");
+        for root in super::parity_harness::GradeRoot::SEQUENCE {
+            manifest.require_fixture(&entry, Surface::NonClipGrade, &format!("{}: GradePerNode sample", root.variant()));
+        }
+    }
     for (entry, surfaces) in entries() {
         let picker = entry.parameter == "@workflow/qualifier_picker";
         for (surface, _) in surfaces {
@@ -378,6 +390,20 @@ fn run_colour_match(report: &mut Report, type_id: &str, surface: Surface, page: 
             return Err(format!("a darker frame is brightened: {}", result.exposure_adjust));
         }
         lands(&start, land, matched, |m| *m == Some(settings))
+    });
+    // Its values, readouts (#1421): drawing them writes nothing, and the
+    // match they show changes the frame, the CPU's the GPU's.
+    let values = match_values();
+    let value_keys = |i| values.iter().map(move |e| CoverageKey::new(e.type_id, &e.parameter, surface, "sample", i)).collect::<Vec<_>>();
+    report.case(&format!("colour match values opened on {surface:?}"), value_keys(Interaction::OpenWithoutWrite), || {
+        let mut matched = start.twin();
+        land(&mut matched)?;
+        opened(&matched.twin())
+    });
+    report.case_or_blocked(&format!("colour match values drawn on {surface:?}"), value_keys(Interaction::Pixels), || {
+        let mut matched = start.twin();
+        land(&mut matched)?;
+        super::parity_pixels::edit_drawn(&start.frame_sequence(), &matched.frame_sequence())
     });
     report.case(&format!("colour match reset on {surface:?}"), [k(Interaction::Reset), k(Interaction::UndoRedo)], || {
         // From a match, its Reset: the match cleared, one step, undone

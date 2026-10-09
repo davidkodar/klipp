@@ -159,6 +159,10 @@ pub enum Widget {
     WheelPart(&'static str),
     /// No row; the value is kept as it is.
     Hidden,
+    /// A value shown, not edited: what a tool of the node measured and
+    /// writes (Colour Match's correction, written by Apply match, #1421).
+    /// Owes opening without a write and its frame, not editing.
+    Readout,
     /// A specialist editor, named (M3 step 0d). An empty name is one not
     /// named yet, which step 0d's coverage refuses.
     Custom(&'static str),
@@ -412,7 +416,8 @@ pub fn param_problems(type_id: &str, p: &ParamDesc, pres: &Presentation) -> Vec<
         out.push(format!("{at}: {} decimals", pres.decimals));
     }
     let numeric = matches!(p.kind, ParamKind::Float | ParamKind::Whole);
-    if numeric && !matches!(pres.widget, Widget::Hidden | Widget::Custom(_)) && !(pres.step.is_finite() && pres.step > 0.0) {
+    // A readout isn't dragged, so it has no step (#1421).
+    if numeric && !matches!(pres.widget, Widget::Hidden | Widget::Readout | Widget::Custom(_)) && !(pres.step.is_finite() && pres.step > 0.0) {
         out.push(format!("{at}: step {} doesn't move it", pres.step));
     }
     match (p.kind, pres.labels) {

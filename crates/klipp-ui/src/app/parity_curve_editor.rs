@@ -6,8 +6,8 @@
 //! Every place a case clicks is a share of the track's drawn range, so one
 //! set of cases drives every parameter.
 //!
-//! Previous/Next key doesn't follow the curve editor's track (#1401), and grade tracks aren't listed (#891): both are central
-//! exclusions in the parity rules.
+//! Grade tracks aren't listed (#891): a central exclusion in the parity
+//! rules.
 
 use super::inspector_edit_host::{InspectorEditHost, InspectorSideEffects};
 use super::parity_manifest::{catalog, CatalogValue, CoverageKey, Interaction, KeyInterpolation, Manifest, Report, Surface};
@@ -94,6 +94,20 @@ fn fixture(track: &Track) -> Result<klipp_timeline::Clip, String> {
                 klipp_core::keyframe::upsert_keyframe(keys, t, track.at(share));
             }
         });
+        return Ok(clip);
+    }
+    // A placed kind (a Temporal Denoise) is keyed through the clip's effect
+    // list, as its card keys it; the path handler refuses its node (#1419).
+    if crate::inspector::stack_view::is_placed_kind(track.tag) {
+        let effect = clip.effect_id_at(0).ok_or("no effect")?;
+        clip.edit_effect_keyframes_of(effect, track.key, |keys| {
+            for (t, share) in KEYS {
+                klipp_core::keyframe::upsert_keyframe(keys, t, track.at(share));
+            }
+        });
+        if clip.animated_effect_keys().is_empty() {
+            return Err("the keyed parameter isn't listed as a track".into());
+        }
         return Ok(clip);
     }
     let id = clip.id;
@@ -205,9 +219,10 @@ impl Curves {
         if matches!(cmd, AppCommand::SeekTo(_)) {
             return;
         }
-        // The video keys' handlers, as the app runs them (a Video track's).
+        // The keys' handlers, as the app runs them: an effect's by its
+        // place in the list (a placed kind's track, #1419), a Video track's.
         let mut host = InspectorEditHost { state: &mut self.state, side: &Sink };
-        if !host.apply_video_keyframes(&cmd) && !host.apply_keyframe_drag(&cmd) && !host.apply(&cmd) {
+        if !host.apply_effect_keyframes(&cmd) && !host.apply_video_keyframes(&cmd) && !host.apply_keyframe_drag(&cmd) && !host.apply(&cmd) {
             self.unapplied.push(format!("{cmd:?}"));
         }
     }
@@ -243,24 +258,11 @@ fn entries() -> Vec<(super::parity_manifest::CatalogEntry, Track)> {
     catalog().into_iter().filter_map(|e| track(&e).map(|t| (e, t))).collect()
 }
 
-/// A placed kind whose keys the curve editor doesn't list (it walks the
-/// output spine's effect nodes, and the clip places this at the source
-/// boundary): owed, and excluded, citing the issue.
-const NOT_LISTED: &[(&str, &str)] = &[("temporal_denoise", "#1419 (Temporal Denoise keys aren't listed in the curve editor: a placed kind isn't on the output spine animated_effect_keys walks)")];
-
-fn not_listed(track: &Track) -> Option<&'static str> {
-    NOT_LISTED.iter().find(|(tag, _)| *tag == track.tag).map(|(_, why)| *why)
-}
-
 pub(super) fn require(manifest: &mut Manifest) {
-    for (e, track) in entries() {
+    // A placed kind's track too: a Temporal Denoise's keys are listed and
+    // edited through the clip's effect list (#1419).
+    for (e, _) in entries() {
         manifest.require_fixture(&e, Surface::CurveEditor, "keyed");
-        if let Some(why) = not_listed(&track) {
-            let owed: Vec<_> = manifest.required.iter().filter(|k| k.type_id == e.type_id && k.parameter == e.parameter && k.surface == Surface::CurveEditor).cloned().collect();
-            for key in owed {
-                manifest.exclude_key(key, why);
-            }
-        }
     }
 }
 
@@ -307,9 +309,7 @@ pub(super) fn run(report: &mut Report) {
         report.case("curve editor", [], || Err("no keyframable effect parameter in the catalog".into()));
     }
     for (e, track) in all {
-        if not_listed(&track).is_none() {
-            run_track(report, &e, track);
-        }
+        run_track(report, &e, track);
     }
 }
 
@@ -317,6 +317,30 @@ pub(super) fn run(report: &mut Report) {
 fn run_track(report: &mut Report, e: &super::parity_manifest::CatalogEntry, track: Track) {
     let key = |interaction| CoverageKey::new(e.type_id, &e.parameter, Surface::CurveEditor, "keyed", interaction);
     let name = |what: &str| format!("{} / {}: curve editor {what}", e.type_id, e.parameter);
+
+    // Previous and Next keyframe (Alt+←/→, `keyframe_jump`) walk the track
+    // the editor shows (#1401): from between its keys, back to the first
+    // and on to the second, writing nothing.
+    for (forward, interaction, want) in [(false, Interaction::PreviousKey, KEYS[0].0), (true, Interaction::NextKey, KEYS[1].0)] {
+        report.case(&name(if forward { "next key" } else { "previous key" }), [key(interaction)], || {
+            let mut c = Curves::over(track, fixture(&track)?)?;
+            c.state.show_curve_editor = true;
+            c.frame(Vec::new());
+            let start = c.clip().timeline_in.to_secs_f64();
+            let between = (KEYS[0].0 + KEYS[1].0) / 2.0;
+            c.state.playhead = klipp_core::Timecode::from_secs_f64(start + between, c.state.playhead.rate);
+            let before = c.picture();
+            let to = super::shortcuts::keyframe_jump(&c.state, forward).ok_or("no key that way: the jump doesn't follow the track shown")?;
+            let at = to.to_secs_f64() - start;
+            if !near(at, want, 1e-3) {
+                return Err(format!("jumped to {at}, the key is at {want}"));
+            }
+            if c.picture() != before || c.state.active_history().undo_count() != 0 {
+                return Err("the jump wrote".into());
+            }
+            Ok(())
+        });
+    }
 
     report.case(&name("opened"), [key(Interaction::OpenWithoutWrite)], || {
         let mut c = Curves::over(track, fixture(&track)?)?;
@@ -365,8 +389,9 @@ fn run_track(report: &mut Report, e: &super::parity_manifest::CatalogEntry, trac
             let at = c.at(1.5, 0.8);
             c.click(at, egui::PointerButton::Primary);
             let sk = c.state.selected_keyframe.take().ok_or("clicking the key didn't select it")?;
-            let cmd = super::shortcuts::remove_selected_keyframe(&c.state, &sk).ok_or("Delete sends nothing")?;
-            c.apply(cmd);
+            for cmd in super::shortcuts::remove_selected_keyframe(&c.state, &sk).ok_or("Delete sends nothing")? {
+                c.apply(cmd);
+            }
             Ok(())
         })
     });
@@ -452,8 +477,7 @@ fn effect_tracks_take_the_edits_named_in_the_curve_editor() {
     let mut manifest = Manifest::default();
     require(&mut manifest);
     // Every key the family can earn, earned: not Pixels (another family's),
-    // not those excluded with a citation (Previous/Next, #1401; Temporal
-    // Denoise, #1419).
+    // not those excluded with a citation.
     let missing: Vec<_> = manifest.required.iter().filter(|k| !matches!(k.interaction, Interaction::Pixels) && !manifest.excluded_keys.contains_key(*k) && !report.passed.contains(k)).collect();
     assert!(missing.is_empty(), "required and not earned: {missing:#?}");
 }

@@ -74,6 +74,12 @@ const SOFT_CLIP: &str = "klipp.grade.soft_clip";
 const DIFF_KEY: &str = "klipp.grade.difference_key";
 const GRAIN: &str = "klipp.grade.film_grain";
 const LUT: &str = "klipp.grade.lut_3d";
+const COLOR_MATCH: &str = "klipp.grade.color_match";
+
+/// A measured value, to two decimals: shown, written by its node's tool.
+const fn readout() -> P {
+    P::scrub(0.0, 2).widget(Widget::Readout)
+}
 
 /// The wheel rows of a type that has them: the log switch, the luma mix,
 /// the log ranges, then the four primary wheels or the three log ones.
@@ -212,6 +218,14 @@ const NODES: &[ParamEntry] = &[
     at(LUMA_KEY, "luma_key_soft", slider(0.000625).label("Soft").visible_if(on("luma_key_enabled"))),
     at(LUMA_KEY, "luma_key_invert", toggle().visible_if(on("luma_key_enabled"))),
     at(SOFT_CLIP, "soft_clip.enabled", toggle()),
+    // Colour Match's correction is what Apply match measured, shown beside
+    // its Capture reference, Apply match and Reset: a hand edit would be
+    // replaced by the next match, and a correction by hand is the
+    // Corrector's (#1421).
+    at(COLOR_MATCH, "color_match.exposure", readout()),
+    at(COLOR_MATCH, "color_match.temperature", readout()),
+    at(COLOR_MATCH, "color_match.tint", readout()),
+    at(COLOR_MATCH, "color_match.saturation", readout()),
     at(SOFT_CLIP, "soft_clip.threshold", slider(0.00125).visible_if(on("soft_clip.enabled"))),
     at(SOFT_CLIP, "soft_clip.knee", slider(0.000625).visible_if(on("soft_clip.enabled"))),
     at("klipp.grade.mask", "masks", editor("mask_stack").label("Masks")),

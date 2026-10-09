@@ -129,7 +129,7 @@ const SHADERS: &[(&str, Cover)] = &[
     ("SHADER_LINEAR_TO_DISPLAY_U8", Test("klipp-engine/tests/hdr_monitor_gpu_matches_cpu.rs", "the_preview_encode_matches_the_cpu")),
     ("SHADER_HDR_NIT_MAP", Test("klipp-engine/tests/hdr_monitor_gpu_matches_cpu.rs", "the_nit_map_matches_the_cpu")),
     ("SHADER_LINEAR_TO_U8", Test("klipp-engine/tests/grade_to_texture_identity.rs", "encode_grade_to_texture_matches_cpu")),
-    ("SHADER_U8_TO_LINEAR", Test("klipp-engine/tests/gpu_u8_to_linear_bridge.rs", "u8_to_linear_gpu_matches_cpu_within_epsilon")),
+    ("SHADER_U8_TO_LINEAR", Test("klipp-engine/tests/gpu_u8_to_linear_bridge.rs", "u8_to_linear_gpu_matches_cpu_exactly")),
     ("SHADER_RGBA64_TO_LINEAR", Test("klipp-engine/tests/gpu_rgba64_to_linear_bridge.rs", "rgba64_to_linear_gpu_matches_cpu")),
     ("SHADER_LINEAR_TO_YUV420", Test("klipp-engine/tests/gpu_yuv420_matches_cpu.rs", "gpu_yuv_matches_cpu_with_no_tone_map")),
     ("SHADER_ACES_REC709_U8", Test("klipp-engine/tests/aces_gpu_matches_cpu.rs", "aces_rec709_matches_the_cpu_on_noise")),

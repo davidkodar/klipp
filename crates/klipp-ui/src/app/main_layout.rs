@@ -277,6 +277,9 @@ impl KlippApp {
 
                     if self.state.show_curve_editor && curve_editor_h > 0.0 {
                         self.render_curve_editor_panel(ui, curve_editor_rect, all_cmds);
+                    } else {
+                        // Not drawn, so Previous / Next walk the rubber band (#1401).
+                        self.state.curve_editor_track = None;
                     }
                     if self.state.show_audio_mixer && audio_mixer_h > 0.0 {
                         self.render_audio_mixer_panel(ui, audio_mixer_rect, all_cmds);

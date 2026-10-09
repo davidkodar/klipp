@@ -40,17 +40,11 @@ fn key(entry: &CatalogEntry) -> CoverageKey {
     CoverageKey::new(entry.type_id, &entry.parameter, Surface::EffectsStack, variant(entry), Interaction::KeyedPixels)
 }
 
-/// Keyed lanes the CPU and the GPU stack draw differently, where the row's
-/// static picture agrees: known defects, excluded from `KeyedPixels` with
-/// their issues until fixed (type, parameter, reason).
-const KEYED_DEFECTS: &[(&str, &str, &str)] = &[
-    ("klipp.fx.posterize", "levels", "known CPU/GPU defect #1443: Posterize differs on the CPU and the GPU stack at a level boundary"),
-];
-
-/// Why a row's keyed lane is excluded, if it is: a known defect of the
-/// row, or of its lane alone.
+/// Why a row's keyed lane is excluded, if it is: a known defect of the row.
+/// (Posterize's keyed lane, which drew apart at a level boundary, finds
+/// its bands against one set of edges on both routes now, #1443.)
 fn excluded(entry: &CatalogEntry) -> Option<&'static str> {
-    known_defect(entry, Surface::EffectsStack, variant(entry)).or_else(|| KEYED_DEFECTS.iter().find(|(ty, param, _)| *ty == entry.type_id && *param == entry.parameter).map(|d| d.2))
+    known_defect(entry, Surface::EffectsStack, variant(entry))
 }
 
 /// The rows that owe `KeyedPixels`: the effect-key family's, less the

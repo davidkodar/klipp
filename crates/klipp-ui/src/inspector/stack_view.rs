@@ -281,6 +281,45 @@ pub fn node_at<'a>(graph: &'a Graph, addr: &NodePath) -> Option<&'a Node> {
     level.nodes.iter().find(|n| n.id == *last)
 }
 
+/// `cmds` as they reach `clip`: a path command naming a placed kind's node
+/// (a Temporal Denoise's track in the curve editor, its key deleted from
+/// the timeline) goes through the clip's effect list, as the kind's card
+/// sends its own (`to_effect_list`), since the path handler refuses a
+/// placed node while the clip's picture is stored as fields (#1419).
+/// Every other command passes as it is.
+pub fn route_placed(clip: &Clip, cmds: Vec<AppCommand>) -> Vec<AppCommand> {
+    let Ok(lifted) = clip.picture_v2() else { return cmds };
+    let graph = &lifted.picture.graph;
+    let mut out = Vec::new();
+    for cmd in cmds {
+        let addr = match &cmd {
+            AppCommand::AddKeyAt { addr, .. }
+            | AppCommand::RemoveKeyAt { addr, .. }
+            | AppCommand::MoveKeyAt { addr, .. }
+            | AppCommand::SetInterpKeyAt { addr, .. }
+            | AppCommand::BeginParamEditAt { addr, .. }
+            | AppCommand::EndParamEditAt { addr, .. }
+            | AppCommand::SetParamAt { addr, .. } => Some(addr),
+            _ => None,
+        };
+        let placed = addr
+            .filter(|a| a.root_clip() == Some(clip.id.0) && a.nodes.len() == 1)
+            .and_then(|a| graph.nodes.iter().find(|n| Some(n.id) == a.node()))
+            .and_then(|n| klipp_graph_lift::effect_params::tag(n).filter(|tag| is_placed_kind(tag)).and_then(|tag| effect_types().find(|t| t.tag == tag)).map(|ty| (n, ty)));
+        match (placed, &cmd) {
+            // A key dragged on its track (the curve editor's Begin / End
+            // around its moves) is a keyframe drag: one step whose undo
+            // puts the keys back. The card's value drag, an effect drag,
+            // snapshots the effect's values and not its keys.
+            (Some((n, _)), AppCommand::BeginParamEditAt { key, .. }) => out.push(AppCommand::BeginKeyframeDrag { key: format!("{:?}:{}:{}", clip.id, n.id, key.as_str()), clip_id: clip.id }),
+            (Some((n, _)), AppCommand::EndParamEditAt { key, .. }) => out.push(AppCommand::EndKeyframeDrag { key: format!("{:?}:{}:{}", clip.id, n.id, key.as_str()), clip_id: clip.id }),
+            (Some((n, ty)), _) => out.extend(to_effect_list(clip, ty, n.id, &klipp_graph_lift::effect_params::entry_of(n).unwrap_or(serde_json::Value::Null), vec![cmd])),
+            (None, _) => out.push(cmd),
+        }
+    }
+    out
+}
+
 /// A placed kind's row commands as the clip's effect-list commands, which
 /// place it: a drag's bracket as the effect drag, a value as the effect
 /// with it changed, a key as the effect's key, its eye as the effect's
@@ -335,6 +374,16 @@ pub fn to_effect_list(clip: &Clip, ty: &klipp_effects::registry::EffectType, nod
             AppCommand::SetNodeEnabledAt { enabled, .. } => {
                 if clip.builtin_effects_enabled().get(index).copied().unwrap_or(true) != enabled {
                     out.push(AppCommand::ToggleBuiltinEffectEnabled { clip_id, index });
+                }
+            }
+            // A key dragged (the curve editor's), found by its time as an
+            // interpolation is.
+            AppCommand::MoveKeyAt { key: pk, time_secs, new_time_secs, value, .. } => {
+                let lanes = clip.effect_keyframes();
+                if let Some(keys) = lanes.get(&format!("{index}:{}", pk.as_str())) {
+                    if let Some(keyframe_index) = crate::inspector::keyframe_selection::nearest(keys, time_secs, KEY_TOLERANCE) {
+                        out.push(AppCommand::MoveEffectKeyframe { clip_id, effect_index: index, param_name: pk.as_str().to_owned(), keyframe_index, new_time_secs, new_value: value });
+                    }
                 }
             }
             AppCommand::SetInterpKeyAt { key: pk, time_secs, interpolation, .. } => {

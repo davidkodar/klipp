@@ -314,10 +314,7 @@ impl Manifest {
                 variant,
                 interaction,
             );
-            if let Some(reason) = rules::key_exclusion(entry, surface)
-                .filter(|_| rules::is_key(interaction))
-                .or_else(|| rules::navigation_exclusion(surface, interaction))
-            {
+            if let Some(reason) = rules::key_exclusion(entry, surface).filter(|_| rules::is_key(interaction)) {
                 self.exclude_key(key, reason);
             } else {
                 self.require(key);
@@ -1414,16 +1411,13 @@ mod tests {
                     wheel_tracks += 1;
                 }
             } else {
-                // An effect track: its keys stay required on the curve
-                // editor, but Previous/Next, which follows no curve-editor
-                // track in either view (#1401).
+                // An effect track: its keys are required on the curve
+                // editor, Previous/Next among them, which walk the track the
+                // editor shows (#1401). None is excluded.
                 for action in actions {
                     assert!(curves.required.contains(&key(action)), "{:?}", key(action));
                 }
-                for nav in [Interaction::PreviousKey, Interaction::NextKey] {
-                    assert!(curves.excluded_keys.get(&key(nav)).is_some_and(|r| r.contains("#1401")), "{:?}", key(nav));
-                }
-                assert_eq!(curves.excluded_keys.len(), 2, "{:?}", curves.excluded_keys);
+                assert!(curves.excluded_keys.is_empty(), "{:?}", curves.excluded_keys);
                 effect_tracks += 1;
             }
             assert!(

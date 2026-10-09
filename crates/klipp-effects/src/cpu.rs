@@ -502,20 +502,11 @@ pub(crate) fn apply(
             each_encoded(p, |s| s.map(|v| v + ((1.0 - v.clamp(0.0, 1.0)) - v) * m))
         }
         Posterize { levels } => {
-            // Bands even on the display scale; white stays white, and
-            // above it the ladder carries on at the same spacing rather
-            // than every highlight landing on white.
-            // Fewer than two levels has no band to step to: at one, every
-            // pixel was 0/0. No control reaches it, but a keyframe curve's
-            // overshoot or a hand-edited file can (#1020).
-            let levels = levels.max(2.0);
-            let div = levels - 1.0;
-            each_encoded(p, |s| {
-                s.map(|v| {
-                    let banded = (v.clamp(0.0, 1.0) * levels).floor().min(div) / div;
-                    banded + ((v - 1.0).max(0.0) * levels).floor() / div
-                })
-            })
+            // The band each value falls in is found against the ladder's
+            // edges, worked out once (`PosterizeLadder`), as the shader
+            // finds it: bit for bit the same band on both routes.
+            let ladder = PosterizeLadder::new(levels);
+            each_value(p, |c| [ladder.band(c[0]), ladder.band(c[1]), ladder.band(c[2]), c[3]])
         }
         Mosaic { block_size } => {
             if block_size <= 1.0 {
@@ -955,6 +946,101 @@ pub(crate) fn apply(
 /// value, whenever the size was fractional, as between two keys (#1441).
 pub(crate) fn grain_cells_per_px(size: f32, height: u32) -> f32 {
     1.0 / (size * height as f32 / 1080.0).max(1.0)
+}
+
+/// How many band edges [`PosterizeLadder`] holds on each side of white.
+pub(crate) const POSTERIZE_EDGES: usize = 256;
+
+/// Posterize's ladder for `levels` bands: bands even on the display scale,
+/// white staying white and the ladder carrying on above it at the same
+/// spacing, rather than every highlight landing on white.
+///
+/// A value's band was `floor(encoded · levels)`. The encoding goes through
+/// `pow`, which the shader works out only approximately, so a value whose
+/// `encoded · levels` sat within a few ULPs of a whole number fell in the
+/// band below on one route and the band above on the other (#1443). So
+/// the edges are worked out here, once, as the linear values they decode
+/// to, and both routes find a band by comparing the value itself with
+/// them: the same comparisons on the same numbers. Only the band's own
+/// value is then decoded per route, which is continuous.
+pub(crate) struct PosterizeLadder {
+    /// The levels, clamped to `[2, 256]`. Fewer than two has no band to
+    /// step to (at one, every pixel was 0/0; a keyframe curve's overshoot
+    /// or a hand-edited file can ask for it, #1020), and the control's
+    /// range ends at 256, which the table is sized for.
+    pub(crate) levels: f32,
+    /// The linear value each band below white starts at, ascending, then
+    /// `f32::MAX` (never reached; WGSL may assume no infinities).
+    pub(crate) inside: [f32; POSTERIZE_EDGES],
+    /// The same above white, the ladder's steps past it.
+    pub(crate) above: [f32; POSTERIZE_EDGES],
+    /// How many of `above` are edges. Past the last, the step is worked
+    /// out from the encoding (about twice white at 256 levels).
+    pub(crate) above_count: u32,
+}
+
+impl PosterizeLadder {
+    /// `levels` as the ladder takes it (see [`Self::levels`]).
+    pub(crate) fn clamped(levels: f32) -> f32 {
+        levels.clamp(2.0, POSTERIZE_EDGES as f32)
+    }
+
+    /// How many above-white edges a ladder holds: all of them. The highest,
+    /// at two levels, is encoded 1 + 256 / 2 = 129, about 1.2e5 in light,
+    /// so every edge decodes finite (`new` checks it all the same).
+    pub(crate) fn above_count(_levels: f32) -> u32 {
+        POSTERIZE_EDGES as u32
+    }
+
+    pub(crate) fn new(levels: f32) -> Self {
+        let levels = Self::clamped(levels);
+        let div = levels - 1.0;
+        let mut inside = [f32::MAX; POSTERIZE_EDGES];
+        // The band rises at encoded m / levels for m up to ⌈levels − 1⌉,
+        // where `min(m, div) / div` reaches white.
+        let steps = (div.ceil() as usize).min(POSTERIZE_EDGES);
+        for (m, edge) in inside.iter_mut().enumerate().take(steps) {
+            *edge = decode((m + 1) as f32 / levels);
+        }
+        let mut above = [f32::MAX; POSTERIZE_EDGES];
+        let mut above_count = 0;
+        for (j, edge) in above.iter_mut().enumerate() {
+            let t = decode(1.0 + (j + 1) as f32 / levels);
+            if !(t.is_finite() && t < f32::MAX) {
+                break;
+            }
+            *edge = t;
+            above_count = j as u32 + 1;
+        }
+        Self { levels, inside, above, above_count }
+    }
+
+    /// How many of `edges` (ascending) are at or below `v`, as the shader
+    /// counts them (`count_at_or_below`).
+    fn count(edges: &[f32; POSTERIZE_EDGES], v: f32) -> u32 {
+        let (mut lo, mut hi) = (0usize, POSTERIZE_EDGES);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if edges[mid] <= v {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo as u32
+    }
+
+    /// The linear value `v` is posterized to.
+    pub(crate) fn band(&self, v: f32) -> f32 {
+        let div = self.levels - 1.0;
+        let m = Self::count(&self.inside, v) as f32;
+        let mut j = Self::count(&self.above, v);
+        if j == self.above_count && self.above_count == POSTERIZE_EDGES as u32 {
+            // Past the table: the step from the encoding, never below it.
+            j = j.max(((encode(v) - 1.0) * self.levels).floor().max(0.0) as u32);
+        }
+        decode(m.min(div) / div + j as f32 / div)
+    }
 }
 
 /// The motion shaders' bilinear sample: clamp-to-edge corners around

@@ -52,8 +52,6 @@ pub(super) fn entry_exclusion(entry: &CatalogEntry) -> Option<&'static str> {
             Some("#1348: implicit grade-node mix is command-tested but neither inspector exposes it"),
         CatalogValue::Parameter { .. } if entry.type_id == "klipp.grade.primaries_matrix" =>
             Some("#1351: PrimariesMatrix parameter controls have no reachable inspector route in either view"),
-        CatalogValue::Parameter { .. } if entry.type_id == "klipp.grade.color_match" =>
-            Some("#1421: Colour Match's values are readouts in both views; the catalog presents them as sliders"),
         CatalogValue::Enabled if entry.type_id == "klipp.grade.input_transform" =>
             Some("#1351: InputTransform selection reaches camera encoding before the bypass header in both views"),
         _ => None,
@@ -178,14 +176,6 @@ pub(super) fn key_exclusion(entry: &CatalogEntry, surface: Surface) -> Option<&'
     }
 }
 
-/// Previous and Next key on the curve editor: Alt+←/→ walks the clip's own
-/// video or audio track's keys, never the curve editor's selected track,
-/// in either view, so it's a feature to add after M3, not parity.
-pub(super) fn navigation_exclusion(surface: Surface, interaction: Interaction) -> Option<&'static str> {
-    (surface == Surface::CurveEditor && matches!(interaction, Interaction::PreviousKey | Interaction::NextKey))
-        .then_some("#1401 (Previous/Next key doesn't follow the curve editor's track)")
-}
-
 pub(super) fn is_key(interaction: Interaction) -> bool {
     matches!(
         interaction,
@@ -286,6 +276,11 @@ pub(super) fn interactions(
                 }
                 Widget::Hidden => {
                     required.insert(PreserveHidden);
+                }
+                // A measured value: shown, written by its node's tool, so
+                // it owes its frame, not editing (#1421).
+                Widget::Readout => {
+                    required.insert(Pixels);
                 }
                 Widget::Custom(id) => required.extend(specialist(id)?),
             }
