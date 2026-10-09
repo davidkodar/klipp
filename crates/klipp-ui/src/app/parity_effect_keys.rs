@@ -45,7 +45,7 @@ fn key(entry: &CatalogEntry, action: Interaction) -> CoverageKey {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum Action {
+pub(super) enum Action {
     Add,
     Remove,
     Edit,
@@ -55,7 +55,18 @@ enum Action {
 }
 
 impl Action {
-    fn interaction(self) -> Interaction {
+    pub(super) const ALL: [Action; 8] = [
+        Action::Add,
+        Action::Remove,
+        Action::Edit,
+        Action::Previous,
+        Action::Next,
+        Action::Interpolate(Interpolation::Linear),
+        Action::Interpolate(Interpolation::Step),
+        Action::Interpolate(Interpolation::Bezier),
+    ];
+
+    pub(super) fn interaction(self) -> Interaction {
         match self {
             Self::Add => Interaction::AddKey,
             Self::Remove => Interaction::RemoveKey,
@@ -137,6 +148,8 @@ fn interpolation(run: &mut Run, label: RowLabel, want: Interpolation) -> Result<
     let text = run
         .frame(Vec::new(), egui::Modifiers::NONE)
         .into_iter()
+        // The menu is drawn last: the Video tab shows "Linear" elsewhere.
+        .rev()
         .find(|(s, _)| s.trim().trim_start_matches('*').trim() == name)
         .map(|(s, _)| s)
         .ok_or_else(|| format!("no interpolation menu item {name}"))?;
@@ -148,9 +161,16 @@ fn interpolation(run: &mut Run, label: RowLabel, want: Interpolation) -> Result<
 
 fn edit_keys(
     clip: &mut klipp_timeline::Clip,
+    surface: Surface,
     desc: &ParamDesc,
     edit: impl FnOnce(&mut Vec<Keyframe>),
 ) {
+    // The Video tab's Opacity row keys the clip's opacity lane: the
+    // anchor Opacity's, as the Video tab and curve editor show it.
+    if surface == Surface::VideoTab {
+        clip.edit_video_param_keyframes(klipp_core::VideoParam::Opacity, edit);
+        return;
+    }
     let id = clip.effect_id_at(0).unwrap();
     clip.edit_effect_keyframes_of(id, desc.key, edit);
 }
@@ -181,6 +201,12 @@ fn first_difference(
 }
 
 fn exercise_case(entry: &CatalogEntry, action: Action, generated: bool) -> Result<(), String> {
+    exercise_on(entry, Surface::EffectsStack, action, generated)
+}
+
+/// `action` on `entry`'s row on `surface` (the Effects stack, or the
+/// Video tab's anchor Opacity), old or generated.
+pub(super) fn exercise_on(entry: &CatalogEntry, surface: Surface, action: Action, generated: bool) -> Result<(), String> {
     let CatalogValue::Parameter {
         desc,
         presentation: pres,
@@ -211,13 +237,13 @@ fn exercise_case(entry: &CatalogEntry, action: Action, generated: bool) -> Resul
     let (_, a) = value(0.2);
     let (_, b) = value(0.8);
     let (typed, target) = value(0.6);
-    let mut clip = fixture_on(&effect, Surface::EffectsStack);
+    let mut clip = fixture_on(&effect, surface);
     let initial_interp = if matches!(action, Action::Interpolate(Interpolation::Linear)) {
         Interpolation::Step
     } else {
         Interpolation::Linear
     };
-    edit_keys(&mut clip, desc, |keys| {
+    edit_keys(&mut clip, surface, desc, |keys| {
         *keys = [(0.25, a), (1.25, b)]
             .into_iter()
             .map(|(time_secs, value)| Keyframe {
@@ -238,6 +264,7 @@ fn exercise_case(entry: &CatalogEntry, action: Action, generated: bool) -> Resul
     let mut oracle = clip.clone();
     // #1388: the old route writes both the base payload and the key.
     // Keep its exact two-step behavior, without copying it into the new one.
+    let stack = surface == Surface::EffectsStack;
     let undo_steps = if !generated && matches!(action, Action::Edit) {
         2
     } else {
@@ -248,7 +275,7 @@ fn exercise_case(entry: &CatalogEntry, action: Action, generated: bool) -> Resul
         let id = oracle.effect_id_at(0).unwrap();
         oracle.replace_effect(id, updated);
     }
-    edit_keys(&mut oracle, desc, |keys| match action {
+    edit_keys(&mut oracle, surface, desc, |keys| match action {
         Action::Add => {
             let mut evaluated = klipp_core::keyframe::evaluate(keys, at, a);
             // #1389: the old integer payload rounds before adding a key.
@@ -264,6 +291,7 @@ fn exercise_case(entry: &CatalogEntry, action: Action, generated: bool) -> Resul
     });
     let expected = oracle.picture_v2()?;
     let mut run = Run::new(clip.clone(), generated);
+    run.property = surface == Surface::VideoTab;
     run.state.playhead = Timecode::from_secs_f64(at, clip.timeline_in.rate);
     match action {
         Action::Add | Action::Remove => {
@@ -284,7 +312,7 @@ fn exercise_case(entry: &CatalogEntry, action: Action, generated: bool) -> Resul
     let after = run.clip().picture_v2()?;
     // #1384: the retiring old Effects route drops the menu response.
     // Pin that no-op explicitly; the generated route must apply the edit.
-    if !generated && matches!(action, Action::Interpolate(_)) {
+    if stack && !generated && matches!(action, Action::Interpolate(_)) {
         return if after == before
             && run.state.active_history().undo_count() == 0
             && !run.state.any_drag_in_progress()
@@ -354,16 +382,7 @@ fn exercise_case(entry: &CatalogEntry, action: Action, generated: bool) -> Resul
 
 pub(super) fn run(report: &mut Report) {
     for entry in catalog().into_iter().filter(eligible) {
-        for action in [
-            Action::Add,
-            Action::Remove,
-            Action::Edit,
-            Action::Previous,
-            Action::Next,
-            Action::Interpolate(Interpolation::Linear),
-            Action::Interpolate(Interpolation::Step),
-            Action::Interpolate(Interpolation::Bezier),
-        ] {
+        for action in Action::ALL {
             let name = format!("{} / {} / {action:?}", entry.type_id, entry.parameter);
             // The central rules require only Step for Whole parameters.
             // Their real menus also offer Linear/Bezier: still verify those

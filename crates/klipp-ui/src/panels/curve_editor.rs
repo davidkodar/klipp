@@ -1121,6 +1121,11 @@ impl CurveEditorPanel {
                                 if let CurveParam::Node { path, key, .. } = &self.param {
                                     cmds.push(AppCommand::BeginParamEditAt { addr: path.clone(), key: key.clone() });
                                 }
+                                // A clip lane's key too, as the timeline's
+                                // lanes bracket theirs (#1424).
+                                if matches!(self.param, CurveParam::Video(_) | CurveParam::Audio(_)) {
+                                    cmds.push(AppCommand::BeginKeyframeDrag { key: lane_drag_key(clip_id), clip_id });
+                                }
                                 state.selected_keyframe = Some(SelectedKeyframe {
                                     clip_id,
                                     param_kind: self.param_to_kind(),
@@ -1239,6 +1244,9 @@ impl CurveEditorPanel {
         if response.drag_stopped() {
             if let (Some(CurveDrag { handle: None, .. }), CurveParam::Node { path, key, .. }) = (&self.drag, &self.param) {
                 cmds.push(AppCommand::EndParamEditAt { addr: path.clone(), key: key.clone() });
+            }
+            if let (Some(CurveDrag { handle: None, .. }), CurveParam::Video(_) | CurveParam::Audio(_)) = (&self.drag, &self.param) {
+                cmds.push(AppCommand::EndKeyframeDrag { key: lane_drag_key(clip_id), clip_id });
             }
             self.drag = None;
         }
@@ -1453,6 +1461,11 @@ impl CurveEditorPanel {
             _ => false,
         }
     }
+}
+
+/// The history drag a clip lane's key drag is held under.
+fn lane_drag_key(clip_id: klipp_core::ClipId) -> String {
+    format!("kf:curve:{}", clip_id.0)
 }
 
 /// Choose a "nice" step size for grid lines.
