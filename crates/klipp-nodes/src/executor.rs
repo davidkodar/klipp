@@ -8644,3 +8644,102 @@ mod unreadable_image_tests {
         let _ = std::fs::remove_file(&missing);
     }
 }
+
+#[cfg(test)]
+mod analysis_node_tests {
+    use super::*;
+    use crate::frame_context::{Analysis, AnalysisBlob, AnalysisInputs, FrameContext, NoSources, PluginInstances, NODE_ANALYSIS_SCHEMA};
+    use klipp_effects::node_analysis::NodeAnalysis;
+    use klipp_effects::stabilization::{accumulate_trajectory, decompose_homography, smooth_trajectory, StabilizationData};
+    use klipp_effects::BuiltinEffect;
+
+    /// A shaky trajectory of 48 frames at 24 fps.
+    fn shaky() -> StabilizationData {
+        let step = |i: usize| klipp_effects::homography::Homography { h: [[1.0, 0.0, if i % 2 == 0 { 3.0 } else { -2.0 }], [0.0, 1.0, 0.5], [0.0, 0.0, 1.0]] };
+        let frame_transforms: Vec<_> = (0..47).map(step).collect();
+        let accumulated = accumulate_trajectory(&frame_transforms);
+        let trajectory = accumulated.iter().map(decompose_homography).collect();
+        StabilizationData { frame_transforms, accumulated, trajectory, fps: 24.0, frame_count: 48 }
+    }
+
+    /// Each stabilisation effect's analysis at its own smoothing.
+    struct BySmoothing(Vec<(f32, AnalysisBlob)>);
+
+    impl AnalysisInputs for BySmoothing {
+        fn lookup(&self, _: NodeId, _: u32) -> Analysis<'_> {
+            Analysis::Absent
+        }
+        fn lookup_effect(&self, _: NodeId, effect: &BuiltinEffect, _: u32) -> Analysis<'_> {
+            let BuiltinEffect::VideoStabilization { smoothing, .. } = effect else { return Analysis::Absent };
+            self.0.iter().find(|(s, _)| s == smoothing).map_or(Analysis::Absent, |(_, b)| Analysis::Ready(b))
+        }
+    }
+
+    fn stabilise(smoothing: f32) -> Node {
+        Node {
+            id: NodeId::new_v4(),
+            kind: NodeKind::Effect,
+            label: String::new(),
+            enabled: true,
+            params: NodeParams { effects: vec![BuiltinEffect::VideoStabilization { smoothing, crop_ratio: 0.0, zoom: false }], ..Default::default() },
+            keyframes: Default::default(),
+            output_link: None,
+            input_links: vec![],
+        }
+    }
+
+    /// Two stabilisation nodes on one clip, at two smoothings, each take
+    /// their own correction for the frame: never one node's for both.
+    #[test]
+    fn two_stabilisation_nodes_each_take_their_own_transform() {
+        let data = shaky();
+        let derive = |s: f32| AnalysisBlob { schema: NODE_ANALYSIS_SCHEMA, data: std::sync::Arc::new(NodeAnalysis::Stabilisation { smoothed: smooth_trajectory(&data, (s as f64 * 2.0).max(0.05)), fps: 24.0 }) };
+        let inputs = BySmoothing(vec![(0.1, derive(0.1)), (0.9, derive(0.9))]);
+        let (a, b) = (stabilise(0.1), stabilise(0.9));
+        let mut graph = NodeGraph::default();
+        graph.nodes = vec![a.clone(), b.clone()];
+        let mut sources = NoSources;
+        let mut instances = PluginInstances::default();
+        let ctx = FrameContext {
+            clip: klipp_core::ClipId::new(),
+            frame: 20,
+            source: (klipp_core::MediaId::nil(), 0.0),
+            clip_time_secs: 20.0 / 24.0,
+            frame_number: 20,
+            fps: 24.0,
+            source_secs: 20.0 / 24.0,
+            source_pts: None,
+            sources: &mut sources,
+            analysis: &inputs,
+            instances: &mut instances,
+            ofx: None,
+            source_at: &|t| t,
+        };
+        let run = resolve_analysis(&graph, &ctx, 8);
+        let h = |n: &Node| run.get(&n.id).and_then(|at| at.motion.stabilization).expect("its correction");
+        assert_ne!(h(&a), h(&b), "two smoothings, two corrections");
+        let own = |s: f32| {
+            let smoothed = smooth_trajectory(&data, (s as f64 * 2.0).max(0.05));
+            let m = smoothed.corrections[20].h;
+            [m[0][0] as f32, m[0][1] as f32, m[0][2] as f32, m[1][0] as f32, m[1][1] as f32, m[1][2] as f32, m[2][0] as f32, m[2][1] as f32, m[2][2] as f32, 0.0, 0.0, 0.0]
+        };
+        assert_eq!(h(&a), own(0.1));
+        assert_eq!(h(&b), own(0.9));
+    }
+
+    /// A node whose analysis isn't ready has none for the frame: its effect
+    /// passes the frame through.
+    #[test]
+    fn a_node_without_its_analysis_has_none() {
+        let inputs = BySmoothing(vec![]);
+        let mut graph = NodeGraph::default();
+        graph.nodes = vec![stabilise(0.5)];
+        let mut sources = NoSources;
+        let mut instances = PluginInstances::default();
+        let ctx = FrameContext {
+            clip: klipp_core::ClipId::new(), frame: 0, source: (klipp_core::MediaId::nil(), 0.0), clip_time_secs: 0.0, frame_number: 0, fps: 24.0,
+            source_secs: 0.0, source_pts: None, sources: &mut sources, analysis: &inputs, instances: &mut instances, ofx: None, source_at: &|t| t,
+        };
+        assert!(resolve_analysis(&graph, &ctx, 8).is_empty());
+    }
+}
