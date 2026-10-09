@@ -796,6 +796,18 @@ fn modifiers(r: &mut Rng) -> Value {
     json!({ "modifiers": (0..n).map(|_| one(r)).collect::<Vec<_>>() })
 }
 
+/// A live effect entry as v1 stored it: a Speed Ramp with the fields
+/// picture revision 4 drops (#1409), which the frozen reader requires;
+/// none of them drew.
+fn v1_entry(mut e: Value) -> Value {
+    if e["type"] == "speed_ramp" {
+        for (k, x) in [("ramp_curve", json!(0)), ("ramp_start", json!(0.0)), ("ramp_end", json!(1.0)), ("reverse", json!(false)), ("freeze_at", json!(0.0)), ("freeze", json!(false))] {
+            e[k] = x;
+        }
+    }
+    e
+}
+
 /// An effect from the registry with its numbers moved, or one of the
 /// effects the lift reads: opacity, transform, temporal denoise, a speed
 /// ramp that blends frames.
@@ -807,8 +819,7 @@ fn effect(r: &mut Rng, samples: &[Value]) -> Value {
         3 => {
             let mut s = serde_json::to_value(klipp_effects::registry::effect_type("speed_ramp").map(|t| (t.sample)())).unwrap();
             s["blend_mode"] = json!(r.below(2));
-            s["freeze"] = json!(r.chance(20));
-            s
+            v1_entry(s)
         }
         _ => samples[r.below(samples.len() as u64) as usize].clone(),
     };
@@ -948,7 +959,7 @@ fn picture(r: &mut Rng, samples: &[Value]) -> Value {
 fn generated_project(dir: &Path, seed: u64, n: usize) {
     use klipp_timeline::ClipKind as K;
     let mut r = Rng(0x9E37_79B9_7F4A_7C15 ^ (seed + 1));
-    let samples: Vec<Value> = klipp_effects::registry::effect_types().map(|t| serde_json::to_value((t.sample)()).unwrap()).collect();
+    let samples: Vec<Value> = klipp_effects::registry::effect_types().map(|t| v1_entry(serde_json::to_value((t.sample)()).unwrap())).collect();
     let mut seq = Sequence::new_default();
     let tc = |s: f64| Timecode::from_secs_f64(s, 24);
     for i in 0..n {
@@ -1002,7 +1013,7 @@ fn loop_free(mut g: Value) -> Value {
 fn generated_spliced_project(dir: &Path, seed: u64, n: usize) {
     generated_project(dir, seed, n);
     let mut r = Rng(0x51CE_D00D ^ (seed + 7));
-    let samples: Vec<Value> = klipp_effects::registry::effect_types().map(|t| serde_json::to_value((t.sample)()).unwrap()).collect();
+    let samples: Vec<Value> = klipp_effects::registry::effect_types().map(|t| v1_entry(serde_json::to_value((t.sample)()).unwrap())).collect();
     let path = dir.join("project.json");
     let mut project: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     let seq = &mut project["sequences"][0];

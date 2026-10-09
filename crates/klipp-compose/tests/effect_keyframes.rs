@@ -80,10 +80,7 @@ fn every_effect() -> Vec<E> {
         E::TemporalDenoise { strength: 0.5, threshold: 0.02 },
         E::Deflicker { strength: 0.5, window_secs: 1.0, gain: 1.0 },
         E::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true },
-        E::SpeedRamp {
-            speed: 1.0, blend_mode: 0, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0,
-            freeze: false,
-        },
+        E::SpeedRamp { speed: 1.0, blend_mode: 0 },
         E::Frei0r { type_id: "test".into(), params: Vec::new() },
         E::CornerPin { tl: [0.1, 0.1], tr: [0.9, 0.0], br: [1.0, 1.0], bl: [0.0, 0.9] },
     ];

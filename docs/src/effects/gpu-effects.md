@@ -98,7 +98,7 @@ The built-in effects are the variants of `BuiltinEffect` in `crates/klipp-effect
 | Video Stabilization | `smoothing`, `crop_ratio`, `zoom` | Smooths camera motion. Needs the clip analysed first (*AnalyzeStabilization*) |
 | Rolling Shutter Correction | `strength`, `readout_ratio` | Removes CMOS wobble |
 | Deflicker | `strength`, `window_secs`, `gain` | Undoes whole-frame brightness pumping. Needs the clip analysed first (*AnalyzeDeflicker*); the compositor sets `gain` per frame, and 1.0 (no correction) is what an unanalysed clip gets |
-| Speed Ramp | `speed`, `blend_mode` (0 nearest, 1 linear), `ramp_curve` (0 constant, 1 ease-in, 2 ease-out, 3 ease-in-out, 4 S-curve), `ramp_start`, `ramp_end`, `reverse`, `freeze_at`, `freeze` | Retiming with optional frame blending, ramps, reverse and freeze; there is no optical-flow mode |
+| Speed Ramp | `speed`, `blend_mode` (0 nearest, 1 linear) | Retiming with optional frame blending; there is no optical-flow mode |
 
 ### Plugins
 

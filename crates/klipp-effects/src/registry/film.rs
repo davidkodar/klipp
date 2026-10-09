@@ -13,8 +13,6 @@
 //! Where two places disagree, the description follows the reset and says
 //! so:
 //!
-//! * a speed ramp's `freeze_at` resets to 0, but its slider's double-click
-//!   reset is 0.5;
 //! * grain `size` is measured per 1080-line frame (the effect scales it
 //!   internally), so `at_render_scale` rightly leaves it alone.
 //!
@@ -282,12 +280,6 @@ pub(super) static TYPES: &[EffectType] = &[
             &[
                 ParamDesc::float("speed", "Speed", 1.0, (0.1, 4.0), Unit::Ratio).fixed(),
                 choice("blend_mode", "Blend", 1.0, &["nearest", "linear"]),
-                choice("ramp_curve", "Curve", 0.0, &["constant", "ease-in", "ease-out", "ease-in-out", "s-curve"]),
-                ParamDesc::float("ramp_start", "Ramp Start", 0.0, UNIT, Unit::Ratio).fixed(),
-                ParamDesc::float("ramp_end", "Ramp End", 1.0, UNIT, Unit::Ratio).fixed(),
-                switch("reverse", "Reverse", false),
-                ParamDesc::float("freeze_at", "Freeze At", 0.0, UNIT, Unit::Ratio).fixed(),
-                switch("freeze", "Freeze", false),
             ],
             ColourDomain::Linear,
             Spatial::PerPixel,
@@ -295,16 +287,7 @@ pub(super) static TYPES: &[EffectType] = &[
             false,
         ),
         tag: "speed_ramp",
-        sample: || BuiltinEffect::SpeedRamp {
-            speed: 1.0,
-            blend_mode: 1,
-            ramp_curve: 0,
-            ramp_start: 0.0,
-            ramp_end: 1.0,
-            reverse: false,
-            freeze_at: 0.0,
-            freeze: false,
-        },
+        sample: || BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 1 },
     },
     EffectType {
         desc: effect(

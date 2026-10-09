@@ -465,11 +465,7 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::VideoStabilization { .. } => BuiltinEffect::VideoStabilization {
             smoothing: 0.5, crop_ratio: 0.05, zoom: true,
         },
-        BuiltinEffect::SpeedRamp { .. } => BuiltinEffect::SpeedRamp {
-            speed: 1.0, blend_mode: 1, ramp_curve: 0,
-            ramp_start: 0.0, ramp_end: 1.0, reverse: false,
-            freeze_at: 0.0, freeze: false,
-        },
+        BuiltinEffect::SpeedRamp { .. } => BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 1 },
         klipp_effects::BuiltinEffect::Vibrance { .. } => {
             klipp_effects::BuiltinEffect::Vibrance { amount: 0.0 }
         },

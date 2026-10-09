@@ -748,18 +748,6 @@ pub enum BuiltinEffect {
         /// issue on retiming; this comment used to claim a mode 2 that
         /// nothing implements and the inspector never offered.
         blend_mode: u32,
-        /// Ramp curve: 0=constant, 1=ease-in, 2=ease-out, 3=ease-in-out, 4=s-curve
-        ramp_curve: u32,
-        /// Ramp start position (0.0–1.0 of clip duration, only used with ramp curves)
-        ramp_start: f32,
-        /// Ramp end position (0.0–1.0 of clip duration)
-        ramp_end: f32,
-        /// Reverse playback
-        reverse: bool,
-        /// Freeze frame at this position (0.0–1.0, only active when freeze=true)
-        freeze_at: f32,
-        /// Enable freeze frame mode
-        freeze: bool,
     },
     /// Third-party frei0r 1.x video plugin. The plugin universe is
     /// open-ended (Kdenlive / Shotcut / OBS / MLT all share frei0r),

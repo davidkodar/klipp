@@ -80,7 +80,6 @@ pub fn clip(p: &ClipPicture, ctx: &LiftCtx) -> Result<Value, Refusal> {
                 if n.enabled {
                     let mut ramp = payload(n)?.clone();
                     ramp["blend_mode"] = json!(1);
-                    ramp["freeze"] = json!(false);
                     fx.push(ramp, true, &BTreeMap::new());
                 }
             }

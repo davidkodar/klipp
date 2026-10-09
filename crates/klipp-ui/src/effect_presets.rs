@@ -281,23 +281,13 @@ impl PresetManager {
 
         // ── Speed Ramp ─────────────────────────────────────────
         self.bi("klipp.fx.speed_ramp", "Slow-Mo 50%", "Half-speed playback",
-            klipp_effects::BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode: 1, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false });
+            klipp_effects::BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode: 1 });
         self.bi("klipp.fx.speed_ramp", "Slow-Mo 25%", "Quarter-speed playback",
-            klipp_effects::BuiltinEffect::SpeedRamp { speed: 0.25, blend_mode: 1, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false });
+            klipp_effects::BuiltinEffect::SpeedRamp { speed: 0.25, blend_mode: 1 });
         self.bi("klipp.fx.speed_ramp", "Speed Up 2x", "Double-speed playback",
-            klipp_effects::BuiltinEffect::SpeedRamp { speed: 2.0, blend_mode: 0, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false });
+            klipp_effects::BuiltinEffect::SpeedRamp { speed: 2.0, blend_mode: 0 });
         self.bi("klipp.fx.speed_ramp", "Speed Up 4x", "Quadruple-speed playback",
-            klipp_effects::BuiltinEffect::SpeedRamp { speed: 4.0, blend_mode: 0, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false });
-        self.bi("klipp.fx.speed_ramp", "Smooth Slow-Mo", "Slow-mo with ease-in-out ramp",
-            klipp_effects::BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode: 1, ramp_curve: 3, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false });
-        self.bi("klipp.fx.speed_ramp", "Speed Ramp In", "Accelerate with ease-in",
-            klipp_effects::BuiltinEffect::SpeedRamp { speed: 2.0, blend_mode: 1, ramp_curve: 1, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false });
-        self.bi("klipp.fx.speed_ramp", "Speed Ramp Out", "Decelerate with ease-out",
-            klipp_effects::BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode: 1, ramp_curve: 2, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false });
-        self.bi("klipp.fx.speed_ramp", "Reverse", "Reverse playback",
-            klipp_effects::BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 0, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: true, freeze_at: 0.0, freeze: false });
-        self.bi("klipp.fx.speed_ramp", "Freeze Frame", "Freeze at midpoint",
-            klipp_effects::BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 0, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.5, freeze: true });
+            klipp_effects::BuiltinEffect::SpeedRamp { speed: 4.0, blend_mode: 0 });
 
         // ── Chroma Key ─────────────────────────────────────────
         // New presets ship with ChannelClamp + 0.6 strength so users
@@ -605,7 +595,7 @@ mod tests {
     fn every_built_in_preset_is_keyed_by_its_type_id() {
         let m = manager(std::path::Path::new("/nonexistent/klipp-presets"));
         let builtins: Vec<_> = m.presets.iter().filter(|p| p.is_builtin).collect();
-        assert_eq!(builtins.len(), 135);
+        assert_eq!(builtins.len(), 130);
         for p in &builtins {
             let id = p.builtin.as_ref().and_then(preset_type_id);
             assert_eq!(Some(p.effect_key.as_str()), id, "{}", p.name);
