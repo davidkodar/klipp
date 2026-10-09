@@ -252,65 +252,9 @@ impl KlippApp {
             let mut keyframe_deleted = false;
             if kb.is_action_pressed("delete_clip", i) {
                 if let Some(sk) = self.state.selected_keyframe.take() {
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == sk.clip_id);
-                    if let Some(clip) = clip {
-                        let kf_time = match &sk.param_kind {
-                            crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id).get(sk.keyframe_index).map(|kf| kf.time_secs),
-                            crate::state::KeyframeParamKind::Audio(param) => {
-                                let kfs = match param {
-                                    klipp_core::AudioParam::Volume => &clip.volume_keyframes,
-                                    klipp_core::AudioParam::Pan => &clip.pan_keyframes,
-                                    klipp_core::AudioParam::Gain => &clip.gain_keyframes,
-                                };
-                                kfs.get(sk.keyframe_index).map(|kf| kf.time_secs)
-                            }
-                            crate::state::KeyframeParamKind::Video(param) => {
-                                let kfs = match param {
-                                    klipp_core::VideoParam::Opacity => clip.opacity_keyframes(),
-                                    klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes(),
-                                    klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes(),
-                                    klipp_core::VideoParam::Scale => clip.transform_scale_keyframes(),
-                                    klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes(),
-                                    klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes(),
-                                    klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes(),
-                                    klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
-                                    klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
-                                };
-                                kfs.get(sk.keyframe_index).map(|kf| kf.time_secs)
-                            }
-                            crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
-                                clip.audio_effect_keyframes
-                                    .get(&format!("{effect_index}:{param_name}"))
-                                    .and_then(|kfs| kfs.get(sk.keyframe_index).map(|kf| kf.time_secs))
-                            }
-                            crate::state::KeyframeParamKind::Node { path, key } => {
-                                clip.node_key_state(path, key).and_then(|s| s.keys.get(sk.keyframe_index).map(|kf| kf.time_secs))
-                            }
-                        };
-                        if let Some(time_secs) = kf_time {
-                            match &sk.param_kind {
-                                crate::state::KeyframeParamKind::Title { object_id, param } => cmds.push(param.remove(sk.clip_id, *object_id, time_secs)),
-                                crate::state::KeyframeParamKind::Audio(param) => {
-                                    cmds.push(AppCommand::RemoveAudioKeyframe { clip_id: sk.clip_id, param: *param, time_secs });
-                                }
-                                crate::state::KeyframeParamKind::Video(param) => {
-                                    cmds.push(AppCommand::RemoveVideoKeyframe { clip_id: sk.clip_id, param: *param, time_secs });
-                                }
-                                crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
-                                    cmds.push(AppCommand::RemoveAudioEffectKeyframe {
-                                        clip_id: sk.clip_id,
-                                        effect_index: *effect_index,
-                                        param_name: param_name.clone(),
-                                        time_secs,
-                                    });
-                                }
-                                crate::state::KeyframeParamKind::Node { path, key } => {
-                                    cmds.push(AppCommand::RemoveKeyAt { addr: path.clone(), key: key.clone(), time_secs });
-                                }
-                            }
-                            keyframe_deleted = true;
-                        }
+                    if let Some(cmd) = remove_selected_keyframe(&self.state, &sk) {
+                        cmds.push(cmd);
+                        keyframe_deleted = true;
                     }
                 }
             }
@@ -1339,4 +1283,67 @@ impl KlippApp {
         });
         held
     }
+}
+
+/// The command that takes the selected keyframe `sk` off its track, as
+/// Delete does: by the time of its key, which the track holds at its
+/// index. `None` when the clip or the key is gone. One place, so the
+/// shortcut and the curve editor's parity apply it alike.
+pub(super) fn remove_selected_keyframe(state: &crate::state::AppState, sk: &crate::state::SelectedKeyframe) -> Option<AppCommand> {
+    let seq = &state.sequences[state.active_sequence_idx];
+    let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == sk.clip_id)?;
+    let kf_time = match &sk.param_kind {
+        crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id).get(sk.keyframe_index).map(|kf| kf.time_secs),
+        crate::state::KeyframeParamKind::Audio(param) => {
+            let kfs = match param {
+                klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+            };
+            kfs.get(sk.keyframe_index).map(|kf| kf.time_secs)
+        }
+        crate::state::KeyframeParamKind::Video(param) => {
+            let kfs = match param {
+                klipp_core::VideoParam::Opacity => clip.opacity_keyframes(),
+                klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes(),
+                klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes(),
+                klipp_core::VideoParam::Scale => clip.transform_scale_keyframes(),
+                klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes(),
+                klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes(),
+                klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes(),
+                klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
+                klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
+            };
+            kfs.get(sk.keyframe_index).map(|kf| kf.time_secs)
+        }
+        crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
+            clip.audio_effect_keyframes
+                .get(&format!("{effect_index}:{param_name}"))
+                .and_then(|kfs| kfs.get(sk.keyframe_index).map(|kf| kf.time_secs))
+        }
+        crate::state::KeyframeParamKind::Node { path, key } => {
+            clip.node_key_state(path, key).and_then(|s| s.keys.get(sk.keyframe_index).map(|kf| kf.time_secs))
+        }
+    };
+    let time_secs = kf_time?;
+    Some(match &sk.param_kind {
+        crate::state::KeyframeParamKind::Title { object_id, param } => param.remove(sk.clip_id, *object_id, time_secs),
+        crate::state::KeyframeParamKind::Audio(param) => {
+            AppCommand::RemoveAudioKeyframe { clip_id: sk.clip_id, param: *param, time_secs }
+        }
+        crate::state::KeyframeParamKind::Video(param) => {
+            AppCommand::RemoveVideoKeyframe { clip_id: sk.clip_id, param: *param, time_secs }
+        }
+        crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
+            AppCommand::RemoveAudioEffectKeyframe {
+                clip_id: sk.clip_id,
+                effect_index: *effect_index,
+                param_name: param_name.clone(),
+                time_secs,
+            }
+        }
+        crate::state::KeyframeParamKind::Node { path, key } => {
+            AppCommand::RemoveKeyAt { addr: path.clone(), key: key.clone(), time_secs }
+        }
+    })
 }

@@ -291,8 +291,9 @@ impl Manifest {
                 variant,
                 interaction,
             );
-            if let Some(reason) =
-                rules::key_exclusion(entry, surface).filter(|_| rules::is_key(interaction))
+            if let Some(reason) = rules::key_exclusion(entry, surface)
+                .filter(|_| rules::is_key(interaction))
+                .or_else(|| rules::navigation_exclusion(surface, interaction))
             {
                 self.exclude_key(key, reason);
             } else {
@@ -739,6 +740,13 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
 mod tests {
     use super::*;
 
+    /// The keys a family can earn: every required key but those excluded
+    /// with a citation, which stay in the manifest for audit and must never
+    /// count as passed.
+    fn earnable(manifest: &Manifest) -> Vec<CoverageKey> {
+        manifest.required.iter().filter(|k| !manifest.excluded_keys.contains_key(*k)).cloned().collect()
+    }
+
     fn key(parameter: &str) -> CoverageKey {
         CoverageKey::new(
             "klipp.fx.gaussian_blur",
@@ -884,7 +892,7 @@ mod tests {
         let mut mislabeled = Report::default();
         mislabeled.case(
             "all labelled new",
-            manifest.required.iter().cloned(),
+            earnable(&manifest),
             || Ok(()),
         );
         assert!(mislabeled
@@ -898,16 +906,12 @@ mod tests {
         let mut report = Report::default();
         report.case(
             "generated",
-            manifest
-                .required
-                .iter()
-                .filter(|key| !fallback(key))
-                .cloned(),
+            earnable(&manifest).iter().filter(|key| !fallback(key)).cloned(),
             || Ok(()),
         );
         report.case_via_fallback(
             "legacy roots",
-            manifest.required.iter().filter(fallback).cloned(),
+            earnable(&manifest).iter().filter(fallback).cloned(),
             "#997: nested/nonclip rows retain their legacy route",
             || Ok(()),
         );
@@ -990,7 +994,7 @@ mod tests {
         let mut report = Report::default();
         report.case_via_fallback(
             "old path",
-            manifest.required.iter().cloned(),
+            earnable(&manifest),
             "#997: legacy fixture still required",
             || Ok(()),
         );
@@ -1014,7 +1018,7 @@ mod tests {
         assert!(errors.contains("#997: legacy fixture still required"));
 
         let mut converted = Report::default();
-        converted.case("new path", manifest.required.iter().cloned(), || Ok(()));
+        converted.case("new path", earnable(&manifest), || Ok(()));
         assert!(converted.complete_for_deletion(&manifest, &[entry]).is_ok());
     }
 
@@ -1070,7 +1074,7 @@ mod tests {
         );
         report.case(
             "assertions completed",
-            manifest.required.iter().cloned(),
+            earnable(&manifest),
             || Ok(()),
         );
         assert!(report.complete(&manifest, &[entry]).is_ok());
@@ -1118,11 +1122,7 @@ mod tests {
         let mut report = Report::default();
         report.case(
             "remaining assertions",
-            manifest
-                .required
-                .iter()
-                .filter(|k| **k != excluded)
-                .cloned(),
+            earnable(&manifest),
             || Ok(()),
         );
         assert!(report
@@ -1153,59 +1153,70 @@ mod tests {
     }
 
     #[test]
-    fn reviewed_key_exclusions_are_narrow_and_leave_curve_editor_keys_required() {
+    fn reviewed_key_exclusions_are_narrow_and_cite_their_decisions() {
         use klipp_effects::registry::presentation::Widget;
         let mut excluded = 0;
         let mut wheel_tracks = 0;
+        let mut effect_tracks = 0;
         for entry in catalog() {
             let mut manifest = Manifest::default();
             manifest.require_fixture(&entry, Surface::GradePerNode, "sample");
             for (key, reason) in &manifest.excluded_keys {
                 assert!(rules::is_key(key.interaction), "non-key exclusion: {key:?}");
-                assert!(
-                    matches!(entry.value, CatalogValue::Parameter { presentation, .. }
-                    if matches!(presentation.widget, Widget::Toggle | Widget::Combo | Widget::WheelPart(_))),
-                    "other widget excluded: {key:?}"
-                );
-                assert!(reason.contains("#1318"));
+                match entry.value {
+                    CatalogValue::Parameter { presentation, .. } if matches!(presentation.widget, Widget::Toggle | Widget::Combo) => {
+                        assert!(reason.contains("#1318"), "{key:?}: {reason}")
+                    }
+                    CatalogValue::Parameter { presentation, .. } if matches!(presentation.widget, Widget::WheelPart(_)) => {
+                        assert!(reason.contains("#891"), "{key:?}: {reason}")
+                    }
+                    _ => panic!("other widget excluded: {key:?}"),
+                }
                 excluded += 1;
             }
             assert!(!manifest
                 .excluded_keys
                 .keys()
                 .any(|k| k.interaction == Interaction::Pixels));
-            if matches!(entry.value, CatalogValue::Parameter { desc, presentation }
-                if desc.keyframable && matches!(presentation.widget, Widget::WheelPart(_)))
-            {
-                let mut curves = Manifest::default();
-                curves.require_fixture(&entry, Surface::CurveEditor, "wheel-track");
-                assert!(curves.excluded_keys.is_empty());
-                for action in [
-                    Interaction::AddKey,
-                    Interaction::EditKey,
-                    Interaction::RemoveKey,
-                ] {
-                    assert!(curves.required.contains(&CoverageKey::new(
-                        entry.type_id,
-                        &entry.parameter,
-                        Surface::CurveEditor,
-                        "wheel-track",
-                        action
-                    )));
-                }
-                assert!(
-                    !curves
-                        .required
-                        .iter()
-                        .any(|k| matches!(k.interaction, Interaction::WheelDrag(_))),
-                    "the curve editor does not draw a wheel"
-                );
-                wheel_tracks += 1;
+            let CatalogValue::Parameter { desc, presentation } = entry.value else { continue };
+            if !desc.keyframable {
+                continue;
             }
+            let mut curves = Manifest::default();
+            curves.require_fixture(&entry, Surface::CurveEditor, "track");
+            let actions = [Interaction::AddKey, Interaction::EditKey, Interaction::RemoveKey];
+            let key = |action| CoverageKey::new(entry.type_id, &entry.parameter, Surface::CurveEditor, "track", action);
+            if entry.grade {
+                // A grade track, a wheel's parts among them: keyed in no
+                // view today (#891), excluded centrally (kept in the
+                // manifest for audit, never earned).
+                for action in actions.into_iter().filter(|a| curves.required.contains(&key(*a))) {
+                    assert!(curves.excluded_keys.get(&key(action)).is_some_and(|r| r.contains("#891")), "{:?}", key(action));
+                }
+                if matches!(presentation.widget, Widget::WheelPart(_)) {
+                    wheel_tracks += 1;
+                }
+            } else {
+                // An effect track: its keys stay required on the curve
+                // editor, but Previous/Next, which follows no curve-editor
+                // track in either view (#1401).
+                for action in actions {
+                    assert!(curves.required.contains(&key(action)), "{:?}", key(action));
+                }
+                for nav in [Interaction::PreviousKey, Interaction::NextKey] {
+                    assert!(curves.excluded_keys.get(&key(nav)).is_some_and(|r| r.contains("#1401")), "{:?}", key(nav));
+                }
+                assert_eq!(curves.excluded_keys.len(), 2, "{:?}", curves.excluded_keys);
+                effect_tracks += 1;
+            }
+            assert!(
+                !curves.required.iter().any(|k| matches!(k.interaction, Interaction::WheelDrag(_))),
+                "the curve editor does not draw a wheel"
+            );
         }
         assert!(
-            excluded > 0 && wheel_tracks > 0,
-            "exercise both actual catalog classes"
+            excluded > 0 && wheel_tracks > 0 && effect_tracks > 0,
+            "exercise every catalog class"
         );
     }
 

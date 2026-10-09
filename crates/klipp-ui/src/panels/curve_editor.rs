@@ -174,6 +174,10 @@ pub struct CurveEditorPanel {
     drag: Option<CurveDrag>,
     /// Auto-fit on first display
     needs_fit: bool,
+    /// The last frame's graph, for a test to find a key on screen: its
+    /// rect and the value range it maps.
+    #[cfg(test)]
+    last_view: Option<(Rect, f32, f32)>,
 }
 
 impl Default for CurveEditorPanel {
@@ -186,6 +190,8 @@ impl Default for CurveEditorPanel {
             selected_clip: None,
             drag: None,
             needs_fit: true,
+            #[cfg(test)]
+            last_view: None,
         }
     }
 }
@@ -336,6 +342,10 @@ impl CurveEditorPanel {
         let clip_id = scope.clip_id();
         let (v_min, v_max, v_default) = self.param.range();
         let v_range = v_max - v_min;
+        #[cfg(test)]
+        {
+            self.last_view = Some((graph_rect, v_min, v_range));
+        }
 
         // Auto-fit on first display
         if self.needs_fit {
@@ -683,6 +693,22 @@ impl CurveEditorPanel {
     }
 
     // ── Coordinate conversions ──
+
+    /// Where the key at `t` seconds and `v` is drawn, as the last frame
+    /// laid the graph out.
+    #[cfg(test)]
+    pub(crate) fn screen_at(&self, t: f64, v: f32) -> Option<egui::Pos2> {
+        let (rect, v_min, v_range) = self.last_view?;
+        Some(pos2(self.time_to_x(t, &rect, 0.0), self.value_to_y(v, &rect, v_min, v_range)))
+    }
+
+    /// Show `param`'s track, as picking it from the header's list does.
+    #[cfg(test)]
+    pub(crate) fn show_track(&mut self, param: CurveParam) {
+        self.param = param;
+        self.drag = None;
+        self.needs_fit = true;
+    }
 
     fn time_to_x(&self, t: f64, graph_rect: &Rect, _clip_duration: f64) -> f32 {
         graph_rect.left() + t as f32 * self.zoom_x - self.scroll.x

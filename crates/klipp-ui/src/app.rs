@@ -68,6 +68,8 @@ mod parity_grade_specialists;
 #[cfg(test)]
 mod parity_grade_workflows;
 #[cfg(test)]
+mod parity_curve_editor;
+#[cfg(test)]
 mod parity_harness;
 #[cfg(test)]
 mod parity_numeric;
