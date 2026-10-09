@@ -135,7 +135,29 @@ pub fn spawn<F>(pick: F)
 where
     F: FnOnce() -> Vec<AppCommand> + Send + 'static,
 {
+    #[cfg(test)]
+    if CANCELLING.with(|c| c.get().map(|n| c.set(Some(n + 1)))).is_some() {
+        // Inside `cancelling`: the picker answers cancelled at once, with
+        // no dialog on screen, and so queues nothing.
+        return;
+    }
     run(None, move || Answer::Commands(pick()));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// While [`cancelling`] runs on this thread: how many pickers it asked for.
+    static CANCELLING: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// `f` with every picker it asks for ([`spawn`]) answering cancelled at
+/// once, no dialog shown: how many it asked for. A test's stand-in for a
+/// person dismissing the dialog, which queues no commands.
+#[cfg(test)]
+pub(crate) fn cancelling(f: impl FnOnce()) -> usize {
+    CANCELLING.with(|c| c.set(Some(0)));
+    f();
+    CANCELLING.with(|c| c.take()).unwrap_or(0)
 }
 
 /// Run `pick` on a worker thread for the widget `id`, which collects the

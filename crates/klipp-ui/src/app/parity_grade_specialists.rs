@@ -107,6 +107,27 @@ pub(super) fn run_lut(report: &mut Report) {
             files.into_iter().next().map(|f| (c.file_name().unwrap().to_string_lossy().to_string(), f))
         })
     });
+    report.case("LUT opened", [key(LUT_ENTRY, Interaction::OpenWithoutWrite)], || {
+        let mut g = lut_node(Some("/nonexistent/klipp-parity/look.cube"))?.twin();
+        opened_writes_nothing(&mut g)
+    });
+    // Browse, its dialog dismissed: a picker asked for, and nothing sent
+    // or written (`file_dialog::cancelling` answers it cancelled).
+    report.case("LUT browse cancelled", [key(LUT_ENTRY, Interaction::FileCancel)], || {
+        let mut g = lut_node(Some("/nonexistent/klipp-parity/look.cube"))?.twin();
+        g.drawn();
+        let before = (g.picture(), g.state.active_history().undo_count());
+        let mut clicked = Ok(());
+        let asked = crate::file_dialog::cancelling(|| clicked = click(&mut g, "Browse\u{2026}"));
+        clicked?;
+        if asked != 1 {
+            return Err(format!("Browse asked for {asked} pickers, not one"));
+        }
+        if (g.picture(), g.state.active_history().undo_count()) != before || !g.unapplied.is_empty() || !g.side.is_empty() {
+            return Err(format!("a dismissed Browse wrote or sent: {:?} {:?}", g.unapplied, g.side));
+        }
+        Ok(())
+    });
     report.case("LUT picked from the bundled looks", [key(LUT_ENTRY, Interaction::FileSelect), key(LUT_ENTRY, Interaction::UndoRedo)], || {
         let (category, file) = first.clone().ok_or("no bundled look to pick")?;
         let name = file.file_stem().unwrap().to_string_lossy().to_string();
@@ -116,6 +137,22 @@ pub(super) fn run_lut(report: &mut Report) {
             click(g, &category)?;
             click(g, &name)
         })
+    });
+    // The look drawn: picking it changes the frame, the CPU's the GPU's,
+    // through the stage the grade is on.
+    report.case_or_blocked("LUT picked, drawn", [key(LUT_ENTRY, Interaction::Pixels)], || {
+        let (category, file) = first.clone().ok_or("no bundled look to pick")?;
+        let name = file.file_stem().unwrap().to_string_lossy().to_string();
+        let start = lut_node(None)?;
+        let mut g = start.twin();
+        g.drawn();
+        click(&mut g, "Bundled")?;
+        click(&mut g, &category)?;
+        click(&mut g, &name)?;
+        if !g.unapplied.is_empty() {
+            return Err(format!("unapplied: {:?}", g.unapplied));
+        }
+        super::parity_pixels::edit_drawn(&start.frame_sequence(), &g.frame_sequence())
     });
     report.case("LUT cleared", [key(LUT_ENTRY, Interaction::FileClear), key(LUT_ENTRY, Interaction::UndoRedo)], || {
         let start = lut_node(Some("/nonexistent/klipp-parity/look.cube"))?;
@@ -204,7 +241,42 @@ fn mask_node(with_one: bool) -> Result<Grade, String> {
     Ok(Grade::new(state, clip, node).on(Page::PerNode))
 }
 
+/// Drawing `g` twice writes nothing: no picture change, no step, nothing
+/// sent.
+fn opened_writes_nothing(g: &mut Grade) -> Result<(), String> {
+    let before = (g.picture(), g.state.active_history().undo_count());
+    g.drawn();
+    g.drawn();
+    if (g.picture(), g.state.active_history().undo_count()) != before || !g.unapplied.is_empty() {
+        return Err(format!("opening wrote: {:?}", g.unapplied));
+    }
+    Ok(())
+}
+
 pub(super) fn run_masks(report: &mut Report) {
+    report.case("mask stack opened", [key(MASK_ENTRY, Interaction::OpenWithoutWrite)], || opened_writes_nothing(&mut mask_node(true)?.twin()));
+    // Escape during a shape slider's drag takes it back: the masks as they
+    // were, no step.
+    report.case("mask drag cancelled", [key(MASK_ENTRY, Interaction::CancelDrag)], || {
+        let mut g = mask_node(true)?.twin();
+        let at = mask_slider(&mut g, "radius")?;
+        let (before, picture) = (masks(&g), g.picture());
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        g.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
+        for dx in [8.0, 16.0, 24.0] {
+            g.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))]);
+        }
+        if masks(&g) == before {
+            return Err("the drag didn't move the radius, so Escape had nothing to take back".into());
+        }
+        g.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        g.frame(vec![button(at + egui::vec2(24.0, 0.0), false)]);
+        g.frame(Vec::new());
+        if !g.unapplied.is_empty() || g.state.active_history().undo_count() != 0 || masks(&g) != before || g.picture() != picture {
+            return Err(format!("Escape didn't take the drag back: {} steps, {:?}", g.state.active_history().undo_count(), g.unapplied));
+        }
+        Ok(())
+    });
     report.case("mask added", [key(MASK_ENTRY, Interaction::AddMask), key(MASK_ENTRY, Interaction::UndoRedo)], || {
         let start = mask_node(false)?;
         mask_case(&start, |before, after| if after.len() == before.len() + 1 && matches!(after.last().map(|m| &m.shape), Some(klipp_core::MaskShape::Circle { .. })) { Ok(()) } else { Err(format!("{after:?}")) }, |g| {
