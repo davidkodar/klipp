@@ -262,22 +262,33 @@ pub fn added_into_memory(n: &mut Node) -> Result<(), String> {
     into_memory(n)
 }
 
-/// The effect node `n` as it is stored: its entry written from its map,
-/// and only the node's own keys left there. The inverse of
-/// [`into_memory`]; a node already stored, or no effect node, is left.
+/// The effect node `n` as a file stores it: its entry written from its
+/// map ([`into_entry`]), and a plug-in's as its own node (`klipp.frei0r`,
+/// `klipp.ofx`: picture revision 4). The inverse of [`into_memory`]; a node
+/// already stored, or no effect node, is left.
 pub fn into_stored(n: &mut Node) -> Result<(), String> {
     if n.type_id.as_str() == types::LEGACY_OFX {
         return ofx::into_stored(n);
     }
+    let was = is_effect(n) && in_memory(n);
+    into_entry(n)?;
+    if was && tag(n) == Some(frei0r::TAG) {
+        let entry = n.legacy.as_ref().map(|l| l.payload.clone()).unwrap_or(Value::Null);
+        return frei0r::into_stored(n, &entry);
+    }
+    Ok(())
+}
+
+/// The effect node `n` with its entry written from its map, and only the
+/// node's own keys left there: the entry a reader of entries (the delift)
+/// reads. A node already so, or no effect node, is left.
+pub fn into_entry(n: &mut Node) -> Result<(), String> {
     if !is_effect(n) || !in_memory(n) {
         return Ok(());
     }
     let tag = tag(n).ok_or_else(|| format!("effect node {} has no type", n.id))?.to_owned();
     let entry = from_params(&tag, &n.params)?;
     n.params.retain(|k, _| !is_field_key(k));
-    if tag == frei0r::TAG {
-        return frei0r::into_stored(n, &entry);
-    }
     if let Some(legacy) = n.legacy.as_mut() {
         legacy.payload = entry;
     }

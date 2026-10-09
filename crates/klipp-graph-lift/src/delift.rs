@@ -195,7 +195,7 @@ pub fn clip(p: &ClipPicture) -> Result<ClipRecordV2, Refusal> {
                 let t = t.to_owned();
                 // An effect's entry written back from its values (M3-2).
                 let mut stored = n.clone();
-                crate::effect_params::into_stored(&mut stored)?;
+                crate::effect_params::into_entry(&mut stored)?;
                 builtins.push((slot(n)?, restore(stored, &t)));
             }
             other => return Err(format!("node {} is a {other}, which the lift does not put in a clip's chain", n.id)),
