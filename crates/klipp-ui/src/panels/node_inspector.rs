@@ -1662,6 +1662,9 @@ impl NodeInspectorPanel {
         }
 
         // ── Noise Reduction section ──
+        // Its rows are the generated ones, from the snapshot the caller set,
+        // as the Corrector's are; the hand-written rows only where there is
+        // none (a nested grade, the #1391 boundary).
         if let Some((nid, enabled)) = find_node(graph, NodeKind::Denoise) {
             let (reset, is_open) = section_header(ui, "NOISE REDUCTION", enabled, theme);
             if is_open {
@@ -1676,27 +1679,33 @@ impl NodeInspectorPanel {
                             c.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_radius".into(), value: 3.0 });
                         });
                     }
-                    let mut luma = node.params.denoise_luma.unwrap_or(0.0);
-                    #[cfg(any(test, feature = "row-recorder"))]
-                    crate::widgets::row_recorder::next_parameter("denoise_luma");
-                    if inspector_row(ui, "Luma", &mut luma, 0.0..=1.0, 0.0, "", theme, cmds, clip_id) {
-                        node.params.denoise_luma = Some(luma);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_luma".into(), value: luma });
+                    if !self.shared_row(ui, nid, "denoise_luma", cmds, theme, frame) {
+                        let mut luma = node.params.denoise_luma.unwrap_or(0.0);
+                        #[cfg(any(test, feature = "row-recorder"))]
+                        crate::widgets::row_recorder::next_parameter("denoise_luma");
+                        if inspector_row(ui, "Luma", &mut luma, 0.0..=1.0, 0.0, "", theme, cmds, clip_id) {
+                            node.params.denoise_luma = Some(luma);
+                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_luma".into(), value: luma });
+                        }
                     }
-                    let mut chroma = node.params.denoise_chroma.unwrap_or(0.0);
-                    #[cfg(any(test, feature = "row-recorder"))]
-                    crate::widgets::row_recorder::next_parameter("denoise_chroma");
-                    if inspector_row(ui, "Chroma", &mut chroma, 0.0..=1.0, 0.0, "", theme, cmds, clip_id) {
-                        node.params.denoise_chroma = Some(chroma);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_chroma".into(), value: chroma });
+                    if !self.shared_row(ui, nid, "denoise_chroma", cmds, theme, frame) {
+                        let mut chroma = node.params.denoise_chroma.unwrap_or(0.0);
+                        #[cfg(any(test, feature = "row-recorder"))]
+                        crate::widgets::row_recorder::next_parameter("denoise_chroma");
+                        if inspector_row(ui, "Chroma", &mut chroma, 0.0..=1.0, 0.0, "", theme, cmds, clip_id) {
+                            node.params.denoise_chroma = Some(chroma);
+                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_chroma".into(), value: chroma });
+                        }
                     }
-                    let mut radius = node.params.denoise_radius.unwrap_or(3) as f32;
-                    #[cfg(any(test, feature = "row-recorder"))]
-                    crate::widgets::row_recorder::next_parameter("denoise_radius");
-                    if inspector_row(ui, "Radius", &mut radius, 1.0..=DENOISE_RADIUS_MAX, 3.0, "px", theme, cmds, clip_id) {
-                        let r = radius.round() as u32;
-                        node.params.denoise_radius = Some(r);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_radius".into(), value: r as f32 });
+                    if !self.shared_row(ui, nid, "denoise_radius", cmds, theme, frame) {
+                        let mut radius = node.params.denoise_radius.unwrap_or(3) as f32;
+                        #[cfg(any(test, feature = "row-recorder"))]
+                        crate::widgets::row_recorder::next_parameter("denoise_radius");
+                        if inspector_row(ui, "Radius", &mut radius, 1.0..=DENOISE_RADIUS_MAX, 3.0, "px", theme, cmds, clip_id) {
+                            let r = radius.round() as u32;
+                            node.params.denoise_radius = Some(r);
+                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_radius".into(), value: r as f32 });
+                        }
                     }
                 }
                 section_divider(ui, theme);
@@ -1720,7 +1729,10 @@ impl NodeInspectorPanel {
             if let Some(idx) = mask_node_idx {
                 let node_id = graph.nodes[idx].id;
                 let masks = graph.nodes[idx].params.masks.get_or_insert_with(Default::default);
-                Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, frame, &[]);
+                // The mask editor the node's own page draws, its tracked
+                // masks marked as there.
+                let tracked = self.tracked_masks.clone();
+                Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, frame, &tracked);
             } else {
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);

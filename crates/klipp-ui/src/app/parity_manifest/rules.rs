@@ -275,8 +275,11 @@ pub(super) fn surfaces(entry: &CatalogEntry) -> Result<BTreeSet<Surface>, String
             }
         }
         // These controls are also reached through tabs, independently of
-        // the selected-node layout: Masks, Noise Reduction and Warper.
-        if matches!(kind, Mask | Denoise | ColorWarper)
+        // the selected-node layout: Noise Reduction's rows (the Adjustments
+        // tab's section) and the Warper. The Adjustments tab's MASKS section
+        // is the Mask node's own editor (`render_masks_body`), owed where
+        // the node's page draws it.
+        if matches!(kind, Denoise | ColorWarper)
             && !matches!(entry.value, CatalogValue::Enabled)
         {
             required.extend([GradeTabbedRight, GradeBottomTools]);
