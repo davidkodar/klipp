@@ -2839,7 +2839,7 @@ impl Renderer {
         // route: never by the kernels, which would make it one frame's.
         let frei0r = klipp_effects::has_frei0r(fx);
         if (!plan && !blended && !frei0r) || fx.is_empty() {
-            return self.effects(fx, pixels, clip_time, width, height);
+            return self.effects_analysed(clip, fx, pixels, clip_time, fps, width, height);
         }
         if !plan && frei0r {
             self.cpu_kernel_run();
@@ -2851,7 +2851,7 @@ impl Renderer {
                 self.plan_misses += 1;
                 self.cpu_fallback(clip);
                 if !blended && !frei0r {
-                    return self.effects(fx, back, clip_time, width, height);
+                    return self.effects_analysed(clip, fx, back, clip_time, fps, width, height);
                 }
                 self.cpu_kernel_run();
                 self.on_cpu_executor(|r| r.run_effects_plan(clip, fx, blends, back, clip_time, fps, width, height)).unwrap_or_else(|back| back)
@@ -3583,6 +3583,39 @@ impl Renderer {
     /// `fx` on `pixels` by the CPU kernels: a clip whose effects can't run
     /// on the GPU (no GPU, an effect with no GPU kernel), or whose plan
     /// couldn't apply them. Every run is counted (#1274).
+    /// [`Self::effects`] for `clip`'s list, its analysis effects given
+    /// their analysis for the frame (M4 step 9): a deflicker's gain and the
+    /// frame's motion, read at the frame's source time from the clip's
+    /// analyses. The kernels take one motion for the list.
+    #[allow(clippy::too_many_arguments)]
+    fn effects_analysed(&mut self, clip: &Clip, fx: &[BuiltinEffect], pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
+        use klipp_nodes::frame_context::{Analysis, AnalysisInputs, NODE_ANALYSIS_SCHEMA};
+        let Some((_, analyses)) = self.clip_analysis.as_ref().filter(|(id, _)| *id == clip.id) else {
+            return self.effects(fx, pixels, clip_time, width, height);
+        };
+        let source_secs = clip.source_secs_at(clip_time, fps);
+        let mut motion = std::mem::take(&mut self.motion);
+        let mut list = fx.to_vec();
+        for effect in &mut list {
+            let Analysis::Ready(blob) = analyses.lookup_effect(NodeId::nil(), effect, NODE_ANALYSIS_SCHEMA) else { continue };
+            let Some(a) = blob.data.downcast_ref::<klipp_effects::node_analysis::NodeAnalysis>() else { continue };
+            let at = a.at(effect, source_secs, height);
+            if let (BuiltinEffect::Deflicker { gain, .. }, Some(g)) = (&mut *effect, at.gain) {
+                *gain = g;
+            }
+            if at.motion.stabilization.is_some() {
+                motion.stabilization = at.motion.stabilization;
+            }
+            if at.motion.rsc_rows.is_some() {
+                motion.rsc_rows = at.motion.rsc_rows;
+            }
+        }
+        let kept = std::mem::replace(&mut self.motion, motion);
+        let out = self.effects(&list, pixels, clip_time, width, height);
+        self.motion = kept;
+        out
+    }
+
     fn effects(&mut self, fx: &[BuiltinEffect], pixels: Vec<f32>, clip_time: f64, width: u32, height: u32) -> Vec<f32> {
         if !has_active_effects(fx) {
             return pixels;
