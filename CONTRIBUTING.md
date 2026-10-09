@@ -238,8 +238,57 @@ scripts/install-hooks.sh     # once, after cloning
 ```
 
 After that every `git push` runs the authorship check, clippy with
-`-D warnings`, a rustdoc pass, and `cargo test --workspace` — about
-75 s warm — and refuses the push on any failure.
+`-D warnings`, a rustdoc pass, and the tests the change can reach (see
+[What each step runs](#what-each-step-runs)), and refuses the push on
+any failure. On a warm build a gate run takes a few minutes, about 7 as
+a typical figure, and up to about 16 when the whole suite runs.
+
+Before you push, run the **pre-gate** in your branch's checkout, with
+everything committed:
+
+```bash
+scripts/pre-gate.sh
+```
+
+It does the cheap checks that catch most gate failures, in your own
+checkout, before the gate spends a run on them:
+
+1. a merge check against the newest `main`, which names any file that
+   conflicts, before anything is built;
+2. `cargo check --all-targets` on every crate the change can affect;
+3. every test target (unit, integration, doc) of the crates the change
+   touches, plus the repository's source scans when an effect or grade
+   crate changed;
+4. clippy and rustdoc with `-D warnings` on those crates;
+5. the scripts' own tests, when `scripts/` changed.
+
+On a pass it stamps the commit's **tree**, and the pre-push hook
+refuses any push whose tree has no stamp:
+
+```
+pre-push: 1a2b3c4d has not passed scripts/pre-gate.sh — push refused.
+```
+
+Because the stamp is the tree, rewording a commit message keeps it; a
+code change, or a rebase that changes the code, needs a new run. Warm,
+it takes ten to twenty minutes, most of it the tests; its log is kept
+in `.git/klipp-pre-gate/logs/`.
+
+Its overrides each take a **reason**, not a flag, and the reason is kept
+in `.git/klipp-pre-gate/skips.log`:
+
+* `KLIPP_SKIP_PRE_GATE="<why>" git push` pushes without a stamp (a
+  documentation-only branch, a mid-bisect push).
+* `KLIPP_PRE_GATE_FORCE="<why>" scripts/pre-gate.sh` starts it although
+  two other cargo jobs are already running on the machine. It refuses
+  to start a third by default, since a third build makes all three slow
+  and can run the machine out of memory.
+* `KLIPP_PRE_GATE_ALLOW_REVERT="<why>" scripts/pre-gate.sh` lets through
+  a branch that puts a file back exactly as it was before a recent
+  `main` commit. That is what a squash onto a moved `origin/main` does
+  by accident, so it is refused unless you say the revert is intended.
+  Squash onto the commit you rebased on:
+  `git reset --soft $(git merge-base HEAD origin/main)`.
 
 Klipp's tests run locally rather than in CI, and this is a deliberate
 choice rather than a gap we have not got round to.
@@ -297,16 +346,25 @@ once the space it holds of its own (not what it shares with the main
 checkout's build) passes `KLIPP_GATE_MAX_GB` (250), checked once a day
 on btrfs.
 
-The tests that run are those of the crates the branch touches, every
-crate built on them, and every crate whose tests use one of those
-(`scripts/affected_crates.py` decides, from cargo's metadata). A change
-to a file the whole workspace shares (`Cargo.lock`, `assets/`,
-`vendor/`, `scripts/`) or to a path it does not know runs the whole
-suite, and documentation alone runs none. clippy and rustdoc always
-cover the whole workspace. The whole suite also runs when it has not
-passed for `KLIPP_GATE_FULL_HOURS` (12) hours, so whatever a narrower
-run misses is caught the same day; `KLIPP_GATE_FULL=1 git push` asks
-for it.
+#### What each step runs
+
+| Step | Tests | clippy and rustdoc |
+|---|---|---|
+| `scripts/pre-gate.sh` | the crates the change **touches**, every target | the touched crates |
+| the gate (`git push`) | the touched crates, every crate built on them, and every crate whose tests use one of those | the whole workspace |
+| the gate, every 12 h, or `KLIPP_GATE_FULL=1 git push` | the whole workspace | the whole workspace |
+
+`scripts/affected_crates.py` works out the affected crates from cargo's
+metadata, for both steps. A change to a file the whole workspace shares
+(`Cargo.lock`, `assets/`, `vendor/`, `scripts/`) or to a path it does
+not know runs the whole suite, and documentation alone runs none. The
+whole suite also runs when it has not passed for
+`KLIPP_GATE_FULL_HOURS` (12) hours, so whatever a narrower run misses
+is caught the same day.
+
+You don't need to run `cargo test --workspace` yourself before a push;
+the gate does what the change can reach. It's still the command for
+checking everything at once.
 
 A build folder's first build (the gate checkout's, or a worktree's built
 in place) does not start from an empty `target/`: it takes a
@@ -374,7 +432,7 @@ scripts/check-signoff.sh main..my-branch
 ```
 
 It is instant, and it runs before clippy so a commit that needs
-amending does not cost you 75 s first.
+amending does not cost you a build first.
 
 If you do not have a GPU, say so in the PR. The maintainer will run the
 full suite locally before merging.
@@ -473,10 +531,12 @@ Before you open a PR:
 0. Every commit is signed off (`git commit -s`), authored under your
    own name and email, with no agent as author, committer or
    co-author.
-1. `cargo c` clean — zero new clippy warnings. The pre-push git hook
-   enforces this: it runs `clippy -D warnings`, a rustdoc pass, and the
-   workspace tests, and blocks the push on any failure.
-2. `cargo test --workspace` green.
+1. `scripts/pre-gate.sh` passed on the commit you push: the pre-push
+   hook refuses a push without its stamp. It runs `clippy -D warnings`,
+   rustdoc and the tests of the crates you touched.
+2. The gate passed on `git push`: clippy and rustdoc over the whole
+   workspace, and the tests the change can reach ([What each step
+   runs](#what-each-step-runs)).
 3. `cargo +nightly check -p klipp-ui` produces no new
    f64→f32-fallback warnings (rust-lang/rust#154024). Run
    `cargo +nightly fix --lib -p klipp-ui` if needed.
