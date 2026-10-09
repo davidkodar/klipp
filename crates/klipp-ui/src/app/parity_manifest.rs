@@ -529,9 +529,10 @@ pub(super) fn bypass_variant() -> &'static str {
     rules::BYPASS_VARIANT
 }
 
-/// The page a grade node's bypass is owed on per type (`rules::surfaces`),
-/// or `None` for an entry the central rules exclude.
-pub(super) fn grade_bypass_page(entry: &CatalogEntry) -> Option<Surface> {
+/// The one page a grade entry is owed on per type (`rules::surfaces`): a
+/// node's bypass, a lean specialist editor; `None` for an entry the
+/// central rules exclude.
+pub(super) fn owed_page(entry: &CatalogEntry) -> Option<Surface> {
     if rules::entry_exclusion(entry).is_some() {
         return None;
     }

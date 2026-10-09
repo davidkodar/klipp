@@ -320,11 +320,13 @@ pub(super) fn require(manifest: &mut Manifest) {
             }
         }
     }
-    let ty = klipp_nodes::registry::node_type(klipp_nodes::NodeKind::Corrector).expect("the Corrector type");
-    for desc in ty.desc.params {
-        if discrete(ty.presentation(desc).widget) && CORRECTOR_TABS.iter().any(|(k, _)| *k == desc.key) {
-            for surface in [Surface::GradeTabbedRight, Surface::GradeBottomTools] {
-                want(ty.desc.id, desc.key, surface, grade_variant(ty, desc));
+    for kind in PAGE_KINDS {
+        let ty = klipp_nodes::registry::node_type(kind).expect("a page type");
+        for desc in ty.desc.params {
+            if discrete(ty.presentation(desc).widget) && CORRECTOR_TABS.iter().any(|(k, _)| *k == desc.key) {
+                for surface in [Surface::GradeTabbedRight, Surface::GradeBottomTools] {
+                    want(ty.desc.id, desc.key, surface, grade_variant(ty, desc));
+                }
             }
         }
     }
@@ -477,6 +479,9 @@ pub(super) struct Grade {
     pub(super) diamonds: Vec<egui::Rect>,
     /// The last frame's small square frames (a checkbox's box).
     pub(super) boxes: Vec<egui::Rect>,
+    /// The last frame's large filled panels, at least 100 points wide and
+    /// 60 tall (a curve editor's canvas).
+    pub(super) canvases: Vec<egui::Rect>,
     /// The playhead moves the view asked for (a row's key carets), in
     /// order, as the app's seek would take them.
     pub(super) seeks: Vec<klipp_core::Timecode>,
@@ -568,7 +573,7 @@ impl Grade {
         // filling the panel, which pushes the rows off it.
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
-        Grade { state, clip, node, ctx, clock: 0.0, panel: Default::default(), unapplied: Vec::new(), side: Vec::new(), page: Page::PerNode, before_input: None, gesture: None, root: GradeRoot::Clip, group: None, home: clip, fresh: None, icons: Vec::new(), diamonds: Vec::new(), boxes: Vec::new(), seeks: Vec::new(), path_writes: Vec::new() }
+        Grade { state, clip, node, ctx, clock: 0.0, panel: Default::default(), unapplied: Vec::new(), side: Vec::new(), page: Page::PerNode, before_input: None, gesture: None, root: GradeRoot::Clip, group: None, home: clip, fresh: None, icons: Vec::new(), diamonds: Vec::new(), boxes: Vec::new(), canvases: Vec::new(), seeks: Vec::new(), path_writes: Vec::new() }
     }
 
     /// The same node in `root` instead (M3 step 19): for a sequence grade,
@@ -705,6 +710,10 @@ impl Grade {
         self.icons = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Rect(r) if r.fill_texture_id != egui::TextureId::default() => Some(r.rect), _ => None }).collect();
         self.boxes = out.shapes.iter().filter_map(|s| match &s.shape {
             egui::Shape::Rect(r) if r.fill_texture_id == egui::TextureId::default() && (10.0..=20.0).contains(&r.rect.width()) && (r.rect.width() - r.rect.height()).abs() < 1.0 => Some(r.rect),
+            _ => None,
+        }).collect();
+        self.canvases = out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Rect(r) if r.fill_texture_id == egui::TextureId::default() && r.fill != egui::Color32::TRANSPARENT && r.rect.width() >= 100.0 && r.rect.height() >= 60.0 => Some(r.rect),
             _ => None,
         }).collect();
         self.diamonds = out.shapes.iter().filter_map(|s| match &s.shape {
@@ -1454,22 +1463,43 @@ fn discrete_cases(report: &mut Report, ty: &klipp_nodes::registry::NodeType, des
 /// page lays them out.
 const CORRECTOR_TABS: &[(&str, crate::state::ColorTab)] = &[("wheels_log_mode", crate::state::ColorTab::Wheels), ("curves_preserve_luma", crate::state::ColorTab::Curves)];
 
-/// The Corrector's switches and menus on the pages that share its rows:
-/// the tabbed page in the right inspector, and the Colour page's bottom
-/// tools. A real Corrector, on its tab, through the generated rows.
+/// The types whose switches and menus the tabbed page and the bottom tools
+/// draw on a tab: the Corrector's, and a Color Wheels' and an RGB Curves'
+/// (the log wheels and preserve-luma switch on their own tabs).
+const PAGE_KINDS: [klipp_nodes::NodeKind; 3] = [klipp_nodes::NodeKind::Corrector, klipp_nodes::NodeKind::ColorWheels, klipp_nodes::NodeKind::RGBCurves];
+
+/// Those switches and menus on the pages that share their rows: the tabbed
+/// page in the right inspector, and the Colour page's bottom tools. A real
+/// node, on its tab, through the generated rows; another type than the
+/// Corrector with the Corrector off, since the pages edit an enabled
+/// Corrector whatever node is selected.
 pub(super) fn run_grade_pages(report: &mut Report) {
-    let ty = klipp_nodes::registry::node_type(klipp_nodes::NodeKind::Corrector).unwrap();
-    let Some((state, clip, node)) = super::grade_inspector_tests::graded(klipp_nodes::NodeKind::Corrector) else {
-        report.case(ty.desc.id, [], || Err("the grade won't take a Corrector".into()));
+    for kind in PAGE_KINDS {
+        run_grade_pages_of(report, kind);
+    }
+}
+
+fn run_grade_pages_of(report: &mut Report, kind: klipp_nodes::NodeKind) {
+    let ty = klipp_nodes::registry::node_type(kind).unwrap();
+    let Some((mut state, clip, node)) = super::grade_inspector_tests::graded(kind) else {
+        report.case(ty.desc.id, [], || Err("the grade won't take one".into()));
         return;
     };
+    if kind != klipp_nodes::NodeKind::Corrector {
+        if let Some(c) = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)) {
+            klipp_timeline::GradeAccess::edit_grade(c, |g| g.nodes.iter_mut().filter(|n| n.kind == klipp_nodes::NodeKind::Corrector).for_each(|n| n.enabled = false));
+        }
+    }
     let base = Grade::new(state, clip, node);
     for desc in ty.desc.params {
         if !matches!(ty.presentation(desc).widget, Widget::Toggle | Widget::Combo) {
             continue;
         }
         let Some(&(_, tab)) = CORRECTOR_TABS.iter().find(|(k, _)| *k == desc.key) else {
-            report.case(&format!("{} {}", ty.desc.id, desc.key), [], || Err("no tab known for it".into()));
+            // Another type's other switches are its per-node page's.
+            if kind == klipp_nodes::NodeKind::Corrector {
+                report.case(&format!("{} {}", ty.desc.id, desc.key), [], || Err("no tab known for it".into()));
+            }
             continue;
         };
         for (page, surface) in [(Page::Tabbed(tab), Surface::GradeTabbedRight), (Page::Bottom(tab), Surface::GradeBottomTools)] {

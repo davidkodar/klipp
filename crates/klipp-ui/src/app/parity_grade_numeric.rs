@@ -290,20 +290,12 @@ pub(super) fn shown_in_frame(start: &Grade, ty: &NodeType, desc: &ParamDesc) -> 
             cmds.push(AppCommand::SetNodeParam { clip_id, node_id: corrector, param: "exposure".into(), value: 1.0 });
         }
     }
+    // A matte image to read a channel of, or invert.
+    if matches!(desc.key, "matte_channel" | "matte_invert") {
+        cmds.push(AppCommand::SetExternalMattePath { clip_id, node_id, path: Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/effect_preview_reference.png")) });
+    }
     for cmd in cmds {
         g.apply(cmd);
-    }
-    // A matte image to read a channel of, or invert: written to the node
-    // straight, since the app sets it in its own colour handler, which
-    // this harness doesn't run (`SetExternalMattePath`).
-    if matches!(desc.key, "matte_channel" | "matte_invert") {
-        let image = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/effect_preview_reference.png");
-        if let Ok(with_image) = super::parity_controls::with_node(&g, |n| {
-            n.params.matte_image_path = Some(image);
-            Ok(())
-        }) {
-            return with_image.twin();
-        }
     }
     g.twin()
 }

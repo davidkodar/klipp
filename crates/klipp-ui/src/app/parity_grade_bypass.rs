@@ -159,12 +159,12 @@ pub(super) fn run(report: &mut Report) {
 /// Every grade type's bypass entry, on the page its node is first drawn on
 /// (`rules::surfaces`): the per-type half of the bypass rule.
 fn entries() -> Vec<super::parity_manifest::CatalogEntry> {
-    catalog().into_iter().filter(|e| e.grade && matches!(e.value, CatalogValue::Enabled) && super::parity_manifest::grade_bypass_page(e).is_some()).collect()
+    catalog().into_iter().filter(|e| e.grade && matches!(e.value, CatalogValue::Enabled) && super::parity_manifest::owed_page(e).is_some()).collect()
 }
 
 pub(super) fn require(manifest: &mut Manifest) {
     for entry in entries() {
-        if let Some(page) = super::parity_manifest::grade_bypass_page(&entry) {
+        if let Some(page) = super::parity_manifest::owed_page(&entry) {
             manifest.require_fixture(&entry, page, "sample");
         }
     }
@@ -191,7 +191,7 @@ fn opened(kind: NodeKind, page: Surface) -> Result<Grade, String> {
 
 pub(super) fn run_opened(report: &mut Report) {
     for entry in entries() {
-        let Some(page) = super::parity_manifest::grade_bypass_page(&entry) else { continue };
+        let Some(page) = super::parity_manifest::owed_page(&entry) else { continue };
         let Some(ty) = klipp_nodes::registry::node_types().find(|t| t.desc.id == entry.type_id) else { continue };
         let key = CoverageKey::new(entry.type_id, &entry.parameter, page, "sample", Interaction::OpenWithoutWrite);
         report.case(&format!("{} opened with its bypass on {page:?}", entry.type_id), [key], || {

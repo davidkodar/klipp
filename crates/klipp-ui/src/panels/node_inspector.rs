@@ -3086,15 +3086,10 @@ impl NodeInspectorPanel {
         ui.horizontal(|ui| {
             ui.add_space(8.0);
             if ui.button("Choose image…").clicked() {
-                crate::file_dialog::spawn(move || {
-                    rfd::FileDialog::new()
-                        .add_filter("Image", &["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"])
-                        .pick_file()
-                        .map(|path| vec![AppCommand::SetExternalMattePath {
-                            clip_id, node_id, path: Some(path),
-                        }])
-                        .unwrap_or_default()
-                });
+                crate::file_dialog::spawn_pick(
+                    || rfd::FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"]).pick_file(),
+                    move |path| vec![AppCommand::SetExternalMattePath { clip_id, node_id, path: Some(path) }],
+                );
             }
             if params.matte_image_path.is_some()
                 && ui.button("Clear").clicked()
@@ -3200,15 +3195,10 @@ impl NodeInspectorPanel {
         ui.horizontal(|ui| {
             ui.add_space(8.0);
             if ui.button("Choose plate…").clicked() {
-                crate::file_dialog::spawn(move || {
-                    rfd::FileDialog::new()
-                        .add_filter("Image", &["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"])
-                        .pick_file()
-                        .map(|path| vec![AppCommand::SetNodeDifferenceKeyPlate {
-                            clip_id, node_id, plate_path: Some(path),
-                        }])
-                        .unwrap_or_default()
-                });
+                crate::file_dialog::spawn_pick(
+                    || rfd::FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"]).pick_file(),
+                    move |path| vec![AppCommand::SetNodeDifferenceKeyPlate { clip_id, node_id, plate_path: Some(path) }],
+                );
             }
             if dk.plate_path.is_some() && ui.button("Clear").clicked() {
                 dk.plate_path = None;
@@ -3962,14 +3952,10 @@ pub(crate) fn lut_picker(ui: &mut egui::Ui, params: &NodeParams, node_id: NodeId
     // bundled looks; Clear takes it off.
     ui.horizontal(|ui| {
         if ui.button("Browse\u{2026}").on_hover_text("Load a .cube, .3dl or .csp file into this node").clicked() {
-            crate::file_dialog::spawn(move || {
-                rfd::FileDialog::new()
-                    .set_title("LUT for this node")
-                    .add_filter("LUT files", &["cube", "3dl", "csp"])
-                    .pick_file()
-                    .map(|path| vec![AppCommand::SetNodeLut { clip_id, node_id, path: Some(path) }])
-                    .unwrap_or_default()
-            });
+            crate::file_dialog::spawn_pick(
+                || rfd::FileDialog::new().set_title("LUT for this node").add_filter("LUT files", &["cube", "3dl", "csp"]).pick_file(),
+                move |path| vec![AppCommand::SetNodeLut { clip_id, node_id, path: Some(path) }],
+            );
         }
         if let Some(dir) = klipp_core::assets::bundled_luts_dir() {
             ui.menu_button("Bundled", |ui| {

@@ -94,6 +94,8 @@ mod parity_flip;
 #[cfg(test)]
 mod parity_grade_bypass;
 #[cfg(test)]
+mod parity_grade_editors;
+#[cfg(test)]
 mod parity_grade_keys;
 #[cfg(test)]
 mod parity_grade_numeric;

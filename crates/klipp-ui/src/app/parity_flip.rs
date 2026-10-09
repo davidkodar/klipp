@@ -32,6 +32,7 @@ fn manifest() -> Manifest {
     super::parity_grade_workflows::require(&mut m);
     super::parity_grade_wheels::require(&mut m);
     super::parity_grade_bypass::require(&mut m);
+    super::parity_grade_editors::require(&mut m);
     m.require_representatives();
     m
 }
@@ -69,6 +70,7 @@ fn run_all(report: &mut Report) {
     report.family("grade bypass", super::parity_grade_bypass::run);
     report.family("grade bypass on the sequence's grades", |r| on_roots(r, super::parity_grade_bypass::run));
     report.family("grade bypass opened", super::parity_grade_bypass::run_opened);
+    report.family("grade editors", super::parity_grade_editors::run);
     report.family("grade keys", super::parity_grade_keys::run);
     report.family("grade keys on the sequence's grades", |r| on_roots(r, super::parity_grade_keys::run));
     report.family("grade wheels on the sequence's grades", |r| on_roots(r, super::parity_grade_wheels::run));
@@ -183,6 +185,7 @@ fn every_parity_family_is_in_the_flip() {
         ("parity_grade_wheels", include_str!("parity_grade_wheels.rs")),
         ("parity_grade_keys", include_str!("parity_grade_keys.rs")),
         ("parity_grade_bypass", include_str!("parity_grade_bypass.rs")),
+        ("parity_grade_editors", include_str!("parity_grade_editors.rs")),
         ("parity_pixels", include_str!("parity_pixels.rs")),
         ("parity_harness", include_str!("parity_harness.rs")),
     ];

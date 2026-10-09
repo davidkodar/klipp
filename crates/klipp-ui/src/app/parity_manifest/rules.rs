@@ -242,6 +242,11 @@ pub(super) fn surfaces(entry: &CatalogEntry) -> Result<BTreeSet<Surface>, String
             .find(|t| t.desc.id == entry.type_id)
             .ok_or_else(|| format!("{}: unclassified grade surfaces", entry.type_id))?
             .kind;
+        // A lean specialist editor, owed once where its node is first drawn.
+        if matches!(&entry.value, CatalogValue::Parameter { presentation, .. } if matches!(presentation.widget, Widget::Custom(id) if LEAN_EDITORS.contains(&id))) {
+            let page = if crate::app::main_layout::per_node_kind(kind) { GradePerNode } else { GradeTabbedRight };
+            return Ok(BTreeSet::from([page]));
+        }
         // A node's bypass is one switch on every page (`BYPASS_REPRESENTATIVE`):
         // per type, owed where its node is first drawn.
         if matches!(entry.value, CatalogValue::Enabled) {
@@ -341,6 +346,11 @@ pub(super) fn key_exclusion(entry: &CatalogEntry, surface: Surface) -> Option<&'
         _ => None,
     }
 }
+
+/// The specialist editors owed once, on the page their node is first drawn
+/// on (`specialist`): the same editor on another page or a sequence grade
+/// is the same widget writing the same command.
+pub(super) const LEAN_EDITORS: [&str; 6] = ["curves", "huesat_curves", "camera_encoding", "layer_mixer_inputs", "plate_file", "matte_file"];
 
 /// A Wheel Sat/Bri node's saturation or brightness cell.
 fn sat_bri_cell(entry: &CatalogEntry) -> bool {
@@ -520,10 +530,10 @@ pub(super) fn interactions(
         CatalogValue::Workflow(id) => required.extend(specialist(id)?),
     }
     // A sampling tool's frame (white balance, the qualifier's picker,
-    // Colour Match) and the mask stack's on a sequence grade are drawn
-    // through the stage the representative row's frame is (`ROOT_NUMERIC`'s
-    // Pixels): owed on the clip's grade, not again on every root.
-    let specialist = matches!(entry.value, CatalogValue::Workflow(_)) || matches!(&entry.value, CatalogValue::Parameter { presentation, .. } if presentation.widget == Widget::Custom("mask_stack"));
+    // Colour Match) on a sequence grade is drawn through the stage the
+    // representative row's frame is (`ROOT_NUMERIC`'s Pixels): owed on the
+    // clip's grade, not again on every root.
+    let specialist = matches!(entry.value, CatalogValue::Workflow(_));
     if surface == Surface::NonClipGrade && specialist {
         required.remove(&Pixels);
     }
@@ -533,25 +543,15 @@ pub(super) fn interactions(
 fn specialist(id: &str) -> Result<Vec<Interaction>, String> {
     use Interaction::*;
     Ok(match id {
-        "curves" => vec![
-            CurvePoint(CurveAction::Add),
-            CurvePoint(CurveAction::Drag),
-            CurvePoint(CurveAction::Remove),
-            CancelDrag,
-            Reset,
-            UndoRedo,
-            Pixels,
-        ],
-        "huesat_curves" => vec![
-            CurvePoint(CurveAction::Add),
-            CurvePoint(CurveAction::Drag),
-            CurvePoint(CurveAction::Remove),
-            CancelDrag,
-            Reset,
-            Eyedropper,
-            UndoRedo,
-            Pixels,
-        ],
+        // A specialist editor owes what shows it does the right thing
+        // (flip readiness ruling, 10-09): one real edit through the drawn
+        // widget storing what it must, one undo step undone exactly, its
+        // cancel where it has one, and its frame, on the page it's drawn
+        // on ([`LEAN_EDITORS`]). A curve's other point edits and its reset
+        // write the same curve through the same command as the edit does.
+        "curves" => vec![CurvePoint(CurveAction::Add), CancelDrag, UndoRedo, Pixels],
+        // The eyedropper is a request the app runs on the viewer's frame.
+        "huesat_curves" => vec![CurvePoint(CurveAction::Add), CancelDrag, Eyedropper, UndoRedo, Pixels],
         "colour_warper" => vec![Drag, CancelDrag, Reset, UndoRedo, Pixels],
         "frei0r_plugin" => vec![
             PluginSelect,
@@ -560,7 +560,10 @@ fn specialist(id: &str) -> Result<Vec<Interaction>, String> {
             UndoRedo,
             Pixels,
         ],
-        "lut_file" | "matte_file" => vec![
+        // An image picked, cleared, or the picker cancelled; a missing file
+        // is the LUT's case, which reads it the same way.
+        "matte_file" | "plate_file" => vec![FileSelect, FileClear, FileCancel, UndoRedo, Pixels],
+        "lut_file" => vec![
             FileSelect,
             FileClear,
             FileCancel,
@@ -568,18 +571,18 @@ fn specialist(id: &str) -> Result<Vec<Interaction>, String> {
             UndoRedo,
             Pixels,
         ],
-        "plate_file" => vec![
-            FileSelect,
-            FileClear,
-            FileCancel,
-            MissingAsset,
-            CapturePlate,
-            UndoRedo,
-            Pixels,
-        ],
-        "camera_encoding" => vec![SelectEncoding, UndoRedo, Pixels],
+        // The file's encoding converts its frames as they're decoded; the
+        // Input Transform node passes its input on, so no frame the grade
+        // draws shows the pick. Its frame is owed by the decode tests:
+        // klipp-color's `camera_log_parity`
+        // (`every_camera_log_curve_matches_its_reference_at_every_code`,
+        // `the_decoder_uses_the_same_curve_clamped_at_zero`) and
+        // klipp-compose's `golden_corpus` case "scene/S-Log3 graded with glow".
+        "camera_encoding" => vec![SelectEncoding, UndoRedo],
         "mask_stack" => vec![AddMask, EditMask, RemoveMask, CancelDrag, UndoRedo, Pixels],
-        "layer_mixer_inputs" => vec![AddLayer, EditLayer, RemoveLayer, UndoRedo, Pixels],
+        // The inspector edits an input's settings; inputs are added and
+        // removed by wiring the node on the canvas.
+        "layer_mixer_inputs" => vec![EditLayer, UndoRedo, Pixels],
         "compound_body" => vec![
             AddNode,
             RemoveNode,
@@ -596,18 +599,21 @@ fn specialist(id: &str) -> Result<Vec<Interaction>, String> {
             UndoRedo,
             Pixels,
         ],
+        // A sampling tool asks the app to measure the viewer's frame and
+        // writes what it measured into rows whose own frames are owed (the
+        // balance's temperature and tint, the qualifier's ranges, Colour
+        // Match's readouts): its frame is theirs, not owed again here.
         "white_balance" => vec![
             AutoWhiteBalance,
             Eyedropper,
             ResultDuringDrag,
             UndoRedo,
-            Pixels,
         ],
-        "qualifier_picker" => vec![Eyedropper, ResultDuringDrag, UndoRedo, Pixels],
+        "qualifier_picker" => vec![Eyedropper, ResultDuringDrag, UndoRedo],
         // A match landing while a grade slider's drag is held, as the
         // balance and the qualifier's key can (a socket write, a missed
         // release): the drag its own step first.
-        "colour_match" => vec![CaptureReference, ColourMatch, Reset, ResultDuringDrag, UndoRedo, Pixels],
+        "colour_match" => vec![CaptureReference, ColourMatch, Reset, ResultDuringDrag, UndoRedo],
         // These adapters add notices or nothing; parameter rows carry the edits.
         "temporal_denoise" | "speed_ramp" | "focus_blur" | "color_fade" | "corner_pin" => vec![],
         _ => return Err(format!("unclassified specialist: {id:?}")),
