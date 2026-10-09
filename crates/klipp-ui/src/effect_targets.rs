@@ -65,20 +65,27 @@ pub fn drop_reselects(primary: Option<ClipId>, selected: &[ClipId], dropped_on: 
 }
 
 /// The commands for `targets`, `make` giving each clip's, as one undo
-/// step when there is more than one clip.
-pub fn commands(targets: &Targets, mut make: impl FnMut(ClipId) -> Vec<AppCommand>) -> Vec<AppCommand> {
-    let many = targets.clips.len() > 1;
-    let mut out = Vec::new();
-    if many {
-        out.push(AppCommand::BeginHistoryBatch);
-    }
-    for id in &targets.clips {
-        out.extend(make(*id));
-    }
-    if many {
+/// step when there is more than one command (several clips, or a look's
+/// several effects on one).
+pub fn commands(targets: &Targets, make: impl FnMut(ClipId) -> Vec<AppCommand>) -> Vec<AppCommand> {
+    let mut out: Vec<AppCommand> = targets.clips.iter().copied().flat_map(make).collect();
+    if out.len() > 1 {
+        out.insert(0, AppCommand::BeginHistoryBatch);
         out.push(AppCommand::EndHistoryBatch);
     }
     out
+}
+
+/// As [`commands`], each clip's from `make`, all of them or none: the
+/// first clip that can't take the effect refuses the whole add, naming
+/// the clip's reason, so a drop on several clips never lands on some.
+pub fn all_or_none(targets: &Targets, mut make: impl FnMut(ClipId) -> Result<Vec<AppCommand>, String>) -> Result<Vec<AppCommand>, String> {
+    let mut each = Vec::with_capacity(targets.clips.len());
+    for id in &targets.clips {
+        each.push(make(*id)?);
+    }
+    let mut each = each.into_iter();
+    Ok(commands(targets, |_| each.next().unwrap_or_default()))
 }
 
 /// What the toast says: where `name` went, and what it skipped.
@@ -168,5 +175,21 @@ mod tests {
         assert_eq!(commands(&one, |c| vec![AppCommand::SelectClip(Some(c))]).len(), 1, "one clip needs no batch");
         assert!(said("Vignette", &t).contains("2 clips"));
         assert!(said("Vignette", &Targets { clips: vec![v(0)], skipped: 2 }).contains("2 selected clips could not take it"));
+    }
+
+    /// One clip's several commands (a look's chain) are one step too; and
+    /// a clip that can't take the effect refuses the whole add, so none
+    /// of the others get it.
+    #[test]
+    fn several_commands_are_one_step_and_a_refusal_refuses_all() {
+        let seq = timeline();
+        let v = |i: usize| seq.tracks[0].clips[i].id;
+        let one = targets(&seq, Some(v(0)), &[], None, EffectKind::Picture);
+        let cmds = all_or_none(&one, |c| Ok(vec![AppCommand::SelectClip(Some(c)), AppCommand::SelectClip(None)])).unwrap();
+        assert!(matches!(cmds.first(), Some(AppCommand::BeginHistoryBatch)) && matches!(cmds.last(), Some(AppCommand::EndHistoryBatch)));
+        assert_eq!(cmds.len(), 4);
+        let two = targets(&seq, Some(v(0)), &[v(0), v(1)], None, EffectKind::Picture);
+        let refused = all_or_none(&two, |c| if c == v(1) { Err("its stack can't be read".to_string()) } else { Ok(vec![AppCommand::SelectClip(Some(c))]) });
+        assert_eq!(refused.unwrap_err(), "its stack can't be read");
     }
 }

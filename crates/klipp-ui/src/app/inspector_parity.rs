@@ -295,31 +295,37 @@ fn a_preset_picked_from_the_card_is_the_same_through_both_views() {
     assert_eq!(compared, 135, "every built-in preset compared");
 }
 
-/// M3 step 14: every built-in entry of the effects browser is a catalog
-/// type, and adding it behind the switch (by path, after the clip's stack)
-/// leaves the clip the same effects, in the same order and with the same
-/// values (the entry's own, not the catalog's sample), as adding it to the
-/// effect list does.
+/// M3 steps 14 and 19: every built-in entry of the effects browser is a
+/// catalog type, and every built-in effect and every look it offers, added through
+/// the browser's own producer (`effect_commands_in`, as its double click
+/// and a drop send it) in each view, leaves the clip the same effects, in
+/// the same order and with the same values (the entry's own, not the
+/// catalog's sample), as adding them to the effect list does; behind the
+/// switch by path, a look's chain as one undo step, undone exactly.
 #[test]
 fn a_browser_add_is_the_same_by_path() {
+    use crate::browser::effect_registry::EffectSource;
     let registry = crate::browser::effect_registry::EffectRegistry::new();
     let mut differ = Vec::new();
-    let mut compared = 0;
+    let (mut compared, mut looks) = (0, 0);
     for entry in &registry.effects {
-        let crate::browser::effect_registry::EffectSource::Builtin(effect) = &entry.source else { continue };
-        if entry.type_id().is_none() {
+        if !matches!(entry.source, EffectSource::Builtin(_) | EffectSource::Look(_)) {
+            continue;
+        }
+        if matches!(entry.source, EffectSource::Builtin(_)) && entry.type_id().is_none() {
             differ.push(format!("{}: no catalog type", entry.name));
             continue;
         }
         let clip = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
         let (mut old, mut new) = (Run::new(clip.clone(), false), Run::new(clip, true));
-        let id = old.clip;
-        old.apply(AppCommand::AddBuiltinEffect { clip_id: id, effect: effect.clone() });
-        let Some(by_path) = crate::inspector::stack_view::add_effect_command(&new.state, new.clip(), effect) else {
-            differ.push(format!("{}: no add by path", entry.name));
-            continue;
-        };
-        new.apply(by_path);
+        let targets = crate::effect_targets::Targets { clips: vec![old.clip], skipped: 0 };
+        let before = new.clip().picture_v2().unwrap();
+        for run in [&mut old, &mut new] {
+            match crate::effect_targets::all_or_none(&targets, |id| crate::browser::effects_tab::effect_commands_in(&run.state, &entry.source, id)) {
+                Ok(cmds) => cmds.into_iter().for_each(|cmd| run.apply(cmd)),
+                Err(why) => differ.push(format!("{}: refused ({why})", entry.name)),
+            }
+        }
         let list = |r: &Run| serde_json::to_value(r.clip().builtin_effects()).unwrap();
         if list(&old) != list(&new) {
             differ.push(format!("{}: old {}, new {}", entry.name, list(&old), list(&new)));
@@ -327,12 +333,72 @@ fn a_browser_add_is_the_same_by_path() {
         if !old.unapplied.is_empty() || !new.unapplied.is_empty() {
             differ.push(format!("{}: unapplied old {:?}, new {:?}", entry.name, old.unapplied, new.unapplied));
         }
+        if new.state.active_history().undo_count() != 1 {
+            differ.push(format!("{}: {} undo steps", entry.name, new.state.active_history().undo_count()));
+        } else if !new.step(false) || new.clip().picture_v2().unwrap() != before {
+            differ.push(format!("{}: undo isn't exact", entry.name));
+        }
         compared += 1;
+        looks += usize::from(matches!(entry.source, EffectSource::Look(_)));
     }
-    assert!(differ.is_empty(), "{} differences in {compared} entries:\n{}", differ.len(), differ.join("\n"));
+    assert!(differ.is_empty(), "browser adds differ:\n{}", differ.join("\n"));
     assert!(compared > 40, "only {compared} entries compared");
+    assert!(looks > 0, "no look compared");
 }
 
+
+/// Behind the switch a browser add the clip can't take is refused with
+/// its reason, never sent as the old index add instead (M3 step 19).
+#[test]
+fn a_browser_add_the_clip_cant_take_is_refused() {
+    let run = Run::new(fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 }), true);
+    let source = crate::browser::effect_registry::EffectSource::Builtin(BuiltinEffect::Sharpen { amount: 0.5 });
+    let refused = crate::browser::effects_tab::effect_commands_in(&run.state, &source, klipp_core::ClipId::new());
+    assert_eq!(refused.unwrap_err(), "the clip isn't in the sequence");
+    let mut old = Run::new(fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 }), false);
+    old.state.use_generated_stack = false;
+    let cmds = crate::browser::effects_tab::effect_commands_in(&old.state, &source, old.clip).unwrap();
+    assert!(matches!(cmds.as_slice(), [AppCommand::AddBuiltinEffect { .. }]), "without the switch, the list add: {cmds:?}");
+}
+
+/// A look put on two selected clips behind the switch, as a drop or the
+/// browser's double click sends it (`effect_targets::all_or_none` over
+/// `effect_commands_in`): its whole chain by path on both, one undo step,
+/// undone exactly on both.
+#[test]
+fn a_look_on_two_clips_is_one_step_by_path() {
+    use crate::browser::effect_registry::EffectSource;
+    let registry = crate::browser::effect_registry::EffectRegistry::new();
+    let (name, chain) = registry.effects.iter().find_map(|e| match &e.source {
+        EffectSource::Look(chain) if chain.len() > 1 && chain.iter().all(|fx| !crate::inspector::stack_view::is_placed_kind(serde_json::to_value(fx).unwrap()["type"].as_str().unwrap())) => Some((e.name.clone(), e.source.clone())),
+        _ => None,
+    }).expect("a look of several effects");
+    let EffectSource::Look(effects) = &chain else { unreachable!() };
+    let mut run = Run::new(fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 }), true);
+    let mut second = run.clip().clone();
+    second.id = klipp_core::ClipId::new();
+    let other = second.id;
+    let v1 = run.state.sequences[0].tracks.iter().position(|t| t.clips.iter().any(|c| c.id == run.clip)).unwrap();
+    run.state.sequences[0].tracks[v1].clips.push(second);
+    let ids = [run.clip, other];
+    let targets = crate::effect_targets::Targets { clips: ids.to_vec(), skipped: 0 };
+    let pictures = |r: &Run| ids.map(|id| r.state.sequences[0].all_clips().find(|c| c.id == id).unwrap().picture_v2().unwrap());
+    let lists = |r: &Run| ids.map(|id| r.state.sequences[0].all_clips().find(|c| c.id == id).unwrap().builtin_effects().to_vec());
+    let before = pictures(&run);
+    let cmds = crate::effect_targets::all_or_none(&targets, |id| crate::browser::effects_tab::effect_commands_in(&run.state, &chain, id)).unwrap();
+    assert!(cmds.iter().all(|c| matches!(c, AppCommand::AddNodeAt { .. } | AppCommand::BeginHistoryBatch | AppCommand::EndHistoryBatch)), "{name}: by path: {cmds:?}");
+    for cmd in cmds {
+        run.apply(cmd);
+    }
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+    let want: Vec<BuiltinEffect> = std::iter::once(BuiltinEffect::GaussianBlur { radius: 3.0 }).chain(effects.iter().cloned()).collect();
+    for list in lists(&run) {
+        assert_eq!(serde_json::to_value(&list).unwrap(), serde_json::to_value(&want).unwrap(), "{name}: the whole chain, in order, on each clip");
+    }
+    assert_eq!(run.state.active_history().undo_count(), 1, "{name}: one step");
+    assert!(run.step(false));
+    assert!(pictures(&run) == before, "{name}: undone on both");
+}
 
 /// Start a real drag on the header's Mix: its label, a number row's
 /// scrubbing handle, pressed and dragged left (from full, its top).

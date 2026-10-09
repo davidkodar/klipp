@@ -555,8 +555,13 @@ pub fn show(
                                 } else {
                                     push_recent(recent_effects, &fx.name);
                                     let source = fx.source.clone();
-                                    cmds.extend(crate::effect_targets::commands(&targets, |clip_id| effect_commands_in(state, &source, clip_id)));
-                                    state.toast.show(crate::effect_targets::said(&fx.name, &targets));
+                                    match crate::effect_targets::all_or_none(&targets, |clip_id| effect_commands_in(state, &source, clip_id)) {
+                                        Ok(adds) => {
+                                            cmds.extend(adds);
+                                            state.toast.show(crate::effect_targets::said(&fx.name, &targets));
+                                        }
+                                        Err(why) => state.toast.show(format!("\"{}\" wasn't applied: {why}", fx.name)),
+                                    }
                                 }
                             }
 
@@ -1941,34 +1946,43 @@ fn paint_effect_preview(
     }
 }
 
-/// The commands that put `source` on `clip_id`, as [`effect_commands`];
-/// behind the switch a built-in effect is added by path, after the clip's
-/// stack (M3 step 14), with the entry's own values.
-pub(crate) fn effect_commands_in(state: &AppState, source: &EffectSource, clip_id: klipp_core::ClipId) -> Vec<AppCommand> {
-    if let (true, EffectSource::Builtin(effect)) = (state.use_generated_stack, source) {
-        let clip = state.sequence().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id);
-        if let Some(cmd) = clip.and_then(|c| crate::inspector::stack_view::add_effect_command(state, c, effect)) {
-            return vec![cmd];
+/// The picture effects `source` puts on a clip, with their own values: a
+/// built-in effect, a look's chain, a frei0r plugin at its declared
+/// defaults. `None` for a plug-in or sound effect, added by its type.
+pub(crate) fn picture_effects(source: &EffectSource) -> Option<Vec<klipp_effects::BuiltinEffect>> {
+    match source {
+        EffectSource::Builtin(effect) => Some(vec![effect.clone()]),
+        EffectSource::Look(effects) => Some(effects.clone()),
+        EffectSource::Frei0r(plugin) => {
+            let params: Vec<klipp_frei0r::Frei0rValue> = plugin.params.iter().map(|p| klipp_frei0r::Frei0rValue::default_for(p.kind)).collect();
+            Some(vec![klipp_effects::BuiltinEffect::Frei0r { type_id: plugin.type_id(), params }])
         }
+        _ => None,
     }
-    effect_commands(source, clip_id)
+}
+
+/// The commands that put `source` on `clip_id`, as [`effect_commands`];
+/// behind the switch its picture effects are added by path, after the
+/// clip's stack (M3 steps 14 and 19), or refused with the clip's reason:
+/// never the old index add instead.
+pub(crate) fn effect_commands_in(state: &AppState, source: &EffectSource, clip_id: klipp_core::ClipId) -> Result<Vec<AppCommand>, String> {
+    match picture_effects(source).filter(|_| state.use_generated_stack) {
+        Some(effects) => {
+            let clip = state.sequence().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id).ok_or("the clip isn't in the sequence")?;
+            crate::inspector::stack_view::add_effects_command(state, clip, &effects)
+        }
+        None => Ok(effect_commands(source, clip_id)),
+    }
 }
 
 /// The commands that put `source` on `clip_id`: a look's every effect, a
 /// frei0r plugin with its declared defaults, an audio plugin by its type.
 fn effect_commands(source: &EffectSource, clip_id: klipp_core::ClipId) -> Vec<AppCommand> {
     match source {
-        EffectSource::Builtin(effect) => vec![AppCommand::AddBuiltinEffect { clip_id, effect: effect.clone() }],
-        EffectSource::Look(effects) => effects.iter().map(|effect| AppCommand::AddBuiltinEffect { clip_id, effect: effect.clone() }).collect(),
+        EffectSource::Builtin(_) | EffectSource::Look(_) | EffectSource::Frei0r(_) => picture_effects(source).unwrap_or_default().into_iter().map(|effect| AppCommand::AddBuiltinEffect { clip_id, effect }).collect(),
         EffectSource::Ofx(plugin_name) => vec![AppCommand::AddEffect { clip_id, plugin_name: plugin_name.clone() }],
         EffectSource::Audio(type_id) => vec![AppCommand::AddAudioEffect { clip_id, effect_type: type_id.clone() }],
         EffectSource::Ladspa(plugin) => vec![AppCommand::AddAudioEffect { clip_id, effect_type: format!("ladspa:{}:{}", plugin.path.display(), plugin.label) }],
-        EffectSource::Frei0r(plugin) => {
-            // Its declared defaults, so the inspector has something
-            // sensible to show at once.
-            let params: Vec<klipp_frei0r::Frei0rValue> = plugin.params.iter().map(|p| klipp_frei0r::Frei0rValue::default_for(p.kind)).collect();
-            vec![AppCommand::AddBuiltinEffect { clip_id, effect: klipp_effects::BuiltinEffect::Frei0r { type_id: plugin.type_id(), params } }]
-        }
         // LV2 and CLAP ride the same audio pipeline as LADSPA.
         EffectSource::Lv2(plugin) => vec![AppCommand::AddAudioEffect { clip_id, effect_type: plugin.type_id() }],
         EffectSource::Clap(plugin) => vec![AppCommand::AddAudioEffect { clip_id, effect_type: plugin.type_id() }],

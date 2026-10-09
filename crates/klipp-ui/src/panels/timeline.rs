@@ -3065,58 +3065,29 @@ impl TimelinePanel {
                                     cmds.push(AppCommand::SelectClip(Some(clip_id)));
                                 }
                                 if is_builtin {
-                                    // Two paths: pure built-in effects clone
-                                    // out of the registry's prototype; frei0r
-                                    // plugins (also marked is_builtin so they
-                                    // land in `clip.builtin_effects()`) need a
-                                    // fresh `BuiltinEffect::Frei0r { type_id,
-                                    // params }` constructed against the
-                                    // plugin's default param values. The drag
-                                    // payload's `plugin_id` carries the
-                                    // type_id for the frei0r case.
-                                    let effects: Vec<klipp_effects::BuiltinEffect> = state
-                                        .effect_registry
-                                        .effects
-                                        .iter()
-                                        .find(|e| e.name == name)
-                                        .and_then(|e| match &e.source {
-                                            crate::browser::effect_registry::EffectSource::Builtin(eff) => {
-                                                Some(vec![eff.clone()])
-                                            }
-                                            // A Look is a chain: every
-                                            // effect lands on the clip as
-                                            // its own inspector row.
-                                            crate::browser::effect_registry::EffectSource::Look(chain) => {
-                                                Some(chain.clone())
-                                            }
-                                            crate::browser::effect_registry::EffectSource::Frei0r(plugin) => {
-                                                let params: Vec<klipp_frei0r::Frei0rValue> = plugin
-                                                    .params
-                                                    .iter()
-                                                    .map(|p| {
-                                                        klipp_frei0r::Frei0rValue::default_for(p.kind)
-                                                    })
-                                                    .collect();
-                                                Some(vec![klipp_effects::BuiltinEffect::Frei0r {
-                                                    type_id: plugin.type_id(),
-                                                    params,
-                                                }])
-                                            }
-                                            _ => None,
-                                        })
-                                        .unwrap_or_default();
+                                    // A built-in effect, a look's chain or a
+                                    // frei0r plugin at its defaults, as the
+                                    // browser puts them (`picture_effects`):
+                                    // behind the switch by path on every
+                                    // target as one step, or refused whole
+                                    // with the reason (M3 step 19).
+                                    let effects = state.effect_registry.effects.iter().find(|e| e.name == name).and_then(|e| crate::browser::effects_tab::picture_effects(&e.source)).unwrap_or_default();
                                     if !effects.is_empty() {
-                                        // Behind the switch a single built-in effect is
-                                        // added by path, as the browser adds it.
-                                        let by_path = state.use_generated_stack && effects.len() == 1;
-                                        cmds.extend(crate::effect_targets::commands(&targets, |clip_id| {
-                                            let clip = state.sequence().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id);
-                                            effects.iter().map(|effect| {
-                                                by_path.then(|| clip.and_then(|c| crate::inspector::stack_view::add_effect_command(state, c, effect))).flatten()
-                                                    .unwrap_or_else(|| AppCommand::AddBuiltinEffect { clip_id, effect: effect.clone() })
-                                            }).collect()
-                                        }));
-                                        state.toast.show(crate::effect_targets::said(&name, &targets));
+                                        let adds = if state.use_generated_stack {
+                                            crate::effect_targets::all_or_none(&targets, |clip_id| {
+                                                let clip = state.sequence().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id).ok_or("the clip isn't in the sequence")?;
+                                                crate::inspector::stack_view::add_effects_command(state, clip, &effects)
+                                            })
+                                        } else {
+                                            Ok(crate::effect_targets::commands(&targets, |clip_id| effects.iter().map(|effect| AppCommand::AddBuiltinEffect { clip_id, effect: effect.clone() }).collect()))
+                                        };
+                                        match adds {
+                                            Ok(adds) => {
+                                                cmds.extend(adds);
+                                                state.toast.show(crate::effect_targets::said(&name, &targets));
+                                            }
+                                            Err(why) => state.toast.show(format!("\"{name}\" wasn't applied: {why}")),
+                                        }
                                     }
                                 } else {
                                     cmds.extend(crate::effect_targets::commands(&targets, |clip_id| vec![AppCommand::AddEffect { clip_id, plugin_name: plugin_id.clone() }]));

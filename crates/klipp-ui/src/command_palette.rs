@@ -1128,14 +1128,28 @@ pub fn dispatch_dialog(kind: DialogKind) -> Vec<AppCommand> {
 }
 
 /// `effect` on every selected picture that can take it, as one undo step
-/// (#842), with the toast saying where it went.
+/// (#842), with the toast saying where it went: behind the switch by path
+/// (M3 step 19), or refused whole with the reason.
 fn add_to_selection(state: &mut AppState, cmds: &mut Vec<AppCommand>, name: &str, effect: klipp_effects::BuiltinEffect) {
     let targets = crate::effect_targets::targets(state.sequence(), state.selected_clip, &state.selected_clips, None, crate::effect_targets::EffectKind::Picture);
     if targets.clips.is_empty() {
         return;
     }
-    cmds.extend(crate::effect_targets::commands(&targets, |clip_id| vec![AppCommand::AddBuiltinEffect { clip_id, effect: effect.clone() }]));
-    state.toast.show(crate::effect_targets::said(name, &targets));
+    let adds = if state.use_generated_stack {
+        crate::effect_targets::all_or_none(&targets, |clip_id| {
+            let clip = state.sequence().tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id).ok_or("the clip isn't in the sequence")?;
+            crate::inspector::stack_view::add_effects_command(state, clip, std::slice::from_ref(&effect))
+        })
+    } else {
+        Ok(crate::effect_targets::commands(&targets, |clip_id| vec![AppCommand::AddBuiltinEffect { clip_id, effect: effect.clone() }]))
+    };
+    match adds {
+        Ok(adds) => {
+            cmds.extend(adds);
+            state.toast.show(crate::effect_targets::said(name, &targets));
+        }
+        Err(why) => state.toast.show(format!("\"{name}\" wasn't applied: {why}")),
+    }
 }
 
 #[cfg(test)]

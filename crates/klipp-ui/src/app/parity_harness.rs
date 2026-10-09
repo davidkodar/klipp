@@ -316,6 +316,13 @@ impl Run {
             self.state.playhead = time;
             return;
         }
+        // A batch of edits made one undo step, as the app's dispatch opens
+        // and closes it (`playback.rs`).
+        match cmd {
+            AppCommand::BeginHistoryBatch => return self.state.active_history_mut().begin_batch(),
+            AppCommand::EndHistoryBatch => return self.state.active_history_mut().end_batch(),
+            _ => {}
+        }
         if is_side(&cmd) {
             // An analysis the row asks for passes the dispatch boundary as in
             // the app, which must not close the row's drag.

@@ -78,6 +78,11 @@ pub enum FixAction {
     RemoveBuiltinEffectFromClip {
         clip_id: ClipId,
         effect_index: usize,
+        /// Behind the generated-stack switch, the entry's picture node,
+        /// as the scan found it: the fix removes that node by path (M3
+        /// step 19), and is refused if the node is gone by then, rather
+        /// than removing whatever sits at `effect_index` now.
+        node: Option<uuid::Uuid>,
     },
     ReEnableLadspaPlugin {
         unique_id: u64,
@@ -349,10 +354,16 @@ fn apply_fix(action: &FixAction, cmds: &mut Vec<AppCommand>) {
         FixAction::RemoveBuiltinEffectFromClip {
             clip_id,
             effect_index,
+            node,
         } => {
-            cmds.push(AppCommand::RemoveBuiltinEffect {
-                clip_id: *clip_id,
-                index: *effect_index,
+            cmds.push(match node {
+                Some(node) => AppCommand::RemoveNodeAt {
+                    addr: klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip_id.0 }, [*node]),
+                },
+                None => AppCommand::RemoveBuiltinEffect {
+                    clip_id: *clip_id,
+                    index: *effect_index,
+                },
             });
         }
         FixAction::ReEnableLadspaPlugin { unique_id } => {
@@ -642,6 +653,7 @@ fn scan_project(state: &AppState) -> Vec<Finding> {
                                 action: FixAction::RemoveBuiltinEffectFromClip {
                                     clip_id: clip.id,
                                     effect_index,
+                                    node: clip.effect_node_at(false, effect_index).filter(|_| state.use_generated_stack),
                                 },
                             }],
                         });
@@ -724,6 +736,47 @@ fn report_as_text(findings: &[Finding]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Behind the switch a missing frei0r plug-in's fix removes the node
+    /// the scan found, by path, one step: the right one even when the list
+    /// moved under it since; and once that node is gone the fix is
+    /// refused, changing nothing, rather than removing what sits at its
+    /// old place now (M3 step 19).
+    #[test]
+    fn a_missing_plugin_is_removed_by_its_node() {
+        use klipp_effects::BuiltinEffect as E;
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
+        clip.push_effect(E::GaussianBlur { radius: 3.0 });
+        clip.push_effect(E::Frei0r { type_id: "frei0r:klipp-test-not-installed".into(), params: Vec::new() });
+        let id = clip.id;
+        let mut state = AppState { use_generated_stack: true, ..Default::default() };
+        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        state.sequences[0].tracks[v1].clips.push(clip);
+        let fix = scan_project(&state).into_iter().flat_map(|f| f.fixes).find_map(|f| match f.action {
+            a @ FixAction::RemoveBuiltinEffectFromClip { .. } => Some(a),
+            _ => None,
+        }).expect("the missing plug-in's fix");
+        let effects = |s: &AppState| s.sequences[0].all_clips().find(|c| c.id == id).unwrap().builtin_effects().to_vec();
+        // An effect put before it since the scan: the plug-in is now third.
+        let first = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().effect_node_at(false, 0).unwrap();
+        let node: klipp_graph_format::Node = serde_json::from_value(serde_json::json!({ "id": uuid::Uuid::new_v4(), "type_id": klipp_graph_lift::to_v2::effect_node_type("sharpen"), "legacy": { "payload": E::Sharpen { amount: 0.5 } } })).unwrap();
+        let add = AppCommand::AddNodeAt { after: klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, [first]), node: Box::new(node) };
+        assert!(state.path_command(&add).is_some());
+        let steps = state.active_history().undo_count();
+        let mut cmds = Vec::new();
+        apply_fix(&fix, &mut cmds);
+        assert!(matches!(cmds.as_slice(), [AppCommand::RemoveNodeAt { .. }]), "{cmds:?}");
+        assert!(state.path_command(&cmds[0]).is_some());
+        assert_eq!(serde_json::to_value(effects(&state)).unwrap(), serde_json::to_value([E::GaussianBlur { radius: 3.0 }, E::Sharpen { amount: 0.5 }]).unwrap(), "the plug-in removed, the effect put before it kept");
+        assert_eq!(state.active_history().undo_count(), steps + 1);
+        // Its node gone, the same fix again changes nothing.
+        let now = effects(&state);
+        state.path_command(&cmds[0]);
+        assert_eq!(serde_json::to_value(effects(&state)).unwrap(), serde_json::to_value(now).unwrap());
+        assert_eq!(state.active_history().undo_count(), steps + 1);
+        assert!(state.toast.message_for_test().is_some(), "the refusal is said");
+    }
 
     fn err(cat: &str) -> Finding {
         Finding {
