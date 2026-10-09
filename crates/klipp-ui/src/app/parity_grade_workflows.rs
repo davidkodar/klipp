@@ -21,13 +21,6 @@ use crate::state::ColorTab;
 use klipp_core::AppCommand;
 use klipp_nodes::NodeKind;
 
-/// The qualifier's eyedropper on one of the sequence's own grades: its
-/// pick names the stand-in clip the Colour page edits that grade through,
-/// which the engine's sequence never holds, so the engine refuses it
-/// (`klipp-engine` `sequence_grade_pick_refused`). What the
-/// pick would key can't be earned there until it reads that node's input.
-const ROOT_PICK: &str = "known defect #1428: the engine refuses an eyedropper pick on a sequence grade's node (no clip by the stand-in's id)";
-
 /// Click the drawn text `text`: its last occurrence.
 fn click(g: &mut Grade, text: &str) -> Result<(), String> {
     let at = g.drawn().into_iter().rev().find(|(t, _)| t == text).map(|(_, p)| p).ok_or_else(|| format!("{text:?} isn't drawn"))?;
@@ -252,20 +245,13 @@ pub(super) fn require(manifest: &mut Manifest) {
         }
     }
     for (entry, surfaces) in entries() {
-        let picker = entry.parameter == "@workflow/qualifier_picker";
         for (surface, _) in surfaces {
             manifest.require_fixture(&entry, surface, "sample");
             // On the sequence's own grades too (`on_roots`), under the
-            // root's variant; the eyedropper's sampled result there is the
-            // pinned defect, its trigger a behaviour check.
+            // root's variant.
             for root in super::parity_harness::GradeRoot::SEQUENCE {
                 let variant = format!("{}: {surface:?} sample", root.variant());
                 manifest.require_fixture(&entry, Surface::NonClipGrade, &variant);
-                if picker {
-                    for interaction in [Interaction::Eyedropper, Interaction::ResultDuringDrag, Interaction::UndoRedo] {
-                        manifest.exclude_key(CoverageKey::new(entry.type_id, &entry.parameter, Surface::NonClipGrade, &variant, interaction), ROOT_PICK);
-                    }
-                }
             }
         }
     }
@@ -333,14 +319,6 @@ fn run_qualifier(report: &mut Report, type_id: &str, surface: Surface, page: Pag
     }
     let start = Grade::new(state, clip, node).on(page);
     report.case(&format!("qualifier picker opened on {surface:?}"), [k(Interaction::OpenWithoutWrite)], || opened(&start));
-    // On a sequence grade the pick is refused by the engine (`ROOT_PICK`):
-    // its trigger alone, a behaviour check that earns nothing.
-    if start.root != super::parity_harness::GradeRoot::Clip {
-        report.case(&format!("qualifier eyedropper trigger on {surface:?}"), [], || {
-            trigger(&start, "PickQualifierColour", |g| click_icon_by(g, "Enabled", "PickQualifierColour"))
-        });
-        return;
-    }
     let key_of = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).and_then(|n| n.params.qualifier.clone());
     // An orange picked: the key sits on its hue, as the eyedropper's
     // sample lands it (`NodeInputSampled`, then `SetNodeQualifier`).
