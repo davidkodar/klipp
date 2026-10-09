@@ -193,12 +193,16 @@ fn opacity_follows_todays_three_rules() {
     );
     assert_eq!(p.opacity, 0.6);
     assert_eq!(p.opacity_anim.as_ref().unwrap().keys, [json!({"time_secs": 0.0, "value": 0.9})]);
-    assert!(notes.iter().any(|n| matches!(n, LiftNote::OrphanKeys { .. })), "the earlier effect's keys never ran");
-    // Every Opacity entry is kept off for the record (#1089): the property
-    // renders, and each entry keeps its slot and its stored enabled bit.
+    // The earlier enabled one multiplies in with its own keys (#1386): kept
+    // on, its keys on it, none orphaned.
+    assert!(!notes.iter().any(|n| matches!(n, LiftNote::OrphanKeys { .. })), "{notes:?}");
+    // The anchor is kept off for the record (#1089): the property renders
+    // it. Each entry keeps its slot and its stored enabled bit.
     let kept: Vec<&Node> = p.graph.nodes.iter().filter(|n| n.type_id.as_str() == types::LEGACY_OPACITY).collect();
     assert_eq!(kept.len(), 2);
-    assert!(kept.iter().all(|n| !n.enabled && n.legacy_flags.as_ref().and_then(|f| f.was_enabled) == Some(true)));
+    assert!(kept[0].enabled && kept[0].legacy_flags.as_ref().and_then(|f| f.was_enabled).is_none(), "the earlier one is on");
+    assert!(kept[0].legacy.as_ref().unwrap().keyframes.as_ref().is_some_and(|k| k.get("0:value").is_some()), "with its own keys");
+    assert!(!kept[1].enabled && kept[1].legacy_flags.as_ref().and_then(|f| f.was_enabled) == Some(true), "the anchor is kept off");
     assert_eq!(kept.iter().map(|n| n.legacy.as_ref().unwrap().slot).collect::<Vec<_>>(), [Some(0), Some(1)]);
 
     // No keys of its own: the clip's keys and modifiers, then its value
@@ -220,10 +224,15 @@ fn opacity_follows_todays_three_rules() {
     let (p, _) = lift(clip(json!({"builtin_effects": [op(1.7)]})), ClipKind::Media);
     assert_eq!((p.opacity, p.opacity_anim), (1.0, None));
 
-    // Adjustment layers: the first effect's value, enabled or not.
-    let mut first_off = clip(json!({"builtin_effects": [op(0.4), op(0.8)], "builtin_effects_enabled": [false, true]}));
-    let (p, _) = lift(first_off.take(), ClipKind::Adjustment);
-    assert_eq!(p.opacity, 0.4);
+    // An adjustment layer by the same rule (#1386): a disabled first
+    // Opacity never counts, so [off 0.5, on 0.8] is 0.8, nothing multiplied.
+    for kind in [ClipKind::Adjustment, ClipKind::Media] {
+        let mut first_off = clip(json!({"builtin_effects": [op(0.5), op(0.8)], "builtin_effects_enabled": [false, true]}));
+        let (p, _) = lift(first_off.take(), kind);
+        assert_eq!(p.opacity, 0.8, "{kind:?}");
+        let on: Vec<_> = p.graph.nodes.iter().filter(|n| n.type_id.as_str() == types::LEGACY_OPACITY && n.enabled).collect();
+        assert!(on.is_empty(), "{kind:?}: nothing else multiplies");
+    }
 }
 
 #[test]

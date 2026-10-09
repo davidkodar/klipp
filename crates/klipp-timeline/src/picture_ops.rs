@@ -758,11 +758,9 @@ impl Clip {
             let v = *v;
             if key.as_str() == "opacity" {
                 let is_opacity = |e: &BuiltinEffect| matches!(e, BuiltinEffect::Opacity { .. });
-                let at = if matches!(self.kind, crate::ClipKind::AdjustmentLayer) {
-                    self.builtin_effects().iter().position(is_opacity)
-                } else {
-                    (0..self.builtin_effects().len()).rev().find(|i| is_opacity(&self.builtin_effects()[*i]) && on(self, *i))
-                };
+                // The last enabled Opacity, on a clip and an adjustment
+                // layer alike (#1386).
+                let at = (0..self.builtin_effects().len()).rev().find(|i| is_opacity(&self.builtin_effects()[*i]) && on(self, *i));
                 let id = match at {
                     Some(i) => self.effect_id_at(i).ok_or("the opacity entry is gone")?,
                     None => self.push_effect(BuiltinEffect::Opacity { value: v }),

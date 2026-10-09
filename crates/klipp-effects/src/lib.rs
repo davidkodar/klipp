@@ -233,7 +233,9 @@ pub enum BuiltinEffect {
         position_y: f32,
         /// Horizontal scale (1.0 = 100%)
         scale_x: f32,
-        /// Vertical scale (1.0 = 100%)
+        /// Vertical scale (1.0 = 100%): the clip's aspect times the width.
+        /// A width set to exactly 0 resets the aspect to 1 (a zero width
+        /// draws nothing); scale keys through 0 keep it.
         scale_y: f32,
         /// Rotation in degrees (Z-axis)
         rotation: f32,

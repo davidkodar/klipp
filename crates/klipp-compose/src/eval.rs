@@ -555,39 +555,46 @@ pub fn tracker_position_at_playhead(
 }
 
 
-/// Evaluate the effective clip-level opacity at a timeline position.
-/// Combines the static `BuiltinEffect::Opacity` value with opacity keyframes
-/// and any modifier stack on `ParamId::Opacity`. Returns a value in [0.0, 1.0].
+/// A clip's compositing weight at `time`, a clip's and an adjustment
+/// layer's alike: its last enabled `Opacity` effect (the anchor) over its
+/// opacity keyframes and modifiers, else those alone over 1; times every
+/// other enabled Opacity of its own, each by its own keys (#1386); times
+/// each Opacity its track added. A disabled Opacity counts for nothing. A
+/// render copy carries its track's effects after the clip's own
+/// (`bake_track_effects`); a track's Opacity weighs the clip's resolved
+/// opacity rather than standing in for it (#1078). Returns a value in
+/// [0.0, 1.0].
 pub fn evaluate_clip_opacity(
     clip: &klipp_timeline::Clip,
-    playhead: klipp_core::Timecode,
+    time: klipp_core::Timecode,
     fps: f64,
 ) -> f32 {
-    let opacity_default = clip
-        .builtin_effects()
-        .iter()
-        .find_map(|e| match e {
-            klipp_effects::BuiltinEffect::Opacity { value } => Some(*value),
-            _ => None,
-        })
-        .unwrap_or(1.0);
-    let clip_relative_secs = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
-    let eval_ctx = klipp_core::EvalContext {
-        clip_time_secs: clip_relative_secs,
-        clip_duration_secs: (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()),
-        timeline_time_secs: playhead.to_secs_f64(),
-        fps,
-        seed: clip.id.0.as_u64_pair().0,
+    use klipp_effects::BuiltinEffect;
+    let t = (time - clip.timeline_in).to_secs_f64().max(0.0);
+    let ctx = eval_context(clip, time, fps);
+    let enabled = |i: usize| clip.builtin_effects_enabled().get(i).copied().unwrap_or(true);
+    let own = clip.own_effects().map_or(clip.builtin_effects().len(), |o| o.builtin_effects.len());
+    let param = |i: usize, name: &str, v: f32| {
+        let kfs = clip.effect_keyframes().get(&format!("{i}:{name}")).map(|v| v.as_slice()).unwrap_or(&[]);
+        eval_effect_with_modifiers(kfs, clip.param_modifiers(), i, name, t, v, &ctx)
     };
-    eval_with_modifiers(
-        clip.opacity_keyframes(),
-        clip.param_modifiers(),
-        &klipp_core::ParamId::Opacity,
-        clip_relative_secs,
-        opacity_default,
-        &eval_ctx,
-    )
-    .clamp(0.0, 1.0)
+    let opacities = || clip.builtin_effects().iter().enumerate().filter(|(i, e)| enabled(*i) && matches!(e, BuiltinEffect::Opacity { .. }));
+    let anchor = opacities().filter(|(i, _)| *i < own).map(|(i, _)| i).next_back();
+    let mut opacity = None;
+    let mut others = 1.0f32;
+    for (i, effect) in opacities() {
+        let BuiltinEffect::Opacity { value } = effect else { continue };
+        if Some(i) == anchor {
+            // Clip opacity keyframes / modifiers first, then the effect's
+            // own parameter keyframes — the viewer's order.
+            let base = eval_with_modifiers(clip.opacity_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::Opacity, t, *value, &ctx);
+            opacity = Some(param(i, "value", base));
+        } else {
+            others *= param(i, "value", *value).clamp(0.0, 1.0);
+        }
+    }
+    let opacity = opacity.unwrap_or_else(|| eval_with_modifiers(clip.opacity_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::Opacity, t, 1.0, &ctx));
+    opacity.clamp(0.0, 1.0) * others
 }
 
 /// Evaluate an effect param with optional modifier stack.
@@ -1339,5 +1346,47 @@ mod resolve_effect_param_tests {
         }
         // The stack is really in play: it moves the value off the keys'.
         assert!(TIMES.iter().any(|&t| resolve_effect_param(&keys, Some(&stack), t, 2.0, &ctx(t)) != klipp_core::keyframe::evaluate(&keys, t, 2.0)));
+    }
+}
+
+#[cfg(test)]
+mod opacity_multiply_tests {
+    use super::evaluate_clip_opacity;
+    use klipp_core::Timecode;
+    use klipp_effects::BuiltinEffect;
+    use klipp_timeline::{Clip, ClipKind};
+
+    fn clip(kind: ClipKind, opacities: &[(f32, bool)]) -> Clip {
+        let mut c = Clip { kind, ..Clip::gap(Timecode::from_frames(0, 24), Timecode::from_frames(48, 24)) };
+        c.set_effect_list(opacities.iter().map(|(value, _)| BuiltinEffect::Opacity { value: *value }).collect(), opacities.iter().map(|(_, on)| *on).collect());
+        c
+    }
+
+    /// Every enabled Opacity multiplies the last, a clip's and an
+    /// adjustment layer's alike (#1386); a disabled one counts for nothing,
+    /// wherever it sits.
+    #[test]
+    fn every_enabled_opacity_multiplies_in_on_a_clip_and_an_adjustment_layer() {
+        let at = Timecode::from_frames(12, 24);
+        for kind in [ClipKind::Gap, ClipKind::AdjustmentLayer] {
+            let o = |opacities: &[(f32, bool)]| evaluate_clip_opacity(&clip(kind.clone(), opacities), at, 24.0);
+            assert_eq!(o(&[(0.8, true)]), 0.8, "{kind:?}");
+            assert!((o(&[(0.5, true), (0.8, true)]) - 0.4).abs() < 1e-6, "{kind:?}: 0.5 × 0.8");
+            assert_eq!(o(&[(0.5, false), (0.8, true)]), 0.8, "{kind:?}: a disabled first one");
+            assert_eq!(o(&[(0.5, true), (0.8, false)]), 0.5, "{kind:?}: a disabled last one");
+        }
+    }
+
+    /// A keyed Opacity before the anchor multiplies in by its keys.
+    #[test]
+    fn a_keyed_opacity_before_the_anchor_multiplies_by_its_keys() {
+        let at = Timecode::from_frames(12, 24);
+        let mut c = clip(ClipKind::Gap, &[(1.0, true), (1.0, true)]);
+        let id = c.effect_id_at(0).unwrap();
+        c.edit_effect_keyframes_of(id, "value", |k| {
+            klipp_core::keyframe::upsert_keyframe(k, 0.0, 0.25);
+            klipp_core::keyframe::upsert_keyframe(k, 2.0, 0.25);
+        });
+        assert!((evaluate_clip_opacity(&c, at, 24.0) - 0.25).abs() < 1e-6, "{}", evaluate_clip_opacity(&c, at, 24.0));
     }
 }

@@ -99,3 +99,28 @@ fn a_picture_truth_clips_placement_is_its_pictures() {
     let placement = lifted.picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::PLACEMENT).unwrap();
     assert!(placement.params.keys().all(|k| k.as_str() == "mode"), "{:?}", placement.params);
 }
+
+/// A static width of exactly 0 resets the clip's aspect to 1 (a zero width
+/// draws nothing, so nothing visible goes); the height is always the width
+/// times the aspect. Scale keys through 0 keep it: the aspect is the
+/// static Transform's, which a key never writes (#1406).
+#[test]
+fn a_width_of_zero_resets_the_aspect_and_keys_through_zero_keep_it() {
+    let half = || E::Transform { position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 0.5, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+    let mut c = clip(vec![half()], vec![true]);
+    set(&mut c, "scale", 0.0);
+    assert!(matches!(c.builtin_effects()[0], E::Transform { scale_x: 0.0, scale_y: 0.0, .. }), "{:?}", c.builtin_effects()[0]);
+    set(&mut c, "scale", 1.0);
+    assert!(matches!(c.builtin_effects()[0], E::Transform { scale_x: 1.0, scale_y: 1.0, .. }), "{:?}", c.builtin_effects()[0]);
+    assert_eq!(c.picture_v2().unwrap().picture.placement.aspect, None, "aspect 1");
+
+    let mut keyed = clip(vec![half()], vec![true]);
+    let path = keyed.placement_path().unwrap();
+    for (t, v) in [(0.0, 1.0), (1.0, 0.0), (2.0, 1.0)] {
+        let key = Keyframe { time_secs: t, value: v, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        keyed.apply_picture_ops(&[GraphOp::AddKeyAt { path: path.clone(), key: ParamKey::from("scale"), keyframe: serde_json::to_value(key).unwrap() }]).unwrap();
+    }
+    let p = keyed.picture_v2().unwrap().picture.clone();
+    assert_eq!(p.placement.aspect, Some(0.5), "keyed through 0, the aspect holds");
+    assert_eq!(p.placement_anim[&ParamKey::from("scale")].keys.len(), 3);
+}

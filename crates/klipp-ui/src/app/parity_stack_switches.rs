@@ -69,10 +69,6 @@ fn eyes() -> Vec<(CatalogEntry, &'static EffectType)> {
 
 /// Switching a Speed Ramp off can't change the frame: retiming comes from
 /// the clip's speed curve, and the effect keeps only its frame blending.
-/// A non-anchor Opacity is kept off by the lift, so switching its card off
-/// draws the same frame.
-const OPACITY_PIXELS: &str = "known defect #1386: a non-anchor Opacity entry is kept off, so switching it draws the same frame";
-
 const RAMP_PIXELS: &str = "known defect #1409: retiming comes from the clip's speed curve, so a Speed Ramp switched off draws the same frame";
 
 /// Why a card's eye earns no Pixels key, when it can't: switching it can't
@@ -81,7 +77,6 @@ const RAMP_PIXELS: &str = "known defect #1409: retiming comes from the clip's sp
 fn eye_pixels_pinned(tag: &str) -> Option<&'static str> {
     match tag {
         "speed_ramp" => Some(RAMP_PIXELS),
-        "opacity" => Some(OPACITY_PIXELS),
         _ => None,
     }
 }

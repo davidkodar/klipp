@@ -581,6 +581,8 @@ fn rule_cases() -> Vec<Case> {
     let mut top = media(0.0, 4.0);
     top.set_effect_list(vec![BuiltinEffect::Opacity { value: 0.9 }, BuiltinEffect::Opacity { value: 0.2 }, BuiltinEffect::Opacity { value: 0.6 }], vec![true, true, false]);
     let f = Frames::default().with(&base, 90).with(&top, 0);
+    // Every enabled Opacity multiplies (#1386): 0.9 × 0.2, the disabled
+    // 0.6 not at all. The historical case name identifies its baseline.
     out.push(Case::new("rule/opacity last enabled wins", sequence(vec![track("V2", TrackKind::Video, vec![top]), track("V1", TrackKind::Video, vec![base])]), f));
 
     // Opacity: the effect's keys over the clip's opacity keys.
@@ -592,7 +594,9 @@ fn rule_cases() -> Vec<Case> {
     let f = Frames::default().with(&base, 90).with(&top, 0);
     out.push(Case::new("rule/opacity effect keys over clip keys", sequence(vec![track("V2", TrackKind::Video, vec![top]), track("V1", TrackKind::Video, vec![base])]), f));
 
-    // Opacity: an adjustment layer takes its first Opacity, even disabled.
+    // Opacity: an adjustment layer by the clip's rule (#1386): a disabled
+    // Opacity never counts, so this one draws its Invert whole. The
+    // historical case name identifies its baseline.
     let base = media(0.0, 4.0);
     let mut adj = adjustment(0.0, 4.0);
     adj.set_effect_list(vec![BuiltinEffect::Opacity { value: 0.4 }, BuiltinEffect::Invert { mix: 1.0 }], vec![false, true]);
@@ -1440,6 +1444,9 @@ fn every_path_draws_the_corpus_alike() {
 //
 //     KLIPP_RECORD_GOLDENS="<why>" cargo test -p klipp-compose --test golden_corpus every_path_draws_its_recorded_frames
 //
+// A rule change records only the cases it moves, every other frame held
+// to its stored one: add `KLIPP_RECORD_GOLDEN_CASE="<case>|<case>"`.
+//
 // A re-recording is reviewed like code: its commit says why each frame may
 // change.
 
@@ -1512,6 +1519,37 @@ fn stored() -> std::collections::BTreeMap<(String, String, String), Option<Drawn
         .collect()
 }
 
+/// The two opacity rule cases draw what their rule computes (#1386), on
+/// every path: three Opacities [0.9 on, 0.2 on, 0.6 off] draw as one at
+/// 0.9 × 0.2 = 0.18, and an adjustment layer whose only Opacity (0.4) is
+/// off draws as one with no Opacity, its Invert whole. So their stored
+/// frames, recorded under the rule, hold the computed result.
+#[test]
+fn the_opacity_rule_cases_draw_what_the_rule_computes() {
+    let mut renderers = Renderers::default();
+    let named = |name: &str| corpus().into_iter().find(|c| c.name == name).unwrap_or_else(|| panic!("no case {name:?}"));
+    let base = media(0.0, 4.0);
+    let mut one = media(0.0, 4.0);
+    one.set_effect_list(vec![BuiltinEffect::Opacity { value: 0.9 * 0.2 }], vec![true]);
+    let f = Frames::default().with(&base, 90).with(&one, 0);
+    let multiplied = Case::new("check/opacity 0.18", sequence(vec![track("V2", TrackKind::Video, vec![one]), track("V1", TrackKind::Video, vec![base])]), f);
+    let base = media(0.0, 4.0);
+    let mut adj = adjustment(0.0, 4.0);
+    adj.set_effect_list(vec![BuiltinEffect::Invert { mix: 1.0 }], vec![true]);
+    let f = Frames::default().with(&base, 0);
+    let unweighted = Case::new("check/adjustment no opacity", sequence(vec![track("Adj", TrackKind::Video, vec![adj]), track("V1", TrackKind::Video, vec![base])]), f);
+    for (case, want) in [(named("rule/opacity last enabled wins"), multiplied), (named("rule/adjustment first opacity"), unweighted)] {
+        let (_, got) = frames_of(&case, &mut renderers);
+        let (_, expected) = frames_of(&want, &mut renderers);
+        assert_eq!(got.len(), expected.len(), "{}", case.name);
+        for ((t, path, a), (_, _, b)) in got.iter().zip(&expected) {
+            let (Some(a), Some(b)) = (a, b) else { continue };
+            let (worst, _) = a.against(b).expect("frames of one kind and size");
+            assert!(worst <= TOLERANCE, "{} @{t} {}: {worst} levels from what its rule computes", case.name, path_name(*path));
+        }
+    }
+}
+
 /// Every path draws each case as main drew it when the frames were stored,
 /// within the corpus's tolerance; a path declines where it declined then.
 #[test]
@@ -1521,7 +1559,10 @@ fn every_path_draws_its_recorded_frames() {
     if let Ok(reason) = std::env::var("KLIPP_RECORD_GOLDENS") {
         assert!(!reason.trim().is_empty(), "say why the frames are recorded again");
         if let Ok(case) = std::env::var("KLIPP_RECORD_GOLDEN_CASE") {
-            // A reviewed rule change may replace one case only. All
+            // One rule change may move several cases: their names apart by
+            // `|`.
+            let cases: Vec<&str> = case.split('|').map(str::trim).collect();
+            // A reviewed rule change may replace those cases only. All
             // other stored bytes stay exact, and must still agree with
             // today's render before any reference is written.
             let mut old = stored();
@@ -1529,7 +1570,7 @@ fn every_path_draws_its_recorded_frames() {
             let mut count = 0;
             for (key, drawn) in &mut selected {
                 let previous = old.remove(key).expect("a case-only recording cannot add frames");
-                if key.0 == case {
+                if cases.contains(&key.0.as_str()) {
                     count += 1;
                     match (&previous, drawn.as_ref()) {
                         (Some(w), Some(d)) => println!("re-record {} @{} {}: {:?}", key.0, key.1, key.2, d.against(w)),
@@ -1545,6 +1586,9 @@ fn every_path_draws_its_recorded_frames() {
                 }
             }
             assert!(count > 0, "no frames of {case:?}");
+            for c in &cases {
+                assert!(selected.iter().any(|(k, _)| k.0 == *c), "no frames of {c:?}");
+            }
             assert!(old.is_empty(), "a case-only recording cannot remove frames");
             record(&selected, &reason);
         } else {
