@@ -132,7 +132,9 @@ impl KlippApp {
 /// grade node keeps its keys. `None` when it has no keys there.
 fn animation_of(node: &Node, key: &ParamKey) -> Option<klipp_graph_format::Animation> {
     if !matches!(node.type_id.as_str(), klipp_graph_format::types::LEGACY_NODE | klipp_graph_format::lifted::types::MERGE) {
-        return node.anim.get(key).cloned();
+        // By either of an alias's names (a ChromaKey's `spill` is its `soft_edge`).
+        let stored = klipp_graph_lift::lift::anim_key(klipp_graph_lift::effect_params::tag(node).unwrap_or(""), key.as_str());
+        return node.anim.get(&ParamKey::from(stored)).cloned();
     }
     let tracks = node.legacy.as_ref()?.keyframes.as_ref()?.get("tracks")?.as_array()?;
     let track = tracks.iter().find(|t| t.get("param_name").and_then(serde_json::Value::as_str) == Some(key.as_str()))?;

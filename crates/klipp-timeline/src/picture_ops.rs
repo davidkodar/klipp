@@ -860,6 +860,10 @@ impl Clip {
                 }
                 let v = serde_json::to_value(&self.builtin_effects()[i]).map_err(|e| e.to_string())?;
                 let (tag, mut params) = ep::to_params(&v)?;
+                // A keyframe alias's value is the field it stands for (a
+                // ChromaKey's `spill` is its `soft_edge`), as in the lift's
+                // own writer.
+                let key = &klipp_graph_format::ParamKey::from(klipp_graph_lift::lift::anim_key(&tag, key.as_str()));
                 params.insert(key.clone(), ep::held(&tag, key, &stored(value)?));
                 let effect = ep::effect(&tag, &params).map_err(|_| format!("{key} doesn't take {value:?}"))?;
                 let id = id_at(self, i)?;
@@ -915,7 +919,9 @@ impl Clip {
             GraphOp::AddKeyAt { key, .. } | GraphOp::RemoveKeyAt { key, .. } | GraphOp::SetAnim { key, .. } => {
                 let n = node(post, named).ok_or("the effect's node")?;
                 let id = id_at(self, index(order, named)?)?;
-                self.write_anim(id, tag_of(n), key.as_str(), n.anim.get(key))?;
+                // Read under the key the op stored it under (an alias's own).
+                let stored = klipp_graph_lift::lift::anim_key(tag_of(n), key.as_str());
+                self.write_anim(id, tag_of(n), stored, n.anim.get(&klipp_graph_format::ParamKey::from(stored)))?;
             }
             _ => return Err("not an effect edit".into()),
         }
@@ -1237,4 +1243,61 @@ fn grade_nodes(p: &ClipPicture) -> impl Iterator<Item = &Node> {
 
 fn grade_nodes_mut(p: &mut ClipPicture) -> impl Iterator<Item = &mut Node> {
     p.graph.nodes.iter_mut().filter(|n| n.type_id.as_str() == lt::GROUP).filter_map(|g| g.group.as_mut()).flat_map(|g| g.graph.nodes.iter_mut())
+}
+
+#[cfg(test)]
+mod keyframe_alias_tests {
+    use crate::Clip;
+    use klipp_core::{MediaId, RationalTime};
+    use klipp_graph_format::path::{NodePath, Root};
+    use klipp_graph_format::{ParamKey, ParamValue};
+    use klipp_graph_lift::ops::GraphOp;
+
+    /// A clip holding `tag`'s sample, and its node's path.
+    fn clip(tag: &str) -> (Clip, NodePath) {
+        let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+        let mut c = Clip::media(MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
+        c.push_effect((klipp_effects::registry::effect_type(tag).unwrap().sample)());
+        let node = c.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some(tag)).unwrap().id;
+        let id = c.id;
+        (c, NodePath::new(Root::Clip { clip: id.0 }, [node]))
+    }
+
+    fn key(t: f64, v: f32) -> serde_json::Value {
+        serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }).unwrap()
+    }
+
+    fn times(c: &Clip, path: &NodePath, name: &str) -> Vec<f64> {
+        c.node_key_state(path, &ParamKey::from(name)).map(|s| s.keys.iter().map(|k| k.time_secs).collect()).unwrap_or_default()
+    }
+
+    /// Every keyframe alias (a ChromaKey's `spill`, stored as `soft_edge`):
+    /// a path edit naming either name edits the one stored animation and
+    /// value. Before, a key added by the alias went into a second, empty
+    /// animation whose write replaced the stored lane, losing every other
+    /// key.
+    #[test]
+    fn an_edit_by_a_keyframe_alias_reaches_the_stored_animation() {
+        for (tag, alias, stored) in klipp_graph_lift::lift::KEYFRAME_ALIASES {
+            let (mut c, path) = clip(tag);
+            let add = |name: &str, t: f64, v: f32| GraphOp::AddKeyAt { path: path.clone(), key: name.into(), keyframe: key(t, v) };
+            c.apply_picture_ops(&[add(alias, 0.5, 0.2)]).unwrap();
+            c.apply_picture_ops(&[add(alias, 1.5, 0.8)]).unwrap();
+            assert_eq!(times(&c, &path, stored), vec![0.5, 1.5], "{tag}: two keys added by {alias}, both kept under {stored}");
+            assert_eq!(times(&c, &path, alias), vec![0.5, 1.5], "{tag}: and read by either name");
+            c.apply_picture_ops(&[add(stored, 1.0, 0.5)]).unwrap();
+            assert_eq!(times(&c, &path, stored), vec![0.5, 1.0, 1.5], "{tag}: one by each name, one animation");
+
+            c.apply_picture_ops(&[GraphOp::RemoveKeyAt { path: path.clone(), key: alias.into(), time_secs: 1.0 }]).unwrap();
+            assert_eq!(times(&c, &path, stored), vec![0.5, 1.5], "{tag}: a remove by {alias} takes that key only");
+
+            let anim = klipp_graph_format::Animation { keys: vec![key(0.25, 0.1), key(0.75, 0.3), key(1.25, 0.9)], modifiers: None };
+            c.apply_picture_ops(&[GraphOp::SetAnim { path: path.clone(), key: alias.into(), anim: Some(anim) }]).unwrap();
+            assert_eq!(times(&c, &path, stored), vec![0.25, 0.75, 1.25], "{tag}: an animation set by {alias} is {stored}'s");
+
+            c.apply_picture_ops(&[GraphOp::SetParam { path: path.clone(), key: alias.into(), value: ParamValue::Float(0.375) }]).unwrap();
+            let field = serde_json::to_value(&c.builtin_effects()[0]).unwrap()[stored].clone();
+            assert_eq!(field, serde_json::json!(0.375f32), "{tag}: a value set by {alias} is the stored {stored}");
+        }
+    }
 }

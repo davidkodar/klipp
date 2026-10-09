@@ -221,6 +221,10 @@ fn set_param(n: &mut Node, key: &ParamKey, value: &ParamValue) -> Result<(), Str
             return Err(format!("{key} is the node's own, not a setting of its effect"));
         }
         let tag = crate::effect_params::tag(n).unwrap_or_default().to_owned();
+        // A value named by a keyframe alias (a ChromaKey's `spill`) is the
+        // field it stands for (`soft_edge`): set under the alias, it would
+        // be a key no field reads, and the value would be lost.
+        let key = &ParamKey::from(crate::lift::anim_key(&tag, key.as_str()));
         let mut params = n.params.clone();
         params.insert(key.clone(), crate::effect_params::held(&tag, key, &v));
         let entry = crate::effect_params::from_params(&tag, &params)?;
@@ -356,10 +360,16 @@ fn apply_grade_anim(n: &mut Node, op: &GraphOp) -> Result<(), String> {
     Ok(())
 }
 
-/// The animation edits, the same on a graph and on a track's list.
+/// The animation edits, the same on a graph and on a track's list. A key
+/// named by an effect's keyframe alias (a ChromaKey's `spill`) edits the
+/// animation it is stored under (`soft_edge`, [`crate::lift::anim_key`]):
+/// never a second one beside it, whose write would replace the first.
 fn apply_anim(n: &mut Node, op: &GraphOp) -> Result<(), String> {
+    let tag = crate::effect_params::tag(n).unwrap_or("").to_owned();
+    let stored = |key: &ParamKey| ParamKey::from(crate::lift::anim_key(&tag, key.as_str()));
     match op {
         GraphOp::AddKeyAt { key, keyframe, .. } => {
+            let key = &stored(key);
             let t = key_time(keyframe)?;
             let a = n.anim.entry(key.clone()).or_insert(Animation { keys: Vec::new(), modifiers: None });
             a.keys.retain(|k| key_time(k).map_or(true, |kt| (kt - t).abs() > SAME_TIME));
@@ -367,6 +377,7 @@ fn apply_anim(n: &mut Node, op: &GraphOp) -> Result<(), String> {
             a.keys.insert(at, keyframe.clone());
         }
         GraphOp::RemoveKeyAt { key, time_secs, .. } => {
+            let key = &stored(key);
             let a = n.anim.get_mut(key).ok_or_else(|| format!("{key} isn't animated"))?;
             let before = a.keys.len();
             a.keys.retain(|k| key_time(k).map_or(true, |kt| (kt - time_secs).abs() > SAME_TIME));
@@ -377,14 +388,14 @@ fn apply_anim(n: &mut Node, op: &GraphOp) -> Result<(), String> {
                 n.anim.remove(key);
             }
         }
-        GraphOp::SetAnim { key, anim, .. } => match anim {
-            Some(a) => {
+        GraphOp::SetAnim { key, anim, .. } => match (&stored(key), anim) {
+            (key, Some(a)) => {
                 for k in &a.keys {
                     key_time(k)?;
                 }
                 n.anim.insert(key.clone(), a.clone());
             }
-            None => {
+            (key, None) => {
                 n.anim.remove(key);
             }
         },

@@ -80,6 +80,14 @@ pub fn keyframe_name<'a>(tag: &str, key: &'a str) -> &'a str {
     KEYFRAME_ALIASES.iter().find(|(t, _, to)| *t == tag && *to == key).map_or(key, |(_, from, _)| from)
 }
 
+/// The key a node's animation is stored under for the keyframe name `key`
+/// (`tag` the effect's saved tag): [`KEYFRAME_ALIASES`]' own, so a
+/// ChromaKey's `spill` is its `soft_edge`. Every other name is itself. An
+/// edit by path naming either reaches the one animation.
+pub fn anim_key<'a>(tag: &str, key: &'a str) -> &'a str {
+    KEYFRAME_ALIASES.iter().find(|(t, from, _)| *t == tag && *from == key).map_or(key, |(_, _, to)| to)
+}
+
 /// The effects that draw outside the picture, in the margin a transform
 /// leaves (`klipp_effects::draws_outside_the_picture`). Kept in step with
 /// it by a test.
