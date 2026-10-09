@@ -4028,7 +4028,7 @@ pub fn clip_effects(
     for (i, effect) in fx.iter_mut() {
         // Every keyframable parameter, from the one list the inspector
         // offers keyframes from. Opacity is the exception: it is the
-        // clip's compositing weight (`clip_opacity`).
+        // clip's compositing weight (`eval::evaluate_clip_opacity`).
         if !matches!(effect, BuiltinEffect::Opacity { .. }) {
             effect.animate(&mut |name, v| {
                 let kfs = clip.effect_keyframes().get(&format!("{i}:{name}")).map(|v| v.as_slice()).unwrap_or(&[]);
@@ -4038,7 +4038,7 @@ pub fn clip_effects(
         frame_inputs(clip, effect, t, fps, pin, &mut pinned);
     }
     let fx = fx.into_iter().map(|(_, e)| e).collect();
-    (place_and_finish(clip, fx, t, &ctx, resolved), clip_opacity(clip, time, fps))
+    (place_and_finish(clip, fx, t, &ctx, resolved), eval::evaluate_clip_opacity(clip, time, fps))
 }
 
 /// What one frame gives an animated effect (R16): the film effects' seed,
@@ -4142,40 +4142,6 @@ pub(crate) fn place_and_finish(
     }
     fx.retain(|e| !klipp_effects::is_identity_effect(e));
     fx
-}
-
-/// A clip's compositing weight at `time`: its own last `Opacity` effect
-/// over its opacity keyframes and modifiers (else those alone, over 1),
-/// times each Opacity its track added. A render copy carries its track's
-/// effects after the clip's own (`bake_track_effects`); a track's Opacity
-/// weighs the clip's resolved opacity rather than standing in for it
-/// (#1078).
-pub(crate) fn clip_opacity(clip: &Clip, time: Timecode, fps: f64) -> f32 {
-    let t = eval_clip_time(clip, time);
-    let ctx = eval::eval_context(clip, time, fps);
-    let enabled = |i: usize| clip.builtin_effects_enabled().get(i).copied().unwrap_or(true);
-    let own = clip.own_effects().map_or(clip.builtin_effects().len(), |o| o.builtin_effects.len());
-    let param = |i: usize, name: &str, v: f32| {
-        let kfs = clip.effect_keyframes().get(&format!("{i}:{name}")).map(|v| v.as_slice()).unwrap_or(&[]);
-        eval::eval_effect_with_modifiers(kfs, clip.param_modifiers(), i, name, t, v, &ctx)
-    };
-    let mut opacity = None;
-    let mut track_opacity = 1.0f32;
-    for (i, effect) in clip.builtin_effects().iter().enumerate().filter(|(i, _)| enabled(*i)) {
-        let BuiltinEffect::Opacity { value } = effect else { continue };
-        if i >= own {
-            track_opacity *= param(i, "value", *value).clamp(0.0, 1.0);
-        } else {
-            // Clip opacity keyframes / modifiers first, then the effect's
-            // own parameter keyframes — the viewer's order.
-            let base = eval::eval_with_modifiers(clip.opacity_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::Opacity, t, *value, &ctx);
-            opacity = Some(param(i, "value", base));
-        }
-    }
-    let opacity = opacity.unwrap_or_else(|| {
-        eval::eval_with_modifiers(clip.opacity_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::Opacity, t, 1.0, &ctx)
-    });
-    opacity.clamp(0.0, 1.0) * track_opacity
 }
 
 /// A clip's 3D tilt and perspective at clip time `t`: the tilt tracks,
@@ -4819,9 +4785,9 @@ mod temporal_denoise_placement_tests {
         klipp_core::keyframe::upsert_keyframe(&mut keys, 1.0, 0.6);
         assert!((opacity(&baked(half(), keys.clone(), half()), 24) - 0.3).abs() < 1e-6, "the clip's keys still count");
         assert!((opacity(&baked(vec![], keys, half()), 24) - 0.3).abs() < 1e-6, "keys with no Opacity effect of the clip's");
-        // Two of the clip's own: the last still sets it, as before.
+        // Two of the clip's own multiply (#1386), then the track's.
         let own = vec![BuiltinEffect::Opacity { value: 0.2 }, BuiltinEffect::Opacity { value: 0.8 }];
-        assert!((opacity(&baked(own, vec![], half()), 0) - 0.4).abs() < 1e-6);
+        assert!((opacity(&baked(own, vec![], half()), 0) - 0.08).abs() < 1e-6, "0.2 × 0.8 × 0.5");
         // A track Opacity above 1 can't brighten the clip.
         assert!((opacity(&baked(half(), vec![], vec![BuiltinEffect::Opacity { value: 1.5 }]), 0) - 0.5).abs() < 1e-6);
     }
