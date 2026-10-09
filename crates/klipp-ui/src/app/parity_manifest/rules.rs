@@ -255,6 +255,12 @@ pub(super) fn interactions(
             }
             if desc.keyframable && presentation.widget != Widget::Hidden {
                 required.extend([AddKey, EditKey, RemoveKey, PreviousKey, NextKey]);
+                // A numeric effect row's lane renders through the effect
+                // node's animation, apart from its static value. Grade rows
+                // are left out: grade keyframing is #891.
+                if surface == Surface::EffectsStack && !entry.grade && matches!(presentation.widget, Widget::Scrub | Widget::Slider | Widget::Gradient(_) | Widget::HueRainbow | Widget::Vec2) {
+                    required.insert(KeyedPixels);
+                }
                 match desc.kind {
                     ParamKind::Float | ParamKind::Colour => required.extend([
                         Interpolation(KeyInterpolation::Linear),

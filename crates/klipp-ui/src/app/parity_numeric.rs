@@ -55,7 +55,7 @@ const KNOWN_DEFECTS: &[(&str, &str, Surface, &str, &str)] = &[
     ("klipp.fx.speed_ramp", "freeze_at", Surface::EffectsStack, VARIANT, "known defect #1409: the lift drops the ramp, so Freeze At moves nothing"),
 ];
 
-fn known_defect(entry: &CatalogEntry, surface: Surface, variant: &str) -> Option<&'static str> {
+pub(super) fn known_defect(entry: &CatalogEntry, surface: Surface, variant: &str) -> Option<&'static str> {
     KNOWN_DEFECTS.iter().find(|(ty, param, s, v, _)| *ty == entry.type_id && *param == entry.parameter && *s == surface && *v == variant).map(|d| d.4)
 }
 
@@ -86,7 +86,7 @@ pub(super) fn with_field(
     serde_json::from_value(entry).map_err(|e| format!("{}: {e}", desc.key))
 }
 
-fn stored(effect: &BuiltinEffect, desc: &ParamDesc) -> Value {
+pub(super) fn stored(effect: &BuiltinEffect, desc: &ParamDesc) -> Value {
     effect_value(&serde_json::to_value(effect).unwrap(), desc)
 }
 
@@ -315,11 +315,25 @@ const PIXEL_CONTEXT: &[(&str, &[(&str, &str)], bool)] = &[
 /// of a few pixels at 1920 wide is under one at 320).
 const AT_FULL_SIZE: &[&str] = &["film_grain", "old_film"];
 
+/// The routes a type's Pixels are drawn on, and the declared reason when
+/// it is the CPU alone ([`CPU_BY_DESIGN`]).
+pub(super) fn routes_for(type_id: &str) -> (super::parity_pixels::Routes, Option<&'static str>) {
+    match CPU_BY_DESIGN.iter().find(|(ty, _)| *ty == type_id) {
+        Some((_, why)) => (super::parity_pixels::Routes::CpuByDesign, Some(why)),
+        None => (super::parity_pixels::Routes::Both, None),
+    }
+}
+
+/// The frame size a type's Pixels are drawn at ([`AT_FULL_SIZE`]).
+pub(super) fn size_for(tag: &str) -> (u32, u32) {
+    if AT_FULL_SIZE.contains(&tag) { super::parity_pixels::FULL } else { super::parity_pixels::SMALL }
+}
+
 /// The clip a row's pixel case edits, and the place of the edited effect
 /// in its list: `effect` with the [`PIXEL_CONTEXT`] for its tag, after a
 /// shrinking Transform where the context asks for one, with the analysis
 /// an analysis effect draws by.
-fn pixel_fixture(ty: &EffectType, effect: &BuiltinEffect, surface: Surface) -> Result<(klipp_timeline::Clip, usize), String> {
+pub(super) fn pixel_fixture(ty: &EffectType, effect: &BuiltinEffect, surface: Surface) -> Result<(klipp_timeline::Clip, usize), String> {
     let context = PIXEL_CONTEXT.iter().find(|(tag, _, _)| *tag == ty.tag);
     let mut entry = serde_json::to_value(effect).map_err(|e| e.to_string())?;
     for (field, value) in context.map_or(&[][..], |(_, fields, _)| *fields) {
@@ -363,7 +377,7 @@ fn pixel_fixture(ty: &EffectType, effect: &BuiltinEffect, surface: Surface) -> R
 /// side commands, they don't apply them): the deflicker gains for its
 /// window (`RegainDeflicker`), and the stabilisation's trajectory smoothed
 /// over its smoothing's window (`ResmoothStabilization`).
-fn regain(clip: &mut klipp_timeline::Clip) {
+pub(super) fn regain(clip: &mut klipp_timeline::Clip) {
     let window = clip.builtin_effects().iter().find_map(|e| match e {
         BuiltinEffect::Deflicker { window_secs, .. } => Some(*window_secs as f64),
         _ => None,
@@ -403,8 +417,8 @@ fn retime_control(clip: &klipp_timeline::Clip, size: (u32, u32)) -> Result<(), S
 /// A row no such value moves is an error naming it.
 #[allow(clippy::too_many_arguments)]
 fn pixel_case(routes: super::parity_pixels::Routes, ty: &EffectType, surface: Surface, effect: &BuiltinEffect, desc: &ParamDesc, label: RowLabel, value_at: impl Fn(f32) -> (String, Value)) -> Result<(), String> {
-    use super::parity_pixels::{cpu_frames_differ, FULL, SMALL};
-    let size = if AT_FULL_SIZE.contains(&ty.tag) { FULL } else { SMALL };
+    use super::parity_pixels::cpu_frames_differ;
+    let size = size_for(ty.tag);
     let (clip, index) = pixel_fixture(ty, effect, surface)?;
     if ty.tag == "speed_ramp" {
         retime_control(&clip, size)?;
@@ -431,6 +445,18 @@ fn pixel_case(routes: super::parity_pixels::Routes, ty: &EffectType, surface: Su
     let (mut new, mut old) = (run_for(surface, clip.clone(), true), run_for(surface, clip, false));
     type_value(&mut new, label, &typed)?;
     commands_applied(&new)?;
+    // The row asks the app to bring its analysis up to the edit; `regain`
+    // stands in for that below, so the request must have been sent.
+    let refresh = match (ty.tag, desc.key) {
+        ("deflicker", "window_secs") => Some("RegainDeflicker"),
+        ("video_stabilization", "smoothing") => Some("ResmoothStabilization"),
+        _ => None,
+    };
+    if let Some(command) = refresh {
+        if !new.side.iter().any(|sent| sent.starts_with(command)) {
+            return Err(format!("the row didn't ask for {command}: sent {:?}", new.side));
+        }
+    }
     old.apply(AppCommand::UpdateBuiltinEffect { clip_id: old.clip, index, effect: with_field(&start.builtin_effects()[index], desc, target)? });
     commands_applied(&old)?;
     let (mut old, mut new) = (old.clip().clone(), new.clip().clone());
