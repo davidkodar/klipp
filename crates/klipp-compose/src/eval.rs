@@ -579,7 +579,7 @@ pub fn evaluate_clip_opacity(
         eval_effect_with_modifiers(kfs, clip.param_modifiers(), i, name, t, v, &ctx)
     };
     let opacities = || clip.builtin_effects().iter().enumerate().filter(|(i, e)| enabled(*i) && matches!(e, BuiltinEffect::Opacity { .. }));
-    let anchor = opacities().filter(|(i, _)| *i < own).map(|(i, _)| i).last();
+    let anchor = opacities().filter(|(i, _)| *i < own).map(|(i, _)| i).next_back();
     let mut opacity = None;
     let mut others = 1.0f32;
     for (i, effect) in opacities() {
