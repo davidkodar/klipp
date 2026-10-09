@@ -237,6 +237,7 @@ fn in_memory(n: &Node) -> bool {
 /// held so, or no effect node, is left as it is.
 pub fn into_memory(n: &mut Node) -> Result<(), String> {
     frei0r::from_stored(n)?;
+    ofx::from_stored(n)?;
     if !is_effect(n) || in_memory(n) {
         return Ok(());
     }
@@ -265,6 +266,9 @@ pub fn added_into_memory(n: &mut Node) -> Result<(), String> {
 /// and only the node's own keys left there. The inverse of
 /// [`into_memory`]; a node already stored, or no effect node, is left.
 pub fn into_stored(n: &mut Node) -> Result<(), String> {
+    if n.type_id.as_str() == types::LEGACY_OFX {
+        return ofx::into_stored(n);
+    }
     if !is_effect(n) || !in_memory(n) {
         return Ok(());
     }
@@ -280,10 +284,130 @@ pub fn into_stored(n: &mut Node) -> Result<(), String> {
     Ok(())
 }
 
-/// A stored `klipp.frei0r` node as the effect entry it holds, for a reader
-/// of stored entries (the delift); any other node is left as it is.
-pub fn frei0r_entry(n: &mut Node) -> Result<(), String> {
-    frei0r::from_stored(n)
+/// A stored `klipp.frei0r` or `klipp.ofx` node as the entry it holds, for
+/// a reader of stored entries (the delift); any other node is left.
+pub fn plugin_entry(n: &mut Node) -> Result<(), String> {
+    frei0r::from_stored(n)?;
+    ofx::from_stored(n)
+}
+
+/// An OFX plug-in's stored form (picture revision 4, d9's fields): a
+/// `klipp.ofx` node whose `plugin`, `context` and `transition_amount` are
+/// its entry's, and whose `p.{name}` is each value by name at full
+/// precision, its kind in its variant. The entry's own `enabled` is the
+/// node's there (in memory an OFX node is on, its entry saying whether it
+/// runs). In memory it is the `klipp.legacy.ofx` node it was.
+mod ofx {
+    use super::*;
+
+    const PREFIX: &str = "p.";
+
+    pub fn into_stored(n: &mut Node) -> Result<(), String> {
+        let legacy = n.legacy.as_mut().ok_or_else(|| format!("OFX node {} has no entry", n.id))?;
+        let entry = legacy.payload.as_object().ok_or_else(|| format!("OFX node {}'s entry isn't an object", n.id))?.clone();
+        if !n.enabled {
+            return Err(format!("OFX node {} is off as a node, which its stored form can't say apart from its entry's", n.id));
+        }
+        if let Some(extra) = entry.keys().find(|k| !matches!(k.as_str(), "plugin_name" | "enabled" | "param_values" | "context" | "transition_amount")) {
+            return Err(format!("OFX node {}: a field {extra:?} its stored form has no key for", n.id));
+        }
+        let text = |k: &str| entry.get(k).and_then(Value::as_str).map(str::to_owned).ok_or_else(|| format!("OFX node {}: no {k}", n.id));
+        n.params.insert(ParamKey::from("plugin"), ParamValue::Text(text("plugin_name")?));
+        if entry.contains_key("context") {
+            n.params.insert(ParamKey::from("context"), ParamValue::Text(text("context")?));
+        }
+        if let Some(t) = entry.get("transition_amount") {
+            n.params.insert(ParamKey::from("transition_amount"), ParamValue::Float64(t.as_f64().ok_or_else(|| format!("OFX node {}: its transition amount isn't a number", n.id))?));
+        }
+        for (name, v) in entry.get("param_values").and_then(Value::as_object).into_iter().flatten() {
+            let p = value(v).ok_or_else(|| format!("OFX node {}: {name} isn't an OFX value: {v}", n.id))?;
+            n.params.insert(ParamKey::from(format!("{PREFIX}{name}").as_str()), p);
+        }
+        n.enabled = entry.get("enabled").and_then(Value::as_bool).ok_or_else(|| format!("OFX node {}: no enabled flag", n.id))?;
+        legacy.payload = Value::Null;
+        n.type_id = klipp_graph_format::NodeTypeId::new(lt::OFX);
+        Ok(())
+    }
+
+    pub fn from_stored(n: &mut Node) -> Result<(), String> {
+        if n.type_id.as_str() != lt::OFX {
+            return Ok(());
+        }
+        let mut entry = Map::new();
+        let take = |n: &mut Node, k: &str| n.params.remove(&ParamKey::from(k));
+        match take(n, "plugin") {
+            Some(ParamValue::Text(p)) => entry.insert("plugin_name".into(), Value::from(p)),
+            other => return Err(format!("OFX node {}: its plug-in is {other:?}, not a name", n.id)),
+        };
+        entry.insert("enabled".into(), Value::Bool(n.enabled));
+        match take(n, "context") {
+            Some(ParamValue::Text(c)) => {
+                entry.insert("context".into(), Value::from(c));
+            }
+            None => {}
+            other => return Err(format!("OFX node {}: its context is {other:?}", n.id)),
+        }
+        match take(n, "transition_amount") {
+            Some(ParamValue::Float64(t)) => {
+                entry.insert("transition_amount".into(), serde_json::json!(t));
+            }
+            None => {}
+            other => return Err(format!("OFX node {}: its transition amount is {other:?}", n.id)),
+        }
+        let mut values = Map::new();
+        for key in n.params.keys().filter(|k| k.as_str().starts_with(PREFIX)).cloned().collect::<Vec<_>>() {
+            let v = n.params.remove(&key).unwrap_or(ParamValue::Bool(false));
+            let name = key.as_str()[PREFIX.len()..].to_owned();
+            values.insert(name, stored(&v).ok_or_else(|| format!("OFX node {}: {key} is {v:?}, no OFX value", n.id))?);
+        }
+        entry.insert("param_values".into(), Value::Object(values));
+        let legacy = n.legacy.as_mut().ok_or_else(|| format!("OFX node {} has no slot", n.id))?;
+        legacy.payload = Value::Object(entry);
+        n.enabled = true;
+        n.type_id = klipp_graph_format::NodeTypeId::new(types::LEGACY_OFX);
+        Ok(())
+    }
+
+    /// A stored OFX value (`{"Double2": [a, b]}`, as `OfxValue` writes it)
+    /// as the typed value of its kind.
+    fn value(v: &Value) -> Option<ParamValue> {
+        let (kind, x) = v.as_object().filter(|o| o.len() == 1)?.iter().next()?;
+        let floats = |n: usize| -> Option<Vec<f64>> { x.as_array().filter(|a| a.len() == n)?.iter().map(Value::as_f64).collect() };
+        let ints = |n: usize| -> Option<Vec<i32>> { x.as_array().filter(|a| a.len() == n)?.iter().map(|i| i.as_i64().and_then(|i| i32::try_from(i).ok())).collect() };
+        let int = || x.as_i64().and_then(|i| i32::try_from(i).ok());
+        Some(match kind.as_str() {
+            "Double" => ParamValue::Float64(x.as_f64()?),
+            "Double2" => floats(2).map(|f| ParamValue::Point2F64([f[0], f[1]]))?,
+            "Double3" => floats(3).map(|f| ParamValue::Point3F64([f[0], f[1], f[2]]))?,
+            "Int" => ParamValue::Int(int()?),
+            "Int2" => ints(2).map(|i| ParamValue::Int2([i[0], i[1]]))?,
+            "Int3" => ints(3).map(|i| ParamValue::Int3([i[0], i[1], i[2]]))?,
+            "Bool" => ParamValue::Bool(x.as_bool()?),
+            "Choice" => ParamValue::Choice(int()?),
+            "String" => ParamValue::Text(x.as_str()?.to_owned()),
+            "Rgba" => floats(4).map(|f| ParamValue::ColorF64 { rgba: [f[0], f[1], f[2], f[3]], alpha: true })?,
+            "Rgb" => floats(3).map(|f| ParamValue::ColorF64 { rgba: [f[0], f[1], f[2], 0.0], alpha: false })?,
+            _ => return None,
+        })
+    }
+
+    /// [`value`]'s inverse.
+    fn stored(v: &ParamValue) -> Option<Value> {
+        Some(match v {
+            ParamValue::Float64(x) => serde_json::json!({ "Double": x }),
+            ParamValue::Point2F64(p) => serde_json::json!({ "Double2": p }),
+            ParamValue::Point3F64(p) => serde_json::json!({ "Double3": p }),
+            ParamValue::Int(i) => serde_json::json!({ "Int": i }),
+            ParamValue::Int2(i) => serde_json::json!({ "Int2": i }),
+            ParamValue::Int3(i) => serde_json::json!({ "Int3": i }),
+            ParamValue::Bool(b) => serde_json::json!({ "Bool": b }),
+            ParamValue::Choice(i) => serde_json::json!({ "Choice": i }),
+            ParamValue::Text(s) => serde_json::json!({ "String": s }),
+            ParamValue::ColorF64 { rgba, alpha: true } => serde_json::json!({ "Rgba": rgba }),
+            ParamValue::ColorF64 { rgba, alpha: false } => serde_json::json!({ "Rgb": &rgba[..3] }),
+            _ => return None,
+        })
+    }
 }
 
 /// A frei0r plug-in's stored form (picture revision 4, d9's fields): a
@@ -479,6 +603,45 @@ mod tests {
         let mut gap = n.clone();
         gap.params.remove(&ParamKey::from("p2"));
         assert!(into_memory(&mut gap).unwrap_err().contains("skip"));
+    }
+
+    /// An OFX plug-in is stored as `klipp.ofx` (picture revision 4): each
+    /// value by name, in its kind, at full precision, an RGB colour's unused
+    /// alpha 0; held in memory it is the OFX entry it was, and stored again
+    /// the same.
+    #[test]
+    fn an_ofx_entry_is_stored_by_name_and_kind_and_back() {
+        let entry = serde_json::json!({"plugin_name": "org.example.Glow", "enabled": false, "context": "Filter", "transition_amount": 0.1, "param_values": {
+            "amount": {"Double": 0.1}, "centre": {"Double2": [0.1, 0.7]}, "axis": {"Double3": [0.1, 0.2, 0.3]},
+            "count": {"Int": -3}, "size": {"Int2": [640, 480]}, "box": {"Int3": [1, 2, 3]}, "on": {"Bool": true},
+            "mode": {"Choice": -1}, "name": {"String": "soft"}, "tint": {"Rgba": [0.1, 0.2, 0.3, 0.4]}, "key": {"Rgb": [0.5, 0.6, 0.7]}
+        }});
+        let mut n: Node = serde_json::from_value(serde_json::json!({"id": uuid::Uuid::nil(), "type_id": types::LEGACY_OFX, "label": "", "legacy": {"slot": 0, "payload": entry}})).unwrap();
+        let memory = n.clone();
+        into_stored(&mut n).unwrap();
+        assert_eq!(n.type_id.as_str(), lt::OFX);
+        assert!(!n.enabled, "the entry's flag is the node's");
+        assert_eq!(n.legacy.as_ref().unwrap().payload, Value::Null);
+        let p = |k: &str| n.params.get(&ParamKey::from(k)).cloned();
+        assert_eq!(p("plugin"), Some(ParamValue::Text("org.example.Glow".into())));
+        assert_eq!(p("context"), Some(ParamValue::Text("Filter".into())));
+        assert_eq!(p("transition_amount"), Some(ParamValue::Float64(0.1)));
+        assert_eq!(p("p.amount"), Some(ParamValue::Float64(0.1)));
+        assert_eq!(p("p.centre"), Some(ParamValue::Point2F64([0.1, 0.7])));
+        assert_eq!(p("p.axis"), Some(ParamValue::Point3F64([0.1, 0.2, 0.3])));
+        assert_eq!(p("p.count"), Some(ParamValue::Int(-3)));
+        assert_eq!(p("p.size"), Some(ParamValue::Int2([640, 480])));
+        assert_eq!(p("p.box"), Some(ParamValue::Int3([1, 2, 3])));
+        assert_eq!(p("p.on"), Some(ParamValue::Bool(true)));
+        assert_eq!(p("p.mode"), Some(ParamValue::Choice(-1)));
+        assert_eq!(p("p.name"), Some(ParamValue::Text("soft".into())));
+        assert_eq!(p("p.tint"), Some(ParamValue::ColorF64 { rgba: [0.1, 0.2, 0.3, 0.4], alpha: true }));
+        assert_eq!(p("p.key"), Some(ParamValue::ColorF64 { rgba: [0.5, 0.6, 0.7, 0.0], alpha: false }));
+        let stored = serde_json::to_value(&n).unwrap();
+        into_memory(&mut n).unwrap();
+        assert_eq!(n, memory, "the OFX entry it was");
+        into_stored(&mut n).unwrap();
+        assert_eq!(serde_json::to_value(&n).unwrap(), stored, "stored again, the same");
     }
 
     #[test]

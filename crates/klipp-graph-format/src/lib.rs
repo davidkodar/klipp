@@ -432,6 +432,16 @@ pub enum ParamValue {
     Float64(f64),
     /// A position an f32 can't hold exactly: a frei0r plug-in's.
     Point2F64([f64; 2]),
+    /// An OFX plug-in's three-number value, at full precision.
+    Point3F64([f64; 3]),
+    /// An OFX plug-in's two- and three-integer values.
+    Int2([i32; 2]),
+    Int3([i32; 3]),
+    /// An OFX plug-in's choice: its index, which may be negative.
+    Choice(i32),
+    /// An OFX plug-in's colour at full precision. Without `alpha` (an RGB
+    /// value) `rgba[3]` is 0 and never read, so equal colours compare equal.
+    ColorF64 { rgba: [f64; 4], alpha: bool },
 }
 
 /// A clip's picture as revision 1 writes it: the graph, plus the clip's

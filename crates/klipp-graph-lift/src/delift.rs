@@ -139,13 +139,13 @@ fn compound(mut n: Node) -> Result<Node, Refusal> {
 
 /// A lifted, unspliced clip picture back to its revision-1 record.
 pub fn clip(p: &ClipPicture) -> Result<ClipRecordV2, Refusal> {
-    // A frei0r plug-in stored as `klipp.frei0r` (picture revision 4) is
-    // read as the entry it holds.
+    // A plug-in stored as `klipp.frei0r` or `klipp.ofx` (picture revision
+    // 4) is read as the entry it holds.
     let mut entries = None;
-    if p.graph.nodes.iter().any(|n| n.type_id.as_str() == lt::FREI0R) {
+    if p.graph.nodes.iter().any(|n| matches!(n.type_id.as_str(), lt::FREI0R | lt::OFX)) {
         let mut q = p.clone();
         for n in &mut q.graph.nodes {
-            crate::effect_params::frei0r_entry(n)?;
+            crate::effect_params::plugin_entry(n)?;
         }
         entries = Some(q);
     }

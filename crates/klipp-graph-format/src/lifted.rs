@@ -44,6 +44,10 @@ pub mod types {
     /// In memory it is an effect node like any other
     /// (`effect_params::into_memory`).
     pub const FREI0R: &str = "klipp.frei0r";
+    /// An OFX plug-in as a file stores it (picture revision 4): the plug-in
+    /// in `plugin`, its context, and each value by name in `p.{name}`. In
+    /// memory it is the OFX entry it was.
+    pub const OFX: &str = "klipp.ofx";
     /// The display tone map after the Grade group: always present, a
     /// passthrough unless the source is scene-referred at render time.
     pub const SCENE_TO_DISPLAY: &str = "klipp.colour.scene_to_display";
