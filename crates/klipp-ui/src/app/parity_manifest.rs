@@ -646,8 +646,11 @@ impl Report {
             }
         }
         for key in &self.passed {
-            // snapshot_for deliberately disables generated rows for these
-            // roots. They must not silently be labelled new-path evidence.
+            // Nested grades keep the old rows (the #1391 boundary). The
+            // timeline grade and group stages draw generated (M3 step 19)
+            // but no family runs over them yet, so any case on this
+            // surface is still labelled as fallback evidence until one
+            // does, and nothing on it can be deleted.
             if matches!(key.surface, Surface::NestedGrade | Surface::NonClipGrade)
                 && !self.fallback.contains_key(key)
             {

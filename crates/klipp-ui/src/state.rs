@@ -2101,6 +2101,14 @@ pub struct AppState {
     /// grade has no enabled Corrector, so the rows and editors drawn before
     /// it exists name the node it will be (see `grade_view::snapshot_for`).
     pub pending_corrector: Option<(ClipId, klipp_nodes::NodeId)>,
+    /// The graph the timeline grade's or a group stage's stand-in was put
+    /// on with while that root has no grade yet: what the inspector drew,
+    /// and what the root's first path edit begins from, so its node ids
+    /// are the ones drawn (M3 step 19, see `grade_view::snapshot_for_root`).
+    /// Each stand-in's draw sets it and nothing clears it when the
+    /// selection moves on: it is read only for its own root, and only
+    /// while that root still has no grade, so a stale one is never used.
+    pub root_grade_start: Option<(klipp_graph_format::path::Root, klipp_nodes::NodeGraph)>,
     /// The split view's compared node: its clip, and the node whose
     /// picture the "before" half stops at.
     pub split_compare_node: Option<(ClipId, klipp_graph_format::path::NodePath)>,
@@ -4159,6 +4167,7 @@ impl Default for AppState {
             use_generated_stack: false,
             resumable_path_drag: None,
             pending_corrector: None,
+            root_grade_start: None,
             selected_node_addr: None,
             split_compare_node: None,
             graph_dock_open: false,

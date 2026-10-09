@@ -48,6 +48,16 @@ impl Effects {
     }
 }
 
+/// One of the sequence's own grades put back as an edit's undo or redo
+/// stored it. It was the sequence's when the edit was made; one that no
+/// longer is (its group gone) is said, never passed over quietly.
+fn set_root_grade(seq: &mut klipp_timeline::Sequence, root: klipp_graph_format::path::Root, grade: Option<&klipp_nodes::NodeGraph>) {
+    if let Err(why) = seq.set_root_grade(root, grade.cloned()) {
+        debug_assert!(false, "a grade step's root is gone: {why}");
+        tracing::warn!(?root, %why, "undo/redo: a grade step's root is gone; the grade is left as it is");
+    }
+}
+
 /// A graph edit lands on the clip it names, or, under the sequence's
 /// timeline-grade id, on the timeline grade, or under a grade group
 /// stage's id, on that stage: the Colour workspace edits those through
@@ -713,6 +723,10 @@ impl DocumentView<'_> {
             }
             EditCommand::SetMediaLogFormat { media_id, old, grades, .. } => {
                 effects.merge(self.set_media_log_format(*media_id, *old, grades.iter().map(|(id, before, after)| (*id, after, before))));
+            }
+            EditCommand::SetRootGrade { root, old, .. } => {
+                set_root_grade(&mut self.sequences[self.active], *root, old.as_deref());
+                effects.sync_sequence = true;
             }
             EditCommand::PictureEdit { clip_id, edit, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
@@ -1406,6 +1420,10 @@ impl DocumentView<'_> {
             }
             EditCommand::SetMediaLogFormat { media_id, new, grades, .. } => {
                 effects.merge(self.set_media_log_format(*media_id, *new, grades.iter().map(|(id, before, after)| (*id, before, after))));
+            }
+            EditCommand::SetRootGrade { root, new, .. } => {
+                set_root_grade(&mut self.sequences[self.active], *root, new.as_deref());
+                effects.sync_sequence = true;
             }
             EditCommand::PictureEdit { clip_id, edit, .. } => {
                 for track in &mut self.sequences[self.active].tracks {

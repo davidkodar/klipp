@@ -546,6 +546,16 @@ pub enum EditCommand {
         new_graph: klipp_nodes::NodeGraph,
     },
 
+    /// A path edit of one of the sequence's own grades (M3 step 19): the
+    /// timeline grade or a grade group's pre-clip or post-clip stage, as
+    /// stored before (`None`: it had none) and after.
+    SetRootGrade {
+        description: &'static str,
+        root: klipp_graph_format::path::Root,
+        old: Option<Box<klipp_nodes::NodeGraph>>,
+        new: Option<Box<klipp_nodes::NodeGraph>>,
+    },
+
     // === PICTURE (graph ops, node-graph M2 step 15) ===
     /// A batch of graph ops on a clip's picture: its fields before and
     /// after, effect ids included (`Clip::apply_picture_ops`), so undo
@@ -848,6 +858,7 @@ impl EditCommand {
             EditCommand::RemoveTransition { .. } => "Remove Transition",
             EditCommand::SetNodeGraph { .. } => "Color Grade",
             EditCommand::SetMediaLogFormat { .. } => "Camera Encoding",
+            EditCommand::SetRootGrade { description, .. } => description,
             EditCommand::PictureEdit { description, .. } => description,
             EditCommand::ReplaceClip { description, .. } => description,
             EditCommand::EditKeyframes { description, .. } => description,
@@ -1365,6 +1376,12 @@ fn combine_old_new(old_entry: HistoryEntry, new_entry: HistoryEntry) -> HistoryE
             EditCommand::SetSequenceCamera { old, .. },
             EditCommand::SetSequenceCamera { new, .. },
         ) => EditCommand::SetSequenceCamera { old: old.clone(), new: new.clone() },
+        // A drag on one of the sequence's own grades (M3 step 19): the
+        // grade as the drag found it and as it left it.
+        (
+            EditCommand::SetRootGrade { description, root, old, .. },
+            EditCommand::SetRootGrade { new, .. },
+        ) => EditCommand::SetRootGrade { description, root: *root, old: old.clone(), new: new.clone() },
         // Unmatched pair: the pre-drag and post-drag commands are different
         // variants, or this is a coalesce-eligible variant someone wired up
         // without extending combine_old_new. Loudly flag in debug, fall back
