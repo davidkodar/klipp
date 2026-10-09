@@ -279,6 +279,9 @@ impl Manifest {
         for key in rules::representative_keys() {
             self.require(key);
         }
+        for (key, reason) in rules::representative_exclusions() {
+            self.exclude_key(key, reason);
+        }
     }
 
     /// The central rules' representative obligations that nothing
@@ -470,7 +473,9 @@ impl Manifest {
             if !self.required.contains(key) {
                 errors.push(format!("excluded key was not required: {key:?}"));
             }
-            if !catalog.contains_key(&(key.type_id.as_str(), key.parameter.as_str())) {
+            // A representative's exclusion is the central rules', as the
+            // representative is (`rules::representative_exclusions`).
+            if !catalog.contains_key(&(key.type_id.as_str(), key.parameter.as_str())) && !representative.contains(key) {
                 errors.push(format!("stale excluded key: {key:?}"));
             }
             if !cited(reason) {
@@ -511,6 +516,26 @@ pub(super) fn representatives_of(interaction: Interaction) -> Vec<CoverageKey> {
 /// (`rules::GRADE_KEY_REPRESENTATIVE`).
 pub(super) fn grade_key_representatives() -> [(Surface, &'static str, &'static str); 3] {
     rules::GRADE_KEY_REPRESENTATIVE
+}
+
+/// The grade bypass's representative nodes, as (page, type)
+/// (`rules::BYPASS_REPRESENTATIVE`).
+pub(super) fn bypass_representatives() -> [(Surface, &'static str); 3] {
+    rules::BYPASS_REPRESENTATIVE
+}
+
+/// The variant the grade bypass representatives are earned under.
+pub(super) fn bypass_variant() -> &'static str {
+    rules::BYPASS_VARIANT
+}
+
+/// The page a grade node's bypass is owed on per type (`rules::surfaces`),
+/// or `None` for an entry the central rules exclude.
+pub(super) fn grade_bypass_page(entry: &CatalogEntry) -> Option<Surface> {
+    if rules::entry_exclusion(entry).is_some() {
+        return None;
+    }
+    rules::surfaces(entry).ok()?.into_iter().next()
 }
 
 /// The clip grade page a grade row owes its per-type `AddKey` on

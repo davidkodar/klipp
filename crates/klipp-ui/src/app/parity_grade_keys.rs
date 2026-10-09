@@ -241,7 +241,7 @@ pub(super) fn add_key_case(start: &Grade, ty: &NodeType, desc: &'static ParamDes
 }
 
 /// A representative's row drawn, with its page and variant's start.
-fn representative(page: Surface, type_id: &str, parameter: &str) -> Result<(Grade, &'static NodeType, &'static ParamDesc), String> {
+pub(super) fn representative(page: Surface, type_id: &str, parameter: &str) -> Result<(Grade, &'static NodeType, &'static ParamDesc), String> {
     let ty = klipp_nodes::registry::node_types().find(|t| t.desc.id == type_id).ok_or("no such grade type")?;
     let desc = ty.desc.params.iter().find(|d| d.key == parameter).ok_or("no such parameter")?;
     let start = match page {
