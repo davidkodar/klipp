@@ -56,7 +56,11 @@ pub struct ClipPicture {
     pub graph: Graph,
     #[serde(default, skip_serializing_if = "PlacementProps::is_empty")]
     pub placement: PlacementProps,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// The placement's keyed values, by key ([`PLACEMENT_ANIM_KEYS`]). A key
+    /// this reader doesn't animate is refused, so a lane added later (a
+    /// height keyed apart from the width, after #1406) is never read with
+    /// it dropped.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty", deserialize_with = "known_placement_keys")]
     pub placement_anim: BTreeMap<ParamKey, Animation>,
     /// The static opacity: clamped to 0..1 as the renderer does when
     /// nothing animates it, and as stored under an animation, which the
@@ -73,6 +77,19 @@ pub struct ClipPicture {
     /// dropped (#1034).
     #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "known_capabilities")]
     pub requires: Vec<String>,
+}
+
+/// The placement values a clip keys. The width's lane keys the height too,
+/// at the clip's aspect (`PlacementProps::aspect`); a height keyed apart
+/// would be a lane of its own, added to this list with the reading of it.
+pub const PLACEMENT_ANIM_KEYS: [&str; 6] = ["pos_x", "pos_y", "scale", "rotation", "tilt_x", "tilt_y"];
+
+fn known_placement_keys<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<ParamKey, Animation>, D::Error> {
+    let anim = BTreeMap::<ParamKey, Animation>::deserialize(d)?;
+    if let Some(key) = anim.keys().find(|k| !PLACEMENT_ANIM_KEYS.contains(&k.as_str())) {
+        return Err(serde::de::Error::custom(format!("unsupported placement animation: {key}")));
+    }
+    Ok(anim)
 }
 
 /// The capability a picture-truth clip's stored picture requires.
@@ -150,6 +167,15 @@ pub struct PlacementProps {
     pub pos_y: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale: Option<f32>,
+    /// The clip's aspect, its height's scale against its width's
+    /// (`scale_y / scale_x`), only where it isn't 1 (absent, the clip
+    /// scales evenly): a clip scaled unevenly (#1406, picture revision 4).
+    /// Its height is `scale × aspect`, so the scale lane keys both axes at
+    /// this aspect, and a width keyed to 0 gives a height of 0. A reader
+    /// before it refuses the field, so it never draws the clip with its
+    /// height dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aspect: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotation: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

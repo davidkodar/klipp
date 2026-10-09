@@ -14,7 +14,7 @@ use klipp_graph_format::{Animation, ParamKey, ParamValue};
 use serde_json::Value;
 
 /// The placement's keys.
-pub const PLACEMENT: [&str; 9] = ["pos_x", "pos_y", "scale", "rotation", "anchor_x", "anchor_y", "tilt_x", "tilt_y", "perspective"];
+pub const PLACEMENT: [&str; 10] = ["pos_x", "pos_y", "scale", "scale_y", "rotation", "anchor_x", "anchor_y", "tilt_x", "tilt_y", "perspective"];
 
 /// The opacity's key.
 pub const OPACITY: &str = "opacity";
@@ -24,9 +24,10 @@ pub fn is_property(key: &ParamKey) -> bool {
     key.as_str() == OPACITY || PLACEMENT.contains(&key.as_str())
 }
 
-/// Whether `key` takes keyframes.
+/// Whether `key` takes keyframes: the opacity, and the placement values a
+/// clip keys (`PLACEMENT_ANIM_KEYS`; its height follows the width's lane).
 pub fn is_animated(key: &ParamKey) -> bool {
-    matches!(key.as_str(), "pos_x" | "pos_y" | "scale" | "rotation" | "tilt_x" | "tilt_y" | OPACITY)
+    key.as_str() == OPACITY || klipp_graph_format::lifted::PLACEMENT_ANIM_KEYS.contains(&key.as_str())
 }
 
 /// The id a clip's placement is addressed by, whatever its node's id now:
@@ -69,7 +70,10 @@ pub fn apply(picture: &mut ClipPicture, op: &GraphOp) -> Result<(), String> {
         match key.as_str() {
             "pos_x" => p.pos_x = Some(v),
             "pos_y" => p.pos_y = Some(v),
+            // The width; the height keeps the aspect under it.
             "scale" => p.scale = Some(v),
+            // The height, kept as the aspect against the width (#1406).
+            "scale_y" => p.aspect = crate::lift::aspect(p.scale.or(Some(1.0)), Some(v)),
             "rotation" => p.rotation = Some(v),
             "anchor_x" => p.anchor_x = Some(v),
             "anchor_y" => p.anchor_y = Some(v),
@@ -80,6 +84,7 @@ pub fn apply(picture: &mut ClipPicture, op: &GraphOp) -> Result<(), String> {
             // it is stored as given.
             _ => picture.opacity = if picture.opacity_anim.is_some() { v } else { v.clamp(0.0, 1.0) },
         }
+
         return Ok(());
     }
     if !is_animated(&key) {

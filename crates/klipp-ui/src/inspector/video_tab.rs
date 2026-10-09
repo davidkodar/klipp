@@ -547,7 +547,7 @@ fn show_clip_video(
         t.position_x = pos_x;
         t.position_y = pos_y;
         t.scale_x = scale_val;
-        t.scale_y = scale_val; // uniform scale
+        t.scale_y = keep_aspect(&transform, scale_val);
         t.rotation = rotation;
         t.rotation_x = tilt_x;
         t.rotation_y = tilt_y;
@@ -592,7 +592,7 @@ fn show_clip_video(
             t.position_x = pos_x;
             t.position_y = pos_y;
             t.scale_x = scale_val;
-            t.scale_y = scale_val;
+            t.scale_y = keep_aspect(&transform, scale_val);
             t.rotation = rotation;
             t.rotation_x = tilt_x;
             t.rotation_y = tilt_y;
@@ -3930,6 +3930,13 @@ fn emit_transform(cmds: &mut Vec<AppCommand>, clip: &Clip, clip_id: klipp_core::
             effect: params.to_builtin_effect(),
         });
     }
+}
+
+/// The height a scale of `width` gives `t`'s clip: its aspect (height
+/// against width) kept, as the scale lane keys both (#1406); a width of 0
+/// gives a height of 0.
+pub(crate) fn keep_aspect(t: &TransformParams, width: f32) -> f32 {
+    if t.scale_x != 0.0 { width * t.scale_y / t.scale_x } else { width }
 }
 
 /// The Perspective the row stores for the value it shows: its default,

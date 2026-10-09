@@ -693,21 +693,28 @@ fn opacity(record: &ClipRecordV2, effects: &[&Node], ctx: &LiftCtx, notes: &mut 
     }
 }
 
+/// A clip's aspect from its two scales (`PlacementProps::aspect`): `None`
+/// where they agree, or the width is 0 or absent.
+pub fn aspect(scale_x: Option<f32>, scale_y: Option<f32>) -> Option<f32> {
+    let (x, y) = (scale_x.unwrap_or(1.0), scale_y.or(scale_x).unwrap_or(1.0));
+    (x != 0.0 && y != x).then(|| y / x).filter(|a| a.is_finite())
+}
+
 /// The clip's placement values from its first enabled Transform (#1207),
 /// and their animation from the clip's transform keyframes.
-fn placement(record: &ClipRecordV2, transforms: &[&Node], notes: &mut Vec<LiftNote>) -> (PlacementProps, BTreeMap<ParamKey, Animation>) {
+fn placement(record: &ClipRecordV2, transforms: &[&Node]) -> (PlacementProps, BTreeMap<ParamKey, Animation>) {
     let mut p = PlacementProps::default();
     if let Some(first) = transforms.iter().find(|n| n.enabled) {
         let v = payload(first);
         p.pos_x = num(v, "position_x");
         p.pos_y = num(v, "position_y");
         p.scale = num(v, "scale_x");
+        // Its height against its width, where they differ (#1406): none
+        // for a width of 0, which draws nothing whatever the height.
+        p.aspect = aspect(p.scale, num(v, "scale_y"));
         p.rotation = num(v, "rotation");
         p.anchor_x = num(v, "anchor_x");
         p.anchor_y = num(v, "anchor_y");
-        if num(v, "scale_y") != num(v, "scale_x") {
-            notes.push(LiftNote::DroppedField { what: "transform".into(), field: "scale_y".into() });
-        }
         p.tilt_x = num(v, "rotation_x");
         p.tilt_y = num(v, "rotation_y");
         p.perspective = num(v, "perspective");
@@ -822,7 +829,7 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
     // The clip's opacity and placement become properties.
     let (opacity, opacity_anim) = opacity(record, &effects, ctx, &mut notes, &mut clip_orphans);
     let transforms: Vec<&Node> = effects.iter().copied().filter(|n| n.type_id.as_str() == types::LEGACY_TRANSFORM).collect();
-    let (placement, placement_anim) = placement(record, &transforms, &mut notes);
+    let (placement, placement_anim) = placement(record, &transforms);
     let fixed_at = transforms.iter().find(|n| n.enabled).map(|n| n.id);
 
     // The chain.
@@ -945,11 +952,10 @@ mod placement_bypass_tests {
         let off = transform(false, 20.0, json!({"old":"disabled"}));
         let on = transform(true, 2.0, Value::Null);
         let later = transform(true, 30.0, json!({"old":"later"}));
-        let mut notes = Vec::new();
-        let absent = placement(&record, &[], &mut notes);
-        assert_eq!(placement(&record, &[&off], &mut notes), absent);
-        let expected = placement(&record, &[&on], &mut notes);
-        assert_eq!(placement(&record, &[&off, &on, &later], &mut notes), expected);
+        let absent = placement(&record, &[]);
+        assert_eq!(placement(&record, &[&off]), absent);
+        let expected = placement(&record, &[&on]);
+        assert_eq!(placement(&record, &[&off, &on, &later]), expected);
         assert_eq!(expected.0.pos_x, Some(2.0));
         assert_eq!(expected.0.tilt_x, Some(8.0));
         assert_eq!(expected.0.perspective, Some(10.0));

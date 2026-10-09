@@ -46,10 +46,11 @@ pub fn lane_key(param: VideoParam) -> Option<&'static str> {
 /// Opacity.
 fn values(effect: &BuiltinEffect) -> Vec<(&'static str, f32)> {
     match effect {
-        BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, anchor_x, anchor_y, rotation_x, rotation_y, perspective, .. } => vec![
+        BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, rotation_x, rotation_y, perspective, .. } => vec![
             ("pos_x", *position_x),
             ("pos_y", *position_y),
             ("scale", *scale_x),
+            ("scale_y", *scale_y),
             ("rotation", *rotation),
             ("anchor_x", *anchor_x),
             ("anchor_y", *anchor_y),
@@ -70,6 +71,7 @@ fn current(clip: &Clip) -> Vec<(&'static str, f32)> {
         ("pos_x", p.pos_x.unwrap_or(0.0)),
         ("pos_y", p.pos_y.unwrap_or(0.0)),
         ("scale", p.scale.unwrap_or(1.0)),
+        ("scale_y", p.scale.unwrap_or(1.0) * p.aspect.unwrap_or(1.0)),
         ("rotation", p.rotation.unwrap_or(0.0)),
         ("anchor_x", p.anchor_x.unwrap_or(0.5)),
         ("anchor_y", p.anchor_y.unwrap_or(0.5)),
@@ -88,7 +90,8 @@ pub fn placement(clip: &Clip) -> crate::inspector::video_tab::TransformParams {
     let mut t = crate::inspector::video_tab::TransformParams::default();
     if let Some(v) = get("pos_x") { t.position_x = v; }
     if let Some(v) = get("pos_y") { t.position_y = v; }
-    if let Some(v) = get("scale") { (t.scale_x, t.scale_y) = (v, v); }
+    if let Some(v) = get("scale") { t.scale_x = v; }
+    if let Some(v) = get("scale_y") { t.scale_y = v; }
     if let Some(v) = get("rotation") { t.rotation = v; }
     if let Some(v) = get("anchor_x") { t.anchor_x = v; }
     if let Some(v) = get("anchor_y") { t.anchor_y = v; }
@@ -130,12 +133,20 @@ pub fn by_path(cmds: Vec<AppCommand>, clip: &Clip) -> Vec<AppCommand> {
                     if keyed.contains(&key) {
                         continue;
                     }
+                    let old_scale = now.iter().find(|(k, _)| *k == "scale").map_or(1.0, |(_, w)| *w);
                     let was = now.iter_mut().find(|(k, _)| *k == key);
                     if was.as_ref().is_some_and(|(_, w)| (*w - v).abs() <= f32::EPSILON) {
                         continue;
                     }
                     if let Some(w) = was {
                         w.1 = v;
+                    }
+                    // A new width carries the height at the clip's aspect.
+                    if key == "scale" {
+                        let aspect = klipp_graph_lift::lift::aspect(Some(old_scale), now.iter().find(|(k, _)| *k == "scale_y").map(|(_, h)| *h)).unwrap_or(1.0);
+                        if let Some(h) = now.iter_mut().find(|(k, _)| *k == "scale_y") {
+                            h.1 = v * aspect;
+                        }
                     }
                     out.push(AppCommand::SetParamAt { addr: addr.clone(), key: key.into(), value: ParamValue::Float(v) });
                 }
