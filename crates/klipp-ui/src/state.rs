@@ -2086,7 +2086,8 @@ pub struct AppState {
     // struct. Addresses are node paths, never list places: a clip with the
     // same local node id as another shares none of it.
     /// The inspector draws its rows from the node catalog instead of the
-    /// hand-written tabs. Off until the generated rows match the old ones.
+    /// hand-written tabs. On by default; `KLIPP_GENERATED_STACK=0` still
+    /// draws the old tabs until they're deleted (M3 step 19).
     pub use_generated_stack: bool,
     /// The node the inspector and the graph dock show, by path.
     pub selected_node_addr: Option<klipp_graph_format::path::NodePath>,
@@ -4164,7 +4165,7 @@ impl Default for AppState {
             solo_node: None,
             before_after_active: false,
             stabilization_compare_active: false,
-            use_generated_stack: false,
+            use_generated_stack: true,
             resumable_path_drag: None,
             pending_corrector: None,
             root_grade_start: None,
