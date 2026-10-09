@@ -8,6 +8,10 @@ use klipp_effects::registry::presentation::Widget;
 use klipp_effects::registry::ParamKind;
 use std::collections::BTreeSet;
 
+/// A track's grade is graded nowhere in the app, so it has no generated or
+/// old route to compare: the `NonClipGrade` surface's track variant.
+pub(super) const TRACK_GRADE_EXCLUSION: &str = "#1408 (a track's grade has no inspector surface yet; nothing to compare or delete)";
+
 pub(super) const GRAPH_INSPECTOR_EXCLUSION: &str =
     "#1347: picture-graph selection does not reveal an effect inspector in either view";
 
@@ -102,10 +106,12 @@ pub(super) fn surfaces(entry: &CatalogEntry) -> Result<BTreeSet<Surface>, String
                 required.insert(GradeTabbedRight);
             }
         }
-        // Nested grades keep the old rows (the #1391 boundary); the
-        // timeline grade and group stages draw generated (M3 step 19) but
-        // no family covers them yet. Both stay required and labelled
-        // fallback, blocking deletion, until cases earn them.
+        // Nested grades keep the old rows (the #1391 boundary): required,
+        // and labelled fallback, which blocks deletion. The timeline grade
+        // and a group's stages draw generated at their own roots (M3 step
+        // 19); the grade families earn their keys by running on them
+        // (`parity_controls::on_roots`). A track's grade has no surface
+        // (TRACK_GRADE_EXCLUSION).
         required.extend([NestedGrade, NonClipGrade]);
     }
     if matches!(entry.value, CatalogValue::Parameter { desc, .. } if desc.keyframable)

@@ -306,6 +306,16 @@ impl Manifest {
         }
     }
 
+    /// `entry`'s fixture `variant` owed on every sequence grade, on each
+    /// clip grade page it requires (M3 step 19): `Surface::NonClipGrade`
+    /// under the variant [`Report::merge_on_root`] gives a case run there.
+    pub fn require_on_sequence_grades(&mut self, entry: &CatalogEntry, variant: &str) {
+        let Ok(surfaces) = rules::surfaces(entry) else { return };
+        for (root, page) in sequence_grade_obligations(&surfaces) {
+            self.require_fixture(entry, Surface::NonClipGrade, &format!("{root}: {page:?} {variant}"));
+        }
+    }
+
     pub fn exclude(&mut self, type_id: &str, parameter: &str, reason: &str) {
         assert!(
             cited(reason),
@@ -353,16 +363,35 @@ impl Manifest {
             }
             match rules::surfaces(entry) {
                 Ok(surfaces) => {
-                    for surface in surfaces {
+                    for surface in &surfaces {
                         if !self.required.iter().any(|key| {
                             key.type_id == entry.type_id
                                 && key.parameter == entry.parameter
-                                && key.surface == surface
+                                && key.surface == *surface
                         }) {
                             errors.push(format!(
                                 "missing surface: {} / {} / {surface:?}",
                                 entry.type_id, entry.parameter
                             ));
+                        }
+                    }
+                    // The non-clip surface is owed on every sequence grade,
+                    // on every clip grade page the entry is drawn on there
+                    // (M3 step 19): one key on it covers none of the others.
+                    if surfaces.contains(&Surface::NonClipGrade) {
+                        for (root, page) in sequence_grade_obligations(&surfaces) {
+                            let prefix = format!("{root}: {page:?} ");
+                            if !self.required.iter().any(|key| {
+                                key.type_id == entry.type_id
+                                    && key.parameter == entry.parameter
+                                    && key.surface == Surface::NonClipGrade
+                                    && key.variant.starts_with(&prefix)
+                            }) {
+                                errors.push(format!(
+                                    "missing root obligation: {} / {} / NonClipGrade {root}: {page:?}",
+                                    entry.type_id, entry.parameter
+                                ));
+                            }
                         }
                     }
                 }
@@ -462,6 +491,70 @@ impl Manifest {
     }
 }
 
+/// The sequence grades a `Surface::NonClipGrade` entry is owed on, each
+/// with each clip grade page among `surfaces`: as `(grade, page)`.
+fn sequence_grade_obligations(surfaces: &BTreeSet<Surface>) -> Vec<(&'static str, Surface)> {
+    let pages = [Surface::GradePerNode, Surface::GradeTabbedRight, Surface::GradeBottomTools];
+    super::parity_harness::GradeRoot::SEQUENCE
+        .iter()
+        .flat_map(|root| pages.iter().filter(|p| surfaces.contains(p)).map(move |p| (root.variant(), *p)))
+        .collect()
+}
+
+/// Whether a `Surface::NonClipGrade` variant names one of the sequence's
+/// own grades a family ran on (`Report::merge_on_root`): the timeline
+/// grade or a group's pre-clip or post-clip stage. A track's grade is
+/// never one (#1408).
+fn on_a_sequence_grade(variant: &str) -> bool {
+    super::parity_harness::GradeRoot::SEQUENCE.iter().any(|root| variant.starts_with(&format!("{}: ", root.variant())))
+}
+
+thread_local! {
+    /// Whether a family is running with its grade on one of the sequence's
+    /// own grades (`parity_controls::on_roots`, M3 step 19), and how often
+    /// the case running now drew or edited that grade.
+    static ON_ROOT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static ROOT_TOUCHES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// A family run on a sequence grade, while it lives: dropped (a panic
+/// included), the run is over, so no later case is held to it.
+pub(super) struct OnRoot(());
+
+impl OnRoot {
+    pub(super) fn start() -> Self {
+        ON_ROOT.with(|on| on.set(true));
+        OnRoot(())
+    }
+}
+
+impl Drop for OnRoot {
+    fn drop(&mut self) {
+        ON_ROOT.with(|on| on.set(false));
+    }
+}
+
+/// The case running now drew or edited the sequence grade it runs on.
+pub(super) fn touched_the_root() {
+    ROOT_TOUCHES.with(|n| n.set(n.get() + 1));
+}
+
+/// `run`, held, during a family's run on a sequence grade, to having drawn
+/// or edited that grade: a case that passes without (a helper that built
+/// its own fixture on a clip) fails, so no key is counted for a grade the
+/// case never touched.
+fn touching_the_root(run: impl FnOnce() -> Result<(), String>) -> impl FnOnce() -> Result<(), String> {
+    move || {
+        ROOT_TOUCHES.with(|n| n.set(0));
+        let result = run();
+        let untouched = ON_ROOT.with(std::cell::Cell::get) && ROOT_TOUCHES.with(std::cell::Cell::get) == 0;
+        match result {
+            Ok(()) if untouched => Err("passed without drawing or editing the sequence grade it counts for".into()),
+            other => other,
+        }
+    }
+}
+
 #[derive(Debug, Default, serde::Serialize)]
 pub(super) struct Report {
     pub passed: BTreeSet<CoverageKey>,
@@ -504,6 +597,24 @@ fn serialize_fallbacks<S: serde::Serializer>(
 impl Report {
     /// Isolate a family's setup as well as its individual cases, so even
     /// a fixture panic cannot prevent subsequent families from running.
+    /// `other`, a family's report run with its grade on one of the
+    /// sequence's own grades (`root`, M3 step 19), folded in: each key it
+    /// earned on a clip grade's page counted on `Surface::NonClipGrade`,
+    /// under a variant naming the grade, the page and the fixture it was
+    /// drawn as; each failure named with the grade.
+    pub fn merge_on_root(&mut self, root: &str, other: Report) {
+        let rekey = |key: CoverageKey| {
+            let variant = format!("{root}: {:?} {}", key.surface, key.variant);
+            CoverageKey { surface: Surface::NonClipGrade, variant, ..key }
+        };
+        let rekey_map = |map: BTreeMap<CoverageKey, String>| map.into_iter().map(|(k, why)| (rekey(k), why)).collect::<BTreeMap<_, _>>();
+        self.passed.extend(other.passed.into_iter().map(rekey));
+        self.fallback.extend(rekey_map(other.fallback));
+        self.blocked.extend(rekey_map(other.blocked));
+        self.cpu_by_design.extend(rekey_map(other.cpu_by_design));
+        self.failures.extend(other.failures.into_iter().map(|f| format!("{root}: {f}")));
+    }
+
     pub fn family(&mut self, name: &str, run: impl FnOnce(&mut Self)) {
         if let Err(panic) = catch_unwind(AssertUnwindSafe(|| run(self))) {
             self.failures
@@ -522,7 +633,7 @@ impl Report {
         run: impl FnOnce() -> Result<(), String>,
     ) {
         let keys: Vec<_> = keys.into_iter().collect();
-        match catch_unwind(AssertUnwindSafe(run)) {
+        match catch_unwind(AssertUnwindSafe(touching_the_root(run))) {
             Ok(Ok(())) => self.passed.extend(keys),
             Ok(Err(error)) => self.failures.push(format!("{name}: {error}")),
             Err(panic) => {
@@ -564,7 +675,7 @@ impl Report {
         run: impl FnOnce() -> Result<(), String>,
     ) {
         let keys: Vec<_> = keys.into_iter().collect();
-        match catch_unwind(AssertUnwindSafe(run)) {
+        match catch_unwind(AssertUnwindSafe(touching_the_root(run))) {
             Ok(Ok(())) => self.passed.extend(keys),
             Ok(Err(error)) if error.starts_with("BLOCKED") => {
                 for key in keys {
@@ -650,15 +761,15 @@ impl Report {
             }
         }
         for key in &self.passed {
-            // Nested grades keep the old rows (the #1391 boundary). The
-            // timeline grade and group stages draw generated (M3 step 19)
-            // but no family runs over them yet, so any case on this
-            // surface is still labelled as fallback evidence until one
-            // does, and nothing on it can be deleted.
-            if matches!(key.surface, Surface::NestedGrade | Surface::NonClipGrade)
-                && !self.fallback.contains_key(key)
-            {
-                errors.push(format!("fallback evidence not labelled: {key:?} (#997: nested/nonclip layouts still use the legacy path)"));
+            // Nested grades keep the old rows (the #1391 boundary), so any
+            // case on them is fallback evidence. The timeline grade and a
+            // group's stages draw generated at their own roots (M3 step
+            // 19): a case run on one of them (`parity_controls::on_roots`,
+            // its variant naming the grade) is the generated route's. Any
+            // other non-clip variant is still labelled fallback.
+            let legacy = key.surface == Surface::NestedGrade || (key.surface == Surface::NonClipGrade && !on_a_sequence_grade(&key.variant));
+            if legacy && !self.fallback.contains_key(key) {
+                errors.push(format!("fallback evidence not labelled: {key:?} (#997: nested layouts and unnamed non-clip roots still use the legacy path)"));
             }
         }
         let mut exclusions = manifest.exclusion_lines();
@@ -666,6 +777,7 @@ impl Report {
             "excluded surface: GraphInspector: {}",
             rules::GRAPH_INSPECTOR_EXCLUSION
         ));
+        exclusions.push(format!("excluded surface variant: NonClipGrade track: {}", rules::TRACK_GRADE_EXCLUSION));
         if entries
             .iter()
             .any(|e| e.type_id == "klipp.grade.wheel_sat_bri")
@@ -779,6 +891,35 @@ mod tests {
         for surface in rules::surfaces(entry).unwrap() {
             manifest.require_fixture(entry, surface, "sample");
         }
+        manifest.require_on_sequence_grades(entry, "sample");
+    }
+
+    /// A family that covers the non-clip surface on one sequence grade or
+    /// one page leaves the rest owed, each named: one key on the surface
+    /// isn't the surface (M3 step 19).
+    #[test]
+    fn a_narrowed_sequence_grade_family_reports_each_root_and_page_it_skips() {
+        let entry = catalog()
+            .into_iter()
+            .find(|e| e.type_id == "klipp.grade.corrector" && e.parameter == "exposure")
+            .unwrap();
+        let surfaces = rules::surfaces(&entry).unwrap();
+        let mut narrowed = Manifest::default();
+        for surface in &surfaces {
+            narrowed.require_fixture(&entry, *surface, "sample");
+        }
+        // The timeline grade, on one page only.
+        let (_, page) = sequence_grade_obligations(&surfaces)[0];
+        narrowed.require_fixture(&entry, Surface::NonClipGrade, &format!("timeline: {page:?} sample"));
+        let errors = narrowed.rule_errors(std::slice::from_ref(&entry));
+        let owed: Vec<_> = errors.iter().filter(|e| e.starts_with("missing root obligation")).collect();
+        let all = sequence_grade_obligations(&surfaces);
+        assert_eq!(owed.len(), all.len() - 1, "each skipped grade and page named: {owed:#?}");
+        assert!(!owed.iter().any(|e| e.ends_with(&format!("timeline: {page:?}"))), "the covered one isn't owed");
+        assert!(all.len() > 3, "the entry is drawn on more than one page: {all:?}");
+        let mut whole = Manifest::default();
+        require_every_surface(&mut whole, &entry);
+        assert!(!whole.rule_errors(std::slice::from_ref(&entry)).iter().any(|e| e.starts_with("missing root obligation")), "every grade and page owed, none missing");
     }
 
     #[test]
@@ -871,6 +1012,38 @@ mod tests {
             assert!(rules::surfaces(entry).unwrap().is_empty());
             assert!(rules::entry_exclusion(entry).unwrap().contains("#1351"));
         }
+    }
+
+    /// A case on one of the sequence's own grades (its variant naming the
+    /// timeline grade or a group stage, as `merge_on_root` writes it) is the
+    /// generated route's and needs no fallback label (M3 step 19); a
+    /// non-clip case on any other variant, and a nested grade's, still do.
+    /// A track's grade is excluded by name (#1408).
+    #[test]
+    fn a_sequence_grade_case_is_generated_and_other_roots_stay_fallback() {
+        let entry = catalog()
+            .into_iter()
+            .find(|e| e.type_id == "klipp.grade.corrector" && e.parameter == "exposure")
+            .unwrap();
+        let mut manifest = Manifest::default();
+        require_every_surface(&mut manifest, &entry);
+        let errors = |surface, variant: &str| {
+            let key = CoverageKey::new(entry.type_id, &entry.parameter, surface, variant, Interaction::OpenWithoutWrite);
+            let mut report = Report::default();
+            report.case("one", [key.clone()], || Ok(()));
+            let all = report.complete(&manifest, std::slice::from_ref(&entry)).unwrap_err();
+            (all.contains(&format!("fallback evidence not labelled: {key:?}")), all)
+        };
+        for root in super::super::parity_harness::GradeRoot::SEQUENCE {
+            let variant = format!("{}: GradeTabbedRight sample", root.variant());
+            assert!(!errors(Surface::NonClipGrade, &variant).0, "{variant}: the generated route's");
+            assert!(errors(Surface::NestedGrade, &variant).0, "{variant}: a nested grade's is still fallback");
+        }
+        for variant in ["sample", "track: GradeTabbedRight sample", "clip: GradeTabbedRight sample"] {
+            assert!(errors(Surface::NonClipGrade, variant).0, "{variant}: not a sequence grade, still fallback");
+        }
+        let (_, all) = errors(Surface::NonClipGrade, "timeline: GradeTabbedRight sample");
+        assert!(all.contains("NonClipGrade track: #1408"), "the track exclusion is listed: {all}");
     }
 
     #[test]

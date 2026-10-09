@@ -24,7 +24,7 @@ fn lut_node(path: Option<&str>) -> Result<Grade, String> {
 }
 
 fn lut_path(g: &Grade) -> Option<std::path::PathBuf> {
-    klipp_timeline::GradeAccess::grade(g.clip()).nodes.iter().find(|n| n.id == g.node).and_then(|n| n.params.lut_path.clone())
+    g.grade().nodes.iter().find(|n| n.id == g.node).and_then(|n| n.params.lut_path.clone())
 }
 
 /// One LUT edit through both views from `start`: the same file after, in
@@ -119,11 +119,16 @@ pub(super) fn run_lut(report: &mut Report) {
 fn a_lut_nodes_file_edits_as_the_old_panel() {
     let mut report = Report::default();
     report.family("LUT file", run_lut);
+    // The same cases with the grade on the timeline grade and a group's
+    // stages, drawn through their stand-ins (M3 step 19).
+    super::parity_controls::on_roots(&mut report, run_lut);
+    // Its cases claim no coverage keys on any page yet, so the run on each
+    // root is a behaviour check: every case passes there too.
     report.family_result().unwrap();
 }
 
 fn masks(g: &Grade) -> Vec<klipp_core::Mask> {
-    klipp_timeline::GradeAccess::grade(g.clip()).nodes.iter().find(|n| n.id == g.node).and_then(|n| n.params.masks.clone()).map(|m| m.masks).unwrap_or_default()
+    g.grade().nodes.iter().find(|n| n.id == g.node).and_then(|n| n.params.masks.clone()).map(|m| m.masks).unwrap_or_default()
 }
 
 /// One mask-stack edit through both views from `start`: the same masks
@@ -200,6 +205,11 @@ pub(super) fn run_masks(report: &mut Report) {
 fn a_mask_stack_edits_as_the_old_panel() {
     let mut report = Report::default();
     report.family("mask stack", run_masks);
+    // The same cases with the grade on the timeline grade and a group's
+    // stages, drawn through their stand-ins (M3 step 19).
+    super::parity_controls::on_roots(&mut report, run_masks);
+    // Its cases claim no coverage keys on any page yet, so the run on each
+    // root is a behaviour check: every case passes there too.
     report.family_result().unwrap();
 }
 
@@ -210,7 +220,7 @@ fn a_mask_stack_edits_as_the_old_panel() {
 fn a_difference_key_edit_is_one_step_undone() {
     let (state, clip, node) = placed(NodeKind::DifferenceKey).expect("a Difference Key node");
     let base = Grade::new(state, clip, node, true).on(Page::PerNode);
-    let key = |g: &Grade| klipp_timeline::GradeAccess::grade(g.clip()).nodes.iter().find(|n| n.id == g.node).and_then(|n| n.params.difference_key.clone());
+    let key = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).and_then(|n| n.params.difference_key.clone());
     for generated in [false, true] {
         let mut g = base.twin(generated);
         g.drawn();

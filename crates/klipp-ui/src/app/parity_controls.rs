@@ -11,6 +11,7 @@
 //! old view. A key is recorded only once its case's assertions pass.
 
 use super::inspector_edit_host::{InspectorEditHost, InspectorSideEffects};
+use super::parity_harness::GradeRoot;
 use super::parity_manifest::{CoverageKey, Interaction, Report, Surface};
 use crate::inspector::generated::{effect_value, row};
 use crate::state::AppState;
@@ -309,6 +310,28 @@ pub(super) struct Grade {
     before_input: Option<klipp_nodes::NodeGraph>,
     /// An old-panel gesture's start (`BeginNodeParamEdit`).
     gesture: Option<klipp_nodes::NodeGraph>,
+    /// Which grade the node is in (M3 step 19): the clip's own (`clip` is
+    /// that clip), or one of the sequence's own (`clip` is the id of the
+    /// stand-in it is drawn and edited through, there only inside
+    /// [`Grade::with_stand_in`]).
+    pub(super) root: GradeRoot,
+    /// The fixture's grade group, for a stage root.
+    group: Option<klipp_core::GradeGroupId>,
+    /// The clip the fixture was made on, whatever `root` is.
+    home: ClipId,
+    /// The graph a stand-in is put on with while its root has no grade,
+    /// kept as the app keeps it.
+    fresh: Option<(ClipId, klipp_nodes::NodeGraph)>,
+}
+
+/// A grade's picture, as the families compare it: a clip's lifted picture,
+/// or a sequence grade as stored, as a JSON value (its canvas positions are
+/// a hash map, whose written order two equal grades needn't share; a
+/// value's maps compare whatever their order).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum GradePicture {
+    Clip(Box<klipp_timeline::LiftedPicture>),
+    Root(serde_json::Value),
 }
 
 /// The grade pages a node's controls are drawn on.
@@ -322,24 +345,155 @@ pub(super) enum Page {
     Bottom(crate::state::ColorTab),
 }
 
+thread_local! {
+    /// The grade [`Grade::new`] puts its node in while [`on_roots`] runs a
+    /// family: the clip's own, but for that run.
+    static ROOT: std::cell::Cell<GradeRoot> = const { std::cell::Cell::new(GradeRoot::Clip) };
+}
+
+/// `family` run again with its grade on each of the sequence's own grades
+/// (M3 step 19): the timeline grade and a group's pre-clip and post-clip
+/// stages, drawn and edited through their stand-ins as the app does, every
+/// case it earns counted on `Surface::NonClipGrade` (`Report::merge_on_root`).
+pub(super) fn on_roots(report: &mut Report, family: impl Fn(&mut Report)) {
+    for root in GradeRoot::SEQUENCE {
+        let mut inner = Report::default();
+        {
+            let _run = RootRun::start(root);
+            inner.family(root.variant(), &family);
+        }
+        report.merge_on_root(root.variant(), inner);
+    }
+}
+
+/// Every sequence grade earned keys on `Surface::NonClipGrade`: a family
+/// that ran on none of them counts for nothing there.
+pub(super) fn assert_on_every_root(report: &Report) {
+    for root in GradeRoot::SEQUENCE {
+        let prefix = format!("{}: ", root.variant());
+        assert!(
+            report.passed.iter().any(|k| k.surface == Surface::NonClipGrade && k.variant.starts_with(&prefix)),
+            "no case passed on the {} grade",
+            root.variant()
+        );
+    }
+}
+
+/// A family's run on `root`, while it lives: [`Grade::new`] puts its node
+/// there, and every case must touch it. Dropped (a panic included), both
+/// are put back, so no later test runs on it.
+struct RootRun(super::parity_manifest::OnRoot);
+
+impl RootRun {
+    fn start(root: GradeRoot) -> Self {
+        ROOT.with(|r| r.set(root));
+        RootRun(super::parity_manifest::OnRoot::start())
+    }
+}
+
+impl Drop for RootRun {
+    fn drop(&mut self) {
+        ROOT.with(|r| r.set(GradeRoot::Clip));
+    }
+}
+
 impl Grade {
+    /// A grade's node driven through both views: in the clip's own grade,
+    /// or, while [`on_roots`] runs a family, in the sequence grade it names.
     pub(super) fn new(state: AppState, clip: ClipId, node: klipp_nodes::NodeId, generated: bool) -> Self {
+        Self::plain(state, clip, node, generated).on_root(ROOT.with(std::cell::Cell::get))
+    }
+
+    /// [`Grade::new`] in the clip's own grade, whatever family runs.
+    fn plain(state: AppState, clip: ClipId, node: klipp_nodes::NodeId, generated: bool) -> Self {
         // The icons load as in the app: a failed one is drawn as a warning
         // filling the panel, which pushes the rows off it.
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
-        Grade { state, clip, node, ctx, clock: 0.0, panel: Default::default(), generated, unapplied: Vec::new(), side: Vec::new(), page: Page::PerNode, before_input: None, gesture: None }
+        Grade { state, clip, node, ctx, clock: 0.0, panel: Default::default(), generated, unapplied: Vec::new(), side: Vec::new(), page: Page::PerNode, before_input: None, gesture: None, root: GradeRoot::Clip, group: None, home: clip, fresh: None }
+    }
+
+    /// The same node in `root` instead (M3 step 19): for a sequence grade,
+    /// the clip's grade moved there (the timeline grade, or a stage of a
+    /// fixture group), drawn and edited through its stand-in.
+    pub(super) fn on_root(mut self, root: GradeRoot) -> Self {
+        use klipp_timeline::GradeStage;
+        if root == GradeRoot::Clip || self.root != GradeRoot::Clip {
+            return self;
+        }
+        let grade = self.clip().grade().clone();
+        let seq = &mut self.state.sequences[0];
+        self.clip = match root {
+            GradeRoot::Timeline => {
+                seq.timeline_grade_slot().set(Some(grade));
+                seq.timeline_grade_clip_id()
+            }
+            GradeRoot::Pre | GradeRoot::Post => {
+                let stage = if root == GradeRoot::Pre { GradeStage::Pre } else { GradeStage::Post };
+                let mut group = klipp_timeline::GradeGroup::new("Fixture");
+                group.stage_slot(stage).set(Some(grade));
+                let id = group.stage_clip_id(stage);
+                self.group = Some(group.id);
+                seq.grade_groups.push(group);
+                id
+            }
+            GradeRoot::Clip => unreachable!(),
+        };
+        self.root = root;
+        self
+    }
+
+    /// What the Colour workspace grades `root` through, for a sequence grade.
+    fn stand_in(&self) -> Option<super::timeline_grade::GradeStandIn> {
+        use super::timeline_grade::GradeStandIn;
+        use klipp_timeline::GradeStage;
+        match self.root {
+            GradeRoot::Clip => None,
+            GradeRoot::Timeline => Some(GradeStandIn::Timeline),
+            GradeRoot::Pre => self.group.map(|g| GradeStandIn::Group(g, GradeStage::Pre)),
+            GradeRoot::Post => self.group.map(|g| GradeStandIn::Group(g, GradeStage::Post)),
+        }
+    }
+
+    /// `f` with a sequence grade's stand-in on, as the app has it while it
+    /// draws the Colour panels and runs a colour command, and taken down
+    /// after, settling what `f` wrote on it into the grade. A clip's grade
+    /// has none.
+    fn with_stand_in<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let Some(which) = self.stand_in() else { return f(self) };
+        super::timeline_grade::stand_in_grade_on(&mut self.state.sequences[0], which, &mut self.fresh);
+        let out = f(self);
+        super::timeline_grade::stand_down_timeline_grade_on(&mut self.state.sequences[0], &mut self.fresh);
+        out
+    }
+
+    /// The grade the node is in, as stored.
+    pub(super) fn grade(&self) -> &klipp_nodes::NodeGraph {
+        match self.stand_in() {
+            None => klipp_timeline::GradeAccess::grade(self.clip()),
+            Some(which) => {
+                let seq = &self.state.sequences[0];
+                seq.root_grade(which.root(seq)).ok().flatten().expect("the fixture's grade")
+            }
+        }
     }
 
     /// A fresh state, no history, holding a clone of this one's clip and files.
     pub(super) fn twin(&self, generated: bool) -> Self {
         let mut state = AppState::default();
-        let track = self.state.sequences[0].tracks.iter().position(|t| t.clips.iter().any(|c| c.id == self.clip)).unwrap();
-        state.sequences[0].tracks[track].clips.push(self.clip().clone());
+        let home = self.state.sequences[0].all_clips().find(|c| c.id == self.home).unwrap();
+        let track = self.state.sequences[0].tracks.iter().position(|t| t.clips.iter().any(|c| c.id == self.home)).unwrap();
+        state.sequences[0].tracks[track].clips.push(home.clone());
         // Its files too: a clip's file settings (its camera encoding) are
         // the file's.
         state.media_pool = self.state.media_pool.clone();
-        Grade { page: self.page, ..Grade::new(state, self.clip, self.node, generated) }
+        // A sequence grade's: the sequence's grades and groups too, under
+        // the same sequence id, which the timeline grade's stand-in id is
+        // made from.
+        state.sequences[0].id = self.state.sequences[0].id;
+        state.sequences[0].timeline_grade_slot().set(self.state.sequences[0].timeline_grade().cloned());
+        state.sequences[0].grade_groups = self.state.sequences[0].grade_groups.clone();
+        Grade { page: self.page, root: self.root, group: self.group, clip: self.clip, ..Grade::plain(state, self.home, self.node, generated) }
     }
 
     /// The same, on `page`.
@@ -351,8 +505,11 @@ impl Grade {
         self.state.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap()
     }
 
-    pub(super) fn picture(&self) -> klipp_timeline::LiftedPicture {
-        (*self.clip().picture_v2().unwrap()).clone()
+    pub(super) fn picture(&self) -> GradePicture {
+        match self.root {
+            GradeRoot::Clip => GradePicture::Clip(Box::new((*self.clip().picture_v2().unwrap()).clone())),
+            _ => GradePicture::Root(serde_json::to_value(self.grade()).unwrap()),
+        }
     }
 
     /// One frame with `events`: the text drawn, at its centre. The
@@ -363,41 +520,68 @@ impl Grade {
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 2400.0))), time: Some(self.clock), events, ..Default::default() };
         let frame = crate::inspector::keyframe_selection::FrameSelection { time_secs: 0.5, tolerance: 0.02 };
         let theme = KlippTheme::default();
+        self.before_input = Some(self.grade().clone());
+        if self.root != GradeRoot::Clip {
+            super::parity_manifest::touched_the_root();
+        }
+        let (cmds, out) = self.with_stand_in(|g| g.draw(input, frame, &theme));
+        for cmd in cmds {
+            self.apply(cmd);
+        }
+        out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)), _ => None }).collect()
+    }
+
+    /// One frame drawn as the app draws the Colour panels, the stand-in on
+    /// for a sequence grade: its commands, not yet applied, and its shapes.
+    fn draw(&mut self, input: egui::RawInput, frame: crate::inspector::keyframe_selection::FrameSelection, theme: &KlippTheme) -> (Vec<AppCommand>, egui::FullOutput) {
         let mut cmds = Vec::new();
-        self.before_input = Some(self.clip().grade().clone());
+        let root = self.stand_in().map(|w| w.root(&self.state.sequences[0]));
         let Grade { state, clip, node, ctx, panel, generated, page, .. } = self;
         let (clip_id, node, page) = (*clip, *node, *page);
         let out = ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| match page {
-                Page::PerNode if *generated => {
-                    let clip = state.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap().clone();
-                    crate::inspector::grade_view::show(ui, &theme, &clip, node, &mut cmds, frame, Some(panel));
-                }
+                Page::PerNode if *generated => match root {
+                    None => {
+                        let clip = state.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap().clone();
+                        crate::inspector::grade_view::show(ui, theme, &clip, node, &mut cmds, frame, Some(panel));
+                    }
+                    Some(root) => {
+                        let snapshot = crate::inspector::grade_view::snapshot_for_root(&state.sequences[0], clip_id, root, true, false, &mut state.pending_corrector, &mut state.root_grade_start);
+                        let mut panel_cmds = Vec::new();
+                        // A node the grade doesn't hold draws nothing, as in the app.
+                        let _ = snapshot.as_ref().is_some_and(|s| s.page(ui, theme, node, &mut panel_cmds, frame, Some(panel)));
+                        let grade = state.sequences[0].root_grade(root).ok().flatten().cloned().unwrap_or_default();
+                        for mut cmd in panel_cmds {
+                            crate::inspector::keyframe_selection::resolve_for_grade(&grade, frame.tolerance, &mut cmd);
+                            cmds.push(cmd);
+                        }
+                    }
+                },
                 Page::PerNode => {
                     let clip = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
-                    cmds.extend(clip.edit_grade(|g| panel.show(ui, &Some(node), g, clip_id, &theme, frame)));
+                    cmds.extend(clip.edit_grade(|g| panel.show(ui, &Some(node), g, clip_id, theme, frame)));
                 }
                 // The tabbed page and the bottom tools as the app draws them
                 // (`main_layout`): the panel over the clip's grade, its
                 // shared rows the generated ones when `generated`.
                 Page::Tabbed(tab) | Page::Bottom(tab) => {
+                    // A sequence grade's snapshot is taken at its root, before
+                    // the stand-in is borrowed to draw, as the app takes it.
+                    let at_root = root.and_then(|root| crate::inspector::grade_view::snapshot_for_root(&state.sequences[0], clip_id, root, *generated, false, &mut state.pending_corrector, &mut state.root_grade_start));
                     let clip = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
-                    panel.generated = crate::inspector::grade_view::snapshot_for(clip, *generated, false, false, &mut state.pending_corrector);
+                    panel.generated = if root.is_some() { at_root } else { crate::inspector::grade_view::snapshot_for(clip, *generated, false, false, &mut state.pending_corrector) };
                     let (mut selected, mut tab) = (Some(node), tab);
                     let wide = matches!(page, Page::Bottom(_));
                     cmds.extend(clip.edit_grade(|g| if wide {
-                        panel.show_simple_horizontal(ui, g, clip_id, &mut selected, &mut tab, &theme, frame)
+                        panel.show_simple_horizontal(ui, g, clip_id, &mut selected, &mut tab, theme, frame)
                     } else {
-                        panel.show_simple(ui, g, clip_id, &mut selected, &mut tab, &theme, frame)
+                        panel.show_simple(ui, g, clip_id, &mut selected, &mut tab, theme, frame)
                     }));
                     panel.generated = None;
                 }
             });
         });
-        for cmd in cmds {
-            self.apply(cmd);
-        }
-        out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)), _ => None }).collect()
+        (cmds, out)
     }
 
     /// `cmd` as the app applies it: its key resolved, past the dispatch
@@ -407,6 +591,9 @@ impl Grade {
     /// inspector edit host. A sampling tool's request is recorded in
     /// `side`; what nothing applies, in `unapplied`.
     pub(super) fn apply(&mut self, mut cmd: AppCommand) {
+        if self.root != GradeRoot::Clip {
+            super::parity_manifest::touched_the_root();
+        }
         crate::inspector::keyframe_selection::resolve_command(&self.state.sequences[0], &mut cmd);
         // The dispatch boundary first, for every command, as the app's
         // dispatch passes it.
@@ -423,58 +610,68 @@ impl Grade {
                     self.side.push(format!("{cmd:?}"));
                     return;
                 }
-                // An old-panel gesture, recorded as the colour dispatch
-                // records it: one graph step, from the grade as it was
-                // before the input that began it.
-                match &cmd {
-                    AppCommand::BeginNodeParamEdit { .. } => {
-                        if self.gesture.is_none() {
-                            self.gesture = self.before_input.clone();
-                        }
-                        return;
-                    }
-                    AppCommand::AbandonNodeParamEdit { .. } => {
-                        if let Some(old_graph) = self.gesture.take() {
-                            super::colour::abandon_gesture(&mut self.state, self.clip, old_graph);
-                        }
-                        return;
-                    }
-                    AppCommand::EndNodeParamEdit { .. } => {
-                        if let Some(old_graph) = self.gesture.take() {
-                            super::colour::close_gesture(&mut self.state, self.clip, old_graph);
-                        }
-                        return;
-                    }
-                    _ => {}
-                }
-                // A file's camera encoding, as the colour dispatch applies
-                // it (#1396): the file and every clip of it, one step.
-                if let AppCommand::SetClipLogFormat { clip_id, log_format } = &cmd {
-                    self.state.set_clip_log_format(*clip_id, *log_format);
-                    return;
-                }
-                let path = self.state.graph_descent_path.clone();
-                // The old panel's number, as the colour dispatch writes
-                // it (the history is its gesture's).
-                if let AppCommand::SetNodeParam { node_id, param, value, .. } = &cmd {
-                    let target = self.state.phantom_target(self.clip, *node_id);
-                    super::colour::write_node_param(&mut self.state, self.clip, &path, target, param, *value);
-                    return;
-                }
-                // A per-node editor's settings, as the colour dispatch
-                // lands them: written, one graph step unless a gesture
-                // is open (its close records the step). Whether `cmd`
-                // is one is asked of a copy, so nothing else is written.
-                if super::colour::write_node_settings(&mut self.clip().grade().clone(), &cmd) {
-                    super::colour::edit_clip_graph(&mut self.state, self.clip, &path, self.gesture.is_none(), |g| {
-                        super::colour::write_node_settings(g, &cmd);
-                    });
-                    return;
-                }
-                if !(InspectorEditHost { state: &mut self.state, side: &Sink }).apply(&cmd) {
-                    self.unapplied.push(format!("{cmd:?}"));
-                }
+                // The colour dispatch runs with a sequence grade's stand-in
+                // on (`handle_color_commands`), as here.
+                self.with_stand_in(|g| g.apply_colour(cmd));
             }
+        }
+    }
+
+    /// A colour command as the colour dispatch lands it: an old-panel
+    /// gesture recorded as one graph step, a node's number written in
+    /// place, an editor's settings written as a step, or the inspector
+    /// edit host's.
+    fn apply_colour(&mut self, cmd: AppCommand) {
+        // An old-panel gesture, recorded as the colour dispatch
+        // records it: one graph step, from the grade as it was
+        // before the input that began it.
+        match &cmd {
+            AppCommand::BeginNodeParamEdit { .. } => {
+                if self.gesture.is_none() {
+                    self.gesture = self.before_input.clone();
+                }
+                return;
+            }
+            AppCommand::AbandonNodeParamEdit { .. } => {
+                if let Some(old_graph) = self.gesture.take() {
+                    super::colour::abandon_gesture(&mut self.state, self.clip, old_graph);
+                }
+                return;
+            }
+            AppCommand::EndNodeParamEdit { .. } => {
+                if let Some(old_graph) = self.gesture.take() {
+                    super::colour::close_gesture(&mut self.state, self.clip, old_graph);
+                }
+                return;
+            }
+            _ => {}
+        }
+        // A file's camera encoding, as the colour dispatch applies
+        // it (#1396): the file and every clip of it, one step.
+        if let AppCommand::SetClipLogFormat { clip_id, log_format } = &cmd {
+            self.state.set_clip_log_format(*clip_id, *log_format);
+            return;
+        }
+        let path = self.state.graph_descent_path.clone();
+        // The old panel's number, as the colour dispatch writes
+        // it (the history is its gesture's).
+        if let AppCommand::SetNodeParam { node_id, param, value, .. } = &cmd {
+            let target = self.state.phantom_target(self.clip, *node_id);
+            super::colour::write_node_param(&mut self.state, self.clip, &path, target, param, *value);
+            return;
+        }
+        // A per-node editor's settings, as the colour dispatch
+        // lands them: written, one graph step unless a gesture
+        // is open (its close records the step). Whether `cmd`
+        // is one is asked of a copy, so nothing else is written.
+        if super::colour::write_node_settings(&mut self.grade().clone(), &cmd) {
+            super::colour::edit_clip_graph(&mut self.state, self.clip, &path, self.gesture.is_none(), |g| {
+                super::colour::write_node_settings(g, &cmd);
+            });
+            return;
+        }
+        if !(InspectorEditHost { state: &mut self.state, side: &Sink }).apply(&cmd) {
+            self.unapplied.push(format!("{cmd:?}"));
         }
     }
 
@@ -536,7 +733,7 @@ impl Grade {
 
     /// The node's stored value for `desc`, as its rows read it.
     fn value(&self, desc: &ParamDesc) -> Value {
-        let node = self.clip().grade().nodes.iter().find(|n| n.id == self.node).cloned().unwrap();
+        let node = self.grade().nodes.iter().find(|n| n.id == self.node).cloned().unwrap();
         let entry = serde_json::json!({ "params": node.params });
         crate::inspector::generated::grade_value(&entry, desc)
     }
@@ -589,7 +786,7 @@ fn grade_case(start: &Grade, drive: impl Fn(&mut Grade) -> Result<(), String>) -
         return Err("the control changed nothing".into());
     }
     if after != old.picture() {
-        let node = |g: &Grade| g.clip().grade().nodes.iter().find(|n| n.id == g.node).map(|n| format!("{:?}", n.params)).unwrap_or_default();
+        let node = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).map(|n| format!("{:?}", n.params)).unwrap_or_default();
         return Err(format!("not the old panel's picture: new {}, old {}", node(&new), node(&old)));
     }
     if new.state.active_history().undo_count() != 1 {
@@ -784,7 +981,11 @@ pub(super) fn run_grade_pages(report: &mut Report) {
 fn corrector_page_switches_and_menus_edit_as_the_old_page() {
     let mut report = Report::default();
     report.family("grade pages", run_grade_pages);
+    // The same cases with the grade on the timeline grade and a group's
+    // stages, drawn through their stand-ins (M3 step 19).
+    on_roots(&mut report, run_grade_pages);
     report.family_result().unwrap();
+    assert_on_every_root(&report);
     assert!(!report.passed.is_empty(), "no switch or menu row was driven");
 }
 
@@ -794,7 +995,11 @@ fn corrector_page_switches_and_menus_edit_as_the_old_page() {
 fn grade_switches_and_menus_edit_as_the_old_panel() {
     let mut report = Report::default();
     report.family("grade controls", run_grade);
+    // The same cases with the grade on the timeline grade and a group's
+    // stages, drawn through their stand-ins (M3 step 19).
+    on_roots(&mut report, run_grade);
     report.family_result().unwrap();
+    assert_on_every_root(&report);
     assert!(!report.passed.is_empty(), "no switch or menu row was driven");
 }
 
@@ -834,7 +1039,7 @@ fn opening_a_corrector_page_tab_writes_nothing() {
 fn a_curve_edit_after_opening_is_one_step_back_to_unset() {
     let (state, clip, node) = super::grade_inspector_tests::graded(klipp_nodes::NodeKind::Corrector).unwrap();
     let base = Grade::new(state, clip, node, true);
-    let curves = |g: &Grade| g.clip().grade().nodes.iter().find(|n| n.id == g.node).map(|n| n.params.curves.clone()).unwrap();
+    let curves = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).map(|n| n.params.curves.clone()).unwrap();
     for page in [Page::Tabbed(crate::state::ColorTab::Curves), Page::Bottom(crate::state::ColorTab::Curves)] {
         for generated in [false, true] {
             let mut g = Grade { page, ..base.twin(generated) };
@@ -875,7 +1080,7 @@ fn a_curve_edit_after_opening_is_one_step_back_to_unset() {
 fn a_warper_move_after_opening_is_one_step_back_to_unset() {
     let (state, clip, node) = super::grade_inspector_tests::graded(klipp_nodes::NodeKind::Corrector).unwrap();
     let base = Grade::new(state, clip, node, true);
-    let warper = |g: &Grade| g.clip().grade().nodes.iter().find(|n| n.id == g.node).map(|n| n.params.warper_params.clone()).unwrap();
+    let warper = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).map(|n| n.params.warper_params.clone()).unwrap();
     const SECTORS: [&str; 12] = ["R", "O", "Y", "YG", "G", "CG", "C", "CB", "B", "BM", "M", "MR"];
     for page in [Page::Tabbed(crate::state::ColorTab::Warper), Page::Bottom(crate::state::ColorTab::Warper)] {
         for generated in [false, true] {
@@ -919,7 +1124,7 @@ fn a_warper_move_after_opening_is_one_step_back_to_unset() {
 fn escape_takes_back_a_curve_drag() {
     let (state, clip, node) = super::grade_inspector_tests::graded(klipp_nodes::NodeKind::Corrector).unwrap();
     let base = Grade::new(state, clip, node, true);
-    let curves = |g: &Grade| g.clip().grade().nodes.iter().find(|n| n.id == g.node).map(|n| n.params.curves.clone()).unwrap();
+    let curves = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).map(|n| n.params.curves.clone()).unwrap();
     for page in [Page::Tabbed(crate::state::ColorTab::Curves), Page::Bottom(crate::state::ColorTab::Curves)] {
         for generated in [false, true] {
             let mut g = Grade { page, ..base.twin(generated) };
@@ -965,7 +1170,7 @@ fn opening_a_per_node_grade_writes_nothing_in_either_view() {
             g.drawn();
             g.drawn();
             if g.picture() != before || g.state.active_history().undo_count() != 0 || !g.unapplied.is_empty() {
-                let params = |p: &klipp_timeline::LiftedPicture| format!("{p:?}").len();
+                let params = |p: &GradePicture| format!("{p:?}").len();
                 wrote.push(format!("{} generated {generated}: steps {}, unapplied {:?} ({} → {} bytes)", ty.desc.id, g.state.active_history().undo_count(), g.unapplied, params(&before), params(&g.picture())));
             }
             opened += 1;
@@ -982,7 +1187,7 @@ fn opening_a_per_node_grade_writes_nothing_in_either_view() {
 fn a_wheel_drag_is_one_step_and_escape_takes_it_back() {
     let Some((state, clip, node)) = super::grade_inspector_tests::graded(klipp_nodes::NodeKind::ColorWheels) else { panic!("a Color Wheels node") };
     let base = Grade::new(state, clip, node, true);
-    let lift = |g: &Grade| g.clip().grade().nodes.iter().find(|n| n.id == g.node).map(|n| (n.params.lift_x, n.params.lift_y)).unwrap();
+    let lift = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).map(|n| (n.params.lift_x, n.params.lift_y)).unwrap();
     for escape in [false, true] {
         for generated in [false, true] {
             let mut g = base.twin(generated);
