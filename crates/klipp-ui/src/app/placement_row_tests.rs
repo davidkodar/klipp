@@ -164,29 +164,52 @@ fn rubber_bands_and_hotkeys_read_the_properties() {
     assert_eq!(read(&run), [40.0, 0.6, 0.3], "moved, the same values");
 }
 
-/// On a clip whose picture is stored whole (an effect's mix makes it so),
-/// the placement's place and mode wait for the next format revision: the
-/// row says so in place of its controls, and a move or a mode sent by path is refused
-/// with that reason, writing nothing.
+/// Auto keeps a static move (#1394, picture revision 4): a moved clip made
+/// automatic keeps its move, as one step, and becomes picture-truth (its
+/// fields can't hold an automatic move), and a later edit through its
+/// fields keeps the move too. Fixed again puts it back in a Transform.
 #[test]
-fn a_picture_truth_placement_is_refused_and_unwritten() {
+fn auto_keeps_a_static_move() {
+    let mut run = generated(&[E::GaussianBlur { radius: 3.0 }, transform(40.0), E::Sharpen { amount: 0.5 }]);
+    let placement_at = |run: &Run| NodePath::new(Root::Clip { clip: run.clip.0 }, [placement(run).id]);
+    let steps = undos(&run);
+    run.apply(AppCommand::SetParamAt { addr: placement_at(&run), key: "mode".into(), value: ParamValue::Enum(lt::PLACEMENT_AUTO) });
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+    assert_eq!(undos(&run), steps + 1, "one step");
+    assert!(run.clip().is_picture_truth(), "an automatic move is picture-truth");
+    assert!(!run.clip().builtin_effects().iter().any(|e| matches!(e, E::Transform { .. })), "no Transform entry places it");
+    let p = run.clip().picture_v2().unwrap().picture.clone();
+    assert_eq!(placement(&run).params.get(&"mode".into()), Some(&ParamValue::Enum(lt::PLACEMENT_AUTO)));
+    assert_eq!(p.placement.pos_x, Some(40.0), "the move is kept");
+    // An edit through the fields (the blur's radius) keeps it.
+    let blur = NodePath::new(Root::Clip { clip: run.clip.0 }, [run.clip().effect_node_at(false, 0).unwrap()]);
+    run.apply(AppCommand::SetParamAt { addr: blur, key: "radius".into(), value: ParamValue::Float(5.0) });
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+    assert_eq!(run.clip().picture_v2().unwrap().picture.placement.pos_x, Some(40.0), "still moved after another edit");
+    run.apply(AppCommand::SetParamAt { addr: placement_at(&run), key: "mode".into(), value: ParamValue::Enum(lt::PLACEMENT_FIXED) });
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+    assert!(run.clip().builtin_effects().iter().any(|e| matches!(e, E::Transform { position_x, .. } if *position_x == 40.0)), "fixed, its Transform holds the move: {:?}", run.clip().builtin_effects());
+}
+
+/// A picture-truth clip (an effect's mix) changes its placement's mode and
+/// place as any clip does, its mix kept and its move with it.
+#[test]
+fn a_picture_truth_placement_changes_mode_keeping_its_mix() {
     let mut run = generated(&[E::GaussianBlur { radius: 3.0 }, transform(40.0), E::Sharpen { amount: 0.5 }]);
     let blur = NodePath::new(Root::Clip { clip: run.clip.0 }, [run.clip().effect_node_at(false, 0).unwrap()]);
     run.apply(AppCommand::SetMixAt { addr: blur, mix: Some(0.5) });
     assert!(run.clip().is_picture_truth(), "a mix makes the clip picture-truth");
-    let before = run.clip().picture_v2().unwrap().picture.clone();
-    let steps = undos(&run);
     let drawn: Vec<String> = run.frame(Vec::new(), egui::Modifiers::NONE).into_iter().map(|(text, _)| text).collect();
-    assert!(drawn.iter().any(|t| t == "This clip's placement moves with the next project format"), "the row says why: {drawn:?}");
-    assert!(!drawn.iter().any(|t| t == "Auto" || t == "Fixed"), "no mode drawn: {drawn:?}");
-    let placement = NodePath::new(Root::Clip { clip: run.clip.0 }, [placement(&run).id]);
-    let sharpen = placement_after(&run);
-    run.apply(AppCommand::MoveNodeAt { addr: placement.clone(), after: sharpen });
-    run.apply(AppCommand::SetParamAt { addr: placement, key: "mode".into(), value: ParamValue::Enum(lt::PLACEMENT_AUTO) });
-    assert_eq!(run.unapplied.len(), 2, "{:?}", run.unapplied);
-    assert!(run.unapplied.iter().all(|u| u.contains("next format revision")), "{:?}", run.unapplied);
-    assert_eq!(undos(&run), steps, "nothing recorded");
-    assert_eq!(run.clip().picture_v2().unwrap().picture, before, "nothing written");
+    assert!(drawn.iter().any(|t| t == "Fixed"), "the mode is drawn: {drawn:?}");
+    let steps = undos(&run);
+    let placement_at = NodePath::new(Root::Clip { clip: run.clip.0 }, [placement(&run).id]);
+    run.apply(AppCommand::SetParamAt { addr: placement_at, key: "mode".into(), value: ParamValue::Enum(lt::PLACEMENT_AUTO) });
+    assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+    assert_eq!(undos(&run), steps + 1, "one step");
+    let p = run.clip().picture_v2().unwrap().picture.clone();
+    assert_eq!(p.placement.pos_x, Some(40.0), "the move is kept");
+    let mixed = p.graph.nodes.iter().any(|n| n.mix == Some(0.5));
+    assert!(mixed, "the blur's mix is kept");
 }
 
 /// The node after the placement in the clip's chain.
