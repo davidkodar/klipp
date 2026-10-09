@@ -700,13 +700,18 @@ impl Grade {
     pub(super) fn frame(&mut self, events: Vec<egui::Event>) -> Vec<(String, egui::Pos2)> {
         self.clock += 0.05;
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 2400.0))), time: Some(self.clock), events, ..Default::default() };
-        let frame = crate::inspector::keyframe_selection::FrameSelection { time_secs: 0.5, tolerance: 0.02 };
         let theme = KlippTheme::default();
         self.before_input = Some(self.grade().clone());
         if self.root != GradeRoot::Clip {
             super::parity_manifest::touched_the_root();
         }
-        let (cmds, out) = self.with_stand_in(|g| g.draw(input, frame, &theme));
+        let (cmds, out) = self.with_stand_in(|g| {
+            // The clip drawn (a sequence grade's stand-in, stood in) starts
+            // where the carets seek from.
+            let clip_start = g.state.sequences[0].all_clips().find(|c| c.id == g.clip).expect("the grade's clip").timeline_in;
+            let frame = crate::inspector::keyframe_selection::FrameSelection { time_secs: 0.5, tolerance: 0.02, clip_start };
+            g.draw(input, frame, &theme)
+        });
         self.icons = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Rect(r) if r.fill_texture_id != egui::TextureId::default() => Some(r.rect), _ => None }).collect();
         self.boxes = out.shapes.iter().filter_map(|s| match &s.shape {
             egui::Shape::Rect(r) if r.fill_texture_id == egui::TextureId::default() && (10.0..=20.0).contains(&r.rect.width()) && (r.rect.width() - r.rect.height()).abs() < 1.0 => Some(r.rect),

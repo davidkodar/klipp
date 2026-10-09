@@ -15,11 +15,19 @@ pub(super) fn clip_time(state: &crate::state::AppState, clip: &Clip) -> f64 {
 pub(crate) struct FrameSelection {
     pub time_secs: f64,
     pub tolerance: f64,
+    /// Where the clip starts on the timeline: a key's clip time from it is
+    /// the timeline time a caret seeks to.
+    pub clip_start: klipp_core::Timecode,
 }
 
 impl FrameSelection {
     pub fn new(playhead: klipp_core::Timecode, clip_start: klipp_core::Timecode, tolerance: f64) -> Self {
-        Self { time_secs: (playhead.to_secs_f64() - clip_start.to_secs_f64()).max(0.0), tolerance }
+        Self { time_secs: (playhead.to_secs_f64() - clip_start.to_secs_f64()).max(0.0), tolerance, clip_start }
+    }
+
+    /// Seek to the clip's `clip_secs`.
+    pub fn seek_to(&self, clip_secs: f64) -> klipp_core::AppCommand {
+        klipp_core::AppCommand::SeekTo(klipp_core::Timecode::from_secs_f64(self.clip_start.to_secs_f64() + clip_secs, self.clip_start.rate))
     }
 }
 

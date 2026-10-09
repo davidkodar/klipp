@@ -26,7 +26,7 @@ pub fn show_color_and_luts(
         // on any change so the persistent path matches every other
         // mask-edit site.
         if let Some(clip_id) = state.selected_clip {
-            let mask_entry: Option<(klipp_nodes::NodeId, klipp_core::MaskStack, f64, Vec<usize>)> = state
+            let mask_entry: Option<(klipp_nodes::NodeId, klipp_core::MaskStack, f64, Vec<usize>, klipp_core::Timecode)> = state
                 .sequences
                 .get(state.active_sequence_idx)
                 .and_then(|seq| seq.tracks.iter()
@@ -47,13 +47,14 @@ pub fn show_color_and_luts(
                                     .filter(|(tn, _)| *tn == nid)
                                     .map(|(_, mi)| mi))
                                 .collect();
-                            (nid, n.params.masks.clone().unwrap_or_default(), clip_time, tracked)
+                            (nid, n.params.masks.clone().unwrap_or_default(), clip_time, tracked, c.timeline_in)
                         })
                     }));
-            if let Some((node_id, mut masks, clip_time_secs, tracked)) = mask_entry {
+            if let Some((node_id, mut masks, clip_time_secs, tracked, clip_start)) = mask_entry {
                 let frame = crate::inspector::keyframe_selection::FrameSelection {
                     time_secs: clip_time_secs,
                     tolerance: crate::inspector::keyframe_selection::frame_tolerance(state.sequence()),
+                    clip_start,
                 };
                 section_card(ui, "MASKS", None, theme, |ui| {
                     crate::panels::node_inspector::NodeInspectorPanel::render_masks_body(

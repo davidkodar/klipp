@@ -2,7 +2,8 @@
 //! layout's header and the tabbed page's and bottom tools' strip, one
 //! generated switch with its keys whatever the node. Switched off and on,
 //! its frame, and its keys (its diamond adds and removes one; once keyed,
-//! the switch edits the key at the playhead) are earned on the central
+//! the switch edits the key at the playhead; its carets seek to the keys
+//! either side; its menu holds a key) are earned on the central
 //! rules' representative nodes (`rules::BYPASS_REPRESENTATIVE`), on the
 //! clip's grade and, through `on_roots`, each sequence grade, each held to
 //! the node changed straight in the document, one undo step, and an exact
@@ -46,12 +47,45 @@ fn with_node(start: &Grade, edit: impl FnOnce(&mut klipp_nodes::Node)) -> Result
     Ok(g.twin())
 }
 
+/// The bypass's caret toward the previous or the next key: the small icon
+/// beside its diamond, on that side.
+fn caret(g: &mut Grade, next: bool) -> Result<egui::Pos2, String> {
+    let at = diamond(g)?;
+    g.icons.iter().filter(|i| (i.center().y - at.y).abs() < 8.0 && (i.center().x > at.x) == next && (i.center().x - at.x).abs() < 40.0 && i.width() < 12.0).map(|i| i.center()).min_by(|a, b| (a.x - at.x).abs().total_cmp(&(b.x - at.x).abs())).ok_or_else(|| format!("no {} caret beside the bypass diamond", if next { "next" } else { "previous" }))
+}
+
 /// A bypass key track of `keys` (time, on).
 fn keyed(keys: &[(f64, f32)]) -> impl Fn(&mut klipp_nodes::Node) + '_ {
+    keyed_as(keys, klipp_core::Interpolation::Step)
+}
+
+/// [`keyed`], the keys interpolated by `interpolation`.
+fn keyed_as(keys: &[(f64, f32)], interpolation: klipp_core::Interpolation) -> impl Fn(&mut klipp_nodes::Node) + '_ {
     move |n| {
         let track = n.keyframes.track_mut(klipp_nodes::ENABLED_TRACK);
-        track.keyframes = keys.iter().map(|&(time_secs, value)| Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Step, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }).collect();
+        track.keyframes = keys.iter().map(|&(time_secs, value)| Keyframe { time_secs, value, interpolation, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }).collect();
     }
+}
+
+/// From keys either side of the frame, a caret seeks to the key on its
+/// side, in the timeline's time, and writes nothing.
+fn caret_case(start: &Grade, next: bool) -> Result<(), String> {
+    let s = with_node(start, keyed(&[(0.25, 1.0), (1.25, 0.0)]))?;
+    let mut g = s.twin();
+    g.drawn();
+    let before = g.picture();
+    let at = caret(&mut g, next)?;
+    g.click_at(at);
+    g.drawn();
+    let want = if next { 1.25 } else { 0.25 };
+    let lands = |t: f64| g.state.sequences[0].all_clips().any(|c| (t - c.timeline_in.to_secs_f64() - want).abs() < 0.02);
+    if g.seeks.len() != 1 || !lands(g.seeks[0].to_secs_f64()) {
+        return Err(format!("seeks {:?}, not one to the key at {want}", g.seeks));
+    }
+    if g.picture() != before || g.state.active_history().undo_count() != 0 || !g.unapplied.is_empty() {
+        return Err(format!("a caret wrote: undo {}, unapplied {:?}", g.state.active_history().undo_count(), g.unapplied));
+    }
+    Ok(())
 }
 
 /// One bypass edit by `drive` from `start`, held to `expected` (the node
@@ -142,6 +176,24 @@ pub(super) fn run(report: &mut Report) {
             edit_case(&s, keyed(&[(1.25, 1.0)]), |g| {
                 let at = diamond(g)?;
                 g.click_at(at);
+                Ok(())
+            })
+        });
+        report.case(&name("previous key"), [key(Interaction::PreviousKey)], || caret_case(&start()?, false));
+        report.case(&name("next key"), [key(Interaction::NextKey)], || caret_case(&start()?, true));
+        report.case(&name("key held"), [key(Interaction::Interpolation(super::parity_manifest::KeyInterpolation::Step))], || {
+            // A key that eases (one keyed before keys held): Step from the
+            // diamond's menu holds it.
+            let s = with_node(&start()?, keyed_as(&[(AT, 1.0), (1.25, 0.0)], klipp_core::Interpolation::Linear))?;
+            edit_case(&s, |n| {
+                keyed_as(&[(AT, 1.0), (1.25, 0.0)], klipp_core::Interpolation::Linear)(n);
+                n.keyframes.track_mut(klipp_nodes::ENABLED_TRACK).keyframes[0].interpolation = klipp_core::Interpolation::Step;
+            }, |g| {
+                let at = diamond(g)?;
+                g.right_click_at(at);
+                // The menu is drawn last.
+                let item = g.frame(Vec::new()).into_iter().rev().find(|(t, _)| t.trim().trim_start_matches('*').trim() == "Step (Hold)").map(|(_, p)| p).ok_or("no Step (Hold) in the bypass diamond's menu")?;
+                g.click_at(item);
                 Ok(())
             })
         });

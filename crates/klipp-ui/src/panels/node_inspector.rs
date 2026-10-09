@@ -107,7 +107,7 @@ impl NodeInspectorPanel {
         &mut self, ui: &mut egui::Ui, graph: &mut NodeGraph,
         selected: NodeId, clip_id: ClipId, theme: &KlippTheme,
     ) -> Vec<AppCommand> {
-        self.show(ui, &Some(selected), graph, clip_id, theme, FrameSelection { time_secs: 0.0, tolerance: 1.0 / 48.0 })
+        self.show(ui, &Some(selected), graph, clip_id, theme, FrameSelection { time_secs: 0.0, tolerance: 1.0 / 48.0, clip_start: klipp_core::Timecode::zero() })
     }
 
     /// Draw a real colour-page tab, including the Corrector's custom editors.
@@ -117,7 +117,7 @@ impl NodeInspectorPanel {
         selected: NodeId, clip_id: ClipId, theme: &KlippTheme, mut tab: ColorTab,
     ) -> Vec<AppCommand> {
         let _scope = crate::widgets::row_recorder::scope(format!("tab/{tab:?}"));
-        self.show_simple(ui, graph, clip_id, &mut Some(selected), &mut tab, theme, FrameSelection { time_secs: 0.0, tolerance: 1.0 / 48.0 })
+        self.show_simple(ui, graph, clip_id, &mut Some(selected), &mut tab, theme, FrameSelection { time_secs: 0.0, tolerance: 1.0 / 48.0, clip_start: klipp_core::Timecode::zero() })
     }
     /// Recompute the curves' histogram when the viewer shows a new
     /// frame. Cheap enough to call every frame: it returns immediately
@@ -1278,16 +1278,15 @@ impl NodeInspectorPanel {
                 .find(|n| n.kind == NodeKind::Corrector)
                 .map(|n| (n.id, n.label.clone(), n.enabled)));
         if let Some((target_id, target_label, target_enabled)) = bypass_target {
-            let (track_has_kfs, kf_at_playhead, effective_on, key_time) = {
+            let (track_has_kfs, effective_on, key_time, bypass_keyframes) = {
                 let node = graph.nodes.iter().find(|n| n.id == target_id);
                 let track = node.and_then(|n| n.keyframes.tracks.iter().find(|t| t.param_name == klipp_nodes::ENABLED_TRACK));
                 let has_kfs = track.is_some_and(|t| !t.keyframes.is_empty());
                 let selected = track.and_then(|t| crate::inspector::keyframe_selection::nearest(&t.keyframes, clip_time_secs, frame.tolerance).map(|i| &t.keyframes[i]));
-                let at_ph = selected.is_some();
                 let on = selected.map(|k| k.value).or_else(|| track.and_then(|t| t.evaluate(clip_time_secs)))
                     .map(|v| v >= 0.5)
                     .unwrap_or(target_enabled);
-                (has_kfs, at_ph, on, selected.map_or(clip_time_secs, |k| k.time_secs))
+                (has_kfs, on, selected.map_or(clip_time_secs, |k| k.time_secs), track.map(|t| t.keyframes.clone()).unwrap_or_default())
             };
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -1326,50 +1325,7 @@ impl NodeInspectorPanel {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(12.0);
-                    let diamond_color = if kf_at_playhead {
-                        theme.text_accent
-                    } else if track_has_kfs {
-                        egui::Color32::from_rgba_premultiplied(255, 191, 0, 128)
-                    } else {
-                        theme.text_dim
-                    };
-                    let diamond_text = if kf_at_playhead { "\u{25C6}" } else { "\u{25C7}" };
-                    let diamond_resp = ui.add(
-                        egui::Button::new(egui::RichText::new(diamond_text).size(13.0).color(diamond_color))
-                            .frame(false),
-                    );
-                    if diamond_resp.clicked() {
-                        if kf_at_playhead {
-                            cmds.push(AppCommand::RemoveKeyframe {
-                                clip_id, node_id: target_id,
-                                param: klipp_nodes::ENABLED_TRACK.to_string(),
-                                time_secs: key_time,
-                            });
-                        } else {
-                            cmds.push(AppCommand::AddKeyframe {
-                                clip_id, node_id: target_id,
-                                param: klipp_nodes::ENABLED_TRACK.to_string(),
-                                time_secs: key_time,
-                                value: if effective_on { 1.0 } else { 0.0 },
-                            });
-                        }
-                    }
-                    if track_has_kfs {
-                        diamond_resp.context_menu(|ui| {
-                            if ui.button("Clear bypass keyframes").clicked() {
-                                cmds.push(AppCommand::ClearKeyframes {
-                                    clip_id, node_id: target_id,
-                                    param: klipp_nodes::ENABLED_TRACK.to_string(),
-                                });
-                                ui.close_menu();
-                            }
-                        });
-                    }
-                    diamond_resp.on_hover_text(if kf_at_playhead {
-                        "Remove bypass keyframe at playhead"
-                    } else {
-                        "Add bypass keyframe at playhead"
-                    });
+                    bypass_keys(ui, &bypass_keyframes, effective_on, target_id, clip_id, cmds, theme, frame, 13.0);
                 });
             });
             ui.add_space(4.0);
@@ -4000,7 +3956,6 @@ pub(crate) fn node_header(
     let bypass_track_has_kfs = enabled_track.is_some_and(|t| !t.keyframes.is_empty());
     let selected = enabled_track.and_then(|t| crate::inspector::keyframe_selection::nearest(&t.keyframes, clip_time_secs, frame.tolerance).map(|i| &t.keyframes[i]));
     let key_time = selected.map_or(clip_time_secs, |k| k.time_secs);
-    let bypass_kf_at_playhead = selected.is_some();
     let effective_on = selected.map(|k| k.value).or_else(|| enabled_track.and_then(|t| t.evaluate(clip_time_secs)))
         .map(|v| v >= 0.5)
         .unwrap_or(enabled);
@@ -4026,55 +3981,72 @@ pub(crate) fn node_header(
                 }
             }
             ui.add_space(4.0);
-            let diamond_color = if bypass_kf_at_playhead {
-                theme.text_accent
-            } else if bypass_track_has_kfs {
-                egui::Color32::from_rgba_premultiplied(255, 191, 0, 128)
-            } else {
-                theme.text_dim
-            };
-            let diamond_text = if bypass_kf_at_playhead { "\u{25C6}" } else { "\u{25C7}" };
-            let diamond_resp = ui.add(
-                egui::Button::new(egui::RichText::new(diamond_text).size(12.0).color(diamond_color))
-                    .frame(false),
-            );
-            if diamond_resp.clicked() {
-                if bypass_kf_at_playhead {
-                    cmds.push(AppCommand::RemoveKeyframe {
-                        clip_id, node_id,
-                        param: klipp_nodes::ENABLED_TRACK.to_string(),
-                        time_secs: key_time,
-                    });
-                } else {
-                    cmds.push(AppCommand::AddKeyframe {
-                        clip_id, node_id,
-                        param: klipp_nodes::ENABLED_TRACK.to_string(),
-                        time_secs: key_time,
-                        value: if effective_on { 1.0 } else { 0.0 },
-                    });
-                }
-            }
-            if bypass_track_has_kfs {
-                diamond_resp.context_menu(|ui| {
-                    if ui.button("Clear bypass keyframes").clicked() {
-                        cmds.push(AppCommand::ClearKeyframes {
-                            clip_id, node_id,
-                            param: klipp_nodes::ENABLED_TRACK.to_string(),
-                        });
-                        ui.close_menu();
-                    }
-                });
-            }
-            diamond_resp.on_hover_text(if bypass_kf_at_playhead {
-                "Remove bypass keyframe at playhead"
-            } else {
-                "Add bypass keyframe at playhead"
-            });
+            bypass_keys(ui, enabled_track.map_or(&[], |t| &t.keyframes), effective_on, node_id, clip_id, cmds, theme, frame, 12.0);
         });
     });
     ui.add_space(2.0);
     ui.separator();
     ui.add_space(4.0);
+}
+
+/// A grade node's bypass key controls, drawn right to left as a number
+/// row's are: the next-key caret, the diamond that adds or removes the key
+/// at the frame, the previous-key caret (#1456). The carets seek, writing
+/// nothing; the diamond's menu sets the key's interpolation (a switch
+/// holds, so Step is the one offered) and clears the track.
+#[allow(clippy::too_many_arguments)]
+fn bypass_keys(ui: &mut egui::Ui, keys: &[klipp_core::Keyframe], effective_on: bool, node_id: NodeId, clip_id: ClipId, cmds: &mut Vec<AppCommand>, theme: &KlippTheme, frame: FrameSelection, size: f32) {
+    use crate::inspector::keyframe_selection;
+    let around = keyframe_selection::state(keys, frame.time_secs, frame.tolerance);
+    let selected = keyframe_selection::nearest(keys, frame.time_secs, frame.tolerance).map(|i| &keys[i]);
+    let key_time = selected.map_or(frame.time_secs, |k| k.time_secs);
+    let param = || klipp_nodes::ENABLED_TRACK.to_string();
+    let caret = |ui: &mut egui::Ui, icon: Icon, to: Option<f64>, cmds: &mut Vec<AppCommand>| {
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(10.0, 18.0), if to.is_some() { egui::Sense::click() } else { egui::Sense::hover() });
+        let tint = if to.is_none() { theme.text_dim.gamma_multiply(0.4) } else if resp.hovered() { theme.text_accent } else { theme.text_dim };
+        icon.image(8.0).tint(tint).paint_at(ui, egui::Rect::from_center_size(rect.center(), egui::vec2(8.0, 8.0)));
+        if let Some(t) = to.filter(|_| resp.clicked()) {
+            cmds.push(frame.seek_to(t));
+        }
+    };
+    if !keys.is_empty() {
+        caret(ui, Icon::CaretRight, around.next_keyframe_time, cmds);
+    }
+    let diamond_color = if selected.is_some() {
+        theme.text_accent
+    } else if !keys.is_empty() {
+        egui::Color32::from_rgba_premultiplied(255, 191, 0, 128)
+    } else {
+        theme.text_dim
+    };
+    let diamond_text = if selected.is_some() { "\u{25C6}" } else { "\u{25C7}" };
+    let diamond_resp = ui.add(egui::Button::new(egui::RichText::new(diamond_text).size(size).color(diamond_color)).frame(false));
+    if diamond_resp.clicked() {
+        if selected.is_some() {
+            cmds.push(AppCommand::RemoveKeyframe { clip_id, node_id, param: param(), time_secs: key_time });
+        } else {
+            cmds.push(AppCommand::AddKeyframe { clip_id, node_id, param: param(), time_secs: key_time, value: if effective_on { 1.0 } else { 0.0 } });
+        }
+    }
+    if !keys.is_empty() {
+        diamond_resp.context_menu(|ui| {
+            if let Some(key) = selected {
+                let step = key.interpolation == klipp_core::Interpolation::Step;
+                if ui.button(format!("{}Step (Hold)", if step { "  * " } else { "    " })).clicked() {
+                    cmds.push(AppCommand::SetKeyframeInterpolation { clip_id, node_id, param: param(), time_secs: key_time, interpolation: klipp_core::Interpolation::Step });
+                    ui.close_menu();
+                }
+            }
+            if ui.button("Clear bypass keyframes").clicked() {
+                cmds.push(AppCommand::ClearKeyframes { clip_id, node_id, param: param() });
+                ui.close_menu();
+            }
+        });
+    }
+    diamond_resp.on_hover_text(if selected.is_some() { "Remove bypass keyframe at playhead" } else { "Add bypass keyframe at playhead" });
+    if !keys.is_empty() {
+        caret(ui, Icon::CaretLeft, around.prev_keyframe_time, cmds);
+    }
 }
 
 fn section_header(ui: &mut egui::Ui, title: &str, enabled: bool, theme: &KlippTheme) -> (bool, bool) {

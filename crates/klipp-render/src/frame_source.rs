@@ -529,11 +529,9 @@ fn download_linear(buf: &wgpu::Buffer, width: u32, height: u32) -> Vec<f32> {
 /// them idle.
 fn rgba64_to_linear(rgba: &[u16], to_working: Option<[[f32; 3]; 3]>) -> Vec<f32> {
     use rayon::prelude::*;
-    use std::sync::OnceLock;
-    static LUT: OnceLock<Vec<f32>> = OnceLock::new();
-    let lut = LUT.get_or_init(|| {
-        (0..=u16::MAX).map(|v| klipp_color::transfer::srgb_to_linear(v as f32 / 65535.0)).collect()
-    });
+    // The GPU bridge's table too: the two decodes are one.
+    let table = klipp_effects::gpu::srgb16_decode_table();
+    let (lut, alpha) = table.split_at(65536);
     let mut out = vec![0.0f32; rgba.len()];
     out.par_chunks_exact_mut(4)
         .zip(rgba.par_chunks_exact(4))
@@ -551,7 +549,7 @@ fn rgba64_to_linear(rgba: &[u16], to_working: Option<[[f32; 3]; 3]>) -> Vec<f32>
                     dst[2] = b;
                 }
             }
-            dst[3] = px[3] as f32 / 65535.0;
+            dst[3] = alpha[px[3] as usize];
         });
     out
 }

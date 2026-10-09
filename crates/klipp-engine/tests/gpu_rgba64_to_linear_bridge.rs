@@ -60,6 +60,10 @@ fn cpu_linear(rgba: &[u16], m: [[f32; 4]; 3]) -> Vec<f32> {
 }
 
 fn bridge(rgba: &[u16], m: [[f32; 4]; 3]) -> Option<Vec<f32>> {
+    bridge_sized(rgba, W, H, m)
+}
+
+fn bridge_sized(rgba: &[u16], w: u32, h: u32, m: [[f32; 4]; 3]) -> Option<Vec<f32>> {
     // Dedicated context: cargo runs integration tests in parallel and
     // `shared()` caches one across them, which races descriptor-pool
     // exhaustion on NVIDIA Vulkan.
@@ -77,16 +81,16 @@ fn bridge(rgba: &[u16], m: [[f32; 4]; 3]) -> Option<Vec<f32>> {
     ctx.device.poll(wgpu::Maintain::Poll);
 
     assert!(
-        pipeline.bridge_rgba64_to_linear_into_chain(&input, W, H, m),
+        pipeline.bridge_rgba64_to_linear_into_chain(&input, w, h, m),
         "bridge call must succeed"
     );
-    Some(pipeline.download_chain_output_linear(true, (W * H) as usize))
+    Some(pipeline.download_chain_output_linear(true, (w * h) as usize))
 }
 
-/// The GPU expansion is the CPU expansion. `pow` differs by an LSB or
-/// two between the CPU's f64 intermediate and the GPU's f32; 0.003 in
-/// [0, 1] covers that across the ramp and is far below the ~0.0002 that
-/// one 8-bit output level costs in the darks.
+/// The GPU expansion is the CPU expansion, to the bit: the bridge looks
+/// each code up in the CPU's own decode of it, where the shader's `pow`
+/// was up to 12 ULP off (#1451). A frame seeded on the GPU then meets a
+/// step in the chain (a Posterize band edge on a code) as the CPU does.
 #[test]
 fn rgba64_to_linear_gpu_matches_cpu() {
     let rgba = test_pattern(W, H);
@@ -96,14 +100,23 @@ fn rgba64_to_linear_gpu_matches_cpu() {
     };
     let cpu = cpu_linear(&rgba, IDENTITY);
     assert_eq!(gpu.len(), cpu.len(), "length mismatch");
-
-    let mut worst = 0.0f32;
     for (i, (g, c)) in gpu.iter().zip(cpu.iter()).enumerate() {
-        let delta = (g - c).abs();
-        worst = worst.max(delta);
-        assert!(delta < 0.003, "sample {i}: gpu={g:.6} cpu={c:.6} delta={delta:.6}");
+        assert!(g.to_bits() == c.to_bits(), "sample {i}: gpu={g:e} cpu={c:e}, not the CPU's to the bit");
     }
-    eprintln!("worst |gpu - cpu| = {worst:.2e}");
+}
+
+/// Every 16-bit code, in each colour channel and in alpha, decodes on
+/// the GPU to the CPU's value exactly.
+#[test]
+fn every_code_decodes_as_on_the_cpu() {
+    let rgba: Vec<u16> = (0..=u16::MAX).flat_map(|c| [c, u16::MAX - c, c.wrapping_mul(7), c]).collect();
+    let Some(gpu) = bridge_sized(&rgba, 256, 256, IDENTITY) else {
+        eprintln!("skipping: no usable GPU");
+        return;
+    };
+    let cpu = cpu_linear(&rgba, IDENTITY);
+    let off: Vec<_> = gpu.iter().zip(&cpu).enumerate().filter(|(_, (g, c))| g.to_bits() != c.to_bits()).map(|(i, (g, c))| (i, *g, *c)).collect();
+    assert!(off.is_empty(), "{} samples the GPU decodes otherwise: {:?}", off.len(), &off[..off.len().min(8)]);
 }
 
 /// The basis change is applied, not carried and dropped. Without this
