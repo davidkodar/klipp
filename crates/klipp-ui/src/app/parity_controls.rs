@@ -12,7 +12,7 @@
 
 use super::inspector_edit_host::{InspectorEditHost, InspectorSideEffects};
 use super::parity_harness::GradeRoot;
-use super::parity_manifest::{CoverageKey, Interaction, Report, Surface};
+use super::parity_manifest::{catalog, CoverageKey, Interaction, Manifest, Report, Surface};
 use crate::inspector::generated::{effect_value, row};
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -217,6 +217,71 @@ fn edit_case(effect: &BuiltinEffect, desc: &ParamDesc, want: Value, drive: impl 
         return Err("redo doesn't give back the picture after".into());
     }
     Ok(())
+}
+
+/// The obligations of every row these cases drive, on the surface and
+/// fixture variant each is driven on: an effect card's switches and menus
+/// on the stack (`run`), a per-node grade's (`run_grade`), and the
+/// Corrector's on its tabbed page and the bottom tools (`run_grade_pages`).
+/// Taken from the same selection the runs make, not from the central
+/// rules, so completeness can't be circular.
+pub(super) fn require(manifest: &mut Manifest) {
+    let entries = catalog();
+    let mut want = |type_id: &str, parameter: &str, surface: Surface, variant: &str| {
+        if let Some(entry) = entries.iter().find(|e| e.type_id == type_id && e.parameter == parameter) {
+            manifest.require_fixture(entry, surface, variant);
+            // A grade family runs on the sequence's grades too (`on_roots`),
+            // which earns its keys there under the root's variant.
+            if entry.grade {
+                for root in GradeRoot::SEQUENCE {
+                    manifest.require_fixture(entry, Surface::NonClipGrade, &format!("{}: {surface:?} {variant}", root.variant()));
+                }
+            }
+        }
+    };
+    let discrete = |w: Widget| matches!(w, Widget::Toggle | Widget::Combo);
+    for ty in effect_types() {
+        if crate::inspector::stack_view::is_placed_kind(ty.tag) {
+            continue;
+        }
+        for desc in ty.desc.params {
+            let pres = ty.presentation(desc);
+            if discrete(pres.widget) {
+                if let Ok((_, variant)) = shown_fixture(ty, &pres) {
+                    want(ty.desc.id, desc.key, Surface::EffectsStack, variant);
+                }
+            }
+        }
+    }
+    for ty in klipp_nodes::registry::node_types() {
+        if !super::main_layout::per_node_kind(ty.kind) {
+            continue;
+        }
+        for desc in ty.desc.params {
+            if discrete(ty.presentation(desc).widget) {
+                want(ty.desc.id, desc.key, Surface::GradePerNode, grade_variant(ty, desc));
+            }
+        }
+    }
+    let ty = klipp_nodes::registry::node_type(klipp_nodes::NodeKind::Corrector).expect("the Corrector type");
+    for desc in ty.desc.params {
+        if discrete(ty.presentation(desc).widget) && CORRECTOR_TABS.iter().any(|(k, _)| *k == desc.key) {
+            for surface in [Surface::GradeTabbedRight, Surface::GradeBottomTools] {
+                want(ty.desc.id, desc.key, surface, grade_variant(ty, desc));
+            }
+        }
+    }
+}
+
+/// The fixture variant `discrete_cases` names a grade row by: "conditions
+/// met" when a condition on it isn't met at its type's defaults, which the
+/// case switches on first, else "sample".
+fn grade_variant(ty: &klipp_nodes::registry::NodeType, desc: &ParamDesc) -> &'static str {
+    let pres = ty.presentation(desc);
+    let unmet = [pres.visible_if, pres.enabled_if].into_iter().flatten().any(|Cond::ParamIs { key, value }| {
+        ty.desc.params.iter().find(|p| p.key == key).is_none_or(|cond| cond.default.round() as i64 != value as i64)
+    });
+    if unmet { "conditions met" } else { "sample" }
 }
 
 /// Every switch clicked both ways and every menu item picked, on every

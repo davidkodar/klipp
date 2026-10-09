@@ -12,7 +12,7 @@
 //! removed by its ×, and turned off by its switch.
 
 use super::parity_controls::{placed, Grade, Page};
-use super::parity_manifest::Report;
+use super::parity_manifest::{catalog, CoverageKey, Interaction, Manifest, Report, Surface};
 use klipp_nodes::NodeKind;
 
 /// A LUT node with `path` set (or none), as the per-node layout draws it.
@@ -70,6 +70,30 @@ fn click(g: &mut Grade, text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The LUT node's file editor, and the Mask node's stack: the catalog
+/// entries these cases drive, on the per-node layout.
+const LUT_ENTRY: (&str, &str) = ("klipp.grade.lut_3d", "lut_path");
+const MASK_ENTRY: (&str, &str) = ("klipp.grade.mask", "masks");
+
+fn key((type_id, parameter): (&str, &str), interaction: Interaction) -> CoverageKey {
+    CoverageKey::new(type_id, parameter, Surface::GradePerNode, "sample", interaction)
+}
+
+/// The obligations of the entries these cases drive, on the surface and
+/// fixture they drive them on.
+pub(super) fn require(manifest: &mut Manifest) {
+    let entries = catalog();
+    for (type_id, parameter) in [LUT_ENTRY, MASK_ENTRY] {
+        if let Some(entry) = entries.iter().find(|e| e.type_id == type_id && e.parameter == parameter) {
+            manifest.require_fixture(entry, Surface::GradePerNode, "sample");
+            // These cases run on the sequence's grades too (`on_roots`).
+            for root in super::parity_harness::GradeRoot::SEQUENCE {
+                manifest.require_fixture(entry, Surface::NonClipGrade, &format!("{}: GradePerNode sample", root.variant()));
+            }
+        }
+    }
+}
+
 pub(super) fn run_lut(report: &mut Report) {
     let library = klipp_core::assets::bundled_luts_dir();
     // The first bundled look, by its category and name.
@@ -82,7 +106,7 @@ pub(super) fn run_lut(report: &mut Report) {
             files.into_iter().next().map(|f| (c.file_name().unwrap().to_string_lossy().to_string(), f))
         })
     });
-    report.case("LUT picked from the bundled looks", [], || {
+    report.case("LUT picked from the bundled looks", [key(LUT_ENTRY, Interaction::FileSelect), key(LUT_ENTRY, Interaction::UndoRedo)], || {
         let (category, file) = first.clone().ok_or("no bundled look to pick")?;
         let name = file.file_stem().unwrap().to_string_lossy().to_string();
         let start = lut_node(None)?;
@@ -92,13 +116,13 @@ pub(super) fn run_lut(report: &mut Report) {
             click(g, &name)
         })
     });
-    report.case("LUT cleared", [], || {
+    report.case("LUT cleared", [key(LUT_ENTRY, Interaction::FileClear), key(LUT_ENTRY, Interaction::UndoRedo)], || {
         let start = lut_node(Some("/nonexistent/klipp-parity/look.cube"))?;
         lut_case(&start, None, |g| click(g, "Clear"))
     });
     // A file this machine doesn't have: named in both views, nothing
     // written by drawing it.
-    report.case("LUT missing", [], || {
+    report.case("LUT missing", [key(LUT_ENTRY, Interaction::MissingAsset)], || {
         let start = lut_node(Some("/nonexistent/klipp-parity/look.cube"))?;
         for generated in [false, true] {
             let mut g = start.twin(generated);
@@ -171,18 +195,18 @@ fn mask_node(with_one: bool) -> Result<Grade, String> {
 }
 
 pub(super) fn run_masks(report: &mut Report) {
-    report.case("mask added", [], || {
+    report.case("mask added", [key(MASK_ENTRY, Interaction::AddMask), key(MASK_ENTRY, Interaction::UndoRedo)], || {
         let start = mask_node(false)?;
         mask_case(&start, |before, after| if after.len() == before.len() + 1 && matches!(after.last().map(|m| &m.shape), Some(klipp_core::MaskShape::Circle { .. })) { Ok(()) } else { Err(format!("{after:?}")) }, |g| {
             click(g, "+ Add Mask")?;
             click(g, "Circle")
         })
     });
-    report.case("mask removed", [], || {
+    report.case("mask removed", [key(MASK_ENTRY, Interaction::RemoveMask), key(MASK_ENTRY, Interaction::UndoRedo)], || {
         let start = mask_node(true)?;
         mask_case(&start, |before, after| if after.len() + 1 == before.len() { Ok(()) } else { Err(format!("{after:?}")) }, |g| click(g, "\u{00D7}"))
     });
-    report.case("mask turned off", [], || {
+    report.case("mask turned off", [key(MASK_ENTRY, Interaction::EditMask), key(MASK_ENTRY, Interaction::UndoRedo)], || {
         let start = mask_node(true)?;
         mask_case(&start, |_, after| if after.len() == 1 && !after[0].enabled { Ok(()) } else { Err(format!("{after:?}")) }, |g| {
             // Its switch, left of its name.

@@ -367,7 +367,7 @@ impl Manifest {
             .collect()
     }
 
-    fn rule_errors(&self, entries: &[CatalogEntry]) -> Vec<String> {
+    pub(super) fn rule_errors(&self, entries: &[CatalogEntry]) -> Vec<String> {
         let catalog: BTreeMap<_, _> = entries
             .iter()
             .map(|e| ((e.type_id, e.parameter.as_str()), e))
@@ -437,6 +437,12 @@ impl Manifest {
                     "excluded surface registered as required: {key:?}: {}",
                     rules::GRAPH_INSPECTOR_EXCLUSION
                 ));
+            }
+            if key.surface == Surface::NestedGrade {
+                errors.push(format!("excluded surface registered as required: {key:?}: {}", rules::NESTED_GRADE_EXCLUSION));
+            }
+            if key.surface == Surface::CurveEditor && entry.grade {
+                errors.push(format!("excluded surface registered as required: {key:?}: {}", rules::GRADE_CURVE_EXCLUSION));
             }
             if !contexts.insert((
                 key.type_id.as_str(),
@@ -512,6 +518,11 @@ impl Manifest {
             .map(|entry| format!("{} / {}", entry.type_id, entry.parameter))
             .collect()
     }
+}
+
+/// The nested grade boundary's wording, for a report outside this module.
+pub(super) fn rules_nested_grade() -> &'static str {
+    rules::NESTED_GRADE_EXCLUSION
 }
 
 /// The sequence grades a `Surface::NonClipGrade` entry is owed on, each
@@ -801,6 +812,8 @@ impl Report {
             rules::GRAPH_INSPECTOR_EXCLUSION
         ));
         exclusions.push(format!("excluded surface variant: NonClipGrade track: {}", rules::TRACK_GRADE_EXCLUSION));
+        exclusions.push(format!("retained old route (do not delete): NestedGrade: {}", rules::NESTED_GRADE_EXCLUSION));
+        exclusions.push(format!("excluded surface: CurveEditor for grade rows: {}", rules::GRADE_CURVE_EXCLUSION));
         if entries
             .iter()
             .any(|e| e.type_id == "klipp.grade.wheel_sat_bri")
@@ -1083,9 +1096,7 @@ mod tests {
             .join("\n");
         for surface in [
             "GradeBottomTools",
-            "NestedGrade",
             "NonClipGrade",
-            "CurveEditor",
         ] {
             assert!(errors.contains(surface), "{surface}: {errors}");
         }
