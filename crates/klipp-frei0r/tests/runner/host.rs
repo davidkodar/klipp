@@ -1,8 +1,10 @@
 //! Subprocess worker for scripts/plugin-tests.py --format frei0r. No oracle
 //! lives in the host: it opens one plug-in, sets the given parameters and
-//! renders each frame through the same `render` the editor calls, in order,
-//! in one process, so a plug-in's state may carry from frame to frame.
-use klipp_frei0r::{host::scan_library, Frei0rEffect, Frei0rPlugin, Frei0rValue};
+//! renders each frame, in order, through one kept `Frei0rInstanceSet`, so
+//! a plug-in's history carries from frame to frame. A declared fallback is
+//! printed as `KLIPP_HOST_FALLBACK`; a refusal as `KLIPP_HOST_REFUSED`,
+//! exiting 3.
+use klipp_frei0r::{host::scan_library, Fallback, Frei0rInstanceSet, Frei0rPlugin, Frei0rValue};
 use std::{error::Error, path::Path, sync::Arc};
 
 fn run() -> Result<(), Box<dyn Error>> {
@@ -21,11 +23,17 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Err(format!("required fixture missing: {}", args[1]).into());
     };
     let plugin = Arc::new(Frei0rPlugin::open(&info.path.clone(), info)?);
-    let apply_params = |effect: &Frei0rEffect| {
-        for (index, value) in &params {
-            effect.set_param(*index, value);
+    let mut set = match Frei0rInstanceSet::new(plugin, width, height) {
+        Ok(set) => set,
+        Err(refusal) => {
+            eprintln!("KLIPP_HOST_REFUSED {refusal}");
+            std::process::exit(3);
         }
     };
+    // By index, as the plug-in numbers them; the rest keep its defaults.
+    for (index, value) in &params {
+        set.set_param(*index, value);
+    }
     for frame in args[5..].chunks_exact(3) {
         let time: f64 = frame[0].parse()?;
         if !time.is_finite() {
@@ -35,7 +43,18 @@ fn run() -> Result<(), Box<dyn Error>> {
         if input.len() != width as usize * height as usize * 4 {
             return Err("input must be tightly packed RGBA8".into());
         }
-        let output = klipp_frei0r::render(plugin.clone(), width, height, time, &input, &apply_params);
+        let output = match set.render(time, &input) {
+            Ok(rendered) => {
+                if let Some(Fallback::Padded { from, to }) = rendered.fallback {
+                    eprintln!("KLIPP_HOST_FALLBACK padded {}x{} {}x{}", from.0, from.1, to.0, to.1);
+                }
+                rendered.rgba
+            }
+            Err(refusal) => {
+                eprintln!("KLIPP_HOST_REFUSED {refusal}");
+                std::process::exit(3);
+            }
+        };
         std::fs::write(&frame[2], output)?;
     }
     Ok(())

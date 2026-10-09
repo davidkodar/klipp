@@ -11,7 +11,8 @@
 //! - [`host`]     — discovery + on-disk cache (mirrors LADSPA pattern).
 //! - [`instance`] — per-instance lifecycle, parameter dispatch,
 //!   color-model adapter, temporal-plugin allowlist.
-//! - [`tile`]     — tiling renderer for resolutions above 2048.
+//! - [`tile`]     — the instances kept across frames: padding, tiling,
+//!   declared refusals and fallbacks.
 //!
 //! ## Safety
 //!
@@ -38,4 +39,4 @@ pub use host::{
     Frei0rPluginInfo, ParamInfo, ParamKind, PluginType,
 };
 pub use instance::{temporal, Frei0rEffect, Frei0rPlugin, Frei0rValue};
-pub use tile::render;
+pub use tile::{Fallback, Frei0rInstanceSet, Refusal, Rendered};

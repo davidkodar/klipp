@@ -1,43 +1,40 @@
-//! Tiling renderer for resolutions beyond frei0r's 2048×2048 cap.
+//! A frei0r effect kept across frames at one frame size: the instances
+//! a frame needs, made once and run in order, so a plug-in that keeps
+//! history (#1468) sees each frame after the one before.
 //!
-//! ## Strategy
+//! ## Sizes frei0r can't take
 //!
-//! For any frame with width > 2048 OR height > 2048, render in
-//! 1024×1024 tiles with a 64-px overlap on each interior side. Each
-//! tile is fed through a per-tile [`Frei0rEffect`] instance (one
-//! plugin handle, multiple instances — frei0r ABI permits this since
-//! `f0r_construct` returns an opaque handle).
+//! frei0r 1.x takes widths and heights that are multiples of 8, from 8
+//! to 2048. Any other size is padded to the next multiple of 8 (at
+//! least 8) by repeating the edge pixels, rendered, and cropped back:
+//! a declared [`Fallback::Padded`], never the picture returned
+//! unchanged (#1469). Pixel-local plug-ins come out exact; one that
+//! reads the frame's geometry (a vignette, a position parameter) sees
+//! a frame up to 7 pixels larger.
 //!
-//! ## Seam handling
+//! ## Tiling
 //!
-//! Spatial filters (blur, glow, distort, edge-detect) read pixels
-//! outside the tile they're rendering. The 64-px overlap guarantees
-//! that for a filter with a kernel ≤ 64 px, the inner tile region is
-//! correct — the overlap region absorbs the edge artifacts and is
-//! discarded on composite. For wider kernels, seams will show as
-//! faint discontinuities at tile boundaries; that is the documented
-//! v1 limitation. Frei0r doesn't expose kernel widths, so we can't
-//! grow the overlap dynamically.
+//! Above 2048 in either direction the padded frame is split into
+//! 1024×1024 tiles with a 64-px overlap on each interior side, one
+//! instance per tile, kept like any other. The overlap absorbs the
+//! edges of filters whose kernel is at most 64 px and is dropped on
+//! composite; wider kernels show seams, and frei0r doesn't expose
+//! kernel widths. A plug-in that keeps frame history is refused above
+//! 2048 ([`Refusal::TemporalAboveMax`]): each tile would keep a
+//! history of its own part of the frame.
 //!
-//! ## Temporal filters
+//! ## Memory
 //!
-//! Plugins listed in [`crate::instance::temporal::TEMPORAL_PLUGINS`]
-//! must NEVER be tiled — their internal state is keyed off the whole
-//! frame. The render dispatch in `klipp-effects` checks the allowlist
-//! BEFORE calling into this module and rejects with a toast. By the
-//! time we're in `render_tiled`, the plugin is known safe to tile.
-//!
-//! ## Dimension alignment
-//!
-//! frei0r mandates 8-aligned dimensions. A 1080p frame (1920×1080)
-//! is aligned. A 1081-line frame is NOT. For non-aligned input, the
-//! renderer falls back to the same passthrough used for >2048 in
-//! the no-tile path; the inspector blocks that case at apply time.
+//! frei0r has no way to ask a plug-in what it keeps. [`Frei0rInstanceSet::bytes`]
+//! is an estimate: each instance's frame, plus, for the plug-ins listed
+//! in [`crate::instance::temporal`], the frames of history measured for
+//! each. A plug-in that keeps history and isn't listed is unbounded by
+//! that estimate; the instance owner's slot count is the bound then.
 
 use std::sync::Arc;
 
 use crate::ffi::{F0R_DIM_ALIGN, F0R_MAX_DIM};
-use crate::instance::{Frei0rEffect, Frei0rPlugin};
+use crate::instance::{temporal, Frei0rEffect, Frei0rPlugin, Frei0rValue};
 
 /// Tile size — must be ≤ F0R_MAX_DIM and must be 8-aligned. 1024 leaves
 /// margin so the tile + overlap stays well under 2048 even at the
@@ -50,197 +47,206 @@ pub const TILE_DIM: u32 = 1024;
 /// will show seams.
 pub const TILE_OVERLAP: u32 = 64;
 
-/// Render an effect over a frame at any resolution. Tiles internally
-/// when the frame exceeds [`F0R_MAX_DIM`] in either dimension, runs
-/// straight through the plugin otherwise.
-///
-/// `apply_params` is invoked once per instance after construction so
-/// the caller can push the current `Frei0rValue` set onto the plugin.
-///
-/// Returns the input bytes unchanged on:
-///   - non-8-aligned dimensions
-///   - dimensions below 8 (frei0r min)
-///   - any per-tile construct failure
-///
-/// Never panics; FFI calls already go through `frei0r_guard!`.
-pub fn render<F>(
-    plugin: Arc<Frei0rPlugin>,
-    width: u32,
-    height: u32,
-    time_secs: f64,
-    rgba_in: &[u8],
-    apply_params: &F,
-) -> Vec<u8>
-where
-    F: Fn(&Frei0rEffect),
-{
-    let expected = (width as usize) * (height as usize) * 4;
-    if rgba_in.len() != expected {
-        tracing::warn!(
-            "frei0r render: buffer size mismatch ({} vs expected {expected})",
-            rgba_in.len()
-        );
-        return rgba_in.to_vec();
-    }
-
-    if !width.is_multiple_of(F0R_DIM_ALIGN)
-        || !height.is_multiple_of(F0R_DIM_ALIGN)
-        || width < F0R_DIM_ALIGN
-        || height < F0R_DIM_ALIGN
-    {
-        tracing::warn!(
-            "frei0r render: {width}×{height} is not 8-aligned, passing through"
-        );
-        return rgba_in.to_vec();
-    }
-
-    // Hot path — frame fits in one frei0r call.
-    if width <= F0R_MAX_DIM && height <= F0R_MAX_DIM {
-        let effect = match Frei0rEffect::new(plugin, width, height) {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!("frei0r render: instance construct failed: {e}");
-                return rgba_in.to_vec();
-            }
-        };
-        apply_params(&effect);
-        return effect.run(time_secs, rgba_in);
-    }
-
-    // Tile path — split into ≤ TILE_DIM blocks with TILE_OVERLAP on
-    // each interior side.
-    render_tiled(plugin, width, height, time_secs, rgba_in, apply_params)
+/// Why a frei0r effect can't render a frame. The caller reports it;
+/// nothing here passes the picture through in its place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    /// A width or height of 0.
+    EmptyFrame,
+    /// The frame isn't `width × height × 4` bytes.
+    BufferSize { got: usize, expected: usize },
+    /// A plug-in that keeps frame history, above 2048 (tiles would
+    /// split its history).
+    TemporalAboveMax { plugin: String, width: u32, height: u32 },
+    /// The plug-in wouldn't make an instance.
+    Construct(String),
 }
 
-fn render_tiled<F>(
-    plugin: Arc<Frei0rPlugin>,
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyFrame => write!(f, "frei0r can't render an empty frame"),
+            Self::BufferSize { got, expected } => write!(f, "frei0r frame is {got} bytes, expected {expected}"),
+            Self::TemporalAboveMax { plugin, width, height } => {
+                write!(f, "{plugin} keeps frame history and can't be tiled: {width}×{height} is above {F0R_MAX_DIM}")
+            }
+            Self::Construct(e) => write!(f, "frei0r instance: {e}"),
+        }
+    }
+}
+
+/// How a frame was rendered other than as asked, declared so the caller
+/// can count and show it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fallback {
+    /// `from` isn't a size frei0r takes: rendered at `to` (the next
+    /// multiple of 8, the edges repeated) and cropped back.
+    Padded { from: (u32, u32), to: (u32, u32) },
+}
+
+/// One rendered frame, `width × height` RGBA8.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Rendered {
+    pub rgba: Vec<u8>,
+    pub fallback: Option<Fallback>,
+}
+
+/// One instance and the part of the (padded) frame it renders.
+struct Tile {
+    effect: Frei0rEffect,
+    /// What the instance sees: its rect in the padded frame.
+    pad_x: u32,
+    pad_y: u32,
+    pad_w: u32,
+    pad_h: u32,
+    /// What it writes back: the inner rect, in the padded frame.
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+}
+
+/// A frei0r effect at one frame size, kept across frames: one instance,
+/// or one per tile above 2048. Render frames through it in order and a
+/// plug-in's history carries; make a new one where history must start
+/// again (a seek, a new size, another source).
+pub struct Frei0rInstanceSet {
     width: u32,
     height: u32,
-    time_secs: f64,
-    rgba_in: &[u8],
-    apply_params: &F,
-) -> Vec<u8>
-where
-    F: Fn(&Frei0rEffect),
-{
-    let mut out = vec![0u8; rgba_in.len()];
+    padded: (u32, u32),
+    tiles: Vec<Tile>,
+    bytes: usize,
+}
 
-    // Walk the frame in TILE_DIM strides. For each tile we compute:
-    //   - the inner rect (final destination region — TILE_DIM × TILE_DIM
-    //     except at the right/bottom edges where it's the remainder)
-    //   - the padded rect (inner + overlap on every interior side)
-    //
-    // The padded rect is what frei0r sees; only the inner rect's
-    // pixels are written back to `out`.
+impl Frei0rInstanceSet {
+    /// The instances `plugin` needs to render `width × height` frames.
+    pub fn new(plugin: Arc<Frei0rPlugin>, width: u32, height: u32) -> Result<Self, Refusal> {
+        if width == 0 || height == 0 {
+            return Err(Refusal::EmptyFrame);
+        }
+        let padded = (padded_dim(width), padded_dim(height));
+        let tiled = padded.0 > F0R_MAX_DIM || padded.1 > F0R_MAX_DIM;
+        if tiled && temporal::is_temporal(&plugin.info) {
+            return Err(Refusal::TemporalAboveMax { plugin: plugin.info.name.clone(), width, height });
+        }
+        let history = temporal::history_frames(&plugin.info) as usize;
+        let mut tiles = Vec::new();
+        for (pad_x, pad_y, pad_w, pad_h, x, y, w, h) in layout(padded.0, padded.1) {
+            let effect = Frei0rEffect::new(plugin.clone(), pad_w, pad_h).map_err(Refusal::Construct)?;
+            tiles.push(Tile { effect, pad_x, pad_y, pad_w, pad_h, x, y, w, h });
+        }
+        let bytes = tiles.iter().map(|t| t.pad_w as usize * t.pad_h as usize * 4 * (1 + history)).sum();
+        Ok(Self { width, height, padded, tiles, bytes })
+    }
 
-    let mut y = 0u32;
-    while y < height {
-        let inner_h = TILE_DIM.min(height - y);
-        let mut x = 0u32;
-        while x < width {
-            let inner_w = TILE_DIM.min(width - x);
+    /// Set the plug-in's parameter `index` on every instance.
+    pub fn set_param(&self, index: usize, value: &Frei0rValue) {
+        for tile in &self.tiles {
+            tile.effect.set_param(index, value);
+        }
+    }
 
-            // Padded rect bounds, clamped to frame.
+    /// Set every parameter, in the plug-in's order.
+    pub fn set_params(&self, params: &[Frei0rValue]) {
+        for (index, value) in params.iter().enumerate() {
+            self.set_param(index, value);
+        }
+    }
+
+    /// Render the next frame, `width × height` RGBA8 in Klipp's byte
+    /// order, at `time_secs`.
+    pub fn render(&mut self, time_secs: f64, rgba_in: &[u8]) -> Result<Rendered, Refusal> {
+        let expected = self.width as usize * self.height as usize * 4;
+        if rgba_in.len() != expected {
+            return Err(Refusal::BufferSize { got: rgba_in.len(), expected });
+        }
+        let (pw, ph) = self.padded;
+        let fallback = ((pw, ph) != (self.width, self.height)).then_some(Fallback::Padded { from: (self.width, self.height), to: (pw, ph) });
+        let padded_in;
+        let frame: &[u8] = if fallback.is_some() {
+            padded_in = pad_edges(rgba_in, self.width, self.height, pw, ph);
+            &padded_in
+        } else {
+            rgba_in
+        };
+        let out = if let [tile] = self.tiles.as_slice() {
+            tile.effect.run(time_secs, frame)
+        } else {
+            let mut out = vec![0u8; frame.len()];
+            for t in &self.tiles {
+                let tile_in = extract_rect(frame, pw, t.pad_x, t.pad_y, t.pad_w, t.pad_h);
+                let tile_out = t.effect.run(time_secs, &tile_in);
+                blit_rect(&tile_out, t.pad_w, t.x - t.pad_x, t.y - t.pad_y, t.w, t.h, &mut out, pw, t.x, t.y);
+            }
+            out
+        };
+        let rgba = if fallback.is_some() { extract_rect(&out, pw, 0, 0, self.width, self.height) } else { out };
+        Ok(Rendered { rgba, fallback })
+    }
+
+    /// The frame size it renders.
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// How many instances it keeps: 1, or one per tile.
+    pub fn instances(&self) -> usize {
+        self.tiles.len()
+    }
+
+    /// An estimate of the memory its instances keep (see the module's
+    /// "Memory").
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+}
+
+/// `v` rounded up to a multiple of 8, at least 8.
+fn padded_dim(v: u32) -> u32 {
+    v.div_ceil(F0R_DIM_ALIGN).max(1) * F0R_DIM_ALIGN
+}
+
+/// The instances for a `w × h` frame (both multiples of 8): one for the
+/// whole frame up to 2048, else ≤ TILE_DIM tiles, each with TILE_OVERLAP
+/// on its interior sides. Each entry: the padded rect, then the inner.
+#[allow(clippy::type_complexity)]
+fn layout(w: u32, h: u32) -> Vec<(u32, u32, u32, u32, u32, u32, u32, u32)> {
+    if w <= F0R_MAX_DIM && h <= F0R_MAX_DIM {
+        return vec![(0, 0, w, h, 0, 0, w, h)];
+    }
+    let mut rects = Vec::new();
+    let mut y = 0;
+    while y < h {
+        let inner_h = TILE_DIM.min(h - y);
+        let mut x = 0;
+        while x < w {
+            let inner_w = TILE_DIM.min(w - x);
             let pad_x = x.saturating_sub(TILE_OVERLAP);
             let pad_y = y.saturating_sub(TILE_OVERLAP);
-            let pad_right = (x + inner_w + TILE_OVERLAP).min(width);
-            let pad_bottom = (y + inner_h + TILE_OVERLAP).min(height);
-            let mut pad_w = pad_right - pad_x;
-            let mut pad_h = pad_bottom - pad_y;
-
-            // Round the padded dimensions down to 8-alignment AND
-            // clamp at F0R_MAX_DIM. Rounding down is safe — it makes
-            // the padded rect smaller, which only reduces overlap;
-            // the inner rect inside is unchanged.
-            pad_w = (pad_w / F0R_DIM_ALIGN) * F0R_DIM_ALIGN;
-            pad_h = (pad_h / F0R_DIM_ALIGN) * F0R_DIM_ALIGN;
-            pad_w = pad_w.min(F0R_MAX_DIM);
-            pad_h = pad_h.min(F0R_MAX_DIM);
-
-            if pad_w < F0R_DIM_ALIGN || pad_h < F0R_DIM_ALIGN {
-                // Tile too small to feed through frei0r — copy
-                // pass-through.
-                copy_inner_passthrough(
-                    rgba_in,
-                    &mut out,
-                    width,
-                    x,
-                    y,
-                    inner_w,
-                    inner_h,
-                );
-                x += inner_w;
-                continue;
-            }
-
-            // Construct tile-sized instance.
-            let effect = match Frei0rEffect::new(plugin.clone(), pad_w, pad_h) {
-                Ok(e) => e,
-                Err(e) => {
-                    tracing::debug!("frei0r tile construct failed: {e}");
-                    copy_inner_passthrough(
-                        rgba_in,
-                        &mut out,
-                        width,
-                        x,
-                        y,
-                        inner_w,
-                        inner_h,
-                    );
-                    x += inner_w;
-                    continue;
-                }
-            };
-            apply_params(&effect);
-
-            // Extract the padded tile from the frame.
-            let tile_in = extract_rect(rgba_in, width, pad_x, pad_y, pad_w, pad_h);
-            let tile_out = effect.run(time_secs, &tile_in);
-
-            // Composite the inner rect back into `out`. The inner
-            // rect lives at offset (x - pad_x, y - pad_y) inside the
-            // padded tile.
-            let inner_off_x = x - pad_x;
-            let inner_off_y = y - pad_y;
-            blit_rect(
-                &tile_out,
-                pad_w,
-                inner_off_x,
-                inner_off_y,
-                inner_w,
-                inner_h,
-                &mut out,
-                width,
-                x,
-                y,
-            );
-
+            let pad_right = (x + inner_w + TILE_OVERLAP).min(w);
+            let pad_bottom = (y + inner_h + TILE_OVERLAP).min(h);
+            rects.push((pad_x, pad_y, pad_right - pad_x, pad_bottom - pad_y, x, y, inner_w, inner_h));
             x += inner_w;
         }
         y += inner_h;
     }
-    out
+    rects
 }
 
-/// Copy a rect from the input frame straight into the output frame
-/// (used when a tile can't be processed for any reason — keeps the
-/// rest of the frame intact).
-fn copy_inner_passthrough(
-    rgba_in: &[u8],
-    out: &mut [u8],
-    frame_w: u32,
-    rect_x: u32,
-    rect_y: u32,
-    rect_w: u32,
-    rect_h: u32,
-) {
-    for row in 0..rect_h {
-        let src_off = (((rect_y + row) * frame_w + rect_x) as usize) * 4;
-        let dst_off = (((rect_y + row) * frame_w + rect_x) as usize) * 4;
-        let len = (rect_w as usize) * 4;
-        out[dst_off..dst_off + len]
-            .copy_from_slice(&rgba_in[src_off..src_off + len]);
+/// `src` (`w × h`) in a `pw × ph` frame, its last column and row
+/// repeated into the rest.
+fn pad_edges(src: &[u8], w: u32, h: u32, pw: u32, ph: u32) -> Vec<u8> {
+    let (w, h, pw, ph) = (w as usize, h as usize, pw as usize, ph as usize);
+    let mut out = Vec::with_capacity(pw * ph * 4);
+    for y in 0..ph {
+        let row = &src[y.min(h - 1) * w * 4..][..w * 4];
+        out.extend_from_slice(row);
+        let last = &row[(w - 1) * 4..];
+        for _ in w..pw {
+            out.extend_from_slice(last);
+        }
     }
+    out
 }
 
 /// Extract a rect from a flat RGBA8888 buffer. Returns a fresh
@@ -317,6 +323,44 @@ mod tests {
         }
         // Outside the rect, dst is still zero.
         assert_eq!(dst[0], 0);
+    }
+
+    #[test]
+    fn padded_sizes_are_the_next_multiple_of_8() {
+        assert_eq!(padded_dim(1), 8);
+        assert_eq!(padded_dim(8), 8);
+        assert_eq!(padded_dim(37), 40);
+        assert_eq!(padded_dim(540), 544);
+        assert_eq!(padded_dim(1080), 1080);
+    }
+
+    #[test]
+    fn padding_repeats_the_last_column_and_row() {
+        // 2×2: pixels 1..4, one byte value per pixel.
+        let src: Vec<u8> = [1u8, 2, 3, 4].iter().flat_map(|&v| [v; 4]).collect();
+        let out = pad_edges(&src, 2, 2, 3, 3);
+        let px: Vec<u8> = out.chunks_exact(4).map(|p| p[0]).collect();
+        assert_eq!(px, [1, 2, 2, 3, 4, 4, 3, 4, 4]);
+    }
+
+    #[test]
+    fn tiles_cover_the_frame_once_with_aligned_rects() {
+        for (w, h) in [(2064, 16), (16, 2064), (4096, 2160), (2048, 2048), (40, 24)] {
+            let mut covered = vec![0u8; (w * h) as usize];
+            for (px, py, pw, ph, x, y, iw, ih) in layout(w, h) {
+                for v in [px, py, pw, ph, x, y, iw, ih] {
+                    assert!(v.is_multiple_of(F0R_DIM_ALIGN), "{w}×{h}: {v} unaligned");
+                }
+                assert!(pw <= F0R_MAX_DIM && ph <= F0R_MAX_DIM && pw >= F0R_DIM_ALIGN && ph >= F0R_DIM_ALIGN);
+                assert!(px <= x && py <= y && x + iw <= px + pw && y + ih <= py + ph, "inner inside padded");
+                for yy in y..y + ih {
+                    for xx in x..x + iw {
+                        covered[(yy * w + xx) as usize] += 1;
+                    }
+                }
+            }
+            assert!(covered.iter().all(|&c| c == 1), "{w}×{h}: every pixel written once");
+        }
     }
 
     #[test]

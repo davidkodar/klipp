@@ -8,16 +8,12 @@
 //! evaluating that clip. Concurrent renders use distinct instances
 //! (mirror LADSPA / OFX precedent).
 //!
-//! ## Tiling
+//! ## Sizes and tiling
 //!
-//! frei0r 1.x clamps width/height to `[8, 2048]` and requires both
-//! to be multiples of 8. Above 2048 the host tiles at 1024×1024 with
-//! 64-px overlap (spatial-filter seam mitigation), drops the overlap
-//! on composite, and crops back to the original frame size. Some
-//! plugins are inherently temporal (delay0r, baltan): they keep
-//! per-instance frame history and tiling fragments that history.
-//! Those plugins are listed in [`temporal::TEMPORAL_PLUGINS`] and
-//! get a clean rejection at >2048 instead of broken output.
+//! A [`Frei0rEffect`] takes one size frei0r accepts (multiples of 8,
+//! from 8 to 2048). [`crate::tile::Frei0rInstanceSet`] keeps the
+//! instances any frame size needs (padding and tiling) and refuses a
+//! plug-in in [`temporal::TEMPORAL_PLUGINS`] above 2048.
 
 use std::path::Path;
 
@@ -354,31 +350,55 @@ fn swap_rgba_bgra(src: &[u8]) -> Vec<u8> {
     out
 }
 
-// ─── Temporal-plugin allowlist ────────────────────────────────────────────
+// ─── Plug-ins that keep frame history ─────────────────────────────────────
 
 pub mod temporal {
-    //! Plugins whose internal state is per-frame-history-buffer and
-    //! therefore CANNOT be safely tiled. At resolutions above
-    //! [`super::F0R_MAX_DIM`] the host renders these as passthrough
-    //! and the inspector surfaces a "doesn't support 4K" toast.
+    //! The installed frei0r filters whose output depends on earlier
+    //! frames, with the history each keeps. frei0r has no flag for it, so
+    //! the list is measured: `tests/temporal_probe.rs` renders every
+    //! installed filter after other frames and fresh, each in a child
+    //! process, and fails when this list and the plug-ins disagree (#1472).
     //!
-    //! Conservative list — when in doubt, NOT in the list (so the
-    //! tiling path runs and produces close-to-correct output rather
-    //! than silently passing the frame through).
+    //! Keyed by the plug-in file's stem, lower-cased (`lightgraffiti` for
+    //! `lightgraffiti.so`), never by its display name: "Light Graffiti"
+    //! was once listed as "Lightgraffiti" and never matched.
 
-    /// Match by plugin NAME (from `f0r_get_plugin_info`), case-sensitive.
-    /// Names shipped by the canonical frei0r distribution.
-    pub const TEMPORAL_PLUGINS: &[&str] = &[
-        "Delay0r",         // delay0r — multi-frame delay buffer
-        "Baltan",          // baltan — temporal feedback delay
-        "Nervous",         // nervous — random past-frame jumble
-        "FrameBuffer0r",   // framebuffer0r (if present)
-        "Lightgraffiti",   // lightgraffiti — accumulates history
-        "scanline0r",      // scanline accumulator
+    use crate::host::Frei0rPluginInfo;
+
+    /// Each plug-in's stem and the frames of history it keeps, beyond its
+    /// own frame: its memory at 1920×1080 at its plateau (120 to 480 frames at 25 fps),
+    /// measured on frei0r-plugins 3.5, in frames of that size, rounded
+    /// up. Delay0r keeps up to its DelayTime (at most a second): 61 frames
+    /// covers 60 fps.
+    pub const TEMPORAL_PLUGINS: &[(&str, u32)] = &[
+        ("aech0r", 1),
+        ("baltan", 32),
+        ("bgsubtract0r", 2),
+        ("delay0r", 61),
+        ("delaygrab", 72),
+        ("denoise_hqdn3d", 4),
+        ("lightgraffiti", 11),
+        ("nervous", 32),
+        ("ntsc", 1),
+        ("vertigo", 3),
+        ("water", 3),
     ];
 
-    pub fn is_temporal(plugin_name: &str) -> bool {
-        TEMPORAL_PLUGINS.contains(&plugin_name)
+    /// The stable key of a plug-in: its file's stem, lower-cased.
+    pub fn key(info: &Frei0rPluginInfo) -> String {
+        info.path.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default()
+    }
+
+    /// Whether `info`'s plug-in keeps frame history.
+    pub fn is_temporal(info: &Frei0rPluginInfo) -> bool {
+        let key = key(info);
+        TEMPORAL_PLUGINS.iter().any(|(k, _)| *k == key)
+    }
+
+    /// The frames of history `info`'s plug-in keeps (0 when it keeps none).
+    pub fn history_frames(info: &Frei0rPluginInfo) -> u32 {
+        let key = key(info);
+        TEMPORAL_PLUGINS.iter().find(|(k, _)| *k == key).map_or(0, |(_, n)| *n)
     }
 }
 
@@ -450,11 +470,30 @@ mod tests {
     }
 
     #[test]
-    fn temporal_allowlist_recognises_known_names() {
-        assert!(temporal::is_temporal("Delay0r"));
-        assert!(temporal::is_temporal("Baltan"));
-        assert!(!temporal::is_temporal("Cartoon"));
-        assert!(!temporal::is_temporal("Invert0r"));
-        assert!(!temporal::is_temporal(""));
+    fn temporal_plugins_are_keyed_by_file_stem() {
+        let info = |path: &str, name: &str| Frei0rPluginInfo {
+            path: path.into(),
+            name: name.into(),
+            author: String::new(),
+            plugin_type: crate::host::PluginType::Filter,
+            color_model: ColorModel::Rgba8888,
+            frei0r_version: 1,
+            major_version: 0,
+            minor_version: 1,
+            explanation: String::new(),
+            params: Vec::new(),
+        };
+        // The display name doesn't matter, the file does.
+        assert!(temporal::is_temporal(&info("/usr/lib/frei0r-1/lightgraffiti.so", "Light Graffiti")));
+        assert!(temporal::is_temporal(&info("/usr/lib/frei0r-1/Delay0r.so", "anything")));
+        assert_eq!(temporal::history_frames(&info("/x/delaygrab.so", "Delaygrab")), 72);
+        assert!(!temporal::is_temporal(&info("/usr/lib/frei0r-1/cartoon.so", "Cartoon")));
+        assert_eq!(temporal::history_frames(&info("/x/cartoon.so", "Cartoon")), 0);
+        let mut keys: Vec<_> = temporal::TEMPORAL_PLUGINS.iter().map(|(k, _)| *k).collect();
+        let n = keys.len();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(keys.len(), n, "no stem twice");
+        assert!(keys.iter().all(|k| *k == k.to_lowercase()), "stems are lower-case");
     }
 }

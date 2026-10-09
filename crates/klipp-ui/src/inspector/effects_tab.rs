@@ -699,33 +699,20 @@ pub(crate) fn stabilization_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: 
 /// generated stack's editor (M3 step 6).
 pub(crate) fn frei0r_body(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, type_id: &str, params: &mut Vec<klipp_frei0r::Frei0rValue>) -> bool {
     let mut changed = false;
-    // Resolution-warning banner: surfaces above the params when
-    // the project frame size doesn't fit frei0r's spec
-    // constraints for THIS plugin (8-aligned, ≤2048 unless
-    // tilable). Temporal plugins (delay0r, baltan) refuse 4K
-    // even with tiling on. Pulled from the live registry so a
+    // Resolution-warning banner: a plug-in that keeps frame history
+    // can't be tiled above 2048 (other sizes frei0r can't take are
+    // padded and cropped back). Pulled from the live registry so a
     // missing-plugin clip falls through quietly.
     let plugin_info = klipp_effects::frei0r_effect::lookup(type_id);
     let resolution = state.sequence().resolution;
     let project_w = resolution.width;
     let project_h = resolution.height;
     if let Some(ref info) = plugin_info {
-        if !klipp_effects::frei0r_effect::supports_resolution(
-            &info.name,
-            project_w,
-            project_h,
-        ) {
-            let why = if !project_w.is_multiple_of(8) || !project_h.is_multiple_of(8) {
-                format!(
-                    "frei0r requires 8-aligned dimensions; project is {}×{}",
-                    project_w, project_h
-                )
-            } else {
-                format!(
-                    "{} doesn't support {}×{} (frei0r {} can't tile temporal effects above 2048)",
-                    info.name, project_w, project_h, info.name
-                )
-            };
+        if !klipp_effects::frei0r_effect::supports_resolution(info, project_w, project_h) {
+            let why = format!(
+                "{} keeps frame history and can't be tiled: {}×{} is above 2048",
+                info.name, project_w, project_h
+            );
             ui.colored_label(theme.marker_warning, format!("⚠ {why}"));
             ui.add_space(4.0);
         }
