@@ -357,6 +357,17 @@ impl FrameSource for ExportFrameSource<'_> {
         }))
     }
 
+    /// The original file's analysis key, at the analysis width and the
+    /// media's rate (M4 step 9).
+    fn analysis_key(&mut self, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
+        use klipp_analysis::assets::{key_for, ANALYSIS_WIDTH};
+        let ClipKind::Media { media_id } = &clip.kind else { return None };
+        let file = self.media.get(media_id)?;
+        let ((w, h), fps) = (file.resolution?, file.fps?);
+        let height = ((ANALYSIS_WIDTH as u64 * h.max(1) as u64 / w.max(1) as u64) as u32 + 1) & !1;
+        key_for(kind, &file.path, ANALYSIS_WIDTH, height, fps)
+    }
+
     /// The whole media, from its start to its duration.
     fn media_range(&mut self, clip: &Clip) -> Option<(f64, f64)> {
         let ClipKind::Media { media_id } = &clip.kind else { return None };

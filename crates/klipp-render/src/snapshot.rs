@@ -107,8 +107,11 @@ pub struct MediaFile {
     /// temporal node may read neighbours from, handles included.
     pub duration_secs: Option<f64>,
     /// The media's frame rate (numerator, denominator), when known: a
-    /// temporal node's neighbours are its captures either side.
+    /// temporal node's neighbours are its captures either side, and its
+    /// analysis assets' key (M4 step 9).
     pub fps: Option<(u32, u32)>,
+    /// The media's size, when known: its analysis assets' key (M4 step 9).
+    pub resolution: Option<(u32, u32)>,
 }
 
 /// A media item's camera log format for its export decoder: the same
@@ -507,6 +510,7 @@ impl SequenceSnapshot {
                     source_rotation: item.source_rotation,
                     duration_secs: Some(item.duration.to_secs_f64()),
                     fps: Some((item.fps.num, item.fps.den)),
+                    resolution: Some((item.resolution.width, item.resolution.height)),
                 });
             }
         }
@@ -1384,7 +1388,7 @@ mod tests {
         assert_eq!(snap.video.sequence.tracks[0].clips[0].id, seq.tracks[0].clips[0].id);
         assert_eq!(
             snap.video.media.get(&media_id),
-            Some(&MediaFile { path: PathBuf::from("/media/clip1.mp4"), log_format: None, source_rotation: 0, duration_secs: Some(pool.get(&media_id).unwrap().duration.to_secs_f64()), fps: Some((pool.get(&media_id).unwrap().fps.num, pool.get(&media_id).unwrap().fps.den)) }),
+            Some(&MediaFile { path: PathBuf::from("/media/clip1.mp4"), log_format: None, source_rotation: 0, duration_secs: Some(pool.get(&media_id).unwrap().duration.to_secs_f64()), fps: Some((pool.get(&media_id).unwrap().fps.num, pool.get(&media_id).unwrap().fps.den)), resolution: Some((pool.get(&media_id).unwrap().resolution.width, pool.get(&media_id).unwrap().resolution.height)) }),
         );
     }
 
