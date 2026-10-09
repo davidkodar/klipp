@@ -187,6 +187,63 @@ pub trait FrameSource {
     }
 }
 
+/// A clip's source as a non-pure node reads it (M4 step 1): the frame
+/// source's neighbour readers, asked in source seconds over the clip's
+/// source range. The encoded frames are [`FrameSource::temporal_frames`]'
+/// (sRGB, for a plug-in) and the linear ones
+/// [`FrameSource::temporal_frames_linear`]'s (the working space, for the
+/// denoiser), never one for the other. Each reader is opened on its first
+/// request. Held to the render's size and a node's budget by
+/// [`klipp_nodes::frame_context::BoundedSources`].
+pub struct ClipSources<'s> {
+    src: &'s mut dyn FrameSource,
+    clip: &'s Clip,
+    working: WorkingColorspace,
+    encoded: Option<Option<klipp_plugin::FrameProviderFn>>,
+    linear: Option<Option<LinearFrameProviderFn>>,
+}
+
+impl<'s> ClipSources<'s> {
+    pub fn new(src: &'s mut dyn FrameSource, clip: &'s Clip, working: WorkingColorspace) -> Self {
+        Self { src, clip, working, encoded: None, linear: None }
+    }
+
+    /// The readers' time for `source_secs`: from the clip's source in-point.
+    fn reader_time(&self, source_secs: f64) -> f64 {
+        source_secs - self.clip.source_in.to_secs_f64()
+    }
+}
+
+impl klipp_nodes::frame_context::SourceProvider for ClipSources<'_> {
+    fn bounds(&self) -> (f64, f64) {
+        (self.clip.source_in.to_secs_f64(), self.clip.source_out.to_secs_f64())
+    }
+
+    fn encoded(&mut self, source_secs: f64) -> klipp_nodes::frame_context::Neighbour<klipp_nodes::frame_context::EncodedFrame> {
+        use klipp_nodes::frame_context::{EncodedFrame, Missing, Neighbour};
+        if self.encoded.is_none() {
+            self.encoded = Some(self.src.temporal_frames(self.clip));
+        }
+        let t = self.reader_time(source_secs);
+        match self.encoded.as_ref().and_then(|r| r.as_ref()).and_then(|read| read(t)) {
+            Some((rgba8, width, height)) => Neighbour::Frame(EncodedFrame { rgba8, width, height, source_secs }),
+            None => Neighbour::Missing(Missing::Unavailable),
+        }
+    }
+
+    fn linear(&mut self, source_secs: f64) -> klipp_nodes::frame_context::Neighbour<klipp_nodes::frame_context::LinearFrame> {
+        use klipp_nodes::frame_context::{LinearFrame, Missing, Neighbour};
+        if self.linear.is_none() {
+            self.linear = Some(self.src.temporal_frames_linear(self.clip, self.working));
+        }
+        let t = self.reader_time(source_secs);
+        match self.linear.as_mut().and_then(|r| r.as_mut()).and_then(|read| read(t)) {
+            Some((rgba, width, height)) => Neighbour::Frame(LinearFrame { rgba, width, height, source_secs }),
+            None => Neighbour::Missing(Missing::Unavailable),
+        }
+    }
+}
+
 /// What the viewer's grade tools want from one clip's grade besides the
 /// picture: the node canvas's thumbnails, the scope's tap point, a soloed
 /// node, a qualifier's matte, the before/after split's "before" half.
@@ -4884,5 +4941,82 @@ mod active_effect_gate_tests {
         let clip = Clip::gap(at, Timecode::from_frames(48, 24));
         let (effects, _) = clip_effects(&clip, at, 24.0, Some((0.2,0.0,1.0,1.0,0.0,0.5,0.5)), None);
         assert!(has_active_effects(&effects));
+    }
+}
+
+#[cfg(test)]
+mod clip_sources_tests {
+    use super::*;
+    use klipp_nodes::frame_context::{Neighbour, SourceProvider};
+
+    /// A frame source whose encoded reader fills with 200 and linear one
+    /// with 0.25, each answering the reader time it was asked; it counts
+    /// the readers opened.
+    #[derive(Default)]
+    struct Readers {
+        opened: Vec<&'static str>,
+    }
+
+    impl FrameSource for Readers {
+        fn frame(&mut self, _: &Clip, _: f64, _: u32, _: u32) -> Option<SourceFrame> {
+            None
+        }
+        fn temporal_frames(&mut self, _: &Clip) -> Option<klipp_plugin::FrameProviderFn> {
+            self.opened.push("encoded");
+            Some(Box::new(|t| (t >= 0.0).then(|| (vec![200, (t * 10.0) as u8, 0, 255], 1, 1))))
+        }
+        fn temporal_frames_linear(&mut self, _: &Clip, _: WorkingColorspace) -> Option<LinearFrameProviderFn> {
+            self.opened.push("linear");
+            Some(Box::new(|t| (t >= 0.0).then(|| (vec![0.25, t as f32, 0.0, 1.0], 1, 1))))
+        }
+    }
+
+    fn clip() -> Clip {
+        let tc = |s| Timecode::from_secs_f64(s, 24);
+        Clip { source_in: tc(2.0), source_out: tc(3.0), ..Clip::gap(tc(0.0), tc(1.0)) }
+    }
+
+    /// Each contract from its own reader, asked from the source in-point,
+    /// each frame stamped with the source time; the bounds are the clip's
+    /// source range, and each reader is opened once.
+    #[test]
+    fn each_contract_comes_from_its_own_reader() {
+        let c = clip();
+        let mut src = Readers::default();
+        let mut s = ClipSources::new(&mut src, &c, WorkingColorspace::Rec709Linear);
+        assert_eq!(s.bounds(), (2.0, 3.0));
+        match s.encoded(2.5) {
+            Neighbour::Frame(f) => assert_eq!((f.rgba8[0], f.rgba8[1], f.source_secs), (200, 5, 2.5)),
+            other => panic!("{other:?}"),
+        }
+        match s.linear(2.5) {
+            Neighbour::Frame(f) => assert_eq!((f.rgba[0], f.rgba[1], f.source_secs), (0.25, 0.5, 2.5)),
+            other => panic!("{other:?}"),
+        }
+        let _ = s.linear(2.75);
+        let _ = s.encoded(2.75);
+        drop(s);
+        assert_eq!(src.opened, ["encoded", "linear"]);
+    }
+
+    /// A source without a reader, or a reader without the frame, is
+    /// unavailable: never the current frame instead.
+    #[test]
+    fn no_reader_or_no_frame_is_unavailable() {
+        struct Nothing;
+        impl FrameSource for Nothing {
+            fn frame(&mut self, _: &Clip, _: f64, _: u32, _: u32) -> Option<SourceFrame> {
+                None
+            }
+        }
+        let c = clip();
+        let mut none = Nothing;
+        let mut s = ClipSources::new(&mut none, &c, WorkingColorspace::Rec709Linear);
+        let unavailable = klipp_nodes::frame_context::Missing::Unavailable;
+        assert_eq!(s.encoded(2.5), Neighbour::Missing(unavailable));
+        assert_eq!(s.linear(2.5), Neighbour::Missing(unavailable));
+        let mut src = Readers::default();
+        let mut s = ClipSources::new(&mut src, &c, WorkingColorspace::Rec709Linear);
+        assert_eq!(s.linear(1.5), Neighbour::Missing(unavailable), "before the media: the reader has none");
     }
 }

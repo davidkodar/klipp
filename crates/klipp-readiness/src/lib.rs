@@ -235,11 +235,16 @@ impl Report {
     }
 }
 
-/// Every family's manifest and every family's cases (`families`).
+/// Every family's manifest and every family's cases (`families`). A
+/// catalog type M4 makes a node that no family declares is a rule error:
+/// the gate fails closed on a type left out.
 pub fn manifest() -> Manifest {
     let mut m = Manifest::default();
     for family in families::ALL {
         (family.require)(&mut m);
+    }
+    for id in rules::undeclared(families::subjects()) {
+        m.errors.push(format!("no family declares {id}"));
     }
     m
 }

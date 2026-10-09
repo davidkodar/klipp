@@ -39,6 +39,11 @@ const SUBJECTS: &[(Family, &[&str])] = &[
     (Family::Format, &["#1391", "#1406", "#1409", "#1386", "#1394", "#1321"]),
 ];
 
+/// Every family's subjects.
+pub fn subjects() -> impl Iterator<Item = &'static str> {
+    SUBJECTS.iter().flat_map(|(_, s)| s.iter().copied())
+}
+
 fn require_family(family: Family, manifest: &mut Manifest) {
     for (f, subjects) in SUBJECTS {
         if *f == family {

@@ -5,21 +5,61 @@
 //! owes (m4-readiness design, "The key" and "Central rules").
 
 use super::{AnalysisCase, Entry, Family, InstanceCase, Key, Obligation, Outcome, Route, TimeCase};
+use klipp_effects::registry::{effect_type, effect_types, ColourDomain, NodeTypeDesc, Placement, Temporal};
+use klipp_graph_format::lifted::types as lifted;
 
 const ROUTES: [Route; 2] = [Route::Viewer, Route::Export];
 
-/// The entries a family's node can be placed in. A plug-in or the legacy
-/// chain runs on every effect list (a clip's, a title's, an adjustment
-/// layer's), as its stage does today; a source-boundary or analysis
-/// family runs at a clip's source. When the catalog carries a node type's
-/// placement (M4 step 1), this reads it from there instead.
-fn entries(family: Family) -> &'static [Entry] {
-    use Family::*;
-    match family {
-        Ofx | OfxTemporal | Frei0r | LegacyChain => &[Entry::Clip, Entry::Title, Entry::Adjustment],
-        TemporalDenoise | FrameBlend | RollingShutter | Stabilisation | Deflicker => &[Entry::Clip],
-        Format => &[Entry::Conversion],
+/// The source-boundary node types a catalog effect is lifted to, by the
+/// effect's tag: a subject named by its node type is that effect's.
+const LIFTED: &[(&str, &str)] = &[(lifted::TEMPORAL_DENOISE, "temporal_denoise"), (lifted::FRAME_BLEND, "speed_ramp")];
+
+/// What the catalog says of `subject`: the effect type it is, or the one
+/// its node type is lifted from. `None` for a fixture or a format row.
+fn catalog_type(subject: &str) -> Option<&'static NodeTypeDesc> {
+    let lifted_from = LIFTED.iter().find(|(node, _)| *node == subject).and_then(|(_, tag)| effect_type(tag));
+    effect_types().find(|t| t.desc.id == subject).or(lifted_from).map(|t| &t.desc)
+}
+
+/// The entries `subject` can be placed in: its catalog type's placement.
+/// A subject the catalog doesn't describe yet (a plug-in fixture, until
+/// its step makes it a node type) runs on every effect list, as its stage
+/// does today; a format row on its conversion.
+fn entries(family: Family, subject: &str) -> Vec<Entry> {
+    if family == Family::Format {
+        return vec![Entry::Conversion];
     }
+    match catalog_type(subject) {
+        Some(desc) => desc
+            .placement()
+            .iter()
+            .map(|p| match p {
+                Placement::Clip => Entry::Clip,
+                Placement::Title => Entry::Title,
+                Placement::Adjustment => Entry::Adjustment,
+            })
+            .collect(),
+        None => vec![Entry::Clip, Entry::Title, Entry::Adjustment],
+    }
+}
+
+/// Whether `subject` converts the picture's encoding to compute (its
+/// catalog domain isn't linear light), so switched off it must still pass
+/// its input on unconverted.
+fn converts(subject: &str) -> bool {
+    catalog_type(subject).is_some_and(|d| d.domain != ColourDomain::Linear)
+}
+
+/// The catalog's node types that read other times than their frame's,
+/// which M4 makes nodes, that no subject in `declared` names (by its id or
+/// the node type it's lifted to): each one an M4 family must declare.
+pub fn undeclared<'a>(declared: impl IntoIterator<Item = &'a str>) -> Vec<&'static str> {
+    let declared: Vec<&str> = declared.into_iter().collect();
+    effect_types()
+        .filter(|t| t.desc.temporal != Temporal::None)
+        .filter(|t| !declared.iter().any(|s| catalog_type(s).is_some_and(|d| d.id == t.desc.id)))
+        .map(|t| t.desc.id)
+        .collect()
 }
 
 /// Whether a family's node is a plug-in's.
@@ -66,12 +106,12 @@ pub fn keys(family: Family, subject: &str) -> Result<Vec<Key>, String> {
         return Ok(out);
     }
     // Every node family, on every entry and route that can draw it.
-    for &entry in entries(family) {
+    for entry in entries(family, subject) {
         for route in ROUTES {
             for o in [Obligation::ExpectedPixels, Obligation::CpuGpuAgree, Obligation::ViewerEqualsExport] {
                 out.push(key(entry, Some(route), o));
             }
-            if plugin(family) {
+            if plugin(family) || converts(subject) {
                 out.push(key(entry, Some(route), Obligation::DisabledIsIdentity));
             }
         }
@@ -158,6 +198,47 @@ mod tests {
                 assert!(k.iter().any(|k| k.entry == entry && k.route == Some(route) && k.obligation == Obligation::ExpectedPixels), "{entry:?} {route:?}");
             }
         }
+    }
+
+    /// A family's entries are its catalog type's placement: a node that
+    /// reads the source's other times on a clip only, one that doesn't on
+    /// every effect list; a subject named by its lifted node type is its
+    /// effect's.
+    #[test]
+    fn a_familys_entries_are_the_catalogs_placement() {
+        let entries_of = |f: Family, s: &str| keys(f, s).unwrap().iter().filter(|k| k.obligation == Obligation::ExpectedPixels).map(|k| k.entry).collect::<std::collections::BTreeSet<_>>();
+        for (family, subject) in [(Family::TemporalDenoise, lifted::TEMPORAL_DENOISE), (Family::FrameBlend, lifted::FRAME_BLEND), (Family::Deflicker, "klipp.fx.deflicker"), (Family::LegacyChain, "klipp.fx.equalize")] {
+            let desc = catalog_type(subject).unwrap_or_else(|| panic!("{subject} isn't in the catalog"));
+            let placed: std::collections::BTreeSet<Entry> = entries(family, subject).into_iter().collect();
+            assert_eq!(entries_of(family, subject), placed, "{subject}");
+            assert_eq!(placed.len(), desc.placement().len(), "{subject}");
+        }
+        assert_eq!(entries_of(Family::Stabilisation, "klipp.fx.video_stabilization"), [Entry::Clip].into());
+        assert_eq!(entries_of(Family::LegacyChain, "klipp.fx.equalize"), [Entry::Clip, Entry::Title, Entry::Adjustment].into());
+    }
+
+    /// Switched off, a node that converts the picture's encoding owes its
+    /// input passed on unconverted, as a plug-in does; a linear one doesn't.
+    #[test]
+    fn a_domain_conversion_owes_the_disabled_identity() {
+        let has = |f: Family, s: &str| keys(f, s).unwrap().iter().any(|k| k.obligation == Obligation::DisabledIsIdentity);
+        assert!(has(Family::LegacyChain, "klipp.fx.equalize"));
+        assert!(has(Family::Frei0r, "frei0r.fixture.colour"));
+        assert!(!has(Family::Deflicker, "klipp.fx.deflicker"));
+    }
+
+    /// A catalog type that reads other times and no family names is
+    /// undeclared; named by its id or its lifted node type, it isn't.
+    #[test]
+    fn an_undeclared_catalog_type_is_found() {
+        let all = undeclared([]);
+        for id in ["klipp.fx.temporal_denoise", "klipp.fx.speed_ramp", "klipp.fx.deflicker", "klipp.fx.video_stabilization", "klipp.fx.rolling_shutter_correction"] {
+            assert!(all.contains(&id), "{id} not found undeclared: {all:?}");
+        }
+        assert!(!all.contains(&"klipp.fx.equalize"), "it reads its frame only");
+        let left = undeclared([lifted::TEMPORAL_DENOISE, "klipp.fx.deflicker"]);
+        assert!(!left.contains(&"klipp.fx.temporal_denoise") && !left.contains(&"klipp.fx.deflicker"));
+        assert!(left.contains(&"klipp.fx.speed_ramp"));
     }
 
     #[test]
