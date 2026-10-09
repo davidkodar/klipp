@@ -58,7 +58,9 @@ fn key(kind: Kind) -> CoverageKey {
 /// The keys this family earns: the central rules' representatives
 /// (`rules::REPRESENTATIVE`), one per mask kind.
 pub(super) fn require(manifest: &mut Manifest) {
-    manifest.require_representatives();
+    for key in super::parity_manifest::representatives_of(super::parity_manifest::Interaction::MaskedPixels) {
+        manifest.require(key);
+    }
 }
 
 /// A circle in the frame's middle, feathered.

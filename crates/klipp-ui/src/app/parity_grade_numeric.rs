@@ -125,7 +125,7 @@ pub(super) fn row_at(g: &mut Grade, label: &str, nth: usize) -> Result<(egui::Po
 
 /// Which of several same-labelled rows a parameter's is: its wheel, in
 /// the order the wheels are drawn.
-fn nth(desc: &ParamDesc) -> usize {
+pub(super) fn nth(desc: &ParamDesc) -> usize {
     ["lift", "gamma", "gain", "offset"].iter().position(|w| desc.key.starts_with(w)).unwrap_or(0)
 }
 
@@ -139,7 +139,7 @@ pub(super) fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
 
 /// The row's number typed to `text`, as a user does: focused by a double
 /// click, all selected, typed, Enter.
-fn type_into(g: &mut Grade, label: &str, n: usize, text: &str) -> Result<(), String> {
+pub(super) fn type_into(g: &mut Grade, label: &str, n: usize, text: &str) -> Result<(), String> {
     let (_, at) = row_at(g, label, n)?;
     for pressed in [true, false, true, false] {
         g.frame(vec![button(at, pressed)]);
@@ -368,6 +368,12 @@ pub(super) fn row_cases(report: &mut Report, ty: &NodeType, desc: &'static Param
         }
         Ok(())
     });
+    // Its diamond takes a key, on the page the row is first drawn on, in
+    // the clip's own grade: the per-type half of the grade key rule (the
+    // controls themselves are the representatives', `parity_grade_keys`).
+    if desc.keyframable && start.root == GradeRoot::Clip && super::parity_manifest::primary_grade_page(id, desc.key) == Some(surface) {
+        report.case(&name("keyed by its diamond"), vec![k(Interaction::AddKey)], || super::parity_grade_keys::add_key_case(start, ty, desc));
+    }
 }
 
 pub(super) fn run(report: &mut Report) {

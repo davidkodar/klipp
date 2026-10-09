@@ -480,7 +480,10 @@ pub(super) fn run(report: &mut Report) {
             report.case(&name, [key(Interaction::Toggle(on)), key(Interaction::UndoRedo)], || eye_case(&effect, on));
         }
         if eye_pixels_pinned(ty.tag).is_none() {
-            report.case_or_blocked(&format!("{} eye drawn", ty.tag), [key(Interaction::Pixels)], || eye_pixels(ty));
+            match super::parity_numeric::routes_for(ty.desc.id) {
+                (_, Some(reason)) => report.case_cpu_by_design(&format!("{} eye drawn", ty.tag), [key(Interaction::Pixels)], reason, || eye_pixels(ty)),
+                (_, None) => report.case_or_blocked(&format!("{} eye drawn", ty.tag), [key(Interaction::Pixels)], || eye_pixels(ty)),
+            }
         }
     }
     for (entry, ty) in entries("@mix") {
