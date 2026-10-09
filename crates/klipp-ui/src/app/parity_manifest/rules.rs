@@ -11,6 +11,24 @@ use std::collections::BTreeSet;
 pub(super) const GRAPH_INSPECTOR_EXCLUSION: &str =
     "#1347: picture-graph selection does not reveal an effect inspector in either view";
 
+/// Obligations no catalog parameter carries, named here so no family can
+/// define them away: a representative per kind, not one per row.
+///
+/// A masked effect's row (`MaskedPixels`): one effect, a Gaussian Blur,
+/// for each kind of mask an effect can read, a window inside the grade
+/// that the grade group publishes and a window node beside the clip's
+/// chain. A masked effect renders through its own path
+/// (`effects_mask_unavailable`), and its row moves with the flip.
+pub(super) const REPRESENTATIVE: &[(&str, &str, Surface, &str, Interaction)] = &[
+    ("klipp.fx.gaussian_blur", "@mask/in-the-grade", Surface::EffectsStack, "masked", Interaction::MaskedPixels),
+    ("klipp.fx.gaussian_blur", "@mask/beside", Surface::EffectsStack, "masked", Interaction::MaskedPixels),
+];
+
+/// [`REPRESENTATIVE`] as keys.
+pub(super) fn representative_keys() -> Vec<super::CoverageKey> {
+    REPRESENTATIVE.iter().map(|(ty, parameter, surface, variant, interaction)| super::CoverageKey::new(ty, parameter, *surface, variant, *interaction)).collect()
+}
+
 /// These catalog capabilities have no inspector control in either view.
 /// Keep the list narrow: a new port must receive an explicit decision.
 pub(super) fn entry_exclusion(entry: &CatalogEntry) -> Option<&'static str> {

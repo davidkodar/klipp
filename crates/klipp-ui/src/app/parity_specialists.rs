@@ -18,27 +18,27 @@ use klipp_effects::registry::{effect_types, EffectType};
 use klipp_effects::BuiltinEffect;
 
 /// The fixture: the type's sample on a two-second clip.
-const VARIANT: &str = "sample";
+pub(super) const VARIANT: &str = "sample";
 
 /// An analysis effect: its type, the workflow it shows, the buttons its
 /// status draws, the row its measurement is smoothed by, and a
 /// measurement of the fixture's clip.
-struct Analysis {
-    tag: &'static str,
-    workflow: &'static str,
-    analyse: &'static str,
+pub(super) struct Analysis {
+    pub(super) tag: &'static str,
+    pub(super) workflow: &'static str,
+    pub(super) analyse: &'static str,
     reanalyse: &'static str,
     row_key: &'static str,
-    measured: fn(&mut klipp_timeline::Clip),
+    pub(super) measured: fn(&mut klipp_timeline::Clip),
     in_progress: fn(&mut crate::state::AppState, ClipId),
-    complete: fn(ClipId) -> AppEvent,
+    pub(super) complete: fn(ClipId) -> AppEvent,
     /// The undo steps a drag held past a result leaves: old view, new.
     result_drag_steps: (usize, usize),
     /// The old view loses a drag held past this result (#1377).
     old_drops_drag: bool,
 }
 
-const ANALYSES: &[Analysis] = &[
+pub(super) const ANALYSES: &[Analysis] = &[
     Analysis {
         tag: "deflicker",
         workflow: "deflicker",
@@ -84,7 +84,7 @@ const ANALYSES: &[Analysis] = &[
     },
 ];
 
-fn effect_type(tag: &str) -> &'static EffectType {
+pub(super) fn effect_type(tag: &str) -> &'static EffectType {
     effect_types().find(|t| t.tag == tag).unwrap()
 }
 
@@ -107,7 +107,7 @@ fn require_analyses(manifest: &mut Manifest) {
 
 /// The frei0r effect's plug-in editor: the catalog entry its custom
 /// widget draws.
-fn frei0r_entry() -> Option<super::parity_manifest::CatalogEntry> {
+pub(super) fn frei0r_entry() -> Option<super::parity_manifest::CatalogEntry> {
     catalog().into_iter().find(|e| matches!(e.value, CatalogValue::Parameter { presentation, .. } if presentation.widget == klipp_effects::registry::presentation::Widget::Custom("frei0r_plugin")))
 }
 
@@ -119,7 +119,7 @@ fn require_frei0r(manifest: &mut Manifest) {
 
 /// The old Effects tab and the generated stack over one clone of `clip`,
 /// `prepare` run on each state.
-fn both(clip: &klipp_timeline::Clip, prepare: impl Fn(&mut Run)) -> (Run, Run) {
+pub(super) fn both(clip: &klipp_timeline::Clip, prepare: impl Fn(&mut Run)) -> (Run, Run) {
     let (mut old, mut new) = (Run::new(clip.clone(), false), Run::new(clip.clone(), true));
     prepare(&mut old);
     prepare(&mut new);
@@ -338,7 +338,7 @@ fn parity_plugin() -> klipp_frei0r::Frei0rPluginInfo {
 
 /// Type `text` into the number field at `at` and press Enter, as a user
 /// does: a click to focus, select all, the text, Enter.
-fn type_into(run: &mut Run, at: egui::Pos2, text: &str) {
+pub(super) fn type_into(run: &mut Run, at: egui::Pos2, text: &str) {
     for pressed in [true, false, true, false] {
         run.button(at, egui::PointerButton::Primary, pressed);
     }
@@ -350,7 +350,7 @@ fn type_into(run: &mut Run, at: egui::Pos2, text: &str) {
 }
 
 /// The first number drawn right of the text `label` on its line.
-fn number_right_of(run: &mut Run, label: &str) -> Option<egui::Pos2> {
+pub(super) fn number_right_of(run: &mut Run, label: &str) -> Option<egui::Pos2> {
     let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
     let at = drawn.iter().rev().find(|(t, _)| t == label).map(|(_, p)| *p)?;
     drawn.iter().filter(|(t, p)| (p.y - at.y).abs() < 6.0 && p.x > at.x && t.trim_start_matches('-').starts_with(|c: char| c.is_ascii_digit())).min_by(|a, b| a.1.x.total_cmp(&b.1.x)).map(|(_, p)| *p)

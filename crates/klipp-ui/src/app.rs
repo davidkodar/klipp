@@ -82,6 +82,10 @@ mod parity_pixels;
 #[cfg(test)]
 mod parity_keyed_pixels;
 #[cfg(test)]
+mod parity_specialist_pixels;
+#[cfg(test)]
+mod parity_masked_pixels;
+#[cfg(test)]
 mod parity_specialists;
 #[cfg(test)]
 mod placement_row_tests;
