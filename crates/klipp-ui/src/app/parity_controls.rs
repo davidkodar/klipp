@@ -746,10 +746,10 @@ impl Grade {
                 Page::PerNode => match root {
                     None => {
                         let clip = state.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap().clone();
-                        crate::inspector::grade_view::show(ui, theme, &clip, node, &mut cmds, frame, Some(panel));
+                        crate::inspector::grade_view::show(ui, theme, &clip, &[], node, &mut cmds, frame, Some(panel));
                     }
                     Some(root) => {
-                        let snapshot = crate::inspector::grade_view::snapshot_for_root(&state.sequences[0], clip_id, root, false, &mut state.pending_corrector, &mut state.root_grade_start);
+                        let snapshot = crate::inspector::grade_view::snapshot_for_root(&state.sequences[0], clip_id, root, &[], &mut state.pending_corrector, &mut state.root_grade_start);
                         let mut panel_cmds = Vec::new();
                         // A node the grade doesn't hold draws nothing, as in the app.
                         let _ = snapshot.as_ref().is_some_and(|s| s.page(ui, theme, node, &mut panel_cmds, frame, Some(panel)));
@@ -766,9 +766,9 @@ impl Grade {
                 Page::Tabbed(tab) | Page::Bottom(tab) => {
                     // A sequence grade's snapshot is taken at its root, before
                     // the stand-in is borrowed to draw, as the app takes it.
-                    let at_root = root.and_then(|root| crate::inspector::grade_view::snapshot_for_root(&state.sequences[0], clip_id, root, false, &mut state.pending_corrector, &mut state.root_grade_start));
+                    let at_root = root.and_then(|root| crate::inspector::grade_view::snapshot_for_root(&state.sequences[0], clip_id, root, &[], &mut state.pending_corrector, &mut state.root_grade_start));
                     let clip = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
-                    panel.generated = if root.is_some() { at_root } else { crate::inspector::grade_view::snapshot_for(clip, false, false, &mut state.pending_corrector) };
+                    panel.generated = if root.is_some() { at_root } else { crate::inspector::grade_view::snapshot_for(clip, &[], false, &mut state.pending_corrector) };
                     let (mut selected, mut tab) = (Some(node), tab);
                     let wide = matches!(page, Page::Bottom(_));
                     cmds.extend(clip.edit_grade(|g| if wide {

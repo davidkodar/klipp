@@ -156,7 +156,7 @@ fn kind_of<'a>(nodes: &'a [Value], id: &str) -> &'a str {
 
 /// A v1 grade graph as the body of a `klipp.legacy.grade` group, kept as
 /// saved: odd edges, a missing output and repeated ids included.
-fn grade_body(g: &Map<String, Value>, what: &'static str) -> Result<Graph, ToV2Error> {
+pub(crate) fn grade_body(g: &Map<String, Value>, what: &'static str) -> Result<Graph, ToV2Error> {
     let shape = |field| ToV2Error::Shape { what, field };
     let nodes = required_vec(g, "nodes", what)?;
     let mut out = Vec::with_capacity(nodes.len());

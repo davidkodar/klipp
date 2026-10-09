@@ -25,10 +25,11 @@ pub(crate) fn effective_edges(graph: &Graph) -> Vec<Edge> {
     edges
 }
 
-/// Lifted grade nodes retain their authored label in the legacy payload.
+/// Lifted grade nodes retain their authored label in the legacy payload,
+/// a compound's group (#1391) too.
 pub(crate) fn node_label(node: &klipp_graph_format::Node) -> &str {
     node.legacy.as_ref()
-        .filter(|_| matches!(node.type_id.as_str(), klipp_graph_format::types::LEGACY_NODE | klipp_graph_format::lifted::types::MERGE))
+        .filter(|_| matches!(node.type_id.as_str(), klipp_graph_format::types::LEGACY_NODE | klipp_graph_format::lifted::types::MERGE | klipp_graph_format::lifted::types::GROUP))
         .and_then(|legacy| legacy.payload.get("label"))
         .and_then(serde_json::Value::as_str)
         .filter(|label| !label.is_empty())

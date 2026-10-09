@@ -48,6 +48,9 @@ fn at_of(v: &Value) -> Result<(usize, Edge), Refusal> {
 /// A lifted Grade group body back to the structural body.
 pub fn body(lifted: &Graph) -> Result<Graph, Refusal> {
     let mut g = lifted.clone();
+    // A compound's `frame` is the lift's: a v1 Compound reads only `in`.
+    let compounds: BTreeSet<NodeId> = g.nodes.iter().filter(|n| n.type_id.as_str() == lt::GROUP).map(|n| n.id).collect();
+    g.edges.retain(|e| !(compounds.contains(&e.to.0) && e.to.1.as_str() == "frame"));
     let frame = g.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP_FRAME).map(|n| n.id);
     let record: LegacyFlags = g
         .nodes
@@ -108,11 +111,30 @@ pub fn body(lifted: &Graph) -> Result<Graph, Refusal> {
             lt::GROUP_FRAME => {}
             lt::GROUP_INPUT | lt::GROUP_OUTPUT if n.legacy.is_none() => {}
             lt::GROUP_INPUT | lt::GROUP_OUTPUT | lt::MERGE | types::LEGACY_NODE => nodes.push(restore(n, types::LEGACY_NODE)),
+            lt::GROUP => nodes.push(compound(n)?),
             other => return Err(format!("grade node {} is a {other}", n.id)),
         }
     }
     g.nodes = nodes;
     Ok(g)
+}
+
+/// A compound's group back to the v1 Compound entry it was lifted from:
+/// its body, delifted, as the entry's `params.compound_subgraph` (#1391).
+fn compound(mut n: Node) -> Result<Node, Refusal> {
+    let inner = n.group.take().ok_or_else(|| format!("compound {} has no body", n.id))?;
+    let mut grade = Node { type_id: NodeTypeId::new(types::LEGACY_GRADE), group: None, ..n.clone() };
+    grade.group = Some(Box::new(GroupBody { graph: body(&inner.graph)?, ports: Vec::new(), interface: Vec::new() }));
+    let subgraph = crate::to_v1::grade_body(&grade)?;
+    let mut n = restore(n, types::LEGACY_NODE);
+    let params = n
+        .legacy
+        .as_mut()
+        .and_then(|l| l.payload.get_mut("params"))
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| format!("compound {} carries no params for its subgraph", n.id))?;
+    params.insert("compound_subgraph".into(), subgraph);
+    Ok(n)
 }
 
 /// A lifted, unspliced clip picture back to its revision-1 record.

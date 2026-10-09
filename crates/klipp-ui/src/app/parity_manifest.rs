@@ -22,7 +22,6 @@ pub(super) enum Surface {
     GradePerNode,
     GradeTabbedRight,
     GradeBottomTools,
-    NestedGrade,
     NonClipGrade,
     CurveEditor,
 }
@@ -419,9 +418,6 @@ impl Manifest {
                     rules::GRAPH_INSPECTOR_EXCLUSION
                 ));
             }
-            if key.surface == Surface::NestedGrade {
-                errors.push(format!("excluded surface registered as required: {key:?}: {}", rules::NESTED_GRADE_EXCLUSION));
-            }
             if key.surface == Surface::CurveEditor && entry.grade {
                 errors.push(format!("excluded surface registered as required: {key:?}: {}", rules::GRADE_CURVE_EXCLUSION));
             }
@@ -551,11 +547,6 @@ pub(super) fn grade_key_variant() -> &'static str {
 /// on (`rules::CURVE_PIXEL_REPRESENTATIVE`).
 pub(super) fn curve_pixel_representative(type_id: &str, parameter: &str) -> bool {
     rules::CURVE_PIXEL_REPRESENTATIVE.iter().any(|(t, p)| *t == type_id && *p == parameter)
-}
-
-/// The nested grade boundary's wording, for a report outside this module.
-pub(super) fn rules_nested_grade() -> &'static str {
-    rules::NESTED_GRADE_EXCLUSION
 }
 
 /// The sequence grades a `Surface::NonClipGrade` entry is owed on, each
@@ -828,15 +819,14 @@ impl Report {
             }
         }
         for key in &self.passed {
-            // Nested grades keep the old rows (the #1391 boundary), so any
-            // case on them is fallback evidence. The timeline grade and a
-            // group's stages draw generated at their own roots (M3 step
-            // 19): a case run on one of them (`parity_controls::on_roots`,
-            // its variant naming the grade) is the generated route's. Any
-            // other non-clip variant is still labelled fallback.
-            let legacy = key.surface == Surface::NestedGrade || (key.surface == Surface::NonClipGrade && !on_a_sequence_grade(&key.variant));
+            // The timeline grade and a group's stages draw generated at
+            // their own roots (M3 step 19): a case run on one of them
+            // (`parity_controls::on_roots`, its variant naming the grade)
+            // is the generated route's. Any other non-clip variant is still
+            // labelled fallback.
+            let legacy = key.surface == Surface::NonClipGrade && !on_a_sequence_grade(&key.variant);
             if legacy && !self.fallback.contains_key(key) {
-                errors.push(format!("fallback evidence not labelled: {key:?} (#997: nested layouts and unnamed non-clip roots still use the legacy path)"));
+                errors.push(format!("fallback evidence not labelled: {key:?} (#997: unnamed non-clip roots still use the legacy path)"));
             }
         }
         let mut exclusions = manifest.exclusion_lines();
@@ -845,7 +835,6 @@ impl Report {
             rules::GRAPH_INSPECTOR_EXCLUSION
         ));
         exclusions.push(format!("excluded surface variant: NonClipGrade track: {}", rules::TRACK_GRADE_EXCLUSION));
-        exclusions.push(format!("retained old route (do not delete): NestedGrade: {}", rules::NESTED_GRADE_EXCLUSION));
         exclusions.push(format!("excluded surface: CurveEditor for grade rows: {}", rules::GRADE_CURVE_EXCLUSION));
         if entries
             .iter()
@@ -1092,7 +1081,7 @@ mod tests {
     /// A case on one of the sequence's own grades (its variant naming the
     /// timeline grade or a group stage, as `merge_on_root` writes it) is the
     /// generated route's and needs no fallback label (M3 step 19); a
-    /// non-clip case on any other variant, and a nested grade's, still do.
+    /// non-clip case on any other variant still does.
     /// A track's grade is excluded by name (#1408).
     #[test]
     fn a_sequence_grade_case_is_generated_and_other_roots_stay_fallback() {
@@ -1112,7 +1101,6 @@ mod tests {
         for root in super::super::parity_harness::GradeRoot::SEQUENCE {
             let variant = format!("{}: GradeTabbedRight sample", root.variant());
             assert!(!errors(Surface::NonClipGrade, &variant).0, "{variant}: the generated route's");
-            assert!(errors(Surface::NestedGrade, &variant).0, "{variant}: a nested grade's is still fallback");
         }
         for variant in ["sample", "track: GradeTabbedRight sample", "clip: GradeTabbedRight sample"] {
             assert!(errors(Surface::NonClipGrade, variant).0, "{variant}: not a sequence grade, still fallback");
@@ -1154,7 +1142,7 @@ mod tests {
             .contains("fallback evidence not labelled"));
 
         let fallback = |key: &&CoverageKey| {
-            matches!(key.surface, Surface::NestedGrade | Surface::NonClipGrade)
+            key.surface == Surface::NonClipGrade
         };
         let mut report = Report::default();
         report.case(
@@ -1165,7 +1153,7 @@ mod tests {
         report.case_via_fallback(
             "legacy roots",
             earnable(&manifest).iter().filter(fallback).cloned(),
-            "#997: nested/nonclip rows retain their legacy route",
+            "#997: nonclip rows retain their legacy route",
             || Ok(()),
         );
         assert!(report

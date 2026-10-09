@@ -12,12 +12,6 @@ use std::collections::BTreeSet;
 /// old route to compare: the `NonClipGrade` surface's track variant.
 pub(super) const TRACK_GRADE_EXCLUSION: &str = "#1408 (a track's grade has no inspector surface yet; nothing to compare or delete)";
 
-/// A RETAINED old route, not a dead one: nested grade compounds keep the
-/// old rows until M4 step 1b (#1391), so the surface earns nothing and
-/// blocks nothing, and step 19's deletion keeps the code nested editing
-/// uses.
-pub(super) const NESTED_GRADE_EXCLUSION: &str = "#1391: RETAINED old route: nested grade compounds keep the old rows until M4 step 1b (none in the 348-project corpus); step 19 keeps the code nested grade editing uses";
-
 /// A grade row's track in the curve editor: grade keyframing isn't M3's.
 pub(super) const GRADE_CURVE_EXCLUSION: &str = "#891 (grade keyframing: phase 4; the curve editor lists effect tracks only)";
 
@@ -193,7 +187,7 @@ pub(super) fn entry_exclusion(entry: &CatalogEntry) -> Option<&'static str> {
         CatalogValue::Parameter { .. } if entry.type_id == "klipp.grade.primaries_matrix" =>
             Some("#1351: PrimariesMatrix parameter controls have no reachable inspector route in either view"),
         CatalogValue::Parameter { presentation, .. } if matches!(presentation.widget, Widget::Custom("compound_body")) =>
-            Some("#1391: a grade compound's body is edited on the retained nested route until M4 step F lifts compounds as groups"),
+            Some("#1476: a grade compound's structure edits (add, remove, reorder, group, ungroup) are still the v1 id route; their path twins are owed by step 12"),
         CatalogValue::Enabled if entry.type_id == "klipp.grade.input_transform" =>
             Some("#1351: InputTransform selection reaches camera encoding before the bypass header in both views"),
         _ => None,
@@ -289,10 +283,10 @@ pub(super) fn surfaces(entry: &CatalogEntry) -> Result<BTreeSet<Surface>, String
                 required.insert(GradeTabbedRight);
             }
         }
-        // Nested grades keep the old rows, the boundary step 19 keeps
-        // (NESTED_GRADE_EXCLUSION), so they're no surface to earn. The
-        // timeline grade and a group's stages draw generated at their own
-        // roots (M3 step 19); the grade families earn their keys by
+        // A grade inside a compound draws the same generated rows by its
+        // path through the compound's group (#1391), so it is no separate
+        // surface. The timeline grade and a group's stages draw generated
+        // at their own roots (M3 step 19); the grade families earn their keys by
         // running on them (`parity_controls::on_roots`). A track's grade
         // has no surface (TRACK_GRADE_EXCLUSION).
         required.insert(NonClipGrade);

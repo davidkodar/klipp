@@ -259,6 +259,15 @@ fn today_loops(body: &Graph) -> bool {
 /// A grade group's body lifted, its legacy flags, and whether today's
 /// renderer refused to order it ([`today_loops`]).
 fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (Graph, LegacyFlags, bool) {
+    lift_grade_body_at(group, migrate, 0, notes)
+}
+
+/// How deep today's executor runs compounds inside compounds; one deeper
+/// passes its input through (`executor.rs` `COMPOUND_MAX_DEPTH`).
+const COMPOUND_MAX_DEPTH: u32 = 8;
+
+/// [`lift_grade_body`] for a body `depth` compounds deep.
+fn lift_grade_body_at(group: &Node, migrate: bool, depth: u32, notes: &mut Vec<LiftNote>) -> (Graph, LegacyFlags, bool) {
     let mut body = group.group.as_ref().map(|g| g.graph.clone()).unwrap_or_else(Graph::empty);
     // The graph as today's loader leaves it: migrated first, on the graphs
     // it migrates (a clip's, a track's, a grade version's).
@@ -495,7 +504,61 @@ fn lift_grade_body(group: &Node, migrate: bool, notes: &mut Vec<LiftNote>) -> (G
             n.params.insert("op".into(), ParamValue::Text((*op).to_owned()));
         }
     }
+
+    // 5. A compound becomes a group whose body is its subgraph, lifted as
+    // this body is, so paths run through it (#1391, picture revision 4).
+    lift_compounds(&mut body, depth, notes);
     (body, group_flags, loops)
+}
+
+/// Each Compound in `body` that holds a subgraph, as a group: its body the
+/// subgraph lifted, its entry kept for `delift` without the subgraph, and
+/// its `frame` fed what feeds its `in` (today's executor runs a subgraph on
+/// the compound's own input). A subgraph today's executor never ran (one
+/// that loops, or past its depth) leaves the group off, which renders the
+/// passthrough it gave. A Compound without a subgraph, or one whose
+/// subgraph doesn't read or repeats an id, stays the entry it was.
+fn lift_compounds(body: &mut Graph, depth: u32, notes: &mut Vec<LiftNote>) {
+    let mut feeds = Vec::new();
+    for n in body.nodes.iter_mut().filter(|n| kind_of(n) == "Compound") {
+        let Some(sub) = payload(n).get("params").and_then(|p| p.get("compound_subgraph")).and_then(Value::as_object) else { continue };
+        let Ok(structural) = crate::to_v2::grade_body(sub, "a compound's subgraph") else { continue };
+        let mut inner = node(n.id, types::LEGACY_GRADE, true, None);
+        inner.group = Some(Box::new(GroupBody { graph: structural, ports: Vec::new(), interface: Vec::new() }));
+        if repeated_id(&inner).is_err() {
+            continue;
+        }
+        let (lifted, _, loops) = lift_grade_body_at(&inner, false, depth + 1, notes);
+        if let Some(params) = n.legacy.as_mut().and_then(|l| l.payload.get_mut("params")).and_then(Value::as_object_mut) {
+            params.remove("compound_subgraph");
+        }
+        n.type_id = NodeTypeId::new(lt::GROUP);
+        n.group = Some(Box::new(GroupBody { graph: lifted, ports: Vec::new(), interface: Vec::new() }));
+        let why = if loops {
+            Some("its subgraph loops, so today's executor passed the compound's input through")
+        } else if depth >= COMPOUND_MAX_DEPTH {
+            Some("it is nested past today's compound depth, so its input passed through")
+        } else {
+            None
+        };
+        if let Some(why) = why.filter(|_| n.enabled) {
+            notes.push(LiftNote::NeverRan { node: n.id, why: why.into() });
+            flags(n).was_enabled = Some(true);
+            n.enabled = false;
+        }
+        feeds.push(n.id);
+    }
+    for id in feeds {
+        let from = body.edges.iter().find(|e| e.to.0 == id && e.to.1.as_str() == "in").map(|e| e.from.clone()).or_else(|| {
+            let n = body.nodes.iter().find(|n| n.id == id)?;
+            let name = n.wireless.input_links.get(&PortKey::from("in"))?;
+            let sender = body.nodes.iter().find(|o| o.id != id && o.wireless.output_link.as_deref() == Some(name.as_str()))?;
+            Some((sender.id, klipp_graph_format::ports::output_key(kind_of(sender), 0)))
+        });
+        if let Some(from) = from {
+            body.edges.push(Edge { from, to: (id, "frame".into()) });
+        }
+    }
 }
 
 /// A grade-only revision-1 graph (one `klipp.legacy.grade` node: a group

@@ -404,7 +404,7 @@ impl KlippApp {
                 // before the clip is borrowed to draw.
                 let mut stand_in_snapshot = stand_in.and_then(|w| {
                     let seq = &self.state.sequences[seq_idx];
-                    crate::inspector::grade_view::snapshot_for_root(seq, clip_id, w.root(seq), !self.state.graph_descent_path.is_empty(), &mut self.state.pending_corrector, &mut self.state.root_grade_start)
+                    crate::inspector::grade_view::snapshot_for_root(seq, clip_id, w.root(seq), &self.state.graph_descent_path, &mut self.state.pending_corrector, &mut self.state.root_grade_start)
                 });
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
@@ -413,12 +413,11 @@ impl KlippApp {
                     let path = self.state.graph_descent_path.clone();
                     // The shared rows are the generated ones, as on the right
                     // inspector (M3 step 11c): this frame's snapshot of the
-                    // clip's own grade, under the same guards, or none.
-                    let generated = path.is_empty();
+                    // clip's own grade, at any depth (#1391), or none.
                     self.node_inspector_panel.generated = if grading_timeline {
                         stand_in_snapshot.take()
                     } else {
-                        crate::inspector::grade_view::snapshot_for(clip, !path.is_empty(), false, &mut self.state.pending_corrector)
+                        crate::inspector::grade_view::snapshot_for(clip, &path, false, &mut self.state.pending_corrector)
                     };
                     let panel_cmds = clip.edit_grade(|root| {
                         let graph: &mut klipp_nodes::NodeGraph =
@@ -438,7 +437,7 @@ impl KlippApp {
                     // A key the generated rows name at the playhead is the
                     // stored key in its frame.
                     let mut panel_cmds = panel_cmds;
-                    if generated {
+                    {
                         // A stand-in's keys are its root's (M3 step 19).
                         let grade = clip.grade().clone();
                         for cmd in &mut panel_cmds {
