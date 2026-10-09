@@ -205,9 +205,11 @@ impl Report {
 
     /// The report's head line and its lines, for the report file.
     pub fn listing(&self, manifest: &Manifest) -> String {
+        // Each owed key counted once: excluded (whether or not a case also
+        // earned it, which `open` reports), else earned, else missing.
         let required = manifest.required.len();
-        let earned = manifest.required.iter().filter(|k| self.passed.contains(*k)).count();
         let excluded = manifest.excluded.len();
+        let earned = manifest.required.iter().filter(|k| self.passed.contains(*k) && !manifest.excluded.contains_key(*k)).count();
         let open = self.open(manifest);
         let mut by_family: BTreeMap<Family, usize> = BTreeMap::new();
         for k in manifest.required.iter().filter(|k| !self.passed.contains(*k) && !manifest.excluded.contains_key(*k)) {
@@ -238,4 +240,25 @@ pub fn run_all() -> Report {
         (family.run)(&mut r);
     }
     r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A key both excluded and earned is counted once, as excluded, and
+    /// reported open: the head line adds up and the listing is written.
+    #[test]
+    fn a_key_excluded_and_earned_is_counted_once_and_reported() {
+        let mut m = Manifest::default();
+        m.require(Family::LegacyChain, "s");
+        let key = m.required.iter().next().unwrap().clone();
+        m.exclude(key.clone(), "#1 (a reason)");
+        let mut r = Report::default();
+        r.case("earns the excluded key", [key], || Ok(()));
+        let listing = r.listing(&m);
+        let required = m.required.len();
+        assert!(listing.starts_with(&format!("required {required} = earned 0 + excluded 1 + missing {}", required - 1)), "{listing}");
+        assert!(r.open(&m).iter().any(|l| l.starts_with("excluded and earned")));
+    }
 }
