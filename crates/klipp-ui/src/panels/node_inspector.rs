@@ -756,6 +756,10 @@ impl NodeInspectorPanel {
         #[cfg(any(test, feature = "row-recorder"))]
         crate::widgets::row_recorder::control(ui.next_auto_id(), "mask_stack", "masks", "Masks", &*masks);
         let mut masks_changed = false;
+        // A slider drag is one gesture, one undo step (IC13), not one step
+        // per frame: begun as it starts, ended on release, taken back on
+        // Escape.
+        let mut ended: Option<fn(ClipId) -> AppCommand> = None;
 
         ui.horizontal(|ui| {
             ui.add_space(8.0);
@@ -1017,6 +1021,13 @@ impl NodeInspectorPanel {
                         .custom_formatter(|v, _| format!("{:.3}", v))
                         .min_decimals(3)
                     );
+                    // Begun before the drag's first write (a key, or the
+                    // stack sent below), so its step starts from before it.
+                    let (began, end) = gesture_of(ui, resp.drag_started(), resp.drag_stopped());
+                    if began {
+                        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+                    }
+                    ended = ended.or(end);
                     if resp.changed() {
                         if info.has_keyframes {
                             cmds.push(AppCommand::AddMaskKeyframe {
@@ -1072,6 +1083,9 @@ impl NodeInspectorPanel {
         }
         if masks_changed {
             cmds.push(AppCommand::SetNodeMasks { clip_id, node_id, masks: masks.clone() });
+        }
+        if let Some(end) = ended {
+            cmds.push(end(clip_id));
         }
     }
 

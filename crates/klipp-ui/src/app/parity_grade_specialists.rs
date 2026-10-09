@@ -339,3 +339,71 @@ fn retrack_and_untrack_click_through() {
     let drawn: Vec<String> = old.drawn().into_iter().map(|(t, _)| t).collect();
     assert!(drawn.iter().any(|t| t == "\u{1F3AF} Track") && !drawn.iter().any(|t| t.contains("Re-track")), "the old panel offers Track only (#1398)");
 }
+
+/// Where the mask's `param` slider is pressed: on its rail, between its
+/// name and the number it shows.
+fn mask_slider(g: &mut Grade, param: &str) -> Result<egui::Pos2, String> {
+    let drawn = g.drawn();
+    let label = drawn.iter().rev().find(|(t, _)| t == param).map(|(_, p)| *p).ok_or_else(|| format!("no {param} slider"))?;
+    let value = drawn.iter().filter(|(t, p)| (p.y - label.y).abs() < 6.0 && p.x > label.x && t.starts_with(|c: char| c.is_ascii_digit())).map(|(_, p)| *p).min_by(|a, b| a.x.total_cmp(&b.x)).ok_or_else(|| format!("no number on the {param} slider"))?;
+    Ok(egui::pos2((label.x + value.x) / 2.0, value.y))
+}
+
+/// A mask's shape slider dragged is one undo step, not one per frame, and
+/// Escape during the drag takes it back, in both views (IC13).
+#[test]
+fn a_mask_slider_drag_is_one_step_and_escape_takes_it_back() {
+    let base = mask_node(true).expect("a Mask node with a circle");
+    let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    for escape in [false, true] {
+        for generated in [false, true] {
+            let mut g = base.twin(generated);
+            let at = mask_slider(&mut g, "radius").unwrap();
+            let before = masks(&g);
+            g.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
+            for dx in [8.0, 16.0, 24.0] {
+                g.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))]);
+            }
+            let dragged = masks(&g);
+            assert!(dragged != before, "generated {generated}: the drag moved the radius");
+            if escape {
+                g.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+            }
+            g.frame(vec![button(at + egui::vec2(24.0, 0.0), false)]);
+            g.frame(Vec::new());
+            assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+            if escape {
+                assert_eq!(g.state.active_history().undo_count(), 0, "generated {generated}: Escape leaves no step");
+                assert_eq!(masks(&g), before, "generated {generated}: Escape gives back the masks");
+            } else {
+                assert_eq!(g.state.active_history().undo_count(), 1, "generated {generated}: one step for the drag");
+                g.step(false).unwrap();
+                assert_eq!(masks(&g), before, "generated {generated}: undo gives back the masks");
+            }
+        }
+    }
+}
+
+/// A click on a keyed mask slider keys its value at the playhead as one
+/// undo step, undone exactly, in both views.
+#[test]
+fn a_keyed_mask_slider_click_is_one_step() {
+    let mut base = mask_node(true).expect("a Mask node with a circle");
+    let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    let (clip, node) = (base.clip, base.node);
+    let c = base.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
+    klipp_timeline::GradeAccess::edit_grade(c, |g| g.nodes.iter_mut().filter(|n| n.id == node).for_each(|n| {
+        n.params.masks.as_mut().unwrap().masks[0].keyframes.radius = vec![key(0.0, 0.2), key(1.0, 0.3)];
+    }));
+    for generated in [false, true] {
+        let mut g = base.twin(generated);
+        let at = mask_slider(&mut g, "radius").unwrap();
+        let before = masks(&g);
+        g.click_at(at + egui::vec2(12.0, 0.0));
+        assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+        assert!(masks(&g)[0].keyframes.radius != before[0].keyframes.radius, "generated {generated}: the click keyed the radius");
+        assert_eq!(g.state.active_history().undo_count(), 1, "generated {generated}: one step");
+        g.step(false).unwrap();
+        assert_eq!(masks(&g), before, "generated {generated}: undo gives back the keys");
+    }
+}

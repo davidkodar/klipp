@@ -1654,77 +1654,15 @@ impl KlippApp {
 
     fn handle_color_keyframes(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         match cmd {
-            AppCommand::AddMaskKeyframe { clip_id, node_id, mask_index, ref param, time_secs, value } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.edit_grade(|graph| {
-                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                                if let Some(masks) = &mut node.params.masks {
-                                    if let Some(mask) = masks.masks.get_mut(*mask_index) {
-                                        if let Some(track) = mask.keyframes.track_mut(param) {
-                                            // Insert or update keyframe at this time
-                                            let epsilon = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
-                                            if let Some(kf) = track.iter_mut().find(|k| (k.time_secs - time_secs).abs() < epsilon) {
-                                                kf.value = *value;
-                                            } else {
-                                                track.push(klipp_core::Keyframe {
-                                                    time_secs: *time_secs,
-                                                    value: *value,
-                                                    interpolation: klipp_core::Interpolation::Linear,
-                                                    tangent_out: (0.0, 0.0),
-                                                    tangent_in: (0.0, 0.0),
-                                                });
-                                                track.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                        break;
-                    }
-                }
-                *needs_refresh = true;
-                true
-            }
-            AppCommand::RemoveMaskKeyframe { clip_id, node_id, mask_index, ref param, time_secs } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.edit_grade(|graph| {
-                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                                if let Some(masks) = &mut node.params.masks {
-                                    if let Some(mask) = masks.masks.get_mut(*mask_index) {
-                                        if let Some(track) = mask.keyframes.track_mut(param) {
-                                            klipp_core::keyframe::remove_keyframe_at(track, *time_secs);
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                        break;
-                    }
-                }
-                *needs_refresh = true;
-                true
-            }
-            AppCommand::ClearMaskKeyframes { clip_id, node_id, mask_index, ref param } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.edit_grade(|graph| {
-                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                                if let Some(masks) = &mut node.params.masks {
-                                    if let Some(mask) = masks.masks.get_mut(*mask_index) {
-                                        if let Some(track) = mask.keyframes.track_mut(param) {
-                                            track.clear();
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                        break;
-                    }
-                }
-                *needs_refresh = true;
+            AppCommand::AddMaskKeyframe { clip_id, .. }
+            | AppCommand::RemoveMaskKeyframe { clip_id, .. }
+            | AppCommand::ClearMaskKeyframes { clip_id, .. } => {
+                // On the clip's own graph, as the mask list names its node:
+                // one step, or none inside a slider's gesture (whose close
+                // records it).
+                self.with_clip_graph_mut_at(*clip_id, &[], needs_refresh, |graph| {
+                    write_node_settings(graph, cmd);
+                });
                 true
             }
             AppCommand::AddKeyframe { clip_id, node_id, ref param, time_secs, value } => {
@@ -3101,10 +3039,11 @@ impl crate::state::AppState {
 
 /// A per-node editor's settings command written to its node in `graph`:
 /// the curves, hue curves, qualifier, luma key, difference key, soft clip,
-/// grain, external matte channel, matte combine, LUT file, mask stack or
-/// colour match that the command carries, or a mask shape added to (or
-/// removed from) the grade's Mask node. One place, so the app's dispatch
-/// and the inspector parity apply them alike. `false` when `cmd` is none of these.
+/// grain, external matte channel, matte combine, LUT file, mask stack,
+/// colour match or mask key (added, removed or a track cleared) that the
+/// command carries, or a mask shape added to (or removed from) the grade's
+/// Mask node. One place, so the app's dispatch and the inspector parity
+/// apply them alike. `false` when `cmd` is none of these.
 pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppCommand) -> bool {
     // A mask shape added or removed names its clip, not its node: the
     // grade's Mask node takes it, made (with its cutout) when there's none.
@@ -3129,6 +3068,7 @@ pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppC
     let node_id = match cmd {
         AppCommand::SetNodeLut { node_id, .. } | AppCommand::SetNodeMasks { node_id, .. } | AppCommand::SetNodeColorMatch { node_id, .. } => *node_id,
         AppCommand::SetNodeCurves { node_id, .. } | AppCommand::SetNodeHueSatCurves { node_id, .. } => *node_id,
+        AppCommand::AddMaskKeyframe { node_id, .. } | AppCommand::RemoveMaskKeyframe { node_id, .. } | AppCommand::ClearMaskKeyframes { node_id, .. } => *node_id,
         AppCommand::SetNodeQualifier { node_id, .. }
         | AppCommand::SetNodeLumaKey { node_id, .. }
         | AppCommand::SetNodeDifferenceKey { node_id, .. }
@@ -3140,7 +3080,33 @@ pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppC
     };
     let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) else { return true };
     let params = &mut node.params;
+    // A mask's key track, by the mask and the parameter it animates.
+    fn mask_track<'a>(params: &'a mut klipp_nodes::NodeParams, mask_index: usize, param: &str) -> Option<&'a mut Vec<klipp_core::Keyframe>> {
+        params.masks.as_mut()?.masks.get_mut(mask_index)?.keyframes.track_mut(param)
+    }
     match cmd {
+        AppCommand::AddMaskKeyframe { mask_index, param, time_secs, value, .. } => {
+            if let Some(track) = mask_track(params, *mask_index, param) {
+                // A key at this time is updated, else one is put in.
+                let epsilon = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
+                if let Some(kf) = track.iter_mut().find(|k| (k.time_secs - time_secs).abs() < epsilon) {
+                    kf.value = *value;
+                } else {
+                    track.push(klipp_core::Keyframe { time_secs: *time_secs, value: *value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) });
+                    track.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                }
+            }
+        }
+        AppCommand::RemoveMaskKeyframe { mask_index, param, time_secs, .. } => {
+            if let Some(track) = mask_track(params, *mask_index, param) {
+                klipp_core::keyframe::remove_keyframe_at(track, *time_secs);
+            }
+        }
+        AppCommand::ClearMaskKeyframes { mask_index, param, .. } => {
+            if let Some(track) = mask_track(params, *mask_index, param) {
+                track.clear();
+            }
+        }
         AppCommand::SetNodeCurves { curves, .. } => {
             params.curves = Some(curves.clone());
             node.enabled = true;
