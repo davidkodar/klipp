@@ -170,6 +170,36 @@ fn upload_motion(gpu: &mut GpuEffectsPipeline, motion: &klipp_effects::MotionDat
     }
 }
 
+/// `effects` with a deflicker's gain set to the analysis node's for the
+/// frame, when it has one.
+fn with_gain<'a>(effects: &'a [klipp_effects::BuiltinEffect], at: Option<&klipp_effects::node_analysis::AtFrame>) -> std::borrow::Cow<'a, [klipp_effects::BuiltinEffect]> {
+    let Some(g) = at.and_then(|a| a.gain) else { return std::borrow::Cow::Borrowed(effects) };
+    std::borrow::Cow::Owned(effects.iter().cloned().map(|mut e| {
+        if let klipp_effects::BuiltinEffect::Deflicker { gain, .. } = &mut e {
+            *gain = g;
+        }
+        e
+    }).collect())
+}
+
+/// Each analysis node's data for the frame `ctx` renders (M4 step 9): its
+/// analysis, found ready at its schema, read at the frame's source time.
+/// A node whose analysis is absent or stale has none, and its effect
+/// passes the frame through.
+fn resolve_analysis(graph: &NodeGraph, ctx: &crate::frame_context::FrameContext<'_>, height: u32) -> HashMap<NodeId, klipp_effects::node_analysis::AtFrame> {
+    use crate::frame_context::{Analysis, NODE_ANALYSIS_SCHEMA};
+    let mut out = HashMap::new();
+    for node in graph.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Effect | NodeKind::EffectSegment)) {
+        let Some(effect) = node.params.effects.iter().find(|e| klipp_effects::node_analysis::derivation_params(e).is_some()) else { continue };
+        if let Analysis::Ready(blob) = ctx.analysis.lookup(node.id, NODE_ANALYSIS_SCHEMA) {
+            if let Some(a) = blob.data.downcast_ref::<klipp_effects::node_analysis::NodeAnalysis>() {
+                out.insert(node.id, a.at(effect, ctx.source_secs, height));
+            }
+        }
+    }
+    out
+}
+
 pub struct GraphExecutor {
     /// Optional GPU pipeline for accelerated node execution.
     /// Lazily populated by `ensure_gpu()` on first use so we don't
@@ -264,6 +294,14 @@ pub struct GraphExecutor {
     keep_output_on_gpu: bool,
     /// Effect-node chain breaks in the run so far (`ChainStats`).
     run_effect_breaks: u32,
+    /// Each analysis node's data for the frame being run (M4 step 9),
+    /// resolved from the run's frame context at its start and dropped at
+    /// its end: node-scoped, never carried to another clip or frame.
+    run_analysis: HashMap<NodeId, klipp_effects::node_analysis::AtFrame>,
+    /// Whether this run's GPU chain has taken an analysis node's motion:
+    /// the chain records its nodes and submits once, so a second one in
+    /// the run would overwrite the first's; it runs on the CPU instead.
+    run_motion_uploaded: bool,
     /// Source-boundary nodes run (M4 step 6), all time.
     source_runs: u64,
     /// Of them, those run with no context to read the source from, which
@@ -706,6 +744,8 @@ impl GraphExecutor {
             last_run_declines: Vec::new(),
             ofx_runs: 0,
             ofx_refused: 0,
+            run_analysis: HashMap::new(),
+            run_motion_uploaded: false,
             run_mix_refused: 0,
             start_kept: None,
             start_kept_for_gates: None,
@@ -789,6 +829,8 @@ impl GraphExecutor {
             last_run_declines: Vec::new(),
             ofx_runs: 0,
             ofx_refused: 0,
+            run_analysis: HashMap::new(),
+            run_motion_uploaded: false,
             run_mix_refused: 0,
             start_kept: None,
             start_kept_for_gates: None,
@@ -1642,10 +1684,13 @@ impl GraphExecutor {
             }
         };
         plan.refresh(graph);
+        self.run_analysis = ctx.as_deref().map(|c| resolve_analysis(graph, c, height)).unwrap_or_default();
+        self.run_motion_uploaded = false;
         let result = self.execute_with_plan(
             source_frame, graph, &plan, width, height, clip_time_secs, frame_number,
             matte_tap, matte_preview_node, visible_nodes, ctx,
         );
+        self.run_analysis.clear();
         // Kept for the next run of this shape. A long session of many
         // shapes starts over rather than grow without bound.
         if self.plans.len() >= MAX_PLANS {
@@ -3797,6 +3842,19 @@ impl GraphExecutor {
         // A clip's effects record into the chain; ones not recorded yet
         // are counted breaks (`ChainStats::effect_breaks`).
         if let NodeKind::Effect | NodeKind::EffectSegment = kind {
+            // An analysis node's motion goes up just before it records; a
+            // second in the run would overwrite it before the chain
+            // submits, so that one runs on the CPU (step 9).
+            let at = self.run_analysis.get(&node_id).cloned();
+            if let Some(at) = &at {
+                if self.run_motion_uploaded {
+                    return None;
+                }
+                self.run_motion_uploaded = true;
+                upload_motion(self.gpu.as_mut()?, &at.motion);
+            }
+            let effects = with_gain(&params.effects, at.as_ref());
+            let effects = effects.as_ref();
             let mask = self.effect_mask.take();
             let window = self.effect_window.take();
             // Taken out while the run reads it, and put back for the key's
@@ -3812,9 +3870,9 @@ impl GraphExecutor {
                         (None, None, Some(pixels)) => Some(klipp_effects::gpu::EffectMatte::Pixels(pixels.as_slice())),
                         (None, None, None) => None,
                     };
-                    gpu.chain_run_effects_mixed(&params.effects, in_is_a, width, height, mix, matte)
+                    gpu.chain_run_effects_mixed(effects, in_is_a, width, height, mix, matte)
                 }),
-                None => Some(gpu.chain_run_effects(&params.effects, in_is_a, width, height)),
+                None => Some(gpu.chain_run_effects(effects, in_is_a, width, height)),
             };
             if let Some((id, k)) = keyed {
                 self.key_mattes.insert(id, k);
@@ -4561,18 +4619,24 @@ impl GraphExecutor {
             // A frei0r plug-in on the CPU, its instances kept across
             // frames (M4 step 5).
             NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r => {
-                let fx = &params.effects;
+                // An analysis node's own data for this frame (step 9), else
+                // the clip's motion as the renderer set it.
+                let at = self.run_analysis.get(&node_id).cloned();
+                let fx = with_gain(&params.effects, at.as_ref());
+                let fx = fx.as_ref();
+                let motion = at.map_or_else(|| self.motion.clone(), |a| a.motion);
                 let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
                 let effect = if *kind == NodeKind::Frei0r {
                     self.run_frei0r(node_id, fx, primary_input, width, height, clip_time_secs, ctx)
                 } else {
                     match self.gpu.as_mut() {
                         Some(gpu) if !klipp_effects::has_frei0r(fx) => {
+                            upload_motion(gpu, &motion);
                             let out = gpu.apply_effects(fx, primary_input, width, height);
                             self.run_effect_breaks += 1;
                             out
                         }
-                        _ => klipp_effects::apply_effects_with_motion(fx, primary_input.to_vec(), width, height, clip_time_secs, luma, &self.motion),
+                        _ => klipp_effects::apply_effects_with_motion(fx, primary_input.to_vec(), width, height, clip_time_secs, luma, &motion),
                     }
                 };
                 match params.effect_blend {
