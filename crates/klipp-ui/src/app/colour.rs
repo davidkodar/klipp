@@ -1368,15 +1368,9 @@ impl KlippApp {
                 }
                 true
             }
-            AppCommand::SetNodeDifferenceKeyPlate { clip_id, node_id, plate_path } => {
-                let node_id = *node_id;
-                let plate_path = plate_path.clone();
+            AppCommand::SetNodeDifferenceKeyPlate { clip_id, .. } => {
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        let dk = node.params.difference_key.get_or_insert_with(Default::default);
-                        dk.plate_path = plate_path;
-                        node.enabled = true;
-                    }
+                    write_node_settings(graph, cmd);
                 });
                 true
             }
@@ -1411,30 +1405,16 @@ impl KlippApp {
                 });
                 true
             }
-            AppCommand::SetExternalMattePath { clip_id, node_id, path } => {
-                let node_id = *node_id;
-                let matte_path = path.clone();
+            AppCommand::SetExternalMattePath { clip_id, .. } => {
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        node.params.matte_image_path = matte_path;
-                    }
+                    write_node_settings(graph, cmd);
                 });
                 self.state.dirty = true;
                 true
             }
-            AppCommand::SetNodeLayerMixerInput { clip_id, node_id, port, input } => {
-                let node_id = *node_id;
-                let port = *port;
-                let input = *input;
+            AppCommand::SetNodeLayerMixerInput { clip_id, .. } => {
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        let mixer = node.params.layer_mixer.get_or_insert_with(Default::default);
-                        let needed = (port as usize) + 1;
-                        if mixer.inputs.len() < needed {
-                            mixer.inputs.resize_with(needed, klipp_nodes::LayerMixerInput::default);
-                        }
-                        mixer.inputs[port as usize] = input;
-                    }
+                    write_node_settings(graph, cmd);
                 });
                 true
             }
@@ -3037,6 +3017,33 @@ pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppC
         AppCommand::ClearKeyframes { node_id, param, .. } => {
             if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
                 node.keyframes.tracks.retain(|t| t.param_name != *param);
+            }
+            return true;
+        }
+        // A Difference Key's plate (which turns the node on), an External
+        // Matte's image, a Layer Mixer input's settings: written as one
+        // edit of the node, the app's dispatch and the test driver alike.
+        AppCommand::SetNodeDifferenceKeyPlate { node_id, plate_path, .. } => {
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                node.params.difference_key.get_or_insert_with(Default::default).plate_path = plate_path.clone();
+                node.enabled = true;
+            }
+            return true;
+        }
+        AppCommand::SetExternalMattePath { node_id, path, .. } => {
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                node.params.matte_image_path = path.clone();
+            }
+            return true;
+        }
+        AppCommand::SetNodeLayerMixerInput { node_id, port, input, .. } => {
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                let mixer = node.params.layer_mixer.get_or_insert_with(Default::default);
+                let needed = usize::from(*port) + 1;
+                if mixer.inputs.len() < needed {
+                    mixer.inputs.resize_with(needed, klipp_nodes::LayerMixerInput::default);
+                }
+                mixer.inputs[usize::from(*port)] = *input;
             }
             return true;
         }

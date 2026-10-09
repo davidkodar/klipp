@@ -14,6 +14,7 @@
 use super::parity_controls::{placed, Grade, Page};
 use super::parity_manifest::{catalog, CoverageKey, Interaction, Manifest, Report, Surface};
 use klipp_nodes::NodeKind;
+use klipp_core::AppCommand;
 
 /// A LUT node with `path` set (or none), as the per-node layout draws it.
 fn lut_node(path: Option<&str>) -> Result<Grade, String> {
@@ -283,6 +284,25 @@ pub(super) fn run_masks(report: &mut Report) {
             click(g, "+ Add Mask")?;
             click(g, "Circle")
         })
+    });
+    // A mask added, drawn: the window it opens changes the frame, the CPU's
+    // the GPU's, through a correction it selects (the window's Corrector
+    // turned up).
+    report.case_or_blocked("mask added, drawn", [key(MASK_ENTRY, Interaction::Pixels)], || {
+        let mut start = mask_node(false)?;
+        let clip_id = start.clip;
+        for corrector in start.grade().nodes.iter().filter(|n| n.kind == NodeKind::Corrector).map(|n| n.id).collect::<Vec<_>>() {
+            start.apply(AppCommand::SetNodeParam { clip_id, node_id: corrector, param: "exposure".into(), value: 1.5 });
+        }
+        let start = start.twin();
+        let mut g = start.twin();
+        g.drawn();
+        click(&mut g, "+ Add Mask")?;
+        click(&mut g, "Circle")?;
+        if !g.unapplied.is_empty() {
+            return Err(format!("unapplied: {:?}", g.unapplied));
+        }
+        super::parity_pixels::edit_drawn(&start.frame_sequence(), &g.frame_sequence())
     });
     report.case("mask removed", [key(MASK_ENTRY, Interaction::RemoveMask), key(MASK_ENTRY, Interaction::UndoRedo)], || {
         let start = mask_node(true)?;

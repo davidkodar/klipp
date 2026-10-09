@@ -136,28 +136,75 @@ where
     F: FnOnce() -> Vec<AppCommand> + Send + 'static,
 {
     #[cfg(test)]
-    if CANCELLING.with(|c| c.get().map(|n| c.set(Some(n + 1)))).is_some() {
-        // Inside `cancelling`: the picker answers cancelled at once, with
-        // no dialog on screen, and so queues nothing.
+    if ANSWERING.with(|a| a.borrow_mut().as_mut().map(|a| a.asked += 1)).is_some() {
+        // Inside `answering`: the picker answers at once, with no dialog
+        // on screen; one that maps its own answer can only be cancelled.
         return;
     }
     run(None, move || Answer::Commands(pick()));
 }
 
-#[cfg(test)]
-thread_local! {
-    /// While [`cancelling`] runs on this thread: how many pickers it asked for.
-    static CANCELLING: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+/// [`spawn`] for a picker whose dialog and whose answer's commands are
+/// apart: `dialog` shows the dialog on the worker thread, and a path
+/// chosen becomes `then`'s commands; none chosen, nothing.
+pub fn spawn_pick<D, T>(dialog: D, then: T)
+where
+    D: FnOnce() -> Option<PathBuf> + Send + 'static,
+    T: FnOnce(PathBuf) -> Vec<AppCommand> + Send + 'static,
+{
+    #[cfg(test)]
+    if let Some(chosen) = ANSWERING.with(|a| a.borrow_mut().as_mut().map(|a| {
+        a.asked += 1;
+        a.chosen.clone()
+    })) {
+        // Inside `answering`: the dialog answers `chosen` at once, and its
+        // commands are collected for the test to apply, as the app would.
+        let cmds = chosen.map(then).unwrap_or_default();
+        ANSWERING.with(|a| a.borrow_mut().as_mut().map(|a| a.queued.extend(cmds)));
+        return;
+    }
+    spawn(move || dialog().map(then).unwrap_or_default());
 }
 
-/// `f` with every picker it asks for ([`spawn`]) answering cancelled at
-/// once, no dialog shown: how many it asked for. A test's stand-in for a
-/// person dismissing the dialog, which queues no commands.
+/// What [`answering`] answers this thread's pickers with, and what they did.
+#[cfg(test)]
+struct Answering {
+    chosen: Option<PathBuf>,
+    asked: usize,
+    queued: Vec<AppCommand>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// While [`answering`] runs on this thread.
+    static ANSWERING: std::cell::RefCell<Option<Answering>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `f` with every picker it asks for answering `chosen` at once (`None`
+/// cancelled), no dialog shown: how many it asked for, and the commands
+/// the answers queued, which the app would drain on its next frame. Put
+/// back however `f` ends, a panic included.
+#[cfg(test)]
+pub(crate) fn answering(chosen: Option<PathBuf>, f: impl FnOnce()) -> (usize, Vec<AppCommand>) {
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            ANSWERING.with(|a| a.borrow_mut().take());
+        }
+    }
+    ANSWERING.with(|a| *a.borrow_mut() = Some(Answering { chosen, asked: 0, queued: Vec::new() }));
+    let done = Done;
+    f();
+    let answered = ANSWERING.with(|a| a.borrow_mut().take()).map_or((0, Vec::new()), |a| (a.asked, a.queued));
+    drop(done);
+    answered
+}
+
+/// [`answering`] cancelled: a test's stand-in for a person dismissing the
+/// dialog, which queues no commands. How many pickers it asked for.
 #[cfg(test)]
 pub(crate) fn cancelling(f: impl FnOnce()) -> usize {
-    CANCELLING.with(|c| c.set(Some(0)));
-    f();
-    CANCELLING.with(|c| c.take()).unwrap_or(0)
+    answering(None, f).0
 }
 
 /// Run `pick` on a worker thread for the widget `id`, which collects the
