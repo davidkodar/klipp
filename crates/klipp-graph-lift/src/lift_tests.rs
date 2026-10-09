@@ -765,3 +765,86 @@ fn a_published_port_is_refused_not_dropped() {
     assert!(err.contains("publishes ports (matte_out)"), "{err}");
     assert!(crate::unlift::clip(&p).is_err(), "and loading it is refused the same way");
 }
+
+/// A grade compound, two deep, lifts as a group within a group, each body
+/// its subgraph lifted as a grade body is, each `frame` fed what feeds its
+/// `in`; nothing of a subgraph stays in a payload, and `delift` gives the
+/// record back (#1391, picture revision 4).
+#[test]
+fn a_grade_compound_lifts_as_a_group_and_back() {
+    const CMP: &str = "00000000-0000-0000-0000-0000000000c1";
+    const INNER: &str = "00000000-0000-0000-0000-0000000000c2";
+    const ISRC: &str = "00000000-0000-0000-0000-0000000000a1";
+    const IOUT: &str = "00000000-0000-0000-0000-0000000000a2";
+    const JSRC: &str = "00000000-0000-0000-0000-0000000000b1";
+    const JOUT: &str = "00000000-0000-0000-0000-0000000000b2";
+    let compound = |at: &str, sub: Value| {
+        let mut n = gn(at, "Compound");
+        n["params"] = json!({ "compound_subgraph": sub });
+        n
+    };
+    let innermost = json!({
+        "nodes": [gn(JSRC, "Source"), gn(SAT, "Saturation"), gn(JOUT, "Output")],
+        "edges": [edge(JSRC, 0, SAT, 0), edge(SAT, 0, JOUT, 0)],
+        "output_node_id": JOUT
+    });
+    let mut cor = gn(COR, "Corrector");
+    cor["params"] = json!({ "exposure": 0.4 });
+    let middle = json!({
+        "nodes": [gn(ISRC, "Source"), cor, compound(INNER, innermost), gn(IOUT, "Output")],
+        "edges": [edge(ISRC, 0, COR, 0), edge(COR, 0, INNER, 0), edge(INNER, 0, IOUT, 0)],
+        "output_node_id": IOUT
+    });
+    let g = json!({
+        "nodes": [gn(SRC, "Source"), compound(CMP, middle), gn(OUT, "Output")],
+        "edges": [edge(SRC, 0, CMP, 0), edge(CMP, 0, OUT, 0)],
+        "output_node_id": OUT
+    });
+    let record = clip_to_v2(clip(json!({"node_graph": g})).as_object().unwrap()).unwrap();
+    let (p, _) = lift_clip(&record, &LiftCtx { clip_id: id(CLIP), kind: ClipKind::Media }).unwrap();
+    p.graph.check_lifted(false).unwrap_or_else(|e| panic!("not a valid lifted graph: {e}"));
+    let outer = find(body(&p), CMP);
+    assert_eq!(outer.type_id.as_str(), lt::GROUP);
+    assert!(outer.enabled);
+    assert!(has_edge(body(&p), id(SRC), id(CMP), "frame"), "its frame is what feeds its in");
+    let mid = &outer.group.as_ref().unwrap().graph;
+    assert_eq!(find(mid, COR).legacy.as_ref().unwrap().payload["params"]["exposure"], json!(0.4));
+    let inner = find(mid, INNER);
+    assert_eq!(inner.type_id.as_str(), lt::GROUP);
+    assert!(has_edge(mid, id(COR), id(INNER), "frame"));
+    assert_eq!(types_of(&inner.group.as_ref().unwrap().graph).iter().filter(|t| **t == lt::GROUP_FRAME).count(), 1);
+    assert!(!serde_json::to_string(&p).unwrap().contains("compound_subgraph"), "no subgraph stays a payload");
+    let back = crate::delift::clip(&p).unwrap();
+    assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&record).unwrap(), "delift(lift(r)) == r");
+}
+
+/// A compound whose subgraph loops passed its input through today: its
+/// group is kept off, and `delift` gives its stored enabled bit back.
+#[test]
+fn a_compound_that_loops_is_kept_off() {
+    const CMP: &str = "00000000-0000-0000-0000-0000000000c1";
+    const ISRC: &str = "00000000-0000-0000-0000-0000000000a1";
+    const IOUT: &str = "00000000-0000-0000-0000-0000000000a2";
+    let mut cor = gn(COR, "Corrector");
+    cor["input_links"] = json!([null, "loop"]);
+    let mut sat = gn(SAT, "Saturation");
+    sat["output_link"] = json!("loop");
+    let mut cmp = gn(CMP, "Compound");
+    cmp["params"] = json!({ "compound_subgraph": {
+        "nodes": [gn(ISRC, "Source"), cor, sat, gn(IOUT, "Output")],
+        "edges": [edge(ISRC, 0, COR, 0), edge(COR, 0, SAT, 0), edge(SAT, 0, IOUT, 0)],
+        "output_node_id": IOUT
+    }});
+    let g = json!({
+        "nodes": [gn(SRC, "Source"), cmp, gn(OUT, "Output")],
+        "edges": [edge(SRC, 0, CMP, 0), edge(CMP, 0, OUT, 0)],
+        "output_node_id": OUT
+    });
+    let record = clip_to_v2(clip(json!({"node_graph": g})).as_object().unwrap()).unwrap();
+    let (p, notes) = lift_clip(&record, &LiftCtx { clip_id: id(CLIP), kind: ClipKind::Media }).unwrap();
+    let group = find(body(&p), CMP);
+    assert!(group.type_id.as_str() == lt::GROUP && !group.enabled, "off, as it passed through");
+    assert!(notes.iter().any(|n| matches!(n, LiftNote::NeverRan { node, .. } if *node == id(CMP))));
+    let back = crate::delift::clip(&p).unwrap();
+    assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&record).unwrap(), "delift(lift(r)) == r");
+}

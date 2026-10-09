@@ -181,7 +181,7 @@ fn check_slot(n: &Node, slot: Option<u32>, at: usize) -> Result<(), Refusal> {
 }
 
 /// A `klipp.legacy.grade` group's body back to the v1 grade graph.
-fn grade_body(group: &Node) -> Result<Value, Refusal> {
+pub(crate) fn grade_body(group: &Node) -> Result<Value, Refusal> {
     let body = &group.group.as_ref().ok_or_else(|| format!("grade group {} has no body", group.id))?.graph;
     // The kind that names an edge's ports: the first node with that id,
     // or "" when there is none, as `to_v2` names them.

@@ -152,10 +152,9 @@ fn pad_flags(obj: &mut Map<String, Value>, list: &str, flags: &str) {
     }
 }
 
-/// Normalise a v1 grade graph. A Compound node's subgraph is left as it
-/// is: it is part of the node's params, which the conversion carries
-/// verbatim as the node's payload, so nothing in it is re-expressed and
-/// nothing may be normalised.
+/// Normalise a v1 grade graph, and each Compound's subgraph within it:
+/// since revision 4 a subgraph is lifted as a group's body (#1391), so it
+/// is re-expressed as a grade graph is.
 fn grade_graph(v: &mut Value) {
     let Some(obj) = v.as_object_mut() else { return };
     drop_if_empty(obj, "node_positions");
@@ -172,6 +171,9 @@ fn grade_graph(v: &mut Value) {
             drop_if_empty(node, "input_links");
             if node.get("output_link").is_some_and(Value::is_null) {
                 node.remove("output_link");
+            }
+            if let Some(sub) = node.get_mut("params").and_then(|p| p.get_mut("compound_subgraph")).filter(|s| s.is_object()) {
+                grade_graph(sub);
             }
         }
     }
@@ -284,14 +286,15 @@ mod tests {
 
 
     #[test]
-    fn a_compound_nodes_graph_is_carried_as_it_is() {
+    fn a_compound_nodes_graph_is_normalised_as_a_grade_graph() {
         let a = json!({"from_node": "a", "from_port": 0, "to_node": "b", "to_port": 1});
         let b = json!({"from_node": "a", "from_port": 0, "to_node": "b", "to_port": 0});
         let with = |edges: Value| graph(json!([]), node(json!({"kind": "Compound", "params": { "compound_subgraph": graph(edges, node(json!({"input_links": []}))) }})));
-        // Its payload is verbatim, so two orders stay two, and an empty
-        // link list inside it stays.
+        // Lifted as a group's body since revision 4 (#1391): edge order is
+        // still meaning, so two orders stay two, but an empty link list
+        // inside goes as it does at the top.
         assert_ne!(canon(Store::Graph, &with(json!([a.clone(), b.clone()]))), canon(Store::Graph, &with(json!([b, a]))));
         let c = canon(Store::Graph, &with(json!([])));
-        assert_eq!(c["nodes"][0]["params"]["compound_subgraph"]["nodes"][0]["input_links"], json!([]));
+        assert!(c["nodes"][0]["params"]["compound_subgraph"]["nodes"][0].get("input_links").is_none());
     }
 }
