@@ -427,6 +427,11 @@ pub enum ParamValue {
     Point2([f32; 2]),
     Text(String),
     Matrix3([f32; 9]),
+    /// A number an f32 can't hold exactly: a frei0r plug-in's double
+    /// (picture revision 4). A reader before it refuses the variant.
+    Float64(f64),
+    /// A position an f32 can't hold exactly: a frei0r plug-in's.
+    Point2F64([f64; 2]),
 }
 
 /// A clip's picture as revision 1 writes it: the graph, plus the clip's

@@ -19,7 +19,7 @@
 use std::collections::BTreeMap;
 
 use klipp_effects::registry::{effect_type, ParamDesc, ParamKind};
-use klipp_graph_format::lifted::ClipPicture;
+use klipp_graph_format::lifted::{types as lt, ClipPicture};
 use klipp_graph_format::{types, Graph, Node, ParamKey, ParamValue};
 use serde_json::{Map, Value};
 
@@ -236,6 +236,7 @@ fn in_memory(n: &Node) -> bool {
 /// moved into its map, the entry left holding its tag. A node already
 /// held so, or no effect node, is left as it is.
 pub fn into_memory(n: &mut Node) -> Result<(), String> {
+    frei0r::from_stored(n)?;
     if !is_effect(n) || in_memory(n) {
         return Ok(());
     }
@@ -270,10 +271,108 @@ pub fn into_stored(n: &mut Node) -> Result<(), String> {
     let tag = tag(n).ok_or_else(|| format!("effect node {} has no type", n.id))?.to_owned();
     let entry = from_params(&tag, &n.params)?;
     n.params.retain(|k, _| !is_field_key(k));
+    if tag == frei0r::TAG {
+        return frei0r::into_stored(n, &entry);
+    }
     if let Some(legacy) = n.legacy.as_mut() {
         legacy.payload = entry;
     }
     Ok(())
+}
+
+/// A frei0r plug-in's stored form (picture revision 4, d9's fields): a
+/// `klipp.frei0r` node whose `plugin` is the entry's `type_id` and whose
+/// `p{i}` is its `i`th value by ABI type (a double and a position as f64,
+/// which an f32 can't hold; a colour sRGB, as frei0r takes it), so each
+/// value has a key and a type in the file. Its entry keeps only its tag
+/// (and its slot, keys and modifiers), as an effect's in memory does. In
+/// memory it is an effect node like any other: its entry rebuilt, then
+/// its values read into its map as every effect's are.
+mod frei0r {
+    use super::*;
+
+    pub const TAG: &str = "frei0r";
+
+    fn index(key: &ParamKey) -> Option<usize> {
+        key.as_str().strip_prefix('p').filter(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit())).and_then(|d| d.parse().ok())
+    }
+
+    /// `entry` (`{"type":"frei0r","type_id":…,"params":[…]}`) as `n`'s
+    /// stored form; `n`'s map already holds only its own keys.
+    pub fn into_stored(n: &mut Node, entry: &Value) -> Result<(), String> {
+        let plugin = entry.get("type_id").and_then(Value::as_str).ok_or_else(|| format!("frei0r node {} names no plug-in", n.id))?;
+        let values = entry.get("params").and_then(Value::as_array).ok_or_else(|| format!("frei0r node {} has no values", n.id))?;
+        if let Some(extra) = entry.as_object().and_then(|o| o.keys().find(|k| !matches!(k.as_str(), "type" | "type_id" | "params"))) {
+            return Err(format!("frei0r node {}: a field {extra:?} its stored form has no key for", n.id));
+        }
+        n.params.insert(ParamKey::from("plugin"), ParamValue::Text(plugin.to_owned()));
+        for (i, v) in values.iter().enumerate() {
+            n.params.insert(ParamKey::from(format!("p{i}").as_str()), value(v).ok_or_else(|| format!("frei0r node {}: value {i} isn't a frei0r value: {v}", n.id))?);
+        }
+        n.type_id = klipp_graph_format::NodeTypeId::new(lt::FREI0R);
+        if let Some(legacy) = n.legacy.as_mut() {
+            legacy.payload = serde_json::json!({ "type": TAG });
+        }
+        Ok(())
+    }
+
+    /// A stored `klipp.frei0r` node as the effect node memory holds; any
+    /// other node is left as it is.
+    pub fn from_stored(n: &mut Node) -> Result<(), String> {
+        if n.type_id.as_str() != lt::FREI0R {
+            return Ok(());
+        }
+        let plugin = match n.params.remove(&ParamKey::from("plugin")) {
+            Some(ParamValue::Text(p)) => p,
+            other => return Err(format!("frei0r node {}: its plug-in is {other:?}, not a name", n.id)),
+        };
+        let mut values: BTreeMap<usize, Value> = BTreeMap::new();
+        for key in n.params.keys().filter(|k| index(k).is_some()).cloned().collect::<Vec<_>>() {
+            let i = index(&key).unwrap_or_default();
+            let v = n.params.remove(&key).unwrap_or(ParamValue::Bool(false));
+            values.insert(i, entry(&v).ok_or_else(|| format!("frei0r node {}: {key} is {v:?}, no frei0r value", n.id))?);
+        }
+        if values.keys().enumerate().any(|(at, i)| at != *i) {
+            return Err(format!("frei0r node {}: its values skip an index", n.id));
+        }
+        let legacy = n.legacy.as_mut().ok_or_else(|| format!("frei0r node {} has no slot", n.id))?;
+        legacy.payload = serde_json::json!({ "type": TAG, "type_id": plugin, "params": values.into_values().collect::<Vec<_>>() });
+        n.type_id = klipp_graph_format::NodeTypeId::new(types::LEGACY_EFFECT);
+        Ok(())
+    }
+
+    /// A stored frei0r value (`{"Double": 0.5}`, as `Frei0rValue` writes
+    /// it) as the typed value its ABI type is.
+    fn value(v: &Value) -> Option<ParamValue> {
+        let (kind, x) = v.as_object().filter(|o| o.len() == 1)?.iter().next()?;
+        let floats = |n: usize| -> Option<Vec<f64>> { x.as_array().filter(|a| a.len() == n)?.iter().map(Value::as_f64).collect() };
+        Some(match kind.as_str() {
+            "Bool" => ParamValue::Bool(x.as_bool()?),
+            "Double" => ParamValue::Float64(x.as_f64()?),
+            "Color" => {
+                let c = floats(3)?;
+                ParamValue::Color { rgb: [c[0] as f32, c[1] as f32, c[2] as f32], space: SRGB.into() }
+            }
+            "Position" => {
+                let p = floats(2)?;
+                ParamValue::Point2F64([p[0], p[1]])
+            }
+            "String" => ParamValue::Text(x.as_str()?.to_owned()),
+            _ => return None,
+        })
+    }
+
+    /// [`value`]'s inverse.
+    fn entry(v: &ParamValue) -> Option<Value> {
+        Some(match v {
+            ParamValue::Bool(b) => serde_json::json!({ "Bool": b }),
+            ParamValue::Float64(x) => serde_json::json!({ "Double": x }),
+            ParamValue::Color { rgb, space } if space == SRGB => serde_json::json!({ "Color": rgb }),
+            ParamValue::Point2F64(p) => serde_json::json!({ "Position": p }),
+            ParamValue::Text(s) => serde_json::json!({ "String": s }),
+            _ => return None,
+        })
+    }
 }
 
 /// Each effect node of `graph`, and of every group body in it, through `f`.
@@ -338,6 +437,42 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 54, "every described effect");
+    }
+
+    /// A frei0r plug-in is stored as `klipp.frei0r` (picture revision 4):
+    /// its plug-in by name, each value by ABI index and type, a double and
+    /// a position as f64, exactly; held in memory it is the effect node it
+    /// was, and stored again the same.
+    #[test]
+    fn a_frei0r_entry_is_stored_by_index_and_type_and_back() {
+        let entry = serde_json::json!({"type": "frei0r", "type_id": "frei0r:/usr/lib/frei0r-1/glow.so:Glow", "params": [
+            {"Bool": true}, {"Double": 0.1}, {"Color": [0.25f32, 0.5f32, 1.0f32]}, {"Position": [0.1, 0.7]}, {"String": "soft"}
+        ]});
+        let mut n: Node = serde_json::from_value(serde_json::json!({"id": uuid::Uuid::nil(), "type_id": types::LEGACY_EFFECT, "label": "", "legacy": {"slot": 0, "payload": entry}})).unwrap();
+        into_memory(&mut n).unwrap();
+        let memory = n.clone();
+        assert_eq!(n.type_id.as_str(), types::LEGACY_EFFECT, "an effect node in memory");
+        into_stored(&mut n).unwrap();
+        assert_eq!(n.type_id.as_str(), lt::FREI0R);
+        assert_eq!(n.legacy.as_ref().unwrap().payload, serde_json::json!({"type": "frei0r"}));
+        let p = |k: &str| n.params.get(&ParamKey::from(k)).cloned();
+        assert_eq!(p("plugin"), Some(ParamValue::Text("frei0r:/usr/lib/frei0r-1/glow.so:Glow".into())));
+        assert_eq!(p("p0"), Some(ParamValue::Bool(true)));
+        assert_eq!(p("p1"), Some(ParamValue::Float64(0.1)), "0.1 as f64, which an f32 can't hold");
+        assert_eq!(p("p2"), Some(ParamValue::Color { rgb: [0.25, 0.5, 1.0], space: SRGB.into() }));
+        assert_eq!(p("p3"), Some(ParamValue::Point2F64([0.1, 0.7])));
+        assert_eq!(p("p4"), Some(ParamValue::Text("soft".into())));
+        assert!(p("plugin.name").is_none(), "no stamp until an authored edit");
+        let stored = serde_json::to_value(&n).unwrap();
+        into_memory(&mut n).unwrap();
+        assert_eq!(n, memory, "held in memory again, the same");
+        assert_eq!(entry_of(&n).unwrap(), entry, "its entry is the one it was");
+        into_stored(&mut n).unwrap();
+        assert_eq!(serde_json::to_value(&n).unwrap(), stored, "stored again, the same");
+        // A stored node that skips an index is refused, not read short.
+        let mut gap = n.clone();
+        gap.params.remove(&ParamKey::from("p2"));
+        assert!(into_memory(&mut gap).unwrap_err().contains("skip"));
     }
 
     #[test]
