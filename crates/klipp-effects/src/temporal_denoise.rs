@@ -75,6 +75,10 @@ pub fn blend_pixel(cur: [f32; 3], neighbours: &[[f32; 3]], threshold: f32, stren
     out
 }
 
+/// The source frames the denoiser reads for one frame: the one either
+/// side of it.
+pub const NEIGHBOURS: usize = 2;
+
 /// Denoise `current` against its neighbours, all linear RGBA f32 of the
 /// same size.
 ///

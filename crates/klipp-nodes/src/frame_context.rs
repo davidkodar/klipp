@@ -28,6 +28,9 @@ use crate::graph::NodeId;
 pub struct FrameContext<'a> {
     /// The clip's time, as the executor is given it.
     pub clip_time_secs: f64,
+    /// The source time of the frame being rendered: where a node's
+    /// neighbours are counted from.
+    pub source_secs: f64,
     pub frame_number: u64,
     pub fps: f64,
     pub sources: &'a mut dyn SourceProvider,
@@ -102,6 +105,9 @@ impl FrameSize for LinearFrame {
 pub trait SourceProvider {
     /// The source range a request may name: `[in, out)`, in source seconds.
     fn bounds(&self) -> (f64, f64);
+    /// The node whose requests follow, and the source frames its type
+    /// declares it reads per frame. Only a bounding provider counts them.
+    fn for_node(&mut self, _node: NodeId, _budget: usize) {}
     fn encoded(&mut self, source_secs: f64) -> Neighbour<EncodedFrame>;
     fn linear(&mut self, source_secs: f64) -> Neighbour<LinearFrame>;
     /// One of the media's frames, in seconds (1 / its rate), when known: a
@@ -139,13 +145,6 @@ impl<'s> BoundedSources<'s> {
         Self { inner, size: (width, height), asked: HashMap::new(), node: None }
     }
 
-    /// The node whose requests follow, and the source frames its type
-    /// declares it reads per frame (a denoiser its window, a temporal
-    /// plug-in what its metadata says), held to [`NEIGHBOUR_CEILING`].
-    pub fn for_node(&mut self, node: NodeId, budget: usize) {
-        self.node = Some((node, budget.min(NEIGHBOUR_CEILING)));
-    }
-
     fn admit(&mut self, source_secs: f64) -> Result<(), Missing> {
         let (from, to) = self.inner.bounds();
         if !(source_secs >= from && source_secs < to) {
@@ -179,6 +178,13 @@ impl SourceProvider for BoundedSources<'_> {
 
     fn frame_secs(&self) -> Option<f64> {
         self.inner.frame_secs()
+    }
+
+    /// The node whose requests follow, and the source frames its type
+    /// declares it reads per frame (a denoiser its window, a temporal
+    /// plug-in what its metadata says), held to [`NEIGHBOUR_CEILING`].
+    fn for_node(&mut self, node: NodeId, budget: usize) {
+        self.node = Some((node, budget.min(NEIGHBOUR_CEILING)));
     }
 
     fn encoded(&mut self, source_secs: f64) -> Neighbour<EncodedFrame> {
