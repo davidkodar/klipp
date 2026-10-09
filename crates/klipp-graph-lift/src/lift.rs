@@ -805,7 +805,7 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
     }
     let blend = effects.iter().find(|n| {
         let v = payload(n);
-        n.type_id.as_str() == types::LEGACY_SPEED_RAMP && n.enabled && v.get("blend_mode").and_then(Value::as_u64) == Some(1) && v.get("freeze") != Some(&Value::Bool(true))
+        n.type_id.as_str() == types::LEGACY_SPEED_RAMP && n.enabled && v.get("blend_mode").and_then(Value::as_u64) == Some(1)
     });
     if let Some(n) = blend {
         let mut b = node(n.id, lt::FRAME_BLEND, media, n.legacy.clone());
@@ -815,14 +815,6 @@ pub fn lift_clip(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<(ClipPicture, V
         head.push(b);
         if !media {
             notes.push(LiftNote::NeverRan { node: n.id, why: "frame blending runs on media clips only".into() });
-        }
-    }
-    for n in effects.iter().filter(|n| n.type_id.as_str() == types::LEGACY_SPEED_RAMP) {
-        let v = payload(n);
-        for (field, default) in [("ramp_curve", json!(0)), ("ramp_start", json!(0.0)), ("ramp_end", json!(1.0)), ("reverse", json!(false)), ("freeze_at", json!(0.0))] {
-            if v.get(field).is_some_and(|x| x.as_f64() != default.as_f64() || x.as_bool() != default.as_bool()) {
-                notes.push(LiftNote::DroppedField { what: "speed ramp".into(), field: field.into() });
-            }
         }
     }
 

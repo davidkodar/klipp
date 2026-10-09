@@ -809,9 +809,7 @@ impl FrameSource for TwoFrames {
 /// the blend mode, the earlier frame alone.
 #[test]
 fn slow_motion_blends_the_frames_either_side() {
-    let ramp = |blend_mode| BuiltinEffect::SpeedRamp {
-        speed: 0.5, blend_mode, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false,
-    };
+    let ramp = |blend_mode| BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode };
     for blend_mode in [1, 0] {
         let mut c = media(0.0, 4.0);
         c.speed = 0.5;

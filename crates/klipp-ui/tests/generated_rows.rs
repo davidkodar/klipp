@@ -170,8 +170,8 @@ fn fixed_params_show_no_diamond() {
 }
 
 /// Every number resets to its declared value: the presentation's hint,
-/// whose list is exactly Speed Ramp's freeze point (P2), else the
-/// catalog's default.
+/// of which no effect has one since Speed Ramp's freeze point went
+/// (#1409), else the catalog's default.
 #[test]
 fn every_row_resets_to_its_declared_value() {
     let mut hints = Vec::new();
@@ -189,21 +189,7 @@ fn every_row_resets_to_its_declared_value() {
             assert_eq!(r.reset.as_ref().and_then(Value::as_f64).map(|x| x as f32), Some(want), "{}/{}", t.desc.id, p.key);
         }
     }
-    assert_eq!(hints, [("klipp.fx.speed_ramp", "freeze_at", 0.5)]);
-}
-
-/// Speed Ramp's freeze point shows only while it freezes; its value stays
-/// either way.
-#[test]
-fn visible_if_hides_freeze_at_until_freeze() {
-    let t = effect_types().find(|t| t.desc.id == "klipp.fx.speed_ramp").unwrap();
-    let mut json = serde_json::to_value((t.sample)()).unwrap();
-    for (freeze, shows) in [(false, false), (true, true)] {
-        json["freeze"] = Value::Bool(freeze);
-        json["freeze_at"] = serde_json::json!(0.25);
-        let (rows, _) = generated(t, &json);
-        assert_eq!(rows.iter().any(|r| r.parameter.as_deref() == Some("freeze_at")), shows, "freeze {freeze}");
-    }
+    assert!(hints.is_empty(), "{hints:?}");
 }
 
 /// A value the row can't read as its kind is shown read-only and nothing

@@ -90,18 +90,14 @@ impl Clip {
         })
     }
 
-    /// An enabled, non-frozen SpeedRamp requesting frame blending. The caller
+    /// An enabled SpeedRamp requesting frame blending. The caller
     /// separately checks playback direction and speed at the current time.
     pub fn has_frame_blend_entry(&self) -> bool {
         self.builtin_effects().iter().enumerate().any(|(i, e)| {
             self.builtin_effects_enabled().get(i).copied().unwrap_or(true)
                 && matches!(
                     e,
-                    BuiltinEffect::SpeedRamp {
-                        blend_mode: 1,
-                        freeze: false,
-                        ..
-                    }
+                    BuiltinEffect::SpeedRamp { blend_mode: 1, .. }
                 )
         })
     }
@@ -389,24 +385,14 @@ mod tests {
     }
 
     #[test]
-    fn frame_blend_entry_keeps_mode_freeze_and_enabled_rules() {
-        for (mode, freeze, enabled, expected) in [
-            (1, false, None, true),
-            (1, false, Some(false), false),
-            (1, true, Some(true), false),
-            (0, false, Some(true), false),
+    fn frame_blend_entry_keeps_mode_and_enabled_rules() {
+        for (mode, enabled, expected) in [
+            (1, None, true),
+            (1, Some(false), false),
+            (0, Some(true), false),
         ] {
             let mut c = clip();
-            c.set_effect_list(c.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::SpeedRamp {
-                speed: 0.5,
-                ramp_curve: 0,
-                ramp_start: 0.0,
-                ramp_end: 1.0,
-                reverse: false,
-                freeze_at: 0.0,
-                freeze,
-                blend_mode: mode,
-            })).collect(), c.builtin_effects_enabled().iter().cloned().chain(enabled).collect());
+            c.set_effect_list(c.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode: mode })).collect(), c.builtin_effects_enabled().iter().cloned().chain(enabled).collect());
             assert_eq!(c.has_frame_blend_entry(), expected);
         }
     }

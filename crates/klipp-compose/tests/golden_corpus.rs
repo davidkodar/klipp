@@ -485,16 +485,7 @@ fn temporal_cases() -> Vec<Case> {
     // frame mixes two source frames by where it falls between them.
     let (mut case, _) = moving(
         "temporal/frame blending",
-        vec![BuiltinEffect::SpeedRamp {
-            speed: 0.5,
-            blend_mode: 1,
-            ramp_curve: 0,
-            ramp_start: 0.0,
-            ramp_end: 1.0,
-            reverse: false,
-            freeze_at: 0.0,
-            freeze: false,
-        }],
+        vec![BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode: 1 }],
     );
     for c in case.project[0].tracks[0].clips.iter_mut() {
         c.speed = 0.5;

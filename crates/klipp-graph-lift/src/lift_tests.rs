@@ -147,7 +147,7 @@ fn the_chain_runs_in_render_order() {
 #[test]
 fn head_nodes_run_on_media_clips_only() {
     let tnr = |s: f64| json!({"type": "temporal_denoise", "strength": s, "threshold": 0.1});
-    let ramp = json!({"type": "speed_ramp", "speed": 0.5, "blend_mode": 1, "ramp_curve": 0, "ramp_start": 0.0, "ramp_end": 1.0, "reverse": false, "freeze_at": 0.0, "freeze": false});
+    let ramp = json!({"type": "speed_ramp", "speed": 0.5, "blend_mode": 1});
     let c = clip(json!({"builtin_effects": [tnr(0.0), tnr(0.4), tnr(0.8), ramp]}));
     let (p, notes) = lift(c.clone(), ClipKind::Media);
     let head: Vec<(&str, bool)> = p.graph.nodes[1..5].iter().map(|n| (n.type_id.as_str(), n.enabled)).collect();
@@ -162,13 +162,11 @@ fn head_nodes_run_on_media_clips_only() {
     assert!(t.graph.nodes[1..5].iter().all(|n| !n.enabled), "on a title none of it ever ran");
     assert_eq!(notes.iter().filter(|n| matches!(n, LiftNote::NeverRan { .. })).count(), 4);
 
-    // A frozen or non-blending ramp gives no frame blend; its unread fields
-    // with values are reported.
-    let frozen = json!({"type": "speed_ramp", "speed": 0.5, "blend_mode": 1, "ramp_curve": 2, "ramp_start": 0.0, "ramp_end": 1.0, "reverse": true, "freeze_at": 0.0, "freeze": true});
-    let (f, notes) = lift(clip(json!({"builtin_effects": [frozen]})), ClipKind::Media);
+    // A ramp that doesn't blend gives no frame blend (#1409: Speed and
+    // Blend Mode are all a ramp keeps).
+    let nearest = json!({"type": "speed_ramp", "speed": 0.5, "blend_mode": 0});
+    let (f, _) = lift(clip(json!({"builtin_effects": [nearest]})), ClipKind::Media);
     assert!(!types_of(&f.graph).contains(&lt::FRAME_BLEND));
-    let dropped: Vec<&str> = notes.iter().filter_map(|n| match n { LiftNote::DroppedField { field, .. } => Some(field.as_str()), _ => None }).collect();
-    assert_eq!(dropped, ["ramp_curve", "reverse"]);
 }
 
 #[test]

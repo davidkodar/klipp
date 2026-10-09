@@ -139,7 +139,7 @@ fn the_automatic_placement_ignores_what_is_switched_off_or_not_a_pixel_effect() 
             shadow,
             E::Gamma { gamma: 1.1 },
             E::Opacity { value: 0.7 },
-            E::SpeedRamp { speed: 2.0, blend_mode: 0, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: -1.0, freeze: false },
+            E::SpeedRamp { speed: 2.0, blend_mode: 0 },
             E::TemporalDenoise { strength: 0.5, threshold: 0.1 },
             glow,
             E::Vibrance { amount: 0.2 },

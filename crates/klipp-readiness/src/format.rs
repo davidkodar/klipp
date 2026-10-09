@@ -203,7 +203,7 @@ pub fn run(report: &mut Report) {
     // test).
     row(report, "#1409", |s| {
         let mut c = clip();
-        c.set_effect_list(vec![E::SpeedRamp { speed: 1.0, blend_mode: 1, ramp_curve: 3, ramp_start: 0.2, ramp_end: 0.8, reverse: true, freeze_at: 0.4, freeze: false }], vec![true]);
+        c.set_effect_list(vec![E::SpeedRamp { speed: 1.0, blend_mode: 1 }], vec![true]);
         s.tracks[0].clips.push(c);
     }, |_, v| {
         let ramp = nodes(picture(v)?).into_iter().find(|n| n["type_id"] == klipp_graph_format::types::LEGACY_SPEED_RAMP).ok_or("no Speed Ramp in the chain")?;

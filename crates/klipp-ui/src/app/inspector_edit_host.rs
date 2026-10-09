@@ -836,9 +836,9 @@ impl InspectorEditHost<'_> {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         clip.push_effect(effect.clone());
                         // SpeedRamp: apply speed change on add
-                        if let klipp_effects::BuiltinEffect::SpeedRamp { speed, freeze, .. } = effect {
+                        if let klipp_effects::BuiltinEffect::SpeedRamp { speed, .. } = effect {
                             is_speed_ramp = true;
-                            let new_speed = if *freeze { 0.001 } else { (*speed as f64).clamp(0.1, 16.0) };
+                            let new_speed = (*speed as f64).clamp(0.1, 16.0);
                             clip.speed = new_speed;
                             let source_dur_secs = clip.source_duration().to_secs_f64();
                             let new_dur_secs = source_dur_secs / new_speed;
@@ -955,21 +955,16 @@ impl InspectorEditHost<'_> {
                             clip.replace_effect(id, effect.clone());
                         }
                         // SpeedRamp: use the same logic as SetClipSpeed
-                        if let klipp_effects::BuiltinEffect::SpeedRamp { speed, reverse, freeze, .. } = effect {
+                        if let klipp_effects::BuiltinEffect::SpeedRamp { speed, .. } = effect {
                             is_speed_ramp = true;
-                            let new_speed = if *freeze {
-                                0.001
-                            } else {
-                                (*speed as f64).clamp(0.1, 16.0)
-                            };
+                            let new_speed = (*speed as f64).clamp(0.1, 16.0);
                             clip.speed = new_speed;
                             // Adjust timeline_out exactly like SetClipSpeed
                             let source_dur_secs = clip.source_duration().to_secs_f64();
                             let new_dur_secs = source_dur_secs / new_speed;
                             let new_duration = klipp_core::RationalTime::from_secs_f64(new_dur_secs, clip.timeline_in.rate);
                             clip.timeline_out = clip.timeline_in + new_duration;
-                            tracing::debug!("SpeedRamp: speed={} freeze={} reverse={} → clip.speed={} dur={}s",
-                                speed, freeze, reverse, new_speed, new_dur_secs);
+                            tracing::debug!("SpeedRamp: speed={} → clip.speed={} dur={}s", speed, new_speed, new_dur_secs);
                         }
                         break;
                     }
@@ -1250,7 +1245,7 @@ mod tests {
         let (mut state, id) = fixture(&[]);
         let original = clip(&state).clone();
         let side = Recorder::default();
-        let ramp = E::SpeedRamp { speed: 2.0, blend_mode: 0, ramp_curve: 0, ramp_start: 0.0, ramp_end: 1.0, reverse: false, freeze_at: 0.0, freeze: false };
+        let ramp = E::SpeedRamp { speed: 2.0, blend_mode: 0 };
         run(&mut state, &side, AppCommand::AddBuiltinEffect { clip_id: id, effect: ramp });
         assert_eq!(state.active_history().undo_count(), 1);
         assert_eq!(clip(&state).speed, 2.0);

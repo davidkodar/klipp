@@ -181,20 +181,6 @@ fn cases() -> Vec<Case> {
             stored: serde_json::to_value((ty.sample)()).unwrap(),
             rows: effect_rows((ty.sample)()),
         });
-        let mut conditional = (ty.sample)();
-        if let klipp_effects::BuiltinEffect::SpeedRamp {
-            freeze, reverse, ..
-        } = &mut conditional
-        {
-            *freeze = true;
-            *reverse = true;
-            out.push(Case {
-                kind: ty.desc.id.into(),
-                variant: "freeze_reverse".into(),
-                stored: serde_json::to_value(&conditional).unwrap(),
-                rows: effect_rows(conditional),
-            });
-        }
         for method in [
             klipp_effects::SpillMethod::None,
             klipp_effects::SpillMethod::Hawk,

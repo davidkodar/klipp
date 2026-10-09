@@ -4,7 +4,7 @@
 //! they differ from the catalog's. A grain's seed and the deflicker's
 //! gain are system values, hidden by name.
 
-use super::{Cond, ParamEntry, Presentation as P, Suffix, TypeEntry, TypePresentation, Widget};
+use super::{ParamEntry, Presentation as P, Suffix, TypeEntry, TypePresentation, Widget};
 
 const fn at(type_id: &'static str, key: &'static str, pres: P) -> ParamEntry {
     ParamEntry { type_id, key, pres }
@@ -71,14 +71,6 @@ pub(super) static PARAMS: &[ParamEntry] = &[
     at(STABILIZE, "zoom", toggle().label("Auto-zoom to fill")),
     at(RAMP, "speed", P::scrub(0.05, 2).suffix(Suffix::Text("×")).order(0)),
     at(RAMP, "blend_mode", combo().label("Blend Mode").labels(&["Nearest", "Linear"]).order(1)),
-    at(RAMP, "ramp_curve", combo().label("Ramp Curve").labels(&["Constant", "Ease In", "Ease Out", "Ease In-Out", "S-Curve"]).order(2)),
-    at(RAMP, "ramp_start", P::scrub(0.005, 3).order(3)),
-    at(RAMP, "ramp_end", P::scrub(0.005, 3).order(4)),
-    at(RAMP, "reverse", toggle().order(5)),
-    at(RAMP, "freeze", toggle().label("Freeze Frame").order(6)),
-    // Shown while it freezes, and reset to the middle (the one reset hint,
-    // P2).
-    at(RAMP, "freeze_at", P::scrub(0.005, 3).order(7).reset(0.5).visible_if(Cond::ParamIs { key: "freeze", value: 1.0 })),
     // The plug-in and its values, drawn by its editor (M3 step 0d).
     at(FREI0R, "type_id", P::shown_as(Widget::Custom("frei0r_plugin")).group("Plug-in")),
     at(FREI0R, "params", P::shown_as(Widget::Custom("frei0r_plugin")).group("Plug-in")),

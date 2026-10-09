@@ -333,7 +333,6 @@ const CHOICE_LABELS: &[(&str, &str, &[&str])] = &[
     ("klipp.fx.letterbox", "bar_color", &["Black", "White"]),
     ("klipp.fx.chroma_key", "spill_method", &["None", "Channel Clamp", "Hawk"]),
     ("klipp.fx.speed_ramp", "blend_mode", &["Nearest", "Linear"]),
-    ("klipp.fx.speed_ramp", "ramp_curve", &["Constant", "Ease In", "Ease Out", "Ease In-Out", "S-Curve"]),
     ("klipp.fx.radial_blur", "mode", &["Zoom", "Spin"]),
 ];
 

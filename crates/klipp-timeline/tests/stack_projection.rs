@@ -34,16 +34,7 @@ fn the_placement_row_never_duplicates_a_transform() {
     c.push_effect(transform()); // First enabled Transform: the anchor.
     c.push_effect(transform()); // A retained card, not another anchor.
     c.push_effect(E::Opacity { value: 0.5 });
-    c.push_effect(E::SpeedRamp {
-        speed: 2.0,
-        blend_mode: 0,
-        ramp_curve: 0,
-        ramp_start: 0.0,
-        ramp_end: 1.0,
-        reverse: false,
-        freeze_at: 0.0,
-        freeze: false,
-    });
+    c.push_effect(E::SpeedRamp { speed: 2.0, blend_mode: 0 });
     let picture = c.picture_v2().unwrap().picture.clone();
     let before = picture.clone();
     let view = project(
@@ -89,16 +80,7 @@ fn source_neighbours_use_the_source_section_and_placed_edit_route() {
         strength: 0.5,
         threshold: 0.25,
     });
-    c.push_effect(E::SpeedRamp {
-        speed: 2.0,
-        blend_mode: 1,
-        ramp_curve: 0,
-        ramp_start: 0.0,
-        ramp_end: 1.0,
-        reverse: false,
-        freeze_at: 0.0,
-        freeze: false,
-    });
+    c.push_effect(E::SpeedRamp { speed: 2.0, blend_mode: 1 });
     let picture = c.picture_v2().unwrap().picture.clone();
     let view = project(
         Root::Clip { clip: c.id.0 },
@@ -215,7 +197,6 @@ fn stack_projection_matches_the_effect_list_on_the_18() {
                     if let Some((i, _)) = effects.iter().enumerate().find(|(i, e)| {
                         e["type"] == "speed_ramp"
                             && e["blend_mode"] == 1
-                            && e["freeze"] != true
                             && flags.get(*i).and_then(Value::as_bool).unwrap_or(true)
                     }) {
                         expected_source.push(i);

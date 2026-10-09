@@ -807,7 +807,6 @@ fn effect(r: &mut Rng, samples: &[Value]) -> Value {
         3 => {
             let mut s = serde_json::to_value(klipp_effects::registry::effect_type("speed_ramp").map(|t| (t.sample)())).unwrap();
             s["blend_mode"] = json!(r.below(2));
-            s["freeze"] = json!(r.chance(20));
             s
         }
         _ => samples[r.below(samples.len() as u64) as usize].clone(),
