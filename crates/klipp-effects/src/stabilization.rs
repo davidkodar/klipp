@@ -11,7 +11,7 @@ use crate::rolling_shutter::{self, Homography, Match};
 // ---------------------------------------------------------------------------
 
 /// Decomposed 2D motion parameters from an affine transform.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct MotionParams {
     pub tx: f64,
     pub ty: f64,
@@ -20,7 +20,7 @@ pub struct MotionParams {
 }
 
 /// Raw analysis: per-frame affine transforms for the entire clip.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StabilizationData {
     /// Frame-to-frame affine transforms. Length = frame_count - 1.
     pub frame_transforms: Vec<Homography>,

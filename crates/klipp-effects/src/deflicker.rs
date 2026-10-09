@@ -29,7 +29,7 @@
 use crate::cpu::decode;
 
 /// What one analysis pass measured. Cheap: one float per frame.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DeflickerData {
     /// Mean linear luma per frame, in order from the clip's source in.
     pub luma: Vec<f32>,
