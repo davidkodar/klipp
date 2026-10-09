@@ -103,7 +103,6 @@ fn listing(manifest: &Manifest, report: &Report, gate: &Result<(), String>) -> S
         "required {} = earned {earned} + excluded {excluded} + missing {missing}; also earned but not required {unexpected}; gate errors {open} (each missing key, each surface no family declares, each unexpected or unlabelled key)",
         required.len()
     );
-    lines.push(format!("RETAINED NestedGrade: {}", super::parity_manifest::rules_nested_grade()));
     lines.sort();
     // The keys still missing, by interaction and surface, with the types
     // that owe them: which family's work each group is.
