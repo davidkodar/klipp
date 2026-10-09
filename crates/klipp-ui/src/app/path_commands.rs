@@ -1281,6 +1281,34 @@ mod tests {
         assert!(matches!(c.builtin_effects()[1], E::CornerPin { tl, .. } if tl[1] == 0.1), "{:?}", c.builtin_effects()[1]);
     }
 
+    /// An effect moved by path (the stack's ↑ and ↓ send `MoveNodeAt`,
+    /// `reorder_moves_by_path`) stays the selected one, keeps its keys, and
+    /// the move is one step whose undo puts the order back with the
+    /// selection and the keys as they were.
+    #[test]
+    fn a_reorder_keeps_the_selection_and_the_keys() {
+        let (mut s, id) = state(&[E::GaussianBlur { radius: 3.0 }, E::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 }]);
+        let fx = effects(&s, id);
+        let blur = at(id, &[fx[0]]);
+        let key = |t: f64, v: f32| serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).unwrap();
+        run(&mut s, AppCommand::AddKeyAt { addr: blur.clone(), key: "radius".into(), keyframe: key(0.0, 2.0) });
+        run(&mut s, AppCommand::AddKeyAt { addr: blur.clone(), key: "radius".into(), keyframe: key(1.0, 6.0) });
+        s.selected_node_addr = Some(blur.clone());
+        let keys = |s: &AppState| clip(s, id).node_key_state(&blur, &"radius".into()).map(|k| k.keys.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>());
+        let had = keys(&s);
+        assert_eq!(had.as_deref(), Some(&[(0.0, 2.0), (1.0, 6.0)][..]), "the blur's keys");
+        let steps = s.active_history().undo_count();
+        run(&mut s, AppCommand::MoveNodeAt { addr: blur.clone(), after: fx[1] });
+        assert_eq!(effects(&s, id), [fx[1], fx[0]], "the blur moved after the vignette");
+        assert_eq!(s.selected_node_addr, Some(blur.clone()), "the moved effect is still the selected one");
+        assert_eq!(keys(&s), had, "its keys moved with it");
+        assert_eq!(s.active_history().undo_count(), steps + 1, "one step");
+        undo(&mut s);
+        assert_eq!(effects(&s, id), fx, "undo puts the order back");
+        assert_eq!(s.selected_node_addr, Some(blur.clone()), "and keeps the selection");
+        assert_eq!(keys(&s), had, "and the keys");
+    }
+
     /// A pin drag taken back (Escape) leaves the picture exactly as the
     /// drag found it, the static axis's value and the keyed axis's new
     /// key alike, and records no step.

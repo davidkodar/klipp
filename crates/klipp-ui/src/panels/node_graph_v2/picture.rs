@@ -490,6 +490,71 @@ mod tests {
         assert_eq!(*restored.picture_v2().unwrap(), before);
     }
 
+    /// Descending into a group by double-clicking it and climbing back by
+    /// the "Clip" crumb is navigation alone: every command the canvas sends
+    /// for it, applied as the app applies it, leaves the project clean, its
+    /// history empty and the clip's picture as it was, while the level does
+    /// move in and out.
+    #[test]
+    fn navigation_never_dirties_the_project() {
+        let c = clip();
+        let before = c.picture_v2().unwrap();
+        let model = PictureCanvas::new(&before.picture.graph, root(&c), None).unwrap();
+        let group = model.nodes.iter().find(|n| n.node.group.is_some()).expect("the clip's grade group");
+        let (group_id, group_label) = (group.id(), group.label.clone());
+        let mut state = crate::state::AppState::default();
+        state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(c.clone());
+        state.selected_clip = Some(c.id);
+        state.graph_dock_open = true;
+        let ctx = egui::Context::default();
+        let mut panel = super::super::NodeGraphV2Panel::default();
+        let (mut selected, mut set, mut time) = (None, Default::default(), 0.0);
+        let mut sent = Vec::new();
+        // One frame as the graph dock draws it: the canvas at the level the
+        // app keeps (`graph_dock_path`), and every command it sends applied
+        // as the app applies it, the canvas's own move of the level kept.
+        let mut frame = |events, state: &mut crate::state::AppState| {
+            time += 0.1;
+            let mut level = NodePath::new(root(&c).root, state.graph_dock_path.clone());
+            let mut cmds = Vec::new();
+            let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 700.0))), time: Some(time), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    cmds = panel.show_picture(ui, &c, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, true, &Default::default(), 0, &mut Vec::new()).unwrap();
+                });
+            });
+            state.graph_dock_path = level.nodes.clone();
+            for cmd in &cmds {
+                state.before_dispatch(cmd);
+                state.path_command(cmd);
+            }
+            sent.extend(cmds);
+            output.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)), _ => None,
+            }).collect::<Vec<_>>()
+        };
+        let button = |at, pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut texts = Vec::new();
+        for _ in 0..3 { texts = frame(Vec::new(), &mut state); }
+        // In: a double click on the group.
+        let at = texts.iter().find(|(s, _)| *s == group_label).unwrap_or_else(|| panic!("the group is drawn: {texts:?}")).1;
+        frame(vec![egui::Event::PointerMoved(at)], &mut state);
+        for _ in 0..2 {
+            frame(vec![button(at, true)], &mut state);
+            frame(vec![button(at, false)], &mut state);
+        }
+        for _ in 0..3 { texts = frame(Vec::new(), &mut state); }
+        assert_eq!(state.graph_dock_path, [group_id], "the double click descends into the group: sent {sent:?}");
+        // Out: the "Clip" crumb.
+        let at = texts.iter().find(|(s, _)| s == "Clip").unwrap_or_else(|| panic!("the Clip crumb is drawn: {texts:?}")).1;
+        frame(vec![egui::Event::PointerMoved(at), button(at, true)], &mut state);
+        frame(vec![button(at, false)], &mut state);
+        for _ in 0..2 { frame(Vec::new(), &mut state); }
+        assert!(state.graph_dock_path.is_empty(), "the crumb climbs back to the clip: {:?}", state.graph_dock_path);
+        assert!(!state.dirty, "navigating dirtied the project: {sent:?}");
+        assert_eq!(state.active_history().undo_count(), 0, "navigating left an undo step: {sent:?}");
+        assert_eq!(state.sequence().all_clips().find(|x| x.id == c.id).unwrap().picture_v2().unwrap(), before);
+    }
+
     #[test]
     fn opening_selecting_panning_and_zooming_the_picture_writes_nothing() {
         let c = clip();
