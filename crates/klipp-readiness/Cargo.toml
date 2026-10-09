@@ -1,0 +1,20 @@
+[package]
+name = "klipp-readiness"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+publish = false
+
+# M4's readiness gate: what every execution family owes, across the
+# entries it can be placed in and the routes that draw it, and what its
+# tests earn. Test-only, as klipp-testing is: nothing here reaches a
+# release binary. The families' cases bring their own dev-dependencies
+# as they're written.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints]
+workspace = true
