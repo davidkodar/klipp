@@ -37,9 +37,100 @@ pub(super) const REPRESENTATIVE: &[(&str, &str, Surface, &str, Interaction)] = &
     ("klipp.fx.gaussian_blur", "@mask/beside", Surface::EffectsStack, "masked", Interaction::MaskedPixels),
 ];
 
-/// [`REPRESENTATIVE`] as keys.
+/// A grade row's keyframe controls (its diamond, its carets, a typed edit
+/// at a key, its interpolation menu) are the generated rows' one code
+/// path, whatever the type: so they're owed on a representative row of
+/// each grade page, the clip's grade and each of the sequence's grades,
+/// not on every type × page × grade (flip readiness ruling, 10-09). That
+/// every keyframable grade row takes a key at all is owed per type, by
+/// its diamond on its own page ([`primary_grade_page`], `AddKey` alone).
+/// The rows: a per-node type's on the per-node layout, the Corrector's on
+/// the tabbed page and the bottom tools.
+pub(super) const GRADE_KEY_REPRESENTATIVE: [(Surface, &str, &str); 3] = [
+    (Surface::GradePerNode, "klipp.grade.denoise", "denoise_luma"),
+    (Surface::GradeTabbedRight, "klipp.grade.corrector", "exposure"),
+    (Surface::GradeBottomTools, "klipp.grade.corrector", "exposure"),
+];
+
+/// The fixture variant of [`GRADE_KEY_REPRESENTATIVE`]'s cases: the row
+/// with keys on it.
+pub(super) const GRADE_KEY_VARIANT: &str = "keyed";
+
+/// A curve-editor lane's edit drawn (`Pixels`): the lane is one widget
+/// writing the key it edits, whatever the effect, and the key reaches the
+/// frame through the effect node's animation, which the keyed-pixels family
+/// draws per type on the stack. So it's owed on one lane of each kind
+/// (flip readiness ruling, 10-09): a number on an effect node, a whole
+/// number (stepped), and a placed kind's lane, the clip's opacity (its
+/// Video track). No colour lane exists: no effect colour is keyframable.
+pub(super) const CURVE_PIXEL_REPRESENTATIVE: [(&str, &str); 3] = [
+    ("klipp.fx.gaussian_blur", "radius"),
+    ("klipp.fx.posterize", "levels"),
+    ("klipp.fx.opacity", "value"),
+];
+
+/// A keyframable number's key controls.
+pub(super) const KEY_INTERACTIONS: [Interaction; 8] = [
+    Interaction::AddKey,
+    Interaction::EditKey,
+    Interaction::RemoveKey,
+    Interaction::PreviousKey,
+    Interaction::NextKey,
+    Interaction::Interpolation(KeyInterpolation::Linear),
+    Interaction::Interpolation(KeyInterpolation::Step),
+    Interaction::Interpolation(KeyInterpolation::Bezier),
+];
+
+/// A sequence grade (the timeline grade, a group's pre-clip and post-clip
+/// stages) is drawn by the clip grade's pages at its own root, so what's
+/// owed there is that each root draws and edits through each page: a
+/// representative row's whole numeric set ([`GRADE_KEY_REPRESENTATIVE`]'s
+/// rows, as the grade numeric family runs them), not every type on every
+/// root (flip readiness ruling, 10-09). A family that runs more on the
+/// sequence's grades still owes all it requires.
+pub(super) const ROOT_NUMERIC: [Interaction; 7] = [
+    Interaction::OpenWithoutWrite,
+    Interaction::TypeNumber,
+    Interaction::Drag,
+    Interaction::CancelDrag,
+    Interaction::Reset,
+    Interaction::UndoRedo,
+    Interaction::Pixels,
+];
+
+/// The variant the grade numeric family runs a row with no conditions
+/// under (`parity_controls::grade_variant`).
+pub(super) const ROOT_NUMERIC_VARIANT: &str = "sample";
+
+/// [`REPRESENTATIVE`] as keys, with the grade representatives.
 pub(super) fn representative_keys() -> Vec<super::CoverageKey> {
-    REPRESENTATIVE.iter().map(|(ty, parameter, surface, variant, interaction)| super::CoverageKey::new(ty, parameter, *surface, variant, *interaction)).collect()
+    use super::CoverageKey;
+    let mut keys: Vec<CoverageKey> = REPRESENTATIVE.iter().map(|(ty, parameter, surface, variant, interaction)| CoverageKey::new(ty, parameter, *surface, variant, *interaction)).collect();
+    for (ty, parameter) in CURVE_PIXEL_REPRESENTATIVE {
+        keys.push(CoverageKey::new(ty, parameter, Surface::CurveEditor, "keyed", Interaction::Pixels));
+    }
+    for (page, ty, parameter) in GRADE_KEY_REPRESENTATIVE {
+        for interaction in KEY_INTERACTIONS {
+            keys.push(CoverageKey::new(ty, parameter, page, GRADE_KEY_VARIANT, interaction));
+        }
+        for root in crate::app::parity_harness::GradeRoot::SEQUENCE {
+            for interaction in KEY_INTERACTIONS {
+                keys.push(CoverageKey::new(ty, parameter, Surface::NonClipGrade, &format!("{}: {page:?} {GRADE_KEY_VARIANT}", root.variant()), interaction));
+            }
+            for interaction in ROOT_NUMERIC {
+                keys.push(CoverageKey::new(ty, parameter, Surface::NonClipGrade, &format!("{}: {page:?} {ROOT_NUMERIC_VARIANT}", root.variant()), interaction));
+            }
+        }
+    }
+    keys
+}
+
+/// The clip grade page a grade row is first drawn on: the per-node layout
+/// for a per-node type, else the tabbed page, else the bottom tools. Where
+/// its per-type `AddKey` is owed ([`GRADE_KEY_REPRESENTATIVE`]).
+pub(super) fn primary_grade_page(entry: &CatalogEntry) -> Option<Surface> {
+    let surfaces = surfaces(entry).ok()?;
+    [Surface::GradePerNode, Surface::GradeTabbedRight, Surface::GradeBottomTools].into_iter().find(|s| surfaces.contains(s))
 }
 
 /// These catalog capabilities have no inspector control in either view.
@@ -172,6 +263,12 @@ pub(super) fn key_exclusion(entry: &CatalogEntry, surface: Surface) -> Option<&'
         {
             Some(GRADE_KEYFRAMING)
         }
+        // A grade specialist editor (curves, the warper) draws no diamond.
+        CatalogValue::Parameter { presentation, .. }
+            if entry.grade && matches!(presentation.widget, Widget::Custom(_)) =>
+        {
+            Some(GRADE_KEYFRAMING)
+        }
         _ => None,
     }
 }
@@ -205,6 +302,8 @@ pub(super) fn interactions(
                 ))
             }
         };
+        // A lane's edit drawn is owed per kind of lane, not per type
+        // (`CURVE_PIXEL_REPRESENTATIVE`).
         required.extend([
             AddKey,
             EditKey,
@@ -212,7 +311,6 @@ pub(super) fn interactions(
             PreviousKey,
             NextKey,
             UndoRedo,
-            Pixels,
         ]);
         required.insert(Interpolation(KeyInterpolation::Step));
         if matches!(kind, ParamKind::Float | ParamKind::Colour) {
@@ -284,7 +382,14 @@ pub(super) fn interactions(
                 }
                 Widget::Custom(id) => required.extend(specialist(id)?),
             }
-            if desc.keyframable && presentation.widget != Widget::Hidden {
+            // A grade row's key controls are owed on the representatives
+            // (`GRADE_KEY_REPRESENTATIVE`); per type, only that its diamond
+            // takes a key, on its own page.
+            if entry.grade && desc.keyframable && presentation.widget != Widget::Hidden {
+                if primary_grade_page(entry) == Some(surface) {
+                    required.insert(AddKey);
+                }
+            } else if desc.keyframable && presentation.widget != Widget::Hidden {
                 required.extend([AddKey, EditKey, RemoveKey, PreviousKey, NextKey]);
                 // A numeric effect row's lane renders through the effect
                 // node's animation, apart from its static value. Grade rows

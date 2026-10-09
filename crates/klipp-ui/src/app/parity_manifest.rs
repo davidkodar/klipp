@@ -391,25 +391,9 @@ impl Manifest {
                             ));
                         }
                     }
-                    // The non-clip surface is owed on every sequence grade,
-                    // on every clip grade page the entry is drawn on there
-                    // (M3 step 19): one key on it covers none of the others.
-                    if surfaces.contains(&Surface::NonClipGrade) {
-                        for (root, page) in sequence_grade_obligations(&surfaces) {
-                            let prefix = format!("{root}: {page:?} ");
-                            if !self.required.iter().any(|key| {
-                                key.type_id == entry.type_id
-                                    && key.parameter == entry.parameter
-                                    && key.surface == Surface::NonClipGrade
-                                    && key.variant.starts_with(&prefix)
-                            }) {
-                                errors.push(format!(
-                                    "missing root obligation: {} / {} / NonClipGrade {root}: {page:?}",
-                                    entry.type_id, entry.parameter
-                                ));
-                            }
-                        }
-                    }
+                    // The sequence's grades are owed through representative
+                    // rows on each page (`rules::ROOT_NUMERIC`), checked
+                    // with the other representatives, not per entry.
                 }
                 Err(error) => errors.push(error),
             }
@@ -515,6 +499,35 @@ impl Manifest {
             .map(|entry| format!("{} / {}", entry.type_id, entry.parameter))
             .collect()
     }
+}
+
+/// The central rules' representative keys of one interaction: what the
+/// family earning that interaction requires of them.
+pub(super) fn representatives_of(interaction: Interaction) -> Vec<CoverageKey> {
+    rules::representative_keys().into_iter().filter(|k| k.interaction == interaction).collect()
+}
+
+/// The grade key controls' representative rows, as (page, type, parameter)
+/// (`rules::GRADE_KEY_REPRESENTATIVE`).
+pub(super) fn grade_key_representatives() -> [(Surface, &'static str, &'static str); 3] {
+    rules::GRADE_KEY_REPRESENTATIVE
+}
+
+/// The clip grade page a grade row owes its per-type `AddKey` on
+/// (`rules::primary_grade_page`), by its type and parameter.
+pub(super) fn primary_grade_page(type_id: &str, parameter: &str) -> Option<Surface> {
+    catalog().into_iter().find(|e| e.type_id == type_id && e.parameter == parameter).and_then(|e| rules::primary_grade_page(&e))
+}
+
+/// The variant the grade key representatives are earned under.
+pub(super) fn grade_key_variant() -> &'static str {
+    rules::GRADE_KEY_VARIANT
+}
+
+/// Whether a curve-editor lane is one the central rules owe a drawn edit
+/// on (`rules::CURVE_PIXEL_REPRESENTATIVE`).
+pub(super) fn curve_pixel_representative(type_id: &str, parameter: &str) -> bool {
+    rules::CURVE_PIXEL_REPRESENTATIVE.iter().any(|(t, p)| *t == type_id && *p == parameter)
 }
 
 /// The nested grade boundary's wording, for a report outside this module.
@@ -928,11 +941,13 @@ mod tests {
         manifest.require_on_sequence_grades(entry, "sample");
     }
 
-    /// A family that covers the non-clip surface on one sequence grade or
-    /// one page leaves the rest owed, each named: one key on the surface
-    /// isn't the surface (M3 step 19).
+    /// The sequence's grades are owed through a representative row on each
+    /// clip grade page, on each of them (flip readiness ruling, 10-09): a
+    /// manifest that requires the timeline grade on one page leaves every
+    /// other grade and page named as missing, and none once the
+    /// representatives are required; and no entry is owed per root.
     #[test]
-    fn a_narrowed_sequence_grade_family_reports_each_root_and_page_it_skips() {
+    fn each_sequence_grade_and_page_is_owed_through_its_representative() {
         let entry = catalog()
             .into_iter()
             .find(|e| e.type_id == "klipp.grade.corrector" && e.parameter == "exposure")
@@ -942,18 +957,21 @@ mod tests {
         for surface in &surfaces {
             narrowed.require_fixture(&entry, *surface, "sample");
         }
-        // The timeline grade, on one page only.
-        let (_, page) = sequence_grade_obligations(&surfaces)[0];
-        narrowed.require_fixture(&entry, Surface::NonClipGrade, &format!("timeline: {page:?} sample"));
-        let errors = narrowed.rule_errors(std::slice::from_ref(&entry));
-        let owed: Vec<_> = errors.iter().filter(|e| e.starts_with("missing root obligation")).collect();
-        let all = sequence_grade_obligations(&surfaces);
-        assert_eq!(owed.len(), all.len() - 1, "each skipped grade and page named: {owed:#?}");
-        assert!(!owed.iter().any(|e| e.ends_with(&format!("timeline: {page:?}"))), "the covered one isn't owed");
-        assert!(all.len() > 3, "the entry is drawn on more than one page: {all:?}");
+        narrowed.require_fixture(&entry, Surface::NonClipGrade, "timeline: GradeTabbedRight sample");
+        let missing = narrowed.missing_representatives();
+        for root in super::super::parity_harness::GradeRoot::SEQUENCE {
+            for (page, _, _) in rules::GRADE_KEY_REPRESENTATIVE {
+                let numeric = format!("{}: {page:?} {}", root.variant(), rules::ROOT_NUMERIC_VARIANT);
+                let covered = numeric == "timeline: GradeTabbedRight sample";
+                assert_eq!(missing.iter().any(|e| e.contains(&format!("{numeric:?}"))), !covered, "{numeric}: {missing:#?}");
+                let keyed = format!("{}: {page:?} {}", root.variant(), rules::GRADE_KEY_VARIANT);
+                assert!(missing.iter().any(|e| e.contains(&format!("{keyed:?}"))), "{keyed} not owed");
+            }
+        }
+        assert!(!narrowed.rule_errors(std::slice::from_ref(&entry)).iter().any(|e| e.contains("NonClipGrade group")), "an entry is owed per root");
         let mut whole = Manifest::default();
-        require_every_surface(&mut whole, &entry);
-        assert!(!whole.rule_errors(std::slice::from_ref(&entry)).iter().any(|e| e.starts_with("missing root obligation")), "every grade and page owed, none missing");
+        whole.require_representatives();
+        assert!(whole.missing_representatives().is_empty());
     }
 
     #[test]
@@ -1382,6 +1400,10 @@ mod tests {
                         assert!(reason.contains("#1318"), "{key:?}: {reason}")
                     }
                     CatalogValue::Parameter { presentation, .. } if matches!(presentation.widget, Widget::WheelPart(_)) => {
+                        assert!(reason.contains("#891"), "{key:?}: {reason}")
+                    }
+                    // A grade specialist editor (curves, the warper) draws no diamond.
+                    CatalogValue::Parameter { presentation, .. } if entry.grade && matches!(presentation.widget, Widget::Custom(_)) => {
                         assert!(reason.contains("#891"), "{key:?}: {reason}")
                     }
                     _ => panic!("other widget excluded: {key:?}"),

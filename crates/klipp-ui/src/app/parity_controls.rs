@@ -393,6 +393,11 @@ pub(super) struct Grade {
     fresh: Option<(ClipId, klipp_nodes::NodeGraph)>,
     /// The last frame's icons (its textured rectangles), where drawn.
     pub(super) icons: Vec<egui::Rect>,
+    /// The last frame's keyframe diamonds (small closed four-point paths).
+    pub(super) diamonds: Vec<egui::Rect>,
+    /// The playhead moves the view asked for (a row's key carets), in
+    /// order, as the app's seek would take them.
+    pub(super) seeks: Vec<klipp_core::Timecode>,
 }
 
 /// A grade's picture, as the families compare it: a clip's lifted picture,
@@ -481,7 +486,7 @@ impl Grade {
         // filling the panel, which pushes the rows off it.
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
-        Grade { state, clip, node, ctx, clock: 0.0, panel: Default::default(), unapplied: Vec::new(), side: Vec::new(), page: Page::PerNode, before_input: None, gesture: None, root: GradeRoot::Clip, group: None, home: clip, fresh: None, icons: Vec::new(), path_writes: Vec::new() }
+        Grade { state, clip, node, ctx, clock: 0.0, panel: Default::default(), unapplied: Vec::new(), side: Vec::new(), page: Page::PerNode, before_input: None, gesture: None, root: GradeRoot::Clip, group: None, home: clip, fresh: None, icons: Vec::new(), diamonds: Vec::new(), seeks: Vec::new(), path_writes: Vec::new() }
     }
 
     /// The same node in `root` instead (M3 step 19): for a sequence grade,
@@ -616,6 +621,13 @@ impl Grade {
         }
         let (cmds, out) = self.with_stand_in(|g| g.draw(input, frame, &theme));
         self.icons = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Rect(r) if r.fill_texture_id != egui::TextureId::default() => Some(r.rect), _ => None }).collect();
+        self.diamonds = out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Path(path) if path.closed && path.points.len() == 4 => {
+                let r = egui::Rect::from_points(&path.points);
+                ((6.0..=12.0).contains(&r.width()) && (r.width() - r.height()).abs() < 0.5).then_some(r)
+            }
+            _ => None,
+        }).collect();
         for cmd in cmds {
             self.apply(cmd);
         }
@@ -682,6 +694,12 @@ impl Grade {
             super::parity_manifest::touched_the_root();
         }
         crate::inspector::keyframe_selection::resolve_command(&self.state.sequences[0], &mut cmd);
+        // A seek moves the playhead, which the grade's frame doesn't follow:
+        // recorded, as the app's seek would take it.
+        if let AppCommand::SeekTo(at) = cmd {
+            self.seeks.push(at);
+            return;
+        }
         // The dispatch boundary first, for every command, as the app's
         // dispatch passes it.
         self.state.before_dispatch(&cmd);
@@ -771,6 +789,13 @@ impl Grade {
         self.frame(vec![egui::Event::PointerMoved(at), button(true)]);
         self.frame(vec![egui::Event::PointerMoved(at), button(false)]);
         self.frame(vec![egui::Event::PointerGone]);
+    }
+
+    /// A secondary click at `at`, as a context menu opens.
+    pub(super) fn right_click_at(&mut self, at: egui::Pos2) {
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE };
+        self.frame(vec![egui::Event::PointerMoved(at), button(true)]);
+        self.frame(vec![egui::Event::PointerMoved(at), button(false)]);
     }
 
     /// The settled frame's texts.

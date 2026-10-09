@@ -331,6 +331,7 @@ pub(super) const CPU_BY_DESIGN: &[(&str, &str)] = &[
     ("klipp.fx.temporal_denoise", "M4 step 6 (temporal denoise as a source-boundary node): the GPU stack declines a frame with temporal noise reduction"),
     ("klipp.fx.video_stabilization", "M4 step 9 (analysis effects as nodes) deletes the stack's temporal gate (klipp-compose render.rs), which draws a stabilised layer on the CPU"),
     ("klipp.fx.rolling_shutter_correction", "M4 step 9 (analysis effects as nodes) deletes the stack's temporal gate (klipp-compose render.rs), which draws a corrected layer on the CPU"),
+    ("klipp.fx.frei0r", "M4 step 5 (frei0r as a node, with a local CPU segment): a frei0r plug-in vetoes the chain's GPU route, so its layer is drawn on the CPU"),
 ];
 
 /// What a row's pixel case starts from beyond the effect's sample, by

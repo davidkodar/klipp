@@ -365,6 +365,32 @@ fn run_track(report: &mut Report, e: &super::parity_manifest::CatalogEntry, trac
         })
     });
 
+    // A lane's edit drawn, on one lane of each kind (the central rules'
+    // `CURVE_PIXEL_REPRESENTATIVE`): the key at the frame's time dragged up
+    // the lane changes the frame there, and the CPU draws it as the GPU.
+    if super::parity_manifest::curve_pixel_representative(e.type_id, &e.parameter) {
+        report.case(&name("edit drawn"), [key(Interaction::Pixels)], || {
+            let before = fixture(&track)?;
+            let mut c = Curves::over(track, before.clone())?;
+            let (from, to) = (c.at(KEYS[0].0, KEYS[0].1), c.at(KEYS[0].0, 0.7));
+            c.button(from, egui::PointerButton::Primary, true);
+            c.frame(vec![egui::Event::PointerMoved(from + (to - from).normalized() * 7.0)]);
+            for k in 1..=4 {
+                c.frame(vec![egui::Event::PointerMoved(from + (to - from) * (k as f32 / 4.0))]);
+            }
+            c.button(to, egui::PointerButton::Primary, false);
+            c.frame(vec![egui::Event::PointerGone]);
+            if !c.unapplied.is_empty() {
+                return Err(format!("unapplied {:?}", c.unapplied));
+            }
+            if !c.keys().iter().any(|k| near(k.0, KEYS[0].0, 0.02) && track.near(k.1, track.at(0.7))) {
+                return Err(format!("the key at {} s wasn't dragged to 70% of the lane: {:?}", KEYS[0].0, c.keys()));
+            }
+            let (routes, _) = super::parity_numeric::routes_for(e.type_id);
+            super::parity_pixels::clip_edit_drawn_on(routes, super::parity_numeric::size_for(track.tag), &before, c.clip())
+        });
+    }
+
     // A key dragged moves, in one step.
     report.case(&name("moves a key"), [key(Interaction::EditKey)], || {
         case(track, |keys| if keys.len() == 2 && keys.iter().any(|k| near(k.0, 1.2, 0.03) && track.near(k.1, track.at(0.6))) && !keys.iter().any(|k| near(k.0, 1.5, 0.01)) { Ok(()) } else { Err("the key isn't near 1.2 s, 60% of the range".into()) }, |c| {
