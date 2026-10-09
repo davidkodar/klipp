@@ -103,6 +103,10 @@ pub(super) enum Interaction {
     ReorderNode,
     SharedBranchRefusal,
     Reveal,
+    /// A keyframable row's key lane drawn by the renderer: its keys move
+    /// the frame, and a key edited through either view draws the same
+    /// frame at a key and between keys (`parity_keyed_pixels`).
+    KeyedPixels,
 }
 
 /// `variant` names the concrete fixture, including condition state,
@@ -549,8 +553,6 @@ impl Report {
         }
     }
 
-    /// A standalone family's test judges failures, not whole-catalog
-    /// coverage. The orchestrator calls the same runner then `complete`.
     /// [`Report::case`], except that an error beginning `BLOCKED` records
     /// the keys as blocked, with the reason, instead of a failure: the
     /// case couldn't be run as its obligation asks, so it earns nothing
@@ -601,6 +603,8 @@ impl Report {
         }
     }
 
+    /// A standalone family's test judges failures, not whole-catalog
+    /// coverage. The orchestrator calls the same runner then `complete`.
     pub fn family_result(&self) -> Result<(), String> {
         if self.failures.is_empty() {
             Ok(())

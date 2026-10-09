@@ -34,7 +34,14 @@ pub(super) const FULL: (u32, u32) = (1920, 1080);
 /// start at zero and run two seconds, early enough that a clip sped up
 /// to twice its speed still shows.
 fn at() -> Timecode {
-    RationalTime::from_secs_f64(0.5, 24)
+    time(AT)
+}
+
+/// The oracle's sample time, in seconds.
+pub(super) const AT: f64 = 0.5;
+
+fn time(secs: f64) -> Timecode {
+    RationalTime::from_secs_f64(secs, 24)
 }
 
 /// A frame of the source at `secs`: hue and brightness ramps across and
@@ -104,6 +111,30 @@ impl FrameSource for Synthetic {
     }
 }
 
+/// Where the oracle's time goes, summed over a process: a renderer made,
+/// a frame rendered, on each route, and the egui driving the families
+/// time themselves. Read with [`timing_report`].
+pub(super) mod timing {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    pub(in super::super) static CPU_NEW: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+    pub(in super::super) static CPU_FRAME: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+    pub(in super::super) static GPU_NEW: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+    pub(in super::super) static GPU_FRAME: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+    pub(in super::super) static DRIVING: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+
+    /// Add the time since `t0` to `phase`: its nanoseconds and its count.
+    pub(in super::super) fn add(phase: &[AtomicU64; 2], t0: std::time::Instant) {
+        phase[0].fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        phase[1].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Each phase's total seconds and count, one line.
+    pub(in super::super) fn report() -> String {
+        let line = |name: &str, p: &[AtomicU64; 2]| format!("{name} {:.1} s / {}", p[0].load(Ordering::Relaxed) as f64 / 1e9, p[1].load(Ordering::Relaxed));
+        [line("cpu renderer made", &CPU_NEW), line("cpu frame", &CPU_FRAME), line("gpu renderer made", &GPU_NEW), line("gpu frame", &GPU_FRAME), line("egui driving", &DRIVING)].join("; ")
+    }
+}
+
 /// One clip's frame on each route.
 #[derive(Clone, PartialEq)]
 pub(super) struct Frames {
@@ -126,11 +157,46 @@ fn sequence(clip: &Clip, (width, height): (u32, u32)) -> Sequence {
 /// `clip` drawn on the CPU executor: linear RGBA floats, full, finite,
 /// not flat, and read from the clip's source.
 fn render_cpu(seq: &Sequence, size: (u32, u32)) -> Result<Vec<f32>, String> {
+    render_cpu_at(seq, size, AT)
+}
+
+thread_local! {
+    /// The test thread's renderers, one per route, kept across frames: a
+    /// new one pays for its pipelines on its first frame, about a tenth of
+    /// a second on the GPU, which made renderer setup most of a family's
+    /// time. What a renderer keeps between frames is safe to keep here:
+    /// its effect plans, pins and shutter samples are rebuilt each frame,
+    /// and its per-clip motion and neighbour-frame providers read the
+    /// oracle's source, the same for every clip, by clip ids no two cases
+    /// share. Leaked, one per route and test thread: a GPU renderer
+    /// dropped while the thread's locals are torn down panics, which
+    /// aborts the test process.
+    static CPU: std::cell::RefCell<Option<&'static mut Renderer>> = const { std::cell::RefCell::new(None) };
+    static GPU: std::cell::RefCell<Option<&'static mut Renderer>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `f` with the thread's renderer for a route, made the first time.
+fn with_renderer<R>(slot: &'static std::thread::LocalKey<std::cell::RefCell<Option<&'static mut Renderer>>>, gpu: bool, f: impl FnOnce(&mut Renderer) -> R) -> R {
+    slot.with(|cell| {
+        let mut held = cell.borrow_mut();
+        let renderer = held.get_or_insert_with(|| {
+            let t0 = std::time::Instant::now();
+            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(gpu);
+            timing::add(if gpu { &timing::GPU_NEW } else { &timing::CPU_NEW }, t0);
+            Box::leak(Box::new(r))
+        });
+        f(renderer)
+    })
+}
+
+/// [`render_cpu`] at `secs`.
+fn render_cpu_at(seq: &Sequence, size: (u32, u32), secs: f64) -> Result<Vec<f32>, String> {
     let (w, h) = size;
     let mut src = Synthetic { size, reads: 0 };
-    let mut cpu = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
-    cpu.set_gpu_enabled(false);
-    let (frame, _) = cpu.render_inspected(seq, at(), w, h, &mut src, RenderOptions::default(), Inspect::default());
+    let t0 = std::time::Instant::now();
+    let (frame, _) = with_renderer(&CPU, false, |cpu| cpu.render_inspected(seq, time(secs), w, h, &mut src, RenderOptions::default(), Inspect::default()));
+    timing::add(&timing::CPU_FRAME, t0);
     if src.reads == 0 {
         return Err("the CPU frame never read the clip's source".into());
     }
@@ -147,12 +213,21 @@ fn render_cpu(seq: &Sequence, size: (u32, u32)) -> Result<Vec<f32>, String> {
 /// beginning `BLOCKED` when the stack declines the frame or the frame
 /// leaves the native route.
 fn render_gpu(seq: &Sequence, size: (u32, u32)) -> Result<Vec<u8>, String> {
+    render_gpu_at(seq, size, AT)
+}
+
+/// [`render_gpu`] at `secs`.
+fn render_gpu_at(seq: &Sequence, size: (u32, u32), secs: f64) -> Result<Vec<u8>, String> {
     let (w, h) = size;
     let mut src = Synthetic { size, reads: 0 };
-    let mut gpu = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
-    gpu.set_gpu_enabled(true);
-    let Some((bytes, stats)) = gpu.render_display_u8_on_gpu(seq, at(), w, h, &mut src, RenderOptions::default()) else {
-        return Err(format!("BLOCKED: the GPU stack declined the frame: {}", gpu.last_decline().unwrap_or("no reason given")));
+    let t0 = std::time::Instant::now();
+    let (rendered, decline) = with_renderer(&GPU, true, |gpu| {
+        let rendered = gpu.render_display_u8_on_gpu(seq, time(secs), w, h, &mut src, RenderOptions::default());
+        (rendered, gpu.last_decline())
+    });
+    timing::add(&timing::GPU_FRAME, t0);
+    let Some((bytes, stats)) = rendered else {
+        return Err(format!("BLOCKED: the GPU stack declined the frame: {}", decline.unwrap_or("no reason given")));
     };
     let off_route = [
         ("layers drawn on the CPU", stats.cpu_layers),
@@ -211,6 +286,19 @@ fn same_on_cpu(before: &Clip, old: &Clip, new: &Clip, size: (u32, u32)) -> Resul
 /// control, that the frame can show the change a case looks for at all.
 pub(super) fn cpu_frames_differ(a: &Clip, b: &Clip, size: (u32, u32)) -> Result<bool, String> {
     Ok(render_cpu(&sequence(a, size), size)? != render_cpu(&sequence(b, size), size)?)
+}
+
+/// `clip`'s frame at `secs` on the routes `routes` names: the CPU's, and
+/// the native GPU stack's unless the route is the CPU by design. For a
+/// case that compares frames at times of its own (a key lane).
+pub(super) fn frames_at(routes: Routes, size: (u32, u32), clip: &Clip, secs: f64) -> Result<(Vec<f32>, Option<Vec<u8>>), String> {
+    let seq = sequence(clip, size);
+    let cpu = render_cpu_at(&seq, size, secs)?;
+    let gpu = match routes {
+        Routes::Both => Some(render_gpu_at(&seq, size, secs)?),
+        Routes::CpuByDesign => None,
+    };
+    Ok((cpu, gpu))
 }
 
 /// [`same_edit`] on `routes`, drawn at `size`.
@@ -306,6 +394,52 @@ mod tests {
                 None => eprintln!("{name}: the GPU stack declined"),
             }
         }
+    }
+
+    /// `clip`'s frame at `secs` from renderers made for it alone: what the
+    /// thread's shared ones must draw too.
+    fn fresh_frames(clip: &Clip, size: (u32, u32), secs: f64) -> (Vec<f32>, Vec<u8>) {
+        let seq = sequence(clip, size);
+        let fresh = |gpu: bool| {
+            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(gpu);
+            r
+        };
+        let mut src = Synthetic { size, reads: 0 };
+        let (cpu, _) = fresh(false).render_inspected(&seq, time(secs), size.0, size.1, &mut src, RenderOptions::default(), Inspect::default());
+        let mut src = Synthetic { size, reads: 0 };
+        let (gpu, _) = fresh(true).render_display_u8_on_gpu(&seq, time(secs), size.0, size.1, &mut src, RenderOptions::default()).expect("a GPU stack frame");
+        (cpu, gpu)
+    }
+
+    /// The shared renderers keep nothing a case could read as another's:
+    /// for a clip of each kind the families draw (a plain effect, a keyed
+    /// one, a placed one), the shared frame is a fresh renderer's on each
+    /// route; and after another clip of the same id drawn in between, a
+    /// clip draws as it did before it.
+    #[test]
+    fn the_shared_renderers_draw_what_fresh_ones_draw() {
+        let plain = clip(&[E::Gamma { gamma: 1.6 }]);
+        let mut keyed = clip(&[E::GaussianBlur { radius: 2.0 }]);
+        let id = keyed.effect_id_at(0).unwrap();
+        keyed.edit_effect_keyframes_of(id, "radius", |keys| {
+            *keys = [(0.25, 2.0), (1.25, 12.0)].into_iter().map(|(time_secs, value)| klipp_core::Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }).collect();
+        });
+        let placed = clip(&[E::Transform { position_x: 40.0, position_y: -20.0, scale_x: 0.7, scale_y: 0.7, rotation: 15.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None }]);
+        for (name, c) in [("plain", &plain), ("keyed", &keyed), ("placed", &placed)] {
+            let (cpu, gpu) = frames_at(Routes::Both, SMALL, c, 0.75).unwrap();
+            let (fresh_cpu, fresh_gpu) = fresh_frames(c, SMALL, 0.75);
+            assert!(cpu == fresh_cpu, "{name}: the shared CPU renderer draws another frame");
+            assert_eq!(gpu.as_deref(), Some(fresh_gpu.as_slice()), "{name}: the shared GPU renderer draws another frame");
+        }
+        // A, then B (the same clip id, another effect), then A again.
+        let mut other = plain.clone();
+        let id = other.effect_id_at(0).unwrap();
+        other.replace_effect(id, E::Gamma { gamma: 0.6 });
+        let a = frames_at(Routes::Both, SMALL, &plain, AT).unwrap();
+        let b = frames_at(Routes::Both, SMALL, &other, AT).unwrap();
+        assert!(a != b, "the control: B draws another frame");
+        assert!(frames_at(Routes::Both, SMALL, &plain, AT).unwrap() == a, "A drew differently after B");
     }
 
     /// The oracle's own controls: an edit that draws nothing is refused,

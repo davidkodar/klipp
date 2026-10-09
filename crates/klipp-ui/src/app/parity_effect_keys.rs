@@ -15,12 +15,12 @@ use crate::inspector::generated::row;
 use klipp_core::{Interpolation, Keyframe, Timecode};
 use klipp_effects::registry::{effect_types, ParamDesc};
 
-fn eligible(entry: &CatalogEntry) -> bool {
+pub(super) fn eligible(entry: &CatalogEntry) -> bool {
     numeric(entry)
         && matches!(entry.value, CatalogValue::Parameter { desc, .. } if desc.keyframable)
 }
 
-fn variant(entry: &CatalogEntry) -> &'static str {
+pub(super) fn variant(entry: &CatalogEntry) -> &'static str {
     if entry.type_id == "klipp.fx.opacity" {
         "non-anchor"
     } else {
