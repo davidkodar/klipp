@@ -26,6 +26,13 @@ use crate::graph::NodeId;
 
 /// Everything a non-pure node is given for one frame.
 pub struct FrameContext<'a> {
+    /// The clip being rendered: a plug-in instance's slot is its.
+    pub clip: ClipId,
+    /// The timeline frame index rendered: continuity is counted in frames.
+    pub frame: i64,
+    /// The clip's media and its source in-point (a nil media for a clip
+    /// without one): a plug-in's state is reset when either changes.
+    pub source: (klipp_core::MediaId, f64),
     /// The clip's time, as the executor is given it.
     pub clip_time_secs: f64,
     /// The source time of the frame being rendered: where a node's

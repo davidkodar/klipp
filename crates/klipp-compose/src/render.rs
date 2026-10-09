@@ -3092,7 +3092,14 @@ impl Renderer {
         let mut sources = ClipSources::new(src, clip, self.working);
         let mut bounded = BoundedSources::new(&mut sources, width, height);
         let mut instances = std::mem::take(&mut self.instances);
+        let media = match clip.kind {
+            ClipKind::Media { media_id } => media_id,
+            _ => klipp_core::MediaId::nil(),
+        };
         let mut ctx = FrameContext {
+            clip: clip.id,
+            frame: (time.to_secs_f64() * fps).round() as i64,
+            source: (media, clip.source_in.to_secs_f64()),
             clip_time_secs: clip_time,
             frame_number: grade_frame(clip_time, fps),
             fps,
