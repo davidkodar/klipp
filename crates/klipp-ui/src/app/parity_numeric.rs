@@ -52,7 +52,6 @@ fn contexts(ty: &EffectType) -> Vec<(Surface, &'static str)> {
 const KNOWN_DEFECTS: &[(&str, &str, Surface, &str, &str)] = &[
     ("klipp.fx.transform", "scale_y", Surface::EffectsStack, VARIANT, "known defect #1406: placement renders a uniform scale from scale_x, so the Scale Y row moves nothing"),
     ("klipp.fx.opacity", "value", Surface::EffectsStack, "non-anchor", "known defect #1386: a non-anchor Opacity entry is kept off, so its value moves nothing"),
-    ("klipp.fx.speed_ramp", "speed", Surface::EffectsStack, VARIANT, "known defect #1409: retiming comes from the clip's speed curve, so the effect's Speed moves nothing"),
 ];
 
 pub(super) fn known_defect(entry: &CatalogEntry, surface: Surface, variant: &str) -> Option<&'static str> {
