@@ -1318,7 +1318,7 @@ impl KlippApp {
                     // A key the generated rows name at the playhead is the
                     // stored key in its frame.
                     let mut panel_cmds = panel_cmds;
-                    if generated {
+                    {
                         // A stand-in's keys are its root's, stored in the
                         // grade the stand-in was put on with.
                         let grade = clip.grade().clone();

@@ -113,7 +113,11 @@ pub(crate) fn resolve_for_clip(clip: &Clip, tolerance: f64, command: &mut AppCom
 /// key added or taken off within `tolerance` of a stored one is that key.
 pub(crate) fn resolve_for_grade(grade: &klipp_nodes::NodeGraph, tolerance: f64, command: &mut AppCommand) {
     let keys = |addr: &klipp_graph_format::path::NodePath, key: &klipp_graph_format::ParamKey| -> Vec<Keyframe> {
-        let node = addr.nodes.last().and_then(|id| grade.nodes.iter().find(|n| n.id == *id));
+        // At its path's depth: inside a compound too (#1391).
+        let level = addr.nodes[..addr.nodes.len().saturating_sub(1)].iter().try_fold(grade, |g, id| {
+            g.nodes.iter().find(|n| n.id == *id && n.kind == klipp_nodes::NodeKind::Compound)?.params.compound_subgraph.as_ref()
+        });
+        let node = addr.nodes.last().and_then(|id| level?.nodes.iter().find(|n| n.id == *id));
         node.and_then(|n| n.keyframes.tracks.iter().find(|t| t.param_name == key.as_str())).map(|t| t.keyframes.clone()).unwrap_or_default()
     };
     match command {
