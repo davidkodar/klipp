@@ -125,6 +125,22 @@ pub trait SourceProvider {
     }
 }
 
+/// No source: a run without one (an effects plan over a picture already
+/// drawn) gives a node that asks for a source frame none.
+pub struct NoSources;
+
+impl SourceProvider for NoSources {
+    fn bounds(&self) -> (f64, f64) {
+        (0.0, 0.0)
+    }
+    fn encoded(&mut self, _source_secs: f64) -> Neighbour<EncodedFrame> {
+        Neighbour::Missing(Missing::Unavailable)
+    }
+    fn linear(&mut self, _source_secs: f64) -> Neighbour<LinearFrame> {
+        Neighbour::Missing(Missing::Unavailable)
+    }
+}
+
 /// The most source frames any node may ask for in one frame, whatever
 /// its type declares: past it, a runaway node is refused, visibly.
 pub const NEIGHBOUR_CEILING: usize = 32;

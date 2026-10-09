@@ -954,6 +954,9 @@ impl Renderer {
         self.inspect = inspect;
         self.hdr_peak = opts.hdr_peak_nits;
         let out = self.render_stack(seq, time, width, height, src, opts);
+        // The frame is done: a plug-in instance not rendered near it since
+        // goes (`PluginInstances::end_frame`).
+        self.instances.end_frame((time.to_secs_f64() * seq.fps.as_f64()).round() as i64);
         self.inspect = Inspect::default();
         self.resolved = Default::default();
         self.hdr_peak = None;
@@ -2501,15 +2504,23 @@ impl Renderer {
         // The pixels go straight into the chain, not copied on the CPU for
         // the Source to upload: a third of a run's time at 720p. A graph
         // that still wants them on the CPU says so, and runs again.
-        let run = match self.executor.prime_chain_from_linear(&pixels, width, height) {
-            true => match self.executor.execute_linear(&[], &self.spliced, width, height, clip_time, frame, None, None) {
-                Err(klipp_nodes::executor::ExecutorError::CpuSourceRequired) => {
-                    self.executor.execute_linear(&pixels, &self.spliced, width, height, clip_time, frame, None, None)
-                }
-                r => r,
-            },
-            false => self.executor.execute_linear(&pixels, &self.spliced, width, height, clip_time, frame, None, None),
-        };
+        // The picture's already drawn: a plug-in's instance is lent to the
+        // run, and no node of it reads the source.
+        let source_at = clip.source_in.to_secs_f64() + clip_time;
+        let run = self.in_context(clip, clip_time, fps, source_at, &mut klipp_nodes::frame_context::NoSources, |r, ctx| {
+            let spliced = std::mem::take(&mut r.spliced);
+            let run = match r.executor.prime_chain_from_linear(&pixels, width, height) {
+                true => match r.executor.execute_linear_with_context(&[], &spliced, width, height, clip_time, frame, None, None, None, ctx) {
+                    Err(klipp_nodes::executor::ExecutorError::CpuSourceRequired) => {
+                        r.executor.execute_linear_with_context(&pixels, &spliced, width, height, clip_time, frame, None, None, None, ctx)
+                    }
+                    run => run,
+                },
+                false => r.executor.execute_linear_with_context(&pixels, &spliced, width, height, clip_time, frame, None, None, None, ctx),
+            };
+            r.spliced = spliced;
+            run.map(|(out, tap, _)| (out, tap))
+        });
         self.found.stats.effects_ms += ms_since(t);
         match run {
             Ok((out, _)) if self.executor.last_run_effects_complete() && out.len() == pixels.len() => Ok(out),
@@ -3075,43 +3086,53 @@ impl Renderer {
         self.executor.set_motion(&self.motion);
     }
 
-    /// [`Self::grade`] with the clip's source-boundary node (M4 step 6):
-    /// a media clip with temporal noise reduction runs it straight after
+    /// [`Self::grade`] in the clip's frame context (M4), with its
+    /// source-boundary node (step 6): a media clip with temporal noise
+    /// reduction runs it straight after
     /// the Source, from the clip's source frames either side (`src`'s
     /// linear reader, bounded to the media and the render size), before
     /// the grade. Its rules are the effect's: the first enabled one, and
     /// none at a strength of 0 or less (`temporal_denoise_of`).
     #[allow(clippy::too_many_arguments)]
     fn grade_at_source(&mut self, clip: &Clip, input: GradeInput, time: Timecode, clip_time: f64, fps: f64, width: u32, height: u32, src: &mut dyn FrameSource) -> Vec<f32> {
-        use klipp_nodes::frame_context::{BoundedSources, FrameContext, NoAnalysis};
+        use klipp_nodes::frame_context::BoundedSources;
         let denoise = matches!(clip.kind, ClipKind::Media { .. }).then(|| temporal_denoise_of(clip, time, fps)).flatten();
-        let Some((strength, threshold)) = denoise else {
-            return self.grade(clip, input, clip_time, fps, width, height, None);
-        };
-        self.run_source_node = Some(source_denoise_node(clip, strength, threshold));
+        self.run_source_node = denoise.map(|(strength, threshold)| source_denoise_node(clip, strength, threshold));
+        // Every clip's run has its context: a plug-in node reads its
+        // instance there whether or not anything reads the source, whose
+        // readers open only when asked.
         let mut sources = ClipSources::new(src, clip, self.working);
         let mut bounded = BoundedSources::new(&mut sources, width, height);
-        let mut instances = std::mem::take(&mut self.instances);
+        let pixels = self.in_context(clip, clip_time, fps, source_secs(clip, time, fps), &mut bounded, |r, ctx| r.grade(clip, input, clip_time, fps, width, height, Some(ctx)));
+        self.run_source_node = None;
+        pixels
+    }
+
+    /// `f` run with a frame context for `clip` at clip time `clip_time`
+    /// (M4): this renderer's plug-in instances, lent for the run, and
+    /// `sources` for the clip's source frames at other times.
+    #[allow(clippy::too_many_arguments)]
+    fn in_context<R>(&mut self, clip: &Clip, clip_time: f64, fps: f64, source_secs: f64, sources: &mut dyn klipp_nodes::frame_context::SourceProvider, f: impl FnOnce(&mut Self, &mut klipp_nodes::frame_context::FrameContext<'_>) -> R) -> R {
         let media = match clip.kind {
             ClipKind::Media { media_id } => media_id,
             _ => klipp_core::MediaId::nil(),
         };
-        let mut ctx = FrameContext {
+        let mut instances = std::mem::take(&mut self.instances);
+        let mut ctx = klipp_nodes::frame_context::FrameContext {
             clip: clip.id,
-            frame: (time.to_secs_f64() * fps).round() as i64,
+            frame: ((clip.timeline_in.to_secs_f64() + clip_time) * fps).round() as i64,
             source: (media, clip.source_in.to_secs_f64()),
             clip_time_secs: clip_time,
             frame_number: grade_frame(clip_time, fps),
             fps,
-            source_secs: source_secs(clip, time, fps),
-            sources: &mut bounded,
-            analysis: &NoAnalysis,
+            source_secs,
+            sources,
+            analysis: &klipp_nodes::frame_context::NoAnalysis,
             instances: &mut instances,
         };
-        let pixels = self.grade(clip, input, clip_time, fps, width, height, Some(&mut ctx));
+        let out = f(self, &mut ctx);
         self.instances = instances;
-        self.run_source_node = None;
-        pixels
+        out
     }
 
     /// The clip's node graph, at clip-relative time. The inspected clip
