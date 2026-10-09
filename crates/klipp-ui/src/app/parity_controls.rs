@@ -395,6 +395,8 @@ pub(super) struct Grade {
     pub(super) icons: Vec<egui::Rect>,
     /// The last frame's keyframe diamonds (small closed four-point paths).
     pub(super) diamonds: Vec<egui::Rect>,
+    /// The last frame's small square frames (a checkbox's box).
+    pub(super) boxes: Vec<egui::Rect>,
     /// The playhead moves the view asked for (a row's key carets), in
     /// order, as the app's seek would take them.
     pub(super) seeks: Vec<klipp_core::Timecode>,
@@ -486,7 +488,7 @@ impl Grade {
         // filling the panel, which pushes the rows off it.
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
-        Grade { state, clip, node, ctx, clock: 0.0, panel: Default::default(), unapplied: Vec::new(), side: Vec::new(), page: Page::PerNode, before_input: None, gesture: None, root: GradeRoot::Clip, group: None, home: clip, fresh: None, icons: Vec::new(), diamonds: Vec::new(), seeks: Vec::new(), path_writes: Vec::new() }
+        Grade { state, clip, node, ctx, clock: 0.0, panel: Default::default(), unapplied: Vec::new(), side: Vec::new(), page: Page::PerNode, before_input: None, gesture: None, root: GradeRoot::Clip, group: None, home: clip, fresh: None, icons: Vec::new(), diamonds: Vec::new(), boxes: Vec::new(), seeks: Vec::new(), path_writes: Vec::new() }
     }
 
     /// The same node in `root` instead (M3 step 19): for a sequence grade,
@@ -621,6 +623,10 @@ impl Grade {
         }
         let (cmds, out) = self.with_stand_in(|g| g.draw(input, frame, &theme));
         self.icons = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Rect(r) if r.fill_texture_id != egui::TextureId::default() => Some(r.rect), _ => None }).collect();
+        self.boxes = out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Rect(r) if r.fill_texture_id == egui::TextureId::default() && (10.0..=20.0).contains(&r.rect.width()) && (r.rect.width() - r.rect.height()).abs() < 1.0 => Some(r.rect),
+            _ => None,
+        }).collect();
         self.diamonds = out.shapes.iter().filter_map(|s| match &s.shape {
             egui::Shape::Path(path) if path.closed && path.points.len() == 4 => {
                 let r = egui::Rect::from_points(&path.points);

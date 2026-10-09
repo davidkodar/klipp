@@ -1078,9 +1078,7 @@ impl KlippApp {
                 let node_id = *node_id;
                 let Some(path) = self.graph_holding(*clip_id, &[node_id]) else { return true };
                 self.with_clip_graph_mut_at(*clip_id, &path, needs_refresh, |graph| {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                        node.enabled = !node.enabled;
-                    }
+                    write_node_settings(graph, cmd);
                 });
                 true
             }
@@ -1665,71 +1663,19 @@ impl KlippApp {
                 });
                 true
             }
-            AppCommand::AddKeyframe { clip_id, node_id, ref param, time_secs, value } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.edit_grade(|graph| {
-                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                                let track = node.keyframes.track_mut(param);
-                                track.set_keyframe(*time_secs, *value);
-                                if param == klipp_nodes::ENABLED_TRACK {
-                                    let epsilon = 0.01;
-                                    if let Some(kf) = track.keyframes.iter_mut().find(|kf| (kf.time_secs - *time_secs).abs() < epsilon) {
-                                        kf.interpolation = klipp_core::keyframe::Interpolation::Step;
-                                    }
-                                }
-                            }
-                        });
-                        break;
-                    }
-                }
-                *needs_refresh = true;
-                true
-            }
-            AppCommand::RemoveKeyframe { clip_id, node_id, ref param, time_secs } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.edit_grade(|graph| {
-                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                                node.keyframes.track_mut(param).remove_keyframe(*time_secs);
-                            }
-                        });
-                        break;
-                    }
-                }
-                *needs_refresh = true;
-                true
-            }
-            AppCommand::ClearKeyframes { clip_id, node_id, ref param } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.edit_grade(|graph| {
-                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                                node.keyframes.tracks.retain(|t| t.param_name != *param);
-                            }
-                        });
-                        break;
-                    }
-                }
-                *needs_refresh = true;
-                true
-            }
-            AppCommand::SetKeyframeInterpolation { clip_id, node_id, ref param, time_secs, interpolation } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.edit_grade(|graph| {
-                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                                let track = node.keyframes.track_mut(param);
-                                let epsilon = 0.01;
-                                if let Some(kf) = track.keyframes.iter_mut().find(|kf| (kf.time_secs - *time_secs).abs() < epsilon) {
-                                    kf.interpolation = *interpolation;
-                                }
-                            }
-                        });
-                        break;
-                    }
-                }
-                *needs_refresh = true;
+            AppCommand::AddKeyframe { clip_id, node_id, .. }
+            | AppCommand::RemoveKeyframe { clip_id, node_id, .. }
+            | AppCommand::ClearKeyframes { clip_id, node_id, .. }
+            | AppCommand::SetKeyframeInterpolation { clip_id, node_id, .. } => {
+                // A node's key track (its bypass's, from the bypass switch
+                // and diamond) edited on the graph holding the node, as its
+                // bypass is switched: one step, or none inside a slider's
+                // gesture (whose close records it). Written straight into
+                // the grade, these recorded no step, so an undo skipped them.
+                let Some(path) = self.graph_holding(*clip_id, &[*node_id]) else { return true };
+                self.with_clip_graph_mut_at(*clip_id, &path, needs_refresh, |graph| {
+                    write_node_settings(graph, cmd);
+                });
                 true
             }
             AppCommand::SetKeyframeTangents { clip_id, node_id, ref param, time_secs, tangent_in, tangent_out } => {
@@ -3059,6 +3005,49 @@ pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppC
             if let Some(masks) = graph.nodes.iter_mut().find(|n| n.kind == klipp_nodes::NodeKind::Mask).and_then(|n| n.params.masks.as_mut()) {
                 if *mask_index < masks.masks.len() {
                     masks.masks.remove(*mask_index);
+                }
+            }
+            return true;
+        }
+        _ => {}
+    }
+    // A node's bypass switched, and its key track, by its parameter. A
+    // bypass key holds: the switch is on or off, never between.
+    match cmd {
+        AppCommand::ToggleNodeEnabled { node_id, .. } => {
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                node.enabled = !node.enabled;
+            }
+            return true;
+        }
+        AppCommand::AddKeyframe { node_id, param, time_secs, value, .. } => {
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                let track = node.keyframes.track_mut(param);
+                track.set_keyframe(*time_secs, *value);
+                if param == klipp_nodes::ENABLED_TRACK {
+                    if let Some(kf) = track.keyframes.iter_mut().find(|kf| (kf.time_secs - *time_secs).abs() < 0.01) {
+                        kf.interpolation = klipp_core::keyframe::Interpolation::Step;
+                    }
+                }
+            }
+            return true;
+        }
+        AppCommand::RemoveKeyframe { node_id, param, time_secs, .. } => {
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                node.keyframes.track_mut(param).remove_keyframe(*time_secs);
+            }
+            return true;
+        }
+        AppCommand::ClearKeyframes { node_id, param, .. } => {
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                node.keyframes.tracks.retain(|t| t.param_name != *param);
+            }
+            return true;
+        }
+        AppCommand::SetKeyframeInterpolation { node_id, param, time_secs, interpolation, .. } => {
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                if let Some(kf) = node.keyframes.track_mut(param).keyframes.iter_mut().find(|kf| (kf.time_secs - *time_secs).abs() < 0.01) {
+                    kf.interpolation = *interpolation;
                 }
             }
             return true;

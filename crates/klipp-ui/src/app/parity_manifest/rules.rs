@@ -102,6 +102,62 @@ pub(super) const ROOT_NUMERIC: [Interaction; 7] = [
 /// under (`parity_controls::grade_variant`).
 pub(super) const ROOT_NUMERIC_VARIANT: &str = "sample";
 
+/// A grade node's bypass (the per-node layout's header, the tabbed page's
+/// and the bottom tools' strip) is one generated switch whatever the
+/// node, so its switching, its frame and its keys are owed on a
+/// representative node of each page, on the clip's grade and each
+/// sequence grade (flip readiness ruling, 10-09); per type, only that its
+/// page opens without a write. The rows: a per-node type's on the per-node
+/// layout, the Corrector's on the tabbed page and the bottom tools.
+pub(super) const BYPASS_REPRESENTATIVE: [(Surface, &str); 3] = [
+    (Surface::GradePerNode, "klipp.grade.denoise"),
+    (Surface::GradeTabbedRight, "klipp.grade.corrector"),
+    (Surface::GradeBottomTools, "klipp.grade.corrector"),
+];
+
+/// The variant of [`BYPASS_REPRESENTATIVE`]'s cases.
+pub(super) const BYPASS_VARIANT: &str = "bypass";
+
+/// What the bypass switch does: on and off, its frame, and its keys (its
+/// diamond adds and removes one; once keyed, the switch edits the key at
+/// the playhead).
+pub(super) const BYPASS_INTERACTIONS: [Interaction; 7] = [
+    Interaction::Toggle(false),
+    Interaction::Toggle(true),
+    Interaction::UndoRedo,
+    Interaction::Pixels,
+    Interaction::AddKey,
+    Interaction::RemoveKey,
+    Interaction::EditKey,
+];
+
+/// The bypass key controls neither its header nor its strip draws, owed
+/// and excluded with their issue.
+pub(super) const BYPASS_UNOFFERED: [Interaction; 3] = [Interaction::PreviousKey, Interaction::NextKey, Interaction::Interpolation(KeyInterpolation::Step)];
+
+pub(super) const BYPASS_NAVIGATION_EXCLUSION: &str = "#1456 (a grade node's bypass keys have no Previous/Next or interpolation control)";
+
+/// The bypass representatives' keys on `page`'s grade (`variant` names it),
+/// each interaction of `of`.
+fn bypass_keys(of: &[Interaction]) -> Vec<super::CoverageKey> {
+    let mut keys = Vec::new();
+    for (page, ty) in BYPASS_REPRESENTATIVE {
+        for interaction in of {
+            keys.push(super::CoverageKey::new(ty, "@enabled", page, BYPASS_VARIANT, *interaction));
+            for root in crate::app::parity_harness::GradeRoot::SEQUENCE {
+                keys.push(super::CoverageKey::new(ty, "@enabled", Surface::NonClipGrade, &format!("{}: {page:?} {BYPASS_VARIANT}", root.variant()), *interaction));
+            }
+        }
+    }
+    keys
+}
+
+/// The representatives owed and excluded, each with its issue: they stay
+/// required, so the exclusion is listed, never earned.
+pub(super) fn representative_exclusions() -> Vec<(super::CoverageKey, &'static str)> {
+    bypass_keys(&BYPASS_UNOFFERED).into_iter().map(|k| (k, BYPASS_NAVIGATION_EXCLUSION)).collect()
+}
+
 /// [`REPRESENTATIVE`] as keys, with the grade representatives.
 pub(super) fn representative_keys() -> Vec<super::CoverageKey> {
     use super::CoverageKey;
@@ -122,6 +178,8 @@ pub(super) fn representative_keys() -> Vec<super::CoverageKey> {
             }
         }
     }
+    keys.extend(bypass_keys(&BYPASS_INTERACTIONS));
+    keys.extend(bypass_keys(&BYPASS_UNOFFERED));
     keys
 }
 
@@ -143,6 +201,8 @@ pub(super) fn entry_exclusion(entry: &CatalogEntry) -> Option<&'static str> {
             Some("#1348: implicit grade-node mix is command-tested but neither inspector exposes it"),
         CatalogValue::Parameter { .. } if entry.type_id == "klipp.grade.primaries_matrix" =>
             Some("#1351: PrimariesMatrix parameter controls have no reachable inspector route in either view"),
+        CatalogValue::Parameter { presentation, .. } if matches!(presentation.widget, Widget::Custom("compound_body")) =>
+            Some("#1391: a grade compound's body is edited on the retained nested route until M4 step F lifts compounds as groups"),
         CatalogValue::Enabled if entry.type_id == "klipp.grade.input_transform" =>
             Some("#1351: InputTransform selection reaches camera encoding before the bypass header in both views"),
         _ => None,
@@ -182,6 +242,12 @@ pub(super) fn surfaces(entry: &CatalogEntry) -> Result<BTreeSet<Surface>, String
             .find(|t| t.desc.id == entry.type_id)
             .ok_or_else(|| format!("{}: unclassified grade surfaces", entry.type_id))?
             .kind;
+        // A node's bypass is one switch on every page (`BYPASS_REPRESENTATIVE`):
+        // per type, owed where its node is first drawn.
+        if matches!(entry.value, CatalogValue::Enabled) {
+            let page = if crate::app::main_layout::per_node_kind(kind) { GradePerNode } else { GradeTabbedRight };
+            return Ok(BTreeSet::from([page]));
+        }
         // Use the same predicate that routes the production inspector.
         if crate::app::main_layout::per_node_kind(kind) {
             required.insert(GradePerNode);
@@ -259,7 +325,7 @@ pub(super) fn key_exclusion(entry: &CatalogEntry, surface: Surface) -> Option<&'
             Some("#1318 (IC1: switch/choice diamonds follow-up)")
         }
         CatalogValue::Parameter { presentation, .. }
-            if matches!(presentation.widget, Widget::WheelPart(_)) =>
+            if matches!(presentation.widget, Widget::WheelPart(_)) || sat_bri_cell(entry) =>
         {
             Some(GRADE_KEYFRAMING)
         }
@@ -271,6 +337,11 @@ pub(super) fn key_exclusion(entry: &CatalogEntry, surface: Surface) -> Option<&'
         }
         _ => None,
     }
+}
+
+/// A Wheel Sat/Bri node's saturation or brightness cell.
+fn sat_bri_cell(entry: &CatalogEntry) -> bool {
+    entry.type_id == "klipp.grade.wheel_sat_bri" && (entry.parameter.ends_with("_sat") || entry.parameter.ends_with("_bri"))
 }
 
 pub(super) fn is_key(interaction: Interaction) -> bool {
@@ -323,7 +394,11 @@ pub(super) fn interactions(
     }
     match &entry.value {
         CatalogValue::Parameter { desc, presentation } => {
-            match presentation.widget {
+            // A Wheel Sat/Bri node's cells are presented as sliders and
+            // drawn as the cells under the bottom tools' wide wheels: a
+            // wheel part's (`NARROW_WHEEL_EXCLUSION`).
+            let widget = if sat_bri_cell(entry) { Widget::WheelPart("sat_bri") } else { presentation.widget };
+            match widget {
                 Widget::Scrub
                 | Widget::Slider
                 | Widget::Gradient(_)
@@ -423,6 +498,9 @@ pub(super) fn interactions(
         CatalogValue::Mix => {
             required.extend([TypeNumber, Drag, CancelDrag, Reset, UndoRedo, Pixels])
         }
+        // A grade node's bypass: per type, its page opened; what the switch
+        // does is the representatives' (`BYPASS_REPRESENTATIVE`).
+        CatalogValue::Enabled if entry.grade => {}
         CatalogValue::Enabled => {
             required.extend([Toggle(false), Toggle(true), UndoRedo, Pixels]);
             if entry.grade {
@@ -437,6 +515,14 @@ pub(super) fn interactions(
             }
         }
         CatalogValue::Workflow(id) => required.extend(specialist(id)?),
+    }
+    // A sampling tool's frame (white balance, the qualifier's picker,
+    // Colour Match) and the mask stack's on a sequence grade are drawn
+    // through the stage the representative row's frame is (`ROOT_NUMERIC`'s
+    // Pixels): owed on the clip's grade, not again on every root.
+    let specialist = matches!(entry.value, CatalogValue::Workflow(_)) || matches!(&entry.value, CatalogValue::Parameter { presentation, .. } if presentation.widget == Widget::Custom("mask_stack"));
+    if surface == Surface::NonClipGrade && specialist {
+        required.remove(&Pixels);
     }
     Ok(required)
 }

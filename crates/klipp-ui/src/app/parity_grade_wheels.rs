@@ -57,7 +57,9 @@ fn control(ty: &NodeType, desc: &ParamDesc) -> Option<Control> {
     if matches!(desc.key, "log_low_range" | "log_high_range") {
         return Some(Control::Range);
     }
-    if !matches!(pres.widget, Widget::WheelPart(_)) {
+    // A Wheel Sat/Bri node's cells are presented as sliders, and drawn as
+    // the cells under the bottom tools' wide wheels (`NARROW_WHEEL_EXCLUSION`).
+    if !matches!(pres.widget, Widget::WheelPart(_)) && ty.kind != NodeKind::WheelSatBri {
         return None;
     }
     let (prefix, axis) = desc.key.rsplit_once('_')?;
