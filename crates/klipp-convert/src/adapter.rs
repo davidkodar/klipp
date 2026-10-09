@@ -322,6 +322,7 @@ fn grade(group: &Node) -> Result<Grade, Refusal> {
     let mut source = None;
     let mut nodes = Vec::new();
     for n in &body.nodes {
+        let mut subgraph = None;
         let kind = match n.type_id.as_str() {
             lt::GROUP_FRAME | lt::GROUP_INPUT if n.legacy.is_none() => {
                 minted.push(n.id);
@@ -337,6 +338,23 @@ fn grade(group: &Node) -> Result<Grade, Refusal> {
                 "Source".to_owned()
             }
             lt::GROUP_OUTPUT => "Output".to_owned(),
+            // A compound (#1391): its body back to the subgraph, the frame's
+            // reads from its own Source (the compound's input, as today's
+            // executor runs it). One the lift switched off comes back as a
+            // subgraph today's executor refuses, so it passes through.
+            lt::GROUP => {
+                let inner = grade(n)?;
+                let mut sub = inner.graph;
+                if !inner.reads.is_empty() {
+                    let src = first_of(&sub, "Source").ok_or_else(|| format!("compound {} reads its input with no Source", n.id))?.to_owned();
+                    let reads: Vec<Value> = inner.reads.iter().map(|(to, port)| edge(&(src.clone(), 0), to, *port)).collect();
+                    if let Some(Value::Array(e)) = sub.get_mut("edges") {
+                        e.extend(reads);
+                    }
+                }
+                subgraph = Some(sub);
+                "Compound".to_owned()
+            }
             lt::MERGE => {
                 let op = match n.params.get(&klipp_graph_format::ParamKey::new("op")) {
                     Some(ParamValue::Text(op)) => op,
@@ -357,6 +375,10 @@ fn grade(group: &Node) -> Result<Grade, Refusal> {
             if let Some(x) = p.get(key) {
                 v.insert(key.into(), x.clone());
             }
+        }
+        if let Some(sub) = subgraph {
+            let params = v.entry("params").or_insert_with(|| json!({}));
+            params.as_object_mut().ok_or_else(|| format!("compound {}'s params aren't an object", n.id))?.insert("compound_subgraph".into(), sub);
         }
         if let Some(k) = n.legacy.as_ref().and_then(|l| l.keyframes.as_ref()) {
             v.insert("keyframes".into(), k.clone());
@@ -386,6 +408,10 @@ fn grade(group: &Node) -> Result<Grade, Refusal> {
     let mut reads = Vec::new();
     for e in &body.edges {
         let to_kind = kinds.get(&e.to.0).map(String::as_str).unwrap_or("");
+        // A compound's frame is its input, which the subgraph reads.
+        if to_kind == "Compound" && e.to.1.as_str() == "frame" {
+            continue;
+        }
         let to_port = port(to_kind, &e.to.1, true).ok_or_else(|| format!("an edge enters {} by {}", e.to.0, e.to.1))?;
         let gated = body.nodes.iter().find(|n| n.id == e.to.0).and_then(|n| n.legacy_flags.as_ref()).is_some_and(|f| f.alpha_one);
         if to_port == 1 && GATEABLE.contains(&to_kind) && !gated {
