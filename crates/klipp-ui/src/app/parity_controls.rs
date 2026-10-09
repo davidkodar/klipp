@@ -276,7 +276,7 @@ pub(super) fn require(manifest: &mut Manifest) {
 /// The fixture variant `discrete_cases` names a grade row by: "conditions
 /// met" when a condition on it isn't met at its type's defaults, which the
 /// case switches on first, else "sample".
-fn grade_variant(ty: &klipp_nodes::registry::NodeType, desc: &ParamDesc) -> &'static str {
+pub(super) fn grade_variant(ty: &klipp_nodes::registry::NodeType, desc: &ParamDesc) -> &'static str {
     let pres = ty.presentation(desc);
     let unmet = [pres.visible_if, pres.enabled_if].into_iter().flatten().any(|Cond::ParamIs { key, value }| {
         ty.desc.params.iter().find(|p| p.key == key).is_none_or(|cond| cond.default.round() as i64 != value as i64)
@@ -797,7 +797,7 @@ impl Grade {
     }
 
     /// The node's stored value for `desc`, as its rows read it.
-    fn value(&self, desc: &ParamDesc) -> Value {
+    pub(super) fn value(&self, desc: &ParamDesc) -> Value {
         let node = self.grade().nodes.iter().find(|n| n.id == self.node).cloned().unwrap();
         let entry = serde_json::json!({ "params": node.params });
         crate::inspector::generated::grade_value(&entry, desc)
@@ -834,7 +834,7 @@ fn old_menu<'a>(label: &str, shows: &'a str, item: &'a str) -> (String, &'a str,
 /// A discrete grade edit, `drive` working the control in both views from
 /// one `start` clip: the generated view's picture must be the old panel's,
 /// in one undo step there, undone and redone exactly.
-fn grade_case(start: &Grade, drive: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
+pub(super) fn grade_case(start: &Grade, drive: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
     let (mut new, mut old) = (start.twin(true), start.twin(false));
     // The picture as the page shows it, drawn once (a page may write on
     // its first draw, as the tabbed page's curves do).
@@ -935,6 +935,27 @@ pub(super) fn run_grade(report: &mut Report) {
     }
 }
 
+/// `base` with `desc`'s row shown: its conditions met by clicking their
+/// switches, and the fixture's variant, "conditions met" when any had to
+/// be, else "sample".
+pub(super) fn meet_conditions(base: &Grade, ty: &klipp_nodes::registry::NodeType, desc: &ParamDesc) -> Result<(Grade, &'static str), String> {
+    let pres = ty.presentation(desc);
+    let mut shown = base.twin(true);
+    let mut variant = "sample";
+    for Cond::ParamIs { key, value } in [pres.visible_if, pres.enabled_if].into_iter().flatten() {
+        let cond = ty.desc.params.iter().find(|p| p.key == key).ok_or_else(|| format!("its condition names {key:?}, not a parameter"))?;
+        if shown_index(cond, &shown.value(cond)) != Some(value as usize) {
+            let cond_label = ty.presentation(cond).label.unwrap_or(cond.label);
+            shown.switch(cond_label)?;
+            variant = "conditions met";
+        }
+    }
+    if !shown.unapplied.is_empty() {
+        return Err(format!("meeting its conditions: unapplied {:?}", shown.unapplied));
+    }
+    Ok((shown, variant))
+}
+
 /// A grade node's switch or menu row (`desc`), drawn on `base`'s page and
 /// counted on `surface`: clicked both ways or every item picked, each
 /// from the other value, through the generated view and the old panel;
@@ -946,28 +967,13 @@ fn discrete_cases(report: &mut Report, ty: &klipp_nodes::registry::NodeType, des
         return;
     }
     let label = pres.label.unwrap_or(desc.label);
-    // Meet the row's conditions by clicking their switches.
-    let mut shown = base.twin(true);
-    let mut variant = "sample";
-    let mut setup = Ok(());
-    for Cond::ParamIs { key, value } in [pres.visible_if, pres.enabled_if].into_iter().flatten() {
-        let Some(cond) = ty.desc.params.iter().find(|p| p.key == key) else {
-            setup = Err(format!("its condition names {key:?}, not a parameter"));
-            break;
-        };
-        if shown_index(cond, &shown.value(cond)) != Some(value as usize) {
-            let cond_label = ty.presentation(cond).label.unwrap_or(cond.label);
-            setup = shown.switch(cond_label);
-            variant = "conditions met";
+    let (shown, variant) = match meet_conditions(base, ty, desc) {
+        Ok(shown) => shown,
+        Err(e) => {
+            report.case(&format!("{id} {}", desc.key), [], || Err(e));
+            return;
         }
-    }
-    if setup.is_ok() && !shown.unapplied.is_empty() {
-        setup = Err(format!("meeting its conditions: unapplied {:?}", shown.unapplied));
-    }
-    if let Err(e) = setup {
-        report.case(&format!("{id} {}", desc.key), [], || Err(e));
-        return;
-    }
+    };
     let key = |interaction| CoverageKey::new(id, desc.key, surface, variant, interaction);
     match pres.widget {
         Widget::Toggle => {

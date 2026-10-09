@@ -652,7 +652,12 @@ impl NodeInspectorPanel {
                             let t = ((pos.x - cx) / track_draw_w).clamp(0.0, 1.0);
                             s = t * 2.0 - 1.0;
                             *sat_field = Some(s);
-                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name.clone(), value: s });
+                            if sat_resp.dragged() {
+                                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name.clone(), value: s });
+                            } else {
+                                // A click is a step of its own, as a drag is.
+                                push_atomic_node_edit(cmds, clip_id, node_id, &sat_name, s);
+                            }
                         }
                     }
                     if sat_resp.double_clicked() || sat_resp.secondary_clicked() {
@@ -706,7 +711,12 @@ impl NodeInspectorPanel {
                             let t = ((pos.x - cx) / track_draw_w).clamp(0.0, 1.0);
                             b = t * 2.0 - 1.0;
                             *bri_field = Some(b);
-                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.clone(), value: b });
+                            if bri_resp.dragged() {
+                                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.clone(), value: b });
+                            } else {
+                                // A click is a step of its own, as a drag is.
+                                push_atomic_node_edit(cmds, clip_id, node_id, &bri_name, b);
+                            }
                         }
                     }
                     if bri_resp.double_clicked() || bri_resp.secondary_clicked() {
@@ -2301,7 +2311,12 @@ impl NodeInspectorPanel {
                     if r.changed() {
                         *field = Some(v);
                         let param = format!("{prefix}_{suffix}");
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param, value: v });
+                        if r.dragged() || r.drag_started() || r.drag_stopped() {
+                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param, value: v });
+                        } else {
+                            // A press on the rail is a step of its own.
+                            push_atomic_node_edit(cmds, clip_id, node_id, &param, v);
+                        }
                     }
                     if let (_, Some(end)) = gesture_of(ui, false, r.drag_stopped()) {
                         cmds.push(end(clip_id));
@@ -3793,6 +3808,23 @@ pub(crate) fn compound_summary(ui: &mut egui::Ui, params: &NodeParams, theme: &K
 
 /// A Corrector's ASC CDL import (onto its wheels and saturation) and
 /// export (of them).
+/// An imported CDL's writes: its slope, offset and power on the node's
+/// wheels and its saturation, as one undo step.
+fn cdl_commands(cdl: &klipp_grade_model::cdl::Cdl, clip_id: ClipId, node_id: NodeId) -> Vec<AppCommand> {
+    let mut cmds = Vec::new();
+    atomic_node_edit_batch(&mut cmds, clip_id, |cmds| {
+        let (lift, gamma, gain, offset) = cdl.wheel_amounts();
+        for (name, amounts) in [("lift", lift), ("gamma", gamma), ("gain", gain), ("offset", offset)] {
+            let (x, y, m) = klipp_color::rgb_to_wheel_offset((amounts[0], amounts[1], amounts[2]));
+            for (suffix, v) in [("x", x), ("y", y), ("master", m)] {
+                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: format!("{name}_{suffix}"), value: v });
+            }
+        }
+        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "saturation".into(), value: cdl.saturation });
+    });
+    cmds
+}
+
 pub(crate) fn cdl_buttons(ui: &mut egui::Ui, params: &NodeParams, node_id: NodeId, clip_id: ClipId) {
     ui.horizontal(|ui| {
         if ui
@@ -3809,17 +3841,8 @@ pub(crate) fn cdl_buttons(ui: &mut egui::Ui, params: &NodeParams, node_id: NodeI
                     .and_then(|t| klipp_grade_model::cdl::Cdl::parse(&t));
                 match read {
                     Ok(cdl) => {
-                        let mut cmds = Vec::new();
-                        let (lift, gamma, gain, offset) = cdl.wheel_amounts();
-                        for (name, amounts) in [("lift", lift), ("gamma", gamma), ("gain", gain), ("offset", offset)] {
-                            let (x, y, m) = klipp_color::rgb_to_wheel_offset((amounts[0], amounts[1], amounts[2]));
-                            for (suffix, v) in [("x", x), ("y", y), ("master", m)] {
-                                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: format!("{name}_{suffix}"), value: v });
-                            }
-                        }
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "saturation".into(), value: cdl.saturation });
                         tracing::info!("Imported CDL from {}", path.display());
-                        cmds
+                        cdl_commands(&cdl, clip_id, node_id)
                     }
                     Err(e) => {
                         tracing::warn!("CDL import failed for {}: {e}", path.display());
@@ -4361,7 +4384,8 @@ fn slider_interact(
             cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
         }
         if val.dragged() {
-            *value = (*value + drag_dx(ui, &val) * span / 800.0 * slider_drag_factor(ui)).clamp(lo, hi);
+            // The grade rule, shared with the generated rows (M3-4).
+            *value = crate::widgets::grade_drag::grade_drag(*value, drag_dx(ui, &val) * slider_drag_factor(ui), span).clamp(lo, hi);
             changed = true;
         }
         if val.drag_stopped() {
@@ -4612,12 +4636,7 @@ fn lut_colorspace_dropdown(
             } else {
                 current_tag as f32
             };
-            cmds.push(AppCommand::SetNodeParam {
-                clip_id,
-                node_id,
-                param: param_key.into(),
-                value,
-            });
+            push_atomic_node_edit(cmds, clip_id, node_id, param_key, value);
         }
     });
 }
@@ -4727,6 +4746,17 @@ fn grade_slider(
     #[cfg(any(test, feature = "row-recorder"))]
     crate::widgets::row_recorder::numeric(ui.next_auto_id(), "grade_slider", label, *value, &range, None, Some(f64::from(speed)), Some(2), suffix, None);
     let mut changed = false;
+    // A one-shot change (a typed value, a keyboard nudge, a press on the
+    // rail) is its own undo step, as `slider_interact`'s are: Begin goes out
+    // with it, before the caller's SetNodeParam, and End on the first frame
+    // after it with no button held. A press that turns into a drag joins
+    // the drag's gesture, whose End closes it first.
+    let one_shot_end = ui.next_auto_id().with("grade_slider_one_shot");
+    if ui.data(|d| d.get_temp::<bool>(one_shot_end)).unwrap_or(false) && !ui.input(|i| i.pointer.any_down()) {
+        ui.data_mut(|d| d.remove::<bool>(one_shot_end));
+        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+    }
+    let mut one_shot = false;
     // Begin/End signals collected inside the horizontal closures (which can't
     // mutably borrow `cmds` directly) and flushed after each closure returns.
     let mut drag_value_started = false;
@@ -4740,6 +4770,11 @@ fn grade_slider(
             theme.overlay(107)));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(pad);
+            // The number's drag moves the value by the grade rule, shared with
+            // the generated rows (M3-4), unrounded: the field's own drag is
+            // overridden, Shift still dragging a tenth as fast; its typing and
+            // keyboard nudges (at its speed) are kept.
+            let before_drag = *value;
             let resp = ui.add(
                 egui::DragValue::new(value)
                     .range(range.clone())
@@ -4748,8 +4783,13 @@ fn grade_slider(
                         if suffix.is_empty() { format!("{v:.2}") } else { format!("{v:.2} {suffix}") }
                     }),
             );
+            if resp.dragged() {
+                let fine = if ui.input(|i| i.modifiers.shift_only()) { 0.1 } else { 1.0 };
+                *value = crate::widgets::grade_drag::grade_drag(before_drag, drag_dx(ui, &resp) * fine, range_span).clamp(*range.start(), *range.end());
+            }
             if resp.drag_started() { drag_value_started = true; }
             if resp.changed() { changed = true; }
+            if resp.changed() && !resp.dragged() && !resp.drag_stopped() { one_shot = true; }
             if resp.drag_stopped() { drag_value_ended = true; }
         });
     });
@@ -4768,8 +4808,14 @@ fn grade_slider(
         );
         if resp.drag_started() { drag_slider_started = true; }
         if resp.changed() { changed = true; }
+        if resp.changed() && !resp.dragged() && !resp.drag_stopped() { one_shot = true; }
         if resp.drag_stopped() { drag_slider_ended = true; }
     });
+    if one_shot {
+        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+        ui.data_mut(|d| d.insert_temp(one_shot_end, true));
+        ui.ctx().request_repaint();
+    }
     if drag_slider_started {
         cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
     }
@@ -4997,6 +5043,17 @@ mod sends_on_change {
             sent.iter().any(|c| matches!(c, AppCommand::SetNodeQualifier { qualifier, .. } if !qualifier.enabled)),
             "turning the qualifier off is sent: {sent:?}"
         );
+    }
+
+    /// An imported CDL is one undo step: its thirteen writes go out between
+    /// one Begin and one End.
+    #[test]
+    fn an_imported_cdl_is_one_undo_step() {
+        let cdl = klipp_grade_model::cdl::Cdl::parse("<ColorCorrection><SOPNode><Slope>1.1 1 0.9</Slope><Offset>0.01 0 -0.01</Offset><Power>1 1 1</Power></SOPNode><SatNode><Saturation>0.8</Saturation></SatNode></ColorCorrection>").unwrap();
+        let sent = cdl_commands(&cdl, ClipId::new(), NodeId::new_v4());
+        assert!(matches!(sent.first(), Some(AppCommand::BeginNodeParamEdit { .. })) && matches!(sent.last(), Some(AppCommand::EndNodeParamEdit { .. })), "{sent:?}");
+        assert_eq!(sent.iter().filter(|c| matches!(c, AppCommand::SetNodeParam { .. })).count(), 13);
+        assert_eq!(sent.iter().filter(|c| matches!(c, AppCommand::BeginNodeParamEdit { .. } | AppCommand::EndNodeParamEdit { .. })).count(), 2);
     }
 
     #[test]

@@ -1298,8 +1298,6 @@ mod keyframe_alias_tests {
             c.apply_picture_ops(&[GraphOp::SetParam { path: path.clone(), key: alias.into(), value: ParamValue::Float(0.375) }]).unwrap();
             let field = serde_json::to_value(&c.builtin_effects()[0]).unwrap()[stored].clone();
             assert_eq!(field, serde_json::json!(0.375f32), "{tag}: a value set by {alias} is the stored {stored}");
-            let read = |name: &str| c.node_key_state(&path, &ParamKey::from(name)).and_then(|s| s.value);
-            assert_eq!((read(alias), read(stored)), (Some(0.375), Some(0.375)), "{tag}: the value read by either name");
         }
     }
 }

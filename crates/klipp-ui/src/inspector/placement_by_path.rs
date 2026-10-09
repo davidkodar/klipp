@@ -11,10 +11,7 @@
 //! - their drag's begin, end and abandon, into a drag over the placement
 //!   node's parameters together (`BeginParamEditAt` with an empty key);
 //! - a key put on or taken off a placement or opacity lane, into
-//!   `AddKeyAt` / `RemoveKeyAt` on the node's key. A value set with a key
-//!   on its lane is the key alone, one step, as the generated stack keys
-//!   a number: the card's value under a lane isn't written as well (the
-//!   old card's second step, #1388).
+//!   `AddKeyAt` / `RemoveKeyAt` on the node's key.
 //!
 //! Anything else passes as it was.
 
@@ -118,18 +115,11 @@ pub fn by_path(cmds: Vec<AppCommand>, clip: &Clip) -> Vec<AppCommand> {
     let Some(addr) = clip.placement_path() else { return cmds };
     let whole = ParamKey::from("");
     let mut now = current(clip);
-    let keyed: Vec<&'static str> = cmds.iter().filter_map(|c| match c {
-        AppCommand::AddVideoKeyframe { clip_id, param, .. } if *clip_id == clip.id => lane_key(*param),
-        _ => None,
-    }).collect();
     let mut out = Vec::with_capacity(cmds.len());
     for cmd in cmds {
         match &cmd {
             AppCommand::UpdateBuiltinEffect { clip_id, effect, .. } | AppCommand::AddBuiltinEffect { clip_id, effect } if *clip_id == clip.id && !values(effect).is_empty() => {
                 for (key, v) in values(effect) {
-                    if keyed.contains(&key) {
-                        continue;
-                    }
                     let was = now.iter_mut().find(|(k, _)| *k == key);
                     if was.as_ref().is_some_and(|(_, w)| (*w - v).abs() <= f32::EPSILON) {
                         continue;
@@ -182,18 +172,5 @@ mod tests {
         let out = by_path(vec![AppCommand::AddBuiltinEffect { clip_id: c.id, effect: t }], &c);
         assert_eq!(out.len(), 1, "{out:?}");
         assert!(matches!(&out[0], AppCommand::SetParamAt { addr: a, key, value: ParamValue::Float(v) } if *a == addr && key.as_str() == "pos_x" && *v == 30.0), "{out:?}");
-    }
-
-    /// A value set with a key on its lane is the key alone: the card's
-    /// update of the same value isn't written as well.
-    #[test]
-    fn a_keyed_value_is_the_key_alone() {
-        let c = clip();
-        let out = by_path(vec![
-            AppCommand::UpdateBuiltinEffect { clip_id: c.id, index: 0, effect: BuiltinEffect::Opacity { value: 0.6 } },
-            AppCommand::AddVideoKeyframe { clip_id: c.id, param: VideoParam::Opacity, time_secs: 0.5, value: 0.6 },
-        ], &c);
-        assert_eq!(out.len(), 1, "{out:?}");
-        assert!(matches!(&out[0], AppCommand::AddKeyAt { key, .. } if key.as_str() == "opacity"), "{out:?}");
     }
 }

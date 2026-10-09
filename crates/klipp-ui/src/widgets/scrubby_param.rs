@@ -102,6 +102,42 @@ pub fn scrubby_param_row(
     suffix: &str,
     keyframe_state: Option<KeyframeState>,
 ) -> ScrubbyParamResponse {
+    scrubby_row(ui, label, value, range, default, speed, decimals, suffix, keyframe_state, None)
+}
+
+/// [`scrubby_param_row`] whose drags (of the label or the number) move the
+/// value by `drag(value, dx_pixels)` instead of its speed, unrounded: a
+/// grade row's rule (`grade_drag`), the old panel's own.
+#[allow(clippy::too_many_arguments)]
+pub fn scrubby_param_row_dragged(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    default: f32,
+    speed: f64,
+    decimals: usize,
+    suffix: &str,
+    keyframe_state: Option<KeyframeState>,
+    drag: &dyn Fn(f32, f32) -> f32,
+) -> ScrubbyParamResponse {
+    // `speed` is the field's keyboard nudge; a drag goes by `drag`.
+    scrubby_row(ui, label, value, range, default, speed, decimals, suffix, keyframe_state, Some(drag))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scrubby_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    default: f32,
+    speed: f64,
+    decimals: usize,
+    suffix: &str,
+    keyframe_state: Option<KeyframeState>,
+    drag: Option<&dyn Fn(f32, f32) -> f32>,
+) -> ScrubbyParamResponse {
     #[cfg(any(test, feature = "row-recorder"))]
     super::row_recorder::numeric(ui.id().with(label).with("scrubby_row_hover"), "scrubby", label, *value, &range, Some(default), Some(speed), Some(decimals), suffix, keyframe_state);
     let old_value = *value;
@@ -189,13 +225,20 @@ pub fn scrubby_param_row(
 
         // Apply label drag delta to value
         if label_rect.dragged() {
-            let delta = label_rect.drag_delta().x as f64;
-            let label_speed = if modifiers.shift_only() {
-                effective_speed / 10.0   // Shift: fine
-            } else {
-                effective_speed
-            };
-            *value += (delta * label_speed) as f32;
+            // Shift drags a tenth as fast, Alt ten times, by either rule.
+            let pace = if modifiers.shift_only() { 0.1 } else if modifiers.alt { 10.0 } else { 1.0 };
+            match drag {
+                Some(drag) => *value = drag(*value, label_rect.drag_delta().x * pace),
+                None => {
+                    let delta = label_rect.drag_delta().x as f64;
+                    let label_speed = if modifiers.shift_only() {
+                        effective_speed / 10.0   // Shift: fine
+                    } else {
+                        effective_speed
+                    };
+                    *value += (delta * label_speed) as f32;
+                }
+            }
             *value = value.clamp(*range.start(), *range.end());
         }
         label_drag_started = label_rect.drag_started();
@@ -289,12 +332,19 @@ pub fn scrubby_param_row(
             reset_rect_resp = Some(rr);
 
             // Drag value (leftmost in cluster)
+            let before_drag = *value;
             let dv = egui::DragValue::new(value)
                 .speed(effective_speed)
                 .range(range.clone())
                 .fixed_decimals(decimals)
                 .suffix(suffix);
             let dv_resp = ui.add(dv);
+            // A drag rule moves the value itself, unrounded; the field's
+            // own drag (at speed 0) is overridden, its typing kept.
+            if let Some(drag) = drag.filter(|_| dv_resp.dragged()) {
+                let pace = if modifiers.shift_only() { 0.1 } else if modifiers.alt { 10.0 } else { 1.0 };
+                *value = drag(before_drag, dv_resp.drag_delta().x * pace).clamp(*range.start(), *range.end());
+            }
             dv_response = Some(dv_resp);
         });
 

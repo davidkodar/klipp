@@ -286,16 +286,16 @@ impl Clip {
     /// names no node of the clip's picture.
     pub fn node_key_state(&self, path: &klipp_graph_format::path::NodePath, key: &klipp_graph_format::ParamKey) -> Option<NodeKeyState> {
         self.picture_node(path, |n| {
-            // An effect's keys and value by either of an alias's names (a
-            // ChromaKey's `spill` is its `soft_edge`).
-            let stored = klipp_graph_format::ParamKey::from(klipp_graph_lift::lift::anim_key(klipp_graph_lift::effect_params::tag(n).unwrap_or(""), key.as_str()));
             let keys = if matches!(n.type_id.as_str(), klipp_graph_format::types::LEGACY_NODE | klipp_graph_format::lifted::types::MERGE) {
                 let tracks: Option<klipp_nodes::NodeKeyframeTracks> = n.legacy.as_ref().and_then(|l| l.keyframes.clone()).and_then(|k| serde_json::from_value(k).ok());
                 tracks.and_then(|t| t.tracks.into_iter().find(|t| t.param_name == key.as_str())).map(|t| t.keyframes).unwrap_or_default()
             } else {
-                n.anim.get(&stored).map(|a| a.keys.iter().filter_map(|k| serde_json::from_value::<Keyframe>(k.clone()).ok()).collect()).unwrap_or_default()
+                // An effect's keys by either of an alias's names (a ChromaKey's
+                // `spill` is its `soft_edge`).
+                let stored = klipp_graph_lift::lift::anim_key(klipp_graph_lift::effect_params::tag(n).unwrap_or(""), key.as_str());
+                n.anim.get(&klipp_graph_format::ParamKey::from(stored)).map(|a| a.keys.iter().filter_map(|k| serde_json::from_value::<Keyframe>(k.clone()).ok()).collect()).unwrap_or_default()
             };
-            let value = match n.params.get(&stored) {
+            let value = match n.params.get(key) {
                 Some(klipp_graph_format::ParamValue::Float(v)) => Some(*v),
                 Some(klipp_graph_format::ParamValue::Int(v)) => Some(*v as f32),
                 _ => None,
