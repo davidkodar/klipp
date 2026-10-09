@@ -920,3 +920,29 @@ mod tests {
         assert!(cache.get(3, 300).is_none());
     }
 }
+
+#[cfg(test)]
+mod analyze_clip_tests {
+    use super::*;
+
+    /// One motion pair a frame, the file's ends identity (they have no
+    /// frame on one side); fewer than three frames is refused.
+    #[test]
+    fn a_whole_file_gets_one_motion_pair_a_frame() {
+        let mut decode = |t: f64| {
+            let n = (t * 24.0).round() as u8;
+            let rgba: Vec<u8> = (0..64 * 32).flat_map(|i| {
+                let v = (((i % 64) as u8).wrapping_mul(37) ^ ((i / 64) as u8).wrapping_mul(11)).wrapping_add(n);
+                [v, v, v, 255]
+            }).collect();
+            Some((rgba, 64, 32))
+        };
+        let data = analyze_clip(24.0, 6, &mut decode, &|_| true).unwrap();
+        assert_eq!(data.motion.len(), 6);
+        let identity = |h: &Homography| h.h == Homography::identity().h;
+        assert!(identity(&data.motion[0].0) && identity(&data.motion[0].1), "the first frame");
+        assert!(identity(&data.motion[5].0) && identity(&data.motion[5].1), "the last frame");
+        assert!(analyze_clip(24.0, 2, &mut decode, &|_| true).is_err());
+        assert_eq!(analyze_clip(24.0, 6, &mut decode, &|_| false).unwrap_err(), "cancelled");
+    }
+}
