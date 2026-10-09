@@ -107,6 +107,34 @@ fn is_view(cmd: &AppCommand) -> bool {
     )
 }
 
+/// Which grade a grade family draws its node in (M3 step 19): a clip's
+/// own, or one of the sequence's own grades, drawn through the stand-in
+/// the Colour workspace grades it with. A sequence grade's cases count on
+/// `Surface::NonClipGrade` under the variant [`GradeRoot::variant`] names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GradeRoot {
+    Clip,
+    Timeline,
+    Pre,
+    Post,
+}
+
+impl GradeRoot {
+    /// The sequence's own grades, each a fixture of `Surface::NonClipGrade`.
+    /// A track's grade is not one: it has no surface to draw (#1408).
+    pub(super) const SEQUENCE: [GradeRoot; 3] = [GradeRoot::Timeline, GradeRoot::Pre, GradeRoot::Post];
+
+    /// The fixture's variant on `Surface::NonClipGrade`.
+    pub(super) fn variant(self) -> &'static str {
+        match self {
+            GradeRoot::Clip => "clip",
+            GradeRoot::Timeline => "timeline",
+            GradeRoot::Pre => "group pre-clip",
+            GradeRoot::Post => "group post-clip",
+        }
+    }
+}
+
 /// One view of one clip, drawn and driven.
 pub(super) struct Run {
     pub(super) state: AppState,

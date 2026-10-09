@@ -85,7 +85,7 @@ fn workflow_tools_still_write_their_params() {
     let (temp, tint) = klipp_color::auto_white_balance(&frame, 32, 32, &[]).expect("a grey to balance on");
     assert!(temp < 0.0, "a warm cast is cooled: {temp}");
     let mut g = corrector.twin(true);
-    let balance = |g: &Grade| klipp_timeline::GradeAccess::grade(g.clip()).nodes.iter().find(|n| n.id == g.node).map(|n| (n.params.temperature, n.params.tint)).unwrap();
+    let balance = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).map(|n| (n.params.temperature, n.params.tint)).unwrap();
     let before = balance(&g);
     assert_eq!(g.state.apply_white_balance(g.clip, temp, tint), Some(false), "within range");
     let (t, n) = balance(&g);
@@ -102,7 +102,7 @@ fn workflow_tools_still_write_their_params() {
     let rgb = [0.8, 0.3, 0.05];
     let hue = klipp_effects::cpu_grade::picture_hsl(rgb).h * 360.0;
     let mut g = qualifier.twin(true);
-    let key = |g: &Grade| klipp_timeline::GradeAccess::grade(g.clip()).nodes.iter().find(|n| n.id == g.node).and_then(|n| n.params.qualifier.clone());
+    let key = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).and_then(|n| n.params.qualifier.clone());
     let before = key(&g);
     let keyed = super::colour::qualifier_keyed_on(rgb, before.clone().unwrap_or_default());
     g.apply(AppCommand::SetNodeQualifier { clip_id: g.clip, node_id: g.node, qualifier: keyed });
@@ -123,7 +123,7 @@ fn workflow_tools_still_write_their_params() {
     assert!(result.exposure_adjust > 0.0, "a darker frame is brightened: {}", result.exposure_adjust);
     let settings = klipp_core::ColorMatchSettings { exposure: result.exposure_adjust, temperature: result.temperature_adjust, tint: result.tint_adjust, saturation: result.saturation_adjust };
     let mut g = matcher.twin(true);
-    let matched = |g: &Grade| klipp_timeline::GradeAccess::grade(g.clip()).nodes.iter().find(|n| n.id == g.node).and_then(|n| n.params.color_match);
+    let matched = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).and_then(|n| n.params.color_match);
     let before = matched(&g);
     // As `ApplyColorMatch` lands it: through `SetNodeColorMatch`.
     g.apply(AppCommand::SetNodeColorMatch { clip_id: g.clip, node_id: g.node, settings });
