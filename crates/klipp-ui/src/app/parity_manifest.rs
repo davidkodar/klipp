@@ -107,6 +107,9 @@ pub(super) enum Interaction {
     /// the frame, and a key edited through either view draws the same
     /// frame at a key and between keys (`parity_keyed_pixels`).
     KeyedPixels,
+    /// A masked effect's row edited through either view draws the same
+    /// masked frame on each route (`parity_masked_pixels`).
+    MaskedPixels,
 }
 
 /// `variant` names the concrete fixture, including condition state,
@@ -270,6 +273,22 @@ impl Manifest {
         self.required.insert(key);
     }
 
+    /// Require the central rules' representative obligations
+    /// (`rules::REPRESENTATIVE`), which no catalog parameter carries.
+    pub fn require_representatives(&mut self) {
+        for key in rules::representative_keys() {
+            self.require(key);
+        }
+    }
+
+    /// The central rules' representative obligations that nothing
+    /// required: a family deleted or skipped can't define them away.
+    /// Checked by [`Report::complete_for_deletion`], the gate on removing
+    /// the old route; a single family's manifest needn't hold them.
+    pub fn missing_representatives(&self) -> Vec<String> {
+        rules::representative_keys().into_iter().filter(|k| !self.required.contains(k)).map(|key| format!("missing obligation: {key:?}")).collect()
+    }
+
     /// Families choose concrete fixtures, not how little behavior counts
     /// as coverage. The central rules expand their interaction obligations.
     pub fn require_fixture(&mut self, entry: &CatalogEntry, surface: Surface, variant: &str) {
@@ -369,8 +388,12 @@ impl Manifest {
                 Err(error) => errors.push(error),
             }
         }
+        let representative = rules::representative_keys();
         let mut contexts = BTreeSet::new();
         for key in &self.required {
+            if representative.contains(key) {
+                continue;
+            }
             let Some(entry) = catalog.get(&(key.type_id.as_str(), key.parameter.as_str())) else {
                 errors.push(format!("required key outside catalog: {key:?}"));
                 continue;
@@ -709,6 +732,7 @@ impl Report {
             .err()
             .into_iter()
             .collect::<Vec<_>>();
+        errors.extend(manifest.missing_representatives());
         errors.extend(
             self.fallback
                 .iter()
@@ -998,6 +1022,8 @@ mod tests {
         let entry = slider();
         let mut manifest = Manifest::default();
         require_every_surface(&mut manifest, &entry);
+        // The deletion gate demands the central representatives too.
+        manifest.require_representatives();
         let mut report = Report::default();
         report.case_via_fallback(
             "old path",
@@ -1248,6 +1274,23 @@ mod tests {
         });
         assert!(report.passed.contains(&key("radius")));
         assert_eq!(report.failures, ["broken fixture: fixture unavailable"]);
+    }
+
+    /// The central representatives are demanded whether or not a family
+    /// requires them: without the masked family's require() the deletion
+    /// gate reports both mask kinds missing, and with it, neither; and a
+    /// representative is never read as a key outside the catalog.
+    #[test]
+    fn representative_obligations_are_missing_until_required() {
+        let without = Manifest::default();
+        let errors = Report::default().complete_for_deletion(&without, &[]).unwrap_err();
+        for kind in ["@mask/in-the-grade", "@mask/beside"] {
+            assert!(errors.lines().any(|e| e.starts_with("missing obligation") && e.contains(kind)), "{kind} not reported: {errors}");
+        }
+        let mut with = Manifest::default();
+        with.require_representatives();
+        assert!(with.missing_representatives().is_empty());
+        assert!(!with.rule_errors(&[]).iter().any(|e| e.starts_with("required key outside catalog")), "a representative read as outside the catalog");
     }
 
     #[test]

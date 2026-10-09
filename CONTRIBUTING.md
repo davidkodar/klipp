@@ -203,6 +203,10 @@ cargo test --workspace   # every test
 cargo test -p klipp-engine --lib   # a single crate's lib tests
 ```
 
+The view-parity tests in `klipp-ui` draw a real frei0r plug-in, so
+`cargo test -p klipp-ui` needs `frei0r-plugins` installed (an optional
+dependency of the package); without it the frei0r case fails and says so.
+
 Logs land in `klipp-debug.log` at the workspace root — tail it while
 running. Level is controlled by the `RUST_LOG` env var; default is
 `info`.
