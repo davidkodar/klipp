@@ -369,6 +369,29 @@ pub struct NodeTypeDesc {
     pub mixable: bool,
 }
 
+/// Where a node can be placed: the effect lists it can sit in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Placement {
+    /// A clip's.
+    Clip,
+    /// A title's.
+    Title,
+    /// An adjustment layer's.
+    Adjustment,
+}
+
+impl NodeTypeDesc {
+    /// The effect lists the node can be placed in. A node that reads other
+    /// times than its frame's (`temporal`) reads a clip's source, so it is
+    /// placed on a clip only; any other is placed on every effect list.
+    pub fn placement(&self) -> &'static [Placement] {
+        match self.temporal {
+            Temporal::None => &[Placement::Clip, Placement::Title, Placement::Adjustment],
+            Temporal::SourceNeighbours | Temporal::AnalysisDriven => &[Placement::Clip],
+        }
+    }
+}
+
 /// A built-in effect's description, tied to its variant.
 #[derive(Debug, Clone, Copy)]
 pub struct EffectType {

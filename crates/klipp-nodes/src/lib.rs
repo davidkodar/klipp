@@ -38,6 +38,7 @@ pub mod kinds;
 pub mod params;
 pub mod defaults;
 pub mod executor;
+pub mod frame_context;
 mod plan;
 pub mod auto_layout;
 pub mod json_check;

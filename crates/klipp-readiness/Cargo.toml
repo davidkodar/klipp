@@ -15,7 +15,8 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-# The Format family's cases convert real projects (M4 step F).
+# The Format family's cases convert real projects (M4 step F); the
+# catalog says where a node type can be placed, and what it converts.
 klipp-convert = { path = "../klipp-convert" }
 klipp-core = { path = "../klipp-core" }
 klipp-effects = { path = "../klipp-effects" }
