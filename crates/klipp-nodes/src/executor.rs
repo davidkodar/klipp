@@ -191,7 +191,7 @@ fn resolve_analysis(graph: &NodeGraph, ctx: &crate::frame_context::FrameContext<
     let mut out = HashMap::new();
     for node in graph.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Effect | NodeKind::EffectSegment)) {
         let Some(effect) = node.params.effects.iter().find(|e| klipp_effects::node_analysis::derivation_params(e).is_some()) else { continue };
-        if let Analysis::Ready(blob) = ctx.analysis.lookup(node.id, NODE_ANALYSIS_SCHEMA) {
+        if let Analysis::Ready(blob) = ctx.analysis.lookup_effect(node.id, effect, NODE_ANALYSIS_SCHEMA) {
             if let Some(a) = blob.data.downcast_ref::<klipp_effects::node_analysis::NodeAnalysis>() {
                 out.insert(node.id, a.at(effect, ctx.source_secs, height));
             }
