@@ -1,14 +1,16 @@
 //! The effect specialists' Pixels: what their workflows and editors
-//! leave on the clip drawn by the real renderer through both views
-//! (`parity_pixels`), on the routes each declares.
+//! leave on the clip drawn by the real renderer (`parity_pixels`), on the
+//! routes each declares: the frame changed, the CPU's within a level of
+//! the GPU's.
 //!
 //! - An analysis workflow (Deflicker, Stabilisation): "Analyse" clicked in
-//!   each view, its measurement landing as the app's drain lands it. Both
-//!   clips must draw the same frame, changed from the unmeasured clip's.
+//!   the inspector, its measurement landing as the app's drain lands it,
+//!   must change the unmeasured clip's frame.
 //!   Stabilisation's layer is drawn on the CPU by the stack's temporal
 //!   gate (M4 step 9), as in the numeric family.
 //! - The frei0r plug-in editor: a real installed plug-in (`saturat0r`,
-//!   from frei0r-plugins), its value typed through each view's editor. Its
+//!   from frei0r-plugins), its value typed through the editor and stored
+//!   as typed. Its
 //!   parameter's default (0, a grey picture) keeps the frame drawn, where
 //!   a plug-in whose 0 is black would leave nothing to compare. Plug-ins run on the CPU by design until they become
 //!   nodes (M4 step 5). frei0r refuses a frame whose sides aren't multiples
@@ -17,8 +19,8 @@
 
 use super::parity_manifest::{CoverageKey, Interaction, Manifest, Report, Surface};
 use super::parity_numeric::routes_for;
-use super::parity_pixels::{same_edit_on, Routes, SMALL};
-use super::parity_specialists::{both, effect_type, number_right_of, type_into, Analysis, ANALYSES, VARIANT};
+use super::parity_pixels::{clip_edit_drawn_on, Routes, SMALL};
+use super::parity_specialists::{effect_type, number_right_of, type_into, Analysis, ANALYSES, VARIANT};
 use super::parity_harness::fixture;
 use klipp_effects::BuiltinEffect;
 
@@ -32,29 +34,29 @@ fn analysis_key(a: &Analysis) -> CoverageKey {
     CoverageKey::new(effect_type(a.tag).desc.id, &format!("@workflow/{}", a.workflow), Surface::EffectsStack, VARIANT, Interaction::Pixels)
 }
 
-/// One analysis workflow's measurement, drawn.
+/// One analysis workflow's measurement, drawn: "Analyse" clicked, the
+/// measurement landing as the app's drain lands it, must change the frame
+/// and draw it alike on the CPU and the GPU.
 fn analysis_case(a: &Analysis, routes: Routes) -> Result<(), String> {
     let clip = fixture(&(effect_type(a.tag).sample)());
     let clip_id = clip.id;
-    let (mut old, mut new) = both(&clip, |_| {});
-    for run in [&mut old, &mut new] {
-        if !run.click_text("", a.analyse) {
-            return Err(format!("no {:?} (generated {})", a.analyse, run.state.use_generated_stack));
-        }
-        // The worker's result, as the drain applies it.
-        let event = (a.complete)(clip_id);
-        let mut flat = run.state.sequences[0].clone();
-        let target = flat.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).ok_or("the clip")?;
-        (a.measured)(target);
-        if !super::proxies::apply_analysis_result(&mut run.state, Some(&flat), &event) {
-            return Err("the result wasn't applied".into());
-        }
-        run.frame(Vec::new(), egui::Modifiers::NONE);
-        if !run.unapplied.is_empty() {
-            return Err(format!("unapplied: {:?}", run.unapplied));
-        }
+    let mut run = super::parity_harness::Run::new(clip.clone(), true);
+    if !run.click_text("", a.analyse) {
+        return Err(format!("no {:?}", a.analyse));
     }
-    same_edit_on(routes, SMALL, &clip, old.clip(), new.clip())
+    // The worker's result, as the drain applies it.
+    let event = (a.complete)(clip_id);
+    let mut flat = run.state.sequences[0].clone();
+    let target = flat.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).ok_or("the clip")?;
+    (a.measured)(target);
+    if !super::proxies::apply_analysis_result(&mut run.state, Some(&flat), &event) {
+        return Err("the result wasn't applied".into());
+    }
+    run.frame(Vec::new(), egui::Modifiers::NONE);
+    if !run.unapplied.is_empty() {
+        return Err(format!("unapplied: {:?}", run.unapplied));
+    }
+    clip_edit_drawn_on(routes, SMALL, &clip, run.clip())
 }
 
 /// A real frei0r plug-in, registered beside the others (the registry is
@@ -76,21 +78,24 @@ fn saturator() -> Result<klipp_frei0r::Frei0rPluginInfo, String> {
         .ok_or_else(|| "the frei0r saturat0r plug-in isn't installed: install frei0r-plugins (an optdepend) to run the frei0r parity case".into())
 }
 
-/// The frei0r editor's value typed in each view, drawn.
+/// The frei0r editor's value typed, stored as typed, drawn: it changes
+/// the frame (on the CPU, the plug-ins' route by design).
 fn frei0r_case() -> Result<(), String> {
     let info = saturator()?;
     let param = info.params.first().ok_or("saturat0r declares no parameter")?.name.clone();
     let params = info.params.iter().map(|p| klipp_frei0r::Frei0rValue::default_for(p.kind)).collect();
     let clip = fixture(&BuiltinEffect::Frei0r { type_id: info.type_id(), params });
-    let (mut old, mut new) = both(&clip, |_| {});
-    for run in [&mut old, &mut new] {
-        let at = number_right_of(run, &param).ok_or_else(|| format!("no number for {param} (generated {})", run.state.use_generated_stack))?;
-        type_into(run, at, "0.85");
-        if !run.unapplied.is_empty() {
-            return Err(format!("unapplied: {:?}", run.unapplied));
-        }
+    let mut run = super::parity_harness::Run::new(clip.clone(), true);
+    let at = number_right_of(&mut run, &param).ok_or_else(|| format!("no number for {param}"))?;
+    type_into(&mut run, at, "0.85");
+    if !run.unapplied.is_empty() {
+        return Err(format!("unapplied: {:?}", run.unapplied));
     }
-    same_edit_on(Routes::CpuByDesign, FREI0R_SIZE, &clip, old.clip(), new.clip())
+    match run.clip().builtin_effects().first() {
+        Some(BuiltinEffect::Frei0r { params, .. }) if matches!(params.first(), Some(klipp_frei0r::Frei0rValue::Double(v)) if *v == 0.85) => {}
+        other => return Err(format!("typed 0.85, stored {other:?}")),
+    }
+    clip_edit_drawn_on(Routes::CpuByDesign, FREI0R_SIZE, &clip, run.clip())
 }
 
 pub(super) fn run(report: &mut Report) {
@@ -114,7 +119,7 @@ pub(super) fn run(report: &mut Report) {
 
 /// Every effect specialist's Pixels key is earned, on its declared route.
 #[test]
-fn effect_specialists_draw_the_same_picture_through_both_views() {
+fn effect_specialists_draw_their_edits_on_their_routes() {
     let mut manifest = Manifest::default();
     super::parity_specialists::require(&mut manifest);
     let mut report = Report::default();

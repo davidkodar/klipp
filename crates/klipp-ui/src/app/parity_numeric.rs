@@ -1,6 +1,8 @@
-//! Numeric effect controls driven through real pointer/key events. The
-//! oracle is the old document command with just the addressed field
-//! changed; comparison includes the complete picture and exact undo/redo.
+//! Numeric effect controls of the inspector driven through real pointer
+//! and key events. The oracle is the document command with just the
+//! addressed field set to what the edit must store (the typed value, the
+//! drag's rule, the reset value); comparison includes the complete
+//! picture and exact undo/redo.
 //! Keyframe evidence is a separate obligation. Pixels are a case of their
 //! own (`pixel_case`): the typed edit drawn by the real renderer on the
 //! CPU and the native GPU stack (`parity_pixels`). A type whose
@@ -42,9 +44,10 @@ fn contexts(ty: &EffectType) -> Vec<(Surface, &'static str)> {
     }
 }
 
-/// Rows whose control is shown but doesn't move the picture: known
-/// defects, each excluded from Pixels with its issue until it is fixed
-/// (type, parameter, surface, variant, reason). Not a route, and not a
+/// Rows whose control is shown but doesn't move the picture, or whose
+/// picture the CPU and the GPU stack draw differently: known defects, each
+/// excluded from Pixels with its issue until it is fixed (type, parameter,
+/// surface, variant, reason). Not a route, and not a
 /// design: the deletion report reads them as open gaps.
 const KNOWN_DEFECTS: &[(&str, &str, Surface, &str, &str)] = &[
     ("klipp.fx.transform", "scale_y", Surface::EffectsStack, VARIANT, "known defect #1406: placement renders a uniform scale from scale_x, so the Scale Y row moves nothing"),
@@ -189,16 +192,26 @@ pub(super) fn type_value(run: &mut Run, label: RowLabel, text: &str) -> Result<(
     Ok(())
 }
 
-fn start_drag(run: &mut Run, label: RowLabel) -> Result<egui::Pos2, String> {
-    let (_, at) = ready(run, label)?;
-    run.button(at, egui::PointerButton::Primary, true);
-    for dx in [12.0, 32.0, 64.0] {
-        run.frame(
-            vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))],
-            egui::Modifiers::NONE,
-        );
+/// How far a row is dragged, in one move: 64 pixels, or for a whole-number
+/// row as far as moves it a unit and a half (within the harness's screen),
+/// since a shorter drag rounds back to where it was.
+fn drag_px(desc: &ParamDesc, pres: &Presentation) -> f32 {
+    match desc.kind {
+        ParamKind::Whole => (1.5 / row::drag_speed(pres.step)).ceil().clamp(64.0, 400.0) as f32,
+        _ => 64.0,
     }
-    Ok(at + egui::vec2(64.0, 0.0))
+}
+
+/// A drag of the row by `px` in one move, held: a scrubby row's by its
+/// label, its own drag, whose one move is one step of its rule
+/// (`value + delta · speed`); a slider row's by its number, as its label
+/// only resets. Returns where the pointer is.
+fn start_drag(run: &mut Run, label: RowLabel, px: f32, slider: bool) -> Result<egui::Pos2, String> {
+    let (on_label, on_number) = ready(run, label)?;
+    let at = if slider { on_number } else { on_label };
+    run.button(at, egui::PointerButton::Primary, true);
+    run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(px, 0.0))], egui::Modifiers::NONE);
+    Ok(at + egui::vec2(px, 0.0))
 }
 
 fn commands_applied(run: &Run) -> Result<(), String> {
@@ -206,6 +219,18 @@ fn commands_applied(run: &Run) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("unapplied: {:?}", run.unapplied))
+    }
+}
+
+/// The analysis a row asks the app to redo when it's edited, if any, and
+/// whether it asks only once the clip is measured: Deflicker's window
+/// always asks for its gains again; Stabilisation's smoothing has a
+/// trajectory to smooth only once measured.
+fn analysis_request(ty: &EffectType, desc: &ParamDesc) -> Option<(&'static str, bool)> {
+    match (ty.tag, desc.key) {
+        ("deflicker", "window_secs") => Some(("RegainDeflicker", false)),
+        ("video_stabilization", "smoothing") => Some(("ResmoothStabilization", true)),
+        _ => None,
     }
 }
 
@@ -220,9 +245,11 @@ fn edit_case(
     let clip = fixture_on(effect, surface);
     let side_clip = clip.clone();
     let before = clip.picture_v2().unwrap();
-    let (mut new, mut old) = (
+    // The view driven, and the oracle: the document command alone,
+    // applied to the same clip, never a view.
+    let (mut new, mut oracle) = (
         run_for(surface, clip.clone(), true),
-        run_for(surface, clip, false),
+        run_for(surface, clip, true),
     );
     drive(&mut new)?;
     commands_applied(&new)?;
@@ -236,31 +263,43 @@ fn edit_case(
         .first()
         .map(|effect| stored(effect, desc))
         .ok_or("effect disappeared")?;
+    // A slider row places its value where the pointer is, by its own
+    // layout: what it must store there is held to the drag's direction (to
+    // the right, a rise) and, below, to the document command's picture.
+    if want.is_none() {
+        let start = stored(effect, desc).as_f64();
+        if !actual.as_f64().zip(start).is_some_and(|(to, from)| to > from) {
+            return Err(format!("a drag to the right stored {actual}, from {}", stored(effect, desc)));
+        }
+    }
     let expected = want.unwrap_or_else(|| actual.clone());
-    old.apply(AppCommand::UpdateBuiltinEffect {
-        clip_id: old.clip,
+    oracle.apply(AppCommand::UpdateBuiltinEffect {
+        clip_id: oracle.clip,
         index: 0,
         effect: with_field(effect, desc, expected.clone())?,
     });
-    commands_applied(&old)?;
-    if after != old.clip().picture_v2().unwrap() {
+    commands_applied(&oracle)?;
+    if after != oracle.clip().picture_v2().unwrap() {
         return Err(format!(
-            "not the old command's picture: value {actual}, expected {expected}"
+            "not the document command's picture: value {actual}, expected {expected}"
         ));
     }
-    // Deflicker's row schedules analysis after changing its window. A
-    // bare document command does not; exercise the actual old row for
-    // that side-effect oracle, keeping the exact document oracle above.
-    if ty.tag == "deflicker" && desc.key == "window_secs" {
-        let mut side_oracle = run_for(surface, side_clip, false);
-        drive(&mut side_oracle)?;
-        commands_applied(&side_oracle)?;
-        old.side = side_oracle.side;
+    // A row that asks the app to bring its analysis up to the edit sends
+    // that request once, besides what the document command sends: the
+    // expected side commands.
+    let measured = side_clip.deflicker_data.is_some() || side_clip.stabilization_data.is_some();
+    if let Some((request, _)) = analysis_request(ty, desc).filter(|(_, once_measured)| measured || !once_measured) {
+        match new.side.iter().position(|sent| sent.starts_with(request)) {
+            Some(i) => {
+                new.side.remove(i);
+            }
+            None => return Err(format!("the row didn't ask for {request}: sent {:?}", new.side)),
+        }
     }
-    if new.side != old.side {
+    if new.side != oracle.side {
         return Err(format!(
             "side commands differ: {:?} / {:?}",
-            new.side, old.side
+            new.side, oracle.side
         ));
     }
     if new.state.any_drag_in_progress() || new.state.active_history().undo_count() != 1 {
@@ -410,10 +449,10 @@ fn retime_control(clip: &klipp_timeline::Clip, size: (u32, u32)) -> Result<(), S
 
 /// The typed edit drawn by the renderer: on the [`pixel_fixture`], the
 /// generated view's row typed to the first of a few values near the
-/// middle of its range whose edit (by the old document command) changes
-/// the CPU frame (a modest move, which keeps a moved picture in the
-/// frame), and the old command setting the same value, each drawn
-/// against the unedited clip ([`super::parity_pixels::same_edit_on`]).
+/// middle of its range whose edit (by the document command) changes the
+/// CPU frame (a modest move, which keeps a moved picture in the frame),
+/// drawn against the unedited clip: it changes the frame, and the CPU
+/// draws it as the GPU does ([`super::parity_pixels::clip_edit_drawn_on`]).
 /// A row no such value moves is an error naming it.
 #[allow(clippy::too_many_arguments)]
 fn pixel_case(routes: super::parity_pixels::Routes, ty: &EffectType, surface: Surface, effect: &BuiltinEffect, desc: &ParamDesc, label: RowLabel, value_at: impl Fn(f32) -> (String, Value)) -> Result<(), String> {
@@ -442,27 +481,20 @@ fn pixel_case(routes: super::parity_pixels::Routes, ty: &EffectType, surface: Su
     }
     let (typed, target) = chosen.ok_or("the edit doesn't change the CPU frame at any value tried")?;
     let start = clip.clone();
-    let (mut new, mut old) = (run_for(surface, clip.clone(), true), run_for(surface, clip, false));
+    let mut new = run_for(surface, clip, true);
     type_value(&mut new, label, &typed)?;
     commands_applied(&new)?;
     // The row asks the app to bring its analysis up to the edit; `regain`
     // stands in for that below, so the request must have been sent.
-    let refresh = match (ty.tag, desc.key) {
-        ("deflicker", "window_secs") => Some("RegainDeflicker"),
-        ("video_stabilization", "smoothing") => Some("ResmoothStabilization"),
-        _ => None,
-    };
-    if let Some(command) = refresh {
+    if let Some((command, _)) = analysis_request(ty, desc) {
         if !new.side.iter().any(|sent| sent.starts_with(command)) {
             return Err(format!("the row didn't ask for {command}: sent {:?}", new.side));
         }
     }
-    old.apply(AppCommand::UpdateBuiltinEffect { clip_id: old.clip, index, effect: with_field(&start.builtin_effects()[index], desc, target)? });
-    commands_applied(&old)?;
-    let (mut old, mut new) = (old.clip().clone(), new.clip().clone());
-    regain(&mut old);
+    let _ = target;
+    let mut new = new.clip().clone();
     regain(&mut new);
-    super::parity_pixels::same_edit_on(routes, size, &start, &old, &new)
+    super::parity_pixels::clip_edit_drawn_on(routes, size, &start, &new)
 }
 
 fn run_entry(report: &mut Report, entry: &CatalogEntry, surface: Surface, variant: &str) {
@@ -551,17 +583,34 @@ fn run_entry(report: &mut Report, entry: &CatalogEntry, surface: Surface, varian
         Some((_, reason)) => report.case_cpu_by_design(&name("pixels"), [key(Interaction::Pixels)], reason, || {
             pixel_case(Routes::CpuByDesign, ty, surface, &effect, desc, label, value_at)
         }),
+        // A known CPU/GPU defect: its key excluded with the issue, the edit
+        // still changes the frame.
+        None if known_defect(entry, surface, variant).is_some_and(|why| why.starts_with("known CPU/GPU")) => {
+            report.case(&name("pixels, routes apart (pinned)"), [], || super::parity_pixels::with_routes_apart(|| pixel_case(Routes::Both, ty, surface, &effect, desc, label, value_at)))
+        }
         None if known_defect(entry, surface, variant).is_some() => {}
         None => report.case_or_blocked(&name("pixels"), [key(Interaction::Pixels)], || {
             pixel_case(Routes::Both, ty, surface, &effect, desc, label, value_at)
         }),
     }
+    // What the drag must store: a scrubby row's rule from where it starts,
+    // over the range it draws (its shown range, widened to hold the value
+    // and the reset), whole for a whole-number row. A slider row places
+    // its value where the pointer is, held to having moved instead.
+    let dragged_to = match pres.widget {
+        Widget::Slider => None,
+        _ => stored(&editing, desc).as_f64().map(|v| {
+            let (v, reset) = (v as f32, row::reset_value(desc, pres));
+            let (lo, hi) = (lo.min(v).min(reset), hi.max(v).max(reset));
+            number(desc, (v + (f64::from(drag_px(desc, pres)) * row::drag_speed(pres.step)) as f32).clamp(lo, hi))
+        }),
+    };
     report.case(
         &name("drag"),
         [key(Interaction::Drag), key(Interaction::UndoRedo)],
         || {
-            edit_case(ty, surface, &editing, desc, None, |run| {
-                let at = start_drag(run, label)?;
+            edit_case(ty, surface, &editing, desc, dragged_to.clone(), |run| {
+                let at = start_drag(run, label, drag_px(desc, pres), matches!(pres.widget, Widget::Slider))?;
                 run.button(at, egui::PointerButton::Primary, false);
                 Ok(())
             })
@@ -588,7 +637,7 @@ fn run_entry(report: &mut Report, entry: &CatalogEntry, surface: Surface, varian
     report.case(&name("cancel"), [key(Interaction::CancelDrag)], || {
         let mut run = run_for(surface, fixture_on(&editing, surface), true);
         let before = run.clip().picture_v2().unwrap();
-        let at = start_drag(&mut run, label)?;
+        let at = start_drag(&mut run, label, drag_px(desc, pres), matches!(pres.widget, Widget::Slider))?;
         if run.clip().picture_v2().unwrap() == before {
             return Err("cancel setup did not change the value".into());
         }

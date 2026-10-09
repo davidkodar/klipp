@@ -83,8 +83,8 @@ fn clip() -> klipp_timeline::Clip {
     )
 }
 
-fn run(clip: klipp_timeline::Clip, generated: bool) -> Run {
-    let mut run = Run::new(clip, generated);
+fn run(clip: klipp_timeline::Clip) -> Run {
+    let mut run = Run::new(clip, true);
     run.property = true;
     run
 }
@@ -183,33 +183,58 @@ fn edit_case(control: Control, edit: Edit) -> Result<(), String> {
     let clip = clip();
     let before = clip.picture_v2().unwrap();
     let start = clip.clone();
-    let (mut old, mut new) = (run(clip.clone(), false), run(clip, true));
-    play(&mut old, control, edit)?;
+    let mut new = run(clip);
     play(&mut new, control, edit)?;
-    if !old.unapplied.is_empty() || !new.unapplied.is_empty() {
-        return Err(format!(
-            "unapplied: old {:?}; new {:?}",
-            old.unapplied, new.unapplied
-        ));
+    if !new.unapplied.is_empty() {
+        return Err(format!("unapplied: {:?}", new.unapplied));
     }
     let after = new.clip().picture_v2().unwrap();
     if after == before {
         return Err("the control changed nothing".into());
-    }
-    if after != old.clip().picture_v2().unwrap() {
-        return Err("old and generated Video pictures differ".into());
     }
     let expected = match edit {
         Edit::Type => Some(control.typed.parse::<f32>().unwrap()),
         Edit::Reset => Some(control.reset),
         Edit::Drag => None,
     };
-    if let Some(expected) = expected {
-        for key in control.keys {
-            if (value(&new, key) - expected).abs() > 1e-5 {
-                return Err(format!("{key} = {}, expected {expected}", value(&new, key)));
-            }
+    // What it must store: the typed value, the reset value, exactly; a
+    // drag to the right, a rise of every value it owns. Then the whole
+    // picture: the start with those values written by path to its
+    // placement, and nothing else.
+    let was = run(start.clone());
+    for key in control.keys {
+        match expected {
+            Some(expected) if value(&new, key) != expected => return Err(format!("{key} = {}, expected {expected}", value(&new, key))),
+            None if value(&new, key) <= value(&was, key) => return Err(format!("a drag to the right left {key} at {} (from {})", value(&new, key), value(&was, key))),
+            _ => {}
         }
+    }
+    // The document command: the start's Transform with those values set,
+    // and nothing else.
+    let mut params = crate::inspector::video_tab::get_transform(&start);
+    for key in control.keys {
+        let v = expected.unwrap_or_else(|| value(&new, key));
+        match *key {
+            "position_x" => params.position_x = v,
+            "position_y" => params.position_y = v,
+            "scale_x" => params.scale_x = v,
+            "scale_y" => params.scale_y = v,
+            "rotation" => params.rotation = v,
+            "rotation_x" => params.rotation_x = v,
+            "rotation_y" => params.rotation_y = v,
+            "perspective" => params.perspective = v,
+            _ => unreachable!(),
+        }
+    }
+    let index = crate::inspector::video_tab::find_transform_index(&start).ok_or("the fixture has no Transform")?;
+    let mut oracle = run(start.clone());
+    let clip_id = oracle.clip;
+    oracle.apply(klipp_core::AppCommand::UpdateBuiltinEffect { clip_id, index, effect: params.to_builtin_effect() });
+    if !oracle.unapplied.is_empty() {
+        return Err(format!("the oracle's command: unapplied {:?}", oracle.unapplied));
+    }
+    if oracle.clip().picture_v2().unwrap() != after {
+        return Err("the edit left another picture than the Transform set by its document command does".into());
     }
     if new.state.active_history().undo_count() != 1 || new.state.any_drag_in_progress() {
         return Err(format!(
@@ -224,16 +249,15 @@ fn edit_case(control: Control, edit: Edit) -> Result<(), String> {
     if !new.step(true) || new.clip().picture_v2().unwrap() != after {
         return Err("redo is not exact".into());
     }
-    // The edit as the renderer draws it, on each route.
-    super::parity_pixels::same_edit(&start, old.clip(), new.clip())
+    // The edit as the renderer draws it: changed, the CPU's as the GPU's.
+    super::parity_pixels::clip_edit_drawn(&start, new.clip())
 }
 
 fn cancel_case(
     clip: klipp_timeline::Clip,
-    generated: bool,
     control: Control,
 ) -> Result<(), String> {
-    let mut run = run(clip, generated);
+    let mut run = run(clip);
     let before = run.clip().picture_v2().unwrap();
     let at = begin_drag(&mut run, control.label)?;
     if run.clip().picture_v2().unwrap() == before {
@@ -248,9 +272,7 @@ fn cancel_case(
         || run.state.any_drag_in_progress()
         || !run.unapplied.is_empty()
     {
-        return Err(format!(
-            "generated={generated}: Escape did not restore the whole picture without history"
-        ));
+        return Err("Escape did not restore the whole picture without history".into());
     }
     Ok(())
 }
@@ -262,18 +284,16 @@ pub(super) fn exercise(report: &mut Report) {
             &name("open"),
             keys(control, Interaction::OpenWithoutWrite),
             || {
-                for generated in [false, true] {
-                    let mut run = run(clip(), generated);
-                    let before = run.clip().picture_v2().unwrap();
-                    let dirty = run.state.dirty;
-                    ready(&mut run, control.label)?;
-                    if run.clip().picture_v2().unwrap() != before
-                        || run.state.dirty != dirty
-                        || run.state.active_history().undo_count() != 0
-                        || !run.unapplied.is_empty()
-                    {
-                        return Err(format!("opening writes state in generated={generated}"));
-                    }
+                let mut run = run(clip());
+                let before = run.clip().picture_v2().unwrap();
+                let dirty = run.state.dirty;
+                ready(&mut run, control.label)?;
+                if run.clip().picture_v2().unwrap() != before
+                    || run.state.dirty != dirty
+                    || run.state.active_history().undo_count() != 0
+                    || !run.unapplied.is_empty()
+                {
+                    return Err("opening writes state".into());
                 }
                 Ok(())
             },
@@ -295,17 +315,14 @@ pub(super) fn exercise(report: &mut Report) {
             &name("cancel"),
             keys(control, Interaction::CancelDrag),
             || {
-                for generated in [false, true] {
-                    cancel_case(clip(), generated, control)?;
-                }
-                Ok(())
+                cancel_case(clip(), control)
             },
         );
     }
 }
 
-/// The anchor Opacity's keyframe controls on the Video tab, each old and
-/// generated against the clip's opacity lane, earning the `anchor` keys
+/// The anchor Opacity's keyframe controls on the Video tab, against the
+/// clip's opacity lane, earning the `anchor` keys
 /// `parity_numeric` requires.
 pub(super) fn anchor_opacity_keys(report: &mut Report) {
     use super::parity_effect_keys::{exercise_on, Action};
@@ -316,15 +333,7 @@ pub(super) fn anchor_opacity_keys(report: &mut Report) {
     for action in Action::ALL {
         let key = CoverageKey::new(entry.type_id, &entry.parameter, Surface::VideoTab, "anchor", action.interaction());
         report.case(&format!("Video Opacity / {action:?}"), [key], || {
-            let failures: Vec<_> = [false, true]
-                .into_iter()
-                .filter_map(|generated| exercise_on(&entry, Surface::VideoTab, action, generated).err())
-                .collect();
-            if failures.is_empty() {
-                Ok(())
-            } else {
-                Err(failures.join("; "))
-            }
+            exercise_on(&entry, Surface::VideoTab, action)
         });
     }
 }
@@ -367,55 +376,53 @@ fn video_transform_without_an_effect_cancels_clicks_and_undoes_the_first_drag() 
         tc(0.0),
         tc(2.0),
     );
-    for generated in [false, true] {
-        // Perspective appears only after a tilt; the tilted fixture above
-        // covers its cancellation. These six rows exist on a bare clip.
-        for &control in &CONTROLS[..6] {
-            cancel_case(bare.clone(), generated, control)
-                .unwrap_or_else(|e| panic!("{}: {e}", control.label));
-            let mut run = run(bare.clone(), generated);
-            let before = run.clip().picture_v2().unwrap();
-            let (_, at) = ready(&mut run, control.label).unwrap();
-            run.button(at, egui::PointerButton::Primary, true);
-            run.button(at, egui::PointerButton::Primary, false);
-            run.frame(Vec::new(), egui::Modifiers::NONE);
-            assert_eq!(
-                run.clip().picture_v2().unwrap(),
-                before,
-                "{} / generated={generated}: click",
-                control.label
-            );
-            assert_eq!(run.state.active_history().undo_count(), 0);
-            assert!(!run.state.any_drag_in_progress());
-            assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
+    // Perspective appears only after a tilt; the tilted fixture above
+    // covers its cancellation. These six rows exist on a bare clip.
+    for &control in &CONTROLS[..6] {
+        cancel_case(bare.clone(), control)
+            .unwrap_or_else(|e| panic!("{}: {e}", control.label));
+        let mut run = run(bare.clone());
+        let before = run.clip().picture_v2().unwrap();
+        let (_, at) = ready(&mut run, control.label).unwrap();
+        run.button(at, egui::PointerButton::Primary, true);
+        run.button(at, egui::PointerButton::Primary, false);
+        run.frame(Vec::new(), egui::Modifiers::NONE);
+        assert_eq!(
+            run.clip().picture_v2().unwrap(),
+            before,
+            "{}: click",
+            control.label
+        );
+        assert_eq!(run.state.active_history().undo_count(), 0);
+        assert!(!run.state.any_drag_in_progress());
+        assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
 
-            let mut edited = self::run(bare.clone(), generated);
-            let end = begin_drag(&mut edited, control.label).unwrap();
-            edited.button(end, egui::PointerButton::Primary, false);
-            edited.frame(Vec::new(), egui::Modifiers::NONE);
-            let after = edited.clip().picture_v2().unwrap();
-            assert_ne!(
-                after, before,
-                "{} / generated={generated}: committed drag",
-                control.label
-            );
-            assert_eq!(edited.state.active_history().undo_count(), 1);
-            assert!(!edited.state.any_drag_in_progress());
-            assert!(edited.step(false));
-            assert_eq!(
-                edited.clip().picture_v2().unwrap(),
-                before,
-                "{} / generated={generated}: undo",
-                control.label
-            );
-            assert!(edited.step(true));
-            assert_eq!(
-                edited.clip().picture_v2().unwrap(),
-                after,
-                "{} / generated={generated}: exact redo",
-                control.label
-            );
-            assert!(edited.unapplied.is_empty(), "{:?}", edited.unapplied);
-        }
+        let mut edited = self::run(bare.clone());
+        let end = begin_drag(&mut edited, control.label).unwrap();
+        edited.button(end, egui::PointerButton::Primary, false);
+        edited.frame(Vec::new(), egui::Modifiers::NONE);
+        let after = edited.clip().picture_v2().unwrap();
+        assert_ne!(
+            after, before,
+            "{}: committed drag",
+            control.label
+        );
+        assert_eq!(edited.state.active_history().undo_count(), 1);
+        assert!(!edited.state.any_drag_in_progress());
+        assert!(edited.step(false));
+        assert_eq!(
+            edited.clip().picture_v2().unwrap(),
+            before,
+            "{}: undo",
+            control.label
+        );
+        assert!(edited.step(true));
+        assert_eq!(
+            edited.clip().picture_v2().unwrap(),
+            after,
+            "{}: exact redo",
+            control.label
+        );
+        assert!(edited.unapplied.is_empty(), "{:?}", edited.unapplied);
     }
 }

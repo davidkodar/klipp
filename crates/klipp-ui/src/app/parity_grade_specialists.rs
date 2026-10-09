@@ -1,7 +1,7 @@
-//! M3 step 18 parity: the grade's specialist editors (d9's family), each
-//! driven through the generated view and the old panel on the grade
-//! driver of `parity_controls`, and held to the same picture, one undo
-//! step, and exact undo and redo.
+//! M3: the grade's specialist editors (d9's family), each driven through
+//! the generated view on the grade driver of `parity_controls` and held
+//! to what the edit must leave (the file it names, the mask stack it
+//! makes), one undo step, and exact undo and redo.
 //!
 //! A LUT node's file (`node_inspector::lut_picker`). A look picked
 //! from the bundled library, the file cleared, and a file this machine
@@ -27,30 +27,31 @@ fn lut_path(g: &Grade) -> Option<std::path::PathBuf> {
     g.grade().nodes.iter().find(|n| n.id == g.node).and_then(|n| n.params.lut_path.clone())
 }
 
-/// One LUT edit through both views from `start`: the same file after, in
-/// one step, undone and redone exactly.
+/// One LUT edit from `start`: the node's file `want` after, the picture
+/// exactly the start's with only that file written, in one step, undone
+/// and redone exactly.
 fn lut_case(start: &Grade, want: Option<&std::path::Path>, drive: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
-    let (mut new, mut old) = (start.twin(true), start.twin(false));
+    let mut new = start.twin(true);
     new.drawn();
-    old.drawn();
     let before = new.picture();
-    drive(&mut new).map_err(|e| format!("new: {e}"))?;
-    drive(&mut old).map_err(|e| format!("old: {e}"))?;
-    for (view, g) in [("new", &new), ("old", &old)] {
-        if !g.unapplied.is_empty() {
-            return Err(format!("{view}: unapplied {:?}", g.unapplied));
-        }
-        if lut_path(g).as_deref() != want {
-            return Err(format!("{view}: {:?}, want {want:?}", lut_path(g)));
-        }
-        if g.state.active_history().undo_count() != 1 {
-            return Err(format!("{view}: {} steps, not one", g.state.active_history().undo_count()));
-        }
+    let expected = super::parity_controls::expected_with(&new, |n| {
+        n.params.lut_path = want.map(Into::into);
+        Ok(())
+    })?;
+    drive(&mut new)?;
+    if !new.unapplied.is_empty() {
+        return Err(format!("unapplied {:?}", new.unapplied));
     }
-    if new.picture() != old.picture() {
-        return Err("the pictures differ".into());
+    if lut_path(&new).as_deref() != want {
+        return Err(format!("{:?}, want {want:?}", lut_path(&new)));
+    }
+    if new.state.active_history().undo_count() != 1 {
+        return Err(format!("{} steps, not one", new.state.active_history().undo_count()));
     }
     let after = new.picture();
+    if after != expected {
+        return Err("not the expected picture: more than the file was written".into());
+    }
     new.step(false)?;
     if new.picture() != before {
         return Err("undo doesn't give back the picture before".into());
@@ -120,27 +121,25 @@ pub(super) fn run_lut(report: &mut Report) {
         let start = lut_node(Some("/nonexistent/klipp-parity/look.cube"))?;
         lut_case(&start, None, |g| click(g, "Clear"))
     });
-    // A file this machine doesn't have: named in both views, nothing
-    // written by drawing it.
+    // A file this machine doesn't have: named, nothing written by drawing
+    // it.
     report.case("LUT missing", [key(LUT_ENTRY, Interaction::MissingAsset)], || {
         let start = lut_node(Some("/nonexistent/klipp-parity/look.cube"))?;
-        for generated in [false, true] {
-            let mut g = start.twin(generated);
-            let before = g.picture();
-            let drawn = g.drawn();
-            if !drawn.iter().any(|(t, _)| t == "look") {
-                return Err(format!("generated {generated}: the missing file isn't named"));
-            }
-            if g.picture() != before || g.state.active_history().undo_count() != 0 || !g.unapplied.is_empty() {
-                return Err(format!("generated {generated}: drawing it wrote"));
-            }
+        let mut g = start.twin(true);
+        let before = g.picture();
+        let drawn = g.drawn();
+        if !drawn.iter().any(|(t, _)| t == "look") {
+            return Err("the missing file isn't named".into());
+        }
+        if g.picture() != before || g.state.active_history().undo_count() != 0 || !g.unapplied.is_empty() {
+            return Err("drawing it wrote".into());
         }
         Ok(())
     });
 }
 
 #[test]
-fn a_lut_nodes_file_edits_as_the_old_panel() {
+fn a_lut_nodes_file_stores_the_file_picked() {
     let mut report = Report::default();
     report.family("LUT file", run_lut);
     // The same cases with the grade on the timeline grade and a group's
@@ -155,27 +154,38 @@ fn masks(g: &Grade) -> Vec<klipp_core::Mask> {
     g.grade().nodes.iter().find(|n| n.id == g.node).and_then(|n| n.params.masks.clone()).map(|m| m.masks).unwrap_or_default()
 }
 
-/// One mask-stack edit through both views from `start`: the same masks
-/// after, `check`ed, in one step, undone to the masks before exactly.
+/// One mask-stack edit from `start`: the masks after `check`ed against
+/// the masks before (the edit the control names), in one step, undone to
+/// the picture before and redone to the picture after exactly.
 fn mask_case(start: &Grade, check: impl Fn(&[klipp_core::Mask], &[klipp_core::Mask]) -> Result<(), String>, drive: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
-    let (mut new, mut old) = (start.twin(true), start.twin(false));
+    let mut new = start.twin(true);
     new.drawn();
-    old.drawn();
-    let before = masks(&new);
-    drive(&mut new).map_err(|e| format!("new: {e}"))?;
-    drive(&mut old).map_err(|e| format!("old: {e}"))?;
-    for (view, g) in [("new", &mut new), ("old", &mut old)] {
-        if !g.unapplied.is_empty() {
-            return Err(format!("{view}: unapplied {:?}", g.unapplied));
-        }
-        check(&before, &masks(g)).map_err(|e| format!("{view}: {e}"))?;
-        if g.state.active_history().undo_count() != 1 {
-            return Err(format!("{view}: {} steps, not one", g.state.active_history().undo_count()));
-        }
-        g.step(false)?;
-        if masks(g) != before {
-            return Err(format!("{view}: undo doesn't give back the masks before: {:?}", masks(g)));
-        }
+    let (before, picture) = (masks(&new), new.picture());
+    drive(&mut new)?;
+    if !new.unapplied.is_empty() {
+        return Err(format!("unapplied {:?}", new.unapplied));
+    }
+    check(&before, &masks(&new))?;
+    // Nothing but the stack written: the start with the stack it now has.
+    let stack = new.grade().nodes.iter().find(|n| n.id == new.node).and_then(|n| n.params.masks.clone());
+    let expected = super::parity_controls::expected_with(start, |n| {
+        n.params.masks = stack;
+        Ok(())
+    })?;
+    let after = new.picture();
+    if after != expected {
+        return Err("not the expected picture: more than the mask stack was written".into());
+    }
+    if new.state.active_history().undo_count() != 1 {
+        return Err(format!("{} steps, not one", new.state.active_history().undo_count()));
+    }
+    new.step(false)?;
+    if new.picture() != picture {
+        return Err(format!("undo doesn't give back the masks before: {:?}", masks(&new)));
+    }
+    new.step(true)?;
+    if new.picture() != after {
+        return Err("redo doesn't give back the picture after".into());
     }
     Ok(())
 }
@@ -226,7 +236,7 @@ pub(super) fn run_masks(report: &mut Report) {
 }
 
 #[test]
-fn a_mask_stack_edits_as_the_old_panel() {
+fn a_mask_stack_makes_the_edit_named() {
     let mut report = Report::default();
     report.family("mask stack", run_masks);
     // The same cases with the grade on the timeline grade and a group's
@@ -237,54 +247,49 @@ fn a_mask_stack_edits_as_the_old_panel() {
     report.family_result().unwrap();
 }
 
-/// A Difference Key's switch, in both views: one step, and its undo
-/// gives back the key as it was (unset). The old panel drew it in place
-/// and sent it too, so the step started from the edit and undid nothing.
+/// A Difference Key's switch: one step, and its undo gives back the key
+/// as it was (unset), not a step started from the edit that undoes
+/// nothing.
 #[test]
 fn a_difference_key_edit_is_one_step_undone() {
     let (state, clip, node) = placed(NodeKind::DifferenceKey).expect("a Difference Key node");
     let base = Grade::new(state, clip, node, true).on(Page::PerNode);
     let key = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).and_then(|n| n.params.difference_key.clone());
-    for generated in [false, true] {
-        let mut g = base.twin(generated);
-        g.drawn();
-        let before = key(&g);
-        click(&mut g, "Enabled").unwrap();
-        assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
-        assert_ne!(key(&g), before, "generated {generated}: the switch changed the key");
-        assert_eq!(g.state.active_history().undo_count(), 1, "generated {generated}: one step");
-        g.step(false).unwrap();
-        assert_eq!(key(&g), before, "generated {generated}: undo gives back the key");
-    }
+    let mut g = base.twin(true);
+    g.drawn();
+    let before = key(&g);
+    click(&mut g, "Enabled").unwrap();
+    assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+    assert_ne!(key(&g), before, "the switch changed the key");
+    assert_eq!(g.state.active_history().undo_count(), 1, "one step");
+    g.step(false).unwrap();
+    assert_eq!(key(&g), before, "undo gives back the key");
 }
 
-/// Escape during a grade slider's drag takes it back in both views: the
-/// old panel's `grade_slider` (a Soft Clip's Knee) and the generated row.
+/// Escape during a grade slider's drag (a Soft Clip's Knee) takes it back.
 #[test]
 fn escape_takes_back_a_grade_slider_drag() {
     let (mut state, clip, node) = placed(NodeKind::SoftClip).expect("a Soft Clip node");
     let c = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)).unwrap();
     klipp_timeline::GradeAccess::edit_grade(c, |g| g.nodes.iter_mut().filter(|n| n.id == node).for_each(|n| n.params.soft_clip = Some(klipp_core::color_grade::SoftClipSettings { enabled: true, ..Default::default() })));
     let base = Grade::new(state, clip, node, true).on(Page::PerNode);
-    for generated in [false, true] {
-        let mut g = base.twin(generated);
-        let drawn = g.drawn();
-        let before = g.picture();
-        let label = drawn.iter().rev().find(|(t, _)| t == "Knee").map(|(_, p)| *p).expect("a Knee row");
-        let at = drawn.iter().filter(|(t, p)| (p.y - label.y).abs() < 6.0 && p.x > label.x && t.trim_start_matches('-').starts_with(|c: char| c.is_ascii_digit())).map(|(_, p)| *p).next().expect("its number");
-        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
-        g.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
-        for dx in [6.0, 12.0, 18.0] {
-            g.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))]);
-        }
-        assert!(g.picture() != before, "generated {generated}: the drag moved the knee");
-        g.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
-        g.frame(vec![button(at + egui::vec2(18.0, 0.0), false)]);
-        g.frame(Vec::new());
-        assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
-        assert_eq!(g.state.active_history().undo_count(), 0, "generated {generated}: no step");
-        assert!(g.picture() == before, "generated {generated}: Escape gives back the picture");
+    let mut g = base.twin(true);
+    let drawn = g.drawn();
+    let before = g.picture();
+    let label = drawn.iter().rev().find(|(t, _)| t == "Knee").map(|(_, p)| *p).expect("a Knee row");
+    let at = drawn.iter().filter(|(t, p)| (p.y - label.y).abs() < 6.0 && p.x > label.x && t.trim_start_matches('-').starts_with(|c: char| c.is_ascii_digit())).map(|(_, p)| *p).next().expect("its number");
+    let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    g.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
+    for dx in [6.0, 12.0, 18.0] {
+        g.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))]);
     }
+    assert!(g.picture() != before, "the drag moved the knee");
+    g.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+    g.frame(vec![button(at + egui::vec2(18.0, 0.0), false)]);
+    g.frame(Vec::new());
+    assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+    assert_eq!(g.state.active_history().undo_count(), 0, "no step");
+    assert!(g.picture() == before, "Escape gives back the picture");
 }
 
 /// A mask's own keyframes stay with it: with two masks keyed apart,
@@ -308,44 +313,38 @@ fn mask_shapes_keep_their_own_tracks() {
     let (f, s2) = (first.clone(), second.clone());
     klipp_timeline::GradeAccess::edit_grade(c, |g| g.nodes.iter_mut().filter(|n| n.id == node).for_each(|n| n.params.masks = Some(klipp_core::MaskStack { masks: vec![f.clone(), s2.clone()] })));
     let base = Grade::new(state, clip, node, true).on(Page::PerNode);
-    for generated in [false, true] {
-        let mut g = base.twin(generated);
-        // The first row's ×.
-        let drawn = g.drawn();
-        let row = drawn.iter().find(|(t, _)| t.starts_with("Mask 1")).map(|(_, p)| *p).expect("a Mask 1 row");
-        let x = drawn.iter().filter(|(t, p)| t == "\u{00D7}" && (p.y - row.y).abs() < 8.0).map(|(_, p)| *p).next().expect("its ×");
-        g.click_at(x);
-        assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
-        let left = masks(&g);
-        assert_eq!(left.len(), 1, "generated {generated}: one mask left");
-        assert_eq!(left[0].keyframes.center_x, second.keyframes.center_x, "generated {generated}: the second keeps its own track");
-        assert!(left[0].keyframes.center_y.is_empty(), "generated {generated}: and not the first's");
-    }
+    let mut g = base.twin(true);
+    // The first row's ×.
+    let drawn = g.drawn();
+    let row = drawn.iter().find(|(t, _)| t.starts_with("Mask 1")).map(|(_, p)| *p).expect("a Mask 1 row");
+    let x = drawn.iter().filter(|(t, p)| t == "\u{00D7}" && (p.y - row.y).abs() < 8.0).map(|(_, p)| *p).next().expect("its ×");
+    g.click_at(x);
+    assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+    let left = masks(&g);
+    assert_eq!(left.len(), 1, "one mask left");
+    assert_eq!(left[0].keyframes.center_x, second.keyframes.center_x, "the second keeps its own track");
+    assert!(left[0].keyframes.center_y.is_empty(), "and not the first's");
 }
 
-/// A mask's Track button asks for its region to be tracked, in both views,
-/// and writes nothing itself (step 11's `track_and_retrack_click_through`,
+/// A mask's Track button asks for its region to be tracked, and writes
+/// nothing itself (step 11's `track_and_retrack_click_through`,
 /// its first half).
 #[test]
-fn track_clicks_through_in_both_views() {
+fn track_clicks_through() {
     let start = mask_node(true).unwrap();
-    for generated in [false, true] {
-        let mut g = start.twin(generated);
-        g.drawn();
-        let before = g.picture();
-        click(&mut g, "\u{1F3AF} Track").unwrap();
-        assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
-        assert_eq!(g.side.len(), 1, "generated {generated}: {:?}", g.side);
-        assert!(g.side[0].starts_with("TrackMaskRegion") && g.side[0].contains("mask_index: 0"), "generated {generated}: {:?}", g.side);
-        assert!(g.picture() == before && g.state.active_history().undo_count() == 0, "generated {generated}: the request wrote");
-    }
+    let mut g = start.twin(true);
+    g.drawn();
+    let before = g.picture();
+    click(&mut g, "\u{1F3AF} Track").unwrap();
+    assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+    assert_eq!(g.side.len(), 1, "{:?}", g.side);
+    assert!(g.side[0].starts_with("TrackMaskRegion") && g.side[0].contains("mask_index: 0"), "{:?}", g.side);
+    assert!(g.picture() == before && g.state.active_history().undo_count() == 0, "the request wrote");
 }
 
-/// A tracked mask's Re-track and Untrack in the generated view: Re-track
-/// takes the old tracker off and tracks again, Untrack takes it off, and
-/// neither writes itself (step 11's `track_and_retrack_click_through`, its
-/// second half). The old per-node panel draws its mask list with no tracked
-/// masks, so it never offers them (pinned, #1398; step 19 removes it).
+/// A tracked mask's Re-track and Untrack: Re-track takes the old tracker
+/// off and tracks again, Untrack takes it off, and neither writes itself
+/// (step 11's `track_and_retrack_click_through`, its second half).
 #[test]
 fn retrack_and_untrack_click_through() {
     let start = mask_node(true).unwrap();
@@ -366,12 +365,6 @@ fn retrack_and_untrack_click_through() {
         assert_eq!(sent, want, "{button}: {:?}", g.side);
         assert!(g.picture() == before && g.state.active_history().undo_count() == 0, "{button}: the request wrote");
     }
-    // The old per-node panel: Track only (#1398).
-    let mut old = start.twin(false);
-    let clip = old.clip;
-    old.state.sequences[0].all_clips_mut().find(|c| c.id == clip).unwrap().track_points.push(tracker);
-    let drawn: Vec<String> = old.drawn().into_iter().map(|(t, _)| t).collect();
-    assert!(drawn.iter().any(|t| t == "\u{1F3AF} Track") && !drawn.iter().any(|t| t.contains("Re-track")), "the old panel offers Track only (#1398)");
 }
 
 /// Where the mask's `param` slider is pressed: on its rail, between its
@@ -384,42 +377,40 @@ fn mask_slider(g: &mut Grade, param: &str) -> Result<egui::Pos2, String> {
 }
 
 /// A mask's shape slider dragged is one undo step, not one per frame, and
-/// Escape during the drag takes it back, in both views (IC13).
+/// Escape during the drag takes it back (IC13).
 #[test]
 fn a_mask_slider_drag_is_one_step_and_escape_takes_it_back() {
     let base = mask_node(true).expect("a Mask node with a circle");
     let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
     for escape in [false, true] {
-        for generated in [false, true] {
-            let mut g = base.twin(generated);
-            let at = mask_slider(&mut g, "radius").unwrap();
-            let before = masks(&g);
-            g.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
-            for dx in [8.0, 16.0, 24.0] {
-                g.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))]);
-            }
-            let dragged = masks(&g);
-            assert!(dragged != before, "generated {generated}: the drag moved the radius");
-            if escape {
-                g.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
-            }
-            g.frame(vec![button(at + egui::vec2(24.0, 0.0), false)]);
-            g.frame(Vec::new());
-            assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
-            if escape {
-                assert_eq!(g.state.active_history().undo_count(), 0, "generated {generated}: Escape leaves no step");
-                assert_eq!(masks(&g), before, "generated {generated}: Escape gives back the masks");
-            } else {
-                assert_eq!(g.state.active_history().undo_count(), 1, "generated {generated}: one step for the drag");
-                g.step(false).unwrap();
-                assert_eq!(masks(&g), before, "generated {generated}: undo gives back the masks");
-            }
+        let mut g = base.twin(true);
+        let at = mask_slider(&mut g, "radius").unwrap();
+        let before = masks(&g);
+        g.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
+        for dx in [8.0, 16.0, 24.0] {
+            g.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))]);
+        }
+        let dragged = masks(&g);
+        assert!(dragged != before, "the drag moved the radius");
+        if escape {
+            g.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        }
+        g.frame(vec![button(at + egui::vec2(24.0, 0.0), false)]);
+        g.frame(Vec::new());
+        assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+        if escape {
+            assert_eq!(g.state.active_history().undo_count(), 0, "Escape leaves no step");
+            assert_eq!(masks(&g), before, "Escape gives back the masks");
+        } else {
+            assert_eq!(g.state.active_history().undo_count(), 1, "one step for the drag");
+            g.step(false).unwrap();
+            assert_eq!(masks(&g), before, "undo gives back the masks");
         }
     }
 }
 
 /// A click on a keyed mask slider keys its value at the playhead as one
-/// undo step, undone exactly, in both views.
+/// undo step, undone exactly.
 #[test]
 fn a_keyed_mask_slider_click_is_one_step() {
     let mut base = mask_node(true).expect("a Mask node with a circle");
@@ -429,24 +420,21 @@ fn a_keyed_mask_slider_click_is_one_step() {
     klipp_timeline::GradeAccess::edit_grade(c, |g| g.nodes.iter_mut().filter(|n| n.id == node).for_each(|n| {
         n.params.masks.as_mut().unwrap().masks[0].keyframes.radius = vec![key(0.0, 0.2), key(1.0, 0.3)];
     }));
-    for generated in [false, true] {
-        let mut g = base.twin(generated);
-        let at = mask_slider(&mut g, "radius").unwrap();
-        let before = masks(&g);
-        g.click_at(at + egui::vec2(12.0, 0.0));
-        assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
-        assert!(masks(&g)[0].keyframes.radius != before[0].keyframes.radius, "generated {generated}: the click keyed the radius");
-        assert_eq!(g.state.active_history().undo_count(), 1, "generated {generated}: one step");
-        g.step(false).unwrap();
-        assert_eq!(masks(&g), before, "generated {generated}: undo gives back the keys");
-    }
+    let mut g = base.twin(true);
+    let at = mask_slider(&mut g, "radius").unwrap();
+    let before = masks(&g);
+    g.click_at(at + egui::vec2(12.0, 0.0));
+    assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+    assert!(masks(&g)[0].keyframes.radius != before[0].keyframes.radius, "the click keyed the radius");
+    assert_eq!(g.state.active_history().undo_count(), 1, "one step");
+    g.step(false).unwrap();
+    assert_eq!(masks(&g), before, "undo gives back the keys");
 }
 
-/// A file's camera encoding picked from the Input Colour Space menu, in
-/// both views: the same command, the file and its clip set, one step, and
-/// one undo gives back both (#1396).
+/// A file's camera encoding picked from the Input Colour Space menu: the
+/// file and its clip set, one step, and one undo gives back both (#1396).
 #[test]
-fn a_camera_encoding_pick_edits_as_the_old_panel() {
+fn a_camera_encoding_pick_sets_the_file_and_its_clip() {
     let (mut state, clip, node) = super::grade_inspector_tests::graded(NodeKind::InputTransform).expect("an Input Transform node");
     // The clip's file, in the pool: the encoding is the file's.
     let media = state.sequences[0].all_clips().find(|c| c.id == clip).and_then(|c| c.media_id()).expect("a clip of a file");
@@ -454,17 +442,15 @@ fn a_camera_encoding_pick_edits_as_the_old_panel() {
     state.media_pool.add(klipp_media::MediaItem::new_synthetic_title(media, "shot".into(), klipp_core::RationalTime::from_secs_f64(2.0, 25), fps));
     let base = Grade::new(state, clip, node, true).on(Page::PerNode);
     let format = |g: &Grade| g.state.media_pool.get(&media).map(|i| (i.log_format, i.log_format_user_set)).expect("the file");
-    for generated in [false, true] {
-        let mut g = base.twin(generated);
-        g.drawn();
-        let before = (format(&g), g.picture());
-        click(&mut g, "Rec.709 / sRGB (no conversion)").unwrap();
-        click(&mut g, "Sony S-Log3").unwrap();
-        assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
-        assert_eq!(format(&g), (klipp_core::LogFormat::SLog3, true), "generated {generated}: the file's encoding");
-        assert!(g.picture() != before.1, "generated {generated}: the clip's Input Transform");
-        assert_eq!(g.state.active_history().undo_count(), 1, "generated {generated}: one step");
-        g.step(false).unwrap();
-        assert_eq!((format(&g), g.picture()), before, "generated {generated}: undo gives back the file and the clip");
-    }
+    let mut g = base.twin(true);
+    g.drawn();
+    let before = (format(&g), g.picture());
+    click(&mut g, "Rec.709 / sRGB (no conversion)").unwrap();
+    click(&mut g, "Sony S-Log3").unwrap();
+    assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+    assert_eq!(format(&g), (klipp_core::LogFormat::SLog3, true), "the file's encoding");
+    assert!(g.picture() != before.1, "the clip's Input Transform");
+    assert_eq!(g.state.active_history().undo_count(), 1, "one step");
+    g.step(false).unwrap();
+    assert_eq!((format(&g), g.picture()), before, "undo gives back the file and the clip");
 }

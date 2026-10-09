@@ -1,18 +1,19 @@
-//! A grade's numeric rows through both views (M3 step 18): every slider
-//! and number of a grade node, on each page that draws it: the per-node
-//! layout for a per-node type, and the Corrector's tabbed page and the
-//! Colour page's bottom tools for the types they show. Each row is opened
-//! (nothing written), typed, dragged, cancelled by Escape and reset, in
-//! the generated view and the old panel, which must leave the same
-//! picture, one undo step and an exact undo and redo (`edit_case`); the
-//! typed edit is drawn on the CPU and GPU routes, alike in both views
-//! (`same_sequence_edit`). Run through `on_roots` too, so the sequence's
-//! grades are earned alike, drawn by their own stage.
+//! A grade's numeric rows in the inspector (M3): every slider and number
+//! of a grade node, on each page that draws it: the per-node layout for a
+//! per-node type, and the Corrector's tabbed page and the Colour page's
+//! bottom tools for the types they show. Each row is opened (nothing
+//! written), typed, dragged, dragged past its end, cancelled by Escape and
+//! reset, and held to what that edit must store (`oracle_case`): the
+//! picture writing it by path leaves, one undo step, and an exact undo and
+//! redo. The typed edit is drawn on the CPU and GPU routes, which must
+//! change and agree (`parity_pixels::edit_drawn`). Run through `on_roots`
+//! too, so the sequence's grades are earned alike, drawn by their own
+//! stage.
 //!
 //! Wheel axes and the warper's sectors are another driver's (a drag in a
-//! disc) and another family's (`parity_grade_wheels`).
+//! disc) and another family's.
 
-use super::parity_controls::{grade_variant, meet_conditions, placed, Grade, Page};
+use super::parity_controls::{grade_variant, meet_conditions, oracle_case, placed, Grade, Page};
 use super::parity_harness::GradeRoot;
 use super::parity_manifest::{catalog, CoverageKey, Interaction, Manifest, Report, Surface};
 use crate::inspector::generated::row;
@@ -38,10 +39,13 @@ const PAGE_TYPES: &[(NodeKind, &[Surface])] = &[
     (NodeKind::InputTransform, &[Surface::GradeTabbedRight, Surface::GradeBottomTools]),
 ];
 
-/// Rows whose old drag is pinned, not compared, past the end: the old row
-/// drags over another range and stalls on a slow drag (#1427). The
-/// generated row is still held to reaching the end, clamped.
-const OLD_DRAG_PINNED: &[(&str, &str)] = &[("denoise_radius", "#1427: the old Radius row drags over 1..5, not the catalog's 1..7, and stalls on a slow drag")];
+/// Grade types whose rows the CPU and the GPU stack draw differently:
+/// known defects, their Pixels excluded with the issue until fixed.
+const ROUTE_DEFECTS: &[(NodeKind, &str)] = &[];
+
+fn route_defect(ty: &NodeType) -> Option<&'static str> {
+    ROUTE_DEFECTS.iter().find(|(kind, _)| *kind == ty.kind).map(|d| d.1)
+}
 
 const TABS: [ColorTab; 5] = [ColorTab::Adjustments, ColorTab::Wheels, ColorTab::Curves, ColorTab::HueSat, ColorTab::Warper];
 
@@ -58,12 +62,6 @@ fn numeric(ty: &NodeType, desc: &ParamDesc) -> bool {
         && !matches!(desc.key, "log_low_range" | "log_high_range")
 }
 
-/// Kinds whose per-node controls are one shared editor in both views (a
-/// registered whole-node widget, kept by step 19, not old code): their
-/// rows aren't generated number rows, so their reset and cancel are held
-/// alike rather than to IC14 and IC15.
-const WHOLE_NODE: &[NodeKind] = &[NodeKind::ExternalMatte, NodeKind::DifferenceKey, NodeKind::LayerMixer];
-
 fn per_node_types() -> impl Iterator<Item = &'static NodeType> {
     klipp_nodes::registry::node_types().filter(|t| super::main_layout::per_node_kind(t.kind))
 }
@@ -78,6 +76,12 @@ pub(super) fn require(manifest: &mut Manifest) {
         manifest.require_fixture(entry, surface, variant);
         for root in GradeRoot::SEQUENCE {
             manifest.require_fixture(entry, Surface::NonClipGrade, &format!("{}: {surface:?} {variant}", root.variant()));
+        }
+        if let Some(reason) = route_defect(ty) {
+            manifest.exclude_key(CoverageKey::new(entry.type_id, &entry.parameter, surface, variant, Interaction::Pixels), reason);
+            for root in GradeRoot::SEQUENCE {
+                manifest.exclude_key(CoverageKey::new(entry.type_id, &entry.parameter, Surface::NonClipGrade, &format!("{}: {surface:?} {variant}", root.variant()), Interaction::Pixels), reason);
+            }
         }
     };
     for ty in per_node_types() {
@@ -156,10 +160,15 @@ fn drag(g: &mut Grade, label: &str, n: usize, dx: f32, escape: bool) -> Result<(
     let (_, at) = row_at(g, label, n)?;
     g.frame(vec![egui::Event::PointerMoved(at)]);
     g.frame(vec![button(at, true)]);
+    let pressed = g.picture();
     for i in 1..=3 {
         g.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx * i as f32 / 3.0, 0.0))]);
     }
     if escape {
+        // A drag taken back must have moved first, or Escape proves nothing.
+        if g.picture() == pressed {
+            return Err("the drag hadn't moved anything before Escape".into());
+        }
         g.frame(vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
     }
     g.frame(vec![button(at + egui::vec2(dx, 0.0), false)]);
@@ -201,73 +210,30 @@ pub(super) fn shown_on(base: &Grade, ty: &NodeType, desc: &ParamDesc, wide: bool
     Err(last)
 }
 
-/// An edit through both views (`drive`), from `start`: the generated view
-/// and the old panel must store the same value of the row, leave the same
-/// picture, one undo step each, and the generated one undo and redo
-/// exactly. A failure names the row's stored value in each view and each
-/// view's steps.
-pub(super) fn edit_case(start: &Grade, desc: &ParamDesc, drive: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
-    let (mut new, mut old) = (start.twin(true), start.twin(false));
-    new.drawn();
-    old.drawn();
-    let before = new.picture();
-    let value_before = new.value(desc);
-    drive(&mut new)?;
-    drive(&mut old).map_err(|e| format!("the old panel: {e}"))?;
-    if !new.unapplied.is_empty() || !old.unapplied.is_empty() {
-        return Err(format!("unapplied: new {:?}, old {:?}", new.unapplied, old.unapplied));
+/// A drag of the row's number by `dx` in one move, released or taken back
+/// by Escape: one move is one step of the drag's rule, so its result is
+/// `grade_drag(start, dx, span)` exactly.
+fn drag_once(g: &mut Grade, label: &str, n: usize, dx: f32, escape: bool) -> Result<(), String> {
+    let (_, at) = row_at(g, label, n)?;
+    g.frame(vec![egui::Event::PointerMoved(at)]);
+    g.frame(vec![button(at, true)]);
+    g.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))]);
+    if escape {
+        g.frame(vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
     }
-    let stored = |g: &Grade| g.value(desc);
-    // The row's own node changed, not another the page also edits.
-    if stored(&new) == value_before {
-        return Err(format!("the edit left this node's {} at {value_before}: it changed another node", desc.key));
-    }
-    let steps = |g: &Grade| g.state.active_history().undo_count();
-    let after = new.picture();
-    if after == before {
-        return Err(format!("the control changed nothing (old stores {}, {} steps)", stored(&old), steps(&old)));
-    }
-    if after != old.picture() {
-        return Err(format!("the views store {} (new) and {} (old)", stored(&new), stored(&old)));
-    }
-    if (steps(&new), steps(&old)) != (1, 1) {
-        return Err(format!("undo steps: new {}, old {}", steps(&new), steps(&old)));
-    }
-    new.step(false)?;
-    if new.picture() != before {
-        return Err("undo doesn't give back the picture before".into());
-    }
-    new.step(true)?;
-    if new.picture() != after {
-        return Err("redo doesn't give back the picture after".into());
-    }
-    Ok(())
-}
-
-/// `drive` in both views from `start`: the same picture and the same undo
-/// depth after it, whatever each did. For a row both views draw with the
-/// old code, where an intended change can't be asked of the generated one.
-pub(super) fn alike(start: &Grade, drive: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
-    let (mut new, mut old) = (start.twin(true), start.twin(false));
-    new.drawn();
-    old.drawn();
-    drive(&mut new)?;
-    drive(&mut old).map_err(|e| format!("the old panel: {e}"))?;
-    let steps = |g: &Grade| g.state.active_history().undo_count();
-    if new.picture() != old.picture() || steps(&new) != steps(&old) || !new.unapplied.is_empty() || !old.unapplied.is_empty() {
-        return Err(format!("the views differ: steps new {}, old {}; unapplied new {:?}, old {:?}", steps(&new), steps(&old), new.unapplied, old.unapplied));
-    }
+    g.frame(vec![button(at + egui::vec2(dx, 0.0), false)]);
+    g.frame(vec![egui::Event::PointerGone]);
     Ok(())
 }
 
 /// `start` with what the row's edit needs to show in the frame at all, set
-/// alike for both views before the pixel case: a pivot needs a contrast, a
+/// before the pixel case: a pivot needs a contrast, a
 /// mix something to mix, a radius or a grain's shape a strength, a LUT's
 /// opacity a LUT, a softness an edge, a difference key a plate, and a
 /// matte or a mix a correction to select or mix (the exposure of the other
 /// Correctors in the grade). Set through the colour commands,
 /// then twinned, so its history starts empty.
-fn shown_in_frame(start: &Grade, ty: &NodeType, desc: &ParamDesc) -> Grade {
+pub(super) fn shown_in_frame(start: &Grade, ty: &NodeType, desc: &ParamDesc) -> Grade {
     use klipp_core::color_grade::{CurveSet, FilmGrainSettings, HueSatCurves};
     use klipp_core::AppCommand;
     let mut g = start.twin(true);
@@ -304,14 +270,12 @@ fn shown_in_frame(start: &Grade, ty: &NodeType, desc: &ParamDesc) -> Grade {
     g.twin(true)
 }
 
-/// One row's cases on `start` (the row drawn), counted on `surface`.
+/// One row's cases on `start` (the row drawn), counted on `surface`: the
+/// generated view driven, held to what each edit must store (the typed
+/// value clamped to the row's range, `grade_drag`'s result, the range's
+/// end, `reset_value`), one undo step, and the edit drawn alike on the
+/// CPU and the GPU.
 pub(super) fn row_cases(report: &mut Report, ty: &NodeType, desc: &'static ParamDesc, start: &Grade, surface: Surface, variant: &str) {
-    // The bottom tools' wide wheels (`show_wheels_wide`, kept by step 19)
-    // draw the luma mix in both views.
-    // The bottom tools' log ranges are `wheel_shape_sliders` in both views.
-    let shared = (surface == Surface::GradePerNode && WHOLE_NODE.contains(&ty.kind))
-        || (surface == Surface::GradeBottomTools && desc.key == "luma_mix")
-        || (surface == Surface::GradeBottomTools && matches!(desc.key, "log_low_range" | "log_high_range"));
     let id = ty.desc.id;
     let pres = ty.presentation(desc);
     let label = pres.label.unwrap_or(desc.label);
@@ -320,79 +284,68 @@ pub(super) fn row_cases(report: &mut Report, ty: &NodeType, desc: &'static Param
     let name = |what: &str| format!("{id} {} on {surface:?} {what}", desc.key);
     let encoding = klipp_grade_model::Encoding::from_u8(klipp_core::grade_encoding().effective(klipp_engine::video_decoder::working_colorspace()).as_u8());
     let (lo, hi) = row::shown_range(desc, &pres, encoding);
+    let (slo, shi) = (lo.min(hi), lo.max(hi));
+    let to_shown = |v: f32| pres.display.map_or(v, |m| (m.to_shown)(v, encoding));
+    let to_stored = |v: f32| pres.display.map_or(v, |m| (m.to_stored)(v, encoding));
+    // What a drag of `dx` from `stored` stores: the drag's rule over the
+    // row's shown span, clamped to its range (M3-4).
+    let dragged_to = |stored: f32, dx: f32| {
+        let (sa, sb) = (to_stored(slo), to_stored(shi));
+        to_stored(crate::widgets::grade_drag::grade_drag(to_shown(stored), dx, shi - slo).clamp(slo, shi)).clamp(sa.min(sb), sa.max(sb))
+    };
+    let number = |g: &Grade| g.value(desc).as_f64().map(|v| v as f32).ok_or_else(|| format!("{} isn't a number", desc.key));
     // A value the row shows, apart from its default either way.
     let typed = format!("{:.*}", usize::from(pres.decimals), lo + (hi - lo) * 0.7);
     // A drag toward the middle of the range, so one starting at an end
-    // moves.
+    // moves; a whole-number row's further, so it moves at least one unit.
     let current = start.value(desc).as_f64().unwrap_or(0.0) as f32;
-    // A whole-number row's further, so it moves at least one unit.
     let reach = if desc.kind == klipp_effects::registry::ParamKind::Whole { 72.0 } else { 24.0 };
-    let dx = if current > (lo + hi) / 2.0 { -reach } else { reach };
-    let pinned = OLD_DRAG_PINNED.iter().any(|(key, _)| *key == desc.key);
+    let dx = if to_shown(current) > (lo + hi) / 2.0 { -reach } else { reach };
 
     report.case(&name("opened"), vec![k(Interaction::OpenWithoutWrite)], || {
-        for generated in [false, true] {
-            let mut g = start.twin(generated);
-            let before = g.picture();
-            g.drawn();
-            g.drawn();
-            if g.picture() != before || g.state.active_history().undo_count() != 0 || !g.unapplied.is_empty() {
-                return Err(format!("generated {generated}: opening wrote"));
-            }
+        let mut g = start.twin(true);
+        let before = g.picture();
+        g.drawn();
+        g.drawn();
+        if g.picture() != before || g.state.active_history().undo_count() != 0 || !g.unapplied.is_empty() {
+            return Err("opening wrote".into());
         }
         Ok(())
     });
-    report.case(&name("typed"), vec![k(Interaction::TypeNumber), k(Interaction::UndoRedo)], || edit_case(start, desc, |g| type_into(g, label, n, &typed)));
-    // The typed edit drawn: both views' grades draw the frame the edit
-    // changed, alike on each route, through the stage the grade is on.
-    report.case_or_blocked(&name("pixels"), [k(Interaction::Pixels)], || {
-        let start = &shown_in_frame(start, ty, desc);
-        let (mut new, mut old) = (start.twin(true), start.twin(false));
-        new.drawn();
-        old.drawn();
-        type_into(&mut new, label, n, &typed)?;
-        type_into(&mut old, label, n, &typed).map_err(|e| format!("the old panel: {e}"))?;
-        super::parity_pixels::same_sequence_edit(&start.frame_sequence(), &old.frame_sequence(), &new.frame_sequence())
+    report.case(&name("typed"), vec![k(Interaction::TypeNumber), k(Interaction::UndoRedo)], || {
+        let shown: f32 = typed.parse().map_err(|_| format!("{typed:?} isn't a number"))?;
+        oracle_case(start, desc, to_stored(shown.clamp(slo, shi)), |g| type_into(g, label, n, &typed))
     });
+    // The typed edit drawn: it changes the frame, and the CPU draws it as
+    // the GPU does, through the stage the grade is on.
+    let pixels = || {
+        let start = &shown_in_frame(start, ty, desc);
+        let mut new = start.twin(true);
+        new.drawn();
+        type_into(&mut new, label, n, &typed)?;
+        super::parity_pixels::edit_drawn(&start.frame_sequence(), &new.frame_sequence())
+    };
+    match route_defect(ty) {
+        None => report.case_or_blocked(&name("pixels"), [k(Interaction::Pixels)], pixels),
+        // Its key excluded with the issue: the edit still changes the frame.
+        Some(_) => report.case(&name("pixels, routes apart (pinned)"), [], || super::parity_pixels::with_routes_apart(pixels)),
+    }
     report.case(&name("dragged"), vec![k(Interaction::Drag), k(Interaction::UndoRedo)], || {
-        if pinned {
-            // The old drag is pinned (#1427): the generated one moves.
-            let mut g = start.twin(true);
-            g.drawn();
-            let from = g.value(desc);
-            drag(&mut g, label, n, dx, false)?;
-            return if g.value(desc) != from && g.state.active_history().undo_count() == 1 { Ok(()) } else { Err("the generated drag didn't move in one step".into()) };
-        }
-        edit_case(start, desc, |g| drag(g, label, n, dx, false))
+        let from = number(start)?;
+        oracle_case(start, desc, dragged_to(from, dx), |g| drag_once(g, label, n, dx, false))
     });
     // A drag past the row's low end, from just above it (the harness's
-    // screen is narrower than a span): both views store the end, clamped
-    // alike, never a value beyond it.
+    // screen is narrower than a span): the end, never a value beyond it.
     report.case(&name("dragged past the end"), vec![k(Interaction::Drag)], || {
         // At least one shown step above the end, which a whole-number row
         // would otherwise round down to.
         let step = if desc.kind == klipp_effects::registry::ParamKind::Whole { 1.0 } else { 10f32.powi(-i32::from(pres.decimals)) };
-        let near = format!("{:.*}", usize::from(pres.decimals), lo.min(hi) + ((hi - lo).abs() * 0.06).max(step));
+        let near = format!("{:.*}", usize::from(pres.decimals), slo + ((shi - slo) * 0.06).max(step));
         let mut set = start.twin(true);
         type_into(&mut set, label, n, &near)?;
         let near_end = set.twin(true);
-        if !pinned {
-            edit_case(&near_end, desc, |g| drag(g, label, n, -100.0, false))?;
-        }
-        let mut g = near_end.twin(true);
-        g.drawn();
-        let from = g.value(desc);
-        drag(&mut g, label, n, -100.0, false)?;
-        if pinned && g.value(desc) == from {
-            return Err("the generated drag didn't move".into());
-        }
-        let stored = g.value(desc).as_f64().ok_or("the row's value isn't a number")? as f32;
-        let (slo, shi) = (lo.min(hi), lo.max(hi));
-        let shown = pres.display.map_or(stored, |m| (m.to_shown)(stored, encoding));
-        if shown < slo - 1e-4 || shown > shi + 1e-4 {
-            return Err(format!("the drag stored {stored}, past the row's range {slo}..={shi}"));
-        }
-        Ok(())
+        let from = number(&near_end)?;
+        oracle_case(&near_end, desc, dragged_to(from, -100.0), |g| drag_once(g, label, n, -100.0, false))
     });
     report.case(&name("reset"), vec![k(Interaction::Reset), k(Interaction::UndoRedo)], || {
         // From the typed value, so the reset changes it.
@@ -401,68 +354,16 @@ pub(super) fn row_cases(report: &mut Report, ty: &NodeType, desc: &'static Param
         if !away.unapplied.is_empty() {
             return Err(format!("setting it away: unapplied {:?}", away.unapplied));
         }
-        let away = away.twin(true);
-        if shared {
-            // Both views run the same shared editor: held alike, not to
-            // IC15.
-            return alike(&away, |g| reset(g, label, n));
-        }
-        // The generated row resets from its label to its declared value, in
-        // one step, undone and redone exactly.
-        let mut new = away.twin(true);
-        new.drawn();
-        let before = new.picture();
-        reset(&mut new, label, n)?;
-        let want = row::reset_value(desc, &pres);
-        let now = new.value(desc).as_f64().ok_or("the row's value isn't a number")? as f32;
-        if (now - want).abs() > 1e-4 || !new.unapplied.is_empty() {
-            return Err(format!("the generated row reset to {now}, not {want}; unapplied {:?}", new.unapplied));
-        }
-        let after = new.picture();
-        if new.state.active_history().undo_count() != 1 {
-            return Err(format!("the generated reset left {} undo steps, not one", new.state.active_history().undo_count()));
-        }
-        new.step(false)?;
-        if new.picture() != before {
-            return Err("undo doesn't give back the picture before".into());
-        }
-        new.step(true)?;
-        if new.picture() != after {
-            return Err("redo doesn't give back the picture after".into());
-        }
-        // The old panel resets to the same picture, or, lacking a label
-        // reset, changes nothing: intended change IC15 (m3-work-breakdown
-        // M3-6), every number row resetting from its label in the
-        // generated view only.
-        let mut old = away.twin(false);
-        old.drawn();
-        let old_before = old.picture();
-        reset(&mut old, label, n)?;
-        if old.picture() != after && old.picture() != old_before {
-            return Err("the old panel's reset leaves another picture".into());
-        }
-        Ok(())
+        oracle_case(&away.twin(true), desc, row::reset_value(desc, &pres), |g| reset(g, label, n))
     });
     report.case(&name("cancelled"), vec![k(Interaction::CancelDrag)], || {
-        if shared {
-            // Both views run the same shared editor: held alike, not to
-            // IC14.
-            return alike(start, |g| drag(g, label, n, dx, true));
-        }
-        // The generated row takes the drag back on Escape: the picture from
-        // before it, no step. The old panel commits it instead: intended
-        // change IC14 (m3-work-breakdown M3-5), held as the effect rows'.
+        // Escape takes the drag back: the picture from before it, no step.
         let mut g = start.twin(true);
         g.drawn();
         let before = g.picture();
         drag(&mut g, label, n, dx, true)?;
         if g.picture() != before || g.state.active_history().undo_count() != 0 || !g.unapplied.is_empty() {
-            return Err("Escape didn't take the generated drag back".into());
-        }
-        let mut old = start.twin(false);
-        drag(&mut old, label, n, dx, true)?;
-        if !old.unapplied.is_empty() {
-            return Err(format!("the old panel: unapplied {:?}", old.unapplied));
+            return Err("Escape didn't take the drag back".into());
         }
         Ok(())
     });
@@ -512,7 +413,7 @@ pub(super) fn run(report: &mut Report) {
 }
 
 #[test]
-fn grade_numeric_rows_edit_as_the_old_panel() {
+fn grade_numeric_rows_store_what_each_edit_must() {
     let mut report = Report::default();
     report.family("grade numeric rows", run);
     report.family_result().unwrap();
@@ -520,7 +421,7 @@ fn grade_numeric_rows_edit_as_the_old_panel() {
 }
 
 #[test]
-fn grade_numeric_rows_edit_as_the_old_panel_on_the_sequences_grades() {
+fn grade_numeric_rows_store_what_each_edit_must_on_the_sequences_grades() {
     let mut report = Report::default();
     super::parity_controls::on_roots(&mut report, run);
     report.family_result().unwrap();

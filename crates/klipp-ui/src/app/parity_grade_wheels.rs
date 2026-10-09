@@ -1,18 +1,18 @@
-//! A grade's wheels and its Colour Warper through both views (M3 step
-//! 18): every wheel's axes (its puck across and down, its luma master),
-//! the saturation and brightness under a wheel, the log wheels' ranges,
-//! and each of the warper's twelve sectors, on each page that draws them.
-//! A wheel is driven as a user drives it, by a drag in its disc or along
-//! its master; a sector by a drag from its point, across the ring (its
-//! hue) or out from the centre (its saturation). Each is opened (nothing
-//! written), dragged, reset and cancelled by Escape, in the generated
-//! view and the old panel, which must leave the same picture, one undo
-//! step and an exact undo and redo (`parity_grade_numeric::edit_case`).
-//! Run through `on_roots` too, so the sequence's grades are earned alike.
-//! Their pixels are the grade pixels family's.
-
-use super::parity_controls::{grade_variant, placed, Grade, GradePicture, Page};
-use super::parity_grade_numeric::{alike, button, key, row_at, row_cases};
+//! A grade's wheels and its Colour Warper in the inspector (M3): every
+//! wheel's axes (its puck across and down, its luma master), the
+//! saturation and brightness under a wheel, the log wheels' ranges, and
+//! each of the warper's twelve sectors, on each page that draws them. A
+//! wheel is driven as a user drives it, by a drag in its disc or along its
+//! master; a sector by a drag from its point, across the ring (its hue) or
+//! out from the centre (its saturation). Each is opened (nothing written),
+//! dragged, reset and cancelled by Escape, and held to what the edit must
+//! store (`parity_controls::oracle_case`): a puck by its rule, the rest by
+//! having moved, then the picture writing it by path leaves, one undo
+//! step, and an exact undo and redo. Each drag is drawn on both render
+//! routes, which must change and agree (`parity_pixels::edit_drawn`). Run
+//! through `on_roots` too, so the sequence's grades are earned alike.
+use super::parity_controls::{grade_variant, oracle_case, placed, Grade, Page};
+use super::parity_grade_numeric::{button, key, row_at, row_cases, shown_in_frame};
 use super::parity_harness::GradeRoot;
 use super::parity_manifest::{catalog, CoverageKey, Interaction, Manifest, Report, Surface, WheelAxis};
 use crate::state::ColorTab;
@@ -179,19 +179,23 @@ fn wheel(g: &mut Grade, label: &str) -> Result<Wheel, String> {
     Err(format!("no {label:?} wheel"))
 }
 
-/// A press at `from`, moved by `by` over three frames, then released, or
-/// taken back by Escape first.
-fn drag_from(g: &mut Grade, from: egui::Pos2, by: egui::Vec2, escape: bool) {
+/// A press at `from`, moved by `by` in one move, then released, or taken
+/// back by Escape first: one move is one step of the control's rule.
+fn drag_from(g: &mut Grade, from: egui::Pos2, by: egui::Vec2, escape: bool) -> Result<(), String> {
     g.frame(vec![egui::Event::PointerMoved(from)]);
+    let before = g.picture();
     g.frame(vec![button(from, true)]);
-    for i in 1..=3 {
-        g.frame(vec![egui::Event::PointerMoved(from + by * i as f32 / 3.0)]);
-    }
+    g.frame(vec![egui::Event::PointerMoved(from + by)]);
     if escape {
+        // A drag taken back must have moved first, or Escape proves nothing.
+        if g.picture() == before {
+            return Err("the drag hadn't moved anything before Escape".into());
+        }
         g.frame(vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
     }
     g.frame(vec![button(from + by, false)]);
     g.frame(vec![egui::Event::PointerGone]);
+    Ok(())
 }
 
 fn secondary_click(g: &mut Grade, at: egui::Pos2) {
@@ -260,24 +264,30 @@ fn warper_reset(g: &mut Grade) -> Result<(), String> {
 
 /// `control` dragged, released or taken back by Escape.
 fn drag(g: &mut Grade, control: Control, escape: bool) -> Result<(), String> {
+    drag_by(g, control, 1.0, escape)
+}
+
+/// [`drag`] the other way when `sign` is -1: the same press, the move
+/// reversed.
+fn drag_by(g: &mut Grade, control: Control, sign: f32, escape: bool) -> Result<(), String> {
     match control {
         Control::Wheel { label, axis } => {
             // Whole pixels, as a user's: the views draw a wheel at one size,
             // so the same pixels store the same value.
             let w = wheel(g, label)?;
             match axis {
-                WheelAxis::X => drag_from(g, w.centre, egui::vec2(18.0, 0.0), escape),
-                WheelAxis::Y => drag_from(g, w.centre, egui::vec2(0.0, 18.0), escape),
-                _ => drag_from(g, w.master, egui::vec2(18.0, 0.0), escape),
+                WheelAxis::X => drag_from(g, w.centre, egui::vec2(PUCK_DRAG, 0.0) * sign, escape)?,
+                WheelAxis::Y => drag_from(g, w.centre, egui::vec2(0.0, PUCK_DRAG) * sign, escape)?,
+                _ => drag_from(g, w.master, egui::vec2(PUCK_DRAG, 0.0) * sign, escape)?,
             }
         }
         Control::Under { wheel, axis } => {
             let at = under(g, wheel, axis)?;
-            drag_from(g, at, egui::vec2(-12.0, 0.0), escape);
+            drag_from(g, at, egui::vec2(-12.0, 0.0) * sign, escape)?;
         }
         Control::Sector { index, sat } => {
             let (at, by) = sector(g, index, sat)?;
-            drag_from(g, at, by, escape);
+            drag_from(g, at, by * sign, escape)?;
         }
         Control::Range => unreachable!("a range is a number row"),
     }
@@ -302,62 +312,27 @@ fn reset(g: &mut Grade, control: Control) -> Result<(), String> {
     Ok(())
 }
 
-/// `p` as a JSON value, for comparing two views' pictures to a tolerance.
-fn json(p: &GradePicture) -> serde_json::Value {
-    match p {
-        GradePicture::Clip(l) => serde_json::json!({ "picture": serde_json::to_value(&l.picture).unwrap(), "versions": l.versions }),
-        GradePicture::Root(v) => v.clone(),
+/// What a drag must store, where the control's rule is plain from what's
+/// drawn: a puck moves by the drag over the wheel's radius (`color_wheel`:
+/// a full radius of travel is half the range), from where it is. `None`
+/// for a control whose rule goes through its own layout (a master's
+/// track, a rail, a sector), held to moving instead.
+fn drag_rule(g: &mut Grade, control: Control, start: f32) -> Result<Option<f32>, String> {
+    match control {
+        Control::Wheel { label, axis: WheelAxis::X | WheelAxis::Y } => Ok(Some(start + PUCK_DRAG / (wheel(g, label)?.diameter / 2.0))),
+        _ => Ok(None),
     }
 }
 
-/// Where `a` and `b` first differ, as a path.
-fn difference(a: &serde_json::Value, b: &serde_json::Value, path: &str) -> String {
-    use serde_json::Value::*;
-    match (a, b) {
-        (Array(x), Array(y)) if x.len() == y.len() => x.iter().zip(y).enumerate().find(|(_, (x, y))| x != y).map_or_else(std::string::String::new, |(i, (x, y))| difference(x, y, &format!("{path}/{i}"))),
-        (Object(x), Object(y)) => x.keys().chain(y.keys()).find(|k| x.get(*k) != y.get(*k)).map_or_else(std::string::String::new, |k| match (x.get(k), y.get(k)) {
-            (Some(v), Some(w)) => difference(v, w, &format!("{path}/{k}")),
-            (v, w) => format!("{path}/{k}: {v:?} and {w:?}"),
-        }),
-        _ => format!("{path}: {a} and {b}"),
-    }
+/// Whether [`drag`] stores more than its reverse: a master's or a sector's
+/// drag goes up its scale (to the right; across the ring; out from the
+/// centre), a rail's to the left, down it.
+fn rises(control: Control) -> bool {
+    !matches!(control, Control::Under { .. })
 }
 
-/// An edit through both views (`drive`), from `start`, as
-/// `parity_grade_numeric::edit_case` holds it: the same picture exactly,
-/// one undo step each, and the generated one's undo and redo exact.
-fn edit_case(start: &Grade, desc: &ParamDesc, drive: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
-    let (mut new, mut old) = (start.twin(true), start.twin(false));
-    new.drawn();
-    old.drawn();
-    let before = new.picture();
-    drive(&mut new)?;
-    drive(&mut old).map_err(|e| format!("the old panel: {e}"))?;
-    if !new.unapplied.is_empty() || !old.unapplied.is_empty() {
-        return Err(format!("unapplied: new {:?}, old {:?}", new.unapplied, old.unapplied));
-    }
-    let steps = |g: &Grade| g.state.active_history().undo_count();
-    let after = new.picture();
-    if after == before {
-        return Err("the control changed nothing".into());
-    }
-    let (a, b) = (json(&after), json(&old.picture()));
-    if a != b {
-        return Err(format!("the views store {} (new) and {} (old), first apart at {}", new.value(desc), old.value(desc), difference(&a, &b, "")));
-    }
-    if (steps(&new), steps(&old)) != (1, 1) {
-        return Err(format!("undo steps: new {}, old {}", steps(&new), steps(&old)));
-    }
-    new.step(false)?;
-    if new.picture() != before {
-        return Err("undo doesn't give back the picture before".into());
-    }
-    new.step(true)?;
-    if new.picture() != after {
-        return Err("redo doesn't give back the picture after".into());
-    }
-    Ok(())
-}
+/// The pixels a wheel's puck or master is dragged by.
+const PUCK_DRAG: f32 = 18.0;
 
 fn interaction(control: Control) -> Interaction {
     match control {
@@ -371,40 +346,54 @@ fn control_cases(report: &mut Report, ty: &NodeType, desc: &'static ParamDesc, c
     let id = ty.desc.id;
     let k = |interaction| CoverageKey::new(id, desc.key, surface, variant, interaction);
     let name = |what: &str| format!("{id} {} on {surface:?} {what}", desc.key);
+    let number = |g: &Grade| g.value(desc).as_f64().map(|v| v as f32).ok_or_else(|| format!("{} isn't a number", desc.key));
     report.case(&name("opened"), vec![k(Interaction::OpenWithoutWrite)], || {
-        // Both views draw the control at one size, so a pixel moves it as
-        // far in either: a layout change can't bring that difference back.
-        let size = |g: &mut Grade| -> Result<f32, String> {
-            match control {
-                Control::Wheel { label, .. } => Ok(wheel(g, label)?.diameter),
-                Control::Sector { .. } => Ok(warper(g)?.1),
-                _ => Ok(0.0),
-            }
-        };
-        let (new, old) = (size(&mut start.twin(true))?, size(&mut start.twin(false))?);
-        if new != old {
-            return Err(format!("drawn at {new} px (new) and {old} px (old)"));
-        }
-        for generated in [false, true] {
-            let mut g = start.twin(generated);
-            let before = g.picture();
-            g.drawn();
-            g.drawn();
-            if g.picture() != before || g.state.active_history().undo_count() != 0 || !g.unapplied.is_empty() {
-                return Err(format!("generated {generated}: opening wrote"));
-            }
+        let mut g = start.twin(true);
+        let before = g.picture();
+        g.drawn();
+        g.drawn();
+        if g.picture() != before || g.state.active_history().undo_count() != 0 || !g.unapplied.is_empty() {
+            return Err("opening wrote".into());
         }
         Ok(())
     });
     report.case(&name("dragged"), vec![k(interaction(control)), k(Interaction::UndoRedo)], || {
-        edit_case(start, desc, |g| {
-            let was = g.value(desc);
-            drag(g, control, false)?;
-            if g.value(desc) == was {
-                return Err(format!("the drag moved another value, not {} (still {was})", desc.key));
+        let from = number(start)?;
+        // What it must store: the puck's rule; where the rule goes through
+        // the control's own layout (a master's track, a rail, a sector),
+        // the order a drag and its reverse must store in (`rises`), which
+        // the control's arithmetic doesn't decide. The value reached is
+        // then only where the path write goes: the picture it leaves, one
+        // step and nothing else changed are held by `oracle_case`.
+        let mut probe = start.twin(true);
+        let want = match drag_rule(&mut probe, control, from)? {
+            Some(want) => want,
+            None => {
+                let mut back = start.twin(true);
+                drag(&mut probe, control, false)?;
+                drag_by(&mut back, control, -1.0, false)?;
+                let (to, other) = (number(&probe)?, number(&back)?);
+                let (high, low, what) = match rises(control) {
+                    true => (to, other, "the drag over its reverse"),
+                    false => (other, to, "the reverse over the drag"),
+                };
+                if high <= low {
+                    return Err(format!("{what} must store more: {} {to}, reversed {other}", desc.key));
+                }
+                to
             }
-            Ok(())
-        })
+        };
+        oracle_case(start, desc, want, |g| drag(g, control, false))
+    });
+    // The drag drawn: it changes the frame, and the CPU draws it as the GPU
+    // does, through the stage the grade is on, with what the control needs
+    // to show set first (`shown_in_frame`).
+    report.case_or_blocked(&name("pixels"), [k(Interaction::Pixels)], || {
+        let start = &shown_in_frame(start, ty, desc);
+        let mut new = start.twin(true);
+        new.drawn();
+        drag(&mut new, control, false)?;
+        super::parity_pixels::edit_drawn(&start.frame_sequence(), &new.frame_sequence())
     });
     report.case(&name("reset"), vec![k(Interaction::Reset), k(Interaction::UndoRedo)], || {
         // From a dragged value, so the reset changes it.
@@ -413,28 +402,18 @@ fn control_cases(report: &mut Report, ty: &NodeType, desc: &'static ParamDesc, c
         if !away.unapplied.is_empty() {
             return Err(format!("setting it away: unapplied {:?}", away.unapplied));
         }
-        let away = away.twin(true);
-        edit_case(&away, desc, |g| {
-            reset(g, control)?;
-            let now = g.value(desc).as_f64().unwrap_or(f64::NAN);
-            if now.abs() > 1e-6 {
-                return Err(format!("{} reset to {now}, not 0", desc.key));
-            }
-            Ok(())
-        })
+        oracle_case(&away.twin(true), desc, 0.0, |g| reset(g, control))
     });
     report.case(&name("cancelled"), vec![k(Interaction::CancelDrag)], || {
-        // The generated view takes the drag back on Escape: the picture from
-        // before it, no step (IC14). The old panel is held alike where both
-        // views run one widget's gesture, which is every one here.
+        // Escape takes the drag back: the picture from before it, no step.
         let mut g = start.twin(true);
         g.drawn();
         let before = g.picture();
         drag(&mut g, control, true)?;
         if g.picture() != before || g.state.active_history().undo_count() != 0 || !g.unapplied.is_empty() {
-            return Err(format!("Escape didn't take the generated drag back ({} steps, unapplied {:?})", g.state.active_history().undo_count(), g.unapplied));
+            return Err(format!("Escape didn't take the drag back ({} steps, unapplied {:?})", g.state.active_history().undo_count(), g.unapplied));
         }
-        alike(start, |g| drag(g, control, true))
+        Ok(())
     });
 }
 
@@ -461,7 +440,7 @@ pub(super) fn run(report: &mut Report) {
 }
 
 #[test]
-fn grade_wheels_and_warper_edit_as_the_old_panel() {
+fn grade_wheels_and_warper_store_what_each_drag_must() {
     let mut manifest = Manifest::default();
     require(&mut manifest);
     let mut report = Report::default();
@@ -472,7 +451,7 @@ fn grade_wheels_and_warper_edit_as_the_old_panel() {
 }
 
 #[test]
-fn grade_wheels_and_warper_edit_as_the_old_panel_on_the_sequences_grades() {
+fn grade_wheels_and_warper_store_what_each_drag_must_on_the_sequences_grades() {
     let mut report = Report::default();
     super::parity_controls::on_roots(&mut report, run);
     report.family_result().unwrap();
