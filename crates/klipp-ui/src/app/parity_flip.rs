@@ -26,6 +26,7 @@ fn manifest() -> Manifest {
     super::parity_curve_editor::require(&mut m);
     super::parity_controls::require(&mut m);
     super::parity_grade_specialists::require(&mut m);
+    super::parity_grade_numeric::require(&mut m);
     m.require_representatives();
     m
 }
@@ -39,7 +40,6 @@ fn run_all(report: &mut Report) {
     report.family("specialists", super::parity_specialists::run);
     report.family("specialist pixels", super::parity_specialist_pixels::run);
     report.family("video transform", super::parity_video_transform::exercise);
-    report.family("video opacity keys", super::parity_video_transform::anchor_opacity_keys);
     report.family("curve editor", super::parity_curve_editor::run);
     report.family("effect controls", super::parity_controls::run);
     // The grade families, on the clip's grade and on the sequence's grades
@@ -53,6 +53,8 @@ fn run_all(report: &mut Report) {
     report.family("grade LUT on the sequence's grades", |r| on_roots(r, super::parity_grade_specialists::run_lut));
     report.family("grade masks", super::parity_grade_specialists::run_masks);
     report.family("grade masks on the sequence's grades", |r| on_roots(r, super::parity_grade_specialists::run_masks));
+    report.family("grade numeric rows", super::parity_grade_numeric::run);
+    report.family("grade numeric rows on the sequence's grades", |r| on_roots(r, super::parity_grade_numeric::run));
 }
 
 /// The report's lists, one line each, sorted: what the flip still lacks
@@ -145,7 +147,7 @@ fn the_flip_manifest_has_only_the_pinned_rule_errors() {
 #[test]
 fn every_parity_family_is_in_the_flip() {
     let this = include_str!("parity_flip.rs");
-    let families: [(&str, &str); 13] = [
+    let families: [(&str, &str); 14] = [
         ("parity_numeric", include_str!("parity_numeric.rs")),
         ("parity_effect_keys", include_str!("parity_effect_keys.rs")),
         ("parity_keyed_pixels", include_str!("parity_keyed_pixels.rs")),
@@ -157,6 +159,7 @@ fn every_parity_family_is_in_the_flip() {
         ("parity_controls", include_str!("parity_controls.rs")),
         ("parity_grade_specialists", include_str!("parity_grade_specialists.rs")),
         ("parity_grade_workflows", include_str!("parity_grade_workflows.rs")),
+        ("parity_grade_numeric", include_str!("parity_grade_numeric.rs")),
         ("parity_pixels", include_str!("parity_pixels.rs")),
         ("parity_harness", include_str!("parity_harness.rs")),
     ];

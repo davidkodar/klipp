@@ -288,6 +288,14 @@ fn numeric_row(ui: &mut egui::Ui, ctx: &mut RowCtx, input: RowInput) -> RowOutco
     // "unset"). The DragValue must not clamp a label reset back into the
     // soft range later in the same frame; drawing never writes either.
     let (lo, hi) = shown_range(desc, pres, ctx.encoding);
+    // A grade row drags as the old panel's (`grade_drag`): the value it
+    // shows, over its shown span, unrounded, then stored by the display's
+    // conversion, as the old rows convert theirs (M3-4).
+    let grade_span = (hi - lo).abs();
+    // What a grade drag may reach, as the old rows clamp it: the row's
+    // range in shown units, then the stored value to its stored range.
+    let shown_bounds = (lo.min(hi), lo.max(hi));
+    let stored_bounds = (to_stored(lo).min(to_stored(hi)), to_stored(lo).max(to_stored(hi)));
     let reset = to_shown(reset_value(desc, pres));
     let (lo, hi) = (lo.min(shown).min(reset), hi.max(shown).max(reset));
     let before = shown;
@@ -308,7 +316,26 @@ fn numeric_row(ui: &mut egui::Ui, ctx: &mut RowCtx, input: RowInput) -> RowOutco
     });
     #[cfg(any(test, feature = "row-recorder"))]
     crate::widgets::row_recorder::next_parameter(desc.key);
-    let r = scrubby_param_row(ui, label, &mut shown, lo..=hi, reset, drag_speed(pres.step), usize::from(pres.decimals), &suffix, diamond);
+    // The stored value a grade drag left, kept as is rather than read back
+    // from the shown one, which a display map would round.
+    let dragged: std::cell::Cell<Option<f32>> = std::cell::Cell::new(None);
+    let r = if is_grade(ctx) {
+        // From the stored value each time, shown as the old row shows it.
+        let stored_now = shown_at_t.unwrap_or(stored_number);
+        let stored_now = drag_carry(ui, desc, stored_now).unwrap_or(stored_now);
+        let rule = |_shown: f32, dx: f32| {
+            let moved = crate::widgets::grade_drag::grade_drag(to_shown(dragged.get().unwrap_or(stored_now)), dx, grade_span);
+            let next = to_stored(moved.clamp(shown_bounds.0, shown_bounds.1)).clamp(stored_bounds.0, stored_bounds.1);
+            dragged.set(Some(next));
+            to_shown(next)
+        };
+        crate::widgets::scrubby_param::scrubby_param_row_dragged(ui, label, &mut shown, lo..=hi, reset, drag_speed(pres.step), usize::from(pres.decimals), &suffix, diamond, &rule)
+    } else {
+        scrubby_param_row(ui, label, &mut shown, lo..=hi, reset, drag_speed(pres.step), usize::from(pres.decimals), &suffix, diamond)
+    };
+    if is_grade(ctx) {
+        keep_drag_carry(ui, desc, dragged.get().filter(|_| !r.drag_stopped));
+    }
     if has_diamond(desc) {
         behaviours_menu(ui, ctx, desc);
     }
@@ -326,7 +353,7 @@ fn numeric_row(ui: &mut egui::Ui, ctx: &mut RowCtx, input: RowInput) -> RowOutco
         ctx.cmds.push(AppCommand::BeginParamEditAt { addr: ctx.addr.clone(), key: key.clone() });
     }
     if r.changed && shown != before {
-        let value = to_stored(shown);
+        let value = dragged.get().filter(|_| !r.reset_clicked).unwrap_or_else(|| to_stored(shown));
         if keys.any && has_diamond(desc) {
             // Keyed: what's shown is the animation, so the edit is a key.
             add_key(ctx, desc, value);
@@ -375,6 +402,33 @@ fn behaviours_menu(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc) {
     ui.menu_button("⋯", |ui| show(ui, &param, cmds)).response.on_hover_text("Behaviours");
 }
 
+/// Whether the row edits a grade node's settings (its entry's fields sit
+/// under `params`), which drag by the grade rule.
+fn is_grade(ctx: &RowCtx) -> bool {
+    ctx.entry.as_ref().is_some_and(|e| e.fields_at == ["params"])
+}
+
+/// A grade drag's own value, kept across its frames: the unrounded value
+/// it reached, while the stored one is still what it wrote. A whole-number
+/// row stores its value rounded, and a slow drag restarting from that each
+/// frame would never move; a float row stores what it reached, so this is
+/// that value again.
+fn drag_carry(ui: &egui::Ui, desc: &ParamDesc, stored: f32) -> Option<f32> {
+    let id = ui.id().with(("grade_drag_carry", desc.key));
+    ui.data(|d| d.get_temp::<(f32, f32)>(id)).filter(|(written, _)| *written == stored).map(|(_, reached)| reached)
+}
+
+fn keep_drag_carry(ui: &egui::Ui, desc: &ParamDesc, reached: Option<f32>) {
+    let id = ui.id().with(("grade_drag_carry", desc.key));
+    match reached {
+        Some(v) => {
+            let written = if desc.kind == ParamKind::Whole { v.round() } else { v };
+            ui.data_mut(|d| d.insert_temp(id, (written, v)));
+        }
+        None => ui.data_mut(|d| d.remove::<(f32, f32)>(id)),
+    }
+}
+
 /// The drag speed for a declared step, as the hand-written rows pass it:
 /// the step's decimal value, so 0.01 is 0.01, not the `f32`'s widening
 /// (0.009999999776), which a drag's rounding would show as one step lost
@@ -397,12 +451,34 @@ fn slider_row(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc, pres: &Pres
         crate::widgets::row_recorder::parameter(desc.key);
     }
     let before = v;
+    // A grade slider's number drags as the old panel's (`grade_drag`, its
+    // stored value, a span per 800 pixels, unrounded); its rail stays.
+    let grade_span = is_grade(ctx).then(|| {
+        let (slo, shi) = shown_range(desc, pres, ctx.encoding);
+        (shi - slo).abs()
+    });
     let (r, reset_clicked) = ui
         .horizontal(|ui| {
             let reset_clicked = ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked();
             if reset_clicked { v = reset; }
-            let slider = egui::Slider::new(&mut v, lo..=hi);
-            (ui.add(if desc.kind == ParamKind::Whole { slider.integer() } else { slider }), reset_clicked)
+            match grade_span {
+                Some(span) => {
+                    let before_drag = drag_carry(ui, desc, v).unwrap_or(v);
+                    let number = ui.add(egui::DragValue::new(&mut v).range(lo..=hi).speed(span / 800.0));
+                    if number.dragged() {
+                        let pace = ui.input(|i| if i.modifiers.shift_only() { 0.1 } else if i.modifiers.alt { 10.0 } else { 1.0 });
+                        v = crate::widgets::grade_drag::grade_drag(before_drag, number.drag_delta().x * pace, span).clamp(lo, hi);
+                    }
+                    keep_drag_carry(ui, desc, (number.dragged() && !number.drag_stopped()).then_some(v));
+                    let slider = egui::Slider::new(&mut v, lo..=hi).show_value(false);
+                    let rail = ui.add(if desc.kind == ParamKind::Whole { slider.integer() } else { slider });
+                    (number.union(rail), reset_clicked)
+                }
+                None => {
+                    let slider = egui::Slider::new(&mut v, lo..=hi);
+                    (ui.add(if desc.kind == ParamKind::Whole { slider.integer() } else { slider }), reset_clicked)
+                }
+            }
         })
         .inner;
     let key = ParamKey::new(desc.key);

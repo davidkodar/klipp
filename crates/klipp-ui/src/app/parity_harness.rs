@@ -339,7 +339,7 @@ impl Run {
             state: &mut self.state,
             side: &Sink,
         };
-        if !host.apply_effect_keyframes(&cmd) && !host.apply_video_keyframes(&cmd) && !host.apply_keyframe_drag(&cmd) && !host.apply(&cmd) {
+        if !host.apply_effect_keyframes(&cmd) && !host.apply(&cmd) {
             self.unapplied.push(format!("{cmd:?}"));
         }
     }

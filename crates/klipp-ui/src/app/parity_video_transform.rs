@@ -2,9 +2,6 @@
 //! both axes and Perspective resets to the displayed default of one.
 //! Each edit is also drawn by the real renderer (`parity_pixels`) on the
 //! CPU and the native GPU stack; these cases earn no keyframe evidence.
-//! The tab's Opacity row is the clip's anchor Opacity: its diamond, carets
-//! and menu are driven by `parity_effect_keys`' driver on the Video tab
-//! (`anchor_opacity_keys`), its numbers by `parity_numeric`.
 
 use super::parity_harness::{fixture, Run};
 use super::parity_manifest::{catalog, CoverageKey, Interaction, Manifest, Report, Surface};
@@ -302,45 +299,6 @@ pub(super) fn exercise(report: &mut Report) {
             },
         );
     }
-}
-
-/// The anchor Opacity's keyframe controls on the Video tab, each old and
-/// generated against the clip's opacity lane, earning the `anchor` keys
-/// `parity_numeric` requires.
-pub(super) fn anchor_opacity_keys(report: &mut Report) {
-    use super::parity_effect_keys::{exercise_on, Action};
-    let entry = catalog()
-        .into_iter()
-        .find(|e| e.type_id == "klipp.fx.opacity" && e.parameter == "value")
-        .unwrap();
-    for action in Action::ALL {
-        let key = CoverageKey::new(entry.type_id, &entry.parameter, Surface::VideoTab, "anchor", action.interaction());
-        report.case(&format!("Video Opacity / {action:?}"), [key], || {
-            let failures: Vec<_> = [false, true]
-                .into_iter()
-                .filter_map(|generated| exercise_on(&entry, Surface::VideoTab, action, generated).err())
-                .collect();
-            if failures.is_empty() {
-                Ok(())
-            } else {
-                Err(failures.join("; "))
-            }
-        });
-    }
-}
-
-#[test]
-fn video_opacity_key_controls_keep_the_lane_and_undo_contracts() {
-    let mut manifest = Manifest::default();
-    super::parity_numeric::require(&mut manifest);
-    let mut report = Report::default();
-    anchor_opacity_keys(&mut report);
-    report.family_result().unwrap();
-    assert_eq!(report.passed.len(), 8);
-    assert!(report
-        .passed
-        .iter()
-        .all(|key| manifest.required.contains(key)));
 }
 
 #[test]

@@ -88,6 +88,8 @@ mod parity_masked_pixels;
 #[cfg(test)]
 mod parity_flip;
 #[cfg(test)]
+mod parity_grade_numeric;
+#[cfg(test)]
 mod parity_specialists;
 #[cfg(test)]
 mod placement_row_tests;

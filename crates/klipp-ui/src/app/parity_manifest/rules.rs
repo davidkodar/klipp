@@ -52,6 +52,8 @@ pub(super) fn entry_exclusion(entry: &CatalogEntry) -> Option<&'static str> {
             Some("#1348: implicit grade-node mix is command-tested but neither inspector exposes it"),
         CatalogValue::Parameter { .. } if entry.type_id == "klipp.grade.primaries_matrix" =>
             Some("#1351: PrimariesMatrix parameter controls have no reachable inspector route in either view"),
+        CatalogValue::Parameter { .. } if entry.type_id == "klipp.grade.color_match" =>
+            Some("#1421: Colour Match's values are readouts in both views; the catalog presents them as sliders"),
         CatalogValue::Enabled if entry.type_id == "klipp.grade.input_transform" =>
             Some("#1351: InputTransform selection reaches camera encoding before the bypass header in both views"),
         _ => None,
