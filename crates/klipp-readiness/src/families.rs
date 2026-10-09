@@ -36,7 +36,7 @@ const SUBJECTS: &[(Family, &[&str])] = &[
     // exempt types, m2-step11-deletion-map §2 and §3).
     (Family::LegacyChain, &["klipp.fx.equalize"]),
     // M4 step F: picture revision 4, one conversion (M4 plan v2 §4).
-    (Family::Format, &["#1391", "#1406", "#1409", "#1386", "#1394", "#1321", "klipp.frei0r"]),
+    (Family::Format, &["#1391", "#1406", "#1409", "#1386", "#1394", "#1321", "klipp.frei0r", "klipp.ofx"]),
 ];
 
 /// Every family's subjects.

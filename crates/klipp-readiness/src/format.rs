@@ -312,6 +312,31 @@ pub fn run(report: &mut Report) {
         }
         Ok(())
     }, false);
+
+    // klipp.ofx (d9's fields): an OFX plug-in is stored as its own node,
+    // its plug-in, context and each value by name in its kind at full
+    // precision (a double 0.1, an RGB colour); the same picture, so nothing
+    // is declared.
+    row(report, "klipp.ofx", |s| {
+        let mut c = clip();
+        let glow = serde_json::from_value(serde_json::json!({"plugin_name": "org.example.Glow", "enabled": true, "context": "Filter", "transition_amount": 0.0,
+            "param_values": {"amount": {"Double": 0.1}, "key": {"Rgb": [0.5, 0.6, 0.7]}}})).expect("an OFX entry");
+        c.set_ofx_effects(vec![glow]);
+        s.tracks[0].clips.push(c);
+    }, |_, v| {
+        let node = nodes(picture(v)?).into_iter().find(|n| n["type_id"] == klipp_graph_format::lifted::types::OFX).ok_or("no klipp.ofx node")?;
+        let p = &node["params"];
+        if p["plugin"]["Text"] != "org.example.Glow" || p["context"]["Text"] != "Filter" || p["p.amount"]["Float64"] != 0.1 {
+            return Err(format!("the plug-in and its values aren't kept by name and kind: {p}"));
+        }
+        if p["p.key"]["ColorF64"]["alpha"] != false || p["p.key"]["ColorF64"]["rgba"][3] != 0.0 {
+            return Err(format!("the RGB colour isn't kept with alpha off and 0: {p}"));
+        }
+        if node.to_string().contains("param_values") {
+            return Err("the values are still the entry's map".into());
+        }
+        Ok(())
+    }, false);
 }
 
 /// A grade graph holding a Corrector.
