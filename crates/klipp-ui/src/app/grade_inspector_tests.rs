@@ -369,7 +369,10 @@ fn whole_node_widgets_stand_in_for_rows() {
 }
 
 /// The parameters the tabbed page shares with the per-node layout.
-const SHARED: &[&str] = &["exposure", "contrast", "contrast_pivot", "clarity", "saturation", "vibrance", "temperature", "tint", "hue", "global_mix"];
+const SHARED: &[&str] = &["exposure", "contrast", "contrast_pivot", "clarity", "saturation", "vibrance", "highlights", "shadows", "whites", "blacks", "temperature", "tint", "hue", "global_mix"];
+
+/// The tone rows, shared on a Tone Controls node as on the Corrector (#1420).
+const TONE: &[&str] = &["highlights", "shadows", "whites", "blacks"];
 
 /// The tabbed page's Adjustments tab, one frame with `events`, with the
 /// generated rows on (the snapshot set, as the app sets it) or off, and
@@ -441,6 +444,26 @@ fn the_shared_controls_are_one_row_on_both_pages() {
         let (on_tab, on_node) = (find(&tab_rows), find(&node_rows));
         assert!(on_tab.is_some(), "{key} isn't on the tabbed page");
         assert_eq!(on_tab, on_node, "{key}: the tabbed page's row isn't the per-node layout's");
+    }
+}
+
+/// A Tone Controls node's four rows are the per-node layout's on the
+/// tabbed page and the bottom tools too, not the old rows (#1420).
+#[test]
+fn a_tone_controls_node_s_rows_are_one_row_on_both_pages() {
+    for wide in [false, true] {
+        let mut run = Run::with_panel(NodeKind::ToneControls).unwrap();
+        let node = run.node;
+        let (cmds, tab_rows, _) = tabbed_in(&mut run, true, wide, Some(node), Vec::new());
+        assert!(cmds.is_empty(), "wide {wide}: the page wrote on open: {cmds:?}");
+        run.frame(Vec::new());
+        let (_, node_rows) = run.recorded();
+        for key in TONE {
+            let find = |rows: &[crate::widgets::row_recorder::Row]| rows.iter().find(|r| r.parameter.as_deref() == Some(key)).map(shown_as);
+            let (on_tab, on_node) = (find(&tab_rows), find(&node_rows));
+            assert!(on_tab.is_some(), "wide {wide}: {key} isn't on the page");
+            assert_eq!(on_tab, on_node, "wide {wide}: {key}: the page's row isn't the per-node layout's");
+        }
     }
 }
 
