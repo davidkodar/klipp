@@ -97,30 +97,21 @@ The flow:
 
 ---
 
-## Who may be the author of a commit
+## Authorship and AI-assisted contributions
 
-**Commit under your own name and your own email address.** This is not
-negotiable, and it applies to everyone including the maintainer.
+Klipp welcomes contributions developed with or without AI assistance.
 
-Specifically:
+Every contribution must be submitted and signed off by a person, under
+their own name and a reachable email, who takes responsibility for the
+change: its correctness, its licensing, and its compliance with these
+contribution requirements.
 
-* **Never set an AI agent as the author or committer of a commit.** Not
-  as `author`, not as `committer`, not in a `Co-Authored-By` trailer,
-  not in the PR description. Klipp is written with heavy AI assistance
-  and that is not a secret — but a commit's authorship is a statement
-  about *who is answerable for this code*, and a model cannot be
-  answerable for anything. The person who read the diff and decided to
-  ship it is the author. If you did not read it, do not send it.
-* **No `Co-Authored-By` trailers at all**, for humans either. If two
-  people worked on a change, say so in the body in prose.
-* Use a real, reachable email. `git config user.email` should be
-  something we can contact you at. GitHub's `noreply` addresses are
-  fine.
+AI tools may be used to write, change, review or test code. An AI
+system is never listed as the author, committer or co-author of a
+commit. No `Co-Authored-By` trailers at all: if two people worked on a
+change, say so in the body.
 
-Using an AI to help write a patch is welcome and expected. Sending one
-you have not read and cannot explain is not — and in review it shows
-immediately, because the first question is always "why does this need
-to change?"
+Every commit must comply with the Developer Certificate of Origin, below.
 
 ### Sign your work
 
@@ -498,8 +489,8 @@ full suite locally before merging.
 * Messages explain **why**, not **what** — the diff shows the what.
 * Short subject line (≤ 70 chars), imperative mood, no trailing full
   stop. Blank line. Body wrapped at ~72.
-* No `Co-Authored-By` trailers, and no AI agent as author or
-  committer — see [Who may be the author of a commit](#who-may-be-the-author-of-a-commit).
+* No `Co-Authored-By` trailers, and no AI system as author or
+  committer — see [Authorship and AI-assisted contributions](#authorship-and-ai-assisted-contributions).
 * Sign off with `git commit -s`.
 * No references to audit-internal item IDs or internal planning
   documents — commit messages are the public-facing record of the
