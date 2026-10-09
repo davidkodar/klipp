@@ -266,6 +266,13 @@ fn stored(value: &ParamValue) -> Result<Value, String> {
         ParamValue::Text(t) => serde_json::json!(t),
         ParamValue::Point2(p) => serde_json::json!(p),
         ParamValue::Color { .. } | ParamValue::Matrix3(_) => return Err("that value is set through the effect's own editor".into()),
+        ParamValue::Float64(_)
+        | ParamValue::Point2F64(_)
+        | ParamValue::Point3F64(_)
+        | ParamValue::Int2(_)
+        | ParamValue::Int3(_)
+        | ParamValue::Choice(_)
+        | ParamValue::ColorF64 { .. } => return Err("that value is a plug-in's, set through its own editor".into()),
     })
 }
 
