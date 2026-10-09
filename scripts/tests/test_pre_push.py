@@ -913,11 +913,13 @@ class PreGateTests(RealGitGate):
         self.assertNotIn("has not passed scripts/pre-gate.sh", result.stderr)
         self.assertIn("clippy --workspace --all-targets -- -D warnings", self.calls(), "the gate ran")
 
-    def test_it_checks_what_the_change_reaches_and_tests_only_what_it_touches(self):
+    def test_it_tests_what_the_gate_will_test(self):
+        # The gate tests a and every crate built on it: testing a alone
+        # let b's tests fail first in the gate, after its whole build.
         self.assertEqual(self.pre_gate().returncode, 0)
         calls = self.calls()
         self.assertIn("check --all-targets -p a -p b", calls, "b is built on a: compiled")
-        self.assertIn("test --no-fail-fast -p a", calls, "only the touched crate's tests, to the end")
+        self.assertIn("test --no-fail-fast -p a -p b", calls, "the gate's crates' tests, to the end")
         self.assertIn("clippy --all-targets -p a -- -D warnings", calls)
         self.assertIn("doc -j 1 --no-deps -p a", calls, "rustdoc on the touched crate, one job")
         self.assertFalse(any(c.startswith("doc") and "-p b" in c or "--workspace" in c for c in calls), "rustdoc of what it reaches and workspace clippy are the gate's")
@@ -948,7 +950,13 @@ class PreGateTests(RealGitGate):
         for changed in ("crates/klipp-effects/src/lib.rs", "crates/klipp-title/src/lib.rs"):
             self.change(changed, f"// {changed}\n")
             self.assertEqual(self.pre_gate().returncode, 0)
-            self.assertIn("test -p klipp-compose --test golden_corpus", self.calls(), changed)
+            calls = self.calls()
+            # Run on their own, or within the gate's scope when that
+            # includes compose (here the whole workspace), never twice.
+            ran = [c for c in calls if c == "test -p klipp-compose --test golden_corpus" or c.startswith("test --no-fail-fast") and ("--workspace" in c or "-p klipp-compose" in c)]
+            self.assertTrue(ran, (changed, calls))
+            if any("--workspace" in c and c.startswith("test --no-fail-fast") for c in calls):
+                self.assertNotIn("test -p klipp-compose --test golden_corpus", calls, "already in the workspace's tests")
 
     def test_an_unreadable_compose_manifest_still_runs_the_render_references(self):
         # Fail closed: when compose's dependencies can't be read, the
@@ -963,6 +971,33 @@ class PreGateTests(RealGitGate):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("test -p klipp-compose --test golden_corpus", self.calls())
         self.assertIn("could not be read", result.stdout)
+
+    def test_a_change_the_conversion_reads_runs_its_render_inputs(self):
+        # render_inputs lives in klipp-convert and reads the lift (a
+        # dependency) and the timeline's live eval (a dev-dependency): a
+        # change in either passes its own crate and fails only it.
+        for name in ("klipp-graph-lift", "klipp-timeline"):
+            (self.root / f"crates/{name}/src").mkdir(parents=True, exist_ok=True)
+            (self.root / f"crates/{name}/Cargo.toml").write_text(f'[package]\nname = "{name}"\n')
+        (self.root / "crates/klipp-convert/tests").mkdir(parents=True)
+        (self.root / "crates/klipp-convert/tests/render_inputs.rs").write_text("\n")
+        (self.root / "crates/klipp-convert/Cargo.toml").write_text('[package]\nname = "klipp-convert"\n[dependencies]\nklipp-graph-lift = { path = "../klipp-graph-lift" }\n[dev-dependencies]\nklipp-timeline = { path = "../klipp-timeline" }\n')
+        self.commit(self.root, "convert and what it reads")
+        self.git(self.root, "push", "-q", "origin", "HEAD:main")
+        for changed in ("crates/klipp-graph-lift/src/lib.rs", "crates/klipp-timeline/src/lib.rs"):
+            self.change(changed, f"// {changed}\n")
+            self.assertEqual(self.pre_gate().returncode, 0)
+            self.assertIn("test -p klipp-convert --test render_inputs", self.calls(), changed)
+
+    def test_a_change_the_conversion_doesnt_read_skips_its_render_inputs(self):
+        (self.root / "crates/klipp-convert/tests").mkdir(parents=True)
+        (self.root / "crates/klipp-convert/tests/render_inputs.rs").write_text("\n")
+        (self.root / "crates/klipp-convert/Cargo.toml").write_text('[package]\nname = "klipp-convert"\n[dependencies]\nklipp-graph-lift = { path = "../klipp-graph-lift" }\n')
+        self.commit(self.root, "convert, built on the lift only")
+        self.git(self.root, "push", "-q", "origin", "HEAD:main")
+        self.change("crates/a/src/lib.rs", "changed elsewhere for convert\n")
+        self.assertEqual(self.pre_gate().returncode, 0)
+        self.assertFalse(any("render_inputs" in c for c in self.calls()))
 
     def test_a_change_elsewhere_does_not_run_the_render_references(self):
         (self.root / "crates/klipp-compose/tests").mkdir(parents=True)
@@ -1010,6 +1045,23 @@ class PreGateTests(RealGitGate):
 
     def test_behind_main_but_merging_cleanly_is_checked(self):
         self.main_moves_on()
+        result = self.pre_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("merges cleanly", result.stdout)
+
+    def test_behind_main_in_a_crate_the_gate_tests_needs_a_rebase(self):
+        # b is built on a, so the gate tests b: a main commit in b, untested
+        # here, could fail the gate after its whole build.
+        self.main_moves_on(name="crates/b/src/other.rs", text="main's b\n")
+        result = self.pre_gate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("main has moved in crates the gate will test ( b )", result.stderr)
+        self.assertIn("git rebase origin/main", result.stderr)
+        self.assertFalse(any(c.startswith("test") for c in self.calls()), "nothing tested")
+        self.assertFalse(self.stamp().exists())
+
+    def test_behind_main_outside_the_gates_scope_is_checked(self):
+        self.main_moves_on(name="crates/klipp-graph-lift/src/other.rs", text="main's lift\n")
         result = self.pre_gate()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("merges cleanly", result.stdout)

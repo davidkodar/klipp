@@ -116,7 +116,8 @@ fi
 
 # The crates it touches: a changed path inside a crate's folder, named by
 # that folder's Cargo.toml.
-_touched=$(printf '%s\n' "$_changed" | python3 -c '
+crates_of() {
+    python3 -c '
 import sys, tomllib
 from pathlib import Path
 names = set()
@@ -130,7 +131,9 @@ for line in sys.stdin:
                 names.add(package["name"])
             break
 print(" ".join(sorted(names)))
-')
+'
+}
+_touched=$(printf '%s\n' "$_changed" | crates_of)
 
 # The crates it can affect, as the gate works them out: these are checked
 # (compiled), not tested.
@@ -146,6 +149,22 @@ if _meta=$(cargo metadata --no-deps --format-version 1 --offline 2>/dev/null) \
     esac
 fi
 [ -n "${_metafile:-}" ] && rm -f "$_metafile"
+# Behind main, a passing run here says nothing about what main changed in
+# the crates the gate will test: the gate tests the merge, and a main
+# commit in one of those crates can fail it there (a moved test, a new
+# reader). Rebase first when main touched a crate in the gate's scope.
+if [ -n "$_main" ] && [ "$_fork" != "$_main" ]; then
+    _main_crates=$(git diff --name-only "$_fork" "$_main" | crates_of)
+    _in_scope=
+    for _c in $_main_crates; do
+        case " $_check_args " in
+            *" --workspace "*|*" -p $_c "*) _in_scope="$_in_scope $_c" ;;
+        esac
+    done
+    [ -z "$_in_scope" ] || refuse "main has moved in crates the gate will test ($_in_scope ); this run would not test what the gate tests. Rebase, then run this again:
+
+              git fetch origin && git rebase origin/main"
+fi
 _test_args=$(printf '%s' "$_touched" | sed 's/[^ ][^ ]*/-p &/g')
 [ -n "$_check_args" ] || _check_args=$_test_args
 # The gate runs everything for a change to its own scripts (#873); here
@@ -194,7 +213,14 @@ if [ -n "$_check_args" ]; then
     step "cargo check ($_check_why)" cargo check --all-targets $_check_args
 fi
 if [ -n "$_test_args" ]; then
-    step "tests of $_touched" cargo test --no-fail-fast $_test_args
+    # The tests the gate will run: the crates this touches, every crate
+    # built on them and every crate whose tests use them (affected_crates,
+    # the gate's own scope). Testing only the touched crates let a
+    # dependent's test fail first in the gate, after its build: three
+    # 11-23 minute runs on one evening (#1386, #1406, render_inputs).
+    _gate_tests=$_test_args
+    [ -n "$_check_args" ] && _gate_tests=$_check_args
+    step "tests the gate will run ($_check_why)" cargo test --no-fail-fast $_gate_tests
     # A change in an effect or grade crate can add a reader these scans
     # forbid, in a crate other than the one they live in.
     if printf ' %s ' "$_touched" | grep -qE ' (klipp-effects|klipp-nodes|klipp-graph-format|klipp-graph-lift|klipp-compose|klipp-timeline|klipp-engine|klipp-ui) '; then
@@ -205,30 +231,39 @@ if [ -n "$_test_args" ]; then
             step "the ${_scan#*:} scan" cargo test -p "$_crate" --test "${_scan#*:}"
         done
     fi
+    # A downstream test reads what other crates produce: a change in one
+    # of them passes that crate's own tests and fails only the gate.
     # golden_corpus renders through every crate klipp-compose builds on
-    # (effects, nodes, colour, titles, transitions, the lift, ...): a
-    # change in one passes that crate's tests and fails only the gate's
-    # recorded references (#1445's posterize). Run them when the change
-    # touches one of compose's own klipp dependencies and not compose.
-    if [ -f crates/klipp-compose/tests/golden_corpus.rs ] && ! printf ' %s ' "$_touched" | grep -q ' klipp-compose '; then
-        _compose_deps=$(python3 -c '
-import tomllib
-m = tomllib.load(open("crates/klipp-compose/Cargo.toml", "rb"))
-print(" ".join(sorted(k for k in m.get("dependencies", {}) if k.startswith("klipp-"))))
-' 2>/dev/null)
-        if [ -z "$_compose_deps" ]; then
+    # (#1445's posterize). render_inputs holds the conversion to what the
+    # renderer consumes, through the lift and the live eval (#1386, #1406).
+    # Each runs when the change touches one of its crate's klipp
+    # dependencies (normal or dev) and not the crate itself.
+    downstream_test() {
+        _crate=$1 _test=$2 _label=$3
+        [ -f "crates/$_crate/tests/$_test.rs" ] || return 0
+        # Already run above when the gate's scope includes the crate.
+        case " $_gate_tests " in *" --workspace "*|*" -p $_crate "*) return 0 ;; esac
+        _deps=$(python3 -c '
+import sys, tomllib
+m = tomllib.load(open(sys.argv[1], "rb"))
+deps = {**m.get("dependencies", {}), **m.get("dev-dependencies", {})}
+print(" ".join(sorted(k for k in deps if k.startswith("klipp-"))))
+' "crates/$_crate/Cargo.toml" 2>/dev/null)
+        if [ -z "$_deps" ]; then
             # Fail closed: an unreadable manifest must not skip the check.
-            say "klipp-compose's dependencies could not be read; running the render references anyway"
-            step "the render references (golden_corpus)" cargo test -p klipp-compose --test golden_corpus
-        else
-            for _dep in $_compose_deps; do
-                if printf ' %s ' "$_touched" | grep -q " $_dep "; then
-                    step "the render references (golden_corpus)" cargo test -p klipp-compose --test golden_corpus
-                    break
-                fi
-            done
+            say "$_crate's dependencies could not be read; running $_label anyway"
+            step "$_label" cargo test -p "$_crate" --test "$_test"
+            return 0
         fi
-    fi
+        for _dep in $_deps; do
+            if printf ' %s ' "$_touched" | grep -q " $_dep "; then
+                step "$_label" cargo test -p "$_crate" --test "$_test"
+                return 0
+            fi
+        done
+    }
+    downstream_test klipp-compose golden_corpus "the render references (golden_corpus)"
+    downstream_test klipp-convert render_inputs "the conversion's render inputs (render_inputs)"
     step "clippy on $_touched" cargo clippy --all-targets $_test_args -- -D warnings
     # A public doc linking a private item, or a bare [0,1] in prose,
     # passes clippy and every test and fails only the gate's rustdoc.

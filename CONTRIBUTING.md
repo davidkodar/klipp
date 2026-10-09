@@ -256,10 +256,13 @@ checkout, before the gate spends a run on them:
 1. a merge check against the newest `main`, which names any file that
    conflicts, before anything is built;
 2. `cargo check --all-targets` on every crate the change can affect;
-3. every test target (unit, integration, doc) of the crates the change
-   touches, plus the repository's source scans when an effect or grade
-   crate changed, and the render references (`klipp-compose`'s
-   `golden_corpus`) when a crate `klipp-compose` builds on changed;
+3. every test target (unit, integration, doc) of the crates the gate will
+   test: those the change touches, every crate built on them and every
+   crate whose tests use them. Plus the repository's source scans when an
+   effect or grade crate changed, and, if the gate's scope leaves them
+   out, the render references (`klipp-compose`'s `golden_corpus`) and
+   the conversion's render inputs (`klipp-convert`'s `render_inputs`)
+   when a crate they read changed;
 4. clippy and rustdoc with `-D warnings` on those crates;
 5. the scripts' own tests, when `scripts/` changed.
 
