@@ -200,6 +200,56 @@ pub trait FrameSource {
     fn media_fps(&mut self, _clip: &Clip) -> Option<f64> {
         None
     }
+
+    /// The key of `kind`'s analysis of `clip`'s media (M4 steps 8 and 9):
+    /// the original file's, whatever the source decodes. `None` (the
+    /// default) when it can't say: the clip's analysis nodes then have
+    /// none.
+    fn analysis_key(&mut self, _clip: &Clip, _kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
+        None
+    }
+}
+
+/// The analysis asset `effect` reads, if it reads one.
+fn asset_kind(effect: &BuiltinEffect) -> Option<klipp_analysis::assets::AssetKind> {
+    use klipp_analysis::assets::AssetKind;
+    match effect {
+        BuiltinEffect::Deflicker { .. } => Some(AssetKind::Deflicker),
+        BuiltinEffect::VideoStabilization { .. } => Some(AssetKind::Stabilisation),
+        BuiltinEffect::RollingShutterCorrection { .. } => Some(AssetKind::RollingShutter),
+        _ => None,
+    }
+}
+
+/// What an analysis effect's derivation depends on: its kind and the
+/// settings it takes.
+fn derivation_of(effect: &BuiltinEffect) -> Option<(klipp_analysis::assets::AssetKind, u64)> {
+    Some((asset_kind(effect)?, klipp_effects::node_analysis::derivation_params(effect)?))
+}
+
+/// One clip's analyses for a frame (M4 step 9), by the effect that reads
+/// each: ready, with its settings applied, or stale (never read). An
+/// effect with neither has no analysis.
+#[derive(Default)]
+pub struct ClipAnalysis {
+    found: Vec<((klipp_analysis::assets::AssetKind, u64), Option<klipp_nodes::frame_context::AnalysisBlob>)>,
+}
+
+impl klipp_nodes::frame_context::AnalysisInputs for ClipAnalysis {
+    fn lookup(&self, _node: NodeId, _schema: u32) -> klipp_nodes::frame_context::Analysis<'_> {
+        klipp_nodes::frame_context::Analysis::Absent
+    }
+
+    fn lookup_effect(&self, _node: NodeId, effect: &BuiltinEffect, schema: u32) -> klipp_nodes::frame_context::Analysis<'_> {
+        use klipp_nodes::frame_context::Analysis;
+        let Some(wanted) = derivation_of(effect) else { return Analysis::Absent };
+        match self.found.iter().find(|(k, _)| *k == wanted) {
+            None => Analysis::Absent,
+            Some((_, None)) => Analysis::Stale { found: 0 },
+            Some((_, Some(blob))) if blob.schema != schema => Analysis::Stale { found: blob.schema },
+            Some((_, Some(blob))) => Analysis::Ready(blob),
+        }
+    }
 }
 
 /// A clip's source as a non-pure node reads it (M4 step 1): the frame
@@ -661,6 +711,13 @@ pub struct Renderer {
     /// A scene-referred clip's display step for the grade being run,
     /// spliced in after the grade and before `run_effects` (step 11c).
     run_display: Option<klipp_color::hdr::SceneToDisplay>,
+    /// Where analysis assets are kept (M4 step 8): the analysis cache.
+    assets: Box<dyn klipp_analysis::assets::AssetStore + Send>,
+    /// Analyses derived from their assets with an effect's settings, kept
+    /// while their key and settings hold. Bounded.
+    derived: HashMap<(klipp_analysis::assets::AssetKey, u64), Arc<klipp_effects::node_analysis::NodeAnalysis>>,
+    /// The clip being rendered and its analyses, for each of its runs.
+    clip_analysis: Option<(ClipId, ClipAnalysis)>,
     /// The source-boundary node for the grade being run (M4 step 6):
     /// spliced in straight after the Source, before the grade.
     run_source_node: Option<klipp_nodes::Node>,
@@ -814,6 +871,9 @@ impl Renderer {
             rsc_motion: HashMap::new(),
             instances: Default::default(),
             run_source_node: None,
+            assets: Box::new(klipp_analysis::assets::CacheStore::default()),
+            derived: HashMap::new(),
+            clip_analysis: None,
             inspect: Inspect::default(),
             found: Inspection::default(),
             hdr_peak: None,
@@ -2473,6 +2533,9 @@ impl Renderer {
         // The frame's declines before this clip's grade: a run graded again
         // gives back the first run's, and notes its own (step 10).
         let declines_before = self.found.declines.len();
+        // The clip's analyses for its runs this frame, from its media.
+        let analyses = self.analyses_of(clip, src);
+        self.clip_analysis = Some((clip.id, analyses));
         let mut pixels = self.grade_at_source(clip, input, time, clip_time, fps, width, height, src, source_pts, hdr);
         // Whether the grade's run took the display step, so it isn't run
         // twice: not when the run failed and gave back its input.
@@ -3235,6 +3298,10 @@ impl Renderer {
         // The OFX host, lent to the run's OFX nodes: a clone of the shared
         // host, so lending it borrows nothing of the renderer (M4 step 3).
         let ofx = crate::ofx_node::OfxNodes(std::sync::Arc::clone(&self.ofx));
+        // The clip's analyses, lent for the run.
+        let analysis = self.clip_analysis.take();
+        let none = ClipAnalysis::default();
+        let inputs = analysis.as_ref().filter(|(id, _)| *id == clip.id).map_or(&none, |(_, a)| a);
         let mut ctx = klipp_nodes::frame_context::FrameContext {
             clip: clip.id,
             frame: ((clip.timeline_in.to_secs_f64() + clip_time) * fps).round() as i64,
@@ -3245,13 +3312,57 @@ impl Renderer {
             source_secs,
             source_pts,
             sources,
-            analysis: &klipp_nodes::frame_context::NoAnalysis,
+            analysis: inputs,
             instances: &mut instances,
             ofx: Some(&ofx),
             source_at: &|t| clip.source_secs_at(t, fps),
         };
         let out = f(self, &mut ctx);
         self.instances = instances;
+        self.clip_analysis = analysis;
+        out
+    }
+
+    /// Keep analysis assets in `store` rather than the analysis cache.
+    pub fn set_asset_store(&mut self, store: Box<dyn klipp_analysis::assets::AssetStore + Send>) {
+        self.assets = store;
+        self.derived.clear();
+    }
+
+    /// `clip`'s analyses for this frame (M4 step 9): for each analysis
+    /// effect it runs, its asset found under the key `src` gives it,
+    /// derived with the effect's settings (kept while they hold), or stale.
+    fn analyses_of(&mut self, clip: &Clip, src: &mut dyn FrameSource) -> ClipAnalysis {
+        use klipp_analysis::assets::{lookup, Found};
+        let mut out = ClipAnalysis::default();
+        let enabled = |i: usize| clip.builtin_effects_enabled().get(i).copied().unwrap_or(true);
+        for (i, effect) in clip.builtin_effects().iter().enumerate().filter(|(i, _)| enabled(*i)) {
+            let (Some(kind), Some(params)) = (asset_kind(effect), klipp_effects::node_analysis::derivation_params(effect)) else { continue };
+            if out.found.iter().any(|(k, _)| *k == (kind, params)) {
+                continue;
+            }
+            let Some(key) = src.analysis_key(clip, kind) else { continue };
+            let blob = match lookup(self.assets.as_ref(), &key) {
+                Found::Absent => continue,
+                Found::Stale { .. } => None,
+                Found::Ready(raw) => {
+                    if self.derived.len() > 64 {
+                        self.derived.clear();
+                    }
+                    let derived = match self.derived.get(&(key.clone(), params)) {
+                        Some(d) => Some(Arc::clone(d)),
+                        None => klipp_effects::node_analysis::derive(effect, &raw).map(|d| {
+                            let d = Arc::new(d);
+                            self.derived.insert((key.clone(), params), Arc::clone(&d));
+                            d
+                        }),
+                    };
+                    derived.map(|d| klipp_nodes::frame_context::AnalysisBlob { schema: klipp_nodes::frame_context::NODE_ANALYSIS_SCHEMA, data: d })
+                }
+            };
+            let _ = i;
+            out.found.push(((kind, params), blob));
+        }
         out
     }
 
