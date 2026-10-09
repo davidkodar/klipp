@@ -51,13 +51,16 @@ pub fn clip(p: &ClipPicture, ctx: &LiftCtx) -> Result<Value, Refusal> {
     // Each other enabled Opacity, which multiplies the clip's opacity
     // (#1386), with its own keys; before the property's, so the property's
     // is still the last enabled one, which carries the clip's keys.
+    let mut multiplied = false;
     for n in nodes.iter().filter(|n| n.origin.is_none() && n.enabled && n.type_id.as_str() == types::LEGACY_OPACITY) {
         fx.push(payload(n)?.clone(), true, &own_keys(n));
+        multiplied = true;
     }
     // The opacity: one Opacity effect with the value, its animation on the
     // clip's own opacity keys. First too: the last enabled Opacity sets the
-    // result, and a track's spliced after must still be that one.
-    if p.opacity != 1.0 {
+    // result, and a track's spliced after must still be that one. At 1 it
+    // is still written after a multiplying one, so it stays the last.
+    if p.opacity != 1.0 || multiplied {
         fx.push(json!({ "type": "opacity", "value": p.opacity }), true, &BTreeMap::new());
     }
     // The clip's own grade, and the spliced groups before and after it.
