@@ -290,6 +290,12 @@ pub const NODE_ANALYSIS_SCHEMA: u32 = 1;
 /// The analyses a render's nodes read, by node id.
 pub trait AnalysisInputs {
     fn lookup(&self, node: NodeId, schema: u32) -> Analysis<'_>;
+    /// `node`'s analysis by the effect it runs: what an analysis node
+    /// reads. A provider keyed by the effect (its kind and the settings its
+    /// derivation takes) answers here; by default, by the node.
+    fn lookup_effect(&self, node: NodeId, _effect: &klipp_effects::BuiltinEffect, schema: u32) -> Analysis<'_> {
+        self.lookup(node, schema)
+    }
 }
 
 /// No analyses: every lookup is [`Analysis::Absent`].
