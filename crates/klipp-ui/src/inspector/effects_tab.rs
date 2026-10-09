@@ -521,7 +521,7 @@ pub(crate) const TEMPORAL_DENOISE_CPU_NOTE: &str =
 /// tab and the generated stack's adapter (M3 step 6).
 pub(crate) fn deflicker_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, state: &AppState, cmds: &mut Vec<AppCommand>) {
     let clip_id = clip.id;
-    let has_data = clip.deflicker_data.is_some();
+    let has_data = clip.deflicker_data.is_some() || state.analysis_ready.contains(&(clip_id, klipp_analysis::assets::AssetKind::Deflicker));
     let is_analyzing = state.deflicker_in_progress.contains(&clip_id);
 
     if is_analyzing {
@@ -555,10 +555,9 @@ pub(crate) fn deflicker_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Cli
             ui.colored_label(colour, egui::RichText::new(text).size(11.0));
         }
     } else {
-        ui.colored_label(theme.text_dim, egui::RichText::new("Not analysed — the clip's light has to be measured first").size(11.0));
-        if ui.button("Analyse").clicked() {
-            cmds.push(AppCommand::AnalyzeDeflicker { clip_id });
-        }
+        // It starts by itself (`ensure_analyses`); until it's done the
+        // frame is drawn as it is, and says so.
+        ui.colored_label(theme.marker_warning, egui::RichText::new("Analysis needed: measuring the clip's light starts by itself. Until then the frame isn't deflickered.").size(11.0));
     }
 }
 
@@ -569,7 +568,7 @@ pub(crate) fn deflicker_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Cli
 pub(crate) fn stabilization_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, state: &AppState, cmds: &mut Vec<AppCommand>) {
     let clip_id = clip.id;
     // Analysis status
-    let has_data = clip.stabilization_data.is_some();
+    let has_data = clip.stabilization_data.is_some() || state.analysis_ready.contains(&(clip_id, klipp_analysis::assets::AssetKind::Stabilisation));
     let is_analyzing = state.stabilization_in_progress.contains(&clip_id);
 
     if is_analyzing {
@@ -683,9 +682,9 @@ pub(crate) fn stabilization_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: 
             }
         }
     } else {
-        if ui.button("Analyze Clip").clicked() {
-            cmds.push(AppCommand::AnalyzeStabilization { clip_id });
-        }
+        // It starts by itself (`ensure_analyses`); until it's done the
+        // frame is drawn as it is, and says so.
+        ui.colored_label(theme.marker_warning, egui::RichText::new("Analysis needed: measuring the clip's motion starts by itself. Until then the frame isn't stabilised.").size(11.0));
     }
 }
 

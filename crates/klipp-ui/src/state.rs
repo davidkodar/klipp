@@ -1742,6 +1742,12 @@ pub struct AppState {
     pub deflicker_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
     pub stabilization_in_progress: std::collections::HashSet<klipp_core::ClipId>,
     pub stabilization_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
+    /// Clips whose analysis asset of a kind is in the analysis cache (M4
+    /// step 9): what `ensure_analyses` last found, so the inspector shows
+    /// it without reading the disk each frame.
+    pub analysis_ready: std::collections::HashSet<(klipp_core::ClipId, klipp_analysis::assets::AssetKind)>,
+    /// When `ensure_analyses` last looked.
+    pub analysis_checked: Option<std::time::Instant>,
 
     // Scene (shot-boundary) detection state
     pub scene_detect_in_progress: std::collections::HashSet<klipp_core::ClipId>,
@@ -4034,6 +4040,8 @@ impl Default for AppState {
             deflicker_progress: std::collections::HashMap::new(),
             stabilization_in_progress: std::collections::HashSet::new(),
             stabilization_progress: std::collections::HashMap::new(),
+            analysis_ready: Default::default(),
+            analysis_checked: None,
             scene_detect_in_progress: std::collections::HashSet::new(),
             scene_detect_progress: std::collections::HashMap::new(),
             scene_split_pending: std::collections::HashSet::new(),
