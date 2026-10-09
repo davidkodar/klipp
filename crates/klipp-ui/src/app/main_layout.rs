@@ -986,7 +986,7 @@ impl KlippApp {
                 // is borrowed to draw.
                 let mut stand_in_snapshot = stand_in.and_then(|w| {
                     let seq = &self.state.sequences[seq_idx];
-                    crate::inspector::grade_view::snapshot_for_root(seq, clip_id, w.root(seq), !self.state.graph_descent_path.is_empty(), &mut self.state.pending_corrector, &mut self.state.root_grade_start)
+                    crate::inspector::grade_view::snapshot_for_root(seq, clip_id, w.root(seq), &self.state.graph_descent_path, &mut self.state.pending_corrector, &mut self.state.root_grade_start)
                 });
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
@@ -1263,16 +1263,16 @@ impl KlippApp {
                     // clip's own grade from its catalog type, by path.
                     // A stand-in's (the timeline grade, a group stage) too,
                     // at its own root (M3 step 19).
-                    let generated = path.is_empty();
+                    // Inside a compound too: its nodes have paths (#1391).
                     let generated_node = self.state.selected_node_id.filter(|nid| {
-                        generated && klipp_timeline::GradeAccess::grade(&*clip).nodes.iter().any(|n| n.id == *nid && per_node_kind(n.kind))
+                        crate::inspector::grade_view::v1_level(klipp_timeline::GradeAccess::grade(&*clip), &path).is_some_and(|g| g.nodes.iter().any(|n| n.id == *nid && per_node_kind(n.kind)))
                     });
                     // The tabbed page draws what it shares with the
                     // per-node layout as the same generated rows (11c).
                     self.node_inspector_panel.generated = if grading_timeline {
                         stand_in_snapshot.take()
                     } else {
-                        crate::inspector::grade_view::snapshot_for(clip, !path.is_empty(), false, &mut self.state.pending_corrector)
+                        crate::inspector::grade_view::snapshot_for(clip, &path, false, &mut self.state.pending_corrector)
                     };
                     let mut generated_cmds = Vec::new();
                     let drawn = generated_node.is_some_and(|nid| {
@@ -1280,7 +1280,7 @@ impl KlippApp {
                             .id_salt("node_inspector_scroll")
                             .show(ui, |ui| {
                                 if !grading_timeline {
-                                    return crate::inspector::grade_view::show(ui, &self.theme, clip, nid, &mut generated_cmds, mask_frame, Some(&mut self.node_inspector_panel));
+                                    return crate::inspector::grade_view::show(ui, &self.theme, clip, &path, nid, &mut generated_cmds, mask_frame, Some(&mut self.node_inspector_panel));
                                 }
                                 let snapshot = self.node_inspector_panel.generated.take();
                                 let drawn = snapshot.as_ref().is_some_and(|s| s.page(ui, &self.theme, nid, &mut generated_cmds, mask_frame, Some(&mut self.node_inspector_panel)));

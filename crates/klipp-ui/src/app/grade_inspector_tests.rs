@@ -75,7 +75,7 @@ impl Run {
         let frame = FrameSelection { time_secs: self.time, tolerance: 0.02, clip_start: clip.timeline_in };
         let out = self.ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                drawn = crate::inspector::grade_view::show(ui, &theme, &clip, self.node, &mut cmds, frame, self.panel.as_mut());
+                drawn = crate::inspector::grade_view::show(ui, &theme, &clip, &[], self.node, &mut cmds, frame, self.panel.as_mut());
             });
         });
         let texts = out.shapes.iter().filter_map(|s| match &s.shape {
@@ -392,7 +392,7 @@ fn tabbed_in(run: &mut Run, wide: bool, selected: Option<NodeId>, events: Vec<eg
 fn tabbed_on(run: &mut Run, wide: bool, on: crate::state::ColorTab, selected: Option<NodeId>, events: Vec<egui::Event>) -> (Vec<AppCommand>, Vec<crate::widgets::row_recorder::Row>, Vec<(String, egui::Pos2)>) {
     let c = clip(&run.state, run.clip).clone();
     let mut panel = run.panel.take().unwrap_or_default();
-    panel.generated = crate::inspector::grade_view::snapshot_for(&c, false, false, &mut run.state.pending_corrector);
+    panel.generated = crate::inspector::grade_view::snapshot_for(&c, &[], false, &mut run.state.pending_corrector);
     let mut graph = c.grade().clone();
     let theme = crate::theme::KlippTheme::default();
     let frame = FrameSelection { time_secs: run.time, tolerance: 0.02, clip_start: c.timeline_in };
@@ -497,17 +497,26 @@ fn tabbed_targeting_is_unchanged() {
     }
 }
 
-/// A clip's snapshot is taken only of its own grade; a nested grade keeps the old rows (the #1391 boundary),
-/// and a stand-in's (the timeline grade, a group's stage) is taken at its
-/// own root instead (`snapshot_for_root`, M3 step 19).
+/// A clip's snapshot is taken of its own grade at any depth: inside a
+/// compound its nodes have paths through it (#1391), and a descent that
+/// names no compound has none. A stand-in's (the timeline grade, a group's
+/// stage) is taken at its own root instead (`snapshot_for_root`, M3 step 19).
 #[test]
-fn the_shared_rows_fall_back_for_nested_and_stand_in_grades() {
-    let run = Run::new(NodeKind::Corrector).unwrap();
-    let c = clip(&run.state, run.clip);
+fn the_shared_rows_are_generated_at_any_depth_and_not_for_a_stand_in() {
+    let mut run = Run::new(NodeKind::Corrector).unwrap();
+    let id = run.clip;
+    let c = run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
+    let mut compound = klipp_nodes::Node { id: klipp_nodes::NodeId::new_v4(), kind: NodeKind::Compound, label: String::new(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: vec![] };
+    compound.params.compound_subgraph = Some(klipp_timeline::GradeAccess::grade(&*c).clone());
+    let at = compound.id;
+    let anchor = klipp_timeline::GradeAccess::grade(&*c).nodes.iter().find(|n| n.kind == NodeKind::Corrector).map(|n| n.id);
+    assert!(klipp_timeline::GradeAccess::insert_grade_node(c, anchor, compound));
+    let c = clip(&run.state, id);
     use crate::inspector::grade_view::snapshot_for;
-    assert!(snapshot_for(c, false, false, &mut None).is_some(), "the clip's own grade");
-    assert!(snapshot_for(c, true, false, &mut None).is_none(), "a nested grade");
-    assert!(snapshot_for(c, false, true, &mut None).is_none(), "a stand-in's grade");
+    assert!(snapshot_for(c, &[], false, &mut None).is_some(), "the clip's own grade");
+    assert!(snapshot_for(c, &[at], false, &mut None).is_some(), "inside its compound");
+    assert!(snapshot_for(c, &[klipp_nodes::NodeId::new_v4()], false, &mut None).is_none(), "a descent that names no compound");
+    assert!(snapshot_for(c, &[], true, &mut None).is_none(), "a stand-in's grade");
 }
 
 /// The Colour page's bottom tools draw the shared rows from this frame's
@@ -837,7 +846,7 @@ fn stand_in_tab(run: &mut Run, which: GradeStandIn, wide: bool, on: crate::state
     let id = super::timeline_grade::stand_in_grade_on(&mut run.state.sequences[0], which, &mut run.fresh).expect("stood in");
     let root = which.root(&run.state.sequences[0]);
     let mut panel = run.panel.take().unwrap_or_default();
-    panel.generated = crate::inspector::grade_view::snapshot_for_root(&run.state.sequences[0], id, root, false, &mut run.state.pending_corrector, &mut run.state.root_grade_start);
+    panel.generated = crate::inspector::grade_view::snapshot_for_root(&run.state.sequences[0], id, root, &[], &mut run.state.pending_corrector, &mut run.state.root_grade_start);
     let mut graph = clip(&run.state, id).grade().clone();
     let theme = crate::theme::KlippTheme::default();
     let frame = FrameSelection { time_secs: run.time, tolerance: 0.02, clip_start: clip(&run.state, id).timeline_in };

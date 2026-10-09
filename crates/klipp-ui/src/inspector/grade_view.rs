@@ -1,9 +1,9 @@
 //! The generated grade inspector (M3 step 11): a grade node's own layout,
 //! drawn by the generated rows from what its catalog type describes
 //! (`klipp_nodes::registry`) and how that is shown (its presentation),
-//! writing by the node's path. A grade nested in a compound is still drawn
-//! by the per-node layout (`panels::node_inspector`) until M4 step 1b
-//! (#1391).
+//! writing by the node's path. A grade nested in a compound is drawn the
+//! same way: since picture revision 4 a compound is a group of the picture,
+//! so its nodes have paths through it (#1391).
 //!
 //! It reads the clip's picture and never writes it: a clip's grade node is
 //! at `[grade group, node]` under the clip, its stored values are its v1
@@ -32,6 +32,17 @@ pub fn grade_node(clip: &Clip, node: NodeId) -> Option<(NodePath, Node)> {
     Some((NodePath::new(Root::Clip { clip: clip.id.0 }, [group.id, node]), inner.clone()))
 }
 
+/// The lifted body `descent` (compound ids, outermost first) names in
+/// `body`: each compound a group whose body is its subgraph (#1391).
+fn lifted_level<'a>(body: &'a klipp_graph_format::Graph, descent: &[NodeId]) -> Option<&'a klipp_graph_format::Graph> {
+    descent.iter().try_fold(body, |g, id| Some(&g.nodes.iter().find(|n| n.id == *id && n.type_id.as_str() == lt::GROUP)?.group.as_ref()?.graph))
+}
+
+/// The v1 subgraph `descent` names in `grade`, as the canvas descends.
+pub(crate) fn v1_level<'a>(grade: &'a klipp_nodes::NodeGraph, descent: &[NodeId]) -> Option<&'a klipp_nodes::NodeGraph> {
+    descent.iter().try_fold(grade, |g, id| g.nodes.iter().find(|n| n.id == *id && n.kind == klipp_nodes::NodeKind::Compound)?.params.compound_subgraph.as_ref())
+}
+
 /// A grade node's stored entry (its kind, its v1 params): what its rows
 /// read their values from.
 fn entry_of(node: &Node) -> serde_json::Value {
@@ -47,9 +58,9 @@ fn entry_of(node: &Node) -> serde_json::Value {
 /// parameters) are the per-node layout's, drawn through `panel`, which
 /// keeps their state; without it those rows are read-only.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, node: NodeId, cmds: &mut Vec<AppCommand>, frame: FrameSelection, panel: Option<&mut NodeInspectorPanel>) -> bool {
+pub(crate) fn show(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, descent: &[NodeId], node: NodeId, cmds: &mut Vec<AppCommand>, frame: FrameSelection, panel: Option<&mut NodeInspectorPanel>) -> bool {
     let start = cmds.len();
-    if !GradeSnapshot::of(clip, None).is_some_and(|s| s.page(ui, theme, node, cmds, frame, panel)) {
+    if !GradeSnapshot::of(clip, descent, None).is_some_and(|s| s.page(ui, theme, node, cmds, frame, panel)) {
         return false;
     }
     // A key the rows name at the playhead is the stored key in its frame.
@@ -86,18 +97,23 @@ pub(crate) struct GradeSnapshot {
 }
 
 /// The snapshot a tabbed page draws its shared rows from this frame: the
-/// clip's own grade; `None` for a
-/// nested grade (descended into a compound) or a stand-in's (the timeline
-/// grade, a group's stage), which keep the old rows. Every caller of the
+/// clip's own grade at `descent` (the compounds the canvas is inside,
+/// outermost first); `None` for a stand-in's (the timeline grade, a
+/// group's stage), which [`snapshot_for_root`] takes. Every caller of the
 /// tabbed page takes it the same way, each frame, and drops it after.
 ///
 /// `pending` is the app's reservation for a Corrector the clip doesn't
 /// have yet (`AppState::pending_corrector`): kept while the clip's grade
 /// has no enabled Corrector, so every frame and the edit that makes it
 /// name one node, and a fresh id for each clip that needs one.
-pub(crate) fn snapshot_for(clip: &Clip, nested: bool, stand_in: bool, pending: &mut Option<(klipp_core::ClipId, NodeId)>) -> Option<GradeSnapshot> {
-    if nested || stand_in {
+pub(crate) fn snapshot_for(clip: &Clip, descent: &[NodeId], stand_in: bool, pending: &mut Option<(klipp_core::ClipId, NodeId)>) -> Option<GradeSnapshot> {
+    if stand_in {
         return None;
+    }
+    // Inside a compound there is no Corrector to make: the tabs' first
+    // edit makes one at the top.
+    if !descent.is_empty() {
+        return GradeSnapshot::of(clip, descent, None);
     }
     // Once the clip has its Corrector the reservation is spent: a later
     // one (after that node is removed) is a new id, never one a node had.
@@ -108,31 +124,30 @@ pub(crate) fn snapshot_for(clip: &Clip, nested: bool, stand_in: bool, pending: &
         _ => Some(NodeId::new_v4()),
     };
     *pending = reserved.map(|id| (clip.id, id));
-    GradeSnapshot::of(clip, reserved)
+    GradeSnapshot::of(clip, descent, reserved)
 }
 
 /// [`snapshot_for`] for a stand-in (M3 step 19): `stand_in`, the clip the
 /// timeline grade or a group stage is edited through, as the grade at
-/// `root`. Not nested (a compound's
-/// grade is the #1391 boundary), its nodes are addressed at `root`, and
-/// its pending Corrector is reserved as a clip's is, under the stand-in's
-/// id. While the root has no grade yet, the stand-in's (the graph it was
+/// `root`, at `descent` within it. Its nodes are addressed at `root`, and
+/// (at its top) its pending Corrector is reserved as a clip's is, under
+/// the stand-in's id. While the root has no grade yet, the stand-in's (the graph it was
 /// put on with) is the one drawn, and `start` keeps it for the first
 /// edit to begin from, so that edit's ids are the ones drawn.
 pub(crate) fn snapshot_for_root(
     seq: &klipp_timeline::Sequence,
     stand_in: klipp_core::ClipId,
     root: Root,
-    nested: bool,
+    descent: &[NodeId],
     pending: &mut Option<(klipp_core::ClipId, NodeId)>,
     start: &mut Option<(Root, klipp_nodes::NodeGraph)>,
 ) -> Option<GradeSnapshot> {
-    if nested {
-        return None;
-    }
     let clip = seq.all_clips().find(|c| c.id == stand_in)?;
     let stored = seq.root_grade(root).ok()?;
     *start = stored.is_none().then(|| (root, clip.grade().clone()));
+    if !descent.is_empty() {
+        return GradeSnapshot::of_root(seq, clip, root, descent, None);
+    }
     let grade = stored.unwrap_or(clip.grade());
     let has = grade.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Corrector && n.enabled);
     let reserved = match *pending {
@@ -141,7 +156,7 @@ pub(crate) fn snapshot_for_root(
         _ => Some(NodeId::new_v4()),
     };
     *pending = reserved.map(|id| (stand_in, id));
-    GradeSnapshot::of_root(seq, clip, root, reserved)
+    GradeSnapshot::of_root(seq, clip, root, descent, reserved)
 }
 
 /// The Corrector a tabbed page's first edit adds, as its picture holds it
@@ -154,14 +169,15 @@ pub(crate) fn pending_corrector(id: NodeId) -> Node {
 }
 
 impl GradeSnapshot {
-    /// The clip's grade nodes, and the Corrector `pending` names when its
-    /// grade has no enabled one; or `None` when its picture has no grade
-    /// group.
-    pub(crate) fn of(clip: &Clip, pending: Option<NodeId>) -> Option<Self> {
+    /// The clip's grade nodes at `descent`, and the Corrector `pending`
+    /// names when its grade has no enabled one; or `None` when its picture
+    /// has no grade group, or no compound at `descent`.
+    pub(crate) fn of(clip: &Clip, descent: &[NodeId], pending: Option<NodeId>) -> Option<Self> {
         let picture = &clip.picture_v2().ok()?.picture;
         let group = picture.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP)?;
-        let body = &group.group.as_ref()?.graph;
-        let mut nodes: Vec<_> = clip.grade().nodes.iter().filter_map(|v1| body.nodes.iter().find(|n| n.id == v1.id).map(|n| (v1.kind, n.clone()))).collect();
+        let body = lifted_level(&group.group.as_ref()?.graph, descent)?;
+        let grade = v1_level(clip.grade(), descent)?;
+        let mut nodes: Vec<_> = grade.nodes.iter().filter_map(|v1| body.nodes.iter().find(|n| n.id == v1.id).map(|n| (v1.kind, n.clone()))).collect();
         let pending = pending.filter(|id| !nodes.iter().any(|(_, n)| n.id == *id));
         if let Some(id) = pending {
             nodes.push((klipp_nodes::NodeKind::Corrector, pending_corrector(id)));
@@ -169,9 +185,9 @@ impl GradeSnapshot {
         Some(Self {
             clip: clip.id,
             root: Root::Clip { clip: clip.id.0 },
-            prefix: vec![group.id],
+            prefix: std::iter::once(group.id).chain(descent.iter().copied()).collect(),
             nodes,
-            v1: clip.grade().nodes.clone(),
+            v1: grade.nodes.clone(),
             tracked: clip.track_points.iter().filter_map(|tp| tp.linked_mask).collect(),
             pending,
             timeline_in_secs: clip.timeline_in.to_secs_f64(),
@@ -184,9 +200,11 @@ impl GradeSnapshot {
     /// their paths at the root, read from the grade stored there, or from
     /// the stand-in's while the root has none yet (`stored` is `None`).
     /// The Corrector `pending` names is added as in [`GradeSnapshot::of`].
-    pub(crate) fn of_root(seq: &klipp_timeline::Sequence, stand_in: &Clip, root: Root, pending: Option<NodeId>) -> Option<Self> {
-        let grade = seq.root_grade(root).ok()?.unwrap_or(stand_in.grade());
-        let lifted = seq.lift_root_grade(root, grade).ok()?;
+    pub(crate) fn of_root(seq: &klipp_timeline::Sequence, stand_in: &Clip, root: Root, descent: &[NodeId], pending: Option<NodeId>) -> Option<Self> {
+        let top = seq.root_grade(root).ok()?.unwrap_or(stand_in.grade());
+        let whole = seq.lift_root_grade(root, top).ok()?;
+        let lifted = lifted_level(&whole, descent)?;
+        let grade = v1_level(top, descent)?;
         let mut nodes: Vec<_> = grade.nodes.iter().filter_map(|v1| lifted.nodes.iter().find(|n| n.id == v1.id).map(|n| (v1.kind, n.clone()))).collect();
         let pending = pending.filter(|id| !nodes.iter().any(|(_, n)| n.id == *id));
         if let Some(id) = pending {
@@ -195,7 +213,7 @@ impl GradeSnapshot {
         Some(Self {
             clip: stand_in.id,
             root,
-            prefix: Vec::new(),
+            prefix: descent.to_vec(),
             nodes,
             v1: grade.nodes.clone(),
             tracked: Vec::new(),
