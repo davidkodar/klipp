@@ -120,8 +120,9 @@ pub(super) const BYPASS_VARIANT: &str = "bypass";
 
 /// What the bypass switch does: on and off, its frame, and its keys (its
 /// diamond adds and removes one; once keyed, the switch edits the key at
-/// the playhead).
-pub(super) const BYPASS_INTERACTIONS: [Interaction; 7] = [
+/// the playhead; its carets go to the keys either side, and its menu holds
+/// a key).
+pub(super) const BYPASS_INTERACTIONS: [Interaction; 10] = [
     Interaction::Toggle(false),
     Interaction::Toggle(true),
     Interaction::UndoRedo,
@@ -129,13 +130,10 @@ pub(super) const BYPASS_INTERACTIONS: [Interaction; 7] = [
     Interaction::AddKey,
     Interaction::RemoveKey,
     Interaction::EditKey,
+    Interaction::PreviousKey,
+    Interaction::NextKey,
+    Interaction::Interpolation(KeyInterpolation::Step),
 ];
-
-/// The bypass key controls neither its header nor its strip draws, owed
-/// and excluded with their issue.
-pub(super) const BYPASS_UNOFFERED: [Interaction; 3] = [Interaction::PreviousKey, Interaction::NextKey, Interaction::Interpolation(KeyInterpolation::Step)];
-
-pub(super) const BYPASS_NAVIGATION_EXCLUSION: &str = "#1456 (a grade node's bypass keys have no Previous/Next or interpolation control)";
 
 /// The bypass representatives' keys on `page`'s grade (`variant` names it),
 /// each interaction of `of`.
@@ -150,12 +148,6 @@ fn bypass_keys(of: &[Interaction]) -> Vec<super::CoverageKey> {
         }
     }
     keys
-}
-
-/// The representatives owed and excluded, each with its issue: they stay
-/// required, so the exclusion is listed, never earned.
-pub(super) fn representative_exclusions() -> Vec<(super::CoverageKey, &'static str)> {
-    bypass_keys(&BYPASS_UNOFFERED).into_iter().map(|k| (k, BYPASS_NAVIGATION_EXCLUSION)).collect()
 }
 
 /// [`REPRESENTATIVE`] as keys, with the grade representatives.
@@ -179,7 +171,6 @@ pub(super) fn representative_keys() -> Vec<super::CoverageKey> {
         }
     }
     keys.extend(bypass_keys(&BYPASS_INTERACTIONS));
-    keys.extend(bypass_keys(&BYPASS_UNOFFERED));
     keys
 }
 

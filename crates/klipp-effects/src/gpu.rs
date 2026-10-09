@@ -342,6 +342,9 @@ pub struct GpuEffectsPipeline {
     /// is how a software-decoded export frame reaches the chain, since
     /// its scaler's output does not fit in 8 bits.
     bridge_rgba64_to_linear_pipeline: wgpu::ComputePipeline,
+    /// The 16-bit bridge's decode table (`srgb16_decode_table`), alpha's
+    /// after.
+    srgb16_lut: wgpu::Buffer,
     /// Graded linear frame → the encoder's Y'CbCr planes: display
     /// transform, colour matrix and chroma subsampling in one pass, so
     /// only the planes cross the bus.
@@ -1217,10 +1220,21 @@ impl GpuEffectsPipeline {
         srgb8_lut.slice(..).get_mapped_range_mut().copy_from_slice(bytemuck::cast_slice(&srgb8_to_linear()));
         srgb8_lut.unmap();
         // Same again at 16 bits a sample, for the export's software-decoded
-        // frames — two u32 of input per pixel instead of one.
+        // frames — two u32 of input per pixel instead of one — with the
+        // CPU's own 16-bit decode table (512 KiB), for the same reason
+        // (#1451).
         let bridge_rgba64_to_linear_pipeline = create_pipeline(
-            &device, &pipeline_layout, "bridge_rgba64_to_linear", SHADER_RGBA64_TO_LINEAR,
+            &device, &huesat_pl, "bridge_rgba64_to_linear", SHADER_RGBA64_TO_LINEAR,
         );
+        let srgb16_table = srgb16_decode_table();
+        let srgb16_lut = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("srgb16_decode"),
+            size: std::mem::size_of_val(srgb16_table) as u64,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: true,
+        });
+        srgb16_lut.slice(..).get_mapped_range_mut().copy_from_slice(bytemuck::cast_slice(srgb16_table));
+        srgb16_lut.unmap();
         // A display transform whose numbers are baked on the CPU — ACES'
         // matrices and tone curves, BT.2020's gamut reach tables — reads
         // them from a fourth binding. All three pipelines below share
@@ -1554,6 +1568,7 @@ impl GpuEffectsPipeline {
             bridge_u8_fit_pipeline,
             srgb8_lut,
             bridge_rgba64_to_linear_pipeline,
+            srgb16_lut,
             linear_to_yuv420_pipeline,
             aces_rec709_pipeline,
             display_tables_bgl,
@@ -3149,11 +3164,12 @@ impl GpuEffectsPipeline {
 
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bridge_rgba64_to_linear_bg"),
-            layout: &self.bind_group_layout,
+            layout: &self.huesat_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input_rgba64.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: buf_a.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.srgb16_lut.as_entire_binding() },
             ],
         });
 
@@ -10126,6 +10142,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
+/// Each 16-bit sRGB code's linear value (the code over 65535, decoded),
+/// then each code over 65535, alpha's value: the one decode of a 16-bit
+/// frame, on the CPU (`klipp-render`'s `rgba64_to_linear`) and on the
+/// GPU's bridge alike, so a frame seeded on either is the same to the bit
+/// (#1451). Built once.
+pub fn srgb16_decode_table() -> &'static [f32] {
+    static TABLE: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let codes = 0..=u16::MAX;
+        codes.clone().map(|v| srgb_to_linear_scalar(v as f32 / 65535.0)).chain(codes.map(|v| v as f32 / 65535.0)).collect()
+    })
+}
+
 /// Each 8-bit sRGB code's linear value, as every CPU route decodes one
 /// (this crate's `srgb_u8_to_linear_f32_rgba` and
 /// `klipp_color::transfer::srgb_to_linear` of the code over 255, the same
@@ -11287,11 +11316,10 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
-
-fn srgb_to_linear_c(c: f32) -> f32 {
-    if (c <= 0.04045) { return c / 12.92; }
-    return pow((c + 0.055) / 1.055, 2.4);
-}
+// Each 16-bit code's linear value, as the CPU decodes it, then each code
+// over 65535, alpha's value (`srgb16_decode_table`): the shader's `pow`
+// and division only approximate them.
+@group(0) @binding(3) var<storage, read> srgb16: array<f32>;
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -11300,11 +11328,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // RGBA64LE: R,G in the first u32 (low half first), B,A in the second.
     let lo = input[idx * 2u];
     let hi = input[idx * 2u + 1u];
-    let r = f32(lo & 0xFFFFu) / 65535.0;
-    let g = f32((lo >> 16u) & 0xFFFFu) / 65535.0;
-    let b = f32(hi & 0xFFFFu) / 65535.0;
-    let a = f32((hi >> 16u) & 0xFFFFu) / 65535.0;
-    let lin = vec3<f32>(srgb_to_linear_c(r), srgb_to_linear_c(g), srgb_to_linear_c(b));
+    let a = srgb16[65536u + ((hi >> 16u) & 0xFFFFu)];
+    let lin = vec3<f32>(srgb16[lo & 0xFFFFu], srgb16[(lo >> 16u) & 0xFFFFu], srgb16[hi & 0xFFFFu]);
     // Alpha stays linear, per the sRGB spec.
     output[idx] = pack(vec4<f32>(
         dot(params.m0.xyz, lin),

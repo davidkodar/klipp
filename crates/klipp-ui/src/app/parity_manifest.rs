@@ -279,9 +279,6 @@ impl Manifest {
         for key in rules::representative_keys() {
             self.require(key);
         }
-        for (key, reason) in rules::representative_exclusions() {
-            self.exclude_key(key, reason);
-        }
     }
 
     /// The central rules' representative obligations that nothing
@@ -474,7 +471,7 @@ impl Manifest {
                 errors.push(format!("excluded key was not required: {key:?}"));
             }
             // A representative's exclusion is the central rules', as the
-            // representative is (`rules::representative_exclusions`).
+            // representative is.
             if !catalog.contains_key(&(key.type_id.as_str(), key.parameter.as_str())) && !representative.contains(key) {
                 errors.push(format!("stale excluded key: {key:?}"));
             }

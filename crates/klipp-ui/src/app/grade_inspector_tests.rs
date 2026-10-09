@@ -72,7 +72,7 @@ impl Run {
         let mut cmds = Vec::new();
         let mut drawn = false;
         let clip = clip(&self.state, self.clip).clone();
-        let frame = FrameSelection { time_secs: self.time, tolerance: 0.02 };
+        let frame = FrameSelection { time_secs: self.time, tolerance: 0.02, clip_start: clip.timeline_in };
         let out = self.ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 drawn = crate::inspector::grade_view::show(ui, &theme, &clip, self.node, &mut cmds, frame, self.panel.as_mut());
@@ -395,7 +395,7 @@ fn tabbed_on(run: &mut Run, wide: bool, on: crate::state::ColorTab, selected: Op
     panel.generated = crate::inspector::grade_view::snapshot_for(&c, false, false, &mut run.state.pending_corrector);
     let mut graph = c.grade().clone();
     let theme = crate::theme::KlippTheme::default();
-    let frame = FrameSelection { time_secs: run.time, tolerance: 0.02 };
+    let frame = FrameSelection { time_secs: run.time, tolerance: 0.02, clip_start: c.timeline_in };
     run.clock += 0.05;
     let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(WIDTH, 2400.0))), time: Some(run.clock), events, ..Default::default() };
     let mut cmds = Vec::new();
@@ -840,7 +840,7 @@ fn stand_in_tab(run: &mut Run, which: GradeStandIn, wide: bool, on: crate::state
     panel.generated = crate::inspector::grade_view::snapshot_for_root(&run.state.sequences[0], id, root, false, &mut run.state.pending_corrector, &mut run.state.root_grade_start);
     let mut graph = clip(&run.state, id).grade().clone();
     let theme = crate::theme::KlippTheme::default();
-    let frame = FrameSelection { time_secs: run.time, tolerance: 0.02 };
+    let frame = FrameSelection { time_secs: run.time, tolerance: 0.02, clip_start: clip(&run.state, id).timeline_in };
     run.clock += 0.05;
     let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(WIDTH, 2400.0))), time: Some(run.clock), events, ..Default::default() };
     let mut cmds = Vec::new();
