@@ -35,6 +35,9 @@ struct Track {
     key: &'static str,
     lo: f32,
     hi: f32,
+    /// The clip's Video track this row is reached as in the curve editor,
+    /// when it is one (the anchor Opacity's value is the clip's opacity).
+    video: Option<klipp_core::VideoParam>,
 }
 
 impl Track {
@@ -58,8 +61,12 @@ fn track(entry: &super::parity_manifest::CatalogEntry) -> Option<Track> {
         return None;
     }
     let ty = klipp_effects::registry::effect_types().find(|t| t.desc.id == entry.type_id)?;
+    // Opacity's value is the clip's own opacity, its Video track (0 to 1).
+    if ty.tag == "opacity" && desc.key == "value" {
+        return Some(Track { tag: ty.tag, key: desc.key, lo: 0.0, hi: 1.0, video: Some(klipp_core::VideoParam::Opacity) });
+    }
     let (lo, hi) = desc.soft.or(desc.range).unwrap_or((0.0, 1.0));
-    Some(Track { tag: ty.tag, key: desc.key, lo, hi })
+    Some(Track { tag: ty.tag, key: desc.key, lo, hi, video: None })
 }
 
 /// One clip, selected, its blur's radius keyed at `KEYS`, drawn in the
@@ -82,6 +89,14 @@ fn fixture(track: &Track) -> Result<klipp_timeline::Clip, String> {
     let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
     let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
     clip.push_effect((ty.sample)());
+    if let Some(param) = track.video {
+        clip.edit_video_param_keyframes(param, |keys| {
+            for (t, share) in KEYS {
+                klipp_core::keyframe::upsert_keyframe(keys, t, track.at(share));
+            }
+        });
+        return Ok(clip);
+    }
     let id = clip.id;
     let mut state = AppState::default();
     state.sequences[0].tracks[0].clips.push(clip);
@@ -109,8 +124,14 @@ impl Curves {
         state.use_generated_stack = generated;
         state.selected_clip = Some(id);
         let mut panel = CurveEditorPanel::new();
-        let (path, key, tag) = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().animated_effect_keys().into_iter().next().ok_or("no animated track")?;
-        panel.show_track(CurveParam::Node { path, key, tag });
+        let param = match track.video {
+            Some(p) => CurveParam::Video(p),
+            None => {
+                let (path, key, tag) = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().animated_effect_keys().into_iter().next().ok_or("no animated track")?;
+                CurveParam::Node { path, key, tag }
+            }
+        };
+        panel.show_track(param);
         let mut run = Curves { track, state, clip: id, panel, ctx: egui::Context::default(), clock: 0.0, unapplied: Vec::new() };
         run.frame(Vec::new());
         run.frame(Vec::new());
@@ -140,11 +161,17 @@ impl Curves {
 
     /// The track's keys, as (time, value, interpolation).
     fn keys(&self) -> Vec<(f64, f32, klipp_core::Interpolation)> {
+        if let Some(p) = self.track.video {
+            return self.clip().video_param_keyframes(p).iter().map(|k| (k.time_secs, k.value, k.interpolation)).collect();
+        }
         let CurveParam::Node { path, key, .. } = self.panel_param() else { return Vec::new() };
         self.clip().node_key_state(&path, &key).map(|s| s.keys.iter().map(|k| (k.time_secs, k.value, k.interpolation)).collect()).unwrap_or_default()
     }
 
     fn panel_param(&self) -> CurveParam {
+        if let Some(p) = self.track.video {
+            return CurveParam::Video(p);
+        }
         let (path, key, tag) = self.clip().animated_effect_keys().into_iter().next().expect("the track");
         CurveParam::Node { path, key, tag }
     }
@@ -182,7 +209,9 @@ impl Curves {
         if matches!(cmd, AppCommand::SeekTo(_)) {
             return;
         }
-        if !(InspectorEditHost { state: &mut self.state, side: &Sink }).apply(&cmd) {
+        // The video keys' handlers, as the app runs them (a Video track's).
+        let mut host = InspectorEditHost { state: &mut self.state, side: &Sink };
+        if !host.apply_video_keyframes(&cmd) && !host.apply_keyframe_drag(&cmd) && !host.apply(&cmd) {
             self.unapplied.push(format!("{cmd:?}"));
         }
     }
@@ -222,18 +251,6 @@ fn entries() -> Vec<(super::parity_manifest::CatalogEntry, Track)> {
 /// output spine's effect nodes, and the clip places this at the source
 /// boundary): owed, and excluded, citing the issue.
 const NOT_LISTED: &[(&str, &str)] = &[("temporal_denoise", "#1419 (Temporal Denoise keys aren't listed in the curve editor: a placed kind isn't on the output spine animated_effect_keys walks)")];
-
-/// Rows owed here and still missing, not excluded: their track is the
-/// clip's Video track, whose commands only the app applies until the video
-/// keyframe handlers move into the shared edit host. The manifest keeps
-/// requiring them (the flip counts them missing); only this family's own
-/// "all earned" check passes over them, and the list is emptied by the
-/// change that earns them.
-const OPACITY_PENDING: &[(&str, &str, &str)] = &[("klipp.fx.opacity", "value", "video keyframe handlers extracted to InspectorEditHost: next PR")];
-
-fn pending(type_id: &str, parameter: &str) -> bool {
-    OPACITY_PENDING.iter().any(|(t, p, _)| *t == type_id && *p == parameter)
-}
 
 fn not_listed(track: &Track) -> Option<&'static str> {
     NOT_LISTED.iter().find(|(tag, _)| *tag == track.tag).map(|(_, why)| *why)
@@ -302,7 +319,7 @@ pub(super) fn run(report: &mut Report) {
         report.case("curve editor", [], || Err("no keyframable effect parameter in the catalog".into()));
     }
     for (e, track) in all {
-        if not_listed(&track).is_none() && !pending(e.type_id, &e.parameter) {
+        if not_listed(&track).is_none() {
             run_track(report, &e, track);
         }
     }
@@ -415,7 +432,7 @@ fn effect_tracks_edit_alike_in_the_curve_editor() {
     require(&mut manifest);
     // Every key the family can earn, earned: not Pixels (another family's),
     // not those excluded with a citation (Previous/Next, #1401; Temporal
-    // Denoise, #1419), and not OPACITY_PENDING's, which stay missing.
-    let missing: Vec<_> = manifest.required.iter().filter(|k| !matches!(k.interaction, Interaction::Pixels) && !manifest.excluded_keys.contains_key(*k) && !pending(&k.type_id, &k.parameter) && !report.passed.contains(k)).collect();
+    // Denoise, #1419).
+    let missing: Vec<_> = manifest.required.iter().filter(|k| !matches!(k.interaction, Interaction::Pixels) && !manifest.excluded_keys.contains_key(*k) && !report.passed.contains(k)).collect();
     assert!(missing.is_empty(), "required and not earned: {missing:#?}");
 }

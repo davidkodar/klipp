@@ -39,6 +39,7 @@ fn run_all(report: &mut Report) {
     report.family("specialists", super::parity_specialists::run);
     report.family("specialist pixels", super::parity_specialist_pixels::run);
     report.family("video transform", super::parity_video_transform::exercise);
+    report.family("video opacity keys", super::parity_video_transform::anchor_opacity_keys);
     report.family("curve editor", super::parity_curve_editor::run);
     report.family("effect controls", super::parity_controls::run);
     // The grade families, on the clip's grade and on the sequence's grades
