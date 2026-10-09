@@ -151,6 +151,14 @@ pub fn viewer_media_range(pool: &MediaPool, clip: &Clip) -> Option<(f64, f64)> {
     Some((0.0, pool.get(&clip.media_id()?)?.duration.to_secs_f64()))
 }
 
+/// The viewer's key for `kind`'s analysis of `clip`'s media (M4 step 9):
+/// keyed by the original file even when the viewer decodes a proxy, so the
+/// viewer and export share one asset.
+pub fn viewer_analysis_key(pool: &MediaPool, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
+    let klipp_timeline::ClipKind::Media { media_id } = &clip.kind else { return None };
+    klipp_analysis::assets::asset_key(kind, pool.get(media_id)?)
+}
+
 impl FrameSource for ViewerSource<'_> {
     fn media_fps(&mut self, clip: &Clip) -> Option<f64> {
         let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
@@ -159,6 +167,12 @@ impl FrameSource for ViewerSource<'_> {
 
     fn media_range(&mut self, clip: &Clip) -> Option<(f64, f64)> {
         viewer_media_range(&self.media_pool.read().unwrap_or_else(|e| e.into_inner()), clip)
+    }
+
+    /// By the original file, proxy or not (`viewer_analysis_key`).
+    fn analysis_key(&mut self, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
+        let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+        viewer_analysis_key(&pool, clip, kind)
     }
 
     fn frame(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
@@ -1363,5 +1377,55 @@ mod media_range_tests {
         let clip = Clip::media(media, tc(0), tc(50), tc(200), tc(250));
         assert_eq!(viewer_media_range(&pool, &clip), Some((0.0, 10.0)), "the whole media, handles included");
         assert_eq!(viewer_media_range(&pool, &Clip::gap(tc(0), tc(50))), None, "no media, no range");
+    }
+}
+
+#[cfg(test)]
+mod analysis_key_tests {
+    use super::viewer_analysis_key;
+    use klipp_analysis::assets::AssetKind;
+    use klipp_compose::FrameSource;
+
+    /// A media item with a proxy: the viewer, which decodes the proxy, and
+    /// export, which decodes the original, give one key, the original's,
+    /// so they read one asset.
+    #[test]
+    fn the_viewer_and_export_key_a_proxied_clip_by_the_original() {
+        let dir = std::env::temp_dir().join(format!("klipp-viewer-key-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (original, proxy) = (dir.join("clip.mov"), dir.join("clip.proxy.mov"));
+        std::fs::write(&original, b"original").unwrap();
+        std::fs::write(&proxy, b"proxy").unwrap();
+        let mut item = klipp_media::MediaItem::synthetic_for_test(original.clone(), Some(proxy.to_str().unwrap()));
+        item.resolution = klipp_core::Resolution { width: 1920, height: 1080 };
+        item.fps = klipp_core::Fps::new(25, 1);
+        let id = item.id;
+        let mut pool = klipp_media::MediaPool::new();
+        pool.add(item);
+        let tc = |f| klipp_core::RationalTime::from_frames(f, 25);
+        let clip = klipp_timeline::Clip::media(id, tc(0), tc(50), tc(0), tc(50));
+        let viewer = viewer_analysis_key(&pool, &clip, AssetKind::Stabilisation).expect("the viewer's key");
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut track = klipp_timeline::Track::new("V", klipp_timeline::TrackKind::Video);
+        track.clips = vec![clip.clone()];
+        seq.tracks = vec![track];
+        let settings = {
+            use klipp_core::*;
+            ExportSettings {
+                pan_law: Default::default(),
+                output_path: dir.join("out.mp4"), format: ExportFormat::Mp4, video_codec: ExportVideoCodec::H264,
+                resolution: None, fps: None, crf: 18, preset: EncoderPreset::Fast, audio_codec: ExportAudioCodec::Copy,
+                audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: RateControl::Crf,
+                burn_in_subtitles: false, embed_subtitles: false, target_lufs: None, true_peak_dbtp: None, embed_chapters: false,
+                bit_depth: 8, hdr_mode: HdrMode::Sdr, tone_map_op: ToneMapOp::Hable, odt: OdtChoice::MatchViewer,
+                mastering_peak_nits: DEFAULT_MASTERING_PEAK_NITS,
+            }
+        };
+        let snap = klipp_render::SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let mut export = klipp_render::ExportFrameSource::new(&snap.video.media, 25.0, klipp_core::WorkingColorspace::Rec709Linear);
+        let exported = export.analysis_key(&clip, AssetKind::Stabilisation).expect("export's key");
+        assert_eq!(viewer, exported, "one asset for both");
+        assert_eq!(Some(viewer.media), klipp_analysis::store::key_for(&original), "the original's file, not the proxy's");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
