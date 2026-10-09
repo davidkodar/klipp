@@ -3594,7 +3594,7 @@ impl Renderer {
             return self.effects(fx, pixels, clip_time, width, height);
         };
         let source_secs = clip.source_secs_at(clip_time, fps);
-        let mut motion = std::mem::take(&mut self.motion);
+        let mut motion = self.motion.clone();
         let mut list = fx.to_vec();
         for effect in &mut list {
             let Analysis::Ready(blob) = analyses.lookup_effect(NodeId::nil(), effect, NODE_ANALYSIS_SCHEMA) else { continue };
