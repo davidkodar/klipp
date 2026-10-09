@@ -82,7 +82,7 @@ pub const ALL: &[FamilyEntry] = &[
     FamilyEntry { family: Family::Ofx, require: require_ofx, run: none_yet },
     FamilyEntry { family: Family::OfxTemporal, require: require_ofx_temporal, run: none_yet },
     FamilyEntry { family: Family::Frei0r, require: require_frei0r, run: none_yet },
-    FamilyEntry { family: Family::TemporalDenoise, require: require_temporal_denoise, run: none_yet },
+    FamilyEntry { family: Family::TemporalDenoise, require: require_temporal_denoise, run: crate::temporal_denoise::run },
     FamilyEntry { family: Family::FrameBlend, require: require_frame_blend, run: none_yet },
     FamilyEntry { family: Family::RollingShutter, require: require_rolling_shutter, run: none_yet },
     FamilyEntry { family: Family::Stabilisation, require: require_stabilisation, run: none_yet },
