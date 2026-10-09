@@ -46,6 +46,21 @@ pub(crate) struct Resolved {
 /// The node `at` names in `clip`'s picture as `seq` renders it, and
 /// whether its output is a matte; why not, when it names none.
 fn node_of(seq: &Sequence, clip: ClipId, at: &InspectAt) -> Result<(NodeId, bool), String> {
+    // The timeline grade, inspected through its proxy (the clip its
+    // composite is graded as, `Clip::timeline_grade_of`): a node of it by
+    // its own id, as the proxy runs the grade unchanged (#1428).
+    if let Root::TimelineGrade { sequence } = at.path.root {
+        if clip != seq.timeline_grade_clip_id() || sequence != seq.id.0 {
+            return Err("the timeline grade is read through its own proxy, not a clip".into());
+        }
+        let [node] = at.path.nodes.as_slice() else {
+            return Err("that node is inside a compound, which can't be inspected until compounds are groups of the picture".into());
+        };
+        let kind = seq.timeline_grade().and_then(|g| g.nodes.iter().find(|n| n.id == *node)).map(|n| n.kind).ok_or_else(|| format!("{node} isn't in the timeline grade"))?;
+        let name = serde_json::to_value(kind).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+        let index = klipp_graph_format::ports::output_index(&name, &at.port).ok_or_else(|| format!("a {name} has no output {}", at.port))?;
+        return Ok((*node, kind.output_port_role(index) == klipp_nodes::kinds::PortRole::Matte));
+    }
     match seq.grade_node_at(clip, &at.path) {
         Ok(node) => {
             // The grade the clip runs: its own on a render copy, else the

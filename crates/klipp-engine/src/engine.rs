@@ -756,13 +756,15 @@ struct FrameCacheEntry {
 }
 
 
-/// A pending eyedropper read: the render that answers it taps `tap`, the
-/// node feeding `node`, and reads it at `(nx, ny)`.
-#[derive(Debug, Clone, Copy)]
+/// A pending eyedropper read: the inspected render taps `tap`, the
+/// output of the node feeding the asked node, and reads it at `(nx, ny)`.
+/// `clip` and `node` are the asker's names for the node, given back with
+/// the answer.
+#[derive(Debug, Clone)]
 pub(crate) struct NodeSample {
     pub(crate) clip: klipp_core::ClipId,
     pub(crate) node: klipp_nodes::NodeId,
-    pub(crate) tap: klipp_nodes::NodeId,
+    pub(crate) tap: klipp_compose::inspect::InspectAt,
     pub(crate) nx: f32,
     pub(crate) ny: f32,
 }
@@ -3267,8 +3269,8 @@ impl PlaybackEngine {
                     }
                 }
             }
-            AppCommand::SampleNodeInput { clip_id, node_id, nx, ny } => {
-                self.sample_node_input(clip_id, node_id, nx, ny);
+            AppCommand::SampleNodeInput { clip_id, node_id, at, nx, ny } => {
+                self.sample_node_input(clip_id, node_id, &at, nx, ny);
             }
             AppCommand::SetNodeSolo { at } => {
                 self.solo = at;
@@ -8517,38 +8519,83 @@ impl PlaybackEngine {
     /// output comes back from one render with the scope tap on it, at
     /// the frame's size and in the clip's own layout, which is the
     /// screen's only while the clip sits unmoved in the frame.
-    fn sample_node_input(&mut self, clip_id: klipp_core::ClipId, node_id: klipp_nodes::NodeId, nx: f32, ny: f32) {
+    /// Read the input of the node at `at` (#1428): `clip_id` and `node_id`
+    /// are the asker's names for it, given back with the answer. A clip's
+    /// grade node is read from that clip's render; the timeline grade's
+    /// from its proxy's, which grades the composite; a grade group stage's
+    /// from the render of the group's topmost member on the frame, whose
+    /// grade runs the stage. The render that answers inspects that clip
+    /// and taps the node feeding the asked one (`show_inspection`).
+    fn sample_node_input(&mut self, clip_id: klipp_core::ClipId, node_id: klipp_nodes::NodeId, at: &klipp_graph_format::path::NodePath, nx: f32, ny: f32) {
+        use klipp_graph_format::path::{NodePath, Root};
         let answer = |this: &Self, sample| {
             let _ = this.event_tx.send(AppEvent::NodeInputSampled { clip_id, node_id, nx, ny, sample });
         };
-        let why = |s: &str| Err(klipp_core::NodeSampleRefusal::Why(s.to_string()));
+        fn why<T>(s: &str) -> Result<T, klipp_core::NodeSampleRefusal> {
+            Err(klipp_core::NodeSampleRefusal::Why(s.to_string()))
+        }
         if self.state == PlaybackState::Playing {
             return answer(self, why("pause playback first — it reads the parked frame"));
         }
-        let tap = {
+        let Some(&node) = at.nodes.last() else {
+            return answer(self, why("an empty path names no node"));
+        };
+        let found = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-            let Some(clip) = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id) else {
-                drop(seq);
-                return answer(self, why("the clip is no longer on the timeline"));
+            // The clip whose render answers, after the frame checks a clip
+            // of the timeline must pass to be read point for point.
+            let on_frame = |clip: &klipp_timeline::Clip| -> Result<(), klipp_core::NodeSampleRefusal> {
+                if self.playhead < clip.timeline_in || self.playhead >= clip.timeline_out {
+                    return why("the frame on screen is not of this clip — park the playhead on it first");
+                }
+                if !sits_unmoved(clip, &seq, self.playhead) {
+                    return Err(klipp_core::NodeSampleRefusal::Placed);
+                }
+                Ok(())
             };
-            if self.playhead < clip.timeline_in || self.playhead >= clip.timeline_out {
-                drop(seq);
-                return answer(self, why("the frame on screen is not of this clip — park the playhead on it first"));
+            match at.root {
+                Root::Clip { clip } => {
+                    let clip = klipp_core::ClipId(clip);
+                    match seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip) {
+                        None => why("the clip is no longer on the timeline"),
+                        Some(c) => on_frame(c).and_then(|()| {
+                            c.grade().input_of(node, 0).map(|tap| (clip, klipp_compose::inspect::grade_node(clip, tap))).ok_or_else(|| klipp_core::NodeSampleRefusal::Why("the node has no input to read".into()))
+                        }),
+                    }
+                }
+                // The timeline grade grades the composite: no clip's place
+                // to check, a point of the frame is a point of its input.
+                Root::TimelineGrade { sequence } => match seq.timeline_grade() {
+                    None => why("the sequence has no timeline grade"),
+                    Some(grade) => grade
+                        .input_of(node, 0)
+                        .map(|tap| (seq.timeline_grade_clip_id(), klipp_compose::inspect::InspectAt::out(NodePath::new(Root::TimelineGrade { sequence }, [tap]))))
+                        .ok_or_else(|| klipp_core::NodeSampleRefusal::Why("the node has no input to read".into())),
+                },
+                Root::GroupStage { group, stage } => {
+                    let grade_stage = if stage == klipp_graph_format::lifted::Stage::Pre { klipp_timeline::GradeStage::Pre } else { klipp_timeline::GradeStage::Post };
+                    let tap = seq.grade_group(klipp_core::GradeGroupId(group)).and_then(|g| g.stage(grade_stage)).and_then(|g| g.input_of(node, 0));
+                    // The group's topmost member on the frame: the one the
+                    // viewer shows at the point, its grade running the stage.
+                    let member = seq.tracks.iter().rev().flat_map(|t| t.clips.iter()).find(|c| c.grade_group.map(|g| g.0) == Some(group) && self.playhead >= c.timeline_in && self.playhead < c.timeline_out);
+                    match (tap, member) {
+                        (None, _) => why("the node has no input to read"),
+                        (_, None) => why("no clip of the group is on this frame — park the playhead on one first"),
+                        (Some(tap), Some(m)) => on_frame(m).map(|()| (m.id, klipp_compose::inspect::InspectAt::out(NodePath::new(Root::GroupStage { group, stage }, [tap])))),
+                    }
+                }
+                Root::Track { .. } => why("a track's grade can't be sampled yet: it has no inspector (#1408)"),
             }
-            if !sits_unmoved(clip, &seq, self.playhead) {
-                drop(seq);
-                return answer(self, Err(klipp_core::NodeSampleRefusal::Placed));
-            }
-            clip.grade().input_of(node_id, 0)
         };
-        let Some(tap) = tap else {
-            return answer(self, why("the node has no input to read"));
+        let (inspected, tap) = match found {
+            Ok(found) => found,
+            Err(refusal) => return answer(self, Err(refusal)),
         };
-        self.inspect_clip = Some(clip_id);
+        self.inspect_clip = Some(inspected);
         self.node_sample = Some(NodeSample { clip: clip_id, node: node_id, tap, nx, ny });
         self.regrade_cached_frame();
         // Answered by the render (`show_inspection`), unless it drew
-        // without the clip's grade: nothing there to read.
+        // without that grade: nothing there to read.
         if self.node_sample.take().is_some() {
             answer(self, why("the node's picture could not be read on this frame"));
         }

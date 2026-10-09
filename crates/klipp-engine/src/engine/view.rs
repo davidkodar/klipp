@@ -322,7 +322,10 @@ impl PlaybackEngine {
     /// the grade panel is on when it is on screen, else the primary clip.
     fn inspect_request(&self, seq: &Sequence, primary: Option<ClipId>) -> Inspect {
         let find = |id: ClipId| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id);
-        let clip = self.inspect_clip.filter(|id| find(*id).is_some()).or(primary);
+        // The timeline grade is inspected by its stand-in's id, which no
+        // track holds: its render grades the composite under that id.
+        let timeline_grade = |id: ClipId| id == seq.timeline_grade_clip_id() && seq.timeline_grade().is_some();
+        let clip = self.inspect_clip.filter(|id| find(*id).is_some() || timeline_grade(*id)).or(primary);
         let matte_view = if self.matte_preview {
             self.matte_preview_node.or_else(|| {
                 let graph = find(clip?)?.grade();
@@ -351,7 +354,7 @@ impl PlaybackEngine {
             clip,
             thumbs,
             // An eyedropper read borrows the tap for one render.
-            scope_tap: self.node_sample.map(|s| klipp_compose::inspect::grade_node(s.clip, s.tap)),
+            scope_tap: self.node_sample.as_ref().map(|s| s.tap.clone()),
             matte_view: matte_view.and_then(at),
             solo: self.solo.clone(),
             ungraded: self.bypass_color_grade,
@@ -826,8 +829,8 @@ impl PlaybackEngine {
     /// Hand the grade tools what the render found.
     fn show_inspection(&mut self, found: &Inspection, w: u32, h: u32) {
         // An eyedropper read: answered here, from the tap it set.
-        let borrowed = self.node_sample.map(|s| s.tap);
-        match (self.node_sample, &found.scope_tap) {
+        let borrowed = self.node_sample.is_some();
+        match (self.node_sample.clone(), &found.scope_tap) {
             (Some(s), Some(tap)) if tap.len() == (w as usize) * (h as usize) * 4 => {
                 self.node_sample = None;
                 let rgb = patch_mean(tap, w, h, s.nx, s.ny);
@@ -837,7 +840,7 @@ impl PlaybackEngine {
         }
         // A tap borrowed for the read is not the scopes' to show,
         // answered or not.
-        let scope_tap = found.scope_tap.as_ref().filter(|_| borrowed.is_none());
+        let scope_tap = found.scope_tap.as_ref().filter(|_| !borrowed);
         if let Some(tap) = scope_tap {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.scope_data = klipp_effects::linear_f32_rgba_to_srgb_u8(tap);

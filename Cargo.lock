@@ -3072,6 +3072,7 @@ dependencies = [
  "klipp-compose",
  "klipp-core",
  "klipp-effects",
+ "klipp-graph-format",
  "klipp-hdr-out",
  "klipp-jobs",
  "klipp-media",
