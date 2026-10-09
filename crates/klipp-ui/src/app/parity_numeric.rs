@@ -739,3 +739,21 @@ fn all_effect_numeric_rows_edit_and_cancel_through_real_controls() {
     let pinned: std::collections::BTreeSet<&str> = BLOCKED.iter().map(|(ty, _)| *ty).collect();
     assert_eq!(blocked, pinned, "blocked Pixels types differ from the pinned list");
 }
+
+/// The Speed Ramp card's Speed row retimes its clip (#1409's question, M4
+/// step F): typed to 2, the clip plays at twice its speed, and the source
+/// is read at twice the elapsed time, as one undo step. A row stays only
+/// if it changes the picture.
+#[test]
+fn the_speed_ramp_speed_row_retimes_its_clip() {
+    let ty = effect_types().find(|t| t.tag == "speed_ramp").expect("Speed Ramp");
+    let effect = (ty.sample)();
+    let mut run = Run::new(fixture_on(&effect, Surface::EffectsStack));
+    let before = run.clip().source_secs_at(0.5, 24.0);
+    type_value(&mut run, RowLabel { text: "Speed", group: None }, "2.00").expect("the Speed row is drawn and typed");
+    commands_applied(&run).expect("applied");
+    assert_eq!(run.clip().speed, 2.0, "the clip's speed");
+    let after = run.clip().source_secs_at(0.5, 24.0);
+    assert!((after - 2.0 * before).abs() < 1e-6, "the source is read at {after} s, not twice {before} s");
+    assert_eq!(run.state.active_history().undo_count(), 1, "one step");
+}
