@@ -631,6 +631,9 @@ pub struct Renderer {
     /// A scene-referred clip's display step for the grade being run,
     /// spliced in after the grade and before `run_effects` (step 11c).
     run_display: Option<klipp_color::hdr::SceneToDisplay>,
+    /// The source-boundary node for the grade being run (M4 step 6):
+    /// spliced in straight after the Source, before the grade.
+    run_source_node: Option<klipp_nodes::Node>,
     /// Effect runs that couldn't be applied as a plan of their own and
     /// took the CPU kernels instead (`effects_by`), for the stats' counts.
     plan_misses: u64,
@@ -694,13 +697,9 @@ pub struct Renderer {
     /// it decodes three frames, and a paused viewer re-renders the same
     /// frame many times.
     rsc_motion: HashMap<(ClipId, i64), (klipp_effects::rolling_shutter::Homography, klipp_effects::rolling_shutter::Homography)>,
-    /// Frame providers for clips with temporal noise reduction on.
-    ///
-    /// Kept across frames: building one opens a decoder, and a
-    /// denoised clip asks for two neighbours on every rendered frame.
-    /// The linear one, not the OFX one — a neighbour has to be the
-    /// same rendering as the frame it is averaged with.
-    tnr_frames: HashMap<ClipId, LinearFrameProviderFn>,
+    /// The plug-in instances this renderer's non-pure nodes own (M4):
+    /// one owner per renderer, so the viewer's and an export's never meet.
+    instances: klipp_nodes::frame_context::PluginInstances,
     /// The current render's inspection request, and what it has found.
     inspect: Inspect,
     found: Inspection,
@@ -781,7 +780,8 @@ impl Renderer {
             gpu_export_declined_after_work: false,
             global_lut: None,
             rsc_motion: HashMap::new(),
-            tnr_frames: HashMap::new(),
+            instances: Default::default(),
+            run_source_node: None,
             inspect: Inspect::default(),
             found: Inspection::default(),
             hdr_peak: None,
@@ -1298,7 +1298,7 @@ impl Renderer {
         }
 
         self.executor.request_output_on_gpu();
-        let pixels = self.grade(clip, input, clip_time, fps, width, height);
+        let pixels = self.grade(clip, input, clip_time, fps, width, height, None);
         // The grade kept its result on the GPU exactly when it returns
         // nothing. Coming back on the CPU instead — a node with no GPU
         // dispatch, a device that failed — means this frame gets rendered
@@ -1781,7 +1781,7 @@ impl Renderer {
                         // on the GPU with it, instead of a pass over the layer.
                         effects_done = self.splice_effects(c, &fx, time, fps, transforms, stats);
                         self.executor.request_output_on_gpu();
-                        let pixels = self.grade(c, GradeInput::Gpu(g), clip_time, fps, width, height);
+                        let pixels = self.grade(c, GradeInput::Gpu(g), clip_time, fps, width, height, None);
                         stats.grade_ms += ms_since(t);
                         if effects_done && !self.finish_spliced() {
                             return Err("an effect could not be recorded");
@@ -1801,7 +1801,7 @@ impl Renderer {
                             unshare(p)
                         } else {
                             effects_done = self.splice_effects(c, &fx, time, fps, transforms, stats);
-                            let pixels = self.grade(c, GradeInput::Cpu(p), clip_time, fps, width, height);
+                            let pixels = self.grade(c, GradeInput::Cpu(p), clip_time, fps, width, height, None);
                             if effects_done && !self.finish_spliced() {
                                 return Err("an effect could not be recorded");
                             }
@@ -1972,7 +1972,7 @@ impl Renderer {
             let Some(seed) = seed else { return Err("the accumulator could not seed the chain") };
             effects_done = self.splice_effects(c, &fx, time, fps, transforms, stats);
             self.executor.request_output_on_gpu();
-            let pixels = self.grade(c, GradeInput::Gpu(seed), clip_time, fps, width, height);
+            let pixels = self.grade(c, GradeInput::Gpu(seed), clip_time, fps, width, height, None);
             stats.grade_ms += ms_since(t);
             if effects_done && !self.finish_spliced() {
                 return Err("an effect could not be recorded");
@@ -2308,17 +2308,8 @@ impl Renderer {
                             (Some(n), Some(p0)) => blend_frames(pixels, hdr, p0, n, at, width, height),
                             _ => pixels,
                         };
-                        // Scene-referred sources included: the linear
-                        // provider renders them to scene linear, the
-                        // same as `to_linear` just did for this frame,
-                        // so the neighbours are samples of one picture
-                        // rather than renderings of two.
-                        let pixels = match tnr {
-                            Some((strength, threshold)) => self.temporal_denoise(
-                                clip, at, pixels, width, height, fps, strength, threshold, src,
-                            ),
-                            None => pixels,
-                        };
+                        // Denoised by its node at the head of the grade's
+                        // run (`grade_at_source`), from linear neighbours.
                         (GradeInput::Cpu(pixels), hdr)
                     }
                 }
@@ -2413,7 +2404,7 @@ impl Renderer {
         // What the grade reads, kept for a masked effect apart from it to
         // make its matte from (9c-2 B2).
         self.matte_input = apart_blends.iter().flatten().any(|b| b.mask.is_some()).then(|| input.pixels());
-        let mut pixels = self.grade(clip, input, clip_time, fps, width, height);
+        let mut pixels = self.grade_at_source(clip, input, time, clip_time, fps, width, height, src);
         // Whether the grade's run took the display step, so it isn't run
         // twice: not when the run failed and gave back its input.
         let mut displayed = false;
@@ -2433,7 +2424,7 @@ impl Renderer {
                     (self.run_effects, self.run_blends) = ran;
                     self.run_display = hdr.map(|t| self.scene_to_display(t));
                     let input = retry.expect("kept on the plan route");
-                    let pixels = self.on_cpu_executor(|r| r.grade(clip, input, clip_time, fps, width, height));
+                    let pixels = self.on_cpu_executor(|r| r.grade_at_source(clip, input, time, clip_time, fps, width, height, src));
                     self.cpu_kernel_run();
                     self.run_effects.clear();
                     self.run_blends.clear();
@@ -2445,7 +2436,7 @@ impl Renderer {
                 // failed before its effects: the frame is graded again and
                 // its effects drawn by the CPU kernels below, never shown
                 // without them.
-                pixels = self.grade(clip, retry.expect("kept when on_gpu"), clip_time, fps, width, height);
+                pixels = self.grade_at_source(clip, retry.expect("kept when on_gpu"), time, clip_time, fps, width, height, src);
                 displayed = false;
                 self.cpu_fallback(clip);
             }
@@ -2858,7 +2849,7 @@ impl Renderer {
     /// frames for a sample; it runs on the sample alone, as on a still.
     fn title_pixels_at(&mut self, clip: &Clip, td: &klipp_timeline::TitleData, t: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
         let linear = self.title_linear_at(clip, td, t, width, height);
-        let graded = self.grade(clip, GradeInput::Cpu(Arc::new(linear)), t, fps, width, height);
+        let graded = self.grade(clip, GradeInput::Cpu(Arc::new(linear)), t, fps, width, height, None);
         self.ofx(clip, graded, t, width, height, None)
     }
 
@@ -3084,72 +3075,43 @@ impl Renderer {
         self.executor.set_motion(&self.motion);
     }
 
-    /// Average the source frame with its neighbours, before the grade.
-    ///
-    /// The neighbours come from the clip's own media through the frame
-    /// provider, which reads clip time — `source_secs` returns a
-    /// position in the media, so the clip's `source_in` comes back off
-    /// before asking.
-    ///
-    /// A neighbour of a different size is dropped rather than scaled:
-    /// it means the render size and the media size disagree, and a
-    /// resampled neighbour would blur the very detail the guard exists
-    /// to protect.
+    /// [`Self::grade`] with the clip's source-boundary node (M4 step 6):
+    /// a media clip with temporal noise reduction runs it straight after
+    /// the Source, from the clip's source frames either side (`src`'s
+    /// linear reader, bounded to the media and the render size), before
+    /// the grade. Its rules are the effect's: the first enabled one, and
+    /// none at a strength of 0 or less (`temporal_denoise_of`).
     #[allow(clippy::too_many_arguments)]
-    fn temporal_denoise(
-        &mut self,
-        clip: &Clip,
-        source_at: f64,
-        pixels: Arc<Vec<f32>>,
-        width: u32,
-        height: u32,
-        fps: f64,
-        strength: f32,
-        threshold: f32,
-        src: &mut dyn FrameSource,
-    ) -> Arc<Vec<f32>> {
-        if !self.tnr_frames.contains_key(&clip.id) {
-            // One decoder per clip, kept. Bounded so a long timeline
-            // does not hold one open for every clip it has passed.
-            if self.tnr_frames.len() > 8 {
-                self.tnr_frames.clear();
-            }
-            let Some(provider) = src.temporal_frames_linear(clip, self.working) else {
-                return pixels;
-            };
-            self.tnr_frames.insert(clip.id, provider);
-        }
-        let Some(provider) = self.tnr_frames.get_mut(&clip.id) else { return pixels };
-
-        let dt = 1.0 / fps.max(1.0);
-        let clip_at = source_at - clip.source_in.to_secs_f64();
-        let want = (width as usize) * (height as usize) * 4;
-        let mut neighbours: Vec<Vec<f32>> = Vec::with_capacity(2);
-        for t in [clip_at - dt, clip_at + dt] {
-            if t < 0.0 {
-                continue;
-            }
-            let Some((linear, w, h)) = provider(t) else { continue };
-            if (w, h) != (width, height) || linear.len() != want {
-                continue;
-            }
-            neighbours.push(linear);
-        }
-        if neighbours.is_empty() {
-            return pixels;
-        }
-        let refs: Vec<&[f32]> = neighbours.iter().map(|n| n.as_slice()).collect();
-        let t = Instant::now();
-        let out = klipp_effects::temporal_denoise::denoise_frame(&pixels, &refs, threshold, strength);
-        self.found.stats.effects_ms += ms_since(t);
-        Arc::new(out)
+    fn grade_at_source(&mut self, clip: &Clip, input: GradeInput, time: Timecode, clip_time: f64, fps: f64, width: u32, height: u32, src: &mut dyn FrameSource) -> Vec<f32> {
+        use klipp_nodes::frame_context::{BoundedSources, FrameContext, NoAnalysis};
+        let denoise = matches!(clip.kind, ClipKind::Media { .. }).then(|| temporal_denoise_of(clip, time, fps)).flatten();
+        let Some((strength, threshold)) = denoise else {
+            return self.grade(clip, input, clip_time, fps, width, height, None);
+        };
+        self.run_source_node = Some(source_denoise_node(clip, strength, threshold));
+        let mut sources = ClipSources::new(src, clip, self.working);
+        let mut bounded = BoundedSources::new(&mut sources, width, height);
+        let mut instances = std::mem::take(&mut self.instances);
+        let mut ctx = FrameContext {
+            clip_time_secs: clip_time,
+            frame_number: grade_frame(clip_time, fps),
+            fps,
+            source_secs: source_secs(clip, time, fps),
+            sources: &mut bounded,
+            analysis: &NoAnalysis,
+            instances: &mut instances,
+        };
+        let pixels = self.grade(clip, input, clip_time, fps, width, height, Some(&mut ctx));
+        self.instances = instances;
+        self.run_source_node = None;
+        pixels
     }
 
     /// The clip's node graph, at clip-relative time. The inspected clip
     /// also runs the grade tools' captures, its solo and its matte view.
     /// Pixels still on the GPU seed the grade there; read back only when
     /// there is no grade to run, or a node needs them on the CPU.
-    fn grade(&mut self, clip: &Clip, input: GradeInput, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
+    fn grade(&mut self, clip: &Clip, input: GradeInput, clip_time: f64, fps: f64, width: u32, height: u32, mut ctx: Option<&mut klipp_nodes::frame_context::FrameContext<'_>>) -> Vec<f32> {
         self.grade_ran = false;
         // Only a grade the tools read inside runs with its taps (#1274).
         let inspecting = self.inspects_the_grade_of(clip);
@@ -3158,7 +3120,7 @@ impl Renderer {
         // the plan's nodes (step 11b). So does one the tools read inside: its
         // run is what takes their thumbnails and taps, and says which of
         // their requests it doesn't hold (M3 step 16a).
-        if clip.grade_is_identity() && !inspecting && self.run_effects.is_empty() && self.run_display.is_none() {
+        if clip.grade_is_identity() && !inspecting && self.run_effects.is_empty() && self.run_display.is_none() && self.run_source_node.is_none() {
             // Take the buffer rather than clone the handle: a layer this
             // renderer just made is held once, and moves out for free.
             return match input {
@@ -3176,16 +3138,16 @@ impl Renderer {
         self.executor.set_solo_node(if inspecting { self.resolved.solo } else { None });
         let frame = grade_frame(clip_time, fps);
         let out = match &input {
-            GradeInput::Cpu(p) => self.run_graph(clip, p, width, height, clip_time, frame, inspecting, matte_view),
+            GradeInput::Cpu(p) => self.run_graph(clip, p, width, height, clip_time, frame, inspecting, matte_view, ctx.as_deref_mut()),
             GradeInput::Gpu(g) if g.seed(&mut self.executor, width, height) => {
-                match self.run_graph(clip, &[], width, height, clip_time, frame, inspecting, matte_view) {
+                match self.run_graph(clip, &[], width, height, clip_time, frame, inspecting, matte_view, ctx.as_deref_mut()) {
                     Err(klipp_nodes::executor::ExecutorError::CpuSourceRequired) => {
-                        self.run_graph(clip, &g.read(), width, height, clip_time, frame, inspecting, matte_view)
+                        self.run_graph(clip, &g.read(), width, height, clip_time, frame, inspecting, matte_view, ctx.as_deref_mut())
                     }
                     r => r,
                 }
             }
-            GradeInput::Gpu(g) => self.run_graph(clip, &g.read(), width, height, clip_time, frame, inspecting, matte_view),
+            GradeInput::Gpu(g) => self.run_graph(clip, &g.read(), width, height, clip_time, frame, inspecting, matte_view, ctx.as_deref_mut()),
             // Decoded on the GPU as the chain starts; the codes stay there
             // while the same frame is regraded.
             GradeInput::Scene { codes, transfer, source_to_working }
@@ -3199,15 +3161,15 @@ impl Renderer {
                         klipp_effects::color_wgsl::pack_primaries_matrix(*source_to_working),
                     ) =>
             {
-                match self.run_graph(clip, &[], width, height, clip_time, frame, inspecting, matte_view) {
+                match self.run_graph(clip, &[], width, height, clip_time, frame, inspecting, matte_view, ctx.as_deref_mut()) {
                     Err(klipp_nodes::executor::ExecutorError::CpuSourceRequired) => {
-                        self.run_graph(clip, &input.pixels(), width, height, clip_time, frame, inspecting, matte_view)
+                        self.run_graph(clip, &input.pixels(), width, height, clip_time, frame, inspecting, matte_view, ctx.as_deref_mut())
                     }
                     r => r,
                 }
             }
             GradeInput::Scene { .. } => {
-                self.run_graph(clip, &input.pixels(), width, height, clip_time, frame, inspecting, matte_view)
+                self.run_graph(clip, &input.pixels(), width, height, clip_time, frame, inspecting, matte_view, ctx.as_deref_mut())
             }
         };
         self.found.stats.grade_ms += ms_since(t);
@@ -3236,6 +3198,7 @@ impl Renderer {
         frame: u64,
         inspecting: bool,
         matte_view: Option<NodeId>,
+        ctx: Option<&mut klipp_nodes::frame_context::FrameContext<'_>>,
     ) -> Result<Vec<f32>, klipp_nodes::executor::ExecutorError> {
         // The grade's pixel-sized settings are authored at the
         // sequence's size, as the effects' are (#1012).
@@ -3243,7 +3206,7 @@ impl Renderer {
         // The grade with its corrections' mixes (M3 step 17a).
         let to_run = clip.grade_to_run();
         if !inspecting {
-            let graph = if self.run_effects.is_empty() && self.run_display.is_none() {
+            let graph = if self.run_effects.is_empty() && self.run_display.is_none() && self.run_source_node.is_none() {
                 &*to_run
             } else {
                 // An identity grade is the source straight to the output:
@@ -3251,13 +3214,17 @@ impl Renderer {
                 self.splice_run(clip);
                 &self.spliced
             };
-            return self.executor.execute_linear(source, graph, width, height, clip_time, frame, None, None).map(|(out, _)| out);
+            return match ctx {
+                Some(ctx) => self.executor.execute_linear_with_context(source, graph, width, height, clip_time, frame, None, None, None, ctx),
+                None => self.executor.execute_linear_with_thumbs(source, graph, width, height, clip_time, frame, None, None, None),
+            }
+            .map(|(out, _, _)| out);
         }
         // An inspected clip runs its grade alone, unless its effects are
         // masked or mixed (a picture-truth clip's): those run in the plan
         // with it, the grade's nodes still tapped (step 9c-2). A
         // scene-referred clip's display step runs in it either way.
-        let graph = if self.run_effects.is_empty() && self.run_display.is_none() {
+        let graph = if self.run_effects.is_empty() && self.run_display.is_none() && self.run_source_node.is_none() {
             &*to_run
         } else {
             self.splice_run(clip);
@@ -3278,7 +3245,10 @@ impl Renderer {
         let scope_tap = self.resolved.scope_tap.filter(|n| held.contains(n));
         let matte_view = matte_view.filter(|n| held.contains(n));
         let thumbs = self.resolved.thumbs.take();
-        let r = self.executor.execute_linear_with_thumbs(source, graph, width, height, clip_time, frame, scope_tap, matte_view, thumbs.as_ref());
+        let r = match ctx {
+            Some(ctx) => self.executor.execute_linear_with_context(source, graph, width, height, clip_time, frame, scope_tap, matte_view, thumbs.as_ref(), ctx),
+            None => self.executor.execute_linear_with_thumbs(source, graph, width, height, clip_time, frame, scope_tap, matte_view, thumbs.as_ref()),
+        };
         self.resolved.thumbs = thumbs;
         r.map(|(out, tapped, thumbs)| {
             self.found.scope_tap = tapped;
@@ -3308,6 +3278,9 @@ impl Renderer {
         let graded = self.spliced.input_of(self.spliced.output_node_id, 0);
         if let Some(step) = self.run_display {
             self.spliced.splice_before_output(scene_to_display_node(clip, step));
+        }
+        if let Some(node) = self.run_source_node.clone() {
+            self.spliced.splice_after_source(node);
         }
         // Each effect's node is the picture's node it came from, so an
         // inspection by path names it (M3 step 16a); an effect without one
@@ -3715,7 +3688,7 @@ impl Renderer {
         // What its grade reads, kept for a masked effect to make its matte
         // from: its effects run apart from its grade (9c-2 B2).
         self.matte_input = clip.is_picture_truth().then(|| below.clone());
-        let graded = self.grade(clip, GradeInput::Cpu(below), clip_time, fps, width, height);
+        let graded = self.grade(clip, GradeInput::Cpu(below), clip_time, fps, width, height, None);
         let graded = self.ofx(clip, graded, clip_time, width, height, None);
         let (mut fx, _) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied());
         // Its effect colours are authored in BT.709, as a clip's are, and
@@ -3927,6 +3900,22 @@ fn passthrough_graph() -> klipp_nodes::NodeGraph {
     NodeGraph { output_node_id: output.id, nodes: vec![source, output], edges, node_positions: Default::default(), working_space_override: None, frames: vec![], sticky_notes: vec![] }
 }
 
+/// A clip's temporal noise reduction as its source-boundary node (M4
+/// step 6), run straight after the Source.
+fn source_denoise_node(clip: &Clip, strength: f32, threshold: f32) -> klipp_nodes::Node {
+    use klipp_nodes::{Node, NodeId, NodeKind, NodeParams};
+    Node {
+        id: NodeId::from_u128(clip.id.0.as_u128() ^ (0x0050_7c3e_u128 << 64)),
+        kind: NodeKind::Effect,
+        label: String::new(),
+        enabled: true,
+        params: NodeParams { effects: vec![BuiltinEffect::TemporalDenoise { strength, threshold }], ..Default::default() },
+        keyframes: Default::default(),
+        output_link: None,
+        input_links: vec![],
+    }
+}
+
 /// `clip`'s display step as a plan node (step 11c), with an id fixed per
 /// clip so the executor's cached plan holds across frames.
 fn scene_to_display_node(clip: &Clip, step: klipp_color::hdr::SceneToDisplay) -> klipp_nodes::Node {
@@ -4134,10 +4123,12 @@ pub(crate) fn place_and_finish(
     // CPU chain was an 8-bit round trip that changed nothing else.)
     let mut fx: Vec<BuiltinEffect> = fx
         .into_iter()
-        // TemporalDenoise joins them: it ran at the head of the
-        // pipeline, before the grade, and running again here would
-        // average the graded picture against source neighbours.
-        .filter(|e| !matches!(e, BuiltinEffect::Opacity { .. } | BuiltinEffect::SpeedRamp { .. } | BuiltinEffect::TemporalDenoise { .. }))
+        // Nor is a source-boundary node's (temporal noise reduction): it
+        // reads the source's neighbours and runs at the head of the grade's
+        // run, never among the graded picture's effects. The catalog says
+        // which (`needs_source_neighbours`), SpeedRamp's frame blending
+        // among them.
+        .filter(|e| !matches!(e, BuiltinEffect::Opacity { .. }) && !klipp_effects::registry::needs_source_neighbours(e))
         .collect();
 
     let xf = resolved.unwrap_or_else(|| eval::evaluate_clip_own_transform(clip, t, ctx));
