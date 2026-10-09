@@ -36,15 +36,35 @@ fn transform(x: f32, scale_x: f32, scale_y: f32) -> E {
 /// A revision-3 project of one sequence built by `build`, saved by
 /// today's writer into a scratch folder of its own: its folder and its
 /// project file's text.
-fn project(name: &str, build: impl FnOnce(&mut Sequence)) -> Result<(PathBuf, String), String> {
+fn project(name: &str, build: impl FnOnce(&mut Sequence), plant: impl FnOnce(&mut Value)) -> Result<(PathBuf, String), String> {
     let dir = std::env::temp_dir().join(format!("klipp-readiness-format-{name}-{}", std::process::id())).join("p.klipp");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.parent().unwrap()).map_err(|e| e.to_string())?;
     let mut seq = Sequence::new_default();
     build(&mut seq);
     klipp_project::save_project(&dir, &[seq], &klipp_media::MediaPool::new())?;
-    let text = std::fs::read_to_string(dir.join("project.json")).map_err(|e| e.to_string())?;
+    let mut doc = json(&std::fs::read_to_string(dir.join("project.json")).map_err(|e| e.to_string())?)?;
+    plant(&mut doc);
+    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("project.json"), &text).map_err(|e| e.to_string())?;
     Ok((dir, text))
+}
+
+/// Each object in `v` whose `type` is `tag`, through `f`: how a fixture
+/// plants a stored field today's types no longer write.
+fn each_entry(v: &mut Value, tag: &str, f: &mut dyn FnMut(&mut serde_json::Map<String, Value>)) {
+    match v {
+        Value::Object(o) => {
+            if o.get("type").and_then(Value::as_str) == Some(tag) {
+                f(o);
+            }
+            for x in o.values_mut() {
+                each_entry(x, tag, f);
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(|x| each_entry(x, tag, f)),
+        _ => {}
+    }
 }
 
 fn json(text: &str) -> Result<Value, String> {
@@ -126,7 +146,13 @@ fn declares(declared: &[step4::Declared], row: &str) -> bool {
 /// converted file to what revision 4 stores (from the original's text);
 /// `declared` says whether the row declares a change for it.
 fn row(report: &mut Report, row: &'static str, build: impl FnOnce(&mut Sequence), expect: impl FnOnce(&str, &Value) -> Result<(), String>, declared: bool) {
-    let fixture = project(&row.replace('#', "row"), build);
+    planted_row(report, row, build, |_| {}, expect, declared);
+}
+
+/// [`row`] with `plant` writing into the saved file what today's writer
+/// can no longer write (a field a type dropped in this revision).
+fn planted_row(report: &mut Report, row: &'static str, build: impl FnOnce(&mut Sequence), plant: impl FnOnce(&mut Value), expect: impl FnOnce(&str, &Value) -> Result<(), String>, declared: bool) {
+    let fixture = project(&row.replace('#', "row"), build, plant);
     let mut declared_lines = Vec::new();
     let converted = fixture.as_ref().map_err(Clone::clone).and_then(|(_, text)| convert(text).map(|c| (text.clone(), c)));
     report.case(&format!("{row} converted"), [key(row, Obligation::Converted)], || {
@@ -200,13 +226,17 @@ pub fn run(report: &mut Report) {
     // and Freeze (a 0.1× slow motion, not a hold) are dropped. Nothing is
     // declared: none of them changed a frame, and the fixture doesn't
     // freeze (a frozen one becomes speed 1, declared, in the row's own
-    // test).
-    row(report, "#1409", |s| {
+    // test). Today's types can't write them, so the fixture plants them.
+    planted_row(report, "#1409", |s| {
         let mut c = clip();
         c.set_effect_list(vec![E::SpeedRamp { speed: 1.0, blend_mode: 1 }], vec![true]);
         s.tracks[0].clips.push(c);
-    }, |_, v| {
-        let ramp = nodes(picture(v)?).into_iter().find(|n| n["type_id"] == klipp_graph_format::types::LEGACY_SPEED_RAMP).ok_or("no Speed Ramp in the chain")?;
+    }, |doc| each_entry(doc, "speed_ramp", &mut |o| {
+        for (k, v) in [("ramp_curve", Value::from(3)), ("ramp_start", Value::from(0.2)), ("ramp_end", Value::from(0.8)), ("reverse", Value::from(true)), ("freeze_at", Value::from(0.4)), ("freeze", Value::from(false))] {
+            o.insert(k.into(), v);
+        }
+    }), |_, v| {
+        let ramp = nodes(picture(v)?).into_iter().find(|n| n["legacy"]["payload"]["type"] == "speed_ramp").ok_or("no Speed Ramp in the chain")?;
         let payload = &ramp["legacy"]["payload"];
         for dead in ["ramp_curve", "ramp_start", "ramp_end", "reverse", "freeze_at", "freeze"] {
             if payload.get(dead).is_some() {
