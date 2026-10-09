@@ -7,8 +7,10 @@
 //! the analysis cache keys everything), the size and rate it was analysed
 //! at, and the algorithm's version, and by nothing of a clip's. So a trim,
 //! a split or a duplicate keeps it, and the node reads it at its frames'
-//! source times; another file (a relink, a proxy, the file changed) is
-//! another key, and nothing is found until it's analysed. A node's
+//! source times; another file (a relink, the file changed) is another
+//! key, and nothing is found until it's analysed. A proxy isn't another
+//! file: the key is always the original's, so the viewer decoding a proxy
+//! and export decoding the original read one asset. A node's
 //! settings that don't change the raw pass (the deflicker window, the
 //! stabilisation smoothing) are applied to the asset when it's read, so
 //! moving them re-analyses nothing.
@@ -30,6 +32,9 @@ pub enum AssetKind {
     Deflicker,
     /// Frame-to-frame motion and the trajectory it accumulates to.
     Stabilisation,
+    /// Each frame's motion to the frames either side, for rolling-shutter
+    /// correction.
+    RollingShutter,
 }
 
 impl AssetKind {
@@ -38,6 +43,7 @@ impl AssetKind {
         match self {
             AssetKind::Deflicker => "deflicker",
             AssetKind::Stabilisation => "stabilisation",
+            AssetKind::RollingShutter => "rolling_shutter",
         }
     }
 }
@@ -62,6 +68,7 @@ pub fn algorithm(kind: AssetKind) -> u32 {
     match kind {
         AssetKind::Deflicker => 1,
         AssetKind::Stabilisation => 1,
+        AssetKind::RollingShutter => 1,
     }
 }
 
@@ -264,6 +271,20 @@ mod tests {
         assert_eq!(lookup(&again, &key("m")), Found::Ready(serde_json::json!({ "luma": [0.5, 0.6] })));
         assert_eq!(lookup(&again, &key("other")), Found::Absent);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A media item with a proxy keys its analysis by the original file:
+    /// the viewer on the proxy and export on the original share it.
+    #[test]
+    fn a_proxy_shares_its_originals_asset() {
+        let dir = std::env::temp_dir().join(format!("klipp-asset-proxy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("clip.mov");
+        std::fs::write(&path, b"frames").unwrap();
+        let plain = klipp_media::MediaItem::synthetic_for_test(path.clone(), None);
+        let proxied = klipp_media::MediaItem::synthetic_for_test(path.clone(), Some("proxy.mov"));
+        assert_eq!(asset_key(AssetKind::Stabilisation, &proxied), asset_key(AssetKind::Stabilisation, &plain));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A file at another path (moved, or a project opened on another
