@@ -37,6 +37,8 @@ const PAGE_TYPES: &[(NodeKind, &[Surface])] = &[
     (NodeKind::RGBCurves, &[Surface::GradeTabbedRight, Surface::GradeBottomTools]),
     (NodeKind::HueSatCurves, &[Surface::GradeTabbedRight, Surface::GradeBottomTools]),
     (NodeKind::InputTransform, &[Surface::GradeTabbedRight, Surface::GradeBottomTools]),
+    // Its rows are also the Adjustments tab's NOISE REDUCTION section.
+    (NodeKind::Denoise, &[Surface::GradeTabbedRight, Surface::GradeBottomTools]),
 ];
 
 /// Grade types whose rows the CPU and the GPU stack draw differently:

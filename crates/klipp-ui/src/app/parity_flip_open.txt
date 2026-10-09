@@ -7,12 +7,6 @@ missing surface: klipp.grade.corrector / curves / NonClipGrade
 missing surface: klipp.grade.corrector / huesat / GradeBottomTools
 missing surface: klipp.grade.corrector / huesat / GradeTabbedRight
 missing surface: klipp.grade.corrector / huesat / NonClipGrade
-missing surface: klipp.grade.denoise / denoise_chroma / GradeBottomTools
-missing surface: klipp.grade.denoise / denoise_chroma / GradeTabbedRight
-missing surface: klipp.grade.denoise / denoise_luma / GradeBottomTools
-missing surface: klipp.grade.denoise / denoise_luma / GradeTabbedRight
-missing surface: klipp.grade.denoise / denoise_radius / GradeBottomTools
-missing surface: klipp.grade.denoise / denoise_radius / GradeTabbedRight
 missing surface: klipp.grade.difference_key / difference_key.plate_path / GradePerNode
 missing surface: klipp.grade.difference_key / difference_key.plate_path / NonClipGrade
 missing surface: klipp.grade.external_matte / matte_image_path / GradePerNode
@@ -25,8 +19,6 @@ missing surface: klipp.grade.input_transform / log_format / GradeTabbedRight
 missing surface: klipp.grade.input_transform / log_format / NonClipGrade
 missing surface: klipp.grade.layer_mixer / layer_mixer / GradePerNode
 missing surface: klipp.grade.layer_mixer / layer_mixer / NonClipGrade
-missing surface: klipp.grade.mask / masks / GradeBottomTools
-missing surface: klipp.grade.mask / masks / GradeTabbedRight
 missing surface: klipp.grade.rgb_curves / curves / GradeBottomTools
 missing surface: klipp.grade.rgb_curves / curves / GradeTabbedRight
 missing surface: klipp.grade.rgb_curves / curves / NonClipGrade
