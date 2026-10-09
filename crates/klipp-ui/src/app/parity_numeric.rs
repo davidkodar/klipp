@@ -49,9 +49,7 @@ fn contexts(ty: &EffectType) -> Vec<(Surface, &'static str)> {
 /// excluded from Pixels with its issue until it is fixed (type, parameter,
 /// surface, variant, reason). Not a route, and not a
 /// design: the deletion report reads them as open gaps.
-const KNOWN_DEFECTS: &[(&str, &str, Surface, &str, &str)] = &[
-    ("klipp.fx.transform", "scale_y", Surface::EffectsStack, VARIANT, "known defect #1406: placement renders a uniform scale from scale_x, so the Scale Y row moves nothing"),
-];
+const KNOWN_DEFECTS: &[(&str, &str, Surface, &str, &str)] = &[];
 
 pub(super) fn known_defect(entry: &CatalogEntry, surface: Surface, variant: &str) -> Option<&'static str> {
     KNOWN_DEFECTS.iter().find(|(ty, param, s, v, _)| *ty == entry.type_id && *param == entry.parameter && *s == surface && *v == variant).map(|d| d.4)
