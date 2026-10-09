@@ -22,9 +22,6 @@ missing root obligation: klipp.grade.color_match / @enabled / NonClipGrade group
 missing root obligation: klipp.grade.color_match / @enabled / NonClipGrade group pre-clip: GradePerNode
 missing root obligation: klipp.grade.color_match / @enabled / NonClipGrade timeline: GradeBottomTools
 missing root obligation: klipp.grade.color_match / @enabled / NonClipGrade timeline: GradePerNode
-missing root obligation: klipp.grade.color_match / @workflow/colour_match / NonClipGrade group post-clip: GradePerNode
-missing root obligation: klipp.grade.color_match / @workflow/colour_match / NonClipGrade group pre-clip: GradePerNode
-missing root obligation: klipp.grade.color_match / @workflow/colour_match / NonClipGrade timeline: GradePerNode
 missing root obligation: klipp.grade.color_warper / @enabled / NonClipGrade group post-clip: GradeBottomTools
 missing root obligation: klipp.grade.color_warper / @enabled / NonClipGrade group post-clip: GradePerNode
 missing root obligation: klipp.grade.color_warper / @enabled / NonClipGrade group pre-clip: GradeBottomTools
@@ -424,12 +421,6 @@ missing root obligation: klipp.grade.corrector / @enabled / NonClipGrade group p
 missing root obligation: klipp.grade.corrector / @enabled / NonClipGrade group pre-clip: GradeTabbedRight
 missing root obligation: klipp.grade.corrector / @enabled / NonClipGrade timeline: GradeBottomTools
 missing root obligation: klipp.grade.corrector / @enabled / NonClipGrade timeline: GradeTabbedRight
-missing root obligation: klipp.grade.corrector / @workflow/white_balance / NonClipGrade group post-clip: GradeBottomTools
-missing root obligation: klipp.grade.corrector / @workflow/white_balance / NonClipGrade group post-clip: GradeTabbedRight
-missing root obligation: klipp.grade.corrector / @workflow/white_balance / NonClipGrade group pre-clip: GradeBottomTools
-missing root obligation: klipp.grade.corrector / @workflow/white_balance / NonClipGrade group pre-clip: GradeTabbedRight
-missing root obligation: klipp.grade.corrector / @workflow/white_balance / NonClipGrade timeline: GradeBottomTools
-missing root obligation: klipp.grade.corrector / @workflow/white_balance / NonClipGrade timeline: GradeTabbedRight
 missing root obligation: klipp.grade.corrector / curves / NonClipGrade group post-clip: GradeBottomTools
 missing root obligation: klipp.grade.corrector / curves / NonClipGrade group post-clip: GradeTabbedRight
 missing root obligation: klipp.grade.corrector / curves / NonClipGrade group pre-clip: GradeBottomTools
@@ -907,9 +898,6 @@ missing root obligation: klipp.grade.qualifier / @enabled / NonClipGrade group p
 missing root obligation: klipp.grade.qualifier / @enabled / NonClipGrade group pre-clip: GradePerNode
 missing root obligation: klipp.grade.qualifier / @enabled / NonClipGrade timeline: GradeBottomTools
 missing root obligation: klipp.grade.qualifier / @enabled / NonClipGrade timeline: GradePerNode
-missing root obligation: klipp.grade.qualifier / @workflow/qualifier_picker / NonClipGrade group post-clip: GradePerNode
-missing root obligation: klipp.grade.qualifier / @workflow/qualifier_picker / NonClipGrade group pre-clip: GradePerNode
-missing root obligation: klipp.grade.qualifier / @workflow/qualifier_picker / NonClipGrade timeline: GradePerNode
 missing root obligation: klipp.grade.reroute / @enabled / NonClipGrade group post-clip: GradeBottomTools
 missing root obligation: klipp.grade.reroute / @enabled / NonClipGrade group post-clip: GradeTabbedRight
 missing root obligation: klipp.grade.reroute / @enabled / NonClipGrade group pre-clip: GradeBottomTools
@@ -1122,8 +1110,6 @@ missing surface: klipp.grade.color_balance / @enabled / NonClipGrade
 missing surface: klipp.grade.color_match / @enabled / GradeBottomTools
 missing surface: klipp.grade.color_match / @enabled / GradePerNode
 missing surface: klipp.grade.color_match / @enabled / NonClipGrade
-missing surface: klipp.grade.color_match / @workflow/colour_match / GradePerNode
-missing surface: klipp.grade.color_match / @workflow/colour_match / NonClipGrade
 missing surface: klipp.grade.color_warper / @enabled / GradeBottomTools
 missing surface: klipp.grade.color_warper / @enabled / GradePerNode
 missing surface: klipp.grade.color_warper / @enabled / NonClipGrade
@@ -1312,9 +1298,6 @@ missing surface: klipp.grade.contrast / @enabled / NonClipGrade
 missing surface: klipp.grade.corrector / @enabled / GradeBottomTools
 missing surface: klipp.grade.corrector / @enabled / GradeTabbedRight
 missing surface: klipp.grade.corrector / @enabled / NonClipGrade
-missing surface: klipp.grade.corrector / @workflow/white_balance / GradeBottomTools
-missing surface: klipp.grade.corrector / @workflow/white_balance / GradeTabbedRight
-missing surface: klipp.grade.corrector / @workflow/white_balance / NonClipGrade
 missing surface: klipp.grade.corrector / curves / GradeBottomTools
 missing surface: klipp.grade.corrector / curves / GradeTabbedRight
 missing surface: klipp.grade.corrector / curves / NonClipGrade
@@ -1551,8 +1534,6 @@ missing surface: klipp.grade.primaries_matrix / @enabled / NonClipGrade
 missing surface: klipp.grade.qualifier / @enabled / GradeBottomTools
 missing surface: klipp.grade.qualifier / @enabled / GradePerNode
 missing surface: klipp.grade.qualifier / @enabled / NonClipGrade
-missing surface: klipp.grade.qualifier / @workflow/qualifier_picker / GradePerNode
-missing surface: klipp.grade.qualifier / @workflow/qualifier_picker / NonClipGrade
 missing surface: klipp.grade.reroute / @enabled / GradeBottomTools
 missing surface: klipp.grade.reroute / @enabled / GradeTabbedRight
 missing surface: klipp.grade.reroute / @enabled / NonClipGrade
