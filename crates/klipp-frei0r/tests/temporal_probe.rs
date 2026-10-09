@@ -7,12 +7,14 @@
 //! keeps history. Each plug-in runs in a child process of this test, so a
 //! plug-in that crashes ends only its own case.
 //!
-//! Only a mismatch between the list and the plug-ins fails. The plug-ins
-//! are third-party binaries, so a crash, or one that can't be probed
-//! (its output is random), is reported, not failed: a distribution update
-//! must not fail the build over code this project doesn't own. Runs on
-//! every test run; with no frei0r filter installed (`frei0r-plugins`) it
-//! says so and passes.
+//! A mismatch between the list and the plug-ins fails. The plug-ins are
+//! third-party binaries, so a crash, or one that can't be probed (its
+//! output is random), is reported, not failed: a distribution update must
+//! not fail the build over code this project doesn't own. But a probe that
+//! finds no plug-in keeping history, or sees more than half of them crash,
+//! is the probe broken, not the plug-ins, and fails: otherwise a run where
+//! every child failed to report would pass. Runs on every test run; with
+//! no frei0r filter installed (`frei0r-plugins`) it says so and passes.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -124,16 +126,23 @@ fn the_temporal_list_is_the_plug_ins_that_keep_history() {
     let mut failures = Vec::new();
     let mut notes = Vec::new();
     let mut stateful = Vec::new();
+    let mut crashed = 0;
     for (key, path) in &filters {
         let mut keeps = false;
         let mut decided = false;
+        let mut crashes = 0;
         for mode in ["defaults", "numbers"] {
             match verdict(path, mode).as_str() {
                 "stateful" => (keeps, decided) = (true, true),
                 "stateless" => decided = true,
-                other => notes.push(format!("{key} ({mode}): {other}")),
+                other => {
+                    crashes += usize::from(other == "crashed");
+                    notes.push(format!("{key} ({mode}): {other}"));
+                }
             }
         }
+        // Crashed in both modes: it never ran.
+        crashed += usize::from(crashes == 2);
         let listed = temporal::TEMPORAL_PLUGINS.iter().any(|(k, _)| k == key);
         if keeps {
             stateful.push(key.clone());
@@ -154,6 +163,14 @@ fn the_temporal_list_is_the_plug_ins_that_keep_history() {
     eprintln!("{} filters probed; keep history: {stateful:?}", filters.len());
     for note in &notes {
         eprintln!("note: {note}");
+    }
+    // The probe's own controls: the installed set always holds plug-ins
+    // that keep history, and most plug-ins run.
+    if stateful.is_empty() {
+        failures.push(format!("the probe found no plug-in that keeps history among {} filters: the probe is broken", filters.len()));
+    }
+    if crashed * 2 > filters.len() {
+        failures.push(format!("{crashed} of {} filters crashed in both modes: the probe is broken", filters.len()));
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
