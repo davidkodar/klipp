@@ -2913,6 +2913,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "image",
+ "klipp-analysis",
  "klipp-color",
  "klipp-core",
  "klipp-effects",
@@ -3067,6 +3068,7 @@ dependencies = [
  "ffmpeg-next",
  "image",
  "kamadak-exif",
+ "klipp-analysis",
  "klipp-audio",
  "klipp-color",
  "klipp-compose",
@@ -3345,6 +3347,7 @@ dependencies = [
  "bytemuck",
  "ffmpeg-next",
  "image",
+ "klipp-analysis",
  "klipp-audio",
  "klipp-color",
  "klipp-compose",

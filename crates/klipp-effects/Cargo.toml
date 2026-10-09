@@ -8,6 +8,8 @@ license.workspace = true
 klipp-load-lock = { workspace = true }
 klipp-grade-model = { workspace = true }
 serde = { workspace = true }
+# An analysis node's data is read from its asset's JSON (M4 step 9).
+serde_json = { workspace = true }
 wgpu = { workspace = true }
 pollster = { workspace = true }
 tracing = { workspace = true }
