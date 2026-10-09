@@ -216,12 +216,18 @@ import tomllib
 m = tomllib.load(open("crates/klipp-compose/Cargo.toml", "rb"))
 print(" ".join(sorted(k for k in m.get("dependencies", {}) if k.startswith("klipp-"))))
 ' 2>/dev/null)
-        for _dep in $_compose_deps; do
-            if printf ' %s ' "$_touched" | grep -q " $_dep "; then
-                step "the render references (golden_corpus)" cargo test -p klipp-compose --test golden_corpus
-                break
-            fi
-        done
+        if [ -z "$_compose_deps" ]; then
+            # Fail closed: an unreadable manifest must not skip the check.
+            say "klipp-compose's dependencies could not be read; running the render references anyway"
+            step "the render references (golden_corpus)" cargo test -p klipp-compose --test golden_corpus
+        else
+            for _dep in $_compose_deps; do
+                if printf ' %s ' "$_touched" | grep -q " $_dep "; then
+                    step "the render references (golden_corpus)" cargo test -p klipp-compose --test golden_corpus
+                    break
+                fi
+            done
+        fi
     fi
     step "clippy on $_touched" cargo clippy --all-targets $_test_args -- -D warnings
     # A public doc linking a private item, or a bare [0,1] in prose,

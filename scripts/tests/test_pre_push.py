@@ -950,10 +950,27 @@ class PreGateTests(RealGitGate):
             self.assertEqual(self.pre_gate().returncode, 0)
             self.assertIn("test -p klipp-compose --test golden_corpus", self.calls(), changed)
 
+    def test_an_unreadable_compose_manifest_still_runs_the_render_references(self):
+        # Fail closed: when compose's dependencies can't be read, the
+        # references run rather than being skipped without a word.
+        (self.root / "crates/klipp-compose/tests").mkdir(parents=True)
+        (self.root / "crates/klipp-compose/tests/golden_corpus.rs").write_text("\n")
+        (self.root / "crates/klipp-compose/Cargo.toml").write_text("this is [not toml\n")
+        self.commit(self.root, "a broken compose manifest")
+        self.git(self.root, "push", "-q", "origin", "HEAD:main")
+        self.change("crates/a/src/lib.rs", "changed for the manifest test\n")
+        result = self.pre_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("test -p klipp-compose --test golden_corpus", self.calls())
+        self.assertIn("could not be read", result.stdout)
+
     def test_a_change_elsewhere_does_not_run_the_render_references(self):
         (self.root / "crates/klipp-compose/tests").mkdir(parents=True)
         (self.root / "crates/klipp-compose/tests/golden_corpus.rs").write_text("\n")
-        self.change("crates/a/src/lib.rs", "changed\n")
+        (self.root / "crates/klipp-compose/Cargo.toml").write_text('[package]\nname = "klipp-compose"\n[dependencies]\nklipp-effects = { path = "../klipp-effects" }\n')
+        self.commit(self.root, "compose, built on effects only")
+        self.git(self.root, "push", "-q", "origin", "HEAD:main")
+        self.change("crates/a/src/lib.rs", "changed elsewhere\n")
         self.assertEqual(self.pre_gate().returncode, 0)
         self.assertFalse(any("golden_corpus" in c for c in self.calls()))
 
