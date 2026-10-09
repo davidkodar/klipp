@@ -2454,19 +2454,7 @@ impl PlaybackEngine {
                 // frame: re-render once they have.
                 self.tick_stream_refresh();
                 self.tick_audio_reposition();
-                if self.pending_paused_refresh {
-                    // A previous seek (Pause / SetPlayhead / SeekTo
-                    // while paused) left the decoder running because
-                    // its 50–200 ms grab window wasn't enough for a
-                    // cold 4K seek. Pop any frame the decoder has
-                    // produced since, run the full post_process
-                    // pipeline (captures per-node thumbs), then pause
-                    // the decoder. Silent no-op until the frame lands.
-                    if self.try_drain_paused_refresh_frame() {
-                        self.pending_paused_refresh = false;
-                        self.note_view(format!("paused refresh drained at {:?}", self.playhead.value));
-                    }
-                }
+                self.tick_paused_refresh();
                 if applied > 0 {
                     // Colour-grade param drag while paused — the drain updated
                     // the graph but the viewer is still displaying the cached
@@ -6463,8 +6451,9 @@ impl PlaybackEngine {
         let t_seek = std::time::Instant::now();
         self.clock_only = false;
         self.sync_fps_to_sequence();
-        // A frame held back for the previous seek is not this one's.
-        self.paused_refresh_best = None;
+        // A refresh armed for where the playhead was isn't this seek's;
+        // a miss here arms one again.
+        self.disarm_paused_refresh();
         // The pre-grade cache stays: a seek back onto a frame shown before
         // is answered from it below, without the decoder.
         self.last_synth_frame_rendered = None;
@@ -6750,6 +6739,9 @@ impl PlaybackEngine {
 
     /// Step forward or backward by one frame without a full seek.
     fn step_frame(&mut self, direction: i64) {
+        // The step's frame is the playhead's now; a seek that runs below
+        // arms a refresh of its own if it misses.
+        self.disarm_paused_refresh();
         // Positions here are playhead ticks (frame_cache is keyed by
         // them too); a frame is `frame_ticks` of them.
         let step = self.frame_ticks();
@@ -7244,6 +7236,30 @@ impl PlaybackEngine {
         // decoder paused, as if it were the frame at the playhead.
         self.paused_refresh_best = best;
         false
+    }
+
+    /// Forget the paused refresh an earlier seek armed, and the frame it
+    /// held back: they are for where the playhead was. Every move of the
+    /// playhead while paused calls this first. Left armed, a move answered
+    /// from the frame cache had that refresh drain on a later tick and
+    /// present a frame short of the new playhead over the cached one, as
+    /// incomplete; with the decoder paused, nothing completed it (#1092).
+    fn disarm_paused_refresh(&mut self) {
+        self.pending_paused_refresh = false;
+        self.paused_refresh_since = None;
+        self.paused_refresh_best = None;
+    }
+
+    /// A previous seek (Pause / SetPlayhead / SeekTo while paused) left
+    /// the decoder running because its 50–200 ms grab window wasn't
+    /// enough for a cold 4K seek. Pop any frame the decoder has produced
+    /// since, run the full post_process pipeline (captures per-node
+    /// thumbs), then pause the decoder. Silent no-op until the frame lands.
+    fn tick_paused_refresh(&mut self) {
+        if self.pending_paused_refresh && self.try_drain_paused_refresh_frame() {
+            self.pending_paused_refresh = false;
+            self.note_view(format!("paused refresh drained at {:?}", self.playhead.value));
+        }
     }
 
     /// Per-tick handler for `pending_paused_refresh`. Pops the frames the
@@ -13039,5 +13055,112 @@ mod preroll_retry_tests {
         assert_eq!(engine.preroll_failed, None, "a seek forgets the failure");
         assert!(engine.preroll_pending.is_none() && engine.preroll_clip_index.is_none());
         engine.clear_preroll();
+    }
+}
+
+#[cfg(test)]
+mod paused_refresh_tests {
+    use super::*;
+    use klipp_timeline::Sequence;
+    use std::sync::Mutex;
+
+    /// A two-second 64×48 test pattern at 30 fps. `None` without ffmpeg.
+    fn source() -> Option<PathBuf> {
+        let out = std::env::temp_dir().join(format!("klipp-paused-refresh-{}.mp4", std::process::id()));
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=64x48:r=30:d=2", "-pix_fmt", "yuv420p"])
+            .arg(&out)
+            .status()
+            .ok()?
+            .success();
+        ok.then_some(out)
+    }
+
+    /// #1092: a seek that missed its frame arms the paused refresh. A
+    /// later park or step answered from the frame cache must disarm it:
+    /// left
+    /// armed, the refresh drained on a later tick and presented a frame
+    /// short of the playhead over the cached one, marked incomplete, and
+    /// with the decoder paused nothing ever completed it.
+    #[test]
+    fn a_move_answered_from_the_cache_disarms_an_earlier_refresh() {
+        let Some(path) = source() else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let fps = klipp_core::Fps::new(30, 1);
+        let tc = |f: i64| RationalTime { value: f, rate: 30 };
+        let mut item = klipp_media::MediaItem::synthetic_for_test(path.clone(), None);
+        item.fps = fps;
+        item.duration = tc(60);
+        item.resolution = klipp_core::Resolution { width: 64, height: 48 };
+        item.has_audio = false;
+        let id = item.id;
+        let mut pool = klipp_media::MediaPool::new();
+        pool.add(item);
+        let mut seq = Sequence::new_default();
+        seq.fps = fps;
+        let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v1.clips = vec![klipp_timeline::Clip::media(id, tc(0), tc(60), tc(0), tc(60))];
+        seq.tracks = vec![v1];
+        let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let shown = Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+        let mut engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, Arc::clone(&shown), Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16))),
+            Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        engine.state = PlaybackState::Paused;
+
+        // Park on frame 10 and wait for it, which opens the clip's
+        // decoder; then hold frame 10 in the cache, as a frame shown
+        // while playing is.
+        engine.seek_in_sequence_with_timeout(tc(10), Duration::from_secs(5));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while engine.pending_paused_refresh && std::time::Instant::now() < deadline {
+            engine.tick_paused_refresh();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!engine.pending_paused_refresh, "frame 10 arrived");
+        let grey = Pregrade::new(PregradePixels::Srgb8(Arc::new(vec![128; 64 * 48 * 4])));
+        engine.frame_cache.insert(10, engine.primary_clip_now(), grey, 64, 48);
+
+        // A seek elsewhere that missed its frame, long enough ago that its
+        // refresh would show a frame short of the playhead.
+        engine.pending_paused_refresh = true;
+        engine.paused_refresh_since = Some(std::time::Instant::now() - Duration::from_secs(1));
+
+        // Back to frame 10: answered from the cache, shown complete.
+        engine.seek_in_sequence_with_timeout(tc(10), Duration::from_millis(50));
+        // The newest frame written; no UI thread swaps it in here.
+        let presented = |fb: &Mutex<crate::texture::FrameBuffer>| {
+            let fb = fb.lock().unwrap();
+            (fb.shown_presented(), fb.latest_complete())
+        };
+        assert_eq!(presented(&shown), (Some(tc(10)), true), "the cached frame is shown, complete");
+        assert!(!engine.pending_paused_refresh, "the earlier seek's refresh is disarmed");
+
+        // Ticks while paused leave it so.
+        for _ in 0..20 {
+            engine.tick_paused_refresh();
+            std::thread::sleep(Duration::from_millis(5));
+            assert_eq!(presented(&shown), (Some(tc(10)), true), "a tick replaced the cached frame");
+        }
+
+        // A step onto a cached frame disarms it the same way.
+        let grey = Pregrade::new(PregradePixels::Srgb8(Arc::new(vec![96; 64 * 48 * 4])));
+        engine.frame_cache.insert(11, engine.primary_clip_now(), grey, 64, 48);
+        engine.pending_paused_refresh = true;
+        engine.paused_refresh_since = Some(std::time::Instant::now() - Duration::from_secs(1));
+        engine.step_frame(1);
+        assert_eq!(presented(&shown), (Some(tc(11)), true), "the stepped-to cached frame is shown, complete");
+        assert!(!engine.pending_paused_refresh, "the step disarmed the earlier refresh");
+        for _ in 0..20 {
+            engine.tick_paused_refresh();
+            std::thread::sleep(Duration::from_millis(5));
+            assert_eq!(presented(&shown), (Some(tc(11)), true), "a tick replaced the stepped-to frame");
+        }
+        let _ = std::fs::remove_file(&path);
     }
 }
