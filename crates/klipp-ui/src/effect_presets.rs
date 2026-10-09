@@ -614,6 +614,29 @@ mod tests {
         assert_eq!(m.presets_for_type("klipp.fx.hsv_adjust").len(), 4, "HSV Adjust's, by its type id");
     }
 
+    /// Every effect type's preset, saved as the card saves it (under the
+    /// type's id, `generated::presets`) and read back by a fresh manager
+    /// from the same folder, is found under that id, and its key and its
+    /// effect both resolve to that type.
+    #[test]
+    fn every_saved_preset_key_still_resolves() {
+        let dir = std::env::temp_dir().join(format!("klipp-effect-presets-{}", uuid::Uuid::new_v4()));
+        let types: Vec<_> = klipp_effects::registry::effect_types().collect();
+        let mut saving = manager(&dir);
+        for ty in &types {
+            let preset = EffectPreset { name: format!("Mine {}", ty.tag), description: String::new(), effect_key: ty.desc.id.to_owned(), builtin: Some((ty.sample)()), ofx_params: None, is_builtin: false };
+            saving.save_user_preset(preset);
+        }
+        let read = manager(&dir);
+        for ty in &types {
+            let name = format!("Mine {}", ty.tag);
+            let found = read.presets_for_type(ty.desc.id).into_iter().find(|p| p.name == name).unwrap_or_else(|| panic!("{}: the saved preset isn't read back under its id", ty.desc.id));
+            assert_eq!(preset_type(&found.effect_key).map(|t| t.desc.id), Some(ty.desc.id), "{}: its key resolves to its type", ty.desc.id);
+            assert_eq!(found.builtin.as_ref().and_then(preset_type_id), Some(ty.desc.id), "{}: its effect maps back to its type", ty.desc.id);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A user's preset of a built-in effect is read only under its type
     /// id: one saved under a short key (`"bloom"`) is not read, nor
     /// mapped to the type.
