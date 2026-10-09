@@ -657,10 +657,7 @@ impl KlippApp {
             self.state.toast.show("Hue picker: that is almost grey, so it has no hue to change; pick a coloured patch");
             return;
         }
-        let mut huesat = self.state.sequences[self.state.active_sequence_idx]
-            .all_clips()
-            .find(|c| c.id == clip_id)
-            .and_then(|c| c.grade().nodes.iter().find(|n| n.id == node_id))
+        let mut huesat = picked_node(self.state.sequence(), clip_id, node_id)
             .and_then(|n| n.params.huesat.clone())
             .unwrap_or_default();
         let points = match curve {
@@ -685,10 +682,7 @@ impl KlippApp {
         ny: f32,
         sample: Result<[f32; 3], klipp_core::NodeSampleRefusal>,
     ) {
-        let base = self.state.sequences[self.state.active_sequence_idx]
-            .all_clips()
-            .find(|c| c.id == clip_id)
-            .and_then(|c| c.grade().nodes.iter().find(|n| n.id == node_id))
+        let base = picked_node(self.state.sequence(), clip_id, node_id)
             .and_then(|n| n.params.qualifier.clone())
             .unwrap_or_default();
         let qualifier = match sample {
@@ -744,7 +738,8 @@ impl KlippApp {
                 // on screen (#612). Answered by `NodeInputSampled`.
                 let Some((clip_id, node_id, curve)) = self.state.hue_curve_pick.take() else { return true };
                 self.state.hue_curve_awaiting = Some((clip_id, node_id, curve));
-                let _ = self.cmd_tx.send(AppCommand::SampleNodeInput { clip_id, node_id, nx: *nx, ny: *ny });
+                let at = sample_path(self.state.sequence(), clip_id, node_id);
+                let _ = self.cmd_tx.send(AppCommand::SampleNodeInput { clip_id, node_id, at, nx: *nx, ny: *ny });
                 true
             }
             AppCommand::RequestQualifierSample { nx, ny } => {
@@ -753,7 +748,8 @@ impl KlippApp {
                 // pick, the key's own correction (#587). The engine reads
                 // it and answers with `NodeInputSampled`.
                 let Some((clip_id, node_id)) = self.state.qualifier_pick.take() else { return true };
-                let _ = self.cmd_tx.send(AppCommand::SampleNodeInput { clip_id, node_id, nx: *nx, ny: *ny });
+                let at = sample_path(self.state.sequence(), clip_id, node_id);
+                let _ = self.cmd_tx.send(AppCommand::SampleNodeInput { clip_id, node_id, at, nx: *nx, ny: *ny });
                 true
             }
             _ => false,
@@ -3307,5 +3303,85 @@ mod graph_path_tests {
         assert_eq!(graph_path_for(&root, &[top, a], &[]), None);
         // A stale id keeps the editor where it is, and changes nothing there.
         assert_eq!(graph_path_for(&root, &[NodeId::new_v4()], &[compound]), Some(vec![compound]));
+    }
+}
+
+/// The node a pick answered for: in the grade `clip` names, a clip's
+/// own or, for a stand-in, the sequence grade it edits, which no clip of
+/// the timeline holds between colour dispatches.
+fn picked_node(seq: &klipp_timeline::Sequence, clip: klipp_core::ClipId, node: klipp_nodes::NodeId) -> Option<&klipp_nodes::Node> {
+    use klipp_timeline::GradeStage;
+    let graph = if clip == seq.timeline_grade_clip_id() {
+        seq.timeline_grade()
+    } else if let Some((group, stage)) = seq.grade_groups.iter().find_map(|g| [GradeStage::Pre, GradeStage::Post].into_iter().find(|s| clip == g.stage_clip_id(*s)).map(|s| (g, s))) {
+        group.stage(stage)
+    } else {
+        seq.all_clips().find(|c| c.id == clip).map(|c| c.grade())
+    };
+    graph?.nodes.iter().find(|n| n.id == node)
+}
+
+/// The path of the node a pick asks the engine to read (#1428): `node`
+/// of the grade `clip` names, a clip's own, or, for a stand-in the Colour
+/// page edits one of the sequence's own grades through, that grade (the
+/// timeline grade, a grade group's stage). The engine reads a stand-in's
+/// grade where it runs; it has no clip by the stand-in's id.
+pub(super) fn sample_path(seq: &klipp_timeline::Sequence, clip: klipp_core::ClipId, node: klipp_nodes::NodeId) -> klipp_graph_format::path::NodePath {
+    use klipp_graph_format::lifted::Stage;
+    use klipp_graph_format::path::{NodePath, Root};
+    use klipp_timeline::GradeStage;
+    if clip == seq.timeline_grade_clip_id() {
+        return NodePath::new(Root::TimelineGrade { sequence: seq.id.0 }, [node]);
+    }
+    for group in &seq.grade_groups {
+        for (stage, at) in [(GradeStage::Pre, Stage::Pre), (GradeStage::Post, Stage::Post)] {
+            if clip == group.stage_clip_id(stage) {
+                return NodePath::new(Root::GroupStage { group: group.id.0, stage: at }, [node]);
+            }
+        }
+    }
+    klipp_compose::inspect::grade_node(clip, node).path
+}
+
+#[cfg(test)]
+mod sample_path_tests {
+    use super::{picked_node, sample_path};
+    use klipp_graph_format::lifted::Stage;
+    use klipp_graph_format::path::{NodePath, Root};
+    use klipp_timeline::{GradeGroup, GradeStage};
+
+    /// A pick through each stand-in names the sequence grade it edits,
+    /// and its answer finds the node there (#1428); a clip's own pick is
+    /// unchanged.
+    #[test]
+    fn a_stand_in_pick_names_the_grade_it_edits() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let graph = || {
+            let mut g = klipp_nodes::NodeGraph::default();
+            let id = g.ensure_corrector();
+            (g, id)
+        };
+        let (timeline, t) = graph();
+        seq.timeline_grade_slot().set(Some(timeline));
+        let mut group = GradeGroup::new("Night");
+        let (pre, p) = graph();
+        let (post, q) = graph();
+        group.stage_slot(GradeStage::Pre).set(Some(pre));
+        group.stage_slot(GradeStage::Post).set(Some(post));
+        let (gid, pre_id, post_id) = (group.id, group.stage_clip_id(GradeStage::Pre), group.stage_clip_id(GradeStage::Post));
+        seq.grade_groups.push(group);
+
+        let tid = seq.timeline_grade_clip_id();
+        assert_eq!(sample_path(&seq, tid, t), NodePath::new(Root::TimelineGrade { sequence: seq.id.0 }, [t]));
+        assert_eq!(sample_path(&seq, pre_id, p), NodePath::new(Root::GroupStage { group: gid.0, stage: Stage::Pre }, [p]));
+        assert_eq!(sample_path(&seq, post_id, q), NodePath::new(Root::GroupStage { group: gid.0, stage: Stage::Post }, [q]));
+        assert_eq!(picked_node(&seq, tid, t).map(|n| n.id), Some(t));
+        assert_eq!(picked_node(&seq, pre_id, p).map(|n| n.id), Some(p));
+        assert_eq!(picked_node(&seq, post_id, q).map(|n| n.id), Some(q));
+        assert!(picked_node(&seq, pre_id, q).is_none(), "each stage holds its own nodes");
+
+        let clip = klipp_core::ClipId::new();
+        let n = klipp_nodes::NodeId::new_v4();
+        assert_eq!(sample_path(&seq, clip, n), klipp_compose::inspect::grade_node(clip, n).path);
     }
 }

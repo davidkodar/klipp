@@ -77,7 +77,7 @@ fn pick(graph: NodeGraph, node: NodeId, placed: bool) -> Option<Result<[f32; 3],
     cmd.send(AppCommand::SetPlayhead(tc(20))).unwrap();
     // Parked, and the first composite's pipelines built.
     std::thread::sleep(Duration::from_millis(1500));
-    cmd.send(AppCommand::SampleNodeInput { clip_id, node_id: node, nx: 0.5, ny: 0.5 }).unwrap();
+    cmd.send(AppCommand::SampleNodeInput { clip_id, node_id: node, at: klipp_compose::inspect::grade_node(clip_id, node).path, nx: 0.5, ny: 0.5 }).unwrap();
     let t0 = Instant::now();
     let mut answer = None;
     while answer.is_none() && t0.elapsed() < Duration::from_secs(5) {

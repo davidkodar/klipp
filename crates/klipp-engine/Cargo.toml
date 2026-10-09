@@ -9,6 +9,7 @@ klipp-core = { workspace = true }
 klipp-transitions = { workspace = true }
 klipp-effects = { workspace = true }
 klipp-compose = { workspace = true }
+klipp-graph-format = { workspace = true }
 klipp-media = { workspace = true }
 klipp-timeline = { workspace = true }
 klipp-nodes = { workspace = true }

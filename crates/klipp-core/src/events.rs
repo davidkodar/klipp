@@ -1828,10 +1828,14 @@ pub enum AppCommand {
     /// an ISO 639-1 code, or `None` to detect it per file. One undo step;
     /// transcripts detected in another language are made again.
     SetTranscriptLanguage { language: Option<String> },
-    /// Read the picture node `node_id` of `clip_id` receives, at `(nx,
-    /// ny)` (0..=1 over the frame) of the parked frame: the qualifier
-    /// eyedropper's sample. Answered by `AppEvent::NodeInputSampled`.
-    SampleNodeInput { clip_id: ClipId, node_id: uuid::Uuid, nx: f32, ny: f32 },
+    /// Read the picture the node at `at` receives, at `(nx, ny)` (0..=1
+    /// over the frame) of the parked frame: the qualifier eyedropper's and
+    /// the Hue-Sat picker's sample. `at` names the node by path, in a
+    /// clip's grade or in one of the sequence's own grades (the timeline
+    /// grade, a grade group's stage); `clip_id` and `node_id` are the
+    /// asker's names for it, given back in the answer,
+    /// `AppEvent::NodeInputSampled` (#1428).
+    SampleNodeInput { clip_id: ClipId, node_id: uuid::Uuid, at: klipp_graph_format::path::NodePath, nx: f32, ny: f32 },
     /// Set which scope mode the engine should render (0=waveform, 1=parade, 3=histogram).
     SetScopeRenderMode { mode: u8 },
     /// Set the union of scope modes the UI currently needs rendered per tick.
