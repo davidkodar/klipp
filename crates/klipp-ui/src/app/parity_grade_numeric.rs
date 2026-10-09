@@ -243,13 +243,36 @@ pub(super) fn shown_in_frame(start: &Grade, ty: &NodeType, desc: &ParamDesc) -> 
     let mut cmds = match desc.key {
         "contrast_pivot" => vec![param("contrast", 0.5)],
         "global_mix" => vec![param("temperature", 0.5)],
-        "luma_mix" => vec![param("gain_master", 0.3)],
+        // A turned linear wheel: the log mode, which reads log wheels
+        // instead, then moves the frame.
+        "luma_mix" | "wheels_log_mode" => vec![param("gain_master", 0.3)],
+        // A coloured curve: preserving luma then changes what it does.
+        "curves_preserve_luma" => vec![AppCommand::SetNodeCurves { clip_id, node_id, curves: CurveSet { red: vec![[0.0, 0.0], [0.5, 0.8], [1.0, 1.0]], ..Default::default() } }],
         "denoise_radius" => vec![param("denoise_luma", 0.5)],
         "curves_mix" => vec![AppCommand::SetNodeCurves { clip_id, node_id, curves: CurveSet { master: vec![[0.0, 0.0], [0.5, 0.75], [1.0, 1.0]], ..Default::default() } }],
         "huesat_mix" => vec![AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat: HueSatCurves { lum_vs_sat: vec![[0.0, 0.5], [1.0, 0.5]], ..Default::default() } }],
-        "lut_opacity" => vec![AppCommand::SetNodeLut { clip_id, node_id, path: Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/luts/cinematic/D-CINELIKE -0_3 BASE.cube")) }],
+        "lut_opacity" | "lut_input_space" | "lut_output_space" => vec![AppCommand::SetNodeLut { clip_id, node_id, path: Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/luts/cinematic/D-CINELIKE -0_3 BASE.cube")) }],
         // A softness needs an edge to soften: a low end above the bottom.
-        "luma_key_soft" => vec![param("luma_key_low", 0.3)],
+        // A window that keys part of the frame (the default keys it all,
+        // as if off): the soft edge then has an edge to soften, and the
+        // switch something to switch.
+        "luma_key_soft" | "luma_key_enabled" => vec![param("luma_key_low", 0.3)],
+        // Two mattes that each select part of the frame, a key's and a
+        // window's, so intersecting, joining and subtracting them differ.
+        "matte_combine_op" => {
+            let grade = g.grade();
+            let of = |kind: NodeKind| grade.nodes.iter().find(|n| n.kind == kind).map(|n| n.id);
+            let mut cmds = Vec::new();
+            if let Some(mask) = of(NodeKind::Mask) {
+                let circle = klipp_core::Mask { shape: klipp_core::MaskShape::Circle { center_x: 0.35, center_y: 0.5, radius: 0.25 }, ..Default::default() };
+                cmds.push(AppCommand::SetNodeMasks { clip_id, node_id: mask, masks: klipp_core::MaskStack { masks: vec![circle] } });
+            }
+            if let Some(qualifier) = of(NodeKind::Qualifier) {
+                let qualifier_settings = klipp_core::color_grade::QualifierSettings { enabled: true, lum_low: 0.0, lum_high: 0.5, ..Default::default() };
+                cmds.push(AppCommand::SetNodeQualifier { clip_id, node_id: qualifier, qualifier: qualifier_settings });
+            }
+            cmds
+        }
         "qual_lum_soft" => vec![param("qual_lum_low", 0.4), param("qual_lum_high", 0.6)],
         "qual_sat_soft" => vec![param("qual_sat_low", 0.3)],
         k if k.starts_with("difference_key.") => {
@@ -267,6 +290,18 @@ pub(super) fn shown_in_frame(start: &Grade, ty: &NodeType, desc: &ParamDesc) -> 
     }
     for cmd in cmds {
         g.apply(cmd);
+    }
+    // A matte image to read a channel of, or invert: written to the node
+    // straight, since the app sets it in its own colour handler, which
+    // this harness doesn't run (`SetExternalMattePath`).
+    if matches!(desc.key, "matte_channel" | "matte_invert") {
+        let image = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/effect_preview_reference.png");
+        if let Ok(with_image) = super::parity_controls::with_node(&g, |n| {
+            n.params.matte_image_path = Some(image);
+            Ok(())
+        }) {
+            return with_image.twin();
+        }
     }
     g.twin()
 }
@@ -313,6 +348,10 @@ pub(super) fn row_cases(report: &mut Report, ty: &NodeType, desc: &'static Param
         }
         Ok(())
     });
+    // Shown under a condition: it comes and goes with it.
+    if pres.visible_if.is_some() {
+        report.case(&name("shown with its condition"), vec![k(Interaction::ConditionalVisibility)], || super::parity_controls::visibility_case(start, ty, desc, label));
+    }
     report.case(&name("typed"), vec![k(Interaction::TypeNumber), k(Interaction::UndoRedo)], || {
         let shown: f32 = typed.parse().map_err(|_| format!("{typed:?} isn't a number"))?;
         oracle_case(start, desc, to_stored(shown.clamp(slo, shi)), |g| type_into(g, label, n, &typed))

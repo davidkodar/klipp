@@ -359,6 +359,18 @@ fn control_cases(report: &mut Report, ty: &NodeType, desc: &'static ParamDesc, c
         }
         Ok(())
     });
+    // Shown under a condition (a linear wheel with log off, a log one with
+    // it on): the wheel comes and goes with it, found by its name.
+    if ty.presentation(desc).visible_if.is_some() {
+        let wheel = match control {
+            Control::Wheel { label, .. } => Some(label),
+            Control::Under { wheel, .. } => WHEELS.get(wheel).map(|w| w.1),
+            _ => None,
+        };
+        report.case(&name("shown with its condition"), vec![k(Interaction::ConditionalVisibility)], || {
+            super::parity_controls::visibility_case(start, ty, desc, wheel.ok_or("a conditional control with no name to find")?)
+        });
+    }
     report.case(&name("dragged"), vec![k(interaction(control)), k(Interaction::UndoRedo)], || {
         let from = number(start)?;
         // What it must store: the puck's rule; where the rule goes through

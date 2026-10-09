@@ -223,6 +223,55 @@ fn edit_case(effect: &BuiltinEffect, desc: &ParamDesc, want: Value, drive: impl 
     Ok(())
 }
 
+/// Why a stack row's drawn edit (its Pixels) is excluded, if it is: Speed
+/// Ramp's retiming is the clip's speed curve, and the lift drops the
+/// ramp's own settings, so no switch or menu of it moves the frame.
+const SPEED_RAMP_PIXELS: &str = "known defect #1409: the lift drops the ramp, so Speed Ramp's switches and menus move nothing";
+
+/// A stack row's switch flipped or another item picked, on the effect's
+/// pixel fixture (`parity_numeric::pixel_fixture`) through the card: of
+/// the row's other values, the first that moves the frame, with the CPU's
+/// frame the GPU's (`clip_edit_drawn_on`, at the type's route and size).
+/// An error beginning `BLOCKED` when the GPU route isn't kept.
+fn stack_drawn(ty: &EffectType, desc: &ParamDesc, pres: &Presentation, effect: &BuiltinEffect) -> Result<(), String> {
+    let (routes, _) = super::parity_numeric::routes_for(ty.desc.id);
+    let size = super::parity_numeric::size_for(ty.tag);
+    let (clip, index) = super::parity_numeric::pixel_fixture(ty, effect, Surface::EffectsStack)?;
+    let label = pres.label.unwrap_or(desc.label);
+    let labels = menu_labels(desc, pres);
+    let current = stored(&clip.builtin_effects()[index], desc);
+    let others: Vec<Option<usize>> = match pres.widget {
+        Widget::Toggle => vec![None],
+        _ => {
+            let at = shown_index(desc, &current).unwrap_or(0);
+            (0..labels.len()).filter(|i| *i != at).map(Some).collect()
+        }
+    };
+    let mut last = String::from("the row has no other value");
+    for other in others {
+        let mut s = Stack::new(clip.clone());
+        match other {
+            None => s.click(label)?,
+            Some(i) => {
+                let at = shown_index(desc, &current).unwrap_or(0);
+                s.click(labels[at])?;
+                s.click(labels[i])?;
+            }
+        }
+        if !s.unapplied.is_empty() {
+            return Err(format!("unapplied: {:?}", s.unapplied));
+        }
+        let mut after = s.clip().clone();
+        super::parity_numeric::regain(&mut after);
+        match super::parity_pixels::clip_edit_drawn_on(routes, size, &clip, &after) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.starts_with("BLOCKED") => return Err(e),
+            Err(e) => last = format!("{e} ({})", other.map_or_else(|| "switched".to_owned(), |i| format!("picking {:?}", labels[i]))),
+        }
+    }
+    Err(last)
+}
+
 /// The obligations of every row these cases drive, on the surface and
 /// fixture variant each is driven on: an effect card's switches and menus
 /// on the stack (`run`), a per-node grade's (`run_grade`), and the
@@ -244,6 +293,8 @@ pub(super) fn require(manifest: &mut Manifest) {
         }
     };
     let discrete = |w: Widget| matches!(w, Widget::Toggle | Widget::Combo);
+    // Applied once `want` is done with the manifest.
+    let mut pinned = Vec::new();
     // A placed kind's card too (Speed Ramp's switches and menus): its rows
     // are drawn on the stack and sent through the clip's effect list.
     for ty in effect_types() {
@@ -252,6 +303,9 @@ pub(super) fn require(manifest: &mut Manifest) {
             if discrete(pres.widget) {
                 if let Ok((_, variant)) = shown_fixture(ty, &pres) {
                     want(ty.desc.id, desc.key, Surface::EffectsStack, variant);
+                    if ty.tag == "speed_ramp" {
+                        pinned.push(CoverageKey::new(ty.desc.id, desc.key, Surface::EffectsStack, variant, Interaction::Pixels));
+                    }
                 }
             }
         }
@@ -273,6 +327,9 @@ pub(super) fn require(manifest: &mut Manifest) {
                 want(ty.desc.id, desc.key, surface, grade_variant(ty, desc));
             }
         }
+    }
+    for key in pinned {
+        manifest.exclude_key(key, SPEED_RAMP_PIXELS);
     }
 }
 
@@ -309,6 +366,29 @@ pub(super) fn run(report: &mut Report) {
             let key = |interaction| CoverageKey::new(id, desc.key, Surface::EffectsStack, variant, interaction);
             let label = pres.label.unwrap_or(desc.label);
             let was = stored(&effect, desc);
+            // Opened: the card drawn with the row on it writes nothing.
+            report.case(&format!("{id} {} opened", desc.key), [key(Interaction::OpenWithoutWrite)], || {
+                let mut s = Stack::new(fixture(&effect));
+                let before = s.picture();
+                s.frame(Vec::new());
+                if !s.frame(Vec::new()).iter().any(|(t, _)| t == label) {
+                    return Err(format!("{label:?} isn't drawn"));
+                }
+                if !s.unapplied.is_empty() || s.picture() != before || s.state.active_history().undo_count() != 0 {
+                    return Err(format!("opening wrote: {:?}", s.unapplied));
+                }
+                Ok(())
+            });
+            // Drawn: the switch flipped or another item picked changes the
+            // frame, the CPU's the GPU's (Speed Ramp's pinned, #1409).
+            if ty.tag != "speed_ramp" {
+                let name = format!("{id} {} drawn", desc.key);
+                let drawn = || stack_drawn(ty, desc, &pres, &effect);
+                match super::parity_numeric::routes_for(id) {
+                    (_, Some(reason)) => report.case_cpu_by_design(&name, [key(Interaction::Pixels)], reason, drawn),
+                    (_, None) => report.case_or_blocked(&name, [key(Interaction::Pixels)], drawn),
+                }
+            }
             match pres.widget {
                 Widget::Toggle => {
                     for on in [false, true] {
@@ -1006,15 +1086,64 @@ pub(super) fn oracle_case(start: &Grade, desc: &ParamDesc, want: f32, drive: imp
 /// the document (through a sequence grade's stand-in, as the app edits
 /// one): the picture an edit naming that change must leave.
 pub(super) fn expected_with(start: &Grade, edit: impl FnOnce(&mut klipp_nodes::Node) -> Result<(), String>) -> Result<GradePicture, String> {
-    let mut oracle = start.twin();
-    let node = oracle.node;
-    let written = oracle.with_stand_in(|g| -> Result<(), String> {
+    Ok(with_node(start, edit)?.picture())
+}
+
+/// A twin of `start` with its node changed by `edit`, written straight
+/// into the document (through a sequence grade's stand-in, as the app
+/// edits one), no widget involved.
+pub(super) fn with_node(start: &Grade, edit: impl FnOnce(&mut klipp_nodes::Node) -> Result<(), String>) -> Result<Grade, String> {
+    let mut changed = start.twin();
+    let node = changed.node;
+    let written = changed.with_stand_in(|g| -> Result<(), String> {
         let clip_id = g.clip;
         let clip = g.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).ok_or("no clip for the grade")?;
         clip.edit_grade(|graph| edit(graph.nodes.iter_mut().find(|n| n.id == node).ok_or("no node")?))
     });
     written?;
-    Ok(oracle.picture())
+    Ok(changed)
+}
+
+/// `params` with the switch at `field` (a dotted path into a struct, as
+/// `soft_clip.enabled`) set to `on`.
+fn set_switch(params: &mut klipp_nodes::NodeParams, field: &str, on: bool) -> Result<(), String> {
+    let mut json = serde_json::to_value(&*params).map_err(|e| e.to_string())?;
+    let mut at = &mut json;
+    for step in field.split('.') {
+        at = at.as_object_mut().ok_or_else(|| format!("{field} isn't in a struct"))?.entry(step).or_insert(Value::Null);
+    }
+    *at = Value::Bool(on);
+    *params = serde_json::from_value(json).map_err(|e| format!("{field} set: {e}"))?;
+    Ok(())
+}
+
+/// A row shown under a condition (`visible_if`) comes and goes with it
+/// (ConditionalVisibility): on `start`, where the family draws the row
+/// with its condition met, `name` (the row's label, or a wheel's name for
+/// a wheel's part) is drawn; with the condition's switch the other way,
+/// written to the node straight, it isn't, or fewer times; and drawing
+/// either writes nothing.
+pub(super) fn visibility_case(start: &Grade, ty: &klipp_nodes::registry::NodeType, desc: &ParamDesc, name: &str) -> Result<(), String> {
+    let Some(Cond::ParamIs { key, value }) = ty.presentation(desc).visible_if else { return Err(format!("{} has no condition", desc.key)) };
+    let cond = ty.desc.params.iter().find(|p| p.key == key).ok_or_else(|| format!("its condition names {key:?}, not a parameter"))?;
+    let drawn = |g: &mut Grade| -> Result<usize, String> {
+        let before = (g.picture(), g.state.active_history().undo_count());
+        let n = g.drawn().iter().filter(|(t, _)| t == name).count();
+        if (g.picture(), g.state.active_history().undo_count()) != before || !g.unapplied.is_empty() {
+            return Err(format!("drawing wrote: {:?}", g.unapplied));
+        }
+        Ok(n)
+    };
+    let shown = drawn(&mut start.twin())?;
+    if shown == 0 {
+        return Err(format!("{name:?} isn't drawn with {key} met"));
+    }
+    let mut unmet = with_node(start, |n| set_switch(&mut n.params, cond.field, value == 0.0))?;
+    let hidden = drawn(&mut unmet)?;
+    if hidden >= shown {
+        return Err(format!("{name:?} is drawn {hidden} times with {key} unmet, {shown} with it met"));
+    }
+    Ok(())
 }
 
 /// What a switch showing `index` (off 0, on 1) or a menu's item `index`
@@ -1234,6 +1363,52 @@ fn discrete_cases(report: &mut Report, ty: &klipp_nodes::registry::NodeType, des
         }
     };
     let key = |interaction| CoverageKey::new(id, desc.key, surface, variant, interaction);
+    // Opened: the page drawn with the row on it writes nothing.
+    report.case(&format!("{id} {} on {surface:?} opened", desc.key), [key(Interaction::OpenWithoutWrite)], || {
+        let mut g = shown.twin();
+        let before = (g.picture(), g.state.active_history().undo_count());
+        g.drawn();
+        g.drawn();
+        if (g.picture(), g.state.active_history().undo_count()) != before || !g.unapplied.is_empty() {
+            return Err(format!("opening wrote: {:?}", g.unapplied));
+        }
+        Ok(())
+    });
+    // Shown under a condition: it comes and goes with it.
+    if pres.visible_if.is_some() {
+        report.case(&format!("{id} {} on {surface:?} shown with its condition", desc.key), [key(Interaction::ConditionalVisibility)], || visibility_case(&shown, ty, desc, label));
+    }
+    // Drawn: the switch flipped or another item picked changes the frame,
+    // the CPU's the GPU's, through the stage the grade is on. From what
+    // the row needs to show (`shown_in_frame`), the first of its other
+    // values that moves the frame.
+    report.case_or_blocked(&format!("{id} {} on {surface:?} drawn", desc.key), [key(Interaction::Pixels)], || {
+        let base = super::parity_grade_numeric::shown_in_frame(&shown, ty, desc);
+        let labels = menu_labels(desc, &pres);
+        let at = shown_index(desc, &base.value(desc)).unwrap_or(0);
+        let others: Vec<Option<usize>> = match pres.widget {
+            Widget::Toggle => vec![None],
+            _ => (0..labels.len()).filter(|i| *i != at).map(Some).collect(),
+        };
+        let mut last = String::from("the row has no other value");
+        for other in others {
+            let mut g = base.twin();
+            g.drawn();
+            match other {
+                None => g.switch(label)?,
+                Some(i) => g.pick(label, labels[at], labels[i])?,
+            }
+            if !g.unapplied.is_empty() {
+                return Err(format!("unapplied: {:?}", g.unapplied));
+            }
+            match super::parity_pixels::edit_drawn(&base.frame_sequence(), &g.frame_sequence()) {
+                Ok(()) => return Ok(()),
+                Err(e) if e.starts_with("BLOCKED") => return Err(e),
+                Err(e) => last = format!("{e} ({})", other.map_or_else(|| "switched".to_owned(), |i| format!("picking {:?}", labels[i]))),
+            }
+        }
+        Err(last)
+    });
     match pres.widget {
         Widget::Toggle => {
             let is_on = shown_index(desc, &shown.value(desc)) == Some(1);

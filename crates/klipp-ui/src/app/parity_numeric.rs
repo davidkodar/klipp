@@ -570,6 +570,39 @@ fn run_entry(report: &mut Report, entry: &CatalogEntry, surface: Surface, varian
         }
         Ok(())
     });
+    // Shown under a condition (Speed Ramp's Freeze At, with Freeze on):
+    // the row comes and goes with it, the condition's stored field set the
+    // other way on the effect straight, no widget involved; drawing either
+    // writes nothing.
+    if let Some(Cond::ParamIs { key: cond_key, value: met }) = pres.visible_if {
+        report.case(&name("shown with its condition"), [key(Interaction::ConditionalVisibility)], || {
+            let cond = ty.desc.params.iter().find(|p| p.key == cond_key).ok_or_else(|| format!("unknown condition {cond_key}"))?;
+            let drawn = |effect: &BuiltinEffect| -> Result<usize, String> {
+                let mut run = run_for(surface, fixture_on(effect, surface));
+                let before = run.clip().picture_v2().unwrap();
+                run.frame(Vec::new(), egui::Modifiers::NONE);
+                let n = run.frame(Vec::new(), egui::Modifiers::NONE).iter().filter(|(t, _)| t == label.text).count();
+                commands_applied(&run)?;
+                if run.clip().picture_v2().unwrap() != before || run.state.active_history().undo_count() != 0 {
+                    return Err("drawing the card wrote".into());
+                }
+                Ok(n)
+            };
+            let shown = drawn(&effect)?;
+            if shown == 0 {
+                return Err(format!("{:?} isn't drawn with {cond_key} met", label.text));
+            }
+            let unmet = match stored(&effect, cond) {
+                Value::Bool(_) => Value::Bool(met == 0.0),
+                _ => Value::from(u32::from(met == 0.0)),
+            };
+            let hidden = drawn(&with_field(&effect, cond, unmet)?)?;
+            if hidden >= shown {
+                return Err(format!("{:?} is drawn {hidden} times with {cond_key} unmet, {shown} with it met", label.text));
+            }
+            Ok(())
+        });
+    }
     report.case(
         &name("type"),
         [key(Interaction::TypeNumber), key(Interaction::UndoRedo)],
