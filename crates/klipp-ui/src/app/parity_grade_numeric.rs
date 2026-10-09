@@ -10,7 +10,7 @@
 //! grades are earned alike, drawn by their own stage.
 //!
 //! Wheel axes and the warper's sectors are another driver's (a drag in a
-//! disc) and another family's.
+//! disc) and another family's (`parity_grade_wheels`).
 
 use super::parity_controls::{grade_variant, meet_conditions, placed, Grade, Page};
 use super::parity_harness::GradeRoot;
@@ -98,7 +98,7 @@ pub(super) fn require(manifest: &mut Manifest) {
 /// The row labelled `label`, where drawn: its label and its number, right
 /// of the label on its line, or else the nearest below it; the `nth` such
 /// row in reading order when several share the label.
-fn row_at(g: &mut Grade, label: &str, nth: usize) -> Result<(egui::Pos2, egui::Pos2), String> {
+pub(super) fn row_at(g: &mut Grade, label: &str, nth: usize) -> Result<(egui::Pos2, egui::Pos2), String> {
     let drawn = g.drawn();
     // Compared trimmed: a readout pads its labels to line them up.
     let mut labels: Vec<egui::Pos2> = drawn.iter().filter(|(t, _)| t.trim() == label).map(|(_, p)| *p).collect();
@@ -124,11 +124,11 @@ fn nth(desc: &ParamDesc) -> usize {
     ["lift", "gamma", "gain", "offset"].iter().position(|w| desc.key.starts_with(w)).unwrap_or(0)
 }
 
-fn button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+pub(super) fn button(pos: egui::Pos2, pressed: bool) -> egui::Event {
     egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }
 }
 
-fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+pub(super) fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
     egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
 }
 
@@ -177,7 +177,7 @@ fn reset(g: &mut Grade, label: &str, n: usize) -> Result<(), String> {
 /// The row shown on a page that draws it: each tab tried, the row's
 /// conditions met there, the first that draws its label; with the
 /// fixture's variant.
-fn shown_on(base: &Grade, ty: &NodeType, desc: &ParamDesc, wide: bool) -> Result<(Grade, &'static str), String> {
+pub(super) fn shown_on(base: &Grade, ty: &NodeType, desc: &ParamDesc, wide: bool) -> Result<(Grade, &'static str), String> {
     let label = ty.presentation(desc).label.unwrap_or(desc.label);
     let mut last = format!("no tab draws {label:?}");
     // A mix row is its tab's: several tabs draw a "Mix".
@@ -206,7 +206,7 @@ fn shown_on(base: &Grade, ty: &NodeType, desc: &ParamDesc, wide: bool) -> Result
 /// picture, one undo step each, and the generated one undo and redo
 /// exactly. A failure names the row's stored value in each view and each
 /// view's steps.
-fn edit_case(start: &Grade, desc: &ParamDesc, drive: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
+pub(super) fn edit_case(start: &Grade, desc: &ParamDesc, drive: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
     let (mut new, mut old) = (start.twin(true), start.twin(false));
     new.drawn();
     old.drawn();
@@ -247,7 +247,7 @@ fn edit_case(start: &Grade, desc: &ParamDesc, drive: impl Fn(&mut Grade) -> Resu
 /// `drive` in both views from `start`: the same picture and the same undo
 /// depth after it, whatever each did. For a row both views draw with the
 /// old code, where an intended change can't be asked of the generated one.
-fn alike(start: &Grade, drive: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
+pub(super) fn alike(start: &Grade, drive: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
     let (mut new, mut old) = (start.twin(true), start.twin(false));
     new.drawn();
     old.drawn();
@@ -305,10 +305,13 @@ fn shown_in_frame(start: &Grade, ty: &NodeType, desc: &ParamDesc) -> Grade {
 }
 
 /// One row's cases on `start` (the row drawn), counted on `surface`.
-fn row_cases(report: &mut Report, ty: &NodeType, desc: &'static ParamDesc, start: &Grade, surface: Surface, variant: &str) {
+pub(super) fn row_cases(report: &mut Report, ty: &NodeType, desc: &'static ParamDesc, start: &Grade, surface: Surface, variant: &str) {
     // The bottom tools' wide wheels (`show_wheels_wide`, kept by step 19)
     // draw the luma mix in both views.
-    let shared = (surface == Surface::GradePerNode && WHOLE_NODE.contains(&ty.kind)) || (surface == Surface::GradeBottomTools && desc.key == "luma_mix");
+    // The bottom tools' log ranges are `wheel_shape_sliders` in both views.
+    let shared = (surface == Surface::GradePerNode && WHOLE_NODE.contains(&ty.kind))
+        || (surface == Surface::GradeBottomTools && desc.key == "luma_mix")
+        || (surface == Surface::GradeBottomTools && matches!(desc.key, "log_low_range" | "log_high_range"));
     let id = ty.desc.id;
     let pres = ty.presentation(desc);
     let label = pres.label.unwrap_or(desc.label);

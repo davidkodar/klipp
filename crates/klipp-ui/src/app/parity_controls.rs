@@ -384,6 +384,8 @@ pub(super) struct Grade {
     /// The graph a stand-in is put on with while its root has no grade,
     /// kept as the app keeps it.
     fresh: Option<(ClipId, klipp_nodes::NodeGraph)>,
+    /// The last frame's icons (its textured rectangles), where drawn.
+    pub(super) icons: Vec<egui::Rect>,
 }
 
 /// A grade's picture, as the families compare it: a clip's lifted picture,
@@ -472,7 +474,7 @@ impl Grade {
         // filling the panel, which pushes the rows off it.
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
-        Grade { state, clip, node, ctx, clock: 0.0, panel: Default::default(), generated, unapplied: Vec::new(), side: Vec::new(), page: Page::PerNode, before_input: None, gesture: None, root: GradeRoot::Clip, group: None, home: clip, fresh: None }
+        Grade { state, clip, node, ctx, clock: 0.0, panel: Default::default(), generated, unapplied: Vec::new(), side: Vec::new(), page: Page::PerNode, before_input: None, gesture: None, root: GradeRoot::Clip, group: None, home: clip, fresh: None, icons: Vec::new() }
     }
 
     /// The same node in `root` instead (M3 step 19): for a sequence grade,
@@ -606,6 +608,7 @@ impl Grade {
             super::parity_manifest::touched_the_root();
         }
         let (cmds, out) = self.with_stand_in(|g| g.draw(input, frame, &theme));
+        self.icons = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Rect(r) if r.fill_texture_id != egui::TextureId::default() => Some(r.rect), _ => None }).collect();
         for cmd in cmds {
             self.apply(cmd);
         }

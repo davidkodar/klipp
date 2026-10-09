@@ -53,6 +53,11 @@ use klipp_effects::registry::{
     Alpha, Category, ColourDomain, NodeTypeDesc, ParamDesc, ParamKind, PortDesc, PortType, Scaling, Spatial, Temporal, Unit, GATE_IN,
 };
 
+/// The log wheels' ranges keep clear of mid grey by 0.08, as the wheels
+/// themselves bound them (`wheel_shape_sliders`): their rows' ends.
+const LOG_LOW_RANGE_MAX: f32 = klipp_color::grade_model::MID_GREY_ENCODED - 0.08;
+const LOG_HIGH_RANGE_MIN: f32 = klipp_color::grade_model::MID_GREY_ENCODED + 0.08;
+
 #[path = "registry_presentation.rs"]
 pub mod presentation;
 
@@ -111,8 +116,8 @@ static P_CORRECTOR: &[ParamDesc] = &[
     ParamDesc { field: "log_high_x", index: None, key: "log_high_x", label: "High x", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-2.0, 2.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "log_high_y", index: None, key: "log_high_y", label: "High y", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-2.0, 2.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "log_high_master", index: None, key: "log_high_master", label: "High master", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-1.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
-    ParamDesc { field: "log_low_range", index: None, key: "log_low_range", label: "Low range", kind: ParamKind::Float, default: 0.2, range: None, soft: Some((0.0, 0.409)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
-    ParamDesc { field: "log_high_range", index: None, key: "log_high_range", label: "High range", kind: ParamKind::Float, default: 0.78, range: None, soft: Some((0.569, 1.2)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
+    ParamDesc { field: "log_low_range", index: None, key: "log_low_range", label: "Low range", kind: ParamKind::Float, default: 0.2, range: None, soft: Some((0.0, LOG_LOW_RANGE_MAX)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
+    ParamDesc { field: "log_high_range", index: None, key: "log_high_range", label: "High range", kind: ParamKind::Float, default: 0.78, range: None, soft: Some((LOG_HIGH_RANGE_MIN, 1.2)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "luma_mix", index: None, key: "luma_mix", label: "Luma mix", kind: ParamKind::Float, default: 1.0, range: None, soft: Some((0.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "lift_sat", index: None, key: "lift_sat", label: "Lift saturation", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-1.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "lift_bri", index: None, key: "lift_bri", label: "Lift brightness", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-1.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
@@ -197,8 +202,8 @@ static P_COLOR_WHEELS: &[ParamDesc] = &[
     ParamDesc { field: "log_high_x", index: None, key: "log_high_x", label: "High x", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-2.0, 2.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "log_high_y", index: None, key: "log_high_y", label: "High y", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-2.0, 2.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "log_high_master", index: None, key: "log_high_master", label: "High master", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-1.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
-    ParamDesc { field: "log_low_range", index: None, key: "log_low_range", label: "Low range", kind: ParamKind::Float, default: 0.2, range: None, soft: Some((0.0, 0.409)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
-    ParamDesc { field: "log_high_range", index: None, key: "log_high_range", label: "High range", kind: ParamKind::Float, default: 0.78, range: None, soft: Some((0.569, 1.2)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
+    ParamDesc { field: "log_low_range", index: None, key: "log_low_range", label: "Low range", kind: ParamKind::Float, default: 0.2, range: None, soft: Some((0.0, LOG_LOW_RANGE_MAX)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
+    ParamDesc { field: "log_high_range", index: None, key: "log_high_range", label: "High range", kind: ParamKind::Float, default: 0.78, range: None, soft: Some((LOG_HIGH_RANGE_MIN, 1.2)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "luma_mix", index: None, key: "luma_mix", label: "Luma mix", kind: ParamKind::Float, default: 1.0, range: None, soft: Some((0.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
 ];
 static P_WHEEL_SAT_BRI: &[ParamDesc] = &[

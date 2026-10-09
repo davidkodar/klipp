@@ -9,6 +9,9 @@ pub struct WheelResponse {
     pub changed: bool,
     pub drag_started: bool,
     pub drag_ended: bool,
+    /// A drag of the puck, the master or a pill is under way: a change
+    /// outside one (a click, a reset, a typed pill) is a whole edit.
+    pub dragging: bool,
 }
 
 /// Renders a color wheel with puck, RGB readout, and master slider.
@@ -38,6 +41,7 @@ pub fn color_wheel_sized(
     let mut changed = false;
     let mut drag_started = false;
     let mut drag_ended = false;
+    let mut dragging = false;
     let wheel_radius = wheel_diameter / 2.0;
     let rgb_row_h = 16.0;
     let master_row_h = 14.0;
@@ -113,6 +117,7 @@ pub fn color_wheel_sized(
     let wheel_resp = ui.allocate_rect(wheel_rect, egui::Sense::click_and_drag());
     drag_started |= wheel_resp.drag_started();
     drag_ended |= wheel_resp.drag_stopped();
+    dragging |= wheel_resp.dragged();
 
     // A drag moves the puck from where it is, at half the wheel's scale
     // (a full radius of travel is half the range) and a tenth of that
@@ -311,6 +316,7 @@ pub fn color_wheel_sized(
         if resp.drag_started() {
             drag_started = true;
         }
+        dragging |= resp.dragged();
         if resp.changed() {
             rgb[i] = v;
             rgb_edited = true;
@@ -363,6 +369,7 @@ pub fn color_wheel_sized(
     let master_resp = ui.allocate_rect(master_hit, egui::Sense::click_and_drag());
     drag_started |= master_resp.drag_started();
     drag_ended |= master_resp.drag_stopped();
+    dragging |= master_resp.dragged();
 
     // The same as the wheel: a drag moves the thumb from where it is,
     // half the track's scale and a tenth with Shift; a click places it.
@@ -406,6 +413,7 @@ pub fn color_wheel_sized(
         changed,
         drag_started,
         drag_ended,
+        dragging,
     }
 }
 

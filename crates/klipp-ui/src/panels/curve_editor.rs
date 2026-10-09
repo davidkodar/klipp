@@ -1104,6 +1104,11 @@ impl CurveEditorPanel {
                         }
                     }
                 }
+                // A clip lane's Bezier handle dragged is one step too, as
+                // its key is.
+                if found_handle && matches!(self.param, CurveParam::Video(_) | CurveParam::Audio(_)) {
+                    cmds.push(AppCommand::BeginKeyframeDrag { key: lane_drag_key(clip_id), clip_id });
+                }
                 // If no handle, check for diamond hit
                 if !found_handle {
                     let alt = ui.ctx().input(|i| i.modifiers.alt);
@@ -1245,7 +1250,7 @@ impl CurveEditorPanel {
             if let (Some(CurveDrag { handle: None, .. }), CurveParam::Node { path, key, .. }) = (&self.drag, &self.param) {
                 cmds.push(AppCommand::EndParamEditAt { addr: path.clone(), key: key.clone() });
             }
-            if let (Some(CurveDrag { handle: None, .. }), CurveParam::Video(_) | CurveParam::Audio(_)) = (&self.drag, &self.param) {
+            if let (Some(_), CurveParam::Video(_) | CurveParam::Audio(_)) = (&self.drag, &self.param) {
                 cmds.push(AppCommand::EndKeyframeDrag { key: lane_drag_key(clip_id), clip_id });
             }
             self.drag = None;
