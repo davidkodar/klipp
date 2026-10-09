@@ -575,6 +575,20 @@ impl Grade {
         self.state.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap()
     }
 
+    /// What the pixel oracle draws for the node's grade: the clip it was
+    /// made on, alone, with its own grade, or on a sequence grade's root:
+    /// the sequence's timeline grade, or a group's stage with the clip in
+    /// the group.
+    pub(super) fn frame_sequence(&self) -> klipp_timeline::Sequence {
+        let mut seq = self.state.sequences[0].clone();
+        let mut home = seq.all_clips().find(|c| c.id == self.home).unwrap().clone();
+        home.grade_group = self.group;
+        let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        track.clips = vec![home];
+        seq.tracks = vec![track];
+        seq
+    }
+
     pub(super) fn picture(&self) -> GradePicture {
         match self.root {
             GradeRoot::Clip => GradePicture::Clip(Box::new((*self.clip().picture_v2().unwrap()).clone())),
@@ -883,6 +897,9 @@ pub(super) fn placed(kind: klipp_nodes::NodeKind) -> Option<(AppState, ClipId, k
     use klipp_nodes::{NodeGraph, NodeKind};
     let ty = klipp_nodes::registry::node_type(kind)?;
     let matte_out = ty.desc.outputs.iter().any(|p| p.ty == klipp_effects::registry::PortType::Matte);
+    if matches!(kind, NodeKind::Blend | NodeKind::ApplyMatte) {
+        return wired(kind);
+    }
     if !matte_out {
         return super::grade_inspector_tests::graded(kind);
     }
@@ -914,6 +931,33 @@ pub(super) fn placed(kind: klipp_nodes::NodeKind) -> Option<(AppState, ClipId, k
     let id = clip.id;
     state.sequences[0].tracks[v1].clips.push(clip);
     Some((state, id, node))
+}
+
+/// A Blend or an Apply Matte after the Corrector with its other inputs
+/// wired, so its mix has something to mix: the Blend's second input the
+/// source, the Apply Matte's matte a Qualifier's of the source and its
+/// ungraded input the source.
+fn wired(kind: klipp_nodes::NodeKind) -> Option<(AppState, ClipId, klipp_nodes::NodeId)> {
+    use klipp_nodes::{Edge, Node, NodeKind};
+    let (mut state, clip, node) = super::grade_inspector_tests::graded(kind)?;
+    let c = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip))?;
+    klipp_timeline::GradeAccess::edit_grade(c, |g| {
+        let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id);
+        let Some(source) = source else { return };
+        let edge = |from_node, to_node, to_port| Edge { from_node, from_port: 0, to_node, to_port };
+        if kind == NodeKind::Blend {
+            g.edges.push(edge(source, node, 1));
+        } else {
+            let qualifier = Node { id: klipp_nodes::NodeId::new_v4(), kind: NodeKind::Qualifier, label: NodeKind::Qualifier.display_name().to_string(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() };
+            let q = qualifier.id;
+            g.nodes.push(qualifier);
+            g.edges.push(edge(source, q, 0));
+            g.edges.push(edge(q, node, 1));
+            g.edges.push(edge(source, node, 2));
+        }
+    });
+    c.picture_v2().ok()?;
+    Some((state, clip, node))
 }
 
 /// Every switch clicked both ways and every menu item picked on every
