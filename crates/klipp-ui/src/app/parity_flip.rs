@@ -26,6 +26,7 @@ fn manifest() -> Manifest {
     super::parity_curve_editor::require(&mut m);
     super::parity_controls::require(&mut m);
     super::parity_stack_switches::require(&mut m);
+    super::parity_colour_pickers::require(&mut m);
     super::parity_grade_specialists::require(&mut m);
     super::parity_grade_numeric::require(&mut m);
     super::parity_grade_workflows::require(&mut m);
@@ -47,6 +48,7 @@ fn run_all(report: &mut Report) {
     report.family("curve editor", super::parity_curve_editor::run);
     report.family("effect controls", super::parity_controls::run);
     report.family("effect eyes and mixes", super::parity_stack_switches::run);
+    report.family("effect colour rows", super::parity_colour_pickers::run);
     // The grade families, on the clip's grade and on the sequence's grades
     // (`on_roots`), where they earn `NonClipGrade`.
     use super::parity_controls::on_roots;
@@ -168,6 +170,7 @@ fn every_parity_family_is_in_the_flip() {
         ("parity_curve_editor", include_str!("parity_curve_editor.rs")),
         ("parity_controls", include_str!("parity_controls.rs")),
         ("parity_stack_switches", include_str!("parity_stack_switches.rs")),
+        ("parity_colour_pickers", include_str!("parity_colour_pickers.rs")),
         ("parity_grade_specialists", include_str!("parity_grade_specialists.rs")),
         ("parity_grade_workflows", include_str!("parity_grade_workflows.rs")),
         ("parity_grade_numeric", include_str!("parity_grade_numeric.rs")),

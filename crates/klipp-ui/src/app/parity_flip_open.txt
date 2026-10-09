@@ -304,11 +304,6 @@ missing root obligation: klipp.grade.wheel_sat_bri / offset_bri / NonClipGrade t
 missing root obligation: klipp.grade.wheel_sat_bri / offset_sat / NonClipGrade group post-clip: GradeBottomTools
 missing root obligation: klipp.grade.wheel_sat_bri / offset_sat / NonClipGrade group pre-clip: GradeBottomTools
 missing root obligation: klipp.grade.wheel_sat_bri / offset_sat / NonClipGrade timeline: GradeBottomTools
-missing surface: klipp.fx.chroma_key / key_color / EffectsStack
-missing surface: klipp.fx.color_fade / color / EffectsStack
-missing surface: klipp.fx.drop_shadow / color / EffectsStack
-missing surface: klipp.fx.frei0r / params / EffectsStack
-missing surface: klipp.fx.outer_glow / color / EffectsStack
 missing surface: klipp.grade.apply_matte / @enabled / GradeBottomTools
 missing surface: klipp.grade.apply_matte / @enabled / GradePerNode
 missing surface: klipp.grade.apply_matte / @enabled / NonClipGrade

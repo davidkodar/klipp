@@ -105,14 +105,14 @@ fn require_analyses(manifest: &mut Manifest) {
     }
 }
 
-/// The frei0r effect's plug-in editor: the catalog entry its custom
-/// widget draws.
-pub(super) fn frei0r_entry() -> Option<super::parity_manifest::CatalogEntry> {
-    catalog().into_iter().find(|e| matches!(e.value, CatalogValue::Parameter { presentation, .. } if presentation.widget == klipp_effects::registry::presentation::Widget::Custom("frei0r_plugin")))
+/// The frei0r effect's plug-in editor: the catalog entries its one custom
+/// widget draws (the plug-in it is, and its parameters' values).
+pub(super) fn frei0r_entries() -> Vec<super::parity_manifest::CatalogEntry> {
+    catalog().into_iter().filter(|e| matches!(e.value, CatalogValue::Parameter { presentation, .. } if presentation.widget == klipp_effects::registry::presentation::Widget::Custom("frei0r_plugin"))).collect()
 }
 
 fn require_frei0r(manifest: &mut Manifest) {
-    if let Some(entry) = frei0r_entry() {
+    for entry in frei0r_entries() {
         manifest.require_fixture(&entry, Surface::EffectsStack, VARIANT);
     }
 }
@@ -379,17 +379,20 @@ fn click_right_of(run: &mut Run, label: &str) -> bool {
 
 /// The frei0r plug-in editor's cases.
 fn run_frei0r(report: &mut Report) {
-    let Some(entry) = frei0r_entry() else {
+    let entries = frei0r_entries();
+    if entries.is_empty() {
         report.case("frei0r editor", [], || Err("no catalog entry draws the frei0r editor".into()));
         return;
-    };
-    let key = |interaction| CoverageKey::new(entry.type_id, &entry.parameter, Surface::EffectsStack, VARIANT, interaction);
+    }
+    // The editor is one widget over its entries: each case earns its key
+    // on all of them.
+    let key = |interaction| entries.iter().map(|e| CoverageKey::new(e.type_id, &e.parameter, Surface::EffectsStack, VARIANT, interaction)).collect::<Vec<_>>();
     let plugin = parity_plugin();
     let defaults: Vec<klipp_frei0r::Frei0rValue> = plugin.params.iter().map(|p| klipp_frei0r::Frei0rValue::default_for(p.kind)).collect();
     let effect = BuiltinEffect::Frei0r { type_id: plugin.type_id(), params: defaults.clone() };
     let clip = fixture(&effect);
 
-    report.case("frei0r opened", [key(Interaction::OpenWithoutWrite)], || {
+    report.case("frei0r opened", key(Interaction::OpenWithoutWrite), || {
         let (mut old, mut new) = both(&clip, |_| {});
         let before = new.clip().picture_v2()?;
         for run in [&mut old, &mut new] {
@@ -407,7 +410,7 @@ fn run_frei0r(report: &mut Report) {
 
     // A plug-in this machine doesn't have: said in both views, nothing
     // written, and no rows for values it can't name.
-    report.case("frei0r missing", [key(Interaction::MissingAsset)], || {
+    report.case("frei0r missing", key(Interaction::MissingAsset), || {
         let missing = fixture(&BuiltinEffect::Frei0r { type_id: "frei0r:/nonexistent/gone.so:Gone".into(), params: vec![klipp_frei0r::Frei0rValue::Double(0.25)] });
         let (mut old, mut new) = both(&missing, |_| {});
         for run in [&mut old, &mut new] {
@@ -426,7 +429,7 @@ fn run_frei0r(report: &mut Report) {
     // moves to a path when plug-ins become nodes, M4 step 5 (frei0r as a
     // node). Until then both views add it the same way, which is what
     // this holds.
-    report.case("frei0r picked", [key(Interaction::PluginSelect)], || {
+    report.case("frei0r picked", key(Interaction::PluginSelect), || {
         let base = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
         let (mut old, mut new) = both(&base, |_| {});
         let source = crate::browser::effect_registry::EffectSource::Frei0r(plugin.clone());
@@ -512,7 +515,7 @@ fn run_frei0r(report: &mut Report) {
     let mut edits = edits.to_vec();
     edits.push(colour);
     for (what, drive, want) in edits {
-        report.case(&format!("frei0r {what}"), [key(Interaction::PluginParameter), key(Interaction::UndoRedo)], || {
+        report.case(&format!("frei0r {what}"), [key(Interaction::PluginParameter), key(Interaction::UndoRedo)].concat(), || {
             let (mut old, mut new) = both(&clip, |_| {});
             let before = new.clip().picture_v2()?;
             drive(&mut old).map_err(|e| format!("old: {e}"))?;
