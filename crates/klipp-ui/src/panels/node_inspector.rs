@@ -341,6 +341,16 @@ impl NodeInspectorPanel {
                     ColorTab::Warper => vec![NodeKind::ColorWarper],
                     _ => vec![],
                 };
+                // With the generated inspector on, the tab is its target's
+                // generated rows, the editors among them registered (M3
+                // step 19), and a clip with no Corrector draws the one its
+                // first edit makes.
+                if let [tab_kind] = target_kinds[..] {
+                    if self.generated.is_some() {
+                        self.generated_tab(ui, graph, clip_id, tab_kind, cmds, theme, frame);
+                        return;
+                    }
+                }
                 // Lazy-create flow: if no grade node exists yet, render
                 // the widgets against a scratch NodeParams::default()
                 // using a fixed phantom NodeId. The first widget to
@@ -409,6 +419,37 @@ impl NodeInspectorPanel {
                 }
             }
         }
+    }
+
+    /// One of the Wheels, Curves, Hue-Sat and Warper tabs, generated (M3
+    /// step 19): the node it always targeted (an enabled Corrector, else an
+    /// enabled node of the tab's kind), under its header, as its generated
+    /// rows in the tab's band of the Corrector's page, or all of another
+    /// kind's. With neither, the Corrector the snapshot holds pending,
+    /// drawn from its defaults: its first edit makes it (IC16: beside a
+    /// disabled Corrector too, which is left as it is).
+    ///
+    /// The widgets edit a copy of the node's values: every change is the
+    /// commands they push, never a write into the grade while drawing.
+    #[allow(clippy::too_many_arguments)]
+    fn generated_tab(&mut self, ui: &mut egui::Ui, graph: &NodeGraph, clip_id: ClipId, tab_kind: NodeKind, cmds: &mut Vec<AppCommand>, theme: &KlippTheme, frame: FrameSelection) {
+        let Some(snapshot) = self.generated.take() else { return };
+        let target = graph.nodes.iter().find(|n| n.kind == NodeKind::Corrector && n.enabled)
+            .or_else(|| graph.nodes.iter().find(|n| n.kind == tab_kind && n.enabled))
+            .map(|n| (n.id, n.kind, n.enabled, n.keyframes.clone(), n.params.clone()))
+            .or_else(|| snapshot.pending().map(|id| (id, NodeKind::Corrector, true, Default::default(), NodeParams::default())));
+        if let Some((node, kind, enabled, keyframes, mut params)) = target {
+            node_header(ui, &tab_kind, enabled, &keyframes, node, clip_id, cmds, theme, frame);
+            // Where each tab's rows sit on the Corrector's page.
+            let band = (kind == NodeKind::Corrector).then_some(match tab_kind {
+                NodeKind::ColorWheels => 10..=29,
+                NodeKind::RGBCurves => 40..=49,
+                NodeKind::HueSatCurves => 50..=59,
+                _ => 60..=69,
+            });
+            snapshot.tab(ui, theme, node, band, &mut params, self, cmds, frame);
+        }
+        self.generated = Some(snapshot);
     }
 
     /// Wide-layout combined wheels + sat/bri — each wheel column includes its sliders beneath.

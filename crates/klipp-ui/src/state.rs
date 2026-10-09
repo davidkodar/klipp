@@ -2096,6 +2096,11 @@ pub struct AppState {
     /// more step, not one per tick. Forgotten as soon as the gesture can't
     /// be going on (`forget_stale_path_drag`).
     pub resumable_path_drag: Option<(String, Option<ClipId>)>,
+    /// The id a clip's Corrector takes when the tabbed page's first edit
+    /// makes it (M3 step 19): reserved, for the clip selected, while its
+    /// grade has no enabled Corrector, so the rows and editors drawn before
+    /// it exists name the node it will be (see `grade_view::snapshot_for`).
+    pub pending_corrector: Option<(ClipId, klipp_nodes::NodeId)>,
     /// The split view's compared node: its clip, and the node whose
     /// picture the "before" half stops at.
     pub split_compare_node: Option<(ClipId, klipp_graph_format::path::NodePath)>,
@@ -4153,6 +4158,7 @@ impl Default for AppState {
             stabilization_compare_active: false,
             use_generated_stack: false,
             resumable_path_drag: None,
+            pending_corrector: None,
             selected_node_addr: None,
             split_compare_node: None,
             graph_dock_open: false,

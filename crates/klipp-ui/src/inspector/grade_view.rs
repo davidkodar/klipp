@@ -126,6 +126,10 @@ pub(crate) struct GradeSnapshot {
     clip: klipp_core::ClipId,
     group: klipp_graph_format::NodeId,
     nodes: Vec<(klipp_nodes::NodeKind, Node)>,
+    /// The Corrector the clip's first edit on the tabbed page makes, when
+    /// its grade has no enabled one: drawn from its defaults, under the id
+    /// it will take, and written nowhere until that edit.
+    pending: Option<NodeId>,
     timeline_in_secs: f64,
     rate: u32,
 }
@@ -135,19 +139,105 @@ pub(crate) struct GradeSnapshot {
 /// nested grade (descended into a compound) or a stand-in's (the timeline
 /// grade, a group's stage), which keep the old rows. Every caller of the
 /// tabbed page takes it the same way, each frame, and drops it after.
-pub(crate) fn snapshot_for(clip: &Clip, on: bool, nested: bool, stand_in: bool) -> Option<GradeSnapshot> {
-    (on && !nested && !stand_in).then(|| GradeSnapshot::of(clip)).flatten()
+///
+/// `pending` is the app's reservation for a Corrector the clip doesn't
+/// have yet (`AppState::pending_corrector`): kept while the clip's grade
+/// has no enabled Corrector, so every frame and the edit that makes it
+/// name one node, and a fresh id for each clip that needs one.
+pub(crate) fn snapshot_for(clip: &Clip, on: bool, nested: bool, stand_in: bool, pending: &mut Option<(klipp_core::ClipId, NodeId)>) -> Option<GradeSnapshot> {
+    if !on || nested || stand_in {
+        return None;
+    }
+    // Once the clip has its Corrector the reservation is spent: a later
+    // one (after that node is removed) is a new id, never one a node had.
+    let has = clip.grade().nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Corrector && n.enabled);
+    let reserved = match *pending {
+        _ if has => None,
+        Some((c, id)) if c == clip.id && !clip.grade().nodes.iter().any(|n| n.id == id) => Some(id),
+        _ => Some(NodeId::new_v4()),
+    };
+    *pending = reserved.map(|id| (clip.id, id));
+    GradeSnapshot::of(clip, reserved)
+}
+
+/// The Corrector a tabbed page's first edit adds, as its picture holds it
+/// (M3 step 19): a grade node of its catalog type with every parameter
+/// unset, as `NodeGraph::ensure_corrector` makes one, under `id`.
+pub(crate) fn pending_corrector(id: NodeId) -> Node {
+    let payload = serde_json::json!({"kind": klipp_nodes::NodeKind::Corrector, "label": "Corrector", "params": klipp_nodes::NodeParams::default()});
+    serde_json::from_value(serde_json::json!({"id": id, "type_id": klipp_graph_format::types::LEGACY_NODE, "label": "", "legacy": {"payload": payload}}))
+        .expect("a grade node's form")
 }
 
 impl GradeSnapshot {
-    /// The clip's grade nodes, or `None` when its picture has no grade
+    /// The clip's grade nodes, and the Corrector `pending` names when its
+    /// grade has no enabled one; or `None` when its picture has no grade
     /// group.
-    pub(crate) fn of(clip: &Clip) -> Option<Self> {
+    pub(crate) fn of(clip: &Clip, pending: Option<NodeId>) -> Option<Self> {
         let picture = &clip.picture_v2().ok()?.picture;
         let group = picture.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP)?;
         let body = &group.group.as_ref()?.graph;
-        let nodes = clip.grade().nodes.iter().filter_map(|v1| body.nodes.iter().find(|n| n.id == v1.id).map(|n| (v1.kind, n.clone()))).collect();
-        Some(Self { clip: clip.id, group: group.id, nodes, timeline_in_secs: clip.timeline_in.to_secs_f64(), rate: clip.timeline_in.rate })
+        let mut nodes: Vec<_> = clip.grade().nodes.iter().filter_map(|v1| body.nodes.iter().find(|n| n.id == v1.id).map(|n| (v1.kind, n.clone()))).collect();
+        let pending = pending.filter(|id| !nodes.iter().any(|(_, n)| n.id == *id));
+        if let Some(id) = pending {
+            nodes.push((klipp_nodes::NodeKind::Corrector, pending_corrector(id)));
+        }
+        Some(Self { clip: clip.id, group: group.id, nodes, pending, timeline_in_secs: clip.timeline_in.to_secs_f64(), rate: clip.timeline_in.rate })
+    }
+
+    /// The Corrector this snapshot draws before it exists (see
+    /// [`GradeSnapshot::of`]).
+    pub(crate) fn pending(&self) -> Option<NodeId> {
+        self.pending
+    }
+
+    /// Draw one tab of the tabbed page (M3 step 19) for `node`: its
+    /// generated rows whose presentation order is in `band` (a Corrector
+    /// holds every tab, each its own band; any other kind is all one tab,
+    /// `None`), the specialist editors among them drawn by `panel`, which
+    /// edits `params`, the node's own values. Whether it drew: not for a
+    /// node the snapshot doesn't hold.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn tab(&self, ui: &mut egui::Ui, theme: &KlippTheme, node: NodeId, band: Option<std::ops::RangeInclusive<u16>>, params: &mut klipp_nodes::NodeParams, panel: &mut NodeInspectorPanel, cmds: &mut Vec<AppCommand>, frame: FrameSelection) -> bool {
+        let Some((kind, lifted)) = self.nodes.iter().find(|(_, n)| n.id == node) else { return false };
+        let Some(ty) = klipp_nodes::registry::node_type(*kind) else { return false };
+        let addr = NodePath::new(Root::Clip { clip: self.clip.0 }, [self.group, node]);
+        let entry = entry_of(lifted);
+        let in_band: Vec<ParamDesc> = ty.desc.params.iter().filter(|p| band.as_ref().is_none_or(|b| b.contains(&ty.presentation(p).order))).copied().collect();
+        let presentation = |p: &ParamDesc| ty.presentation(p);
+        let stored = |p: &ParamDesc| grade_value(&entry, p);
+        let keys = |p: &ParamDesc| {
+            let base = row::number(&grade_value(&entry, p)).unwrap_or(p.default);
+            keys_at(lifted, p, base, frame.time_secs, frame.tolerance)
+        };
+        let rows = NodeRows { params: &in_band, presentation: &presentation, stored: &stored, keys: &keys };
+        let mut done: Vec<String> = Vec::new();
+        let clip = self.clip;
+        let mut hook = |ui: &mut egui::Ui, id: &str, _: &ParamDesc, cmds: &mut Vec<AppCommand>| -> bool {
+            if done.iter().any(|d| d == id) {
+                return true;
+            }
+            let drawn = panel.grade_editor(ui, id, ty, params, node, clip, cmds, theme, frame);
+            if drawn {
+                done.push(id.to_owned());
+            }
+            drawn
+        };
+        let mut ctx = RowCtx {
+            addr: &addr,
+            clip_time_secs: frame.time_secs,
+            timeline_in_secs: self.timeline_in_secs,
+            rate: self.rate,
+            encoding: klipp_grade_model::Encoding::from_u8(klipp_core::grade_encoding().effective(klipp_engine::video_decoder::working_colorspace()).as_u8()),
+            entry: Some(Entry { payload: &entry, fields_at: &["params"], choices_by_index: true }),
+            cmds,
+            behaviours: None,
+            theme,
+            app: None,
+            custom: Some(&mut hook),
+        };
+        ui.indent(("grade_tab", node), |ui| node_rows(ui, &mut ctx, &rows));
+        true
     }
 
     /// Draw `node`'s parameter `key` as its generated row, as the per-node
