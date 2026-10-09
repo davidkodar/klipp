@@ -407,3 +407,30 @@ fn a_keyed_mask_slider_click_is_one_step() {
         assert_eq!(masks(&g), before, "generated {generated}: undo gives back the keys");
     }
 }
+
+/// A file's camera encoding picked from the Input Colour Space menu, in
+/// both views: the same command, the file and its clip set, one step, and
+/// one undo gives back both (#1396).
+#[test]
+fn a_camera_encoding_pick_edits_as_the_old_panel() {
+    let (mut state, clip, node) = super::grade_inspector_tests::graded(NodeKind::InputTransform).expect("an Input Transform node");
+    // The clip's file, in the pool: the encoding is the file's.
+    let media = state.sequences[0].all_clips().find(|c| c.id == clip).and_then(|c| c.media_id()).expect("a clip of a file");
+    let fps = state.sequences[0].fps;
+    state.media_pool.add(klipp_media::MediaItem::new_synthetic_title(media, "shot".into(), klipp_core::RationalTime::from_secs_f64(2.0, 25), fps));
+    let base = Grade::new(state, clip, node, true).on(Page::PerNode);
+    let format = |g: &Grade| g.state.media_pool.get(&media).map(|i| (i.log_format, i.log_format_user_set)).expect("the file");
+    for generated in [false, true] {
+        let mut g = base.twin(generated);
+        g.drawn();
+        let before = (format(&g), g.picture());
+        click(&mut g, "Rec.709 / sRGB (no conversion)").unwrap();
+        click(&mut g, "Sony S-Log3").unwrap();
+        assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+        assert_eq!(format(&g), (klipp_core::LogFormat::SLog3, true), "generated {generated}: the file's encoding");
+        assert!(g.picture() != before.1, "generated {generated}: the clip's Input Transform");
+        assert_eq!(g.state.active_history().undo_count(), 1, "generated {generated}: one step");
+        g.step(false).unwrap();
+        assert_eq!((format(&g), g.picture()), before, "generated {generated}: undo gives back the file and the clip");
+    }
+}
