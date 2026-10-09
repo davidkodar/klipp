@@ -48,6 +48,12 @@ pub fn clip(p: &ClipPicture, ctx: &LiftCtx) -> Result<Value, Refusal> {
     if auto && has_values(&p.placement) {
         fx.push(transform(&p.placement, false), false, &BTreeMap::new());
     }
+    // Each other enabled Opacity, which multiplies the clip's opacity
+    // (#1386), with its own keys; before the property's, so the property's
+    // is still the last enabled one, which carries the clip's keys.
+    for n in nodes.iter().filter(|n| n.origin.is_none() && n.enabled && n.type_id.as_str() == types::LEGACY_OPACITY) {
+        fx.push(payload(n)?.clone(), true, &own_keys(n));
+    }
     // The opacity: one Opacity effect with the value, its animation on the
     // clip's own opacity keys. First too: the last enabled Opacity sets the
     // result, and a track's spliced after must still be that one.
@@ -114,6 +120,8 @@ pub fn clip(p: &ClipPicture, ctx: &LiftCtx) -> Result<Value, Refusal> {
             // Kept off for the record: every Opacity entry (the clip's
             // opacity property renders), a speed ramp that doesn't blend.
             types::LEGACY_OPACITY | types::LEGACY_SPEED_RAMP if !n.enabled => {}
+            // A multiplying Opacity, written above.
+            types::LEGACY_OPACITY => {}
             types::LEGACY_EFFECT => fx.push(entry(n)?, n.enabled, &n.anim),
             other => return Err(format!("node {} is a {other}, which the lift does not put in a clip's chain", n.id)),
         }
@@ -177,6 +185,19 @@ pub fn clip(p: &ClipPicture, ctx: &LiftCtx) -> Result<Value, Refusal> {
         out.insert("param_modifiers".into(), Value::Object(fx.modifiers));
     }
     Ok(Value::Object(out))
+}
+
+/// An entry's own keys and modifiers on its `value`, as the lift keeps
+/// them on a multiplying Opacity (#1386): in its old entry, by slot.
+fn own_keys(n: &Node) -> BTreeMap<klipp_graph_format::ParamKey, Animation> {
+    let Some(l) = n.legacy.as_ref() else { return BTreeMap::new() };
+    let slot = l.slot.unwrap_or(0);
+    let keys = l.keyframes.as_ref().and_then(|k| k.get(format!("{slot}:value"))).and_then(Value::as_array).cloned().unwrap_or_default();
+    let modifiers = l.modifiers.get(&format!("effect:{slot}:value")).cloned();
+    if keys.is_empty() && modifiers.is_none() {
+        return BTreeMap::new();
+    }
+    BTreeMap::from([(klipp_graph_format::ParamKey::new("value"), Animation { keys, modifiers })])
 }
 
 /// The built-in effect list being written, with its flags and the keys
