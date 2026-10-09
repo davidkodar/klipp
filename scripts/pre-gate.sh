@@ -95,6 +95,25 @@ fi
 _fork=$(git merge-base "${_main:-HEAD}" HEAD)
 _changed=$(git diff --name-only "$_fork" HEAD)
 
+# A file put back to the copy a recent main commit replaced reverts that
+# commit, tests and all, and still builds and passes: what a squash onto
+# a moved origin/main does. KLIPP_PRE_GATE_ALLOW_REVERT="<why>" lets an
+# intended revert through; the reason is kept in skips.log.
+_stale_rc=0
+_stale=$(printf '%s\n' "$_changed" | python3 "$ROOT/scripts/stale_files.py" "$_fork" HEAD) || _stale_rc=$?
+[ "$_stale_rc" -le 1 ] || refuse "the check for reverted main files failed (scripts/stale_files.py, exit $_stale_rc); nothing was checked."
+if [ "$_stale_rc" -eq 1 ]; then
+    printf '%s\n' "$_stale" | awk -F'\t' '{ printf "              %s is %s'\''s parent copy (%s)\n", $1, $2, $3 }' >&2
+    case "${KLIPP_PRE_GATE_ALLOW_REVERT:-}" in
+        ''|1|yes|true|' '*)
+            refuse "this branch puts files back to the copy before a main commit, reverting it. A squash onto a moved origin/main does this: squash onto the commit you rebased on (git reset --soft \$(git merge-base HEAD origin/main)), or rebase again. If the revert is intended: KLIPP_PRE_GATE_ALLOW_REVERT=\"<why>\" scripts/pre-gate.sh" ;;
+        *)
+            say "reverting on purpose: $KLIPP_PRE_GATE_ALLOW_REVERT"
+            printf '%s %s %s allowed a revert: %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$(git rev-parse --short HEAD)" \
+                "$(git symbolic-ref --short -q HEAD || echo detached)" "$KLIPP_PRE_GATE_ALLOW_REVERT" >>"$_stamps/skips.log" ;;
+    esac
+fi
+
 # The crates it touches: a changed path inside a crate's folder, named by
 # that folder's Cargo.toml.
 _touched=$(printf '%s\n' "$_changed" | python3 -c '

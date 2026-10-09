@@ -422,6 +422,7 @@ class RealGitGate(unittest.TestCase):
         (self.root / "scripts").mkdir()
         shutil.copy(Path(__file__).resolve().parents[1] / "pre-push.sh", self.root / "scripts/pre-push.sh")
         shutil.copy(Path(__file__).resolve().parents[1] / "affected_crates.py", self.root / "scripts/affected_crates.py")
+        shutil.copy(Path(__file__).resolve().parents[1] / "stale_files.py", self.root / "scripts/stale_files.py")
         self.script(self.root / "scripts/check-signoff.sh", "exit 0")
         (self.root / "shared.txt").write_text("one\n")
         (self.root / ".gitignore").write_text("target/\n")
@@ -978,6 +979,24 @@ class PreGateTests(RealGitGate):
         self.assertIn("git rebase origin/main", result.stderr)
         self.assertEqual(self.calls(), [], "nothing built")
         self.assertFalse(self.stamp().exists())
+
+    def test_a_squash_onto_a_moved_main_that_reverts_it_is_refused(self):
+        # The branch's tree recorded on top of a main it never saw: main's
+        # newer file goes missing, a revert that builds and passes.
+        self.main_moves_on()
+        self.git(self.root, "fetch", "-q", "origin")
+        tree = self.git(self.root, "rev-parse", "HEAD^{tree}").strip()
+        squash = self.git(self.root, "commit-tree", tree, "-p", "origin/main", "-m", "squash").strip()
+        self.git(self.root, "reset", "-q", "--hard", squash)
+        result = self.pre_gate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("from-main.txt", result.stderr)
+        self.assertIn("reverting it", result.stderr)
+        self.assertEqual(self.calls(), [], "nothing built")
+        self.env["KLIPP_PRE_GATE_ALLOW_REVERT"] = "taking main's file out on purpose"
+        result = self.pre_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("allowed a revert: taking main's file out on purpose", (self.root / ".git/klipp-pre-gate/skips.log").read_text())
 
 if __name__ == "__main__":
     (Path(__file__).resolve().parents[2] / "target").mkdir(exist_ok=True)
