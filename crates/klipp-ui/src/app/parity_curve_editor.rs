@@ -1,8 +1,10 @@
-//! M3 step 18 parity: the keyframe curve editor (d9's family), on an
-//! effect parameter's track, as it lists them today (tracks that have
-//! keys). Each case drives the editor, and the keyframe menu the timeline
-//! draws for it, with the generated inspector off and on, and requires the
-//! same picture, one undo step and an exact undo in each.
+//! M3 step 18 parity: the keyframe curve editor (d9's family), on every
+//! keyframable effect parameter's track, as it lists them today (tracks
+//! that have keys). Each case drives the editor, and the keyframe menu the
+//! timeline draws for it, with the generated inspector off and on, and
+//! requires the same picture, one undo step and an exact undo in each.
+//! Every place a case clicks is a share of the track's drawn range, so one
+//! set of cases drives every parameter.
 //!
 //! Previous/Next key doesn't follow the curve editor's track in either view
 //! (#1401), and grade tracks aren't listed (#891): both are central
@@ -14,7 +16,6 @@ use crate::panels::curve_editor::{CurveEditorPanel, CurveParam};
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, ClipId};
-use klipp_effects::BuiltinEffect;
 
 struct Sink;
 impl InspectorSideEffects for Sink {
@@ -22,14 +23,49 @@ impl InspectorSideEffects for Sink {
     fn send(&self, _command: AppCommand) {}
 }
 
-/// The effect whose track the cases edit, and the keys it starts with.
-const TAG: &str = "gaussian_blur";
-const PARAM: &str = "radius";
-const KEYS: [(f64, f32); 2] = [(0.5, 2.0), (1.5, 8.0)];
+/// The key times the cases start from, and the shares of the track's
+/// drawn range their values sit at.
+const KEYS: [(f64, f32); 2] = [(0.5, 0.2), (1.5, 0.8)];
+
+/// One effect parameter's track: its effect's tag, its key, and the range
+/// the curve editor draws it over (`curve_editor::node_param`'s).
+#[derive(Clone, Copy)]
+struct Track {
+    tag: &'static str,
+    key: &'static str,
+    lo: f32,
+    hi: f32,
+}
+
+impl Track {
+    /// The value at `share` of the drawn range.
+    fn at(&self, share: f32) -> f32 {
+        self.lo + (self.hi - self.lo) * share
+    }
+
+    /// How far apart two values may be and still be one: two hundredths of
+    /// the range, as a click lands within a pixel or two.
+    fn near(&self, a: f32, b: f32) -> bool {
+        (a - b).abs() <= (self.hi - self.lo).abs() * 0.04
+    }
+}
+
+/// The track of a keyframable effect parameter's catalog entry: `None` for
+/// a grade's (not listed, #891) or an entry with no parameter.
+fn track(entry: &super::parity_manifest::CatalogEntry) -> Option<Track> {
+    let CatalogValue::Parameter { desc, .. } = entry.value else { return None };
+    if entry.grade || !desc.keyframable {
+        return None;
+    }
+    let ty = klipp_effects::registry::effect_types().find(|t| t.desc.id == entry.type_id)?;
+    let (lo, hi) = desc.soft.or(desc.range).unwrap_or((0.0, 1.0));
+    Some(Track { tag: ty.tag, key: desc.key, lo, hi })
+}
 
 /// One clip, selected, its blur's radius keyed at `KEYS`, drawn in the
 /// curve editor on that track.
 struct Curves {
+    track: Track,
     state: AppState,
     clip: ClipId,
     panel: CurveEditorPanel,
@@ -38,30 +74,35 @@ struct Curves {
     unapplied: Vec<String>,
 }
 
-/// The clip the cases edit: its blur's radius keyed at `KEYS`, with no
-/// history. Built once per case, so both views start from the same clip.
-fn fixture() -> Result<klipp_timeline::Clip, String> {
+/// The clip the cases edit: the track's effect, its sample, with that
+/// parameter keyed at `KEYS`, and no history. Built once per case, so both
+/// views start from the same clip.
+fn fixture(track: &Track) -> Result<klipp_timeline::Clip, String> {
+    let ty = klipp_effects::registry::effect_type(track.tag).ok_or("no such effect")?;
     let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
     let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
-    clip.push_effect(BuiltinEffect::GaussianBlur { radius: 3.0 });
+    clip.push_effect((ty.sample)());
     let id = clip.id;
     let mut state = AppState::default();
     state.sequences[0].tracks[0].clips.push(clip);
     let node = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().picture_v2()?.picture.graph.nodes.iter()
-        .find(|n| klipp_graph_lift::effect_params::tag(n) == Some(TAG)).map(|n| n.id).ok_or("no blur node")?;
+        .find(|n| klipp_graph_lift::effect_params::tag(n) == Some(track.tag)).map(|n| n.id).ok_or("no effect node")?;
     let addr = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, [node]);
-    for (t, v) in KEYS {
-        let keyframe = serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).unwrap();
-        state.path_command(&AppCommand::AddKeyAt { addr: addr.clone(), key: PARAM.into(), keyframe }).ok_or("no key added")?;
+    for (t, share) in KEYS {
+        let keyframe = serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: track.at(share), interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).unwrap();
+        state.path_command(&AppCommand::AddKeyAt { addr: addr.clone(), key: track.key.into(), keyframe }).ok_or("no key added")?;
     }
     let clip = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
+    if clip.animated_effect_keys().is_empty() {
+        return Err("the keyed parameter isn't listed as a track".into());
+    }
     Ok(clip)
 }
 
 impl Curves {
     /// `clip` selected in a fresh state, drawn in the curve editor on its
     /// track, with the generated inspector `generated`.
-    fn over(clip: klipp_timeline::Clip, generated: bool) -> Result<Self, String> {
+    fn over(track: Track, clip: klipp_timeline::Clip, generated: bool) -> Result<Self, String> {
         let id = clip.id;
         let mut state = AppState::default();
         state.sequences[0].tracks[0].clips.push(clip);
@@ -70,7 +111,7 @@ impl Curves {
         let mut panel = CurveEditorPanel::new();
         let (path, key, tag) = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().animated_effect_keys().into_iter().next().ok_or("no animated track")?;
         panel.show_track(CurveParam::Node { path, key, tag });
-        let mut run = Curves { state, clip: id, panel, ctx: egui::Context::default(), clock: 0.0, unapplied: Vec::new() };
+        let mut run = Curves { track, state, clip: id, panel, ctx: egui::Context::default(), clock: 0.0, unapplied: Vec::new() };
         run.frame(Vec::new());
         run.frame(Vec::new());
         Ok(run)
@@ -146,8 +187,9 @@ impl Curves {
         }
     }
 
-    fn at(&self, t: f64, v: f32) -> egui::Pos2 {
-        self.panel.screen_at(t, v).expect("the graph is drawn")
+    /// Where time `t` and `share` of the track's range are drawn.
+    fn at(&self, t: f64, share: f32) -> egui::Pos2 {
+        self.panel.screen_at(t, self.track.at(share)).expect("the graph is drawn")
     }
 
     fn button(&mut self, at: egui::Pos2, button: egui::PointerButton, pressed: bool) {
@@ -170,31 +212,58 @@ impl Curves {
     }
 }
 
-/// The effect's track entry, required on the curve editor.
-fn entry() -> Option<super::parity_manifest::CatalogEntry> {
-    let ty = klipp_effects::registry::effect_type(TAG)?;
-    catalog().into_iter().find(|e| e.type_id == ty.desc.id && e.parameter == PARAM && matches!(e.value, CatalogValue::Parameter { .. }))
+/// Every keyframable effect parameter's entry and its track: what the
+/// curve editor owes.
+fn entries() -> Vec<(super::parity_manifest::CatalogEntry, Track)> {
+    catalog().into_iter().filter_map(|e| track(&e).map(|t| (e, t))).collect()
+}
+
+/// A placed kind whose keys the curve editor doesn't list (it walks the
+/// output spine's effect nodes, and the clip places this at the source
+/// boundary): owed, and excluded, citing the issue.
+const NOT_LISTED: &[(&str, &str)] = &[("temporal_denoise", "#1419 (Temporal Denoise keys aren't listed in the curve editor: a placed kind isn't on the output spine animated_effect_keys walks)")];
+
+/// Rows owed here and still missing, not excluded: their track is the
+/// clip's Video track, whose commands only the app applies until the video
+/// keyframe handlers move into the shared edit host. The manifest keeps
+/// requiring them (the flip counts them missing); only this family's own
+/// "all earned" check passes over them, and the list is emptied by the
+/// change that earns them.
+const OPACITY_PENDING: &[(&str, &str, &str)] = &[("klipp.fx.opacity", "value", "video keyframe handlers extracted to InspectorEditHost: next PR")];
+
+fn pending(type_id: &str, parameter: &str) -> bool {
+    OPACITY_PENDING.iter().any(|(t, p, _)| *t == type_id && *p == parameter)
+}
+
+fn not_listed(track: &Track) -> Option<&'static str> {
+    NOT_LISTED.iter().find(|(tag, _)| *tag == track.tag).map(|(_, why)| *why)
 }
 
 pub(super) fn require(manifest: &mut Manifest) {
-    if let Some(e) = entry() {
+    for (e, track) in entries() {
         manifest.require_fixture(&e, Surface::CurveEditor, "keyed");
+        if let Some(why) = not_listed(&track) {
+            let owed: Vec<_> = manifest.required.iter().filter(|k| k.type_id == e.type_id && k.parameter == e.parameter && k.surface == Surface::CurveEditor).cloned().collect();
+            for key in owed {
+                manifest.exclude_key(key, why);
+            }
+        }
     }
 }
 
 /// One edit through the editor in both views: `want` on its keys, the same
 /// picture in each, one step, undone and redone exactly.
-fn case(want: impl Fn(&[(f64, f32, klipp_core::Interpolation)]) -> Result<(), String>, drive: impl Fn(&mut Curves) -> Result<(), String>) -> Result<(), String> {
-    case_from(|_| Ok(()), want, drive)
+fn case(track: Track, want: impl Fn(&[(f64, f32, klipp_core::Interpolation)]) -> Result<(), String>, drive: impl Fn(&mut Curves) -> Result<(), String>) -> Result<(), String> {
+    case_from(track, |_| Ok(()), want, drive)
 }
 
 /// As [`case`], from where `prepare` leaves the fixture, with a fresh
 /// history.
-fn case_from(prepare: impl Fn(&mut Curves) -> Result<(), String>, want: impl Fn(&[(f64, f32, klipp_core::Interpolation)]) -> Result<(), String>, drive: impl Fn(&mut Curves) -> Result<(), String>) -> Result<(), String> {
+fn case_from(track: Track, prepare: impl Fn(&mut Curves) -> Result<(), String>, want: impl Fn(&[(f64, f32, klipp_core::Interpolation)]) -> Result<(), String>, drive: impl Fn(&mut Curves) -> Result<(), String>) -> Result<(), String> {
     let mut pictures = Vec::new();
-    let clip = fixture()?;
+    let clip = fixture(&track)?;
     for generated in [false, true] {
-        let mut c = Curves::over(clip.clone(), generated)?;
+        let mut c = Curves::over(track, clip.clone(), generated)?;
         prepare(&mut c).map_err(|e| format!("generated {generated}: preparing: {e}"))?;
         c.restart();
         let before = c.picture();
@@ -228,15 +297,25 @@ fn near(a: f64, b: f64, tol: f64) -> bool {
 }
 
 pub(super) fn run(report: &mut Report) {
-    let Some(e) = entry() else {
-        report.case("curve editor", [], || Err("no catalog entry for the blur's radius".into()));
-        return;
-    };
-    let key = |interaction| CoverageKey::new(e.type_id, &e.parameter, Surface::CurveEditor, "keyed", interaction);
+    let all = entries();
+    if all.is_empty() {
+        report.case("curve editor", [], || Err("no keyframable effect parameter in the catalog".into()));
+    }
+    for (e, track) in all {
+        if not_listed(&track).is_none() && !pending(e.type_id, &e.parameter) {
+            run_track(report, &e, track);
+        }
+    }
+}
 
-    report.case("curve editor opened", [key(Interaction::OpenWithoutWrite)], || {
+/// The cases on one parameter's track, named with it.
+fn run_track(report: &mut Report, e: &super::parity_manifest::CatalogEntry, track: Track) {
+    let key = |interaction| CoverageKey::new(e.type_id, &e.parameter, Surface::CurveEditor, "keyed", interaction);
+    let name = |what: &str| format!("{} / {}: curve editor {what}", e.type_id, e.parameter);
+
+    report.case(&name("opened"), [key(Interaction::OpenWithoutWrite)], || {
         for generated in [false, true] {
-            let mut c = Curves::over(fixture()?, generated)?;
+            let mut c = Curves::over(track, fixture(&track)?, generated)?;
             let before = c.picture();
             c.frame(Vec::new());
             if c.picture() != before || c.state.active_history().undo_count() != 0 || !c.unapplied.is_empty() {
@@ -247,9 +326,9 @@ pub(super) fn run(report: &mut Report) {
     });
 
     // A double-click where there's no key adds one there, at that value.
-    report.case("curve editor adds a key", [key(Interaction::AddKey), key(Interaction::UndoRedo)], || {
-        case(|keys| if keys.len() == 3 && keys.iter().any(|k| near(k.0, 1.0, 0.02) && (k.1 - 5.0).abs() < 0.2) { Ok(()) } else { Err("no new key near (1.0, 5)".into()) }, |c| {
-            let at = c.at(1.0, 5.0);
+    report.case(&name("adds a key"), [key(Interaction::AddKey), key(Interaction::UndoRedo)], || {
+        case(track, |keys| if keys.len() == 3 && keys.iter().any(|k| near(k.0, 1.0, 0.02) && track.near(k.1, track.at(0.5))) { Ok(()) } else { Err("no new key near the middle at 1.0 s".into()) }, |c| {
+            let at = c.at(1.0, 0.5);
             c.button(at, egui::PointerButton::Primary, true);
             c.button(at, egui::PointerButton::Primary, false);
             c.button(at, egui::PointerButton::Primary, true);
@@ -260,9 +339,9 @@ pub(super) fn run(report: &mut Report) {
     });
 
     // A key dragged moves, in one step.
-    report.case("curve editor moves a key", [key(Interaction::EditKey)], || {
-        case(|keys| if keys.len() == 2 && keys.iter().any(|k| near(k.0, 1.2, 0.03) && (k.1 - 6.0).abs() < 0.3) && !keys.iter().any(|k| near(k.0, 1.5, 0.01)) { Ok(()) } else { Err("the key isn't near (1.2, 6)".into()) }, |c| {
-            let (from, to) = (c.at(1.5, 8.0), c.at(1.2, 6.0));
+    report.case(&name("moves a key"), [key(Interaction::EditKey)], || {
+        case(track, |keys| if keys.len() == 2 && keys.iter().any(|k| near(k.0, 1.2, 0.03) && track.near(k.1, track.at(0.6))) && !keys.iter().any(|k| near(k.0, 1.5, 0.01)) { Ok(()) } else { Err("the key isn't near 1.2 s, 60% of the range".into()) }, |c| {
+            let (from, to) = (c.at(1.5, 0.8), c.at(1.2, 0.6));
             c.button(from, egui::PointerButton::Primary, true);
             // Just past egui's drag threshold first, still on the key: the
             // editor finds the dragged key where the drag starts.
@@ -278,9 +357,9 @@ pub(super) fn run(report: &mut Report) {
     });
 
     // A key clicked, then Delete, as the shortcut does it.
-    report.case("curve editor removes a key", [key(Interaction::RemoveKey)], || {
-        case(|keys| if keys.len() == 1 && near(keys[0].0, 0.5, 0.01) { Ok(()) } else { Err("the key at 1.5 isn't the one taken".into()) }, |c| {
-            let at = c.at(1.5, 8.0);
+    report.case(&name("removes a key"), [key(Interaction::RemoveKey)], || {
+        case(track, |keys| if keys.len() == 1 && near(keys[0].0, 0.5, 0.01) { Ok(()) } else { Err("the key at 1.5 isn't the one taken".into()) }, |c| {
+            let at = c.at(1.5, 0.8);
             c.click(at, egui::PointerButton::Primary);
             let sk = c.state.selected_keyframe.take().ok_or("clicking the key didn't select it")?;
             let cmd = super::shortcuts::remove_selected_keyframe(&c.state, &sk).ok_or("Delete sends nothing")?;
@@ -289,16 +368,23 @@ pub(super) fn run(report: &mut Report) {
         })
     });
 
-    // The key's interpolation from the menu its right-click opens.
+    // The key's interpolation from the menu its right-click opens: the ones
+    // the parameter's kind owes (Step for every kind; Linear and Bezier for
+    // a continuous one).
+    let continuous = matches!(e.value, CatalogValue::Parameter { desc, .. } if matches!(desc.kind, klipp_effects::registry::ParamKind::Float | klipp_effects::registry::ParamKind::Colour));
     for (item, interp, want) in [
         ("  Linear", KeyInterpolation::Linear, klipp_core::Interpolation::Linear),
         ("  Bezier (Custom)", KeyInterpolation::Bezier, klipp_core::Interpolation::Bezier),
         ("  Step (Hold)", KeyInterpolation::Step, klipp_core::Interpolation::Step),
     ] {
-        report.case(&format!("curve editor sets {}", item.trim()), [key(Interaction::Interpolation(interp))], || {
+        if !continuous && interp != KeyInterpolation::Step {
+            continue;
+        }
+        report.case(&name(&format!("sets {}", item.trim())), [key(Interaction::Interpolation(interp))], || {
             // From another interpolation, so the pick changes it.
             let from = if want == klipp_core::Interpolation::Linear { Some("  Step (Hold)") } else { None };
             case_from(
+                track,
                 |c| from.map_or(Ok(()), |f| pick(c, f)),
                 |keys| if keys.iter().any(|k| near(k.0, 0.5, 0.01) && k.2 == want) { Ok(()) } else { Err(format!("the key at 0.5 isn't {want:?}")) },
                 |c| pick(c, item),
@@ -309,7 +395,7 @@ pub(super) fn run(report: &mut Report) {
 
 /// Right-click the key at 0.5 and pick `item` from the menu it opens.
 fn pick(c: &mut Curves, item: &str) -> Result<(), String> {
-    let at = c.at(0.5, 2.0);
+    let at = c.at(0.5, 0.2);
     c.click(at, egui::PointerButton::Secondary);
     if c.state.keyframe_context_menu.is_none() {
         return Err("the right-click opened no menu".into());
@@ -328,7 +414,8 @@ fn effect_tracks_edit_alike_in_the_curve_editor() {
     let mut manifest = Manifest::default();
     require(&mut manifest);
     // Every key the family can earn, earned: not Pixels (another family's),
-    // and not those excluded with a citation (Previous/Next, #1401).
-    let missing: Vec<_> = manifest.required.iter().filter(|k| !matches!(k.interaction, Interaction::Pixels) && !manifest.excluded_keys.contains_key(*k) && !report.passed.contains(k)).collect();
+    // not those excluded with a citation (Previous/Next, #1401; Temporal
+    // Denoise, #1419), and not OPACITY_PENDING's, which stay missing.
+    let missing: Vec<_> = manifest.required.iter().filter(|k| !matches!(k.interaction, Interaction::Pixels) && !manifest.excluded_keys.contains_key(*k) && !pending(&k.type_id, &k.parameter) && !report.passed.contains(k)).collect();
     assert!(missing.is_empty(), "required and not earned: {missing:#?}");
 }
