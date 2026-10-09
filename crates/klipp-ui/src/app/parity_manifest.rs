@@ -465,6 +465,17 @@ pub(super) struct Report {
     #[serde(serialize_with = "serialize_fallbacks")]
     pub fallback: BTreeMap<CoverageKey, String>,
     pub failures: Vec<String>,
+    /// Cases that couldn't run on the route their obligation names (a
+    /// Pixels case whose frame the native GPU stack declined or left), and
+    /// why: open, never passed and never a failure of the case itself, so
+    /// the report shows them rather than a skip (`Report::case_or_blocked`).
+    #[serde(serialize_with = "serialize_fallbacks")]
+    pub blocked: BTreeMap<CoverageKey, String>,
+    /// Passed Pixels cases drawn on the CPU route alone, for a family whose
+    /// production route is the CPU by design: the GPU half not applicable,
+    /// with the M4 step that moves it (`Report::case_cpu_by_design`).
+    #[serde(serialize_with = "serialize_fallbacks")]
+    pub cpu_by_design: BTreeMap<CoverageKey, String>,
 }
 
 fn serialize_fallbacks<S: serde::Serializer>(
@@ -539,6 +550,56 @@ impl Report {
 
     /// A standalone family's test judges failures, not whole-catalog
     /// coverage. The orchestrator calls the same runner then `complete`.
+    /// [`Report::case`], except that an error beginning `BLOCKED` records
+    /// the keys as blocked, with the reason, instead of a failure: the
+    /// case couldn't be run as its obligation asks, so it earns nothing
+    /// and stays open in the completeness report.
+    pub fn case_or_blocked(
+        &mut self,
+        name: &str,
+        keys: impl IntoIterator<Item = CoverageKey>,
+        run: impl FnOnce() -> Result<(), String>,
+    ) {
+        let keys: Vec<_> = keys.into_iter().collect();
+        match catch_unwind(AssertUnwindSafe(run)) {
+            Ok(Ok(())) => self.passed.extend(keys),
+            Ok(Err(error)) if error.starts_with("BLOCKED") => {
+                for key in keys {
+                    self.blocked.insert(key, format!("{name}: {error}"));
+                }
+            }
+            Ok(Err(error)) => self.failures.push(format!("{name}: {error}")),
+            Err(panic) => self
+                .failures
+                .push(format!("{name}: {}", panic_message(panic.as_ref()))),
+        }
+    }
+
+    /// [`Report::case`] for a case drawn on the CPU route alone because
+    /// its family runs on the CPU by design: `reason` must name the M4
+    /// step that moves it, and is kept beside the keys it earns, so a
+    /// declared route is never mistaken for a native one.
+    pub fn case_cpu_by_design(
+        &mut self,
+        name: &str,
+        keys: impl IntoIterator<Item = CoverageKey>,
+        reason: &str,
+        run: impl FnOnce() -> Result<(), String>,
+    ) {
+        if !reason.contains("M4 step") {
+            self.failures.push(format!("{name}: a CPU-by-design route names the M4 step that moves it"));
+            return;
+        }
+        let keys: Vec<_> = keys.into_iter().collect();
+        let failed = self.failures.len();
+        self.case(name, keys.iter().cloned(), run);
+        if self.failures.len() == failed {
+            for key in keys {
+                self.cpu_by_design.insert(key, format!("n/a on the GPU: CPU by design, {reason}"));
+            }
+        }
+    }
+
     pub fn family_result(&self) -> Result<(), String> {
         if self.failures.is_empty() {
             Ok(())
@@ -561,7 +622,10 @@ impl Report {
                 .required
                 .difference(&self.passed)
                 .filter(|key| !manifest.excluded_keys.contains_key(*key))
-                .map(|key| format!("missing: {key:?}")),
+                .map(|key| match self.blocked.get(key) {
+                    Some(why) => format!("missing: {key:?} ({why})"),
+                    None => format!("missing: {key:?}"),
+                }),
         );
         errors.extend(
             self.passed

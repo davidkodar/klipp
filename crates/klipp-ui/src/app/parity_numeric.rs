@@ -1,8 +1,14 @@
 //! Numeric effect controls driven through real pointer/key events. The
 //! oracle is the old document command with just the addressed field
 //! changed; comparison includes the complete picture and exact undo/redo.
-//! Keyframe and pixel evidence are separate obligations, never credited
-//! by these scalar-edit checks.
+//! Keyframe evidence is a separate obligation. Pixels are a case of their
+//! own (`pixel_case`): the typed edit drawn by the real renderer on the
+//! CPU and the native GPU stack (`parity_pixels`). A type whose
+//! production route is the CPU by design is drawn on the CPU alone,
+//! declared in [`CPU_BY_DESIGN`] with the M4 step that moves it. One that
+//! should be native and leaves the GPU route is BLOCKED with its reason,
+//! open in the report and pinned in [`BLOCKED`], so neither set can change
+//! unseen.
 
 use super::parity_harness::{fixture, Run};
 use super::parity_manifest::{
@@ -36,6 +42,23 @@ fn contexts(ty: &EffectType) -> Vec<(Surface, &'static str)> {
     }
 }
 
+/// Rows whose control is shown but doesn't move the picture: known
+/// defects, each excluded from Pixels with its issue until it is fixed
+/// (type, parameter, surface, variant, reason). Not a route, and not a
+/// design: the deletion report reads them as open gaps.
+const KNOWN_DEFECTS: &[(&str, &str, Surface, &str, &str)] = &[
+    ("klipp.fx.transform", "scale_y", Surface::EffectsStack, VARIANT, "known defect #1406: placement renders a uniform scale from scale_x, so the Scale Y row moves nothing"),
+    ("klipp.fx.opacity", "value", Surface::EffectsStack, "non-anchor", "known defect #1386: a non-anchor Opacity entry is kept off, so its value moves nothing"),
+    ("klipp.fx.speed_ramp", "speed", Surface::EffectsStack, VARIANT, "known defect #1409: retiming comes from the clip's speed curve, so the effect's Speed moves nothing"),
+    ("klipp.fx.speed_ramp", "ramp_start", Surface::EffectsStack, VARIANT, "known defect #1409: the lift drops the ramp, so Ramp Start moves nothing"),
+    ("klipp.fx.speed_ramp", "ramp_end", Surface::EffectsStack, VARIANT, "known defect #1409: the lift drops the ramp, so Ramp End moves nothing"),
+    ("klipp.fx.speed_ramp", "freeze_at", Surface::EffectsStack, VARIANT, "known defect #1409: the lift drops the ramp, so Freeze At moves nothing"),
+];
+
+fn known_defect(entry: &CatalogEntry, surface: Surface, variant: &str) -> Option<&'static str> {
+    KNOWN_DEFECTS.iter().find(|(ty, param, s, v, _)| *ty == entry.type_id && *param == entry.parameter && *s == surface && *v == variant).map(|d| d.4)
+}
+
 pub(super) fn require(manifest: &mut Manifest) {
     for entry in catalog().into_iter().filter(numeric) {
         let ty = effect_types()
@@ -43,6 +66,9 @@ pub(super) fn require(manifest: &mut Manifest) {
             .unwrap();
         for (surface, variant) in contexts(ty) {
             manifest.require_fixture(&entry, surface, variant);
+            if let Some(reason) = known_defect(&entry, surface, variant) {
+                manifest.exclude_key(CoverageKey::new(entry.type_id, &entry.parameter, surface, variant, Interaction::Pixels), reason);
+            }
         }
     }
 }
@@ -253,6 +279,166 @@ fn edit_case(
     Ok(())
 }
 
+/// The effect types whose Pixels cases are BLOCKED, each with why: their
+/// frame can't stay on the native GPU route, so each needs its own route
+/// handling before it earns pixel evidence. The family test holds the
+/// blocked set to this list exactly.
+const BLOCKED: &[(&str, &str)] = &[];
+
+/// The effect types whose production route is the CPU by design, each
+/// with the M4 step that moves it: their Pixels are drawn on the CPU route
+/// alone, the GPU half declared not applicable (never BLOCKED).
+const CPU_BY_DESIGN: &[(&str, &str)] = &[
+    ("klipp.fx.temporal_denoise", "M4 step 6 (temporal denoise as a source-boundary node): the GPU stack declines a frame with temporal noise reduction"),
+    ("klipp.fx.video_stabilization", "M4 step 9 (analysis effects as nodes) deletes the stack's temporal gate (klipp-compose render.rs), which draws a stabilised layer on the CPU"),
+    ("klipp.fx.rolling_shutter_correction", "M4 step 9 (analysis effects as nodes) deletes the stack's temporal gate (klipp-compose render.rs), which draws a corrected layer on the CPU"),
+];
+
+/// What a row's pixel case starts from beyond the effect's sample, by
+/// effect tag, so its edit can show in a frame: values of other fields
+/// the edited one acts through, as JSON (a crop for its feather, a tilt
+/// for the perspective, a visible shadow for its offset), and whether the
+/// clip is placed shrunk first, for an effect drawn in the margin a
+/// smaller picture leaves (a glow, a shadow, fill bars).
+const PIXEL_CONTEXT: &[(&str, &[(&str, &str)], bool)] = &[
+    ("crop", &[("left", "0.1"), ("right", "0.1"), ("top", "0.1"), ("bottom", "0.1")], false),
+    ("rounded_corners", &[("radius", "0.2")], false),
+    ("transform", &[("rotation", "20.0"), ("scale_x", "0.8"), ("scale_y", "0.8"), ("rotation_x", "20.0")], false),
+    ("outer_glow", &[("radius", "0.05"), ("intensity", "0.6")], true),
+    // White, so the shadow shows over the black the frame is flattened on.
+    ("drop_shadow", &[("offset_x", "0.04"), ("offset_y", "0.04"), ("blur", "0.01"), ("opacity", "0.8"), ("color", "[255, 255, 255]")], true),
+    ("fill_bars", &[], true),
+];
+
+/// The effect types drawn at the delivery size: their strength is scaled
+/// to the frame, so the oracle's small frame rounds it away (a gate weave
+/// of a few pixels at 1920 wide is under one at 320).
+const AT_FULL_SIZE: &[&str] = &["film_grain", "old_film"];
+
+/// The clip a row's pixel case edits, and the place of the edited effect
+/// in its list: `effect` with the [`PIXEL_CONTEXT`] for its tag, after a
+/// shrinking Transform where the context asks for one, with the analysis
+/// an analysis effect draws by.
+fn pixel_fixture(ty: &EffectType, effect: &BuiltinEffect, surface: Surface) -> Result<(klipp_timeline::Clip, usize), String> {
+    let context = PIXEL_CONTEXT.iter().find(|(tag, _, _)| *tag == ty.tag);
+    let mut entry = serde_json::to_value(effect).map_err(|e| e.to_string())?;
+    for (field, value) in context.map_or(&[][..], |(_, fields, _)| *fields) {
+        entry[*field] = serde_json::from_str(value).map_err(|e| format!("{}.{field}: {e}", ty.tag))?;
+    }
+    let effect: BuiltinEffect = serde_json::from_value(entry).map_err(|e| format!("{}: {e}", ty.tag))?;
+    let mut clip = fixture_on(&effect, surface);
+    match ty.tag {
+        "deflicker" => {
+            // A measured flicker, as the analysis leaves it: the gains move
+            // the picture, and the strength and window move the gains.
+            clip.deflicker_data = Some(klipp_effects::deflicker::DeflickerData { luma: (0..48).map(|i| 0.35 + 0.25 * ((i % 4) as f32) / 3.0).collect(), fps: 24.0 });
+            regain(&mut clip);
+        }
+        "video_stabilization" | "rolling_shutter_correction" => {
+            // A measured shake, as the analysis leaves it.
+            use klipp_effects::rolling_shutter::Homography;
+            use klipp_effects::stabilization::{accumulate_trajectory, decompose_homography, StabilizationData};
+            // A drift with a shake on it, so the smoothing window moves
+            // the correction.
+            let step = |i: usize| Homography { h: [[1.0, 0.0, if i.is_multiple_of(2) { 6.0 } else { -2.0 }], [0.0, 1.0, if i.is_multiple_of(5) { 3.0 } else { 0.5 }], [0.0, 0.0, 1.0]] };
+            let frame_transforms: Vec<Homography> = (0..47).map(step).collect();
+            let accumulated = accumulate_trajectory(&frame_transforms);
+            let trajectory = accumulated.iter().map(decompose_homography).collect();
+            let data = StabilizationData { frame_transforms, accumulated, trajectory, fps: 24.0, frame_count: 48 };
+            clip.stabilization_data = Some(data);
+            regain(&mut clip);
+        }
+        _ => {}
+    }
+    if context.is_some_and(|(_, _, shrunk)| *shrunk) {
+        let shrink = BuiltinEffect::Transform { position_x: 0.0, position_y: 0.0, scale_x: 0.6, scale_y: 0.6, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+        clip.insert_effect(0, shrink).ok_or("the shrinking Transform")?;
+        return Ok((clip, 1));
+    }
+    Ok((clip, 0))
+}
+
+/// The analysis an analysis effect draws by, brought up to its settings
+/// as the app does after an edit of them (the parity runs record those
+/// side commands, they don't apply them): the deflicker gains for its
+/// window (`RegainDeflicker`), and the stabilisation's trajectory smoothed
+/// over its smoothing's window (`ResmoothStabilization`).
+fn regain(clip: &mut klipp_timeline::Clip) {
+    let window = clip.builtin_effects().iter().find_map(|e| match e {
+        BuiltinEffect::Deflicker { window_secs, .. } => Some(*window_secs as f64),
+        _ => None,
+    });
+    if let (Some(window), Some(data)) = (window, clip.deflicker_data.as_ref()) {
+        clip.deflicker_gains = Some(klipp_effects::deflicker::DeflickerGains::refresh(clip.deflicker_gains.clone(), data, window));
+    }
+    let smoothing = clip.builtin_effects().iter().find_map(|e| match e {
+        BuiltinEffect::VideoStabilization { smoothing, .. } => Some(*smoothing as f64),
+        _ => None,
+    });
+    if let (Some(smoothing), Some(data)) = (smoothing, clip.stabilization_data.as_ref()) {
+        let duration_secs = data.frame_count as f64 / data.fps.max(1.0);
+        let window_secs = (smoothing.clamp(0.0, 1.0) * duration_secs).max(0.05);
+        clip.smoothed_trajectory = Some(klipp_effects::stabilization::smooth_trajectory(data, window_secs));
+    }
+}
+
+/// A retiming fixture's positive control: the clip's own speed changed
+/// must pick a different source frame at the sample time, so a ramp row
+/// that moves nothing is the row's, not the fixture's.
+fn retime_control(clip: &klipp_timeline::Clip, size: (u32, u32)) -> Result<(), String> {
+    let mut faster = clip.clone();
+    faster.speed = 1.5;
+    if !super::parity_pixels::cpu_frames_differ(clip, &faster, size)? {
+        return Err("positive control: the clip's speed doesn't pick another frame, so the fixture can't show a retime".into());
+    }
+    Ok(())
+}
+
+/// The typed edit drawn by the renderer: on the [`pixel_fixture`], the
+/// generated view's row typed to the first of a few values near the
+/// middle of its range whose edit (by the old document command) changes
+/// the CPU frame (a modest move, which keeps a moved picture in the
+/// frame), and the old command setting the same value, each drawn
+/// against the unedited clip ([`super::parity_pixels::same_edit_on`]).
+/// A row no such value moves is an error naming it.
+#[allow(clippy::too_many_arguments)]
+fn pixel_case(routes: super::parity_pixels::Routes, ty: &EffectType, surface: Surface, effect: &BuiltinEffect, desc: &ParamDesc, label: RowLabel, value_at: impl Fn(f32) -> (String, Value)) -> Result<(), String> {
+    use super::parity_pixels::{cpu_frames_differ, FULL, SMALL};
+    let size = if AT_FULL_SIZE.contains(&ty.tag) { FULL } else { SMALL };
+    let (clip, index) = pixel_fixture(ty, effect, surface)?;
+    if ty.tag == "speed_ramp" {
+        retime_control(&clip, size)?;
+    }
+    let current = stored(&clip.builtin_effects()[index], desc);
+    let edit = |target: &Value| -> Result<klipp_timeline::Clip, String> {
+        let mut c = clip.clone();
+        let id = c.effect_id_at(index).ok_or("the edited effect")?;
+        c.replace_effect(id, with_field(&clip.builtin_effects()[index], desc, target.clone())?);
+        regain(&mut c);
+        Ok(c)
+    };
+    let mut chosen = None;
+    for (typed, target) in [0.55, 0.45, 0.65, 0.35, 0.8, 0.2, 0.95, 0.05].into_iter().map(&value_at) {
+        // A value whose frame can't be drawn (a move that takes the
+        // picture out of the frame) is passed over for the next.
+        if target != current && matches!(cpu_frames_differ(&clip, &edit(&target)?, size), Ok(true)) {
+            chosen = Some((typed, target));
+            break;
+        }
+    }
+    let (typed, target) = chosen.ok_or("the edit doesn't change the CPU frame at any value tried")?;
+    let start = clip.clone();
+    let (mut new, mut old) = (run_for(surface, clip.clone(), true), run_for(surface, clip, false));
+    type_value(&mut new, label, &typed)?;
+    commands_applied(&new)?;
+    old.apply(AppCommand::UpdateBuiltinEffect { clip_id: old.clip, index, effect: with_field(&start.builtin_effects()[index], desc, target)? });
+    commands_applied(&old)?;
+    let (mut old, mut new) = (old.clip().clone(), new.clip().clone());
+    regain(&mut old);
+    regain(&mut new);
+    super::parity_pixels::same_edit_on(routes, size, &start, &old, &new)
+}
+
 fn run_entry(report: &mut Report, entry: &CatalogEntry, surface: Surface, variant: &str) {
     let CatalogValue::Parameter {
         desc,
@@ -334,6 +520,16 @@ fn run_entry(report: &mut Report, entry: &CatalogEntry, surface: Surface, varian
             })
         },
     );
+    use super::parity_pixels::Routes;
+    match CPU_BY_DESIGN.iter().find(|(ty, _)| *ty == entry.type_id).filter(|_| known_defect(entry, surface, variant).is_none()) {
+        Some((_, reason)) => report.case_cpu_by_design(&name("pixels"), [key(Interaction::Pixels)], reason, || {
+            pixel_case(Routes::CpuByDesign, ty, surface, &effect, desc, label, value_at)
+        }),
+        None if known_defect(entry, surface, variant).is_some() => {}
+        None => report.case_or_blocked(&name("pixels"), [key(Interaction::Pixels)], || {
+            pixel_case(Routes::Both, ty, surface, &effect, desc, label, value_at)
+        }),
+    }
     report.case(
         &name("drag"),
         [key(Interaction::Drag), key(Interaction::UndoRedo)],
@@ -418,10 +614,19 @@ fn all_effect_numeric_rows_edit_and_cancel_through_real_controls() {
         report.passed.len(),
         report.failures.len()
     );
+    for (key, why) in report.blocked.iter().chain(&report.cpu_by_design) {
+        eprintln!("{key:?}: {why}");
+    }
     report.family_result().unwrap();
     assert!(!report.passed.is_empty());
     assert!(report
         .passed
         .iter()
         .all(|key| manifest.required.contains(key)));
+    // The blocked Pixels cases are exactly the pinned types: a new one is
+    // a route regression to look at, and one that passes now comes off
+    // the list.
+    let blocked: std::collections::BTreeSet<&str> = report.blocked.keys().map(|k| k.type_id.as_str()).collect();
+    let pinned: std::collections::BTreeSet<&str> = BLOCKED.iter().map(|(ty, _)| *ty).collect();
+    assert_eq!(blocked, pinned, "blocked Pixels types differ from the pinned list");
 }
