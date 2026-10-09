@@ -251,12 +251,11 @@ fn render_gpu_at(seq: &Sequence, size: (u32, u32), secs: f64) -> Result<Vec<u8>,
     Ok(bytes)
 }
 
-/// `clip` drawn on the CPU and on the native GPU stack, or why it can't
+/// `seq` drawn on the CPU and on the native GPU stack, or why it can't
 /// be (an error beginning `BLOCKED` when the GPU route isn't available or
 /// wasn't kept to).
-pub(super) fn render(clip: &Clip, size: (u32, u32)) -> Result<Frames, String> {
-    let seq = sequence(clip, size);
-    Ok(Frames { cpu: render_cpu(&seq, size)?, gpu: render_gpu(&seq, size)? })
+fn render_sequence(seq: &Sequence, size: (u32, u32)) -> Result<Frames, String> {
+    Ok(Frames { cpu: render_cpu(seq, size)?, gpu: render_gpu(seq, size)? })
 }
 
 /// Which routes an edit is drawn on: both, or the CPU alone for a family
@@ -318,7 +317,27 @@ pub(super) fn same_edit(before: &Clip, old: &Clip, new: &Clip) -> Result<(), Str
 
 /// [`same_edit`], drawn at `size`.
 fn same_edit_at(size: (u32, u32), before: &Clip, old: &Clip, new: &Clip) -> Result<(), String> {
-    let (before, old, new) = (render(before, size)?, render(old, size)?, render(new, size)?);
+    let on = |clip: &Clip| sequence(clip, size);
+    same_sequence_edit_at(size, &on(before), &on(old), &on(new))
+}
+
+/// The Pixels bar for a grade's edit, over whole sequences: [`same_edit`]
+/// for a grade that isn't a clip's, the sequence's timeline grade or a
+/// group's stage, drawn by the sequence's own stage for it. Each sequence
+/// flattened, as the engine is given it, and drawn at the oracle's size.
+pub(super) fn same_sequence_edit(before: &Sequence, old: &Sequence, new: &Sequence) -> Result<(), String> {
+    // Flattened, as the engine is given it: a group's stages are baked
+    // into its clips there.
+    let sized = |seq: &Sequence| {
+        let mut seq = klipp_timeline::flatten::flatten_sequence(seq, &[]);
+        seq.resolution = klipp_core::Resolution { width: SMALL.0, height: SMALL.1 };
+        seq
+    };
+    same_sequence_edit_at(SMALL, &sized(before), &sized(old), &sized(new))
+}
+
+fn same_sequence_edit_at(size: (u32, u32), before: &Sequence, old: &Sequence, new: &Sequence) -> Result<(), String> {
+    let (before, old, new) = (render_sequence(before, size)?, render_sequence(old, size)?, render_sequence(new, size)?);
     if new.cpu == before.cpu {
         return Err("the edit doesn't change the CPU frame".into());
     }

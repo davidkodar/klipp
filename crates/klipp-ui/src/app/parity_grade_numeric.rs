@@ -4,8 +4,10 @@
 //! Colour page's bottom tools for the types they show. Each row is opened
 //! (nothing written), typed, dragged, cancelled by Escape and reset, in
 //! the generated view and the old panel, which must leave the same
-//! picture, one undo step and an exact undo and redo (`edit_case`). Run
-//! through `on_roots` too, so the sequence's grades are earned alike.
+//! picture, one undo step and an exact undo and redo (`edit_case`); the
+//! typed edit is drawn on the CPU and GPU routes, alike in both views
+//! (`same_sequence_edit`). Run through `on_roots` too, so the sequence's
+//! grades are earned alike, drawn by their own stage.
 //!
 //! Wheel axes and the warper's sectors are another driver's (a drag in a
 //! disc) and another family's.
@@ -258,6 +260,50 @@ fn alike(start: &Grade, drive: impl Fn(&mut Grade) -> Result<(), String>) -> Res
     Ok(())
 }
 
+/// `start` with what the row's edit needs to show in the frame at all, set
+/// alike for both views before the pixel case: a pivot needs a contrast, a
+/// mix something to mix, a radius or a grain's shape a strength, a LUT's
+/// opacity a LUT, a softness an edge, a difference key a plate, and a
+/// matte or a mix a correction to select or mix (the exposure of the other
+/// Correctors in the grade). Set through the colour commands,
+/// then twinned, so its history starts empty.
+fn shown_in_frame(start: &Grade, ty: &NodeType, desc: &ParamDesc) -> Grade {
+    use klipp_core::color_grade::{CurveSet, FilmGrainSettings, HueSatCurves};
+    use klipp_core::AppCommand;
+    let mut g = start.twin(true);
+    let (clip_id, node_id) = (g.clip, g.node);
+    let param = |param: &str, value: f32| AppCommand::SetNodeParam { clip_id, node_id, param: param.into(), value };
+    let mut cmds = match desc.key {
+        "contrast_pivot" => vec![param("contrast", 0.5)],
+        "global_mix" => vec![param("temperature", 0.5)],
+        "luma_mix" => vec![param("gain_master", 0.3)],
+        "denoise_radius" => vec![param("denoise_luma", 0.5)],
+        "curves_mix" => vec![AppCommand::SetNodeCurves { clip_id, node_id, curves: CurveSet { master: vec![[0.0, 0.0], [0.5, 0.75], [1.0, 1.0]], ..Default::default() } }],
+        "huesat_mix" => vec![AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat: HueSatCurves { lum_vs_sat: vec![[0.0, 0.5], [1.0, 0.5]], ..Default::default() } }],
+        "lut_opacity" => vec![AppCommand::SetNodeLut { clip_id, node_id, path: Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/luts/cinematic/D-CINELIKE -0_3 BASE.cube")) }],
+        // A softness needs an edge to soften: a low end above the bottom.
+        "luma_key_soft" => vec![param("luma_key_low", 0.3)],
+        "qual_lum_soft" => vec![param("qual_lum_low", 0.4), param("qual_lum_high", 0.6)],
+        "qual_sat_soft" => vec![param("qual_sat_low", 0.3)],
+        k if k.starts_with("difference_key.") => {
+            let mut difference_key = g.grade().nodes.iter().find(|n| n.id == node_id).and_then(|n| n.params.difference_key.clone()).unwrap_or_default();
+            difference_key.plate_path = Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/effect_preview_reference.png"));
+            vec![AppCommand::SetNodeDifferenceKey { clip_id, node_id, difference_key }]
+        }
+        k if k.starts_with("grain.") && k != "grain.amount" => vec![AppCommand::SetNodeFilmGrain { clip_id, node_id, grain: FilmGrainSettings { enabled: true, amount: 0.5, ..Default::default() } }],
+        _ => Vec::new(),
+    };
+    if ty.desc.outputs.iter().any(|p| p.ty == klipp_effects::registry::PortType::Matte) || matches!(ty.kind, NodeKind::Blend | NodeKind::ApplyMatte) {
+        for corrector in g.grade().nodes.iter().filter(|n| n.kind == NodeKind::Corrector && n.id != node_id).map(|n| n.id).collect::<Vec<_>>() {
+            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: corrector, param: "exposure".into(), value: 1.0 });
+        }
+    }
+    for cmd in cmds {
+        g.apply(cmd);
+    }
+    g.twin(true)
+}
+
 /// One row's cases on `start` (the row drawn), counted on `surface`.
 fn row_cases(report: &mut Report, ty: &NodeType, desc: &'static ParamDesc, start: &Grade, surface: Surface, variant: &str) {
     // The bottom tools' wide wheels (`show_wheels_wide`, kept by step 19)
@@ -294,6 +340,17 @@ fn row_cases(report: &mut Report, ty: &NodeType, desc: &'static ParamDesc, start
         Ok(())
     });
     report.case(&name("typed"), vec![k(Interaction::TypeNumber), k(Interaction::UndoRedo)], || edit_case(start, desc, |g| type_into(g, label, n, &typed)));
+    // The typed edit drawn: both views' grades draw the frame the edit
+    // changed, alike on each route, through the stage the grade is on.
+    report.case_or_blocked(&name("pixels"), [k(Interaction::Pixels)], || {
+        let start = &shown_in_frame(start, ty, desc);
+        let (mut new, mut old) = (start.twin(true), start.twin(false));
+        new.drawn();
+        old.drawn();
+        type_into(&mut new, label, n, &typed)?;
+        type_into(&mut old, label, n, &typed).map_err(|e| format!("the old panel: {e}"))?;
+        super::parity_pixels::same_sequence_edit(&start.frame_sequence(), &old.frame_sequence(), &new.frame_sequence())
+    });
     report.case(&name("dragged"), vec![k(Interaction::Drag), k(Interaction::UndoRedo)], || {
         if pinned {
             // The old drag is pinned (#1427): the generated one moves.
@@ -527,4 +584,28 @@ fn the_old_panel_s_one_shot_producers_are_one_undo_step_each() {
         old.step(false).unwrap();
         assert!(old.picture() == before, "{what}: undo gives back the picture before");
     }
+}
+
+/// A grade edited under the same clip id draws anew on a renderer kept
+/// across frames, on both routes, as the app's renderer is kept while a
+/// clip's grade is edited: nothing it keeps by a clip's id holds a
+/// graded frame past an edit.
+#[test]
+fn a_grade_edited_under_one_clip_id_draws_anew_on_a_kept_renderer() {
+    use super::parity_pixels::{frames_at, Routes};
+    let (state, clip, node) = super::grade_inspector_tests::graded(NodeKind::Corrector).unwrap();
+    let base = state.sequences[0].all_clips().find(|c| c.id == clip).unwrap().clone();
+    let with = |exposure: f32| {
+        let mut c = base.clone();
+        klipp_timeline::GradeAccess::set_grade_param(&mut c, node, "exposure", exposure);
+        let (cpu, gpu) = frames_at(Routes::Both, (320, 180), &c, 0.5).unwrap();
+        (cpu, gpu.unwrap())
+    };
+    let mut last = with(0.0);
+    for exposure in [1.5, 0.0, -1.0] {
+        let now = with(exposure);
+        assert!(now.0 != last.0 && now.1 != last.1, "exposure {exposure}: a frame drawn as before the edit");
+        last = now;
+    }
+    assert!(with(-1.0) == last, "the same grade draws the same frame");
 }
