@@ -27,6 +27,7 @@ fn manifest() -> Manifest {
     super::parity_controls::require(&mut m);
     super::parity_grade_specialists::require(&mut m);
     super::parity_grade_numeric::require(&mut m);
+    super::parity_grade_workflows::require(&mut m);
     m.require_representatives();
     m
 }
@@ -56,6 +57,8 @@ fn run_all(report: &mut Report) {
     report.family("grade masks on the sequence's grades", |r| on_roots(r, super::parity_grade_specialists::run_masks));
     report.family("grade numeric rows", super::parity_grade_numeric::run);
     report.family("grade numeric rows on the sequence's grades", |r| on_roots(r, super::parity_grade_numeric::run));
+    report.family("grade workflows", super::parity_grade_workflows::run);
+    report.family("grade workflows on the sequence's grades", |r| on_roots(r, super::parity_grade_workflows::run));
 }
 
 /// The report's lists, one line each, sorted: what the flip still lacks
@@ -123,9 +126,8 @@ fn flip_readiness() {
 }
 
 /// The rule errors the orchestrator's manifest has today, one per line:
-/// catalog surfaces no family yet declares (the workflows' own family is
-/// pending, d9's workflow Report family; the rest are the step 18 work
-/// still open). A shrinking list: a family that comes to cover a surface
+/// catalog surfaces no family yet declares (the step 18 work still open).
+/// A shrinking list: a family that comes to cover a surface
 /// takes its line out in the same change.
 const OPEN: &str = include_str!("parity_flip_open.txt");
 

@@ -524,7 +524,7 @@ impl Grade {
     /// draws the Colour panels and runs a colour command, and taken down
     /// after, settling what `f` wrote on it into the grade. A clip's grade
     /// has none.
-    fn with_stand_in<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+    pub(super) fn with_stand_in<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         let Some(which) = self.stand_in() else { return f(self) };
         super::timeline_grade::stand_in_grade_on(&mut self.state.sequences[0], which, &mut self.fresh);
         let out = f(self);
@@ -564,6 +564,11 @@ impl Grade {
     /// The same, on `page`.
     pub(super) fn on(self, page: Page) -> Self {
         Grade { page, ..self }
+    }
+
+    /// The same, drawing `node` of the same grade.
+    pub(super) fn on_node(self, node: klipp_nodes::NodeId) -> Self {
+        Grade { node, ..self }
     }
 
     pub(super) fn clip(&self) -> &klipp_timeline::Clip {

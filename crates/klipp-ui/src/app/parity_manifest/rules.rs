@@ -415,7 +415,10 @@ fn specialist(id: &str) -> Result<Vec<Interaction>, String> {
             Pixels,
         ],
         "qualifier_picker" => vec![Eyedropper, ResultDuringDrag, UndoRedo, Pixels],
-        "colour_match" => vec![CaptureReference, ColourMatch, Reset, UndoRedo, Pixels],
+        // A match landing while a grade slider's drag is held, as the
+        // balance and the qualifier's key can (a socket write, a missed
+        // release): the drag its own step first.
+        "colour_match" => vec![CaptureReference, ColourMatch, Reset, ResultDuringDrag, UndoRedo, Pixels],
         // These adapters add notices or nothing; parameter rows carry the edits.
         "temporal_denoise" | "speed_ramp" | "focus_blur" | "color_fade" | "corner_pin" => vec![],
         _ => return Err(format!("unclassified specialist: {id:?}")),
