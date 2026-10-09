@@ -110,23 +110,60 @@ pub fn key_for(kind: AssetKind, path: &std::path::Path, width: u32, height: u32,
     Some(AssetKey { kind, media: crate::store::key_for(path)?, width, height, fps })
 }
 
-/// Assets in the analysis cache, beside the media's other results: one
-/// file an asset, named by its key.
-pub struct CacheStore;
+/// The width both analysers decode a file at.
+pub const ANALYSIS_WIDTH: u32 = 480;
 
-fn file_id(key: &AssetKey) -> String {
-    format!("{}-{}x{}-{}_{}", key.kind.id(), key.width, key.height, key.fps.0, key.fps.1)
+/// The key of `kind`'s analysis of `media`: its file, at the analysis
+/// width (the height to its aspect, even) and its own rate. Nothing of a
+/// clip's: every clip of the file, trimmed, split or duplicated, reads the
+/// one asset. `None` when the file isn't there.
+pub fn asset_key(kind: AssetKind, media: &klipp_media::MediaItem) -> Option<AssetKey> {
+    let (w, h) = (media.resolution.width.max(1), media.resolution.height.max(1));
+    let height = ((ANALYSIS_WIDTH as u64 * h as u64 / w as u64) as u32 + 1) & !1;
+    key_for(kind, &media.path, ANALYSIS_WIDTH, height, (media.fps.num, media.fps.den))
+}
+
+/// Assets on disk, beside the media's other analysis results by default
+/// (`<cache>/klipp/analysis/<media identity>/`): one file an asset, named
+/// by its key. Outside the project file: a project reopened finds them; a
+/// project opened where they aren't analyses again.
+pub struct CacheStore {
+    root: std::path::PathBuf,
+}
+
+impl Default for CacheStore {
+    fn default() -> Self {
+        Self { root: crate::store::analysis_dir() }
+    }
+}
+
+impl CacheStore {
+    /// A store under `root` instead of the analysis cache.
+    pub fn at(root: std::path::PathBuf) -> Self {
+        Self { root }
+    }
+
+    fn file(&self, key: &AssetKey) -> std::path::PathBuf {
+        self.root.join(&key.media).join(format!("{}-{}x{}-{}_{}.json", key.kind.id(), key.width, key.height, key.fps.0, key.fps.1))
+    }
 }
 
 impl AssetStore for CacheStore {
     fn get(&self, key: &AssetKey) -> Option<Asset> {
-        let value = crate::store::load(&key.media, &file_id(key), 1)?;
-        serde_json::from_value(value).ok()
+        let text = std::fs::read_to_string(self.file(key)).ok()?;
+        serde_json::from_str(&text).ok()
     }
 
     fn put(&mut self, asset: Asset) -> Result<(), String> {
-        let value = serde_json::to_value(&asset).map_err(|e| e.to_string())?;
-        crate::store::save(&asset.key.media, &file_id(&asset.key), 1, &value)
+        let path = self.file(&asset.key);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        let text = serde_json::to_string(&asset).map_err(|e| e.to_string())?;
+        // Whole or not at all: a reader never sees half a file.
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
     }
 }
 
@@ -197,6 +234,36 @@ mod tests {
         assert_ne!(key_for(AssetKind::Deflicker, &path, 480, 270, (24, 1)).unwrap(), a, "changed since");
         assert_eq!(key_for(AssetKind::Deflicker, &dir.join("gone.mov"), 480, 270, (24, 1)), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every clip of a file reads one asset: the key is the media's, at
+    /// the analysis width and the file's rate, whatever a clip's trim.
+    #[test]
+    fn every_clip_of_a_file_reads_one_asset() {
+        let dir = std::env::temp_dir().join(format!("klipp-asset-media-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("clip.mov");
+        std::fs::write(&path, b"frames").unwrap();
+        let mut item = klipp_media::MediaItem::synthetic_for_test(path.clone(), None);
+        item.resolution = klipp_core::Resolution { width: 1920, height: 1080 };
+        item.fps = klipp_core::Fps::new(25, 1);
+        let k = asset_key(AssetKind::Deflicker, &item).unwrap();
+        assert_eq!((k.width, k.height, k.fps), (480, 270, (25, 1)));
+        assert_eq!(asset_key(AssetKind::Deflicker, &item.clone()).unwrap(), k, "a duplicate's media");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Kept on disk: a store opened again (a project reopened) finds it,
+    /// at the algorithm that made it.
+    #[test]
+    fn an_asset_on_disk_is_found_again() {
+        let root = std::env::temp_dir().join(format!("klipp-asset-store-{}", std::process::id()));
+        let mut s = CacheStore::at(root.clone());
+        store(&mut s, key("m"), serde_json::json!({ "luma": [0.5, 0.6] })).unwrap();
+        let again = CacheStore::at(root.clone());
+        assert_eq!(lookup(&again, &key("m")), Found::Ready(serde_json::json!({ "luma": [0.5, 0.6] })));
+        assert_eq!(lookup(&again, &key("other")), Found::Absent);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A file at another path (moved, or a project opened on another
