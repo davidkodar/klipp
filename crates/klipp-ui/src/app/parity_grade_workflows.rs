@@ -4,16 +4,14 @@
 //! workflow keys on the surfaces each is drawn on. Each reads the viewer's
 //! frame in the app, which a headless test doesn't have, so each is held
 //! in parts:
-//! - its trigger: the same request from the same control in both views,
-//!   writing nothing;
+//! - its trigger: the one request its control must send, writing nothing;
 //! - what it computes: a known frame or colour through the same pure
 //!   function the app uses, landed through the same write the app makes,
 //!   the values asserted, one step, undone exactly;
 //! - its result landing while a grade slider's drag is held (a socket
-//!   write, a missed release, a late sample): the generated view closes
-//!   the drag as its own step first, the result is one step, and undo
-//!   walks back both exactly. The old panel's gesture is no history drag
-//!   and its step shape is pinned as the defect it is ([`OLD_GESTURE`]).
+//!   write, a missed release, a late sample): the drag is closed as its
+//!   own step first, the result is one step, and undo walks back both
+//!   exactly.
 //!
 //! Pixels are the picture oracle's family, not this one.
 
@@ -23,18 +21,10 @@ use crate::state::ColorTab;
 use klipp_core::AppCommand;
 use klipp_nodes::NodeKind;
 
-/// The old panel's grade gesture is a snapshot, not a history drag: a
-/// result landing mid-gesture is its own step, and the gesture's close
-/// then records the whole gesture from the snapshot before it, the result
-/// included, so undoing that step takes the result away too while its
-/// own step stays on the stack. Closed by deleting the old gesture (M3
-/// step 19).
-const OLD_GESTURE: &str = "#1429";
-
 /// The qualifier's eyedropper on one of the sequence's own grades: its
 /// pick names the stand-in clip the Colour page edits that grade through,
-/// which the engine's sequence never holds, so the engine refuses it in
-/// both views (`klipp-engine` `sequence_grade_pick_refused`). What the
+/// which the engine's sequence never holds, so the engine refuses it
+/// (`klipp-engine` `sequence_grade_pick_refused`). What the
 /// pick would key can't be earned there until it reads that node's input.
 const ROOT_PICK: &str = "known defect #1428: the engine refuses an eyedropper pick on a sequence grade's node (no clip by the stand-in's id)";
 
@@ -46,17 +36,16 @@ fn click(g: &mut Grade, text: &str) -> Result<(), String> {
 }
 
 /// Click the icon button by `label` (an eyedropper has no text of its
-/// own): right of it on its line, as the old panel puts it, or on a line
-/// just above, from the left, as the generated view puts it over the
-/// rows. Found on throwaway twins, as the first point whose click sends
+/// own): right of it on its line, or on a line just above, from the
+/// left, where the view puts it over the rows. Found on throwaway twins, as the first point whose click sends
 /// the request `want` and writes nothing, so a control on the way (the
 /// label's own checkbox, a button beside it) is never clicked here.
-fn click_icon_by(g: &mut Grade, generated: bool, label: &str, want: &str) -> Result<(), String> {
+fn click_icon_by(g: &mut Grade, label: &str, want: &str) -> Result<(), String> {
     let at = g.drawn().into_iter().rev().find(|(t, _)| t == label).map(|(_, p)| p).ok_or_else(|| format!("{label:?} isn't drawn"))?;
     let right = (0..40).map(|i| egui::pos2(at.x + 4.0 + 4.0 * i as f32, at.y));
     let above = (1..=3).flat_map(|row| (0..50).map(move |i| egui::pos2(4.0 + 4.0 * i as f32, at.y - 20.0 * row as f32)));
     for p in right.chain(above) {
-        let mut t = g.twin(generated);
+        let mut t = g.twin(true);
         t.drawn();
         let before = t.picture();
         t.click_at(p);
@@ -76,7 +65,7 @@ fn button(pos: egui::Pos2, pressed: bool) -> egui::Event {
 /// the button: where the pointer is. The point pressed is found on
 /// throwaway twins, as the first right of the label, on its line or just
 /// under it, whose drag moves the picture.
-fn hold_drag(g: &mut Grade, generated: bool, label: &str) -> Result<egui::Pos2, String> {
+fn hold_drag(g: &mut Grade, label: &str) -> Result<egui::Pos2, String> {
     let at = g.drawn().into_iter().rev().find(|(t, _)| t == label).map(|(_, p)| p).ok_or_else(|| format!("no {label:?} row"))?;
     let drag = |g: &mut Grade, p: egui::Pos2| {
         g.frame(vec![egui::Event::PointerMoved(p), button(p, true)]);
@@ -84,10 +73,10 @@ fn hold_drag(g: &mut Grade, generated: bool, label: &str) -> Result<egui::Pos2, 
             g.frame(vec![egui::Event::PointerMoved(p + egui::vec2(dx, 0.0))]);
         }
     };
-    // On the label's line, or the one under it (an old slider's rail).
+    // On the label's line, or the one under it (a slider's rail).
     for (dy, i) in [0.0, 16.0, 22.0].into_iter().flat_map(|dy| (0..30).map(move |i| (dy, i))) {
         let p = egui::pos2(at.x + 30.0 + 8.0 * i as f32, at.y + dy);
-        let mut t = g.twin(generated);
+        let mut t = g.twin(true);
         t.drawn();
         let before = t.picture();
         drag(&mut t, p);
@@ -109,16 +98,14 @@ fn release(g: &mut Grade, at: egui::Pos2) {
     g.frame(vec![egui::Event::PointerGone]);
 }
 
-/// Opened: drawing the tool's page in each view writes nothing.
+/// Opened: drawing the tool's page writes nothing.
 fn opened(start: &Grade) -> Result<(), String> {
-    for generated in [false, true] {
-        let mut g = start.twin(generated);
-        let before = g.picture();
-        g.drawn();
-        g.drawn();
-        if !g.unapplied.is_empty() || g.picture() != before || g.state.active_history().undo_count() != 0 {
-            return Err(format!("generated {generated}: opening wrote ({:?})", g.unapplied));
-        }
+    let mut g = start.twin(true);
+    let before = g.picture();
+    g.drawn();
+    g.drawn();
+    if !g.unapplied.is_empty() || g.picture() != before || g.state.active_history().undo_count() != 0 {
+        return Err(format!("opening wrote ({:?})", g.unapplied));
     }
     Ok(())
 }
@@ -128,23 +115,21 @@ fn flat(rgb: [u8; 3], w: u32, h: u32) -> Vec<u8> {
     (0..w * h).flat_map(|_| [rgb[0], rgb[1], rgb[2], 255]).collect()
 }
 
-/// The trigger: driving `control` in each view sends the same one request,
-/// `want`, and writes nothing.
-fn trigger(start: &Grade, want: &str, control: impl Fn(&mut Grade, bool) -> Result<(), String>) -> Result<(), String> {
-    for generated in [false, true] {
-        let mut g = start.twin(generated);
-        g.drawn();
-        let before = g.picture();
-        control(&mut g, generated).map_err(|e| format!("generated {generated}: {e}"))?;
-        if !g.unapplied.is_empty() {
-            return Err(format!("generated {generated}: unapplied {:?}", g.unapplied));
-        }
-        if g.side.len() != 1 || !g.side[0].starts_with(want) {
-            return Err(format!("generated {generated}: sent {:?}, want one {want}", g.side));
-        }
-        if g.picture() != before || g.state.active_history().undo_count() != 0 {
-            return Err(format!("generated {generated}: the request wrote"));
-        }
+/// The trigger: driving `control` sends the one request `want`, and
+/// writes nothing.
+fn trigger(start: &Grade, want: &str, control: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
+    let mut g = start.twin(true);
+    g.drawn();
+    let before = g.picture();
+    control(&mut g)?;
+    if !g.unapplied.is_empty() {
+        return Err(format!("unapplied {:?}", g.unapplied));
+    }
+    if g.side.len() != 1 || !g.side[0].starts_with(want) {
+        return Err(format!("sent {:?}, want one {want}", g.side));
+    }
+    if g.picture() != before || g.state.active_history().undo_count() != 0 {
+        return Err("the request wrote".into());
     }
     Ok(())
 }
@@ -153,45 +138,30 @@ fn trigger(start: &Grade, want: &str, control: impl Fn(&mut Grade, bool) -> Resu
 /// `read` is what it set; one step, `read` is `want`, and undo gives back
 /// what was there.
 fn lands<T: PartialEq + std::fmt::Debug>(start: &Grade, land: impl Fn(&mut Grade) -> Result<(), String>, read: impl Fn(&Grade) -> T, want: impl Fn(&T) -> bool) -> Result<(), String> {
-    for generated in [false, true] {
-        let mut g = start.twin(generated);
-        let before = read(&g);
-        land(&mut g).map_err(|e| format!("generated {generated}: {e}"))?;
-        if !g.unapplied.is_empty() {
-            return Err(format!("generated {generated}: unapplied {:?}", g.unapplied));
-        }
-        let now = read(&g);
-        if !want(&now) {
-            return Err(format!("generated {generated}: holds {now:?}"));
-        }
-        if g.state.active_history().undo_count() != 1 {
-            return Err(format!("generated {generated}: {} steps, not one", g.state.active_history().undo_count()));
-        }
-        g.step(false)?;
-        if read(&g) != before {
-            return Err(format!("generated {generated}: undo gives back {:?}, not {before:?}", read(&g)));
-        }
+    let mut g = start.twin(true);
+    let before = read(&g);
+    land(&mut g)?;
+    if !g.unapplied.is_empty() {
+        return Err(format!("unapplied {:?}", g.unapplied));
+    }
+    let now = read(&g);
+    if !want(&now) {
+        return Err(format!("holds {now:?}"));
+    }
+    if g.state.active_history().undo_count() != 1 {
+        return Err(format!("{} steps, not one", g.state.active_history().undo_count()));
+    }
+    g.step(false)?;
+    if read(&g) != before {
+        return Err(format!("undo gives back {:?}, not {before:?}", read(&g)));
     }
     Ok(())
 }
 
-/// The steps a held drag and a result leave in the generated view: its
-/// drag closed as its own step before the result, the result one step, the
-/// drag going on as one more.
-const GENERATED_DRAG_RESULT_STEPS: usize = 3;
-
-/// How the old panel's gesture holds a result landed during it.
-#[derive(Clone, Copy)]
-enum OldShape {
-    /// A result that records its own step (a white balance): two steps,
-    /// and undoing the gesture's takes the result too while the result's
-    /// step stays ([`OLD_GESTURE`], pinned, never a pass).
-    Strips,
-    /// A result written through the colour dispatch's settings writes
-    /// (Colour Match, a qualifier's key): unrecorded inside the gesture, so
-    /// one step, the gesture's, whose undo takes both back. Consistent.
-    Merged,
-}
+/// The steps a held drag and a result leave: the drag closed as its own
+/// step before the result, the result one step, the drag going on as one
+/// more.
+const DRAG_RESULT_STEPS: usize = 3;
 
 /// The history's step labels, top first: unwinding `g`, for a failure's
 /// message.
@@ -207,70 +177,41 @@ fn labels(g: &mut Grade) -> Vec<String> {
 }
 
 /// A result landing (`land`) while a grade slider's drag (`label`, on
-/// `start`'s page) is held, in each view. The generated view: the result
-/// is kept through the rest of the drag, and undoing every step gives back
-/// the grade before, the result's step undoing the result alone. The old
-/// panel: its step shape pinned, and its defect shown, not passed: one
-/// undo takes the result away though the result's own step is still on
-/// the stack ([`OLD_GESTURE`]).
-fn result_during_drag<T: PartialEq + std::fmt::Debug>(start: &Grade, label: &str, old: OldShape, land: impl Fn(&mut Grade) -> Result<(), String>, read: impl Fn(&Grade) -> T) -> Result<(), String> {
-    for generated in [false, true] {
-        let mut g = start.twin(generated);
-        let (before, result_before) = (g.picture(), read(&g));
-        let at = hold_drag(&mut g, generated, label).map_err(|e| format!("generated {generated}: {e}"))?;
-        land(&mut g).map_err(|e| format!("generated {generated}: landing: {e}"))?;
-        let result = read(&g);
-        if result == result_before {
-            return Err(format!("generated {generated}: the result didn't land"));
-        }
-        release(&mut g, at);
-        if !g.unapplied.is_empty() {
-            return Err(format!("generated {generated}: unapplied {:?}", g.unapplied));
-        }
-        let steps = g.state.active_history().undo_count();
-        let want = match (generated, old) {
-            (true, _) => GENERATED_DRAG_RESULT_STEPS,
-            (false, OldShape::Strips) => 2,
-            (false, OldShape::Merged) => 1,
-        };
-        if steps != want {
-            return Err(format!("generated {generated}: {steps} steps {:?}, pinned {want}", labels(&mut g)));
-        }
-        if generated {
-            if read(&g) != result {
-                return Err("generated: the rest of the drag lost the result".into());
-            }
-            // The drag's second part, then the result alone.
-            g.step(false)?;
-            if read(&g) != result {
-                return Err("generated: undoing the drag's rest took the result".into());
-            }
-            g.step(false)?;
-            if read(&g) != result_before {
-                return Err("generated: undoing the result's step left it".into());
-            }
-            g.step(false)?;
-            if g.picture() != before {
-                return Err("generated: undoing every step doesn't give back the grade before".into());
-            }
-        } else if let OldShape::Strips = old {
-            // The defect, pinned: the gesture's step undone takes the
-            // result with it, and the result's own step is still there.
-            g.step(false)?;
-            if read(&g) != result_before || g.state.active_history().undo_count() != 1 {
-                return Err(format!("old: the gesture's undo no longer strips the result ({OLD_GESTURE} fixed? unpin it): {:?}", read(&g)));
-            }
-        } else {
-            // Merged into the gesture's one step: its undo gives back the
-            // grade before both.
-            if read(&g) != result {
-                return Err("old: the rest of the drag lost the result".into());
-            }
-            g.step(false)?;
-            if g.picture() != before || read(&g) != result_before {
-                return Err("old: undoing the gesture doesn't give back the grade before".into());
-            }
-        }
+/// `start`'s page) is held: the result is kept through the rest of the
+/// drag, and undoing every step gives back the grade before, the result's
+/// step undoing the result alone.
+fn result_during_drag<T: PartialEq + std::fmt::Debug>(start: &Grade, label: &str, land: impl Fn(&mut Grade) -> Result<(), String>, read: impl Fn(&Grade) -> T) -> Result<(), String> {
+    let mut g = start.twin(true);
+    let (before, result_before) = (g.picture(), read(&g));
+    let at = hold_drag(&mut g, label)?;
+    land(&mut g).map_err(|e| format!("landing: {e}"))?;
+    let result = read(&g);
+    if result == result_before {
+        return Err("the result didn't land".into());
+    }
+    release(&mut g, at);
+    if !g.unapplied.is_empty() {
+        return Err(format!("unapplied {:?}", g.unapplied));
+    }
+    let steps = g.state.active_history().undo_count();
+    if steps != DRAG_RESULT_STEPS {
+        return Err(format!("{steps} steps {:?}, not {DRAG_RESULT_STEPS}", labels(&mut g)));
+    }
+    if read(&g) != result {
+        return Err("the rest of the drag lost the result".into());
+    }
+    // The drag's second part, then the result alone.
+    g.step(false)?;
+    if read(&g) != result {
+        return Err("undoing the drag's rest took the result".into());
+    }
+    g.step(false)?;
+    if read(&g) != result_before {
+        return Err("undoing the result's step left it".into());
+    }
+    g.step(false)?;
+    if g.picture() != before {
+        return Err("undoing every step doesn't give back the grade before".into());
     }
     Ok(())
 }
@@ -349,7 +290,7 @@ fn run_white_balance(report: &mut Report, type_id: &str, surface: Surface, page:
     // is surely grey; a warmer one reads as skin, never balanced on (#403).
     let warm = flat([176, 168, 158], 32, 32);
     report.case(&format!("Auto WB on {surface:?}"), [k(Interaction::AutoWhiteBalance), k(Interaction::UndoRedo)], || {
-        trigger(&start, "AutoWhiteBalance", |g, _| click(g, "Auto WB"))?;
+        trigger(&start, "AutoWhiteBalance", |g| click(g, "Auto WB"))?;
         let (temp, tint) = klipp_color::auto_white_balance(&warm, 32, 32, &[]).map_err(|e| format!("{e:?}"))?;
         if temp >= 0.0 {
             return Err(format!("a warm cast is cooled: {temp}"));
@@ -357,14 +298,14 @@ fn run_white_balance(report: &mut Report, type_id: &str, surface: Surface, page:
         lands(&start, |g| land_balance(g, temp, tint), balance, |&(t, n)| t.is_some_and(|t| (t - temp).abs() < 1e-4) && n.is_some_and(|n| (n - tint).abs() < 1e-4))
     });
     report.case(&format!("white balance picker on {surface:?}"), [k(Interaction::Eyedropper), k(Interaction::UndoRedo)], || {
-        trigger(&start, "PickWhiteBalance", |g, generated| click_icon_by(g, generated, "Auto WB", "PickWhiteBalance"))?;
+        trigger(&start, "PickWhiteBalance", |g| click_icon_by(g, "Auto WB", "PickWhiteBalance"))?;
         // A grey picked under a warm light, as the picker reads it.
         let (temp, tint) = klipp_color::white_balance::white_balance_to_neutralise([0.5, 0.45, 0.4], klipp_core::WorkingColorspace::Rec709Linear);
         lands(&start, |g| land_balance(g, temp, tint), balance, |&(t, _)| t.is_some_and(|t| (t - temp).abs() < 1e-4))
     });
     report.case(&format!("white balance result during a drag on {surface:?}"), [k(Interaction::ResultDuringDrag), k(Interaction::UndoRedo)], || {
         let (temp, tint) = klipp_color::auto_white_balance(&warm, 32, 32, &[]).map_err(|e| format!("{e:?}"))?;
-        result_during_drag(&start, "Saturation", OldShape::Strips, |g| land_balance(g, temp, tint), balance)
+        result_during_drag(&start, "Saturation", |g| land_balance(g, temp, tint), balance)
     });
 }
 
@@ -374,7 +315,7 @@ fn run_qualifier(report: &mut Report, type_id: &str, surface: Surface, page: Pag
         report.case(&format!("qualifier picker on {surface:?}"), [], || Err("the grade won't take a Qualifier".into()));
         return;
     };
-    // Enabled, so its rows are drawn (the old panel shows them only then).
+    // Enabled, so its rows are drawn.
     if let Some(c) = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)) {
         klipp_timeline::GradeAccess::edit_grade(c, |g| g.nodes.iter_mut().filter(|n| n.id == node).for_each(|n| n.params.qualifier.get_or_insert_with(Default::default).enabled = true));
     }
@@ -384,7 +325,7 @@ fn run_qualifier(report: &mut Report, type_id: &str, surface: Surface, page: Pag
     // its trigger alone, a behaviour check that earns nothing.
     if start.root != super::parity_harness::GradeRoot::Clip {
         report.case(&format!("qualifier eyedropper trigger on {surface:?}"), [], || {
-            trigger(&start, "PickQualifierColour", |g, generated| click_icon_by(g, generated, "Enabled", "PickQualifierColour"))
+            trigger(&start, "PickQualifierColour", |g| click_icon_by(g, "Enabled", "PickQualifierColour"))
         });
         return;
     }
@@ -400,13 +341,13 @@ fn run_qualifier(report: &mut Report, type_id: &str, surface: Surface, page: Pag
         Ok(())
     };
     report.case(&format!("qualifier eyedropper on {surface:?}"), [k(Interaction::Eyedropper), k(Interaction::UndoRedo)], || {
-        trigger(&start, "PickQualifierColour", |g, generated| click_icon_by(g, generated, "Enabled", "PickQualifierColour"))?;
+        trigger(&start, "PickQualifierColour", |g| click_icon_by(g, "Enabled", "PickQualifierColour"))?;
         lands(&start, land, key_of, |q| q.as_ref().is_some_and(|q| (q.hue_center - hue).abs() < 1.0))
     });
     report.case(&format!("qualifier result during a drag on {surface:?}"), [k(Interaction::ResultDuringDrag), k(Interaction::UndoRedo)], || {
         // The keyed hue is the result held: the drag is on Hue Width, which
         // the key sets too.
-        result_during_drag(&start, "Hue Width", OldShape::Merged, land, |g| key_of(g).map(|q| q.hue_center))
+        result_during_drag(&start, "Hue Width", land, |g| key_of(g).map(|q| q.hue_center))
     });
 }
 
@@ -429,43 +370,35 @@ fn run_colour_match(report: &mut Report, type_id: &str, surface: Surface, page: 
         Ok(())
     };
     report.case(&format!("colour match reference on {surface:?}"), [k(Interaction::CaptureReference)], || {
-        trigger(&start, "CaptureColorMatchReference", |g, _| click(g, "Capture reference"))
+        trigger(&start, "CaptureColorMatchReference", |g| click(g, "Capture reference"))
     });
     report.case(&format!("colour match applied on {surface:?}"), [k(Interaction::ColourMatch), k(Interaction::UndoRedo)], || {
-        trigger(&start, "ApplyColorMatch", |g, _| click(g, "Apply match"))?;
+        trigger(&start, "ApplyColorMatch", |g| click(g, "Apply match"))?;
         if result.exposure_adjust <= 0.0 {
             return Err(format!("a darker frame is brightened: {}", result.exposure_adjust));
         }
         lands(&start, land, matched, |m| *m == Some(settings))
     });
     report.case(&format!("colour match reset on {surface:?}"), [k(Interaction::Reset), k(Interaction::UndoRedo)], || {
-        // From a match, its Reset in each view: the match cleared, the
-        // same picture in both, one step, undone exactly.
+        // From a match, its Reset: the match cleared, one step, undone
+        // exactly.
         let mut from = start.twin(true);
         land(&mut from)?;
-        let from = from.twin(true);
-        let mut pictures = Vec::new();
-        for generated in [false, true] {
-            let mut g = from.twin(generated);
-            let before = g.picture();
-            click(&mut g, "Reset")?;
-            if !g.unapplied.is_empty() {
-                return Err(format!("generated {generated}: unapplied {:?}", g.unapplied));
-            }
-            if !matched(&g).is_none_or(|m| m.is_identity()) {
-                return Err(format!("generated {generated}: the match is still {:?}", matched(&g)));
-            }
-            if g.state.active_history().undo_count() != 1 {
-                return Err(format!("generated {generated}: {} steps, not one", g.state.active_history().undo_count()));
-            }
-            pictures.push(g.picture());
-            g.step(false)?;
-            if g.picture() != before {
-                return Err(format!("generated {generated}: undo doesn't give back the match"));
-            }
+        let mut g = from.twin(true);
+        let before = g.picture();
+        click(&mut g, "Reset")?;
+        if !g.unapplied.is_empty() {
+            return Err(format!("unapplied {:?}", g.unapplied));
         }
-        if pictures[0] != pictures[1] {
-            return Err("the two views' pictures differ".into());
+        if !matched(&g).is_none_or(|m| m.is_identity()) {
+            return Err(format!("the match is still {:?}", matched(&g)));
+        }
+        if g.state.active_history().undo_count() != 1 {
+            return Err(format!("{} steps, not one", g.state.active_history().undo_count()));
+        }
+        g.step(false)?;
+        if g.picture() != before {
+            return Err("undo doesn't give back the match".into());
         }
         Ok(())
     });
@@ -474,7 +407,7 @@ fn run_colour_match(report: &mut Report, type_id: &str, surface: Surface, page: 
         // the Colour Match page has no slider of its own.
         let corrector = start.grade().nodes.iter().find(|n| n.kind == NodeKind::Corrector).map(|n| n.id).ok_or("no Corrector")?;
         let on_corrector = start.twin(true).on_node(corrector).on(Page::Tabbed(ColorTab::Adjustments));
-        result_during_drag(&on_corrector, "Saturation", OldShape::Merged, land, matched)
+        result_during_drag(&on_corrector, "Saturation", land, matched)
     });
 }
 

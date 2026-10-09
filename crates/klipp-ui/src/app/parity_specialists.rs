@@ -1,10 +1,9 @@
-//! M3 step 18 parity: the analysis effects' workflow (d9's family).
-//! Deflicker and Video Stabilization measure the clip before they do
-//! anything, and both views draw the same status widget for it
-//! (`effects_tab::deflicker_status`, `stabilization_status`). Each case
-//! drives that widget, or the row its measurement is smoothed by, through
-//! the old Effects tab and the generated stack alike, and requires the
-//! same picture, the same undo depth and the same analysis commands.
+//! The analysis effects' workflow in the inspector (M3). Deflicker and
+//! Video Stabilization measure the clip before they do anything, and the
+//! stack draws a status widget for it (`effects_tab::deflicker_status`,
+//! `stabilization_status`). Each case drives that widget, or the row its
+//! measurement is smoothed by, and requires what it must leave: the
+//! picture, the undo depth and the analysis commands it sends.
 //!
 //! A measurement lands from a worker while the user may be dragging: it
 //! is applied as the app's drain applies it (the open drag closed first,
@@ -32,10 +31,9 @@ pub(super) struct Analysis {
     pub(super) measured: fn(&mut klipp_timeline::Clip),
     in_progress: fn(&mut crate::state::AppState, ClipId),
     pub(super) complete: fn(ClipId) -> AppEvent,
-    /// The undo steps a drag held past a result leaves: old view, new.
-    result_drag_steps: (usize, usize),
-    /// The old view loses a drag held past this result (#1377).
-    old_drops_drag: bool,
+    /// The undo steps a drag held past a result leaves: the drag closed
+    /// before the result as its own step, and the rest as one more.
+    result_drag_steps: usize,
 }
 
 pub(super) const ANALYSES: &[Analysis] = &[
@@ -54,8 +52,7 @@ pub(super) const ANALYSES: &[Analysis] = &[
             state.deflicker_in_progress.insert(clip);
         },
         complete: |clip_id| AppEvent::DeflickerComplete { clip_id },
-        result_drag_steps: (1, 2),
-        old_drops_drag: false,
+        result_drag_steps: 2,
     },
     Analysis {
         tag: "video_stabilization",
@@ -78,9 +75,7 @@ pub(super) const ANALYSES: &[Analysis] = &[
             state.stabilization_in_progress.insert(clip);
         },
         complete: |clip_id| AppEvent::StabilizationComplete { clip_id },
-        // The old view's 0 is #1377.
-        result_drag_steps: (0, 2),
-        old_drops_drag: true,
+        result_drag_steps: 2,
     },
 ];
 
@@ -117,35 +112,26 @@ fn require_frei0r(manifest: &mut Manifest) {
     }
 }
 
-/// The old Effects tab and the generated stack over one clone of `clip`,
-/// `prepare` run on each state.
-pub(super) fn both(clip: &klipp_timeline::Clip, prepare: impl Fn(&mut Run)) -> (Run, Run) {
-    let (mut old, mut new) = (Run::new(clip.clone(), false), Run::new(clip.clone(), true));
-    prepare(&mut old);
-    prepare(&mut new);
-    (old, new)
+/// The inspector over a clone of `clip`, `prepare`d (an analysis in
+/// progress, say).
+pub(super) fn one(clip: &klipp_timeline::Clip, prepare: impl Fn(&mut Run)) -> Run {
+    let mut run = Run::new(clip.clone(), true);
+    prepare(&mut run);
+    run
 }
 
-/// The two views agree: the same whole picture, the same analysis data on
-/// the clip, the same undo depth (`undo` in each), the same side commands
-/// (`side`, in order), and nothing either sent left unapplied.
-fn agree(old: &Run, new: &Run, undo: usize, side: &[String]) -> Result<(), String> {
-    if !old.unapplied.is_empty() || !new.unapplied.is_empty() {
-        return Err(format!("unapplied: old {:?}, new {:?}", old.unapplied, new.unapplied));
+/// What a case's edit must leave besides its picture: nothing unapplied,
+/// the undo depth `undo`, and exactly the side commands `side`, in order.
+fn holds(new: &Run, undo: usize, side: &[String]) -> Result<(), String> {
+    if !new.unapplied.is_empty() {
+        return Err(format!("unapplied: {:?}", new.unapplied));
     }
-    if old.clip().picture_v2()? != new.clip().picture_v2()? {
-        return Err(format!("the pictures differ: old {:?}, new {:?}", old.clip().builtin_effects(), new.clip().builtin_effects()));
+    let depth = new.state.active_history().undo_count();
+    if depth != undo {
+        return Err(format!("undo depth {depth}, want {undo}"));
     }
-    let analysis = |r: &Run| format!("{:?}{:?}{:?}{:?}", r.clip().deflicker_data, r.clip().deflicker_gains, r.clip().stabilization_data, r.clip().smoothed_trajectory);
-    if analysis(old) != analysis(new) {
-        return Err("the clips' measurements differ".into());
-    }
-    let (uo, un) = (old.state.active_history().undo_count(), new.state.active_history().undo_count());
-    if (uo, un) != (undo, undo) {
-        return Err(format!("undo depth old {uo}, new {un}, want {undo}"));
-    }
-    if old.side != side || new.side != side {
-        return Err(format!("side commands old {:?}, new {:?}, want {side:?}", old.side, new.side));
+    if new.side != side {
+        return Err(format!("side commands {:?}, want {side:?}", new.side));
     }
     Ok(())
 }
@@ -164,11 +150,10 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
     let row = ty.presentation(desc).label.unwrap_or(desc.label);
 
     report.case(&format!("{id} opened"), [key(Interaction::OpenWithoutWrite)], || {
-        let (mut old, mut new) = both(&clip, |_| {});
-        let before = old.clip().picture_v2()?;
-        old.frame(Vec::new(), egui::Modifiers::NONE);
+        let mut new = one(&clip, |_| {});
+        let before = new.clip().picture_v2()?;
         new.frame(Vec::new(), egui::Modifiers::NONE);
-        agree(&old, &new, 0, &[])?;
+        holds(&new, 0, &[])?;
         if new.clip().picture_v2()? != before {
             return Err("opening it wrote the picture".into());
         }
@@ -178,22 +163,22 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
     // Measured or not, "Analyse" asks for a measurement and writes nothing.
     for (from, button) in [(&clip, a.analyse), (&measured, a.reanalyse)] {
         report.case(&format!("{id} {button}"), [key(Interaction::StartAnalysis)], || {
-            let (mut old, mut new) = both(from, |_| {});
-            if !(old.click_text("", button) && new.click_text("", button)) {
-                return Err(format!("no {button:?} in a view"));
+            let mut new = one(from, |_| {});
+            if !new.click_text("", button) {
+                return Err(format!("no {button:?}"));
             }
             let want = format!("{:?}", if a.tag == "deflicker" { klipp_core::AppCommand::AnalyzeDeflicker { clip_id } } else { klipp_core::AppCommand::AnalyzeStabilization { clip_id } });
-            agree(&old, &new, 0, &[want])
+            holds(&new, 0, &[want])
         });
     }
 
     report.case(&format!("{id} cancelled"), [key(Interaction::CancelAnalysis)], || {
-        let (mut old, mut new) = both(&clip, |r| (a.in_progress)(&mut r.state, clip_id));
-        if !(old.click_text("", "Cancel") && new.click_text("", "Cancel")) {
-            return Err("no Cancel in a view while it measures".into());
+        let mut new = one(&clip, |r| (a.in_progress)(&mut r.state, clip_id));
+        if !new.click_text("", "Cancel") {
+            return Err("no Cancel while it measures".into());
         }
         let want = format!("{:?}", if a.tag == "deflicker" { klipp_core::AppCommand::CancelDeflicker { clip_id } } else { klipp_core::AppCommand::CancelStabilization { clip_id } });
-        agree(&old, &new, 0, &[want])
+        holds(&new, 0, &[want])
     });
 
     // On a measured clip, a drag of that row asks for the smoothing to be
@@ -201,8 +186,9 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
     // write no document, so they join the drag's one step (#1328), unlike
     // a measurement landing mid-drag below (#1338).
     report.case(&format!("{id} drag over a measurement"), [key(Interaction::UndoRedo)], || {
-        let (mut old, mut new) = both(&measured, |_| {});
-        for run in [&mut old, &mut new] {
+        let mut new = one(&measured, |_| {});
+        {
+            let run = &mut new;
             let (_, at) = run.row(row).ok_or_else(|| format!("no row {row:?}"))?;
             run.button(at, egui::PointerButton::Primary, true);
             for dx in [6.0, 12.0, 18.0] {
@@ -211,20 +197,37 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
             run.button(at + egui::vec2(18.0, 0.0), egui::PointerButton::Primary, false);
             run.frame(Vec::new(), egui::Modifiers::NONE);
         }
-        if new.side.is_empty() {
-            return Err("the drag asked for no smoothing".into());
+        // What it must send: the smoothing redone for this clip, once or
+        // more as the drag goes, and nothing else.
+        let request = format!("{:?}", if a.tag == "deflicker" { klipp_core::AppCommand::RegainDeflicker { clip_id } } else { klipp_core::AppCommand::ResmoothStabilization { clip_id } });
+        if new.side.is_empty() || new.side.iter().any(|sent| *sent != request) {
+            return Err(format!("the drag sent {:?}, not {request} alone", new.side));
         }
-        let side = new.side.clone();
-        agree(&old, &new, 1, &side)
+        let side = vec![request; new.side.len()];
+        holds(&new, 1, &side)?;
+        // What it must leave: the measured clip with the row's new value set
+        // by the document command, and nothing else changed.
+        let effect = measured.builtin_effects()[0].clone();
+        let to = super::parity_numeric::stored(&new.clip().builtin_effects()[0], desc);
+        if to == super::parity_numeric::stored(&effect, desc) {
+            return Err(format!("the drag left {} where it was", desc.key));
+        }
+        let mut oracle = one(&measured, |_| {});
+        oracle.apply(klipp_core::AppCommand::UpdateBuiltinEffect { clip_id, index: 0, effect: super::parity_numeric::with_field(&effect, desc, to)? });
+        if oracle.clip().picture_v2()? != new.clip().picture_v2()? {
+            return Err("the drag left another picture than setting its value by the document command does".into());
+        }
+        Ok(())
     });
 
     // A measurement arriving mid-drag on the row it is smoothed by: the
     // drag is its own step, closed before the result lands; the result is
     // kept; and an undo takes back the drag alone.
     report.case(&format!("{id} result during a drag"), [key(Interaction::ResultDuringDrag), key(Interaction::UndoRedo)], || {
-        let (mut old, mut new) = both(&clip, |r| (a.in_progress)(&mut r.state, clip_id));
+        let mut new = one(&clip, |r| (a.in_progress)(&mut r.state, clip_id));
         let before = new.clip().picture_v2()?;
-        for run in [&mut old, &mut new] {
+        {
+            let run = &mut new;
             let (_, at) = run.row(row).ok_or_else(|| format!("no row {row:?}"))?;
             run.button(at, egui::PointerButton::Primary, true);
             for dx in [6.0, 12.0] {
@@ -245,8 +248,8 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
             for dx in [18.0, 24.0, 30.0, 36.0] {
                 run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))], egui::Modifiers::NONE);
             }
-            if run.state.use_generated_stack && run.clip().builtin_effects() == at_result.as_slice() {
-                return Err("the generated view's drag stopped at the result".into());
+            if run.clip().builtin_effects() == at_result.as_slice() {
+                return Err("the drag stopped at the result".into());
             }
             run.button(at + egui::vec2(36.0, 0.0), egui::PointerButton::Primary, false);
             run.frame(Vec::new(), egui::Modifiers::NONE);
@@ -260,33 +263,15 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
         if new.state.deflicker_in_progress.contains(&clip_id) || new.state.stabilization_in_progress.contains(&clip_id) {
             return Err("still measuring after the result".into());
         }
-        // The steps the gesture leaves, which differ by design (#1338):
-        // the generated view closes its path drag as its own step before
-        // the result and goes on as one more; the old index drag is never
-        // closed by a result. A stabilization result draws its trajectory
-        // above the rows, which moves the old view's ids under the held
-        // slider and drops its drag, open and unrecorded: no step at all
-        // (#1377). The generated rows' ids are their own, so its drag
-        // goes on.
-        let (want_old, want_new) = a.result_drag_steps;
-        let (uo, un) = (old.state.active_history().undo_count(), new.state.active_history().undo_count());
-        if (uo, un) != (want_old, want_new) {
-            return Err(format!("undo depth old {uo}, new {un}, pinned {want_old}, {want_new}"));
+        // The steps the gesture leaves (#1338): the path drag closed as
+        // its own step before the result, and the drag going on as one
+        // more.
+        let depth = new.state.active_history().undo_count();
+        if depth != a.result_drag_steps {
+            return Err(format!("undo depth {depth}, want {}", a.result_drag_steps));
         }
-        let depth = un;
-        if !old.unapplied.is_empty() || !new.unapplied.is_empty() {
-            return Err(format!("unapplied: old {:?}, new {:?}", old.unapplied, new.unapplied));
-        }
-        // The old view that drops its drag at the result (#1377) stops
-        // there; the generated view goes on, so their pictures differ by
-        // the part after the result, and the side commands it implied.
-        if !a.old_drops_drag {
-            if old.clip().picture_v2()? != new.clip().picture_v2()? {
-                return Err(format!("the pictures differ: old {:?}, new {:?}", old.clip().builtin_effects(), new.clip().builtin_effects()));
-            }
-            if old.side != new.side {
-                return Err(format!("side commands old {:?}, new {:?}", old.side, new.side));
-            }
+        if !new.unapplied.is_empty() {
+            return Err(format!("unapplied: {:?}", new.unapplied));
         }
         // Undo all the way back: the picture before the drag, and the
         // measurement still on the clip; redo: the picture after.
@@ -393,63 +378,64 @@ fn run_frei0r(report: &mut Report) {
     let clip = fixture(&effect);
 
     report.case("frei0r opened", key(Interaction::OpenWithoutWrite), || {
-        let (mut old, mut new) = both(&clip, |_| {});
+        let mut new = one(&clip, |_| {});
         let before = new.clip().picture_v2()?;
-        for run in [&mut old, &mut new] {
+        {
+            let run = &mut new;
             let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
             if !drawn.iter().any(|(t, _)| t == "Amount") {
                 return Err("the plug-in's rows aren't drawn".into());
             }
         }
-        agree(&old, &new, 0, &[])?;
+        holds(&new, 0, &[])?;
         if new.clip().picture_v2()? != before {
             return Err("opening it wrote the picture".into());
         }
         Ok(())
     });
 
-    // A plug-in this machine doesn't have: said in both views, nothing
+    // A plug-in this machine doesn't have: said, nothing
     // written, and no rows for values it can't name.
     report.case("frei0r missing", key(Interaction::MissingAsset), || {
         let missing = fixture(&BuiltinEffect::Frei0r { type_id: "frei0r:/nonexistent/gone.so:Gone".into(), params: vec![klipp_frei0r::Frei0rValue::Double(0.25)] });
-        let (mut old, mut new) = both(&missing, |_| {});
-        for run in [&mut old, &mut new] {
+        let mut new = one(&missing, |_| {});
+        {
+            let run = &mut new;
             let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
             if !drawn.iter().any(|(t, _)| t.starts_with("⚠ Plugin not installed")) {
-                return Err(format!("no missing-plug-in notice (generated {})", run.state.use_generated_stack));
+                return Err("no missing-plug-in notice".into());
             }
         }
-        agree(&old, &new, 0, &[])
+        holds(&new, 0, &[])
     });
 
-    // Picked from the effects browser, as its double-click and drop do,
-    // in each view: the same effect, with the plug-in's declared defaults.
-    // Behind the switch the browser still adds a plug-in by its index
-    // (`effect_commands_in` routes only built-in effects by path): its add
-    // moves to a path when plug-ins become nodes, M4 step 5 (frei0r as a
-    // node). Until then both views add it the same way, which is what
-    // this holds.
+    // Picked from the effects browser, as its double-click and drop do:
+    // the effect added, with the plug-in's declared defaults. The browser
+    // still adds a plug-in by its index (`effect_commands_in` routes only
+    // built-in effects by path): its add moves to a path when plug-ins
+    // become nodes, M4 step 5 (frei0r as a node).
     report.case("frei0r picked", key(Interaction::PluginSelect), || {
         let base = fixture(&BuiltinEffect::GaussianBlur { radius: 3.0 });
-        let (mut old, mut new) = both(&base, |_| {});
+        let mut new = one(&base, |_| {});
         let source = crate::browser::effect_registry::EffectSource::Frei0r(plugin.clone());
-        for run in [&mut old, &mut new] {
+        {
+            let run = &mut new;
             let cmds = crate::browser::effects_tab::effect_commands_in(&run.state, &source, run.clip);
             for cmd in cmds {
                 run.apply(cmd);
             }
         }
-        if !old.unapplied.is_empty() || !new.unapplied.is_empty() {
-            return Err(format!("unapplied: old {:?}, new {:?}", old.unapplied, new.unapplied));
+        if !new.unapplied.is_empty() {
+            return Err(format!("unapplied: {:?}", new.unapplied));
         }
         let want = vec![BuiltinEffect::GaussianBlur { radius: 3.0 }, effect.clone()];
-        if old.clip().builtin_effects() != want.as_slice() || new.clip().builtin_effects() != want.as_slice() {
-            return Err(format!("old {:?}, new {:?}", old.clip().builtin_effects(), new.clip().builtin_effects()));
+        if new.clip().builtin_effects() != want.as_slice() {
+            return Err(format!("added {:?}, want {want:?}", new.clip().builtin_effects()));
         }
         Ok(())
     });
 
-    // Each of its values edited through its own control in both views:
+    // Each of its values edited through its own control:
     // the same picture, one step, undone and redone exactly.
     type Drive = fn(&mut Run) -> Result<(), String>;
     // What each edit must leave: the declared defaults with that one value
@@ -516,22 +502,19 @@ fn run_frei0r(report: &mut Report) {
     edits.push(colour);
     for (what, drive, want) in edits {
         report.case(&format!("frei0r {what}"), [key(Interaction::PluginParameter), key(Interaction::UndoRedo)].concat(), || {
-            let (mut old, mut new) = both(&clip, |_| {});
+            let mut new = one(&clip, |_| {});
             let before = new.clip().picture_v2()?;
-            drive(&mut old).map_err(|e| format!("old: {e}"))?;
-            drive(&mut new).map_err(|e| format!("new: {e}"))?;
+            drive(&mut new)?;
             let after = new.clip().picture_v2()?;
             let mut params = defaults.clone();
             want(&mut params);
             let expected = [BuiltinEffect::Frei0r { type_id: plugin.type_id(), params }];
-            for (view, run) in [("old", &old), ("new", &new)] {
-                if run.clip().builtin_effects() != expected.as_slice() {
-                    return Err(format!("{view}: {:?}, want {expected:?}", run.clip().builtin_effects()));
-                }
+            if new.clip().builtin_effects() != expected.as_slice() {
+                return Err(format!("{:?}, want {expected:?}", new.clip().builtin_effects()));
             }
-            // One edit, one step, in each view.
+            // One edit, one step.
             let depth = 1;
-            agree(&old, &new, depth, &[])?;
+            holds(&new, depth, &[])?;
             for _ in 0..depth {
                 if !new.step(false) {
                     return Err("an undo step is missing".into());
@@ -562,7 +545,7 @@ pub(super) fn run(report: &mut Report) {
 
 /// The frei0r editor's required keys, but Pixels (the picture oracle's).
 #[test]
-fn frei0r_plug_ins_are_the_same_through_both_views() {
+fn frei0r_plug_ins_edit_as_expected() {
     let mut report = Report::default();
     report.family("frei0r", run_frei0r);
     report.family_result().unwrap();
@@ -574,7 +557,7 @@ fn frei0r_plug_ins_are_the_same_through_both_views() {
 }
 
 #[test]
-fn analysis_workflows_are_the_same_through_both_views() {
+fn analysis_workflows_edit_as_expected() {
     let mut report = Report::default();
     report.family("analysis workflows", run);
     report.family_result().unwrap();

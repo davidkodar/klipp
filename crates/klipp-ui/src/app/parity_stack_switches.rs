@@ -1,15 +1,14 @@
-//! M3 step 18 parity: an effect card's own switch and its Mix, on the
-//! effects stack.
-//! - **The eye** (`@enabled`): the generated card's checkbox against the
-//!   old card's eye (`ToggleBuiltinEffectEnabled`), switched off and on,
-//!   the same picture, one step each, undone and redone exactly, and the
-//!   frame the renderer draws for it the same on each route.
-//! - **Mix** (`@mix`): the old cards have no Mix, so it is new-only, held
-//!   against the path-op oracle (`SetMixAt` applied by path): a drag, a
-//!   typed value, a reset from its label, Escape on a drag, undo and the
-//!   frame. Its keys are counted under the variant "new only", never as
-//!   two-view evidence. A type that takes no mix (Invert) draws none, and a
-//!   mix sent to it by path is refused.
+//! M3: an effect card's own switch and its Mix, on the effects stack,
+//! held to what they must store.
+//! - **The eye** (`@enabled`): the card's checkbox switched off and on,
+//!   the picture exactly the clip's with that effect's enabled flag so
+//!   set, one step, undone and redone exactly; the frame changes, and the
+//!   CPU's is the GPU's.
+//! - **Mix** (`@mix`): held against the path-op oracle (`SetMixAt` applied
+//!   by path): a drag, a typed value, a reset from its label, Escape on a
+//!   drag, undo and the frame. Its keys are counted under the variant "new
+//!   only" until the variants are renamed in one sweep. A type that takes
+//!   no mix (Invert) draws none, and a mix sent to it by path is refused.
 //! - **A hidden field** (a seed, an analysis' gain, a focus band): the card
 //!   draws no row for it, and another row's edit leaves it exactly as it
 //!   was (`PreserveHidden`).
@@ -22,7 +21,8 @@ use klipp_core::AppCommand;
 use klipp_effects::registry::{effect_types, EffectType};
 use klipp_effects::BuiltinEffect;
 
-/// The variant Mix's keys are counted under: the new view alone.
+/// The variant Mix's keys are counted under (renamed with the others in
+/// one sweep).
 const NEW_ONLY: &str = "new only";
 
 /// The stack's cards: an entry of `parameter` for every effect type whose
@@ -75,6 +75,17 @@ const OPACITY_PIXELS: &str = "known defect #1386: a non-anchor Opacity entry is 
 
 const RAMP_PIXELS: &str = "known defect #1409: retiming comes from the clip's speed curve, so a Speed Ramp switched off draws the same frame";
 
+/// Why a card's eye earns no Pixels key, when it can't: switching it can't
+/// change the frame, or the frame differs between the CPU and the GPU
+/// stack before any edit (pinned with its issue until the routes agree).
+fn eye_pixels_pinned(tag: &str) -> Option<&'static str> {
+    match tag {
+        "speed_ramp" => Some(RAMP_PIXELS),
+        "opacity" => Some(OPACITY_PIXELS),
+        _ => None,
+    }
+}
+
 pub(super) fn require(manifest: &mut Manifest) {
     for (entry, _, _) in hidden() {
         manifest.require_fixture(&entry, Surface::EffectsStack, "sample");
@@ -84,12 +95,7 @@ pub(super) fn require(manifest: &mut Manifest) {
     }
     for (entry, ty) in eyes() {
         manifest.require_fixture(&entry, Surface::EffectsStack, "sample");
-        let pinned = match ty.tag {
-            "speed_ramp" => Some(RAMP_PIXELS),
-            "opacity" => Some(OPACITY_PIXELS),
-            _ => None,
-        };
-        if let Some(why) = pinned {
+        if let Some(why) = eye_pixels_pinned(ty.tag) {
             manifest.exclude_key(CoverageKey::new(entry.type_id, &entry.parameter, Surface::EffectsStack, "sample", Interaction::Pixels), why);
         }
     }
@@ -98,13 +104,15 @@ pub(super) fn require(manifest: &mut Manifest) {
     }
 }
 
-/// `clip` with its effect at `index` switched `on`.
+/// `clip` with its effect at `index` switched `on`, every effect keeping
+/// its id (a plain `set_effect_list` gives each a new one).
 fn switched(mut clip: klipp_timeline::Clip, index: usize, on: bool) -> klipp_timeline::Clip {
     let effects = clip.builtin_effects().to_vec();
     let mut enabled = clip.builtin_effects_enabled().to_vec();
     enabled.resize(effects.len(), true);
     enabled[index] = on;
-    clip.set_effect_list(effects, enabled);
+    let ids = clip.effect_id_list();
+    clip.set_effect_list_with_ids(effects, enabled, &ids);
     clip
 }
 
@@ -148,28 +156,28 @@ fn eye_fixture(effect: &BuiltinEffect) -> klipp_timeline::Clip {
     clip
 }
 
-/// The eye switched `on` from the other way, in each view: the generated
-/// card's checkbox and the old card's eye give the same picture, one step
-/// each, and the generated one undoes and redoes exactly.
+/// The eye switched `on` from the other way: the picture exactly the
+/// start's with the effect's enabled flag set `on`, one step, undone and
+/// redone exactly.
 fn eye_case(effect: &BuiltinEffect, on: bool) -> Result<(), String> {
     let start = switched(eye_fixture(effect), 0, !on);
-    let (mut new, mut old) = (Stack::new(start.clone()), Stack::new(start));
+    let expected = Stack::new(switched(start.clone(), 0, on)).picture();
+    let mut new = Stack::new(start);
     let before = new.picture();
     click_eye(&mut new, 0)?;
-    old.apply(&AppCommand::ToggleBuiltinEffectEnabled { clip_id: old.clip, index: 0 });
-    if !new.unapplied.is_empty() || !old.unapplied.is_empty() {
-        return Err(format!("unapplied: new {:?}, old {:?}", new.unapplied, old.unapplied));
+    if !new.unapplied.is_empty() {
+        return Err(format!("unapplied: {:?}", new.unapplied));
     }
-    if is_on(&new, 0) != on || is_on(&old, 0) != on {
-        return Err(format!("switched new {}, old {}, want {on}", is_on(&new, 0), is_on(&old, 0)));
+    if is_on(&new, 0) != on {
+        return Err(format!("switched {}, want {on}", is_on(&new, 0)));
     }
     let after = new.picture();
-    if after != old.picture() {
-        return Err("not the old eye's picture".into());
+    if after != expected {
+        return Err("not the expected picture: more than the effect's switch was written".into());
     }
-    let (un, uo) = (new.state.active_history().undo_count(), old.state.active_history().undo_count());
-    if (un, uo) != (1, 1) {
-        return Err(format!("undo depth new {un}, old {uo}, not one each"));
+    let steps = new.state.active_history().undo_count();
+    if steps != 1 {
+        return Err(format!("{steps} undo steps, not one"));
     }
     new.step(false)?;
     if new.picture() != before {
@@ -190,8 +198,8 @@ fn routes(ty: &EffectType) -> (super::parity_pixels::Routes, (u32, u32)) {
     (routes, if super::parity_numeric::AT_FULL_SIZE.contains(&ty.tag) { FULL } else { SMALL })
 }
 
-/// The eye switched off, drawn: on the effect's pixel fixture, the
-/// generated card's eye and the old card's give the same changed frame.
+/// The eye switched off, drawn: on the effect's pixel fixture, the card's
+/// eye changes the frame, and the CPU's frame is the GPU's.
 fn eye_pixels(ty: &EffectType) -> Result<(), String> {
     let (mut start, index) = super::parity_numeric::pixel_fixture(ty, &(ty.sample)(), Surface::EffectsStack)?;
     if ty.tag == "opacity" {
@@ -201,12 +209,12 @@ fn eye_pixels(ty: &EffectType) -> Result<(), String> {
     let start = acting(ty, start, index, size)?;
     let mut new = Stack::new(start.clone());
     click_eye(&mut new, index)?;
-    let mut old = Stack::new(start.clone());
-    old.apply(&AppCommand::ToggleBuiltinEffectEnabled { clip_id: old.clip, index });
-    let (mut a, mut b) = (old.clip().clone(), new.clip().clone());
-    super::parity_numeric::regain(&mut a);
+    if is_on(&new, index) {
+        return Err("the eye didn't switch the effect off".into());
+    }
+    let mut b = new.clip().clone();
     super::parity_numeric::regain(&mut b);
-    super::parity_pixels::same_edit_on(routes, size, &start, &a, &b)?;
+    super::parity_pixels::clip_edit_drawn_on(routes, size, &start, &b)?;
     // A Transform switched off is bypassed (#1207): its frame is the clip's
     // with no Transform at all, exactly, on each route.
     if ty.tag == "transform" {
@@ -471,7 +479,7 @@ pub(super) fn run(report: &mut Report) {
             let name = format!("{} eye switched {}", ty.tag, if on { "on" } else { "off" });
             report.case(&name, [key(Interaction::Toggle(on)), key(Interaction::UndoRedo)], || eye_case(&effect, on));
         }
-        if !matches!(ty.tag, "speed_ramp" | "opacity") {
+        if eye_pixels_pinned(ty.tag).is_none() {
             report.case_or_blocked(&format!("{} eye drawn", ty.tag), [key(Interaction::Pixels)], || eye_pixels(ty));
         }
     }
@@ -566,7 +574,7 @@ pub(super) fn run(report: &mut Report) {
 /// Every eye and Mix on the stack, as above: every case passes, and every
 /// key it's required for is earned, but those excluded with a citation.
 #[test]
-fn effect_eyes_and_mixes_edit_alike() {
+fn effect_eyes_and_mixes_store_what_they_name() {
     let mut report = Report::default();
     report.family("effect switches and mixes", run);
     report.family_result().unwrap();

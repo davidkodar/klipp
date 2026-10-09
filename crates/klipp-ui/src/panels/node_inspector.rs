@@ -3247,7 +3247,8 @@ impl NodeInspectorPanel {
         let mut tolerance = dk.tolerance;
         #[cfg(any(test, feature = "row-recorder"))]
         crate::widgets::row_recorder::next_parameter("difference_key.tolerance");
-        if grade_slider(ui, "Tolerance", &mut tolerance, 0.0..=1.0, "", cmds, clip_id, theme) {
+        let defaults = klipp_core::color_grade::DifferenceKeySettings::default();
+        if grade_slider_resetting(ui, "Tolerance", &mut tolerance, 0.0..=1.0, defaults.tolerance, "", cmds, clip_id, theme) {
             dk.tolerance = tolerance;
             cmds.push(AppCommand::SetNodeDifferenceKey {
                 clip_id, node_id, difference_key: dk.clone(),
@@ -3256,7 +3257,7 @@ impl NodeInspectorPanel {
         let mut soft = dk.soft;
         #[cfg(any(test, feature = "row-recorder"))]
         crate::widgets::row_recorder::next_parameter("difference_key.soft");
-        if grade_slider(ui, "Soft", &mut soft, 0.0..=0.5, "", cmds, clip_id, theme) {
+        if grade_slider_resetting(ui, "Soft", &mut soft, 0.0..=0.5, defaults.soft, "", cmds, clip_id, theme) {
             dk.soft = soft;
             cmds.push(AppCommand::SetNodeDifferenceKey {
                 clip_id, node_id, difference_key: dk.clone(),
@@ -4756,19 +4757,19 @@ fn wheel_shape_sliders(
     theme: &crate::theme::KlippTheme,
 ) {
     use klipp_color::grade_model::{LOG_HIGH_RANGE, LOG_LOW_RANGE, MID_GREY_ENCODED};
-    let mut rows = vec![("Luma Mix", "luma_mix", params.luma_mix.unwrap_or(1.0), 0.0..=1.0)];
+    let mut rows = vec![("Luma Mix", "luma_mix", params.luma_mix.unwrap_or(1.0), 0.0..=1.0, 1.0)];
     if log_mode {
-        rows.push(("Low Range", "log_low_range", params.log_low_range.unwrap_or(LOG_LOW_RANGE), 0.0..=MID_GREY_ENCODED - 0.08));
-        rows.push(("High Range", "log_high_range", params.log_high_range.unwrap_or(LOG_HIGH_RANGE), MID_GREY_ENCODED + 0.08..=1.2));
+        rows.push(("Low Range", "log_low_range", params.log_low_range.unwrap_or(LOG_LOW_RANGE), 0.0..=MID_GREY_ENCODED - 0.08, LOG_LOW_RANGE));
+        rows.push(("High Range", "log_high_range", params.log_high_range.unwrap_or(LOG_HIGH_RANGE), MID_GREY_ENCODED + 0.08..=1.2, LOG_HIGH_RANGE));
     }
     // Sent, not written into `params`: they are the clip's own, and a
     // value written there on the press would already be in the snapshot
     // the gesture's BeginNodeParamEdit takes, so undo would return to it.
-    for (label, pname, val, range) in rows {
+    for (label, pname, val, range, default) in rows {
         let mut v = val;
         #[cfg(any(test, feature = "row-recorder"))]
         crate::widgets::row_recorder::next_parameter(pname);
-        if grade_slider(ui, label, &mut v, range, "", cmds, clip_id, theme) {
+        if grade_slider_resetting(ui, label, &mut v, range, default, "", cmds, clip_id, theme) {
             cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: pname.into(), value: v });
         }
     }
@@ -4782,6 +4783,40 @@ fn grade_slider(
     label: &str,
     value: &mut f32,
     range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+    cmds: &mut Vec<AppCommand>,
+    clip_id: ClipId,
+    theme: &crate::theme::KlippTheme,
+) -> bool {
+    grade_slider_with(ui, label, value, range, None, suffix, cmds, clip_id, theme)
+}
+
+/// [`grade_slider`] whose label resets it to `default` when clicked, one
+/// undo step, as every number row of the inspector resets: for the
+/// editors the generated pages draw too (the wheels' shape sliders, the
+/// Difference Key's).
+#[allow(clippy::too_many_arguments)]
+fn grade_slider_resetting(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    default: f32,
+    suffix: &str,
+    cmds: &mut Vec<AppCommand>,
+    clip_id: ClipId,
+    theme: &crate::theme::KlippTheme,
+) -> bool {
+    grade_slider_with(ui, label, value, range, Some(default), suffix, cmds, clip_id, theme)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn grade_slider_with(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    default: Option<f32>,
     suffix: &str,
     cmds: &mut Vec<AppCommand>,
     clip_id: ClipId,
@@ -4814,8 +4849,19 @@ fn grade_slider(
 
     ui.horizontal(|ui| {
         ui.add_space(pad);
-        ui.label(egui::RichText::new(label).size(11.0).color(
-            theme.overlay(107)));
+        let text = egui::Label::new(egui::RichText::new(label).size(11.0).color(theme.overlay(107)));
+        match default {
+            Some(default) => {
+                if ui.add(text.sense(egui::Sense::click())).on_hover_text("Click to reset").clicked() && *value != default {
+                    *value = default;
+                    changed = true;
+                    one_shot = true;
+                }
+            }
+            None => {
+                ui.add(text);
+            }
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(pad);
             // The number's drag moves the value by the grade rule, shared with

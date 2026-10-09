@@ -1,7 +1,8 @@
-//! A key lane's picture through both views: every keyframable numeric
-//! effect row (the effect-key family's rows) earns `KeyedPixels` when its
-//! keys animate the drawn frame, and a key edited through either view
-//! draws the same frame on each route. The lanes render through the
+//! A key lane's picture: every keyframable numeric effect row (the
+//! effect-key family's rows) earns `KeyedPixels` when its keys animate the
+//! drawn frame, and a key edited through the inspector draws the frame the
+//! lane keyed to that value directly draws, on each route, the CPU's as the
+//! GPU's. The lanes render through the
 //! effect node's animation, a path apart from the row's static value, so
 //! the row's Pixels key doesn't vouch for them.
 //!
@@ -12,9 +13,9 @@
 //!   the row fails, named; two times of one clip always differ, since the
 //!   source moves;
 //! - the edit: the key at `T2` typed to a third visible value at the
-//!   playhead in the old view and the generated one, which must draw the
-//!   same frame at `T2` (a key time) and at `MID` (strictly between the
-//!   keys) on each route, and change the frame at `T2`.
+//!   playhead, which must change the frame at `T2` and draw the expected
+//!   lane's frame at `T2` (a key time) and at `MID` (strictly between the
+//!   keys) on each route, the CPU's within a level of the GPU's.
 //!
 //! Each interpolation the row's lane takes is checked: Step always, and
 //! Linear where the parameter interpolates, so an interpolation mismatch
@@ -39,13 +40,26 @@ fn key(entry: &CatalogEntry) -> CoverageKey {
     CoverageKey::new(entry.type_id, &entry.parameter, Surface::EffectsStack, variant(entry), Interaction::KeyedPixels)
 }
 
+/// Keyed lanes the CPU and the GPU stack draw differently, where the row's
+/// static picture agrees: known defects, excluded from `KeyedPixels` with
+/// their issues until fixed (type, parameter, reason).
+const KEYED_DEFECTS: &[(&str, &str, &str)] = &[
+    ("klipp.fx.posterize", "levels", "known CPU/GPU defect #1443: Posterize differs on the CPU and the GPU stack at a level boundary"),
+];
+
+/// Why a row's keyed lane is excluded, if it is: a known defect of the
+/// row, or of its lane alone.
+fn excluded(entry: &CatalogEntry) -> Option<&'static str> {
+    known_defect(entry, Surface::EffectsStack, variant(entry)).or_else(|| KEYED_DEFECTS.iter().find(|(ty, param, _)| *ty == entry.type_id && *param == entry.parameter).map(|d| d.2))
+}
+
 /// The rows that owe `KeyedPixels`: the effect-key family's, less the
-/// known defects, whose keys move nothing either.
+/// known defects, whose keys move nothing or draw apart on the routes.
 pub(super) fn require(manifest: &mut Manifest) {
     for entry in catalog().into_iter().filter(eligible) {
         let k = key(&entry);
         manifest.require(k.clone());
-        if let Some(reason) = known_defect(&entry, Surface::EffectsStack, variant(&entry)) {
+        if let Some(reason) = excluded(&entry) {
             manifest.exclude_key(k, reason);
         }
     }
@@ -120,29 +134,30 @@ fn case(entry: &CatalogEntry, interpolation: Interpolation, picks: &mut Picks) -
     let (b, typed) = picks.clone().expect("chosen above");
     keyed(&mut clip, b);
     let start = clip.clone();
-    // Each view types the third value at the second key.
-    let mut edited = Vec::new();
-    for generated in [false, true] {
-        let t0 = std::time::Instant::now();
-        let mut run = Run::new(clip.clone(), generated);
-        run.state.playhead = Timecode::from_secs_f64(T2, clip.timeline_in.rate);
-        type_value(&mut run, label, &typed)?;
-        super::parity_pixels::timing::add(&super::parity_pixels::timing::DRIVING, t0);
-        if !run.unapplied.is_empty() {
-            return Err(format!("generated={generated}: unapplied {:?}", run.unapplied));
-        }
-        let mut c = run.clip().clone();
-        regain(&mut c);
-        edited.push(c);
+    // The view types the third value at the second key; the expected clip
+    // has that key set on its lane directly.
+    let t0 = std::time::Instant::now();
+    let mut run = Run::new(clip.clone(), true);
+    run.state.playhead = Timecode::from_secs_f64(T2, clip.timeline_in.rate);
+    type_value(&mut run, label, &typed)?;
+    super::parity_pixels::timing::add(&super::parity_pixels::timing::DRIVING, t0);
+    if !run.unapplied.is_empty() {
+        return Err(format!("unapplied {:?}", run.unapplied));
     }
-    let (old, new) = (&edited[0], &edited[1]);
-    if !differ(routes, size, &start, new, T2)? {
+    let mut new = run.clip().clone();
+    regain(&mut new);
+    let shown: f32 = typed.parse().map_err(|_| format!("{typed:?} isn't a number"))?;
+    let want = number(desc, pres.display.map_or(shown, |map| (map.to_stored)(shown, encoding))).as_f64().unwrap_or(f64::from(shown)) as f32;
+    let mut expected = start.clone();
+    keyed(&mut expected, want);
+    if !differ(routes, size, &start, &new, T2)? {
         return Err("the key edit doesn't change the frame at its key".into());
     }
     for (what, secs) in [("the key time", T2), ("between the keys", MID)] {
-        if differ(routes, size, old, new, secs)? {
-            return Err(format!("old and generated frames differ at {what} ({secs} s)"));
+        if differ(routes, size, &expected, &new, secs)? {
+            return Err(format!("the frame differs from the lane keyed to {want} at {what} ({secs} s)"));
         }
+        super::parity_pixels::routes_agree_at(routes, size, &new, secs).map_err(|e| format!("at {what} ({secs} s): {e}"))?;
     }
     Ok(())
 }
@@ -158,9 +173,6 @@ fn interpolations(entry: &CatalogEntry) -> Vec<Interpolation> {
 
 pub(super) fn run(report: &mut Report) {
     for entry in catalog().into_iter().filter(eligible) {
-        if known_defect(&entry, Surface::EffectsStack, variant(&entry)).is_some() {
-            continue;
-        }
         let name = format!("{} / {} / keyed pixels", entry.type_id, entry.parameter);
         let check = || {
             let mut picks = None;
@@ -169,6 +181,16 @@ pub(super) fn run(report: &mut Report) {
             }
             Ok(())
         };
+        match excluded(&entry) {
+            // A known CPU/GPU defect: its key excluded with the issue, the
+            // lane still animates the frame.
+            Some(why) if why.starts_with("known CPU/GPU") => {
+                report.case(&format!("{name}, routes apart (pinned)"), [], || super::parity_pixels::with_routes_apart(check));
+                continue;
+            }
+            Some(_) => continue,
+            None => {}
+        }
         match routes_for(entry.type_id) {
             (Routes::CpuByDesign, Some(reason)) => report.case_cpu_by_design(&name, [key(&entry)], reason, check),
             _ => report.case_or_blocked(&name, [key(&entry)], check),

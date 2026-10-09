@@ -3,7 +3,7 @@
 //! through egui's own colour popup: the swatch clicked, a channel's number
 //! typed or dragged in the popup, the popup closed. Held to the expected
 //! result: the colour stored as typed, one undo step, an exact undo, and
-//! the frame the expected colour draws, alike on the CPU and the GPU.
+//! the frame the expected colour draws changed, the CPU's the GPU's.
 
 use super::parity_harness::{fixture, Run};
 use super::parity_manifest::{catalog, CatalogEntry, CatalogValue, CoverageKey, Interaction, Manifest, Report, Surface};
@@ -55,10 +55,9 @@ fn field(run: &mut Run, prefix: &str) -> Option<egui::Pos2> {
 fn open(run: &mut Run, label: &str) -> Result<(), String> {
     let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
     let at = drawn.iter().find(|(t, _)| t == label).map(|(_, p)| *p).ok_or_else(|| format!("no {label:?} row"))?;
-    let generated = run.state.use_generated_stack;
     for i in 0..80 {
         let p = egui::pos2(at.x + 10.0 + 6.0 * i as f32, at.y);
-        let mut t = Run::new(run.clip().clone(), generated);
+        let mut t = Run::new(run.clip().clone(), true);
         t.frame(Vec::new(), egui::Modifiers::NONE);
         click(&mut t, p);
         if field(&mut t, "R ").is_some() {
@@ -238,12 +237,12 @@ pub(super) fn run(report: &mut Report) {
                 type_channel(r, "G ", "120")?;
                 type_channel(r, "B ", "60")
             }, Some(&orange), 3)?;
-            let was = serde_json::to_value(&start.builtin_effects()[index_of(&start, ty)]).map_err(|e| e.to_string())?[desc.field].clone();
-            let old = with_colour(&start, ty, desc, orange(&was))?;
+            // `edit` has held its picture to the expected colour's; here the
+            // frame it draws changes, and the CPU's is the GPU's.
             use super::parity_pixels::{Routes, FULL, SMALL};
             let routes = if super::parity_numeric::CPU_BY_DESIGN.iter().any(|(t, _)| *t == ty.desc.id) { Routes::CpuByDesign } else { Routes::Both };
             let size = if super::parity_numeric::AT_FULL_SIZE.contains(&ty.tag) { FULL } else { SMALL };
-            super::parity_pixels::same_edit_on(routes, size, &start, &old, &new)
+            super::parity_pixels::clip_edit_drawn_on(routes, size, &start, &new)
         });
     }
 }
@@ -251,7 +250,7 @@ pub(super) fn run(report: &mut Report) {
 /// Every colour row on the stack, as above: every case passes, and every
 /// key it's required for is earned, but those excluded with a citation.
 #[test]
-fn effect_colour_rows_edit_alike_through_their_popup() {
+fn effect_colour_rows_store_the_colour_through_their_popup() {
     let mut report = Report::default();
     report.family("effect colour rows", run);
     report.family_result().unwrap();

@@ -1,13 +1,12 @@
 //! M3 step 18 parity: the keyframe curve editor (d9's family), on every
 //! keyframable effect parameter's track, as it lists them today (tracks
 //! that have keys). Each case drives the editor, and the keyframe menu the
-//! timeline draws for it, with the generated inspector off and on, and
-//! requires the same picture, one undo step and an exact undo in each.
+//! timeline draws for it, with the generated inspector on, and requires
+//! the keys the edit names, one undo step, and an exact undo and redo.
 //! Every place a case clicks is a share of the track's drawn range, so one
 //! set of cases drives every parameter.
 //!
-//! Previous/Next key doesn't follow the curve editor's track in either view
-//! (#1401), and grade tracks aren't listed (#891): both are central
+//! Previous/Next key doesn't follow the curve editor's track (#1401), and grade tracks aren't listed (#891): both are central
 //! exclusions in the parity rules.
 
 use super::inspector_edit_host::{InspectorEditHost, InspectorSideEffects};
@@ -268,8 +267,8 @@ pub(super) fn require(manifest: &mut Manifest) {
     }
 }
 
-/// One edit through the editor in both views: `want` on its keys, the same
-/// picture in each, one step, undone and redone exactly.
+/// One edit through the editor: `want` on its keys, one step, undone and
+/// redone exactly.
 fn case(track: Track, want: impl Fn(&[(f64, f32, klipp_core::Interpolation)]) -> Result<(), String>, drive: impl Fn(&mut Curves) -> Result<(), String>) -> Result<(), String> {
     case_from(track, |_| Ok(()), want, drive)
 }
@@ -277,34 +276,26 @@ fn case(track: Track, want: impl Fn(&[(f64, f32, klipp_core::Interpolation)]) ->
 /// As [`case`], from where `prepare` leaves the fixture, with a fresh
 /// history.
 fn case_from(track: Track, prepare: impl Fn(&mut Curves) -> Result<(), String>, want: impl Fn(&[(f64, f32, klipp_core::Interpolation)]) -> Result<(), String>, drive: impl Fn(&mut Curves) -> Result<(), String>) -> Result<(), String> {
-    let mut pictures = Vec::new();
-    let clip = fixture(&track)?;
-    for generated in [false, true] {
-        let mut c = Curves::over(track, clip.clone(), generated)?;
-        prepare(&mut c).map_err(|e| format!("generated {generated}: preparing: {e}"))?;
-        c.restart();
-        let before = c.picture();
-        drive(&mut c).map_err(|e| format!("generated {generated}: {e}"))?;
-        if !c.unapplied.is_empty() {
-            return Err(format!("generated {generated}: unapplied {:?}", c.unapplied));
-        }
-        want(&c.keys()).map_err(|e| format!("generated {generated}: {e}: {:?}", c.keys()))?;
-        if c.state.active_history().undo_count() != 1 {
-            return Err(format!("generated {generated}: {} steps, not one", c.state.active_history().undo_count()));
-        }
-        let after = c.picture();
-        c.step(false)?;
-        if c.picture() != before {
-            return Err(format!("generated {generated}: undo doesn't give back the picture"));
-        }
-        c.step(true)?;
-        if c.picture() != after {
-            return Err(format!("generated {generated}: redo doesn't give back the picture"));
-        }
-        pictures.push(after);
+    let mut c = Curves::over(track, fixture(&track)?, true)?;
+    prepare(&mut c).map_err(|e| format!("preparing: {e}"))?;
+    c.restart();
+    let before = c.picture();
+    drive(&mut c)?;
+    if !c.unapplied.is_empty() {
+        return Err(format!("unapplied {:?}", c.unapplied));
     }
-    if pictures[0] != pictures[1] {
-        return Err("the two views' pictures differ".into());
+    want(&c.keys()).map_err(|e| format!("{e}: {:?}", c.keys()))?;
+    if c.state.active_history().undo_count() != 1 {
+        return Err(format!("{} steps, not one", c.state.active_history().undo_count()));
+    }
+    let after = c.picture();
+    c.step(false)?;
+    if c.picture() != before {
+        return Err("undo doesn't give back the picture".into());
+    }
+    c.step(true)?;
+    if c.picture() != after {
+        return Err("redo doesn't give back the picture".into());
     }
     Ok(())
 }
@@ -331,13 +322,11 @@ fn run_track(report: &mut Report, e: &super::parity_manifest::CatalogEntry, trac
     let name = |what: &str| format!("{} / {}: curve editor {what}", e.type_id, e.parameter);
 
     report.case(&name("opened"), [key(Interaction::OpenWithoutWrite)], || {
-        for generated in [false, true] {
-            let mut c = Curves::over(track, fixture(&track)?, generated)?;
-            let before = c.picture();
-            c.frame(Vec::new());
-            if c.picture() != before || c.state.active_history().undo_count() != 0 || !c.unapplied.is_empty() {
-                return Err(format!("generated {generated}: opening wrote"));
-            }
+        let mut c = Curves::over(track, fixture(&track)?, true)?;
+        let before = c.picture();
+        c.frame(Vec::new());
+        if c.picture() != before || c.state.active_history().undo_count() != 0 || !c.unapplied.is_empty() {
+            return Err("opening wrote".into());
         }
         Ok(())
     });
@@ -424,7 +413,7 @@ fn pick(c: &mut Curves, item: &str) -> Result<(), String> {
 }
 
 /// A clip lane's Bezier handle dragged in the curve editor is one step,
-/// undone exactly, in each view, as the lane's key drag is (#1424): the
+/// undone exactly, as the lane's key drag is (#1424): the
 /// tangent handlers record nothing themselves.
 #[test]
 fn a_lane_bezier_handle_drag_is_one_step() {
@@ -436,32 +425,30 @@ fn a_lane_bezier_handle_drag_is_one_step() {
         keys[1].tangent_out = (0.3, 0.0);
     });
     let tangent = |c: &Curves| c.clip().video_param_keyframes(VideoParam::Opacity)[1].tangent_out;
-    for generated in [false, true] {
-        let mut c = Curves::over(track, clip.clone(), generated).unwrap();
-        // The key selected, so its handles are drawn and grabbed.
-        let key = c.at(1.5, 0.8);
-        c.click(key, egui::PointerButton::Primary);
-        let (steps, before) = (c.state.active_history().undo_count(), c.picture());
-        let (from, to) = (c.at(1.8, 0.8), c.at(1.8, 0.5));
-        c.button(from, egui::PointerButton::Primary, true);
-        // Just past egui's drag threshold first, still within the handle's
-        // eight pixels: the editor finds what's dragged where the drag starts.
-        c.frame(vec![egui::Event::PointerMoved(from + (to - from).normalized() * 7.0)]);
-        for k in 1..=4 {
-            c.frame(vec![egui::Event::PointerMoved(from + (to - from) * (k as f32 / 4.0))]);
-        }
-        c.button(to, egui::PointerButton::Primary, false);
-        c.frame(vec![egui::Event::PointerGone]);
-        assert!(c.unapplied.is_empty(), "generated {generated}: {:?}", c.unapplied);
-        assert_ne!(tangent(&c), (0.3, 0.0), "generated {generated}: the handle moved");
-        assert_eq!(c.state.active_history().undo_count(), steps + 1, "generated {generated}: one step");
-        c.step(false).unwrap();
-        assert!(c.picture() == before, "generated {generated}: undo gives back the tangent");
+    let mut c = Curves::over(track, clip, true).unwrap();
+    // The key selected, so its handles are drawn and grabbed.
+    let key = c.at(1.5, 0.8);
+    c.click(key, egui::PointerButton::Primary);
+    let (steps, before) = (c.state.active_history().undo_count(), c.picture());
+    let (from, to) = (c.at(1.8, 0.8), c.at(1.8, 0.5));
+    c.button(from, egui::PointerButton::Primary, true);
+    // Just past egui's drag threshold first, still within the handle's
+    // eight pixels: the editor finds what's dragged where the drag starts.
+    c.frame(vec![egui::Event::PointerMoved(from + (to - from).normalized() * 7.0)]);
+    for k in 1..=4 {
+        c.frame(vec![egui::Event::PointerMoved(from + (to - from) * (k as f32 / 4.0))]);
     }
+    c.button(to, egui::PointerButton::Primary, false);
+    c.frame(vec![egui::Event::PointerGone]);
+    assert!(c.unapplied.is_empty(), "{:?}", c.unapplied);
+    assert_ne!(tangent(&c), (0.3, 0.0), "the handle moved");
+    assert_eq!(c.state.active_history().undo_count(), steps + 1, "one step");
+    c.step(false).unwrap();
+    assert!(c.picture() == before, "undo gives back the tangent");
 }
 
 #[test]
-fn effect_tracks_edit_alike_in_the_curve_editor() {
+fn effect_tracks_take_the_edits_named_in_the_curve_editor() {
     let mut report = Report::default();
     report.family("curve editor", run);
     report.family_result().unwrap();

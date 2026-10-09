@@ -321,21 +321,6 @@ fn same_edit_at(size: (u32, u32), before: &Clip, old: &Clip, new: &Clip) -> Resu
     same_sequence_edit_at(size, &on(before), &on(old), &on(new))
 }
 
-/// The Pixels bar for a grade's edit, over whole sequences: [`same_edit`]
-/// for a grade that isn't a clip's, the sequence's timeline grade or a
-/// group's stage, drawn by the sequence's own stage for it. Each sequence
-/// flattened, as the engine is given it, and drawn at the oracle's size.
-pub(super) fn same_sequence_edit(before: &Sequence, old: &Sequence, new: &Sequence) -> Result<(), String> {
-    // Flattened, as the engine is given it: a group's stages are baked
-    // into its clips there.
-    let sized = |seq: &Sequence| {
-        let mut seq = klipp_timeline::flatten::flatten_sequence(seq, &[]);
-        seq.resolution = klipp_core::Resolution { width: SMALL.0, height: SMALL.1 };
-        seq
-    };
-    same_sequence_edit_at(SMALL, &sized(before), &sized(old), &sized(new))
-}
-
 fn same_sequence_edit_at(size: (u32, u32), before: &Sequence, old: &Sequence, new: &Sequence) -> Result<(), String> {
     let (before, old, new) = (render_sequence(before, size)?, render_sequence(old, size)?, render_sequence(new, size)?);
     if new.cpu == before.cpu {
@@ -351,6 +336,103 @@ fn same_sequence_edit_at(size: (u32, u32), before: &Sequence, old: &Sequence, ne
         return Err(format!("old and generated GPU frames differ, first at byte {i}: {} vs {}", old.gpu[i], new.gpu[i]));
     }
     Ok(())
+}
+
+/// The CPU frame as a display shows it: the bytes pixel_check compares,
+/// through the renderer's working space (`WorkingColorspace::default`).
+fn cpu_display(linear: &[f32]) -> Vec<u8> {
+    klipp_color::display::display_transform_ws_to(linear, klipp_color::display::ToneMapOp::None, klipp_core::WorkingColorspace::default(), klipp_core::SdrTransfer::Srgb)
+}
+
+thread_local! {
+    /// Set while a case pinned as a known CPU/GPU defect runs: its frames
+    /// must still change, but the routes aren't held to agree.
+    static ROUTES_APART: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `f` for a case whose type is a known CPU/GPU defect (its Pixels key
+/// excluded, citing its issue): the edit must still change the frame on
+/// each route, but the CPU's isn't held to the GPU's.
+pub(super) fn with_routes_apart<R>(f: impl FnOnce() -> R) -> R {
+    ROUTES_APART.with(|c| c.set(true));
+    let out = f();
+    ROUTES_APART.with(|c| c.set(false));
+    out
+}
+
+/// Whether the CPU frame, as a display shows it, is the GPU stack's frame
+/// within pixel_check's bar: no channel more than a level apart.
+fn cpu_matches_gpu(frames: &Frames) -> Result<(), String> {
+    if ROUTES_APART.with(|c| c.get()) {
+        return Ok(());
+    }
+    let cpu = cpu_display(&frames.cpu);
+    if cpu.len() != frames.gpu.len() {
+        return Err(format!("the CPU and GPU frames differ in size ({} and {} bytes)", cpu.len(), frames.gpu.len()));
+    }
+    let over: Vec<usize> = (0..cpu.len()).filter(|&i| cpu[i].abs_diff(frames.gpu[i]) > 1).collect();
+    match over.first() {
+        None => Ok(()),
+        Some(&i) => Err(format!("the CPU and GPU frames differ by more than a level at {} values, first at byte {i}: {} vs {}", over.len(), cpu[i], frames.gpu[i])),
+    }
+}
+
+/// Whether `clip`'s frame at `secs` is drawn alike on the CPU and the GPU
+/// stack, within pixel_check's bar; the CPU alone has nothing to agree
+/// with.
+pub(super) fn routes_agree_at(routes: Routes, size: (u32, u32), clip: &Clip, secs: f64) -> Result<(), String> {
+    match frames_at(routes, size, clip, secs)? {
+        (cpu, Some(gpu)) => cpu_matches_gpu(&Frames { cpu, gpu }),
+        (_, None) => Ok(()),
+    }
+}
+
+/// The Pixels bar for one edit of the generated view (M3, the old view no
+/// longer compared): drawn on the CPU executor and the native GPU stack,
+/// `after` changes the frame `before` draws on each route, and the CPU's
+/// frame is the GPU's within a level, before and after. Sequences are
+/// flattened, as the engine is given them.
+pub(super) fn edit_drawn(before: &Sequence, after: &Sequence) -> Result<(), String> {
+    let sized = |seq: &Sequence| {
+        let mut seq = klipp_timeline::flatten::flatten_sequence(seq, &[]);
+        seq.resolution = klipp_core::Resolution { width: SMALL.0, height: SMALL.1 };
+        seq
+    };
+    drawn_changed(&render_sequence(&sized(before), SMALL)?, &render_sequence(&sized(after), SMALL)?)
+}
+
+/// The Pixels bar over two drawn frames: the edit changes the CPU frame
+/// and the GPU frame, and the CPU's is the GPU's within a level, before
+/// and after.
+fn drawn_changed(before: &Frames, after: &Frames) -> Result<(), String> {
+    if after.cpu == before.cpu {
+        return Err("the edit doesn't change the CPU frame".into());
+    }
+    if after.gpu == before.gpu {
+        return Err("the edit doesn't change the GPU frame".into());
+    }
+    cpu_matches_gpu(before).map_err(|e| format!("before the edit: {e}"))?;
+    cpu_matches_gpu(after).map_err(|e| format!("after the edit: {e}"))
+}
+
+/// [`edit_drawn`] for one clip, alone on a sequence of the oracle's size.
+pub(super) fn clip_edit_drawn(before: &Clip, after: &Clip) -> Result<(), String> {
+    clip_edit_drawn_on(Routes::Both, SMALL, before, after)
+}
+
+/// [`clip_edit_drawn`] on `routes` at `size`: for a type the CPU draws by
+/// design, the edit changes the CPU frame (its GPU half not applicable);
+/// on both, the bar of [`edit_drawn`], drawn at `size`.
+pub(super) fn clip_edit_drawn_on(routes: Routes, size: (u32, u32), before: &Clip, after: &Clip) -> Result<(), String> {
+    match routes {
+        Routes::CpuByDesign => {
+            if !cpu_frames_differ(before, after, size)? {
+                return Err("the edit doesn't change the CPU frame".into());
+            }
+            Ok(())
+        }
+        Routes::Both => drawn_changed(&render_sequence(&sequence(before, size), size)?, &render_sequence(&sequence(after, size), size)?),
+    }
 }
 
 /// How long the GPU stack takes over `clip`'s frame at `size`, as a median

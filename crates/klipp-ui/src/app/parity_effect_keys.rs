@@ -1,6 +1,7 @@
-//! Effect-row keyframe controls, driven through their actual diamonds,
-//! numbers and menus. The reference edits the legacy clip lane; comparison
-//! includes the whole picture, not only the changed key. Pixels and the
+//! Effect-row keyframe controls of the inspector, driven through their
+//! actual diamonds, numbers and menus. The expected result is the key edit
+//! made on the clip's lane directly; comparison includes the whole picture,
+//! not only the changed key. Pixels and the
 //! curve-editor surface belong to separate families.
 
 use super::parity_harness::Run;
@@ -9,7 +10,7 @@ use super::parity_manifest::{
     Report, Surface,
 };
 use super::parity_numeric::{
-    editable, fixture_on, number, numeric, ready, type_value, with_field, RowLabel,
+    editable, fixture_on, numeric, ready, type_value, RowLabel,
 };
 use crate::inspector::generated::row;
 use klipp_core::{Interpolation, Keyframe, Timecode};
@@ -200,13 +201,13 @@ fn first_difference(
     format!("{path}: actual={actual}, expected={expected}")
 }
 
-fn exercise_case(entry: &CatalogEntry, action: Action, generated: bool) -> Result<(), String> {
-    exercise_on(entry, Surface::EffectsStack, action, generated)
+fn exercise_case(entry: &CatalogEntry, action: Action) -> Result<(), String> {
+    exercise_on(entry, Surface::EffectsStack, action)
 }
 
 /// `action` on `entry`'s row on `surface` (the Effects stack, or the
-/// Video tab's anchor Opacity), old or generated.
-pub(super) fn exercise_on(entry: &CatalogEntry, surface: Surface, action: Action, generated: bool) -> Result<(), String> {
+/// Video tab's anchor Opacity), held to the key edit made on the lane.
+pub(super) fn exercise_on(entry: &CatalogEntry, surface: Surface, action: Action) -> Result<(), String> {
     let CatalogValue::Parameter {
         desc,
         presentation: pres,
@@ -262,26 +263,10 @@ pub(super) fn exercise_on(entry: &CatalogEntry, surface: Surface, action: Action
         0.25
     };
     let mut oracle = clip.clone();
-    // #1388: the old route writes both the base payload and the key.
-    // Keep its exact two-step behavior, without copying it into the new one.
-    let stack = surface == Surface::EffectsStack;
-    let undo_steps = if !generated && matches!(action, Action::Edit) {
-        2
-    } else {
-        1
-    };
-    if !generated && matches!(action, Action::Edit) {
-        let updated = with_field(&effect, desc, number(desc, target))?;
-        let id = oracle.effect_id_at(0).unwrap();
-        oracle.replace_effect(id, updated);
-    }
+    let undo_steps = 1;
     edit_keys(&mut oracle, surface, desc, |keys| match action {
         Action::Add => {
-            let mut evaluated = klipp_core::keyframe::evaluate(keys, at, a);
-            // #1389: the old integer payload rounds before adding a key.
-            if !generated && desc.kind == klipp_effects::registry::ParamKind::Whole {
-                evaluated = evaluated.round();
-            }
+            let evaluated = klipp_core::keyframe::evaluate(keys, at, a);
             klipp_core::keyframe::upsert_keyframe(keys, at, evaluated);
         }
         Action::Remove => klipp_core::keyframe::remove_keyframe_at(keys, at),
@@ -290,7 +275,7 @@ pub(super) fn exercise_on(entry: &CatalogEntry, surface: Surface, action: Action
         Action::Previous | Action::Next => {}
     });
     let expected = oracle.picture_v2()?;
-    let mut run = Run::new(clip.clone(), generated);
+    let mut run = Run::new(clip.clone(), true);
     run.property = surface == Surface::VideoTab;
     run.state.playhead = Timecode::from_secs_f64(at, clip.timeline_in.rate);
     match action {
@@ -305,23 +290,11 @@ pub(super) fn exercise_on(entry: &CatalogEntry, surface: Surface, action: Action
     }
     if !run.unapplied.is_empty() {
         return Err(format!(
-            "generated={generated}: unapplied {:?}",
+            "unapplied {:?}",
             run.unapplied
         ));
     }
     let after = run.clip().picture_v2()?;
-    // #1384: the retiring old Effects route drops the menu response.
-    // Pin that no-op explicitly; the generated route must apply the edit.
-    if stack && !generated && matches!(action, Action::Interpolate(_)) {
-        return if after == before
-            && run.state.active_history().undo_count() == 0
-            && !run.state.any_drag_in_progress()
-        {
-            Ok(())
-        } else {
-            Err("old interpolation differs from the pinned #1384 no-op".into())
-        };
-    }
     if after != expected {
         let difference = first_difference(
             &serde_json::to_value(&after.picture).unwrap(),
@@ -329,7 +302,7 @@ pub(super) fn exercise_on(entry: &CatalogEntry, surface: Surface, action: Action
             "picture",
         );
         return Err(format!(
-            "generated={generated}: {action:?} differs from the whole-picture lane oracle: {difference}; undo={}",
+            "{action:?} differs from the whole-picture lane oracle: {difference}; undo={}",
             run.state.active_history().undo_count()
         ));
     }
@@ -345,7 +318,7 @@ pub(super) fn exercise_on(entry: &CatalogEntry, surface: Surface, action: Action
             || run.state.active_history().undo_count() != 0
         {
             return Err(format!(
-                "generated={generated}: navigation {:?}, playhead {:?}, undo {}",
+                "navigation {:?}, playhead {:?}, undo {}",
                 run.seeks,
                 run.state.playhead,
                 run.state.active_history().undo_count()
@@ -355,26 +328,26 @@ pub(super) fn exercise_on(entry: &CatalogEntry, surface: Surface, action: Action
         if run.state.active_history().undo_count() != undo_steps || run.state.any_drag_in_progress()
         {
             return Err(format!(
-                "generated={generated}: history {}, drag {}",
+                "history {}, drag {}",
                 run.state.active_history().undo_count(),
                 run.state.any_drag_in_progress()
             ));
         }
         for _ in 0..undo_steps {
             if !run.step(false) {
-                return Err(format!("generated={generated}: missing undo step"));
+                return Err("missing undo step".into());
             }
         }
         if run.clip().picture_v2()? != before {
-            return Err(format!("generated={generated}: undo is not exact"));
+            return Err("undo is not exact".into());
         }
         for _ in 0..undo_steps {
             if !run.step(true) {
-                return Err(format!("generated={generated}: missing redo step"));
+                return Err("missing redo step".into());
             }
         }
         if run.clip().picture_v2()? != after {
-            return Err(format!("generated={generated}: redo is not exact"));
+            return Err("redo is not exact".into());
         }
     }
     Ok(())
@@ -394,15 +367,7 @@ pub(super) fn run(report: &mut Report) {
                 );
             let earned = (!extra_whole_menu).then(|| key(&entry, action.interaction()));
             report.case(&name, earned, || {
-                let failures: Vec<_> = [false, true]
-                    .into_iter()
-                    .filter_map(|generated| exercise_case(&entry, action, generated).err())
-                    .collect();
-                if failures.is_empty() {
-                    Ok(())
-                } else {
-                    Err(failures.join("; "))
-                }
+                exercise_case(&entry, action)
             });
         }
     }

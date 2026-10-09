@@ -1,16 +1,16 @@
-//! A masked effect's edits drawn by the real renderer through both views:
+//! A masked effect's edits drawn by the real renderer:
 //! `MaskedPixels`, one effect (a Gaussian Blur) per mask kind.
 //!
 //! A mask is wired on the graph canvas (or over the socket), the same in
 //! either view; what the flip moves is the masked effect's row. A mask
-//! makes the clip's picture whole (picture-truth), so the old Effects tab's
-//! index edits go through the picture-truth guard while the generated
-//! rows write by path. Each case wires the same mask into the fixture,
-//! types the blur's radius through each view, and requires:
+//! makes the clip's picture whole (picture-truth), and the inspector's rows
+//! write by path. Each case wires the mask into the fixture, types the
+//! blur's radius in the inspector, and requires:
 //! - the active control: the masked frame differs from the same clip
 //!   unmasked, on each route;
-//! - the old and generated clips draw the same frame on each route, and
-//!   keep the mask;
+//! - the picture setting the radius by path leaves, the mask kept, and the
+//!   edit drawn: it changes the frame, the CPU's within a level of the
+//!   GPU's;
 //! - the GPU route gives the mask (`effects_mask_unavailable` 0), else
 //!   BLOCKED (`parity_pixels`).
 //!
@@ -21,7 +21,7 @@
 use super::parity_harness::Run;
 use super::parity_manifest::{CoverageKey, Interaction, Manifest, Report, Surface};
 use super::parity_numeric::{type_value, RowLabel};
-use super::parity_pixels::{frames_at, same_edit_on, Routes, AT, SMALL};
+use super::parity_pixels::{clip_edit_drawn, frames_at, Routes, AT, SMALL};
 use klipp_core::{Mask, MaskShape, MaskStack};
 use klipp_effects::BuiltinEffect;
 use klipp_graph_format::lifted::types as lt;
@@ -158,20 +158,24 @@ fn case(kind: Kind) -> Result<(), String> {
     if frames_at(Routes::Both, SMALL, &start, AT)? == frames_at(Routes::Both, SMALL, &plain, AT)? {
         return Err("the masked frame is the unmasked one".into());
     }
-    let label = RowLabel { text: "Radius", group: None };
-    let mut edited = Vec::new();
-    for generated in [false, true] {
-        let mut run = Run::new(start.clone(), generated);
-        type_value(&mut run, label, "12")?;
-        if !run.unapplied.is_empty() {
-            return Err(format!("generated={generated}: unapplied {:?}", run.unapplied));
-        }
-        if !masked(run.clip())? {
-            return Err(format!("generated={generated}: the edit lost the mask"));
-        }
-        edited.push(run.clip().clone());
+    // The view types the radius; the expected clip has it set by path.
+    let mut run = Run::new(start.clone(), true);
+    type_value(&mut run, RowLabel { text: "Radius", group: None }, "12")?;
+    if !run.unapplied.is_empty() {
+        return Err(format!("unapplied {:?}", run.unapplied));
     }
-    same_edit_on(Routes::Both, SMALL, &start, &edited[0], &edited[1])
+    let new = run.clip().clone();
+    if !masked(&new)? {
+        return Err("the edit lost the mask".into());
+    }
+    let p = start.picture_v2()?.picture.clone();
+    let fx = p.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT).map(|n| n.id).ok_or("no blur")?;
+    let mut expected = start.clone();
+    expected.apply_picture_ops(&[GraphOp::SetParam { path: NodePath::new(Root::Clip { clip: start.id.0 }, [fx]), key: klipp_graph_format::ParamKey::from("radius"), value: klipp_graph_format::ParamValue::Float(12.0) }])?;
+    if new.picture_v2()? != expected.picture_v2()? {
+        return Err("the typed radius left another picture than setting it by path does".into());
+    }
+    clip_edit_drawn(&start, &new)
 }
 
 pub(super) fn run(report: &mut Report) {
@@ -181,7 +185,7 @@ pub(super) fn run(report: &mut Report) {
 }
 
 #[test]
-fn a_masked_effects_edit_draws_the_same_picture_through_both_views() {
+fn a_masked_effects_edit_draws_as_the_document_op_on_both_routes() {
     let mut manifest = Manifest::default();
     require(&mut manifest);
     let mut report = Report::default();

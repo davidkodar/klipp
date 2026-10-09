@@ -1,14 +1,15 @@
-//! M3 step 18 parity: the effects stack's switches and menus. Each case
-//! drives the generated stack through its real control (a checkbox
-//! clicked, a menu item picked) and compares the clip's whole typed
-//! picture and its undo depth with a twin where the old route's command,
-//! `UpdateBuiltinEffect` with the one field changed, made the same edit.
-//! Undo must then give back the exact picture before and redo the exact
-//! picture after, through the document as the app applies them.
+//! M3: the switches and menus of the effects stack and the grade pages,
+//! held to what they must store. Each case drives the generated view
+//! through its real control (a checkbox clicked, a menu item picked) and
+//! compares the whole typed picture with the expected one: the start with
+//! the one field set to the value the switch or item names (the catalog's
+//! stored form), written straight into the document. One undo step, and
+//! undo gives back the exact picture before and redo the exact picture
+//! after, through the document as the app applies them.
 //!
-//! The old card's menus are labelled differently by design, so the oracle
-//! for a discrete control is the old route's command, not a click in the
-//! old view. A key is recorded only once its case's assertions pass.
+//! No old view is drawn: the expectation comes from the catalog, never
+//! from running a widget again. A key is recorded only once its case's
+//! assertions pass.
 
 use super::inspector_edit_host::{InspectorEditHost, InspectorSideEffects};
 use super::parity_harness::GradeRoot;
@@ -30,8 +31,8 @@ impl InspectorSideEffects for Sink {
     fn send(&self, _command: AppCommand) {}
 }
 
-/// One clip holding one effect: a clone each for the stack and its twin,
-/// so their pictures compare down to every id.
+/// One clip holding one effect: a clone each for the stack and its
+/// oracle, so their pictures compare down to every id.
 pub(super) fn fixture(effect: &BuiltinEffect) -> klipp_timeline::Clip {
     let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
     let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
@@ -186,27 +187,31 @@ fn menu_labels(desc: &ParamDesc, pres: &Presentation) -> Vec<&'static str> {
 }
 
 /// One discrete edit through the generated stack, `drive` working its
-/// control: the picture the old route's update leaves (the field set to
-/// `want`), in one undo step, undone and redone exactly.
+/// control: the expected picture (the start's clip with the field set to
+/// `want`, the value the control names, by the clip's effect list), in
+/// one undo step, undone and redone exactly.
 fn edit_case(effect: &BuiltinEffect, desc: &ParamDesc, want: Value, drive: impl FnOnce(&mut Stack) -> Result<(), String>) -> Result<(), String> {
     let clip = fixture(effect);
-    let (mut new, mut old) = (Stack::new(clip.clone()), Stack::new(clip));
+    let (mut new, mut oracle) = (Stack::new(clip.clone()), Stack::new(clip));
     let before = new.picture();
     drive(&mut new)?;
-    old.apply(&AppCommand::UpdateBuiltinEffect { clip_id: old.clip, index: 0, effect: with_field(effect, desc, want)? });
-    if !new.unapplied.is_empty() || !old.unapplied.is_empty() {
-        return Err(format!("unapplied: new {:?}, old {:?}", new.unapplied, old.unapplied));
+    oracle.apply(&AppCommand::UpdateBuiltinEffect { clip_id: oracle.clip, index: 0, effect: with_field(effect, desc, want)? });
+    if !new.unapplied.is_empty() {
+        return Err(format!("unapplied: {:?}", new.unapplied));
+    }
+    if !oracle.unapplied.is_empty() {
+        return Err(format!("the expected value can't be written: {:?}", oracle.unapplied));
     }
     let after = new.picture();
     if after == before {
         return Err("the control changed nothing".into());
     }
-    if after != old.picture() {
-        return Err(format!("not the old route's picture: new {:?}, old {:?}", new.clip().builtin_effects(), old.clip().builtin_effects()));
+    if after != oracle.picture() {
+        return Err(format!("not the expected picture: stored {:?}, expected {:?}", new.clip().builtin_effects(), oracle.clip().builtin_effects()));
     }
-    let (un, uo) = (new.state.active_history().undo_count(), old.state.active_history().undo_count());
-    if (un, uo) != (1, 1) {
-        return Err(format!("undo depth new {un}, old {uo}, not one each"));
+    let steps = new.state.active_history().undo_count();
+    if steps != 1 {
+        return Err(format!("{steps} undo steps, not one"));
     }
     new.step(false)?;
     if new.picture() != before {
@@ -284,7 +289,7 @@ pub(super) fn grade_variant(ty: &klipp_nodes::registry::NodeType, desc: &ParamDe
 }
 
 /// Every switch clicked both ways and every menu item picked, on every
-/// effect the stack draws as a card, each against the old route.
+/// effect the stack draws as a card, each held to the value it names.
 pub(super) fn run(report: &mut Report) {
     // A placed kind's card included: its rows are drawn on the stack, their
     // commands sent through the clip's effect list (`to_effect_list`).
@@ -340,7 +345,7 @@ pub(super) fn run(report: &mut Report) {
 /// Every switch and menu row on a card yields its cases, so a row the
 /// stack can't drive is a failure, not a missing count.
 #[test]
-fn effect_switches_and_menus_edit_as_the_old_route() {
+fn effect_switches_and_menus_store_what_they_name() {
     let mut report = Report::default();
     report.family("effect controls", run);
     report.family_result().unwrap();
@@ -372,6 +377,10 @@ pub(super) struct Grade {
     before_input: Option<klipp_nodes::NodeGraph>,
     /// An old-panel gesture's start (`BeginNodeParamEdit`).
     gesture: Option<klipp_nodes::NodeGraph>,
+    /// The path writes the view sent (`SetParamAt`, `SetPayloadAt`), in
+    /// order: where an oracle finds the node's address in this grade,
+    /// whatever its root.
+    pub(super) path_writes: Vec<AppCommand>,
     /// Which grade the node is in (M3 step 19): the clip's own (`clip` is
     /// that clip), or one of the sequence's own (`clip` is the id of the
     /// stand-in it is drawn and edited through, there only inside
@@ -474,7 +483,7 @@ impl Grade {
         // filling the panel, which pushes the rows off it.
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
-        Grade { state, clip, node, ctx, clock: 0.0, panel: Default::default(), generated, unapplied: Vec::new(), side: Vec::new(), page: Page::PerNode, before_input: None, gesture: None, root: GradeRoot::Clip, group: None, home: clip, fresh: None, icons: Vec::new() }
+        Grade { state, clip, node, ctx, clock: 0.0, panel: Default::default(), generated, unapplied: Vec::new(), side: Vec::new(), page: Page::PerNode, before_input: None, gesture: None, root: GradeRoot::Clip, group: None, home: clip, fresh: None, icons: Vec::new(), path_writes: Vec::new() }
     }
 
     /// The same node in `root` instead (M3 step 19): for a sequence grade,
@@ -683,6 +692,9 @@ impl Grade {
         // dispatch passes it.
         self.state.before_dispatch(&cmd);
         self.state.toast = Default::default();
+        if matches!(cmd, AppCommand::SetParamAt { .. } | AppCommand::SetPayloadAt { .. }) {
+            self.path_writes.push(cmd.clone());
+        }
         match self.state.path_command(&cmd) {
             Some(_) => {
                 if let Some(why) = self.state.toast.message_for_test() {
@@ -850,28 +862,231 @@ fn old_menu<'a>(label: &str, shows: &'a str, item: &'a str) -> (String, &'a str,
     }
 }
 
-/// A discrete grade edit, `drive` working the control in both views from
-/// one `start` clip: the generated view's picture must be the old panel's,
-/// in one undo step there, undone and redone exactly.
-pub(super) fn grade_case(start: &Grade, drive: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
-    let (mut new, mut old) = (start.twin(true), start.twin(false));
+/// Whether `after` is `before` but for `node`'s value `key` (a dotted key
+/// names a field of a settings struct): every other node as it was, and
+/// this node's other values and switch.
+fn nothing_else_changed(before: &klipp_nodes::NodeGraph, after: &klipp_nodes::NodeGraph, node: klipp_nodes::NodeId, key: &str) -> Result<(), String> {
+    let without = |g: &klipp_nodes::NodeGraph| {
+        let mut v = serde_json::to_value(g).unwrap();
+        if let Some(nodes) = v["nodes"].as_array_mut() {
+            for n in nodes.iter_mut().filter(|n| n["id"] == serde_json::to_value(node).unwrap()) {
+                // A warper sector's drag writes its hue and saturation
+                // together, both kept in the warper's arrays: that sector's
+                // pair set aside, every other sector compared.
+                let sector = key.strip_prefix("warper_hue_").or_else(|| key.strip_prefix("warper_sat_")).and_then(|i| i.parse::<usize>().ok());
+                if let Some(i) = sector {
+                    // A warper never set is every sector at zero.
+                    if n["params"]["warper_params"].is_null() {
+                        n["params"]["warper_params"] = serde_json::json!({ "hue_shifts": vec![0.0; 12], "sat_shifts": vec![0.0; 12] });
+                    }
+                    for shifts in ["hue_shifts", "sat_shifts"] {
+                        if let Some(slot) = n["params"]["warper_params"][shifts].get_mut(i) {
+                            *slot = serde_json::Value::Null;
+                        }
+                    }
+                    continue;
+                }
+                let mut at = &mut n["params"];
+                let mut parts = key.split('.').peekable();
+                while let Some(part) = parts.next() {
+                    if parts.peek().is_none() {
+                        if let Some(o) = at.as_object_mut() {
+                            o.remove(part);
+                        }
+                    } else {
+                        at = &mut at[part];
+                    }
+                }
+            }
+        }
+        v
+    };
+    let (b, a) = (without(before), without(after));
+    if b != a {
+        let differ = |b: &serde_json::Value, a: &serde_json::Value| -> String {
+            let (bn, an) = (b["nodes"].as_array().cloned().unwrap_or_default(), a["nodes"].as_array().cloned().unwrap_or_default());
+            for (x, y) in bn.iter().zip(&an) {
+                if x != y {
+                    let (xp, yp) = (x["params"].as_object().cloned().unwrap_or_default(), y["params"].as_object().cloned().unwrap_or_default());
+                    for k in xp.keys().chain(yp.keys()) {
+                        if xp.get(k) != yp.get(k) {
+                            return format!("{} {k}: {:?} to {:?}", x["kind"], xp.get(k), yp.get(k));
+                        }
+                    }
+                    return format!("{} (not its params)", x["kind"]);
+                }
+            }
+            "the graph's shape".into()
+        };
+        return Err(format!("the edit of {key} changed more of the grade than {key}: {}", differ(&b, &a)));
+    }
+    Ok(())
+}
+
+/// The expected-result oracle for a grade edit (M3, the old view no longer
+/// compared): what an edit of the generated view must leave, checked
+/// against the same value written by path. Shared by the grade families.
+/// A stored number as the row writes it: whole for a whole-number row.
+pub(super) fn param_value(desc: &ParamDesc, v: f32) -> klipp_graph_format::ParamValue {
+    match desc.kind {
+        klipp_effects::registry::ParamKind::Whole => klipp_graph_format::ParamValue::Int(v.round() as i32),
+        _ => klipp_graph_format::ParamValue::Float(v),
+    }
+}
+
+/// Whether `stored` is `want` as the row writes it, exactly.
+pub(super) fn stores(desc: &ParamDesc, stored: &serde_json::Value, want: f32) -> bool {
+    match param_value(desc, want) {
+        klipp_graph_format::ParamValue::Int(i) => stored.as_i64() == Some(i64::from(i)),
+        klipp_graph_format::ParamValue::Float(f) => stored.as_f64().is_some_and(|v| v as f32 == f),
+        _ => false,
+    }
+}
+
+/// One edit of the generated view (`drive`) from `start`, held to what
+/// it must store: `want`, the row's stored value, written by path to a
+/// clone of `start` (`SetParamAt`, at the address the view wrote it to),
+/// is the picture the view must leave, exactly. A shared editor writing
+/// its node's settings whole, with no path write, is held to `want` as
+/// its stored value. Either way: the row's own node changed, one undo
+/// step, and undo and redo exact.
+pub(super) fn oracle_case(start: &Grade, desc: &ParamDesc, want: f32, drive: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
+    let mut new = start.twin(true);
+    new.drawn();
+    let before = new.picture();
+    let value_before = new.value(desc);
+    drive(&mut new)?;
+    if !new.unapplied.is_empty() {
+        return Err(format!("unapplied: {:?}", new.unapplied));
+    }
+    let after = new.picture();
+    let stored = new.value(desc);
+    if stored == value_before {
+        return Err(format!("the edit left this node's {} at {value_before}", desc.key));
+    }
+    if !stores(desc, &stored, want) {
+        return Err(format!("stored {stored}, where {want} is expected"));
+    }
+    let addr = new.path_writes.iter().rev().find_map(|c| match c {
+        AppCommand::SetParamAt { addr, key, .. } if key.as_str() == desc.key => Some(addr.clone()),
+        _ => None,
+    });
+    match &addr {
+        Some(addr) => {
+            // The write names this node, wherever its root puts it.
+            if addr.node().map(|n| serde_json::to_value(n).ok()) != Some(serde_json::to_value(start.node).ok()) {
+                return Err(format!("the view wrote {} to another node ({addr:?})", desc.key));
+            }
+        }
+        // A shared editor writing its node's settings whole: nothing else
+        // of the grade changed, this node's other values included.
+        None => nothing_else_changed(start.grade(), new.grade(), start.node, desc.key)?,
+    }
+    if let Some(addr) = addr {
+        let mut oracle = start.twin(true);
+        oracle.apply(AppCommand::SetParamAt { addr, key: klipp_graph_format::ParamKey::new(desc.key), value: param_value(desc, want) });
+        if !oracle.unapplied.is_empty() {
+            return Err(format!("the oracle's write: unapplied {:?}", oracle.unapplied));
+        }
+        if oracle.picture() != after {
+            return Err(format!("the edit stored {want} but left another picture than writing it by path does"));
+        }
+    }
+    if new.state.active_history().undo_count() != 1 {
+        return Err(format!("{} undo steps, not one", new.state.active_history().undo_count()));
+    }
+    new.step(false)?;
+    if new.picture() != before {
+        return Err("undo doesn't give back the picture before".into());
+    }
+    new.step(true)?;
+    if new.picture() != after {
+        return Err("redo doesn't give back the picture after".into());
+    }
+    Ok(())
+}
+
+/// `start`'s grade with its node changed by `edit`, written straight into
+/// the document (through a sequence grade's stand-in, as the app edits
+/// one): the picture an edit naming that change must leave.
+pub(super) fn expected_with(start: &Grade, edit: impl FnOnce(&mut klipp_nodes::Node) -> Result<(), String>) -> Result<GradePicture, String> {
+    let mut oracle = start.twin(true);
+    let node = oracle.node;
+    let written = oracle.with_stand_in(|g| -> Result<(), String> {
+        let clip_id = g.clip;
+        let clip = g.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).ok_or("no clip for the grade")?;
+        clip.edit_grade(|graph| edit(graph.nodes.iter_mut().find(|n| n.id == node).ok_or("no node")?))
+    });
+    written?;
+    Ok(oracle.picture())
+}
+
+/// What a switch showing `index` (off 0, on 1) or a menu's item `index`
+/// names, as a path write gives it: the document stores it in the node's
+/// own form (a menu's enum by name, a struct's switch inside its struct,
+/// made at its default when unset).
+fn named_value(desc: &ParamDesc, index: usize) -> klipp_graph_format::ParamValue {
+    match desc.kind {
+        ParamKind::Bool => klipp_graph_format::ParamValue::Bool(index == 1),
+        _ => klipp_graph_format::ParamValue::Int(index as i32),
+    }
+}
+
+/// A discrete grade edit, `drive` working the control from `start`: the
+/// node's `desc` shown at `index` after, and the picture exactly the one
+/// the value `index` names, written by path to a clone of `start` through
+/// the document (at the address the view wrote to, which must name this
+/// node), in one undo step, undone and redone exactly. A shared editor
+/// writing its node's settings by command is held to the item shown and
+/// to changing no other node.
+pub(super) fn grade_case(start: &Grade, desc: &ParamDesc, index: usize, drive: impl Fn(&mut Grade) -> Result<(), String>) -> Result<(), String> {
+    let mut new = start.twin(true);
     // The picture as the page shows it, drawn once (a page may write on
     // its first draw, as the tabbed page's curves do).
     new.drawn();
-    old.drawn();
     let before = new.picture();
     drive(&mut new)?;
-    drive(&mut old).map_err(|e| format!("the old panel: {e}"))?;
-    if !new.unapplied.is_empty() || !old.unapplied.is_empty() {
-        return Err(format!("unapplied: new {:?}, old {:?}", new.unapplied, old.unapplied));
+    if !new.unapplied.is_empty() {
+        return Err(format!("unapplied: {:?}", new.unapplied));
     }
     let after = new.picture();
     if after == before {
         return Err("the control changed nothing".into());
     }
-    if after != old.picture() {
-        let node = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).map(|n| format!("{:?}", n.params)).unwrap_or_default();
-        return Err(format!("not the old panel's picture: new {}, old {}", node(&new), node(&old)));
+    if shown_index(desc, &new.value(desc)) != Some(index) {
+        return Err(format!("stored {}, which doesn't show item {index}", new.value(desc)));
+    }
+    let addr = new.path_writes.iter().rev().find_map(|c| match c {
+        AppCommand::SetParamAt { addr, .. } | AppCommand::SetPayloadAt { addr, .. } => Some(addr.clone()),
+        _ => None,
+    });
+    match addr {
+        Some(addr) => {
+            if addr.node() != Some(new.node) {
+                return Err(format!("the view wrote to {addr:?}, not this node"));
+            }
+            let mut oracle = start.twin(true);
+            oracle.drawn();
+            oracle.apply(AppCommand::SetParamAt { addr, key: klipp_graph_format::ParamKey::new(desc.key), value: named_value(desc, index) });
+            if !oracle.unapplied.is_empty() {
+                return Err(format!("the expected value can't be written: {:?}", oracle.unapplied));
+            }
+            if after != oracle.picture() {
+                let node = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).map(|n| format!("{:?}", n.params)).unwrap_or_default();
+                return Err(format!("not the expected picture ({} at item {index}): stored {}, expected {}", desc.key, node(&new), node(&oracle)));
+            }
+        }
+        // A shared editor (a whole-node widget, the bottom tools' Linear /
+        // Log) writes its node's settings by command, not by path: the
+        // item shown (above), and nothing but this node changed.
+        None => {
+            let mut was = start.twin(true);
+            was.drawn();
+            let others = |g: &Grade| g.grade().nodes.iter().filter(|n| n.id != g.node).map(|n| (n.id, format!("{:?}", n.params), n.enabled)).collect::<Vec<_>>();
+            if others(&new) != others(&was) {
+                return Err("the editor changed another node".into());
+            }
+        }
     }
     if new.state.active_history().undo_count() != 1 {
         return Err(format!("{} undo steps, not one", new.state.active_history().undo_count()));
@@ -961,8 +1176,7 @@ fn wired(kind: klipp_nodes::NodeKind) -> Option<(AppState, ClipId, klipp_nodes::
 }
 
 /// Every switch clicked both ways and every menu item picked on every
-/// grade node the per-node layout draws, the generated view against the
-/// old panel.
+/// grade node the per-node layout draws, each held to the value it names.
 pub(super) fn run_grade(report: &mut Report) {
     for ty in klipp_nodes::registry::node_types() {
         if !super::main_layout::per_node_kind(ty.kind) {
@@ -1007,8 +1221,8 @@ pub(super) fn meet_conditions(base: &Grade, ty: &klipp_nodes::registry::NodeType
 
 /// A grade node's switch or menu row (`desc`), drawn on `base`'s page and
 /// counted on `surface`: clicked both ways or every item picked, each
-/// from the other value, through the generated view and the old panel;
-/// nothing for a row of another widget.
+/// from the other value, held to the value it names; nothing for a row of
+/// another widget.
 fn discrete_cases(report: &mut Report, ty: &klipp_nodes::registry::NodeType, desc: &'static ParamDesc, base: &Grade, surface: Surface) {
     let id = ty.desc.id;
     let pres = ty.presentation(desc);
@@ -1038,7 +1252,7 @@ fn discrete_cases(report: &mut Report, ty: &klipp_nodes::registry::NodeType, des
                     if !start.unapplied.is_empty() {
                         return Err(format!("from the other way: unapplied {:?}", start.unapplied));
                     }
-                    grade_case(&start.twin(true), |g| g.switch(label))
+                    grade_case(&start, desc, usize::from(on), |g| g.switch(label))
                 });
             }
         }
@@ -1057,7 +1271,7 @@ fn discrete_cases(report: &mut Report, ty: &klipp_nodes::registry::NodeType, des
                     if !start.unapplied.is_empty() {
                         return Err(format!("from another item: unapplied {:?}", start.unapplied));
                     }
-                    grade_case(&start.twin(true), |g| g.pick(label, labels[from], item))
+                    grade_case(&start, desc, i, |g| g.pick(label, labels[from], item))
                 });
             }
         }
@@ -1071,8 +1285,7 @@ const CORRECTOR_TABS: &[(&str, crate::state::ColorTab)] = &[("wheels_log_mode", 
 
 /// The Corrector's switches and menus on the pages that share its rows:
 /// the tabbed page in the right inspector, and the Colour page's bottom
-/// tools. A real Corrector, on its tab, through the generated rows and
-/// the old page alike.
+/// tools. A real Corrector, on its tab, through the generated rows.
 pub(super) fn run_grade_pages(report: &mut Report) {
     let ty = klipp_nodes::registry::node_type(klipp_nodes::NodeKind::Corrector).unwrap();
     let Some((state, clip, node)) = super::grade_inspector_tests::graded(klipp_nodes::NodeKind::Corrector) else {
@@ -1096,9 +1309,9 @@ pub(super) fn run_grade_pages(report: &mut Report) {
 }
 
 /// The Corrector's switches and menus on its tabbed page and the bottom
-/// tools edit as the old page does.
+/// tools store what they name.
 #[test]
-fn corrector_page_switches_and_menus_edit_as_the_old_page() {
+fn corrector_page_switches_and_menus_store_what_they_name() {
     let mut report = Report::default();
     report.family("grade pages", run_grade_pages);
     // The same cases with the grade on the timeline grade and a group's
@@ -1110,9 +1323,9 @@ fn corrector_page_switches_and_menus_edit_as_the_old_page() {
 }
 
 /// Every switch and menu row of a per-node grade yields its cases, so a
-/// row neither view can drive is a failure, not a missing count.
+/// row the view can't drive is a failure, not a missing count.
 #[test]
-fn grade_switches_and_menus_edit_as_the_old_panel() {
+fn grade_switches_and_menus_store_what_they_name() {
     let mut report = Report::default();
     report.family("grade controls", run_grade);
     // The same cases with the grade on the timeline grade and a group's
@@ -1126,9 +1339,9 @@ fn grade_switches_and_menus_edit_as_the_old_panel() {
 /// The tabbed page's tabs, each drawn on both pages.
 const TABS: [crate::state::ColorTab; 5] = [crate::state::ColorTab::Adjustments, crate::state::ColorTab::Wheels, crate::state::ColorTab::Curves, crate::state::ColorTab::HueSat, crate::state::ColorTab::Warper];
 
-/// Opening any tab of the Corrector's pages writes nothing, in either
-/// view: the picture as it was before the first draw, no step, nothing
-/// sent that wasn't applied. The Curves, Hue/Sat and Warper editors wrote
+/// Opening any tab of the Corrector's pages writes nothing: the picture
+/// as it was before the first draw, no step, nothing sent that wasn't
+/// applied. The Curves, Hue/Sat and Warper editors wrote
 /// their defaults on their first draw (#1392).
 #[test]
 fn opening_a_corrector_page_tab_writes_nothing() {
@@ -1137,14 +1350,12 @@ fn opening_a_corrector_page_tab_writes_nothing() {
     let mut wrote = Vec::new();
     for tab in TABS {
         for page in [Page::Tabbed(tab), Page::Bottom(tab)] {
-            for generated in [false, true] {
-                let mut g = Grade { page, ..base.twin(generated) };
-                let before = g.picture();
-                g.drawn();
-                g.drawn();
-                if g.picture() != before || g.state.active_history().undo_count() != 0 || !g.unapplied.is_empty() {
-                    wrote.push(format!("{page:?} generated {generated}: steps {}, unapplied {:?}", g.state.active_history().undo_count(), g.unapplied));
-                }
+            let mut g = Grade { page, ..base.twin(true) };
+            let before = g.picture();
+            g.drawn();
+            g.drawn();
+            if g.picture() != before || g.state.active_history().undo_count() != 0 || !g.unapplied.is_empty() {
+                wrote.push(format!("{page:?}: steps {}, unapplied {:?}", g.state.active_history().undo_count(), g.unapplied));
             }
         }
     }
@@ -1152,8 +1363,7 @@ fn opening_a_corrector_page_tab_writes_nothing() {
 }
 
 /// A curve edited after its tab is opened (a point dragged in over
-/// several ticks) is one undo step in each view (IC13),
-/// and undoing it leaves the curves unset, as they were, not their
+/// several ticks) is one undo step (IC13), and undoing it leaves the curves unset, as they were, not their
 /// stored defaults (#1392).
 #[test]
 fn a_curve_edit_after_opening_is_one_step_back_to_unset() {
@@ -1161,39 +1371,37 @@ fn a_curve_edit_after_opening_is_one_step_back_to_unset() {
     let base = Grade::new(state, clip, node, true);
     let curves = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).map(|n| n.params.curves.clone()).unwrap();
     for page in [Page::Tabbed(crate::state::ColorTab::Curves), Page::Bottom(crate::state::ColorTab::Curves)] {
-        for generated in [false, true] {
-            let mut g = Grade { page, ..base.twin(generated) };
-            assert!(curves(&g).is_none(), "the fixture's curves are unset");
-            let drawn = g.drawn();
-            // A point dragged up from an empty place in the editor's square,
-            // below its channel strip: a drag there adds a point and moves it.
-            let strip = drawn.iter().filter(|(t, _)| ["M", "R", "G", "B"].contains(&t.as_str())).map(|(_, p)| p.y).fold(f32::MIN, f32::max);
-            assert!(strip > f32::MIN, "{page:?}: no channel strip");
-            let mut y = strip + 60.0;
-            while curves(&g).is_none() && y < strip + 400.0 {
-                let at = egui::pos2(150.0, y);
-                let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
-                // A drag of several ticks: one gesture, so one step (IC13).
-                g.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
-                for dy in [8.0, 16.0, 24.0] {
-                    g.frame(vec![egui::Event::PointerMoved(at - egui::vec2(0.0, dy))]);
-                }
-                g.frame(vec![button(at - egui::vec2(0.0, 24.0), false)]);
-                g.frame(vec![egui::Event::PointerGone]);
-                y += 40.0;
+        let mut g = Grade { page, ..base.twin(true) };
+        assert!(curves(&g).is_none(), "the fixture's curves are unset");
+        let drawn = g.drawn();
+        // A point dragged up from an empty place in the editor's square,
+        // below its channel strip: a drag there adds a point and moves it.
+        let strip = drawn.iter().filter(|(t, _)| ["M", "R", "G", "B"].contains(&t.as_str())).map(|(_, p)| p.y).fold(f32::MIN, f32::max);
+        assert!(strip > f32::MIN, "{page:?}: no channel strip");
+        let mut y = strip + 60.0;
+        while curves(&g).is_none() && y < strip + 400.0 {
+            let at = egui::pos2(150.0, y);
+            let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            // A drag of several ticks: one gesture, so one step (IC13).
+            g.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
+            for dy in [8.0, 16.0, 24.0] {
+                g.frame(vec![egui::Event::PointerMoved(at - egui::vec2(0.0, dy))]);
             }
-            assert!(curves(&g).is_some(), "{page:?} generated {generated}: no click edited the curve");
-            assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
-            assert_eq!(g.state.active_history().undo_count(), 1, "{page:?} generated {generated}: one step");
-            g.step(false).unwrap();
-            assert!(curves(&g).is_none(), "{page:?} generated {generated}: undo leaves the curves unset");
+            g.frame(vec![button(at - egui::vec2(0.0, 24.0), false)]);
+            g.frame(vec![egui::Event::PointerGone]);
+            y += 40.0;
         }
+        assert!(curves(&g).is_some(), "{page:?}: no click edited the curve");
+        assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+        assert_eq!(g.state.active_history().undo_count(), 1, "{page:?}: one step");
+        g.step(false).unwrap();
+        assert!(curves(&g).is_none(), "{page:?}: undo leaves the curves unset");
     }
 }
 
 
-/// A Colour Warper sector moved on the Corrector's pages is one step in
-/// each view, and undoing it leaves the warper unset, as it was: its
+/// A Colour Warper sector moved on the Corrector's pages is one step,
+/// and undoing it leaves the warper unset, as it was: its
 /// sector commands (`SetNodeParam`, inside the drag's gesture) carry the
 /// edit, and the gesture starts from the grade before the press (#1392).
 #[test]
@@ -1203,79 +1411,74 @@ fn a_warper_move_after_opening_is_one_step_back_to_unset() {
     let warper = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).map(|n| n.params.warper_params.clone()).unwrap();
     const SECTORS: [&str; 12] = ["R", "O", "Y", "YG", "G", "CG", "C", "CB", "B", "BM", "M", "MR"];
     for page in [Page::Tabbed(crate::state::ColorTab::Warper), Page::Bottom(crate::state::ColorTab::Warper)] {
-        for generated in [false, true] {
-            let mut g = Grade { page, ..base.twin(generated) };
-            assert!(warper(&g).is_none(), "the fixture's warper is unset");
-            let drawn = g.drawn();
-            // The wheel's centre, among its sector labels; its points lie
-            // between the centre and each label.
-            let labels: Vec<egui::Pos2> = drawn.iter().filter(|(t, _)| SECTORS.contains(&t.as_str())).map(|(_, p)| *p).collect();
-            assert!(labels.len() >= 12, "{page:?}: the sector labels aren't drawn");
-            let centre = labels.iter().fold(egui::Vec2::ZERO, |s, p| s + p.to_vec2()) / labels.len() as f32;
-            let centre = centre.to_pos2();
-            let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
-            'found: for label in &labels {
-                for k in [0.2, 0.35, 0.5, 0.65, 0.8] {
-                    let at = centre + (*label - centre) * k;
-                    let dir = (*label - centre).normalized() * 6.0;
-                    g.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
-                    for i in 1..=3 {
-                        g.frame(vec![egui::Event::PointerMoved(at + dir * i as f32)]);
-                    }
-                    g.frame(vec![button(at + dir * 3.0, false)]);
-                    g.frame(vec![egui::Event::PointerGone]);
-                    if warper(&g).is_some() {
-                        break 'found;
-                    }
+        let mut g = Grade { page, ..base.twin(true) };
+        assert!(warper(&g).is_none(), "the fixture's warper is unset");
+        let drawn = g.drawn();
+        // The wheel's centre, among its sector labels; its points lie
+        // between the centre and each label.
+        let labels: Vec<egui::Pos2> = drawn.iter().filter(|(t, _)| SECTORS.contains(&t.as_str())).map(|(_, p)| *p).collect();
+        assert!(labels.len() >= 12, "{page:?}: the sector labels aren't drawn");
+        let centre = labels.iter().fold(egui::Vec2::ZERO, |s, p| s + p.to_vec2()) / labels.len() as f32;
+        let centre = centre.to_pos2();
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        'found: for label in &labels {
+            for k in [0.2, 0.35, 0.5, 0.65, 0.8] {
+                let at = centre + (*label - centre) * k;
+                let dir = (*label - centre).normalized() * 6.0;
+                g.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
+                for i in 1..=3 {
+                    g.frame(vec![egui::Event::PointerMoved(at + dir * i as f32)]);
+                }
+                g.frame(vec![button(at + dir * 3.0, false)]);
+                g.frame(vec![egui::Event::PointerGone]);
+                if warper(&g).is_some() {
+                    break 'found;
                 }
             }
-            assert!(warper(&g).is_some(), "{page:?} generated {generated}: no drag moved a sector");
-            assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
-            assert_eq!(g.state.active_history().undo_count(), 1, "{page:?} generated {generated}: one step");
-            g.step(false).unwrap();
-            assert!(warper(&g).is_none(), "{page:?} generated {generated}: undo leaves the warper unset");
         }
+        assert!(warper(&g).is_some(), "{page:?}: no drag moved a sector");
+        assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+        assert_eq!(g.state.active_history().undo_count(), 1, "{page:?}: one step");
+        g.step(false).unwrap();
+        assert!(warper(&g).is_none(), "{page:?}: undo leaves the warper unset");
     }
 }
 
 /// Escape during a curve drag takes the drag back: the curves as they
-/// were (unset), and no undo step, in each view.
+/// were (unset), and no undo step.
 #[test]
 fn escape_takes_back_a_curve_drag() {
     let (state, clip, node) = super::grade_inspector_tests::graded(klipp_nodes::NodeKind::Corrector).unwrap();
     let base = Grade::new(state, clip, node, true);
     let curves = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).map(|n| n.params.curves.clone()).unwrap();
     for page in [Page::Tabbed(crate::state::ColorTab::Curves), Page::Bottom(crate::state::ColorTab::Curves)] {
-        for generated in [false, true] {
-            let mut g = Grade { page, ..base.twin(generated) };
-            let before = { g.drawn(); g.picture() };
-            let drawn = g.drawn();
-            let strip = drawn.iter().filter(|(t, _)| ["M", "R", "G", "B"].contains(&t.as_str())).map(|(_, p)| p.y).fold(f32::MIN, f32::max);
-            let at = egui::pos2(150.0, strip + 140.0);
-            let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
-            g.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
-            for dy in [8.0, 16.0, 24.0] {
-                g.frame(vec![egui::Event::PointerMoved(at - egui::vec2(0.0, dy))]);
-            }
-            assert!(curves(&g).is_some(), "{page:?} generated {generated}: the drag moved the curve");
-            g.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
-            g.frame(vec![button(at - egui::vec2(0.0, 24.0), false)]);
-            g.frame(Vec::new());
-            assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
-            assert_eq!(g.state.active_history().undo_count(), 0, "{page:?} generated {generated}: no step");
-            assert!(curves(&g).is_none(), "{page:?} generated {generated}: the curves as they were");
-            assert!(g.picture() == before, "{page:?} generated {generated}: the picture as it was");
+        let mut g = Grade { page, ..base.twin(true) };
+        let before = { g.drawn(); g.picture() };
+        let drawn = g.drawn();
+        let strip = drawn.iter().filter(|(t, _)| ["M", "R", "G", "B"].contains(&t.as_str())).map(|(_, p)| p.y).fold(f32::MIN, f32::max);
+        let at = egui::pos2(150.0, strip + 140.0);
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        g.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
+        for dy in [8.0, 16.0, 24.0] {
+            g.frame(vec![egui::Event::PointerMoved(at - egui::vec2(0.0, dy))]);
         }
+        assert!(curves(&g).is_some(), "{page:?}: the drag moved the curve");
+        g.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        g.frame(vec![button(at - egui::vec2(0.0, 24.0), false)]);
+        g.frame(Vec::new());
+        assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+        assert_eq!(g.state.active_history().undo_count(), 0, "{page:?}: no step");
+        assert!(curves(&g).is_none(), "{page:?}: the curves as they were");
+        assert!(g.picture() == before, "{page:?}: the picture as it was");
     }
 }
 
-/// Opening any grade node the per-node layout draws writes nothing, in
-/// either view: the picture as it was before the first draw, no step,
-/// nothing sent. The old panel draws in place over the clip's grade, so a
-/// default it stores on draw (a mask stack, a difference key, a layer
-/// mixer) would change the project unrecorded (the class of #1392).
+/// Opening any grade node the per-node layout draws writes nothing: the
+/// picture as it was before the first draw, no step, nothing sent. A
+/// default stored on draw (a mask stack, a difference key, a layer mixer)
+/// would change the project unrecorded (the class of #1392).
 #[test]
-fn opening_a_per_node_grade_writes_nothing_in_either_view() {
+fn opening_a_per_node_grade_writes_nothing() {
     let mut wrote = Vec::new();
     let mut opened = 0;
     for ty in klipp_nodes::registry::node_types() {
@@ -1284,24 +1487,23 @@ fn opening_a_per_node_grade_writes_nothing_in_either_view() {
         }
         let Some((state, clip, node)) = placed(ty.kind) else { continue };
         let base = Grade::new(state, clip, node, true);
-        for generated in [false, true] {
-            let mut g = base.twin(generated);
-            let before = g.picture();
-            g.drawn();
-            g.drawn();
-            if g.picture() != before || g.state.active_history().undo_count() != 0 || !g.unapplied.is_empty() {
-                let params = |p: &GradePicture| format!("{p:?}").len();
-                wrote.push(format!("{} generated {generated}: steps {}, unapplied {:?} ({} → {} bytes)", ty.desc.id, g.state.active_history().undo_count(), g.unapplied, params(&before), params(&g.picture())));
-            }
-            opened += 1;
+        let mut g = base.twin(true);
+        let before = g.picture();
+        g.drawn();
+        g.drawn();
+        if g.picture() != before || g.state.active_history().undo_count() != 0 || !g.unapplied.is_empty() {
+            let params = |p: &GradePicture| format!("{p:?}").len();
+            wrote.push(format!("{}: steps {}, unapplied {:?} ({} → {} bytes)", ty.desc.id, g.state.active_history().undo_count(), g.unapplied, params(&before), params(&g.picture())));
         }
+        opened += 1;
     }
     assert!(wrote.is_empty(), "opening wrote:\n{}", wrote.join("\n"));
-    assert!(opened > 20, "only {opened} opened");
+    // Each per-node kind once (the old panel's run is gone).
+    assert!(opened > 10, "only {opened} opened");
 }
 
 /// A colour wheel's drag on the per-node layout (`wheel_block`) is one
-/// step in each view, and Escape during it takes it back: the picture as
+/// step, and Escape during it takes it back: the picture as
 /// it was, and no step.
 #[test]
 fn a_wheel_drag_is_one_step_and_escape_takes_it_back() {
@@ -1309,37 +1511,35 @@ fn a_wheel_drag_is_one_step_and_escape_takes_it_back() {
     let base = Grade::new(state, clip, node, true);
     let lift = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).map(|n| (n.params.lift_x, n.params.lift_y)).unwrap();
     for escape in [false, true] {
-        for generated in [false, true] {
-            let mut g = base.twin(generated);
-            let drawn = g.drawn();
-            let before = g.picture();
-            // The Lift wheel: its centre between its label and the readouts
-            // under it, across those readouts.
-            let label = drawn.iter().find(|(t, _)| t == "Lift").map(|(_, p)| *p).expect("a Lift wheel");
-            let readouts: Vec<egui::Pos2> = drawn.iter().filter(|(t, p)| t.starts_with('+') && p.y > label.y).map(|(_, p)| *p).collect();
-            let below = readouts.iter().map(|p| p.y).fold(f32::MAX, f32::min);
-            let row: Vec<&egui::Pos2> = readouts.iter().filter(|p| (p.y - below).abs() < 4.0 && (p.x - label.x).abs() < 120.0).collect();
-            let centre = egui::pos2(row.iter().map(|p| p.x).sum::<f32>() / row.len() as f32, (label.y + below) / 2.0);
-            let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
-            g.frame(vec![egui::Event::PointerMoved(centre), button(centre, true)]);
-            for dx in [6.0, 12.0, 18.0] {
-                g.frame(vec![egui::Event::PointerMoved(centre + egui::vec2(dx, -dx))]);
-            }
-            assert_ne!(lift(&g), (None, None), "generated {generated}: the drag moved the wheel");
-            if escape {
-                g.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
-            }
-            g.frame(vec![button(centre + egui::vec2(18.0, -18.0), false)]);
-            g.frame(Vec::new());
-            assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
-            if escape {
-                assert_eq!(g.state.active_history().undo_count(), 0, "generated {generated}: Escape leaves no step");
-                assert!(g.picture() == before, "generated {generated}: Escape gives back the picture");
-            } else {
-                assert_eq!(g.state.active_history().undo_count(), 1, "generated {generated}: one step");
-                g.step(false).unwrap();
-                assert!(g.picture() == before, "generated {generated}: its undo gives back the picture");
-            }
+        let mut g = base.twin(true);
+        let drawn = g.drawn();
+        let before = g.picture();
+        // The Lift wheel: its centre between its label and the readouts
+        // under it, across those readouts.
+        let label = drawn.iter().find(|(t, _)| t == "Lift").map(|(_, p)| *p).expect("a Lift wheel");
+        let readouts: Vec<egui::Pos2> = drawn.iter().filter(|(t, p)| t.starts_with('+') && p.y > label.y).map(|(_, p)| *p).collect();
+        let below = readouts.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+        let row: Vec<&egui::Pos2> = readouts.iter().filter(|p| (p.y - below).abs() < 4.0 && (p.x - label.x).abs() < 120.0).collect();
+        let centre = egui::pos2(row.iter().map(|p| p.x).sum::<f32>() / row.len() as f32, (label.y + below) / 2.0);
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        g.frame(vec![egui::Event::PointerMoved(centre), button(centre, true)]);
+        for dx in [6.0, 12.0, 18.0] {
+            g.frame(vec![egui::Event::PointerMoved(centre + egui::vec2(dx, -dx))]);
+        }
+        assert_ne!(lift(&g), (None, None), "the drag moved the wheel");
+        if escape {
+            g.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        }
+        g.frame(vec![button(centre + egui::vec2(18.0, -18.0), false)]);
+        g.frame(Vec::new());
+        assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+        if escape {
+            assert_eq!(g.state.active_history().undo_count(), 0, "Escape leaves no step");
+            assert!(g.picture() == before, "Escape gives back the picture");
+        } else {
+            assert_eq!(g.state.active_history().undo_count(), 1, "one step");
+            g.step(false).unwrap();
+            assert!(g.picture() == before, "its undo gives back the picture");
         }
     }
 }
