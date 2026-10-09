@@ -198,6 +198,12 @@ The view-parity tests in `klipp-ui` draw a real frei0r plug-in, so
 `cargo test -p klipp-ui` needs `frei0r-plugins` installed (an optional
 dependency of the package); without it the frei0r case fails and says so.
 
+The plug-in fixtures that `scripts/plugin-tests.py` runs (`--format ofx`,
+`--format frei0r`) are C sources under `crates/*/tests/fixtures/`, compiled
+by the script into its artifact folder and never by `cargo build`. They need
+a C compiler: `cc`, or the one `CC` names (`gcc` from the `base-devel`
+group on Arch). Without one the script stops and says what to install.
+
 Logs land in `klipp-debug.log` at the workspace root — tail it while
 running. Level is controlled by the `RUST_LOG` env var; default is
 `info`.

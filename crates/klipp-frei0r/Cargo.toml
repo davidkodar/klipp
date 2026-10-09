@@ -4,6 +4,10 @@ version.workspace = true
 edition = "2021"
 license.workspace = true
 
+[[bin]]
+name = "klipp-frei0r-test-host"
+path = "tests/runner/host.rs"
+
 [dependencies]
 klipp-load-lock = { workspace = true }
 libloading = { workspace = true }
