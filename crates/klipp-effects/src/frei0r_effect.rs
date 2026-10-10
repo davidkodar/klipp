@@ -3,9 +3,9 @@
 //!
 //! Owns the process-global runtime cache that maps a frei0r `type_id`
 //! (`"frei0r:{path}:{name}"`) to a single dlopened `Arc<Frei0rPlugin>`.
-//! Each frame still renders through a fresh `Frei0rInstanceSet`, so a
-//! plug-in that keeps history never sees it (#1468); instances kept
-//! across frames arrive with the frei0r node (M4 step 5).
+//! A clip's frei0r plug-in renders as a node, with its instances kept
+//! across frames by the render (`klipp_nodes::frei0r_node`, M4 step 5).
+//! [`apply`] renders one frame on instances of its own: for a preview.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -90,14 +90,14 @@ fn get_or_load(type_id: &str) -> Option<Arc<Frei0rPlugin>> {
 
 // ─── Public API ───────────────────────────────────────────────────────────
 
-/// Apply one frei0r effect to a frame. A size frei0r can't take is
-/// padded and cropped back (`Fallback::Padded`); above 2048 the frame
-/// is tiled, except for a plug-in that keeps frame history.
+/// One frame of a frei0r effect on instances of its own, made and dropped
+/// here: a preview's (the effects browser's thumbnails). A clip's renders
+/// go through its node, whose instances last. A size frei0r can't take is
+/// padded and cropped back; above 2048 the frame is tiled, except for a
+/// plug-in that keeps frame history.
 ///
-/// A refusal (a temporal plug-in above 2048, an instance the plug-in
-/// won't make) and a plug-in that isn't available still return the
-/// frame unchanged, with a `warn!`, until the frei0r node declines
-/// them visibly (M4 steps 5 and 10).
+/// A refusal, or a plug-in that isn't available, returns the frame
+/// unchanged with a `warn!`: a preview has nowhere to say so.
 ///
 /// Never panics. Callers always get back a frame of the same size.
 pub fn apply(
@@ -123,6 +123,21 @@ pub fn apply(
             rgba
         }
     }
+}
+
+/// The loaded plug-in `type_id` names, opened once and shared: what a
+/// frei0r node keeps its instances against. `None` when it isn't
+/// installed or won't open.
+pub fn plugin(type_id: &str) -> Option<Arc<Frei0rPlugin>> {
+    get_or_load(type_id)
+}
+
+/// Whether `type_id`'s plug-in keeps frame history (the measured list,
+/// `klipp_frei0r::temporal`): its frame depends on the frames rendered
+/// before it, so nothing may keep its output by frame. A plug-in that
+/// isn't known is taken to.
+pub fn keeps_history(type_id: &str) -> bool {
+    lookup_info(type_id).is_none_or(|info| klipp_frei0r::temporal::is_temporal(&info))
 }
 
 /// Look up a plugin's metadata for inspector / project-doctor use.

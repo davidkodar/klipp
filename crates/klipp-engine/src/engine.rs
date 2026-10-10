@@ -6995,7 +6995,7 @@ impl PlaybackEngine {
             seq.tracks
                 .get(self.current_track_index)
                 .and_then(|t| t.clips.get(self.current_clip_index))
-                .filter(|c| c.needs_grade_or_builtin_processing())
+                .filter(|c| c.frames_cacheable())
                 .map(|c| (c.timeline_in.value, c.timeline_out.value))
         };
         let Some((clip_start, clip_end)) = clip_range else { return };
@@ -7031,7 +7031,7 @@ impl PlaybackEngine {
 
         for track in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
             for clip in &track.clips {
-                if !clip.needs_grade_or_builtin_processing() {
+                if !clip.frames_cacheable() {
                     continue;
                 }
                 let grade_hash = self.render_key_hash(&seq, clip, track.opacity);
@@ -7659,9 +7659,9 @@ impl PlaybackEngine {
     /// an effect or a keyframed transform there would drop it from the
     /// picture — that gate stays on `only_the_graded_path_handles`.
     ///
-    /// A builtin chain is admitted only when every effect has a GPU pass
-    /// (`chain_supports_gpu`); a Frei0r plugin is CPU-only and keeps the
-    /// frame off this path. The keyframe-baked transform is always a
+    /// A builtin chain is admitted only when every effect has a GPU pass:
+    /// a frei0r plug-in (`klipp_effects::has_frei0r`) runs as a node on the
+    /// CPU timeline render and keeps the frame off this path. The keyframe-baked transform is always a
     /// `Transform`, which the GPU has, so "render keyframes on clip" is
     /// always safe here.
     fn stack_present_handles(&self, blockers: &[&'static str]) -> bool {

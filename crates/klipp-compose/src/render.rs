@@ -1475,6 +1475,11 @@ impl Renderer {
         let blocker = |c: &Clip| -> Option<&'static str> {
             if c.has_enabled_plugins() {
                 Some("OFX plugin")
+            } else if klipp_effects::has_frei0r(c.builtin_effects()) {
+                // A frei0r plug-in runs as a node of the timeline render,
+                // with its instances (M4 step 5): the stack has no frei0r,
+                // and running the layer's effects here would leave it out.
+                Some("frei0r plug-in")
             } else if frame_blends(c, time) {
                 Some("frame blending")
             } else if title_motion_blur(c).is_some() {
@@ -1771,7 +1776,9 @@ impl Renderer {
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
         let temporal = fx.iter().any(|e| matches!(e, BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. }));
-        let fx_on_gpu = !has_active_effects(&fx) || (klipp_effects::chain_supports_gpu(&fx) && !temporal);
+        // No frei0r test here: the stack declines a frame with a frei0r
+        // plug-in before a layer is placed (M4 step 5), so none reaches it.
+        let fx_on_gpu = !has_active_effects(&fx) || !temporal;
         let clip_time = eval_clip_time(c, time);
         let mut rows = (0, height);
         let mut effects_done = false;
@@ -1987,7 +1994,7 @@ impl Renderer {
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
         let temporal = fx.iter().any(|e| matches!(e, BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. }));
-        if has_active_effects(&fx) && !(klipp_effects::chain_supports_gpu(&fx) && !temporal) {
+        if has_active_effects(&fx) && temporal {
             return Err("adjustment layer with a CPU-only effect");
         }
         let mut slot_a = true;
@@ -2461,10 +2468,11 @@ impl Renderer {
                     PLAN_EFFECT_CLIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     return Some((pixels, opacity));
                 }
-                if blended {
+                if blended || klipp_effects::has_frei0r(&fx) {
                     // A masked or mixed clip's effects can't be drawn by the
-                    // CPU kernels: the same plan runs again on the CPU
-                    // executor, counted (step 9c-2).
+                    // CPU kernels, nor can a frei0r plug-in, which runs only
+                    // as its node: the same plan runs again on the CPU
+                    // executor, counted (step 9c-2, M4 step 5).
                     (self.run_effects, self.run_blends) = ran;
                     self.run_display = hdr.map(|t| self.scene_to_display(t));
                     let input = retry.expect("kept on the plan route");
@@ -2738,15 +2746,22 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     fn effects_by_plain(&mut self, plan: bool, clip: &Clip, fx: &[BuiltinEffect], blends: &[Option<crate::resolve::Blend>], pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
         let blended = blends.iter().any(Option::is_some);
-        if (!plan && !blended) || fx.is_empty() {
+        // A frei0r plug-in runs as a node, with its instances, on every
+        // route: never by the kernels, which would make it one frame's.
+        let frei0r = klipp_effects::has_frei0r(fx);
+        if (!plan && !blended && !frei0r) || fx.is_empty() {
             return self.effects(fx, pixels, clip_time, width, height);
+        }
+        if !plan && frei0r {
+            self.cpu_kernel_run();
+            return self.on_cpu_executor(|r| r.run_effects_plan(clip, fx, blends, pixels, clip_time, fps, width, height)).unwrap_or_else(|back| back);
         }
         match self.run_effects_plan(clip, fx, blends, pixels, clip_time, fps, width, height) {
             Ok(out) => out,
             Err(back) => {
                 self.plan_misses += 1;
                 self.cpu_fallback(clip);
-                if !blended {
+                if !blended && !frei0r {
                     return self.effects(fx, back, clip_time, width, height);
                 }
                 self.cpu_kernel_run();
@@ -2845,7 +2860,7 @@ impl Renderer {
     /// neighbouring frames.
     fn effects_can_run_on_gpu(&self, fx: &[BuiltinEffect]) -> bool {
         let needs_neighbours = fx.iter().any(klipp_effects::registry::needs_source_neighbours);
-        !needs_neighbours && self.allow_gpu && has_active_effects(fx) && klipp_effects::chain_supports_gpu(fx)
+        !needs_neighbours && self.allow_gpu && has_active_effects(fx)
     }
 
     /// Whether the grade tools read inside `clip`'s grade this render: its
@@ -4043,7 +4058,12 @@ fn splice_blended(
     let mut starts = Vec::new();
     let mut i = 0;
     while i < fx.len() {
-        let kind = if spills(&fx[i]) { klipp_nodes::NodeKind::EffectSegment } else { klipp_nodes::NodeKind::Effect };
+        let kind = match &fx[i] {
+            // A plug-in of its own, its instances kept (M4 step 5).
+            BuiltinEffect::Frei0r { .. } => klipp_nodes::NodeKind::Frei0r,
+            e if spills(e) => klipp_nodes::NodeKind::EffectSegment,
+            _ => klipp_nodes::NodeKind::Effect,
+        };
         // A blended effect stands alone; spills run together otherwise.
         let len = if blend(i).is_some() || !spills(&fx[i]) { 1 } else { fx[i..].iter().enumerate().take_while(|(k, e)| spills(e) && blend(i + k).is_none()).count() };
         groups.push((kind, &fx[i..i + len], blend(i)));

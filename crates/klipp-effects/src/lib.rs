@@ -756,17 +756,9 @@ pub enum BuiltinEffect {
     /// so the variant carries the plugin's stable type_id rather than
     /// modelling each plugin as its own enum case.
     ///
-    /// Resolution behaviour:
-    ///   - ≤ 2048 × 2048 with 8-aligned dims → straight render.
-    ///   - > 2048 with NON-temporal plugin → tiled render (1024×1024
-    ///     > tiles, 64-px overlap; spatial-filter seams may show for
-    ///     > wide kernels).
-    ///   - > 2048 with TEMPORAL plugin (delay0r, baltan, …) → input
-    ///     > is passed through unchanged. The inspector blocks this
-    ///     > case at apply time with a toast.
-    ///
-    /// CPU-only; `chain_supports_gpu` returns false on any chain
-    /// containing a Frei0r entry.
+    /// Runs as a node of its own on the CPU, between the GPU nodes around
+    /// it, with its instances kept across frames (M4 step 5; see
+    /// `klipp_frei0r::Frei0rInstanceSet` for sizes, padding and tiling).
     Frei0r {
         /// `frei0r:{path}:{name}` — see `klipp_frei0r::Frei0rPluginInfo::type_id`.
         type_id: String,
@@ -878,10 +870,10 @@ pub fn apply_effects_with_luma(
     linear_rgba: Vec<f32>,
     width: u32,
     height: u32,
-    clip_time_secs: f64,
+    _clip_time_secs: f64,
     luma: [f32; 3],
 ) -> Vec<f32> {
-    apply_chain(effects, linear_rgba, width, height, clip_time_secs, luma, &MotionData::default())
+    apply_chain(effects, linear_rgba, width, height, luma, &MotionData::default())
 }
 
 /// The per-frame motion data stabilisation and rolling-shutter correction
@@ -906,11 +898,11 @@ pub fn apply_effects_with_motion(
     linear_rgba: Vec<f32>,
     width: u32,
     height: u32,
-    clip_time_secs: f64,
+    _clip_time_secs: f64,
     luma: [f32; 3],
     motion: &MotionData,
 ) -> Vec<f32> {
-    apply_chain(effects, linear_rgba, width, height, clip_time_secs, luma, motion)
+    apply_chain(effects, linear_rgba, width, height, luma, motion)
 }
 
 /// How far stabilisation zooms in to hide the edges its warp uncovers.
@@ -918,19 +910,19 @@ pub(crate) fn stabilization_crop_zoom(crop_ratio: f32, zoom: bool) -> f32 {
     if zoom { 1.0 / (1.0 - 2.0 * crop_ratio) } else { 1.0 }
 }
 
-/// Time-aware sibling of [`apply_effects`]. `clip_time_secs` is forwarded
-/// to effects whose render shape is animated by clip time — today only
-/// `BuiltinEffect::Frei0r` reads it (frei0r's `f0r_update` takes a
-/// time argument). Other variants ignore the parameter, so callers
-/// without time context can stick with [`apply_effects`].
+/// [`apply_effects`] with a clip time, which no effect in the chain reads
+/// any more: frei0r, the one that did, runs as its own node with its
+/// instances (M4 step 5). The time parameters here and in
+/// [`apply_effects_with_luma`] and [`apply_effects_with_motion`] go in a
+/// follow-up that updates their callers.
 pub fn apply_effects_with_time(
     effects: &[BuiltinEffect],
     linear_rgba: Vec<f32>,
     width: u32,
     height: u32,
-    clip_time_secs: f64,
+    _clip_time_secs: f64,
 ) -> Vec<f32> {
-    apply_chain(effects, linear_rgba, width, height, clip_time_secs, BT709_LUMA_WEIGHTS, &MotionData::default())
+    apply_chain(effects, linear_rgba, width, height, BT709_LUMA_WEIGHTS, &MotionData::default())
 }
 
 fn apply_chain(
@@ -938,7 +930,6 @@ fn apply_chain(
     linear_rgba: Vec<f32>,
     width: u32,
     height: u32,
-    clip_time_secs: f64,
     luma: [f32; 3],
     motion: &MotionData,
 ) -> Vec<f32> {
@@ -954,9 +945,11 @@ fn apply_chain(
             continue;
         }
         frame = match &effects[i] {
-            BuiltinEffect::Frei0r { type_id, params } => {
-                let u8s = linear_f32_rgba_to_srgb_u8(&frame);
-                srgb_u8_to_linear_f32_rgba(&frei0r_effect::apply(type_id, params, u8s, width, height, clip_time_secs))
+            // A frei0r plug-in is a node (M4 step 5); the renderer never
+            // sends one here. Reached anyway, it's left out, said so.
+            BuiltinEffect::Frei0r { type_id, .. } => {
+                tracing::error!("frei0r {type_id} reached the effect chain, which doesn't run plug-ins: left out");
+                frame
             }
             BuiltinEffect::VideoStabilization { crop_ratio, zoom, .. } => match &motion.stabilization {
                 Some(m) => cpu::stabilize(&frame, width, height, m, stabilization_crop_zoom(*crop_ratio, *zoom)),
@@ -973,10 +966,11 @@ fn apply_chain(
     frame
 }
 
-/// Whether the GPU pipeline can run every effect in the chain: all but
-/// Frei0r plugins, which exist only on the CPU.
-pub fn chain_supports_gpu(effects: &[BuiltinEffect]) -> bool {
-    !effects.iter().any(|e| matches!(e, BuiltinEffect::Frei0r { .. }))
+/// Whether the list holds a frei0r plug-in: a node of its own on the
+/// CPU, with instances kept across frames (M4 step 5), which the viewer's
+/// GPU display stack doesn't draw.
+pub fn has_frei0r(effects: &[BuiltinEffect]) -> bool {
+    effects.iter().any(|e| matches!(e, BuiltinEffect::Frei0r { .. }))
 }
 
 impl BuiltinEffect {

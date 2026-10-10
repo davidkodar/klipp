@@ -16,10 +16,11 @@ impl Clip {
         !self.ofx_effects().is_empty()
     }
 
-    /// Capability of the raw list, including disabled entries. In particular,
-    /// a disabled frei0r entry still keeps this gate off the GPU stack.
+    /// Whether the viewer's GPU display stack can draw the raw list,
+    /// disabled entries included: not with a frei0r entry, which runs as a
+    /// node on the CPU timeline render (M4 step 5).
     pub fn effect_chain_gpu_capable(&self) -> bool {
-        klipp_effects::chain_supports_gpu(self.builtin_effects())
+        !klipp_effects::has_frei0r(self.builtin_effects())
     }
 
     pub fn grade_is_identity(&self) -> bool {
@@ -30,6 +31,18 @@ impl Clip {
     /// not part of this existing decision.
     pub fn needs_grade_or_builtin_processing(&self) -> bool {
         !(self.grade_is_identity() && !self.has_effect_entries())
+    }
+
+    /// Whether the clip's rendered frames can be kept and shown again by
+    /// frame (the render cache, its background jobs, prerendering): only
+    /// when the grade or an effect makes them worth keeping, and no effect
+    /// keeps history. A frei0r delay or feedback draws a frame from the
+    /// frames rendered before it, so a kept one would be shown after a
+    /// seek, and rendering frames out of order to keep them would start
+    /// its history again (M4 step 5).
+    pub fn frames_cacheable(&self) -> bool {
+        self.needs_grade_or_builtin_processing()
+            && !self.builtin_effects().iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::Frei0r { type_id, .. } if klipp_effects::frei0r_effect::keeps_history(type_id)))
     }
 
     /// A modifier entry counts even when its stack is empty or targets audio.
@@ -249,6 +262,37 @@ mod tests {
             assert_eq!(c.has_nonidentity_placement_entries(), placement, "{name}");
             assert_eq!(c.needs_grade_or_builtin_processing(), present, "{name}");
         }
+    }
+
+    /// A frei0r plug-in that keeps history makes the clip's frames
+    /// uncacheable (M4 step 5): one that doesn't leaves them so; one not
+    /// installed is taken to keep it.
+    #[test]
+    fn a_frei0r_that_keeps_history_makes_frames_uncacheable() {
+        let info = |stem: &str| klipp_frei0r::Frei0rPluginInfo {
+            path: format!("/usr/lib/frei0r-1/{stem}.so").into(),
+            name: stem.into(),
+            author: String::new(),
+            plugin_type: klipp_frei0r::PluginType::Filter,
+            color_model: klipp_frei0r::ColorModel::Rgba8888,
+            frei0r_version: 1,
+            major_version: 0,
+            minor_version: 1,
+            explanation: String::new(),
+            params: Vec::new(),
+        };
+        let (delay, invert) = (info("delay0r"), info("invert0r"));
+        klipp_effects::frei0r_effect::_register_for_test(delay.clone());
+        klipp_effects::frei0r_effect::_register_for_test(invert.clone());
+        let with = |type_id: String| {
+            let mut c = clip();
+            c.set_effect_list(vec![BuiltinEffect::Frei0r { type_id, params: vec![] }], vec![true]);
+            c.frames_cacheable()
+        };
+        assert!(!with(delay.type_id()), "a delay keeps history");
+        assert!(with(invert.type_id()), "an invert doesn't");
+        assert!(!with("frei0r:/nowhere/x.so:x".into()), "an unknown plug-in is taken to");
+        assert!(!clip().frames_cacheable(), "nothing to keep without a grade or an effect");
     }
 
     #[test]

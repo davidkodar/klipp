@@ -163,7 +163,7 @@ fn every_effect_node_matches_the_legacy_chain_on_the_gpu() {
     };
     let (cases, _) = cases();
     for (tag, effect) in &cases {
-        if !klipp_effects::chain_supports_gpu(std::slice::from_ref(effect)) {
+        if klipp_effects::has_frei0r(std::slice::from_ref(effect)) {
             panic!("{tag} has no GPU arm but isn't exempt");
         }
         let mut ex = GraphExecutor::new();

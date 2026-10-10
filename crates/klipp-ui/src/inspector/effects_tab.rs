@@ -473,8 +473,8 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
             // "Default" for a frei0r effect = same plugin, fresh
             // default param values from the registry. If the plugin
             // disappeared since the project was saved, fall through to
-            // an empty params list (the lookup-failure path in
-            // `frei0r_effect::apply` will passthrough).
+            // an empty params list (the node refuses a plug-in that
+            // isn't installed and passes its input on).
             klipp_effects::BuiltinEffect::Frei0r {
                 type_id: type_id.clone(),
                 params: klipp_effects::frei0r_effect::default_params(type_id)

@@ -103,7 +103,7 @@ const EFFECTS: &[(&str, Cover)] = &[
     ("Deflicker", Case("Deflicker")),
     ("VideoStabilization", MOTION),
     ("SpeedRamp", Exempt("not a picture pass: the engine blends frames for it in the frame queue, and both chain arms pass through")),
-    ("Frei0r", Exempt("CPU-only plugins: frei0r 1.x has no GPU surface, and chain_supports_gpu sends any chain holding one to the CPU")),
+    ("Frei0r", Exempt("CPU-only plugins: frei0r 1.x has no GPU surface; a frei0r node runs on the CPU between the GPU nodes around it (M4 step 5)")),
     ("CornerPin", Case("CornerPin")),
 ];
 

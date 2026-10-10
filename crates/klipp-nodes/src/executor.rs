@@ -272,6 +272,9 @@ pub struct GraphExecutor {
     /// Mixed effect nodes whose mix or mask couldn't be read, skipped
     /// (`ChainStats::effect_mixes_refused`).
     run_mix_refused: u32,
+    /// frei0r nodes rendered padded, and refused (`ChainStats`).
+    run_frei0r_fallbacks: u32,
+    run_frei0r_refused: u32,
     /// The picture `start_chain` kept for a composite before its first
     /// dispatch, handed to the run (M3 step 17b).
     start_kept: Option<klipp_effects::gpu::KeptPicture>,
@@ -690,6 +693,8 @@ impl GraphExecutor {
             run_effect_breaks: 0,
             source_runs: 0,
             source_unavailable: 0,
+            run_frei0r_fallbacks: 0,
+            run_frei0r_refused: 0,
             run_mix_refused: 0,
             start_kept: None,
             start_kept_for_gates: None,
@@ -767,6 +772,8 @@ impl GraphExecutor {
             run_effect_breaks: 0,
             source_runs: 0,
             source_unavailable: 0,
+            run_frei0r_fallbacks: 0,
+            run_frei0r_refused: 0,
             run_mix_refused: 0,
             start_kept: None,
             start_kept_for_gates: None,
@@ -1778,6 +1785,8 @@ impl GraphExecutor {
         self.effect_keyed = None;
         self.run_effects_incomplete = false;
         self.run_mix_refused = 0;
+        self.run_frei0r_fallbacks = 0;
+        self.run_frei0r_refused = 0;
         let keep = std::mem::take(&mut self.keep_output_on_gpu);
         // (Thumbnails also rule it out: they are read once the chain's
         // last submit is in, and a result kept on the GPU never submits.)
@@ -1851,7 +1860,7 @@ impl GraphExecutor {
                     let readers: Vec<_> = graph.edges.iter().filter(|e| e.from_node == n.id).collect();
                     let masks_only = !readers.is_empty()
                         && readers.iter().all(|e| {
-                            e.to_port == 1 && node_by_id.get(&e.to_node).is_some_and(|r| matches!(r.kind, NodeKind::Effect | NodeKind::EffectSegment) && r.params.effect_blend.is_some())
+                            e.to_port == 1 && node_by_id.get(&e.to_node).is_some_and(|r| matches!(r.kind, NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r) && r.params.effect_blend.is_some())
                         });
                     let key = gpu_key(&n.kind, &params_for_frame(n, clip_time_secs)).filter(|_| masks_only)?;
                     Some(PendingKey { node: n.id, picture: graph.input_of(n.id, 0)?, key, readers: readers.len() })
@@ -1935,7 +1944,7 @@ impl GraphExecutor {
             // else keyed on the CPU now, from its picture's pixels.
             let pending_mask = graph
                 .input_of(node_id, 1)
-                .filter(|_| matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment) && node.params.effect_blend.is_some())
+                .filter(|_| matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r) && node.params.effect_blend.is_some())
                 .and_then(|id| pending_keys.iter().find(|k| k.node == id).map(|k| (id, k.picture)));
             if let Some((key, picture)) = pending_mask {
                 let is_source = node_by_id.get(&picture).is_some_and(|n| n.kind == NodeKind::Source);
@@ -2043,18 +2052,18 @@ impl GraphExecutor {
             // feeding a mixed effect's mask runs off the chain, its matte
             // made on the CPU where the effect can read it.
             let feeds_a_mask = graph.nodes.iter().any(|n| {
-                matches!(n.kind, NodeKind::Effect | NodeKind::EffectSegment) && n.params.effect_blend.is_some() && graph.input_of(n.id, 1) == Some(node_id)
+                matches!(n.kind, NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r) && n.params.effect_blend.is_some() && graph.input_of(n.id, 1) == Some(node_id)
             });
             let effect_mask = match (node.kind, node.params.effect_blend) {
-                (NodeKind::Effect | NodeKind::EffectSegment, Some(_)) => graph.input_of(node_id, 1).map(|id| node_outputs.get(&id).filter(|m| !m.is_empty()).cloned()),
+                (NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r, Some(_)) => graph.input_of(node_id, 1).map(|id| node_outputs.get(&id).filter(|m| !m.is_empty()).cloned()),
                 _ => None,
             };
             let effect_window = match (node.kind, node.params.effect_blend) {
-                (NodeKind::Effect | NodeKind::EffectSegment, Some(_)) => graph.input_of(node_id, 1).and_then(|id| window_mattes.get(&id).cloned()),
+                (NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r, Some(_)) => graph.input_of(node_id, 1).and_then(|id| window_mattes.get(&id).cloned()),
                 _ => None,
             };
             let effect_keyed = match (node.kind, node.params.effect_blend) {
-                (NodeKind::Effect | NodeKind::EffectSegment, Some(_)) => graph.input_of(node_id, 1).filter(|id| self.key_mattes.contains_key(id)),
+                (NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r, Some(_)) => graph.input_of(node_id, 1).filter(|id| self.key_mattes.contains_key(id)),
                 _ => None,
             };
             let effect_mask_ready = effect_window.is_some() || effect_keyed.is_some() || !matches!(effect_mask, Some(None));
@@ -2132,7 +2141,7 @@ impl GraphExecutor {
                 let only_masks_effects = readers.peek().is_some()
                     && readers.all(|e| {
                         e.to_port == 1
-                            && node_by_id.get(&e.to_node).is_some_and(|n| matches!(n.kind, NodeKind::Effect | NodeKind::EffectSegment) && n.params.effect_blend.is_some())
+                            && node_by_id.get(&e.to_node).is_some_and(|n| matches!(n.kind, NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r) && n.params.effect_blend.is_some())
                     });
                 if only_masks_effects {
                     // As drawn now: keyframes, then the window's tracked motion (#238).
@@ -2226,7 +2235,7 @@ impl GraphExecutor {
             // mask while that picture was on the GPU: the flush just made
             // them, so the mask is read again. Without it the mix ran with
             // no matte, white, and the whole effect was drawn.
-            if self.effect_mask.is_none() && self.effect_window.is_none() && self.effect_keyed.is_none() && matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment) && node.params.effect_blend.is_some() {
+            if self.effect_mask.is_none() && self.effect_window.is_none() && self.effect_keyed.is_none() && matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r) && node.params.effect_blend.is_some() {
                 self.effect_mask = graph.input_of(node_id, 1).and_then(|id| node_outputs.get(&id)).filter(|m| !m.is_empty()).cloned();
             }
 
@@ -2768,7 +2777,7 @@ impl GraphExecutor {
                 }
                 None => secondary_slice,
             };
-            if matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment)
+            if matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r)
                 && node.params.effect_blend.is_some()
                 && graph.input_of(node_id, 1).is_some()
                 && secondary_slice.is_none()
@@ -2850,6 +2859,8 @@ impl GraphExecutor {
             evaluations,
             effect_breaks: std::mem::take(&mut self.run_effect_breaks),
             effect_mixes_refused: std::mem::take(&mut self.run_mix_refused),
+            frei0r_fallbacks: std::mem::take(&mut self.run_frei0r_fallbacks),
+            frei0r_refused: std::mem::take(&mut self.run_frei0r_refused),
             peak_slots: u32::try_from(peak_slots).unwrap_or(u32::MAX),
         };
         chain_stats_ledger(&self.last_run_chain_stats);
@@ -2937,7 +2948,7 @@ impl GraphExecutor {
             // A source-boundary node reads source frames the chain hasn't.
             NodeKind::Effect | NodeKind::EffectSegment => {
                 !params.effects.is_empty()
-                    && klipp_effects::chain_supports_gpu(&params.effects)
+                    && !klipp_effects::has_frei0r(&params.effects)
                     && !params.effects.iter().any(klipp_effects::registry::needs_source_neighbours)
             }
             NodeKind::SceneToDisplay => params.scene_to_display.is_some(),
@@ -3397,6 +3408,13 @@ pub struct ChainStats {
     /// Mixed effect nodes whose mix or mask couldn't be read: skipped, the
     /// input passed on (no coverage), never drawn unmasked (step 9c).
     pub effect_mixes_refused: u32,
+    /// frei0r nodes rendered at a size frei0r can't take, padded and
+    /// cropped back (M4 step 5).
+    pub frei0r_fallbacks: u32,
+    /// frei0r nodes the plug-in refused (missing, a history plug-in above
+    /// 2048, no instance): the input passed on, until step 10 declines
+    /// them visibly.
+    pub frei0r_refused: u32,
     /// The most pool slots (frame-sized scratch buffers beside the chain's
     /// own pair) the run held at once: the bounded scratch D10 holds to a
     /// constant, and L7 prices at 4K.
@@ -4352,6 +4370,56 @@ impl GraphExecutor {
         out
     }
 
+    /// A frei0r node's frame: linear → sRGB RGBA8 → the plug-in → linear,
+    /// through the same conversions the effect chain used, so a plug-in
+    /// without history draws as it did. Refused (missing, a history
+    /// plug-in above 2048, no instance), the input passes on and is
+    /// counted.
+    #[allow(clippy::too_many_arguments)]
+    fn run_frei0r(&mut self, node_id: NodeId, fx: &[klipp_effects::BuiltinEffect], input: &[f32], width: u32, height: u32, clip_time_secs: f64, ctx: Option<&mut crate::frame_context::FrameContext<'_>>) -> Vec<f32> {
+        let Some(klipp_effects::BuiltinEffect::Frei0r { type_id, params }) = fx.first() else {
+            return input.to_vec();
+        };
+        let Some(plugin) = klipp_effects::frei0r_effect::plugin(type_id) else {
+            self.run_frei0r_refused += 1;
+            return input.to_vec();
+        };
+        let rgba = klipp_effects::linear_f32_rgba_to_srgb_u8(input);
+        let rendered = match ctx {
+            // The render owner's instances, kept across frames.
+            Some(ctx) => {
+                let stamp = crate::frame_context::SlotStamp {
+                    frame: ctx.frame,
+                    clip_time_secs,
+                    fps: ctx.fps,
+                    width,
+                    height,
+                    source: ctx.source,
+                    enabled: true,
+                };
+                crate::frei0r_node::render(ctx.instances, ctx.clip, node_id, stamp, &plugin, params, &rgba)
+            }
+            // No owner: one frame's instances, as the effect chain had.
+            None => klipp_frei0r::Frei0rInstanceSet::new(plugin, width, height).and_then(|mut set| {
+                set.set_params(params);
+                set.render(clip_time_secs, &rgba)
+            }),
+        };
+        match rendered {
+            Ok(out) => {
+                if crate::frei0r_node::fell_back(&out) {
+                    self.run_frei0r_fallbacks += 1;
+                }
+                klipp_effects::srgb_u8_to_linear_f32_rgba(&out.rgba)
+            }
+            Err(refusal) => {
+                tracing::warn!("frei0r: {refusal}; its input passed on");
+                self.run_frei0r_refused += 1;
+                input.to_vec()
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn execute_node(
         &mut self,
@@ -4386,16 +4454,22 @@ impl GraphExecutor {
             NodeKind::Effect | NodeKind::EffectSegment if params.effects.iter().any(klipp_effects::registry::needs_source_neighbours) => {
                 self.at_the_source(node_id, &params.effects, primary_input, ctx)
             }
-            NodeKind::Effect | NodeKind::EffectSegment => {
+            // A frei0r plug-in on the CPU, its instances kept across
+            // frames (M4 step 5).
+            NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r => {
                 let fx = &params.effects;
                 let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
-                let effect = match self.gpu.as_mut() {
-                    Some(gpu) if klipp_effects::chain_supports_gpu(fx) => {
-                        let out = gpu.apply_effects(fx, primary_input, width, height);
-                        self.run_effect_breaks += 1;
-                        out
+                let effect = if *kind == NodeKind::Frei0r {
+                    self.run_frei0r(node_id, fx, primary_input, width, height, clip_time_secs, ctx)
+                } else {
+                    match self.gpu.as_mut() {
+                        Some(gpu) if !klipp_effects::has_frei0r(fx) => {
+                            let out = gpu.apply_effects(fx, primary_input, width, height);
+                            self.run_effect_breaks += 1;
+                            out
+                        }
+                        _ => klipp_effects::apply_effects_with_motion(fx, primary_input.to_vec(), width, height, clip_time_secs, luma, &self.motion),
                     }
-                    _ => klipp_effects::apply_effects_with_motion(fx, primary_input.to_vec(), width, height, clip_time_secs, luma, &self.motion),
                 };
                 match params.effect_blend {
                     Some(blend) => mix_effect_cpu(blend, luma, primary_input, effect, secondary_input).unwrap_or_else(|| {

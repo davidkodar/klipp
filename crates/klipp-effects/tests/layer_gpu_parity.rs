@@ -1,6 +1,6 @@
 //! Shader compilation and pixel parity for resident rounded cards and spills.
 use klipp_effects::{
-    apply_effects, chain_supports_gpu, gpu::GpuEffectsPipeline, BuiltinEffect as E,
+    apply_effects, gpu::GpuEffectsPipeline, has_frei0r, BuiltinEffect as E,
 };
 
 fn pipeline() -> Option<GpuEffectsPipeline> {
@@ -27,7 +27,7 @@ fn card(w: u32, h: u32) -> Vec<f32> {
 }
 
 fn compare(gpu: &mut GpuEffectsPipeline, p: &[f32], w: u32, h: u32, effects: &[E]) {
-    assert!(chain_supports_gpu(effects));
+    assert!(!has_frei0r(effects));
     let expected = apply_effects(effects, p.to_vec(), w, h);
     let got = gpu.apply_effects(effects, p, w, h);
     let (i, error) = expected

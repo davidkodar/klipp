@@ -77,8 +77,8 @@ impl EffectEntry {
                 .map(|p| p.supports_opengl)
                 .unwrap_or(false),
             EffectSource::Audio(_) | EffectSource::Ladspa(_) => false,
-            // frei0r 1.x has no GPU surface; chain_supports_gpu in
-            // klipp-effects flips to CPU when any frei0r entry is present.
+            // frei0r 1.x has no GPU surface: a frei0r node runs on the
+            // CPU between the GPU nodes around it (M4 step 5).
             EffectSource::Frei0r(_) => false,
             // LV2 hosting runs on the CPU mix thread (audio effect).
             EffectSource::Lv2(_) => false,

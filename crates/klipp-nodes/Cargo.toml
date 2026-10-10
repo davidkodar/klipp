@@ -8,6 +8,7 @@ license.workspace = true
 klipp-color = { workspace = true }
 klipp-core = { workspace = true }
 klipp-effects = { workspace = true }
+klipp-frei0r = { workspace = true }
 rayon = "1"
 wgpu = { workspace = true }
 bytemuck = { workspace = true }

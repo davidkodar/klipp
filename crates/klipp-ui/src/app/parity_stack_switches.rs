@@ -196,7 +196,19 @@ fn routes(ty: &EffectType) -> (super::parity_pixels::Routes, (u32, u32)) {
 /// The eye switched off, drawn: on the effect's pixel fixture, the card's
 /// eye changes the frame, and the CPU's frame is the GPU's.
 fn eye_pixels(ty: &EffectType) -> Result<(), String> {
-    let (mut start, index) = super::parity_numeric::pixel_fixture(ty, &(ty.sample)(), Surface::EffectsStack)?;
+    // The frei0r card's sample names no plug-in, and one that isn't there
+    // passes its frame on: a real one, set to change the frame. (The old
+    // chain round-tripped the frame through 8 bits for any frei0r entry,
+    // which made an empty one look as if it acted.)
+    let sample = match ty.tag {
+        "frei0r" => {
+            let info = super::parity_specialist_pixels::saturator()?;
+            let params = info.params.iter().enumerate().map(|(i, p)| if i == 0 { klipp_frei0r::Frei0rValue::Double(0.85) } else { klipp_frei0r::Frei0rValue::default_for(p.kind) }).collect();
+            BuiltinEffect::Frei0r { type_id: info.type_id(), params }
+        }
+        _ => (ty.sample)(),
+    };
+    let (mut start, index) = super::parity_numeric::pixel_fixture(ty, &sample, Surface::EffectsStack)?;
     if ty.tag == "opacity" {
         start.push_effect(BuiltinEffect::Opacity { value: 1.0 });
     }

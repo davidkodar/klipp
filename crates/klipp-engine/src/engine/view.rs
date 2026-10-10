@@ -431,7 +431,7 @@ impl PlaybackEngine {
         if layer.transition || Some(clip.id) != primary {
             return None;
         }
-        if !clip.needs_grade_or_builtin_processing() {
+        if !clip.frames_cacheable() {
             return None;
         }
         let track_opacity = seq.tracks.get(layer.track).map(|t| t.opacity).unwrap_or(1.0);

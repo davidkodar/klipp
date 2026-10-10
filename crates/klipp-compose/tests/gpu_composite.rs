@@ -104,6 +104,37 @@ fn the_gpu_stack_declines_what_it_cannot_do_yet() {
     assert!(r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, hdr).is_none());
 }
 
+/// The stack has no frei0r: a frame with a frei0r plug-in, on a clip or
+/// on an adjustment layer, is declined (counted, and said), so the
+/// timeline render, where the plug-in is a node, draws it. Run on the
+/// stack, the plug-in would have been left out (M4 step 5).
+#[test]
+fn the_gpu_stack_declines_a_frei0r_plug_in() {
+    let frei0r = || klipp_effects::BuiltinEffect::Frei0r { type_id: "frei0r:/x/invert0r.so:invert0r".into(), params: vec![] };
+    let (seq, mut src) = stack();
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(true);
+    if r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none() {
+        eprintln!("skipping: the GPU stack declined the plain stack (no usable GPU?)");
+        return;
+    }
+    // On a clip.
+    let mut on_clip = seq.clone();
+    let base = on_clip.tracks.last_mut().and_then(|t| t.clips.first_mut()).expect("the base clip");
+    base.set_effect_list(vec![frei0r()], vec![true]);
+    assert!(r.render_display_u8_on_gpu(&on_clip, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none(), "a clip's frei0r on the stack");
+    assert_eq!(r.last_decline(), Some("frei0r plug-in"));
+    // On an adjustment layer over the stack.
+    let mut adjusted = seq.clone();
+    let mut adj = Track::new("Adj", TrackKind::Video);
+    let mut layer = clip(ClipKind::AdjustmentLayer, 0.0, 5.0);
+    layer.set_effect_list(vec![frei0r()], vec![true]);
+    adj.clips = vec![layer];
+    adjusted.tracks.insert(0, adj);
+    assert!(r.render_display_u8_on_gpu(&adjusted, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none(), "an adjustment layer's frei0r on the stack");
+    assert_eq!(r.last_decline(), Some("frei0r plug-in"));
+}
+
 fn renderer() -> Renderer {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
