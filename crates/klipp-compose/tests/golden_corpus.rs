@@ -38,6 +38,10 @@ use klipp_compose::{FrameSource, GpuPixels, LinearFrameProviderFn, RenderOptions
 use klipp_core::{ClipId, Keyframe, RationalTime, Timecode, TransitionAlignment, TransitionId, TransitionKind, WorkingColorspace};
 use klipp_effects::{BuiltinEffect, ColorFadeMode, SpillMethod};
 use klipp_nodes::params::MatteChannel;
+
+// An analysis effect's analysis, as its media's asset (M4 step 9).
+#[path = "support/analysis_assets.rs"]
+mod analysis;
 use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams, NodePos};
 use klipp_timeline::{Clip, ClipKind, GradeGroup, MatteBinding, Sequence, StencilSettings, TextBox, TitleData, Track, TrackKind, Transition};
 use klipp_timeline::test_clip::{self, TestClip};
@@ -230,6 +234,12 @@ impl FrameSource for Frames {
         let seed = *self.seeds.get(&clip.id)?;
         let source_in = clip.source_in.to_secs_f64();
         Some(Box::new(move |clip_secs| Some((linear_of(&pattern_at(seed, frame_no(source_in + clip_secs))), W, H))))
+    }
+
+    /// Every media clip's analyses, under the one stand-in key the
+    /// corpus' renderers hold them by ([`renderer`]).
+    fn analysis_key(&mut self, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
+        analysis::key(clip, kind)
     }
 }
 
@@ -463,8 +473,6 @@ fn moving(name: impl Into<String>, fx: Vec<BuiltinEffect>) -> (Case, Clip) {
 /// The effects that read other frames or an analysis of the clip, and
 /// sources that are not display video (#1024).
 fn temporal_cases() -> Vec<Case> {
-    use klipp_effects::homography::Homography;
-    use klipp_effects::stabilization::SmoothedTrajectory;
     let mut out = Vec::new();
 
     // Temporal noise reduction: the frame averaged with its neighbours
@@ -492,30 +500,16 @@ fn temporal_cases() -> Vec<Case> {
     case.declines = Some(vec![Path::Stack, Path::Export]);
     out.push(case);
 
-    // Stabilisation with its analysis: every frame corrected by a shift.
-    let (mut case, _) = moving("temporal/stabilisation", vec![BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }]);
-    let shift = Homography { h: [[1.0, 0.0, 3.5], [0.0, 1.0, -1.5], [0.0, 0.0, 1.0]] };
-    case.project[0].tracks[0].clips[0].smoothed_trajectory = Some(SmoothedTrajectory {
-        smoothed: Vec::new(),
-        corrections: vec![shift; 96],
-        smoothing_window_secs: 1.0,
-        raw_jitter_px: 1.0,
-        smoothed_jitter_px: 0.1,
-    });
-    out.push(case);
+    // Stabilisation with its analysis (`renderer`'s): every frame
+    // corrected by a shift.
+    out.push(moving("temporal/stabilisation", vec![BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }]).0);
 
-    // Rolling-shutter correction, its motion measured from the moving
-    // picture's frames.
+    // Rolling-shutter correction, with the file's motion as its analysis.
     out.push(moving("temporal/rolling shutter", vec![BuiltinEffect::RollingShutterCorrection { strength: 1.0, readout_ratio: 0.9 }]).0);
 
-    // Deflicker with measured gains that move frame to frame.
+    // Deflicker, its analysis light that flickers frame to frame.
     let mut c = media(0.0, 4.0);
     c = TestClip::of(c).effects(vec![BuiltinEffect::Deflicker { strength: 1.0, window_secs: 1.0, gain: 1.0 }]).build();
-    c.deflicker_gains = Some(klipp_effects::deflicker::DeflickerGains {
-        gains: (0..96).map(|i| 1.0 + 0.2 * ((i as f32) * 0.7).sin()).collect(),
-        window_secs: 1.0,
-        fps: 24.0,
-    });
     let f = Frames::default().with(&c, 0);
     out.push(Case::new("temporal/deflicker gains", sequence(vec![track("V1", TrackKind::Video, vec![c])]), f));
 
@@ -1104,6 +1098,10 @@ fn renderer(gpu: bool, ws: WorkingColorspace) -> Renderer {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(gpu);
     r.set_working_colorspace(ws);
+    // The temporal cases' analyses: every frame shifted (3.5, -1.5),
+    // rows sheared by the picture moving between frames, light that
+    // flickers frame to frame.
+    r.set_asset_store(analysis::store(vec![analysis::stabilised_by(3.5, -1.5, 96), analysis::sheared(96), analysis::flickering(96)]));
     r
 }
 
@@ -1663,8 +1661,6 @@ fn the_temporal_effects_change_the_picture() {
         let mut plain = case.project[0].clone();
         for c in plain.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
             c.set_effect_list(Vec::new(), c.builtin_effects_enabled().to_vec());
-            c.smoothed_trajectory = None;
-            c.deflicker_gains = None;
         }
         let mut r = renderer(false, case.working);
         let t = case.times[0];
