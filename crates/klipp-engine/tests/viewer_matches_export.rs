@@ -632,6 +632,70 @@ fn a_slow_decoder_after_playing_still_shows_the_exported_frames() {
     assert!(worst <= 3, "the viewer differs from the export by {worst} levels");
 }
 
+/// Paused on the dissolve's cut frame just as playback crosses it: the
+/// stream that takes the outgoing clip's decoder over has a's frame at the
+/// cut, and the viewer settles on a complete frame 100, the export's.
+///
+/// The decoder's frame at the cut was taken by playback and dropped, and
+/// the stream held nothing, its queue starting a frame later: parked there,
+/// no frame for it ever came, and the viewer stayed incomplete until any
+/// wait gave up (#1494). The pause is sent the moment the engine notes the
+/// cut, with the decoders slowed so the next frame is 60 ms off; a pause
+/// that still lands past the cut is tried again.
+#[test]
+fn pausing_on_a_dissolves_cut_settles_on_the_exported_frame() {
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            klipp_engine::video_decoder::set_decode_delay_for_tests(0);
+        }
+    }
+    let _decoders = DECODER_SPEED.write().unwrap_or_else(|e| e.into_inner());
+    let (t, out) = main_fixture();
+    let viewer = Viewer::start(t);
+    let _restore = Restore;
+    klipp_engine::video_decoder::set_decode_delay_for_tests(60);
+    let cuts = |v: &Viewer| v.fb.lock().unwrap().trail().iter().filter(|l| l.contains("cut at 100:")).count();
+    let paused_at = |v: &Viewer| {
+        let trail = v.fb.lock().unwrap().trail();
+        trail.iter().rev().find_map(|l| l.split("paused at ").nth(1).and_then(|n| n.trim().parse::<i64>().ok()))
+    };
+    for attempt in 0..5 {
+        viewer.frame_at(97);
+        let before = cuts(&viewer);
+        viewer.cmd.send(AppCommand::Play).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while cuts(&viewer) == before {
+            assert!(Instant::now() < deadline, "playback never crossed the cut
+{}", viewer.trail());
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let asked_after = viewer.fb.lock().unwrap().latest_generation();
+        viewer.cmd.send(AppCommand::Pause).unwrap();
+        let wait = Instant::now() + Duration::from_secs(10);
+        while paused_at(&viewer).is_none_or(|n| n < 100) {
+            assert!(Instant::now() < wait, "the pause was never noted
+{}", viewer.trail());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        if paused_at(&viewer) != Some(100) {
+            eprintln!("attempt {attempt}: paused past the cut, at {:?}; again", paused_at(&viewer));
+            continue;
+        }
+        viewer.wait_for_complete(100, asked_after, Instant::now() + Duration::from_secs(20));
+        let (v, presented, complete) = viewer.settled_labelled();
+        assert_eq!((presented, complete), (Some(100), true), "settled on the cut\n{}", viewer.trail());
+        let worst = compare("paused on the cut", &v, &exported_frame(out, 100));
+        assert!(worst <= 3, "the viewer differs from the export on the cut by {worst} levels");
+        return;
+    }
+    panic!("no pause landed on the cut in five tries\n{}", viewer.trail());
+}
+
 /// A qualifier-driven secondary: the primary grade, a key over it, a
 /// second grade on the branch, and an ApplyMatte recombining the two.
 ///

@@ -1154,6 +1154,11 @@ pub struct PlaybackEngine {
     titles_warm_checked: std::time::Instant,
     /// Until when each presented or missing frame is logged after a cut.
     cut_diag_until: Option<std::time::Instant>,
+    /// The outgoing clip's frame at the cut, taken from the primary
+    /// decoder when it crossed the clip's out point: the frame a
+    /// transition's outgoing side shows there, handed to the clip stream
+    /// that takes the decoder over (#1494).
+    boundary_frame: Option<crate::types::LinearFrame>,
     // Audio — one source per active track, mixed through mix thread
     audio_sources: Vec<ActiveAudioSource>,
     audio_output: Option<SendAudioOutput>,
@@ -2054,6 +2059,7 @@ impl PlaybackEngine {
             titles_warmed: std::collections::HashSet::new(),
             titles_warm_checked: std::time::Instant::now(),
             cut_diag_until: None,
+            boundary_frame: None,
             audio_sources: Vec::new(),
             audio_output,
             mix_thread: Some(mix_thread),
@@ -5149,6 +5155,7 @@ impl PlaybackEngine {
                     clip.timeline_out.to_secs_f64(), current_source_secs);
                 self.playhead = clip.timeline_out;
                 self.cut_diag_until = Some(std::time::Instant::now() + Duration::from_millis(1500));
+                self.boundary_frame = Some(frame);
                 self.advance_to_next_clip();
                 return;
             }
@@ -5696,6 +5703,8 @@ impl PlaybackEngine {
     /// decoder over: it is already where that side needs it, and a fresh
     /// one would leave the side empty while it seeks. Stopped otherwise.
     fn retire_v1_decoder(&mut self, old_clip: Option<klipp_core::ClipId>) {
+        // Only this cut's: a frame left by an earlier one is gone either way.
+        let boundary = self.boundary_frame.take();
         let Some(mut dec) = self.v1_decoder.take() else { return };
         if let Some(id) = old_clip.filter(|id| !self.streams.has(*id)) {
             let time = self.playhead;
@@ -5710,7 +5719,11 @@ impl PlaybackEngine {
             };
             if let Some(secs) = still_shown {
                 debug!("CUT-DIAG primary decoder handed to the clip streams for {id:?} at {secs:.3}s");
-                self.streams.adopt(id, dec, secs);
+                self.note_view(format!("cut at {:?}: the outgoing clip's stream took the decoder over (frame at the cut {})", time.value, if boundary.is_some() { "handed on" } else { "none" }));
+                // With the frame the decoder gave at the cut: the queue
+                // starts after it, and a stream holding nothing would wait
+                // for a frame that's never coming (#1494).
+                self.streams.adopt(id, dec, secs, boundary.map(streams::HeldFrame::from_frame));
                 return;
             }
         }
