@@ -21,6 +21,7 @@ pub mod names;
 pub mod old_fields;
 pub mod ops;
 pub mod paths;
+pub mod placed;
 pub mod revision;
 pub mod revision2;
 pub mod revision3;

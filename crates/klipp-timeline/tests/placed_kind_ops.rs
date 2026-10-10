@@ -214,3 +214,53 @@ fn a_role_change_keeps_every_id() {
     let now: Vec<_> = (0..4).map(|i| c.effect_node_at(false, i)).collect();
     assert_eq!(now, ids, "the anchor and the placement changed hands; no entry was renamed");
 }
+
+/// Every node of the picture, its id by its type: what a held path names.
+fn node_ids(c: &Clip) -> Vec<(String, uuid::Uuid)> {
+    let p = c.picture_v2().expect("the clip's picture");
+    let mut ids: Vec<(String, uuid::Uuid)> = p.picture.graph.nodes.iter().map(|n| (n.type_id.as_str().to_owned(), n.id)).collect();
+    ids.sort();
+    ids
+}
+
+/// A move that changes no role renames no node, the role nodes included
+/// (the placement, the head's denoiser): a path the inspector, the
+/// history or the assistant holds stays good.
+#[test]
+fn a_move_that_changes_no_role_renames_nothing() {
+    let mut c = clip(vec![blur(), E::Gamma { gamma: 1.1 }, transform(10.0), E::TemporalDenoise { strength: 0.5, threshold: 0.1 }, opacity(0.8)], vec![true; 5]);
+    let before = node_ids(&c);
+    c.apply_effect_edits(&[EffectEdit::Move { from: 3, to: 0 }]).expect("the placed kinds take graph ops").expect("the picture takes the edit");
+    assert_eq!(node_ids(&c), before);
+}
+
+/// When the placement changes hands it is the node of the Transform that
+/// holds it: the first Transform switched off, the placement node's id is
+/// the second Transform's.
+#[test]
+fn the_placement_node_is_its_transforms() {
+    let mut c = clip(vec![transform(10.0), transform(30.0)], vec![true, true]);
+    let second = c.effect_node_at(false, 1).expect("the second transform's node");
+    c.apply_effect_edits(&[EffectEdit::SetEnabled(0, false)]).expect("the placed kinds take graph ops").expect("the picture takes the edit");
+    let p = c.picture_v2().unwrap();
+    let placement = p.picture.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::PLACEMENT).expect("a placement node");
+    assert_eq!(placement.id, second, "the placement is the second transform's node");
+}
+
+/// A picture-truth clip (an effect mixed, which its list can't hold)
+/// refuses an edit of a placed kind, by name, for now, and keeps its mix:
+/// its record is its picture's view, and a lift of it would drop the mix.
+#[test]
+fn a_picture_truth_clip_refuses_a_placed_edit_and_keeps_its_mix() {
+    let mut c = clip(vec![blur()], vec![true]);
+    let node = c.effect_node_at(false, 0).expect("the blur's node");
+    let path = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, [node]);
+    c.apply_picture_ops(&[klipp_graph_lift::ops::GraphOp::SetMix { path, mix: Some(0.5) }]).expect("a mix on the blur");
+    assert!(c.is_picture_truth(), "the mix makes the clip picture-truth");
+    let t = transform(20.0);
+    let refused = c.apply_effect_edits(&[EffectEdit::Add(&t)]).expect("routed to the placed edit");
+    assert!(refused.as_ref().is_err_and(|e| e.contains("mix or mask")), "{refused:?}");
+    let p = c.picture_v2().unwrap();
+    assert!(p.picture.graph.nodes.iter().any(|n| n.id == node && n.mix == Some(0.5)), "the mix is kept");
+    assert!(c.builtin_effects().len() == 1, "nothing added");
+}
