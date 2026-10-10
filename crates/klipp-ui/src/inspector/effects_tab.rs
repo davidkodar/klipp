@@ -554,6 +554,9 @@ pub(crate) fn deflicker_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Cli
             };
             ui.colored_label(colour, egui::RichText::new(text).size(11.0));
         }
+    } else if state.analysis_unavailable.contains(&(clip_id, klipp_analysis::assets::AssetKind::Deflicker)) {
+        // No key without the original: a proxy alone can't be analysed.
+        ui.colored_label(theme.marker_warning, egui::RichText::new("Can't analyse: the media's original file isn't available, so the frame isn't deflickered. Relink it to analyse.").size(11.0));
     } else {
         // It starts by itself (`ensure_analyses`); until it's done the
         // frame is drawn as it is, and says so.
@@ -681,6 +684,9 @@ pub(crate) fn stabilization_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: 
                 }
             }
         }
+    } else if state.analysis_unavailable.contains(&(clip_id, klipp_analysis::assets::AssetKind::Stabilisation)) {
+        // No key without the original: a proxy alone can't be analysed.
+        ui.colored_label(theme.marker_warning, egui::RichText::new("Can't analyse: the media's original file isn't available, so the frame isn't stabilised. Relink it to analyse.").size(11.0));
     } else {
         // It starts by itself (`ensure_analyses`); until it's done the
         // frame is drawn as it is, and says so.

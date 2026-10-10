@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use klipp_analysis::assets::{self, AssetKey, AssetKind, AssetStore, Found};
+use klipp_analysis::assets::{self, AssetKey, AssetKind, AssetStore};
 use klipp_timeline::ClipKind;
 
 use crate::{media_analysis_key, RenderError, SequenceSnapshot};
@@ -78,7 +78,7 @@ pub fn needs(snapshot: &SequenceSnapshot) -> Vec<Need> {
                 key: media_analysis_key(file, kind),
                 path: file.path.clone(),
                 fps: media_fps,
-                frames: file.duration_secs.map_or(0, |d| (d * media_fps).round() as usize),
+                frames: file.duration_secs.map_or(0, |d| assets::frames_of(d, media_fps)),
             });
         }
     }
@@ -95,7 +95,7 @@ pub fn ensure(needs: &[Need], store: &mut dyn AssetStore, analyse: Option<&Analy
         let Some(key) = need.key.clone() else {
             return Err(refuse(format!("needs an analysis of {}, whose frame rate or size isn't known", need.path.display())));
         };
-        if done.contains(&key) || matches!(assets::lookup(store, &key), Found::Ready(_)) {
+        if done.contains(&key) || store.stamp(&key).is_some() {
             continue;
         }
         let Some(analyse) = analyse else {
@@ -121,6 +121,7 @@ pub fn ensure(needs: &[Need], store: &mut dyn AssetStore, analyse: Option<&Analy
 #[cfg(test)]
 mod tests {
     use super::*;
+    use klipp_analysis::assets::Found;
     use klipp_analysis::assets::MemoryStore;
     use std::sync::Mutex;
 

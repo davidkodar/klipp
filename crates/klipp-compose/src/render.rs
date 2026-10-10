@@ -227,6 +227,15 @@ fn derivation_of(effect: &BuiltinEffect) -> Option<(klipp_analysis::assets::Asse
     Some((asset_kind(effect)?, klipp_effects::node_analysis::derivation_params(effect)?))
 }
 
+/// What a read of an analysis asset found, kept by the asset's stamp.
+#[derive(Clone)]
+enum Kept {
+    Absent,
+    /// By another algorithm, or one whose data won't derive: owed again.
+    Stale,
+    Ready(Arc<klipp_effects::node_analysis::NodeAnalysis>),
+}
+
 /// One clip's analyses for a frame (M4 step 9), by the effect that reads
 /// each: ready, with its settings applied, or stale (never read). An
 /// effect with neither has no analysis.
@@ -713,9 +722,10 @@ pub struct Renderer {
     run_display: Option<klipp_color::hdr::SceneToDisplay>,
     /// Where analysis assets are kept (M4 step 8): the analysis cache.
     assets: Box<dyn klipp_analysis::assets::AssetStore + Send>,
-    /// Analyses derived from their assets with an effect's settings, kept
-    /// while their key and settings hold. Bounded.
-    derived: HashMap<(klipp_analysis::assets::AssetKey, u64), Arc<klipp_effects::node_analysis::NodeAnalysis>>,
+    /// Analyses derived from their assets with an effect's settings, each
+    /// with the stamp of what was kept when it was read: kept while the
+    /// stamp and the settings hold. Bounded.
+    derived: HashMap<(klipp_analysis::assets::AssetKey, u64), (u64, Kept)>,
     /// The clip being rendered and its analyses, for each of its runs.
     clip_analysis: Option<(ClipId, ClipAnalysis)>,
     /// The source-boundary node for the grade being run (M4 step 6):
@@ -3342,23 +3352,35 @@ impl Renderer {
                 continue;
             }
             let Some(key) = src.analysis_key(clip, kind) else { continue };
-            let blob = match lookup(self.assets.as_ref(), &key) {
-                Found::Absent => continue,
-                Found::Stale { .. } => None,
-                Found::Ready(raw) => {
+            // What's kept, by its stamp: a frame costs a look at the file,
+            // never a read. The asset is read and parsed, and derived with
+            // the effect's settings, only when that stamp or the settings
+            // change; a stamp seen again is the same asset (#1321 review).
+            // None at the current algorithm keeps what was found under a
+            // stamp no asset has, until an analysis keeps one.
+            let stamp = self.assets.stamp(&key).unwrap_or(u64::MAX);
+            let kept = match self.derived.get(&(key.clone(), params)) {
+                Some((seen, kept)) if *seen == stamp => kept.clone(),
+                _ => {
+                    let kept = match lookup(self.assets.as_ref(), &key) {
+                        Found::Absent => Kept::Absent,
+                        Found::Stale { .. } => Kept::Stale,
+                        // One that won't derive (its shape changed without
+                        // its algorithm) reads as stale: owed again, never
+                        // drawn from.
+                        Found::Ready(raw) => klipp_effects::node_analysis::derive(effect, &raw).map_or(Kept::Stale, |d| Kept::Ready(Arc::new(d))),
+                    };
                     if self.derived.len() > 64 {
                         self.derived.clear();
                     }
-                    let derived = match self.derived.get(&(key.clone(), params)) {
-                        Some(d) => Some(Arc::clone(d)),
-                        None => klipp_effects::node_analysis::derive(effect, &raw).map(|d| {
-                            let d = Arc::new(d);
-                            self.derived.insert((key.clone(), params), Arc::clone(&d));
-                            d
-                        }),
-                    };
-                    derived.map(|d| klipp_nodes::frame_context::AnalysisBlob { schema: klipp_nodes::frame_context::NODE_ANALYSIS_SCHEMA, data: d })
+                    self.derived.insert((key.clone(), params), (stamp, kept.clone()));
+                    kept
                 }
+            };
+            let blob = match kept {
+                Kept::Absent => continue,
+                Kept::Stale => None,
+                Kept::Ready(d) => Some(klipp_nodes::frame_context::AnalysisBlob { schema: klipp_nodes::frame_context::NODE_ANALYSIS_SCHEMA, data: d }),
             };
             out.found.push(((kind, params), blob));
         }
@@ -3580,9 +3602,6 @@ impl Renderer {
         EFFECTS_ON_CPU_KERNELS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// `fx` on `pixels` by the CPU kernels: a clip whose effects can't run
-    /// on the GPU (no GPU, an effect with no GPU kernel), or whose plan
-    /// couldn't apply them. Every run is counted (#1274).
     /// [`Self::effects`] for `clip`'s list, its analysis effects given
     /// their analysis for the frame (M4 step 9): a deflicker's gain and the
     /// frame's motion, read at the frame's source time from the clip's
@@ -3616,6 +3635,9 @@ impl Renderer {
         out
     }
 
+    /// `fx` on `pixels` by the CPU kernels: a clip whose effects can't run
+    /// on the GPU (no GPU, an effect with no GPU kernel), or whose plan
+    /// couldn't apply them. Every run is counted (#1274).
     fn effects(&mut self, fx: &[BuiltinEffect], pixels: Vec<f32>, clip_time: f64, width: u32, height: u32) -> Vec<f32> {
         if !has_active_effects(fx) {
             return pixels;

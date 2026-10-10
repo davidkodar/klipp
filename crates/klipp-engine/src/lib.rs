@@ -61,7 +61,7 @@
 #[cfg(target_os = "linux")]
 pub mod alsa_quiet;
 pub mod analyse;
-pub use analyse::analyse_media;
+pub use analyse::{analyse_into, analyse_media};
 pub mod canonical_hash;
 pub mod node_thumbnails;
 pub mod audio_decoder;

@@ -94,6 +94,11 @@ pub enum Found {
 pub trait AssetStore {
     fn get(&self, key: &AssetKey) -> Option<Asset>;
     fn put(&mut self, asset: Asset) -> Result<(), String>;
+    /// What is kept for `key` at the current algorithm, cheaply, without
+    /// reading it: equal stamps are the same asset, so a reader keeps what
+    /// it made of one until the stamp changes. `None` when there's none at
+    /// the current algorithm (absent, or stale).
+    fn stamp(&self, key: &AssetKey) -> Option<u64>;
 }
 
 /// The asset for `key`, if one is there at the current algorithm.
@@ -117,17 +122,31 @@ pub fn key_for(kind: AssetKind, path: &std::path::Path, width: u32, height: u32,
     Some(AssetKey { kind, media: crate::store::key_for(path)?, width, height, fps })
 }
 
-/// The width both analysers decode a file at.
+/// The width the analyser decodes a file at.
 pub const ANALYSIS_WIDTH: u32 = 480;
 
-/// The key of `kind`'s analysis of `media`: its file, at the analysis
-/// width (the height to its aspect, even) and its own rate. Nothing of a
-/// clip's: every clip of the file, trimmed, split or duplicated, reads the
-/// one asset. `None` when the file isn't there.
-pub fn asset_key(kind: AssetKind, media: &klipp_media::MediaItem) -> Option<AssetKey> {
-    let (w, h) = (media.resolution.width.max(1), media.resolution.height.max(1));
+/// The key of `kind`'s analysis of the file at `path`, whose frames are
+/// `size` and whose rate is `fps`: at the analysis width, the height to
+/// its aspect (even). The one formula the viewer and export both key by,
+/// so they find each other's assets. `None` when the file isn't there.
+pub fn key_at(kind: AssetKind, path: &std::path::Path, size: (u32, u32), fps: (u32, u32)) -> Option<AssetKey> {
+    let (w, h) = (size.0.max(1), size.1.max(1));
     let height = ((ANALYSIS_WIDTH as u64 * h as u64 / w as u64) as u32 + 1) & !1;
-    key_for(kind, &media.path, ANALYSIS_WIDTH, height, (media.fps.num, media.fps.den))
+    key_for(kind, path, ANALYSIS_WIDTH, height, fps)
+}
+
+/// The key of `kind`'s analysis of `media`: its file ([`key_at`]).
+/// Nothing of a clip's: every clip of the file, trimmed, split or
+/// duplicated, reads the one asset. `None` when the file isn't there.
+pub fn asset_key(kind: AssetKind, media: &klipp_media::MediaItem) -> Option<AssetKey> {
+    key_at(kind, &media.path, (media.resolution.width, media.resolution.height), (media.fps.num, media.fps.den))
+}
+
+/// How many frames an analysis of `duration_secs` at `fps` reads: the
+/// one count the viewer and export both ask for, so they make the same
+/// asset.
+pub fn frames_of(duration_secs: f64, fps: f64) -> usize {
+    (duration_secs * fps).round().max(0.0) as usize
 }
 
 /// Assets on disk, beside the media's other analysis results by default
@@ -150,42 +169,80 @@ impl CacheStore {
         Self { root }
     }
 
-    fn file(&self, key: &AssetKey) -> std::path::PathBuf {
-        self.root.join(&key.media).join(format!("{}-{}x{}-{}_{}.json", key.kind.id(), key.width, key.height, key.fps.0, key.fps.1))
+    /// The file's name before its algorithm: one per key.
+    fn stem(key: &AssetKey) -> String {
+        format!("{}-{}x{}-{}_{}", key.kind.id(), key.width, key.height, key.fps.0, key.fps.1)
+    }
+
+    /// The file `key`'s asset by `algorithm` is kept in. The algorithm is
+    /// in the name, so whether the current one is there needs no read.
+    fn file(&self, key: &AssetKey, algorithm: u32) -> std::path::PathBuf {
+        self.root.join(&key.media).join(format!("{}-a{algorithm}.json", Self::stem(key)))
     }
 }
 
 impl AssetStore for CacheStore {
+    /// The current algorithm's asset, else one by another (stale, which
+    /// [`lookup`] says so), read whole.
     fn get(&self, key: &AssetKey) -> Option<Asset> {
-        let text = std::fs::read_to_string(self.file(key)).ok()?;
-        serde_json::from_str(&text).ok()
+        let read = |path: &std::path::Path| std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Asset>(&t).ok());
+        if let Some(a) = read(&self.file(key, algorithm(key.kind))) {
+            return Some(a);
+        }
+        let prefix = format!("{}-a", Self::stem(key));
+        std::fs::read_dir(self.root.join(&key.media)).ok()?.flatten().find_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            (name.starts_with(&prefix) && name.ends_with(".json")).then(|| read(&e.path())).flatten()
+        })
     }
 
     fn put(&mut self, asset: Asset) -> Result<(), String> {
-        let path = self.file(&asset.key);
+        let path = self.file(&asset.key, asset.algorithm);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
         let text = serde_json::to_string(&asset).map_err(|e| e.to_string())?;
-        // Whole or not at all: a reader never sees half a file.
-        let tmp = path.with_extension("json.tmp");
+        // Whole or not at all: a reader never sees half a file. The temp
+        // file is this writer's own, so the viewer and an export writing
+        // one asset at once don't write into each other's.
+        static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = path.with_extension(format!("json.{}-{n}.tmp", std::process::id()));
         std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
-        std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
+        std::fs::rename(&tmp, &path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            format!("{}: {e}", path.display())
+        })
+    }
+
+    /// The current algorithm's file's length and modification time: a
+    /// rewrite (a new analysis, by this process or another) is another
+    /// stamp.
+    fn stamp(&self, key: &AssetKey) -> Option<u64> {
+        let meta = std::fs::metadata(self.file(key, algorithm(key.kind))).ok()?;
+        let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+        Some((modified.as_nanos() as u64).rotate_left(17) ^ meta.len())
     }
 }
 
-/// Assets in memory: a test's, or a render's that keeps none.
+/// Assets in memory: a test's, or a render's that keeps none. Each put
+/// is a new stamp.
 #[derive(Default)]
-pub struct MemoryStore(std::collections::HashMap<AssetKey, Asset>);
+pub struct MemoryStore(std::collections::HashMap<AssetKey, (u64, Asset)>, u64);
 
 impl AssetStore for MemoryStore {
     fn get(&self, key: &AssetKey) -> Option<Asset> {
-        self.0.get(key).cloned()
+        self.0.get(key).map(|(_, a)| a.clone())
     }
 
     fn put(&mut self, asset: Asset) -> Result<(), String> {
-        self.0.insert(asset.key.clone(), asset);
+        self.1 += 1;
+        self.0.insert(asset.key.clone(), (self.1, asset));
         Ok(())
+    }
+
+    fn stamp(&self, key: &AssetKey) -> Option<u64> {
+        self.0.get(key).filter(|(_, a)| a.algorithm == algorithm(key.kind)).map(|(n, _)| *n)
     }
 }
 
@@ -302,6 +359,61 @@ mod tests {
         std::fs::rename(&here, &there).unwrap();
         let moved = key_for(AssetKind::Stabilisation, &there, 480, 270, (24, 1)).unwrap();
         assert_eq!(lookup(&s, &moved), Found::Absent);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A stamp says whether what's kept changed, without reading it: the
+    /// same file, the same stamp; rewritten, another; none at the current
+    /// algorithm, none (#1321 review: an asset read once, not each frame).
+    #[test]
+    fn a_stamp_follows_what_is_kept() {
+        let root = std::env::temp_dir().join(format!("klipp-asset-stamp-{}", std::process::id()));
+        let mut s = CacheStore::at(root.clone());
+        assert_eq!(s.stamp(&key("m")), None, "nothing kept");
+        store(&mut s, key("m"), serde_json::json!([1.0])).unwrap();
+        let first = s.stamp(&key("m")).expect("kept");
+        assert_eq!(s.stamp(&key("m")), Some(first), "unchanged");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        store(&mut s, key("m"), serde_json::json!([1.0, 2.0])).unwrap();
+        assert_ne!(s.stamp(&key("m")), Some(first), "rewritten");
+        let mut m = MemoryStore::default();
+        store(&mut m, key("m"), serde_json::json!([1.0])).unwrap();
+        let one = m.stamp(&key("m"));
+        store(&mut m, key("m"), serde_json::json!([1.0])).unwrap();
+        assert!(one.is_some() && m.stamp(&key("m")) != one, "each put a new stamp");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// On disk, an asset by another algorithm is found, as stale, and has
+    /// no stamp; no writer leaves a temp file behind.
+    #[test]
+    fn on_disk_another_algorithm_is_stale_and_writes_leave_no_temp() {
+        let root = std::env::temp_dir().join(format!("klipp-asset-alg-{}", std::process::id()));
+        let mut s = CacheStore::at(root.clone());
+        let old = algorithm(AssetKind::Deflicker) + 7;
+        s.put(Asset { key: key("m"), algorithm: old, data: serde_json::json!([9.0]) }).unwrap();
+        assert_eq!(lookup(&s, &key("m")), Found::Stale { algorithm: old });
+        assert_eq!(s.stamp(&key("m")), None);
+        store(&mut s, key("m"), serde_json::json!([1.0])).unwrap();
+        assert_eq!(lookup(&s, &key("m")), Found::Ready(serde_json::json!([1.0])), "the current one is read first");
+        let temps = std::fs::read_dir(root.join("m")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).count();
+        assert_eq!(temps, 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The key's height is the source's aspect at the analysis width, even:
+    /// one formula for the viewer's media and export's file.
+    #[test]
+    fn the_key_is_one_formula() {
+        let dir = std::env::temp_dir().join(format!("klipp-asset-keyat-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("clip.mov");
+        std::fs::write(&path, b"frames").unwrap();
+        let k = key_at(AssetKind::Deflicker, &path, (1920, 1080), (25, 1)).unwrap();
+        assert_eq!((k.width, k.height), (480, 270));
+        assert_eq!(key_at(AssetKind::Deflicker, &path, (1080, 1920), (25, 1)).unwrap().height, 854, "portrait, rounded to even");
+        assert_eq!(frames_of(2.0, 25.0), 50);
+        assert_eq!(frames_of(1.001, 29.97), 30);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
