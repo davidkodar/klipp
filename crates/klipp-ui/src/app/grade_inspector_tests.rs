@@ -693,7 +693,7 @@ fn the_first_edit_makes_the_corrector_in_the_same_step() {
 }
 
 /// A grade with no Corrector: its Source straight to its Output.
-fn bare_grade() -> NodeGraph {
+pub(super) fn bare_grade() -> NodeGraph {
     let mut g = NodeGraph::default();
     let corrector = g.nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
     let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
@@ -706,7 +706,7 @@ fn bare_grade() -> NodeGraph {
 }
 
 /// `inner` as a Compound in `g`, just before its Output: the compound's id.
-fn nest(g: &mut NodeGraph, inner: NodeGraph) -> NodeId {
+pub(super) fn nest(g: &mut NodeGraph, inner: NodeGraph) -> NodeId {
     let mut compound = Node { id: NodeId::new_v4(), kind: NodeKind::Compound, label: String::new(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: vec![] };
     compound.params.compound_subgraph = Some(inner);
     let (id, output) = (compound.id, g.output_node_id);
@@ -802,7 +802,7 @@ fn the_first_edit_inside_a_sequence_grade_s_compound_makes_its_corrector() {
 
 /// A grade of `kinds` chained between its Source and its Output, and
 /// their ids in order.
-fn chain_of(kinds: &[NodeKind]) -> (NodeGraph, Vec<NodeId>) {
+pub(super) fn chain_of(kinds: &[NodeKind]) -> (NodeGraph, Vec<NodeId>) {
     let mut g = bare_grade();
     let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
     let output = g.output_node_id;
@@ -818,6 +818,11 @@ fn chain_of(kinds: &[NodeKind]) -> (NodeGraph, Vec<NodeId>) {
     }
     g.edges.push(klipp_nodes::Edge { from_node: prev, from_port: 0, to_node: output, to_port: 0 });
     (g, ids)
+}
+
+/// The level `descent` names in `grade`, as stored.
+pub(super) fn level_of(grade: &NodeGraph, descent: &[NodeId]) -> Option<NodeGraph> {
+    crate::inspector::grade_view::v1_level(grade, descent).cloned()
 }
 
 /// A grade whose level `depth` compounds down holds an Exposure, a
@@ -1275,4 +1280,69 @@ fn a_closed_drag_on_a_sequence_grade_without_one_is_one_step() {
         redo_root(&mut run.state);
         assert_eq!(stored(&run, w), dragged, "{w:?}: redo brings back the dragged grade");
     }
+}
+
+/// Each structure command the grade canvas emits inside a compound, drawn
+/// and clicked on the canvas and fed through the app's dispatch
+/// (`canvas_structure_edit`, as the colour page's handler feeds it), lands
+/// as its path-op step (#1476): Add from the add menu, Delete from a
+/// node's menu, Group 2 into Compound, and Ungroup Compound.
+#[test]
+fn the_canvas_s_structure_commands_land_as_path_steps() {
+    use crate::panels::node_graph_v2::canvas_command_tests::Harness;
+    let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
+    let (grade, descent, ids) = at_depth(1);
+    run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap().edit_grade(|g| *g = grade);
+    run.state.graph_descent_path = descent.clone();
+    let clip_id = run.clip;
+    // The canvas on the compound's level as it stands, its nodes spread out.
+    let canvas = |run: &Run| {
+        let mut level = level_of(clip(&run.state, clip_id).grade(), &descent).expect("the level");
+        for (i, n) in level.nodes.iter().enumerate() {
+            level.node_positions.insert(n.id, klipp_nodes::NodePos { x: (i as f32 - 2.0) * 230.0, y: 0.0 });
+        }
+        let mut h = Harness::on(level, clip_id);
+        h.settle();
+        h
+    };
+    let dispatch = |run: &mut Run, cmds: Vec<AppCommand>, label: &str| {
+        let steps = run.state.active_history().undo_count();
+        let [cmd] = cmds.as_slice() else { panic!("{label}: the canvas sent {cmds:?}") };
+        assert_eq!(run.state.canvas_structure_edit(cmd), Some(true), "{label}: {cmd:?}: {:?}", run.state.toast.message_for_test());
+        assert_eq!(run.state.active_history().undo_count(), steps + 1, "{label}: one step");
+        assert_eq!(run.state.active_history().undo_label(), Some(label));
+    };
+    let level = |run: &Run| level_of(clip(&run.state, clip_id).grade(), &descent).expect("the level");
+
+    // Add, from the add menu.
+    let mut h = canvas(&run);
+    h.open_add_menu("Saturation", egui::pos2(42.0, 64.0));
+    let cmds = h.click(h.text("Saturation"), egui::PointerButton::Primary);
+    dispatch(&mut run, cmds, "Add Node");
+    assert_eq!(level(&run).nodes.iter().filter(|n| n.kind == NodeKind::Saturation).count(), 2, "added in the compound");
+
+    // Delete, from the Contrast's menu.
+    let mut h = canvas(&run);
+    let (_, rect) = h.card(NodeKind::Contrast);
+    let cmds = h.menu_item(rect.center(), "Delete");
+    dispatch(&mut run, cmds, "Remove Node");
+    assert!(!level(&run).nodes.iter().any(|n| n.id == ids[2]), "removed from the compound");
+
+    // Group the Exposure and the first Saturation.
+    let mut h = canvas(&run);
+    h.set = [ids[0], ids[1]].into_iter().collect();
+    h.selected = Some(ids[0]);
+    h.settle();
+    let (_, rect) = h.card(NodeKind::Exposure);
+    let cmds = h.menu_item(rect.center(), "Group 2 into Compound");
+    dispatch(&mut run, cmds, "Group into Compound");
+    let group = run.state.selected_node_id.expect("the new compound selected");
+    assert!(level(&run).nodes.iter().any(|n| n.id == group && n.kind == NodeKind::Compound), "grouped in the compound");
+
+    // Ungroup it again.
+    let mut h = canvas(&run);
+    let (_, rect) = h.card(NodeKind::Compound);
+    let cmds = h.menu_item(rect.center(), "Ungroup Compound");
+    dispatch(&mut run, cmds, "Ungroup Compound");
+    assert!(!level(&run).nodes.iter().any(|n| n.id == group) && level(&run).nodes.iter().any(|n| n.id == ids[0]), "ungrouped back");
 }
