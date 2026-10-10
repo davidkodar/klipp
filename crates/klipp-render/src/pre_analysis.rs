@@ -71,7 +71,8 @@ pub fn needs(snapshot: &SequenceSnapshot) -> Vec<Need> {
             let Some(kind) = klipp_compose::render::asset_kind(effect) else { continue };
             let media_fps = file.fps.filter(|(_, d)| *d > 0).map_or(fps, |(n, d)| n as f64 / d as f64);
             out.push(Need {
-                clip_name: clip.name.clone(),
+                // Its own name, else its media's, as the timeline shows it.
+                clip_name: clip.name.clone().unwrap_or_else(|| file.path.file_name().map_or_else(|| file.path.display().to_string(), |n| n.to_string_lossy().into_owned())),
                 effect: effect_name(kind),
                 kind,
                 key: media_analysis_key(file, kind),

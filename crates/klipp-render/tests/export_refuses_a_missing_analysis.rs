@@ -25,7 +25,7 @@ fn a_clip_without_its_analysis_refuses_the_export_by_name() {
     let id = MediaId::new();
     let tc = |f| RationalTime::from_frames(f, 25);
     let mut clip = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Media { media_id: id }, source_in: tc(0), source_out: tc(N), ..klipp_timeline::Clip::gap(tc(0), tc(N)) };
-    clip.name = "Beach".into();
+    clip.name = Some("Beach".into());
     clip.set_effect_list(vec![BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.1, zoom: true }], vec![true]);
     let mut video = VideoTimeline::default();
     video.sequence.fps = Fps::new(25, 1);
