@@ -18,8 +18,9 @@ pub struct FamilyEntry {
 /// fixture, or a format row. Owners rename a placeholder subject to the
 /// node type id when its step lands it.
 const SUBJECTS: &[(Family, &[&str])] = &[
-    // M4 step 3: the native OFX fixtures (#932's), as nodes.
-    (Family::Ofx, &["ofx.fixture.invert", "ofx.fixture.alpha", "ofx.fixture.series"]),
+    // M4 step 3: the native OFX fixtures (#932's), as nodes; a series is
+    // channels then alpha in one clip.
+    (Family::Ofx, &["org.klipp.fixture.identity", "org.klipp.fixture.channels", "org.klipp.fixture.alpha"]),
     // M4 step 4: a temporal OFX fixture that records the times it asked for.
     (Family::OfxTemporal, &["ofx.fixture.time_request"]),
     // M4 step 5: the native frei0r fixtures (step 2's).
@@ -79,7 +80,7 @@ family!(Format, require_format);
 /// Every family, registered: the gate runs these, and a cheap test holds
 /// every `Family` to having one.
 pub const ALL: &[FamilyEntry] = &[
-    FamilyEntry { family: Family::Ofx, require: require_ofx, run: none_yet },
+    FamilyEntry { family: Family::Ofx, require: require_ofx, run: crate::ofx::run },
     FamilyEntry { family: Family::OfxTemporal, require: require_ofx_temporal, run: none_yet },
     FamilyEntry { family: Family::Frei0r, require: require_frei0r, run: none_yet },
     FamilyEntry { family: Family::TemporalDenoise, require: require_temporal_denoise, run: crate::temporal_denoise::run },
@@ -100,4 +101,8 @@ pub const DELETED: &[(Family, &[&str])] = &[
     (Family::TemporalDenoise, &["fn temporal_denoise(", "tnr_frames"]),
     // Step 7: the renderer's pre-grade frame blend.
     (Family::FrameBlend, &["fn blend_frames("]),
+    // Step 3: the renderer's OFX stage (a clip's plug-ins as one chain on
+    // the instance shared by name) and its temporal-plug-in name guess,
+    // replaced by a node per plug-in with an instance of its own.
+    (Family::Ofx, &["fn ofx(", "is_temporal_plugin"]),
 ];

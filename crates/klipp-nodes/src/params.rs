@@ -15,6 +15,9 @@ pub struct NodeParams {
     /// `EffectSegment`: the effects it runs together, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<klipp_effects::BuiltinEffect>,
+    /// `Ofx`: the plug-in and its parameter values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ofx: Option<crate::plugin::OfxNodeParams>,
 
     /// `Effect`/`EffectSegment`: how the effects' result is mixed back over
     /// their input (phase 2b M2, step 9c): `None` takes the result whole.

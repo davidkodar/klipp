@@ -166,6 +166,10 @@ unsafe extern "C" fn main_entry(
             (props.prop_get_int)(in_args_handle, b"OfxImageEffectPropRenderWindow\0".as_ptr() as _, 1, &mut y1);
             (props.prop_get_int)(in_args_handle, b"OfxImageEffectPropRenderWindow\0".as_ptr() as _, 2, &mut x2);
             (props.prop_get_int)(in_args_handle, b"OfxImageEffectPropRenderWindow\0".as_ptr() as _, 3, &mut y2);
+            // The time rendered: a clip's images are asked for at it, as the
+            // OFX spec has them (a host hands only that frame's).
+            let mut time: f64 = 0.0;
+            (props.prop_get_double)(in_args_handle, b"OfxPropTime\0".as_ptr() as _, 0, &mut time);
 
             // Read Strength parameter
             let mut strength: f64 = 1.0;
@@ -196,7 +200,7 @@ unsafe extern "C" fn main_entry(
             (ie.clip_get_handle)(effect, b"Source\0".as_ptr() as _, &mut source_clip, &mut _source_clip_props);
 
             let mut source_img: OfxPropertySetHandle = std::ptr::null_mut();
-            let status = (ie.clip_get_image)(source_clip, 0.0, std::ptr::null(), &mut source_img);
+            let status = (ie.clip_get_image)(source_clip, time, std::ptr::null(), &mut source_img);
             if status != K_OFX_STAT_OK {
                 return K_OFX_STAT_FAILED;
             }
@@ -207,7 +211,7 @@ unsafe extern "C" fn main_entry(
             (ie.clip_get_handle)(effect, b"Output\0".as_ptr() as _, &mut output_clip, &mut _output_clip_props);
 
             let mut output_img: OfxPropertySetHandle = std::ptr::null_mut();
-            let status = (ie.clip_get_image)(output_clip, 0.0, std::ptr::null(), &mut output_img);
+            let status = (ie.clip_get_image)(output_clip, time, std::ptr::null(), &mut output_img);
             if status != K_OFX_STAT_OK {
                 (ie.clip_release_image)(source_img);
                 return K_OFX_STAT_FAILED;
@@ -409,6 +413,20 @@ mod tests {
             let infos = host.plugin_infos();
             assert_eq!(infos.len(), 1, "one entry per identifier");
             assert_eq!(infos[0].version, (2, 0), "the listed version renders, newer first: {newer_first}");
+        }
+    }
+
+    /// A node's own instance renders at its clip's frame, not only at 0:
+    /// the plug-in asks for its images at the time rendered, and the host
+    /// hands it that frame's (M4 step 3).
+    #[test]
+    fn an_instance_inverts_at_any_frame() {
+        let host = std::sync::Arc::new(std::sync::Mutex::new(create_host_with_test_plugin()));
+        let mut inst = OfxHostRuntime::new_instance(&host, "com.klipp.test.Invert", 24.0).expect("an instance");
+        let white = vec![255u8; 4 * 4 * 4];
+        for t in [0.0, 24.0, 61.0] {
+            let out = inst.render(&HashMap::new(), &white, 4, 4, t, 1.0, Vec::new()).expect("rendered");
+            assert_eq!(&out[..4], &[0, 0, 0, 255], "inverted at frame {t}");
         }
     }
 

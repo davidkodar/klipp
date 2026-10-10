@@ -46,6 +46,13 @@ pub struct FrameContext<'a> {
     pub sources: &'a mut dyn SourceProvider,
     pub analysis: &'a dyn AnalysisInputs,
     pub instances: &'a mut PluginInstances,
+    /// The OFX host the render lends its plug-in nodes (M4 step 3): none,
+    /// and every OFX node is refused as missing.
+    pub ofx: Option<&'a dyn crate::plugin::OfxNodeHost>,
+    /// The source time the clip shows at a clip time, in seconds: its
+    /// speed, ramp and direction. Where a plug-in's other frames, named in
+    /// clip time, are read from.
+    pub source_at: &'a dyn Fn(f64) -> f64,
 }
 
 /// A source frame asked for, or why there is none. Never a substitute.

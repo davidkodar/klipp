@@ -269,6 +269,10 @@ pub struct GraphExecutor {
     /// Of them, those run with no context to read the source from, which
     /// passed their input on.
     source_unavailable: u64,
+    /// OFX plug-in nodes run (M4 step 3), and those refused, which passed
+    /// their input on.
+    ofx_runs: u64,
+    ofx_refused: u64,
     /// Mixed effect nodes whose mix or mask couldn't be read, skipped
     /// (`ChainStats::effect_mixes_refused`).
     run_mix_refused: u32,
@@ -700,6 +704,8 @@ impl GraphExecutor {
             run_frei0r_refused: 0,
             run_declines: Vec::new(),
             last_run_declines: Vec::new(),
+            ofx_runs: 0,
+            ofx_refused: 0,
             run_mix_refused: 0,
             start_kept: None,
             start_kept_for_gates: None,
@@ -781,6 +787,8 @@ impl GraphExecutor {
             run_frei0r_refused: 0,
             run_declines: Vec::new(),
             last_run_declines: Vec::new(),
+            ofx_runs: 0,
+            ofx_refused: 0,
             run_mix_refused: 0,
             start_kept: None,
             start_kept_for_gates: None,
@@ -2978,6 +2986,8 @@ impl GraphExecutor {
                     && !params.effects.iter().any(klipp_effects::registry::needs_source_neighbours)
             }
             NodeKind::SceneToDisplay => params.scene_to_display.is_some(),
+            // A plug-in takes 8-bit sRGB on the CPU: never on the chain.
+            NodeKind::Ofx => false,
             // Records the source format; never touches the pixels.
             NodeKind::InputTransform => false,
             NodeKind::Exposure => params.exposure.unwrap_or(0.0) != 0.0,
@@ -4335,6 +4345,12 @@ impl GraphExecutor {
         self.source_unavailable
     }
 
+    /// OFX plug-in nodes run so far (M4 step 3), and of them those refused
+    /// (missing, unsupported, failed), which passed their input on.
+    pub fn ofx_runs(&self) -> (u64, u64) {
+        (self.ofx_runs, self.ofx_refused)
+    }
+
     /// A source-boundary node (M4 steps 6 and 7), its effects in the
     /// catalog's order (`SOURCE_BOUNDARY_ORDER`): the frame blend, then
     /// temporal noise reduction, on the source before the grade, against
@@ -4485,6 +4501,24 @@ impl GraphExecutor {
 
             // A clip's effects off the chain: as the legacy route runs
             // them, on the GPU when the list allows it.
+            // An OFX plug-in (M4 step 3), in its frame context: refused, the
+            // input passes on, counted.
+            NodeKind::Ofx => {
+                self.ofx_runs += 1;
+                let Some(entry) = params.ofx.as_ref() else {
+                    self.ofx_refused += 1;
+                    return primary_input.to_vec();
+                };
+                match crate::plugin::run_ofx(node_id, entry, primary_input, width, height, self.working_colorspace, self.render_scale as f64, ctx) {
+                    Ok(out) => out,
+                    Err(why) => {
+                        tracing::warn!("OFX node {node_id}: {} refused: {why:?}", entry.plugin);
+                        self.ofx_refused += 1;
+                        primary_input.to_vec()
+                    }
+                }
+            }
+
             // A source-boundary node (M4 step 6): it reads the clip's
             // source at other times, which only its context gives it.
             NodeKind::Effect | NodeKind::EffectSegment if params.effects.iter().any(klipp_effects::registry::needs_source_neighbours) => {

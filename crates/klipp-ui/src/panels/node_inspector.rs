@@ -2721,6 +2721,8 @@ impl NodeInspectorPanel {
             | NodeKind::Effect
             | NodeKind::EffectSegment
             | NodeKind::Frei0r
+            // An OFX node's parameters are its effect's rows.
+            | NodeKind::Ofx
             | NodeKind::SceneToDisplay
             | NodeKind::Unknown => {
                 ui.label(egui::RichText::new("No parameters").color(theme.text_dim));

@@ -41,6 +41,7 @@ pub mod executor;
 pub mod decline;
 pub mod frame_context;
 pub mod frei0r_node;
+pub mod plugin;
 mod plan;
 pub mod auto_layout;
 pub mod json_check;

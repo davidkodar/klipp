@@ -179,6 +179,10 @@ pub enum NodeKind {
     /// it, with instances kept across frames (M4 step 5). Made by the
     /// renderer for a run, never by the user or saved.
     Frei0r,
+    /// One OFX plug-in instance (M4 step 3), its plug-in and values in
+    /// `NodeParams::ofx`, run on the CPU through the frame context's host
+    /// (`crate::plugin`). Made by the renderer for a run.
+    Ofx,
     /// A scene-referred clip's display step (step 11c): the SDR tone map
     /// or display light, its settings in `NodeParams::scene_to_display`,
     /// spliced by the renderer after the grade and before the effects.
@@ -479,6 +483,7 @@ impl NodeKind {
             NodeKind::Effect => "Effect",
             NodeKind::EffectSegment => "Effect Segment",
             NodeKind::Frei0r => "frei0r Plug-in",
+            NodeKind::Ofx => "OFX Plug-in",
             NodeKind::SceneToDisplay => "Scene to Display",
             NodeKind::Unknown => "Unknown",
         }
