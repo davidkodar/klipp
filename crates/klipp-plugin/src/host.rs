@@ -16,9 +16,9 @@
 //!   is sound while the handle is registered; the host is the sole
 //!   writer to that store so it controls the lifetime.
 //! * **`set_host(&OfxHostC)`** hands the plugin a `*const OfxHostC`
-//!   that points into `self.c_host: Box<OfxHostC>` — the box lives
-//!   for the whole [`OfxHostRuntime`] lifetime, so the plugin can
-//!   store the pointer without fear of it moving.
+//!   to the process's one host struct (`PROCESS_HOST`), leaked once
+//!   and never freed, so the plugin can store the pointer whichever
+//!   host gave it and however long that host lives.
 //! * **`main_entry` invocation** re-enters plugin code. Any panic
 //!   inside the plugin's suite callbacks is converted to
 //!   `K_OFX_STAT_ERR_FATAL` by the `ofx_guard!` wrapper on each
@@ -154,6 +154,9 @@ pub struct OfxPlugin {
     _lib: Option<Arc<libloading::Library>>,
     /// Whether Load+Describe have been called.
     initialized: bool,
+    /// Whether this host holds one of the plug-in's loads ([`LOADS`]): its
+    /// drop gives it back, and the last one given back unloads it.
+    loaded: bool,
     /// Descriptor-phase effect handle (used during Describe).
     descriptor_handle: ffi::OfxImageEffectHandle,
     /// Descriptor-phase param set handle.
@@ -202,7 +205,9 @@ impl Drop for OfxPlugin {
         // pointer (test injection) or the dylib's plugin entry.
         if !self.raw.is_null() {
             let raw = unsafe { &*self.raw };
-            if self.initialized {
+            // Unloaded only by the last host holding it: the library is the
+            // process's, and another host's instances may still be running.
+            if self.loaded && give_back_load(self.raw) {
                 if let Some(main_entry) = raw.main_entry {
                     let _ = unsafe {
                         main_entry(
@@ -223,6 +228,59 @@ impl Drop for OfxPlugin {
             if self._lib.is_none() {
                 let _ = unsafe { Box::from_raw(self.raw as *mut ffi::OfxPluginRaw) };
             }
+        }
+    }
+}
+
+// ── The process's host ───────────────────────────────────────────────
+
+/// The C host struct every plug-in is given by setHost, and its property
+/// set, as addresses: made once and never freed. A plug-in library is the
+/// process's and keeps one host pointer, from the last setHost, so a host
+/// struct of each [`OfxHostRuntime`]'s own dangled when that host dropped
+/// while another's instances still called through it.
+static PROCESS_HOST: std::sync::LazyLock<(usize, usize)> = std::sync::LazyLock::new(|| {
+    let mut host_props = PropertySet::default();
+    property::populate_host_properties(&mut host_props);
+    // GPU rendering: all contexts are lazily initialized at first render
+    // to avoid corrupting driver state or conflicting with eframe's contexts.
+    // We advertise capabilities upfront so plugins can declare support.
+    host_props.set_string(crate::constants::kOfxImageEffectPropCudaRenderSupported, 0, "true");
+    host_props.set_string(crate::constants::kOfxImageEffectPropCudaStreamSupported, 0, "true");
+    host_props.set_string(crate::constants::kOfxImageEffectPropOpenCLRenderSupported, 0, "true");
+    host_props.set_string(crate::constants::kOfxImageEffectPropOpenGLRenderSupported, 0, "true");
+    let props = property::register_propset(host_props);
+    let host: &'static ffi::OfxHostC = Box::leak(Box::new(ffi::OfxHostC { host: props, fetch_suite: fetch_suite_fn }));
+    (host as *const ffi::OfxHostC as usize, props as usize)
+});
+
+fn process_host() -> *const ffi::OfxHostC {
+    PROCESS_HOST.0 as *const ffi::OfxHostC
+}
+
+/// The hosts holding each plug-in loaded, by its entry point's address:
+/// the first to load it sends Load, and the last to give it back Unload.
+static LOADS: std::sync::LazyLock<std::sync::Mutex<HashMap<usize, usize>>> = std::sync::LazyLock::new(Default::default);
+
+/// One more host holds `raw` loaded; whether it is the first.
+fn take_load(raw: *const ffi::OfxPluginRaw) -> bool {
+    let mut loads = LOADS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = loads.entry(raw as usize).or_insert(0);
+    *n += 1;
+    *n == 1
+}
+
+/// A host gives `raw` back; whether it was the last.
+fn give_back_load(raw: *const ffi::OfxPluginRaw) -> bool {
+    let mut loads = LOADS.lock().unwrap_or_else(|e| e.into_inner());
+    match loads.get_mut(&(raw as usize)) {
+        Some(n) if *n > 1 => {
+            *n -= 1;
+            false
+        }
+        _ => {
+            loads.remove(&(raw as usize));
+            true
         }
     }
 }
@@ -276,8 +334,6 @@ pub struct OfxHostRuntime {
     search_paths: Vec<PathBuf>,
     /// Registered host property set handle.
     host_propset_handle: ffi::OfxPropertySetHandle,
-    /// The C host struct given to plugins via setHost. Box for pointer stability.
-    c_host: Box<ffi::OfxHostC>,
     /// Maps plugin_name → instance handle (key in INSTANCE_STORE).
     instances: HashMap<String, usize>,
     /// CUDA runtime (if available).
@@ -308,28 +364,11 @@ impl Default for OfxHostRuntime {
 
 impl OfxHostRuntime {
     pub fn new() -> Self {
-        // Create and register host property set
-        let mut host_props = PropertySet::default();
-        property::populate_host_properties(&mut host_props);
-
-        // GPU rendering: all contexts are lazily initialized at first render
-        // to avoid corrupting driver state or conflicting with eframe's contexts.
-        // We advertise capabilities upfront so plugins can declare support.
-        host_props.set_string(crate::constants::kOfxImageEffectPropCudaRenderSupported, 0, "true");
-        host_props.set_string(crate::constants::kOfxImageEffectPropCudaStreamSupported, 0, "true");
-        host_props.set_string(crate::constants::kOfxImageEffectPropOpenCLRenderSupported, 0, "true");
-        host_props.set_string(crate::constants::kOfxImageEffectPropOpenGLRenderSupported, 0, "true");
-
         let cuda: Option<crate::gpu_cuda::CudaRuntime> = None;
         let opencl: Option<crate::gpu_opencl::OpenClRuntime> = None;
         let opengl: Option<std::sync::Arc<crate::gpu_opengl::OpenGlRuntime>> = None;
 
-        let host_propset_handle = property::register_propset(host_props);
-
-        let c_host = Box::new(ffi::OfxHostC {
-            host: host_propset_handle,
-            fetch_suite: fetch_suite_fn,
-        });
+        let host_propset_handle = PROCESS_HOST.1 as ffi::OfxPropertySetHandle;
 
         let mut search_paths = vec![
             PathBuf::from("/usr/OFX/Plugins"),
@@ -343,7 +382,6 @@ impl OfxHostRuntime {
             plugins: Vec::new(),
             search_paths,
             host_propset_handle,
-            c_host,
             instances: HashMap::new(),
             cuda,
             opencl,
@@ -469,6 +507,7 @@ impl OfxHostRuntime {
                 raw,
                 _lib: Some(lib.clone()),
                 initialized: false,
+                loaded: false,
                 descriptor_handle: std::ptr::null_mut(),
                 descriptor_param_set: std::ptr::null_mut(),
             });
@@ -510,6 +549,7 @@ impl OfxHostRuntime {
             raw: raw_ptr,
             _lib: None,
             initialized: false,
+            loaded: false,
             descriptor_handle: std::ptr::null_mut(),
             descriptor_param_set: std::ptr::null_mut(),
         });
@@ -523,26 +563,34 @@ impl OfxHostRuntime {
         let plugin = &self.plugins[plugin_idx];
         let raw = unsafe { &*plugin.raw };
 
-        // 1. setHost — give plugin our OfxHostC struct
+        // 1. setHost — the process's one OfxHostC: a plug-in keeps the
+        // pointer from its last setHost, whichever host gave it, so it
+        // must outlive every host (a host's own struct dangled once that
+        // host dropped and another's instances called through it).
         if let Some(set_host) = raw.set_host {
             unsafe {
-                set_host(&*self.c_host as *const ffi::OfxHostC as *const c_void);
+                set_host(process_host() as *const c_void);
             }
         }
 
-        // 2. kOfxActionLoad
-        let status = self.call_action_raw(
-            plugin_idx,
-            b"OfxActionLoad\0",
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        );
-        if status != ffi::K_OFX_STAT_OK && status != ffi::K_OFX_STAT_REPLY_DEFAULT {
-            return Err(PluginError::ActionFailed(format!(
-                "kOfxActionLoad returned {status}"
-            )));
+        // 2. kOfxActionLoad, by the first host to load it only: Load and
+        // Unload pair once for the library, not once a host.
+        if !plugin.loaded && take_load(plugin.raw) {
+            let status = self.call_action_raw(
+                plugin_idx,
+                b"OfxActionLoad\0",
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            if status != ffi::K_OFX_STAT_OK && status != ffi::K_OFX_STAT_REPLY_DEFAULT {
+                give_back_load(self.plugins[plugin_idx].raw);
+                return Err(PluginError::ActionFailed(format!(
+                    "kOfxActionLoad returned {status}"
+                )));
+            }
         }
+        self.plugins[plugin_idx].loaded = true;
 
         // 3. Create descriptor effect handle + param set for Describe
         let mut desc_inst = PluginInstance::new(plugin_idx);
@@ -1080,7 +1128,7 @@ impl OfxHostRuntime {
         let premult = self.plugins.first()
             .map(|p| p.premult_string.clone())
             .unwrap_or_else(|| crate::constants::kOfxImageAlphaUnPremultiplied.to_string());
-        image_effect::set_render_context(frame_provider, frame_time, width, height, &premult, false, false);
+        let _render = image_effect::set_render_context(frame_provider, frame_time, width, height, &premult, false, false);
 
         let mut current = rgba.to_vec();
         for effect in effects {
@@ -1091,7 +1139,6 @@ impl OfxHostRuntime {
             if let Some(ref flag) = abort {
                 if flag.load(Ordering::Relaxed) {
                     debug!("OFX: effects chain aborted before '{}'", effect.plugin_name);
-                    image_effect::clear_render_context();
                     return current;
                 }
             }
@@ -1114,9 +1161,7 @@ impl OfxHostRuntime {
             }
         }
 
-        // Clean up temporal frame provider
-        image_effect::clear_render_context();
-
+        // The temporal frame provider is cleared as `_render` drops.
         current
     }
 
@@ -1907,6 +1952,11 @@ pub struct OfxDescribed {
     pub unsafe_threads: bool,
 }
 
+/// The most other frames [`OfxPluginInstance::frames_needed`] names: the
+/// nearest to the frame rendered. Twice what any node may read in a frame
+/// (`klipp_nodes`' 32), so a plug-in asking past that is still seen to.
+pub const MAX_FRAMES_NEEDED: usize = 64;
+
 /// The renders of each "unsafe" plug-in, by name, held one at a time
 /// across every host: the viewer and each export hold their own. Always
 /// taken inside the host's lock, never before it.
@@ -1980,7 +2030,8 @@ impl OfxPluginInstance {
     }
 
     /// Its GetFramesNeeded for the frame at `time` (the clip's frames): the
-    /// other times it reads, each frame of the range it gives but `time`.
+    /// other times it reads, each frame of the range it gives but `time`,
+    /// the [`MAX_FRAMES_NEEDED`] nearest at most.
     /// A plug-in that answers by default reads only its own frame.
     pub fn frames_needed(&mut self, params: &HashMap<String, OfxValue>, time: f64) -> Vec<f64> {
         let host = host_of(&self.host);
@@ -1999,14 +2050,20 @@ impl OfxPluginInstance {
         property::remove_propset(out_handle);
         match (status, range) {
             (ffi::K_OFX_STAT_OK, Some((lo, hi))) if lo <= hi => {
-                let mut t = lo.floor();
-                let mut times = Vec::new();
-                while t <= hi {
-                    if (t - time).abs() > 1e-9 {
-                        times.push(t);
-                    }
-                    t += 1.0;
-                }
+                // The frames nearest `time` only, at most MAX_FRAMES_NEEDED:
+                // a plug-in naming its whole clip (or a million frames)
+                // isn't walked frame by frame. More than any node may read,
+                // so one asking past a node's budget still shows it.
+                let reach = MAX_FRAMES_NEEDED as f64;
+                let (from, to) = (lo.floor().max((time - reach).floor()), hi.min(time + reach));
+                let mut times: Vec<f64> = (0..)
+                    .map(|k| from + k as f64)
+                    .take_while(|t| *t <= to)
+                    .filter(|t| (t - time).abs() > 1e-9)
+                    .collect();
+                times.sort_by(|a, b| (a - time).abs().total_cmp(&(b - time).abs()));
+                times.truncate(MAX_FRAMES_NEEDED);
+                times.sort_by(f64::total_cmp);
                 times
             }
             _ => Vec::new(),
@@ -2031,13 +2088,13 @@ impl OfxPluginInstance {
         let provider: image_effect::FrameProviderFn = Box::new(move |t| frames.iter().find(|(at, _)| (at - t).abs() < 1e-6).map(|(_, f)| f.clone()));
         // Its other frames in the depth it takes them in.
         let needs_float = instance::with_instance(self.handle(), |inst| inst.plugin_idx).is_some_and(|i| host.plugins[i].needs_float);
-        image_effect::set_render_context(Some(provider), time, width, height, &premult, needs_float, true);
+        let render = image_effect::set_render_context(Some(provider), time, width, height, &premult, needs_float, true);
         let effect = AppliedEffect { plugin_name: self.plugin.clone(), enabled: true, param_values: params.clone(), ..Default::default() };
         self.frame_bytes = rgba8.len();
         // Any frame it may ask for: the node hands in only the source's, held
         // to the media's range and its budget.
         let out = host.render_on(self.handle(), &effect, rgba8, width, height, time, &None, self.fps, render_scale, (-1.0e6, 1.0e6));
-        image_effect::clear_render_context();
+        drop(render);
         out
     }
 

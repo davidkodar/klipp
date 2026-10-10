@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use klipp_plugin::{OfxHostRuntime, OfxValue};
+use klipp_plugin::{OfxHostRuntime, OfxValue, MAX_FRAMES_NEEDED};
 
 /// The fixture bundle in a folder of its own. A missing C compiler fails
 /// here, naming what to install.
@@ -84,9 +84,90 @@ fn a_temporal_plug_in_names_its_frames_and_reads_what_it_was_handed() {
     let mut t = OfxHostRuntime::new_instance(&host, "org.klipp.fixture.temporal", 25.0).expect("an instance");
     assert_eq!(t.frames_needed(&HashMap::new(), 50.0), [49.0, 51.0], "the frames either side, in frames");
     let wide: HashMap<String, OfxValue> = [("mode".to_string(), OfxValue::Int(5))].into();
-    assert_eq!(t.frames_needed(&wide, 50.0).len(), 80, "forty either side");
+    // Forty either side is more than it names: the nearest, half each side.
+    let near: Vec<f64> = (18..=82).filter(|f| *f != 50).map(f64::from).collect();
+    assert_eq!(t.frames_needed(&wide, 50.0), near, "the {MAX_FRAMES_NEEDED} nearest");
+    // A million either side isn't walked: the same nearest, at once.
+    let vast: HashMap<String, OfxValue> = [("mode".to_string(), OfxValue::Int(6))].into();
+    let started = std::time::Instant::now();
+    assert_eq!(t.frames_needed(&vast, 50.0), near);
+    assert!(started.elapsed() < std::time::Duration::from_millis(100), "{:?} for a million frames either side", started.elapsed());
     // Handed the frame before only: red from it, blue 0 (none after).
     let before = (picture(7), W, H);
     let out = t.render(&HashMap::new(), &picture(100), W, H, 50.0, 1.0, vec![(49.0, before)]).expect("rendered");
     assert_eq!(&out[..3], &[7, 110, 0], "red from frame 49, green its own, no frame 51");
+}
+
+/// Two hosts rendering at once, as the viewer and an export do, each under
+/// its own lock: each plug-in reads the neighbour its own render handed,
+/// never the other's (the render context is one for the process).
+#[test]
+fn renders_on_two_hosts_at_once_read_their_own_frames() {
+    let (a, _) = host();
+    let (b, _) = host();
+    let run = |host: Arc<Mutex<OfxHostRuntime>>, red: u8| {
+        std::thread::spawn(move || {
+            let mut t = OfxHostRuntime::new_instance(&host, "org.klipp.fixture.temporal", 25.0).expect("an instance");
+            for i in 0..300 {
+                let out = t.render(&HashMap::new(), &picture(100), W, H, 50.0, 1.0, vec![(49.0, (picture(red), W, H))]).expect("rendered");
+                assert_eq!(out[0], red, "render {i} read another render's frame 49");
+            }
+        })
+    };
+    let (ta, tb) = (run(a, 7), run(b, 60));
+    ta.join().expect("host a's renders");
+    tb.join().expect("host b's renders");
+}
+
+/// A host dropped while another's instances still render, as an export's
+/// host drops when it ends and the viewer's renders on: the plug-in kept
+/// the host pointer the last setHost gave it, the dropped host's own, and
+/// the next render called through freed memory (SIGSEGV). Nor may the
+/// dropped host unload a plug-in the other still holds.
+#[test]
+fn a_dropped_host_leaves_the_other_hosts_plug_ins_working() {
+    let (kept, _) = host();
+    let mut t = OfxHostRuntime::new_instance(&kept, "org.klipp.fixture.temporal", 25.0).expect("an instance");
+    // A second host loads the same plug-ins (its setHost the last), and
+    // goes.
+    let (gone, _) = host();
+    drop(gone);
+    let out = t.render(&HashMap::new(), &picture(100), W, H, 50.0, 1.0, vec![(49.0, (picture(7), W, H))]).expect("rendered");
+    assert_eq!(&out[..3], &[7, 110, 0], "the kept host's instance still renders");
+    // (The identity plug-in: the channels one's instances are counted by
+    // another test, from a trace every test here writes to.)
+    let mut fresh = OfxHostRuntime::new_instance(&kept, "org.klipp.fixture.identity", 25.0).expect("and makes new instances");
+    assert_eq!(fresh.render(&HashMap::new(), &picture(30), W, H, 0.0, 1.0, Vec::new()).expect("rendered"), picture(30));
+}
+
+/// The race as the app has it: one host's instance renders on its thread
+/// while hosts come and go on another (exports starting and ending beside
+/// the viewer). Every render reads its own frames, and nothing crashes.
+#[test]
+fn hosts_dropped_while_another_renders_on_its_thread() {
+    let (kept, _) = host();
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let renders = {
+        let (kept, done) = (Arc::clone(&kept), Arc::clone(&done));
+        std::thread::spawn(move || {
+            let mut t = OfxHostRuntime::new_instance(&kept, "org.klipp.fixture.temporal", 25.0).expect("an instance");
+            let mut n = 0;
+            while !done.load(std::sync::atomic::Ordering::Relaxed) || n < 50 {
+                let out = t.render(&HashMap::new(), &picture(100), W, H, 50.0, 1.0, vec![(49.0, (picture(7), W, H))]).expect("rendered");
+                assert_eq!(&out[..3], &[7, 110, 0], "render {n}");
+                n += 1;
+            }
+            n
+        })
+    };
+    for _ in 0..20 {
+        let (other, _) = host();
+        let mut i = OfxHostRuntime::new_instance(&other, "org.klipp.fixture.identity", 25.0).expect("an instance");
+        i.render(&HashMap::new(), &picture(30), W, H, 0.0, 1.0, Vec::new()).expect("rendered");
+        drop(i);
+        drop(other);
+    }
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    let n = renders.join().expect("the kept host's renders, uncrashed");
+    assert!(n >= 50, "{n} renders");
 }
