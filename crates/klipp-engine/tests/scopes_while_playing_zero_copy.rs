@@ -32,14 +32,20 @@ fn the_scopes_refresh_while_playing_without_a_readback() {
     let scope_generations = || -> Vec<u64> { (0..4).map(|m| parked.scope_texture(m).map_or(0, |e| e.generation)).collect() };
     parked.send(AppCommand::Play);
     // Let playback reach the GPU stack, then watch a stretch of it.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while parked.gpu_frames_and_generation().0 < 3 {
         assert!(Instant::now() < deadline, "no frame reached the viewer's texture: the GPU stack never presented");
         std::thread::sleep(Duration::from_millis(5));
     }
     let (gpu_before, bytes_before) = parked.gpu_frames_and_generation();
     let scopes_before = scope_generations();
-    std::thread::sleep(Duration::from_millis(600));
+    // Watched until four more frames and two refreshes of each scope have
+    // come, or a minute: a loaded machine is slower, not wrong.
+    let enough = |gpu: u64, scopes: &[u64]| gpu > gpu_before + 3 && scopes.iter().zip(&scopes_before).all(|(a, b)| *a >= b + 2);
+    let watch_by = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < watch_by && !enough(parked.gpu_frames_and_generation().0, &scope_generations()) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let (gpu_after, bytes_after) = parked.gpu_frames_and_generation();
     let scopes_after = scope_generations();
     parked.send(AppCommand::Pause);

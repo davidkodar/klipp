@@ -21,10 +21,10 @@ fn seek(parked: &common::Parked, cmd: AppCommand, want: f64) {
     let g = parked.generation();
     parked.send(cmd);
     let t0 = Instant::now();
-    while t0.elapsed() < Duration::from_secs(5) && !parked.frame_number().is_some_and(|f| (f - want).abs() < 0.01) {
+    while t0.elapsed() < Duration::from_secs(30) && !parked.frame_number().is_some_and(|f| (f - want).abs() < 0.01) {
         std::thread::sleep(Duration::from_millis(1));
     }
-    parked.settle_after(g, Duration::from_secs(5));
+    parked.settle_after(g, Duration::from_secs(30));
 }
 
 #[test]

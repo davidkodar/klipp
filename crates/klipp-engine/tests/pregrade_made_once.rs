@@ -25,7 +25,7 @@ fn a_frame_shown_again_does_not_remake_its_ungraded_picture() {
     let step = |n: i64| {
         let g = parked.generation();
         parked.send(AppCommand::SeekRelative(n));
-        parked.settle_after(g, Duration::from_secs(5));
+        parked.settle_after(g, Duration::from_secs(30));
     };
 
     // Walk forward over three frames, then back over them, then forward

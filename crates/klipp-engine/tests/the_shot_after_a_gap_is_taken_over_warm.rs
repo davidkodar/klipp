@@ -23,7 +23,8 @@ struct Engine {
     thread: Option<std::thread::JoinHandle<()>>,
     /// Every playhead the engine reported, and when.
     moves: Arc<Mutex<Vec<(Instant, f64)>>>,
-    paused: Arc<Mutex<Option<Instant>>>,
+    /// When each PlaybackPaused came.
+    paused: Arc<Mutex<Vec<Instant>>>,
 }
 
 impl Engine {
@@ -31,13 +32,13 @@ impl Engine {
         let (cmd, cmd_rx) = crossbeam_channel::unbounded();
         let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<AppEvent>();
         let moves = Arc::new(Mutex::new(Vec::new()));
-        let paused = Arc::new(Mutex::new(None));
+        let paused = Arc::new(Mutex::new(Vec::new()));
         let (m, p) = (Arc::clone(&moves), Arc::clone(&paused));
         std::thread::spawn(move || {
             while let Ok(ev) = ev_rx.recv() {
                 match ev {
                     AppEvent::PlayheadMoved(tc) => m.lock().unwrap().push((Instant::now(), tc.to_secs_f64())),
-                    AppEvent::PlaybackPaused => *p.lock().unwrap() = Some(Instant::now()),
+                    AppEvent::PlaybackPaused => p.lock().unwrap().push(Instant::now()),
                     _ => {}
                 }
             }
@@ -51,19 +52,28 @@ impl Engine {
         Engine { cmd, thread, moves, paused }
     }
 
-    /// Seek to `secs`, let it land, then play; wait until playback
-    /// pauses by itself or `limit` passes. Returns the playheads
-    /// reported after Play, and whether it paused by itself.
+    /// Seek to `secs`, wait for it to land, then play; wait until playback
+    /// pauses by itself or `limit` passes. Returns the playheads reported
+    /// after Play, and whether it paused by itself.
+    ///
+    /// Waited on, never timed: a loaded machine is slower, not wrong. The
+    /// seek's own pause can come late; a pause counts only once the
+    /// playhead has moved on from where playback started.
     fn play_from(&self, secs: f64, fps: Fps, limit: Duration) -> (Vec<(Instant, f64)>, bool) {
+        let asked = Instant::now();
         self.cmd.send(AppCommand::SetPlayhead(RationalTime::from_secs_f64(secs, fps.rate()))).unwrap();
-        std::thread::sleep(Duration::from_millis(600));
-        *self.paused.lock().unwrap() = None;
+        let landed = |m: &[(Instant, f64)]| m.iter().any(|(t, p)| *t >= asked && (p - secs).abs() < 0.5 / fps.as_f64());
+        while asked.elapsed() < Duration::from_secs(30) && !landed(&self.moves.lock().unwrap()) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let t0 = Instant::now();
         self.cmd.send(AppCommand::Play).unwrap();
-        while t0.elapsed() < limit && self.paused.lock().unwrap().is_none() {
+        let advanced = |m: &[(Instant, f64)]| m.iter().find(|(t, p)| *t >= t0 && *p > secs + 0.5 / fps.as_f64()).map(|m| m.0);
+        let stopped = || advanced(&self.moves.lock().unwrap()).is_some_and(|from| self.paused.lock().unwrap().iter().any(|p| *p >= from));
+        while t0.elapsed() < limit && !stopped() {
             std::thread::sleep(Duration::from_millis(20));
         }
-        let stopped = self.paused.lock().unwrap().is_some();
+        let stopped = stopped();
         let _ = self.cmd.send(AppCommand::Pause);
         let moves = self.moves.lock().unwrap().iter().copied().filter(|(t, _)| *t >= t0).collect();
         (moves, stopped)
@@ -129,19 +139,20 @@ fn the_shot_after_a_gap_is_taken_over_warm() {
     let seq = sequence(vec![track("V1", TrackKind::Video, vec![shot(id, 0, 15, fps), shot(id, 25, 40, fps)])], fps);
     let e = Engine::start(seq, pool_of(id, &src, fps));
     let (warm, cold) = klipp_engine::engine::gap_hand_overs();
-    let (moves, stopped) = e.play_from(0.2, fps, Duration::from_secs(6));
+    let (moves, stopped) = e.play_from(0.2, fps, Duration::from_secs(60));
     assert!(stopped && furthest(&moves) > 1.5, "played to {:.2} s", furthest(&moves));
     let (warm2, cold2) = klipp_engine::engine::gap_hand_overs();
     assert_eq!((warm2 - warm, cold2 - cold), (1, 0), "the shot after the gap came from its preroll, not a seek");
     // Taken over a tick late at most, and anchored where the sound is:
-    // the playhead never steps back to the shot's start.
+    // the playhead never steps back, not even at the end (every report is
+    // clamped to it, the stop's included).
     let back = moves.windows(2).find(|w| w[1].1 < w[0].1 - 1e-6);
     assert!(back.is_none(), "the playhead stepped back: {back:?}");
     drop(e);
 
     let seq = sequence(vec![track("V1", TrackKind::Video, vec![shot(id, 0, 15, fps), shot(id, 16, 30, fps)])], fps);
     let e = Engine::start(seq, pool_of(id, &src, fps));
-    let (moves, stopped) = e.play_from(0.2, fps, Duration::from_secs(6));
+    let (moves, stopped) = e.play_from(0.2, fps, Duration::from_secs(60));
     assert!(stopped && furthest(&moves) > 1.1, "played to {:.2} s", furthest(&moves));
     assert_eq!(klipp_engine::engine::gap_hand_overs(), (warm2, cold2), "a frame's gap is cut across, never played as one");
 }

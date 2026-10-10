@@ -2800,7 +2800,7 @@ impl PlaybackEngine {
                     self.pre_seek_generation += 1;
                     self.pre_seek_started = false;
                     let _ = self.event_tx.send(AppEvent::PlaybackStopped);
-                    let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                    self.report_playhead();
                     (self.repaint_cb)();
                 }
             }
@@ -4106,7 +4106,7 @@ impl PlaybackEngine {
 
         info!("Engine reset to idle (project unloaded)");
         let _ = self.event_tx.send(AppEvent::PlaybackStopped);
-        let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+        self.report_playhead();
         let _ = self.event_tx.send(AppEvent::FrameReady);
         (self.repaint_cb)();
     }
@@ -4930,7 +4930,7 @@ impl PlaybackEngine {
                 // for smooth UI display and skip the expensive render work.
                 let current_frame = self.playhead.value;
                 if Some(current_frame) == self.last_synth_frame_rendered {
-                    let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                    self.report_playhead();
                     (self.repaint_cb)();
                     return;
                 }
@@ -4939,7 +4939,7 @@ impl PlaybackEngine {
                 self.present_frame(None);
 
                 self.frames_consumed += 1;
-                let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                self.report_playhead();
                 (self.repaint_cb)();
                 return;
             }
@@ -5040,7 +5040,7 @@ impl PlaybackEngine {
                         return;
                     }
 
-                    let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                    self.report_playhead();
                     (self.repaint_cb)();
                     return;
                 }
@@ -5056,7 +5056,7 @@ impl PlaybackEngine {
                 };
                 let elapsed_tc = RationalTime::from_secs_f64(elapsed_timeline_secs.max(0.0), self.fps.rate());
                 self.playhead = self.clip_timeline_start + elapsed_tc;
-                let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                self.report_playhead();
                 (self.repaint_cb)();
                 return;
             }
@@ -5272,7 +5272,7 @@ impl PlaybackEngine {
             self.last_playback_log = std::time::Instant::now();
         }
 
-        let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+        self.report_playhead();
     }
 
     /// Whether the current clip still runs at `current_source_secs` on
@@ -5363,7 +5363,7 @@ impl PlaybackEngine {
                 let at = self.playhead;
                 self.enter_clock_only(at);
                 self.master_clock.resume();
-                let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                self.report_playhead();
                 self.sync_streams();
                 return;
             }
@@ -5390,7 +5390,7 @@ impl PlaybackEngine {
                 self.start_preroll_for(actual_idx, media_id, next_clip.source_in.to_secs_f64(), next_clip.source_rotation, next_clip.timeline_in);
                 self.gap_hand_over = Some((from, actual_idx));
             }
-            let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+            self.report_playhead();
             self.sync_streams();
             return;
         }
@@ -5403,7 +5403,7 @@ impl PlaybackEngine {
             let at = self.playhead;
             self.enter_clock_only(at);
             self.master_clock.resume();
-            let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+            self.report_playhead();
             self.sync_streams();
             return;
         }
@@ -5439,7 +5439,7 @@ impl PlaybackEngine {
             self.master_clock.seek(source_us);
             self.master_clock.resume();
 
-            let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+            self.report_playhead();
             self.sync_streams();
             return;
         }
@@ -5456,7 +5456,7 @@ impl PlaybackEngine {
                 self.playhead = timeline_in;
                 self.enter_clock_only(timeline_in);
                 self.master_clock.resume();
-                let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                self.report_playhead();
                 self.sync_streams();
                 return;
             }
@@ -5493,7 +5493,7 @@ impl PlaybackEngine {
             // the next clip happened to be reading the skim file.
             self.contiguous_audio.store(true, std::sync::atomic::Ordering::Relaxed);
             self.last_frame_time = std::time::Instant::now();
-            let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+            self.report_playhead();
 
             // The `is_contiguous` check above only considers the video track
             // (same media, source_out == next.source_in). Audio tracks may
@@ -5579,7 +5579,7 @@ impl PlaybackEngine {
                     .map(|p| self.effective_decode_rotation(media_id, &p, source_rotation))
                     .unwrap_or(source_rotation);
                 self.last_frame_time = std::time::Instant::now();
-                let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                self.report_playhead();
                 self.sync_streams();
                 return;
             }
@@ -5627,7 +5627,7 @@ impl PlaybackEngine {
                     .map(|p| self.effective_decode_rotation(media_id, &p, source_rotation))
                     .unwrap_or(source_rotation);
                 self.last_frame_time = std::time::Instant::now();
-                let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                self.report_playhead();
                 self.sync_streams();
                 return;
             }
@@ -5681,7 +5681,7 @@ impl PlaybackEngine {
             // Path-aware rotation; see effective_rotation_for.
             self.current_source_rotation = self.effective_decode_rotation(media_id, &path, source_rotation);
             self.last_frame_time = std::time::Instant::now();
-            let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+            self.report_playhead();
 
             self.sync_streams();
         } else {
@@ -5937,7 +5937,7 @@ impl PlaybackEngine {
         let end = self.sequence_duration();
         if self.playhead >= end {
             self.playhead = end;
-            let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+            self.report_playhead();
             self.stop_at_end();
             return;
         }
@@ -5986,8 +5986,17 @@ impl PlaybackEngine {
             self.present_frame(None);
             self.frames_consumed += 1;
         }
-        let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+        self.report_playhead();
         (self.repaint_cb)();
+    }
+
+    /// Tell the UI where the playhead is, never past the timeline's end:
+    /// a playing clock runs on past it until the end is seen, and the UI
+    /// then showed a time beyond the end and jumped back at the stop.
+    fn report_playhead(&self) {
+        let end = self.sequence_duration();
+        let at = if end.value > 0 { self.playhead.min(end) } else { self.playhead };
+        let _ = self.event_tx.send(AppEvent::PlayheadMoved(at));
     }
 
     fn stop_at_end(&mut self) {
@@ -6009,6 +6018,10 @@ impl PlaybackEngine {
         self.streams.clear();
         self.stop_all_audio();
         self.last_synth_frame_rendered = None;
+        // Where it stopped, said once: a frame dropped under load may have
+        // gone unreported, and the clock may have run past the end.
+        self.playhead = self.playhead.min(self.sequence_duration());
+        self.report_playhead();
         self.state = PlaybackState::Paused;
         let _ = self.event_tx.send(AppEvent::PlaybackPaused);
         (self.repaint_cb)();
@@ -6752,7 +6765,7 @@ impl PlaybackEngine {
         if let Some((pixels, w, h)) = self.frame_cache.get(target_frame, self.primary_clip_now()) {
             self.playhead = RationalTime { value: target_frame, rate: self.playhead.rate };
             self.present_frame(Some(streams::HeldFrame::from_pregrade(&pixels, w, h)));
-            let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+            self.report_playhead();
             // Keep decoder filling the queue for future steps
             self.prefetch_ahead();
             return;
@@ -6803,7 +6816,7 @@ impl PlaybackEngine {
                         }
                     }
                 }
-                let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                self.report_playhead();
                 let _ = self.event_tx.send(AppEvent::FrameReady);
                 (self.repaint_cb)();
                 self.prefetch_ahead();
@@ -6855,7 +6868,7 @@ impl PlaybackEngine {
                             active.source.chirp(chirp_pos, 0.02);
                         }
                     }
-                    let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                    self.report_playhead();
                     let _ = self.event_tx.send(AppEvent::FrameReady);
                     (self.repaint_cb)();
                     // Don't pause — prefetch_ahead will drain queue and keep decoder running
@@ -6920,7 +6933,7 @@ impl PlaybackEngine {
                         found_target = true;
                         self.playhead = RationalTime { value: frame_num, rate: self.playhead.rate };
                         self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
-                        let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                        self.report_playhead();
                         let _ = self.event_tx.send(AppEvent::FrameReady);
                         (self.repaint_cb)();
                         // Keep decoding a few more frames into cache, then stop
@@ -8396,7 +8409,7 @@ impl PlaybackEngine {
             self.last_playback_log = std::time::Instant::now();
         }
 
-        let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+        self.report_playhead();
         let _ = self.event_tx.send(AppEvent::FrameReady);
         (self.repaint_cb)();
     }

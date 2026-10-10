@@ -211,9 +211,10 @@ impl Parked {
         Some(took)
     }
 
-    /// Wait until no new frame has arrived for [`QUIET`], five seconds at
-    /// the most. The engine has no "done" signal — paused, it wakes every
-    /// 16 ms to look for commands — so quiet on the frame buffer is the
+    /// Wait until no new frame has arrived for [`QUIET`] on a complete
+    /// frame, thirty seconds at the most. The engine has no "done" signal:
+    /// paused, it wakes every 16 ms to look for commands, so quiet on the
+    /// frame buffer is the
     /// measure. It replaced fixed sleeps of 250–1500 ms, which were both
     /// slower and, under a loaded machine, no safer.
     ///
@@ -222,12 +223,16 @@ impl Parked {
     /// must produce a frame goes through [`Self::settle_after`], which
     /// waits for that frame first.
     pub fn settle(&self) {
-        let cap = Instant::now() + Duration::from_secs(5);
+        // Thirty seconds at the most: a loaded machine settles later, not
+        // wrongly. Quiet counts only on a complete frame: one drawn before
+        // every clip's stream had its picture is still to be redrawn.
+        let cap = Instant::now() + Duration::from_secs(30);
         let mut g = self.generation();
         while Instant::now() < cap {
             match self.wait_new(g, QUIET) {
                 Some(_) => g = self.generation(),
-                None => return,
+                None if self.fb.lock().unwrap().latest_complete() => return,
+                None => {}
             }
         }
     }

@@ -24,7 +24,8 @@ struct Engine {
     thread: Option<std::thread::JoinHandle<()>>,
     /// Every playhead the engine reported, and when.
     moves: Arc<Mutex<Vec<(Instant, f64)>>>,
-    paused: Arc<Mutex<Option<Instant>>>,
+    /// When each PlaybackPaused came.
+    paused: Arc<Mutex<Vec<Instant>>>,
 }
 
 impl Engine {
@@ -32,13 +33,13 @@ impl Engine {
         let (cmd, cmd_rx) = crossbeam_channel::unbounded();
         let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<AppEvent>();
         let moves = Arc::new(Mutex::new(Vec::new()));
-        let paused = Arc::new(Mutex::new(None));
+        let paused = Arc::new(Mutex::new(Vec::new()));
         let (m, p) = (Arc::clone(&moves), Arc::clone(&paused));
         std::thread::spawn(move || {
             while let Ok(ev) = ev_rx.recv() {
                 match ev {
                     AppEvent::PlayheadMoved(tc) => m.lock().unwrap().push((Instant::now(), tc.to_secs_f64())),
-                    AppEvent::PlaybackPaused => *p.lock().unwrap() = Some(Instant::now()),
+                    AppEvent::PlaybackPaused => p.lock().unwrap().push(Instant::now()),
                     _ => {}
                 }
             }
@@ -52,19 +53,40 @@ impl Engine {
         Engine { cmd, thread, moves, paused }
     }
 
-    /// Seek to `secs`, let it land, then play; wait until playback
-    /// pauses by itself or `limit` passes. Returns the playheads
-    /// reported after Play, and whether it paused by itself.
+    /// Seek to `secs`, wait for it to land, then play; wait until playback
+    /// pauses by itself or `limit` passes. Returns the playheads reported
+    /// after Play, and whether it paused by itself.
+    ///
+    /// Waited on, never timed: a loaded machine is slower, not wrong. The
+    /// seek's own pause can come late; a pause counts only once the
+    /// playhead has moved on from where playback started.
     fn play_from(&self, secs: f64, fps: Fps, limit: Duration) -> (Vec<(Instant, f64)>, bool) {
+        self.play_until(secs, fps, limit, &|_, stopped| stopped)
+    }
+
+    /// [`Self::play_from`], ending when `done` (the playheads reported
+    /// since Play, and whether playback paused by itself) says so.
+    fn play_until(&self, secs: f64, fps: Fps, limit: Duration, done: &dyn Fn(&[(Instant, f64)], bool) -> bool) -> (Vec<(Instant, f64)>, bool) {
+        let asked = Instant::now();
         self.cmd.send(AppCommand::SetPlayhead(RationalTime::from_secs_f64(secs, fps.rate()))).unwrap();
-        std::thread::sleep(Duration::from_millis(600));
-        *self.paused.lock().unwrap() = None;
+        let landed = |m: &[(Instant, f64)]| m.iter().any(|(t, p)| *t >= asked && (p - secs).abs() < 0.5 / fps.as_f64());
+        while asked.elapsed() < Duration::from_secs(30) && !landed(&self.moves.lock().unwrap()) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let t0 = Instant::now();
         self.cmd.send(AppCommand::Play).unwrap();
-        while t0.elapsed() < limit && self.paused.lock().unwrap().is_none() {
+        let advanced = |m: &[(Instant, f64)]| m.iter().find(|(t, p)| *t >= t0 && *p > secs + 0.5 / fps.as_f64()).map(|m| m.0);
+        let stopped = || advanced(&self.moves.lock().unwrap()).is_some_and(|from| self.paused.lock().unwrap().iter().any(|p| *p >= from));
+        let since = |m: &[(Instant, f64)]| m.iter().copied().filter(|(t, _)| *t >= t0).collect::<Vec<_>>();
+        while t0.elapsed() < limit {
+            // One lock at a time: `stopped` takes the playheads' lock itself.
+            let so_far = since(&self.moves.lock().unwrap());
+            if done(&so_far, stopped()) {
+                break;
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
-        let stopped = self.paused.lock().unwrap().is_some();
+        let stopped = stopped();
         let _ = self.cmd.send(AppCommand::Pause);
         let moves = self.moves.lock().unwrap().iter().copied().filter(|(t, _)| *t >= t0).collect();
         (moves, stopped)
@@ -130,14 +152,14 @@ fn playback_runs_on_past_the_last_shot_to_the_end_card() {
     let seq = sequence(vec![track("Text 1", TrackKind::Text, vec![card]), track("V1", TrackKind::Video, vec![shot(id, 0, 20, fps)])], fps);
     let e = Engine::start(seq, pool_of(id, &src, fps));
 
-    let (moves, stopped) = e.play_from(0.2, fps, Duration::from_secs(6));
+    let (moves, stopped) = e.play_from(0.2, fps, Duration::from_secs(60));
     let reached = furthest(&moves);
     assert!(reached > 1.9, "playback stopped at {reached:.2} s, before the end card's end at 2.0 s");
     assert!(stopped, "playback did not stop at the end of the timeline");
     assert!(reached <= 2.0 + 1e-6, "played past the end: {reached:.2} s");
 
     // Started inside the card, after the last shot: it plays from there.
-    let (moves, stopped) = e.play_from(1.2, fps, Duration::from_secs(4));
+    let (moves, stopped) = e.play_from(1.2, fps, Duration::from_secs(60));
     let reached = furthest(&moves);
     assert!(reached > 1.9, "from 1.2 s playback reached only {reached:.2} s");
     assert!(stopped, "from 1.2 s playback did not stop at the end");
@@ -156,7 +178,7 @@ fn a_gap_between_shots_is_played_through() {
     let seq = sequence(vec![track("V1", TrackKind::Video, vec![shot(id, 0, 15, fps), shot(id, 25, 40, fps)])], fps);
     let e = Engine::start(seq, pool_of(id, &src, fps));
 
-    let (moves, stopped) = e.play_from(0.2, fps, Duration::from_secs(6));
+    let (moves, stopped) = e.play_from(0.2, fps, Duration::from_secs(60));
     assert!(stopped, "playback did not stop at the end");
     assert!(furthest(&moves) > 1.5, "the second shot was not played: reached {:.2} s", furthest(&moves));
     // In the gap (0.6 s to 1.0 s) the playhead moves through it rather
@@ -181,7 +203,7 @@ fn a_picture_on_another_track_after_the_last_shot_is_played() {
     let seq = sequence(vec![track("V2", TrackKind::Video, vec![shot(id, 25, 45, fps)]), track("V1", TrackKind::Video, vec![shot(id, 0, 15, fps)])], fps);
     let e = Engine::start(seq, pool_of(id, &src, fps));
 
-    let (moves, stopped) = e.play_from(0.2, fps, Duration::from_secs(6));
+    let (moves, stopped) = e.play_from(0.2, fps, Duration::from_secs(60));
     let reached = furthest(&moves);
     assert!(reached > 1.7, "the picture on V2 (1.0-1.8 s) was not played: reached {reached:.2} s");
     assert!(stopped, "playback did not stop at the end");
@@ -204,12 +226,13 @@ fn a_loop_through_the_end_card_wraps_back_to_the_shot() {
     let e = Engine::start(seq, pool_of(id, &src, fps));
     e.cmd.send(AppCommand::SetLoopPlayback(true)).unwrap();
 
-    let (moves, stopped) = e.play_from(0.2, fps, Duration::from_secs(6));
-    assert!(!stopped, "a looping playback paused");
     // Count the wraps: the playhead falling back from the card's end to
-    // the shot at the start.
-    let wraps = moves.windows(2).filter(|w| w[0].1 > 1.8 && w[1].1 < 0.4).count();
-    assert!(wraps >= 2, "{wraps} wraps in 6 s of a 2 s loop");
+    // the shot at the start. Played until two have come, however long a
+    // loaded machine takes.
+    let wraps = |m: &[(Instant, f64)]| m.windows(2).filter(|w| w[0].1 > 1.8 && w[1].1 < 0.4).count();
+    let (moves, stopped) = e.play_until(0.2, fps, Duration::from_secs(60), &|m, stopped| stopped || wraps(m) >= 2);
+    assert!(!stopped, "a looping playback paused");
+    assert!(wraps(&moves) >= 2, "{} wraps of a 2 s loop in 60 s", wraps(&moves));
     // After a wrap the shot plays: the playhead moves on through it.
     let after_wrap = moves.windows(2).position(|w| w[0].1 > 1.8 && w[1].1 < 0.4).unwrap();
     assert!(moves[after_wrap + 1..].iter().any(|m| m.1 > 0.5 && m.1 < 0.8), "the shot did not play after the wrap");
@@ -241,7 +264,7 @@ fn a_shot_played_to_its_files_end_stops_at_the_end() {
     let seq = sequence(vec![track("V1", TrackKind::Video, vec![shot(id, 0, n, fps)])], fps);
     let e = Engine::start(seq, pool_of(id, &src, fps));
 
-    let (moves, stopped) = e.play_from(end - 0.6, fps, Duration::from_secs(4));
+    let (moves, stopped) = e.play_from(end - 0.6, fps, Duration::from_secs(60));
     assert!(stopped, "playback did not stop at the end of a shot played to its file's end");
     assert!(furthest(&moves) <= end + 1e-6, "played past the end: {:.2} s", furthest(&moves));
     }
