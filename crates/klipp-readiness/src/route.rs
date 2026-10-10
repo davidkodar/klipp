@@ -90,11 +90,29 @@ pub struct Frame {
     pub height: u32,
     pub stats: RenderStats,
     /// What the render declared: the GPU stack's decline, inspection
-    /// requests it couldn't answer.
+    /// requests it couldn't answer, and each node's decline ("declined:
+    /// …", with its outcome's label).
     pub notes: Vec<String>,
 }
 
 impl Frame {
+    /// The nodes this frame declined (M4 step 10), each as its note.
+    pub fn declines(&self) -> Vec<&str> {
+        self.notes.iter().filter_map(|n| n.strip_prefix("declined: ")).collect()
+    }
+
+    /// Held to what it should decline: nothing, or one node with the
+    /// outcome labelled `label` ("fallback", "neighbour frame missing",
+    /// "plug-in missing", ...).
+    pub fn declined_as(&self, label: Option<&str>) -> Result<(), String> {
+        let got = self.declines();
+        match label {
+            None if got.is_empty() => Ok(()),
+            Some(l) if got.len() == 1 && got[0].contains(&format!("({l};")) => Ok(()),
+            _ => Err(format!("frame {}: declined {got:?}, expected {}", self.frame, label.map_or("none".to_owned(), |l| format!("one {l}")))),
+        }
+    }
+
     /// Whether the route drew only display bytes (the viewer's GPU stack),
     /// with no linear frame to compare: a case then compares in sRGB8, to
     /// within a byte.
@@ -175,6 +193,8 @@ impl Session {
         }
         let (linear, found) = self.renderer.render_inspected(seq, time, w, h, &mut src, opts, Default::default());
         notes.extend(found.unavailable.iter().map(|(at, why)| format!("unavailable {at:?}: {why}")));
+        // Each node the frame didn't draw as asked, and why (M4 step 10).
+        notes.extend(found.declines.iter().map(|d| format!("declined: {d}")));
         let srgb8 = klipp_effects::linear_f32_rgba_to_srgb_u8(&linear);
         Frame { frame, srgb8, linear: Some(linear), width: w, height: h, stats: found.stats, notes }
     }

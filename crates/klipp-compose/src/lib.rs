@@ -8,6 +8,7 @@
 
 pub mod eval;
 pub mod inspect;
+mod ofx_node;
 pub mod synth;
 pub mod render;
 pub mod resolve;

@@ -132,11 +132,20 @@ fn holds(route: Route, gpu: bool, scene: (Arc<Scene>, Clip), source: Ramp, frame
     Ok(())
 }
 
+/// Frame `frame` of the scene on `route` held to what it declines (M4
+/// step 10): nothing, or one decline with the outcome labelled `label`.
+fn declines(route: Route, scene: (Arc<Scene>, Clip), source: Ramp, frame: i64, label: Option<&str>) -> Result<(), String> {
+    let mut s = Session::new(route, true, scene.0, Arc::new(source) as Arc<dyn Source>);
+    s.frame(frame).declined_as(label)
+}
+
 pub fn run(report: &mut Report) {
     for route in [Route::Viewer, Route::Export] {
         let at = |o| [key(Some(route), o)];
         report.case(&format!("denoise {route:?}: a frame mid-clip"), at(Obligation::ExpectedPixels), || {
-            holds(route, true, scene(50, 150, 1.0, STRENGTH), Ramp::whole(), &[40], STRENGTH)
+            holds(route, true, scene(50, 150, 1.0, STRENGTH), Ramp::whole(), &[40], STRENGTH)?;
+            // Both neighbours read: nothing declined.
+            declines(route, scene(50, 150, 1.0, STRENGTH), Ramp::whole(), 40, None)
         });
         // Media at half the sequence's rate: the neighbours are the
         // captures either side (40 ms), not a sequence frame (20 ms) away,
@@ -151,7 +160,9 @@ pub fn run(report: &mut Report) {
         // The first frame of a trimmed clip reads the handle before its in
         // point; the last the one after its out point.
         report.case(&format!("denoise {route:?}: a trimmed clip's first frame"), at(Obligation::Time(TimeCase::TrimmedStart)), || {
-            holds(route, true, scene(50, 150, 1.0, STRENGTH), Ramp::whole(), &[0], STRENGTH)
+            holds(route, true, scene(50, 150, 1.0, STRENGTH), Ramp::whole(), &[0], STRENGTH)?;
+            // The handle before the in point is the media's: read.
+            declines(route, scene(50, 150, 1.0, STRENGTH), Ramp::whole(), 0, None)
         });
         report.case(&format!("denoise {route:?}: a trimmed clip's last frame"), at(Obligation::Time(TimeCase::TrimmedEnd)), || {
             holds(route, true, scene(50, 150, 1.0, STRENGTH), Ramp::whole(), &[99], STRENGTH)
@@ -165,7 +176,9 @@ pub fn run(report: &mut Report) {
         // At the media's first frame the one before it is past the media:
         // the frame denoises against the one after only.
         report.case(&format!("denoise {route:?}: the media's first frame"), at(Obligation::Time(TimeCase::OutOfRange)), || {
-            holds(route, true, scene(0, 100, 1.0, STRENGTH), Ramp::whole(), &[0], STRENGTH)
+            holds(route, true, scene(0, 100, 1.0, STRENGTH), Ramp::whole(), &[0], STRENGTH)?;
+            // Declined as a fallback: shown, never refused by an export.
+            declines(route, scene(0, 100, 1.0, STRENGTH), Ramp::whole(), 0, Some("fallback"))
         });
         report.case(&format!("denoise {route:?}: a seek back"), at(Obligation::Time(TimeCase::BackwardSeek)), || {
             holds(route, true, scene(50, 150, 1.0, STRENGTH), Ramp::whole(), &[60, 61, 20, 21], STRENGTH)
@@ -181,7 +194,12 @@ pub fn run(report: &mut Report) {
             let dt = 1.0 / FPS as f64;
             holds(route, true, (Arc::clone(&scene_), clip.clone()), Ramp { missing: vec![at - dt], wrong_size: vec![] }, &[40], STRENGTH)?;
             holds(route, true, (Arc::clone(&scene_), clip.clone()), Ramp { missing: vec![at - dt], wrong_size: vec![at + dt] }, &[40], STRENGTH)?;
-            holds(route, true, (scene_, clip), Ramp { missing: vec![at - dt, at + dt], wrong_size: vec![] }, &[40], STRENGTH)
+            holds(route, true, (Arc::clone(&scene_), clip.clone()), Ramp { missing: vec![at - dt, at + dt], wrong_size: vec![] }, &[40], STRENGTH)?;
+            // Declined as a frame missing, which an export refuses: one
+            // missing, one of another size, or both missing.
+            declines(route, (Arc::clone(&scene_), clip.clone()), Ramp { missing: vec![at - dt], wrong_size: vec![] }, 40, Some("neighbour frame missing"))?;
+            declines(route, (Arc::clone(&scene_), clip.clone()), Ramp { missing: vec![], wrong_size: vec![at + dt] }, 40, Some("neighbour frame missing"))?;
+            declines(route, (scene_, clip), Ramp { missing: vec![at - dt, at + dt], wrong_size: vec![] }, 40, Some("neighbour frame missing"))
         });
     }
 }

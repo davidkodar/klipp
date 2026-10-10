@@ -1867,6 +1867,12 @@ impl OfxHostRuntime {
             }
         }
 
+        // A render that failed drew nothing: an error, never the input
+        // passed off as the plug-in's picture. The chain keeps the frame
+        // as it was on an error; a node declines it (M4 step 10).
+        if status != ffi::K_OFX_STAT_OK && status != ffi::K_OFX_STAT_REPLY_DEFAULT {
+            return Err(PluginError::ActionFailed(format!("its render returned {status}")));
+        }
         Ok(result)
     }
 

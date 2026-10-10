@@ -678,7 +678,9 @@ pub struct Renderer {
     /// failed returns the input with nothing applied, its effects
     /// included, so a spliced run that failed is never taken as done.
     grade_ran: bool,
-    ofx: klipp_plugin::OfxHost,
+    /// The OFX host, shared with the plug-in instances made from it: each
+    /// keeps it alive, so it never goes before them (M4 step 3).
+    ofx: std::sync::Arc<std::sync::Mutex<klipp_plugin::OfxHost>>,
     titles: klipp_title::TitleRenderer,
     /// The warm-up thread's ends: titles to render ahead go out, their
     /// resting renders come back for `titles` to keep.
@@ -790,7 +792,7 @@ impl Renderer {
             spliced: klipp_nodes::NodeGraph::default(),
             passthrough: passthrough_graph(),
             grade_ran: false,
-            ofx,
+            ofx: std::sync::Arc::new(std::sync::Mutex::new(ofx)),
             titles,
             warm_tx: None,
             warm_rx: None,
@@ -832,8 +834,8 @@ impl Renderer {
         self.gpu()
     }
 
-    pub fn ofx_host(&mut self) -> &mut klipp_plugin::OfxHost {
-        &mut self.ofx
+    pub fn ofx_host(&mut self) -> std::sync::MutexGuard<'_, klipp_plugin::OfxHost> {
+        self.ofx.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn title_renderer(&mut self) -> &mut klipp_title::TitleRenderer {
@@ -2513,12 +2515,9 @@ impl Renderer {
         if let Some(t) = hdr.filter(|_| !displayed) {
             self.display_render(&mut pixels, t);
         }
-        let provider = if clip.has_enabled_plugin_matching(is_temporal_plugin) {
-            src.temporal_frames(clip)
-        } else {
-            None
-        };
-        let pixels = self.ofx(clip, pixels, clip_time, width, height, provider);
+        // Its OFX plug-ins, each a node of its own after the grade, a
+        // temporal one reading the clip's source at its other frames.
+        let pixels = self.ofx_nodes(clip, pixels, clip_time, fps, source_secs(clip, time, fps), width, height, Some(&mut *src));
         // The effects as plans of their own (`effects_by`) when the plan
         // route is on, from the picture; the list otherwise.
         let plan = apart.is_some();
@@ -2944,7 +2943,7 @@ impl Renderer {
     fn title_pixels_at(&mut self, clip: &Clip, td: &klipp_timeline::TitleData, t: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
         let linear = self.title_linear_at(clip, td, t, width, height);
         let graded = self.grade(clip, GradeInput::Cpu(Arc::new(linear)), t, fps, width, height, None);
-        self.ofx(clip, graded, t, width, height, None)
+        self.ofx_nodes(clip, graded, t, fps, t, width, height, None)
     }
 
     /// A precomposition's scene at `at`, on a transparent surface: its
@@ -3031,22 +3030,6 @@ impl Renderer {
                 _ => {}
             }
         }
-    }
-
-    /// The working space's pixels as BT.709, for something that only
-    /// speaks BT.709 — an 8-bit OFX plugin.
-    fn working_to_authored(&self, linear: &mut [f32]) {
-        let Some(m) = klipp_color::primaries::working_space_conversion_matrix(
-            self.working,
-            WorkingColorspace::Rec709Linear,
-        ) else {
-            return;
-        };
-        use rayon::prelude::*;
-        linear.par_chunks_exact_mut(4).for_each(|px| {
-            let c = klipp_color::primaries::matrix3_mul_vec(m, [px[0], px[1], px[2]]);
-            px[..3].copy_from_slice(&c);
-        });
     }
 
     /// A scene-referred clip's last step of its own: the SDR display tone
@@ -3193,6 +3176,52 @@ impl Renderer {
         pixels
     }
 
+    /// `clip`'s enabled OFX plug-ins on `pixels`, each a node of its own
+    /// (M4 step 3), in the clip's frame context: its instance its own, kept
+    /// across frames in its slot, and a temporal one handed the frames it
+    /// names from `src` (none for a title's sample or an adjustment layer,
+    /// which have no source). A clip with none on keeps its frame at full
+    /// precision (#995); a run that fails leaves the frame as it was.
+    #[allow(clippy::too_many_arguments)]
+    fn ofx_nodes(&mut self, clip: &Clip, pixels: Vec<f32>, clip_time: f64, fps: f64, source_secs: f64, width: u32, height: u32, src: Option<&mut dyn FrameSource>) -> Vec<f32> {
+        let Some(graph) = ofx_graph(clip) else { return pixels };
+        let t = Instant::now();
+        let frame = grade_frame(clip_time, fps);
+        let run = match src {
+            Some(src) => {
+                let mut sources = ClipSources::new(src, clip, self.working);
+                let mut bounded = klipp_nodes::frame_context::BoundedSources::new(&mut sources, width, height);
+                self.in_context(clip, clip_time, fps, source_secs, None, &mut bounded, |r, ctx| r.executor.execute_linear_with_context(&pixels, &graph, width, height, clip_time, frame, None, None, None, ctx))
+            }
+            None => self.in_context(clip, clip_time, fps, source_secs, None, &mut klipp_nodes::frame_context::NoSources, |r, ctx| {
+                r.executor.execute_linear_with_context(&pixels, &graph, width, height, clip_time, frame, None, None, None, ctx)
+            }),
+        };
+        self.found.stats.ofx_ms += ms_since(t);
+        match run {
+            Ok((out, _, _)) if out.len() == pixels.len() => {
+                // Its own run's declines: the grade's were noted with it.
+                self.note_declines(clip.id);
+                out
+            }
+            other => {
+                // The frame goes on as it was, and each plug-in says it
+                // wasn't drawn: an export refuses it rather than write the
+                // frame without them.
+                let why = match &other {
+                    Ok((out, _, _)) => format!("the run gave {} values for {}", out.len(), pixels.len()),
+                    Err(e) => format!("{e:?}"),
+                };
+                tracing::warn!("clip {}: its OFX plug-ins didn't run ({why}); the frame as it was", clip.id.0);
+                for n in graph.nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::Ofx) {
+                    let name = n.params.ofx.as_ref().map_or_else(String::new, |o| o.plugin.clone());
+                    self.found.declines.push(klipp_nodes::Decline { clip: Some(clip.id), node: n.id, kind: klipp_nodes::NodeKind::Ofx, outcome: klipp_nodes::DeclineOutcome::RenderFailed, name, reason: "its plug-ins' run failed".into(), why: why.clone() });
+                }
+                pixels
+            }
+        }
+    }
+
     /// `f` run with a frame context for `clip` at clip time `clip_time`
     /// (M4): this renderer's plug-in instances, lent for the run, and
     /// `sources` for the clip's source frames at other times.
@@ -3203,6 +3232,9 @@ impl Renderer {
             _ => klipp_core::MediaId::nil(),
         };
         let mut instances = std::mem::take(&mut self.instances);
+        // The OFX host, lent to the run's OFX nodes: a clone of the shared
+        // host, so lending it borrows nothing of the renderer (M4 step 3).
+        let ofx = crate::ofx_node::OfxNodes(std::sync::Arc::clone(&self.ofx));
         let mut ctx = klipp_nodes::frame_context::FrameContext {
             clip: clip.id,
             frame: ((clip.timeline_in.to_secs_f64() + clip_time) * fps).round() as i64,
@@ -3215,6 +3247,8 @@ impl Renderer {
             sources,
             analysis: &klipp_nodes::frame_context::NoAnalysis,
             instances: &mut instances,
+            ofx: Some(&ofx),
+            source_at: &|t| clip.source_secs_at(t, fps),
         };
         let out = f(self, &mut ctx);
         self.instances = instances;
@@ -3419,37 +3453,6 @@ impl Renderer {
             self.found.stats.effects_mask_unavailable += 1;
             EFFECT_MASKS_UNAVAILABLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-    }
-
-    /// OFX plugins take 8-bit sRGB; the round trip is scoped to them.
-    fn ofx(
-        &mut self,
-        clip: &Clip,
-        pixels: Vec<f32>,
-        clip_time: f64,
-        width: u32,
-        height: u32,
-        frames: Option<klipp_plugin::FrameProviderFn>,
-    ) -> Vec<f32> {
-        // Only a plug-in that is on gets the frame: a clip whose plug-ins
-        // are all off keeps its full precision and range (#995).
-        if !clip.has_enabled_plugins() {
-            return pixels;
-        }
-        let t = Instant::now();
-        // An OFX plugin takes 8-bit BT.709, so the frame goes out of the
-        // working space and comes back into it.
-        let mut as_709 = pixels;
-        self.working_to_authored(&mut as_709);
-        let u8s = klipp_effects::linear_f32_rgba_to_srgb_u8(&as_709);
-        let out = match frames {
-            Some(frames) => self.ofx.apply_effects_chain_temporal(clip.ofx_effects(), &u8s, width, height, clip_time, frames),
-            None => self.ofx.apply_effects_chain(clip.ofx_effects(), &u8s, width, height, clip_time),
-        };
-        let mut out = klipp_effects::srgb_u8_to_linear_f32_rgba(&out);
-        self.authored_to_working(&mut out);
-        self.found.stats.ofx_ms += ms_since(t);
-        out
     }
 
     /// Count a clip's effect run that a plan couldn't apply and the CPU
@@ -3809,7 +3812,7 @@ impl Renderer {
         // from: its effects run apart from its grade (9c-2 B2).
         self.matte_input = clip.is_picture_truth().then(|| below.clone());
         let graded = self.grade(clip, GradeInput::Cpu(below), clip_time, fps, width, height, None);
-        let graded = self.ofx(clip, graded, clip_time, width, height, None);
+        let graded = self.ofx_nodes(clip, graded, clip_time, fps, clip_time, width, height, None);
         let (mut fx, _) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied());
         // Its effect colours are authored in BT.709, as a clip's are, and
         // converted into the working space the same way (#995): left as
@@ -4681,11 +4684,41 @@ pub fn frame_blends(clip: &Clip, time: Timecode) -> bool {
     blend && !clip.is_reversed() && clip.speed_at(eval_clip_time(clip, time)).abs() < 1.0 - 1e-6
 }
 
-/// OFX plugins known to read frames at other times than the current one.
-fn is_temporal_plugin(name: &str) -> bool {
-    ["Retime", "SlitScan", "timeOffset", "TimeOffset", "FrameBlend", "TimeBlur"]
-        .iter()
-        .any(|k| name.contains(k))
+/// `clip`'s enabled OFX entries as a graph of their own (M4 step 3):
+/// Source, a node for each in list order, Output. A node's id is its
+/// clip's, its plug-in's and which of that plug-in's entries it is, so
+/// its instance's slot is the same from frame to frame and follows its
+/// plug-in when the list is reordered (an OFX entry keeps no id of its
+/// own). `None` when none is on.
+fn ofx_graph(clip: &Clip) -> Option<klipp_nodes::NodeGraph> {
+    use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams};
+    if !clip.ofx_effects().iter().any(|e| e.enabled) {
+        return None;
+    }
+    // Apart from any id the clip's own graphs use: an OFX node's mark in
+    // the high bits, the rest from what it is.
+    let id = |k: u128| NodeId::from_u128(clip.id.0.as_u128() ^ (0x4f46_5800_u128 << 96) ^ k);
+    // FNV-1a over the plug-in's name, a hash the same in every process.
+    let name = |s: &str| s.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+    let node = |id: NodeId, kind: NodeKind, params: NodeParams| Node { id, kind, label: String::new(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![] };
+    let mut nodes = vec![node(id(0), NodeKind::Source, NodeParams::default())];
+    // Counted over every entry, on or off: switching one off moves no
+    // other's slot.
+    let mut seen: HashMap<&str, u32> = HashMap::new();
+    for e in clip.ofx_effects() {
+        let nth = seen.entry(e.plugin_name.as_str()).or_insert(0);
+        let k = (u128::from(name(&e.plugin_name)) << 32) | u128::from(*nth) | 1 << 31;
+        *nth += 1;
+        if !e.enabled {
+            continue;
+        }
+        let params = NodeParams { ofx: Some(klipp_nodes::plugin::OfxNodeParams { plugin: e.plugin_name.clone(), values: e.param_values.clone(), filter: matches!(e.context, klipp_plugin::OfxCategory::Filter) }), ..Default::default() };
+        nodes.push(node(id(k), NodeKind::Ofx, params));
+    }
+    nodes.push(node(id(u64::MAX as u128), NodeKind::Output, NodeParams::default()));
+    let edges = nodes.windows(2).map(|w| Edge { from_node: w[0].id, from_port: 0, to_node: w[1].id, to_port: 0 }).collect();
+    let output_node_id = nodes.last().map(|n| n.id).unwrap_or_default();
+    Some(NodeGraph { output_node_id, nodes, edges, ..Default::default() })
 }
 
 /// A track matte's mask, for the inspector's preview.
@@ -5131,5 +5164,49 @@ mod clip_sources_tests {
         let mut src = Readers::default();
         let mut s = ClipSources::new(&mut src, &c, WorkingColorspace::Rec709Linear);
         assert_eq!(s.linear(1.5), Neighbour::Missing(unavailable), "before the media: the reader has none");
+    }
+}
+
+#[cfg(test)]
+mod ofx_graph_tests {
+    use super::ofx_graph;
+    use klipp_nodes::NodeKind;
+    use klipp_plugin::AppliedEffect;
+
+    fn entry(name: &str, enabled: bool) -> AppliedEffect {
+        AppliedEffect { plugin_name: name.into(), enabled, ..Default::default() }
+    }
+
+    /// Each OFX node's id by its plug-in, in list order.
+    fn ids(clip: &klipp_timeline::Clip) -> Vec<(String, klipp_nodes::NodeId)> {
+        let g = ofx_graph(clip).expect("a plug-in on");
+        g.nodes.iter().filter(|n| n.kind == NodeKind::Ofx).map(|n| (n.params.ofx.as_ref().unwrap().plugin.clone(), n.id)).collect()
+    }
+
+    /// Reordering a clip's plug-ins keeps each one's node, so its instance
+    /// (its slot, by node) follows it; a copy switched off moves no other.
+    #[test]
+    fn an_ofx_nodes_id_follows_its_plugin() {
+        let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        clip.set_ofx_effects(vec![entry("A", true), entry("B", true)]);
+        let before = ids(&clip);
+        clip.set_ofx_effects(vec![entry("B", true), entry("A", true)]);
+        let after = ids(&clip);
+        assert_eq!(after.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["B", "A"], "drawn in the new order");
+        for (p, id) in &before {
+            assert_eq!(after.iter().find(|(q, _)| q == p).map(|(_, i)| i), Some(id), "{p}'s node moved with it");
+        }
+        // Two copies of one plug-in: switching the first off leaves the
+        // second its node.
+        clip.set_ofx_effects(vec![entry("A", true), entry("A", true)]);
+        let second = ids(&clip)[1].1;
+        clip.set_ofx_effects(vec![entry("A", false), entry("A", true)]);
+        assert_eq!(ids(&clip), [("A".to_string(), second)], "the second copy keeps its node");
+        // Another clip's nodes are its own.
+        let other = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        let mut other = other;
+        other.set_ofx_effects(vec![entry("A", true), entry("A", true)]);
+        assert_ne!(ids(&other)[1].1, second, "another clip, another slot");
     }
 }

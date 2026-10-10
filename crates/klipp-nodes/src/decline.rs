@@ -1,14 +1,18 @@
 //! A node that didn't draw what it shows, and why (M4 step 10).
 //!
-//! A plug-in node that can't run passes its input on; the run records it
-//! here, so the viewer can say so and an export can refuse to write a
-//! picture that is not the one shown. A node the person switched off, and
-//! a node that ran with what it had by design (a frame padded to a size
-//! frei0r takes, a denoise at the media's first frame with no frame
-//! before it), are recorded too but are not failures.
+//! A node that can't run passes its input on; the run records it here, so
+//! the viewer can say so and an export can refuse to write a picture that
+//! is not the one shown. The plug-in nodes record their refusals (frei0r,
+//! OFX), and every node that reads the clip's source at other times (the
+//! frame blend, temporal noise reduction, a temporal OFX plug-in) records
+//! a frame it couldn't read. A node the person switched off, and a node
+//! that ran with what it had by design (a frame padded to a size frei0r
+//! takes, a denoise at the media's first frame with no frame before it),
+//! are recorded too but are not failures.
 
 use klipp_core::ClipId;
 
+use crate::frame_context::Missing;
 use crate::{NodeId, NodeKind};
 
 /// Why a node didn't draw as asked.
@@ -75,16 +79,24 @@ impl Decline {
         self.outcome != DeclineOutcome::Bypass
     }
 
-    fn kind_label(&self) -> &'static str {
+    /// What kind of plug-in it is, before its name; none for a built-in
+    /// effect, whose name says what it is.
+    fn kind_label(&self) -> Option<&'static str> {
         match self.kind {
-            NodeKind::Frei0r => "frei0r",
-            _ => "node",
+            NodeKind::Frei0r => Some("frei0r"),
+            NodeKind::Ofx => Some("OFX"),
+            NodeKind::Effect | NodeKind::EffectSegment => None,
+            _ => Some("node"),
         }
     }
 
-    /// The viewer's words: "frei0r Delay0r: needs a frame size under 2048".
+    /// The viewer's words: "frei0r Delay0r: needs a frame size under 2048",
+    /// "Temporal Noise Reduction: no frame past the media's edge".
     pub fn plain(&self) -> String {
-        format!("{} {}: {}", self.kind_label(), self.name, self.reason)
+        match self.kind_label() {
+            Some(kind) => format!("{kind} {}: {}", self.name, self.reason),
+            None => format!("{}: {}", self.name, self.reason),
+        }
     }
 }
 
@@ -106,8 +118,78 @@ pub fn frei0r_outcome(refusal: &klipp_frei0r::Refusal) -> (DeclineOutcome, &'sta
     }
 }
 
+/// The outcome a node that reads the clip's source at other times declines
+/// with, given the frames it couldn't read, and its reason in plain words:
+/// `None` when it read them all. Past the media's edge is a fallback (the
+/// node ran with the frames there are, as it always will there); a frame
+/// inside the media unread, of the wrong size, or over the node's budget
+/// is not the picture asked for.
+pub fn neighbour_outcome(missed: &[Missing]) -> Option<(DeclineOutcome, &'static str)> {
+    let worst = missed.iter().find(|m| **m != Missing::OutOfRange).or(missed.first())?;
+    Some(match worst {
+        Missing::OutOfRange => (DeclineOutcome::Fallback, "no frame past the media's edge"),
+        Missing::Unavailable => (DeclineOutcome::NeighbourMissing, "a frame it reads couldn't be decoded"),
+        Missing::WrongSize { .. } => (DeclineOutcome::NeighbourMissing, "a frame it reads came at another size"),
+        Missing::OverBudget => (DeclineOutcome::NeighbourMissing, "it asked for more frames than it may read"),
+    })
+}
+
+/// The outcome an OFX node's refusal declines with, and its reason in
+/// plain words.
+pub fn ofx_outcome(refusal: &crate::plugin::Refusal) -> (DeclineOutcome, &'static str) {
+    use crate::plugin::Refusal;
+    match refusal {
+        Refusal::Missing => (DeclineOutcome::PluginMissing, "plug-in missing"),
+        Refusal::Unsupported(_) => (DeclineOutcome::Unsupported, "can't run here"),
+        Refusal::Failed(_) => (DeclineOutcome::RenderFailed, "its render failed"),
+    }
+}
+
+/// A built-in effect's name as the browser shows it.
+pub fn effect_name(effect: &klipp_effects::BuiltinEffect) -> String {
+    let kind = std::mem::discriminant(effect);
+    klipp_effects::registry::effect_types()
+        .find(|t| std::mem::discriminant(&(t.sample)()) == kind)
+        .map_or_else(|| "effect".to_owned(), |t| t.desc.name.to_owned())
+}
+
 /// A frei0r effect's name from its id (`frei0r:<path>:<name>`), for a
 /// plug-in that isn't there to ask.
 pub fn frei0r_name(type_id: &str) -> String {
     type_id.rsplit(':').next().filter(|n| !n.is_empty()).unwrap_or(type_id).to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frame_context::Missing;
+
+    /// Past the media's edge is a fallback; any frame inside it unread is
+    /// a frame missing, and it outweighs an edge in the same node.
+    #[test]
+    fn a_neighbour_past_the_edge_falls_back_and_one_inside_is_missing() {
+        assert_eq!(neighbour_outcome(&[]), None);
+        assert_eq!(neighbour_outcome(&[Missing::OutOfRange]).map(|(o, _)| o), Some(DeclineOutcome::Fallback));
+        for m in [Missing::Unavailable, Missing::WrongSize { width: 2, height: 2 }, Missing::OverBudget] {
+            assert_eq!(neighbour_outcome(&[m]).map(|(o, _)| o), Some(DeclineOutcome::NeighbourMissing), "{m:?}");
+            assert_eq!(neighbour_outcome(&[Missing::OutOfRange, m]).map(|(o, _)| o), Some(DeclineOutcome::NeighbourMissing), "{m:?} with an edge");
+        }
+        assert!(!DeclineOutcome::Fallback.fails() && DeclineOutcome::NeighbourMissing.fails());
+    }
+
+    /// An OFX refusal's outcome, and the viewer's words: a plug-in's kind
+    /// before its name; a built-in effect by its name alone.
+    #[test]
+    fn ofx_refusals_and_the_viewers_words() {
+        use crate::plugin::Refusal;
+        assert_eq!(ofx_outcome(&Refusal::Missing).0, DeclineOutcome::PluginMissing);
+        assert_eq!(ofx_outcome(&Refusal::Unsupported("context".into())).0, DeclineOutcome::Unsupported);
+        assert_eq!(ofx_outcome(&Refusal::Failed(3)).0, DeclineOutcome::RenderFailed);
+        let d = |kind, name: &str| Decline { clip: None, node: NodeId::nil(), kind, outcome: DeclineOutcome::Fallback, name: name.into(), reason: "why".into(), why: String::new() };
+        assert_eq!(d(NodeKind::Ofx, "org.example.Blur").plain(), "OFX org.example.Blur: why");
+        assert_eq!(d(NodeKind::Frei0r, "Delay0r").plain(), "frei0r Delay0r: why");
+        let name = effect_name(&klipp_effects::BuiltinEffect::TemporalDenoise { strength: 1.0, threshold: 0.1 });
+        assert_eq!(d(NodeKind::Effect, &name).plain(), format!("{name}: why"));
+        assert_ne!(name, "effect", "the registry names it");
+    }
 }

@@ -1,7 +1,7 @@
 //! OFX parameter value types — shared between klipp-core (events) and klipp-plugin (host).
 
 /// A typed OFX parameter value for effect parameters.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum OfxValue {
     Double(f64),
     Double2(f64, f64),
