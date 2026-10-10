@@ -220,8 +220,7 @@ fn eye_pixels(ty: &EffectType) -> Result<(), String> {
     if is_on(&new, index) {
         return Err("the eye didn't switch the effect off".into());
     }
-    let mut b = new.clip().clone();
-    super::parity_numeric::regain(&mut b);
+    let b = new.clip().clone();
     super::parity_pixels::clip_edit_drawn_on(routes, size, &start, &b)?;
     // A Transform switched off is bypassed (#1207): its frame is the clip's
     // with no Transform at all, exactly, on each route.

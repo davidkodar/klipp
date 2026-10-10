@@ -25,7 +25,7 @@
 use super::parity_effect_keys::{eligible, variant};
 use super::parity_harness::Run;
 use super::parity_manifest::{catalog, CatalogEntry, CatalogValue, CoverageKey, Interaction, Manifest, Report, Surface};
-use super::parity_numeric::{known_defect, number, pixel_fixture, regain, routes_for, size_for, stored, type_value, RowLabel};
+use super::parity_numeric::{known_defect, number, pixel_fixture, routes_for, size_for, stored, type_value, RowLabel};
 use super::parity_pixels::{frames_at, Routes};
 use crate::inspector::generated::row;
 use klipp_core::{Interpolation, Keyframe, Timecode};
@@ -96,7 +96,6 @@ fn case(entry: &CatalogEntry, interpolation: Interpolation, picks: &mut Picks) -
                 .map(|(time_secs, value)| Keyframe { time_secs, value, interpolation, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) })
                 .collect();
         });
-        regain(clip);
     };
     // The second key: the first value near the middle whose key makes the
     // frame at T2 differ from the same clip with a flat lane (both keys
@@ -139,8 +138,7 @@ fn case(entry: &CatalogEntry, interpolation: Interpolation, picks: &mut Picks) -
     if !run.unapplied.is_empty() {
         return Err(format!("unapplied {:?}", run.unapplied));
     }
-    let mut new = run.clip().clone();
-    regain(&mut new);
+    let new = run.clip().clone();
     let shown: f32 = typed.parse().map_err(|_| format!("{typed:?} isn't a number"))?;
     let want = number(desc, pres.display.map_or(shown, |map| (map.to_stored)(shown, encoding))).as_f64().unwrap_or(f64::from(shown)) as f32;
     let mut expected = start.clone();
