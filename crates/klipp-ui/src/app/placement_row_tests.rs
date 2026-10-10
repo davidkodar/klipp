@@ -95,9 +95,8 @@ fn dragging_placement_sets_fixed_in_one_step() {
 
 /// Fixed puts the placement where automatic placement had it, before the
 /// first effect drawn outside the picture, so the picture is the same;
-/// Auto takes that unmoved Transform away again. A placement that moves
-/// the clip can't be made automatic yet: Auto is greyed with the reason,
-/// and a click on it changes nothing.
+/// Auto takes that unmoved Transform away again, the clip back as it was
+/// (a moved one keeps its move: `auto_keeps_a_static_move`).
 #[test]
 fn choosing_auto_restores_it() {
     let mut run = generated(&[E::GaussianBlur { radius: 3.0 }, glow()]);
@@ -113,19 +112,6 @@ fn choosing_auto_restores_it() {
     assert_eq!(run.clip().picture_v2().unwrap().picture, start, "back to automatic");
     assert!(run.step(false));
     assert_eq!(mode(&run), Some(ParamValue::Enum(lt::PLACEMENT_FIXED)), "undo fixes it again");
-
-    let mut moved = generated(&[E::GaussianBlur { radius: 3.0 }, transform(40.0)]);
-    assert!(moved.clip().placement_auto_refusal().is_some());
-    let before = moved.clip().picture_v2().unwrap().picture.clone();
-    let steps = undos(&moved);
-    choose(&mut moved, "Auto");
-    assert_eq!(undos(&moved), steps, "nothing recorded");
-    assert_eq!(moved.clip().picture_v2().unwrap().picture, before, "nothing changed");
-    // Sent by path anyway, it is refused with the same reason.
-    let addr = NodePath::new(Root::Clip { clip: moved.clip.0 }, [placement(&moved).id]);
-    moved.apply(AppCommand::SetParamAt { addr, key: "mode".into(), value: ParamValue::Enum(lt::PLACEMENT_AUTO) });
-    assert!(moved.unapplied.iter().any(|u| u.contains("reset its placement")), "{:?}", moved.unapplied);
-    assert_eq!(moved.clip().picture_v2().unwrap().picture, before);
 }
 
 /// Moving a fixed placement down past an effect gives the picture the

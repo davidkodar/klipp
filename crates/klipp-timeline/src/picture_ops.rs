@@ -208,6 +208,24 @@ const IDENTITY_TRANSFORM: BuiltinEffect = BuiltinEffect::Transform {
     focal_ref: None,
 };
 
+/// Whether `p` moves the clip at all: any value other than the identity
+/// (an unset value is the identity). An unmoved placement made automatic
+/// needs no picture of its own.
+fn moves(p: &klipp_graph_format::lifted::PlacementProps) -> bool {
+    let off = |v: Option<f32>, identity: f32| v.is_some_and(|v| v != identity);
+    off(p.pos_x, 0.0)
+        || off(p.pos_y, 0.0)
+        || off(p.scale, 1.0)
+        || off(p.aspect, 1.0)
+        || off(p.rotation, 0.0)
+        || off(p.anchor_x, 0.5)
+        || off(p.anchor_y, 0.5)
+        || off(p.tilt_x, 0.0)
+        || off(p.tilt_y, 0.0)
+        || off(p.perspective, 0.0)
+        || p.focal_ref.is_some()
+}
+
 /// The Transform entry that holds `p`, a placement's values, fixed in the
 /// list: what making a placement fixed, or moving it, puts there, so its
 /// move stays (#1394).
@@ -624,7 +642,7 @@ impl Clip {
             None => fresh,
         };
         let auto = klipp_graph_lift::clip_properties::placement_node(&out.picture).is_some_and(|n| n.legacy.is_none());
-        if auto && out.picture.placement != keep {
+        if auto && moves(&keep) && out.picture.placement != keep {
             out.picture.placement = keep;
             out = self.truth_from(out.picture)?;
         }
