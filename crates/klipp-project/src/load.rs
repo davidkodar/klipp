@@ -882,6 +882,8 @@ fn load_sequence_from_json(
                                     };
                                     (k.clone(), val)
                                 }).collect::<HashMap<_, _>>(),
+                                context: e.context,
+                                transition_amount: e.transition_amount,
                             ..Default::default()
                             }
                         }).collect::<Vec<_>>(),
