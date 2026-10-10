@@ -30,6 +30,7 @@ klipp-frei0r = { workspace = true }
 # The golden corpus's stored frames are one PNG (#1089).
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde_json = { workspace = true }
+klipp-timeline = { workspace = true, features = ["test-clip"] }
 
 [lints]
 workspace = true

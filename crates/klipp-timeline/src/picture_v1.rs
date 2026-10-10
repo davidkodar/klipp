@@ -264,6 +264,37 @@ impl EffectJson {
             ..Default::default()
         }
     }
+
+    /// The OFX effect the file's entry holds: the inverse of [`Self::of`],
+    /// what a load and a reader of the clip's picture make of it.
+    pub fn to_effect(&self) -> klipp_plugin::AppliedEffect {
+        use klipp_plugin::OfxValue as V;
+        klipp_plugin::AppliedEffect {
+            plugin_name: self.plugin_name.clone(),
+            enabled: self.enabled,
+            param_values: self
+                .param_values
+                .iter()
+                .map(|(k, v)| {
+                    let val = match v {
+                        OfxValueJson::Double(d) => V::Double(*d),
+                        OfxValueJson::Double2([a, b]) => V::Double2(*a, *b),
+                        OfxValueJson::Double3([a, b, c]) => V::Double3(*a, *b, *c),
+                        OfxValueJson::Int(i) => V::Int(*i),
+                        OfxValueJson::Int2([a, b]) => V::Int2(*a, *b),
+                        OfxValueJson::Int3([a, b, c]) => V::Int3(*a, *b, *c),
+                        OfxValueJson::Bool(b) => V::Bool(*b),
+                        OfxValueJson::Choice(c) => V::Choice(*c),
+                        OfxValueJson::String(s) => V::String(s.clone()),
+                        OfxValueJson::Rgba([r, g, b, a]) => V::Rgba(*r, *g, *b, *a),
+                        OfxValueJson::Rgb([r, g, b]) => V::Rgb(*r, *g, *b),
+                    };
+                    (k.clone(), val)
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
 }
 
 /// A grade version as the file holds it.
