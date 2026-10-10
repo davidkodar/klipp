@@ -158,6 +158,10 @@ pub struct ExportFrameSource<'a> {
     /// slow" is not actionable and "the source conversion is slow" is.
     pub(crate) t_decode: std::time::Duration,
     pub(crate) t_convert: std::time::Duration,
+    /// Readers opened on media: a clip's stream, a neighbour reader. A
+    /// sequential export opens one a clip; a frame blend reads its next
+    /// frame from the stream, opening none (M4 step 7).
+    opened: std::cell::Cell<usize>,
 }
 
 impl<'a> ExportFrameSource<'a> {
@@ -172,7 +176,13 @@ impl<'a> ExportFrameSource<'a> {
             gpu: crate::clip_decoder::GpuConverters::shared(),
             t_decode: std::time::Duration::ZERO,
             t_convert: std::time::Duration::ZERO,
+            opened: std::cell::Cell::new(0),
         }
+    }
+
+    /// Readers this source has opened on media, all told.
+    pub fn readers_opened(&self) -> usize {
+        self.opened.get()
     }
 
     /// The decoders' own breakdown: download plus colour conversion, and
@@ -207,6 +217,7 @@ impl<'a> ExportFrameSource<'a> {
     }
 
     fn open(&self, clip: &Clip, file: &MediaFile, secs: f64, width: u32, height: u32) -> Option<ClipStream> {
+        self.opened.set(self.opened.get() + 1);
         // The clip's rotation when it has one, else the media's. A clip
         // created by a path that did not copy the media's rotation would
         // otherwise render sideways while playing upright, since the
@@ -337,6 +348,7 @@ impl FrameSource for ExportFrameSource<'_> {
         // clip. Plain swscale here rendered log flat and PQ washed
         // out, so a plugin reading neighbours saw a different picture
         // from the one the viewer gave it.
+        self.opened.set(self.opened.get() + 1);
         let reader = std::cell::RefCell::new(
             klipp_media::frame_reader::SeekableFrameReader::open_colour_managed(&path, log_format)?,
         );
@@ -367,6 +379,7 @@ impl FrameSource for ExportFrameSource<'_> {
         let file = self.media.get(media_id)?;
         let (path, log_format) = (file.path.clone(), file.log_format);
         let source_in = clip.source_in.to_secs_f64();
+        self.opened.set(self.opened.get() + 1);
         let mut reader =
             klipp_media::frame_reader::SeekableFrameReader::open_linear(&path, log_format, working)?;
         Some(Box::new(move |t: f64| reader.decode_at((source_in + t).max(0.0))))

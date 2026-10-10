@@ -20,6 +20,7 @@
 pub mod families;
 pub mod fixtures;
 pub mod format;
+mod frame_blend;
 pub mod route;
 pub mod rules;
 mod temporal_denoise;

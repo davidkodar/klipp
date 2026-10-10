@@ -83,7 +83,7 @@ pub const ALL: &[FamilyEntry] = &[
     FamilyEntry { family: Family::OfxTemporal, require: require_ofx_temporal, run: none_yet },
     FamilyEntry { family: Family::Frei0r, require: require_frei0r, run: none_yet },
     FamilyEntry { family: Family::TemporalDenoise, require: require_temporal_denoise, run: crate::temporal_denoise::run },
-    FamilyEntry { family: Family::FrameBlend, require: require_frame_blend, run: none_yet },
+    FamilyEntry { family: Family::FrameBlend, require: require_frame_blend, run: crate::frame_blend::run },
     FamilyEntry { family: Family::RollingShutter, require: require_rolling_shutter, run: none_yet },
     FamilyEntry { family: Family::Stabilisation, require: require_stabilisation, run: none_yet },
     FamilyEntry { family: Family::Deflicker, require: require_deflicker, run: none_yet },
@@ -98,4 +98,6 @@ pub const DELETED: &[(Family, &[&str])] = &[
     // Step 6: the renderer's pre-grade denoise stage and its per-clip
     // neighbour readers, replaced by the source-boundary node.
     (Family::TemporalDenoise, &["fn temporal_denoise(", "tnr_frames"]),
+    // Step 7: the renderer's pre-grade frame blend.
+    (Family::FrameBlend, &["fn blend_frames("]),
 ];

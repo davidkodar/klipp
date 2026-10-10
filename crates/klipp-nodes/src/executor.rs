@@ -4291,9 +4291,11 @@ impl GraphExecutor {
         self.source_unavailable
     }
 
-    /// A source-boundary node (M4 step 6): temporal noise reduction, on
-    /// the source before the grade, against the frames either side of it
-    /// read from the clip's source through `ctx`. A neighbour the source
+    /// A source-boundary node (M4 steps 6 and 7), its effects in the
+    /// catalog's order (`SOURCE_BOUNDARY_ORDER`): the frame blend, then
+    /// temporal noise reduction, on the source before the grade, against
+    /// the frames either side of it read from the clip's source through
+    /// `ctx`. A neighbour the source
     /// hasn't (past the media, the wrong size, a failed read) is left out,
     /// so the media's first and last frames denoise against one side;
     /// with none, or no context, the input passes on.
@@ -4304,14 +4306,39 @@ impl GraphExecutor {
             self.source_unavailable += 1;
             return input.to_vec();
         };
+        // The node's budget, its effects' together: the blend reads the
+        // next frame, the denoiser the frame either side.
+        let budget = effects.iter().map(|e| match e {
+            klipp_effects::BuiltinEffect::SpeedRamp { .. } => 1,
+            klipp_effects::BuiltinEffect::TemporalDenoise { .. } => klipp_effects::temporal_denoise::NEIGHBOURS,
+            _ => 0,
+        }).sum();
+        ctx.sources.for_node(node_id, budget);
         let mut out = input.to_vec();
         for effect in effects {
+            // The frame blend (M4 step 7): the frame shown mixed toward the
+            // media's next one by where the source time falls between their
+            // presentation times. Without either time, or with no next
+            // frame, the frame as it is.
+            if let klipp_effects::BuiltinEffect::SpeedRamp { .. } = effect {
+                let Some(pts) = ctx.source_pts else { continue };
+                if let Neighbour::Frame(next) = ctx.sources.next(ctx.source_secs) {
+                    if let Some(next_pts) = next.pts.filter(|p| *p > pts + 1e-6) {
+                        let weight = (((ctx.source_secs - pts) / (next_pts - pts)).clamp(0.0, 1.0)) as f32;
+                        if weight > 1e-4 && next.rgba.len() == out.len() {
+                            for (o, n) in out.iter_mut().zip(&next.rgba) {
+                                *o += (n - *o) * weight;
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
             let klipp_effects::BuiltinEffect::TemporalDenoise { strength, threshold } = *effect else { continue };
             // The captures either side: one of the media's frames away,
             // whatever the sequence's rate (its rate when the source can't
             // say).
             let dt = ctx.sources.frame_secs().unwrap_or(1.0 / ctx.fps.max(1.0));
-            ctx.sources.for_node(node_id, klipp_effects::temporal_denoise::NEIGHBOURS);
             let neighbours: Vec<Vec<f32>> = [ctx.source_secs - dt, ctx.source_secs + dt]
                 .into_iter()
                 .filter_map(|t| match ctx.sources.linear(t) {
