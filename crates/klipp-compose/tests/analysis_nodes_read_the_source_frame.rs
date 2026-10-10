@@ -43,9 +43,10 @@ fn tc(f: i64) -> RationalTime {
     RationalTime::from_frames(f, FPS)
 }
 
-/// A clip of the file from source frame `from`, deflickered.
+/// A clip of the file from source frame `from`, 100 frames long,
+/// deflickered.
 fn sequence(from: i64) -> Sequence {
-    let mut c = Clip::media(MediaId::new(), tc(0), tc(50), tc(from), tc(from + 50));
+    let mut c = Clip::media(MediaId::new(), tc(0), tc(100), tc(from), tc(from + 100));
     c.set_effect_list(vec![E::Deflicker { strength: 1.0, window_secs: 0.4, gain: 1.0 }], vec![true]);
     let mut seq = Sequence::new_default();
     seq.fps = klipp_core::Fps::new(FPS, 1);
