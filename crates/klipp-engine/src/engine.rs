@@ -1157,8 +1157,10 @@ pub struct PlaybackEngine {
     /// The outgoing clip's frame at the cut, taken from the primary
     /// decoder when it crossed the clip's out point: the frame a
     /// transition's outgoing side shows there, handed to the clip stream
-    /// that takes the decoder over (#1494).
-    boundary_frame: Option<crate::types::LinearFrame>,
+    /// that takes the decoder over (#1494). With the clip it is of: taken
+    /// only for that clip, at that time, so a frame a cut left behind never
+    /// reaches a later cut's stream.
+    boundary_frame: Option<(klipp_core::ClipId, crate::types::LinearFrame)>,
     // Audio — one source per active track, mixed through mix thread
     audio_sources: Vec<ActiveAudioSource>,
     audio_output: Option<SendAudioOutput>,
@@ -5155,7 +5157,7 @@ impl PlaybackEngine {
                     clip.timeline_out.to_secs_f64(), current_source_secs);
                 self.playhead = clip.timeline_out;
                 self.cut_diag_until = Some(std::time::Instant::now() + Duration::from_millis(1500));
-                self.boundary_frame = Some(frame);
+                self.boundary_frame = Some((clip.id, frame));
                 self.advance_to_next_clip();
                 return;
             }
@@ -5718,6 +5720,11 @@ impl PlaybackEngine {
                     .map(|c| klipp_compose::render::source_secs(c, time, fps))
             };
             if let Some(secs) = still_shown {
+                // This clip's frame at this time, or none: within one of the
+                // media's frames of the source time the stream is to show (a
+                // clip slowed below 1x shows one across several of ours).
+                let frame = 2.0 * dec.half_source_frame(self.fps.as_f64());
+                let boundary = boundary.filter(|(clip, f)| *clip == id && (f.pts_secs() - secs).abs() < frame).map(|(_, f)| f);
                 debug!("CUT-DIAG primary decoder handed to the clip streams for {id:?} at {secs:.3}s");
                 self.note_view(format!("cut at {:?}: the outgoing clip's stream took the decoder over (frame at the cut {})", time.value, if boundary.is_some() { "handed on" } else { "none" }));
                 // With the frame the decoder gave at the cut: the queue
