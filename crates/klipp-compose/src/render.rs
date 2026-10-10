@@ -3538,7 +3538,8 @@ impl Renderer {
                 continue;
             }
             let samples: Vec<(ResolvedTransform, f64)> = offsets.iter().map(|&o| self.shutter_sample(seq, c, time, o, fps, width, height)).collect();
-            let tilt_at = |t: f64| (klipp_core::keyframe::evaluate(c.transform_tilt_x_keyframes(), t, 0.0), klipp_core::keyframe::evaluate(c.transform_tilt_y_keyframes(), t, 0.0));
+            let [tx, ty] = c.tilt_lanes();
+            let tilt_at = |t: f64| (klipp_core::keyframe::evaluate(&tx, t, 0.0), klipp_core::keyframe::evaluate(&ty, t, 0.0));
             let (first, last) = (samples[0], samples[n - 1]);
             let moved = (first.0 .0 - last.0 .0).abs() > 0.05
                 || (first.0 .1 - last.0 .1).abs() > 0.05
@@ -4320,8 +4321,9 @@ pub(crate) fn tilt(clip: &Clip, fx: &[BuiltinEffect], t: f64) -> (f32, f32, f32)
             _ => None,
         })
         .unwrap_or((0.0, 0.0, 0.0)));
-    let rx = klipp_core::keyframe::evaluate(clip.transform_tilt_x_keyframes(), t, rx);
-    let ry = klipp_core::keyframe::evaluate(clip.transform_tilt_y_keyframes(), t, ry);
+    let [tx, ty] = clip.tilt_lanes();
+    let rx = klipp_core::keyframe::evaluate(&tx, t, rx);
+    let ry = klipp_core::keyframe::evaluate(&ty, t, ry);
     // Keyframed, or set still in the inspector: either way a tilt.
     let tilted = rx != 0.0 || ry != 0.0 || clip.has_tilt_keyframes();
     (rx, ry, if tilted && persp <= 0.0 { 1.0 } else { persp })

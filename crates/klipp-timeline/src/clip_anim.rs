@@ -164,6 +164,56 @@ impl Clip {
 }
 
 impl Clip {
+    /// A placement or opacity lane as a picture-truth clip's picture holds
+    /// it: its keys and its modifier stack (keyed by `param`, as the
+    /// renderer's evaluation takes it). `None` for any other clip, whose
+    /// lanes are its fields (its picture is made from them), and for a
+    /// parameter that is no such lane. A picture-truth clip's placement and
+    /// opacity edits land in its picture alone (`apply_picture_ops`), so its
+    /// fields' lanes are a view that may be behind: a reader of what the
+    /// clip draws takes them here.
+    pub fn truth_lane(&self, param: &ParamId) -> Option<(Vec<Keyframe>, HashMap<ParamId, ModifierStack>)> {
+        let truth = self.picture.truth()?;
+        let p = &truth.picture;
+        let key = |k: &str| p.placement_anim.get(&klipp_graph_format::ParamKey::from(k));
+        let anim = match param {
+            ParamId::Opacity => p.opacity_anim.as_ref(),
+            ParamId::PositionX => key("pos_x"),
+            ParamId::PositionY => key("pos_y"),
+            ParamId::Scale => key("scale"),
+            ParamId::Rotation => key("rotation"),
+            _ => return None,
+        };
+        let keys = anim.map(|a| a.keys.iter().filter_map(|k| serde_json::from_value(k.clone()).ok()).collect()).unwrap_or_default();
+        let modifiers = anim
+            .and_then(|a| a.modifiers.clone())
+            .and_then(|m| serde_json::from_value::<ModifierStack>(m).ok())
+            .map(|m| HashMap::from([(param.clone(), m)]))
+            .unwrap_or_default();
+        Some((keys, modifiers))
+    }
+
+    /// A picture-truth clip's tilt lanes' keys, as its picture holds them;
+    /// `None` for any other clip.
+    pub fn truth_tilt_keys(&self) -> Option<[Vec<Keyframe>; 2]> {
+        let truth = self.picture.truth()?;
+        let keys = |k: &str| {
+            truth.picture.placement_anim.get(&klipp_graph_format::ParamKey::from(k)).map(|a| a.keys.iter().filter_map(|k| serde_json::from_value(k.clone()).ok()).collect()).unwrap_or_default()
+        };
+        Some([keys("tilt_x"), keys("tilt_y")])
+    }
+
+    /// The tilt lanes the renderer evaluates, x then y: a picture-truth
+    /// clip's from its picture's placement keys, any other clip's from its
+    /// fields.
+    pub fn tilt_lanes(&self) -> [std::borrow::Cow<'_, [Keyframe]>; 2] {
+        use std::borrow::Cow;
+        match self.truth_tilt_keys() {
+            Some([x, y]) => [Cow::Owned(x), Cow::Owned(y)],
+            None => [Cow::Borrowed(self.transform_tilt_x_keyframes()), Cow::Borrowed(self.transform_tilt_y_keyframes())],
+        }
+    }
+
     /// The keyframes of the video parameter `param`: a placement or opacity
     /// lane, or a track-matte radius, which isn't picture animation and
     /// stays a plain field.

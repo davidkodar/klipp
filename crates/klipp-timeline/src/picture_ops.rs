@@ -528,9 +528,14 @@ impl Clip {
             for (index, (op, (t, post))) in ops.iter().zip(&steps).enumerate() {
                 match t {
                     Some(Target::Effect) => self.write_effect_op(op, post, &mut order).map_err(|why| (Some(index), why))?,
-                    // A picture-truth clip's placement is its picture's,
-                    // set on the copy; its fields are the picture's view.
-                    Some(Target::Placement) if !truth => self.write_placement_op(op).map_err(|why| (Some(index), why))?,
+                    // A picture-truth clip's keys are written through to its
+                    // fields' lanes too: a later write to its fields lifts
+                    // them again, and keys only its picture held would be
+                    // lost then. So is a value set where an entry of the
+                    // fields holds it; one with none stays its picture's
+                    // (the fields can't hold it without an entry the picture
+                    // doesn't have), and `merge_truth` carries it.
+                    Some(Target::Placement) if !truth || !matches!(op, GraphOp::SetParam { key, .. } if self.placement_entry(key.as_str()).is_none()) => self.write_placement_op(op).map_err(|why| (Some(index), why))?,
                     _ => {}
                 }
             }
@@ -640,7 +645,7 @@ impl Clip {
         self.reconcile_effect_ids();
         let fresh = self.lift_picture()?;
         let mut out = match old {
-            Some(old) => merge_truth(old, &(before.effect_ids().ids.clone(), self.picture.effect_ids().ids.clone()), fresh)?,
+            Some(old) => merge_truth(old, &(before.effect_ids().ids.clone(), self.picture.effect_ids().ids.clone()), fresh, self.placement_entry("opacity").is_some())?,
             None => fresh,
         };
         let auto = klipp_graph_lift::clip_properties::placement_node(&out.picture).is_some_and(|n| n.legacy.is_none());
@@ -809,6 +814,16 @@ impl Clip {
         Ok(())
     }
 
+    /// The place of the enabled entry of the fields that holds the
+    /// placement value `key`: the last enabled Opacity for `opacity`, on a
+    /// clip and an adjustment layer alike (#1386), the first enabled
+    /// Transform for the rest.
+    fn placement_entry(&self, key: &str) -> Option<usize> {
+        let on = self.builtin_effects_enabled();
+        let mut held = self.builtin_effects().iter().enumerate().filter(|(i, e)| on.get(*i).copied().unwrap_or(true) && if key == "opacity" { matches!(e, BuiltinEffect::Opacity { .. }) } else { matches!(e, BuiltinEffect::Transform { .. }) }).map(|(i, _)| i);
+        if key == "opacity" { held.next_back() } else { held.next() }
+    }
+
     /// One op on the clip's placement or opacity (M3 step 13), written to
     /// the fields the lift reads them from: a placement value to the first
     /// enabled Transform entry (one added at the list's end, an identity,
@@ -820,15 +835,10 @@ impl Clip {
         let (GraphOp::SetParam { key, .. } | GraphOp::AddKeyAt { key, .. } | GraphOp::RemoveKeyAt { key, .. } | GraphOp::SetAnim { key, .. }) = op else {
             return Err("not an op on a clip property".into());
         };
-        let on = |c: &Self, i: usize| c.builtin_effects_enabled().get(i).copied().unwrap_or(true);
         if let GraphOp::SetParam { value: ParamValue::Float(v), .. } = op {
             let v = *v;
             if key.as_str() == "opacity" {
-                let is_opacity = |e: &BuiltinEffect| matches!(e, BuiltinEffect::Opacity { .. });
-                // The last enabled Opacity, on a clip and an adjustment
-                // layer alike (#1386).
-                let at = (0..self.builtin_effects().len()).rev().find(|i| is_opacity(&self.builtin_effects()[*i]) && on(self, *i));
-                let id = match at {
+                let id = match self.placement_entry("opacity") {
                     Some(i) => self.effect_id_at(i).ok_or("the opacity entry is gone")?,
                     None => self.push_effect(BuiltinEffect::Opacity { value: v }),
                 };
@@ -839,8 +849,7 @@ impl Clip {
                 });
                 return Ok(());
             }
-            let at = (0..self.builtin_effects().len()).find(|i| matches!(self.builtin_effects()[*i], BuiltinEffect::Transform { .. }) && on(self, *i));
-            let id = match at {
+            let id = match self.placement_entry(key.as_str()) {
                 Some(i) => self.effect_id_at(i).ok_or("the transform entry is gone")?,
                 None => self.push_effect(IDENTITY_TRANSFORM),
             };
@@ -1114,7 +1123,8 @@ impl Clip {
     fn settle_truth(&mut self, old: &LiftedPicture, before: ClipPictureFields, what: &str) {
         self.reconcile_effect_ids();
         let ids = (before.effect_ids().ids.clone(), self.picture.effect_ids().ids.clone());
-        match self.lift_picture().and_then(|fresh| merge_truth(old, &ids, fresh)) {
+        let anchored = self.placement_entry("opacity").is_some();
+        match self.lift_picture().and_then(|fresh| merge_truth(old, &ids, fresh, anchored)) {
             Ok(picture) => self.picture.set_truth(Some(std::sync::Arc::new(picture))),
             Err(why) => {
                 self.picture = before;
@@ -1164,7 +1174,7 @@ fn entries(p: &ClipPicture) -> Vec<(u32, NodeId, String)> {
 /// after) and of the same type, wherever the write moved it. Refused,
 /// naming it, when the write took away what the picture's own data refers
 /// to.
-fn merge_truth(old: &LiftedPicture, ids: &(Vec<crate::EffectId>, Vec<crate::EffectId>), fresh: LiftedPicture) -> Result<LiftedPicture, String> {
+fn merge_truth(old: &LiftedPicture, ids: &(Vec<crate::EffectId>, Vec<crate::EffectId>), fresh: LiftedPicture, anchored: bool) -> Result<LiftedPicture, String> {
     let mut p = fresh.picture;
     let before = entries(&old.picture);
     let (was, now) = ids;
@@ -1263,6 +1273,11 @@ fn merge_truth(old: &LiftedPicture, ids: &(Vec<crate::EffectId>, Vec<crate::Effe
     let auto = |q: &ClipPicture| klipp_graph_lift::clip_properties::placement_node(q).is_some_and(|n| n.legacy.is_none());
     if auto(&old.picture) && auto(&p) {
         p.placement = old.picture.placement.clone();
+    }
+    // Likewise the clip's opacity, set with no Opacity entry in the fields
+    // to hold it (`anchored`: whether they hold one after the write).
+    if !anchored {
+        p.opacity = old.picture.opacity;
     }
     // The nodes beside the chain, then every edge that isn't the chain's.
     p.graph.nodes.extend(old.picture.graph.nodes.iter().filter(|n| !old_chain.contains(&n.id)).cloned());
