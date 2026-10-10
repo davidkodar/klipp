@@ -24,9 +24,13 @@ pub fn clip(p: &ClipPicture) -> Result<Value, Refusal> {
 }
 
 /// A stored Grade group body standing alone as its v1 grade graph; `group`
-/// is the grade node's id in the store (see [`grade_id`]).
+/// is the grade node's id in the store (see [`grade_id`]). A sequence
+/// grade's mix and mask channel (#1321) have no place in it: the loader
+/// reads them from the stored body ([`crate::sequence_grade_mix`]).
 pub fn body(v: &Value, group: Uuid) -> Result<Value, Refusal> {
-    let b: Graph = serde_json::from_value(v.clone()).map_err(|e| format!("a grade body: {e}"))?;
+    let mut v = v.clone();
+    crate::sequence_grade_mix::read(&mut v)?;
+    let b: Graph = serde_json::from_value(v).map_err(|e| format!("a grade body: {e}"))?;
     to_v1::grade_only(&delift::grade_only(&b, group)?)
 }
 

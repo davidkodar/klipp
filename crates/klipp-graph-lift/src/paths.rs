@@ -70,6 +70,14 @@ fn parse<T: serde::de::DeserializeOwned>(v: &Value) -> Result<T, String> {
     serde_json::from_value(v.clone()).map_err(|e| e.to_string())
 }
 
+/// A sequence grade's stored body as a graph, its mix and mask channel
+/// on its nodes and its `requires` checked and taken off (#1321).
+fn sequence_body(v: &Value) -> Result<Graph, String> {
+    let mut v = v.clone();
+    crate::sequence_grade_mix::read(&mut v)?;
+    parse(&v)
+}
+
 impl Documents {
     /// Index a revision-2 project's pictures.
     pub fn of(project: &Value) -> Result<Self, String> {
@@ -81,13 +89,13 @@ impl Documents {
         };
         for seq in &seqs {
             if let (Some(sid), Some(g)) = (id(seq), seq.get("graph_v2")) {
-                d.timeline.insert(sid, parse(g)?);
+                d.timeline.insert(sid, sequence_body(g)?);
             }
             for group in list(seq, "grade_groups") {
                 let (Some(gid), Some(v2)) = (id(&group), group.get("graph_v2")) else { continue };
                 for (key, stage) in [("pre", Stage::Pre), ("post", Stage::Post)] {
                     if let Some(g) = v2.get(key) {
-                        d.stages.insert((gid, stage), parse(g)?);
+                        d.stages.insert((gid, stage), sequence_body(g)?);
                     }
                 }
             }

@@ -901,10 +901,14 @@ fn revision2_text(project: &ProjectJson, sequences: &[Sequence]) -> Result<Strin
     if let Some(o) = v1.as_object_mut() {
         o.remove("format_revision");
     }
-    let (v2, notes) = klipp_graph_lift::revision2::project_with(&v1, &stored).map_err(|e| format!("Failed to write the project's revision-2 file: {e}"))?;
+    let (mut v2, notes) = klipp_graph_lift::revision2::project_with(&v1, &stored).map_err(|e| format!("Failed to write the project's revision-2 file: {e}"))?;
     if let Some(n) = notes.iter().find(|n| klipp_graph_lift::revision2::is_lost(n)) {
         return Err(format!("Saving would lose part of the project ({n:?}), so it was not saved"));
     }
+    // A sequence grade's mix and mask channel (#1321): its v1 graph leaves
+    // them out, so they go into its stored body here.
+    klipp_graph_lift::sequence_grade_mix::write_project(&mut v2, &|sid, root| sequences.iter().find(|s| s.id.0 == sid).map(|s| s.root_blends(root)).unwrap_or_default())
+        .map_err(|e| format!("Saving would lose a sequence grade's mix ({e}), so it was not saved"))?;
     serde_json::to_string_pretty(&v2).map_err(|e| format!("Failed to serialize project: {e}"))
 }
 

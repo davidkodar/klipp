@@ -433,6 +433,13 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
         #[cfg(feature = "v1-oracle")]
         crate::FileForm::V1 => HashMap::new(),
     };
+    // A sequence grade's mix and mask channel (#1321), which its v1 graph
+    // has no place for, read from its stored body.
+    let sequence_blends = match form {
+        crate::FileForm::Revision2 => klipp_graph_lift::sequence_grade_mix::read_project(&value).map_err(|e| format!("This project's revision-2 file can't be read: {e}"))?,
+        #[cfg(feature = "v1-oracle")]
+        crate::FileForm::V1 => Vec::new(),
+    };
     let value = match form {
         crate::FileForm::Revision2 => {
             refuse_unconverted(&value)?;
@@ -715,6 +722,10 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
 
     stored.retain(|(_, id), _| !rewritten.contains(id));
     adopt_stored_pictures(&mut sequences, stored, strict)?;
+    for (sid, root, blends) in sequence_blends {
+        let seq = sequences.iter_mut().find(|s| s.id.0 == sid).ok_or_else(|| format!("This project's sequence {sid} isn't read, so its grade's mix can't be kept"))?;
+        seq.set_root_blends(root, &blends).map_err(|e| format!("This project's sequence {sid} can't keep its grade's mix: {e}"))?;
+    }
 
     info!(
         "Project loaded from {:?} ({} sequence(s), {} title asset(s))",

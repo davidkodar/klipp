@@ -127,6 +127,25 @@ fn known_capabilities<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Resu
     }
 }
 
+/// Whether a node changes the picture by its mix or mask channel: a mix
+/// other than whole, a channel other than red.
+fn mix_changes(n: &crate::Node) -> bool {
+    n.mix.is_some_and(|m| m != 1.0) || n.params.get(&crate::ParamKey::from("mask.channel")).is_some_and(|c| *c != crate::ParamValue::Text("red".into()))
+}
+
+/// Whether a node of `nodes` inside a grade (`in_grade`, or within a
+/// group among them) has a mix or mask channel that changes it.
+fn grade_mix_inside(nodes: &[crate::Node], in_grade: bool) -> bool {
+    nodes.iter().any(|n| (in_grade && mix_changes(n)) || n.group.as_ref().is_some_and(|g| grade_mix_inside(&g.graph.nodes, true)))
+}
+
+/// [`ClipPicture::grade_mix_used`] for a grade body standing alone, a
+/// timeline grade's or a grade group stage's (#1321): every node of it
+/// is in the grade.
+pub fn body_grade_mix_used(body: &Graph) -> bool {
+    grade_mix_inside(&body.nodes, true)
+}
+
 impl ClipPicture {
     /// Whether this is a picture-truth clip's picture.
     pub fn is_truth(&self) -> bool {
@@ -138,14 +157,7 @@ impl ClipPicture {
     /// other than red. Whole and red are what an absent setting reads, so
     /// a grade set back to them draws, and is read, as one without them.
     pub fn grade_mix_used(&self) -> bool {
-        fn changes(n: &crate::Node) -> bool {
-            n.mix.is_some_and(|m| m != 1.0)
-                || n.params.get(&crate::ParamKey::from("mask.channel")).is_some_and(|c| *c != crate::ParamValue::Text("red".into()))
-        }
-        fn inside(nodes: &[crate::Node], in_grade: bool) -> bool {
-            nodes.iter().any(|n| (in_grade && changes(n)) || n.group.as_ref().is_some_and(|g| inside(&g.graph.nodes, true)))
-        }
-        inside(&self.graph.nodes, false)
+        grade_mix_inside(&self.graph.nodes, false)
     }
 
     /// `requires` names [`GRADE_MIX_CAPABILITY`] exactly when
