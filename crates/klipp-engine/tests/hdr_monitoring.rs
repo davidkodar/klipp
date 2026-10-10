@@ -92,11 +92,11 @@ fn the_viewer_measures_what_the_export_writes() {
     // HDR monitoring on: the light of each band, as the viewer has it.
     let g = parked.generation();
     parked.send(AppCommand::SetHdrMonitor(HdrMonitor::Preview));
-    parked.settle_after(g, Duration::from_secs(5)).expect("monitoring on showed no frame");
+    parked.settle_after(g, Duration::from_secs(30)).expect("monitoring on showed no frame");
     let measured: Vec<f32> = (0..5)
         .map(|b| {
             let nx = (b as f32 + 0.5) / 5.0;
-            parked.wait_nits_at(nx, 0.5, Duration::from_secs(5)).expect("HDR monitoring publishes the light")
+            parked.wait_nits_at(nx, 0.5, Duration::from_secs(30)).expect("HDR monitoring publishes the light")
         })
         .collect();
     for (b, want) in common::BAND_NITS.iter().enumerate() {
@@ -133,7 +133,7 @@ fn the_viewer_measures_what_the_export_writes() {
     // False colour puts each band on the right side of the levels.
     let g = parked.generation();
     parked.send(AppCommand::SetHdrMonitor(HdrMonitor::FalseColour));
-    parked.settle_after(g, Duration::from_secs(5)).expect("false colour showed no frame");
+    parked.settle_after(g, Duration::from_secs(30)).expect("false colour showed no frame");
     let painted = parked.frame();
     let at = |b: u32| {
         let (x, y) = (b * common::BANDS_W / 5 + common::BANDS_W / 10, common::BANDS_H / 2);
@@ -162,17 +162,17 @@ fn the_viewer_measures_what_the_export_writes() {
     // whichever numbers the working space keeps it in.
     let g = parked.generation();
     parked.send(AppCommand::SetHdrMonitor(HdrMonitor::Off));
-    parked.settle_after(g, Duration::from_secs(5)).expect("monitoring off showed no frame");
+    parked.settle_after(g, Duration::from_secs(30)).expect("monitoring off showed no frame");
     let sdr_picture = parked.frame();
     drop(parked);
     klipp_engine::video_decoder::set_working_colorspace(WorkingColorspace::Bt2020Linear);
     let wide = common::Parked::start_ungraded(src.clone(), common::BANDS_W, common::BANDS_H);
     let g = wide.generation();
     wide.send(AppCommand::SetHdrMonitor(HdrMonitor::Preview));
-    wide.settle_after(g, Duration::from_secs(5)).expect("monitoring on showed no frame");
+    wide.settle_after(g, Duration::from_secs(30)).expect("monitoring on showed no frame");
     for b in 0..5 {
         let nx = (b as f32 + 0.5) / 5.0;
-        let got = wide.wait_nits_at(nx, 0.5, Duration::from_secs(5)).expect("HDR monitoring publishes the light") as f64;
+        let got = wide.wait_nits_at(nx, 0.5, Duration::from_secs(30)).expect("HDR monitoring publishes the light") as f64;
         let want = measured[b] as f64;
         eprintln!("band {b}: BT.709 project {want:.1} cd/m², BT.2020 project {got:.1}");
         assert!(

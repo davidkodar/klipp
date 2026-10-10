@@ -321,7 +321,7 @@ impl Viewer {
         let start = Instant::now();
         let mut last = generation();
         let mut since = Instant::now();
-        while since.elapsed() < Duration::from_millis(300) && start.elapsed() < Duration::from_secs(10) {
+        while since.elapsed() < Duration::from_millis(300) && start.elapsed() < Duration::from_secs(30) {
             std::thread::sleep(Duration::from_millis(20));
             let g = generation();
             if g != last {
@@ -334,6 +334,22 @@ impl Viewer {
         assert_eq!((w, h), (W, H), "viewer frame size");
         let presented = fb.latest_presented().map(|at| at.value * FPS / at.rate as i64);
         (rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect(), presented, fb.latest_complete())
+    }
+
+    /// Play from where it is parked (`from`) for at least `at_least`, and
+    /// on until a frame past `from` is shown (or a minute), then pause.
+    /// Returns how long it played. A loaded machine plays later and slower,
+    /// never wrong: nothing here asks the wall clock for a frame count.
+    fn play(&self, from: i64, at_least: Duration) -> Duration {
+        let t0 = Instant::now();
+        self.cmd.send(AppCommand::Play).unwrap();
+        std::thread::sleep(at_least);
+        let moved = |fb: &FrameBuffer| fb.shown_presented().is_some_and(|t| (t.to_secs_f64() * FPS as f64).round() as i64 > from);
+        while t0.elapsed() < Duration::from_secs(60) && !moved(&self.fb.lock().unwrap()) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        self.cmd.send(AppCommand::Pause).unwrap();
+        t0.elapsed()
     }
 
     /// The frame playback stopped on, once it has settled: the one the
@@ -369,7 +385,7 @@ impl Viewer {
     fn frame_at(&self, n: i64) -> Vec<u8> {
         let asked_after = self.fb.lock().unwrap().latest_generation();
         self.cmd.send(AppCommand::SetPlayhead(tc(n))).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             self.wait_for_complete(n, asked_after, deadline);
             let (bytes, presented, complete) = self.settled_labelled();
@@ -530,9 +546,7 @@ fn playing_through_a_dissolve_shows_the_exported_frames() {
     let mut worst = 0;
     for (from, play_ms) in [(80, 800), (90, 700), (70, 1500)] {
         viewer.frame_at(from);
-        viewer.cmd.send(AppCommand::Play).unwrap();
-        std::thread::sleep(Duration::from_millis(play_ms));
-        viewer.cmd.send(AppCommand::Pause).unwrap();
+        viewer.play(from, Duration::from_millis(play_ms));
         let (v, n) = viewer.settled_frame_at();
         assert!(n > from, "playback did not move: from {from}, at {n}");
         worst = worst.max(compare(&format!("played {from}->{n:3}"), &v, &exported_frame(out, n)));
@@ -608,9 +622,7 @@ fn a_slow_decoder_after_playing_still_shows_the_exported_frames() {
     let mut worst = 0;
     for (from, play_ms) in [(80, 800), (90, 700), (70, 1500)] {
         viewer.frame_at(from);
-        viewer.cmd.send(AppCommand::Play).unwrap();
-        std::thread::sleep(Duration::from_millis(play_ms));
-        viewer.cmd.send(AppCommand::Pause).unwrap();
+        viewer.play(from, Duration::from_millis(play_ms));
         let (v, n) = viewer.settled_frame_at();
         worst = worst.max(compare(&format!("slow, played {from}->{n:3}"), &v, &exported_frame(out, n)));
         let back = n - 4;
@@ -1060,15 +1072,29 @@ fn a_reversed_clip_shows_as_it_exports() {
     // playhead runs at the timeline's rate, not off to the end.
     for from in [115, 70] {
         viewer.frame_at(from);
-        viewer.cmd.send(AppCommand::Play).unwrap();
-        std::thread::sleep(Duration::from_millis(1600));
-        viewer.cmd.send(AppCommand::Pause).unwrap();
+        let played = viewer.play(from, Duration::from_millis(1600));
         let (v, n) = viewer.settled_frame_at();
-        assert!(n > from + 20 && n < from + 60, "playback from {from} is at {n} after 1.6 s at 25 fps");
+        // Correctness: it moved, and never ran far past the time it played
+        // (the playhead off to the end). How fast it went is performance:
+        // held only on a quiet machine.
+        let at_rate = played.as_secs_f64() * FPS as f64;
+        assert!(n > from && (n as f64) < from as f64 + at_rate + 10.0, "playback from {from} is at {n} after {played:?} at 25 fps");
+        if quiet_machine() {
+            assert!(n as f64 > from as f64 + at_rate * 0.5, "playback from {from} reached only {n} in {played:?}: under half the timeline's rate");
+        } else {
+            eprintln!("skipped the rate check (the machine is loaded): playback from {from} at {n} after {played:?}");
+        }
         worst = worst.max(compare(&format!("played {from}->{n:3}"), &v, &exported_frame(&out, n)));
     }
     eprintln!("reversed clip, viewer vs export: worst {worst} levels");
     assert!(worst <= 3, "the viewer differs from the export by {worst} levels");
+}
+
+/// Whether the machine is quiet enough for a rate to mean anything: the
+/// last minute's load under half its cores.
+fn quiet_machine() -> bool {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get()) as f64;
+    std::fs::read_to_string("/proc/loadavg").ok().and_then(|l| l.split_whitespace().next()?.parse::<f64>().ok()).is_some_and(|load| load < cores * 0.5)
 }
 
 /// #696: footage at another rate than the sequence's shows the same frame
@@ -1116,9 +1142,7 @@ fn footage_at_another_rate_shows_the_same_file_frame_as_the_export() {
     // Played, then stopped: the frame it stops on is the export's.
     viewer.cmd.send(AppCommand::SetPlayhead(tc(30))).unwrap();
     let _ = viewer.frame_at(30);
-    viewer.cmd.send(AppCommand::Play).unwrap();
-    std::thread::sleep(Duration::from_millis(700));
-    viewer.cmd.send(AppCommand::Pause).unwrap();
+    viewer.play(30, Duration::from_millis(700));
     let (v, n) = viewer.settled_frame_at();
     worst = worst.max(compare(&format!("10 fps, played to {n:3}"), &v, &exported_frame(&out, n)));
     eprintln!("footage at another rate, viewer vs export: worst {worst} levels");

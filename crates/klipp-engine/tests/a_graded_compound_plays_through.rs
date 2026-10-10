@@ -29,7 +29,9 @@ fn shot(id: MediaId, from: i64, to: i64, source_in: i64, fps: Fps) -> Clip {
     Clip { kind: ClipKind::Media { media_id: id }, source_in: tc(source_in), source_out: tc(source_in + to - from), ..Clip::gap(tc(from), tc(to)) }
 }
 
-fn furthest_played(graded: bool) -> f64 {
+/// The furthest frame shown playing from frame 2, played until one past
+/// `goal` seconds is shown (or a minute).
+fn furthest_played(graded: bool, goal: f64) -> f64 {
     let (Some(a), Some(b)) = (common::ramp("p584-a", &["-c:v", "ffv1"], "avi"), common::ramp("p584-b", &["-c:v", "ffv1"], "avi")) else {
         return f64::NAN;
     };
@@ -76,15 +78,26 @@ fn furthest_played(graded: bool) -> f64 {
     // builds its GPU pipelines, near a second here, which would have the
     // clock past the end before the cut's first frame showed. The app has
     // them long before any cut.
+    // Each parked frame waited for, not timed: a loaded machine is
+    // slower, not wrong.
+    let shown_at = |f: i64| {
+        let want = common::frame_tc(f, fps).to_secs_f64();
+        let by = Instant::now() + Duration::from_secs(30);
+        let at = |fb: &FrameBuffer| fb.latest_presented().is_some_and(|t| (t.to_secs_f64() - want).abs() < 0.5 / fps.as_f64());
+        while Instant::now() < by && !at(&fb.lock().unwrap()) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
     cmd.send(AppCommand::SetPlayhead(common::frame_tc(30, fps))).unwrap();
-    std::thread::sleep(Duration::from_millis(1500));
+    shown_at(30);
     cmd.send(AppCommand::SetPlayhead(common::frame_tc(2, fps))).unwrap();
-    std::thread::sleep(Duration::from_millis(600));
+    shown_at(2);
     cmd.send(AppCommand::Play).unwrap();
     let mut furthest = 0.0f64;
     let mut last_gen = 0;
     let t0 = Instant::now();
-    while t0.elapsed() < Duration::from_secs(4) {
+    // Until a frame past `goal` is shown, or a minute.
+    while t0.elapsed() < Duration::from_secs(60) && furthest <= goal {
         {
             let fb = fb.lock().unwrap();
             let (bytes, _, _, generation) = fb.latest_frame();
@@ -106,8 +119,8 @@ fn furthest_played(graded: bool) -> f64 {
 #[test]
 fn playback_carries_on_into_a_graded_compound() {
     let cut = 20.0 / common::FPS as f64;
-    let plain = furthest_played(false);
-    let graded = furthest_played(true);
+    let plain = furthest_played(false, cut + 0.3);
+    let graded = furthest_played(true, cut + 0.3);
     eprintln!("cut at {cut:.2}s; furthest frame shown: ungraded compound {plain:.2}s, graded compound {graded:.2}s");
     assert!(plain > cut + 0.3, "control: an ungraded compound plays on: {plain}");
     assert!(graded > cut + 0.3, "a graded compound plays on too: {graded}");

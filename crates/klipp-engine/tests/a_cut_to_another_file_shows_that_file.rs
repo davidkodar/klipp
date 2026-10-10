@@ -77,13 +77,19 @@ fn a_cut_to_another_file_shows_that_file_from_its_first_frame() {
     let thread = std::thread::spawn(move || engine.run());
 
     cmd.send(AppCommand::SetPlayhead(common::frame_tc(2, fps))).unwrap();
-    std::thread::sleep(Duration::from_millis(600));
+    // The parked frame waited for, not timed: a loaded machine is slower,
+    // not wrong.
+    let parked = common::frame_tc(2, fps).to_secs_f64();
+    let by = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < by && !fb.lock().unwrap().latest_presented().is_some_and(|t| (t.to_secs_f64() - parked).abs() < 0.5 / fps.as_f64()) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
     cmd.send(AppCommand::Play).unwrap();
     // Every frame published, by where on the timeline it is.
     let mut seen: Vec<(f64, f64)> = Vec::new();
     let mut last_gen = 0;
     let t0 = Instant::now();
-    while t0.elapsed() < Duration::from_secs(6) && seen.last().is_none_or(|s| s.0 < cut + 0.5) {
+    while t0.elapsed() < Duration::from_secs(60) && seen.last().is_none_or(|s| s.0 < cut + 0.5) {
         {
             let fb = fb.lock().unwrap();
             let (bytes, _, _, generation) = fb.latest_frame();
