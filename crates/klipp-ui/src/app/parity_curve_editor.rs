@@ -15,6 +15,7 @@ use crate::panels::curve_editor::{CurveEditorPanel, CurveParam};
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, ClipId};
+use klipp_timeline::test_clip;
 
 struct Sink;
 impl InspectorSideEffects for Sink {
@@ -99,7 +100,7 @@ fn fixture(track: &Track) -> Result<klipp_timeline::Clip, String> {
     // A placed kind (a Temporal Denoise) is keyed through the clip's effect
     // list, as its card keys it; the path handler refuses its node (#1419).
     if crate::inspector::stack_view::is_placed_kind(track.tag) {
-        let effect = clip.effect_id_at(0).ok_or("no effect")?;
+        let effect = test_clip::effect_id(&clip, 0);
         clip.edit_effect_keyframes_of(effect, track.key, |keys| {
             for (t, share) in KEYS {
                 klipp_core::keyframe::upsert_keyframe(keys, t, track.at(share));

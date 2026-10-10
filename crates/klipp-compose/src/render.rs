@@ -4912,13 +4912,12 @@ mod temporal_denoise_placement_tests {
     }
 
     fn clip_with(effects: Vec<BuiltinEffect>) -> Clip {
-        let mut clip = Clip {
+        let clip = Clip {
             id: ClipId::new(),
             kind: ClipKind::Gap,
             ..Clip::gap(tc(0), tc(48))
         };
-        clip.set_effect_list(effects, Vec::new());
-        clip
+        klipp_timeline::test_clip::TestClip::of(clip).effects(effects).build()
     }
 
     /// #1078: a track's Opacity weighs the clip's resolved opacity, still
@@ -4930,7 +4929,11 @@ mod temporal_denoise_placement_tests {
         let baked = |own: Vec<BuiltinEffect>, keys: Vec<klipp_core::Keyframe>, track_fx: Vec<BuiltinEffect>| {
             let mut c = clip_with(own);
             c.kind = klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() };
-            c.edit_opacity_keyframes(|v| *v = keys);
+            let mut b = klipp_timeline::test_clip::TestClip::of(c);
+            for k in &keys {
+                b = b.lane("opacity", k.time_secs, k.value);
+            }
+            let c = b.build();
             let mut t = Track::new("V1", TrackKind::Video);
             t.effects.set_video_effect_list(track_fx, vec![]);
             t.clips.push(c);
@@ -5013,7 +5016,7 @@ mod temporal_denoise_placement_tests {
     #[test]
     fn a_disabled_or_zero_strength_one_is_not_applied() {
         let mut clip = clip_with(vec![BuiltinEffect::TemporalDenoise { strength: 0.8, threshold: 0.02 }]);
-        let id = clip.effect_id_at(0).unwrap();
+        let id = klipp_timeline::test_clip::effect_id(&clip, 0);
         clip.set_effect_enabled(id, false);
         assert_eq!(temporal_denoise_of(&clip, tc(0), 24.0), None, "a disabled effect ran");
 
@@ -5059,8 +5062,11 @@ mod active_effect_gate_tests {
             ("temporal runs earlier", Some(BuiltinEffect::TemporalDenoise { strength: 0.8, threshold: 0.1 }), true, false),
             ("frei0r", Some(BuiltinEffect::Frei0r { type_id: "test".into(), params: vec![] }), true, true),
         ] {
-            let mut clip = Clip::gap(at, Timecode::from_frames(48, 24));
-            clip.set_effect_list(entry.into_iter().collect(), vec![enabled]);
+            let mut b = klipp_timeline::test_clip::TestClip::of(Clip::gap(at, Timecode::from_frames(48, 24))).effects(entry);
+            if !enabled {
+                b = b.off();
+            }
+            let clip = b.build();
             let (effects, _) = clip_effects(&clip, at, 24.0, None, None);
             assert_eq!(has_active_effects(&effects), expected, "{name}");
         }

@@ -6,6 +6,7 @@
 use klipp_compose::render::{clip_effects, temporal_denoise_of};
 use klipp_core::{Interpolation, Keyframe, RationalTime, Timecode};
 use klipp_effects::{BuiltinEffect as E, ColorFadeMode, SpillMethod};
+use klipp_timeline::test_clip::TestClip;
 use klipp_timeline::Clip;
 
 fn tc(secs: f64) -> Timecode {
@@ -153,8 +154,7 @@ fn a_keyframed_effect_ramps_between_its_keys() {
         (E::FilmHalation { threshold: 0.7, radius: 8.0, intensity: 0.5, hue: 0.0 }, "intensity"),
         (E::Bloom { threshold: 0.7, radius: 6.0, intensity: 0.8 }, "radius"),
     ] {
-        let mut clip = clip_with(effect.clone());
-        clip.edit_effect_keyframes(|v| v.insert(format!("0:{name}"), vec![key(0.0, 1.0), key(2.0, 9.0)]));
+        let clip = TestClip::of(clip_with(effect.clone())).key(0, name, 0.0, 1.0).key(0, name, 2.0, 9.0).build();
         let at = |t| rendered(&clip, t);
         assert_ne!(at(0.0), at(1.0), "{} {name} did not move", kind(&effect));
         assert_ne!(at(1.0), at(2.0), "{} {name} did not move", kind(&effect));
@@ -165,7 +165,7 @@ fn a_keyframed_effect_ramps_between_its_keys() {
 /// first effect with a parameter of that name.
 #[test]
 fn keys_address_their_own_effect() {
-    let mut clip = Clip {
+    let clip = Clip {
         picture: klipp_timeline::ClipPictureParts {
             builtin_effects: vec![E::Bloom { threshold: 0.7, radius: 6.0, intensity: 0.8 }, E::Vibrance { amount: 0.3 }],
             ..Default::default()
@@ -173,7 +173,7 @@ fn keys_address_their_own_effect() {
         .into(),
         ..Clip::gap(tc(0.0), tc(4.0))
     };
-    clip.edit_effect_keyframes(|v| v.insert("1:amount".into(), vec![key(0.0, 0.9)]));
+    let clip = TestClip::of(clip).key(1, "amount", 0.0, 0.9).build();
     let (fx, _) = clip_effects(&clip, tc(1.0), 24.0, None, None);
     assert!(matches!(fx[0], E::Bloom { radius, .. } if radius == 6.0), "{fx:?}");
     assert!(matches!(fx[1], E::Vibrance { amount } if (amount - 0.9).abs() < 1e-6), "{fx:?}");

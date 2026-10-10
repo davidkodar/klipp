@@ -13,14 +13,11 @@ use klipp_effects::BuiltinEffect as E;
 use klipp_graph_format::lifted::types as lt;
 use klipp_graph_format::path::{NodePath, Root};
 use klipp_graph_format::{Node, ParamValue};
+use klipp_timeline::test_clip::{self, TestClip};
 
 fn clip(effects: &[E]) -> klipp_timeline::Clip {
     let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
-    let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
-    for e in effects {
-        clip.push_effect(e.clone());
-    }
-    clip
+    TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0))).effects(effects.iter().cloned()).build()
 }
 
 fn transform(x: f32) -> E {
@@ -83,12 +80,12 @@ fn dragging_placement_sets_fixed_in_one_step() {
     click(&mut run, "↑");
     assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
     assert_eq!(undos(&run), steps + 1, "one step");
-    assert_eq!(run.clip().builtin_effects(), &[E::GaussianBlur { radius: 3.0 }, glow(), IDENTITY, E::Sharpen { amount: 0.5 }]);
+    assert_eq!(test_clip::effects(run.clip()), [E::GaussianBlur { radius: 3.0 }, glow(), IDENTITY, E::Sharpen { amount: 0.5 }]);
     assert_eq!(mode(&run), Some(ParamValue::Enum(lt::PLACEMENT_FIXED)));
     // Fixed now: up again moves its Transform, past the glow.
     click(&mut run, "↑");
     assert_eq!(undos(&run), steps + 2, "one step");
-    assert_eq!(run.clip().builtin_effects(), &[E::GaussianBlur { radius: 3.0 }, IDENTITY, glow(), E::Sharpen { amount: 0.5 }]);
+    assert_eq!(test_clip::effects(run.clip()), [E::GaussianBlur { radius: 3.0 }, IDENTITY, glow(), E::Sharpen { amount: 0.5 }]);
     assert!(run.step(false) && run.step(false));
     assert_eq!(run.clip().picture_v2().unwrap().picture, start, "undone whole");
 }
@@ -104,7 +101,7 @@ fn choosing_auto_restores_it() {
     let steps = undos(&run);
     choose(&mut run, "Fixed");
     assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
-    assert_eq!(run.clip().builtin_effects(), &[E::GaussianBlur { radius: 3.0 }, IDENTITY, glow()], "fixed before the glow");
+    assert_eq!(test_clip::effects(run.clip()), [E::GaussianBlur { radius: 3.0 }, IDENTITY, glow()], "fixed before the glow");
     assert_eq!(mode(&run), Some(ParamValue::Enum(lt::PLACEMENT_FIXED)));
     choose(&mut run, "Auto");
     assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
@@ -127,7 +124,7 @@ fn a_placement_move_matches_the_old_reorder() {
     click(&mut new, "↓");
     assert!(old.unapplied.is_empty() && new.unapplied.is_empty(), "{:?} {:?}", old.unapplied, new.unapplied);
     assert_eq!((undos(&old), undos(&new)), (steps + 1, steps + 1), "one step each");
-    assert_eq!(new.clip().builtin_effects(), &[E::GaussianBlur { radius: 3.0 }, E::Sharpen { amount: 0.5 }, transform(40.0)]);
+    assert_eq!(test_clip::effects(new.clip()), [E::GaussianBlur { radius: 3.0 }, E::Sharpen { amount: 0.5 }, transform(40.0)]);
     assert_eq!(*new.clip().picture_v2().unwrap(), *old.clip().picture_v2().unwrap(), "the same picture");
 }
 
@@ -163,7 +160,7 @@ fn auto_keeps_a_static_move() {
     assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
     assert_eq!(undos(&run), steps + 1, "one step");
     assert!(run.clip().is_picture_truth(), "an automatic move is picture-truth");
-    assert!(!run.clip().builtin_effects().iter().any(|e| matches!(e, E::Transform { .. })), "no Transform entry places it");
+    assert!(!test_clip::effects(run.clip()).iter().any(|e| matches!(e, E::Transform { .. })), "no Transform entry places it");
     let p = run.clip().picture_v2().unwrap().picture.clone();
     assert_eq!(placement(&run).params.get(&"mode".into()), Some(&ParamValue::Enum(lt::PLACEMENT_AUTO)));
     assert_eq!(p.placement.pos_x, Some(40.0), "the move is kept");
@@ -174,7 +171,7 @@ fn auto_keeps_a_static_move() {
     assert_eq!(run.clip().picture_v2().unwrap().picture.placement.pos_x, Some(40.0), "still moved after another edit");
     run.apply(AppCommand::SetParamAt { addr: placement_at(&run), key: "mode".into(), value: ParamValue::Enum(lt::PLACEMENT_FIXED) });
     assert!(run.unapplied.is_empty(), "{:?}", run.unapplied);
-    assert!(run.clip().builtin_effects().iter().any(|e| matches!(e, E::Transform { position_x, .. } if *position_x == 40.0)), "fixed, its Transform holds the move: {:?}", run.clip().builtin_effects());
+    assert!(test_clip::effects(run.clip()).iter().any(|e| matches!(e, E::Transform { position_x, .. } if *position_x == 40.0)), "fixed, its Transform holds the move: {:?}", test_clip::effects(run.clip()));
 }
 
 /// A picture-truth clip (an effect's mix) changes its placement's mode and

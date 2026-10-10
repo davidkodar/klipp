@@ -15,6 +15,7 @@ use super::parity_numeric::{
 use crate::inspector::generated::row;
 use klipp_core::{Interpolation, Keyframe, Timecode};
 use klipp_effects::registry::{effect_types, ParamDesc};
+use klipp_timeline::test_clip;
 
 pub(super) fn eligible(entry: &CatalogEntry) -> bool {
     numeric(entry)
@@ -172,7 +173,7 @@ fn edit_keys(
         clip.edit_video_param_keyframes(klipp_core::VideoParam::Opacity, edit);
         return;
     }
-    let id = clip.effect_id_at(0).unwrap();
+    let id = test_clip::effect_id(clip, 0);
     clip.edit_effect_keyframes_of(id, desc.key, edit);
 }
 

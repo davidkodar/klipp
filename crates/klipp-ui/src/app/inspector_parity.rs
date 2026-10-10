@@ -8,6 +8,7 @@ use super::parity_harness::{fixture, Run};
 use klipp_core::AppCommand;
 use klipp_effects::registry::ParamDesc;
 use klipp_effects::BuiltinEffect;
+use klipp_timeline::test_clip;
 
 /// An interaction with a row's number.
 #[derive(Clone, Copy, Debug)]
@@ -72,8 +73,8 @@ fn a_browser_add_puts_its_effects_after_the_stack() {
         }
         let want: Vec<BuiltinEffect> = std::iter::once(base).chain(crate::browser::effects_tab::picture_effects(&entry.source).unwrap_or_default()).collect();
         let list = |effects: &[BuiltinEffect]| serde_json::to_value(effects).unwrap();
-        if list(run.clip().builtin_effects()) != list(&want) {
-            differ.push(format!("{}: {} where {} is expected", entry.name, list(run.clip().builtin_effects()), list(&want)));
+        if list(&test_clip::effects(run.clip())) != list(&want) {
+            differ.push(format!("{}: {} where {} is expected", entry.name, list(&test_clip::effects(run.clip())), list(&want)));
         }
         if !run.unapplied.is_empty() {
             differ.push(format!("{}: unapplied {:?}", entry.name, run.unapplied));
@@ -123,7 +124,7 @@ fn a_look_on_two_clips_is_one_step_by_path() {
     let ids = [run.clip, other];
     let targets = crate::effect_targets::Targets { clips: ids.to_vec(), skipped: 0 };
     let pictures = |r: &Run| ids.map(|id| r.state.sequences[0].all_clips().find(|c| c.id == id).unwrap().picture_v2().unwrap());
-    let lists = |r: &Run| ids.map(|id| r.state.sequences[0].all_clips().find(|c| c.id == id).unwrap().builtin_effects().to_vec());
+    let lists = |r: &Run| ids.map(|id| test_clip::effects(r.state.sequences[0].all_clips().find(|c| c.id == id).unwrap()));
     let before = pictures(&run);
     let cmds = crate::effect_targets::all_or_none(&targets, |id| crate::browser::effects_tab::effect_commands_in(&run.state, &chain, id)).unwrap();
     assert!(cmds.iter().all(|c| matches!(c, AppCommand::AddNodeAt { .. } | AppCommand::BeginHistoryBatch | AppCommand::EndHistoryBatch)), "{name}: by path: {cmds:?}");
@@ -392,7 +393,7 @@ fn soft_edge_alias_reads_and_edits_its_existing_animation() {
     assert!(play(&mut new, "Soft Edge", Script::Type, "0.700"));
     // Use the clip's existing legacy lane API as the reference: the
     // shared row driver does not dispatch old keyframe commands.
-    let effect = oracle.effect_id_at(0).unwrap();
+    let effect = test_clip::effect_id(&oracle, 0);
     oracle.edit_effect_keyframes_of(effect, "spill", |keys| klipp_core::keyframe::upsert_keyframe(keys, 0.0, 0.7));
     let after = new.clip().picture_v2().unwrap();
     assert_ne!(after, before);

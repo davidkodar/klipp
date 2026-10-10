@@ -9,6 +9,7 @@ use super::parity_harness::{fixture, Run};
 use super::parity_manifest::{catalog, CatalogEntry, CatalogValue, CoverageKey, Interaction, Manifest, Report, Surface};
 use klipp_effects::registry::presentation::Widget;
 use klipp_effects::registry::{effect_types, EffectType, ParamDesc};
+use klipp_timeline::test_clip;
 
 /// The stack's colour rows: (entry, type, parameter, with alpha).
 fn entries() -> Vec<(CatalogEntry, &'static EffectType, &'static ParamDesc, bool)> {
@@ -99,23 +100,23 @@ fn close(run: &mut Run) {
 /// Where the effect whose colour row this is sits in the clip's list: a
 /// pixel fixture puts a shrinking Transform before a glow or a shadow.
 fn index_of(clip: &klipp_timeline::Clip, ty: &EffectType) -> usize {
-    clip.builtin_effects().iter().position(|e| serde_json::to_value(e).ok().and_then(|v| v.get("type").and_then(|t| t.as_str()).map(|t| t == ty.tag)).unwrap_or(false)).unwrap_or(0)
+    test_clip::effects(clip).iter().position(|e| serde_json::to_value(e).ok().and_then(|v| v.get("type").and_then(|t| t.as_str()).map(|t| t == ty.tag)).unwrap_or(false)).unwrap_or(0)
 }
 
 /// The effect's stored colour.
 fn colour(run: &Run, ty: &EffectType, desc: &ParamDesc) -> serde_json::Value {
     let clip = run.clip();
-    serde_json::to_value(&clip.builtin_effects()[index_of(clip, ty)]).ok().and_then(|v| v.get(desc.field).cloned()).unwrap_or_default()
+    serde_json::to_value(&test_clip::effects(clip)[index_of(clip, ty)]).ok().and_then(|v| v.get(desc.field).cloned()).unwrap_or_default()
 }
 
 /// `start` with its effect's colour set to `value`: the expected clip.
 fn with_colour(start: &klipp_timeline::Clip, ty: &EffectType, desc: &ParamDesc, value: serde_json::Value) -> Result<klipp_timeline::Clip, String> {
     let index = index_of(start, ty);
-    let mut json = serde_json::to_value(&start.builtin_effects()[index]).map_err(|e| e.to_string())?;
+    let mut json = serde_json::to_value(&test_clip::effects(start)[index]).map_err(|e| e.to_string())?;
     json[desc.field] = value;
     let effect: klipp_effects::BuiltinEffect = serde_json::from_value(json).map_err(|e| e.to_string())?;
     let mut clip = start.clone();
-    let id = clip.effect_id_at(index).ok_or("the effect")?;
+    let id = test_clip::effect_id(&clip, index);
     clip.replace_effect(id, effect);
     Ok(clip)
 }
@@ -199,7 +200,7 @@ pub(super) fn run(report: &mut Report) {
         // A channel dragged in the popup: one step, as typing is.
         report.case(&name("dragged"), [], || {
             // Toward the middle, so the drag can't clamp at an end.
-            let g = serde_json::to_value(&start.builtin_effects()[index_of(&start, ty)]).ok().and_then(|v| v[desc.field][1].as_u64()).unwrap_or(0);
+            let g = serde_json::to_value(&test_clip::effects(&start)[index_of(&start, ty)]).ok().and_then(|v| v[desc.field][1].as_u64()).unwrap_or(0);
             let dx = if g < 128 { 40.0 } else { -40.0 };
             edit(&start, ty, desc, label, |r| drag_channel(r, "G ", dx), None, 1).map(drop)
         });

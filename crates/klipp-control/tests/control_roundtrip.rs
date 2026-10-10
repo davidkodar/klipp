@@ -513,8 +513,8 @@ fn graph_commit_guards_are_sent_even_when_the_caller_omits_them() {
 fn graph_test_blur(h: &mut Harness) -> Value {
     // Seed an existing effect so each acceptance test reaches its own operation,
     // independently of the add operation's revision-1 path remapping.
-    h.sequence.write().unwrap().tracks[0].clips[0]
-        .push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 });
+    let seeded = h.sequence.read().unwrap().tracks[0].clips[0].clone();
+    h.sequence.write().unwrap().tracks[0].clips[0] = klipp_timeline::test_clip::TestClip::of(seeded).effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 }).build();
     let root = json!({"clip":h.ids.clip_a});
     let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
     let blur = graph["nodes"].as_array().unwrap().iter()
@@ -700,7 +700,8 @@ fn graph_effect_persistence_refusals_map_expanded_indices_and_change_nothing() {
 #[test]
 fn graph_commit_refusal_after_a_beside_node_names_the_actual_operation() {
     let mut h = harness();
-    h.sequence.write().unwrap().tracks[0].clips[0].push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 });
+    let seeded = h.sequence.read().unwrap().tracks[0].clips[0].clone();
+    h.sequence.write().unwrap().tracks[0].clips[0] = klipp_timeline::test_clip::TestClip::of(seeded).effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 }).build();
     let root = json!({"clip":h.ids.clip_a});
     let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
     let nodes = graph["nodes"].as_array().unwrap();
@@ -2779,7 +2780,7 @@ fn an_effect_op_on_a_clip_with_track_effects_keeps_its_effects_node_ids() {
         track.effects.set_video_effect_list(vec![E::Sharpen { amount: 0.5 }], vec![true]);
         let c = &mut track.clips[0];
         c.kind = klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() };
-        c.push_effect(E::GaussianBlur { radius: 4.0 });
+        *c = klipp_timeline::test_clip::TestClip::of(c.clone()).effect(E::GaussianBlur { radius: 4.0 }).build();
     }
     let blur = doc.tracks[0].clips[0].effect_id_list()[0];
     // What the socket reads, as the app hands it over: flattened, with
@@ -2806,7 +2807,7 @@ fn an_effect_op_on_a_clip_with_track_effects_keeps_its_effects_node_ids() {
         view.apply_forward(&edits[0]);
     }
     let after = ids(&sequences);
-    assert_eq!(sequences[0].tracks[0].clips[0].builtin_effects().len(), 2, "the grain was added");
+    assert_eq!(klipp_timeline::test_clip::effects(&sequences[0].tracks[0].clips[0]).len(), 2, "the grain was added");
     assert_eq!(after[0], blur, "the Blur keeps its node id, so the path read before still names it");
     {
         let mut view = klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };

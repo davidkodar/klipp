@@ -15,6 +15,7 @@ use klipp_core::{ClipId, GeneratorData, RationalTime, Timecode, TransitionId};
 use klipp_effects::BuiltinEffect;
 use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams, NodePos};
 use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind, Transition};
+use klipp_timeline::test_clip::{self, TestClip};
 
 const W: u32 = 32;
 const H: u32 = 18;
@@ -181,10 +182,10 @@ fn each_clip_gets_its_own_grade() {
     let mut v1 = media(0.0, 2.0);
     v1.set_grade(exposure(1.0));
     let mut v2 = media(0.0, 2.0);
-    v2.set_effect_list(vec![BuiltinEffect::Transform {
+    v2 = TestClip::of(v2).effects(vec![BuiltinEffect::Transform {
         position_x: 0.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0,
         anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
-    }], v2.builtin_effects_enabled().to_vec());
+    }]).build();
     let mut src = Flat::default().grey(&v1, 0.2).grey(&v2, 0.2);
     let seq = sequence(vec![vec![v2], vec![v1]]);
     for (i, img) in render(&seq, 1.0, &mut src).iter().enumerate() {
@@ -203,7 +204,7 @@ fn opacity_is_applied_once() {
     let with = |effect: Option<f32>, track: f32| {
         let mut top = solid([255, 255, 255], 0.0, 2.0);
         if let Some(v) = effect {
-            top.set_effect_list(vec![BuiltinEffect::Opacity { value: v }], top.builtin_effects_enabled().to_vec());
+            top = TestClip::of(top).effects(vec![BuiltinEffect::Opacity { value: v }]).build();
         }
         let mut seq = sequence(vec![vec![top], vec![solid([0, 0, 0], 0.0, 2.0)]]);
         seq.tracks[0].opacity = track;
@@ -221,7 +222,7 @@ fn opacity_is_applied_once() {
     // Alone on the timeline, a half-transparent clip is flattened over
     // black: the export and the viewer see the same 0.5.
     let mut only = solid([255, 255, 255], 0.0, 2.0);
-    only.set_effect_list(vec![BuiltinEffect::Opacity { value: 0.5 }], only.builtin_effects_enabled().to_vec());
+    only = TestClip::of(only).effects(vec![BuiltinEffect::Opacity { value: 0.5 }]).build();
     for (i, img) in render(&sequence(vec![vec![only]]), 1.0, &mut Flat::default()).iter().enumerate() {
         assert_px(&format!("alone, run {i}"), px(img, 16, 9), [0.5; 3], 1e-3);
         assert_eq!(img[3], 1.0);
@@ -239,12 +240,12 @@ fn a_fade_out_ends_with_the_clip_on_the_timeline() {
         let mut c = solid([255, 255, 255], 0.0, 2.0);
         c.source_in = tc(0.0);
         c.source_out = tc(4.0);
-        c.set_effect_list(vec![BuiltinEffect::ColorFade {
+        c = TestClip::of(c).effects(vec![BuiltinEffect::ColorFade {
             color: [0, 0, 0, 255],
             duration_secs: 1.0,
             mode: klipp_effects::ColorFadeMode::Out,
             progress: 1.0,
-        }], c.builtin_effects_enabled().to_vec());
+        }]).build();
         render(&sequence(vec![vec![c]]), t, &mut Flat::default()).map(|img| px(&img, 16, 9)[0])
     };
     for (i, v) in at(0.5).iter().enumerate() {
@@ -502,13 +503,13 @@ fn an_authored_colour_is_the_same_colour_in_any_working_space() {
 fn a_chroma_key_keys_its_colour_in_any_working_space() {
     use klipp_core::WorkingColorspace::*;
     let mut green = solid([0, 255, 0], 0.0, 2.0);
-    green.set_effect_list(vec![BuiltinEffect::ChromaKey {
+    green = TestClip::of(green).effects(vec![BuiltinEffect::ChromaKey {
         key_color: [0, 255, 0],
         tolerance: 0.15,
         soft_edge: 0.05,
         spill_method: klipp_effects::SpillMethod::None,
         spill_strength: 0.0,
-    }], green.builtin_effects_enabled().to_vec());
+    }]).build();
     let seq = sequence(vec![vec![green]]);
     for (ws, name) in [(Rec709Linear, "BT.709"), (Bt2020Linear, "BT.2020"), (AcesCG, "ACEScg")] {
         for gpu in [false, true] {
@@ -813,7 +814,7 @@ fn slow_motion_blends_the_frames_either_side() {
     for blend_mode in [1, 0] {
         let mut c = media(0.0, 4.0);
         c.speed = 0.5;
-        c.set_effect_list(vec![ramp(blend_mode)], c.builtin_effects_enabled().to_vec());
+        c = TestClip::of(c).effects(vec![ramp(blend_mode)]).build();
         // Where the source time falls between the frames, through the
         // clip's speed: about half.
         let weight = klipp_compose::render::source_secs(&c, tc(1.0 / 24.0), 24.0) as f32 * 24.0;
@@ -916,10 +917,10 @@ fn a_frame_snapshot_renders_the_same_frame() {
     b.set_grade(exposure(1.0));
     let far = solid([0, 0, 255], 10.0, 12.0);
     let mut follower = solid([0, 255, 0], 0.0, 4.0);
-    follower.set_effect_list(vec![BuiltinEffect::Transform {
+    follower = TestClip::of(follower).effects(vec![BuiltinEffect::Transform {
         position_x: 0.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0,
         anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
-    }], follower.builtin_effects_enabled().to_vec());
+    }]).build();
     follower.transform_link = Some(klipp_timeline::TransformLink::new(far.id));
     let tr = Transition {
         id: TransitionId::new(),
@@ -1187,11 +1188,9 @@ fn a_shut_shutter_keeps_the_blur_a_title_enters_with() {
 /// background and the red would read against black rather than green.
 #[test]
 fn a_precomposition_is_composed_before_the_parent_fades_it() {
-    let mut red = solid([255, 0, 0], 0.0, 4.0);
-    red.edit_opacity_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.5));
+    let red = TestClip::of(solid([255, 0, 0], 0.0, 4.0)).lane("opacity", 0.0, 0.5).build();
     let scene = sequence(vec![vec![red], vec![solid([0, 255, 0], 0.0, 4.0)]]);
-    let mut pre = Clip::precomposition(scene.id, tc(0.0), tc(4.0));
-    pre.edit_opacity_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.5));
+    let pre = TestClip::of(Clip::precomposition(scene.id, tc(0.0), tc(4.0))).lane("opacity", 0.0, 0.5).build();
     let outer = sequence(vec![vec![pre]]);
     let flat = klipp_timeline::flatten::flatten_sequence(&outer, &[outer.clone(), scene.clone()]);
     for (i, img) in render(&flat, 1.0, &mut Flat::default()).iter().enumerate() {
@@ -1236,14 +1235,13 @@ fn a_nested_sequence_keeps_its_timeline_grade() {
 /// the frame with nothing around it.
 #[test]
 fn a_precomposition_is_transformed_as_one_picture() {
-    let mut red = solid([255, 0, 0], 0.0, 4.0);
-    red.edit_opacity_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.5));
+    let red = TestClip::of(solid([255, 0, 0], 0.0, 4.0)).lane("opacity", 0.0, 0.5).build();
     let scene = sequence(vec![vec![red], vec![solid([0, 255, 0], 0.0, 4.0)]]);
     let mut pre = Clip::precomposition(scene.id, tc(0.0), tc(4.0));
-    pre.set_effect_list(vec![BuiltinEffect::Transform {
+    pre = TestClip::of(pre).effects(vec![BuiltinEffect::Transform {
         position_x: 0.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0,
         anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
-    }], pre.builtin_effects_enabled().to_vec());
+    }]).build();
     let outer = sequence(vec![vec![pre]]);
     let flat = klipp_timeline::flatten::flatten_sequence(&outer, &[outer.clone(), scene.clone()]);
     for (i, img) in render(&flat, 1.0, &mut Flat::default()).iter().enumerate() {
@@ -1262,10 +1260,10 @@ fn a_precomposition_is_transformed_as_one_picture() {
 fn a_scenes_camera_looks_at_the_scene_not_the_parent() {
     let card = || {
         let mut c = solid([0, 255, 0], 0.0, 4.0);
-        c.set_effect_list(vec![BuiltinEffect::Transform {
+        c = TestClip::of(c).effects(vec![BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0, scale_x: 0.25, scale_y: 0.25, rotation: 0.0,
             anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
-        }], c.builtin_effects_enabled().to_vec());
+        }]).build();
         c
     };
     let lit_area = |zoom: Option<f32>| {
@@ -1357,8 +1355,7 @@ fn a_moving_shape_is_smeared_by_the_motion_blur_on_its_layer() {
         // In the sequence's pixels (1920 across), as every transform is:
         // 48 of the 32 rendered here either way. The blur used to place
         // them unscaled, so the numbers were render pixels (#995).
-        card.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, -2880.0));
-        card.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 1.0, 2880.0));
+        card = TestClip::of(card).lane("pos_x", 0.0, -2880.0).lane("pos_x", 1.0, 2880.0).build();
         // Over a precomposition, drawn before the card, when asked: the
         // scene's render must not take the card's shutter with it (#995).
         let seq = if precomp {
@@ -1433,14 +1430,13 @@ fn a_shadow_on_a_placed_layer_falls_on_the_track_below() {
     let mut top = media(0.0, 1.0);
     // Placed at two fifths of the frame by keyframes, as `compose`
     // writes it — so the transform is the one the renderer pushes.
-    top.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.4));
-    top.set_effect_list(vec![BuiltinEffect::DropShadow {
+    top = TestClip::of(top).lane("scale", 0.0, 0.4).effects(vec![BuiltinEffect::DropShadow {
         offset_x: 0.0,
         offset_y: 0.06,
         blur: 0.05,
         color: [0, 0, 0],
         opacity: 1.0,
-    }], top.builtin_effects_enabled().to_vec());
+    }]).build();
     let under = solid([255, 0, 0], 0.0, 1.0);
     let seq = sequence(vec![vec![top.clone()], vec![under]]);
     let mut src = Flat::default().linear(&top, [1.0, 1.0, 1.0]);
@@ -1460,8 +1456,7 @@ fn a_shadow_on_a_placed_layer_falls_on_the_track_below() {
 #[test]
 fn a_camera_over_the_sequence_moves_every_layer_at_once() {
     let place = |c: &mut Clip, x: f32| {
-        c.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.4));
-        c.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, x));
+        *c = TestClip::of(c.clone()).lane("scale", 0.0, 0.4).lane("pos_x", 0.0, x).build();
     };
     let (mut left, mut right) = (media(0.0, 1.0), media(0.0, 1.0));
     place(&mut left, -(W as f32) * 0.25);
@@ -1496,8 +1491,7 @@ fn a_camera_over_the_sequence_moves_every_layer_at_once() {
 #[test]
 fn layers_at_different_depths_move_by_different_amounts_under_one_camera() {
     let place = |c: &mut Clip, x: f32, depth: f32| {
-        c.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.25));
-        c.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, x));
+        *c = TestClip::of(c.clone()).lane("scale", 0.0, 0.25).lane("pos_x", 0.0, x).build();
         c.depth = depth;
     };
     let (mut plane, mut glass, mut far) = (media(0.0, 1.0), media(0.0, 1.0), media(0.0, 1.0));
@@ -1505,7 +1499,7 @@ fn layers_at_different_depths_move_by_different_amounts_under_one_camera() {
     place(&mut glass, 8.0, 0.0);
     place(&mut far, 0.0, 3.0);
     // Below the other two, so neither covers it.
-    far.edit_transform_pos_y_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 5.0));
+    far = TestClip::of(far).lane("pos_y", 0.0, 5.0).build();
     let mut seq = sequence(vec![vec![plane.clone()], vec![glass.clone()], vec![far.clone()]]);
     // Positions here are written in the rendered buffer's pixels, so the
     // sequence is the size rendered: a position scales with render/sequence.
@@ -1546,10 +1540,7 @@ impl FrameSource for White {
 fn a_tilted_card_is_drawn_in_perspective_the_way_its_tilt_says() {
     let (w, h) = (128u32, 72u32);
     let render_card = |tx: f32, ty: f32| {
-        let mut card = media(0.0, 1.0);
-        card.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.5));
-        card.edit_transform_tilt_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, tx));
-        card.edit_transform_tilt_y_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, ty));
+        let card = TestClip::of(media(0.0, 1.0)).lane("scale", 0.0, 0.5).lane("tilt_x", 0.0, tx).lane("tilt_y", 0.0, ty).build();
         let seq = sequence(vec![vec![card]]);
         [false, true].map(|gpu| {
             let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
@@ -1579,10 +1570,10 @@ fn a_tilted_card_is_drawn_in_perspective_the_way_its_tilt_says() {
     // A tilt set still, on the clip's own Transform with no perspective
     // given, is drawn in perspective too, not squashed flat.
     let mut card = media(0.0, 1.0);
-    card.set_effect_list(vec![BuiltinEffect::Transform {
+    card = TestClip::of(card).effects(vec![BuiltinEffect::Transform {
         position_x: 0.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5,
         rotation_x: 0.0, rotation_y: 40.0, perspective: 0.0, focal_ref: None,
-    }], card.builtin_effects_enabled().to_vec());
+    }]).build();
     let seq = sequence(vec![vec![card]]);
     for gpu in [false, true] {
         let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
@@ -1621,13 +1612,9 @@ fn a_linked_clip_is_smeared_by_what_carries_it() {
     // would go with it — so the row measured is one the card covers and
     // the speck does not.
     let shot = |linked: bool| {
-        let mut parent = media(0.0, 1.0);
-        parent.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.01));
-        parent.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, -48.0));
-        parent.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 1.0, 48.0));
+        let parent = TestClip::of(media(0.0, 1.0)).lane("scale", 0.0, 0.01).lane("pos_x", 0.0, -48.0).lane("pos_x", 1.0, 48.0).build();
 
-        let mut card = media(0.0, 1.0);
-        card.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.25));
+        let mut card = TestClip::of(media(0.0, 1.0)).lane("scale", 0.0, 0.25).build();
         if linked {
             card.transform_link = Some(klipp_timeline::TransformLink {
                 target: klipp_timeline::TransformLinkTarget::Clip(parent.id),
@@ -1639,8 +1626,7 @@ fn a_linked_clip_is_smeared_by_what_carries_it() {
             });
         } else {
             // The same path, written on the clip itself.
-            card.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, -48.0));
-            card.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 1.0, 48.0));
+            card = TestClip::of(card).lane("pos_x", 0.0, -48.0).lane("pos_x", 1.0, 48.0).build();
         }
         let mut seq = sequence(vec![vec![card], vec![parent]]);
         // Positions here are written in the rendered buffer's pixels, so the
@@ -1674,10 +1660,7 @@ fn a_linked_clip_is_smeared_by_what_carries_it() {
 fn a_moving_card_is_smeared_along_its_path_while_the_shutter_is_open() {
     let (w, h) = (128u32, 72u32);
     let shot = |shutter: f32, moving: bool| {
-        let mut card = media(0.0, 1.0);
-        card.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.25));
-        card.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, -48.0));
-        card.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 1.0, if moving { 48.0 } else { -48.0 }));
+        let card = TestClip::of(media(0.0, 1.0)).lane("scale", 0.0, 0.25).lane("pos_x", 0.0, -48.0).lane("pos_x", 1.0, if moving { 48.0 } else { -48.0 }).build();
         let mut seq = sequence(vec![vec![card]]);
         // Positions here are written in the rendered buffer's pixels, so the
         // sequence is the size rendered: a position scales with render/sequence.
@@ -1702,8 +1685,7 @@ fn a_moving_card_is_smeared_along_its_path_while_the_shutter_is_open() {
     }
 
     // A card that holds still but is carried by the camera is smeared too.
-    let mut card = media(0.0, 1.0);
-    card.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.25));
+    let card = TestClip::of(media(0.0, 1.0)).lane("scale", 0.0, 0.25).build();
     let mut seq = sequence(vec![vec![card]]);
     // Positions here are written in the rendered buffer's pixels, so the
     // sequence is the size rendered: a position scales with render/sequence.
@@ -1743,10 +1725,8 @@ impl FrameSource for AnySize {
 /// quarter of the way right landed at the edge.
 #[test]
 fn a_moved_clip_lands_at_the_same_place_at_half_the_sequence_size() {
-    let mut card = media(0.0, 1.0);
-    card.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.25));
     // A quarter of the frame right, in the pixels of a 64×36 sequence.
-    card.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 16.0));
+    let card = TestClip::of(media(0.0, 1.0)).lane("scale", 0.0, 0.25).lane("pos_x", 0.0, 16.0).build();
     let mut seq = sequence(vec![vec![card.clone()]]);
     seq.resolution = klipp_core::Resolution { width: 2 * W, height: 2 * H };
     let mut src = AnySize([(card.id, [1.0, 0.0, 0.0])].into_iter().collect(), false);
@@ -1776,7 +1756,7 @@ fn a_moved_clip_lands_at_the_same_place_at_half_the_sequence_size() {
 #[test]
 fn a_blur_covers_the_same_share_of_the_picture_at_half_size() {
     let mut card = media(0.0, 1.0);
-    card.set_effect_list(card.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::GaussianBlur { radius: 8.0 })).collect(), card.builtin_effects_enabled().iter().cloned().chain(std::iter::once(true)).collect());
+    card = TestClip::of(card).effect(BuiltinEffect::GaussianBlur { radius: 8.0 }).build();
     let mut seq = sequence(vec![vec![card.clone()]]);
     seq.resolution = klipp_core::Resolution { width: 2 * W, height: 2 * H };
     // Red on the left half of the picture, black on the right: one edge.
@@ -1805,7 +1785,7 @@ fn a_blur_covers_the_same_share_of_the_picture_at_half_size() {
 #[test]
 fn a_precomposition_does_not_resize_the_blur_above_it() {
     let mut card = media(0.0, 1.0);
-    card.set_effect_list(card.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::GaussianBlur { radius: 8.0 })).collect(), card.builtin_effects_enabled().iter().cloned().chain(std::iter::once(true)).collect());
+    card = TestClip::of(card).effect(BuiltinEffect::GaussianBlur { radius: 8.0 }).build();
     // The scene at the size it is rendered at, the parent at twice that.
     let mut scene = sequence(vec![vec![solid([0, 255, 0], 0.0, 4.0)]]);
     scene.resolution = klipp_core::Resolution { width: W, height: H };
@@ -1880,7 +1860,7 @@ fn a_stabilised_clip_is_stabilised_with_or_without_the_gpu() {
     use klipp_effects::homography::Homography;
     use klipp_effects::stabilization::SmoothedTrajectory;
     let mut c = media(0.0, 2.0);
-    c.set_effect_list(vec![BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.0, zoom: false }], c.builtin_effects_enabled().to_vec());
+    c = TestClip::of(c).effects(vec![BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.0, zoom: false }]).build();
     // Every frame's correction a shift of 3.5 px to the left.
     let shift = Homography { h: [[1.0, 0.0, 3.5], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
     c.smoothed_trajectory = Some(SmoothedTrajectory {
@@ -1912,7 +1892,7 @@ fn an_adjustment_layers_stabilisation_does_not_borrow_the_clip_below() {
     use klipp_effects::homography::Homography;
     use klipp_effects::stabilization::SmoothedTrajectory;
     let mut c = media(0.0, 2.0);
-    c.set_effect_list(vec![BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.0, zoom: false }], c.builtin_effects_enabled().to_vec());
+    c = TestClip::of(c).effects(vec![BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.0, zoom: false }]).build();
     let shift = Homography { h: [[1.0, 0.0, 3.5], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
     c.smoothed_trajectory = Some(SmoothedTrajectory {
         smoothed: Vec::new(),
@@ -1922,7 +1902,7 @@ fn an_adjustment_layers_stabilisation_does_not_borrow_the_clip_below() {
         smoothed_jitter_px: 0.1,
     });
     let mut adj = clip(ClipKind::AdjustmentLayer, 0.0, 2.0);
-    adj.set_effect_list(c.builtin_effects().to_vec(), adj.builtin_effects_enabled().to_vec());
+    adj = TestClip::of(adj).effects(test_clip::effects(&c)).build();
     let mut src = Flat::default().ramp(&c);
     let alone = render(&sequence(vec![vec![c.clone()]]), 0.5, &mut src);
     let under = render(&sequence(vec![vec![adj], vec![c]]), 0.5, &mut src);
@@ -2015,17 +1995,12 @@ fn a_word_matte_grown_about_its_solid_point_fills_the_frame() {
 /// fringe is keyed wide enough to survive the scale.
 #[test]
 fn keyframed_effects_ramp_in_the_picture() {
-    let key = |time_secs, value| klipp_core::Keyframe {
-        time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0),
-    };
     for (effect, name, from, to) in [
         (BuiltinEffect::RadialBlur { center_x: 0.5, center_y: 0.5, amount: 0.0, samples: 16, mode: 0 }, "amount", 0.0, 30.0),
         (BuiltinEffect::ChromaticAberration { red_shift: 0.0, blue_shift: 0.0, center_x: 0.5, center_y: 0.5 }, "red_shift", 0.0, 400.0),
         (BuiltinEffect::Vignette { amount: 0.0, size: 0.5, softness: 0.5, roundness: 0.5 }, "amount", 0.0, 1.0),
     ] {
-        let mut c = media(0.0, 2.0);
-        c.set_effect_list(vec![effect.clone()], c.builtin_effects_enabled().to_vec());
-        c.edit_effect_keyframes(|v| v.insert(format!("0:{name}"), vec![key(0.0, from), key(1.0, to)]));
+        let c = TestClip::of(media(0.0, 2.0)).effect(effect.clone()).key(0, name, 0.0, from).key(0, name, 1.0, to).build();
         let seq = sequence(vec![vec![c.clone()]]);
         let mut src = Flat::default().ramp(&c);
         let still = render(&seq, 0.0, &mut src);
@@ -2063,10 +2038,10 @@ fn a_disabled_plugin_leaves_the_picture_untouched() {
 fn an_adjustment_layer_and_a_clip_agree_on_an_effect_colour() {
     let fade = || BuiltinEffect::ColorFade { color: [255, 0, 0, 255], duration_secs: 2.0, mode: klipp_effects::ColorFadeMode::In, progress: 0.0 };
     let mut on_clip = media(0.0, 2.0);
-    on_clip.set_effect_list(vec![fade()], on_clip.builtin_effects_enabled().to_vec());
+    on_clip = TestClip::of(on_clip).effects(vec![fade()]).build();
     let base = media(0.0, 2.0);
     let mut adj = clip(ClipKind::AdjustmentLayer, 0.0, 2.0);
-    adj.set_effect_list(vec![fade()], adj.builtin_effects_enabled().to_vec());
+    adj = TestClip::of(adj).effects(vec![fade()]).build();
     let mut src = Flat::default().grey(&on_clip, 0.2).grey(&base, 0.2);
     let clip_seq = sequence(vec![vec![on_clip]]);
     let adj_seq = sequence(vec![vec![adj], vec![base]]);
@@ -2106,11 +2081,11 @@ fn a_still_title_renders_the_same_with_its_motion_blur_on() {
             position_x: 480.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0,
             anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
         };
-        card.set_effect_list(if crop {
+        card = TestClip::of(card).effects(if crop {
             vec![BuiltinEffect::Crop { left: 0.0, right: 0.6, top: 0.0, bottom: 0.0, feather: 0.0 }, transform]
         } else {
             vec![transform]
-        }, card.builtin_effects_enabled().to_vec());
+        }).build();
         let mut seq = sequence(vec![vec![card]]);
         if let Some(x) = camera_x {
             klipp_core::keyframe::upsert_keyframe(&mut seq.camera.x_keyframes, 0.0, x);
@@ -2149,10 +2124,10 @@ fn a_blur_entrance_is_the_same_on_cpu_and_gpu_under_an_effect() {
     let (mut seq, title) = entering_title(blur_in, None, [20, 20, 20, 255]);
     {
         let effect_clip = &mut seq.tracks[0].clips[0];
-        effect_clip.set_effect_list(vec![BuiltinEffect::Transform {
+        *effect_clip = TestClip::of(effect_clip.clone()).effects(vec![BuiltinEffect::Transform {
         position_x: 0.0, position_y: 0.0, scale_x: 2.0, scale_y: 2.0, rotation: 0.0,
         anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
-    }], effect_clip.builtin_effects_enabled().to_vec());
+    }]).build();
     }
     let _ = title;
     // The viewer's GPU stack, which places the title as a sprite, in

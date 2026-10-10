@@ -74,6 +74,7 @@ bytemuck = { workspace = true }
 libc = "0.2"
 
 [dev-dependencies]
+klipp-timeline = { workspace = true, features = ["test-clip"] }
 # Snapshot-style assertion library for the cut-templates plan
 # tests (HZ-NEXT-CUT-TEMPLATES). `expect![[r#"..."#]]
 # .assert_eq(&actual)` reads better than inline vec![] equality

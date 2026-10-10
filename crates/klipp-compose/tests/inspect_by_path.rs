@@ -20,6 +20,7 @@ use klipp_graph_format::lifted::Stage;
 use klipp_graph_format::path::{NodePath, Root};
 use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams, NodePos};
 use klipp_timeline::{Clip, ClipKind, GradeGroup, GradeStage, Sequence, Track, TrackKind};
+use klipp_timeline::test_clip::TestClip;
 
 const W: u32 = 32;
 const H: u32 = 18;
@@ -256,9 +257,9 @@ fn a_source_neighbour_node_tap_has_its_time_context() {
     }
 
     // A temporal denoise: unavailable, never another node's picture.
-    let mut c = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+    let c = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
     let denoise = (klipp_effects::registry::effect_type("temporal_denoise").unwrap().sample)();
-    c.set_effect_list(vec![denoise], vec![true]);
+    let c = TestClip::of(c).effect(denoise).build();
     let id = c.id;
     let node = c.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::TEMPORAL_DENOISE).expect("a temporal denoise node").id;
     let mut seq = Sequence::new_default();
@@ -277,8 +278,7 @@ fn a_source_neighbour_node_tap_has_its_time_context() {
 /// unavailable rather than met with silence.
 #[test]
 fn an_identity_grade_still_answers_its_inspection() {
-    let mut clip = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
-    clip.set_effect_list(vec![klipp_effects::BuiltinEffect::Gamma { gamma: 1.0 }], vec![true]);
+    let clip = TestClip::of(Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) }).effect(klipp_effects::BuiltinEffect::Gamma { gamma: 1.0 }).build();
     let source = clip.grade().nodes.iter().find(|n| n.kind == NodeKind::Source).expect("a source").id;
     assert!(clip.grade_is_identity());
     let effect = clip.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT).unwrap().id;

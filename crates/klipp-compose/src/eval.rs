@@ -1086,17 +1086,15 @@ mod transform_link_compose_tests {
     }
 
     fn clip_with_transform(px: f32, py: f32, sc: f32, ro: f32, ax: f32, ay: f32) -> Clip {
-        let mut c = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
-        c.push_effect(BuiltinEffect::Transform {
+        let c = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
+        klipp_timeline::test_clip::TestClip::of(c).effect(BuiltinEffect::Transform {
             position_x: px, position_y: py,
             scale_x: sc, scale_y: sc,
             rotation: ro,
             anchor_x: ax, anchor_y: ay,
             rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
             focal_ref: None,
-        });
-
-        c
+        }).build()
     }
 
     fn seq_with_clips(clips: Vec<Clip>) -> Sequence {
@@ -1358,9 +1356,14 @@ mod opacity_multiply_tests {
     use klipp_timeline::{Clip, ClipKind};
 
     fn clip(kind: ClipKind, opacities: &[(f32, bool)]) -> Clip {
-        let mut c = Clip { kind, ..Clip::gap(Timecode::from_frames(0, 24), Timecode::from_frames(48, 24)) };
-        c.set_effect_list(opacities.iter().map(|(value, _)| BuiltinEffect::Opacity { value: *value }).collect(), opacities.iter().map(|(_, on)| *on).collect());
-        c
+        let mut b = klipp_timeline::test_clip::TestClip::of(Clip { kind, ..Clip::gap(Timecode::from_frames(0, 24), Timecode::from_frames(48, 24)) });
+        for (value, on) in opacities {
+            b = b.effect(BuiltinEffect::Opacity { value: *value });
+            if !on {
+                b = b.off();
+            }
+        }
+        b.build()
     }
 
     /// Every enabled Opacity multiplies the last, a clip's and an
@@ -1383,7 +1386,7 @@ mod opacity_multiply_tests {
     fn a_keyed_opacity_before_the_anchor_multiplies_by_its_keys() {
         let at = Timecode::from_frames(12, 24);
         let mut c = clip(ClipKind::Gap, &[(1.0, true), (1.0, true)]);
-        let id = c.effect_id_at(0).unwrap();
+        let id = klipp_timeline::test_clip::effect_id(&c, 0);
         c.edit_effect_keyframes_of(id, "value", |k| {
             klipp_core::keyframe::upsert_keyframe(k, 0.0, 0.25);
             klipp_core::keyframe::upsert_keyframe(k, 2.0, 0.25);

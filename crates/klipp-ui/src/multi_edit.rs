@@ -170,6 +170,7 @@ mod tests {
     use super::*;
     use klipp_core::{MediaId, RationalTime};
     use klipp_effects::BuiltinEffect;
+    use klipp_timeline::test_clip::{self, TestClip};
 
     fn clip() -> Clip {
         Clip::media(MediaId::new(), RationalTime::from_secs_f64(0.0, 24), RationalTime::from_secs_f64(1.0, 24), RationalTime::from_secs_f64(0.0, 24), RationalTime::from_secs_f64(1.0, 24))
@@ -192,18 +193,16 @@ mod tests {
 
     #[test]
     fn an_effect_lands_on_the_same_kind_of_effect_wherever_it_sits() {
-        let mut primary = clip();
-        primary.set_effect_list(vec![BuiltinEffect::Opacity { value: 0.4 }], primary.builtin_effects_enabled().to_vec());
-        let mut other = clip();
-        other.set_effect_list(vec![BuiltinEffect::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.5 }, BuiltinEffect::Opacity { value: 1.0 }], other.builtin_effects_enabled().to_vec());
+        let primary = TestClip::of(clip()).effect(BuiltinEffect::Opacity { value: 0.4 }).build();
+        let mut other = TestClip::of(clip()).effects([BuiltinEffect::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.5 }, BuiltinEffect::Opacity { value: 1.0 }]).build();
         let cmd = AppCommand::UpdateBuiltinEffect { clip_id: primary.id, index: 0, effect: BuiltinEffect::Opacity { value: 0.4 } };
         assert!(copy_to(&cmd, &primary, &mut other));
-        assert!(matches!(other.builtin_effects()[1], BuiltinEffect::Opacity { value } if (value - 0.4).abs() < 1e-6));
-        assert!(matches!(other.builtin_effects()[0], BuiltinEffect::Vignette { .. }), "the rest of its chain untouched");
+        assert!(matches!(test_clip::effects(&other)[1], BuiltinEffect::Opacity { value } if (value - 0.4).abs() < 1e-6));
+        assert!(matches!(test_clip::effects(&other)[0], BuiltinEffect::Vignette { .. }), "the rest of its chain untouched");
         // A clip without that effect is left alone and says so.
         let mut bare = clip();
         assert!(!copy_to(&cmd, &primary, &mut bare));
-        assert!(bare.builtin_effects().is_empty());
+        assert!(test_clip::effects(&bare).is_empty());
     }
 
     /// M3 step 4: the match is by the effect's type as its picture node
@@ -213,22 +212,18 @@ mod tests {
     #[test]
     fn multi_edit_matches_by_type_id() {
         let transform = |x: f32| BuiltinEffect::Transform { position_x: x, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
-        let mut primary = clip();
-        primary.set_effect_list(vec![transform(40.0)], vec![true]);
-        let mut other = clip();
-        other.set_effect_list(vec![BuiltinEffect::Gamma { gamma: 1.2 }, transform(0.0)], vec![true, true]);
+        let primary = TestClip::of(clip()).effect(transform(40.0)).build();
+        let mut other = TestClip::of(clip()).effects([BuiltinEffect::Gamma { gamma: 1.2 }, transform(0.0)]).build();
         let cmd = AppCommand::UpdateBuiltinEffect { clip_id: primary.id, index: 0, effect: transform(40.0) };
         assert!(copy_to(&cmd, &primary, &mut other));
-        assert!(matches!(other.builtin_effects()[1], BuiltinEffect::Transform { position_x, .. } if position_x == 40.0), "the placement's Transform: {:?}", other.builtin_effects());
-        assert!(matches!(other.builtin_effects()[0], BuiltinEffect::Gamma { gamma } if gamma == 1.2));
+        assert!(matches!(test_clip::effects(&other)[1], BuiltinEffect::Transform { position_x, .. } if position_x == 40.0), "the placement's Transform: {:?}", test_clip::effects(&other));
+        assert!(matches!(test_clip::effects(&other)[0], BuiltinEffect::Gamma { gamma } if gamma == 1.2));
 
-        let mut primary = clip();
-        primary.set_effect_list(vec![BuiltinEffect::Gamma { gamma: 0.7 }], vec![true]);
-        let mut other = clip();
-        other.set_effect_list(vec![BuiltinEffect::Vibrance { amount: 0.2 }, BuiltinEffect::Gamma { gamma: 1.0 }, BuiltinEffect::Gamma { gamma: 2.0 }], vec![true; 3]);
+        let primary = TestClip::of(clip()).effect(BuiltinEffect::Gamma { gamma: 0.7 }).build();
+        let mut other = TestClip::of(clip()).effects([BuiltinEffect::Vibrance { amount: 0.2 }, BuiltinEffect::Gamma { gamma: 1.0 }, BuiltinEffect::Gamma { gamma: 2.0 }]).build();
         let cmd = AppCommand::UpdateBuiltinEffect { clip_id: primary.id, index: 0, effect: BuiltinEffect::Gamma { gamma: 0.7 } };
         assert!(copy_to(&cmd, &primary, &mut other));
-        let gammas: Vec<f32> = other.builtin_effects().iter().filter_map(|e| match e { BuiltinEffect::Gamma { gamma } => Some(*gamma), _ => None }).collect();
+        let gammas: Vec<f32> = test_clip::effects(&other).iter().filter_map(|e| match e { BuiltinEffect::Gamma { gamma } => Some(*gamma), _ => None }).collect();
         assert_eq!(gammas, vec![0.7, 2.0], "the first Gamma the picture runs");
     }
 

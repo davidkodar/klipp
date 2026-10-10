@@ -78,13 +78,15 @@ mod tests {
     use super::*;
     use klipp_graph_format::path::NodePath;
     use klipp_graph_format::{types, ParamValue};
+    use klipp_timeline::test_clip::{self, TestClip};
 
     fn sequence() -> (klipp_timeline::Sequence, klipp_core::ClipId, Vec<klipp_graph_format::NodeId>) {
         let mut seq = klipp_timeline::Sequence::new_default();
         let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
-        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
-        clip.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 });
-        clip.push_effect(klipp_effects::BuiltinEffect::Sharpen { amount: 0.5 });
+        let clip = TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0)))
+            .effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 })
+            .effect(klipp_effects::BuiltinEffect::Sharpen { amount: 0.5 })
+            .build();
         let fx = clip.picture_v2().unwrap().picture.graph.nodes.iter().filter(|n| n.type_id.as_str() == types::LEGACY_EFFECT).map(|n| n.id).collect();
         let id = clip.id;
         seq.tracks[0].clips.push(clip);
@@ -101,15 +103,15 @@ mod tests {
             GraphOp::SetParam { path: at(fx[0]), key: "radius".into(), value: ParamValue::Float(5.0) },
             GraphOp::SetEnabled { path: at(fx[1]), enabled: false },
         ];
-        let before = format!("{:?}", seq.tracks[0].clips[0].builtin_effects());
+        let before = format!("{:?}", test_clip::effects(&seq.tracks[0].clips[0]));
         let GraphOpsOutcome { edit, .. } = graph_ops_edit(&seq, &ops).unwrap();
         let EditCommand::PictureEdit { clip_id, edit, .. } = edit else { panic!("a picture edit") };
         assert_eq!(clip_id, clip);
         let mut after = seq.tracks[0].clips[0].clone();
         after.restore_picture(&edit.after);
-        assert!(matches!(after.builtin_effects()[0], klipp_effects::BuiltinEffect::GaussianBlur { radius } if radius == 5.0));
-        assert_eq!(after.builtin_effects_enabled().get(1), Some(&false));
-        assert_eq!(format!("{:?}", seq.tracks[0].clips[0].builtin_effects()), before, "built on a copy");
+        assert!(matches!(test_clip::effects(&after)[0], klipp_effects::BuiltinEffect::GaussianBlur { radius } if radius == 5.0));
+        assert_eq!(test_clip::enabled(&after).get(1), Some(&false));
+        assert_eq!(format!("{:?}", test_clip::effects(&seq.tracks[0].clips[0])), before, "built on a copy");
     }
 
     /// An effect added to a clip whose fields hold its effects keeps its id

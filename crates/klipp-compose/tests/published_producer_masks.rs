@@ -18,6 +18,7 @@ use klipp_graph_format::PortBinding;
 use klipp_graph_lift::ops::GraphOp;
 use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams};
 use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, Track, TrackKind};
+use klipp_timeline::test_clip::TestClip;
 
 const W: u32 = 96;
 const H: u32 = 54;
@@ -110,8 +111,7 @@ fn clip(p: Producer, effects: Vec<E>) -> (Clip, NodeId) {
     let graph = NodeGraph { output_node_id: o.id, nodes: vec![s, e, o, k], edges, node_positions: Default::default(), working_space_override: None, frames: vec![], sticky_notes: vec![] };
     let mut c = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
     c.set_grade(graph);
-    let n = effects.len();
-    c.set_effect_list(effects, vec![true; n]);
+    let c = TestClip::of(c).effects(effects).build();
     (c, id)
 }
 

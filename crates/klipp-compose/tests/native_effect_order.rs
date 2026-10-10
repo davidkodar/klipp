@@ -25,6 +25,7 @@ use klipp_core::{ClipId, RationalTime, Timecode};
 use klipp_effects::BuiltinEffect as E;
 use klipp_nodes::{graph::{Edge, Node, NodeGraph, NodeId}, kinds::NodeKind, params::NodeParams};
 use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, Track, TrackKind};
+use klipp_timeline::test_clip::TestClip;
 
 // The legacy route's frames, stored before step 11d deleted it: each case
 // is held to them where it was held to a live legacy render.
@@ -83,7 +84,14 @@ fn media(src: &mut Pictures, seed: f32, fx: Vec<E>, enabled: Option<Vec<bool>>) 
     let mut c = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(4.0)) };
     c.set_grade(exposure_grade(0.3));
     let on = enabled.unwrap_or_else(|| vec![true; fx.len()]);
-    c.set_effect_list(fx, on);
+    let mut b = TestClip::of(c);
+    for (i, e) in fx.into_iter().enumerate() {
+        b = b.effect(e);
+        if !on.get(i).copied().unwrap_or(true) {
+            b = b.off();
+        }
+    }
+    let c = b.build();
     src.0.insert(c.id, picture(seed));
     c
 }
@@ -269,7 +277,7 @@ fn the_automatic_placement_goes_before_the_first_effect_drawing_outside() {
     ] {
         let mut src = Pictures::default();
         let mut c = media(&mut src, 0.2, fx, None);
-        c.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.6));
+        c = TestClip::of(c).lane("scale", 0.0, 0.6).build();
         let base = media(&mut src, 0.5, vec![], None);
         holds(&format!("automatic placement, {name}"), &sequence(vec![track("V2", vec![c]), track("V1", vec![base])]), &src, 1.0, plain_host);
     }
@@ -311,7 +319,7 @@ fn spill_effects_group_when_adjacent_and_split_when_separated() {
     ] {
         let mut src = Pictures::default();
         let mut c = media(&mut src, 0.4, fx, None);
-        c.edit_transform_scale_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, 0.6));
+        c = TestClip::of(c).lane("scale", 0.0, 0.6).build();
         let base = media(&mut src, 0.7, vec![], None);
         holds(&format!("spill, {name}"), &sequence(vec![track("V2", vec![c]), track("V1", vec![base])]), &src, 1.0, plain_host);
     }
@@ -340,6 +348,6 @@ fn an_adjustment_layer_grades_then_runs_its_effects_then_mixes_by_opacity() {
     let base = media(&mut src, 0.2, vec![], None);
     let mut adj = Clip { kind: ClipKind::AdjustmentLayer, ..Clip::gap(tc(0.0), tc(4.0)) };
     adj.set_grade(exposure_grade(-0.4));
-    adj.set_effect_list(vec![E::Vibrance { amount: 0.5 }, E::GaussianBlur { radius: 1.5 }, E::Opacity { value: 0.6 }], vec![true, true, true]);
+    adj = TestClip::of(adj).effects([E::Vibrance { amount: 0.5 }, E::GaussianBlur { radius: 1.5 }, E::Opacity { value: 0.6 }]).build();
     holds("adjustment layer", &sequence(vec![track("V2", vec![adj]), track("V1", vec![base])]), &src, 1.0, plain_host);
 }

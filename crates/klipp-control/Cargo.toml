@@ -47,7 +47,7 @@ png = "0.18"
 
 [dev-dependencies]
 klipp-document = { workspace = true }
-klipp-timeline = { workspace = true }
+klipp-timeline = { workspace = true, features = ["test-clip"] }
 
 [features]
 # The UI's effect commands over the socket (`effect_command`): live checks of

@@ -20,6 +20,7 @@ use super::parity_manifest::{catalog, CatalogEntry, CatalogValue, CoverageKey, I
 use klipp_core::AppCommand;
 use klipp_effects::registry::{effect_types, EffectType};
 use klipp_effects::BuiltinEffect;
+use klipp_timeline::test_clip;
 
 /// The variant Mix's keys are counted under (renamed with the others in
 /// one sweep).
@@ -112,7 +113,7 @@ fn switched(mut clip: klipp_timeline::Clip, index: usize, on: bool) -> klipp_tim
 }
 
 fn is_on(s: &Stack, index: usize) -> bool {
-    s.clip().builtin_effects_enabled().get(index).copied().unwrap_or(true)
+    test_clip::enabled(s.clip()).get(index).copied().unwrap_or(true)
 }
 
 /// Click the card's eye for the effect at `index`: the first point left of
@@ -129,7 +130,7 @@ fn click_eye(s: &mut Stack, index: usize) -> Result<(), String> {
             t.frame(Vec::new());
             t.frame(vec![egui::Event::PointerMoved(p), egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
             t.frame(vec![egui::Event::PointerMoved(p), egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
-            if is_on(&t, index) != was && t.unapplied.is_empty() && t.clip().builtin_effects() == s.clip().builtin_effects() {
+            if is_on(&t, index) != was && t.unapplied.is_empty() && test_clip::effects(t.clip()) == test_clip::effects(s.clip()) {
                 s.frame(vec![egui::Event::PointerMoved(p), egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
                 s.frame(vec![egui::Event::PointerMoved(p), egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
                 s.frame(Vec::new());
@@ -350,7 +351,7 @@ fn hidden_case(ty: &EffectType, desc: &klipp_effects::registry::ParamDesc) -> Re
     let effect: BuiltinEffect = serde_json::from_value(json).map_err(|e| format!("{}: {e}", desc.field))?;
     let clip = fixture(&effect);
     // As stored: the value read back, so an f32 compares as stored.
-    let field = |s: &Stack| serde_json::to_value(&s.clip().builtin_effects()[0]).ok().and_then(|v| v.get(desc.field).cloned());
+    let field = |s: &Stack| serde_json::to_value(&test_clip::effects(s.clip())[0]).ok().and_then(|v| v.get(desc.field).cloned());
     let mut s = Stack::new(clip.clone());
     let kept = field(&s);
     let before = s.picture();
@@ -372,7 +373,7 @@ fn hidden_case(ty: &EffectType, desc: &klipp_effects::registry::ParamDesc) -> Re
         // list (`to_effect_list`): the effect with the field changed.
         Some(other) if crate::inspector::stack_view::is_placed_kind(ty.tag) => {
             let (lo, hi) = other.soft.or(other.range).unwrap_or((0.0, 1.0));
-            let mut e = serde_json::to_value(&s.clip().builtin_effects()[0]).map_err(|e| e.to_string())?;
+            let mut e = serde_json::to_value(&test_clip::effects(s.clip())[0]).map_err(|e| e.to_string())?;
             e[other.field] = serde_json::json!(lo + (hi - lo) * 0.37);
             let effect: BuiltinEffect = serde_json::from_value(e).map_err(|e| e.to_string())?;
             s.apply(&AppCommand::UpdateBuiltinEffect { clip_id: s.clip, index: 0, effect });

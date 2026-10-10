@@ -746,10 +746,12 @@ mod tests {
     #[test]
     fn a_missing_plugin_is_removed_by_its_node() {
         use klipp_effects::BuiltinEffect as E;
+        use klipp_timeline::test_clip::{self, TestClip};
         let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
-        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
-        clip.push_effect(E::GaussianBlur { radius: 3.0 });
-        clip.push_effect(E::Frei0r { type_id: "frei0r:klipp-test-not-installed".into(), params: Vec::new() });
+        let clip = TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0)))
+            .effect(E::GaussianBlur { radius: 3.0 })
+            .effect(E::Frei0r { type_id: "frei0r:klipp-test-not-installed".into(), params: Vec::new() })
+            .build();
         let id = clip.id;
         let mut state = AppState::default();
         let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
@@ -758,7 +760,7 @@ mod tests {
             a @ FixAction::RemoveBuiltinEffectFromClip { .. } => Some(a),
             _ => None,
         }).expect("the missing plug-in's fix");
-        let effects = |s: &AppState| s.sequences[0].all_clips().find(|c| c.id == id).unwrap().builtin_effects().to_vec();
+        let effects = |s: &AppState| test_clip::effects(s.sequences[0].all_clips().find(|c| c.id == id).unwrap());
         // An effect put before it since the scan: the plug-in is now third.
         let first = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().effect_node_at(false, 0).unwrap();
         let node: klipp_graph_format::Node = serde_json::from_value(serde_json::json!({ "id": uuid::Uuid::new_v4(), "type_id": klipp_graph_lift::to_v2::effect_node_type("sharpen"), "legacy": { "payload": E::Sharpen { amount: 0.5 } } })).unwrap();

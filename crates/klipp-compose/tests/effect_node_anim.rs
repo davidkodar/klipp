@@ -8,6 +8,7 @@ use klipp_compose::eval::{eval_context, eval_effect_with_modifiers, EffectNodeAn
 use klipp_core::{Interpolation, Keyframe, ModifierStack, ParamId, RationalTime, Timecode};
 use klipp_effects::BuiltinEffect as E;
 use klipp_timeline::Clip;
+use klipp_timeline::test_clip;
 
 const TIMES: [f64; 6] = [0.0, 0.3, 0.5, 1.0, 1.7, 3.2];
 
@@ -54,7 +55,7 @@ fn node(clip: &Clip, slot: u32) -> klipp_graph_format::Node {
 
 /// The effect at `slot` at clip time `t`, as the list's keys give it.
 fn by_index(clip: &Clip, slot: usize, t: f64) -> serde_json::Value {
-    let mut e = clip.builtin_effects()[slot].clone();
+    let mut e = test_clip::effects(clip)[slot].clone();
     let ctx = eval_context(clip, tc(t), 24.0);
     e.animate(&mut |name, v| {
         let kfs = clip.effect_keyframes().get(&format!("{slot}:{name}")).map(|v| v.as_slice()).unwrap_or(&[]);
@@ -66,7 +67,7 @@ fn by_index(clip: &Clip, slot: usize, t: f64) -> serde_json::Value {
 /// The effect at `slot` at clip time `t`, as its lifted node gives it.
 fn by_node(clip: &Clip, slot: usize, t: f64) -> serde_json::Value {
     let anim = EffectNodeAnim::of(&node(clip, slot as u32)).expect("the node's animation reads");
-    let mut e = clip.builtin_effects()[slot].clone();
+    let mut e = test_clip::effects(clip)[slot].clone();
     anim.animate(&mut e, t, &eval_context(clip, tc(t), 24.0));
     serde_json::to_value(e).unwrap()
 }

@@ -10,6 +10,7 @@ use klipp_compose::render::clip_effects;
 use klipp_core::{MediaId, Timecode};
 use klipp_effects::{corner_pin, BuiltinEffect};
 use klipp_timeline::{Clip, Sequence, Surface, SurfaceKey, SurfacePin};
+use klipp_timeline::test_clip::TestClip;
 
 const FPS: f64 = 24.0;
 
@@ -44,7 +45,7 @@ fn scene() -> (Sequence, Clip) {
     });
     let mut pin = Clip::media(MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
     let [tl, tr, br, bl] = quad(0.1);
-    pin.set_effect_list(pin.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::CornerPin { tl, tr, br, bl })).collect(), pin.builtin_effects_enabled().to_vec());
+    pin = TestClip::of(pin).effect(BuiltinEffect::CornerPin { tl, tr, br, bl }).build();
     pin.surface_pin = Some(SurfacePin { host: host.id, surface: id, picture_size: None, fit: Default::default(), inset: 0.0 });
     seq.tracks[0].clips.push(host);
     (seq, pin)

@@ -6,15 +6,15 @@ use klipp_compose::eval;
 use klipp_core::{MediaId, RationalTime, VideoParam};
 use klipp_effects::BuiltinEffect as E;
 use klipp_timeline::{Clip, ClipKind};
+use klipp_timeline::test_clip::TestClip;
 
 fn tc(s: f64) -> RationalTime {
     RationalTime::from_secs_f64(s, 24)
 }
 
 fn clip(scale_x: f32, scale_y: f32) -> Clip {
-    let mut c = Clip { kind: ClipKind::Media { media_id: MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
-    c.set_effect_list(vec![E::Transform { position_x: 0.0, position_y: 0.0, scale_x, scale_y, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None }], vec![true]);
-    c
+    let c = Clip { kind: ClipKind::Media { media_id: MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+    TestClip::of(c).effect(E::Transform { position_x: 0.0, position_y: 0.0, scale_x, scale_y, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None }).build()
 }
 
 /// The width and height the clip is drawn at, at `secs`.

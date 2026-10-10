@@ -8,6 +8,7 @@ use std::sync::Arc;
 use klipp_compose::{FrameSource, Inspect, RenderOptions, Renderer, SourceFrame, SourcePixels};
 use klipp_core::{MediaId, RationalTime};
 use klipp_timeline::{Clip, Sequence, Track, TrackKind};
+use klipp_timeline::test_clip::TestClip;
 
 const W: u32 = 64;
 const H: u32 = 36;
@@ -45,7 +46,7 @@ fn sequence() -> (Sequence, Clip) {
         klipp_effects::BuiltinEffect::SpeedRamp { speed, .. } => *speed = 2.0,
         other => panic!("the Speed Ramp sample is {other:?}"),
     }
-    c.set_effect_list(vec![ramp], vec![true]);
+    c = TestClip::of(c).effect(ramp).build();
     let mut seq = Sequence::new_default();
     seq.resolution = klipp_core::Resolution { width: W, height: H };
     let mut track = Track::new("V", TrackKind::Video);

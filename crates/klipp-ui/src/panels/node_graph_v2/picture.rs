@@ -314,12 +314,11 @@ mod tests {
     use super::*;
     use klipp_graph_format::path::Root;
     use klipp_timeline::Clip;
+    use klipp_timeline::test_clip::TestClip;
 
     fn clip() -> Clip {
         let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
-        let mut clip = Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
-        clip.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 });
-        clip
+        TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))).effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 }).build()
     }
 
     fn root(clip: &Clip) -> NodePath { NodePath::new(Root::Clip { clip: clip.id.0 }, []) }

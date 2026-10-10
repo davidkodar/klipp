@@ -33,6 +33,7 @@ use klipp_graph_format::{NodeId, PortBinding};
 use klipp_graph_lift::ops::GraphOp;
 use klipp_nodes::{Edge, Node, NodeGraph, NodeKind, NodeParams};
 use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, Track, TrackKind};
+use klipp_timeline::test_clip::TestClip;
 
 const W: u32 = 96;
 const H: u32 = 54;
@@ -160,8 +161,7 @@ fn graded(kind: ClipKind, before: Vec<E>, blend: Blend, keyed: bool) -> Clip {
     c.set_grade(grade);
     let mut fx = before;
     fx.push(E::GaussianBlur { radius: 5.0 });
-    let n = fx.len();
-    c.set_effect_list(fx, vec![true; n]);
+    c = TestClip::of(c).effects(fx).build();
     set_blend(&mut c, blend, mask);
     c
 }
@@ -290,6 +290,12 @@ fn a_masked_effect_after_the_transform_under_the_shutter_is_blended_on_the_avera
     };
     let build = |blend| {
         let mut c = media(vec![transform.clone()], blend, true);
+        // Through the v1 lane, as main's writers key today: the clip is
+        // picture-truth (its mask is set), and the renderer doesn't read a
+        // picture-truth clip's placement_anim, only the v1 lanes (eval.rs
+        // `transform_pos_x_keyframes`). A picture-op lane (TestClip's
+        // `.lane`) lands in placement_anim and the clip doesn't move. Step
+        // 12a must read the picture's animation.
         c.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, -12.0));
         c.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 2.0, 12.0));
         let mut seq = sequence(vec![vec![c]]);
@@ -309,6 +315,12 @@ fn a_masked_effect_after_the_transform_under_the_shutter_is_blended_on_the_avera
 fn a_masked_effect_before_the_transform_under_the_shutter_smears_with_the_picture() {
     let build = |blend| {
         let mut c = media(vec![], blend, true);
+        // Through the v1 lane, as main's writers key today: the clip is
+        // picture-truth (its mask is set), and the renderer doesn't read a
+        // picture-truth clip's placement_anim, only the v1 lanes (eval.rs
+        // `transform_pos_x_keyframes`). A picture-op lane (TestClip's
+        // `.lane`) lands in placement_anim and the clip doesn't move. Step
+        // 12a must read the picture's animation.
         c.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, -12.0));
         c.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 2.0, 12.0));
         let mut seq = sequence(vec![vec![c]]);

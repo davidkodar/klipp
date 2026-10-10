@@ -23,6 +23,7 @@ rayon             = { workspace = true }
 tracing           = { workspace = true }
 
 [dev-dependencies]
+klipp-timeline = { workspace = true, features = ["test-clip"] }
 klipp-color = { workspace = true }
 klipp-frei0r = { workspace = true }
 # The golden corpus's stored frames are one PNG (#1089).

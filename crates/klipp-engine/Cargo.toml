@@ -37,6 +37,7 @@ dirs = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+klipp-timeline = { workspace = true, features = ["test-clip"] }
 klipp-testing = { workspace = true }
 pollster = "0.3"
 klipp-render = { workspace = true }

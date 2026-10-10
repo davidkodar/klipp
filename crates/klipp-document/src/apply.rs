@@ -1874,8 +1874,9 @@ mod effect_writer_tests {
     //! (#1074): each keeps every keyframe and modifier on the effect it
     //! animates, and an edit, a toggle or a keyframe edit keeps the ids.
     use super::*;
-    use klipp_core::{Keyframe, ModifierStack, ParamId, Timecode};
+    use klipp_core::{ModifierStack, ParamId, Timecode};
     use klipp_effects::BuiltinEffect;
+    use klipp_timeline::test_clip::{self, TestClip};
 
     fn blur(radius: f32) -> BuiltinEffect {
         BuiltinEffect::GaussianBlur { radius }
@@ -1891,9 +1892,7 @@ mod effect_writer_tests {
         let mut seq = Sequence::new_default();
         let mut clip = klipp_timeline::Clip::media(MediaId::new(), Timecode::zero(), Timecode { value: 48, rate: 24 }, Timecode::zero(), Timecode { value: 48, rate: 24 });
         clip.set_effects(vec![blur(2.0), vignette(0.4)]);
-        let key = |v: f32| vec![Keyframe { time_secs: 0.0, value: v, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }];
-        clip.edit_effect_keyframes(|v| v.insert("0:radius".into(), key(3.0)));
-        clip.edit_effect_keyframes(|v| v.insert("1:amount".into(), key(0.7)));
+        let mut clip = TestClip::of(clip).key(0, "radius", 0.0, 3.0).key(1, "amount", 0.0, 0.7).build();
         clip.edit_param_modifiers(|v| v.insert(ParamId::Effect { effect_index: 1, param_name: "amount".into() }, ModifierStack::default()));
         let id = clip.id;
         seq.tracks[0].clips.push(clip);
@@ -1907,7 +1906,7 @@ mod effect_writer_tests {
     /// Each effect's own animation, read through its id: the blur's radius
     /// keys, the vignette's amount keys and whether it has its modifier.
     fn animation(c: &mut klipp_timeline::Clip) -> (Option<f32>, Option<f32>, bool) {
-        let (b, v) = (c.effect_id_at(0).unwrap(), c.effect_id_at(1).unwrap());
+        let (b, v) = (test_clip::effect_id(c, 0), test_clip::effect_id(c, 1));
         let radius = c.edit_existing_effect_keyframes(b, "radius", |k| k[0].value);
         let amount = c.edit_existing_effect_keyframes(v, "amount", |k| k[0].value);
         let modifier = c.edit_existing_effect_modifiers(v, "amount", |_| ()).is_some();
@@ -1919,7 +1918,7 @@ mod effect_writer_tests {
     #[test]
     fn an_effect_edit_keeps_its_id_and_animation() {
         let (mut seqs, id) = doc();
-        let before = clip(&mut seqs, id).effect_id_at(1);
+        let before = test_clip::effect_id(clip(&mut seqs, id), 1);
         let edit = EditCommand::EditBuiltinEffect { clip_id: id, effect_index: 1, old_effect: vignette(0.4), new_effect: vignette(0.9) };
         let mut pool = MediaPool::new();
         let mut fps = seqs[0].fps;
@@ -1927,16 +1926,16 @@ mod effect_writer_tests {
         for (forward, want) in [(true, vignette(0.9)), (false, vignette(0.4)), (true, vignette(0.9))] {
             if forward { view.apply_forward(&edit) } else { view.apply_inverse(&edit) };
             let c = clip(view.sequences, id);
-            assert_eq!(c.builtin_effects()[1], want);
+            assert_eq!(test_clip::effects(c)[1], want);
             assert_eq!(animation(c), ALL);
-            assert_eq!(c.effect_id_at(1), before, "the same effect, edited");
+            assert_eq!(test_clip::effect_id(c, 1), before, "the same effect, edited");
         }
     }
 
     #[test]
     fn a_toggle_flips_one_flag_and_keeps_the_animation() {
         let (mut seqs, id) = doc();
-        let before = clip(&mut seqs, id).effect_id_at(1);
+        let before = test_clip::effect_id(clip(&mut seqs, id), 1);
         let edit = EditCommand::ToggleBuiltinEffectEnabled { clip_id: id, index: 1 };
         let mut pool = MediaPool::new();
         let mut fps = seqs[0].fps;
@@ -1947,7 +1946,7 @@ mod effect_writer_tests {
             let c = clip(view.sequences, id);
             assert_eq!(flags(c), want);
             assert_eq!(animation(c), ALL);
-            assert_eq!(c.effect_id_at(1), before);
+            assert_eq!(test_clip::effect_id(c, 1), before);
         }
     }
 
@@ -1970,11 +1969,11 @@ mod effect_writer_tests {
         let mut view = DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
         view.apply_forward(&edit);
         let c = clip(view.sequences, id);
-        assert_eq!((c.builtin_effects().len(), c.builtin_effects_enabled().to_vec()), (3, vec![true, false, true]));
+        assert_eq!((test_clip::effects(c).len(), test_clip::enabled(c)), (3, vec![true, false, true]));
         assert_eq!(animation(c), ALL);
         view.apply_inverse(&edit);
         let c = clip(view.sequences, id);
-        assert_eq!(c.builtin_effects(), vec![blur(2.0), vignette(0.4)]);
+        assert_eq!(test_clip::effects(c), vec![blur(2.0), vignette(0.4)]);
         assert_eq!(animation(c), ALL);
     }
 
@@ -1982,7 +1981,7 @@ mod effect_writer_tests {
     fn a_keyframe_edit_restores_the_effect_keys_and_keeps_the_ids() {
         let (mut seqs, id) = doc();
         let c = clip(&mut seqs, id);
-        let ids = (c.effect_id_at(0), c.effect_id_at(1));
+        let ids = (test_clip::effect_id(c, 0), test_clip::effect_id(c, 1));
         let old_state = crate::history::KeyframeSnapshot::from_clip(c);
         let mut new_state = old_state.clone();
         new_state.effect_keyframes.remove("0:radius");
@@ -1993,7 +1992,7 @@ mod effect_writer_tests {
         view.apply_forward(&edit);
         let c = clip(view.sequences, id);
         assert_eq!(animation(c), (None, Some(0.7), true));
-        assert_eq!((c.effect_id_at(0), c.effect_id_at(1)), ids, "a keyframe edit is no new effect");
+        assert_eq!((test_clip::effect_id(c, 0), test_clip::effect_id(c, 1)), ids, "a keyframe edit is no new effect");
         view.apply_inverse(&edit);
         assert_eq!(animation(clip(view.sequences, id)), ALL);
     }
@@ -2013,9 +2012,8 @@ mod picture_edit_tests {
     #[test]
     fn a_picture_edit_undoes_and_redoes_the_clips_picture_whole() {
         let mut seq = Sequence::new_default();
-        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), Timecode::zero(), Timecode { value: 48, rate: 24 }, Timecode::zero(), Timecode { value: 48, rate: 24 });
-        clip.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 });
-        clip.push_effect(klipp_effects::BuiltinEffect::Sharpen { amount: 0.5 });
+        let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), Timecode::zero(), Timecode { value: 48, rate: 24 }, Timecode::zero(), Timecode { value: 48, rate: 24 });
+        let mut clip = klipp_timeline::test_clip::TestClip::of(clip).effects([klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 }, klipp_effects::BuiltinEffect::Sharpen { amount: 0.5 }]).build();
         let clip_id = clip.id;
         let ids: Vec<_> = clip.effect_entries().map(|(id, _, _)| id).collect();
         let fx: Vec<_> = clip.picture_v2().unwrap().picture.graph.nodes.iter().filter(|n| n.type_id.as_str() == types::LEGACY_EFFECT).map(|n| n.id).collect();

@@ -152,6 +152,7 @@ impl Clip {
 mod tests {
     use super::*;
     use klipp_core::{Interpolation, MediaId, ModifierStack, ParamId, RationalTime};
+    use crate::test_clip::TestClip;
 
     fn clip() -> Clip {
         let t = |n| RationalTime::from_frames(n, 24);
@@ -254,9 +255,15 @@ mod tests {
                 true,
             ),
         ] {
-            let mut c = clip();
             let present = entry.is_some();
-            c.set_effect_list(c.builtin_effects().iter().cloned().chain(entry).collect(), vec![enabled]);
+            let mut b = TestClip::of(clip());
+            if let Some(e) = entry {
+                b = b.effect(e);
+                if !enabled {
+                    b = b.off();
+                }
+            }
+            let c = b.build();
             assert_eq!(c.has_effect_entries(), present, "{name}");
             assert_eq!(c.effect_chain_gpu_capable(), gpu, "{name}");
             assert_eq!(c.has_nonidentity_placement_entries(), placement, "{name}");
@@ -435,8 +442,11 @@ mod tests {
             (1, Some(false), false),
             (0, Some(true), false),
         ] {
-            let mut c = clip();
-            c.set_effect_list(c.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode: mode })).collect(), c.builtin_effects_enabled().iter().cloned().chain(enabled).collect());
+            let mut b = TestClip::of(clip()).effect(BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode: mode });
+            if enabled == Some(false) {
+                b = b.off();
+            }
+            let c = b.build();
             assert_eq!(c.has_frame_blend_entry(), expected);
         }
     }
@@ -463,7 +473,7 @@ mod tests {
             if let BuiltinEffect::Transform { focal_ref, .. } = &mut effect {
                 *focal_ref = Some(focal);
             }
-            c.set_effect_list(c.builtin_effects().iter().cloned().chain(std::iter::once(effect)).collect(), c.builtin_effects_enabled().iter().cloned().chain(std::iter::once(false)).collect());
+            let c = TestClip::of(c).effect(effect).off().build();
             assert_eq!(c.picture_references(), vec![host, host]);
         }
     }

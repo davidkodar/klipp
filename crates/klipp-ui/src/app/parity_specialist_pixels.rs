@@ -23,6 +23,7 @@ use super::parity_pixels::{clip_edit_drawn_on, Routes, SMALL};
 use super::parity_specialists::{effect_type, number_right_of, type_into, Analysis, ANALYSES, VARIANT};
 use super::parity_harness::fixture;
 use klipp_effects::BuiltinEffect;
+use klipp_timeline::test_clip;
 
 /// Why the frei0r editor's Pixels are drawn on the CPU alone.
 const FREI0R_ROUTE: &str = "M4 step 5 (frei0r as a node, with a local CPU segment and an instance owner): plug-ins run on the CPU";
@@ -91,7 +92,7 @@ fn frei0r_case() -> Result<(), String> {
     if !run.unapplied.is_empty() {
         return Err(format!("unapplied: {:?}", run.unapplied));
     }
-    match run.clip().builtin_effects().first() {
+    match test_clip::effects(run.clip()).first() {
         Some(BuiltinEffect::Frei0r { params, .. }) if matches!(params.first(), Some(klipp_frei0r::Frei0rValue::Double(v)) if *v == 0.85) => {}
         other => return Err(format!("typed 0.85, stored {other:?}")),
     }

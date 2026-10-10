@@ -20,6 +20,7 @@ use klipp_graph_format::path::{Root, TrackPart};
 use klipp_graph_lift::ids::{entry_id, RootKind};
 use klipp_graph_lift::stack_view::{PlacementBoundary, ResolvedPlacement};
 use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
+use klipp_timeline::test_clip::{self, TestClip};
 
 fn tc(s: f64) -> Timecode {
     RationalTime::from_secs_f64(s, 24)
@@ -40,8 +41,14 @@ fn transform() -> E {
 /// A media clip with `effects`, moving across its four seconds unless
 /// `still`.
 fn clip(kind: ClipKind, effects: Vec<E>, enabled: Vec<bool>, still: bool) -> Clip {
-    let mut c = Clip { kind, ..Clip::gap(tc(0.0), tc(4.0)) };
-    c.set_effect_list(effects, enabled);
+    let mut b = TestClip::of(Clip { kind, ..Clip::gap(tc(0.0), tc(4.0)) });
+    for (i, e) in effects.into_iter().enumerate() {
+        b = b.effect(e);
+        if !enabled.get(i).copied().unwrap_or(true) {
+            b = b.off();
+        }
+    }
+    let mut c = b.build();
     if !still {
         c.edit_video_param_keyframes(klipp_core::VideoParam::PositionX, |k| *k = vec![key(0.0, 0.0), key(4.0, 120.0)]);
     }
@@ -129,7 +136,7 @@ fn read(name: &str, placed: &Placed, t: f64) -> ResolvedPlacement {
     } else {
         // The frame drops an identity effect after cutting before it, so an
         // identity boundary is held to the effect drawn after it.
-        let effects: Vec<E> = clip.builtin_effects().to_vec();
+        let effects: Vec<E> = test_clip::effects(clip);
         let drawn = named.clone().filter(|k| !effects.iter().any(|e| kind(e) == *k && klipp_effects::is_identity_effect(e)));
         if named.is_none() || drawn.is_some() {
             assert_eq!(frame, Some(drawn), "{name} at {t}: {}", read.reason);

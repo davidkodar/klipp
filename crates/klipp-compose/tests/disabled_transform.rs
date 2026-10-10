@@ -5,6 +5,7 @@ use klipp_compose::{eval, FrameSource, Inspect, RenderOptions, Renderer, SourceF
 use klipp_core::{MediaId, RationalTime, VideoParam};
 use klipp_effects::BuiltinEffect as E;
 use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams};
+use klipp_timeline::test_clip::TestClip;
 use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, Track, TrackKind};
 
 const W: u32 = 96;
@@ -28,7 +29,7 @@ fn disabled_defaults_leave_clip_animation_and_the_next_enabled_transform() {
     let evaluate = |c: &Clip| eval::evaluate_clip_own_transform(c, 1.0, &eval::eval_context(c, tc(1.0), 24.0));
     let automatic = evaluate(&c);
     assert_eq!(automatic, (4.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5));
-    c.set_effect_list(vec![transform(20.0)], vec![false]);
+    c = TestClip::of(c).effect(transform(20.0)).off().build();
     assert_eq!(evaluate(&c), automatic);
     c.set_effect_list(vec![transform(20.0), transform(8.0)], vec![false, true]);
     let second = evaluate(&c);
@@ -59,7 +60,7 @@ fn sequence() -> Sequence {
     c.set_grade(NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions: Default::default(),
         working_space_override: None, frames: vec![], sticky_notes: vec![] });
     // A real effect after the grade makes the GPU plan route observable.
-    c.set_effect_list(vec![E::Gamma { gamma: 1.2 }, transform(20.0)], vec![true, true]);
+    c = TestClip::of(c).effects([E::Gamma { gamma: 1.2 }, transform(20.0)]).build();
     let mut seq = Sequence::new_default();
     seq.resolution = klipp_core::Resolution { width: W, height: H };
     let mut track = Track::new("V", TrackKind::Video);

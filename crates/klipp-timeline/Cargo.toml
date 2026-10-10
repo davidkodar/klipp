@@ -21,5 +21,11 @@ uuid = { workspace = true }
 # A frei0r plug-in's description, for the cache gate's test.
 klipp-frei0r = { workspace = true }
 
+[features]
+# The clip builder for tests (`test_clip`, M4 step 12-0). Enabled only
+# from another crate's [dev-dependencies]: `tests/test_clip_feature.rs`
+# fails on any [dependencies] entry that turns it on.
+test-clip = []
+
 [lints]
 workspace = true

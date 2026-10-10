@@ -15,6 +15,7 @@ use klipp_core::{RationalTime, Resolution};
 use klipp_effects::registry::{effect_types, ParamKind};
 use klipp_effects::BuiltinEffect;
 use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
+use klipp_timeline::test_clip::TestClip;
 
 const W: u32 = 192;
 const H: u32 = 108;
@@ -51,8 +52,7 @@ fn tc(s: f64) -> RationalTime {
 /// The clip carrying `effect`, in a sequence `seq` pixels in size,
 /// rendered `w` by `h`.
 fn render(effect: &BuiltinEffect, seq: (u32, u32), w: u32, h: u32, gpu: bool) -> Vec<f32> {
-    let mut clip = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
-    clip.push_effect(effect.clone());
+    let clip = TestClip::of(Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) }).effect(effect.clone()).build();
     let mut s = Sequence::new_default();
     s.resolution = Resolution { width: seq.0, height: seq.1 };
     let mut track = Track::new("V", TrackKind::Video);
@@ -188,7 +188,7 @@ fn a_masked_blur_at_half_scale() {
         };
         let mut clip = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
         klipp_timeline::GradeAccess::set_grade(&mut clip, graph);
-        clip.push_effect(BuiltinEffect::GaussianBlur { radius: 6.0 });
+        clip = TestClip::of(clip).effect(BuiltinEffect::GaussianBlur { radius: 6.0 }).build();
         let p = clip.picture_v2().unwrap().picture.clone();
         let group = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP).unwrap().id;
         let blur = p.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT).unwrap().id;

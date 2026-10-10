@@ -812,6 +812,7 @@ fn remove_modifiers(clip: &mut klipp_timeline::Clip, param: &klipp_core::ParamId
 mod modifier_target_tests {
     use super::{with_modifiers, remove_modifiers};
     use klipp_core::{ModifierStack, ParamId};
+    use klipp_timeline::test_clip::{self, TestClip};
 
     fn clip() -> klipp_timeline::Clip {
         let t = |n| klipp_core::RationalTime::from_frames(n, 24);
@@ -839,8 +840,7 @@ mod modifier_target_tests {
     /// clip's own stays direct.
     #[test]
     fn stacks_land_on_their_effect_or_the_clip() {
-        let mut c = clip();
-        c.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 });
+        let mut c = TestClip::of(clip()).effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 }).build();
         assert!(with_modifiers(&mut c, &effect_param(0), true, |_| ()).is_some());
         assert!(c.param_modifiers().contains_key(&effect_param(0)));
         assert!(with_modifiers(&mut c, &ParamId::Opacity, true, |_| ()).is_some());
@@ -855,17 +855,14 @@ mod modifier_target_tests {
     /// lands at that index later (it used to be).
     #[test]
     fn an_index_past_the_list_starts_nothing() {
-        let mut c = clip();
-        c.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 });
+        let mut c = TestClip::of(clip()).effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 }).build();
         assert!(with_modifiers(&mut c, &effect_param(3), true, |_| ()).is_none());
         assert!(c.param_modifiers().is_empty());
         // The keyframe commands resolve the same way.
         assert!(c.effect_id_at(3).is_none());
         // Once an effect does land at that index, it starts clean.
-        for _ in 0..3 {
-            c.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 1.0 });
-        }
-        let id = c.effect_id_at(3).unwrap();
+        c = TestClip::of(c).effects((0..3).map(|_| klipp_effects::BuiltinEffect::GaussianBlur { radius: 1.0 })).build();
+        let id = test_clip::effect_id(&c, 3);
         assert!(c.edit_existing_effect_modifiers(id, "radius", |_| ()).is_none());
         let _: Option<()> = with_modifiers(&mut c, &effect_param(3), false, |_: &mut ModifierStack| ());
         assert!(c.param_modifiers().is_empty());
@@ -875,9 +872,8 @@ mod modifier_target_tests {
     /// names (M3 step 2), and comes off by path too.
     #[test]
     fn a_modifier_by_node_path_is_the_effects() {
-        let mut c = clip();
-        c.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 });
-        let node = c.effect_id_at(0).unwrap().as_uuid();
+        let mut c = TestClip::of(clip()).effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 }).build();
+        let node = test_clip::effect_id(&c, 0).as_uuid();
         let by_path = ParamId::Node { addr: klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, [node]), key: "radius".into() };
         let by_index = ParamId::Effect { effect_index: 0, param_name: "radius".into() };
         with_modifiers(&mut c, &by_path, true, |s| s.modifiers.push(klipp_core::Modifier::Clamp { min: 0.0, max: 1.0, enabled: true }));

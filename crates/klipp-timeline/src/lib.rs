@@ -76,6 +76,9 @@ pub mod picture_v1;
 mod sequence;
 pub mod shared;
 pub mod surface;
+/// Clips for tests, built through the picture (M4 step 12-0).
+#[cfg(any(test, feature = "test-clip"))]
+pub mod test_clip;
 pub use surface::{PinFit, Surface, SurfaceKey, SurfacePin};
 pub use shared::{SequenceRead, SequenceRevision, SequenceWrite, SharedSequence};
 

@@ -13,6 +13,7 @@ use klipp_graph_format::{NodeId, PortBinding};
 use klipp_graph_lift::ops::GraphOp;
 use klipp_nodes::{Edge, Node, NodeGraph, NodeKind, NodeParams};
 use klipp_timeline::{Clip, GradeAccess, Track, TrackKind};
+use klipp_timeline::test_clip::{self, TestClip};
 
 fn t(s: f64) -> Timecode {
     Timecode::from_secs_f64(s, 24)
@@ -21,8 +22,7 @@ fn t(s: f64) -> Timecode {
 /// A media clip over 0..4 s whose grade publishes a qualifier's matte,
 /// masking its blur, mixed at a half; and the blur's node.
 fn masked() -> (Clip, NodeId) {
-    let mut c = Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
-    c.push_effect(E::GaussianBlur { radius: 3.0 });
+    let mut c = TestClip::of(Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0))).effect(E::GaussianBlur { radius: 3.0 }).build();
     let mut g = NodeGraph::default();
     g.ensure_corrector();
     let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
@@ -94,8 +94,14 @@ fn a_duplicate_keeps_its_own_picture() {
 #[test]
 fn a_compound_taken_apart_gives_its_adjustment_layer_the_picture() {
     let (c, blur) = masked();
-    let mut layer = Clip { kind: klipp_timeline::ClipKind::AdjustmentLayer, ..Clip::gap(t(0.0), t(4.0)) };
-    layer.set_effect_list(c.builtin_effects().to_vec(), c.builtin_effects_enabled().to_vec());
+    let mut layer = TestClip::of(Clip { kind: klipp_timeline::ClipKind::AdjustmentLayer, ..Clip::gap(t(0.0), t(4.0)) });
+    for (effect, on) in test_clip::effects(&c).into_iter().zip(test_clip::enabled(&c)) {
+        layer = layer.effect(effect);
+        if !on {
+            layer = layer.off();
+        }
+    }
+    let mut layer = layer.build();
     layer.set_grade(c.grade().clone());
     layer.take_picture_truth_of(&c);
     keeps_the_picture(&layer, blur, "compound taken apart");

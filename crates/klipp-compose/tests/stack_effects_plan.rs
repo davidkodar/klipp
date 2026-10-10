@@ -14,6 +14,7 @@ use klipp_core::{ClipId, RationalTime, Timecode};
 use klipp_effects::BuiltinEffect as E;
 use klipp_nodes::{graph::{Edge, Node, NodeGraph, NodeId}, kinds::NodeKind, params::NodeParams};
 use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, Track, TrackKind};
+use klipp_timeline::test_clip::TestClip;
 
 // The legacy route's frames, stored before step 11d deleted it: each case
 // is held to them where it was held to a live legacy render.
@@ -90,8 +91,7 @@ fn layered() -> (Sequence, Pictures) {
         E::DropShadow { offset_x: 0.03, offset_y: 0.02, blur: 0.01, color: [10, 20, 30], opacity: 0.8 },
         E::OuterGlow { radius: 0.03, intensity: 0.6, color: [250, 200, 40] },
     ];
-    let n = fx.len();
-    c.set_effect_list(fx, vec![true; n]);
+    c = TestClip::of(c).effects(fx).build();
     top.clips = vec![c];
     seq.tracks = vec![top, base];
     (seq, src)
@@ -140,7 +140,7 @@ fn a_graded_adjustment_layers_effects_run_in_its_grades_plan() {
     let mut adj = Track::new("Adj", TrackKind::Video);
     let mut a = Clip { kind: ClipKind::AdjustmentLayer, ..Clip::gap(tc(0.0), tc(4.0)) };
     a.set_grade(exposure_grade(-0.5));
-    a.set_effect_list(vec![E::GaussianBlur { radius: 2.0 }, E::Vibrance { amount: 0.3 }], vec![true; 2]);
+    a = TestClip::of(a).effects([E::GaussianBlur { radius: 2.0 }, E::Vibrance { amount: 0.3 }]).build();
     adj.clips = vec![a];
     seq.tracks.insert(0, adj);
     both("adjustment layer", &seq, &mut src, 2);
@@ -182,8 +182,7 @@ fn a_titles_effects_run_as_a_plan_over_its_slot_on_the_stack() {
     let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Stack".into(), font_size: 48.0, ..Default::default() });
     let mut title = Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(4.0)) };
     let fx = vec![E::GaussianBlur { radius: 1.5 }, E::DropShadow { offset_x: 0.02, offset_y: 0.03, blur: 0.01, color: [0, 0, 0], opacity: 0.8 }, E::Gamma { gamma: 1.2 }];
-    let n = fx.len();
-    title.set_effect_list(fx, vec![true; n]);
+    title = TestClip::of(title).effects(fx).build();
     let mut text = Track::new("T1", TrackKind::Text);
     text.clips = vec![title];
     let mut v1 = Track::new("V1", TrackKind::Video);
