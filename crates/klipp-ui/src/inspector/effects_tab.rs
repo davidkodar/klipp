@@ -516,12 +516,21 @@ pub(crate) const DEFLICKER_WINDOW_HINT: &str =
 pub(crate) const TEMPORAL_DENOISE_CPU_NOTE: &str =
     "A clip using this is rendered on the CPU rather than the GPU: the frames it averages against are decoded there.";
 
+/// `clip`'s analysis of `kind`, derived with the settings of its first
+/// enabled effect that `is` (M4 step 9): what the render draws by.
+fn derived_analysis(clip: &Clip, state: &AppState, kind: klipp_analysis::assets::AssetKind, is: fn(&klipp_effects::BuiltinEffect) -> bool) -> Option<klipp_effects::node_analysis::NodeAnalysis> {
+    let raw = state.analysis_of(clip, kind)?;
+    let enabled = clip.builtin_effects_enabled();
+    let effect = clip.builtin_effects().iter().enumerate().find(|(i, e)| is(e) && enabled.get(*i).copied().unwrap_or(true)).map(|(_, e)| e)?;
+    klipp_effects::node_analysis::derive(effect, raw)
+}
+
 /// Deflicker's analysis: measuring (with Cancel), done (with Re-analyse
-/// and what it found), or not yet (with Analyse). Shared by the effects
-/// tab and the generated stack's adapter (M3 step 6).
+/// and what it found), or not yet (starting by itself). Shared by the
+/// effects tab and the generated stack's adapter (M3 step 6).
 pub(crate) fn deflicker_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, state: &AppState, cmds: &mut Vec<AppCommand>) {
     let clip_id = clip.id;
-    let has_data = clip.deflicker_data.is_some() || state.analysis_ready.contains(&(clip_id, klipp_analysis::assets::AssetKind::Deflicker));
+    let has_data = state.analysis_of(clip, klipp_analysis::assets::AssetKind::Deflicker).is_some();
     let is_analyzing = state.deflicker_in_progress.contains(&clip_id);
 
     if is_analyzing {
@@ -537,10 +546,12 @@ pub(crate) fn deflicker_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Cli
                 cmds.push(AppCommand::AnalyzeDeflicker { clip_id });
             }
         });
-        // What it found, so "nothing happened" is answerable.
-        if let Some(gains) = clip.deflicker_gains.as_ref() {
+        // What it found at the window the effect is set to, so "nothing
+        // happened" is answerable.
+        if let Some(klipp_effects::node_analysis::NodeAnalysis::Deflicker { gains, .. }) =
+            derived_analysis(clip, state, klipp_analysis::assets::AssetKind::Deflicker, |e| matches!(e, klipp_effects::BuiltinEffect::Deflicker { .. }))
+        {
             let worst = gains
-                .gains
                 .iter()
                 .map(|g| (g - 1.0).abs())
                 .fold(0.0f32, f32::max);
@@ -566,12 +577,13 @@ pub(crate) fn deflicker_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Cli
 
 /// Video Stabilization's analysis: analysing (with Cancel), done (with
 /// Re-analyse, Compare, the shake it removed and the trajectory plot), or
-/// not yet (with Analyse). Shared by the effects tab and the generated
-/// stack's adapter (M3 step 6).
+/// not yet (starting by itself). Shared by the effects tab and the
+/// generated stack's adapter (M3 step 6).
 pub(crate) fn stabilization_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, state: &AppState, cmds: &mut Vec<AppCommand>) {
     let clip_id = clip.id;
     // Analysis status
-    let has_data = clip.stabilization_data.is_some() || state.analysis_ready.contains(&(clip_id, klipp_analysis::assets::AssetKind::Stabilisation));
+    let raw = state.analysis_of(clip, klipp_analysis::assets::AssetKind::Stabilisation);
+    let has_data = raw.is_some();
     let is_analyzing = state.stabilization_in_progress.contains(&clip_id);
 
     if is_analyzing {
@@ -594,8 +606,10 @@ pub(crate) fn stabilization_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: 
                 cmds.push(AppCommand::ToggleStabilizationCompare);
             }
         });
-        // Quality metric: how much shake the smoothing actually removed.
-        if let Some(smoothed) = clip.smoothed_trajectory.as_ref() {
+        // Quality metric: how much shake the smoothing actually removed, at
+        // the smoothing the effect is set to.
+        let derived = derived_analysis(clip, state, klipp_analysis::assets::AssetKind::Stabilisation, |e| matches!(e, klipp_effects::BuiltinEffect::VideoStabilization { .. }));
+        if let Some(klipp_effects::node_analysis::NodeAnalysis::Stabilisation { smoothed, .. }) = derived.as_ref() {
             let pct = smoothed.jitter_reduction_pct();
             let (label_color, headline) = if smoothed.raw_jitter_px < 0.25 {
                 // Source was already smooth — nothing to remove.
@@ -619,7 +633,8 @@ pub(crate) fn stabilization_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: 
 
             // Trajectory graph: raw camera tx (jagged) vs smoothed tx (clean).
             // Visualizes what stabilization is actually doing.
-            if let Some(data) = clip.stabilization_data.as_ref() {
+            let data = raw.and_then(|r| serde_json::from_value::<klipp_effects::stabilization::StabilizationData>((**r).clone()).ok());
+            if let Some(data) = data.as_ref() {
                 let raw: Vec<f32> = data.trajectory.iter().map(|p| p.tx as f32).collect();
                 let smooth: Vec<f32> = smoothed.smoothed.iter().map(|p| p.tx as f32).collect();
                 if raw.len() >= 2 && smooth.len() == raw.len() {

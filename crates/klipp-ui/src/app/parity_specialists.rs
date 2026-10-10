@@ -1,12 +1,15 @@
 //! The analysis effects' workflow in the inspector (M3). Deflicker and
-//! Video Stabilization measure the clip before they do anything, and the
-//! stack draws a status widget for it (`effects_tab::deflicker_status`,
-//! `stabilization_status`). Each case drives that widget, or the row its
-//! measurement is smoothed by, and requires what it must leave: the
-//! picture, the undo depth and the analysis commands it sends.
+//! Video Stabilization measure the clip's media before they do anything,
+//! and the stack draws a status widget for it
+//! (`effects_tab::deflicker_status`, `stabilization_status`). Each case
+//! drives that widget, or the row its measurement is smoothed by, and
+//! requires what it must leave: the picture, the undo depth and the
+//! analysis commands it sends.
 //!
-//! A measurement lands from a worker while the user may be dragging: it
-//! is applied as the app's drain applies it (the open drag closed first,
+//! A measurement is the media file's analysis (M4 step 9), held by the
+//! app by its asset key once found ([`measure`]), never written onto the
+//! clip. It lands from a worker while the user may be dragging: it is
+//! applied as the app's drain applies it (the open drag closed first,
 //! then `proxies::apply_analysis_result`), so the case drives the code
 //! the app runs.
 
@@ -26,10 +29,11 @@ pub(super) const VARIANT: &str = "sample";
 pub(super) struct Analysis {
     pub(super) tag: &'static str,
     pub(super) workflow: &'static str,
-    pub(super) analyse: &'static str,
     reanalyse: &'static str,
     row_key: &'static str,
-    pub(super) measured: fn(&mut klipp_timeline::Clip),
+    pub(super) kind: klipp_analysis::assets::AssetKind,
+    /// A measurement of the fixture's media, as the analysis keeps it.
+    pub(super) measured: fn() -> serde_json::Value,
     in_progress: fn(&mut crate::state::AppState, ClipId),
     pub(super) complete: fn(ClipId) -> AppEvent,
     /// The undo steps a drag held past a result leaves: the drag closed
@@ -41,13 +45,12 @@ pub(super) const ANALYSES: &[Analysis] = &[
     Analysis {
         tag: "deflicker",
         workflow: "deflicker",
-        analyse: "Analyse",
         reanalyse: "Re-analyse",
         row_key: "window_secs",
-        measured: |clip| {
+        kind: klipp_analysis::assets::AssetKind::Deflicker,
+        measured: || {
             let data = klipp_effects::deflicker::DeflickerData { luma: (0..48).map(|i| 0.5 + 0.02 * ((i % 3) as f32)).collect(), fps: 24.0 };
-            clip.deflicker_gains = Some(klipp_effects::deflicker::DeflickerGains::refresh(None, &data, 0.5));
-            clip.deflicker_data = Some(data);
+            serde_json::to_value(data).expect("serialises")
         },
         in_progress: |state, clip| {
             state.deflicker_in_progress.insert(clip);
@@ -58,19 +61,17 @@ pub(super) const ANALYSES: &[Analysis] = &[
     Analysis {
         tag: "video_stabilization",
         workflow: "video_stabilization",
-        analyse: "Analyze Clip",
         reanalyse: "Re-analyze",
         row_key: "smoothing",
-        measured: |clip| {
+        kind: klipp_analysis::assets::AssetKind::Stabilisation,
+        measured: || {
             use klipp_effects::rolling_shutter::Homography;
-            use klipp_effects::stabilization::{accumulate_trajectory, decompose_homography, smooth_trajectory, StabilizationData};
+            use klipp_effects::stabilization::{accumulate_trajectory, decompose_homography, StabilizationData};
             let step = |i: usize| Homography { h: [[1.0, 0.0, if i.is_multiple_of(2) { 2.0 } else { -1.5 }], [0.0, 1.0, 0.5], [0.0, 0.0, 1.0]] };
             let frame_transforms: Vec<Homography> = (0..47).map(step).collect();
             let accumulated = accumulate_trajectory(&frame_transforms);
             let trajectory = accumulated.iter().map(decompose_homography).collect();
-            let data = StabilizationData { frame_transforms, accumulated, trajectory, fps: 24.0, frame_count: 48 };
-            clip.smoothed_trajectory = Some(smooth_trajectory(&data, 1.0));
-            clip.stabilization_data = Some(data);
+            serde_json::to_value(StabilizationData { frame_transforms, accumulated, trajectory, fps: 24.0, frame_count: 48 }).expect("serialises")
         },
         in_progress: |state, clip| {
             state.stabilization_in_progress.insert(clip);
@@ -79,6 +80,28 @@ pub(super) const ANALYSES: &[Analysis] = &[
         result_drag_steps: 2,
     },
 ];
+
+/// `state` holding `a`'s measurement of `clip`'s media, as the app holds
+/// a found analysis (M4 step 9): by the file's asset key. The media is
+/// put in the pool as a stand-in file that exists, as a key reads it.
+pub(super) fn measure(state: &mut crate::state::AppState, clip: &klipp_timeline::Clip, a: &Analysis) {
+    let Some(media) = clip.media_id() else { return };
+    if state.media_pool.get(&media).is_none() {
+        let Ok(path) = std::env::current_exe() else { return };
+        let mut item = klipp_media::MediaItem::synthetic_for_test(path, None);
+        item.id = media;
+        item.fps = klipp_core::Fps::new(24, 1);
+        item.resolution = klipp_core::Resolution { width: 1920, height: 1080 };
+        state.media_pool.add(item);
+    }
+    let Some(key) = state.media_pool.get(&media).and_then(|item| klipp_analysis::assets::asset_key(a.kind, item)) else { return };
+    state.analyses.insert(key, std::sync::Arc::new((a.measured)()));
+}
+
+/// Whether `state` holds `a`'s measurement of `clip`'s media.
+fn holds_measurement(state: &crate::state::AppState, clip: &klipp_timeline::Clip, a: &Analysis) -> bool {
+    state.analysis_of(clip, a.kind).is_some()
+}
 
 pub(super) fn effect_type(tag: &str) -> &'static EffectType {
     effect_types().find(|t| t.tag == tag).unwrap()
@@ -145,8 +168,7 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
     let key = |interaction| CoverageKey::new(id, &parameter, Surface::EffectsStack, VARIANT, interaction);
     let clip = fixture(&(ty.sample)());
     let clip_id = clip.id;
-    let mut measured = clip.clone();
-    (a.measured)(&mut measured);
+    let measured = |r: &mut Run| measure(&mut r.state, &clip, a);
     let desc = ty.desc.params.iter().find(|p| p.key == a.row_key).unwrap();
     let row = ty.presentation(desc).label.unwrap_or(desc.label);
 
@@ -161,17 +183,21 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
         Ok(())
     });
 
-    // Measured or not, "Analyse" asks for a measurement and writes nothing.
-    for (from, button) in [(&clip, a.analyse), (&measured, a.reanalyse)] {
-        report.case(&format!("{id} {button}"), [key(Interaction::StartAnalysis)], || {
-            let mut new = one(from, |_| {});
-            if !new.click_text("", button) {
-                return Err(format!("no {button:?}"));
-            }
-            let want = format!("{:?}", if a.tag == "deflicker" { klipp_core::AppCommand::AnalyzeDeflicker { clip_id } } else { klipp_core::AppCommand::AnalyzeStabilization { clip_id } });
-            holds(&new, 0, &[want])
-        });
-    }
+    // Not measured, it starts by itself: no button. Measured, the button
+    // asks for the measurement again and writes nothing.
+    report.case(&format!("{id} {}", a.reanalyse), [key(Interaction::StartAnalysis)], || {
+        let mut unmeasured = one(&clip, |_| {});
+        if unmeasured.click_text("", a.reanalyse) {
+            return Err(format!("{:?} before there is a measurement", a.reanalyse));
+        }
+        holds(&unmeasured, 0, &[])?;
+        let mut new = one(&clip, measured);
+        if !new.click_text("", a.reanalyse) {
+            return Err(format!("no {:?}", a.reanalyse));
+        }
+        let want = format!("{:?}", if a.tag == "deflicker" { klipp_core::AppCommand::AnalyzeDeflicker { clip_id } } else { klipp_core::AppCommand::AnalyzeStabilization { clip_id } });
+        holds(&new, 0, &[want])
+    });
 
     report.case(&format!("{id} cancelled"), [key(Interaction::CancelAnalysis)], || {
         let mut new = one(&clip, |r| (a.in_progress)(&mut r.state, clip_id));
@@ -182,12 +208,11 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
         holds(&new, 0, &[want])
     });
 
-    // On a measured clip, a drag of that row asks for the smoothing to be
-    // redone as it goes (`RegainDeflicker`, `ResmoothStabilization`): those
-    // write no document, so they join the drag's one step (#1328), unlike
-    // a measurement landing mid-drag below (#1338).
+    // On a measured clip, a drag of that row is one step and sends
+    // nothing more: the smoothing is applied where the measurement is read
+    // (M4 step 9), unlike a measurement landing mid-drag below (#1338).
     report.case(&format!("{id} drag over a measurement"), [key(Interaction::UndoRedo)], || {
-        let mut new = one(&measured, |_| {});
+        let mut new = one(&clip, measured);
         {
             let run = &mut new;
             let (_, at) = run.row(row).ok_or_else(|| format!("no row {row:?}"))?;
@@ -198,22 +223,15 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
             run.button(at + egui::vec2(18.0, 0.0), egui::PointerButton::Primary, false);
             run.frame(Vec::new(), egui::Modifiers::NONE);
         }
-        // What it must send: the smoothing redone for this clip, once or
-        // more as the drag goes, and nothing else.
-        let request = format!("{:?}", if a.tag == "deflicker" { klipp_core::AppCommand::RegainDeflicker { clip_id } } else { klipp_core::AppCommand::ResmoothStabilization { clip_id } });
-        if new.side.is_empty() || new.side.iter().any(|sent| *sent != request) {
-            return Err(format!("the drag sent {:?}, not {request} alone", new.side));
-        }
-        let side = vec![request; new.side.len()];
-        holds(&new, 1, &side)?;
-        // What it must leave: the measured clip with the row's new value set
-        // by the document command, and nothing else changed.
-        let effect = test_clip::effects(&measured)[0].clone();
+        holds(&new, 1, &[])?;
+        // What it must leave: the clip with the row's new value set by the
+        // document command, and nothing else changed.
+        let effect = test_clip::effects(&clip)[0].clone();
         let to = super::parity_numeric::stored(&test_clip::effects(new.clip())[0], desc);
         if to == super::parity_numeric::stored(&effect, desc) {
             return Err(format!("the drag left {} where it was", desc.key));
         }
-        let mut oracle = one(&measured, |_| {});
+        let mut oracle = one(&clip, measured);
         oracle.apply(klipp_core::AppCommand::UpdateBuiltinEffect { clip_id, index: 0, effect: super::parity_numeric::with_field(&effect, desc, to)? });
         if oracle.clip().picture_v2()? != new.clip().picture_v2()? {
             return Err("the drag left another picture than setting its value by the document command does".into());
@@ -239,12 +257,12 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
             if super::event_writes::event_writes(&event) {
                 run.state.close_path_drag_before_edit();
             }
-            let mut flat = run.state.sequences[0].clone();
-            let target = flat.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
-            (a.measured)(target);
-            if !super::proxies::apply_analysis_result(&mut run.state, Some(&flat), &event) {
+            if !super::proxies::apply_analysis_result(&mut run.state, &event) {
                 return Err("the result wasn't applied".into());
             }
+            // The worker kept it as the file's asset; the app's next look
+            // finds it (`ensure_analyses`).
+            measure(&mut run.state, &clip, a);
             let at_result = test_clip::effects(run.clip());
             for dx in [18.0, 24.0, 30.0, 36.0] {
                 run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))], egui::Modifiers::NONE);
@@ -258,7 +276,7 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
         if new.clip().picture_v2()? == before {
             return Err("the drag changed nothing".into());
         }
-        if new.clip().deflicker_data.is_none() && new.clip().stabilization_data.is_none() {
+        if !holds_measurement(&new.state, &clip, a) {
             return Err("the result wasn't kept".into());
         }
         if new.state.deflicker_in_progress.contains(&clip_id) || new.state.stabilization_in_progress.contains(&clip_id) {
@@ -285,7 +303,7 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
         if new.clip().picture_v2()? != before {
             return Err("undo doesn't give back the picture before the drag".into());
         }
-        if new.clip().deflicker_data.is_none() && new.clip().stabilization_data.is_none() {
+        if !holds_measurement(&new.state, &clip, a) {
             return Err("undoing the drag took the measurement".into());
         }
         for _ in 0..depth {

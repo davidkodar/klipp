@@ -89,6 +89,56 @@ impl FrameSource for Synthetic {
         Some(Box::new(move |secs| Some(((*source(secs, size)).clone(), size.0, size.1))))
     }
 
+    /// Every media clip's analyses, under one stand-in key: those the
+    /// oracle's renderers hold ([`analyses`]).
+    fn analysis_key(&mut self, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
+        matches!(clip.kind, klipp_timeline::ClipKind::Media { .. }).then(|| stand_in_key(kind)).flatten()
+    }
+}
+
+/// The key the oracle's analyses are kept under: a stand-in file that
+/// exists (this binary), as an analysis key reads the file.
+fn stand_in_key(kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
+    klipp_analysis::assets::key_for(kind, &std::env::current_exe().ok()?, klipp_analysis::assets::ANALYSIS_WIDTH, 270, (24, 1))
+}
+
+/// The analyses an analysis effect draws by, as the analysis leaves them
+/// (M4 step 9), for every media clip the oracle draws: a measured
+/// flicker, so the gains move the picture and the strength and window
+/// move the gains; a drift with a shake on it, so the smoothing window
+/// moves the correction; the picture moving between frames, so the rows
+/// shear. Each renderer derives them with its effect's settings.
+pub(super) fn analyses() -> Box<klipp_analysis::assets::MemoryStore> {
+    use klipp_analysis::assets::{self, AssetKind};
+    use klipp_effects::rolling_shutter::{Homography, RollingShutterData};
+    use klipp_effects::stabilization::{accumulate_trajectory, decompose_homography, StabilizationData};
+    let deflicker = klipp_effects::deflicker::DeflickerData { luma: (0..48).map(|i| 0.35 + 0.25 * ((i % 4) as f32) / 3.0).collect(), fps: 24.0 };
+    let step = |i: usize| Homography { h: [[1.0, 0.0, if i.is_multiple_of(2) { 6.0 } else { -2.0 }], [0.0, 1.0, if i.is_multiple_of(5) { 3.0 } else { 0.5 }], [0.0, 0.0, 1.0]] };
+    let frame_transforms: Vec<Homography> = (0..47).map(step).collect();
+    let accumulated = accumulate_trajectory(&frame_transforms);
+    let trajectory = accumulated.iter().map(decompose_homography).collect();
+    let stabilisation = StabilizationData { frame_transforms, accumulated, trajectory, fps: 24.0, frame_count: 48 };
+    let moved = |dx: f64, dy: f64| Homography { h: [[1.0, 0.0, dx], [0.0, 1.0, dy], [0.0, 0.0, 1.0]] };
+    let shutter = RollingShutterData { motion: vec![(moved(-6.0, -0.5), moved(6.0, 0.5)); 48], fps: 24.0 };
+    let mut store = assets::MemoryStore::default();
+    for (kind, data) in [
+        (AssetKind::Deflicker, serde_json::to_value(deflicker)),
+        (AssetKind::Stabilisation, serde_json::to_value(stabilisation)),
+        (AssetKind::RollingShutter, serde_json::to_value(shutter)),
+    ] {
+        if let (Some(key), Ok(data)) = (stand_in_key(kind), data) {
+            let _ = assets::store(&mut store, key, data);
+        }
+    }
+    Box::new(store)
+}
+
+/// A renderer for the oracle, on the GPU or not, holding its analyses.
+fn oracle_renderer(gpu: bool) -> Renderer {
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(gpu);
+    r.set_asset_store(analyses());
+    r
 }
 
 /// Where the oracle's time goes, summed over a process: a renderer made,
@@ -161,8 +211,7 @@ fn with_renderer<R>(slot: &'static std::thread::LocalKey<std::cell::RefCell<Opti
         let mut held = cell.borrow_mut();
         let renderer = held.get_or_insert_with(|| {
             let t0 = std::time::Instant::now();
-            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
-            r.set_gpu_enabled(gpu);
+            let r = oracle_renderer(gpu);
             timing::add(if gpu { &timing::GPU_NEW } else { &timing::CPU_NEW }, t0);
             Box::leak(Box::new(r))
         });
@@ -415,14 +464,44 @@ pub(super) fn clip_edit_drawn_on(routes: Routes, size: (u32, u32), before: &Clip
     }
 }
 
+/// What an analysis landing draws (M4 step 9): `clip`'s frame from
+/// renderers that haven't its analysis and from the oracle's, which have
+/// ([`analyses`]), on `routes`: the analysis changes the frame, and with
+/// it the CPU's frame is within a level of the GPU's.
+pub(super) fn analysis_drawn_on(routes: Routes, size: (u32, u32), clip: &Clip) -> Result<(), String> {
+    let seq = sequence(clip, size);
+    let unanalysed = |gpu: bool| {
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(gpu);
+        r.set_asset_store(Box::new(klipp_analysis::assets::MemoryStore::default()));
+        r
+    };
+    let mut src = Synthetic { size, reads: 0 };
+    let (cpu, _) = unanalysed(false).render_inspected(&seq, at(), size.0, size.1, &mut src, RenderOptions::default(), Inspect::default());
+    match routes {
+        Routes::CpuByDesign => {
+            if cpu == render_cpu(&seq, size)? {
+                return Err("the analysis doesn't change the CPU frame".into());
+            }
+            Ok(())
+        }
+        Routes::Both => {
+            let mut src = Synthetic { size, reads: 0 };
+            let (gpu, _) = unanalysed(true)
+                .render_display_u8_on_gpu(&seq, at(), size.0, size.1, &mut src, RenderOptions::default())
+                .ok_or("BLOCKED: the GPU stack declined the unanalysed frame")?;
+            drawn_changed(&Frames { cpu, gpu }, &render_sequence(&seq, size)?)
+        }
+    }
+}
+
 /// How long the GPU stack takes over `clip`'s frame at `size`, as a median
 /// of `runs`, and how many layers it drew on the CPU: a cost probe, not a
 /// parity check.
 pub(super) fn gpu_frame_cost(clip: &Clip, size: (u32, u32), runs: usize) -> Option<(f64, u32)> {
     let seq = sequence(clip, size);
     let mut src = Synthetic { size, reads: 0 };
-    let mut gpu = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
-    gpu.set_gpu_enabled(true);
+    let mut gpu = oracle_renderer(true);
     gpu.render_display_u8_on_gpu(&seq, at(), size.0, size.1, &mut src, RenderOptions::default())?;
     let mut times = Vec::with_capacity(runs);
     let mut cpu_layers = 0;
@@ -453,19 +532,11 @@ mod tests {
     #[test]
     #[ignore = "a timing probe, run by hand; not a gate"]
     fn stabilised_layer_cost() {
-        use klipp_effects::rolling_shutter::Homography;
-        use klipp_effects::stabilization::{accumulate_trajectory, decompose_homography, smooth_trajectory, StabilizationData};
+        // The oracle's renderers hold the stabiliser's analysis for every
+        // media clip (`analyses`).
         let plain = clip(&[]);
-        let unanalysed = clip(&[E::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }]);
-        let mut analysed = unanalysed.clone();
-        let step = |i: usize| Homography { h: [[1.0, 0.0, if i.is_multiple_of(2) { 6.0 } else { -4.5 }], [0.0, 1.0, 1.5], [0.0, 0.0, 1.0]] };
-        let frame_transforms: Vec<Homography> = (0..47).map(step).collect();
-        let accumulated = accumulate_trajectory(&frame_transforms);
-        let trajectory = accumulated.iter().map(decompose_homography).collect();
-        let data = StabilizationData { frame_transforms, accumulated, trajectory, fps: 24.0, frame_count: 48 };
-        analysed.smoothed_trajectory = Some(smooth_trajectory(&data, 1.0));
-        analysed.stabilization_data = Some(data);
-        for (name, c) in [("no effect", &plain), ("stabiliser, unanalysed", &unanalysed), ("stabiliser, analysed", &analysed)] {
+        let analysed = clip(&[E::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }]);
+        for (name, c) in [("no effect", &plain), ("stabiliser, analysed", &analysed)] {
             match gpu_frame_cost(c, FULL, 15) {
                 Some((ms, cpu_layers)) => eprintln!("{name}: {ms:.2} ms median at 1920x1080, cpu_layers {cpu_layers}"),
                 None => eprintln!("{name}: the GPU stack declined"),
@@ -477,11 +548,7 @@ mod tests {
     /// thread's shared ones must draw too.
     fn fresh_frames(clip: &Clip, size: (u32, u32), secs: f64) -> (Vec<f32>, Vec<u8>) {
         let seq = sequence(clip, size);
-        let fresh = |gpu: bool| {
-            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
-            r.set_gpu_enabled(gpu);
-            r
-        };
+        let fresh = oracle_renderer;
         let mut src = Synthetic { size, reads: 0 };
         let (cpu, _) = fresh(false).render_inspected(&seq, time(secs), size.0, size.1, &mut src, RenderOptions::default(), Inspect::default());
         let mut src = Synthetic { size, reads: 0 };

@@ -216,18 +216,6 @@ fn commands_applied(run: &Run) -> Result<(), String> {
     }
 }
 
-/// The analysis a row asks the app to redo when it's edited, if any, and
-/// whether it asks only once the clip is measured: Deflicker's window
-/// always asks for its gains again; Stabilisation's smoothing has a
-/// trajectory to smooth only once measured.
-fn analysis_request(ty: &EffectType, desc: &ParamDesc) -> Option<(&'static str, bool)> {
-    match (ty.tag, desc.key) {
-        ("deflicker", "window_secs") => Some(("RegainDeflicker", false)),
-        ("video_stabilization", "smoothing") => Some(("ResmoothStabilization", true)),
-        _ => None,
-    }
-}
-
 fn edit_case(
     ty: &EffectType,
     surface: Surface,
@@ -237,7 +225,6 @@ fn edit_case(
     drive: impl Fn(&mut Run) -> Result<(), String>,
 ) -> Result<(), String> {
     let clip = fixture_on(effect, surface);
-    let side_clip = clip.clone();
     let before = clip.picture_v2().unwrap();
     // The view driven, and the oracle: the document command alone,
     // applied to the same clip, never a view.
@@ -275,18 +262,6 @@ fn edit_case(
         return Err(format!(
             "not the document command's picture: value {actual}, expected {expected}"
         ));
-    }
-    // A row that asks the app to bring its analysis up to the edit sends
-    // that request once, besides what the document command sends: the
-    // expected side commands.
-    let measured = side_clip.deflicker_data.is_some() || side_clip.stabilization_data.is_some();
-    if let Some((request, _)) = analysis_request(ty, desc).filter(|(_, once_measured)| measured || !once_measured) {
-        match new.side.iter().position(|sent| sent.starts_with(request)) {
-            Some(i) => {
-                new.side.remove(i);
-            }
-            None => return Err(format!("the row didn't ask for {request}: sent {:?}", new.side)),
-        }
     }
     if new.side != oracle.side {
         return Err(format!(
@@ -363,8 +338,7 @@ pub(super) fn size_for(tag: &str) -> (u32, u32) {
 
 /// The clip a row's pixel case edits, and the place of the edited effect
 /// in its list: `effect` with the [`PIXEL_CONTEXT`] for its tag, after a
-/// shrinking Transform where the context asks for one, with the analysis
-/// an analysis effect draws by.
+/// shrinking Transform where the context asks for one.
 pub(super) fn pixel_fixture(ty: &EffectType, effect: &BuiltinEffect, surface: Surface) -> Result<(klipp_timeline::Clip, usize), String> {
     let context = PIXEL_CONTEXT.iter().find(|(tag, _, _)| *tag == ty.tag);
     let mut entry = serde_json::to_value(effect).map_err(|e| e.to_string())?;
@@ -372,60 +346,17 @@ pub(super) fn pixel_fixture(ty: &EffectType, effect: &BuiltinEffect, surface: Su
         entry[*field] = serde_json::from_str(value).map_err(|e| format!("{}.{field}: {e}", ty.tag))?;
     }
     let effect: BuiltinEffect = serde_json::from_value(entry).map_err(|e| format!("{}: {e}", ty.tag))?;
+    // An analysis effect draws by its media's analysis, which the
+    // oracle's renderers hold for every media clip
+    // (`parity_pixels::analyses`), derived with the effect's settings as
+    // it reads them (M4 step 9).
     let mut clip = fixture_on(&effect, surface);
-    match ty.tag {
-        "deflicker" => {
-            // A measured flicker, as the analysis leaves it: the gains move
-            // the picture, and the strength and window move the gains.
-            clip.deflicker_data = Some(klipp_effects::deflicker::DeflickerData { luma: (0..48).map(|i| 0.35 + 0.25 * ((i % 4) as f32) / 3.0).collect(), fps: 24.0 });
-            regain(&mut clip);
-        }
-        "video_stabilization" | "rolling_shutter_correction" => {
-            // A measured shake, as the analysis leaves it.
-            use klipp_effects::rolling_shutter::Homography;
-            use klipp_effects::stabilization::{accumulate_trajectory, decompose_homography, StabilizationData};
-            // A drift with a shake on it, so the smoothing window moves
-            // the correction.
-            let step = |i: usize| Homography { h: [[1.0, 0.0, if i.is_multiple_of(2) { 6.0 } else { -2.0 }], [0.0, 1.0, if i.is_multiple_of(5) { 3.0 } else { 0.5 }], [0.0, 0.0, 1.0]] };
-            let frame_transforms: Vec<Homography> = (0..47).map(step).collect();
-            let accumulated = accumulate_trajectory(&frame_transforms);
-            let trajectory = accumulated.iter().map(decompose_homography).collect();
-            let data = StabilizationData { frame_transforms, accumulated, trajectory, fps: 24.0, frame_count: 48 };
-            clip.stabilization_data = Some(data);
-            regain(&mut clip);
-        }
-        _ => {}
-    }
     if context.is_some_and(|(_, _, shrunk)| *shrunk) {
         let shrink = BuiltinEffect::Transform { position_x: 0.0, position_y: 0.0, scale_x: 0.6, scale_y: 0.6, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
         clip.insert_effect(0, shrink).ok_or("the shrinking Transform")?;
         return Ok((clip, 1));
     }
     Ok((clip, 0))
-}
-
-/// The analysis an analysis effect draws by, brought up to its settings
-/// as the app does after an edit of them (the parity runs record those
-/// side commands, they don't apply them): the deflicker gains for its
-/// window (`RegainDeflicker`), and the stabilisation's trajectory smoothed
-/// over its smoothing's window (`ResmoothStabilization`).
-pub(super) fn regain(clip: &mut klipp_timeline::Clip) {
-    let window = clip.builtin_effects().iter().find_map(|e| match e {
-        BuiltinEffect::Deflicker { window_secs, .. } => Some(*window_secs as f64),
-        _ => None,
-    });
-    if let (Some(window), Some(data)) = (window, clip.deflicker_data.as_ref()) {
-        clip.deflicker_gains = Some(klipp_effects::deflicker::DeflickerGains::refresh(clip.deflicker_gains.clone(), data, window));
-    }
-    let smoothing = clip.builtin_effects().iter().find_map(|e| match e {
-        BuiltinEffect::VideoStabilization { smoothing, .. } => Some(*smoothing as f64),
-        _ => None,
-    });
-    if let (Some(smoothing), Some(data)) = (smoothing, clip.stabilization_data.as_ref()) {
-        let duration_secs = data.frame_count as f64 / data.fps.max(1.0);
-        let window_secs = (smoothing.clamp(0.0, 1.0) * duration_secs).max(0.05);
-        clip.smoothed_trajectory = Some(klipp_effects::stabilization::smooth_trajectory(data, window_secs));
-    }
 }
 
 /// A retiming fixture's positive control: the clip's own speed changed
@@ -467,7 +398,6 @@ fn pixel_case(routes: super::parity_pixels::Routes, ty: &EffectType, surface: Su
             let length = klipp_core::RationalTime::from_secs_f64(c.source_duration().to_secs_f64() / c.speed, c.timeline_in.rate);
             c.timeline_out = c.timeline_in + length;
         }
-        regain(&mut c);
         Ok(c)
     };
     let mut chosen = None;
@@ -484,17 +414,9 @@ fn pixel_case(routes: super::parity_pixels::Routes, ty: &EffectType, surface: Su
     let mut new = run_for(surface, clip);
     type_value(&mut new, label, &typed)?;
     commands_applied(&new)?;
-    // The row asks the app to bring its analysis up to the edit; `regain`
-    // stands in for that below, so the request must have been sent.
-    if let Some((command, _)) = analysis_request(ty, desc) {
-        if !new.side.iter().any(|sent| sent.starts_with(command)) {
-            return Err(format!("the row didn't ask for {command}: sent {:?}", new.side));
-        }
-    }
     let _ = target;
-    let mut new = new.clip().clone();
-    regain(&mut new);
-    super::parity_pixels::clip_edit_drawn_on(routes, size, &start, &new)
+    // The analysis follows the edit where it is read: nothing to redo.
+    super::parity_pixels::clip_edit_drawn_on(routes, size, &start, new.clip())
 }
 
 fn run_entry(report: &mut Report, entry: &CatalogEntry, surface: Surface, variant: &str) {
