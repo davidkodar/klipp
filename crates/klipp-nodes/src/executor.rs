@@ -264,6 +264,11 @@ pub struct GraphExecutor {
     keep_output_on_gpu: bool,
     /// Effect-node chain breaks in the run so far (`ChainStats`).
     run_effect_breaks: u32,
+    /// Source-boundary nodes run (M4 step 6), all time.
+    source_runs: u64,
+    /// Of them, those run with no context to read the source from, which
+    /// passed their input on.
+    source_unavailable: u64,
     /// Mixed effect nodes whose mix or mask couldn't be read, skipped
     /// (`ChainStats::effect_mixes_refused`).
     run_mix_refused: u32,
@@ -683,6 +688,8 @@ impl GraphExecutor {
             chain_thumbs: None,
             keep_output_on_gpu: false,
             run_effect_breaks: 0,
+            source_runs: 0,
+            source_unavailable: 0,
             run_mix_refused: 0,
             start_kept: None,
             start_kept_for_gates: None,
@@ -758,6 +765,8 @@ impl GraphExecutor {
             chain_thumbs: None,
             keep_output_on_gpu: false,
             run_effect_breaks: 0,
+            source_runs: 0,
+            source_unavailable: 0,
             run_mix_refused: 0,
             start_kept: None,
             start_kept_for_gates: None,
@@ -1549,6 +1558,45 @@ impl GraphExecutor {
         matte_preview_node: Option<NodeId>,
         visible_nodes: Option<&std::collections::HashSet<NodeId>>,
     ) -> Result<(Vec<f32>, Option<Vec<f32>>, std::collections::HashMap<NodeId, Vec<u8>>), ExecutorError> {
+        self.run_planned(source_frame, graph, width, height, clip_time_secs, frame_number, matte_tap, matte_preview_node, visible_nodes, None)
+    }
+
+    /// [`Self::execute_linear_with_thumbs`] with what a non-pure node reads
+    /// besides its input (M4): its source frames at other times, its
+    /// analysis and its plug-in instance. A node that needs them and runs
+    /// without them passes its input on, counted
+    /// ([`Self::source_unavailable`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_linear_with_context(
+        &mut self,
+        source_frame: &[f32],
+        graph: &NodeGraph,
+        width: u32,
+        height: u32,
+        clip_time_secs: f64,
+        frame_number: u64,
+        matte_tap: Option<NodeId>,
+        matte_preview_node: Option<NodeId>,
+        visible_nodes: Option<&std::collections::HashSet<NodeId>>,
+        ctx: &mut crate::frame_context::FrameContext<'_>,
+    ) -> Result<(Vec<f32>, Option<Vec<f32>>, std::collections::HashMap<NodeId, Vec<u8>>), ExecutorError> {
+        self.run_planned(source_frame, graph, width, height, clip_time_secs, frame_number, matte_tap, matte_preview_node, visible_nodes, Some(ctx))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_planned(
+        &mut self,
+        source_frame: &[f32],
+        graph: &NodeGraph,
+        width: u32,
+        height: u32,
+        clip_time_secs: f64,
+        frame_number: u64,
+        matte_tap: Option<NodeId>,
+        matte_preview_node: Option<NodeId>,
+        visible_nodes: Option<&std::collections::HashSet<NodeId>>,
+        ctx: Option<&mut crate::frame_context::FrameContext<'_>>,
+    ) -> Result<(Vec<f32>, Option<Vec<f32>>, std::collections::HashMap<NodeId, Vec<u8>>), ExecutorError> {
         // The run's plan (#1089, M2 step 8): compiled once per graph shape
         // and kept. A correction gated by a matte runs as the correction
         // blended by an ApplyMatte, so no correction reads its port 1
@@ -1568,7 +1616,7 @@ impl GraphExecutor {
         plan.refresh(graph);
         let result = self.execute_with_plan(
             source_frame, graph, &plan, width, height, clip_time_secs, frame_number,
-            matte_tap, matte_preview_node, visible_nodes,
+            matte_tap, matte_preview_node, visible_nodes, ctx,
         );
         // Kept for the next run of this shape. A long session of many
         // shapes starts over rather than grow without bound.
@@ -1592,6 +1640,7 @@ impl GraphExecutor {
         matte_tap: Option<NodeId>,
         matte_preview_node: Option<NodeId>,
         visible_nodes: Option<&std::collections::HashSet<NodeId>>,
+        ctx: Option<&mut crate::frame_context::FrameContext<'_>>,
     ) -> Result<(Vec<f32>, Option<Vec<f32>>, std::collections::HashMap<NodeId, Vec<u8>>), ExecutorError> {
         let graph = plan.graph(live);
         let saved_ws = self.working_colorspace;
@@ -1605,7 +1654,7 @@ impl GraphExecutor {
         }
         let result = self.execute_linear_with_thumbs_inner(
             source_frame, graph, plan, width, height, clip_time_secs, frame_number,
-            matte_tap, matte_preview_node, visible_nodes,
+            matte_tap, matte_preview_node, visible_nodes, ctx,
         );
         if needs_swap {
             self.set_working_colorspace(saved_ws);
@@ -1626,6 +1675,7 @@ impl GraphExecutor {
         matte_tap: Option<NodeId>,
         matte_preview_node: Option<NodeId>,
         visible_nodes: Option<&std::collections::HashSet<NodeId>>,
+        mut ctx: Option<&mut crate::frame_context::FrameContext<'_>>,
     ) -> Result<(Vec<f32>, Option<Vec<f32>>, std::collections::HashMap<NodeId, Vec<u8>>), ExecutorError> {
         // An empty `source_frame` is only meaningful when the GPU chain
         // has been pre-seeded — the caller skipped the GPU→CPU readback
@@ -1908,7 +1958,7 @@ impl GraphExecutor {
                         return Err(if is_source { ExecutorError::CpuSourceRequired } else { ExecutorError::MaskUnavailable(node_id) });
                     };
                     let key_params = params_for_frame(key_node, clip_time_secs);
-                    let matte = self.execute_node(key, &key_node.kind, &key_params, pixels, None, None, width, height, source_frame, frame_number, clip_time_secs, None);
+                    let matte = self.execute_node(key, &key_node.kind, &key_params, pixels, None, None, width, height, source_frame, frame_number, clip_time_secs, None, None);
                     node_outputs.insert(key, Arc::new(matte));
                     cpu_fallback_count += 1;
                 }
@@ -2659,7 +2709,7 @@ impl GraphExecutor {
                         return Err(if is_source { ExecutorError::CpuSourceRequired } else { ExecutorError::MaskUnavailable(node_id) });
                     };
                     let key_params = params_for_frame(key_node, clip_time_secs);
-                    let matte = self.execute_node(sec.matte, &key_node.kind, &key_params, pixels, None, None, width, height, source_frame, frame_number, clip_time_secs, None);
+                    let matte = self.execute_node(sec.matte, &key_node.kind, &key_params, pixels, None, None, width, height, source_frame, frame_number, clip_time_secs, None, None);
                     node_outputs.insert(sec.matte, Arc::new(matte));
                     cpu_fallback_count += 1;
                 }
@@ -2699,7 +2749,7 @@ impl GraphExecutor {
             let secondary_slice = match graph.input_of(node_id, 1).filter(|id| secondary_slice.is_none() && window_mattes.contains_key(id)).and_then(|id| node_by_id.get(&id).copied()) {
                 Some(window) => {
                     let window_params = params_for_frame(window, clip_time_secs);
-                    window_on_cpu = self.execute_node(window.id, &NodeKind::Mask, &window_params, primary_slice, None, None, width, height, source_frame, frame_number, clip_time_secs, None);
+                    window_on_cpu = self.execute_node(window.id, &NodeKind::Mask, &window_params, primary_slice, None, None, width, height, source_frame, frame_number, clip_time_secs, None, None);
                     cpu_fallback_count += 1;
                     Some(window_on_cpu.as_slice())
                 }
@@ -2740,6 +2790,7 @@ impl GraphExecutor {
                 frame_number,
                 clip_time_secs,
                 secondary_matte.as_ref().filter(|(id, _)| graph.input_of(node.id, 1) == Some(*id)).map(|(_, m)| m),
+                ctx.as_deref_mut(),
             );
             // A gate run here has read what was kept for it.
             self.gate_read(node_id, secondaries, &mut kept, &mut secondary_matte);
@@ -2883,8 +2934,11 @@ impl GraphExecutor {
         match kind {
             // A clip's effects (step 10): on the chain when the legacy
             // route would run them on the GPU too.
+            // A source-boundary node reads source frames the chain hasn't.
             NodeKind::Effect | NodeKind::EffectSegment => {
-                !params.effects.is_empty() && klipp_effects::chain_supports_gpu(&params.effects)
+                !params.effects.is_empty()
+                    && klipp_effects::chain_supports_gpu(&params.effects)
+                    && !params.effects.iter().any(klipp_effects::registry::needs_source_neighbours)
             }
             NodeKind::SceneToDisplay => params.scene_to_display.is_some(),
             // Records the source format; never touches the pixels.
@@ -4225,6 +4279,52 @@ impl GraphExecutor {
         self.last_chain_final_slot
     }
 
+    /// Source-boundary nodes run so far (M4 step 6): each once a frame,
+    /// so a frame that ran one twice shows here.
+    pub fn source_runs(&self) -> u64 {
+        self.source_runs
+    }
+
+    /// Source-boundary nodes run with no context to read their source
+    /// from, which passed their input on.
+    pub fn source_unavailable(&self) -> u64 {
+        self.source_unavailable
+    }
+
+    /// A source-boundary node (M4 step 6): temporal noise reduction, on
+    /// the source before the grade, against the frames either side of it
+    /// read from the clip's source through `ctx`. A neighbour the source
+    /// hasn't (past the media, the wrong size, a failed read) is left out,
+    /// so the media's first and last frames denoise against one side;
+    /// with none, or no context, the input passes on.
+    fn at_the_source(&mut self, node_id: NodeId, effects: &[klipp_effects::BuiltinEffect], input: &[f32], ctx: Option<&mut crate::frame_context::FrameContext<'_>>) -> Vec<f32> {
+        use crate::frame_context::Neighbour;
+        self.source_runs += 1;
+        let Some(ctx) = ctx else {
+            self.source_unavailable += 1;
+            return input.to_vec();
+        };
+        let mut out = input.to_vec();
+        for effect in effects {
+            let klipp_effects::BuiltinEffect::TemporalDenoise { strength, threshold } = *effect else { continue };
+            // The captures either side: one of the media's frames away,
+            // whatever the sequence's rate (its rate when the source can't
+            // say).
+            let dt = ctx.sources.frame_secs().unwrap_or(1.0 / ctx.fps.max(1.0));
+            ctx.sources.for_node(node_id, klipp_effects::temporal_denoise::NEIGHBOURS);
+            let neighbours: Vec<Vec<f32>> = [ctx.source_secs - dt, ctx.source_secs + dt]
+                .into_iter()
+                .filter_map(|t| match ctx.sources.linear(t) {
+                    Neighbour::Frame(f) => Some(f.rgba),
+                    Neighbour::Missing(_) => None,
+                })
+                .collect();
+            let refs: Vec<&[f32]> = neighbours.iter().map(Vec::as_slice).collect();
+            out = klipp_effects::temporal_denoise::denoise_frame(&out, &refs, threshold, strength);
+        }
+        out
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn execute_node(
         &mut self,
@@ -4242,6 +4342,7 @@ impl GraphExecutor {
         // The node wiring this one's matte port left its matte in GPU
         // memory rather than on the CPU. Only ApplyMatte cares.
         gpu_matte: Option<&klipp_effects::gpu::KeyedMatte>,
+        ctx: Option<&mut crate::frame_context::FrameContext<'_>>,
     ) -> Vec<f32> {
         match kind {
             NodeKind::Source => source_frame.to_vec(),
@@ -4253,6 +4354,11 @@ impl GraphExecutor {
 
             // A clip's effects off the chain: as the legacy route runs
             // them, on the GPU when the list allows it.
+            // A source-boundary node (M4 step 6): it reads the clip's
+            // source at other times, which only its context gives it.
+            NodeKind::Effect | NodeKind::EffectSegment if params.effects.iter().any(klipp_effects::registry::needs_source_neighbours) => {
+                self.at_the_source(node_id, &params.effects, primary_input, ctx)
+            }
             NodeKind::Effect | NodeKind::EffectSegment => {
                 let fx = &params.effects;
                 let luma = klipp_color::linear::luma_coefs(self.working_colorspace);

@@ -26,8 +26,18 @@ use crate::graph::NodeId;
 
 /// Everything a non-pure node is given for one frame.
 pub struct FrameContext<'a> {
+    /// The clip being rendered: a plug-in instance's slot is its.
+    pub clip: ClipId,
+    /// The timeline frame index rendered: continuity is counted in frames.
+    pub frame: i64,
+    /// The clip's media and its source in-point (a nil media for a clip
+    /// without one): a plug-in's state is reset when either changes.
+    pub source: (klipp_core::MediaId, f64),
     /// The clip's time, as the executor is given it.
     pub clip_time_secs: f64,
+    /// The source time of the frame being rendered: where a node's
+    /// neighbours are counted from.
+    pub source_secs: f64,
     pub frame_number: u64,
     pub fps: f64,
     pub sources: &'a mut dyn SourceProvider,
@@ -102,6 +112,9 @@ impl FrameSize for LinearFrame {
 pub trait SourceProvider {
     /// The source range a request may name: `[in, out)`, in source seconds.
     fn bounds(&self) -> (f64, f64);
+    /// The node whose requests follow, and the source frames its type
+    /// declares it reads per frame. Only a bounding provider counts them.
+    fn for_node(&mut self, _node: NodeId, _budget: usize) {}
     fn encoded(&mut self, source_secs: f64) -> Neighbour<EncodedFrame>;
     fn linear(&mut self, source_secs: f64) -> Neighbour<LinearFrame>;
     /// One of the media's frames, in seconds (1 / its rate), when known: a
@@ -109,6 +122,22 @@ pub trait SourceProvider {
     /// sequence's rate. `None` when the source can't say.
     fn frame_secs(&self) -> Option<f64> {
         None
+    }
+}
+
+/// No source: a run without one (an effects plan over a picture already
+/// drawn) gives a node that asks for a source frame none.
+pub struct NoSources;
+
+impl SourceProvider for NoSources {
+    fn bounds(&self) -> (f64, f64) {
+        (0.0, 0.0)
+    }
+    fn encoded(&mut self, _source_secs: f64) -> Neighbour<EncodedFrame> {
+        Neighbour::Missing(Missing::Unavailable)
+    }
+    fn linear(&mut self, _source_secs: f64) -> Neighbour<LinearFrame> {
+        Neighbour::Missing(Missing::Unavailable)
     }
 }
 
@@ -137,13 +166,6 @@ impl<'s> BoundedSources<'s> {
     /// `inner` for a render at `size`.
     pub fn new(inner: &'s mut dyn SourceProvider, width: u32, height: u32) -> Self {
         Self { inner, size: (width, height), asked: HashMap::new(), node: None }
-    }
-
-    /// The node whose requests follow, and the source frames its type
-    /// declares it reads per frame (a denoiser its window, a temporal
-    /// plug-in what its metadata says), held to [`NEIGHBOUR_CEILING`].
-    pub fn for_node(&mut self, node: NodeId, budget: usize) {
-        self.node = Some((node, budget.min(NEIGHBOUR_CEILING)));
     }
 
     fn admit(&mut self, source_secs: f64) -> Result<(), Missing> {
@@ -179,6 +201,13 @@ impl SourceProvider for BoundedSources<'_> {
 
     fn frame_secs(&self) -> Option<f64> {
         self.inner.frame_secs()
+    }
+
+    /// The node whose requests follow, and the source frames its type
+    /// declares it reads per frame (a denoiser its window, a temporal
+    /// plug-in what its metadata says), held to [`NEIGHBOUR_CEILING`].
+    fn for_node(&mut self, node: NodeId, budget: usize) {
+        self.node = Some((node, budget.min(NEIGHBOUR_CEILING)));
     }
 
     fn encoded(&mut self, source_secs: f64) -> Neighbour<EncodedFrame> {

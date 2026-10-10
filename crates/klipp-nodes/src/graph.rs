@@ -797,6 +797,17 @@ impl NodeGraph {
         self.edges.push(Edge { from_node: prev, from_port: 0, to_node: out, to_port: 0 });
     }
 
+    /// Put `node` straight after the graph's Source: everything the
+    /// source fed, it feeds. A graph without a Source is left alone.
+    pub fn splice_after_source(&mut self, node: Node) {
+        let Some(source) = self.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id) else { return };
+        for e in self.edges.iter_mut().filter(|e| e.from_node == source) {
+            e.from_node = node.id;
+        }
+        self.edges.push(Edge { from_node: source, from_port: 0, to_node: node.id, to_port: 0 });
+        self.nodes.push(node);
+    }
+
     /// Splice one node in before the output, between it and what fed it
     /// (port 0 in and out): how the renderer adds a run's own step, such
     /// as a scene-referred clip's display step (step 11c).
