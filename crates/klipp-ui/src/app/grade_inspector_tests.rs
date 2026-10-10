@@ -800,6 +800,139 @@ fn the_first_edit_inside_a_sequence_grade_s_compound_makes_its_corrector() {
     }
 }
 
+/// A grade of `kinds` chained between its Source and its Output, and
+/// their ids in order.
+fn chain_of(kinds: &[NodeKind]) -> (NodeGraph, Vec<NodeId>) {
+    let mut g = bare_grade();
+    let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
+    let output = g.output_node_id;
+    g.edges.clear();
+    let (mut prev, mut ids) = (source, Vec::new());
+    for kind in kinds {
+        let n = Node { id: NodeId::new_v4(), kind: *kind, label: format!("{kind:?}"), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: vec![] };
+        g.edges.push(klipp_nodes::Edge { from_node: prev, from_port: 0, to_node: n.id, to_port: 0 });
+        prev = n.id;
+        ids.push(n.id);
+        let at = g.nodes.iter().position(|x| x.id == output).unwrap();
+        g.nodes.insert(at, n);
+    }
+    g.edges.push(klipp_nodes::Edge { from_node: prev, from_port: 0, to_node: output, to_port: 0 });
+    (g, ids)
+}
+
+/// A grade whose level `depth` compounds down holds an Exposure, a
+/// Saturation and a Contrast in a chain: the grade, the descent to that
+/// level, and those three.
+fn at_depth(depth: usize) -> (NodeGraph, Vec<NodeId>, Vec<NodeId>) {
+    let (mut grade, ids) = chain_of(&[NodeKind::Exposure, NodeKind::Saturation, NodeKind::Contrast]);
+    let mut descent = Vec::new();
+    for _ in 0..depth {
+        let mut outer = NodeGraph::default();
+        descent.insert(0, nest(&mut outer, grade));
+        grade = outer;
+    }
+    (grade, descent, ids)
+}
+
+/// Each structure edit, as the grade canvas makes it (#1476), on `grade`
+/// at `descent`, through the editing clip `clip` (a clip, or a sequence
+/// grade's stand-in): each one step, which undo takes back.
+fn check_structure_edits(run: &mut Run, clip: ClipId, descent: &[NodeId], ids: &[NodeId], level: &dyn Fn(&Run) -> NodeGraph, saved: &dyn Fn(&Run) -> String, undo: &dyn Fn(&mut AppState), what: &str) {
+    use super::path_commands::GradeStructure as S;
+    let kinds = |g: &NodeGraph| g.nodes.iter().map(|n| (n.id, n.kind)).collect::<Vec<_>>();
+    let (added, group) = (NodeId::new_v4(), NodeId::new_v4());
+    let edits = [
+        ("add", S::Add { kind: NodeKind::Saturation, id: added, position: (40.0, 60.0) }),
+        ("remove", S::Remove { node: ids[1] }),
+        ("reorder", S::Reorder { node: ids[2], after: ids[0] }),
+        ("group", S::Group { nodes: ids[0..2].to_vec(), group }),
+    ];
+    for (name, edit) in edits {
+        let (before, steps, shape) = (saved(run), run.state.active_history().undo_count(), kinds(&level(run)));
+        assert!(run.state.grade_structure_edit(clip, descent, edit), "{what} {name}: {:?}", run.state.toast.message_for_test());
+        assert_eq!(run.state.active_history().undo_count(), steps + 1, "{what} {name}: one step");
+        let after = level(run);
+        match name {
+            "add" => assert!(after.nodes.iter().any(|n| n.id == added && n.kind == NodeKind::Saturation), "{what}: added at the level"),
+            "remove" => assert!(!after.nodes.iter().any(|n| n.id == ids[1]), "{what}: removed from the level"),
+            "reorder" => assert_ne!(kinds(&after), shape, "{what}: reordered"),
+            _ => {
+                let g = after.nodes.iter().find(|n| n.id == group).expect("the compound at the level");
+                let inside = g.params.compound_subgraph.as_ref().unwrap();
+                assert!(ids[0..2].iter().all(|id| inside.nodes.iter().any(|n| n.id == *id)), "{what}: grouped inside it");
+                assert!(!after.nodes.iter().any(|n| ids[0..2].contains(&n.id)), "{what}: out of the level");
+            }
+        }
+        undo(&mut run.state);
+        assert_eq!(saved(run), before, "{what} {name}: undo, the grade as it was");
+    }
+    // Group, then Ungroup that compound: one step each.
+    assert!(run.state.grade_structure_edit(clip, descent, S::Group { nodes: ids[0..2].to_vec(), group }));
+    let (grouped, steps) = (saved(run), run.state.active_history().undo_count());
+    assert!(run.state.grade_structure_edit(clip, descent, S::Ungroup { node: group }), "{what} ungroup: {:?}", run.state.toast.message_for_test());
+    assert_eq!(run.state.active_history().undo_count(), steps + 1, "{what} ungroup: one step");
+    let after = level(run);
+    assert!(!after.nodes.iter().any(|n| n.id == group) && ids[0..2].iter().all(|id| after.nodes.iter().any(|n| n.id == *id)), "{what}: ungrouped back into the level");
+    undo(&mut run.state);
+    assert_eq!(saved(run), grouped, "{what} ungroup: undo, the compound back");
+}
+
+/// Add, remove, reorder, Group and Ungroup on a clip's grade, at its top,
+/// one compound down and two, each by path in one step (#1476).
+#[test]
+fn a_clip_grade_s_structure_edits_are_one_step_by_path_at_any_depth() {
+    for depth in 0..3 {
+        let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
+        let (grade, descent, ids) = at_depth(depth);
+        run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap().edit_grade(|g| *g = grade);
+        let clip_id = run.clip;
+        let d = descent.clone();
+        check_structure_edits(
+            &mut run,
+            clip_id,
+            &descent,
+            &ids,
+            &|run| crate::inspector::grade_view::v1_level(clip(&run.state, run.clip).grade(), &d).expect("the level").clone(),
+            &|run| saved(&run.state, run.clip),
+            &undo_once,
+            &format!("clip, depth {depth}"),
+        );
+    }
+}
+
+/// The same on the timeline grade and a group's stages, through their
+/// stand-ins' ids (#1476).
+#[test]
+fn a_sequence_grade_s_structure_edits_are_one_step_by_path_at_any_depth() {
+    for depth in 0..3 {
+        let (mut run, which) = sequence_grades(true);
+        for w in which {
+            let (grade, descent, ids) = at_depth(depth);
+            let seq = &mut run.state.sequences[0];
+            let root = w.root(seq);
+            seq.set_root_grade(root, Some(grade)).unwrap();
+            let stand_in = match w {
+                GradeStandIn::Timeline => seq.timeline_grade_clip_id(),
+                GradeStandIn::Group(g, stage) => seq.grade_group(g).unwrap().stage_clip_id(stage),
+            };
+            let d = descent.clone();
+            check_structure_edits(
+                &mut run,
+                stand_in,
+                &descent,
+                &ids,
+                &|run| {
+                    let seq = &run.state.sequences[0];
+                    crate::inspector::grade_view::v1_level(seq.root_grade(root).unwrap().unwrap(), &d).expect("the level").clone()
+                },
+                &|run| stored(run, w),
+                &undo_root,
+                &format!("{w:?}, depth {depth}"),
+            );
+        }
+    }
+}
+
 /// Escape during the first drag takes the drag and the Corrector it made
 /// back: the clip saved as it was, no step. A press and release that move
 /// nothing leave nothing either.

@@ -33,6 +33,7 @@ const ALLOWED: &[(&str, usize, &str)] = &[
     ("klipp-graph-format/src/lib.rs", 1, "a grade node's kind"),
     ("klipp-graph-format/src/lifted.rs", 1, "a grade node's kind"),
     ("klipp-graph-lift/src/registry_catalog.rs", 1, "a grade node's kind"),
+    ("klipp-graph-lift/src/structure.rs", 1, "a grade node's kind, for Group and Ungroup on a grade body (#1476)"),
     ("klipp-graph-lift/src/revision4.rs", 3, "the conversion to revision 4, on the stored form: a grade compound's kind and a Speed Ramp's fields"),
 ];
 

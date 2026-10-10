@@ -590,6 +590,8 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn
                 path: path.clone(), action: crate::edit_planner::Action::MoveAfter(*after),
             }, catalog, interface).map_err(|e| e.to_string())?;
         }
+        GraphOp::Group { nodes, group, .. } => crate::structure::group(g, nodes, *group)?,
+        GraphOp::Ungroup { .. } => crate::structure::ungroup(g, target)?,
     }
     Ok(())
 }
@@ -664,6 +666,7 @@ fn apply_list(list: &mut Vec<Node>, op: &GraphOp, target: NodeId, catalog: Optio
             set_payload(&mut list[at], payload)?;
         }
         GraphOp::Connect { .. } | GraphOp::Disconnect { .. } | GraphOp::PublishOutput { .. } | GraphOp::Unpublish { .. } | GraphOp::SetMaskChannel { .. } | GraphOp::AddNodeBeside { .. } => return Err("a track's effects are a list, with nothing to wire".into()),
+        GraphOp::Group { .. } | GraphOp::Ungroup { .. } => return Err("a track's effects are a list, with no compound".into()),
     }
     Ok(())
 }
@@ -729,6 +732,11 @@ fn apply_pending(docs: &mut Documents, op: &GraphOp, catalog: Option<&dyn PortCa
         }
         Root::Clip { .. } => {
             let mut picture: klipp_graph_format::lifted::ClipPicture = serde_json::from_value(copy).map_err(err)?;
+            // A picture-truth clip's grade holds no compound (picture
+            // revision 4 refuses one).
+            if matches!(op, GraphOp::Group { .. }) && picture.is_truth() {
+                return Err("this clip's picture keeps settings its fields can't, so its grade takes no compound".into());
+            }
             let interface = if matches!(op, GraphOp::RemoveNode { .. } | GraphOp::MoveAfter { .. }) { containing_interface(&picture.graph, through)? } else { Vec::new() };
             // The clip's placement and opacity are its picture's, set
             // through its PLACEMENT node (M3 step 13); every other op edits

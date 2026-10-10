@@ -58,6 +58,13 @@ pub enum GraphOp {
     /// until effects take typed parameters (M3 step 19). Of the same kind,
     /// and it must read as the frozen v1 types read it.
     SetPayload { path: NodePath, payload: Value },
+    /// Pack `nodes`, all at the level of the node `path` names (one of
+    /// them), into a new grade compound `group` in their place: what fed
+    /// them feeds it, what they fed reads it (#1476).
+    Group { path: NodePath, nodes: Vec<NodeId>, group: NodeId },
+    /// Dissolve the grade compound `path` names into its level: what fed
+    /// it feeds what its input fed, what read it reads what fed its output.
+    Ungroup { path: NodePath },
 }
 
 impl GraphOp {
@@ -77,7 +84,9 @@ impl GraphOp {
             | Self::AddKeyAt { path, .. }
             | Self::RemoveKeyAt { path, .. }
             | Self::SetAnim { path, .. }
-            | Self::SetPayload { path, .. } => path,
+            | Self::SetPayload { path, .. }
+            | Self::Group { path, .. }
+            | Self::Ungroup { path } => path,
             Self::Connect { to, .. } | Self::Disconnect { to, .. } => to,
             Self::PublishOutput { group, .. } | Self::Unpublish { group, .. } => group,
         }

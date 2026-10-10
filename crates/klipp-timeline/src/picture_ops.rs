@@ -61,7 +61,9 @@ fn path_of(op: &GraphOp) -> &klipp_graph_format::path::NodePath {
         | GraphOp::AddKeyAt { path, .. }
         | GraphOp::RemoveKeyAt { path, .. }
         | GraphOp::SetAnim { path, .. }
-        | GraphOp::SetPayload { path, .. } => path,
+        | GraphOp::SetPayload { path, .. }
+        | GraphOp::Group { path, .. }
+        | GraphOp::Ungroup { path } => path,
         GraphOp::Connect { to, .. } | GraphOp::Disconnect { to, .. } => to,
         GraphOp::PublishOutput { group, .. } | GraphOp::Unpublish { group, .. } => group,
     }
