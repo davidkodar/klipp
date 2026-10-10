@@ -1742,10 +1742,12 @@ pub struct AppState {
     pub deflicker_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
     pub stabilization_in_progress: std::collections::HashSet<klipp_core::ClipId>,
     pub stabilization_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
-    /// Clips whose analysis asset of a kind is in the analysis cache (M4
-    /// step 9): what `ensure_analyses` last found, so the inspector shows
-    /// it without reading the disk each frame.
-    pub analysis_ready: std::collections::HashSet<(klipp_core::ClipId, klipp_analysis::assets::AssetKind)>,
+    /// The analyses found in the analysis cache (M4 step 9), each a
+    /// media file's, by its asset key: what `ensure_analyses` last found,
+    /// so the inspector reads them without the disk each frame. Keyed by
+    /// the media, not the clip: a trim, a split or a duplicate of a clip
+    /// finds the same analysis ([`AppState::analysis_of`]).
+    pub analyses: std::collections::HashMap<klipp_analysis::assets::AssetKey, std::sync::Arc<serde_json::Value>>,
     /// When `ensure_analyses` last looked.
     pub analysis_checked: Option<std::time::Instant>,
     /// Analyses `ensure_analyses` started this session, by asset: started
@@ -3757,6 +3759,13 @@ impl AttributesClipboard {
 }
 
 impl AppState {
+    /// `kind`'s analysis of `clip`'s media as `ensure_analyses` found it
+    /// (M4 step 9): the file's, whichever clip of it asks.
+    pub fn analysis_of(&self, clip: &klipp_timeline::Clip, kind: klipp_analysis::assets::AssetKind) -> Option<&std::sync::Arc<serde_json::Value>> {
+        let item = self.media_pool.get(&clip.media_id()?)?;
+        self.analyses.get(&klipp_analysis::assets::asset_key(kind, item)?)
+    }
+
     /// The explicit dock works in either workspace; Colour keeps its
     /// existing grade strip when the new dock is closed.
     pub fn graph_is_visible(&self) -> bool {
@@ -4047,7 +4056,7 @@ impl Default for AppState {
             deflicker_progress: std::collections::HashMap::new(),
             stabilization_in_progress: std::collections::HashSet::new(),
             stabilization_progress: std::collections::HashMap::new(),
-            analysis_ready: Default::default(),
+            analyses: Default::default(),
             analysis_checked: None,
             analysis_started: Default::default(),
             analysis_unavailable: Default::default(),

@@ -85,9 +85,7 @@ impl InspectorSideEffects for Sink {
 fn is_side(cmd: &AppCommand) -> bool {
     matches!(
         cmd,
-        AppCommand::ResmoothStabilization { .. }
-            | AppCommand::RegainDeflicker { .. }
-            | AppCommand::AnalyzeStabilization { .. }
+        AppCommand::AnalyzeStabilization { .. }
             | AppCommand::AnalyzeDeflicker { .. }
             | AppCommand::CancelStabilization { .. }
             | AppCommand::CancelDeflicker { .. }

@@ -73,54 +73,81 @@ fn click(t: &EffectType, clip: &Clip, state: &AppState, label: &str) -> Vec<AppC
     card(&ctx, t, clip, state, vec![button(false)]).1
 }
 
-/// Analyse, then Cancel while it measures, then Re-analyse once it has:
+/// A media clip, and a state whose pool holds its media: a stand-in file
+/// that exists, as an analysis key reads the file (M4 step 9).
+fn media_clip() -> (Clip, AppState) {
+    let t = |s| RationalTime::from_secs_f64(s, 24);
+    let mut item = klipp_media::MediaItem::synthetic_for_test(std::env::current_exe().expect("the test binary"), None);
+    item.fps = klipp_core::Fps::new(24, 1);
+    item.resolution = klipp_core::Resolution { width: 1920, height: 1080 };
+    let c = Clip::media(item.id, t(0.0), t(2.0), t(0.0), t(2.0));
+    let mut state = AppState::default();
+    state.media_pool.add(item);
+    (c, state)
+}
+
+/// `state` holding `kind`'s analysis `data` of `clip`'s media, as
+/// `ensure_analyses` keeps it once found: by the file, for every clip of it.
+fn analysed(state: &mut AppState, clip: &Clip, kind: klipp_analysis::assets::AssetKind, data: serde_json::Value) {
+    let item = state.media_pool.get(&clip.media_id().unwrap()).unwrap();
+    let key = klipp_analysis::assets::asset_key(kind, item).expect("a key");
+    state.analyses.insert(key, std::sync::Arc::new(data));
+}
+
+/// Whether `t`'s card for `clip` draws a line starting `text`.
+fn draws(t: &EffectType, clip: &Clip, state: &AppState, text: &str) -> bool {
+    card(&egui::Context::default(), t, clip, state, Vec::new()).0.iter().any(|(s, _)| s.starts_with(text))
+}
+
+/// Not analysed yet: no button, the analysis starting by itself. Cancel
+/// while it measures, then Re-analyse once the file's analysis is there:
 /// both analysis-driven effects, through the generated card.
 #[test]
 fn analysis_buttons_click_through() {
-    let c = clip();
-    let mut state = AppState::default();
+    use klipp_analysis::assets::AssetKind;
+    let (c, mut state) = media_clip();
     let deflicker = ty("klipp.fx.deflicker");
-    assert_cmds!(click(deflicker, &c, &state, "Analyse"), [AppCommand::AnalyzeDeflicker { clip_id: c.id }]);
+    assert!(draws(deflicker, &c, &state, "Analysis needed") && !draws(deflicker, &c, &state, "Analyse"), "it starts by itself");
     state.deflicker_in_progress.insert(c.id);
     assert_cmds!(click(deflicker, &c, &state, "Cancel"), [AppCommand::CancelDeflicker { clip_id: c.id }]);
     state.deflicker_in_progress.clear();
-    let mut measured = c.clone();
-    measured.deflicker_data = Some(klipp_effects::deflicker::DeflickerData { luma: vec![0.5; 48], fps: 24.0 });
-    assert_cmds!(click(deflicker, &measured, &state, "Re-analyse"), [AppCommand::AnalyzeDeflicker { clip_id: c.id }]);
+    analysed(&mut state, &c, AssetKind::Deflicker, serde_json::to_value(klipp_effects::deflicker::DeflickerData { luma: vec![0.5; 48], fps: 24.0 }).unwrap());
+    assert_cmds!(click(deflicker, &c, &state, "Re-analyse"), [AppCommand::AnalyzeDeflicker { clip_id: c.id }]);
 
     let stab = ty("klipp.fx.video_stabilization");
-    assert_cmds!(click(stab, &c, &state, "Analyze Clip"), [AppCommand::AnalyzeStabilization { clip_id: c.id }]);
+    assert!(draws(stab, &c, &state, "Analysis needed"), "its own analysis, not the deflicker's");
     state.stabilization_in_progress.insert(c.id);
     assert_cmds!(click(stab, &c, &state, "Cancel"), [AppCommand::CancelStabilization { clip_id: c.id }]);
     state.stabilization_in_progress.clear();
-    let mut analysed = c.clone();
-    analysed.stabilization_data = Some(klipp_effects::stabilization::StabilizationData { frame_transforms: Vec::new(), accumulated: Vec::new(), trajectory: Vec::new(), fps: 24.0, frame_count: 0 });
-    assert_cmds!(click(stab, &analysed, &state, "Re-analyze"), [AppCommand::AnalyzeStabilization { clip_id: c.id }]);
-    assert_cmds!(click(stab, &analysed, &state, "Compare"), [AppCommand::ToggleStabilizationCompare]);
+    let data = klipp_effects::stabilization::StabilizationData { frame_transforms: Vec::new(), accumulated: Vec::new(), trajectory: Vec::new(), fps: 24.0, frame_count: 0 };
+    analysed(&mut state, &c, AssetKind::Stabilisation, serde_json::to_value(data).unwrap());
+    assert_cmds!(click(stab, &c, &state, "Re-analyze"), [AppCommand::AnalyzeStabilization { clip_id: c.id }]);
+    assert_cmds!(click(stab, &c, &state, "Compare"), [AppCommand::ToggleStabilizationCompare]);
+    // A trim or a split of the clip is another clip of the same file: it
+    // finds the same analysis.
+    let mut split = c.clone();
+    split.id = ClipId::new();
+    assert!(draws(stab, &split, &state, "Analysis complete"), "the file's analysis, whichever clip asks");
 }
 
-/// A row's edit brings today's side command: a moved window re-gains a
-/// measured deflicker, a moved smoothing re-smooths an analysed
-/// stabilization (and not without its analysis); other rows bring none.
+/// A row's edit brings no side command: the window and the smoothing are
+/// applied where the analysis is read (M4 step 9), so moving them redoes
+/// nothing.
 #[test]
-fn row_edits_bring_todays_side_commands() {
+fn row_edits_bring_no_side_commands() {
     let state = AppState::default();
     let theme = KlippTheme::default();
-    let mut analysed = clip();
     let run = |id: &str, clip: &Clip, key: &str, outcome: RowOutcome| {
         let mut cmds = Vec::new();
         adapter(id).unwrap().after_row(&mut AdapterCtx { theme: &theme, clip, state: &state, cmds: &mut cmds }, key, outcome);
         cmds
     };
     let c = clip();
-    assert_cmds!(run("deflicker", &c, "window_secs", RowOutcome::Edited), [AppCommand::RegainDeflicker { clip_id: c.id }]);
-    assert_cmds!(run("deflicker", &c, "window_secs", RowOutcome::Keyed), [AppCommand::RegainDeflicker { clip_id: c.id }]);
-    assert!(run("deflicker", &c, "strength", RowOutcome::Edited).is_empty());
-    assert!(run("deflicker", &c, "window_secs", RowOutcome::Nothing).is_empty());
-    assert!(run("video_stabilization", &c, "smoothing", RowOutcome::Edited).is_empty(), "no analysis to re-smooth");
-    analysed.stabilization_data = Some(klipp_effects::stabilization::StabilizationData { frame_transforms: Vec::new(), accumulated: Vec::new(), trajectory: Vec::new(), fps: 24.0, frame_count: 0 });
-    assert_cmds!(run("video_stabilization", &analysed, "smoothing", RowOutcome::Edited), [AppCommand::ResmoothStabilization { clip_id: analysed.id }]);
-    assert!(run("video_stabilization", &analysed, "crop_ratio", RowOutcome::Edited).is_empty());
+    for (id, key) in [("deflicker", "window_secs"), ("deflicker", "strength"), ("video_stabilization", "smoothing"), ("video_stabilization", "crop_ratio")] {
+        for outcome in [RowOutcome::Edited, RowOutcome::Keyed] {
+            assert!(run(id, &c, key, outcome).is_empty(), "{id}.{key}");
+        }
+    }
 }
 
 /// Focus Blur shows its notice and no editable row: a title's roll sets it.

@@ -3213,9 +3213,6 @@ pub enum AppCommand {
     /// Measure a clip's per-frame light, for the Deflicker effect.
     AnalyzeDeflicker { clip_id: ClipId },
     CancelDeflicker { clip_id: ClipId },
-    /// Rebuild the deflicker gains after the window slider moved. The
-    /// measurement is unchanged; only the smoothing over it is.
-    RegainDeflicker { clip_id: ClipId },
 
     // Scene (shot-boundary) detection
     DetectScenes { clip_id: ClipId },
@@ -3231,10 +3228,6 @@ pub enum AppCommand {
     /// Razor-split a clip at every scene marker it carries, atomically.
     /// Undo restores the original single clip in one step.
     SplitAtSceneMarkers { clip_id: ClipId },
-    /// Re-run smoothing on existing stabilization_data with the current smoothing
-    /// slider value. Cheap (microseconds) — no decode, just gaussian over the
-    /// already-baked trajectory. Used for live slider updates.
-    ResmoothStabilization { clip_id: ClipId },
 
     // Point tracking
     /// Add a new track point to a clip at the given normalized position.

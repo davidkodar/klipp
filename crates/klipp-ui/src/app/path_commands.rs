@@ -2620,8 +2620,6 @@ mod tests {
             AppCommand::SetTimelineZoom { zoom: 2.0, scroll_x: None },
             AppCommand::SetScopesVisible(true),
             AppCommand::ToggleColorPanel,
-            // An analysis recomputed from the parameter being dragged.
-            AppCommand::RegainDeflicker { clip_id: c.id },
         ] {
             assert!(!s.closes_path_drag(&cmd), "{cmd:?} leaves the drag open");
         }
