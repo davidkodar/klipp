@@ -82,3 +82,45 @@ fn without_its_analysis_the_frame_is_unchanged() {
     let drawn = draw(&sequence(50), 0, stale);
     assert!(drawn.chunks_exact(4).all(|p| (p[0] - 0.4).abs() < 1e-6), "a stale asset is never read");
 }
+
+/// A store that counts its full reads, its assets shared with the test.
+struct Counting {
+    inner: Arc<std::sync::Mutex<MemoryStore>>,
+    reads: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl AssetStore for Counting {
+    fn get(&self, key: &AssetKey) -> Option<Asset> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.lock().unwrap().get(key)
+    }
+    fn put(&mut self, asset: Asset) -> Result<(), String> {
+        self.inner.lock().unwrap().put(asset)
+    }
+    fn stamp(&self, key: &AssetKey) -> Option<u64> {
+        self.inner.lock().unwrap().stamp(key)
+    }
+}
+
+/// An asset is read once and kept while its stamp holds: playback costs a
+/// look at the store each frame, never a read and a parse of the whole
+/// asset. Kept again (a new analysis), it's read again, once.
+#[test]
+fn an_asset_is_read_once_while_it_holds() {
+    let inner = Arc::new(std::sync::Mutex::new(pumping()));
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(false);
+    r.set_asset_store(Box::new(Counting { inner: Arc::clone(&inner), reads: Arc::clone(&reads) }));
+    let seq = sequence(0);
+    for f in 0..12 {
+        r.render_inspected(&seq, tc(f), W, H, &mut Grey, RenderOptions::default(), Inspect::default());
+    }
+    assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), 1, "twelve frames, one read");
+    let luma: Vec<f32> = vec![0.5; 250];
+    store(&mut *inner.lock().unwrap(), key(), serde_json::to_value(klipp_effects::deflicker::DeflickerData { luma, fps: FPS as f64 }).unwrap()).unwrap();
+    for f in 12..20 {
+        r.render_inspected(&seq, tc(f), W, H, &mut Grey, RenderOptions::default(), Inspect::default());
+    }
+    assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), 2, "kept again: read again, once");
+}

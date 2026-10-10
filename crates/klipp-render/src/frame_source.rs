@@ -830,8 +830,6 @@ mod temporal_frames_tests {
 /// analysis width and the media's rate (M4 step 9). `None` when its rate
 /// or size isn't known.
 pub fn media_analysis_key(file: &crate::MediaFile, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
-    use klipp_analysis::assets::{key_for, ANALYSIS_WIDTH};
-    let ((w, h), fps) = (file.resolution?, file.fps?);
-    let height = ((ANALYSIS_WIDTH as u64 * h.max(1) as u64 / w.max(1) as u64) as u32 + 1) & !1;
-    key_for(kind, &file.path, ANALYSIS_WIDTH, height, fps)
+    // The viewer's formula (`asset_key`): both read one asset.
+    klipp_analysis::assets::key_at(kind, &file.path, file.resolution?, file.fps?)
 }

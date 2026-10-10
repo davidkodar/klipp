@@ -1748,9 +1748,13 @@ pub struct AppState {
     pub analysis_ready: std::collections::HashSet<(klipp_core::ClipId, klipp_analysis::assets::AssetKind)>,
     /// When `ensure_analyses` last looked.
     pub analysis_checked: Option<std::time::Instant>,
-    /// Analyses `ensure_analyses` started this session: started once, so
-    /// one that fails isn't started again on every look.
-    pub analysis_started: std::collections::HashSet<(klipp_core::ClipId, klipp_analysis::assets::AssetKind)>,
+    /// Analyses `ensure_analyses` started this session, by asset: started
+    /// once for a file however many clips read it, so one that fails
+    /// isn't started again on every look.
+    pub analysis_started: std::collections::HashSet<klipp_analysis::assets::AssetKey>,
+    /// Clips whose analysis can't be made: the media's original file isn't
+    /// there (a proxy alone), so the inspector says why rather than wait.
+    pub analysis_unavailable: std::collections::HashSet<(klipp_core::ClipId, klipp_analysis::assets::AssetKind)>,
 
     // Scene (shot-boundary) detection state
     pub scene_detect_in_progress: std::collections::HashSet<klipp_core::ClipId>,
@@ -4046,6 +4050,7 @@ impl Default for AppState {
             analysis_ready: Default::default(),
             analysis_checked: None,
             analysis_started: Default::default(),
+            analysis_unavailable: Default::default(),
             scene_detect_in_progress: std::collections::HashSet::new(),
             scene_detect_progress: std::collections::HashMap::new(),
             scene_split_pending: std::collections::HashSet::new(),
