@@ -139,6 +139,17 @@ fn compound(mut n: Node) -> Result<Node, Refusal> {
 
 /// A lifted, unspliced clip picture back to its revision-1 record.
 pub fn clip(p: &ClipPicture) -> Result<ClipRecordV2, Refusal> {
+    // A plug-in stored as `klipp.frei0r` or `klipp.ofx` (picture revision
+    // 4) is read as the entry it holds.
+    let mut entries = None;
+    if p.graph.nodes.iter().any(|n| matches!(n.type_id.as_str(), lt::FREI0R | lt::OFX)) {
+        let mut q = p.clone();
+        for n in &mut q.graph.nodes {
+            crate::effect_params::plugin_entry(n)?;
+        }
+        entries = Some(q);
+    }
+    let p = entries.as_ref().unwrap_or(p);
     let mut grade = None;
     let mut ofx = Vec::new();
     let mut builtins: Vec<(u32, Node)> = Vec::new();
@@ -184,7 +195,7 @@ pub fn clip(p: &ClipPicture) -> Result<ClipRecordV2, Refusal> {
                 let t = t.to_owned();
                 // An effect's entry written back from its values (M3-2).
                 let mut stored = n.clone();
-                crate::effect_params::into_stored(&mut stored)?;
+                crate::effect_params::into_entry(&mut stored)?;
                 builtins.push((slot(n)?, restore(stored, &t)));
             }
             other => return Err(format!("node {} is a {other}, which the lift does not put in a clip's chain", n.id)),

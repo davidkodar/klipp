@@ -132,7 +132,17 @@ fn as_v1(value: &ParamValue) -> Option<Value> {
         ParamValue::Enum(e) => serde_json::json!(e),
         ParamValue::Text(t) => serde_json::json!(t),
         ParamValue::Point2(p) => serde_json::json!(p),
-        ParamValue::Color { .. } | ParamValue::Matrix3(_) => return None,
+        // A plug-in's stored values (picture revision 4) have no v1 grade
+        // or effect field.
+        ParamValue::Color { .. }
+        | ParamValue::Matrix3(_)
+        | ParamValue::Float64(_)
+        | ParamValue::Point2F64(_)
+        | ParamValue::Point3F64(_)
+        | ParamValue::Int2(_)
+        | ParamValue::Int3(_)
+        | ParamValue::Choice(_)
+        | ParamValue::ColorF64 { .. } => return None,
     })
 }
 

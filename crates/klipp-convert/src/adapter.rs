@@ -35,6 +35,13 @@ const GATEABLE: [&str; 8] = ["Corrector", "ColorBalance", "Exposure", "Contrast"
 
 /// A lifted clip picture as the v1 picture fields of a clip of `ctx.kind`.
 pub fn clip(p: &ClipPicture, ctx: &LiftCtx) -> Result<Value, Refusal> {
+    // A plug-in a file stores as its own node (picture revision 4) is read
+    // as the entry it holds.
+    let mut entries = p.clone();
+    for n in &mut entries.graph.nodes {
+        klipp_graph_lift::effect_params::plugin_entry(n)?;
+    }
+    let p = &entries;
     let mut out = Map::new();
     let mut ofx = Vec::new();
     let mut fx = Fx::default();
