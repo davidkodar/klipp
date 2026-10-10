@@ -360,12 +360,8 @@ impl FrameSource for ExportFrameSource<'_> {
     /// The original file's analysis key, at the analysis width and the
     /// media's rate (M4 step 9).
     fn analysis_key(&mut self, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
-        use klipp_analysis::assets::{key_for, ANALYSIS_WIDTH};
         let ClipKind::Media { media_id } = &clip.kind else { return None };
-        let file = self.media.get(media_id)?;
-        let ((w, h), fps) = (file.resolution?, file.fps?);
-        let height = ((ANALYSIS_WIDTH as u64 * h.max(1) as u64 / w.max(1) as u64) as u32 + 1) & !1;
-        key_for(kind, &file.path, ANALYSIS_WIDTH, height, fps)
+        media_analysis_key(self.media.get(media_id)?, kind)
     }
 
     /// The whole media, from its start to its duration.
@@ -828,4 +824,14 @@ mod temporal_frames_tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// The key of `kind`'s analysis of `file`: the original file's, at the
+/// analysis width and the media's rate (M4 step 9). `None` when its rate
+/// or size isn't known.
+pub fn media_analysis_key(file: &crate::MediaFile, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
+    use klipp_analysis::assets::{key_for, ANALYSIS_WIDTH};
+    let ((w, h), fps) = (file.resolution?, file.fps?);
+    let height = ((ANALYSIS_WIDTH as u64 * h.max(1) as u64 / w.max(1) as u64) as u32 + 1) & !1;
+    key_for(kind, &file.path, ANALYSIS_WIDTH, height, fps)
 }

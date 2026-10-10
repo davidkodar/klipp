@@ -162,6 +162,10 @@ pub struct RenderQueue {
     /// Max jobs to run simultaneously. Read at job-start time, so changing
     /// this between frames takes effect on the next spawn.
     pub max_parallel: usize,
+    /// What runs an analysis a job needs and hasn't got (M4 step 9): the
+    /// app's, set with [`Self::set_analyser`]. Without one, a job missing
+    /// an analysis refuses.
+    analyser: Option<klipp_render::Analyser>,
 }
 
 enum RenderThreadEvent {
@@ -184,7 +188,13 @@ impl RenderQueue {
             snapshots: Vec::new(),
             active_jobs: Vec::new(),
             max_parallel: 2,
+            analyser: None,
         }
+    }
+
+    /// Jobs started from now on run a missing analysis with `analyser`.
+    pub fn set_analyser(&mut self, analyser: klipp_render::Analyser) {
+        self.analyser = Some(analyser);
     }
 
     pub fn add_job(
@@ -469,6 +479,7 @@ impl RenderQueue {
         let loudness_result_clone = Arc::new(std::sync::Mutex::new(None::<String>));
         let hw_info_clone = hw_info.clone();
         let render_stage_clone = render_stage.clone();
+        let analyser = self.analyser.clone();
         let (event_tx, event_rx) = crossbeam_channel::unbounded();
 
         let handle = std::thread::Builder::new()
@@ -485,6 +496,7 @@ impl RenderQueue {
                     hw_info: hw_info_clone.clone(),
                     render_stage: render_stage_clone,
                     loudness_result: loudness_result_clone,
+                    analyser,
                 };
 
                 // Send hw_info as soon as it's available (after decoder/encoder init)

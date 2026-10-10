@@ -211,7 +211,7 @@ pub trait FrameSource {
 }
 
 /// The analysis asset `effect` reads, if it reads one.
-fn asset_kind(effect: &BuiltinEffect) -> Option<klipp_analysis::assets::AssetKind> {
+pub fn asset_kind(effect: &BuiltinEffect) -> Option<klipp_analysis::assets::AssetKind> {
     use klipp_analysis::assets::AssetKind;
     match effect {
         BuiltinEffect::Deflicker { .. } => Some(AssetKind::Deflicker),

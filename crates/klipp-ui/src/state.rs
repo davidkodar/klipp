@@ -4205,7 +4205,13 @@ impl Default for AppState {
             composition_templates: crate::parameterized_templates::CompositionTemplateStore::load_default(),
             title_template_dialog: None,
             effect_thumbnails: crate::browser::effect_thumbnails::ThumbnailRenderer::default(),
-            render_queue: klipp_export::RenderQueue::new(),
+            render_queue: {
+                // An export runs an analysis its clips need and haven't
+                // got the way the viewer's analyses do (M4 step 9).
+                let mut q = klipp_export::RenderQueue::new();
+                q.set_analyser(std::sync::Arc::new(klipp_engine::analyse_media));
+                q
+            },
             show_render_queue: false,
             filmstrip_generating: false,
             filmstrip_generate_start: std::time::Instant::now(),
