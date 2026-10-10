@@ -1896,7 +1896,7 @@ impl Renderer {
                         // on the GPU with it, instead of a pass over the layer.
                         effects_done = self.splice_effects(c, &fx, time, fps, transforms, stats);
                         self.executor.request_output_on_gpu();
-                        let pixels = self.grade(c, GradeInput::Gpu(g), clip_time, fps, width, height, None);
+                        let pixels = self.grade_on_stack(c, GradeInput::Gpu(g), time, clip_time, fps, width, height, src);
                         stats.grade_ms += ms_since(t);
                         if effects_done && !self.finish_spliced() {
                             return Err("an effect could not be recorded");
@@ -1916,7 +1916,7 @@ impl Renderer {
                             unshare(p)
                         } else {
                             effects_done = self.splice_effects(c, &fx, time, fps, transforms, stats);
-                            let pixels = self.grade(c, GradeInput::Cpu(p), clip_time, fps, width, height, None);
+                            let pixels = self.grade_on_stack(c, GradeInput::Cpu(p), time, clip_time, fps, width, height, src);
                             if effects_done && !self.finish_spliced() {
                                 return Err("an effect could not be recorded");
                             }
@@ -2631,7 +2631,7 @@ impl Renderer {
         // that still wants them on the CPU says so, and runs again.
         // The picture's already drawn: a plug-in's instance is lent to the
         // run, and no node of it reads the source.
-        let source_at = clip.source_in.to_secs_f64() + clip_time;
+        let source_at = clip.source_secs_at(clip_time, fps);
         let run = self.in_context(clip, clip_time, fps, source_at, None, &mut klipp_nodes::frame_context::NoSources, |r, ctx| {
             let spliced = std::mem::take(&mut r.spliced);
             let run = match r.executor.prime_chain_from_linear(&pixels, width, height) {
@@ -3103,6 +3103,21 @@ impl Renderer {
     /// plan's `SceneToDisplay` node runs in a clip's plan (step 11c).
     fn scene_to_display(&self, t: klipp_color::hdr::HdrTransfer) -> klipp_color::hdr::SceneToDisplay {
         klipp_color::hdr::SceneToDisplay { transfer: t, peak_nits: self.hdr_peak, luma: klipp_color::primaries::luminance_weights(self.working) }
+    }
+
+    /// A layer's grade on the GPU stack in the clip's frame context, with
+    /// its analyses from its media, as on the CPU: an analysis effect
+    /// (a Deflicker) reads its asset here too, or declines, rather than
+    /// running at no strength. The stack takes no temporal effect, so no
+    /// source frames are lent.
+    #[allow(clippy::too_many_arguments)]
+    fn grade_on_stack(&mut self, clip: &Clip, input: GradeInput, time: Timecode, clip_time: f64, fps: f64, width: u32, height: u32, src: &mut dyn FrameSource) -> Vec<f32> {
+        let analyses = self.analyses_of(clip, src);
+        self.clip_analysis = Some((clip.id, analyses));
+        let at = source_secs(clip, time, fps);
+        let pixels = self.in_context(clip, clip_time, fps, at, None, &mut klipp_nodes::frame_context::NoSources, |r, ctx| r.grade(clip, input, clip_time, fps, width, height, Some(ctx)));
+        self.clip_analysis = None;
+        pixels
     }
 
     /// [`Self::grade`] in the clip's frame context (M4), with its
