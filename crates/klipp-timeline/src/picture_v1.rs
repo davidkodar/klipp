@@ -105,6 +105,21 @@ pub struct EffectJson {
     pub enabled: bool,
     #[serde(default)]
     pub param_values: HashMap<String, OfxValueJson>,
+    /// The context it was applied in; a Filter's is left out, so a file
+    /// with none reads as one (#1144).
+    #[serde(default, skip_serializing_if = "is_filter")]
+    pub context: klipp_plugin::OfxCategory,
+    /// A Transition's amount; 0 is left out.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub transition_amount: f64,
+}
+
+fn is_filter(c: &klipp_plugin::OfxCategory) -> bool {
+    *c == klipp_plugin::OfxCategory::Filter
+}
+
+fn is_zero(t: &f64) -> bool {
+    *t == 0.0
 }
 
 /// OFX parameter value for JSON serialisation.
@@ -212,6 +227,8 @@ impl EffectJson {
                     (k.clone(), json_val)
                 })
                 .collect(),
+            context: effect.context,
+            transition_amount: effect.transition_amount,
         }
     }
 }
