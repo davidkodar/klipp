@@ -353,3 +353,39 @@ fn plain_edits_keep_orphans_orphans() {
     let p = removed.picture_v2().unwrap();
     assert!(p.picture.graph.nodes.iter().all(|n| n.anim.keys().all(|k| k.as_str() != "radius")), "nothing animates by the orphan");
 }
+
+/// A plain effect added by graph ops sent straight to the picture (a path
+/// command's or the assistant's AddNode), onto an orphan's slot: the
+/// orphan must stay one. The route writes the fields directly today.
+#[test]
+#[ignore = "12b: apply_picture_ops still writes fields directly (orphans exposed)"]
+fn a_direct_graph_op_add_keeps_an_orphan_an_orphan() {
+    let mut c = clip(vec![blur(), E::Gamma { gamma: 1.1 }, E::Vibrance { amount: 0.2 }], vec![true; 3]);
+    c.edit_effect_keyframes(|keys| {
+        keys.insert("3:radius".into(), vec![key(0.0, 1.0), key(1.0, 9.0)]);
+    });
+    let more = E::GaussianBlur { radius: 4.0 };
+    let ops = c.effect_edit_ops(EffectEdit::Add(&more)).expect("a plain add's ops");
+    c.apply_picture_ops(&ops).expect("the picture takes them");
+    assert!(!c.effect_keyframes().keys().any(|k| k.starts_with("3:")), "the blur added at 3 has no keys");
+    assert_eq!(c.effect_keyframes().get("4:radius").map(Vec::len), Some(2), "the orphan, past the list");
+}
+
+/// The same on a picture-truth clip, whose plain edits stay on the graph
+/// ops: the orphan must stay one there too, with the mix kept.
+#[test]
+#[ignore = "12b: a picture-truth clip's plain edits still write fields directly (orphans exposed); with the mix/mask merge-back"]
+fn a_picture_truth_clips_plain_add_keeps_an_orphan_an_orphan() {
+    let mut c = clip(vec![blur(), E::Gamma { gamma: 1.1 }, E::Vibrance { amount: 0.2 }], vec![true; 3]);
+    c.edit_effect_keyframes(|keys| {
+        keys.insert("3:radius".into(), vec![key(0.0, 1.0), key(1.0, 9.0)]);
+    });
+    let node = c.effect_node_at(false, 0).expect("the blur's node");
+    let path = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, [node]);
+    c.apply_picture_ops(&[klipp_graph_lift::ops::GraphOp::SetMix { path, mix: Some(0.5) }]).expect("a mix on the blur");
+    assert!(c.is_picture_truth());
+    let more = E::GaussianBlur { radius: 4.0 };
+    c.apply_effect_edits(&[EffectEdit::Add(&more)]).expect("a list edit").expect("the picture takes it");
+    assert!(!c.effect_keyframes().keys().any(|k| k.starts_with("3:")), "the blur added at 3 has no keys");
+    assert_eq!(c.effect_keyframes().get("4:radius").map(Vec::len), Some(2), "the orphan, past the list");
+}
