@@ -92,9 +92,5 @@ klipp-convert = { path = "../klipp-convert" }
 workspace = true
 
 [[test]]
-name = "old_inspector_rows"
-required-features = ["row-recorder"]
-
-[[test]]
 name = "generated_rows"
 required-features = ["row-recorder"]

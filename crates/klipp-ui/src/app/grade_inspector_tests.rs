@@ -692,6 +692,114 @@ fn the_first_edit_makes_the_corrector_in_the_same_step() {
     }
 }
 
+/// A grade with no Corrector: its Source straight to its Output.
+fn bare_grade() -> NodeGraph {
+    let mut g = NodeGraph::default();
+    let corrector = g.nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
+    let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
+    let output = g.output_node_id;
+    g.nodes.retain(|n| n.id != corrector);
+    g.edges.retain(|e| e.from_node != corrector && e.to_node != corrector);
+    g.edges.push(klipp_nodes::Edge { from_node: source, from_port: 0, to_node: output, to_port: 0 });
+    g.node_positions.remove(&corrector);
+    g
+}
+
+/// `inner` as a Compound in `g`, just before its Output: the compound's id.
+fn nest(g: &mut NodeGraph, inner: NodeGraph) -> NodeId {
+    let mut compound = Node { id: NodeId::new_v4(), kind: NodeKind::Compound, label: String::new(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: vec![] };
+    compound.params.compound_subgraph = Some(inner);
+    let (id, output) = (compound.id, g.output_node_id);
+    let at = g.nodes.iter().position(|n| n.id == output).unwrap();
+    g.nodes.insert(at, compound);
+    for e in g.edges.iter_mut().filter(|e| e.to_node == output && e.to_port == 0) {
+        e.to_node = id;
+    }
+    g.edges.push(klipp_nodes::Edge { from_node: id, from_port: 0, to_node: output, to_port: 0 });
+    id
+}
+
+/// A grade with its Corrector at the top and a compound with none, or
+/// (`deep`) a compound with none inside another with none: the grade, and
+/// the descent to the innermost.
+fn compounded(deep: bool) -> (NodeGraph, Vec<NodeId>) {
+    let mut top = NodeGraph::default();
+    if !deep {
+        let at = nest(&mut top, bare_grade());
+        return (top, vec![at]);
+    }
+    let mut outer = bare_grade();
+    let inner = nest(&mut outer, bare_grade());
+    let at = nest(&mut top, outer);
+    (top, vec![at, inner])
+}
+
+/// The enabled Correctors of `grade` at `descent`.
+fn correctors_at(grade: &NodeGraph, descent: &[NodeId]) -> Vec<Node> {
+    crate::inspector::grade_view::v1_level(grade, descent).expect("the level").nodes.iter().filter(|n| n.kind == NodeKind::Corrector && n.enabled).cloned().collect()
+}
+
+/// Inside a clip's grade compound with no Corrector, one level down or
+/// two, the page reserves one, and the first edit by path makes it in that
+/// compound under the reserved id, as one step with the edit; undo leaves
+/// the clip saved as it was (#1483).
+#[test]
+fn the_first_edit_inside_a_compound_makes_its_corrector_in_the_same_step() {
+    use klipp_graph_format::path::{NodePath, Root};
+    for deep in [false, true] {
+        let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
+        let (grade, descent) = compounded(deep);
+        let top = grade.nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
+        run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap().edit_grade(|g| *g = grade);
+        let (before, steps) = (saved(&run.state, run.clip), run.state.active_history().undo_count());
+        let c = clip(&run.state, run.clip).clone();
+        let snapshot = crate::inspector::grade_view::snapshot_for(&c, &descent, false, &mut run.state.pending_corrector).expect("drawn inside the compound");
+        let reserved = snapshot.pending().expect("deep {deep}: a Corrector reserved inside it");
+        assert_eq!(run.state.pending_corrector, Some((run.clip, reserved)));
+        let group = crate::inspector::grade_view::grade_node(clip(&run.state, run.clip), top).unwrap().0.nodes[0];
+        let addr = NodePath::new(Root::Clip { clip: run.clip.0 }, std::iter::once(group).chain(descent.iter().copied()).chain([reserved]));
+        let edit = AppCommand::SetParamAt { addr, key: "exposure".into(), value: klipp_graph_format::ParamValue::Float(0.4) };
+        assert_eq!(run.state.path_command(&edit), Some(true), "deep {deep}: {:?}", run.state.toast.message_for_test());
+        let made = correctors_at(clip(&run.state, run.clip).grade(), &descent);
+        assert_eq!(made.iter().map(|n| (n.id, n.params.exposure)).collect::<Vec<_>>(), vec![(reserved, Some(0.4))], "deep {deep}: made in the compound, with the edit");
+        assert_eq!(correctors_at(clip(&run.state, run.clip).grade(), &[]).iter().map(|n| n.id).collect::<Vec<_>>(), vec![top], "deep {deep}: none made at the top");
+        assert_eq!(run.state.active_history().undo_count(), steps + 1, "deep {deep}: one step");
+        undo_once(&mut run.state);
+        assert_eq!(saved(&run.state, run.clip), before, "deep {deep}: undo, the clip as it was");
+    }
+}
+
+/// The same inside a compound of a sequence grade: the timeline grade's
+/// and a group's stages (#1483).
+#[test]
+fn the_first_edit_inside_a_sequence_grade_s_compound_makes_its_corrector() {
+    use klipp_graph_format::path::NodePath;
+    for deep in [false, true] {
+        let (mut run, which) = sequence_grades(true);
+        for w in which {
+            let (grade, descent) = compounded(deep);
+            let top = grade.nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
+            let root = w.root(&run.state.sequences[0]);
+            run.state.sequences[0].set_root_grade(root, Some(grade)).unwrap();
+            let (before, steps) = (stored(&run, w), run.state.active_history().undo_count());
+            let id = super::timeline_grade::stand_in_grade_on(&mut run.state.sequences[0], w, &mut run.fresh).expect("stood in");
+            let snapshot = crate::inspector::grade_view::snapshot_for_root(&run.state.sequences[0], id, root, &descent, &mut run.state.pending_corrector, &mut run.state.root_grade_start);
+            super::timeline_grade::stand_down_timeline_grade_on(&mut run.state.sequences[0], &mut run.fresh);
+            let reserved = snapshot.expect("drawn inside the compound").pending().expect("a Corrector reserved inside it");
+            let addr = NodePath::new(root, descent.iter().copied().chain([reserved]));
+            let edit = AppCommand::SetParamAt { addr, key: "exposure".into(), value: klipp_graph_format::ParamValue::Float(0.4) };
+            assert_eq!(run.state.path_command(&edit), Some(true), "{w:?} deep {deep}: {:?}", run.state.toast.message_for_test());
+            let grade = run.state.sequences[0].root_grade(root).unwrap().unwrap().clone();
+            let made = correctors_at(&grade, &descent);
+            assert_eq!(made.iter().map(|n| (n.id, n.params.exposure)).collect::<Vec<_>>(), vec![(reserved, Some(0.4))], "{w:?} deep {deep}");
+            assert_eq!(correctors_at(&grade, &[]).iter().map(|n| n.id).collect::<Vec<_>>(), vec![top], "{w:?} deep {deep}: none made at the top");
+            assert_eq!(run.state.active_history().undo_count(), steps + 1, "{w:?} deep {deep}: one step");
+            undo_root(&mut run.state);
+            assert_eq!(stored(&run, w), before, "{w:?} deep {deep}: undo, the grade as it was");
+        }
+    }
+}
+
 /// Escape during the first drag takes the drag and the Corrector it made
 /// back: the clip saved as it was, no step. A press and release that move
 /// nothing leave nothing either.
