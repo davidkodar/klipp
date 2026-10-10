@@ -162,7 +162,7 @@ fn after_a_plug_in_a_fast_clip_reads_the_frame_it_shows() {
         let mut seq = sequence(from);
         let c = &mut seq.tracks[0].clips[0];
         c.speed = speed;
-        c.source_out = tc(from + (50.0 * speed) as i64);
+        c.source_out = tc(from + (100.0 * speed) as i64);
         c.set_ofx_effects(vec![klipp_plugin::AppliedEffect { plugin_name: "com.klipp.test.Invert".into(), enabled: true, ..Default::default() }]);
         let mut host = klipp_plugin::OfxHost::new();
         let at = host.register_raw_plugin(klipp_plugin::test_plugin::create_test_plugin_raw());
