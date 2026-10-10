@@ -3205,7 +3205,18 @@ impl Renderer {
                 out
             }
             other => {
-                tracing::warn!("clip {}: its OFX plug-ins didn't run ({:?}); the frame as it was", clip.id.0, other.err());
+                // The frame goes on as it was, and each plug-in says it
+                // wasn't drawn: an export refuses it rather than write the
+                // frame without them.
+                let why = match &other {
+                    Ok((out, _, _)) => format!("the run gave {} values for {}", out.len(), pixels.len()),
+                    Err(e) => format!("{e:?}"),
+                };
+                tracing::warn!("clip {}: its OFX plug-ins didn't run ({why}); the frame as it was", clip.id.0);
+                for n in graph.nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::Ofx) {
+                    let name = n.params.ofx.as_ref().map_or_else(String::new, |o| o.plugin.clone());
+                    self.found.declines.push(klipp_nodes::Decline { clip: Some(clip.id), node: n.id, kind: klipp_nodes::NodeKind::Ofx, outcome: klipp_nodes::DeclineOutcome::RenderFailed, name, reason: "its plug-ins' run failed".into(), why: why.clone() });
+                }
                 pixels
             }
         }
@@ -4701,7 +4712,7 @@ fn ofx_graph(clip: &Clip) -> Option<klipp_nodes::NodeGraph> {
         if !e.enabled {
             continue;
         }
-        let params = NodeParams { ofx: Some(klipp_nodes::plugin::OfxNodeParams { plugin: e.plugin_name.clone(), values: e.param_values.clone(), filter: !matches!(e.context, klipp_plugin::OfxCategory::Transition | klipp_plugin::OfxCategory::Generator) }), ..Default::default() };
+        let params = NodeParams { ofx: Some(klipp_nodes::plugin::OfxNodeParams { plugin: e.plugin_name.clone(), values: e.param_values.clone(), filter: matches!(e.context, klipp_plugin::OfxCategory::Filter) }), ..Default::default() };
         nodes.push(node(id(k), NodeKind::Ofx, params));
     }
     nodes.push(node(id(u64::MAX as u128), NodeKind::Output, NodeParams::default()));

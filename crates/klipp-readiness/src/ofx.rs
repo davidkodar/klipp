@@ -12,7 +12,8 @@
 //! - `channels`: (B, 255 − R, G, A).
 //! - `alpha`: (R, G, B, ⌊A / 2⌋).
 //!
-//! An adjacent run of OFX nodes converts once, at its ends. A disabled
+//! Each OFX node converts to 8-bit sRGB and back around its own plug-in;
+//! two in series apply their rules in order. A disabled
 //! node passes its input on with no conversion, so values above 1 survive
 //! exactly. A plug-in that's missing, can't run in the Filter context, or
 //! fails its render passes its input on.
@@ -148,8 +149,8 @@ pub fn run(report: &mut Report) {
                 draws(route, true, scene(vec![entry(subject, false, filter)])?, true, &picture(true))
             });
         }
-        // Two in series convert once, at the run's ends.
-        report.case(&format!("ofx {route:?}: channels then alpha, one run"), [key(CHANNELS, Some(route), Obligation::ExpectedPixels)], || {
+        // Two in series, each rule in turn on the one before's picture.
+        report.case(&format!("ofx {route:?}: channels then alpha, in order"), [key(CHANNELS, Some(route), Obligation::ExpectedPixels)], || {
             draws(route, true, scene(vec![entry(CHANNELS, true, filter), entry(ALPHA, true, filter)])?, false, &through(false, &[channels, alpha]))
         });
         report.case(&format!("ofx {route:?}: a plug-in that isn't there"), [key(CHANNELS, Some(route), Obligation::Outcome(Outcome::PluginMissing))], || {
@@ -159,6 +160,11 @@ pub fn run(report: &mut Report) {
             // Refused, named: the channels plug-in offers Filter, so it
             // would have drawn had the node run it as one.
             draws_declining(route, true, scene(vec![entry(CHANNELS, true, OfxCategory::Transition)])?, false, &picture(false), Some("unsupported"))
+        });
+        report.case(&format!("ofx {route:?}: an entry applied in the General context"), [key(CHANNELS, Some(route), Obligation::Outcome(Outcome::Unsupported))], || {
+            // The host's General is `Other`: only a Filter entry runs as a
+            // filter, so it's refused, named, never drawn as one.
+            draws_declining(route, true, scene(vec![entry(CHANNELS, true, OfxCategory::Other)])?, false, &picture(false), Some("unsupported"))
         });
     }
 }

@@ -132,16 +132,26 @@ pub fn run_ofx_noting(node: NodeId, entry: &OfxNodeParams, input: &[f32], width:
     let fps = ctx.fps.max(1.0);
     let (clip, time, source_at) = (ctx.clip, ctx.clip_time_secs * fps, ctx.source_at);
     let FrameContext { instances, sources, .. } = ctx;
-    // A sequential-render plug-in's history is its instance's: after a seek
-    // or a step back, `end_frame` has dropped the slot (it keeps only an
-    // instance used within the last few frames), so the plug-in starts
-    // fresh rather than carrying frames from elsewhere.
     let make = || OfxSlot { plugin: entry.plugin.clone(), made: host.instance(&entry.plugin, fps) };
     let slot = instances.slot(clip, node, stamp, make);
     // An instance is made at its clip's rate and for its plug-in: another
     // rate, or a node now running another plug-in, is another instance,
     // never one plug-in's state handed to another.
-    if slot.last.is_some_and(|last| last.fps != stamp.fps) || slot.instance.plugin != entry.plugin {
+    //
+    // Its history goes on only from the frame before: a plug-in that
+    // renders in sequence keeps its instance for the next frame (and the
+    // same frame drawn again, as a run retried within a frame draws it),
+    // any other for a short step on too. A seek back or a jump ahead
+    // starts it fresh, as an export reaching that frame from the clip's
+    // start in order would not otherwise draw it.
+    let continues = |last: &SlotStamp| {
+        let on = stamp.frame - last.frame;
+        match description.sequential_render {
+            true => (0..=1).contains(&on),
+            false => (0..=crate::frame_context::CONTINUATION_FRAMES).contains(&on),
+        }
+    };
+    if slot.last.is_some_and(|last| last.fps != stamp.fps || !continues(&last)) || slot.instance.plugin != entry.plugin {
         *slot.instance = make();
     }
     let instance = slot.instance.made.as_mut().map_err(|r| r.clone())?;
@@ -177,7 +187,8 @@ mod tests {
     /// A host of test plug-ins: `channels` (B, 255 − R, G, A); `temporal`,
     /// which asks for the frames either side and one far away and records
     /// what it was handed; `transition`, which offers no Filter context;
-    /// `failing`, whose render fails. Each instance counts its renders.
+    /// `failing`, whose render fails; `sequential`, which renders in
+    /// sequence. Each instance counts its renders.
     #[derive(Default)]
     struct Double {
         handed: Arc<Mutex<Vec<f64>>>,
@@ -196,8 +207,9 @@ mod tests {
         fn describe(&self, plugin: &str) -> Result<OfxDescription, Refusal> {
             let filter = plugin != "transition";
             let budget = if plugin == "temporal" { 2 } else { 0 };
+            let sequential_render = plugin == "sequential";
             match plugin {
-                "channels" | "temporal" | "transition" | "failing" => Ok(OfxDescription { filter, budget, sequential_render: false, unsafe_threads: false }),
+                "channels" | "temporal" | "transition" | "failing" | "sequential" => Ok(OfxDescription { filter, budget, sequential_render, unsafe_threads: false }),
                 _ => Err(Refusal::Missing),
             }
         }
@@ -258,16 +270,22 @@ mod tests {
     /// [`in_context`] for a clip whose source time at a clip time is
     /// `source_at`.
     fn retimed<R>(host: Option<&dyn OfxNodeHost>, instances: &mut PluginInstances, clip: ClipId, source_at: &dyn Fn(f64) -> f64, f: impl FnOnce(&mut FrameContext<'_>) -> R) -> R {
+        framed(host, instances, clip, 50, source_at, f)
+    }
+
+    /// [`retimed`] on timeline frame `frame`, the clip's frame 0 at frame 0.
+    fn framed<R>(host: Option<&dyn OfxNodeHost>, instances: &mut PluginInstances, clip: ClipId, frame: i64, source_at: &dyn Fn(f64) -> f64, f: impl FnOnce(&mut FrameContext<'_>) -> R) -> R {
         let mut media = Media;
         let mut sources = BoundedSources::new(&mut media, 4, 2);
+        let clip_time_secs = frame as f64 / 25.0;
         let mut ctx = FrameContext {
             clip,
-            frame: 50,
+            frame,
             source: (MediaId::nil(), 1.0),
-            clip_time_secs: 2.0,
-            source_secs: 3.0,
+            clip_time_secs,
+            source_secs: source_at(clip_time_secs),
             source_pts: None,
-            frame_number: 50,
+            frame_number: frame as u64,
             fps: 25.0,
             sources: &mut sources,
             analysis: &NoAnalysis,
@@ -317,6 +335,38 @@ mod tests {
         let got = in_context(Some(&host), &mut instances, ClipId::new(), |ctx| run_ofx(NodeId::new_v4(), &transition, &picture(), 4, 2, WorkingColorspace::Rec709Linear, 1.0, Some(ctx)));
         assert!(matches!(got, Err(Refusal::Unsupported(_))), "{got:?}");
         assert_eq!(*host.made.lock().unwrap(), 0, "no instance made");
+    }
+
+    /// An instance's history goes on only from the frame before. A
+    /// sequential plug-in keeps its instance frame to frame in order (the
+    /// control) and for the same frame drawn again, and is made again on a
+    /// seek back, a jump ahead, or a step past the next frame; any other
+    /// keeps it for a short step on too, and is made again on a seek back
+    /// or a jump.
+    #[test]
+    fn a_seek_starts_a_plugin_fresh() {
+        let made_over = |plugin: &str, frames: &[i64]| {
+            let host = Double::default();
+            let mut instances = PluginInstances::default();
+            let (node, clip) = (NodeId::new_v4(), ClipId::new());
+            frames
+                .iter()
+                .map(|&f| {
+                    framed(Some(&host), &mut instances, clip, f, &|t| 1.0 + t, |ctx| run_ofx(node, &entry(plugin), &picture(), 4, 2, WorkingColorspace::Rec709Linear, 1.0, Some(ctx))).unwrap();
+                    instances.end_frame(f);
+                    *host.made.lock().unwrap()
+                })
+                .collect::<Vec<_>>()
+        };
+        // The control: in order, one instance throughout.
+        assert_eq!(made_over("sequential", &[10, 11, 12, 13]), vec![1, 1, 1, 1]);
+        // A seek back, then in order again; a jump ahead, then in order.
+        assert_eq!(made_over("sequential", &[10, 11, 12, 5, 6, 40, 41]), vec![1, 1, 1, 2, 2, 3, 3]);
+        // The same frame drawn again keeps it; a frame skipped doesn't.
+        assert_eq!(made_over("sequential", &[10, 10, 11, 13]), vec![1, 1, 1, 2]);
+        // Any other plug-in: a redraw and a short step keep it; a seek
+        // back or a jump doesn't.
+        assert_eq!(made_over("temporal", &[10, 10, 12, 5, 40]), vec![1, 1, 1, 2, 3]);
     }
 
     /// A node keeps its instance across frames; another node, or the same
