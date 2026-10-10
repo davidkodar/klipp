@@ -686,6 +686,10 @@ fn pausing_on_a_dissolves_cut_settles_on_the_exported_frame() {
             eprintln!("attempt {attempt}: paused past the cut, at {:?}; again", paused_at(&viewer));
             continue;
         }
+        // The cut's own frame, of the outgoing clip at its time, went
+        // with the decoder: the tag matched.
+        let handed = viewer.fb.lock().unwrap().trail().iter().any(|l| l.contains("cut at 100:") && l.contains("handed on"));
+        assert!(handed, "the frame at the cut wasn't handed on\n{}", viewer.trail());
         viewer.wait_for_complete(100, asked_after, Instant::now() + Duration::from_secs(20));
         let (v, presented, complete) = viewer.settled_labelled();
         assert_eq!((presented, complete), (Some(100), true), "settled on the cut\n{}", viewer.trail());
