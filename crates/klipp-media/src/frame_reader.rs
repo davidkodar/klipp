@@ -119,8 +119,14 @@ impl<T: Clone> SeekableFrameReader<T> {
             self.current_pts = seek_secs - 1.0; // approximate; the loop corrects it
         }
 
-        for (stream, packet) in self.format_ctx.packets() {
-            if stream.index() != self.stream_index {
+        let tb = self.format_ctx.stream(self.stream_index).map_or(0.0, |st| {
+            let tb = st.time_base();
+            tb.numerator() as f64 / tb.denominator().max(1) as f64
+        });
+        // A packet at a time, so the format context is free again for
+        // the frames it gives.
+        while let Some((index, packet)) = self.format_ctx.packets().next().map(|(st, p)| (st.index(), p)) {
+            if index != self.stream_index {
                 continue;
             }
             if self.decoder.send_packet(&packet).is_err() {
@@ -129,33 +135,47 @@ impl<T: Clone> SeekableFrameReader<T> {
                     tracing::warn!("SeekableFrameReader: packet lost after drain+retry");
                 }
             }
-            while self.decoder.receive_frame(&mut self.frame).is_ok() {
-                let pts = self.frame.pts().unwrap_or(0);
-                let tb = stream.time_base();
-                let frame_secs = pts as f64 * tb.numerator() as f64 / tb.denominator() as f64;
-                self.current_pts = frame_secs;
-                if frame_secs < seek_secs - self.frame_duration * 0.5 {
-                    continue;
-                }
-                let (w, h) = (self.frame.width(), self.frame.height());
-                match (self.convert)(&self.frame, w, h) {
-                    Ok(rgba) => {
-                        if self.cache.len() >= CACHE_FRAMES {
-                            self.cache.remove(0);
-                        }
-                        self.cache.push((frame_secs, rgba.clone(), w, h));
-                        return Some((rgba, w, h));
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "SeekableFrameReader: the frame at {frame_secs:.3}s could not be converted: {e}"
-                        );
-                        return None;
-                    }
-                }
+            if let Some(found) = self.receive(seek_secs, tb) {
+                return found;
             }
         }
+        // The packets are spent, but a decoder with frame threads still
+        // holds the last frames back: at the file's end they are drained
+        // (a second end of file only errors, and the frames still held
+        // come out as before). A seek flushes the decoder for the next.
+        let _ = self.decoder.send_eof();
+        if let Some(found) = self.receive(seek_secs, tb) {
+            return found;
+        }
         // The file ended before the time asked for.
+        None
+    }
+
+    /// The decoded frames the decoder gives now: `Some` with the answer
+    /// once one is at or after `seek_secs` (time base `tb`, seconds a
+    /// tick), `None` while it has given only earlier ones.
+    fn receive(&mut self, seek_secs: f64, tb: f64) -> Option<Option<(T, u32, u32)>> {
+        while self.decoder.receive_frame(&mut self.frame).is_ok() {
+            let frame_secs = self.frame.pts().unwrap_or(0) as f64 * tb;
+            self.current_pts = frame_secs;
+            if frame_secs < seek_secs - self.frame_duration * 0.5 {
+                continue;
+            }
+            let (w, h) = (self.frame.width(), self.frame.height());
+            return Some(match (self.convert)(&self.frame, w, h) {
+                Ok(rgba) => {
+                    if self.cache.len() >= CACHE_FRAMES {
+                        self.cache.remove(0);
+                    }
+                    self.cache.push((frame_secs, rgba.clone(), w, h));
+                    Some((rgba, w, h))
+                }
+                Err(e) => {
+                    tracing::warn!("SeekableFrameReader: the frame at {frame_secs:.3}s could not be converted: {e}");
+                    None
+                }
+            });
+        }
         None
     }
 }
@@ -945,5 +965,50 @@ mod backward_bench {
         let worst = times[1..].iter().cloned().fold(0.0, f64::max);
         let late = times[1..].iter().filter(|t| **t > fd * 1000.0).count();
         eprintln!("{path}: {n} frames back at {:.1} fps: first {:.0} ms, then mean {mean:.1} ms, worst {worst:.1} ms, {late} over a frame's time, {} windows", 1.0 / fd, times[0], r.fills());
+    }
+}
+
+#[cfg(test)]
+mod forward_tests {
+    use super::*;
+
+    /// A ramp, frame n a flat grey of 20 + 4n, 48 frames at 24 fps, in
+    /// `codec`'s arguments: `None` without ffmpeg or the encoder.
+    fn ramp(name: &str, codec: &[&str]) -> Option<std::path::PathBuf> {
+        let path = std::env::temp_dir().join(format!("klipp-forward-{name}-{}.mkv", std::process::id()));
+        std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=32x32:r=24:d=2,geq=lum='20+4*N':cb=128:cr=128"])
+            .args(codec)
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success())
+            .then_some(path)
+    }
+
+    /// Every frame of a file read forward is there, its last ones included
+    /// (a decoder with frame threads holds them until the end of file);
+    /// past the end there is none; and the reader seeks back to the first
+    /// frame after. Intra-coded ffv1, and h264 with B-frames, frames out
+    /// of decode order.
+    #[test]
+    fn a_file_reads_forward_to_its_last_frame_and_back() {
+        for (name, codec) in [
+            ("ffv1", &["-c:v", "ffv1", "-pix_fmt", "yuv420p"][..]),
+            ("h264", &["-c:v", "libx264", "-bf", "2", "-g", "12", "-crf", "10", "-pix_fmt", "yuv420p"][..]),
+        ] {
+            let Some(path) = ramp(name, codec) else {
+                eprintln!("skipped {name}: ffmpeg could not write the test clip");
+                continue;
+            };
+            let mut r = SeekableFrameReader::open_rgba(&path).expect("opens");
+            let fd = r.frame_duration();
+            let grey = |r: &mut SeekableFrameReader<Vec<u8>>, k: i64| r.decode_at(k as f64 * fd).map(|(px, _, _)| px[0] as i64);
+            let greys: Vec<i64> = (0..48).map(|k| grey(&mut r, k).unwrap_or_else(|| panic!("{name}: frame {k} missing"))).collect();
+            assert!(greys.windows(2).all(|w| w[1] > w[0]), "{name}: every frame its own, in order: {greys:?}");
+            assert_eq!(grey(&mut r, 60), None, "{name}: none past the end");
+            assert_eq!(grey(&mut r, 0), Some(greys[0]), "{name}: the first frame again, after the end");
+            assert_eq!(grey(&mut r, 47), Some(greys[47]), "{name}: and the last again");
+            std::fs::remove_file(&path).ok();
+        }
     }
 }
