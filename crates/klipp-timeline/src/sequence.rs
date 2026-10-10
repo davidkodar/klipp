@@ -1527,10 +1527,6 @@ impl Track {
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
             multicam_sound: Default::default(),
-            deflicker_data: None,
-            deflicker_gains: None,
-            stabilization_data: None,
-            smoothed_trajectory: None,
             track_points: Vec::new(),
             surfaces: Vec::new(),
             surface_pin: None,
@@ -1831,10 +1827,6 @@ impl Track {
             multicam_sound: clip.multicam_sound,
             audio_effects: clip.audio_effects.clone(),
             audio_effect_keyframes: audio_effect_kfs_a,
-            deflicker_data: None,
-            deflicker_gains: None,
-            stabilization_data: None,
-            smoothed_trajectory: None,
             track_points: Vec::new(),
             // The keys are in file time: each half keeps the track (#684).
             surfaces: clip.surfaces.clone(),
@@ -1907,10 +1899,6 @@ impl Track {
             multicam_sound: clip.multicam_sound,
             audio_effects: clip.audio_effects,
             audio_effect_keyframes: audio_effect_kfs_b,
-            deflicker_data: None,
-            deflicker_gains: None,
-            stabilization_data: None,
-            smoothed_trajectory: None,
             track_points: Vec::new(),
             surfaces: clip.surfaces.clone(),
             surface_pin: clip.surface_pin,
@@ -2415,21 +2403,6 @@ pub struct Clip {
     /// Reserved param names: "__bypass" (0/1, step) and "__wetdry" (0..1, linear).
     #[serde(default)]
     pub audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
-    /// Per-frame light, measured once by the deflicker analysis. Not
-    /// serialized — one float per frame is cheap to remeasure and
-    /// stale numbers against re-linked media would be worse than none.
-    #[serde(skip)]
-    pub deflicker_data: Option<klipp_effects::deflicker::DeflickerData>,
-    /// The gains that measurement produces at the current window.
-    /// Recomputed when the window moves, as `smoothed_trajectory` is.
-    #[serde(skip)]
-    pub deflicker_gains: Option<klipp_effects::deflicker::DeflickerGains>,
-    /// Pre-computed stabilization data. Not serialized — reanalysis needed on load.
-    #[serde(skip)]
-    pub stabilization_data: Option<klipp_effects::stabilization::StabilizationData>,
-    /// Current smoothed trajectory. Recomputed when smoothing parameter changes.
-    #[serde(skip)]
-    pub smoothed_trajectory: Option<klipp_effects::stabilization::SmoothedTrajectory>,
     /// Tracked points for motion tracking.
     #[serde(default)]
     pub track_points: Vec<klipp_core::TrackPoint>,
@@ -2850,10 +2823,6 @@ impl Clip {
             multicam_sound: Default::default(),
             audio_effects: Vec::new(),
             audio_effect_keyframes: std::collections::HashMap::new(),
-            deflicker_data: None,
-            deflicker_gains: None,
-            stabilization_data: None,
-            smoothed_trajectory: None,
             track_points: Vec::new(),
             surfaces: Vec::new(),
             surface_pin: None,
@@ -2965,10 +2934,6 @@ impl Clip {
             multicam_sound: Default::default(),
             audio_effects: Vec::new(),
             audio_effect_keyframes: std::collections::HashMap::new(),
-            deflicker_data: None,
-            deflicker_gains: None,
-            stabilization_data: None,
-            smoothed_trajectory: None,
             track_points: Vec::new(),
             surfaces: Vec::new(),
             surface_pin: None,
@@ -3069,10 +3034,6 @@ impl Clip {
             multicam_sound: Default::default(),
             audio_effects: Vec::new(),
             audio_effect_keyframes: std::collections::HashMap::new(),
-            deflicker_data: None,
-            deflicker_gains: None,
-            stabilization_data: None,
-            smoothed_trajectory: None,
             track_points: Vec::new(),
             surfaces: Vec::new(),
             surface_pin: None,
