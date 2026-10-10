@@ -107,10 +107,16 @@ pub fn evaluate_clip_own_transform(
             _ => None,
         })
         .unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5)));
-    let px = eval_with_modifiers(clip.transform_pos_x_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::PositionX, clip_time_secs, tdef.0, eval_ctx);
-    let py = eval_with_modifiers(clip.transform_pos_y_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::PositionY, clip_time_secs, tdef.1, eval_ctx);
-    let sc = eval_with_modifiers(clip.transform_scale_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::Scale, clip_time_secs, tdef.2, eval_ctx);
-    let ro = eval_with_modifiers(clip.transform_rotation_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::Rotation, clip_time_secs, tdef.4, eval_ctx);
+    // Each lane where the clip's placement edits land: a picture-truth
+    // clip's in its picture, any other clip's in its fields.
+    let lane = |param: klipp_core::ParamId, view: &[klipp_core::Keyframe], default: f32| match clip.truth_lane(&param) {
+        Some((keys, modifiers)) => eval_with_modifiers(&keys, &modifiers, &param, clip_time_secs, default, eval_ctx),
+        None => eval_with_modifiers(view, clip.param_modifiers(), &param, clip_time_secs, default, eval_ctx),
+    };
+    let px = lane(klipp_core::ParamId::PositionX, clip.transform_pos_x_keyframes(), tdef.0);
+    let py = lane(klipp_core::ParamId::PositionY, clip.transform_pos_y_keyframes(), tdef.1);
+    let sc = lane(klipp_core::ParamId::Scale, clip.transform_scale_keyframes(), tdef.2);
+    let ro = lane(klipp_core::ParamId::Rotation, clip.transform_rotation_keyframes(), tdef.4);
     // The scale lane keys the width; the height keeps the clip's aspect
     // under it (#1406), so a width keyed to 0 gives a height of 0.
     (px, py, sc, sc * tdef.3, ro, tdef.5, tdef.6)
@@ -581,6 +587,20 @@ pub fn evaluate_clip_opacity(
     };
     let opacities = || clip.builtin_effects().iter().enumerate().filter(|(i, e)| enabled(*i) && matches!(e, BuiltinEffect::Opacity { .. }));
     let anchor = opacities().filter(|(i, _)| *i < own).map(|(i, _)| i).next_back();
+    // A picture-truth clip's opacity is its picture's, where its opacity
+    // edits land: its value and its lane, times every other Opacity. Its
+    // modifier stack is the one on `opacity_anim`; the fields' Opacity
+    // stack is the view's and deliberately not read.
+    if let (Some((keys, modifiers)), Ok(lifted)) = (clip.truth_lane(&klipp_core::ParamId::Opacity), clip.picture_v2()) {
+        let opacity = eval_with_modifiers(&keys, &modifiers, &klipp_core::ParamId::Opacity, t, lifted.picture.opacity, &ctx);
+        let mut others = 1.0f32;
+        for (i, effect) in opacities() {
+            if let (BuiltinEffect::Opacity { value }, false) = (effect, Some(i) == anchor) {
+                others *= param(i, "value", *value).clamp(0.0, 1.0);
+            }
+        }
+        return opacity.clamp(0.0, 1.0) * others;
+    }
     let mut opacity = None;
     let mut others = 1.0f32;
     for (i, effect) in opacities() {

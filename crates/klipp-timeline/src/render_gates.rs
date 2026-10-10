@@ -1,7 +1,7 @@
 //! Render-path decisions over today's clip storage. Keep their individual
 //! meanings when the storage changes; a raw entry is not an active effect.
 use crate::{Clip, TransformLinkTarget};
-use klipp_core::{ClipId, Keyframe};
+use klipp_core::{ClipId, Keyframe, ParamId};
 use klipp_effects::{BuiltinEffect, FocalRef};
 
 impl Clip {
@@ -47,17 +47,31 @@ impl Clip {
 
     /// A modifier entry counts even when its stack is empty or targets audio.
     pub fn has_param_modifiers(&self) -> bool {
-        !self.param_modifiers().is_empty()
+        // A picture-truth clip's placement and opacity stacks are its
+        // picture's (`truth_lane`).
+        let truth = [ParamId::Opacity, ParamId::PositionX, ParamId::PositionY, ParamId::Scale, ParamId::Rotation].iter().any(|p| self.truth_lane(p).is_some_and(|(_, m)| !m.is_empty()));
+        truth || !self.param_modifiers().is_empty()
     }
 
     /// The seven clip tracks used by direct-present and title-overlay gates.
     /// A single constant key counts; audio, effect, speed and matte keys do not.
     pub fn has_render_keyframes(&self) -> bool {
+        if let Some(tracks) = self.truth_tracks() {
+            return tracks.iter().any(|k| !k.is_empty());
+        }
         !self.opacity_keyframes().is_empty()
             || self
                 .transform_keyframe_tracks()
                 .iter()
                 .any(|k| !k.is_empty())
+    }
+
+    /// A picture-truth clip's seven render tracks as its picture holds them
+    /// (opacity, then the six transform tracks); `None` for any other clip.
+    fn truth_tracks(&self) -> Option<Vec<Vec<Keyframe>>> {
+        let lane = |p: ParamId| self.truth_lane(&p).map(|(k, _)| k).unwrap_or_default();
+        let [tilt_x, tilt_y] = self.truth_tilt_keys()?;
+        Some(vec![lane(ParamId::Opacity), lane(ParamId::PositionX), lane(ParamId::PositionY), lane(ParamId::Scale), lane(ParamId::Rotation), tilt_x, tilt_y])
     }
 
     /// Existing picture-present animation decision: any modifier or one of
@@ -67,6 +81,9 @@ impl Clip {
     }
 
     pub fn has_tilt_keyframes(&self) -> bool {
+        if let Some(tilt) = self.truth_tilt_keys() {
+            return tilt.iter().any(|k| !k.is_empty());
+        }
         !self.transform_tilt_x_keyframes().is_empty() || !self.transform_tilt_y_keyframes().is_empty()
     }
 
@@ -77,6 +94,9 @@ impl Clip {
 
     /// The shutter gate needs changing neighbouring values, not merely keys.
     pub fn has_changing_transform_keys(&self) -> bool {
+        if let Some(tracks) = self.truth_tracks() {
+            return tracks[1..].iter().any(|k| k.windows(2).any(|w| (w[0].value - w[1].value).abs() > 1e-6));
+        }
         self.transform_keyframe_tracks()
             .iter()
             .any(|k| k.windows(2).any(|w| (w[0].value - w[1].value).abs() > 1e-6))
