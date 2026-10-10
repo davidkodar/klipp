@@ -434,6 +434,20 @@ pub fn needs_source_neighbours(effect: &BuiltinEffect) -> bool {
     kinds.contains(&std::mem::discriminant(effect))
 }
 
+/// The order the source-boundary effects run in at a clip's source (M4
+/// steps 6 and 7), by tag: the frame blend first, on the frames as
+/// decoded, then the denoiser on the blended frame, so it compares the
+/// picture shown with its neighbours. Every type that needs the source's
+/// neighbours is in it.
+pub const SOURCE_BOUNDARY_ORDER: [&str; 2] = ["speed_ramp", "temporal_denoise"];
+
+/// Where `effect` runs among the source-boundary effects
+/// ([`SOURCE_BOUNDARY_ORDER`]); `None` for any other.
+pub fn source_boundary_rank(effect: &BuiltinEffect) -> Option<usize> {
+    let tag = effect_types().find(|t| std::mem::discriminant(&(t.sample)()) == std::mem::discriminant(effect))?.tag;
+    SOURCE_BOUNDARY_ORDER.iter().position(|t| *t == tag)
+}
+
 impl Scaling {
     /// Whether the effect scales it itself ([`BuiltinEffect::at_render_scale`]).
     pub fn by_the_effect(self) -> bool {
@@ -457,5 +471,23 @@ pub fn scaled_value(desc: &ParamDesc, value: f32, k: f32) -> f32 {
         (ParamKind::Whole, _) => value,
         (_, Scaling::AtRenderScaleAtLeastOne) => (value * k).max(1.0),
         _ => value * k,
+    }
+}
+
+#[cfg(test)]
+mod source_boundary_order_tests {
+    use super::*;
+
+    /// Every effect that reads the source's neighbours has its place, the
+    /// blend before the denoiser.
+    #[test]
+    fn every_source_boundary_effect_has_its_place_blend_first() {
+        for t in effect_types().filter(|t| t.desc.temporal == Temporal::SourceNeighbours) {
+            assert!(source_boundary_rank(&(t.sample)()).is_some(), "{} has no place at the source", t.tag);
+        }
+        let blend = source_boundary_rank(&(effect_type("speed_ramp").unwrap().sample)()).unwrap();
+        let denoise = source_boundary_rank(&(effect_type("temporal_denoise").unwrap().sample)()).unwrap();
+        assert!(blend < denoise, "the blend runs first");
+        assert_eq!(source_boundary_rank(&BuiltinEffect::Invert { mix: 1.0 }), None);
     }
 }

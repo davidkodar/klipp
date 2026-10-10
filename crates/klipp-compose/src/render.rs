@@ -221,6 +221,9 @@ pub struct ClipSources<'s> {
     range: (f64, f64),
     /// One of the media's frames, in seconds, when known.
     frame_secs: Option<f64>,
+    /// The rendered frame: its source time, transfer and the render size,
+    /// for its next frame.
+    current: Option<(f64, Option<klipp_color::hdr::HdrTransfer>, u32, u32)>,
     encoded: Option<Option<klipp_plugin::FrameProviderFn>>,
     linear: Option<Option<LinearFrameProviderFn>>,
 }
@@ -229,7 +232,15 @@ impl<'s> ClipSources<'s> {
     pub fn new(src: &'s mut dyn FrameSource, clip: &'s Clip, working: WorkingColorspace) -> Self {
         let range = src.media_range(clip).unwrap_or((0.0, f64::INFINITY));
         let frame_secs = src.media_fps(clip).filter(|f| f.is_finite() && *f > 0.0).map(|f| 1.0 / f);
-        Self { src, clip, working, range, frame_secs, encoded: None, linear: None }
+        Self { src, clip, working, range, frame_secs, current: None, encoded: None, linear: None }
+    }
+
+    /// The frame being rendered, shown at `source_secs` with `hdr`'s
+    /// transfer, at `width × height`: its next frame comes from the same
+    /// reader ([`FrameSource::frame_after`]), with no second seek.
+    pub fn with_current(mut self, source_secs: f64, hdr: Option<klipp_color::hdr::HdrTransfer>, width: u32, height: u32) -> Self {
+        self.current = Some((source_secs, hdr, width, height));
+        self
     }
 
     /// The readers' time for `source_secs`: from the clip's source in-point.
@@ -266,9 +277,24 @@ impl klipp_nodes::frame_context::SourceProvider for ClipSources<'_> {
         }
         let t = self.reader_time(source_secs);
         match self.linear.as_mut().and_then(|r| r.as_mut()).and_then(|read| read(t)) {
-            Some((rgba, width, height)) => Neighbour::Frame(LinearFrame { rgba, width, height, source_secs }),
+            Some((rgba, width, height)) => Neighbour::Frame(LinearFrame { rgba, width, height, source_secs, pts: None }),
             None => Neighbour::Missing(Missing::Unavailable),
         }
+    }
+
+    /// The reader's next frame, fitted to the render size as the frame
+    /// shown was (ruling 10-09). Another transfer than the frame shown's,
+    /// or no time, isn't a frame to blend toward.
+    fn next(&mut self, _source_secs: f64) -> klipp_nodes::frame_context::Neighbour<klipp_nodes::frame_context::LinearFrame> {
+        use klipp_nodes::frame_context::{LinearFrame, Missing, Neighbour};
+        let Some((at, hdr, width, height)) = self.current else { return Neighbour::Missing(Missing::Unavailable) };
+        let Some(next) = self.src.frame_after(self.clip, at, width, height) else { return Neighbour::Missing(Missing::Unavailable) };
+        let Some(pts) = next.pts else { return Neighbour::Missing(Missing::Unavailable) };
+        let (rgba, next_hdr) = to_linear(next, width, height);
+        if next_hdr != hdr {
+            return Neighbour::Missing(Missing::Unavailable);
+        }
+        Neighbour::Frame(LinearFrame { rgba: unshare(rgba), width, height, source_secs: pts, pts: Some(pts) })
     }
 }
 
@@ -2284,11 +2310,25 @@ impl Renderer {
         transforms: &HashMap<ClipId, ResolvedTransform>,
     ) -> Option<(Vec<f32>, f32)> {
         let clip_time = eval_clip_time(clip, time);
+        // The rendered frame's presentation time, for its frame blend.
+        let mut source_pts = None;
         let (input, hdr) = match &clip.kind {
             ClipKind::Media { .. } => {
                 let at = source_secs(clip, time, fps);
-                let f = src.frame(clip, at, width, height)?;
-                let next = if frame_blends(clip, time) { src.frame_after(clip, at, width, height) } else { None };
+                // Blended by its node at the head of the grade's run, from
+                // the stream's next frame (M4 step 7).
+                let blending = frame_blends(clip, time);
+                // A source reads the frame nearest the time asked; a blend
+                // mixes from the frame at or before it toward the next, so
+                // it asks half a media frame earlier. Otherwise a time
+                // halfway between two frames could read the later one, and
+                // the blend would have nothing after it to mix toward.
+                let read_at = match src.media_fps(clip).filter(|r| *r > 0.0) {
+                    Some(rate) if blending => at - 0.5 / rate,
+                    _ => at,
+                };
+                let f = src.frame(clip, read_at, width, height)?;
+                source_pts = f.pts;
                 // Temporal noise reduction happens here, on the source,
                 // before the grade — so a clip using it gives up the
                 // GPU-resident fast path below and comes down to the
@@ -2299,26 +2339,21 @@ impl Renderer {
                 match f {
                     // Left on the GPU for the grade to start from.
                     SourceFrame { pixels: SourcePixels::Gpu(g), width: w, height: h, .. }
-                        if tnr.is_none() && next.is_none() && (w, h) == (width, height) =>
+                        if tnr.is_none() && !blending && (w, h) == (width, height) =>
                     {
                         (GradeInput::Gpu(g), None)
                     }
                     // Scene-referred codes at the render size go to the
                     // grade as they are.
                     SourceFrame { pixels: SourcePixels::SceneReferred { codes, transfer, source_to_working }, width: w, height: h, .. }
-                        if tnr.is_none() && next.is_none() && (w, h) == (width, height) && codes.len() == (w as usize) * (h as usize) =>
+                        if tnr.is_none() && !blending && (w, h) == (width, height) && codes.len() == (w as usize) * (h as usize) =>
                     {
                         (GradeInput::Scene { codes, transfer, source_to_working }, Some(transfer))
                     }
                     f => {
-                        let pts = f.pts;
                         let (pixels, hdr) = to_linear(f, width, height);
-                        let pixels = match (next, pts) {
-                            (Some(n), Some(p0)) => blend_frames(pixels, hdr, p0, n, at, width, height),
-                            _ => pixels,
-                        };
-                        // Denoised by its node at the head of the grade's
-                        // run (`grade_at_source`), from linear neighbours.
+                        // Blended and denoised by its node at the head of
+                        // the grade's run (`grade_at_source`).
                         (GradeInput::Cpu(pixels), hdr)
                     }
                 }
@@ -2413,7 +2448,7 @@ impl Renderer {
         // What the grade reads, kept for a masked effect apart from it to
         // make its matte from (9c-2 B2).
         self.matte_input = apart_blends.iter().flatten().any(|b| b.mask.is_some()).then(|| input.pixels());
-        let mut pixels = self.grade_at_source(clip, input, time, clip_time, fps, width, height, src);
+        let mut pixels = self.grade_at_source(clip, input, time, clip_time, fps, width, height, src, source_pts, hdr);
         // Whether the grade's run took the display step, so it isn't run
         // twice: not when the run failed and gave back its input.
         let mut displayed = false;
@@ -2433,7 +2468,7 @@ impl Renderer {
                     (self.run_effects, self.run_blends) = ran;
                     self.run_display = hdr.map(|t| self.scene_to_display(t));
                     let input = retry.expect("kept on the plan route");
-                    let pixels = self.on_cpu_executor(|r| r.grade_at_source(clip, input, time, clip_time, fps, width, height, src));
+                    let pixels = self.on_cpu_executor(|r| r.grade_at_source(clip, input, time, clip_time, fps, width, height, src, source_pts, hdr));
                     self.cpu_kernel_run();
                     self.run_effects.clear();
                     self.run_blends.clear();
@@ -2445,7 +2480,7 @@ impl Renderer {
                 // failed before its effects: the frame is graded again and
                 // its effects drawn by the CPU kernels below, never shown
                 // without them.
-                pixels = self.grade_at_source(clip, retry.expect("kept when on_gpu"), time, clip_time, fps, width, height, src);
+                pixels = self.grade_at_source(clip, retry.expect("kept when on_gpu"), time, clip_time, fps, width, height, src, source_pts, hdr);
                 displayed = false;
                 self.cpu_fallback(clip);
             }
@@ -2513,7 +2548,7 @@ impl Renderer {
         // The picture's already drawn: a plug-in's instance is lent to the
         // run, and no node of it reads the source.
         let source_at = clip.source_in.to_secs_f64() + clip_time;
-        let run = self.in_context(clip, clip_time, fps, source_at, &mut klipp_nodes::frame_context::NoSources, |r, ctx| {
+        let run = self.in_context(clip, clip_time, fps, source_at, None, &mut klipp_nodes::frame_context::NoSources, |r, ctx| {
             let spliced = std::mem::take(&mut r.spliced);
             let run = match r.executor.prime_chain_from_linear(&pixels, width, height) {
                 true => match r.executor.execute_linear_with_context(&[], &spliced, width, height, clip_time, frame, None, None, None, ctx) {
@@ -3100,16 +3135,18 @@ impl Renderer {
     /// the grade. Its rules are the effect's: the first enabled one, and
     /// none at a strength of 0 or less (`temporal_denoise_of`).
     #[allow(clippy::too_many_arguments)]
-    fn grade_at_source(&mut self, clip: &Clip, input: GradeInput, time: Timecode, clip_time: f64, fps: f64, width: u32, height: u32, src: &mut dyn FrameSource) -> Vec<f32> {
+    fn grade_at_source(&mut self, clip: &Clip, input: GradeInput, time: Timecode, clip_time: f64, fps: f64, width: u32, height: u32, src: &mut dyn FrameSource, source_pts: Option<f64>, hdr: Option<klipp_color::hdr::HdrTransfer>) -> Vec<f32> {
         use klipp_nodes::frame_context::BoundedSources;
         let denoise = matches!(clip.kind, ClipKind::Media { .. }).then(|| temporal_denoise_of(clip, time, fps)).flatten();
-        self.run_source_node = denoise.map(|(strength, threshold)| source_denoise_node(clip, strength, threshold));
+        let blend = matches!(clip.kind, ClipKind::Media { .. }) && frame_blends(clip, time);
+        self.run_source_node = source_node(clip, blend, denoise);
         // Every clip's run has its context: a plug-in node reads its
         // instance there whether or not anything reads the source, whose
         // readers open only when asked.
-        let mut sources = ClipSources::new(src, clip, self.working);
+        let at = source_secs(clip, time, fps);
+        let mut sources = ClipSources::new(src, clip, self.working).with_current(at, hdr, width, height);
         let mut bounded = BoundedSources::new(&mut sources, width, height);
-        let pixels = self.in_context(clip, clip_time, fps, source_secs(clip, time, fps), &mut bounded, |r, ctx| r.grade(clip, input, clip_time, fps, width, height, Some(ctx)));
+        let pixels = self.in_context(clip, clip_time, fps, at, source_pts, &mut bounded, |r, ctx| r.grade(clip, input, clip_time, fps, width, height, Some(ctx)));
         self.run_source_node = None;
         pixels
     }
@@ -3118,7 +3155,7 @@ impl Renderer {
     /// (M4): this renderer's plug-in instances, lent for the run, and
     /// `sources` for the clip's source frames at other times.
     #[allow(clippy::too_many_arguments)]
-    fn in_context<R>(&mut self, clip: &Clip, clip_time: f64, fps: f64, source_secs: f64, sources: &mut dyn klipp_nodes::frame_context::SourceProvider, f: impl FnOnce(&mut Self, &mut klipp_nodes::frame_context::FrameContext<'_>) -> R) -> R {
+    fn in_context<R>(&mut self, clip: &Clip, clip_time: f64, fps: f64, source_secs: f64, source_pts: Option<f64>, sources: &mut dyn klipp_nodes::frame_context::SourceProvider, f: impl FnOnce(&mut Self, &mut klipp_nodes::frame_context::FrameContext<'_>) -> R) -> R {
         let media = match clip.kind {
             ClipKind::Media { media_id } => media_id,
             _ => klipp_core::MediaId::nil(),
@@ -3132,6 +3169,7 @@ impl Renderer {
             frame_number: grade_frame(clip_time, fps),
             fps,
             source_secs,
+            source_pts,
             sources,
             analysis: &klipp_nodes::frame_context::NoAnalysis,
             instances: &mut instances,
@@ -3934,20 +3972,33 @@ fn passthrough_graph() -> klipp_nodes::NodeGraph {
     NodeGraph { output_node_id: output.id, nodes: vec![source, output], edges, node_positions: Default::default(), working_space_override: None, frames: vec![], sticky_notes: vec![] }
 }
 
-/// A clip's temporal noise reduction as its source-boundary node (M4
-/// step 6), run straight after the Source.
-fn source_denoise_node(clip: &Clip, strength: f32, threshold: f32) -> klipp_nodes::Node {
+/// A clip's source-boundary node (M4 steps 6 and 7): its frame blend and
+/// its temporal noise reduction, in the catalog's order
+/// (`SOURCE_BOUNDARY_ORDER`), run straight after the Source. `None` when it
+/// has neither.
+fn source_node(clip: &Clip, blend: bool, denoise: Option<(f32, f32)>) -> Option<klipp_nodes::Node> {
     use klipp_nodes::{Node, NodeId, NodeKind, NodeParams};
-    Node {
+    let mut effects: Vec<BuiltinEffect> = Vec::new();
+    if blend {
+        effects.push(BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 1 });
+    }
+    if let Some((strength, threshold)) = denoise {
+        effects.push(BuiltinEffect::TemporalDenoise { strength, threshold });
+    }
+    if effects.is_empty() {
+        return None;
+    }
+    effects.sort_by_key(klipp_effects::registry::source_boundary_rank);
+    Some(Node {
         id: NodeId::from_u128(clip.id.0.as_u128() ^ (0x0050_7c3e_u128 << 64)),
         kind: NodeKind::Effect,
         label: String::new(),
         enabled: true,
-        params: NodeParams { effects: vec![BuiltinEffect::TemporalDenoise { strength, threshold }], ..Default::default() },
+        params: NodeParams { effects, ..Default::default() },
         keyframes: Default::default(),
         output_link: None,
         input_links: vec![],
-    }
+    })
 }
 
 /// `clip`'s display step as a plan node (step 11c), with an id fixed per
@@ -4575,34 +4626,6 @@ pub fn frame_blends(clip: &Clip, time: Timecode) -> bool {
     // A reversed clip's next frame is the one before: there is no
     // following frame to blend toward.
     blend && !clip.is_reversed() && clip.speed_at(eval_clip_time(clip, time)).abs() < 1.0 - 1e-6
-}
-
-/// Mix `current` (the frame at `pts`) with `next`, by where `at` falls
-/// between their times. Mismatched frames — another transfer, no time —
-/// leave `current` as it is.
-fn blend_frames(
-    current: Arc<Vec<f32>>,
-    hdr: Option<klipp_color::hdr::HdrTransfer>,
-    pts: f64,
-    next: SourceFrame,
-    at: f64,
-    width: u32,
-    height: u32,
-) -> Arc<Vec<f32>> {
-    let Some(next_pts) = next.pts.filter(|p| *p > pts + 1e-6) else { return current };
-    let weight = (((at - pts) / (next_pts - pts)).clamp(0.0, 1.0)) as f32;
-    if weight <= 1e-4 {
-        return current;
-    }
-    let (next, next_hdr) = to_linear(next, width, height);
-    if next_hdr != hdr || next.len() != current.len() {
-        return current;
-    }
-    let mut out = unshare(current);
-    for (o, n) in out.iter_mut().zip(next.iter()) {
-        *o += (n - *o) * weight;
-    }
-    Arc::new(out)
 }
 
 /// OFX plugins known to read frames at other times than the current one.

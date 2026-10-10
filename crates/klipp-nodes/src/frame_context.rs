@@ -38,6 +38,9 @@ pub struct FrameContext<'a> {
     /// The source time of the frame being rendered: where a node's
     /// neighbours are counted from.
     pub source_secs: f64,
+    /// The rendered frame's presentation time in the media, when known: a
+    /// frame blend weighs from it, and can't blend without it.
+    pub source_pts: Option<f64>,
     pub frame_number: u64,
     pub fps: f64,
     pub sources: &'a mut dyn SourceProvider,
@@ -87,6 +90,9 @@ pub struct LinearFrame {
     pub height: u32,
     /// The source time it is the frame of.
     pub source_secs: f64,
+    /// Its presentation time in the media, when the reader knows it: what
+    /// a frame blend weighs it by.
+    pub pts: Option<f64>,
 }
 
 /// A frame's size.
@@ -122,6 +128,12 @@ pub trait SourceProvider {
     /// sequence's rate. `None` when the source can't say.
     fn frame_secs(&self) -> Option<f64> {
         None
+    }
+    /// The media's next frame after the one rendered (shown at
+    /// `source_secs`), from the reader it came from, at the render size,
+    /// with its presentation time: a frame blend's other frame.
+    fn next(&mut self, _source_secs: f64) -> Neighbour<LinearFrame> {
+        Neighbour::Missing(Missing::Unavailable)
     }
 }
 
@@ -224,6 +236,18 @@ impl SourceProvider for BoundedSources<'_> {
         }
         let got = self.inner.linear(source_secs);
         self.sized(got)
+    }
+
+    /// Counted against the budget like any request; the next frame past
+    /// the media's end is out of range.
+    fn next(&mut self, source_secs: f64) -> Neighbour<LinearFrame> {
+        if let Err(m) = self.admit(source_secs) {
+            return Neighbour::Missing(m);
+        }
+        match self.inner.next(source_secs) {
+            Neighbour::Frame(f) if f.pts.is_some_and(|p| p >= self.inner.bounds().1) => Neighbour::Missing(Missing::OutOfRange),
+            got => self.sized(got),
+        }
     }
 }
 
@@ -424,7 +448,7 @@ mod tests {
         fn linear(&mut self, source_secs: f64) -> Neighbour<LinearFrame> {
             self.asked += 1;
             let (width, height) = self.size;
-            Neighbour::Frame(LinearFrame { rgba: vec![0.5; (width * height * 4) as usize], width, height, source_secs })
+            Neighbour::Frame(LinearFrame { rgba: vec![0.5; (width * height * 4) as usize], width, height, source_secs, pts: None })
         }
     }
 
