@@ -88,7 +88,7 @@ fn baked(clip: Clip, track_fx: Vec<E>) -> Placed {
 fn rendered(name: &str, clip: &Clip, t: f64) -> Option<Option<String>> {
     let lifted = clip.picture_v2().unwrap_or_else(|e| panic!("{name}: lift: {e}"));
     let picture = &lifted.picture;
-    let list = klipp_compose::render::clip_effects(clip, tc(t), 24.0, None, None).0;
+    let list = klipp_compose::render::list_effects(clip, tc(t), 24.0, None, None).0;
     let fx = resolve_effects(clip, picture, tc(t), 24.0, None, None).unwrap_or_else(|e| panic!("{name}: {e}"));
     assert_eq!(format!("{fx:?}"), format!("{list:?}"), "{name}: the routes disagree at {t}");
     let at = fx.iter().position(|e| matches!(e, E::Transform { .. }))?;

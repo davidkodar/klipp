@@ -4232,12 +4232,34 @@ fn has_active_effects(fx: &[BuiltinEffect]) -> bool {
 }
 
 /// A clip's built-in effects evaluated at `time`, with its opacity split
-/// out. Keyframes and modifier stacks applied, the transform replaced by
-/// the resolved one (own keyframes, link, focal point), disabled and
+/// out, read from its picture (M4 step 12a): each effect node's values
+/// with its keys and modifier stack, the transform replaced by the
+/// resolved one (own keyframes, link, focal point), switched-off and
 /// identity effects dropped, `Opacity` removed — it is a compositing
 /// weight, returned separately — and `SpeedRamp` removed, which acts on
-/// time, not pixels.
+/// time, not pixels. A clip whose picture can't be read is drawn from its
+/// list ([`list_effects`]), which is said.
 pub fn clip_effects(
+    clip: &Clip,
+    time: Timecode,
+    fps: f64,
+    resolved: Option<ResolvedTransform>,
+    pin: Option<klipp_timeline::surface::Quad>,
+) -> (Vec<BuiltinEffect>, f32) {
+    let from_picture = clip.picture_v2().and_then(|p| crate::resolve::resolve_effects_at(clip, &p.picture, time, fps, resolved, pin, 1.0));
+    match from_picture {
+        Ok(fx) => (fx, eval::evaluate_clip_opacity(clip, time, fps)),
+        Err(e) => {
+            tracing::warn!("clip {}: effects from its picture: {e}; its list stands in", clip.id.0);
+            list_effects(clip, time, fps, resolved, pin)
+        }
+    }
+}
+
+/// [`clip_effects`] from the clip's effect list rather than its picture:
+/// the stand-in for a picture that can't be read, until the lists go
+/// (step 12f).
+pub fn list_effects(
     clip: &Clip,
     time: Timecode,
     fps: f64,

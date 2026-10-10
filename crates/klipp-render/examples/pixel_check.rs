@@ -933,7 +933,7 @@ fn resolve_sweep(args: &[String], scratch: &Path) -> i32 {
                         let t = a + (b - a) * (k as f64 / 5.0);
                         let time = Timecode::from_secs_f64(t, snapshot.fps_num);
                         times += 1;
-                        let want = klipp_compose::render::clip_effects(clip, time, fps, None, None).0;
+                        let want = klipp_compose::render::list_effects(clip, time, fps, None, None).0;
                         let got = klipp_compose::resolve::resolve_effects(clip, &picture.picture, time, fps, None, None);
                         match got {
                             Ok(got) if format!("{got:?}") == format!("{want:?}") => {}

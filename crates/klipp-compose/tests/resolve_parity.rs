@@ -1,8 +1,10 @@
-//! A clip's effects read from its lifted picture are the effects the
-//! renderer takes today, bit for bit (#1089, phase 2b M2, step 10c-1).
+//! A clip's effects read from its lifted picture are the effects its list
+//! gives, bit for bit (#1089, phase 2b M2, step 10c-1): the renderer reads
+//! the picture (step 12a), and the list stands in when it can't be read,
+//! until the lists go (step 12f).
 //!
 //! Each case builds a clip, bakes it as a render copy, and holds
-//! `resolve_effects` over the copy's `picture_v2()` to `clip_effects` on
+//! `resolve_effects` over the copy's `picture_v2()` to `list_effects` on
 //! the copy, at several times: keys and modifier stacks, a disabled
 //! effect, the fixed and the automatic placement and an extra Transform,
 //! a shadow drawn outside the picture, the film seeds, a colour fade, the
@@ -51,7 +53,7 @@ fn baked(clip: Clip, track_fx: Vec<E>) -> Clip {
 fn check(name: &str, clip: &Clip) {
     let picture = clip.picture_v2().unwrap_or_else(|e| panic!("{name}: lift: {e}"));
     for t in [0.0, 0.4, 1.0, 1.7, 2.5, 3.9] {
-        let want = klipp_compose::render::clip_effects(clip, tc(t), 24.0, None, None).0;
+        let want = klipp_compose::render::list_effects(clip, tc(t), 24.0, None, None).0;
         let got = resolve_effects(clip, &picture.picture, tc(t), 24.0, None, None).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(format!("{got:?}"), format!("{want:?}"), "{name} at {t}");
     }
@@ -166,7 +168,7 @@ fn a_frame_at_render_scale_resolves_each_effect_scaled() {
     let picture = clip.picture_v2().unwrap();
     for k in [1.0, 0.5, 0.25] {
         for t in [0.0, 1.0, 2.5] {
-            let want: Vec<E> = klipp_compose::render::clip_effects(&clip, tc(t), 24.0, None, None).0.into_iter().map(|e| e.at_render_scale(k)).collect();
+            let want: Vec<E> = klipp_compose::render::list_effects(&clip, tc(t), 24.0, None, None).0.into_iter().map(|e| e.at_render_scale(k)).collect();
             let got = resolve_effects_at(&clip, &picture.picture, tc(t), 24.0, None, None, k).unwrap();
             assert_eq!(format!("{got:?}"), format!("{want:?}"), "at {k}, {t} s");
         }
