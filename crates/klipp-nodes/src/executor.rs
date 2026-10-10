@@ -8638,7 +8638,7 @@ mod analysis_node_tests {
 
     /// A shaky trajectory of 48 frames at 24 fps.
     fn shaky() -> StabilizationData {
-        let step = |i: usize| klipp_effects::homography::Homography { h: [[1.0, 0.0, if i % 2 == 0 { 3.0 } else { -2.0 }], [0.0, 1.0, 0.5], [0.0, 0.0, 1.0]] };
+        let step = |i: usize| klipp_effects::homography::Homography { h: [[1.0, 0.0, if i.is_multiple_of(2) { 3.0 } else { -2.0 }], [0.0, 1.0, 0.5], [0.0, 0.0, 1.0]] };
         let frame_transforms: Vec<_> = (0..47).map(step).collect();
         let accumulated = accumulate_trajectory(&frame_transforms);
         let trajectory = accumulated.iter().map(decompose_homography).collect();
@@ -8679,8 +8679,7 @@ mod analysis_node_tests {
         let derive = |s: f32| AnalysisBlob { schema: NODE_ANALYSIS_SCHEMA, data: std::sync::Arc::new(NodeAnalysis::Stabilisation { smoothed: smooth_trajectory(&data, (s as f64 * 2.0).max(0.05)), fps: 24.0 }) };
         let inputs = BySmoothing(vec![(0.1, derive(0.1)), (0.9, derive(0.9))]);
         let (a, b) = (stabilise(0.1), stabilise(0.9));
-        let mut graph = NodeGraph::default();
-        graph.nodes = vec![a.clone(), b.clone()];
+        let graph = NodeGraph { nodes: vec![a.clone(), b.clone()], ..Default::default() };
         let mut sources = NoSources;
         let mut instances = PluginInstances::default();
         let ctx = FrameContext {
@@ -8715,8 +8714,7 @@ mod analysis_node_tests {
     #[test]
     fn a_node_without_its_analysis_has_none() {
         let inputs = BySmoothing(vec![]);
-        let mut graph = NodeGraph::default();
-        graph.nodes = vec![stabilise(0.5)];
+        let graph = NodeGraph { nodes: vec![stabilise(0.5)], ..Default::default() };
         let mut sources = NoSources;
         let mut instances = PluginInstances::default();
         let ctx = FrameContext {
