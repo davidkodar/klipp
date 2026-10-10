@@ -312,6 +312,8 @@ mod ofx {
     use super::*;
 
     const PREFIX: &str = "p.";
+    /// A value whose shape the stored form doesn't type, kept as its JSON.
+    const RAW: &str = "p-json.";
     /// The node's own key saying an OFX node is off as a node (in memory
     /// it never is; kept rather than refused).
     const NODE_OFF: &str = "node.enabled";
@@ -338,8 +340,12 @@ mod ofx {
             n.params.insert(ParamKey::from("transition_amount"), ParamValue::Float64(t.as_f64().ok_or_else(|| format!("OFX node {}: its transition amount isn't a number", n.id))?));
         }
         for (name, v) in entry.get("param_values").and_then(Value::as_object).into_iter().flatten() {
-            let p = value(v).ok_or_else(|| format!("OFX node {}: {name} isn't an OFX value: {v}", n.id))?;
-            n.params.insert(ParamKey::from(format!("{PREFIX}{name}").as_str()), p);
+            // A value in a shape the stored form doesn't type is kept as
+            // its JSON, under its own key, so storing never fails.
+            match value(v) {
+                Some(p) => n.params.insert(ParamKey::from(format!("{PREFIX}{name}").as_str()), p),
+                None => n.params.insert(ParamKey::from(format!("{RAW}{name}").as_str()), ParamValue::Text(v.to_string())),
+            };
         }
         n.enabled = entry.get("enabled").and_then(Value::as_bool).ok_or_else(|| format!("OFX node {}: no enabled flag", n.id))?;
         legacy.payload = Value::Null;
@@ -378,6 +384,10 @@ mod ofx {
             let name = key.as_str()[PREFIX.len()..].to_owned();
             values.insert(name, stored(&v).ok_or_else(|| format!("OFX node {}: {key} is {v:?}, no OFX value", n.id))?);
         }
+        for key in n.params.keys().filter(|k| k.as_str().starts_with(RAW)).cloned().collect::<Vec<_>>() {
+            let Some(ParamValue::Text(json)) = n.params.remove(&key) else { return Err(format!("OFX node {}: {key} isn't a kept value", n.id)) };
+            values.insert(key.as_str()[RAW.len()..].to_owned(), serde_json::from_str(&json).map_err(|e| format!("OFX node {}: {key}: {e}", n.id))?);
+        }
         entry.insert("param_values".into(), Value::Object(values));
         extras_back(n, &mut entry)?;
         let off = n.params.remove(&ParamKey::from(NODE_OFF)) == Some(ParamValue::Bool(false));
@@ -388,14 +398,15 @@ mod ofx {
         Ok(())
     }
 
-    /// A stored OFX value (`{"Double2": [a, b]}`, as `OfxValue` writes it)
-    /// as the typed value of its kind.
+    /// A stored OFX value (`{"t": "Double2", "v": [a, b]}`, as the file's
+    /// `OfxValueJson` writes it) as the typed value of its kind.
     fn value(v: &Value) -> Option<ParamValue> {
-        let (kind, x) = v.as_object().filter(|o| o.len() == 1)?.iter().next()?;
+        let o = v.as_object().filter(|o| o.len() == 2)?;
+        let (kind, x) = (o.get("t")?.as_str()?, o.get("v")?);
         let floats = |n: usize| -> Option<Vec<f64>> { x.as_array().filter(|a| a.len() == n)?.iter().map(Value::as_f64).collect() };
         let ints = |n: usize| -> Option<Vec<i32>> { x.as_array().filter(|a| a.len() == n)?.iter().map(|i| i.as_i64().and_then(|i| i32::try_from(i).ok())).collect() };
         let int = || x.as_i64().and_then(|i| i32::try_from(i).ok());
-        Some(match kind.as_str() {
+        Some(match kind {
             "Double" => ParamValue::Float64(x.as_f64()?),
             "Double2" => floats(2).map(|f| ParamValue::Point2F64([f[0], f[1]]))?,
             "Double3" => floats(3).map(|f| ParamValue::Point3F64([f[0], f[1], f[2]]))?,
@@ -413,18 +424,19 @@ mod ofx {
 
     /// [`value`]'s inverse.
     fn stored(v: &ParamValue) -> Option<Value> {
+        let tv = |t: &str, x: Value| serde_json::json!({ "t": t, "v": x });
         Some(match v {
-            ParamValue::Float64(x) => serde_json::json!({ "Double": x }),
-            ParamValue::Point2F64(p) => serde_json::json!({ "Double2": p }),
-            ParamValue::Point3F64(p) => serde_json::json!({ "Double3": p }),
-            ParamValue::Int(i) => serde_json::json!({ "Int": i }),
-            ParamValue::Int2(i) => serde_json::json!({ "Int2": i }),
-            ParamValue::Int3(i) => serde_json::json!({ "Int3": i }),
-            ParamValue::Bool(b) => serde_json::json!({ "Bool": b }),
-            ParamValue::Choice(i) => serde_json::json!({ "Choice": i }),
-            ParamValue::Text(s) => serde_json::json!({ "String": s }),
-            ParamValue::ColorF64 { rgba, alpha: true } => serde_json::json!({ "Rgba": rgba }),
-            ParamValue::ColorF64 { rgba, alpha: false } => serde_json::json!({ "Rgb": &rgba[..3] }),
+            ParamValue::Float64(x) => tv("Double", serde_json::json!(x)),
+            ParamValue::Point2F64(p) => tv("Double2", serde_json::json!(p)),
+            ParamValue::Point3F64(p) => tv("Double3", serde_json::json!(p)),
+            ParamValue::Int(i) => tv("Int", serde_json::json!(i)),
+            ParamValue::Int2(i) => tv("Int2", serde_json::json!(i)),
+            ParamValue::Int3(i) => tv("Int3", serde_json::json!(i)),
+            ParamValue::Bool(b) => tv("Bool", serde_json::json!(b)),
+            ParamValue::Choice(i) => tv("Choice", serde_json::json!(i)),
+            ParamValue::Text(s) => tv("String", serde_json::json!(s)),
+            ParamValue::ColorF64 { rgba, alpha: true } => tv("Rgba", serde_json::json!(rgba)),
+            ParamValue::ColorF64 { rgba, alpha: false } => tv("Rgb", serde_json::json!(&rgba[..3])),
             _ => return None,
         })
     }
@@ -653,9 +665,10 @@ mod tests {
     #[test]
     fn an_ofx_entry_is_stored_by_name_and_kind_and_back() {
         let entry = serde_json::json!({"plugin_name": "org.example.Glow", "enabled": false, "context": "Filter", "transition_amount": 0.1, "param_values": {
-            "amount": {"Double": 0.1}, "centre": {"Double2": [0.1, 0.7]}, "axis": {"Double3": [0.1, 0.2, 0.3]},
-            "count": {"Int": -3}, "size": {"Int2": [640, 480]}, "box": {"Int3": [1, 2, 3]}, "on": {"Bool": true},
-            "mode": {"Choice": -1}, "name": {"String": "soft"}, "tint": {"Rgba": [0.1, 0.2, 0.3, 0.4]}, "key": {"Rgb": [0.5, 0.6, 0.7]}
+            "amount": {"t": "Double", "v": 0.1}, "centre": {"t": "Double2", "v": [0.1, 0.7]}, "axis": {"t": "Double3", "v": [0.1, 0.2, 0.3]},
+            "count": {"t": "Int", "v": -3}, "size": {"t": "Int2", "v": [640, 480]}, "box": {"t": "Int3", "v": [1, 2, 3]}, "on": {"t": "Bool", "v": true},
+            "mode": {"t": "Choice", "v": -1}, "name": {"t": "String", "v": "soft"}, "tint": {"t": "Rgba", "v": [0.1, 0.2, 0.3, 0.4]}, "key": {"t": "Rgb", "v": [0.5, 0.6, 0.7]},
+            "old": {"Double": 0.5}
         }});
         let mut n: Node = serde_json::from_value(serde_json::json!({"id": uuid::Uuid::nil(), "type_id": types::LEGACY_OFX, "label": "", "legacy": {"slot": 0, "payload": entry}})).unwrap();
         let memory = n.clone();
@@ -678,6 +691,7 @@ mod tests {
         assert_eq!(p("p.name"), Some(ParamValue::Text("soft".into())));
         assert_eq!(p("p.tint"), Some(ParamValue::ColorF64 { rgba: [0.1, 0.2, 0.3, 0.4], alpha: true }));
         assert_eq!(p("p.key"), Some(ParamValue::ColorF64 { rgba: [0.5, 0.6, 0.7, 0.0], alpha: false }));
+        assert_eq!(p("p-json.old"), Some(ParamValue::Text("{\"Double\":0.5}".into())), "a value in another shape kept as its JSON");
         let stored = serde_json::to_value(&n).unwrap();
         into_memory(&mut n).unwrap();
         assert_eq!(n, memory, "the OFX entry it was");
