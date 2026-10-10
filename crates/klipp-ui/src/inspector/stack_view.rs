@@ -101,10 +101,6 @@ fn placement_controls(ui: &mut egui::Ui, clip: &Clip, view: &StackView, row: &Ro
     if row.read_only || row.provenance.is_some() {
         return;
     }
-    if clip.is_picture_truth() {
-        ui.label(egui::RichText::new("This clip's placement moves with the next project format").size(10.0).weak());
-        return;
-    }
     let auto = placement.mode != Some(lt::PLACEMENT_FIXED);
     let refusal = clip.placement_auto_refusal();
     let mode = |m: u32| AppCommand::SetParamAt { addr: row.addr.clone(), key: "mode".into(), value: klipp_graph_format::ParamValue::Enum(m) };
