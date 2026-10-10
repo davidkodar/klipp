@@ -143,10 +143,22 @@ fn upcoming_reversed(seq: &Sequence, time: klipp_core::Timecode, playing: bool) 
         .collect()
 }
 
+/// The source times the viewer can read `clip`'s media at: from its start
+/// to its duration in the pool, as export's snapshot says, so a temporal
+/// node's neighbour past the media's end is out of range on both routes,
+/// never a frame the viewer merely couldn't read.
+pub fn viewer_media_range(pool: &MediaPool, clip: &Clip) -> Option<(f64, f64)> {
+    Some((0.0, pool.get(&clip.media_id()?)?.duration.to_secs_f64()))
+}
+
 impl FrameSource for ViewerSource<'_> {
     fn media_fps(&mut self, clip: &Clip) -> Option<f64> {
         let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
         Some(pool.get(&clip.media_id()?)?.fps.as_f64())
+    }
+
+    fn media_range(&mut self, clip: &Clip) -> Option<(f64, f64)> {
+        viewer_media_range(&self.media_pool.read().unwrap_or_else(|e| e.into_inner()), clip)
     }
 
     fn frame(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
@@ -1324,4 +1336,24 @@ fn clip_render_hash_of(clip: &Clip) -> u64 {
         });
         salt ^ UNHASHABLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     })
+}
+
+#[cfg(test)]
+mod media_range_tests {
+    use super::*;
+
+    /// The viewer bounds a clip's neighbours by its media's duration, as
+    /// export does; a clip without media has no range.
+    #[test]
+    fn the_viewers_range_is_the_medias_duration() {
+        let mut pool = MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/known/ten.mov".into(), None);
+        item.duration = klipp_core::RationalTime { value: 250, rate: 25 };
+        let media = item.id;
+        pool.add(item);
+        let tc = |f: i64| klipp_core::RationalTime { value: f, rate: 25 };
+        let clip = Clip::media(media, tc(0), tc(50), tc(200), tc(250));
+        assert_eq!(viewer_media_range(&pool, &clip), Some((0.0, 10.0)), "the whole media, handles included");
+        assert_eq!(viewer_media_range(&pool, &Clip::gap(tc(0), tc(50))), None, "no media, no range");
+    }
 }
