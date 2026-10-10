@@ -48,7 +48,7 @@ mod clip_anim;
 mod picture_fields;
 mod picture_store;
 mod picture_ops;
-pub use picture_ops::{take_picture_refusal, takes_picture_ops, EffectEdit, PictureEdit, PICTURE_WRITES_REFUSED};
+pub use picture_ops::{take_picture_refusal, takes_picture_ops, EffectEdit, OfxEdit, PictureEdit, PICTURE_WRITES_REFUSED};
 pub use klipp_graph_lift::registry_catalog::RegistryCatalog;
 #[cfg(test)]
 mod picture_cache_tests;

@@ -39,6 +39,14 @@ pub enum PlacedEdit {
     /// The entry replaced whole by another of its kind; its id, flag and
     /// keys stay.
     SetPayload(NodeId, Value),
+    /// An OFX plug-in entry (as stored: `plugin_name`, `enabled`,
+    /// `param_values`, ...) put in the clip's plug-in list after `after`,
+    /// or first, under `id`. The plug-in list has its own places; the
+    /// edits above act on either list by the entry's id.
+    AddOfx { id: NodeId, entry: Value, after: Option<NodeId> },
+    /// One parameter value of an OFX entry set (as stored, `{"t": .., "v":
+    /// ..}`), the rest of its entry as it was.
+    SetOfxParam { node: NodeId, name: String, value: Value },
 }
 
 /// Whether `entry` (as stored, with its `type`) is one of the kinds the
@@ -52,13 +60,18 @@ fn is_listed(n: &Node) -> bool {
     !matches!(n.type_id.as_str(), types::LEGACY_GRADE | types::LEGACY_OFX)
 }
 
+fn is_ofx(n: &Node) -> bool {
+    n.type_id.as_str() == types::LEGACY_OFX
+}
+
 fn slot(n: &Node) -> usize {
     n.legacy.as_ref().and_then(|l| l.slot).unwrap_or(usize::MAX)
 }
 
-/// The record's built-in entries' ids, in list order.
-fn list_order(record: &ClipRecordV2) -> Vec<NodeId> {
-    let mut listed: Vec<&Node> = record.graph.nodes.iter().filter(|n| is_listed(n)).collect();
+/// The record's entries of one list (`which`: the built-ins or the
+/// plug-ins), their ids in list order.
+fn list_order(record: &ClipRecordV2, which: fn(&Node) -> bool) -> Vec<NodeId> {
+    let mut listed: Vec<&Node> = record.graph.nodes.iter().filter(|n| which(n)).collect();
     listed.sort_by_key(|n| slot(n));
     listed.into_iter().map(|n| n.id).collect()
 }
@@ -78,7 +91,11 @@ fn reslot(key: &str, from: usize, to: usize) -> String {
 /// Each entry at its place in `order`, its keys and modifiers moving with
 /// its slot; the record's chain as `delift::clip` builds it (the grade,
 /// the plug-ins, then the list by slot).
-fn renumber(record: &mut ClipRecordV2, order: &[NodeId]) -> Result<(), String> {
+fn renumber(record: &mut ClipRecordV2, order: &[NodeId], ofx_order: &[NodeId]) -> Result<(), String> {
+    for (to, id) in ofx_order.iter().enumerate() {
+        let n = record.graph.nodes.iter_mut().find(|n| n.id == *id).ok_or_else(|| format!("plug-in {id} isn't in the clip's list"))?;
+        n.legacy.as_mut().ok_or_else(|| format!("plug-in {id} carries no stored entry"))?.slot = Some(to);
+    }
     for (to, id) in order.iter().enumerate() {
         let n = record.graph.nodes.iter_mut().find(|n| n.id == *id).ok_or_else(|| format!("entry {id} isn't in the clip's list"))?;
         let legacy = n.legacy.as_mut().ok_or_else(|| format!("entry {id} carries no stored entry"))?;
@@ -150,65 +167,100 @@ fn keep_orphans(record: &mut ClipRecordV2, old: usize, new: usize) {
 
 /// `edits`, in turn, on `record`'s list.
 fn apply(record: &mut ClipRecordV2, edits: &[PlacedEdit]) -> Result<(), String> {
-    let mut order = list_order(record);
+    let mut order = list_order(record, is_listed);
+    let mut ofx_order = list_order(record, is_ofx);
     let old_len = order.len();
     let node = |record: &mut ClipRecordV2, id: NodeId| -> Result<&mut Node, String> {
-        record.graph.nodes.iter_mut().filter(|n| is_listed(n)).find(|n| n.id == id).ok_or_else(|| format!("entry {id} isn't in the clip's list"))
+        record.graph.nodes.iter_mut().filter(|n| is_listed(n) || is_ofx(n)).find(|n| n.id == id).ok_or_else(|| format!("entry {id} isn't in the clip's lists"))
+    };
+    let new_node = |id: NodeId, type_id: &str, entry: &Value| Node {
+        id,
+        type_id: type_id.into(),
+        type_version: 1,
+        label: String::new(),
+        enabled: true,
+        params: Default::default(),
+        anim: Default::default(),
+        mix: None,
+        wireless: Default::default(),
+        group: None,
+        legacy: Some(Legacy { slot: Some(usize::MAX), payload: entry.clone(), keyframes: None, modifiers: Default::default() }),
+        legacy_flags: None,
+        origin: None,
+    };
+    let fresh = |record: &ClipRecordV2, id: NodeId| -> Result<(), String> {
+        match record.graph.nodes.iter().any(|n| n.id == id) {
+            true => Err(format!("entry {id} is in the clip already")),
+            false => Ok(()),
+        }
     };
     for edit in edits {
         match edit {
             PlacedEdit::Add { id, entry, after } => {
-                if order.contains(id) || record.graph.nodes.iter().any(|n| n.id == *id) {
-                    return Err(format!("entry {id} is in the clip already"));
-                }
+                fresh(record, *id)?;
                 let at = place_after(&order, *after)?;
-                record.graph.nodes.push(Node {
-                    id: *id,
-                    type_id: entry_type(entry)?.into(),
-                    type_version: 1,
-                    label: String::new(),
-                    enabled: true,
-                    params: Default::default(),
-                    anim: Default::default(),
-                    mix: None,
-                    wireless: Default::default(),
-                    group: None,
-                    legacy: Some(Legacy { slot: Some(usize::MAX), payload: entry.clone(), keyframes: None, modifiers: Default::default() }),
-                    legacy_flags: None,
-                    origin: None,
-                });
+                record.graph.nodes.push(new_node(*id, entry_type(entry)?, entry));
                 order.insert(at, *id);
+            }
+            PlacedEdit::AddOfx { id, entry, after } => {
+                fresh(record, *id)?;
+                entry.get("plugin_name").and_then(Value::as_str).ok_or("a plug-in entry without its plug-in")?;
+                let at = place_after(&ofx_order, *after)?;
+                // On as a node: a plug-in's entry says whether it runs.
+                record.graph.nodes.push(new_node(*id, types::LEGACY_OFX, entry));
+                ofx_order.insert(at, *id);
             }
             PlacedEdit::Remove(id) => {
                 node(record, *id)?;
                 record.graph.nodes.retain(|n| n.id != *id);
                 order.retain(|o| o != id);
+                ofx_order.retain(|o| o != id);
             }
             PlacedEdit::SetEnabled(id, on) => {
                 let n = node(record, *id)?;
-                n.enabled = *on;
+                if is_ofx(n) {
+                    // A plug-in's flag is its entry's; the node stays on.
+                    let entry = n.legacy.as_mut().and_then(|l| l.payload.as_object_mut()).ok_or_else(|| format!("plug-in {id} carries no entry"))?;
+                    entry.insert("enabled".into(), Value::Bool(*on));
+                } else {
+                    n.enabled = *on;
+                }
             }
             PlacedEdit::Move { node: id, after } => {
                 node(record, *id)?;
                 if *after == Some(*id) {
                     return Err(format!("entry {id} can't go after itself"));
                 }
-                order.retain(|o| o != id);
-                let at = place_after(&order, *after)?;
-                order.insert(at, *id);
+                let list = if ofx_order.contains(id) { &mut ofx_order } else { &mut order };
+                list.retain(|o| o != id);
+                let at = place_after(list, *after)?;
+                list.insert(at, *id);
             }
             PlacedEdit::SetPayload(id, payload) => {
-                let kind = entry_type(payload)?;
                 let n = node(record, *id)?;
-                if n.type_id.as_str() != kind {
-                    return Err(format!("entry {id} is a {}, not a {kind}", n.type_id.as_str()));
+                if is_ofx(n) {
+                    payload.get("plugin_name").and_then(Value::as_str).ok_or("a plug-in entry without its plug-in")?;
+                } else {
+                    let kind = entry_type(payload)?;
+                    if n.type_id.as_str() != kind {
+                        return Err(format!("entry {id} is a {}, not a {kind}", n.type_id.as_str()));
+                    }
                 }
                 n.legacy.as_mut().ok_or_else(|| format!("entry {id} carries no stored entry"))?.payload = payload.clone();
+            }
+            PlacedEdit::SetOfxParam { node: id, name, value } => {
+                let n = node(record, *id)?;
+                if !is_ofx(n) {
+                    return Err(format!("entry {id} isn't a plug-in"));
+                }
+                let entry = n.legacy.as_mut().and_then(|l| l.payload.as_object_mut()).ok_or_else(|| format!("plug-in {id} carries no entry"))?;
+                let values = entry.entry("param_values").or_insert_with(|| Value::Object(Map::new()));
+                values.as_object_mut().ok_or_else(|| format!("plug-in {id}'s values aren't a map"))?.insert(name.clone(), value.clone());
             }
         }
     }
     keep_orphans(record, old_len, order.len());
-    renumber(record, &order)
+    renumber(record, &order, &ofx_order)
 }
 
 /// `picture` with `edits` made on its list, the roles they leave settled by

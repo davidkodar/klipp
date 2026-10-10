@@ -862,31 +862,7 @@ fn load_sequence_from_json(
                         },
                         builtin_effects: effects_by_clip.get(c.id.as_str()).cloned().unwrap_or_default(),
                         builtin_effects_enabled: c.builtin_effects_enabled.clone(),
-                        ofx_effects: c.effects.iter().map(|e| {
-                            klipp_plugin::AppliedEffect {
-                                plugin_name: e.plugin_name.clone(),
-                                enabled: e.enabled,
-                                param_values: e.param_values.iter().map(|(k, v)| {
-                                    let val = match v {
-                                        OfxValueJson::Double(d) => klipp_plugin::OfxValue::Double(*d),
-                                        OfxValueJson::Double2([a, b]) => klipp_plugin::OfxValue::Double2(*a, *b),
-                                        OfxValueJson::Double3([a, b, c]) => klipp_plugin::OfxValue::Double3(*a, *b, *c),
-                                        OfxValueJson::Int(i) => klipp_plugin::OfxValue::Int(*i),
-                                        OfxValueJson::Int2([a, b]) => klipp_plugin::OfxValue::Int2(*a, *b),
-                                        OfxValueJson::Int3([a, b, c]) => klipp_plugin::OfxValue::Int3(*a, *b, *c),
-                                        OfxValueJson::Bool(b) => klipp_plugin::OfxValue::Bool(*b),
-                                        OfxValueJson::Choice(c) => klipp_plugin::OfxValue::Choice(*c),
-                                        OfxValueJson::String(s) => klipp_plugin::OfxValue::String(s.clone()),
-                                        OfxValueJson::Rgba([r, g, b, a]) => klipp_plugin::OfxValue::Rgba(*r, *g, *b, *a),
-                                        OfxValueJson::Rgb([r, g, b]) => klipp_plugin::OfxValue::Rgb(*r, *g, *b),
-                                    };
-                                    (k.clone(), val)
-                                }).collect::<HashMap<_, _>>(),
-                                context: e.context,
-                                transition_amount: e.transition_amount,
-                            ..Default::default()
-                            }
-                        }).collect::<Vec<_>>(),
+                        ofx_effects: c.effects.iter().map(|e| e.to_effect()).collect(),
                         opacity_keyframes: c.opacity_keyframes.clone().unwrap_or_default(),
                         transform_pos_x_keyframes: c.transform_pos_x_keyframes.clone().unwrap_or_default(),
                         transform_pos_y_keyframes: c.transform_pos_y_keyframes.clone().unwrap_or_default(),

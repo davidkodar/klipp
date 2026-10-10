@@ -345,6 +345,22 @@ pub enum EffectEdit<'a> {
     Move { from: usize, to: usize },
 }
 
+/// An edit of a clip's OFX plug-in list, by place (M4 step 12b-0).
+#[derive(Clone, Copy, Debug)]
+pub enum OfxEdit<'a> {
+    /// Put a plug-in at the end of the list.
+    Add(&'a klipp_plugin::AppliedEffect),
+    Remove(usize),
+    SetEnabled(usize, bool),
+    /// The plug-in at a place, replaced whole.
+    Update(usize, &'a klipp_plugin::AppliedEffect),
+    /// Move the plug-in at `from` to place `to` (counted after it is taken
+    /// out).
+    Move { from: usize, to: usize },
+    /// One parameter value of the plug-in at a place.
+    SetParam(usize, &'a str, &'a klipp_core::OfxValue),
+}
+
 impl Clip {
     /// The graph ops for `edit`, when every entry it touches is a plain
     /// effect node ([`takes_picture_ops`]); `None` when one is a placed
@@ -501,6 +517,61 @@ impl Clip {
             self.picture = before;
             return Err(why);
         }
+        Ok(PictureEdit { before, after: self.picture.clone() })
+    }
+
+    /// `edits` of the clip's OFX plug-in list made through its picture's
+    /// record, settled by the lift, as one edit (M4 step 12b-0): the list
+    /// written back from the record. A picture-truth clip is refused, by
+    /// name. The plug-ins keep no ids of their own yet (#1500): their nodes
+    /// are named by their places, so a moved plug-in's node is named anew.
+    pub fn apply_ofx_edits(&mut self, edits: &[OfxEdit]) -> Result<PictureEdit, String> {
+        use klipp_graph_lift::placed::PlacedEdit;
+        let lifted = self.picture_v2()?;
+        let kind = klipp_graph_lift::lift::ClipKind::from_json(Some(&serde_json::json!({ "type": crate::picture_fields::lift_kind_tag(&self.kind) })))?;
+        let ctx = klipp_graph_lift::lift::LiftCtx { clip_id: self.id.0, kind };
+        let mut ids: Vec<NodeId> = (0..self.ofx_effects().len()).map(|i| self.effect_node_at(true, i).ok_or_else(|| format!("no plug-in at {i}"))).collect::<Result<_, _>>()?;
+        let at = |ids: &[NodeId], i: usize| ids.get(i).copied().ok_or_else(|| format!("no plug-in at {i}"));
+        let entry = |e: &klipp_plugin::AppliedEffect| serde_json::to_value(crate::picture_v1::EffectJson::of(e)).map_err(|e| e.to_string());
+        let mut placed = Vec::with_capacity(edits.len());
+        for edit in edits {
+            match *edit {
+                OfxEdit::Add(e) => {
+                    let id = uuid::Uuid::new_v4();
+                    placed.push(PlacedEdit::AddOfx { id, entry: entry(e)?, after: ids.last().copied() });
+                    ids.push(id);
+                }
+                OfxEdit::Remove(i) => {
+                    placed.push(PlacedEdit::Remove(at(&ids, i)?));
+                    ids.remove(i);
+                }
+                OfxEdit::SetEnabled(i, on) => placed.push(PlacedEdit::SetEnabled(at(&ids, i)?, on)),
+                OfxEdit::Update(i, e) => placed.push(PlacedEdit::SetPayload(at(&ids, i)?, entry(e)?)),
+                OfxEdit::Move { from, to } => {
+                    let id = at(&ids, from)?;
+                    ids.remove(from);
+                    let after = match to {
+                        0 => None,
+                        _ => Some(at(&ids, to - 1)?),
+                    };
+                    ids.insert(to.min(ids.len()), id);
+                    placed.push(PlacedEdit::Move { node: id, after });
+                }
+                OfxEdit::SetParam(i, name, value) => {
+                    // The value as the file writes it: through the entry's own
+                    // mapping, one value long.
+                    let one = klipp_plugin::AppliedEffect { param_values: [(name.to_owned(), value.clone())].into(), ..Default::default() };
+                    let written = entry(&one)?;
+                    let value = written.get("param_values").and_then(|v| v.get(name)).cloned().ok_or("the value has no stored form")?;
+                    placed.push(PlacedEdit::SetOfxParam { node: at(&ids, i)?, name: name.to_owned(), value });
+                }
+            }
+        }
+        let (record, _settled) = klipp_graph_lift::placed::edit(&lifted.picture, &ctx, &placed)?;
+        let v1 = klipp_graph_lift::to_v1::clip(&serde_json::to_value(&record).map_err(|e| e.to_string())?)?;
+        let stored: Vec<crate::picture_v1::EffectJson> = serde_json::from_value(v1.get("effects").cloned().unwrap_or_default()).map_err(|e| format!("the edited plug-ins: {e}"))?;
+        let before = self.picture.clone();
+        self.set_ofx_effects(stored.iter().map(|e| e.to_effect()).collect());
         Ok(PictureEdit { before, after: self.picture.clone() })
     }
 

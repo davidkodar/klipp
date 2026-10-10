@@ -389,3 +389,64 @@ fn a_picture_truth_clips_plain_add_keeps_an_orphan_an_orphan() {
     assert!(!c.effect_keyframes().keys().any(|k| k.starts_with("3:")), "the blur added at 3 has no keys");
     assert_eq!(c.effect_keyframes().get("4:radius").map(Vec::len), Some(2), "the orphan, past the list");
 }
+
+fn plugin(name: &str) -> klipp_plugin::AppliedEffect {
+    klipp_plugin::AppliedEffect { plugin_name: name.into(), enabled: true, ..Default::default() }
+}
+
+fn plugins(c: &Clip) -> Vec<(String, bool)> {
+    c.ofx_effects().iter().map(|e| (e.plugin_name.clone(), e.enabled)).collect()
+}
+
+/// The OFX list's edits go through the picture and come back as the list
+/// given whole would be: added at the end, switched, moved, removed, a
+/// value set; the built-in list beside it is untouched.
+#[test]
+fn ofx_edits_come_back_as_the_list() {
+    use klipp_timeline::OfxEdit;
+    let mut c = clip(vec![blur()], vec![true]);
+    c.set_ofx_effects(vec![plugin("org.example.A"), plugin("org.example.B")]);
+    let added = plugin("org.example.C");
+    c.apply_ofx_edits(&[OfxEdit::Add(&added), OfxEdit::SetEnabled(0, false), OfxEdit::Move { from: 2, to: 0 }]).expect("the edits");
+    assert_eq!(plugins(&c), vec![("org.example.C".into(), true), ("org.example.A".into(), false), ("org.example.B".into(), true)]);
+    let v = klipp_core::OfxValue::Double(0.25);
+    c.apply_ofx_edits(&[OfxEdit::SetParam(2, "strength", &v), OfxEdit::Remove(0)]).expect("a value and a removal");
+    assert_eq!(plugins(&c), vec![("org.example.A".into(), false), ("org.example.B".into(), true)]);
+    assert_eq!(c.ofx_effects()[1].param_values.get("strength"), Some(&v), "the value is set on B");
+    assert!(c.ofx_effects()[0].param_values.is_empty(), "A has none");
+    assert_eq!(c.builtin_effects(), &[blur()], "the built-in list is untouched");
+    // The picture holds what the list given whole would.
+    let mut whole = clip(vec![blur()], vec![true]);
+    whole.set_ofx_effects(c.ofx_effects().to_vec());
+    assert_eq!(roles(&c), roles(&whole));
+}
+
+/// A switched-off plug-in stays in the chain as a node that runs and is
+/// told not to: its entry's flag, the node itself kept on.
+#[test]
+fn an_ofx_switch_is_its_entrys_flag() {
+    use klipp_timeline::OfxEdit;
+    let mut c = clip(vec![], vec![]);
+    c.set_ofx_effects(vec![plugin("org.example.A")]);
+    let whole = {
+        let mut w = clip(vec![], vec![]);
+        w.set_ofx_effects(vec![klipp_plugin::AppliedEffect { enabled: false, ..plugin("org.example.A") }]);
+        roles(&w)
+    };
+    c.apply_ofx_edits(&[OfxEdit::SetEnabled(0, false)]).expect("the switch");
+    assert_eq!(roles(&c), whole);
+}
+
+/// A picture-truth clip refuses an OFX edit, by name, and keeps its list.
+#[test]
+fn a_picture_truth_clip_refuses_an_ofx_edit() {
+    use klipp_timeline::OfxEdit;
+    let mut c = clip(vec![blur()], vec![true]);
+    c.set_ofx_effects(vec![plugin("org.example.A")]);
+    let node = c.effect_node_at(false, 0).expect("the blur's node");
+    let path = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, [node]);
+    c.apply_picture_ops(&[klipp_graph_lift::ops::GraphOp::SetMix { path, mix: Some(0.5) }]).expect("a mix on the blur");
+    let refused = c.apply_ofx_edits(&[OfxEdit::Remove(0)]);
+    assert!(refused.as_ref().is_err_and(|e| e.contains("mix or mask")), "{refused:?}");
+    assert_eq!(plugins(&c), vec![("org.example.A".into(), true)]);
+}
