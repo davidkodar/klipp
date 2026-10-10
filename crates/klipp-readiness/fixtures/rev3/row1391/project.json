@@ -1,0 +1,493 @@
+{
+  "active_sequence_id": null,
+  "created_at": null,
+  "format_revision": 3,
+  "generation": "18dd0f14bac224dd-163b31",
+  "grade_encoding": "bt1886",
+  "klipp_version": "0.1.0",
+  "klipp_version_min": "0.1.0",
+  "notes": "",
+  "platform": "linux-x86_64",
+  "saved_at": "2026-10-10T04:00:08Z",
+  "sequences": [
+    {
+      "drop_frame": false,
+      "first_clip_autoset": {
+        "fps": true,
+        "resolution": true
+      },
+      "fps": {
+        "den": 1,
+        "num": 24
+      },
+      "global_lut_enabled": true,
+      "global_lut_opacity": 1.0,
+      "global_lut_path": null,
+      "id": "6ef0ab09-bef8-45e3-a775-c4b1ebd5b5b3",
+      "in_point": null,
+      "last_playhead": null,
+      "markers": [],
+      "name": "Main Sequence",
+      "out_point": null,
+      "resolution": {
+        "height": 1080,
+        "width": 1920
+      },
+      "track_header_width": 160.0,
+      "tracks": [
+        {
+          "clips": [
+            {
+              "active_grade_version": null,
+              "builtin_effects": [
+                {
+                  "type": "graph_v2"
+                }
+              ],
+              "channel_config": null,
+              "clip_markers": null,
+              "color_grade": null,
+              "effects": [],
+              "fade_in_curve": null,
+              "fade_in_secs": null,
+              "fade_out_curve": null,
+              "fade_out_secs": null,
+              "gain": null,
+              "gain_keyframes": null,
+              "grade_versions": [],
+              "graph_v2": {
+                "graph": {
+                  "edges": [
+                    {
+                      "from": [
+                        "e0c966c7-209c-5f55-9e5c-a0a7ba839852",
+                        "out"
+                      ],
+                      "to": [
+                        "76e41690-950f-59ec-8134-e1ae5f4b54b7",
+                        "in"
+                      ]
+                    },
+                    {
+                      "from": [
+                        "76e41690-950f-59ec-8134-e1ae5f4b54b7",
+                        "out"
+                      ],
+                      "to": [
+                        "7522ce74-000a-55f4-b660-199355ec51d7",
+                        "in"
+                      ]
+                    },
+                    {
+                      "from": [
+                        "7522ce74-000a-55f4-b660-199355ec51d7",
+                        "out"
+                      ],
+                      "to": [
+                        "96f9b972-b95c-5902-bdd8-994c4f2216a8",
+                        "in"
+                      ]
+                    },
+                    {
+                      "from": [
+                        "96f9b972-b95c-5902-bdd8-994c4f2216a8",
+                        "out"
+                      ],
+                      "to": [
+                        "c7fe3498-d554-5f39-9f81-46993da08dc6",
+                        "in"
+                      ]
+                    },
+                    {
+                      "from": [
+                        "e0c966c7-209c-5f55-9e5c-a0a7ba839852",
+                        "out"
+                      ],
+                      "to": [
+                        "76e41690-950f-59ec-8134-e1ae5f4b54b7",
+                        "frame"
+                      ]
+                    }
+                  ],
+                  "graph_version": 2,
+                  "nodes": [
+                    {
+                      "id": "e0c966c7-209c-5f55-9e5c-a0a7ba839852",
+                      "legacy_flags": {
+                        "clip_anim": {
+                          "fields": {
+                            "opacity_keyframes": null,
+                            "transform_pos_x_keyframes": null,
+                            "transform_pos_y_keyframes": null,
+                            "transform_rotation_keyframes": null,
+                            "transform_scale_keyframes": null
+                          }
+                        }
+                      },
+                      "type_id": "klipp.source"
+                    },
+                    {
+                      "group": {
+                        "graph": {
+                          "edges": [
+                            {
+                              "from": [
+                                "806ff982-c948-47b2-8193-134c6954a20c",
+                                "out"
+                              ],
+                              "to": [
+                                "30c522b2-69ab-45d6-8e7f-ca71e2837635",
+                                "in"
+                              ]
+                            },
+                            {
+                              "from": [
+                                "b6ea8896-9c5f-4599-9caf-42737b7da7e1",
+                                "out"
+                              ],
+                              "to": [
+                                "9ee83f0f-67af-4ad2-8e3c-c95eafe232a1",
+                                "in"
+                              ]
+                            },
+                            {
+                              "from": [
+                                "30c522b2-69ab-45d6-8e7f-ca71e2837635",
+                                "out"
+                              ],
+                              "to": [
+                                "b6ea8896-9c5f-4599-9caf-42737b7da7e1",
+                                "in"
+                              ]
+                            }
+                          ],
+                          "graph_version": 2,
+                          "nodes": [
+                            {
+                              "id": "806ff982-c948-47b2-8193-134c6954a20c",
+                              "legacy": {
+                                "keyframes": {
+                                  "tracks": []
+                                },
+                                "payload": {
+                                  "kind": "Source",
+                                  "label": "Source",
+                                  "params": {}
+                                }
+                              },
+                              "type_id": "klipp.group.input"
+                            },
+                            {
+                              "id": "f85110da-fb0e-5219-a26e-602fdd95ab0b",
+                              "type_id": "klipp.group.frame"
+                            },
+                            {
+                              "id": "30c522b2-69ab-45d6-8e7f-ca71e2837635",
+                              "legacy": {
+                                "keyframes": {
+                                  "tracks": []
+                                },
+                                "payload": {
+                                  "kind": "Corrector",
+                                  "label": "Corrector",
+                                  "params": {
+                                    "exposure": 0.4
+                                  }
+                                }
+                              },
+                              "type_id": "klipp.legacy.node"
+                            },
+                            {
+                              "id": "b6ea8896-9c5f-4599-9caf-42737b7da7e1",
+                              "legacy": {
+                                "keyframes": {
+                                  "tracks": []
+                                },
+                                "payload": {
+                                  "kind": "Compound",
+                                  "label": "Compound",
+                                  "params": {
+                                    "compound_subgraph": {
+                                      "edges": [
+                                        {
+                                          "from_node": "00c57543-85da-4942-b6f3-0bde858161a1",
+                                          "from_port": 0,
+                                          "to_node": "d146a64e-6733-4021-ae97-71b818ce6c03",
+                                          "to_port": 0
+                                        },
+                                        {
+                                          "from_node": "b31c42b0-16b7-4b38-92e4-c1379d02398d",
+                                          "from_port": 0,
+                                          "to_node": "b34bf6ca-4a88-47a7-9637-135feb651159",
+                                          "to_port": 0
+                                        },
+                                        {
+                                          "from_node": "d146a64e-6733-4021-ae97-71b818ce6c03",
+                                          "from_port": 0,
+                                          "to_node": "b31c42b0-16b7-4b38-92e4-c1379d02398d",
+                                          "to_port": 0
+                                        }
+                                      ],
+                                      "node_positions": {
+                                        "00c57543-85da-4942-b6f3-0bde858161a1": {
+                                          "x": 0.0,
+                                          "y": 0.0
+                                        },
+                                        "b34bf6ca-4a88-47a7-9637-135feb651159": {
+                                          "x": 440.0,
+                                          "y": 0.0
+                                        },
+                                        "d146a64e-6733-4021-ae97-71b818ce6c03": {
+                                          "x": 220.0,
+                                          "y": 0.0
+                                        }
+                                      },
+                                      "nodes": [
+                                        {
+                                          "enabled": true,
+                                          "id": "00c57543-85da-4942-b6f3-0bde858161a1",
+                                          "input_links": [],
+                                          "keyframes": {
+                                            "tracks": []
+                                          },
+                                          "kind": "Source",
+                                          "label": "Source",
+                                          "output_link": null,
+                                          "params": {}
+                                        },
+                                        {
+                                          "enabled": true,
+                                          "id": "d146a64e-6733-4021-ae97-71b818ce6c03",
+                                          "input_links": [],
+                                          "keyframes": {
+                                            "tracks": []
+                                          },
+                                          "kind": "Corrector",
+                                          "label": "Corrector",
+                                          "output_link": null,
+                                          "params": {
+                                            "exposure": 0.4
+                                          }
+                                        },
+                                        {
+                                          "enabled": true,
+                                          "id": "b31c42b0-16b7-4b38-92e4-c1379d02398d",
+                                          "input_links": [],
+                                          "keyframes": {
+                                            "tracks": []
+                                          },
+                                          "kind": "Compound",
+                                          "label": "Compound",
+                                          "output_link": null,
+                                          "params": {
+                                            "compound_subgraph": {
+                                              "edges": [
+                                                {
+                                                  "from_node": "a5c7f7bd-1feb-422b-8078-588f06f3b1b1",
+                                                  "from_port": 0,
+                                                  "to_node": "fd3c1fde-97d6-4c92-8f88-0535747f1e03",
+                                                  "to_port": 0
+                                                },
+                                                {
+                                                  "from_node": "fd3c1fde-97d6-4c92-8f88-0535747f1e03",
+                                                  "from_port": 0,
+                                                  "to_node": "6e37a14e-fe0f-4cc1-aea5-5ed5e7d4189b",
+                                                  "to_port": 0
+                                                }
+                                              ],
+                                              "node_positions": {
+                                                "6e37a14e-fe0f-4cc1-aea5-5ed5e7d4189b": {
+                                                  "x": 440.0,
+                                                  "y": 0.0
+                                                },
+                                                "a5c7f7bd-1feb-422b-8078-588f06f3b1b1": {
+                                                  "x": 0.0,
+                                                  "y": 0.0
+                                                },
+                                                "fd3c1fde-97d6-4c92-8f88-0535747f1e03": {
+                                                  "x": 220.0,
+                                                  "y": 0.0
+                                                }
+                                              },
+                                              "nodes": [
+                                                {
+                                                  "enabled": true,
+                                                  "id": "a5c7f7bd-1feb-422b-8078-588f06f3b1b1",
+                                                  "input_links": [],
+                                                  "keyframes": {
+                                                    "tracks": []
+                                                  },
+                                                  "kind": "Source",
+                                                  "label": "Source",
+                                                  "output_link": null,
+                                                  "params": {}
+                                                },
+                                                {
+                                                  "enabled": true,
+                                                  "id": "fd3c1fde-97d6-4c92-8f88-0535747f1e03",
+                                                  "input_links": [],
+                                                  "keyframes": {
+                                                    "tracks": []
+                                                  },
+                                                  "kind": "Corrector",
+                                                  "label": "Corrector",
+                                                  "output_link": null,
+                                                  "params": {
+                                                    "exposure": 0.4
+                                                  }
+                                                },
+                                                {
+                                                  "enabled": true,
+                                                  "id": "6e37a14e-fe0f-4cc1-aea5-5ed5e7d4189b",
+                                                  "input_links": [],
+                                                  "keyframes": {
+                                                    "tracks": []
+                                                  },
+                                                  "kind": "Output",
+                                                  "label": "Output",
+                                                  "output_link": null,
+                                                  "params": {}
+                                                }
+                                              ],
+                                              "output_node_id": "6e37a14e-fe0f-4cc1-aea5-5ed5e7d4189b"
+                                            }
+                                          }
+                                        },
+                                        {
+                                          "enabled": true,
+                                          "id": "b34bf6ca-4a88-47a7-9637-135feb651159",
+                                          "input_links": [],
+                                          "keyframes": {
+                                            "tracks": []
+                                          },
+                                          "kind": "Output",
+                                          "label": "Output",
+                                          "output_link": null,
+                                          "params": {}
+                                        }
+                                      ],
+                                      "output_node_id": "b34bf6ca-4a88-47a7-9637-135feb651159"
+                                    }
+                                  }
+                                }
+                              },
+                              "type_id": "klipp.legacy.node"
+                            },
+                            {
+                              "id": "9ee83f0f-67af-4ad2-8e3c-c95eafe232a1",
+                              "legacy": {
+                                "keyframes": {
+                                  "tracks": []
+                                },
+                                "payload": {
+                                  "kind": "Output",
+                                  "label": "Output",
+                                  "params": {}
+                                }
+                              },
+                              "type_id": "klipp.group.output"
+                            }
+                          ],
+                          "output": "9ee83f0f-67af-4ad2-8e3c-c95eafe232a1",
+                          "ui": {
+                            "positions": {
+                              "30c522b2-69ab-45d6-8e7f-ca71e2837635": {
+                                "x": 220.0,
+                                "y": 0.0
+                              },
+                              "806ff982-c948-47b2-8193-134c6954a20c": {
+                                "x": 0.0,
+                                "y": 0.0
+                              },
+                              "9ee83f0f-67af-4ad2-8e3c-c95eafe232a1": {
+                                "x": 440.0,
+                                "y": 0.0
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "id": "76e41690-950f-59ec-8134-e1ae5f4b54b7",
+                      "legacy": {
+                        "payload": null
+                      },
+                      "type_id": "klipp.group"
+                    },
+                    {
+                      "id": "7522ce74-000a-55f4-b660-199355ec51d7",
+                      "type_id": "klipp.colour.scene_to_display"
+                    },
+                    {
+                      "id": "96f9b972-b95c-5902-bdd8-994c4f2216a8",
+                      "params": {
+                        "mode": {
+                          "Enum": 0
+                        }
+                      },
+                      "type_id": "klipp.placement"
+                    },
+                    {
+                      "id": "c7fe3498-d554-5f39-9f81-46993da08dc6",
+                      "type_id": "klipp.output"
+                    }
+                  ],
+                  "output": "c7fe3498-d554-5f39-9f81-46993da08dc6"
+                },
+                "opacity": 1.0
+              },
+              "group_id": null,
+              "id": "2f150de5-7133-4297-8059-dd95429b972b",
+              "kind": {
+                "media_id": "ca54a366-c9ab-48b2-a809-448162a80b02",
+                "type": "media"
+              },
+              "linked_clip_id": null,
+              "linked_title_asset_id": null,
+              "media_id": "ca54a366-c9ab-48b2-a809-448162a80b02",
+              "pan": null,
+              "pan_keyframes": null,
+              "rate": 24,
+              "solo": null,
+              "source_in": 0,
+              "source_out": 48,
+              "timeline_in": 0,
+              "timeline_out": 48,
+              "track_points": [],
+              "volume": null,
+              "volume_keyframes": null
+            }
+          ],
+          "id": "d134460c-114f-4b6e-a051-804dd1bc539f",
+          "kind": "Video",
+          "locked": false,
+          "magnetic_role": "Primary",
+          "muted": false,
+          "name": "Video 1",
+          "opacity": 1.0,
+          "pan": 0.0,
+          "solo": false,
+          "transitions": [],
+          "visible": true,
+          "volume": 1.0
+        },
+        {
+          "clips": [],
+          "id": "4cc32c2e-960f-471f-8181-04d16ce38414",
+          "kind": "Audio",
+          "locked": false,
+          "magnetic_role": "Connected",
+          "muted": false,
+          "name": "Audio 1",
+          "opacity": 1.0,
+          "pan": 0.0,
+          "solo": false,
+          "transitions": [],
+          "visible": true,
+          "volume": 1.0
+        }
+      ]
+    }
+  ],
+  "version": "1.0.0",
+  "working_colorspace": "Rec709Linear"
+}

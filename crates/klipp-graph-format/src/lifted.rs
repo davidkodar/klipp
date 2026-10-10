@@ -272,6 +272,10 @@ pub enum LiftNote {
     /// Kept as a disabled node because v1 never ran it: a head entry on a
     /// clip that isn't Media, or a TNR after the first that ran.
     NeverRan { node: NodeId, why: String },
+    /// A grade compound kept off because today's executor passed its input
+    /// through (#1391): its subgraph loops, or it is nested past depth 8.
+    /// The same picture; the conversion declares it.
+    CompoundKeptOff { node: NodeId, why: String },
     /// A port-1 edge on a correction whose port 0 is unwired: never a gate.
     ParkedEdge { group: NodeId, edge: Value },
     /// Keyframes or modifiers that drove nothing, kept on a node (or the

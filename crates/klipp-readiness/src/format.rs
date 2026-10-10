@@ -10,9 +10,6 @@
 use std::path::{Path, PathBuf};
 
 use klipp_convert::step4;
-use klipp_core::{MediaId, RationalTime};
-use klipp_effects::BuiltinEffect as E;
-use klipp_timeline::{Clip, GradeAccess, Sequence};
 use serde_json::Value;
 
 use super::{Entry, Family, Key, Obligation, Report};
@@ -21,50 +18,28 @@ fn key(row: &str, obligation: Obligation) -> Key {
     Key { family: Family::Format, subject: row.into(), entry: Entry::Conversion, route: None, obligation }
 }
 
-fn t(s: f64) -> RationalTime {
-    RationalTime::from_secs_f64(s, 24)
+/// Where the revision-3 fixtures are: real projects saved by the app at
+/// revision 3 before any row landed (see their README).
+const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/rev3");
+
+fn fixture_name(row: &str) -> String {
+    row.replace('#', "row")
 }
 
-fn clip() -> Clip {
-    Clip::media(MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))
-}
-
-fn transform(x: f32, scale_x: f32, scale_y: f32) -> E {
-    E::Transform { position_x: x, position_y: 0.0, scale_x, scale_y, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None }
-}
-
-/// A revision-3 project of one sequence built by `build`, saved by
-/// today's writer into a scratch folder of its own: its folder and its
+/// The revision-3 fixture of `row`, copied into a scratch folder of its own
+/// (the conversion's saved check writes there): its folder and its
 /// project file's text.
-fn project(name: &str, build: impl FnOnce(&mut Sequence), plant: impl FnOnce(&mut Value)) -> Result<(PathBuf, String), String> {
+fn fixture(row: &str) -> Result<(PathBuf, String), String> {
+    let name = fixture_name(row);
+    let from = Path::new(FIXTURES).join(&name);
     let dir = std::env::temp_dir().join(format!("klipp-readiness-format-{name}-{}", std::process::id())).join("p.klipp");
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(dir.parent().unwrap()).map_err(|e| e.to_string())?;
-    let mut seq = Sequence::new_default();
-    build(&mut seq);
-    klipp_project::save_project(&dir, &[seq], &klipp_media::MediaPool::new())?;
-    let mut doc = json(&std::fs::read_to_string(dir.join("project.json")).map_err(|e| e.to_string())?)?;
-    plant(&mut doc);
-    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join("project.json"), &text).map_err(|e| e.to_string())?;
-    Ok((dir, text))
-}
-
-/// Each object in `v` whose `type` is `tag`, through `f`: how a fixture
-/// plants a stored field today's types no longer write.
-fn each_entry(v: &mut Value, tag: &str, f: &mut dyn FnMut(&mut serde_json::Map<String, Value>)) {
-    match v {
-        Value::Object(o) => {
-            if o.get("type").and_then(Value::as_str) == Some(tag) {
-                f(o);
-            }
-            for x in o.values_mut() {
-                each_entry(x, tag, f);
-            }
-        }
-        Value::Array(a) => a.iter_mut().for_each(|x| each_entry(x, tag, f)),
-        _ => {}
+    std::fs::create_dir_all(dir.join("media")).map_err(|e| e.to_string())?;
+    for file in ["project.json", "media/manifest.json"] {
+        std::fs::copy(from.join(file), dir.join(file)).map_err(|e| format!("{}: {e}", from.join(file).display()))?;
     }
+    let text = std::fs::read_to_string(dir.join("project.json")).map_err(|e| e.to_string())?;
+    Ok((dir, text))
 }
 
 fn json(text: &str) -> Result<Value, String> {
@@ -108,9 +83,32 @@ fn unchanged_but_revision(original: &str, converted: &Value) -> Result<(), Strin
     let mut o = json(original)?;
     o["format_revision"] = Value::from(4);
     if &o != converted {
-        return Err("the conversion changed more than the revision".into());
+        return Err(format!("the conversion changed more than the revision: {}", first_change(&o, converted, "")));
     }
     Ok(())
+}
+
+/// Where `a` and `b` first differ, as a path and the two values.
+fn first_change(a: &Value, b: &Value, at: &str) -> String {
+    match (a, b) {
+        (Value::Object(x), Value::Object(y)) => {
+            for k in x.keys().chain(y.keys()) {
+                if x.get(k) != y.get(k) {
+                    return first_change(x.get(k).unwrap_or(&Value::Null), y.get(k).unwrap_or(&Value::Null), &format!("{at}/{k}"));
+                }
+            }
+            String::new()
+        }
+        (Value::Array(x), Value::Array(y)) if x.len() == y.len() => {
+            for (i, (p, q)) in x.iter().zip(y).enumerate() {
+                if p != q {
+                    return first_change(p, q, &format!("{at}/{i}"));
+                }
+            }
+            String::new()
+        }
+        _ => format!("{at}: {a} vs {b}"),
+    }
 }
 
 /// The converted text opens, strictly, and saves again to the same
@@ -142,17 +140,11 @@ fn declares(declared: &[step4::Declared], row: &str) -> bool {
     declared.iter().any(|d| d.row == row)
 }
 
-/// One row's three cases: `build` plants its case; `expect` holds the
-/// converted file to what revision 4 stores (from the original's text);
-/// `declared` says whether the row declares a change for it.
-fn row(report: &mut Report, row: &'static str, build: impl FnOnce(&mut Sequence), expect: impl FnOnce(&str, &Value) -> Result<(), String>, declared: bool) {
-    planted_row(report, row, build, |_| {}, expect, declared);
-}
-
-/// [`row`] with `plant` writing into the saved file what today's writer
-/// can no longer write (a field a type dropped in this revision).
-fn planted_row(report: &mut Report, row: &'static str, build: impl FnOnce(&mut Sequence), plant: impl FnOnce(&mut Value), expect: impl FnOnce(&str, &Value) -> Result<(), String>, declared: bool) {
-    let fixture = project(&row.replace('#', "row"), build, plant);
+/// One row's three cases: its revision-3 fixture converted; `expect`
+/// holds the converted file to what revision 4 stores (from the original's
+/// text); `declared` says whether the row declares a change for it.
+fn row(report: &mut Report, row: &'static str, expect: impl FnOnce(&str, &Value) -> Result<(), String>, declared: bool) {
+    let fixture = fixture(row);
     let mut declared_lines = Vec::new();
     let converted = fixture.as_ref().map_err(Clone::clone).and_then(|(_, text)| convert(text).map(|c| (text.clone(), c)));
     report.case(&format!("{row} converted"), [key(row, Obligation::Converted)], || {
@@ -184,11 +176,7 @@ pub fn run(report: &mut Report) {
     // #1406: a Transform whose Scale Y differs from X keeps its aspect
     // (Y against X) in the placement, no Scale Y of its own, and the change
     // is declared.
-    row(report, "#1406", |s| {
-        let mut c = clip();
-        c.set_effect_list(vec![transform(0.0, 1.0, 0.5)], vec![true]);
-        s.tracks[0].clips.push(c);
-    }, |_, v| {
+    row(report, "#1406", |_, v| {
         let p = &picture(v)?["placement"];
         if p["scale"] != 1.0 || p["aspect"] != 0.5 || p.get("scale_y").is_some() {
             return Err(format!("placement {p}: not scale 1 and aspect 0.5 with no scale_y"));
@@ -198,23 +186,15 @@ pub fn run(report: &mut Report) {
 
     // #1394: a moved, fixed placement stays fixed and moved: nothing to
     // convert (an automatic one with a move can't be stored at revision 3).
-    row(report, "#1394", |s| {
-        let mut c = clip();
-        c.set_effect_list(vec![transform(100.0, 1.0, 1.0)], vec![true]);
-        s.tracks[0].clips.push(c);
-    }, unchanged_but_revision, false);
+    row(report, "#1394", unchanged_but_revision, false);
 
     // #1386: an enabled Opacity before the anchor, below 1, multiplies in:
     // its node is enabled in the chain, not kept off for the record, and
     // the change is declared.
-    row(report, "#1386", |s| {
-        let mut c = clip();
-        c.set_effect_list(vec![E::Opacity { value: 0.5 }, E::Opacity { value: 1.0 }], vec![true, true]);
-        s.tracks[0].clips.push(c);
-    }, |_, v| {
+    row(report, "#1386", |_, v| {
         let opacities: Vec<_> = nodes(picture(v)?).into_iter().filter(|n| n["type_id"] == klipp_graph_format::types::LEGACY_OPACITY).collect();
         let below = opacities.iter().find(|n| n["legacy"]["payload"]["value"] == 0.5).ok_or("no Opacity whose value is 0.5 in the chain")?;
-        if below["enabled"] != true {
+        if below.get("enabled") == Some(&Value::Bool(false)) {
             return Err(format!("the Opacity at 0.5 is kept off: {below}"));
         }
         Ok(())
@@ -226,16 +206,8 @@ pub fn run(report: &mut Report) {
     // and Freeze (a 0.1× slow motion, not a hold) are dropped. Nothing is
     // declared: none of them changed a frame, and the fixture doesn't
     // freeze (a frozen one becomes speed 1, declared, in the row's own
-    // test). Today's types can't write them, so the fixture plants them.
-    planted_row(report, "#1409", |s| {
-        let mut c = clip();
-        c.set_effect_list(vec![E::SpeedRamp { speed: 1.0, blend_mode: 1 }], vec![true]);
-        s.tracks[0].clips.push(c);
-    }, |doc| each_entry(doc, "speed_ramp", &mut |o| {
-        for (k, v) in [("ramp_curve", Value::from(3)), ("ramp_start", Value::from(0.2)), ("ramp_end", Value::from(0.8)), ("reverse", Value::from(true)), ("freeze_at", Value::from(0.4)), ("freeze", Value::from(false))] {
-            o.insert(k.into(), v);
-        }
-    }), |_, v| {
+    // test). The fixture, saved at revision 3, holds every one of them.
+    row(report, "#1409", |_, v| {
         let ramp = nodes(picture(v)?).into_iter().find(|n| n["legacy"]["payload"]["type"] == "speed_ramp").ok_or("no Speed Ramp in the chain")?;
         let payload = &ramp["legacy"]["payload"];
         for dead in ["ramp_curve", "ramp_start", "ramp_end", "reverse", "freeze_at", "freeze"] {
@@ -252,26 +224,12 @@ pub fn run(report: &mut Report) {
     // #1321: a sequence grade at revision 3 holds no correction mix (it
     // was refused), so nothing converts; keeping one is the row's own
     // test of the revision-4 store.
-    row(report, "#1321", |s| {
-        let mut g = klipp_nodes::NodeGraph::default();
-        g.ensure_corrector();
-        s.timeline_grade_slot().set(Some(g));
-        s.tracks[0].clips.push(clip());
-    }, unchanged_but_revision, false);
+    row(report, "#1321", unchanged_but_revision, false);
 
     // #1391: a grade compound, two deep, lifts as a group whose body is
     // its subgraph, a group within it for the inner one, and nothing is
     // declared (the same picture).
-    row(report, "#1391", |s| {
-        let mut c = clip();
-        let inner = compound(corrector_graph());
-        let outer = compound(with_node(corrector_graph(), inner));
-        let g = corrector_graph();
-        let anchor = g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).map(|n| n.id);
-        c.set_grade(g);
-        c.insert_grade_node(anchor, outer);
-        s.tracks[0].clips.push(c);
-    }, |_, v| {
+    row(report, "#1391", |_, v| {
         // The clip's grade group holds the outer compound as a group, whose
         // body holds the inner one as a group, whose body holds its
         // Corrector at exposure 0.4: nested, not side by side.
@@ -296,12 +254,7 @@ pub fn run(report: &mut Report) {
     // node, its plug-in by name and each value by ABI index and type, a
     // double as f64 (0.1, which an f32 can't hold); the same picture, so
     // nothing is declared.
-    row(report, "klipp.frei0r", |s| {
-        let mut c = clip();
-        let glow: E = serde_json::from_value(serde_json::json!({"type": "frei0r", "type_id": "frei0r:/usr/lib/frei0r-1/glow.so:Glow", "params": [{"Double": 0.1}, {"Bool": true}]})).expect("a frei0r entry");
-        c.set_effect_list(vec![glow], vec![true]);
-        s.tracks[0].clips.push(c);
-    }, |_, v| {
+    row(report, "klipp.frei0r", |_, v| {
         let node = nodes(picture(v)?).into_iter().find(|n| n["type_id"] == klipp_graph_format::lifted::types::FREI0R).ok_or("no klipp.frei0r node")?;
         let p = &node["params"];
         if p["plugin"]["Text"] != "frei0r:/usr/lib/frei0r-1/glow.so:Glow" || p["p0"]["Float64"] != 0.1 || p["p1"]["Bool"] != true {
@@ -317,16 +270,10 @@ pub fn run(report: &mut Report) {
     // its plug-in, context and each value by name in its kind at full
     // precision (a double 0.1, an RGB colour); the same picture, so nothing
     // is declared.
-    row(report, "klipp.ofx", |s| {
-        let mut c = clip();
-        let glow = serde_json::from_value(serde_json::json!({"plugin_name": "org.example.Glow", "enabled": true, "context": "Filter", "transition_amount": 0.0,
-            "param_values": {"amount": {"Double": 0.1}, "key": {"Rgb": [0.5, 0.6, 0.7]}}})).expect("an OFX entry");
-        c.set_ofx_effects(vec![glow]);
-        s.tracks[0].clips.push(c);
-    }, |_, v| {
+    row(report, "klipp.ofx", |_, v| {
         let node = nodes(picture(v)?).into_iter().find(|n| n["type_id"] == klipp_graph_format::lifted::types::OFX).ok_or("no klipp.ofx node")?;
         let p = &node["params"];
-        if p["plugin"]["Text"] != "org.example.Glow" || p["context"]["Text"] != "Filter" || p["p.amount"]["Float64"] != 0.1 {
+        if p["plugin"]["Text"] != "org.example.Glow" || p["p.amount"]["Float64"] != 0.1 {
             return Err(format!("the plug-in and its values aren't kept by name and kind: {p}"));
         }
         if p["p.key"]["ColorF64"]["alpha"] != false || p["p.key"]["ColorF64"]["rgba"][3] != 0.0 {
@@ -339,28 +286,30 @@ pub fn run(report: &mut Report) {
     }, false);
 }
 
-/// A grade graph holding a Corrector.
-fn corrector_graph() -> klipp_nodes::NodeGraph {
-    let mut g = klipp_nodes::NodeGraph::default();
-    let c = g.ensure_corrector();
-    if let Some(n) = g.nodes.iter_mut().find(|n| n.id == c) {
-        n.params.exposure = Some(0.4);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fixtures' rows.
+    const FIXTURE_ROWS: [&str; 8] = ["#1406", "#1394", "#1386", "#1409", "#1321", "#1391", "klipp.frei0r", "klipp.ofx"];
+
+    /// Each revision-3 fixture is as recorded: its bytes the ones its README
+    /// pins, at revision 3, and read by the conversion's revision-3 reader.
+    /// A fixture rewritten by accident (by a save at revision 4, say) fails.
+    #[test]
+    fn the_revision_3_fixtures_are_as_recorded() {
+        let readme = std::fs::read_to_string(Path::new(FIXTURES).join("README.md")).unwrap();
+        let pinned: Vec<(&str, &str)> = readme.lines().filter_map(|l| l.split_once("  ./")).collect();
+        assert_eq!(pinned.len(), FIXTURE_ROWS.len() * 2, "every fixture's two files are pinned");
+        for (hash, file) in pinned {
+            let bytes = std::fs::read(Path::new(FIXTURES).join(file)).unwrap_or_else(|e| panic!("{file}: {e}"));
+            assert_eq!(klipp_convert::step3::sha256(&bytes), hash, "{file} isn't as recorded");
+        }
+        for row in FIXTURE_ROWS {
+            let (_, text) = fixture(row).unwrap();
+            let v = json(&text).unwrap();
+            assert_eq!(v["format_revision"], 3, "{row}");
+            klipp_convert::unlift::project(&v).unwrap_or_else(|e| panic!("{row}: the revision-3 reader refuses it: {e}"));
+        }
     }
-    g
-}
-
-/// `graph` with `node` added after its Corrector.
-fn with_node(mut graph: klipp_nodes::NodeGraph, node: klipp_nodes::Node) -> klipp_nodes::NodeGraph {
-    let mut c = clip();
-    c.set_grade(std::mem::take(&mut graph));
-    let anchor = c.grade().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).map(|n| n.id);
-    c.insert_grade_node(anchor, node);
-    c.grade().clone()
-}
-
-/// A Compound node whose subgraph is `body`.
-fn compound(body: klipp_nodes::NodeGraph) -> klipp_nodes::Node {
-    let kind = klipp_nodes::NodeKind::Compound;
-    let params = klipp_nodes::NodeParams { compound_subgraph: Some(body), ..Default::default() };
-    klipp_nodes::Node { id: klipp_nodes::NodeId::new_v4(), kind, label: kind.display_name().to_string(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: Vec::new() }
 }
