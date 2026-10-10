@@ -450,3 +450,20 @@ fn a_picture_truth_clip_refuses_an_ofx_edit() {
     assert!(refused.as_ref().is_err_and(|e| e.contains("mix or mask")), "{refused:?}");
     assert_eq!(plugins(&c), vec![("org.example.A".into(), true)]);
 }
+
+/// Today's known gap (#1500): a plug-in has no id of its own, so its node
+/// is named by its place, and a moved plug-in's node is named anew. The
+/// place finds it. When plug-ins keep ids, this flips on purpose.
+#[test]
+fn a_moved_plugins_node_is_named_by_its_new_place() {
+    use klipp_timeline::OfxEdit;
+    let mut c = clip(vec![], vec![]);
+    c.set_ofx_effects(vec![plugin("org.example.A"), plugin("org.example.B")]);
+    let a_before = c.effect_node_at(true, 0).expect("A's node");
+    c.apply_ofx_edits(&[OfxEdit::Move { from: 0, to: 1 }]).expect("the move");
+    assert_eq!(plugins(&c), vec![("org.example.B".into(), true), ("org.example.A".into(), true)]);
+    let a_after = c.effect_node_at(true, 1).expect("A's node at its new place");
+    assert_ne!(a_after, a_before, "the node is named by its place (#1500)");
+    assert_eq!(c.effect_node_at(true, 0), Some(a_before), "B now has the first place's name");
+    assert_eq!(c.effect_slot_of_node(a_after), Some((true, 1)), "the place finds it");
+}
