@@ -517,12 +517,41 @@ pub(crate) const TEMPORAL_DENOISE_CPU_NOTE: &str =
     "A clip using this is rendered on the CPU rather than the GPU: the frames it averages against are decoded there.";
 
 /// `clip`'s analysis of `kind`, derived with the settings of its first
-/// enabled effect that `is` (M4 step 9): what the render draws by.
-fn derived_analysis(clip: &Clip, state: &AppState, kind: klipp_analysis::assets::AssetKind, is: fn(&klipp_effects::BuiltinEffect) -> bool) -> Option<klipp_effects::node_analysis::NodeAnalysis> {
+/// enabled effect that `is` (M4 step 9): what the render draws by. Kept
+/// in the panel's memory for the clip while the analysis read (the same
+/// `Arc`, held there) and the settings hold, so a frame of the inspector costs no
+/// derivation.
+fn derived_analysis(ctx: &egui::Context, clip: &Clip, state: &AppState, kind: klipp_analysis::assets::AssetKind, is: fn(&klipp_effects::BuiltinEffect) -> bool) -> Option<std::sync::Arc<klipp_effects::node_analysis::NodeAnalysis>> {
+    // The analysis itself is held, so its address can't be another's.
+    type Kept = (std::sync::Arc<serde_json::Value>, u64, Option<std::sync::Arc<klipp_effects::node_analysis::NodeAnalysis>>);
     let raw = state.analysis_of(clip, kind)?;
     let enabled = clip.builtin_effects_enabled();
     let effect = clip.builtin_effects().iter().enumerate().find(|(i, e)| is(e) && enabled.get(*i).copied().unwrap_or(true)).map(|(_, e)| e)?;
-    klipp_effects::node_analysis::derive(effect, raw)
+    let params = klipp_effects::node_analysis::derivation_params(effect)?;
+    let id = egui::Id::new(("derived_analysis", clip.id, kind));
+    if let Some((seen, p, kept)) = ctx.data(|d| d.get_temp::<Kept>(id)) {
+        if std::sync::Arc::ptr_eq(&seen, raw) && p == params {
+            return kept;
+        }
+    }
+    let derived = klipp_effects::node_analysis::derive(effect, raw).map(std::sync::Arc::new);
+    ctx.data_mut(|d| d.insert_temp::<Kept>(id, (std::sync::Arc::clone(raw), params, derived.clone())));
+    derived
+}
+
+/// The camera's horizontal path in `raw` (a stabilisation analysis), for
+/// the trajectory plot: parsed once for the clip while `raw` holds.
+fn trajectory_x(ctx: &egui::Context, clip: &Clip, raw: &std::sync::Arc<serde_json::Value>) -> Option<std::sync::Arc<Vec<f32>>> {
+    type Kept = (std::sync::Arc<serde_json::Value>, Option<std::sync::Arc<Vec<f32>>>);
+    let id = egui::Id::new(("trajectory_x", clip.id));
+    if let Some((seen, kept)) = ctx.data(|d| d.get_temp::<Kept>(id)) {
+        if std::sync::Arc::ptr_eq(&seen, raw) {
+            return kept;
+        }
+    }
+    let xs = serde_json::from_value::<klipp_effects::stabilization::StabilizationData>((**raw).clone()).ok().map(|d| std::sync::Arc::new(d.trajectory.iter().map(|p| p.tx as f32).collect::<Vec<f32>>()));
+    ctx.data_mut(|d| d.insert_temp::<Kept>(id, (std::sync::Arc::clone(raw), xs.clone())));
+    xs
 }
 
 /// Deflicker's analysis: measuring (with Cancel), done (with Re-analyse
@@ -548,9 +577,8 @@ pub(crate) fn deflicker_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Cli
         });
         // What it found at the window the effect is set to, so "nothing
         // happened" is answerable.
-        if let Some(klipp_effects::node_analysis::NodeAnalysis::Deflicker { gains, .. }) =
-            derived_analysis(clip, state, klipp_analysis::assets::AssetKind::Deflicker, |e| matches!(e, klipp_effects::BuiltinEffect::Deflicker { .. }))
-        {
+        let derived = derived_analysis(ui.ctx(), clip, state, klipp_analysis::assets::AssetKind::Deflicker, |e| matches!(e, klipp_effects::BuiltinEffect::Deflicker { .. }));
+        if let Some(klipp_effects::node_analysis::NodeAnalysis::Deflicker { gains, .. }) = derived.as_deref() {
             let worst = gains
                 .iter()
                 .map(|g| (g - 1.0).abs())
@@ -608,8 +636,8 @@ pub(crate) fn stabilization_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: 
         });
         // Quality metric: how much shake the smoothing actually removed, at
         // the smoothing the effect is set to.
-        let derived = derived_analysis(clip, state, klipp_analysis::assets::AssetKind::Stabilisation, |e| matches!(e, klipp_effects::BuiltinEffect::VideoStabilization { .. }));
-        if let Some(klipp_effects::node_analysis::NodeAnalysis::Stabilisation { smoothed, .. }) = derived.as_ref() {
+        let derived = derived_analysis(ui.ctx(), clip, state, klipp_analysis::assets::AssetKind::Stabilisation, |e| matches!(e, klipp_effects::BuiltinEffect::VideoStabilization { .. }));
+        if let Some(klipp_effects::node_analysis::NodeAnalysis::Stabilisation { smoothed, .. }) = derived.as_deref() {
             let pct = smoothed.jitter_reduction_pct();
             let (label_color, headline) = if smoothed.raw_jitter_px < 0.25 {
                 // Source was already smooth — nothing to remove.
@@ -633,9 +661,7 @@ pub(crate) fn stabilization_status(ui: &mut egui::Ui, theme: &KlippTheme, clip: 
 
             // Trajectory graph: raw camera tx (jagged) vs smoothed tx (clean).
             // Visualizes what stabilization is actually doing.
-            let data = raw.and_then(|r| serde_json::from_value::<klipp_effects::stabilization::StabilizationData>((**r).clone()).ok());
-            if let Some(data) = data.as_ref() {
-                let raw: Vec<f32> = data.trajectory.iter().map(|p| p.tx as f32).collect();
+            if let Some(raw) = raw.and_then(|r| trajectory_x(ui.ctx(), clip, r)) {
                 let smooth: Vec<f32> = smoothed.smoothed.iter().map(|p| p.tx as f32).collect();
                 if raw.len() >= 2 && smooth.len() == raw.len() {
                     let avail = ui.available_width();
