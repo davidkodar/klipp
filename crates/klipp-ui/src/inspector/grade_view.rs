@@ -166,6 +166,21 @@ pub(crate) fn pending_corrector(id: NodeId) -> Node {
         .expect("a grade node's form")
 }
 
+/// A new grade node of `kind` as its picture holds it (#1476): every
+/// parameter unset, as the canvas adds one, under `id`; a merge kind (Layer,
+/// Blend, Layer Mixer) as the lift makes it.
+pub(crate) fn new_grade_node(kind: klipp_nodes::NodeKind, id: NodeId) -> Node {
+    let payload = serde_json::json!({"kind": kind, "label": kind.display_name(), "params": klipp_nodes::NodeParams::default()});
+    let mut node: Node = serde_json::from_value(serde_json::json!({"id": id, "type_id": klipp_graph_format::types::LEGACY_NODE, "label": "", "legacy": {"payload": payload}}))
+        .expect("a grade node's form");
+    let name = serde_json::to_value(kind).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+    if let Some((_, op)) = lt::MERGE_OPS.iter().find(|(k, _)| *k == name) {
+        node.type_id = klipp_graph_format::NodeTypeId::new(lt::MERGE);
+        node.params.insert("op".into(), klipp_graph_format::ParamValue::Text((*op).to_owned()));
+    }
+    node
+}
+
 impl GradeSnapshot {
     /// The clip's grade nodes at `descent`, and the Corrector `pending`
     /// names when its grade has no enabled one; or `None` when its picture

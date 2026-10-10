@@ -42,7 +42,6 @@ const KNOWN: &[(&str, &str, usize)] = &[
     // their tests.
     ("klipp-ui/src/app/colour.rs", "SetNodeGraph", 9),
     // A compound's grade moved in and out with its clips.
-    ("klipp-ui/src/app/compound.rs", "SetNodeGraph", 2),
     // Keys generated from a track, on a grade window.
     ("klipp-ui/src/app/stabilization.rs", "SetNodeGraph", 3),
     // A still's grade put on clips, and its tests.

@@ -296,17 +296,6 @@ impl KlippApp {
         false
     }
 
-    fn add_color_node(&mut self, clip_id: klipp_core::ClipId, kind: &str, node_id: Option<uuid::Uuid>, position: (f32, f32), needs_refresh: &mut bool) {
-        let Some(node_kind) = klipp_nodes::kinds::addable_node_kind(kind) else { return };
-        // A node the sender names (the control socket) goes into the
-        // clip's top-level graph, the one `get_grade` reports, whatever
-        // the editor has descended into, and whichever clip that is.
-        // The editor's own adds go where the editor is.
-        let path = add_node_path(node_id, &self.state.graph_descent_path);
-        let new_id = node_id.unwrap_or_else(klipp_nodes::NodeId::new_v4);
-        self.with_clip_graph_mut_at(clip_id, &path, needs_refresh, |graph| push_node(graph, node_kind, new_id, position));
-    }
-
     /// Collapse a multi-node selection into a single Compound node.
     /// See `AppCommand::GroupIntoCompound` for the user-visible
     /// contract; this method is the in-place mutation that captures
@@ -758,28 +747,14 @@ impl KlippApp {
 
     fn handle_color_node_ops(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         match cmd {
-            AppCommand::AddNode { clip_id, ref kind, node_id, position } => {
-                self.add_color_node(*clip_id, kind, *node_id, *position, needs_refresh);
+            AppCommand::AddNode { .. } | AppCommand::RemoveNode { .. } | AppCommand::GroupIntoCompound { .. } | AppCommand::UngroupCompound { .. } => {
+                // By path, one step (#1476).
+                if self.state.canvas_structure_edit(cmd) == Some(true) {
+                    *needs_refresh = true;
+                }
                 true
             }
-            AppCommand::RemoveNode { clip_id, node_id } => {
-                let node_id = *node_id;
-                let Some(path) = self.graph_holding(*clip_id, &[node_id]) else { return true };
-                self.with_clip_graph_mut_at(*clip_id, &path, needs_refresh, |graph| {
-                    graph.nodes.retain(|n| n.id != node_id);
-                    graph.edges.retain(|e| e.from_node != node_id && e.to_node != node_id);
-                    graph.node_positions.remove(&node_id);
-                    // Frame cleanup invariant — drop the deleted id
-                    // from every frame's membership set, then prune
-                    // any frame left with zero members (a frame
-                    // wrapping nothing is a visual ghost).
-                    for frame in &mut graph.frames {
-                        frame.contained_node_ids.remove(&node_id);
-                    }
-                    graph.frames.retain(|f| !f.contained_node_ids.is_empty());
-                });
-                true
-            }
+
             AppCommand::CreateNodeFrame { clip_id, node_ids, label, color_rgba } => {
                 let label = label.clone();
                 let color_rgba = *color_rgba;
@@ -902,18 +877,12 @@ impl KlippApp {
                 });
                 true
             }
-            AppCommand::GroupIntoCompound { clip_id, node_ids } => {
-                self.group_into_compound(*clip_id, node_ids, needs_refresh);
-                true
-            }
+
             AppCommand::AutoLayoutNodeGraph { clip_id } => {
                 self.auto_layout_node_graph(*clip_id, needs_refresh);
                 true
             }
-            AppCommand::UngroupCompound { clip_id, node_id } => {
-                self.ungroup_compound(*clip_id, *node_id, needs_refresh);
-                true
-            }
+
             AppCommand::UpdateActiveGradeVersion { clip_id } => {
                 let clip_id = *clip_id;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
@@ -2859,11 +2828,13 @@ mod colour_seek_tests {
 /// The graph an added node goes into: the clip's top-level one when the
 /// sender names the node (the control socket, whose reply says the id
 /// `get_grade` will show), else the one the editor has descended into.
-fn add_node_path(node_id: Option<uuid::Uuid>, descent: &[klipp_nodes::NodeId]) -> Vec<klipp_nodes::NodeId> {
+pub(super) fn add_node_path(node_id: Option<uuid::Uuid>, descent: &[klipp_nodes::NodeId]) -> Vec<klipp_nodes::NodeId> {
     if node_id.is_some() { Vec::new() } else { descent.to_vec() }
 }
 
-/// A new, unwired node of `kind` with id `id` at `position`.
+/// A new, unwired node of `kind` with id `id` at `position`, as the v1
+/// canvas added one before adds went by path (#1476).
+#[cfg(test)]
 fn push_node(graph: &mut klipp_nodes::NodeGraph, kind: klipp_nodes::NodeKind, id: klipp_nodes::NodeId, position: (f32, f32)) {
     graph.nodes.push(klipp_nodes::Node {
         id,
@@ -3228,7 +3199,7 @@ pub(super) fn abandon_gesture(state: &mut AppState, clip_id: klipp_core::ClipId,
 /// lands where the node is (#1179). Nodes in no graph at all (an id gone
 /// stale) keep the editor's descent, where they change nothing. Nodes in
 /// different graphs: `None`, no graph holds them all.
-fn graph_path_for(root: &klipp_nodes::NodeGraph, nodes: &[klipp_nodes::NodeId], descent: &[klipp_nodes::NodeId]) -> Option<Vec<klipp_nodes::NodeId>> {
+pub(super) fn graph_path_for(root: &klipp_nodes::NodeGraph, nodes: &[klipp_nodes::NodeId], descent: &[klipp_nodes::NodeId]) -> Option<Vec<klipp_nodes::NodeId>> {
     let mut paths = nodes.iter().filter_map(|id| root.path_to_node(*id));
     let Some(first) = paths.next() else { return Some(descent.to_vec()) };
     paths.all(|p| p == first).then_some(first)

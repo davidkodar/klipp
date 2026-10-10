@@ -12,6 +12,7 @@ use super::*;
 use klipp_graph_format::path::{NodePath, Root};
 use klipp_graph_format::{Node, ParamKey};
 use klipp_graph_lift::ops::GraphOp;
+use klipp_timeline::GradeAccess;
 
 /// What every path drag's history key starts with.
 const PATH_DRAG: &str = "at:";
@@ -145,6 +146,142 @@ fn animation_of(node: &Node, key: &ParamKey) -> Option<klipp_graph_format::Anima
 impl crate::state::AppState {
     /// The node's implicit blend, distinct from an effect parameter named `mix`.
     pub(crate) const NODE_MIX_DRAG_KEY: &'static str = "@mix";
+
+    /// Where the nodes of `clip_id`'s grade at `descent` (the compounds it
+    /// is inside, outermost first) are by path (#1476): a clip's under its
+    /// grade group, a sequence grade's, edited through its stand-in, at its
+    /// own root.
+    pub(super) fn grade_level(&self, clip_id: ClipId, descent: &[klipp_nodes::NodeId]) -> Result<NodePath, String> {
+        let seq = &self.sequences[self.active_sequence_idx];
+        if let Some(which) = super::timeline_grade::GradeStandIn::of(seq, clip_id) {
+            return Ok(NodePath::new(which.root(seq), descent.iter().copied()));
+        }
+        let clip = seq.all_clips().find(|c| c.id == clip_id).ok_or("no such clip")?;
+        let picture = clip.picture_v2()?;
+        let group = picture.picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::GROUP).ok_or("the clip has no grade")?.id;
+        Ok(NodePath::new(Root::Clip { clip: clip_id.0 }, std::iter::once(group).chain(descent.iter().copied())))
+    }
+
+    /// The lifted body at `level` ([`Self::grade_level`]).
+    fn level_body(&self, level: &NodePath) -> Result<klipp_graph_format::Graph, String> {
+        if level.nodes.is_empty() {
+            return self.root_grade_doc(level.root);
+        }
+        self.node_at(level)?.group.map(|g| g.graph).ok_or_else(|| "that isn't a compound".to_string())
+    }
+
+    /// The ops of a structure edit on `clip_id`'s grade at `descent`, as
+    /// the grade canvas makes it (#1476), and the step's name: each one
+    /// path-op batch, so one undo step at any depth, on a clip's grade and
+    /// on a sequence grade's (through its stand-in).
+    pub(super) fn grade_structure_ops(&self, clip_id: ClipId, descent: &[klipp_nodes::NodeId], edit: GradeStructure) -> Result<(Vec<GraphOp>, &'static str), String> {
+        let level = self.grade_level(clip_id, descent)?;
+        let at = |node| NodePath::new(level.root, level.nodes.iter().copied().chain([node]));
+        Ok(match edit {
+            // Unwired, as the canvas adds one: beside the level's output,
+            // reading what an unwired node reads (the frame into its
+            // primary, and the like), placed where it was dropped.
+            GradeStructure::Add { kind, id, position } => {
+                let body = self.level_body(&level)?;
+                let node = crate::inspector::grade_view::new_grade_node(kind, id);
+                let mut ops = vec![GraphOp::AddNodeBeside { at: at(body.output), node: Box::new(node.clone()) }];
+                for e in klipp_graph_lift::structure::inputs_of_unwired(&body, &node) {
+                    ops.push(GraphOp::Connect { from: at(e.from.0), from_port: e.from.1, to: at(id), to_port: e.to.1 });
+                }
+                let place = serde_json::to_value(klipp_nodes::NodePos { x: position.0, y: position.1 }).map_err(|e| e.to_string())?;
+                ops.push(GraphOp::SetNodeMeta { path: at(id), label: None, position: Some(place) });
+                (ops, "Add Node")
+            }
+            GradeStructure::Remove { node } => (vec![GraphOp::RemoveNode { path: at(node) }], "Remove Node"),
+            #[cfg(test)]
+            GradeStructure::Reorder { node, after } => (vec![GraphOp::MoveAfter { path: at(node), after }], "Move Node"),
+            GradeStructure::Group { nodes, group } => {
+                let first = *nodes.first().ok_or("Group needs two nodes or more")?;
+                (vec![GraphOp::Group { path: at(first), nodes, group }], "Group into Compound")
+            }
+            GradeStructure::Ungroup { node } => (vec![GraphOp::Ungroup { path: at(node) }], "Ungroup Compound"),
+        })
+    }
+
+    /// The structure edit a grade canvas's command makes (#1476), and where:
+    /// the clip it names, the level (the canvas's descent; a node the
+    /// sender names goes to the grade's top, a removal to the level holding
+    /// it) and the edit. `None` for any other command.
+    pub(super) fn canvas_structure(&self, cmd: &AppCommand) -> Option<(ClipId, Vec<klipp_nodes::NodeId>, GradeStructure)> {
+        match cmd {
+            AppCommand::AddNode { clip_id, kind, node_id, position } => {
+                let kind = klipp_nodes::kinds::addable_node_kind(kind)?;
+                let id = node_id.unwrap_or_else(klipp_nodes::NodeId::new_v4);
+                Some((*clip_id, super::colour::add_node_path(*node_id, &self.graph_descent_path), GradeStructure::Add { kind, id, position: *position }))
+            }
+            AppCommand::RemoveNode { clip_id, node_id } => {
+                let seq = &self.sequences[self.active_sequence_idx];
+                let grade = seq.all_clips().find(|c| c.id == *clip_id)?.grade();
+                let descent = super::colour::graph_path_for(grade, &[*node_id], &self.graph_descent_path)?;
+                Some((*clip_id, descent, GradeStructure::Remove { node: *node_id }))
+            }
+            AppCommand::GroupIntoCompound { clip_id, node_ids } => {
+                let mut nodes: Vec<klipp_nodes::NodeId> = Vec::new();
+                for id in node_ids {
+                    if !nodes.contains(id) {
+                        nodes.push(*id);
+                    }
+                }
+                (nodes.len() >= 2).then(|| (*clip_id, self.graph_descent_path.clone(), GradeStructure::Group { nodes, group: klipp_nodes::NodeId::new_v4() }))
+            }
+            AppCommand::UngroupCompound { clip_id, node_id } => Some((*clip_id, self.graph_descent_path.clone(), GradeStructure::Ungroup { node: *node_id })),
+            _ => None,
+        }
+    }
+
+    /// A grade canvas's structure command (#1476) applied as its path ops,
+    /// one step: `None` when `cmd` isn't one, else whether the grade
+    /// changed. The selection follows a Group (the new compound) and an
+    /// Ungroup (the nodes it held).
+    pub(super) fn canvas_structure_edit(&mut self, cmd: &AppCommand) -> Option<bool> {
+        let (clip_id, descent, edit) = self.canvas_structure(cmd)?;
+        let unpacked: Vec<klipp_nodes::NodeId> = match &edit {
+            GradeStructure::Ungroup { node } => self.sequences[self.active_sequence_idx]
+                .all_clips()
+                .find(|c| c.id == clip_id)
+                .and_then(|c| crate::inspector::grade_view::v1_level(c.grade(), &descent).and_then(|g| g.nodes.iter().find(|n| n.id == *node)).and_then(|n| n.params.compound_subgraph.clone()))
+                .map(|sub| sub.nodes.iter().filter(|n| !matches!(n.kind, klipp_nodes::NodeKind::Source | klipp_nodes::NodeKind::Output)).map(|n| n.id).collect())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let select = match &edit {
+            GradeStructure::Group { group, .. } => Some(vec![*group]),
+            GradeStructure::Ungroup { .. } => Some(unpacked),
+            _ => None,
+        };
+        if !self.grade_structure_edit(clip_id, &descent, edit) {
+            return Some(false);
+        }
+        if let Some(select) = select {
+            self.selected_node_ids.clear();
+            self.selected_node_ids.extend(select.iter().copied());
+            self.selected_node_id = select.first().copied();
+        }
+        Some(true)
+    }
+
+    /// [`Self::grade_structure_ops`] applied: whether the grade changed. A
+    /// refusal is said, and changes nothing.
+    pub(super) fn grade_structure_edit(&mut self, clip_id: ClipId, descent: &[klipp_nodes::NodeId], edit: GradeStructure) -> bool {
+        match self.grade_structure_ops(clip_id, descent, edit) {
+            Ok((ops, label)) => match self.apply_path_ops(&ops, label) {
+                Ok(()) => true,
+                Err(why) => {
+                    self.toast.show(why);
+                    false
+                }
+            },
+            Err(why) => {
+                self.toast.show(why);
+                false
+            }
+        }
+    }
 
     /// Run a path-addressed command on the state: `None` when `cmd` isn't
     /// one, else whether a picture changed (the engine wants the
@@ -2210,4 +2347,22 @@ mod tests {
         assert_eq!(picture(&s, c.id), original, "socket route: then the drag");
     }
 
+}
+
+/// A structure edit of a grade on the canvas (#1476), at the level it
+/// shows.
+#[derive(Clone, Debug)]
+pub(super) enum GradeStructure {
+    /// A node of `kind` added unwired, under `id`, at `position`.
+    Add { kind: klipp_nodes::NodeKind, id: klipp_nodes::NodeId, position: (f32, f32) },
+    Remove { node: klipp_nodes::NodeId },
+    /// `node` moved to just after `after`: no canvas gesture makes it
+    /// (the grade canvas has no reorder); its tests and the parity family
+    /// drive it as `MoveAfter` by path.
+    #[cfg(test)]
+    Reorder { node: klipp_nodes::NodeId, after: klipp_nodes::NodeId },
+    /// `nodes` packed into a new compound `group`.
+    Group { nodes: Vec<klipp_nodes::NodeId>, group: klipp_nodes::NodeId },
+    /// The compound `node` dissolved.
+    Ungroup { node: klipp_nodes::NodeId },
 }

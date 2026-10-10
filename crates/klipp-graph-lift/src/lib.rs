@@ -28,6 +28,7 @@ pub mod registry_catalog;
 pub mod sequence_grade_mix;
 pub mod splice;
 pub mod stack_view;
+pub mod structure;
 pub mod to_v1;
 pub mod to_v2;
 mod topology;
