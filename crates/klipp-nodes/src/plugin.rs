@@ -107,6 +107,14 @@ fn convert(linear: &mut [f32], m: Option<[[f32; 3]; 3]>) {
 /// `width × height`), in its frame context: the plug-in's picture, back in
 /// the working space, or why it didn't run.
 pub fn run_ofx(node: NodeId, entry: &OfxNodeParams, input: &[f32], width: u32, height: u32, working: WorkingColorspace, render_scale: f64, ctx: Option<&mut FrameContext<'_>>) -> Result<Vec<f32>, Refusal> {
+    run_ofx_noting(node, entry, input, width, height, working, render_scale, ctx, &mut Vec::new())
+}
+
+/// [`run_ofx`], and each frame at another time it asked for that the
+/// source couldn't give, in `missed` (step 10): the plug-in ran without
+/// them.
+#[allow(clippy::too_many_arguments)]
+pub fn run_ofx_noting(node: NodeId, entry: &OfxNodeParams, input: &[f32], width: u32, height: u32, working: WorkingColorspace, render_scale: f64, ctx: Option<&mut FrameContext<'_>>, missed: &mut Vec<crate::frame_context::Missing>) -> Result<Vec<f32>, Refusal> {
     let ctx = ctx.ok_or(Refusal::Missing)?;
     let host = ctx.ofx.ok_or(Refusal::Missing)?;
     if !entry.filter {
@@ -144,7 +152,10 @@ pub fn run_ofx(node: NodeId, entry: &OfxNodeParams, input: &[f32], width: u32, h
         .into_iter()
         .filter_map(|t| match sources.encoded(source_at(t / fps)) {
             Neighbour::Frame(f) => Some((t, f)),
-            Neighbour::Missing(_) => None,
+            Neighbour::Missing(m) => {
+                missed.push(m);
+                None
+            }
         })
         .collect();
     let mut authored = input.to_vec();
@@ -342,6 +353,20 @@ mod tests {
         assert_eq!(handed, [49.0, 51.0], "the one 100 s on is past the media");
         let read = host.read.lock().unwrap().clone();
         assert!(read.len() == 2 && (read[0] - 2.96).abs() < 1e-9 && (read[1] - 3.04).abs() < 1e-9, "source 1 s plus clip times 1.96 s and 2.04 s: {read:?}");
+    }
+
+    /// A frame it names that the source hasn't is reported, not handed in
+    /// (step 10): the one 100 s on is past the media, a fallback; the
+    /// plug-in still runs on the frames there are.
+    #[test]
+    fn a_frame_a_plugin_names_that_the_source_hasnt_is_reported() {
+        let host = Double::default();
+        let mut instances = PluginInstances::default();
+        let mut missed = Vec::new();
+        let ran = in_context(Some(&host), &mut instances, ClipId::new(), |ctx| run_ofx_noting(NodeId::new_v4(), &entry("temporal"), &picture(), 4, 2, WorkingColorspace::Rec709Linear, 1.0, Some(ctx), &mut missed));
+        assert!(ran.is_ok(), "{ran:?}");
+        assert_eq!(missed, [crate::frame_context::Missing::OutOfRange]);
+        assert_eq!(crate::decline::neighbour_outcome(&missed).map(|(o, _)| o), Some(crate::DeclineOutcome::Fallback));
     }
 
     /// The frames a plug-in names are read where the clip shows them: on a

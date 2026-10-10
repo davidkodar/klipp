@@ -142,6 +142,13 @@ fn holds(route: Route, gpu: bool, scene: (Arc<Scene>, Clip), source: Ramp, frame
     Ok(())
 }
 
+/// Frame `frame` of the scene on `route` held to what it declines (M4
+/// step 10): nothing, or one decline with the outcome labelled `label`.
+fn declines(route: Route, scene: (Arc<Scene>, Clip), source: Ramp, frame: i64, label: Option<&str>) -> Result<(), String> {
+    let mut s = Session::new(route, true, scene.0, Arc::new(source) as Arc<dyn Source>);
+    s.frame(frame).declined_as(label)
+}
+
 pub fn run(report: &mut Report) {
     let whole = || Ramp { missing: vec![], large: vec![] };
     for route in [Route::Viewer, Route::Export] {
@@ -149,7 +156,10 @@ pub fn run(report: &mut Report) {
         // At half speed, every other frame falls halfway between two media
         // frames.
         report.case(&format!("blend {route:?}: half speed"), at(Obligation::ExpectedPixels), || {
-            holds(route, true, scene(50, 100, Run::At(0.5), 1), whole(), &[1, 2, 41], 1)
+            holds(route, true, scene(50, 100, Run::At(0.5), 1), whole(), &[1, 2, 41], 1)?;
+            // The next frame read: nothing declined, between frames or on one.
+            declines(route, scene(50, 100, Run::At(0.5), 1), whole(), 41, None)?;
+            declines(route, scene(50, 100, Run::At(0.5), 1), whole(), 2, None)
         });
         report.case(&format!("blend {route:?}: the CPU and the GPU agree"), at(Obligation::CpuGpuAgree), || {
             holds(route, false, scene(50, 100, Run::At(0.5), 1), whole(), &[41], 1)?;
@@ -171,7 +181,10 @@ pub fn run(report: &mut Report) {
         });
         // At the media's last frame there is no next one: the frame as it is.
         report.case(&format!("blend {route:?}: the media's last frame"), at(Obligation::Time(TimeCase::OutOfRange)), || {
-            holds(route, true, scene(MEDIA_FRAMES - 10, 20, Run::At(0.5), 1), whole(), &[19], 1)
+            holds(route, true, scene(MEDIA_FRAMES - 10, 20, Run::At(0.5), 1), whole(), &[19], 1)?;
+            // No frame past the media to blend toward: a fallback, shown,
+            // never refused by an export.
+            declines(route, scene(MEDIA_FRAMES - 10, 20, Run::At(0.5), 1), whole(), 19, Some("fallback"))
         });
         report.case(&format!("blend {route:?}: a seek back"), at(Obligation::Time(TimeCase::BackwardSeek)), || {
             holds(route, true, scene(50, 100, Run::At(0.5), 1), whole(), &[61, 62, 21, 22], 1)
@@ -181,13 +194,19 @@ pub fn run(report: &mut Report) {
         });
         report.case(&format!("blend {route:?}: no next frame"), at(Obligation::Outcome(Outcome::NeighbourMissing)), || {
             // Frame 41 at half speed shows media frame 70, between 70 and 71.
-            holds(route, true, scene(50, 100, Run::At(0.5), 1), Ramp { missing: vec![71], large: vec![] }, &[41], 1)
+            holds(route, true, scene(50, 100, Run::At(0.5), 1), Ramp { missing: vec![71], large: vec![] }, &[41], 1)?;
+            // Declined as a frame missing, which an export refuses; on a
+            // media frame's own time the next isn't needed, so nothing.
+            declines(route, scene(50, 100, Run::At(0.5), 1), Ramp { missing: vec![71], large: vec![] }, 41, Some("neighbour frame missing"))?;
+            declines(route, scene(50, 100, Run::At(0.5), 1), Ramp { missing: vec![71], large: vec![] }, 40, None)
         });
         // A next frame of another size is fitted to the render size, as the
         // current one is, and blended: a source whose frames change size
         // doesn't stutter (ruling 10-09). A flat grey fits to itself.
         report.case(&format!("blend {route:?}: a next frame of another size"), at(Obligation::ExpectedPixels), || {
-            holds(route, true, scene(50, 100, Run::At(0.5), 1), Ramp { missing: vec![], large: vec![71] }, &[41], 1)
+            holds(route, true, scene(50, 100, Run::At(0.5), 1), Ramp { missing: vec![], large: vec![71] }, &[41], 1)?;
+            // Fitted and blended: nothing declined.
+            declines(route, scene(50, 100, Run::At(0.5), 1), Ramp { missing: vec![], large: vec![71] }, 41, None)
         });
     }
 }

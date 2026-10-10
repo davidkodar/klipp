@@ -4358,7 +4358,9 @@ impl GraphExecutor {
     /// `ctx`. A neighbour the source
     /// hasn't (past the media, the wrong size, a failed read) is left out,
     /// so the media's first and last frames denoise against one side;
-    /// with none, or no context, the input passes on.
+    /// with none, or no context, the input passes on. Each frame left out
+    /// is declined (step 10): past the media's edge as a fallback, any
+    /// other as a frame missing, which an export refuses.
     fn at_the_source(&mut self, node_id: NodeId, effects: &[klipp_effects::BuiltinEffect], input: &[f32], ctx: Option<&mut crate::frame_context::FrameContext<'_>>) -> Vec<f32> {
         use crate::frame_context::Neighbour;
         self.source_runs += 1;
@@ -4382,15 +4384,21 @@ impl GraphExecutor {
             // frame, the frame as it is.
             if let klipp_effects::BuiltinEffect::SpeedRamp { .. } = effect {
                 let Some(pts) = ctx.source_pts else { continue };
-                if let Neighbour::Frame(next) = ctx.sources.next(ctx.source_secs) {
-                    if let Some(next_pts) = next.pts.filter(|p| *p > pts + 1e-6) {
-                        let weight = (((ctx.source_secs - pts) / (next_pts - pts)).clamp(0.0, 1.0)) as f32;
-                        if weight > 1e-4 && next.rgba.len() == out.len() {
-                            for (o, n) in out.iter_mut().zip(&next.rgba) {
-                                *o += (n - *o) * weight;
+                match ctx.sources.next(ctx.source_secs) {
+                    Neighbour::Frame(next) => {
+                        if let Some(next_pts) = next.pts.filter(|p| *p > pts + 1e-6) {
+                            let weight = (((ctx.source_secs - pts) / (next_pts - pts)).clamp(0.0, 1.0)) as f32;
+                            if weight > 1e-4 && next.rgba.len() == out.len() {
+                                for (o, n) in out.iter_mut().zip(&next.rgba) {
+                                    *o += (n - *o) * weight;
+                                }
                             }
                         }
                     }
+                    // Only a frame between two of the media's needs the
+                    // next: one shown on its own time is drawn whole.
+                    Neighbour::Missing(m) if ctx.source_secs > pts + 1e-6 => self.decline_neighbours(node_id, effect, &[m]),
+                    Neighbour::Missing(_) => {}
                 }
                 continue;
             }
@@ -4399,17 +4407,31 @@ impl GraphExecutor {
             // whatever the sequence's rate (its rate when the source can't
             // say).
             let dt = ctx.sources.frame_secs().unwrap_or(1.0 / ctx.fps.max(1.0));
+            let mut missed = Vec::new();
             let neighbours: Vec<Vec<f32>> = [ctx.source_secs - dt, ctx.source_secs + dt]
                 .into_iter()
                 .filter_map(|t| match ctx.sources.linear(t) {
                     Neighbour::Frame(f) => Some(f.rgba),
-                    Neighbour::Missing(_) => None,
+                    Neighbour::Missing(m) => {
+                        missed.push(m);
+                        None
+                    }
                 })
                 .collect();
+            self.decline_neighbours(node_id, effect, &missed);
             let refs: Vec<&[f32]> = neighbours.iter().map(Vec::as_slice).collect();
             out = klipp_effects::temporal_denoise::denoise_frame(&out, &refs, threshold, strength);
         }
         out
+    }
+
+    /// Records a source-boundary node's `effect` that ran without the
+    /// frames in `missed` (step 10): nothing when it read them all.
+    fn decline_neighbours(&mut self, node: NodeId, effect: &klipp_effects::BuiltinEffect, missed: &[crate::frame_context::Missing]) {
+        if let Some((outcome, reason)) = crate::decline::neighbour_outcome(missed) {
+            let why = missed.iter().map(|m| format!("{m:?}")).collect::<Vec<_>>().join(", ");
+            self.decline(node, NodeKind::Effect, outcome, crate::decline::effect_name(effect), reason, why);
+        }
     }
 
     /// Records a node that didn't draw as asked (step 10).
@@ -4507,13 +4529,25 @@ impl GraphExecutor {
                 self.ofx_runs += 1;
                 let Some(entry) = params.ofx.as_ref() else {
                     self.ofx_refused += 1;
+                    self.decline(node_id, NodeKind::Ofx, crate::DeclineOutcome::PluginMissing, "plug-in".into(), "no plug-in named", "the node names no plug-in".into());
                     return primary_input.to_vec();
                 };
-                match crate::plugin::run_ofx(node_id, entry, primary_input, width, height, self.working_colorspace, self.render_scale as f64, ctx) {
-                    Ok(out) => out,
+                let mut missed = Vec::new();
+                match crate::plugin::run_ofx_noting(node_id, entry, primary_input, width, height, self.working_colorspace, self.render_scale as f64, ctx, &mut missed) {
+                    Ok(out) => {
+                        // Drawn without the frames at other times it asked
+                        // for that the source hasn't (step 10).
+                        if let Some((outcome, reason)) = crate::decline::neighbour_outcome(&missed) {
+                            let why = missed.iter().map(|m| format!("{m:?}")).collect::<Vec<_>>().join(", ");
+                            self.decline(node_id, NodeKind::Ofx, outcome, entry.plugin.clone(), reason, why);
+                        }
+                        out
+                    }
                     Err(why) => {
                         tracing::warn!("OFX node {node_id}: {} refused: {why:?}", entry.plugin);
                         self.ofx_refused += 1;
+                        let (outcome, reason) = crate::decline::ofx_outcome(&why);
+                        self.decline(node_id, NodeKind::Ofx, outcome, entry.plugin.clone(), reason, format!("{why:?}"));
                         primary_input.to_vec()
                     }
                 }

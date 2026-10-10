@@ -145,7 +145,10 @@ pub trait SourceProvider {
 }
 
 /// No source: a run without one (an effects plan over a picture already
-/// drawn) gives a node that asks for a source frame none.
+/// drawn, a title, an adjustment layer) gives a node that asks for a
+/// source frame none. Its range is empty, so every time is past it
+/// ([`Missing::OutOfRange`]): a node there runs with the frame it has,
+/// declined as a fallback (step 10), never as a frame that failed to read.
 pub struct NoSources;
 
 impl SourceProvider for NoSources {
@@ -153,10 +156,13 @@ impl SourceProvider for NoSources {
         (0.0, 0.0)
     }
     fn encoded(&mut self, _source_secs: f64) -> Neighbour<EncodedFrame> {
-        Neighbour::Missing(Missing::Unavailable)
+        Neighbour::Missing(Missing::OutOfRange)
     }
     fn linear(&mut self, _source_secs: f64) -> Neighbour<LinearFrame> {
-        Neighbour::Missing(Missing::Unavailable)
+        Neighbour::Missing(Missing::OutOfRange)
+    }
+    fn next(&mut self, _source_secs: f64) -> Neighbour<LinearFrame> {
+        Neighbour::Missing(Missing::OutOfRange)
     }
 }
 
@@ -246,13 +252,16 @@ impl SourceProvider for BoundedSources<'_> {
     }
 
     /// Counted against the budget like any request; the next frame past
-    /// the media's end is out of range.
+    /// the media's end is out of range, and so is none at all where one
+    /// media frame on is past it (a reader at its end has nothing after).
     fn next(&mut self, source_secs: f64) -> Neighbour<LinearFrame> {
         if let Err(m) = self.admit(source_secs) {
             return Neighbour::Missing(m);
         }
+        let end = self.inner.bounds().1;
         match self.inner.next(source_secs) {
-            Neighbour::Frame(f) if f.pts.is_some_and(|p| p >= self.inner.bounds().1) => Neighbour::Missing(Missing::OutOfRange),
+            Neighbour::Frame(f) if f.pts.is_some_and(|p| p >= end) => Neighbour::Missing(Missing::OutOfRange),
+            Neighbour::Missing(Missing::Unavailable) if self.inner.frame_secs().is_some_and(|d| source_secs + d >= end - 1e-6) => Neighbour::Missing(Missing::OutOfRange),
             got => self.sized(got),
         }
     }
@@ -461,6 +470,49 @@ mod tests {
 
     fn node() -> NodeId {
         NodeId::new_v4()
+    }
+
+    /// A reader that has no frame after the one shown, its frames 0.04 s
+    /// apart, in a source from 2 s to 3 s.
+    struct Ended;
+
+    impl SourceProvider for Ended {
+        fn bounds(&self) -> (f64, f64) {
+            (2.0, 3.0)
+        }
+        fn encoded(&mut self, _source_secs: f64) -> Neighbour<EncodedFrame> {
+            Neighbour::Missing(Missing::Unavailable)
+        }
+        fn linear(&mut self, _source_secs: f64) -> Neighbour<LinearFrame> {
+            Neighbour::Missing(Missing::Unavailable)
+        }
+        fn frame_secs(&self) -> Option<f64> {
+            Some(0.04)
+        }
+        fn next(&mut self, _source_secs: f64) -> Neighbour<LinearFrame> {
+            Neighbour::Missing(Missing::Unavailable)
+        }
+    }
+
+    /// No next frame where one media frame on is past the source is its
+    /// edge, out of range (a fallback, step 10); none inside it is a frame
+    /// that couldn't be read.
+    #[test]
+    fn no_next_frame_at_the_sources_end_is_out_of_range() {
+        let mut ended = Ended;
+        let mut s = BoundedSources::new(&mut ended, 4, 2);
+        s.for_node(node(), 8);
+        assert_eq!(s.next(2.97), Neighbour::Missing(Missing::OutOfRange), "the last frame");
+        assert_eq!(s.next(2.5), Neighbour::Missing(Missing::Unavailable), "mid-source");
+    }
+
+    /// No source at all: every time is past it.
+    #[test]
+    fn no_sources_is_out_of_range_everywhere() {
+        let mut none = NoSources;
+        assert_eq!(none.linear(1.0), Neighbour::Missing(Missing::OutOfRange));
+        assert_eq!(none.encoded(1.0), Neighbour::Missing(Missing::OutOfRange));
+        assert_eq!(none.next(1.0), Neighbour::Missing(Missing::OutOfRange));
     }
 
     /// Outside `[in, out)` is out of range, and the source isn't asked.

@@ -111,10 +111,17 @@ fn alpha(p: [u8; 4]) -> [u8; 4] {
     [p[0], p[1], p[2], p[3] / 2]
 }
 
-/// Frame 10 of the scene on `route` is `want`.
+/// Frame 10 of the scene on `route` is `want`, declining nothing.
 fn draws(route: Route, gpu: bool, scene: Arc<Scene>, hdr: bool, want: &[f32]) -> Result<(), String> {
+    draws_declining(route, gpu, scene, hdr, want, None)
+}
+
+/// [`draws`], declining one node with the outcome `declined` labels, or
+/// nothing (M4 step 10).
+fn draws_declining(route: Route, gpu: bool, scene: Arc<Scene>, hdr: bool, want: &[f32], declined: Option<&str>) -> Result<(), String> {
     let mut s = Session::new(route, gpu, scene, Arc::new(Still { hdr }));
     let got = s.frame(10);
+    got.declined_as(declined)?;
     // The viewer's GPU stack draws display bytes only: within a byte.
     let tolerance = if got.display_only() { 1.0 / 255.0 } else { 1e-6 };
     let off = got.off(want);
@@ -146,10 +153,12 @@ pub fn run(report: &mut Report) {
             draws(route, true, scene(vec![entry(CHANNELS, true, filter), entry(ALPHA, true, filter)])?, false, &through(false, &[channels, alpha]))
         });
         report.case(&format!("ofx {route:?}: a plug-in that isn't there"), [key(CHANNELS, Some(route), Obligation::Outcome(Outcome::PluginMissing))], || {
-            draws(route, true, scene(vec![entry("org.klipp.fixture.absent", true, filter)])?, false, &picture(false))
+            draws_declining(route, true, scene(vec![entry("org.klipp.fixture.absent", true, filter)])?, false, &picture(false), Some("plug-in missing"))
         });
         report.case(&format!("ofx {route:?}: a context the plug-in hasn't"), [key(CHANNELS, Some(route), Obligation::Outcome(Outcome::Unsupported))], || {
-            draws(route, true, scene(vec![entry(CHANNELS, true, OfxCategory::Transition)])?, false, &picture(false))
+            // Refused, named: the channels plug-in offers Filter, so it
+            // would have drawn had the node run it as one.
+            draws_declining(route, true, scene(vec![entry(CHANNELS, true, OfxCategory::Transition)])?, false, &picture(false), Some("unsupported"))
         });
     }
 }

@@ -3199,7 +3199,11 @@ impl Renderer {
         };
         self.found.stats.ofx_ms += ms_since(t);
         match run {
-            Ok((out, _, _)) if out.len() == pixels.len() => out,
+            Ok((out, _, _)) if out.len() == pixels.len() => {
+                // Its own run's declines: the grade's were noted with it.
+                self.note_declines(clip.id);
+                out
+            }
             other => {
                 tracing::warn!("clip {}: its OFX plug-ins didn't run ({:?}); the frame as it was", clip.id.0, other.err());
                 pixels
