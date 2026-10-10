@@ -264,3 +264,67 @@ fn a_picture_truth_clip_refuses_a_placed_edit_and_keeps_its_mix() {
     assert!(p.picture.graph.nodes.iter().any(|n| n.id == node && n.mix == Some(0.5)), "the mix is kept");
     assert!(c.builtin_effects().len() == 1, "nothing added");
 }
+
+fn key(t: f64, v: f32) -> klipp_core::Keyframe {
+    klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }
+}
+
+/// A key naming a slot past the list is an orphan the clip keeps. Growing
+/// the list onto that slot doesn't hand the orphan to the new entry: the
+/// new entry has no keys, and the orphan is still kept, past the list.
+#[test]
+fn an_orphan_key_stays_an_orphan_when_the_list_grows() {
+    let mut c = clip(vec![blur(), E::Gamma { gamma: 1.1 }, opacity(0.8)], vec![true; 3]);
+    c.edit_effect_keyframes(|keys| {
+        keys.insert("3:radius".into(), vec![key(0.0, 1.0), key(1.0, 9.0)]);
+    });
+    let t = transform(20.0);
+    c.apply_effect_edits(&[EffectEdit::Add(&t)]).expect("the placed kinds take graph ops").expect("the picture takes the edit");
+    assert_eq!(c.builtin_effects().len(), 4);
+    assert!(!c.effect_keyframes().keys().any(|k| k.starts_with("3:")), "the new entry at 3 has no keys: {:?}", c.effect_keyframes().keys().collect::<Vec<_>>());
+    assert_eq!(c.effect_keyframes().get("4:radius").map(Vec::len), Some(2), "the orphan is kept, past the list");
+    let p = c.picture_v2().unwrap();
+    let added = c.effect_node_at(false, 3).expect("the added entry's node");
+    assert!(p.picture.graph.nodes.iter().filter(|n| n.id == added).all(|n| n.anim.is_empty()), "nothing animates the added entry");
+}
+
+/// When the opacity anchor changes hands the clip's opacity row is still
+/// the placement node's `opacity`, at the placement's stable path; each
+/// Opacity entry keeps its own node id, the one that held the anchor too.
+#[test]
+fn the_opacity_row_survives_the_anchor_changing_hands() {
+    let mut c = clip(vec![opacity(0.8), blur(), opacity(0.5)], vec![true, true, true]);
+    let row = c.placement_path().expect("the placement's path");
+    let ids = (c.effect_node_at(false, 0), c.effect_node_at(false, 2));
+    c.apply_effect_edits(&[EffectEdit::SetEnabled(2, false)]).expect("the placed kinds take graph ops").expect("the picture takes the edit");
+    assert_eq!(c.placement_path(), Some(row), "the opacity row's path");
+    assert_eq!((c.effect_node_at(false, 0), c.effect_node_at(false, 2)), ids, "each Opacity keeps its node");
+    assert!((c.picture_v2().unwrap().picture.opacity - 0.8).abs() < 1e-6, "the first Opacity is the anchor now");
+}
+
+/// A batch on a clip with an OFX plug-in: the plug-in keeps its node, its
+/// place and its entry while the list around it is edited.
+#[test]
+fn an_ofx_plug_in_keeps_its_place_through_a_placed_batch() {
+    let mut c = clip(vec![blur(), opacity(0.8)], vec![true, true]);
+    c.set_ofx_effects(vec![klipp_plugin::AppliedEffect { plugin_name: "org.example.Grain".into(), enabled: true, ..Default::default() }]);
+    let ofx = |c: &Clip| {
+        let p = c.picture_v2().unwrap();
+        p.picture.graph.nodes.iter().filter(|n| matches!(n.type_id.as_str(), klipp_graph_format::types::LEGACY_OFX | lt::OFX)).map(|n| (n.id, n.legacy.as_ref().and_then(|l| l.slot))).collect::<Vec<_>>()
+    };
+    let before = ofx(&c);
+    assert_eq!(before.len(), 1);
+    let t = transform(15.0);
+    c.apply_effect_edits(&[EffectEdit::Add(&t), EffectEdit::Move { from: 2, to: 0 }, EffectEdit::SetEnabled(1, false)])
+        .expect("the placed kinds take graph ops")
+        .expect("the picture takes the edit");
+    assert_eq!(ofx(&c), before, "the plug-in's node and slot");
+    assert_eq!(c.ofx_effects().len(), 1);
+    assert_eq!(c.ofx_effects()[0].plugin_name, "org.example.Grain");
+    holds(
+        "with a plug-in",
+        (vec![blur(), opacity(0.8)], vec![true, true]),
+        &[EffectEdit::Add(&t), EffectEdit::Move { from: 2, to: 0 }, EffectEdit::SetEnabled(1, false)],
+        (vec![transform(15.0), blur(), opacity(0.8)], vec![true, false, true]),
+    );
+}

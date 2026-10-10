@@ -120,9 +120,38 @@ fn entry_type(entry: &Value) -> Result<&'static str, String> {
     Ok(crate::to_v2::effect_node_type(tag))
 }
 
+/// The slot a clip-level orphan's name holds: `"{n}:{param}"` for a key,
+/// `"effect:{n}:{param}"` for a modifier.
+fn orphan_slot(key: &str) -> Option<usize> {
+    let rest = key.strip_prefix("effect:").unwrap_or(key);
+    rest.split_once(':')?.0.parse().ok()
+}
+
+/// The clip's orphans (keys and modifiers naming a slot past the list,
+/// which the record keeps on the clip rather than on an entry) kept
+/// orphans when the list grows or shrinks from `old` to `new` entries: each
+/// past the old list shifts by the change, so it stays past the new one and
+/// never comes to animate an entry an edit added (or slid under it).
+fn keep_orphans(record: &mut ClipRecordV2, old: usize, new: usize) {
+    if old == new {
+        return;
+    }
+    let shift = |key: String| -> String {
+        match orphan_slot(&key).filter(|n| *n >= old) {
+            // Past the old list, so past the new one by as much.
+            Some(n) => reslot(&key, n, n + new - old),
+            None => key,
+        }
+    };
+    let lc = &mut record.legacy_clip;
+    lc.effect_keyframes = std::mem::take(&mut lc.effect_keyframes).into_iter().map(|(k, v)| (shift(k), v)).collect();
+    lc.param_modifiers = std::mem::take(&mut lc.param_modifiers).into_iter().map(|(k, v)| (shift(k), v)).collect();
+}
+
 /// `edits`, in turn, on `record`'s list.
 fn apply(record: &mut ClipRecordV2, edits: &[PlacedEdit]) -> Result<(), String> {
     let mut order = list_order(record);
+    let old_len = order.len();
     let node = |record: &mut ClipRecordV2, id: NodeId| -> Result<&mut Node, String> {
         record.graph.nodes.iter_mut().filter(|n| is_listed(n)).find(|n| n.id == id).ok_or_else(|| format!("entry {id} isn't in the clip's list"))
     };
@@ -178,6 +207,7 @@ fn apply(record: &mut ClipRecordV2, edits: &[PlacedEdit]) -> Result<(), String> 
             }
         }
     }
+    keep_orphans(record, old_len, order.len());
     renumber(record, &order)
 }
 
@@ -201,6 +231,10 @@ pub fn settle(picture: &ClipPicture, ctx: &LiftCtx) -> Result<ClipPicture, Strin
     settle_record(&crate::delift::clip(picture)?, ctx)
 }
 
+/// The record lifted, refused where the lift would lose part of the clip.
+/// No lift note does today (`revision2::is_lost` is false for every kind,
+/// the lift being complete), so the refusal is untested: it guards a note
+/// a later lift may add, and isn't coverage.
 fn settle_record(record: &ClipRecordV2, ctx: &LiftCtx) -> Result<ClipPicture, String> {
     let (picture, notes) = lift_clip(record, ctx)?;
     if let Some(lost) = notes.iter().find(|n| crate::revision2::is_lost(n)) {
