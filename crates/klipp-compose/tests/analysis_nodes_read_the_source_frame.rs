@@ -125,3 +125,54 @@ fn an_asset_is_read_once_while_it_holds() {
     }
     assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), 2, "kept again: read again, once");
 }
+
+fn display(linear: &[f32]) -> Vec<u8> {
+    klipp_color::display::display_transform_ws_to(linear, klipp_color::display::ToneMapOp::None, klipp_core::WorkingColorspace::Rec709Linear, klipp_core::SdrTransfer::Srgb)
+}
+
+/// On the GPU stack a Deflicker reads its asset as on the CPU: the stack's
+/// grade runs in the clip's context with its analyses, so the gain is the
+/// asset's, never 1.
+#[test]
+fn the_gpu_stack_reads_the_analysis_too() {
+    let seq = sequence(50);
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(true);
+    r.set_asset_store(Box::new(pumping()));
+    let Some((stack, _)) = r.render_display_u8_on_gpu(&seq, tc(0), W, H, &mut Grey, RenderOptions::default()) else {
+        eprintln!("skipping: the GPU stack declined (no usable GPU?)");
+        return;
+    };
+    let cpu = display(&draw(&seq, 0, pumping()));
+    let worst = cpu.iter().zip(&stack).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
+    assert!(worst <= 1, "the stack's frame is the CPU's, within a level: {worst}");
+    // The control: the gain did something, so the match isn't the frame
+    // left as it is.
+    let plain = display(&draw(&seq, 0, MemoryStore::default()));
+    assert!(plain.iter().zip(&stack).any(|(a, b)| (*a as i32 - *b as i32).abs() > 2), "the asset's gain shows on the stack");
+}
+
+/// A clip with a plug-in before its Deflicker runs its effects as a plan of
+/// their own after the plug-in; there too the analysis is the source
+/// frame's, through the clip's speed: a 2x clip's frame 25 shows source
+/// frame 50, and draws as a clip showing frame 50 at its own speed.
+#[test]
+fn after_a_plug_in_a_fast_clip_reads_the_frame_it_shows() {
+    let draw_at = |speed: f64, from: i64, frame: i64| {
+        let mut seq = sequence(from);
+        let c = &mut seq.tracks[0].clips[0];
+        c.speed = speed;
+        c.source_out = tc(from + (50.0 * speed) as i64);
+        c.set_ofx_effects(vec![klipp_plugin::AppliedEffect { plugin_name: "com.klipp.test.Invert".into(), enabled: true, ..Default::default() }]);
+        let mut host = klipp_plugin::OfxHost::new();
+        let at = host.register_raw_plugin(klipp_plugin::test_plugin::create_test_plugin_raw());
+        host.initialise_plugin(at).expect("the invert plug-in loads");
+        let mut r = Renderer::new(host, klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(true);
+        r.set_asset_store(Box::new(pumping()));
+        r.render_inspected(&seq, tc(frame), W, H, &mut Grey, RenderOptions::default(), Inspect::default()).0
+    };
+    let fast = draw_at(2.0, 0, 25);
+    assert_eq!(fast, draw_at(1.0, 50, 0), "source frame 50's gain");
+    assert_ne!(fast, draw_at(1.0, 0, 25), "not source frame 25's (the clip time taken for source time)");
+}
