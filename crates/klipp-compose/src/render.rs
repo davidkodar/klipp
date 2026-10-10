@@ -3203,7 +3203,7 @@ impl Renderer {
                 }
             }
             GradeInput::Scene { .. } => {
-                self.run_graph(clip, &input.pixels(), width, height, clip_time, frame, inspecting, matte_view, ctx.as_deref_mut())
+                self.run_graph(clip, &input.pixels(), width, height, clip_time, frame, inspecting, matte_view, ctx)
             }
         };
         self.found.stats.grade_ms += ms_since(t);
