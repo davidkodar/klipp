@@ -434,6 +434,35 @@ fn analysis_driven_effects_draw_the_same_on_the_plan_route() {
     }
 }
 
+/// The deflicker and rolling-shutter clips draw what their analysis
+/// computes: the graded frame with no effects, through the effects' own
+/// kernels with the gain or rows worked out from the asset itself
+/// (`analysis::flicker_gain`, `analysis::shear_rows`). Their stored
+/// frames are held to this, never to whatever rendered.
+#[test]
+fn analysis_driven_effects_draw_what_their_analysis_computes() {
+    for (name, seq, _) in analysed().into_iter().filter(|(n, _, _)| *n != "stabilise") {
+        let clip = seq.tracks[0].clips[0].clone();
+        let mut graded_only = seq.clone();
+        graded_only.tracks[0].clips[0].set_effect_list(Vec::new(), Vec::new());
+        for secs in [0.5, 1.0, 1.5] {
+            let (with, _) = draw(&mut renderer(false), &seq, secs, &mut Moving);
+            let (without, _) = draw(&mut renderer(false), &graded_only, secs, &mut Moving);
+            let (mut effects, mut motion) = (clip.builtin_effects().to_vec(), klipp_effects::MotionData::default());
+            for e in &mut effects {
+                match e {
+                    E::Deflicker { gain, window_secs, .. } => *gain = analysis::flicker_gain(48, *window_secs as f64, secs),
+                    E::RollingShutterCorrection { strength, readout_ratio } => motion.rsc_rows = Some(analysis::shear_rows(H, *readout_ratio, *strength)),
+                    _ => {}
+                }
+            }
+            let want = klipp_effects::apply_effects_with_motion(&effects, without, W, H, secs, klipp_color::linear::luma_coefs(klipp_core::WorkingColorspace::Rec709Linear), &motion);
+            let worst = with.iter().zip(&want).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(with.len() == want.len() && worst < 2e-3, "{name} at {secs}: {worst} from what its analysis computes");
+        }
+    }
+}
+
 /// Analysis that finishes mid-play: the frames before it draw the clip
 /// uncorrected, and the first frame after it is corrected as a fresh
 /// renderer corrects it, on the plan route, with no frame drawn with old

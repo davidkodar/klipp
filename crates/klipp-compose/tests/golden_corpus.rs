@@ -1652,6 +1652,42 @@ fn every_effect_variant_is_in_the_corpus() {
     assert!(missing.is_empty(), "effects missing from the corpus: {missing:?}");
 }
 
+/// The deflicker and rolling-shutter cases draw what their analysis
+/// computes: the frame without the effect, through the effect's own kernel
+/// with the gain or rows worked out from the asset itself
+/// (`analysis::flicker_gain`, `analysis::shear_rows`). Their recorded
+/// frames are held to this, as #1386's were, never to whatever rendered.
+#[test]
+fn the_analysed_cases_draw_what_their_analysis_computes() {
+    let mut seen = 0;
+    for case in temporal_cases().into_iter().filter(|c| c.name == "temporal/deflicker gains" || c.name == "temporal/rolling shutter") {
+        seen += 1;
+        let clip = case.project[0].tracks[0].clips[0].clone();
+        let mut plain = case.project[0].clone();
+        plain.tracks[0].clips[0].set_effect_list(Vec::new(), clip.builtin_effects_enabled().to_vec());
+        let mut r = renderer(false, case.working);
+        for &t in &case.times {
+            let with = r.render(&case.project[0], tc(t), W, H, &mut case.frames.clone(), case.opts);
+            let without = r.render(&plain, tc(t), W, H, &mut case.frames.clone(), case.opts);
+            let clip_time = t - clip.timeline_in.to_secs_f64();
+            let source_secs = clip.source_secs_at(clip_time, 24.0);
+            let (mut effects, mut motion) = (clip.builtin_effects().to_vec(), klipp_effects::MotionData::default());
+            for e in &mut effects {
+                match e {
+                    BuiltinEffect::Deflicker { gain, window_secs, .. } => *gain = analysis::flicker_gain(96, *window_secs as f64, source_secs),
+                    BuiltinEffect::RollingShutterCorrection { strength, readout_ratio } => motion.rsc_rows = Some(analysis::shear_rows(H, *readout_ratio, *strength)),
+                    _ => {}
+                }
+            }
+            let luma = klipp_color::linear::luma_coefs(case.working);
+            let want = klipp_effects::apply_effects_with_motion(&effects, without, W, H, clip_time, luma, &motion);
+            let worst = with.iter().zip(&want).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(with.len() == want.len() && worst < 1e-4, "{} @{t}: {worst} from what its analysis computes", case.name);
+        }
+    }
+    assert_eq!(seen, 2, "both analysed cases are in the corpus");
+}
+
 /// Each temporal case's effect does something on the CPU, so the paths
 /// agreeing is not agreement on doing nothing: without the effect (and
 /// its analysis), the frame comes out different (#1024).

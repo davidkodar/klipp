@@ -51,16 +51,42 @@ pub fn stabilised_by(tx: f64, ty: f64, frames: usize) -> (AssetKind, serde_json:
 
 /// Deflicker data: each frame's light, alternating bright and dim, so its
 /// gains change every frame.
-pub fn flickering(frames: usize) -> (AssetKind, serde_json::Value) {
+fn flicker_data(frames: usize) -> klipp_effects::deflicker::DeflickerData {
     let luma = (0..frames).map(|i| if i % 2 == 0 { 0.35 } else { 0.55 } + 0.002 * i as f32).collect();
-    let data = klipp_effects::deflicker::DeflickerData { luma, fps: 24.0 };
-    (AssetKind::Deflicker, serde_json::to_value(data).expect("serialises"))
+    klipp_effects::deflicker::DeflickerData { luma, fps: 24.0 }
 }
 
-/// Rolling-shutter motion: every frame the picture moving right and a
-/// little down between its neighbours, so the rows shear.
-pub fn sheared(frames: usize) -> (AssetKind, serde_json::Value) {
+/// [`flicker_data`] as an asset.
+pub fn flickering(frames: usize) -> (AssetKind, serde_json::Value) {
+    (AssetKind::Deflicker, serde_json::to_value(flicker_data(frames)).expect("serialises"))
+}
+
+/// The gain [`flickering`]'s analysis gives the frame shown at
+/// `source_secs`, under a window of `window_secs`: worked out from the
+/// light itself, not read back from a render.
+pub fn flicker_gain(frames: usize, window_secs: f64, source_secs: f64) -> f32 {
+    let gains = flicker_data(frames).gains(window_secs);
+    gains[((source_secs * 24.0).round().max(0.0) as usize).min(gains.len() - 1)]
+}
+
+/// The motion between a frame and its neighbours [`sheared`] gives every
+/// frame: the picture moving right and a little down.
+fn shear_motion() -> (Homography, Homography) {
     let step = |dx: f64, dy: f64| Homography { h: [[1.0, 0.0, dx], [0.0, 1.0, dy], [0.0, 0.0, 1.0]] };
-    let data = klipp_effects::rolling_shutter::RollingShutterData { motion: vec![(step(-6.0, -1.0), step(6.0, 1.0)); frames], fps: 24.0 };
+    (step(-6.0, -1.0), step(6.0, 1.0))
+}
+
+/// Rolling-shutter motion: every frame [`shear_motion`], so the rows
+/// shear.
+pub fn sheared(frames: usize) -> (AssetKind, serde_json::Value) {
+    let data = klipp_effects::rolling_shutter::RollingShutterData { motion: vec![shear_motion(); frames], fps: 24.0 };
     (AssetKind::RollingShutter, serde_json::to_value(data).expect("serialises"))
+}
+
+/// The rows [`sheared`]'s analysis gives a correction of `strength` and
+/// `readout_ratio` on a frame `height` rows tall: worked out from the
+/// motion itself, not read back from a render.
+pub fn shear_rows(height: u32, readout_ratio: f32, strength: f32) -> Vec<klipp_effects::rolling_shutter::RowTransform> {
+    let (prev, next) = shear_motion();
+    klipp_effects::rolling_shutter::compute_row_transforms(&prev, &next, height, readout_ratio, strength)
 }
