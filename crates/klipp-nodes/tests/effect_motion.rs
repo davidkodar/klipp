@@ -1,11 +1,13 @@
 //! An effect node's stabilisation and rolling-shutter correction warp by
-//! the frame's motion the renderer hands the executor (node-graph M2
-//! step 12): on the CPU arm and on the executor's own GPU pipeline alike,
-//! and not at all once the motion is cleared. A missing GPU leaves the GPU
-//! half unverified; with `KLIPP_TEST_REQUIRE_GPU=1` it fails.
+//! the frame's motion from its analysis (node-graph M2 step 12, M4 step
+//! 9): on the CPU arm and on the executor's own GPU pipeline alike, and
+//! not at all without one. A missing GPU leaves the GPU half unverified;
+//! with `KLIPP_TEST_REQUIRE_GPU=1` it fails.
 
-use klipp_effects::rolling_shutter::RowTransform;
-use klipp_effects::{BuiltinEffect as E, MotionData};
+use klipp_effects::homography::Homography;
+use klipp_effects::node_analysis::NodeAnalysis;
+use klipp_effects::BuiltinEffect as E;
+use klipp_nodes::frame_context::{Analysis, AnalysisBlob, AnalysisInputs, FrameContext, NoSources, PluginInstances, NODE_ANALYSIS_SCHEMA};
 use klipp_nodes::graph::{Edge, Node, NodeGraph, NodeId};
 use klipp_nodes::kinds::NodeKind;
 use klipp_nodes::params::NodeParams;
@@ -26,19 +28,42 @@ fn frame() -> Vec<f32> {
 }
 
 /// A correction as stabilisation makes them: a small turn and a shift.
-fn homography() -> [f32; 12] {
-    let (s, c) = 2.5f32.to_radians().sin_cos();
-    [c, -s, 6.3, s, c, -4.7, 0.00004, -0.00003, 1.0, 0.0, 0.0, 0.0]
+fn turned() -> Homography {
+    let (s, c) = 2.5f64.to_radians().sin_cos();
+    Homography { h: [[c, -s, 6.3], [s, c, -4.7], [0.00004, -0.00003, 1.0]] }
 }
 
-/// Rows sheared and shifted progressively down the frame.
-fn rows() -> Vec<RowTransform> {
-    (0..H)
-        .map(|y| {
-            let t = y as f32 / H as f32;
-            RowTransform { a: 1.0, b: 0.02 * t, tx: 7.5 * t - 2.0, c: 0.0, d: 1.0, ty: 1.25 * t, _pad0: 0.0, _pad1: 0.0 }
-        })
-        .collect()
+/// Every effect's analysis, whatever node asks: a stabilisation's
+/// corrections and the file's rolling-shutter motion, each the same at
+/// every frame. Empty, none.
+struct Given(Option<(AnalysisBlob, AnalysisBlob)>);
+
+impl Given {
+    fn analysed() -> Self {
+        use klipp_effects::rolling_shutter::RollingShutterData;
+        use klipp_effects::stabilization::SmoothedTrajectory;
+        let blob = |a: NodeAnalysis| AnalysisBlob { schema: NODE_ANALYSIS_SCHEMA, data: std::sync::Arc::new(a) };
+        let stab = NodeAnalysis::Stabilisation {
+            smoothed: SmoothedTrajectory { smoothed: Vec::new(), corrections: vec![turned(); 48], smoothing_window_secs: 1.0, raw_jitter_px: 1.0, smoothed_jitter_px: 0.1 },
+            fps: 24.0,
+        };
+        let step = |dx: f64, dy: f64| Homography { h: [[1.0, 0.02, dx], [0.0, 1.0, dy], [0.0, 0.0, 1.0]] };
+        let rsc = NodeAnalysis::RollingShutter(RollingShutterData { motion: vec![(step(-7.5, -1.25), step(7.5, 1.25)); 48], fps: 24.0 });
+        Self(Some((blob(stab), blob(rsc))))
+    }
+}
+
+impl AnalysisInputs for Given {
+    fn lookup(&self, _: NodeId, _: u32) -> Analysis<'_> {
+        Analysis::Absent
+    }
+    fn lookup_effect(&self, _: NodeId, effect: &E, _: u32) -> Analysis<'_> {
+        match (&self.0, effect) {
+            (Some((stab, _)), E::VideoStabilization { .. }) => Analysis::Ready(stab),
+            (Some((_, rsc)), E::RollingShutterCorrection { .. }) => Analysis::Ready(rsc),
+            _ => Analysis::Absent,
+        }
+    }
 }
 
 fn node(kind: NodeKind, params: NodeParams) -> Node {
@@ -62,8 +87,24 @@ fn graph(fx: Vec<E>) -> NodeGraph {
     }
 }
 
-fn run(ex: &mut GraphExecutor, g: &NodeGraph) -> Vec<f32> {
-    ex.execute_linear(&frame(), g, W, H, 0.5, 12, None, None).unwrap().0
+fn run(ex: &mut GraphExecutor, g: &NodeGraph, analysis: &Given) -> Vec<f32> {
+    let (mut sources, mut instances) = (NoSources, PluginInstances::default());
+    let mut ctx = FrameContext {
+        clip: klipp_core::ClipId::new(),
+        frame: 12,
+        source: (klipp_core::MediaId::nil(), 0.0),
+        clip_time_secs: 0.5,
+        source_secs: 0.5,
+        source_pts: None,
+        frame_number: 12,
+        fps: 24.0,
+        sources: &mut sources,
+        analysis,
+        instances: &mut instances,
+        ofx: None,
+        source_at: &|t| t,
+    };
+    ex.execute_linear_with_context(&frame(), g, W, H, 0.5, 12, None, None, None, &mut ctx).unwrap().0
 }
 
 fn mean_diff(a: &[f32], b: &[f32]) -> f32 {
@@ -82,8 +123,8 @@ fn gpu() -> Option<GraphExecutor> {
 }
 
 #[test]
-fn set_motion_reaches_both_arms() {
-    let motion = MotionData { stabilization: Some(homography()), rsc_rows: Some(rows()) };
+fn an_analysis_reaches_both_arms() {
+    let (analysed, none) = (Given::analysed(), Given(None));
     let cases = [
         ("stabilise", vec![E::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }]),
         ("rolling shutter", vec![E::RollingShutterCorrection { strength: 0.8, readout_ratio: 0.4 }]),
@@ -91,35 +132,14 @@ fn set_motion_reaches_both_arms() {
     for (name, fx) in cases {
         let g = graph(fx);
         let mut cpu = GraphExecutor::new_cpu_only();
-        let still = run(&mut cpu, &g);
-        cpu.set_motion(&motion);
-        let warped = run(&mut cpu, &g);
-        assert!(mean_diff(&warped, &still) > 0.01, "{name}: the CPU arm warps by the motion it was given");
-        cpu.set_motion(&MotionData::default());
-        assert_eq!(run(&mut cpu, &g), still, "{name}: cleared, the CPU arm passes the frame through");
+        let still = run(&mut cpu, &g, &none);
+        let warped = run(&mut cpu, &g, &analysed);
+        assert!(mean_diff(&warped, &still) > 0.01, "{name}: the CPU arm warps by its analysis");
+        assert_eq!(run(&mut cpu, &g, &none), still, "{name}: without one, the CPU arm passes the frame through");
         if let Some(mut ex) = gpu() {
-            // Set before the run that builds the pipeline's buffers, and again after.
-            ex.set_motion(&motion);
-            let on_gpu = run(&mut ex, &g);
+            let on_gpu = run(&mut ex, &g, &analysed);
             assert!(mean_diff(&on_gpu, &warped) < 1.0 / 255.0, "{name}: the GPU warps as the CPU does ({})", mean_diff(&on_gpu, &warped));
-            ex.set_motion(&MotionData::default());
-            assert!(mean_diff(&run(&mut ex, &g), &still) < 1.0 / 255.0, "{name}: cleared, the GPU passes the frame through");
+            assert!(mean_diff(&run(&mut ex, &g, &none), &still) < 1.0 / 255.0, "{name}: without one, the GPU passes the frame through");
         }
     }
-}
-
-/// Motion set before the executor's GPU pipeline exists reaches it when
-/// the pipeline is built.
-#[test]
-fn motion_set_before_the_pipeline_is_built_reaches_it() {
-    let Some(_) = gpu() else { return };
-    let g = graph(vec![E::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }]);
-    let motion = MotionData { stabilization: Some(homography()), rsc_rows: None };
-    let mut cpu = GraphExecutor::new_cpu_only();
-    cpu.set_motion(&motion);
-    let want = run(&mut cpu, &g);
-    let mut ex = GraphExecutor::new();
-    ex.set_motion(&motion);
-    let got = run(&mut ex, &g);
-    assert!(mean_diff(&got, &want) < 1.0 / 255.0, "{}", mean_diff(&got, &want));
 }
