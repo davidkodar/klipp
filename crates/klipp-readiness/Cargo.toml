@@ -18,6 +18,10 @@ path = "src/lib.rs"
 # The Format family's cases convert real projects (M4 step F); the
 # catalog says where a node type can be placed, and what it converts.
 klipp-convert = { path = "../klipp-convert" }
+# The routes the families' cases render through (`route`).
+klipp-compose = { path = "../klipp-compose" }
+klipp-plugin = { path = "../klipp-plugin" }
+klipp-title = { path = "../klipp-title" }
 klipp-core = { path = "../klipp-core" }
 klipp-effects = { path = "../klipp-effects" }
 klipp-graph-format = { workspace = true }

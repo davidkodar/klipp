@@ -3323,14 +3323,17 @@ dependencies = [
 name = "klipp-readiness"
 version = "0.1.0"
 dependencies = [
+ "klipp-compose",
  "klipp-convert",
  "klipp-core",
  "klipp-effects",
  "klipp-graph-format",
  "klipp-media",
  "klipp-nodes",
+ "klipp-plugin",
  "klipp-project",
  "klipp-timeline",
+ "klipp-title",
  "serde_json",
 ]
 
