@@ -94,16 +94,16 @@ pub fn evaluate_clip_own_transform(
     // its authoritative properties must not be mistaken for a bypassed
     // authored effect (#1207).
     let picture = clip.is_picture_truth().then(|| clip.picture_v2().ok()).flatten();
+    // The scale and the aspect its height keeps under it (#1406).
     let tdef = picture.as_ref().map(|p| {
         let p = &p.picture.placement;
-        let scale = p.scale.unwrap_or(1.0);
-        (p.pos_x.unwrap_or(0.0), p.pos_y.unwrap_or(0.0), scale, scale,
+        (p.pos_x.unwrap_or(0.0), p.pos_y.unwrap_or(0.0), p.scale.unwrap_or(1.0), p.aspect.unwrap_or(1.0),
             p.rotation.unwrap_or(0.0), p.anchor_x.unwrap_or(0.5), p.anchor_y.unwrap_or(0.5))
     }).unwrap_or_else(|| enabled_transform(clip).into_iter()
         .find_map(|e| match e {
             klipp_effects::BuiltinEffect::Transform {
                 position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, ..
-            } => Some((*position_x, *position_y, *scale_x, *scale_y, *rotation, *anchor_x, *anchor_y)),
+            } => Some((*position_x, *position_y, *scale_x, klipp_graph_lift::lift::aspect(Some(*scale_x), Some(*scale_y)).unwrap_or(1.0), *rotation, *anchor_x, *anchor_y)),
             _ => None,
         })
         .unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5)));
@@ -111,8 +111,9 @@ pub fn evaluate_clip_own_transform(
     let py = eval_with_modifiers(clip.transform_pos_y_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::PositionY, clip_time_secs, tdef.1, eval_ctx);
     let sc = eval_with_modifiers(clip.transform_scale_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::Scale, clip_time_secs, tdef.2, eval_ctx);
     let ro = eval_with_modifiers(clip.transform_rotation_keyframes(), clip.param_modifiers(), &klipp_core::ParamId::Rotation, clip_time_secs, tdef.4, eval_ctx);
-    // Scale is single-axis in our model — same value on x and y.
-    (px, py, sc, sc, ro, tdef.5, tdef.6)
+    // The scale lane keys the width; the height keeps the clip's aspect
+    // under it (#1406), so a width keyed to 0 gives a height of 0.
+    (px, py, sc, sc * tdef.3, ro, tdef.5, tdef.6)
 }
 
 /// Placement and its focal anchor come from the first enabled Transform.
