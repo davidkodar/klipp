@@ -4,15 +4,23 @@
 //! edit lifts it as paths address it, applies the ops there and lowers it
 //! back, so the stored form is the one the old route writes.
 //!
+//! A correction's mix and gate mask channel, which a v1 graph has no
+//! place for, are kept on its node as its run setting
+//! (`correction_blend`), which the renderer reads as it does a clip
+//! grade's, and saved in the grade's stored body (#1321,
+//! [`klipp_graph_lift::sequence_grade_mix`]).
+//!
 //! A track's grade (`Root::Track`) has no inspector to edit it yet (#1408)
-//! and is refused here. So are a correction's mix and gate mask channel on
-//! any of these: only a clip's picture keeps them (#1321).
+//! and is refused here.
 
 use crate::{GradeStage, Sequence};
+use klipp_effects::mask_mix::MaskChannel;
 use klipp_graph_format::lifted::Stage;
 use klipp_graph_format::path::Root;
 use klipp_graph_format::Graph;
 use klipp_graph_lift::ops::GraphOp;
+use klipp_graph_lift::sequence_grade_mix::{self as grade_mix, Blend};
+use klipp_nodes::params::EffectBlend;
 use klipp_nodes::NodeGraph;
 
 fn stage_of(stage: Stage) -> GradeStage {
@@ -23,14 +31,69 @@ fn stage_of(stage: Stage) -> GradeStage {
 }
 
 /// Why a path edit of `root` is refused before it is tried, if it is.
-fn refused(root: Root, op: &GraphOp) -> Option<String> {
+fn refused(root: Root) -> Option<String> {
     match root {
         Root::Track { .. } => Some("a track's grade isn't edited by path yet (#1408)".into()),
-        Root::TimelineGrade { .. } | Root::GroupStage { .. } if matches!(op, GraphOp::SetMix { .. } | GraphOp::SetMaskChannel { .. }) => {
-            Some("only a clip's grade keeps a correction's mix and mask channel so far (#1321)".into())
-        }
         _ => None,
     }
+}
+
+/// Every node of `grade`, each followed by those of its compound's
+/// subgraph at any depth, as the grade's stored body orders them.
+fn all_nodes(grade: &NodeGraph) -> Vec<&klipp_nodes::Node> {
+    let mut out = Vec::new();
+    for n in &grade.nodes {
+        out.push(n);
+        if let Some(sub) = &n.params.compound_subgraph {
+            out.extend(all_nodes(sub));
+        }
+    }
+    out
+}
+
+/// Each node of `grade`, inside its compounds too, whose run setting
+/// holds a mix or a mask channel, as its stored body keeps them: whole
+/// and red are left out.
+pub fn blends_of(grade: &NodeGraph) -> Vec<Blend> {
+    all_nodes(grade)
+        .into_iter()
+        .filter_map(|n| {
+            let b = n.params.correction_blend?;
+            let mix = (b.mix != 1.0).then_some(b.mix);
+            let channel = (b.channel != MaskChannel::Red).then(|| b.channel.as_str().to_owned());
+            (mix.is_some() || channel.is_some()).then_some(Blend { node: n.id, mix, channel })
+        })
+        .collect()
+}
+
+/// Set each node's run setting from `blends`, by node id, inside the
+/// grade's compounds too: a node none names has none. A blend naming a
+/// node `grade` doesn't hold, or a channel this build doesn't know, is
+/// refused, and nothing is set.
+pub fn set_blends(grade: &mut NodeGraph, blends: &[Blend]) -> Result<(), String> {
+    let held: Vec<klipp_nodes::NodeId> = all_nodes(grade).iter().map(|n| n.id).collect();
+    let mut settings = Vec::new();
+    for b in blends {
+        if !held.contains(&b.node) {
+            return Err(format!("node {} holds a mix or mask channel but isn't in the grade", b.node));
+        }
+        let channel = match &b.channel {
+            Some(c) => c.parse().map_err(|_| format!("node {}: unknown mask channel {c:?}", b.node))?,
+            None => MaskChannel::Red,
+        };
+        let mix = b.mix.unwrap_or(1.0);
+        settings.push((b.node, (mix != 1.0 || channel != MaskChannel::Red).then_some(EffectBlend { mix, channel })));
+    }
+    fn apply(grade: &mut NodeGraph, settings: &[(klipp_nodes::NodeId, Option<EffectBlend>)]) {
+        for n in &mut grade.nodes {
+            n.params.correction_blend = settings.iter().find(|(id, _)| *id == n.id).and_then(|(_, s)| *s);
+            if let Some(sub) = n.params.compound_subgraph.as_mut() {
+                apply(sub, settings);
+            }
+        }
+    }
+    apply(grade, &settings);
+    Ok(())
 }
 
 impl Sequence {
@@ -70,10 +133,14 @@ impl Sequence {
             _ => return Err("not one of this sequence's own grades".into()),
         };
         let structural = structural.ok_or("the grade lifts to nothing")?;
-        match root {
-            Root::GroupStage { .. } => splice::stage_body(&structural),
-            _ => lift::lift_grade_only(&structural, false),
-        }
+        let mut lifted = match root {
+            Root::GroupStage { .. } => splice::stage_body(&structural)?,
+            _ => lift::lift_grade_only(&structural, false)?,
+        };
+        // A correction's mix and mask channel, which the v1 graph's JSON
+        // leaves out, on the nodes that hold them (#1321).
+        grade_mix::set_blends(&mut lifted, &blends_of(grade))?;
+        Ok(lifted)
     }
 
     /// Store `grade` as `root`'s, or take it off (`None`).
@@ -92,6 +159,21 @@ impl Sequence {
         }
     }
 
+    /// The mix and mask channel of each correction of `root`'s grade, as
+    /// its stored body keeps them (#1321): none when it has no grade.
+    pub fn root_blends(&self, root: Root) -> Vec<Blend> {
+        self.root_grade(root).ok().flatten().map(blends_of).unwrap_or_default()
+    }
+
+    /// Set the mix and mask channel of `root`'s corrections from its
+    /// stored body as read (#1321). Blends for a grade the sequence
+    /// doesn't have, or a node it doesn't hold, are refused.
+    pub fn set_root_blends(&mut self, root: Root, blends: &[Blend]) -> Result<(), String> {
+        let mut grade = self.root_grade(root)?.cloned().ok_or("a mix or mask channel for a grade the sequence doesn't have")?;
+        set_blends(&mut grade, blends)?;
+        self.set_root_grade(root, Some(grade))
+    }
+
     /// Apply `ops`, all on one of this sequence's own grades, as one edit:
     /// the grade lifted (`start` standing for it when the root has none
     /// yet, the graph the inspector drew), the ops applied there with the
@@ -103,7 +185,7 @@ impl Sequence {
         if ops.iter().any(|op| op.path().root != root) {
             return Err("a batch edits one grade".into());
         }
-        if let Some(why) = ops.iter().find_map(|op| refused(root, op)) {
+        if let Some(why) = refused(root) {
             return Err(why);
         }
         let before = self.root_grade(root)?.cloned();
@@ -129,7 +211,8 @@ impl Sequence {
         }
         .ok_or("the edit lost its grade")?;
         let v1 = klipp_graph_lift::to_v1::grade_only(&klipp_graph_lift::delift::grade_only(&edited, uuid::Uuid::nil())?)?;
-        let after: NodeGraph = serde_json::from_value(v1).map_err(|e| e.to_string())?;
+        let mut after: NodeGraph = serde_json::from_value(v1).map_err(|e| e.to_string())?;
+        set_blends(&mut after, &grade_mix::blends(&edited))?;
         self.set_root_grade(root, Some(after.clone()))?;
         Ok((before, after))
     }
@@ -190,25 +273,62 @@ mod tests {
         assert_eq!(seq.root_grade(root).unwrap().unwrap().nodes.iter().find(|n| n.id == node).unwrap().params.exposure, Some(0.5));
     }
 
-    /// A correction's mix and mask channel are refused on a sequence's own
-    /// grades (#1321), and a track's grade isn't edited by path (#1408).
+    /// A correction's mix and mask channel on a sequence's own grade land
+    /// on its node as its run setting (#1321), lifted with the grade for
+    /// the next edit, and a later edit of another value keeps them; whole
+    /// and red take the setting off. A track's grade isn't edited by path
+    /// (#1408).
     #[test]
-    fn mix_mask_channel_and_track_roots_are_refused() {
+    fn a_mix_and_mask_channel_land_and_track_roots_are_refused() {
+        use klipp_effects::mask_mix::MaskChannel;
         let mut seq = Sequence::new_default();
         seq.timeline_grade_slot().set(Some(NodeGraph::default()));
         let root = Root::TimelineGrade { sequence: seq.id.0 };
         let node = corrector(seq.root_grade(root).unwrap().unwrap());
-        let before = serde_json::to_value(seq.root_grade(root).unwrap()).unwrap();
-        for op in [
-            GraphOp::SetMix { path: NodePath::new(root, [node]), mix: Some(0.5) },
-            GraphOp::SetMaskChannel { path: NodePath::new(root, [node]), channel: Some("red".into()) },
-        ] {
-            let why = seq.apply_root_grade_ops(&[op], None).unwrap_err();
-            assert!(why.contains("#1321"), "{why}");
-        }
-        assert_eq!(serde_json::to_value(seq.root_grade(root).unwrap()).unwrap(), before, "nothing changed");
+        let blend = |seq: &Sequence| seq.root_grade(root).unwrap().unwrap().nodes.iter().find(|n| n.id == node).unwrap().params.correction_blend;
+        let path = NodePath::new(root, [node]);
+        seq.apply_root_grade_ops(&[GraphOp::SetMix { path: path.clone(), mix: Some(0.5) }, GraphOp::SetMaskChannel { path: path.clone(), channel: Some("luminance".into()) }], None).unwrap();
+        let set = Some(EffectBlend { mix: 0.5, channel: MaskChannel::Luminance });
+        assert_eq!(blend(&seq), set);
+        let lifted = seq.lift_root_grade(root, seq.root_grade(root).unwrap().unwrap()).unwrap();
+        assert_eq!(grade_mix::blends(&lifted), vec![Blend { node, mix: Some(0.5), channel: Some("luminance".into()) }], "lifted with the grade");
+        assert_eq!(seq.root_blends(root), grade_mix::blends(&lifted), "as its stored body keeps them");
+        seq.apply_root_grade_ops(&[set_exposure(root, node, 0.25)], None).unwrap();
+        assert_eq!(blend(&seq), set, "another value's edit keeps them");
+        seq.apply_root_grade_ops(&[GraphOp::SetMix { path: path.clone(), mix: Some(1.0) }, GraphOp::SetMaskChannel { path, channel: Some("red".into()) }], None).unwrap();
+        assert_eq!(blend(&seq), None, "whole and red is none");
+        assert!(seq.root_blends(root).is_empty());
         let track = Root::Track { track: uuid::Uuid::nil(), part: klipp_graph_format::path::TrackPart::Grade };
         assert!(seq.apply_root_grade_ops(&[set_exposure(track, node, 0.5)], None).unwrap_err().contains("#1408"));
+    }
+
+    /// Blends set on a grade by node id: a node none names has none, and
+    /// one naming a node the grade doesn't hold or an unknown channel is
+    /// refused.
+    #[test]
+    fn set_blends_is_by_node_and_refuses_what_it_cannot_place() {
+        let mut g = NodeGraph::default();
+        let node = corrector(&g);
+        set_blends(&mut g, &[Blend { node, mix: Some(0.3), channel: None }]).unwrap();
+        assert_eq!(blends_of(&g), vec![Blend { node, mix: Some(0.3), channel: None }]);
+        set_blends(&mut g, &[]).unwrap();
+        assert!(blends_of(&g).is_empty(), "none named, none kept");
+        assert!(set_blends(&mut g, &[Blend { node: uuid::Uuid::new_v4(), mix: Some(0.3), channel: None }]).is_err());
+        assert!(set_blends(&mut g, &[Blend { node, mix: None, channel: Some("green".into()) }]).is_err());
+        // Inside a compound, at any depth.
+        let inner = NodeGraph::default();
+        let deep = corrector(&inner);
+        let mut compound = g.nodes.iter().find(|n| n.id == node).unwrap().clone();
+        compound.id = uuid::Uuid::new_v4();
+        compound.kind = klipp_nodes::NodeKind::Compound;
+        compound.params = Default::default();
+        compound.params.compound_subgraph = Some(inner);
+        g.nodes.push(compound);
+        let both = [Blend { node, mix: Some(0.3), channel: None }, Blend { node: deep, mix: None, channel: Some("alpha".into()) }];
+        set_blends(&mut g, &both).unwrap();
+        assert_eq!(blends_of(&g), both.to_vec());
+        set_blends(&mut g, &[]).unwrap();
+        assert!(blends_of(&g).is_empty(), "the compound's cleared too");
     }
 
     /// A grade as an editor leaves one: a Corrector with a mask, a disabled

@@ -25,6 +25,7 @@ pub mod revision2;
 pub mod revision3;
 pub mod revision4;
 pub mod registry_catalog;
+pub mod sequence_grade_mix;
 pub mod splice;
 pub mod stack_view;
 pub mod to_v1;

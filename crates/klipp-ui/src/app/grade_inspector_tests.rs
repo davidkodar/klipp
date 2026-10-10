@@ -981,20 +981,27 @@ fn escape_on_a_sequence_grade_s_drag_takes_it_back() {
     }
 }
 
-/// A correction's mix on a sequence grade is refused, said, and changes
-/// nothing (#1321).
+/// A correction's mix and mask channel on the timeline grade and on a
+/// group's stages land on the node as its run setting, one step each,
+/// and undo takes them off (#1321).
 #[test]
-fn a_mix_edit_on_a_sequence_grade_is_refused() {
+fn a_mix_and_channel_edit_on_a_sequence_grade_lands() {
+    use klipp_effects::mask_mix::MaskChannel;
     let (mut run, which) = sequence_grades(true);
-    let w = which[0];
-    let seq = &run.state.sequences[0];
-    let root = w.root(seq);
-    let node = seq.root_grade(root).unwrap().unwrap().nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
-    let before = stored(&run, w);
-    let cmd = AppCommand::SetMixAt { addr: klipp_graph_format::path::NodePath::new(root, [node]), mix: Some(0.5) };
-    assert_eq!(run.state.path_command(&cmd), Some(false));
-    assert!(run.state.toast.message_for_test().is_some_and(|m| m.contains("#1321")), "{:?}", run.state.toast.message_for_test());
-    assert_eq!(stored(&run, w), before);
+    for w in which {
+        let seq = &run.state.sequences[0];
+        let root = w.root(seq);
+        let node = seq.root_grade(root).unwrap().unwrap().nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
+        let blend = |run: &Run| run.state.sequences[0].root_grade(root).unwrap().unwrap().nodes.iter().find(|n| n.id == node).unwrap().params.correction_blend;
+        let addr = klipp_graph_format::path::NodePath::new(root, [node]);
+        assert_eq!(run.state.path_command(&AppCommand::SetMixAt { addr: addr.clone(), mix: Some(0.5) }), Some(true), "{w:?}: {:?}", run.state.toast.message_for_test());
+        assert_eq!(run.state.path_command(&AppCommand::SetMaskChannelAt { addr, channel: Some("alpha".into()) }), Some(true), "{w:?}");
+        assert_eq!(blend(&run), Some(klipp_nodes::params::EffectBlend { mix: 0.5, channel: MaskChannel::Alpha }), "{w:?}");
+        undo_root(&mut run.state);
+        assert_eq!(blend(&run), Some(klipp_nodes::params::EffectBlend { mix: 0.5, channel: MaskChannel::Red }), "{w:?}: undo takes the channel off");
+        undo_root(&mut run.state);
+        assert_eq!(blend(&run), None, "{w:?}: and then the mix");
+    }
 }
 
 /// Redo once, as the app does for a sequence grade's path edit.

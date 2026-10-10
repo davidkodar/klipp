@@ -746,11 +746,12 @@ fn apply_pending(docs: &mut Documents, op: &GraphOp, catalog: Option<&dyn PortCa
             serde_json::to_value(picture).map_err(err)?
         }
         _ => {
-            // Only a clip's picture keeps a correction's mix or mask
-            // channel (M3 step 17a); a track's, a timeline's or a grade
-            // group's grade has no place for them yet.
-            if matches!(op, GraphOp::SetMix { .. } | GraphOp::SetMaskChannel { .. }) {
-                return Err("only a clip's grade keeps a correction's mix or mask channel".into());
+            // A clip's picture keeps a correction's mix or mask channel
+            // (M3 step 17a), and so do the timeline grade and a grade
+            // group's stages (#1321); a track's grade has no place for
+            // them yet.
+            if matches!(op, GraphOp::SetMix { .. } | GraphOp::SetMaskChannel { .. }) && !matches!(root, Root::TimelineGrade { .. } | Root::GroupStage { .. }) {
+                return Err("a track's grade doesn't keep a correction's mix or mask channel".into());
             }
             let mut body: Graph = serde_json::from_value(std::mem::take(&mut copy)).map_err(err)?;
             let interface = if matches!(op, GraphOp::RemoveNode { .. } | GraphOp::MoveAfter { .. }) { containing_interface(&body, through)? } else { Vec::new() };

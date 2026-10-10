@@ -222,8 +222,8 @@ pub fn run(report: &mut Report) {
     }, false);
 
     // #1321: a sequence grade at revision 3 holds no correction mix (it
-    // was refused), so nothing converts; keeping one is the row's own
-    // test of the revision-4 store.
+    // was refused), so nothing converts; keeping one is held by
+    // klipp-project's `sequence_grade_mix` tests, through a real save.
     row(report, "#1321", unchanged_but_revision, false);
 
     // #1391: a grade compound, two deep, lifts as a group whose body is

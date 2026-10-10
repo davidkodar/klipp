@@ -294,13 +294,21 @@ fn ops_reach_every_root_and_undo_keeps_to_its_own() {
     assert!(resolve(&d, &NodePath::new(stage.root, [Uuid::from_u128(0x71)])).is_ok(), "another root's edit is untouched");
     undo(&mut d, &b).unwrap();
     apply(&mut d, &GraphOp::SetEnabled { path: track.clone(), enabled: true }).unwrap();
-    // Only a clip's picture keeps a correction's mix or mask channel (M3
-    // step 17a): these roots refuse both, rather than drop them.
-    for path in [&timeline, &stage, &track] {
-        for op in [GraphOp::SetMix { path: path.clone(), mix: Some(0.5) }, GraphOp::SetMaskChannel { path: path.clone(), channel: Some("alpha".into()) }] {
-            let why = apply_with_catalog(&mut d, &op, &RegistryCatalog).unwrap_err();
-            assert!(why.contains("only a clip's grade"), "{op:?}: {why}");
-        }
+    // The timeline grade and a group stage keep a correction's mix and
+    // mask channel (#1321), on the node, and undo takes them off; a
+    // track's grade refuses both, rather than drop them.
+    for path in [&timeline, &stage] {
+        let mix = apply_with_catalog(&mut d, &GraphOp::SetMix { path: path.clone(), mix: Some(0.5) }, &RegistryCatalog).unwrap();
+        let channel = apply_with_catalog(&mut d, &GraphOp::SetMaskChannel { path: path.clone(), channel: Some("alpha".into()) }, &RegistryCatalog).unwrap();
+        let n = resolve(&d, path).unwrap();
+        assert_eq!(n.mix, Some(0.5), "{path:?}");
+        assert_eq!(n.params.get(&ParamKey::from("mask.channel")), Some(&ParamValue::Text("alpha".into())), "{path:?}");
+        undo(&mut d, &channel).unwrap();
+        undo(&mut d, &mix).unwrap();
+    }
+    for op in [GraphOp::SetMix { path: track.clone(), mix: Some(0.5) }, GraphOp::SetMaskChannel { path: track.clone(), channel: Some("alpha".into()) }] {
+        let why = apply_with_catalog(&mut d, &op, &RegistryCatalog).unwrap_err();
+        assert!(why.contains("a track's grade"), "{op:?}: {why}");
     }
     assert_eq!(serde_json::to_value((&d.timeline, d.stages.iter().collect::<Vec<_>>(), &d.track_grades)).unwrap(), start, "every root as it was");
 }
