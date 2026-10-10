@@ -853,12 +853,7 @@ impl KlippApp {
         // of it runs now (nothing to read until it ends).
         let mut uses: Vec<(assets::AssetKey, AssetKind, klipp_core::ClipId, bool)> = Vec::new();
         for clip in seq.tracks.iter().flat_map(|t| t.clips.iter()) {
-            let effects = clip.builtin_effects();
-            let enabled = clip.builtin_effects_enabled();
-            for (i, effect) in effects.iter().enumerate() {
-                if !enabled.get(i).copied().unwrap_or(true) {
-                    continue;
-                }
+            for effect in clip.enabled_effects() {
                 let Some(kind) = klipp_compose::render::asset_kind(effect) else { continue };
                 let running = match kind {
                     AssetKind::Deflicker => self.state.deflicker_in_progress.contains(&clip.id),

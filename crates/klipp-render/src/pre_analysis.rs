@@ -63,11 +63,7 @@ pub fn needs(snapshot: &SequenceSnapshot) -> Vec<Need> {
             continue;
         }
         let Some(file) = snapshot.video.media.get(media_id) else { continue };
-        let enabled = clip.builtin_effects_enabled();
-        for (i, effect) in clip.builtin_effects().iter().enumerate() {
-            if !enabled.get(i).copied().unwrap_or(true) {
-                continue;
-            }
+        for effect in clip.enabled_effects() {
             let Some(kind) = klipp_compose::render::asset_kind(effect) else { continue };
             let media_fps = file.fps.filter(|(_, d)| *d > 0).map_or(fps, |(n, d)| n as f64 / d as f64);
             out.push(Need {

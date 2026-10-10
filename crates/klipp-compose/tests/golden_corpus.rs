@@ -90,25 +90,6 @@ fn pattern_at(seed: u8, n: i64) -> Vec<u8> {
     v
 }
 
-/// The size of the frames motion analysis reads: the corpus's own is too
-/// small for corner detection at the half size it works at.
-const MOTION_W: u32 = 256;
-const MOTION_H: u32 = 144;
-
-/// A blocky texture with corners everywhere, six pixels further right
-/// each frame: what rolling-shutter correction measures motion from.
-fn motion_texture(n: i64) -> Vec<u8> {
-    let mut v = Vec::with_capacity((MOTION_W * MOTION_H * 4) as usize);
-    for y in 0..MOTION_H as i64 {
-        for x in 0..MOTION_W as i64 {
-            let (bx, by) = ((x - 6 * n).div_euclid(8), y.div_euclid(8));
-            let g = ((bx * 7919 + by * 104_729).rem_euclid(251)) as u8;
-            v.extend_from_slice(&[g, g, g, 255]);
-        }
-    }
-    v
-}
-
 /// The frame of `source_secs` at the corpus's rate.
 fn frame_no(source_secs: f64) -> i64 {
     (source_secs * 24.0).floor() as i64
@@ -1664,7 +1645,7 @@ fn the_analysed_cases_draw_what_their_analysis_computes() {
         seen += 1;
         let clip = case.project[0].tracks[0].clips[0].clone();
         let mut plain = case.project[0].clone();
-        plain.tracks[0].clips[0].set_effect_list(Vec::new(), clip.builtin_effects_enabled().to_vec());
+        strip_effects(&mut plain.tracks[0].clips[0]);
         let mut r = renderer(false, case.working);
         for &t in &case.times {
             let with = r.render(&case.project[0], tc(t), W, H, &mut case.frames.clone(), case.opts);
@@ -1765,4 +1746,11 @@ fn a_frei0r_plugin_draws_alike() {
         }
         None => eprintln!("frei0r: the stack declined"),
     }
+}
+
+/// `c` with its built-in effects taken off, through its picture.
+fn strip_effects(c: &mut Clip) {
+    let n = klipp_timeline::test_clip::effects(c).len();
+    let edits: Vec<klipp_timeline::EffectEdit> = (0..n).rev().map(klipp_timeline::EffectEdit::Remove).collect();
+    c.apply_effect_edits(&edits).expect("plain effects").expect("taken off");
 }
