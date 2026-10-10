@@ -84,6 +84,7 @@ fn a_saved_vector_morph_renders_in_the_export() {
         render_stage: Default::default(),
         loudness_result: Default::default(),
         total_frames: frames,
+        analyser: None,
     }
     .run()
     .unwrap();
