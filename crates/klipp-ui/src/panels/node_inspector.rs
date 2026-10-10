@@ -2976,6 +2976,7 @@ impl NodeInspectorPanel {
             | NodeKind::Reroute
             | NodeKind::Effect
             | NodeKind::EffectSegment
+            | NodeKind::Frei0r
             | NodeKind::SceneToDisplay
             | NodeKind::Unknown => {
                 ui.label(egui::RichText::new("No parameters").color(theme.text_dim));

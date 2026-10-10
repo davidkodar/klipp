@@ -90,7 +90,7 @@ fn legacy(gpu: bool, fx: &[E]) -> Vec<f32> {
     let graded = run(&mut ex, &graph(&[], false));
     let luma = klipp_color::linear::luma_coefs(klipp_core::WorkingColorspace::default());
     match gpu.then(klipp_effects::gpu::GpuEffectsPipeline::new).flatten() {
-        Some(mut p) if klipp_effects::chain_supports_gpu(fx) => {
+        Some(mut p) if !klipp_effects::has_frei0r(fx) => {
             p.set_luma_coefs(luma);
             p.apply_effects(fx, &graded, W, H)
         }
@@ -147,7 +147,7 @@ fn recorded_effects_join_the_grades_chain_in_one_submit() {
 /// histogram, so it always breaks the chain. Every other effect records.
 fn not_recorded() -> Option<E> {
     Some(E::Equalize { strength: 0.6 })
-        .filter(|e| klipp_effects::gpu::slots_needed(e).is_none() && klipp_effects::chain_supports_gpu(std::slice::from_ref(e)))
+        .filter(|e| klipp_effects::gpu::slots_needed(e).is_none() && !klipp_effects::has_frei0r(std::slice::from_ref(e)))
 }
 
 #[test]

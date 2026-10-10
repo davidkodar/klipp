@@ -61,7 +61,7 @@ fn analysis_case(a: &Analysis, routes: Routes) -> Result<(), String> {
 
 /// A real frei0r plug-in, registered beside the others (the registry is
 /// the process's; registering adds, so no other case loses its own).
-fn saturator() -> Result<klipp_frei0r::Frei0rPluginInfo, String> {
+pub(super) fn saturator() -> Result<klipp_frei0r::Frei0rPluginInfo, String> {
     static FOUND: std::sync::OnceLock<Option<klipp_frei0r::Frei0rPluginInfo>> = std::sync::OnceLock::new();
     FOUND
         .get_or_init(|| {

@@ -17,5 +17,9 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 
+[dev-dependencies]
+# A frei0r plug-in's description, for the cache gate's test.
+klipp-frei0r = { workspace = true }
+
 [lints]
 workspace = true

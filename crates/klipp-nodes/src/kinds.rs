@@ -174,6 +174,11 @@ pub enum NodeKind {
     /// Effects that run together as one: a spill group, each cast from
     /// the same picture.
     EffectSegment,
+    /// A frei0r plug-in from the clip's list (its entry in
+    /// `NodeParams::effects`), run on the CPU between the GPU nodes around
+    /// it, with instances kept across frames (M4 step 5). Made by the
+    /// renderer for a run, never by the user or saved.
+    Frei0r,
     /// A scene-referred clip's display step (step 11c): the SDR tone map
     /// or display light, its settings in `NodeParams::scene_to_display`,
     /// spliced by the renderer after the grade and before the effects.
@@ -473,6 +478,7 @@ impl NodeKind {
             NodeKind::Reroute => "Reroute",
             NodeKind::Effect => "Effect",
             NodeKind::EffectSegment => "Effect Segment",
+            NodeKind::Frei0r => "frei0r Plug-in",
             NodeKind::SceneToDisplay => "Scene to Display",
             NodeKind::Unknown => "Unknown",
         }
