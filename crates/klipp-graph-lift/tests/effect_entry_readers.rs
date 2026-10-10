@@ -32,7 +32,8 @@ const ALLOWED: &[(&str, usize, &str)] = &[
     ("klipp-convert/src/adapter.rs", 1, "`payload`, used for every node but an effect (`entry`)"),
     ("klipp-graph-format/src/lib.rs", 1, "a grade node's kind"),
     ("klipp-graph-format/src/lifted.rs", 1, "a grade node's kind"),
-    ("klipp-timeline/src/registry_catalog.rs", 1, "a grade node's kind"),
+    ("klipp-graph-lift/src/registry_catalog.rs", 1, "a grade node's kind"),
+    ("klipp-graph-lift/src/revision4.rs", 3, "the conversion to revision 4, on the stored form: a grade compound's kind and a Speed Ramp's fields"),
 ];
 
 fn sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {

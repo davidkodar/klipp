@@ -853,7 +853,7 @@ fn a_compound_that_loops_is_kept_off() {
     let (p, notes) = lift_clip(&record, &LiftCtx { clip_id: id(CLIP), kind: ClipKind::Media }).unwrap();
     let group = find(body(&p), CMP);
     assert!(group.type_id.as_str() == lt::GROUP && !group.enabled, "off, as it passed through");
-    assert!(notes.iter().any(|n| matches!(n, LiftNote::NeverRan { node, .. } if *node == id(CMP))));
+    assert!(notes.iter().any(|n| matches!(n, LiftNote::CompoundKeptOff { node, .. } if *node == id(CMP))));
     let back = crate::delift::clip(&p).unwrap();
     assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&record).unwrap(), "delift(lift(r)) == r");
 }

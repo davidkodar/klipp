@@ -155,7 +155,7 @@ fn pad_flags(obj: &mut Map<String, Value>, list: &str, flags: &str) {
 /// Normalise a v1 grade graph, and each Compound's subgraph within it:
 /// since revision 4 a subgraph is lifted as a group's body (#1391), so it
 /// is re-expressed as a grade graph is.
-fn grade_graph(v: &mut Value) {
+pub(crate) fn grade_graph(v: &mut Value) {
     let Some(obj) = v.as_object_mut() else { return };
     drop_if_empty(obj, "node_positions");
     for f in ["frames", "sticky_notes"] {

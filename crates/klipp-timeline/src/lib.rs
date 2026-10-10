@@ -48,9 +48,8 @@ mod clip_anim;
 mod picture_fields;
 mod picture_store;
 mod picture_ops;
-mod registry_catalog;
 pub use picture_ops::{take_picture_refusal, takes_picture_ops, EffectEdit, PictureEdit, PICTURE_WRITES_REFUSED};
-pub use registry_catalog::RegistryCatalog;
+pub use klipp_graph_lift::registry_catalog::RegistryCatalog;
 #[cfg(test)]
 mod picture_cache_tests;
 pub use clip_anim::{EffectKeyframes, Keyframes, ParamModifiers};

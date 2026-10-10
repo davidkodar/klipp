@@ -22,7 +22,11 @@ use std::collections::BTreeSet;
 
 use crate::ids::{entry_id, RootKind};
 use crate::old_fields::V2_FIELD;
-use crate::revision2::{PROJECT_REVISION, REVISION};
+use crate::revision2::REVISION;
+
+/// The revision this step writes: 3, whatever the project revision is now
+/// (picture revision 4 has its own step, `klipp-convert`'s step 4).
+const PROJECT_REVISION: u64 = 3;
 use klipp_graph_format::lifted::ClipPicture;
 use klipp_graph_format::{types, Graph, NodeId};
 use serde_json::Value;

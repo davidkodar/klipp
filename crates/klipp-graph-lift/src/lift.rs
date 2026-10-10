@@ -542,7 +542,7 @@ fn lift_compounds(body: &mut Graph, depth: u32, notes: &mut Vec<LiftNote>) {
             None
         };
         if let Some(why) = why.filter(|_| n.enabled) {
-            notes.push(LiftNote::NeverRan { node: n.id, why: why.into() });
+            notes.push(LiftNote::CompoundKeptOff { node: n.id, why: why.into() });
             flags(n).was_enabled = Some(true);
             n.enabled = false;
         }

@@ -1,0 +1,333 @@
+{
+  "active_sequence_id": null,
+  "created_at": null,
+  "format_revision": 3,
+  "generation": "18dd0f14baa2f42a-163b31",
+  "grade_encoding": "bt1886",
+  "klipp_version": "0.1.0",
+  "klipp_version_min": "0.1.0",
+  "notes": "",
+  "platform": "linux-x86_64",
+  "saved_at": "2026-10-10T04:00:08Z",
+  "sequences": [
+    {
+      "drop_frame": false,
+      "first_clip_autoset": {
+        "fps": true,
+        "resolution": true
+      },
+      "fps": {
+        "den": 1,
+        "num": 24
+      },
+      "global_lut_enabled": true,
+      "global_lut_opacity": 1.0,
+      "global_lut_path": null,
+      "id": "2941c63e-3dba-4629-afc9-bf06debcf88e",
+      "in_point": null,
+      "last_playhead": null,
+      "markers": [],
+      "name": "Main Sequence",
+      "out_point": null,
+      "resolution": {
+        "height": 1080,
+        "width": 1920
+      },
+      "track_header_width": 160.0,
+      "tracks": [
+        {
+          "clips": [
+            {
+              "active_grade_version": null,
+              "builtin_effects": [
+                {
+                  "type": "graph_v2"
+                }
+              ],
+              "channel_config": null,
+              "clip_markers": null,
+              "color_grade": null,
+              "effects": [],
+              "fade_in_curve": null,
+              "fade_in_secs": null,
+              "fade_out_curve": null,
+              "fade_out_secs": null,
+              "gain": null,
+              "gain_keyframes": null,
+              "grade_versions": [],
+              "graph_v2": {
+                "graph": {
+                  "edges": [
+                    {
+                      "from": [
+                        "c7b6e795-4b25-5709-a0b1-e0c834f54a07",
+                        "out"
+                      ],
+                      "to": [
+                        "8436c241-4116-5f34-b0a8-320eeb0a69ba",
+                        "in"
+                      ]
+                    },
+                    {
+                      "from": [
+                        "8436c241-4116-5f34-b0a8-320eeb0a69ba",
+                        "out"
+                      ],
+                      "to": [
+                        "97064501-f822-59c5-8991-b3d45618ba76",
+                        "in"
+                      ]
+                    },
+                    {
+                      "from": [
+                        "97064501-f822-59c5-8991-b3d45618ba76",
+                        "out"
+                      ],
+                      "to": [
+                        "e37b254a-488f-5e2f-b6c6-0db44f006ccb",
+                        "in"
+                      ]
+                    },
+                    {
+                      "from": [
+                        "e37b254a-488f-5e2f-b6c6-0db44f006ccb",
+                        "out"
+                      ],
+                      "to": [
+                        "f0587036-e827-5e45-b4a8-451b55790076",
+                        "in"
+                      ]
+                    },
+                    {
+                      "from": [
+                        "c7b6e795-4b25-5709-a0b1-e0c834f54a07",
+                        "out"
+                      ],
+                      "to": [
+                        "8436c241-4116-5f34-b0a8-320eeb0a69ba",
+                        "frame"
+                      ]
+                    }
+                  ],
+                  "graph_version": 2,
+                  "nodes": [
+                    {
+                      "id": "c7b6e795-4b25-5709-a0b1-e0c834f54a07",
+                      "legacy_flags": {
+                        "clip_anim": {
+                          "fields": {
+                            "opacity_keyframes": null,
+                            "transform_pos_x_keyframes": null,
+                            "transform_pos_y_keyframes": null,
+                            "transform_rotation_keyframes": null,
+                            "transform_scale_keyframes": null
+                          }
+                        }
+                      },
+                      "type_id": "klipp.source"
+                    },
+                    {
+                      "group": {
+                        "graph": {
+                          "edges": [
+                            {
+                              "from": [
+                                "6d9bc761-0d42-4d6d-b3f3-e30ecc6010d6",
+                                "out"
+                              ],
+                              "to": [
+                                "2bf50a5a-a73b-4e5d-aaee-164e723057f1",
+                                "in"
+                              ]
+                            },
+                            {
+                              "from": [
+                                "2bf50a5a-a73b-4e5d-aaee-164e723057f1",
+                                "out"
+                              ],
+                              "to": [
+                                "8e99378c-ac0b-4ac3-88a6-2ca094139d4c",
+                                "in"
+                              ]
+                            }
+                          ],
+                          "graph_version": 2,
+                          "nodes": [
+                            {
+                              "id": "6d9bc761-0d42-4d6d-b3f3-e30ecc6010d6",
+                              "legacy": {
+                                "keyframes": {
+                                  "tracks": []
+                                },
+                                "payload": {
+                                  "kind": "Source",
+                                  "label": "Source",
+                                  "params": {}
+                                }
+                              },
+                              "type_id": "klipp.group.input"
+                            },
+                            {
+                              "id": "2b275bff-c463-562f-ab16-afe7ebf6f97a",
+                              "type_id": "klipp.group.frame"
+                            },
+                            {
+                              "id": "2bf50a5a-a73b-4e5d-aaee-164e723057f1",
+                              "legacy": {
+                                "keyframes": {
+                                  "tracks": []
+                                },
+                                "payload": {
+                                  "kind": "Corrector",
+                                  "label": "Corrector",
+                                  "params": {}
+                                }
+                              },
+                              "type_id": "klipp.legacy.node"
+                            },
+                            {
+                              "id": "8e99378c-ac0b-4ac3-88a6-2ca094139d4c",
+                              "legacy": {
+                                "keyframes": {
+                                  "tracks": []
+                                },
+                                "payload": {
+                                  "kind": "Output",
+                                  "label": "Output",
+                                  "params": {}
+                                }
+                              },
+                              "type_id": "klipp.group.output"
+                            }
+                          ],
+                          "output": "8e99378c-ac0b-4ac3-88a6-2ca094139d4c",
+                          "ui": {
+                            "positions": {
+                              "2bf50a5a-a73b-4e5d-aaee-164e723057f1": {
+                                "x": 220.0,
+                                "y": 0.0
+                              },
+                              "6d9bc761-0d42-4d6d-b3f3-e30ecc6010d6": {
+                                "x": 0.0,
+                                "y": 0.0
+                              },
+                              "8e99378c-ac0b-4ac3-88a6-2ca094139d4c": {
+                                "x": 440.0,
+                                "y": 0.0
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "id": "8436c241-4116-5f34-b0a8-320eeb0a69ba",
+                      "legacy": {
+                        "payload": null
+                      },
+                      "type_id": "klipp.group"
+                    },
+                    {
+                      "id": "97064501-f822-59c5-8991-b3d45618ba76",
+                      "type_id": "klipp.colour.scene_to_display"
+                    },
+                    {
+                      "id": "e37b254a-488f-5e2f-b6c6-0db44f006ccb",
+                      "legacy": {
+                        "payload": {
+                          "anchor_x": 0.5,
+                          "anchor_y": 0.5,
+                          "focal_ref": null,
+                          "perspective": 0.0,
+                          "position_x": 0.0,
+                          "position_y": 0.0,
+                          "rotation": 0.0,
+                          "rotation_x": 0.0,
+                          "rotation_y": 0.0,
+                          "scale_x": 1.0,
+                          "scale_y": 0.5,
+                          "type": "transform"
+                        },
+                        "slot": 0
+                      },
+                      "params": {
+                        "mode": {
+                          "Enum": 1
+                        }
+                      },
+                      "type_id": "klipp.placement"
+                    },
+                    {
+                      "id": "f0587036-e827-5e45-b4a8-451b55790076",
+                      "type_id": "klipp.output"
+                    }
+                  ],
+                  "output": "f0587036-e827-5e45-b4a8-451b55790076"
+                },
+                "opacity": 1.0,
+                "placement": {
+                  "anchor_x": 0.5,
+                  "anchor_y": 0.5,
+                  "perspective": 0.0,
+                  "pos_x": 0.0,
+                  "pos_y": 0.0,
+                  "rotation": 0.0,
+                  "scale": 1.0,
+                  "tilt_x": 0.0,
+                  "tilt_y": 0.0
+                }
+              },
+              "group_id": null,
+              "id": "58533f71-d7f9-4038-ad6e-2697a5d3da9e",
+              "kind": {
+                "media_id": "26f478cd-f0f6-42f6-b63a-d83266434494",
+                "type": "media"
+              },
+              "linked_clip_id": null,
+              "linked_title_asset_id": null,
+              "media_id": "26f478cd-f0f6-42f6-b63a-d83266434494",
+              "pan": null,
+              "pan_keyframes": null,
+              "rate": 24,
+              "solo": null,
+              "source_in": 0,
+              "source_out": 48,
+              "timeline_in": 0,
+              "timeline_out": 48,
+              "track_points": [],
+              "volume": null,
+              "volume_keyframes": null
+            }
+          ],
+          "id": "f2a9741c-8a0f-483e-9f41-177399099422",
+          "kind": "Video",
+          "locked": false,
+          "magnetic_role": "Primary",
+          "muted": false,
+          "name": "Video 1",
+          "opacity": 1.0,
+          "pan": 0.0,
+          "solo": false,
+          "transitions": [],
+          "visible": true,
+          "volume": 1.0
+        },
+        {
+          "clips": [],
+          "id": "22e66b41-7ad1-4f5d-baff-a0a8c0315b35",
+          "kind": "Audio",
+          "locked": false,
+          "magnetic_role": "Connected",
+          "muted": false,
+          "name": "Audio 1",
+          "opacity": 1.0,
+          "pan": 0.0,
+          "solo": false,
+          "transitions": [],
+          "visible": true,
+          "volume": 1.0
+        }
+      ]
+    }
+  ],
+  "version": "1.0.0",
+  "working_colorspace": "Rec709Linear"
+}

@@ -33,8 +33,12 @@ pub const REVISION: u64 = 2;
 /// The project's revision now: 3, where each effect's node id is its
 /// identity, kept through a reorder and a save (M3 proposal 6). A project
 /// converted from revision 0 or 1 has its effects' slot ids, which is what
-/// revision 3 reads them as, so it is written as 3 directly.
-pub const PROJECT_REVISION: u64 = 3;
+/// revision 3 reads them as, so it is written as 3 directly. 4 is picture
+/// revision 4 (M4 step F): a grade compound a group, an uneven scale's
+/// aspect, every enabled Opacity multiplying, a Speed Ramp without the
+/// fields that never drew, frei0r and OFX plug-ins as their own nodes; a
+/// revision-3 project is converted once (`klipp-convert` step 4).
+pub const PROJECT_REVISION: u64 = 4;
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -309,6 +313,7 @@ pub fn colour_preset_noted(file_name: &str, raw: &Value) -> Result<(Value, Vec<L
 pub fn is_lost(note: &LiftNote) -> bool {
     match note {
         LiftNote::NeverRan { .. }
+        | LiftNote::CompoundKeptOff { .. }
         | LiftNote::ParkedEdge { .. }
         | LiftNote::OrphanKeys { .. }
         | LiftNote::ExtraTransform { .. }

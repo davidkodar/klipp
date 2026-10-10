@@ -1,11 +1,15 @@
-//! The step to revision 3 (`klipp_convert::step3`), in temporary folders
-//! only: every project, backup and journal here is made by the test.
+//! The run of a revision step (`klipp_convert::step3`'s machinery), as the
+//! step to revision 4 (`klipp_convert::step4`) runs it, in temporary
+//! folders only: every project, backup and journal here is made by the
+//! test. A revision-3 project is one the app saves now, marked 3 (its
+//! forms here are the same at both revisions).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use klipp_convert::run::Settings;
 use klipp_convert::step3::{self, Decision, Hooks, Point, RunError};
+use klipp_convert::step4;
 use klipp_convert::{revision2, revision3};
 use klipp_core::{MediaId, RationalTime};
 use klipp_effects::BuiltinEffect as E;
@@ -17,7 +21,7 @@ use klipp_timeline::{Clip, GradeAccess};
 use serde_json::{json, Value};
 
 fn root(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("klipp-step3-{name}-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("klipp-step-run-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     std::fs::canonicalize(d).unwrap()
@@ -38,9 +42,8 @@ fn read(p: &Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
 }
 
-/// A revision-2 project as the build before revision 3 wrote one: saved
-/// by the v1 writer and converted by stage A's conversion, so its effects
-/// have their slot ids; with a grade version, a Look, a still and the
+/// A revision-3 project: saved by the v1 writer and converted by stage A's
+/// conversion, marked 3; with a grade version, a Look, a still and the
 /// app's saved backup of the project file.
 fn plain(parent: &Path, name: &str) -> PathBuf {
     let dir = parent.join(format!("{name}.klipp"));
@@ -59,7 +62,7 @@ fn plain(parent: &Path, name: &str) -> PathBuf {
     klipp_project::save_looks_v1(&dir, &[klipp_timeline::Look { id: uuid::Uuid::new_v4(), name: "Warm".into(), node_graph: graph() }]).unwrap();
     std::fs::write(dir.join("media/stills.json"), json!([{ "name": "s", "filename": "s.png", "grade": graph() }]).to_string()).unwrap();
     let mut p = revision2::project(&read(&dir.join("project.json"))).unwrap().0;
-    p["format_revision"] = json!(revision2::REVISION);
+    p["format_revision"] = json!(step4::FROM);
     std::fs::write(dir.join("project.json"), serde_json::to_string_pretty(&p).unwrap()).unwrap();
     std::fs::copy(dir.join("project.json"), dir.join("project.json.bak.1")).unwrap();
     let stills = dir.join("media/stills.json");
@@ -104,8 +107,7 @@ fn new_effect(id: u128, effect: &E) -> Box<Node> {
 
 /// A picture-truth clip after an add, a move and a remove: its blur masked
 /// by a qualifier's matte the grade publishes and mixed at a half, so its
-/// effect ids are its own, not slot ids. Saved, then marked revision 2 as
-/// the build before revision 3 saved such a clip (its truth ids the same).
+/// effect ids are its own, not slot ids. Saved, then marked revision 3.
 fn truth(parent: &Path, name: &str) -> PathBuf {
     let dir = parent.join(format!("{name}.klipp"));
     let mut c = Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
@@ -138,12 +140,12 @@ fn truth(parent: &Path, name: &str) -> PathBuf {
     seq.tracks[0].clips.push(c);
     klipp_project::save_project(&dir, &[seq], &klipp_media::MediaPool::new()).unwrap();
     let path = dir.join("project.json");
-    let text = std::fs::read_to_string(&path).unwrap().replacen("\"format_revision\": 3", "\"format_revision\": 2", 1);
+    let text = std::fs::read_to_string(&path).unwrap().replacen("\"format_revision\": 4", "\"format_revision\": 3", 1);
     std::fs::write(&path, text).unwrap();
     dir
 }
 
-/// A project already at revision 3, as the app saves it now.
+/// A project already at revision 4, as the app saves it now.
 fn current(parent: &Path, name: &str) -> PathBuf {
     let dir = parent.join(format!("{name}.klipp"));
     let mut seq = klipp_timeline::Sequence::new_default();
@@ -155,7 +157,7 @@ fn current(parent: &Path, name: &str) -> PathBuf {
 }
 
 fn settings(r: &Path, projects: Vec<PathBuf>, excluded: Vec<PathBuf>, date: &str) -> Settings {
-    Settings { projects, excluded: excluded.into_iter().collect::<BTreeSet<_>>(), config_dir: None, backup_root: r.join("backup/pre-v3"), date: date.into() }
+    Settings { projects, excluded: excluded.into_iter().collect::<BTreeSet<_>>(), config_dir: None, backup_root: r.join("backup/pre-v4"), date: date.into() }
 }
 
 fn reload(dir: &Path) -> Result<(), String> {
@@ -197,35 +199,35 @@ fn all(dirs: &[&PathBuf]) -> Vec<Vec<(PathBuf, Vec<u8>)>> {
 }
 
 fn approved(s: &Settings) -> String {
-    let m = step3::preflight(s);
+    let m = step4::preflight(s);
     assert!(m.stops.is_empty(), "{:?}", m.stops);
     m.hash()
 }
 
-/// A run steps every revision-2 project, plain and picture-truth, to 3:
-/// project.json differs from its backup by the revision number only, and
-/// nothing else of any project changes; one at 3 and one excluded stay as
-/// they are; the truth clip's own ids are kept.
+/// A run steps every revision-3 project, plain and picture-truth, to 4:
+/// project.json is its original's conversion, and nothing else of any
+/// project changes; one at 4 and one excluded stay as they are; the truth
+/// clip's own ids are kept.
 #[test]
-fn a_run_steps_revision_2_projects_to_3_and_nothing_else() {
+fn a_run_steps_revision_3_projects_to_4_and_nothing_else() {
     let r = root("full");
     let (a, b, c, d) = (plain(&r, "Plain"), truth(&r, "Truth"), current(&r, "Now"), plain(&r, "Left"));
     let before = all(&[&a, &b, &c, &d]);
     let s = settings(&r, vec![a.clone(), b.clone(), c.clone(), d.clone()], vec![d.clone()], "2026-10-07");
-    let m = step3::preflight(&s);
+    let m = step4::preflight(&s);
     let decisions: Vec<_> = m.candidates.iter().map(|c| c.decision).collect();
     assert_eq!(decisions, [Decision::Excluded, Decision::AlreadyConverted, Decision::Convert, Decision::Convert], "by path: {m:?}");
-    assert!(m.candidates[3].reason.contains("1 picture-truth"), "{}", m.candidates[3].reason);
-    assert!(m.candidates[2].reason.contains("1 track effect lists"), "{}", m.candidates[2].reason);
-    let report = step3::run(&s, &m.hash(), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap();
+    assert!(m.candidates[3].reason.contains("declares nothing"), "{}", m.candidates[3].reason);
+    assert!(m.candidates[2].reason.contains("declares nothing"), "{}", m.candidates[2].reason);
+    let report = step4::run(&s, &m.hash(), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap();
     assert_eq!(report.converted, vec![a.clone(), b.clone()]);
     for (dir, was) in [(&a, &before[0]), (&b, &before[1])] {
         let now = snapshot(dir);
         assert_eq!(now.len(), was.len());
         for ((p, x), (_, y)) in now.iter().zip(was.iter()) {
             if p == Path::new("project.json") {
-                let back = String::from_utf8(y.clone()).unwrap().replacen("\"format_revision\": 2", "\"format_revision\": 3", 1);
-                assert_eq!(String::from_utf8(x.clone()).unwrap(), back, "only the number changed");
+                let back = step4::convert(&String::from_utf8(y.clone()).unwrap()).unwrap().text;
+                assert_eq!(String::from_utf8(x.clone()).unwrap(), back, "the original's conversion");
                 assert_eq!(std::fs::read(s.backup_root.join("2026-10-07").join(dir.join("project.json").strip_prefix("/").unwrap())).unwrap(), *y, "the backup is the original");
             } else {
                 assert_eq!(x, y, "{} unchanged", p.display());
@@ -241,10 +243,10 @@ fn a_run_steps_revision_2_projects_to_3_and_nothing_else() {
     let clip = loaded[0].all_clips().next().unwrap();
     assert!(clip.is_picture_truth());
     assert!(effects(&picture(clip)).contains(&uuid::Uuid::from_u128(0xa2)), "the added effect is reached by its own id after the conversion");
-    assert_eq!(read(&step3::journal_path(&s))["state"], json!("Committed"));
-    // A second run finds them all at 3.
+    assert_eq!(read(&step3::journal_path_with(&step4::STEP, &s))["state"], json!("Committed"));
+    // A second run finds them all at 4.
     let s2 = settings(&r, vec![a.clone(), b.clone()], vec![], "2026-10-08");
-    let again = step3::run(&s2, &approved(&s2), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap();
+    let again = step4::run(&s2, &approved(&s2), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap();
     assert_eq!((again.converted.len(), again.already.len()), (0, 2));
     let _ = std::fs::remove_dir_all(&r);
 }
@@ -259,7 +261,7 @@ fn the_dry_run_reads_only_and_needs_a_render_for_the_go() {
     let before = all(&[&a, &b]);
     let s = settings(&r, vec![a.clone(), b.clone()], vec![], "2026-10-07");
     let out = r.join("out");
-    let report = step3::dry_run(&s, &out, "test", &reload, None).unwrap();
+    let report = step4::dry_run(&s, &out, "test", &reload, None).unwrap();
     assert!(report.text().contains("render NOT RUN"), "{}", report.text());
     assert!(!report.go(), "no go without a render");
     assert!(report.projects.iter().all(|p| p.proven.is_ok()), "{report:?}");
@@ -270,12 +272,12 @@ fn the_dry_run_reads_only_and_needs_a_render_for_the_go() {
     assert!(found.contains(&a) && found.contains(&b), "the projects are found: {found:?}");
     assert!(found.iter().all(|p| !p.starts_with(&out)), "the dry run's copies are not projects: {found:?}");
     let render = |_: &Path, _: &Path| Ok::<_, String>("3 frames match".to_owned());
-    let rendered = step3::dry_run(&s, &r.join("out2"), "test", &reload, Some(&render)).unwrap();
+    let rendered = step4::dry_run(&s, &r.join("out2"), "test", &reload, Some(&render)).unwrap();
     assert!(rendered.go(), "{}", rendered.text());
     let failing = |_: &Path, _: &Path| Err::<String, _>("a frame differs".to_owned());
-    assert!(!step3::dry_run(&s, &r.join("out3"), "test", &reload, Some(&failing)).unwrap().go());
-    assert!(step3::dry_run(&s, &a.join("report"), "test", &reload, None).is_err());
-    assert!(step3::dry_run(&s, &r.join("backup/pre-v3/x"), "test", &reload, None).is_err());
+    assert!(!step4::dry_run(&s, &r.join("out3"), "test", &reload, Some(&failing)).unwrap().go());
+    assert!(step4::dry_run(&s, &a.join("report"), "test", &reload, None).is_err());
+    assert!(step4::dry_run(&s, &r.join("backup/pre-v4/x"), "test", &reload, None).is_err());
     assert_eq!(all(&[&a, &b]), before, "the projects untouched");
     assert!(!s.backup_root.exists(), "no backup made");
     let _ = std::fs::remove_dir_all(&r);
@@ -290,7 +292,7 @@ fn a_change_since_the_dry_run_is_refused() {
     let hash = approved(&s);
     std::fs::write(a.join("looks/extra.json"), json!({ "format_revision": 2, "id": uuid::Uuid::new_v4(), "name": "x", "graph_v2": {} }).to_string()).unwrap();
     let before = snapshot(&a);
-    assert!(matches!(step3::run(&s, &hash, &ok, &hooks(NO_CRASH, NO_FAIL)), Err(RunError::Refused(why)) if why.contains("changed since the dry run")));
+    assert!(matches!(step4::run(&s, &hash, &ok, &hooks(NO_CRASH, NO_FAIL)), Err(RunError::Refused(why)) if why.contains("changed since the dry run")));
     assert_eq!(snapshot(&a), before);
     let _ = std::fs::remove_dir_all(&r);
 }
@@ -303,10 +305,10 @@ fn a_failed_write_rolls_back_every_project() {
     let (a, b, c) = (plain(&r, "A"), truth(&r, "B"), plain(&r, "C"));
     let before = all(&[&a, &b, &c]);
     let s = settings(&r, vec![a.clone(), b.clone(), c.clone()], vec![], "2026-10-07");
-    let err = step3::run(&s, &approved(&s), &ok, &hooks(NO_CRASH, &|n| n == 1)).unwrap_err();
+    let err = step4::run(&s, &approved(&s), &ok, &hooks(NO_CRASH, &|n| n == 1)).unwrap_err();
     assert!(matches!(&err, RunError::RolledBack(why) if why.contains("no space")), "{err:?}");
     assert_eq!(all(&[&a, &b, &c]), before);
-    assert_eq!(read(&step3::journal_path(&s))["state"], json!("RolledBack"));
+    assert_eq!(read(&step3::journal_path_with(&step4::STEP, &s))["state"], json!("RolledBack"));
     let _ = std::fs::remove_dir_all(&r);
 }
 
@@ -323,7 +325,7 @@ fn a_klipp_started_part_way_rolls_back() {
         calls.set(calls.get() + 1);
         if calls.get() > 2 { Err("a Klipp is running".to_owned()) } else { Ok(()) }
     };
-    let err = step3::run(&s, &approved(&s), &pre, &hooks(NO_CRASH, NO_FAIL)).unwrap_err();
+    let err = step4::run(&s, &approved(&s), &pre, &hooks(NO_CRASH, NO_FAIL)).unwrap_err();
     assert!(matches!(&err, RunError::RolledBack(why) if why.contains("Klipp is running")), "{err:?}");
     assert_eq!(all(&[&a, &b]), before);
     let _ = std::fs::remove_dir_all(&r);
@@ -340,12 +342,12 @@ fn a_crash_anywhere_is_rolled_back_by_the_next_run() {
         let before = all(&[&a, &b]);
         let s = settings(&r, vec![a.clone(), b.clone()], vec![], "2026-10-07");
         let crash = move |p: Point| p == point;
-        assert_eq!(step3::run(&s, &approved(&s), &ok, &hooks(&crash, NO_FAIL)).unwrap_err(), RunError::Crashed(point));
+        assert_eq!(step4::run(&s, &approved(&s), &ok, &hooks(&crash, NO_FAIL)).unwrap_err(), RunError::Crashed(point));
         // The next run rolls back first, crashing once more in the middle.
         let again = |p: Point| p == Point::Restored(0);
-        let second = step3::recover(&s, &hooks(&again, NO_FAIL));
+        let second = step3::recover_with(&step4::STEP, &s, &hooks(&again, NO_FAIL));
         let s2 = settings(&r, vec![a.clone(), b.clone()], vec![], "2026-10-08");
-        let third = step3::run(&s2, "any", &ok, &hooks(NO_CRASH, NO_FAIL));
+        let third = step4::run(&s2, "any", &ok, &hooks(NO_CRASH, NO_FAIL));
         match second {
             // Rolled back whole by the recovery.
             Ok(true) => assert!(matches!(&third, Err(RunError::Refused(_))), "{point:?}: {third:?}"),
@@ -354,10 +356,10 @@ fn a_crash_anywhere_is_rolled_back_by_the_next_run() {
             other => panic!("{point:?}: {other:?}"),
         }
         assert_eq!(all(&[&a, &b]), before, "{point:?}: as it was");
-        assert_eq!(read(&step3::journal_path(&s))["state"], json!("RolledBack"), "{point:?}");
+        assert_eq!(read(&step3::journal_path_with(&step4::STEP, &s))["state"], json!("RolledBack"), "{point:?}");
         // And a fresh run then converts them.
         let s3 = settings(&r, vec![a.clone(), b.clone()], vec![], "2026-10-09");
-        assert_eq!(step3::run(&s3, &approved(&s3), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap().converted.len(), 2, "{point:?}");
+        assert_eq!(step4::run(&s3, &approved(&s3), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap().converted.len(), 2, "{point:?}");
         let _ = std::fs::remove_dir_all(&r);
     }
 }
@@ -370,44 +372,29 @@ fn a_failed_restore_is_reported_and_everything_kept() {
     let (a, b) = (plain(&r, "A"), plain(&r, "B"));
     let s = settings(&r, vec![a.clone(), b.clone()], vec![], "2026-10-07");
     let crash = |p: Point| p == Point::Written(1);
-    step3::run(&s, &approved(&s), &ok, &hooks(&crash, NO_FAIL)).unwrap_err();
+    step4::run(&s, &approved(&s), &ok, &hooks(&crash, NO_FAIL)).unwrap_err();
     // A backup damaged before the rollback: it no longer has its hash.
     let damaged = s.backup_root.join("2026-10-07").join(a.join("project.json").strip_prefix("/").unwrap());
     std::fs::write(&damaged, b"{}").unwrap();
-    match step3::recover(&s, &hooks(NO_CRASH, NO_FAIL)) {
+    match step3::recover_with(&step4::STEP, &s, &hooks(NO_CRASH, NO_FAIL)) {
         Err(RunError::RollbackIncomplete { unrestored, .. }) => assert_eq!(unrestored.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(), vec![a.join("project.json")]),
         other => panic!("{other:?}"),
     }
-    assert_eq!(read(&step3::journal_path(&s))["state"], json!("RollingBack"), "kept, unfinished");
+    assert_eq!(read(&step3::journal_path_with(&step4::STEP, &s))["state"], json!("RollingBack"), "kept, unfinished");
     assert!(s.backup_root.join("2026-10-07").join(b.join("project.json").strip_prefix("/").unwrap()).is_file());
-    assert_eq!(read(&b.join("project.json"))["format_revision"], json!(2), "the other restored");
+    assert_eq!(read(&b.join("project.json"))["format_revision"], json!(3), "the other restored");
     let _ = std::fs::remove_dir_all(&r);
 }
 
-/// A track effect whose stored id isn't its slot id stops preflight too.
-#[test]
-fn a_track_effect_with_a_moved_id_stops_preflight() {
-    let r = root("track-moved");
-    let dir = plain(&r, "Track");
-    let path = dir.join("project.json");
-    let mut v = read(&path);
-    v["sequences"][0]["tracks"][0]["effects"]["graph_v2"]["effects"][0]["id"] = json!(uuid::Uuid::new_v4().to_string());
-    std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
-    let stops = step3::preflight(&settings(&r, vec![dir], vec![], "d")).stops;
-    assert!(stops.len() == 1 && stops[0].contains("track") && stops[0].contains("not its slot id"), "{stops:?}");
-    let _ = std::fs::remove_dir_all(&r);
-}
-
-/// What preflight stops on: a project that doesn't parse, one from before
-/// revision 2, a fields clip whose effect id isn't its slot id, a truth
-/// clip with two nodes of one id, an exclusion naming no project, a side
-/// store at another revision.
+/// What preflight stops on: a project that doesn't parse, one at another
+/// revision than 3, a truth clip with two nodes of one id, an exclusion
+/// naming no project, a side store at another revision.
 #[test]
 fn preflight_stops_on_what_it_cannot_settle() {
     let r = root("stops");
     let stop = |dir: &Path, damage: &dyn Fn(&Path)| -> Vec<String> {
         damage(dir);
-        step3::preflight(&settings(&r, vec![dir.to_path_buf()], vec![], "d")).stops
+        step4::preflight(&settings(&r, vec![dir.to_path_buf()], vec![], "d")).stops
     };
     let set = |dir: &Path, f: &dyn Fn(&mut Value)| {
         let mut v = read(&dir.join("project.json"));
@@ -416,16 +403,7 @@ fn preflight_stops_on_what_it_cannot_settle() {
     };
     let nodes = |v: &mut Value| -> Vec<Value> { v["sequences"][0]["tracks"][0]["clips"][0]["graph_v2"]["graph"]["nodes"].as_array().unwrap().clone() };
     assert!(stop(&plain(&r, "Garbled"), &|d| std::fs::write(d.join("project.json"), b"{ not json").unwrap())[0].contains("doesn't parse"));
-    assert!(stop(&plain(&r, "Old"), &|d| set(d, &|v| v["format_revision"] = json!(1)))[0].contains("stage-A"));
-    let moved = stop(&plain(&r, "Moved"), &|d| {
-        set(d, &|v| {
-            let mut ns = nodes(v);
-            let fx = ns.iter_mut().find(|n| n["legacy"]["slot"] == json!(0) && n["type_id"] == json!(types::LEGACY_EFFECT)).unwrap();
-            fx["id"] = json!(uuid::Uuid::new_v4().to_string());
-            v["sequences"][0]["tracks"][0]["clips"][0]["graph_v2"]["graph"]["nodes"] = json!(ns);
-        })
-    });
-    assert!(moved[0].contains("not its slot id"), "{moved:?}");
+    assert!(stop(&plain(&r, "Old"), &|d| set(d, &|v| v["format_revision"] = json!(1)))[0].contains("at revision 3 only"));
     let twice = stop(&truth(&r, "Twice"), &|d| {
         set(d, &|v| {
             let mut ns = nodes(v);
@@ -435,20 +413,20 @@ fn preflight_stops_on_what_it_cannot_settle() {
             v["sequences"][0]["tracks"][0]["clips"][0]["graph_v2"]["graph"]["nodes"] = json!(ns);
         })
     });
-    assert!(twice[0].contains("two nodes have id") || twice[0].contains("isn't a node"), "{twice:?}");
+    assert!(twice[0].contains("isn't one the lift makes"), "{twice:?}");
     let look = stop(&plain(&r, "Look"), &|d| {
         let l = std::fs::read_dir(d.join("looks")).unwrap().next().unwrap().unwrap().path();
         std::fs::write(l, b"{\"format_revision\": 1}").unwrap();
     });
     assert!(look[0].contains("not 2"), "{look:?}");
     let a = plain(&r, "Fine");
-    let unmatched = step3::preflight(&settings(&r, vec![a], vec![r.join("Gone.klipp")], "d")).stops;
+    let unmatched = step4::preflight(&settings(&r, vec![a], vec![r.join("Gone.klipp")], "d")).stops;
     assert!(unmatched[0].contains("names no project"), "{unmatched:?}");
     let _ = std::fs::remove_dir_all(&r);
 }
 
-/// The oracle holds the written file to its original as raw JSON with only
-/// the revision removed: each deliberate change fails it.
+/// The proof holds the written file to its original's conversion: each
+/// deliberate change fails it.
 #[test]
 fn the_oracle_fails_every_deliberate_change() {
     let r = root("oracle");
@@ -457,8 +435,8 @@ fn the_oracle_fails_every_deliberate_change() {
     // A field no reader knows, which the oracle must keep too.
     v["sequences"][0]["tracks"][0]["clips"][0]["x_future"] = json!({ "kept": true });
     let original = serde_json::to_string_pretty(&v).unwrap();
-    let written = revision3::project_text(&original).unwrap();
-    revision3::verify(&original, &written).unwrap();
+    let written = step4::convert(&original).unwrap().text;
+    step4::verify(&original, &written).unwrap();
     let good: Value = serde_json::from_str(&written).unwrap();
     let edges = good["sequences"][0]["tracks"][0]["clips"][0]["graph_v2"]["graph"]["edges"].as_array().unwrap().clone();
     let fx_mask = edges.iter().position(|e| e["to"][1] == json!("mask")).expect("a mask edge");
@@ -484,28 +462,31 @@ fn the_oracle_fails_every_deliberate_change() {
         ("change the placement", Box::new(|v: &mut Value| {
             v["sequences"][0]["tracks"][0]["clips"][0]["graph_v2"]["opacity"] = json!(0.5);
         })),
-        ("leave the revision at 2", Box::new(|v: &mut Value| v["format_revision"] = json!(2))),
+        ("leave the revision at 3", Box::new(|v: &mut Value| v["format_revision"] = json!(3))),
     ];
     // The truth fixture has no grade version: give the original one, so
     // dropping it is a change.
     let mut with_version: Value = serde_json::from_str(&original).unwrap();
-    with_version["sequences"][0]["tracks"][0]["clips"][0]["grade_versions"] = json!([{ "name": "B", "graph_v2": { "kept": 1 } }]);
+    let body = with_version["sequences"][0]["tracks"][0]["clips"][0]["graph_v2"]["graph"]["nodes"].as_array().unwrap().iter().find(|n| n["type_id"] == json!(lt::GROUP)).expect("the grade group")["group"]["graph"].clone();
+    with_version["sequences"][0]["tracks"][0]["clips"][0]["grade_versions"] = json!([{ "name": "B", "node_graph": null, "graph_v2": body }]);
     let original_v = serde_json::to_string_pretty(&with_version).unwrap();
     // Written as the original was (pretty, keys in order), so each damage
     // below is the only difference from what the step writes.
-    let good: Value = serde_json::from_str(&revision3::project_text(&original_v).unwrap()).unwrap();
-    revision3::verify(&original_v, &serde_json::to_string_pretty(&good).unwrap()).unwrap();
+    let good: Value = serde_json::from_str(&step4::convert(&original_v).unwrap().text).unwrap();
+    step4::verify(&original_v, &serde_json::to_string_pretty(&good).unwrap()).unwrap();
     for (what, damage) in damages {
         let mut bad = good.clone();
         damage(&mut bad);
-        assert!(revision3::verify(&original_v, &serde_json::to_string_pretty(&bad).unwrap()).is_err(), "{what} passed the oracle");
+        assert!(step4::verify(&original_v, &serde_json::to_string_pretty(&bad).unwrap()).is_err(), "{what} passed the proof");
     }
     let _ = std::fs::remove_dir_all(&r);
 }
 
-/// A change no parse can see fails the oracle too: a number spelled another
-/// way (`0.10` for `0.1`) and two keys in another order give the same JSON
-/// value, but not the original's bytes with the revision alone changed.
+/// Revision 3's own step (`revision3`, kept for readers that step a copy
+/// 2 -> 3 -> 4): a change no parse can see fails its oracle too: a number
+/// spelled another way (`0.10` for `0.1`) and two keys in another order
+/// give the same JSON value, but not the original's bytes with the
+/// revision alone changed.
 #[test]
 fn the_oracle_holds_the_bytes_not_only_the_value() {
     let original = "{\n  \"a\": 0.10,\n  \"b\": 1,\n  \"format_revision\": 2,\n  \"sequences\": []\n}";
@@ -528,7 +509,7 @@ fn a_converted_file_keeps_its_mode() {
     let a = plain(&r, "A");
     std::fs::set_permissions(a.join("project.json"), std::fs::Permissions::from_mode(0o640)).unwrap();
     let s = settings(&r, vec![a.clone()], vec![], "2026-10-08");
-    step3::run(&s, &approved(&s), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap();
+    step4::run(&s, &approved(&s), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap();
     assert_eq!(std::fs::metadata(a.join("project.json")).unwrap().permissions().mode() & 0o777, 0o640);
     let _ = std::fs::remove_dir_all(&r);
 }
@@ -550,11 +531,11 @@ fn a_rollback_never_overwrites_bytes_the_run_did_not_write() {
         }
         false
     };
-    let err = step3::run(&s, &approved(&s), &ok, &hooks(&edit, NO_FAIL)).unwrap_err();
+    let err = step4::run(&s, &approved(&s), &ok, &hooks(&edit, NO_FAIL)).unwrap_err();
     assert!(matches!(&err, RunError::RollbackIncomplete { unrestored, .. } if unrestored.len() == 1 && unrestored[0].0 == b.join("project.json") && unrestored[0].1.contains("someone else")), "{err:?}");
     assert_eq!(snapshot(&a), before_a, "the first is rolled back");
     assert_eq!(std::fs::read(b.join("project.json")).unwrap(), theirs, "the second keeps their bytes");
-    assert_eq!(read(&step3::journal_path(&s))["state"], json!("RollingBack"), "left unfinished for a person");
+    assert_eq!(read(&step3::journal_path_with(&step4::STEP, &s))["state"], json!("RollingBack"), "left unfinished for a person");
     let _ = std::fs::remove_dir_all(&r);
 }
 
@@ -569,15 +550,15 @@ fn a_file_changed_after_the_run_wrote_it_is_left_and_named() {
     let a = plain(&r, "A");
     let s = settings(&r, vec![a.clone()], vec![], "2026-10-07");
     let crash = |p: Point| p == Point::Written(0);
-    assert_eq!(step3::run(&s, &approved(&s), &ok, &hooks(&crash, NO_FAIL)).unwrap_err(), RunError::Crashed(Point::Written(0)));
+    assert_eq!(step4::run(&s, &approved(&s), &ok, &hooks(&crash, NO_FAIL)).unwrap_err(), RunError::Crashed(Point::Written(0)));
     let theirs = b"{\"saved\": \"after\"}".to_vec();
     std::fs::write(a.join("project.json"), &theirs).unwrap();
-    let err = step3::recover(&s, &hooks(NO_CRASH, NO_FAIL)).unwrap_err();
+    let err = step3::recover_with(&step4::STEP, &s, &hooks(NO_CRASH, NO_FAIL)).unwrap_err();
     assert!(matches!(&err, RunError::RollbackIncomplete { unrestored, .. } if unrestored.len() == 1 && unrestored[0].0 == a.join("project.json") && unrestored[0].1.contains("someone else")), "{err:?}");
     assert_eq!(std::fs::read(a.join("project.json")).unwrap(), theirs);
     assert!(s.backup_root.join("2026-10-07").exists(), "the backups kept");
-    assert_eq!(read(&step3::journal_path(&s))["state"], json!("RollingBack"), "left unfinished for a person");
-    assert_eq!(read(&step3::journal_path(&s))["touched"][0]["written"], json!(false), "the write wasn't marked");
+    assert_eq!(read(&step3::journal_path_with(&step4::STEP, &s))["state"], json!("RollingBack"), "left unfinished for a person");
+    assert_eq!(read(&step3::journal_path_with(&step4::STEP, &s))["touched"][0]["written"], json!(false), "the write wasn't marked");
     let _ = std::fs::remove_dir_all(&r);
 }
 
@@ -596,7 +577,7 @@ fn a_corrupt_backup_is_never_converted() {
         }
         false
     };
-    let err = step3::run(&s, &approved(&s), &ok, &hooks(&spoil, NO_FAIL)).unwrap_err();
+    let err = step4::run(&s, &approved(&s), &ok, &hooks(&spoil, NO_FAIL)).unwrap_err();
     assert!(matches!(&err, RunError::RolledBack(why) if why.contains("no longer has its hash")), "{err:?}");
     assert_eq!(snapshot(&a), before);
     let _ = std::fs::remove_dir_all(&r);
@@ -612,7 +593,7 @@ fn the_dry_run_output_is_fresh_plain_and_outside() {
     let before = snapshot(&a);
     let s = settings(&r, vec![a.clone()], vec![], "2026-10-07");
     let refused = |out: &Path, says: &str| {
-        let e = step3::dry_run(&s, out, "test", &reload, None).unwrap_err();
+        let e = step4::dry_run(&s, out, "test", &reload, None).unwrap_err();
         assert!(e.contains(says), "{}: {e}", out.display());
     };
     // A link into the project, as the output or on its way.
@@ -636,9 +617,9 @@ fn the_dry_run_output_is_fresh_plain_and_outside() {
     assert_eq!(snapshot(&a), before, "the project untouched");
     assert!(!s.backup_root.exists(), "no backup made");
     // A fresh one, and an empty one, are taken.
-    assert!(step3::dry_run(&s, &r.join("fresh/out"), "test", &reload, None).is_ok());
+    assert!(step4::dry_run(&s, &r.join("fresh/out"), "test", &reload, None).is_ok());
     std::fs::create_dir(r.join("empty")).unwrap();
-    assert!(step3::dry_run(&s, &r.join("empty"), "test", &reload, None).is_ok());
+    assert!(step4::dry_run(&s, &r.join("empty"), "test", &reload, None).is_ok());
     assert_eq!(snapshot(&a), before, "the project untouched");
     let _ = std::fs::remove_dir_all(&r);
 }
@@ -658,7 +639,7 @@ fn a_linked_side_folder_stops_preflight() {
             std::fs::create_dir(&real).unwrap();
         }
         std::os::unix::fs::symlink(&real, &at).unwrap();
-        let m = step3::preflight(&settings(&r, vec![a.clone()], vec![], "2026-10-07"));
+        let m = step4::preflight(&settings(&r, vec![a.clone()], vec![], "2026-10-07"));
         assert!(m.stops.iter().any(|s| s.contains("isn't a plain folder")), "{rel}: {:?}", m.stops);
         let _ = std::fs::remove_dir_all(&r);
     }
@@ -705,11 +686,11 @@ fn a_stored_picture_that_disagrees_fails_the_proof() {
     spoil_stored_picture(&b);
     let before = all(&[&a, &b]);
     let s = settings(&r, vec![a.clone(), b.clone()], vec![], "2026-10-07");
-    let dry = step3::dry_run(&s, &r.join("out"), "test", &reload, None).unwrap();
+    let dry = step4::dry_run(&s, &r.join("out"), "test", &reload, None).unwrap();
     let proven: Vec<_> = dry.projects.iter().map(|p| (p.dir.clone(), p.proven.is_ok())).collect();
     assert_eq!(proven, vec![(a.clone(), true), (b.clone(), false)], "{}", dry.text());
     assert!(dry.projects[1].proven.as_ref().unwrap_err().contains("differs"), "{}", dry.text());
-    let err = step3::run(&s, &approved(&s), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap_err();
+    let err = step4::run(&s, &approved(&s), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap_err();
     assert!(matches!(&err, RunError::RolledBack(why) if why.contains("the app's loader refuses it")), "{err:?}");
     assert_eq!(all(&[&a, &b]), before, "both rolled back");
     let _ = std::fs::remove_dir_all(&r);
@@ -723,7 +704,7 @@ fn the_strict_loader_refuses_a_stored_picture_that_disagrees() {
     let r = root("strict");
     let a = plain(&r, "A");
     let s = settings(&r, vec![a.clone()], vec![], "2026-10-07");
-    step3::run(&s, &approved(&s), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap();
+    step4::run(&s, &approved(&s), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap();
     assert!(klipp_project::load_project_strict(&a).is_ok());
     spoil_stored_picture(&a);
     let e = klipp_project::load_project_strict(&a).map(|_| ()).unwrap_err();
@@ -755,21 +736,21 @@ fn an_excluded_projects_links_are_not_followed_or_a_stop() {
         let linked_bak = b.join("project.json.bak.linked");
         std::os::unix::fs::symlink(a.join("project.json"), &linked_bak).unwrap();
         let s = settings(&r, vec![a.clone(), b.clone()], vec![b.clone()], "2026-10-07");
-        let m = step3::preflight(&s);
+        let m = step4::preflight(&s);
         assert!(m.stops.is_empty(), "{rel}: {:?}", m.stops);
         let excluded = m.candidates.iter().find(|c| c.dir == b).unwrap();
         assert_eq!(excluded.decision, Decision::Excluded);
         assert!(excluded.items.iter().all(|i| !i.path.starts_with(&at) && i.path != linked_bak), "{rel}: nothing through a link: {:?}", excluded.items);
         assert!(excluded.items.iter().any(|i| i.path == b.join("project.json")), "its own files are held");
         let before = std::fs::read(b.join("project.json")).unwrap();
-        let report = step3::run(&s, &approved(&s), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap();
+        let report = step4::run(&s, &approved(&s), &ok, &hooks(NO_CRASH, NO_FAIL)).unwrap();
         assert_eq!((report.converted, report.excluded), (vec![a.clone()], vec![b.clone()]));
         assert_eq!(std::fs::read(b.join("project.json")).unwrap(), before);
         // Not excluded, the same links stop it.
-        let m = step3::preflight(&settings(&r, vec![b.clone()], vec![], "2026-10-08"));
+        let m = step4::preflight(&settings(&r, vec![b.clone()], vec![], "2026-10-08"));
         assert!(m.stops.iter().any(|s| s.contains("isn't a plain folder")), "{rel}: {:?}", m.stops);
         std::fs::remove_file(&at).unwrap();
-        let m = step3::preflight(&settings(&r, vec![b.clone()], vec![], "2026-10-08"));
+        let m = step4::preflight(&settings(&r, vec![b.clone()], vec![], "2026-10-08"));
         assert!(m.stops.iter().any(|s| s.contains("isn't a plain file")), "{rel}: {:?}", m.stops);
         let _ = std::fs::remove_dir_all(&r);
     }

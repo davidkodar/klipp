@@ -43,16 +43,18 @@ fn the_current_format_opens() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Revision 3 is the node-graph format (#1089) with stored effect ids: a
-/// save writes it, and it opens again.
+/// Revision 4 is picture revision 4 (M4 step F): a save writes it, and it
+/// opens again.
 #[test]
-fn a_save_writes_revision_3() {
-    // 3: effects keep their node ids as stored; a revision-2 reader would
-    // derive them again from the slots and rename them on a reorder.
-    assert_eq!(FORMAT_REVISION, 3, "raising the revision is a deliberate change: update this test with the reason");
-    let dir = saved("revision_three");
+fn a_save_writes_revision_4() {
+    // 4: a grade compound is a group, an uneven scale keeps its aspect,
+    // every enabled Opacity multiplies, a Speed Ramp drops the fields that
+    // never drew, and frei0r and OFX plug-ins are their own nodes; a
+    // revision-3 reader would misread each (3 kept effect ids as stored).
+    assert_eq!(FORMAT_REVISION, 4, "raising the revision is a deliberate change: update this test with the reason");
+    let dir = saved("revision_four");
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("project.json")).unwrap()).unwrap();
-    assert_eq!(v["format_revision"], 3);
+    assert_eq!(v["format_revision"], 4);
     load_project(&dir).expect("and it opens");
     let _ = std::fs::remove_dir_all(&dir);
 }

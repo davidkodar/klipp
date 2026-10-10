@@ -46,6 +46,44 @@ use crate::{revision, revision2, scan};
 /// takes the copies there for projects.
 pub const DRY_RUN_MARK: &str = ".klipp-dry-run";
 
+/// One revision step this run makes: the revision it reads and the one it
+/// writes, its journal's name, the side stores' revision it expects, and
+/// its own check, conversion and proof of a project's text. Revision 3's
+/// is [`STEP3`]; revision 4's is `step4::STEP`. The run, its backups, its
+/// journal and its rollback are the same for every step.
+pub struct Step {
+    pub name: &'static str,
+    pub from: u64,
+    pub to: u64,
+    pub journal: &'static str,
+    pub side: u64,
+    /// Why a project at `from` is to be converted, or why it can't be.
+    pub check: fn(&Value) -> Result<String, String>,
+    pub convert: fn(&str) -> Result<String, String>,
+    /// Hold a written text to the original it was converted from.
+    pub verify: fn(&str, &str) -> Result<(), String>,
+}
+
+/// The step to revision 3 (effects keep their node ids).
+pub const STEP3: Step = Step {
+    name: "revision 3",
+    from: 2,
+    to: 3,
+    journal: "run3.json",
+    side: revision2::REVISION,
+    check: check3,
+    convert: revision3::project_text,
+    verify: revision3::verify,
+};
+
+fn check3(raw: &Value) -> Result<String, String> {
+    let checked = revision3::check(raw)?;
+    Ok(format!(
+        "at revision 2, effect ids checked: {} clip pictures ({} picture-truth, ids kept as stored), {} track effect lists",
+        checked.clips, checked.truth_clips, checked.tracks_with_effects
+    ))
+}
+
 pub fn sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
@@ -174,7 +212,7 @@ fn read_json(p: &Path) -> Result<Value, String> {
 }
 
 /// Settle one candidate, or say why it stops.
-fn settle(dir: &Path, excluded: bool) -> Result<Candidate, String> {
+fn settle(step: &Step, dir: &Path, excluded: bool) -> Result<Candidate, String> {
     let items = inventory(dir, excluded)?;
     let candidate = |decision, reason: String, revision| Candidate { dir: dir.to_path_buf(), decision, reason, revision, items: items.clone() };
     if excluded {
@@ -182,11 +220,11 @@ fn settle(dir: &Path, excluded: bool) -> Result<Candidate, String> {
     }
     let raw = read_json(&dir.join("project.json"))?;
     let r = revision::read_revision(&raw).map_err(|e| format!("project.json: {e}"))?;
-    if r == revision2::PROJECT_REVISION {
+    if r == step.to {
         return Ok(candidate(Decision::AlreadyConverted, format!("at revision {r}"), Some(r)));
     }
-    if r != revision2::REVISION {
-        return Err(format!("at revision {r}: the stage-A run converts a project from before revision {} first", revision2::REVISION));
+    if r != step.from {
+        return Err(format!("at revision {r}: {} converts a project at revision {} only", step.name, step.from));
     }
     if scan::has_pending_recovery(dir) {
         return Err("a save that stopped part way: open it in Klipp first".into());
@@ -197,21 +235,22 @@ fn settle(dir: &Path, excluded: bool) -> Result<Candidate, String> {
     for side in [dir.join("media/stills.json")].into_iter().chain(items.iter().map(|i| i.path.clone()).filter(|p| p.parent() == Some(&dir.join("looks")))) {
         if side.is_file() {
             let at = read_json(&side)?.get("format_revision").and_then(Value::as_u64);
-            if at != Some(revision2::REVISION) {
-                return Err(format!("{} is at revision {at:?}, not {}", side.display(), revision2::REVISION));
+            if at != Some(step.side) {
+                return Err(format!("{} is at revision {at:?}, not {}", side.display(), step.side));
             }
         }
     }
-    let checked = revision3::check(&raw)?;
-    let reason = format!(
-        "at revision 2, effect ids checked: {} clip pictures ({} picture-truth, ids kept as stored), {} track effect lists",
-        checked.clips, checked.truth_clips, checked.tracks_with_effects
-    );
+    let reason = (step.check)(&raw)?;
     Ok(candidate(Decision::Convert, reason, Some(r)))
 }
 
 /// Freeze the manifest of the run's projects (see the module's note).
 pub fn preflight(s: &Settings) -> Manifest {
+    preflight_with(&STEP3, s)
+}
+
+/// [`preflight`] for `step`.
+pub fn preflight_with(step: &Step, s: &Settings) -> Manifest {
     let mut m = Manifest::default();
     let projects: BTreeSet<&PathBuf> = s.projects.iter().collect();
     m.unmatched_exclusions = s.excluded.iter().filter(|e| !projects.contains(e)).cloned().collect();
@@ -219,7 +258,7 @@ pub fn preflight(s: &Settings) -> Manifest {
         m.stops.push(format!("--exclude {} names no project of the run", e.display()));
     }
     for dir in projects {
-        match settle(dir, s.excluded.contains(dir)) {
+        match settle(step, dir, s.excluded.contains(dir)) {
             Ok(c) => m.candidates.push(c),
             Err(why) => m.stops.push(format!("{}: {why}", dir.display())),
         }
@@ -260,12 +299,17 @@ pub struct Journal {
 }
 
 pub fn journal_path(s: &Settings) -> PathBuf {
-    s.backup_root.join("run3.json")
+    journal_path_with(&STEP3, s)
 }
 
-fn record(s: &Settings, j: &Journal) -> Result<(), String> {
+/// [`journal_path`] for `step`.
+pub fn journal_path_with(step: &Step, s: &Settings) -> PathBuf {
+    s.backup_root.join(step.journal)
+}
+
+fn record(step: &Step, s: &Settings, j: &Journal) -> Result<(), String> {
     make_dirs(&s.backup_root)?;
-    write_atomic(&journal_path(s), &serde_json::to_vec_pretty(j).map_err(|e| e.to_string())?)
+    write_atomic(&journal_path_with(step, s), &serde_json::to_vec_pretty(j).map_err(|e| e.to_string())?)
 }
 
 fn in_backup(s: &Settings, path: &Path) -> PathBuf {
@@ -325,9 +369,9 @@ pub struct Report {
 /// backup, and check it. A file at its original hash needs nothing; one
 /// that holds neither hash isn't the run's to overwrite, and is left and
 /// named.
-fn roll_back(s: &Settings, j: &mut Journal, hooks: &Hooks) -> Result<(), RunError> {
+fn roll_back(step: &Step, s: &Settings, j: &mut Journal, hooks: &Hooks) -> Result<(), RunError> {
     j.state = State::RollingBack;
-    record(s, j).map_err(|e| RunError::RollbackIncomplete { why: format!("recording the rollback: {e}"), unrestored: j.touched.iter().map(|t| (t.path.clone(), "not tried".into())).collect() })?;
+    record(step, s, j).map_err(|e| RunError::RollbackIncomplete { why: format!("recording the rollback: {e}"), unrestored: j.touched.iter().map(|t| (t.path.clone(), "not tried".into())).collect() })?;
     let mut unrestored = Vec::new();
     for (i, t) in j.touched.iter().enumerate() {
         let now = std::fs::read(&t.path).map(|b| sha256(&b));
@@ -352,7 +396,7 @@ fn roll_back(s: &Settings, j: &mut Journal, hooks: &Hooks) -> Result<(), RunErro
         return Err(RunError::RollbackIncomplete { why: "restoring from the backups".into(), unrestored });
     }
     j.state = State::RolledBack;
-    record(s, j).map_err(|e| RunError::RollbackIncomplete { why: format!("every file restored, but recording it failed: {e}"), unrestored: Vec::new() })
+    record(step, s, j).map_err(|e| RunError::RollbackIncomplete { why: format!("every file restored, but recording it failed: {e}"), unrestored: Vec::new() })
 }
 
 /// Put a touched file's backup back, and read it back against its hash.
@@ -368,7 +412,12 @@ fn restore(t: &Touched) -> Result<(), String> {
 /// Roll back a run the journal shows unfinished. `Ok(true)` when there was
 /// one.
 pub fn recover(s: &Settings, hooks: &Hooks) -> Result<bool, RunError> {
-    let path = journal_path(s);
+    recover_with(&STEP3, s, hooks)
+}
+
+/// [`recover`] for `step`.
+pub fn recover_with(step: &Step, s: &Settings, hooks: &Hooks) -> Result<bool, RunError> {
+    let path = journal_path_with(step, s);
     if !path.exists() {
         return Ok(false);
     }
@@ -376,7 +425,7 @@ pub fn recover(s: &Settings, hooks: &Hooks) -> Result<bool, RunError> {
     let mut j: Journal = serde_json::from_str(&text).map_err(|e| RunError::Refused(format!("{}: {e}", path.display())))?;
     match j.state {
         State::Committed | State::RolledBack => Ok(false),
-        State::BackingUp | State::Writing | State::RollingBack => roll_back(s, &mut j, hooks).map(|()| true),
+        State::BackingUp | State::Writing | State::RollingBack => roll_back(step, s, &mut j, hooks).map(|()| true),
     }
 }
 
@@ -432,14 +481,14 @@ fn unchanged(c: &Candidate) -> Result<(), String> {
 
 /// The text the run writes for `c`'s project.json, from its backup, the
 /// backup held to the manifest's hash first.
-fn converted_text(s: &Settings, c: &Candidate, item: &Item) -> Result<String, String> {
+fn converted_text(step: &Step, s: &Settings, c: &Candidate, item: &Item) -> Result<String, String> {
     let backup = in_backup(s, &item.path);
     let bytes = std::fs::read(&backup).map_err(|e| io_err("reading the backup of", &item.path, e))?;
     if sha256(&bytes) != item.sha256 {
         return Err(format!("the backup {} no longer has its hash", backup.display()));
     }
     let original = String::from_utf8(bytes).map_err(|e| format!("{}: {e}", c.dir.display()))?;
-    revision3::project_text(&original)
+    (step.convert)(&original)
 }
 
 /// Write one project; the n-th to convert. The checks are made again just
@@ -456,7 +505,7 @@ fn write_one(n: usize, c: &Candidate, path: &Path, text: &str, hooks: &Hooks, pr
 }
 
 /// Hold the written project to its backup and load a copy of it.
-fn prove_one(s: &Settings, n: usize, c: &Candidate, hooks: &Hooks) -> Result<(), String> {
+fn prove_one(step: &Step, s: &Settings, n: usize, c: &Candidate, hooks: &Hooks) -> Result<(), String> {
     let path = c.dir.join("project.json");
     let item = c.items.iter().find(|i| i.path == path).ok_or_else(|| format!("{}: no project.json in its manifest", c.dir.display()))?;
     let backup = std::fs::read(in_backup(s, &path)).map_err(|e| io_err("reading the backup of", &path, e))?;
@@ -465,7 +514,7 @@ fn prove_one(s: &Settings, n: usize, c: &Candidate, hooks: &Hooks) -> Result<(),
     }
     let original = String::from_utf8(backup).map_err(|e| format!("{}: {e}", path.display()))?;
     let written = std::fs::read_to_string(&path).map_err(|e| io_err("reading back", &path, e))?;
-    revision3::verify(&original, &written).map_err(|e| format!("{}: {e}", path.display()))?;
+    (step.verify)(&original, &written).map_err(|e| format!("{}: {e}", path.display()))?;
     let copy = s.backup_root.join(&s.date).join(".reload").join(n.to_string());
     let _ = std::fs::remove_dir_all(&copy);
     make_dirs(&copy.join("media"))?;
@@ -479,13 +528,18 @@ fn prove_one(s: &Settings, n: usize, c: &Candidate, hooks: &Hooks) -> Result<(),
 
 /// The real run, from the manifest hash its dry run reported.
 pub fn run(s: &Settings, approved: &str, preconditions: &dyn Fn() -> Result<(), String>, hooks: &Hooks) -> Result<Report, RunError> {
+    run_with(&STEP3, s, approved, preconditions, hooks)
+}
+
+/// [`run`] for `step`.
+pub fn run_with(step: &Step, s: &Settings, approved: &str, preconditions: &dyn Fn() -> Result<(), String>, hooks: &Hooks) -> Result<Report, RunError> {
     let _lock = Lock::take(&s.backup_root).map_err(RunError::Refused)?;
-    let mut report = Report { rolled_back_earlier: recover(s, hooks)?, ..Report::default() };
+    let mut report = Report { rolled_back_earlier: recover_with(step, s, hooks)?, ..Report::default() };
     if report.rolled_back_earlier {
         return Err(RunError::RolledBack("an earlier run stopped part way and is rolled back: run the dry run again".into()));
     }
     preconditions().map_err(RunError::Refused)?;
-    let m = preflight(s);
+    let m = preflight_with(step, s);
     if !m.stops.is_empty() {
         return Err(RunError::Refused(format!("preflight stops: {}", m.stops.join(" | "))));
     }
@@ -500,14 +554,14 @@ pub fn run(s: &Settings, approved: &str, preconditions: &dyn Fn() -> Result<(), 
         }
     }
     let mut j = Journal { manifest_hash: m.hash(), state: State::BackingUp, touched: Vec::new() };
-    record(s, &j).map_err(RunError::Refused)?;
+    record(step, s, &j).map_err(RunError::Refused)?;
     match backup_all(s, &m, hooks) {
         Ok(()) => {}
         Err(why) if why.starts_with("crash:") => return Err(RunError::Crashed(Point::BackingUp(why[6..].parse().unwrap_or(0)))),
         Err(why) => {
             // Nothing written yet: the journal says so, the backups stay.
             j.state = State::RolledBack;
-            let _ = record(s, &j);
+            let _ = record(step, s, &j);
             return Err(RunError::Refused(format!("backing up: {why}")));
         }
     }
@@ -515,7 +569,7 @@ pub fn run(s: &Settings, approved: &str, preconditions: &dyn Fn() -> Result<(), 
         return Err(RunError::Crashed(Point::BackedUp));
     }
     j.state = State::Writing;
-    record(s, &j).map_err(RunError::Refused)?;
+    record(step, s, &j).map_err(RunError::Refused)?;
     let mut failed = None;
     for (n, c) in m.to_convert().enumerate() {
         let path = c.dir.join("project.json");
@@ -525,7 +579,7 @@ pub fn run(s: &Settings, approved: &str, preconditions: &dyn Fn() -> Result<(), 
         };
         // Checked before the journal names it, so a file that changed is
         // never in the journal at all.
-        let text = match unchanged(c).and_then(|()| converted_text(s, c, item)) {
+        let text = match unchanged(c).and_then(|()| converted_text(step, s, c, item)) {
             Ok(text) => text,
             Err(e) => {
                 failed = Some(e);
@@ -533,7 +587,7 @@ pub fn run(s: &Settings, approved: &str, preconditions: &dyn Fn() -> Result<(), 
             }
         };
         j.touched.push(Touched { path: path.clone(), backup: in_backup(s, &path), sha256: item.sha256.clone(), written_sha256: sha256(text.as_bytes()), written: false });
-        if let Err(e) = record(s, &j) {
+        if let Err(e) = record(step, s, &j) {
             failed = Some(e);
             break;
         }
@@ -552,11 +606,11 @@ pub fn run(s: &Settings, approved: &str, preconditions: &dyn Fn() -> Result<(), 
         if let Some(t) = j.touched.last_mut() {
             t.written = true;
         }
-        if let Err(e) = record(s, &j) {
+        if let Err(e) = record(step, s, &j) {
             failed = Some(e);
             break;
         }
-        if let Err(e) = prove_one(s, n, c, hooks) {
+        if let Err(e) = prove_one(step, s, n, c, hooks) {
             failed = Some(e);
             break;
         }
@@ -578,12 +632,12 @@ pub fn run(s: &Settings, approved: &str, preconditions: &dyn Fn() -> Result<(), 
         return Err(RunError::Crashed(Point::BeforeCommit));
     }
     if let Some(why) = failed {
-        roll_back(s, &mut j, hooks)?;
+        roll_back(step, s, &mut j, hooks)?;
         return Err(RunError::RolledBack(why));
     }
     j.state = State::Committed;
-    if let Err(e) = record(s, &j) {
-        roll_back(s, &mut j, hooks)?;
+    if let Err(e) = record(step, s, &j) {
+        roll_back(step, s, &mut j, hooks)?;
         return Err(RunError::RolledBack(format!("recording the commit: {e}")));
     }
     Ok(report)
@@ -605,6 +659,9 @@ pub struct DryProject {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct DryReport {
+    /// The step's name and the revision it writes.
+    pub step: String,
+    pub to: u64,
     pub manifest_hash: String,
     pub build: String,
     pub projects: Vec<DryProject>,
@@ -621,11 +678,12 @@ impl DryReport {
     }
 
     pub fn text(&self) -> String {
-        let mut t = format!("revision 3 dry run\nbuild: {}\nmanifest: {}\n", self.build, self.manifest_hash);
+        let mut t = format!("{} dry run\nbuild: {}\nmanifest: {}\n", self.step, self.build, self.manifest_hash);
         let count = |d| self.projects.iter().filter(|p| p.decision == d).count();
         t += &format!(
-            "to convert: {}, already at 3: {}, excluded: {}\n",
+            "to convert: {}, already at {}: {}, excluded: {}\n",
             count(Decision::Convert),
+            self.to,
             count(Decision::AlreadyConverted),
             count(Decision::Excluded)
         );
@@ -715,9 +773,14 @@ fn dry_run_output(s: &Settings, out: &Path) -> Result<PathBuf, String> {
 /// given, renders the project (read only) and its converted copy under
 /// `out` and says how they compare, or why they don't.
 pub fn dry_run(s: &Settings, out: &Path, build: &str, reload: &dyn Fn(&Path) -> Result<(), String>, render: Option<&dyn Fn(&Path, &Path) -> Result<String, String>>) -> Result<DryReport, String> {
+    dry_run_with(&STEP3, s, out, build, reload, render)
+}
+
+/// [`dry_run`] for `step`.
+pub fn dry_run_with(step: &Step, s: &Settings, out: &Path, build: &str, reload: &dyn Fn(&Path) -> Result<(), String>, render: Option<&dyn Fn(&Path, &Path) -> Result<String, String>>) -> Result<DryReport, String> {
     let out = dry_run_output(s, out)?;
-    let m = preflight(s);
-    std::fs::write(out.join(DRY_RUN_MARK), b"klipp-convert step3 dry run\n").map_err(|e| io_err("marking", &out, e))?;
+    let m = preflight_with(step, s);
+    std::fs::write(out.join(DRY_RUN_MARK), format!("klipp-convert {} dry run\n", step.name)).map_err(|e| io_err("marking", &out, e))?;
     let mut projects = Vec::new();
     for (n, c) in m.candidates.iter().enumerate() {
         let mut p = DryProject { dir: c.dir.clone(), decision: c.decision, reason: c.reason.clone(), proven: Ok(()), render: "render NOT RUN".into() };
@@ -725,8 +788,8 @@ pub fn dry_run(s: &Settings, out: &Path, build: &str, reload: &dyn Fn(&Path) -> 
             let copy = out.join("projects").join(n.to_string());
             p.proven = (|| {
                 let text = std::fs::read_to_string(c.dir.join("project.json")).map_err(|e| e.to_string())?;
-                let written = revision3::project_text(&text)?;
-                revision3::verify(&text, &written)?;
+                let written = (step.convert)(&text)?;
+                (step.verify)(&text, &written)?;
                 std::fs::create_dir_all(copy.join("media")).map_err(|e| e.to_string())?;
                 std::fs::write(copy.join("project.json"), &written).map_err(|e| e.to_string())?;
                 std::fs::copy(c.dir.join("media/manifest.json"), copy.join("media/manifest.json")).map_err(|e| e.to_string())?;
@@ -738,7 +801,7 @@ pub fn dry_run(s: &Settings, out: &Path, build: &str, reload: &dyn Fn(&Path) -> 
         }
         projects.push(p);
     }
-    let report = DryReport { manifest_hash: m.hash(), build: build.into(), projects, unmatched_exclusions: m.unmatched_exclusions.clone(), stops: m.stops.clone(), rendered: render.is_some() };
+    let report = DryReport { step: step.name.into(), to: step.to, manifest_hash: m.hash(), build: build.into(), projects, unmatched_exclusions: m.unmatched_exclusions.clone(), stops: m.stops.clone(), rendered: render.is_some() };
     std::fs::write(out.join("manifest.json"), serde_json::to_vec_pretty(&m).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     std::fs::write(out.join("report.txt"), report.text()).map_err(|e| e.to_string())?;
     Ok(report)
