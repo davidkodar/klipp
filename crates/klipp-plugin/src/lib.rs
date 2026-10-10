@@ -106,7 +106,7 @@ pub mod property;
 pub mod test_plugin;
 pub mod thread;
 
-pub use host::{
+pub use host::{OfxDescribed, OfxPluginInstance, 
     plugin_infos_cached, AppliedEffect, OfxCategory, OfxHost, OfxHostRuntime, OfxPluginInfo,
     OfxValue, OfxValueExt, PluginError,
 };

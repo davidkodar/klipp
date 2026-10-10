@@ -37,6 +37,15 @@ typedef struct {
     Status (*lock)(Handle, void **);
     Status (*unlock)(Handle);
 } Images;
+/* The first six slots of OfxParameterSuiteV1; the getters are variadic. */
+typedef struct {
+    Status (*define)(Handle, const char *, const char *, Handle *);
+    Status (*get_handle)(Handle, const char *, Handle *, Handle *);
+    Status (*set_props)(Handle, Handle *);
+    Status (*props)(Handle, Handle *);
+    Status (*get_value)(Handle, ...);
+    Status (*get_value_at_time)(Handle, double, ...);
+} Params;
 typedef struct { Handle host; const void *(*fetch)(Handle, const char *, int); } Host;
 typedef struct {
     const char *api; int api_version; const char *id;
@@ -45,8 +54,20 @@ typedef struct {
     Status (*entry)(const char *, const void *, Handle, Handle);
 } Plugin;
 static Host *host;
-static const char *names[] = { "identity", "channels", "alpha", "time" };
+static const char *names[] = { "identity", "channels", "alpha", "time", "temporal" };
+/* The temporal fixture reads the frames either side, in OFX time units
+ * (frames): red from the one before, green its own, blue the one after;
+ * a frame the host doesn't give is 0. `mode` 5 asks 40 either side. */
+#define TEMPORAL 4
 static void set_host(Host *value) { host = value; }
+/* Each instance made and destroyed, one line to the file KLIPP_FIXTURE_TRACE_FILE
+ * names, when it names one: a test counts them to see a slot's drop destroy
+ * its instance. */
+static void trace(const char *what, int kind) {
+    const char *path = getenv("KLIPP_FIXTURE_TRACE_FILE");
+    FILE *f = path ? fopen(path, "a") : NULL;
+    if (f) { fprintf(f, "%s %s\n", what, names[kind]); fclose(f); }
+}
 #define TRY(expr) do { if ((expr) != 0) return 1; } while (0)
 
 static Status action(int kind, const char *name, const void *effect, Handle in, Handle out) {
@@ -55,13 +76,17 @@ static Status action(int kind, const char *name, const void *effect, Handle in, 
     const Properties *p = host->fetch(host->host, "OfxPropertySuite", 1);
     const Images *im = host->fetch(host->host, "OfxImageEffectSuite", 1);
     if (!p || !im) return 1;
-    if (!strcmp(name, "OfxActionLoad") || !strcmp(name, "OfxActionUnload") ||
-        !strcmp(name, "OfxActionCreateInstance") || !strcmp(name, "OfxActionDestroyInstance")) return 0;
+    const Params *pa = host->fetch(host->host, "OfxParameterSuite", 1);
+    if (!pa) return 1;
+    if (!strcmp(name, "OfxActionCreateInstance")) { trace("create", kind); return 0; }
+    if (!strcmp(name, "OfxActionDestroyInstance")) { trace("destroy", kind); return 0; }
+    if (!strcmp(name, "OfxActionLoad") || !strcmp(name, "OfxActionUnload")) return 0;
     if (!strcmp(name, "OfxActionDescribe")) {
         Handle properties = NULL;
         TRY(im->get_properties((Handle)effect, &properties));
         TRY(p->set_string(properties, "OfxImageEffectPropSupportedContexts", 0, "OfxImageEffectContextFilter"));
         TRY(p->set_string(properties, "OfxImageEffectPropSupportedPixelDepths", 0, "OfxBitDepthByte"));
+        if (kind == TEMPORAL) TRY(p->set_int(properties, "OfxImageEffectPropTemporalClipAccess", 0, 1));
         TRY(p->set_string(properties, "OfxPropLabel", 0, names[kind]));
         return 0;
     }
@@ -72,10 +97,35 @@ static Status action(int kind, const char *name, const void *effect, Handle in, 
         TRY(im->define_clip((Handle)effect, "Output", &clip));
         TRY(p->set_string(clip, "OfxImageEffectPropSupportedComponents", 0, "OfxImageComponentRGBA"));
         TRY(p->set_string(clip, "OfxImageEffectPropPreMultiplication", 0, "OfxImageUnPreMultiplied"));
+        /* `mode`: a case's failure mode, per instance, so cases running
+         * side by side in one process never share it (0 = the runner's
+         * KLIPP_FIXTURE_MODE, else normal). */
+        Handle params = NULL, props = NULL;
+        TRY(im->get_parameters((Handle)effect, &params));
+        TRY(pa->define(params, "OfxParamTypeInteger", "mode", &props));
+        TRY(p->set_int(props, "OfxParamPropDefault", 0, 0));
+        return 0;
+    }
+    if (kind == TEMPORAL && !strcmp(name, "OfxImageEffectActionGetFramesNeeded")) {
+        double t = 0;
+        Handle params = NULL, param = NULL;
+        int chosen = 0;
+        TRY(p->get_double(in, "OfxPropTime", 0, &t));
+        if (!im->get_parameters((Handle)effect, &params) && !pa->get_handle(params, "mode", &param, NULL)) pa->get_value(param, &chosen);
+        double reach = chosen == 5 ? 40.0 : 1.0;
+        TRY(p->set_double(out, "OfxImageClipPropFrameRange_Source", 0, t - reach));
+        TRY(p->set_double(out, "OfxImageClipPropFrameRange_Source", 1, t + reach));
+        fprintf(stderr, "KLIPP_FIXTURE_FRAMES_NEEDED %.17g %.17g\n", t - reach, t + reach);
         return 0;
     }
     if (strcmp(name, "OfxImageEffectActionRender")) return 14; /* ReplyDefault */
-    const char *mode = getenv("KLIPP_FIXTURE_MODE");
+    static const char *modes[] = { NULL, "passthrough", "render-error", "hang", "wrong-output" };
+    const char *mode = NULL;
+    Handle params = NULL, param = NULL;
+    int chosen = 0;
+    if (!im->get_parameters((Handle)effect, &params) && !pa->get_handle(params, "mode", &param, NULL) &&
+        !pa->get_value(param, &chosen) && chosen > 0 && chosen < 5) mode = modes[chosen];
+    if (!mode) mode = getenv("KLIPP_FIXTURE_MODE");
     if (!mode) mode = "normal";
     if (!strcmp(mode, "hang")) { for (;;) {} }
     if (!strcmp(mode, "render-error")) return 1;
@@ -90,6 +140,10 @@ static Status action(int kind, const char *name, const void *effect, Handle in, 
     int sr = 0, dr = 0, bounds[4] = {0}, dst_bounds[4] = {0}, window[4] = {0};
     char *src_depth = NULL, *dst_depth = NULL;
     Status status = 1;
+    /* The temporal fixture's frames either side, when the host gives them
+     * (the same bounds and row bytes as the source's frame). */
+    Handle prev = NULL, next = NULL;
+    uint8_t *prev_data = NULL, *next_data = NULL;
     if (p->get_pointer(src, "OfxImagePropData", 0, &src_data) ||
         p->get_pointer(dst, "OfxImagePropData", 0, &dst_data) ||
         p->get_int(src, "OfxImagePropRowBytes", 0, &sr) ||
@@ -107,6 +161,14 @@ static Status action(int kind, const char *name, const void *effect, Handle in, 
         window[0] < dst_bounds[0] || window[1] < dst_bounds[1] ||
         window[2] > dst_bounds[2] || window[3] > dst_bounds[3] ||
         sr < (bounds[2]-bounds[0])*4 || dr < (dst_bounds[2]-dst_bounds[0])*4) goto cleanup;
+    if (kind == TEMPORAL) {
+        double reach = chosen == 5 ? 40.0 : 1.0;
+        void *data = NULL;
+        if (!im->get_image(source, time - reach, NULL, &prev) && prev && !p->get_pointer(prev, "OfxImagePropData", 0, &data)) prev_data = data;
+        data = NULL;
+        if (!im->get_image(source, time + reach, NULL, &next) && next && !p->get_pointer(next, "OfxImagePropData", 0, &data)) next_data = data;
+        fprintf(stderr, "KLIPP_FIXTURE_GOT %.17g %s %s\n", time, prev_data ? "before" : "-", next_data ? "after" : "-");
+    }
     for (int y = window[1]; y < window[3]; ++y) {
         for (int x = window[0]; x < window[2]; ++x) {
             const uint8_t *s = (uint8_t *)src_data + (y-bounds[1])*sr + (x-bounds[0])*4;
@@ -116,6 +178,11 @@ static Status action(int kind, const char *name, const void *effect, Handle in, 
                 if (kind == 1) { d[0] = s[2]; d[1] = 255-s[0]; d[2] = s[1]; }
                 if (kind == 2) d[3] = s[3]/2;
                 if (kind == 3) d[0] = (uint8_t)((s[0] + (int)(time*16)) & 255);
+                if (kind == TEMPORAL) {
+                    size_t at = (size_t)(y-bounds[1])*sr + (size_t)(x-bounds[0])*4;
+                    d[0] = prev_data ? prev_data[at] : 0;
+                    d[2] = next_data ? next_data[at + 2] : 0;
+                }
                 if (!strcmp(mode, "wrong-output")) d[0] ^= 1;
             }
         }
@@ -123,13 +190,15 @@ static Status action(int kind, const char *name, const void *effect, Handle in, 
     fprintf(stderr, "KLIPP_FIXTURE_RENDER %s %.17g\n", names[kind], time);
     status = 0;
 cleanup:
+    if (prev) im->release_image(prev);
+    if (next) im->release_image(next);
     im->release_image(src);
     im->release_image(dst);
     return status;
 }
 #define ENTRY(n) static Status entry##n(const char *a, const void *h, Handle i, Handle o) { return action(n,a,h,i,o); }
-ENTRY(0) ENTRY(1) ENTRY(2) ENTRY(3)
+ENTRY(0) ENTRY(1) ENTRY(2) ENTRY(3) ENTRY(4)
 #define PLUGIN(n, label) {"OfxImageEffectPluginAPI", 1, "org.klipp.fixture." label, 1, 0, set_host, entry##n}
-static Plugin plugins[] = {PLUGIN(0,"identity"),PLUGIN(1,"channels"),PLUGIN(2,"alpha"),PLUGIN(3,"time")};
-int OfxGetNumberOfPlugins(void) { return 4; }
-Plugin *OfxGetPlugin(int index) { return index >= 0 && index < 4 ? &plugins[index] : NULL; }
+static Plugin plugins[] = {PLUGIN(0,"identity"),PLUGIN(1,"channels"),PLUGIN(2,"alpha"),PLUGIN(3,"time"),PLUGIN(4,"temporal")};
+int OfxGetNumberOfPlugins(void) { return 5; }
+Plugin *OfxGetPlugin(int index) { return index >= 0 && index < 5 ? &plugins[index] : NULL; }
