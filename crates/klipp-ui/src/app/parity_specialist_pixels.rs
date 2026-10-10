@@ -36,8 +36,9 @@ fn analysis_key(a: &Analysis) -> CoverageKey {
 }
 
 /// One analysis workflow's measurement, drawn: the measurement it starts
-/// by itself landing as the app's drain lands it, the file's analysis,
-/// must change the frame and draw it alike on the CPU and the GPU.
+/// by itself landing as the app's drain lands it, the file's analysis as
+/// the app holds it, drawn from that and nothing else, must change the
+/// frame and draw it alike on the CPU and the GPU.
 fn analysis_case(a: &Analysis, routes: Routes) -> Result<(), String> {
     let clip = fixture(&(effect_type(a.tag).sample)());
     let mut run = super::parity_harness::Run::new(clip.clone());
@@ -54,7 +55,7 @@ fn analysis_case(a: &Analysis, routes: Routes) -> Result<(), String> {
     if run.state.analysis_of(run.clip(), a.kind).is_none() {
         return Err("the measurement isn't held".into());
     }
-    analysis_drawn_on(routes, SMALL, run.clip())
+    analysis_drawn_on(routes, SMALL, run.clip(), &run.state)
 }
 
 /// A real frei0r plug-in, registered beside the others (the registry is

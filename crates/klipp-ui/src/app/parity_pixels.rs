@@ -464,34 +464,69 @@ pub(super) fn clip_edit_drawn_on(routes: Routes, size: (u32, u32), before: &Clip
     }
 }
 
+/// The synthetic source for clips whose analyses the app holds: each
+/// media clip keyed as the app keys it (its media in `state`'s pool, by
+/// `asset_key`), so a frame is drawn from the analysis the app holds and
+/// nothing else.
+struct Held<'a> {
+    inner: Synthetic,
+    state: &'a crate::state::AppState,
+}
+
+impl FrameSource for Held<'_> {
+    fn frame(&mut self, clip: &Clip, secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        self.inner.frame(clip, secs, width, height)
+    }
+
+    fn temporal_frames_linear(&mut self, clip: &Clip, working: klipp_core::WorkingColorspace) -> Option<klipp_compose::LinearFrameProviderFn> {
+        self.inner.temporal_frames_linear(clip, working)
+    }
+
+    fn analysis_key(&mut self, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
+        klipp_analysis::assets::asset_key(kind, self.state.media_pool.get(&clip.media_id()?)?)
+    }
+}
+
 /// What an analysis landing draws (M4 step 9): `clip`'s frame from
-/// renderers that haven't its analysis and from the oracle's, which have
-/// ([`analyses`]), on `routes`: the analysis changes the frame, and with
-/// it the CPU's frame is within a level of the GPU's.
-pub(super) fn analysis_drawn_on(routes: Routes, size: (u32, u32), clip: &Clip) -> Result<(), String> {
+/// renderers holding no analysis, and from renderers holding exactly the
+/// analyses `state` holds, its clips keyed as the app keys them, on
+/// `routes`: the analysis the app holds changes the frame, and with it the
+/// CPU's frame is within a level of the GPU's.
+pub(super) fn analysis_drawn_on(routes: Routes, size: (u32, u32), clip: &Clip, state: &crate::state::AppState) -> Result<(), String> {
     let seq = sequence(clip, size);
-    let unanalysed = |gpu: bool| {
+    let holding = |gpu: bool, held: bool| {
         let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
         r.set_gpu_enabled(gpu);
-        r.set_asset_store(Box::new(klipp_analysis::assets::MemoryStore::default()));
+        let mut store = klipp_analysis::assets::MemoryStore::default();
+        if held {
+            for (key, data) in &state.analyses {
+                let _ = klipp_analysis::assets::store(&mut store, key.clone(), (**data).clone());
+            }
+        }
+        r.set_asset_store(Box::new(store));
         r
     };
-    let mut src = Synthetic { size, reads: 0 };
-    let (cpu, _) = unanalysed(false).render_inspected(&seq, at(), size.0, size.1, &mut src, RenderOptions::default(), Inspect::default());
+    let draw = |gpu: bool, held: bool| -> Result<(Vec<f32>, Vec<u8>), String> {
+        let mut src = Held { inner: Synthetic { size, reads: 0 }, state };
+        if gpu {
+            let (bytes, _) = holding(true, held)
+                .render_display_u8_on_gpu(&seq, at(), size.0, size.1, &mut src, RenderOptions::default())
+                .ok_or("BLOCKED: the GPU stack declined the frame")?;
+            Ok((Vec::new(), bytes))
+        } else {
+            let (frame, _) = holding(false, held).render_inspected(&seq, at(), size.0, size.1, &mut src, RenderOptions::default(), Inspect::default());
+            Ok((frame, Vec::new()))
+        }
+    };
+    let (before, after) = (draw(false, false)?.0, draw(false, true)?.0);
     match routes {
         Routes::CpuByDesign => {
-            if cpu == render_cpu(&seq, size)? {
-                return Err("the analysis doesn't change the CPU frame".into());
+            if before == after {
+                return Err("the held analysis doesn't change the CPU frame".into());
             }
             Ok(())
         }
-        Routes::Both => {
-            let mut src = Synthetic { size, reads: 0 };
-            let (gpu, _) = unanalysed(true)
-                .render_display_u8_on_gpu(&seq, at(), size.0, size.1, &mut src, RenderOptions::default())
-                .ok_or("BLOCKED: the GPU stack declined the unanalysed frame")?;
-            drawn_changed(&Frames { cpu, gpu }, &render_sequence(&seq, size)?)
-        }
+        Routes::Both => drawn_changed(&Frames { cpu: before, gpu: draw(true, false)?.1 }, &Frames { cpu: after, gpu: draw(true, true)?.1 }),
     }
 }
 
