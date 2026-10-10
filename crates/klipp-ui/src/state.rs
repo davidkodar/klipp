@@ -1547,6 +1547,9 @@ pub struct AppState {
     pub awaiting_seek_frame: bool,
     /// Render cache coverage per clip: (clip_id, cached_count, total_count).
     pub render_cache_ranges: Vec<(klipp_core::ClipId, u32, u32)>,
+    /// The nodes the frame on screen didn't draw as asked (M4 step 10),
+    /// for the viewer's chips.
+    pub frame_declines: Vec<klipp_nodes::Decline>,
     /// The render status strip over the ruler (#924): graded clips' spans,
     /// cached or still to render, in timeline ticks.
     pub render_status: Vec<klipp_engine::texture::RenderSpan>,
@@ -3971,6 +3974,7 @@ impl Default for AppState {
             showing_thumbnail_preview: false,
             awaiting_seek_frame: false,
             render_cache_ranges: Vec::new(),
+            frame_declines: Vec::new(),
             render_status: Vec::new(),
             render_range: None,
             show_relink_dialog: false,

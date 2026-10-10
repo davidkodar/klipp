@@ -275,6 +275,9 @@ pub struct GraphExecutor {
     /// frei0r nodes rendered padded, and refused (`ChainStats`).
     run_frei0r_fallbacks: u32,
     run_frei0r_refused: u32,
+    /// The run's declines so far (step 10), and the last run's.
+    run_declines: Vec<crate::Decline>,
+    last_run_declines: Vec<crate::Decline>,
     /// The picture `start_chain` kept for a composite before its first
     /// dispatch, handed to the run (M3 step 17b).
     start_kept: Option<klipp_effects::gpu::KeptPicture>,
@@ -695,6 +698,8 @@ impl GraphExecutor {
             source_unavailable: 0,
             run_frei0r_fallbacks: 0,
             run_frei0r_refused: 0,
+            run_declines: Vec::new(),
+            last_run_declines: Vec::new(),
             run_mix_refused: 0,
             start_kept: None,
             start_kept_for_gates: None,
@@ -774,6 +779,8 @@ impl GraphExecutor {
             source_unavailable: 0,
             run_frei0r_fallbacks: 0,
             run_frei0r_refused: 0,
+            run_declines: Vec::new(),
+            last_run_declines: Vec::new(),
             run_mix_refused: 0,
             start_kept: None,
             start_kept_for_gates: None,
@@ -1354,6 +1361,12 @@ impl GraphExecutor {
         self.last_run_chain_stats
     }
 
+    /// The nodes the last run didn't draw as asked, and why (step 10): a
+    /// list beside [`ChainStats`], which stays `Copy`.
+    pub fn last_run_declines(&self) -> &[crate::Decline] {
+        &self.last_run_declines
+    }
+
     /// `Some(slot_a)` if the last run left its final result in the chain
     /// buffer. Its returned Vec is then empty; read the result with
     /// `encode_output_to_display_u8`.
@@ -1787,6 +1800,9 @@ impl GraphExecutor {
         self.run_mix_refused = 0;
         self.run_frei0r_fallbacks = 0;
         self.run_frei0r_refused = 0;
+        // A run that errors leaves no declines of an earlier run behind.
+        self.run_declines.clear();
+        self.last_run_declines.clear();
         let keep = std::mem::take(&mut self.keep_output_on_gpu);
         // (Thumbnails also rule it out: they are read once the chain's
         // last submit is in, and a result kept on the GPU never submits.)
@@ -1937,6 +1953,15 @@ impl GraphExecutor {
                 || neutral_corrector
                 || noop_input_transform
                 || effect_blend_is_none(graph, node, clip_time_secs);
+            // A plug-in switched off is a decline the viewer names, never
+            // one an export fails on (step 10).
+            if node.kind == NodeKind::Frei0r && !effective_enabled(node, clip_time_secs) {
+                let name = match node.params.effects.first() {
+                    Some(klipp_effects::BuiltinEffect::Frei0r { type_id, .. }) => crate::decline::frei0r_name(type_id),
+                    _ => String::new(),
+                };
+                self.decline(node.id, NodeKind::Frei0r, crate::DeclineOutcome::Bypass, name, "switched off", "switched off".into());
+            }
 
             // A mixed effect whose mask is a key still waiting for its
             // picture on the chain (#1266): drawn from the tail, or from a
@@ -2864,6 +2889,7 @@ impl GraphExecutor {
             peak_slots: u32::try_from(peak_slots).unwrap_or(u32::MAX),
         };
         chain_stats_ledger(&self.last_run_chain_stats);
+        self.last_run_declines = std::mem::take(&mut self.run_declines);
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
         if total_ms > 5.0 {
             // Roll up per-node timings: kind#path → total ms across this frame.
@@ -4370,6 +4396,11 @@ impl GraphExecutor {
         out
     }
 
+    /// Records a node that didn't draw as asked (step 10).
+    pub(crate) fn decline(&mut self, node: NodeId, kind: NodeKind, outcome: crate::DeclineOutcome, name: String, reason: &str, why: String) {
+        self.run_declines.push(crate::Decline { clip: None, node, kind, outcome, name, reason: reason.to_owned(), why });
+    }
+
     /// A frei0r node's frame: linear → sRGB RGBA8 → the plug-in → linear,
     /// through the same conversions the effect chain used, so a plug-in
     /// without history draws as it did. Refused (missing, a history
@@ -4382,8 +4413,10 @@ impl GraphExecutor {
         };
         let Some(plugin) = klipp_effects::frei0r_effect::plugin(type_id) else {
             self.run_frei0r_refused += 1;
+            self.decline(node_id, NodeKind::Frei0r, crate::DeclineOutcome::PluginMissing, crate::decline::frei0r_name(type_id), "plug-in missing", format!("{type_id} isn't installed"));
             return input.to_vec();
         };
+        let name = plugin.info.name.clone();
         let rgba = klipp_effects::linear_f32_rgba_to_srgb_u8(input);
         let rendered = match ctx {
             // The render owner's instances, kept across frames.
@@ -4409,12 +4442,15 @@ impl GraphExecutor {
             Ok(out) => {
                 if crate::frei0r_node::fell_back(&out) {
                     self.run_frei0r_fallbacks += 1;
+                    self.decline(node_id, NodeKind::Frei0r, crate::DeclineOutcome::Fallback, name, "rendered padded to a size it takes", format!("{width}×{height} padded"));
                 }
                 klipp_effects::srgb_u8_to_linear_f32_rgba(&out.rgba)
             }
             Err(refusal) => {
                 tracing::warn!("frei0r: {refusal}; its input passed on");
                 self.run_frei0r_refused += 1;
+                let (outcome, reason) = crate::decline::frei0r_outcome(&refusal);
+                self.decline(node_id, NodeKind::Frei0r, outcome, name, reason, refusal.to_string());
                 input.to_vec()
             }
         }

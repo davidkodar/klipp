@@ -88,6 +88,10 @@ impl KlippApp {
             if self.state.render_status != fb.render_status {
                 self.state.render_status = fb.render_status.clone();
             }
+            if self.state.frame_declines.as_slice() != fb.declines() {
+                self.state.frame_declines = fb.declines().to_vec();
+                crate::panels::viewer_declines::publish(ctx, &self.state.frame_declines);
+            }
             // A frame the GPU stack wrote straight into the viewer's
             // texture: nothing to upload, the viewer samples it.
             self.viewer.gpu_frame_live = fb.gpu_output_live && fb.gpu_output.is_some();

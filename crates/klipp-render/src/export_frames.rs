@@ -26,6 +26,15 @@ use crate::export_job::{fit_to_target, pad_linear};
 use crate::frame_source::ExportFrameSource;
 use crate::snapshot::SequenceSnapshot;
 
+/// Why an export refuses a frame with these declines, if it does: any
+/// but a node switched off and a declared fallback (a padded frame, a
+/// neighbour past the media's real edge), which draw what the timeline
+/// shows (M4 step 10).
+pub fn refused(declines: &[klipp_nodes::Decline]) -> Option<String> {
+    let failed: Vec<String> = declines.iter().filter(|d| d.fails()).map(|d| d.to_string()).collect();
+    (!failed.is_empty()).then(|| failed.join("; "))
+}
+
 /// The renderer an export draws with: the viewer's, set up for a delivery.
 /// `label` names the export in the log.
 pub fn export_renderer(snapshot: &SequenceSnapshot, label: &str) -> Renderer {
@@ -155,11 +164,40 @@ impl ExportFrameMaker {
             self.gpu_yuv = None;
             debug!("{}: GPU frame conversion off from {time:?}", self.label);
         }
-        let picture = renderer.render(timeline, time, fit_w, fit_h, frames, self.opts);
+        let (picture, found) = renderer.render_inspected(timeline, time, fit_w, fit_h, frames, self.opts, Default::default());
         frames.end_frame()?;
+        if let Some(why) = refused(&found.declines) {
+            return Err(RenderError::Declined(format!("at {time:?}: {why}")));
+        }
         let t = std::time::Instant::now();
         let picture = pad_linear(picture, fit_w, fit_h, self.out.0, self.out.1, fit_x, fit_y);
         self.last_pad = t.elapsed();
         Ok(ExportFrame::Linear(picture))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refused;
+    use klipp_nodes::{Decline, DeclineOutcome as Outcome, NodeKind};
+
+    fn decline(outcome: Outcome) -> Decline {
+        Decline { clip: None, node: uuid::Uuid::nil(), kind: NodeKind::Frei0r, outcome, name: "Delay0r".into(), reason: "reason".into(), why: "why".into() }
+    }
+
+    #[test]
+    fn a_neighbour_past_the_media_edge_or_a_switched_off_node_never_stops_an_export() {
+        // A denoise at the media's first frame has no frame before it: the
+        // node ran with what it had, as it always will there.
+        assert_eq!(refused(&[decline(Outcome::Fallback), decline(Outcome::Bypass)]), None);
+        assert_eq!(refused(&[]), None);
+    }
+
+    #[test]
+    fn a_neighbour_unread_inside_the_media_or_a_failed_plug_in_stops_it() {
+        for outcome in [Outcome::NeighbourMissing, Outcome::PluginMissing, Outcome::Unsupported, Outcome::RenderFailed] {
+            let why = refused(&[decline(Outcome::Fallback), decline(outcome)]).unwrap_or_else(|| panic!("{outcome:?} exported"));
+            assert!(why.contains(outcome.label()) && !why.contains("fallback"), "{why}");
+        }
     }
 }
