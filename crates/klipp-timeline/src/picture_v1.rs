@@ -292,6 +292,8 @@ impl EffectJson {
                     (k.clone(), val)
                 })
                 .collect(),
+            context: self.context,
+            transition_amount: self.transition_amount,
             ..Default::default()
         }
     }
