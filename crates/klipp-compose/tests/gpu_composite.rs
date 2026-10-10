@@ -135,6 +135,434 @@ fn the_gpu_stack_declines_a_frei0r_plug_in() {
     assert_eq!(r.last_decline(), Some("frei0r plug-in"));
 }
 
+/// A frame with something for every effect to act on: gradients across
+/// and down, a band of highlights up to 4 (glows, bloom and soft clips
+/// gate on light above 1), patches of saturated primaries and secondaries,
+/// a hard checker (edges for sharpening, streaks and keys), a band at
+/// half alpha (an alpha-over has something to show through), and clear
+/// margins down each side.
+fn rich() -> Arc<Vec<f32>> {
+    let patches: [[f32; 3]; 6] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 1.0, 0.0], [0.0, 1.0, 1.0], [1.0, 0.0, 1.0]];
+    let mut v = Vec::with_capacity((W * H * 4) as usize);
+    for y in 0..H {
+        for x in 0..W {
+            let (fx, fy) = (x as f32 / (W - 1) as f32, y as f32 / (H - 1) as f32);
+            let mut px = [fx * 0.9, fy * 0.7, (1.0 - fx) * 0.6, 1.0];
+            if fy < 0.2 {
+                // Highlights: a ramp to 4 across the top.
+                let l = 0.5 + fx * 3.5;
+                px = [l, l * 0.9, l * 0.8, 1.0];
+            } else if (0.4..0.55).contains(&fy) {
+                let p = patches[((fx * 6.0) as usize).min(5)];
+                px = [p[0], p[1], p[2], 1.0];
+            } else if (0.65..0.8).contains(&fy) {
+                let on = ((x / 8) + (y / 8)) % 2 == 0;
+                let c = if on { 0.95 } else { 0.05 };
+                px = [c, c, c, 1.0];
+            }
+            if fy > 0.9 {
+                px[3] = 0.5;
+            }
+            // Transparent margins down each side: a shadow or a glow
+            // around the picture has empty pixels to draw into.
+            if !(24..W - 24).contains(&x) {
+                px = [0.0, 0.0, 0.0, 0.0];
+            }
+            v.extend_from_slice(&px);
+        }
+    }
+    Arc::new(v)
+}
+
+/// The probe's sequence: one clip of [`rich`] on top of a dark backdrop,
+/// so a change isn't diluted by layers over it, and an effect that draws
+/// outside the picture (a shadow) or through it (opacity) has something to
+/// draw over. The probed clip is the top track's.
+fn probe_stack() -> (Sequence, Flat) {
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    let mut top = Track::new("V2", TrackKind::Video);
+    let mut back = Track::new("V1", TrackKind::Video);
+    let t = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 10.0);
+    let b = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 10.0);
+    let mut src = Flat::default();
+    src.0.insert(t.id, rich());
+    src.0.insert(b.id, Arc::new(picture(0.6).iter().enumerate().map(|(i, v)| if i % 4 == 3 { *v } else { v * 0.3 }).collect()));
+    top.clips = vec![t];
+    back.clips = vec![b];
+    seq.tracks = vec![top, back];
+    (seq, src)
+}
+
+/// The probed clip of [`probe_stack`]'s sequence.
+fn probed(seq: &mut Sequence) -> &mut Clip {
+    seq.tracks.first_mut().and_then(|t| t.clips.first_mut()).expect("the probed clip")
+}
+
+/// The values a catalog parameter is tried at, strongest first: near each
+/// end of its soft range (its range without one), then nearer the middle.
+fn tries(p: &klipp_effects::registry::ParamDesc) -> Vec<f32> {
+    let (lo, hi) = p.soft.or(p.range).unwrap_or((p.default - 1.0, p.default + 1.0));
+    [0.95, 0.05, 0.8, 0.2].iter().map(|s| lo + (hi - lo) * s).filter(|v| (v - p.default).abs() > 1e-6).collect()
+}
+
+/// `t`'s settings to try through its saved form: every number at once,
+/// then one parameter at a time, strongest first; the sample last.
+fn effect_tries(t: &klipp_effects::registry::EffectType) -> Vec<klipp_effects::BuiltinEffect> {
+    let mut out = Vec::new();
+    // Every number at once, at 80% of its range: an effect that needs two
+    // settings together (a shadow's distance and its opacity) acts.
+    let mut all = serde_json::to_value((t.sample)()).expect("an effect serialises");
+    for p in t.desc.params.iter().filter(|p| p.kind == klipp_effects::registry::ParamKind::Float) {
+        let (lo, hi) = p.soft.or(p.range).unwrap_or((p.default - 1.0, p.default + 1.0));
+        let to = serde_json::json!(lo + (hi - lo) * 0.8);
+        match (p.index, all.get_mut(p.field)) {
+            (Some(i), Some(serde_json::Value::Array(a))) if i < a.len() => a[i] = to,
+            (None, Some(field)) if field.is_number() => *field = to,
+            _ => {}
+        }
+    }
+    if let Ok(e) = serde_json::from_value(all) {
+        out.push(e);
+    }
+    for p in t.desc.params.iter().filter(|p| p.kind == klipp_effects::registry::ParamKind::Float) {
+        for value in tries(p) {
+            let mut v = serde_json::to_value((t.sample)()).expect("an effect serialises");
+            let to = serde_json::json!(value);
+            let set = match (p.index, v.get_mut(p.field)) {
+                (Some(i), Some(serde_json::Value::Array(a))) if i < a.len() => {
+                    a[i] = to;
+                    true
+                }
+                (None, Some(field)) if field.is_number() => {
+                    *field = to;
+                    true
+                }
+                _ => false,
+            };
+            if let (true, Ok(e)) = (set, serde_json::from_value(v)) {
+                out.push(e);
+            }
+        }
+    }
+    out.push((t.sample)());
+    out
+}
+
+/// A Transform that shrinks the picture to 60%, so an effect that draws
+/// beyond it (a shadow, a glow's spill) has room to.
+fn shrink() -> klipp_effects::BuiltinEffect {
+    klipp_effects::BuiltinEffect::Transform { position_x: 0.0, position_y: 0.0, scale_x: 0.6, scale_y: 0.6, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None }
+}
+
+/// The kinds the probe can't show changing in a one-clip fixture, and
+/// why. Held exactly: a kind that starts drawing here must leave the list,
+/// and a new kind that can't must join it with its reason.
+const UNPROVEN: &[(&str, &str)] = &[
+    ("effect klipp.fx.temporal_denoise", "compares a frame with its neighbours; the fixture's source is one still frame"),
+    ("effect klipp.fx.speed_ramp", "blends toward the media's next frame; the fixture's source is one still frame"),
+    ("effect klipp.fx.deflicker", "draws from a deflicker analysis of the media, which the fixture has none of"),
+    ("effect klipp.fx.video_stabilization", "warps by a stabilisation analysis, which the fixture has none of"),
+    ("effect klipp.fx.rolling_shutter_correction", "warps by a motion analysis, which the fixture has none of"),
+    ("grade node Reroute", "passes its input on by design"),
+    ("grade node InputTransform", "records the source's format; the decoder has already decoded it, so it passes the picture on"),
+    ("grade node Mask", "makes a matte its consumers read; alone in a chain it draws the picture as it is"),
+    ("grade node DifferenceKey", "keys against a clean-plate file the fixture has none of"),
+];
+
+/// A grade node's settings that make it act, for a kind whose settings
+/// aren't plain numbers; `None` for the rest, which are tried number by
+/// number.
+fn node_setup(kind: klipp_nodes::NodeKind, lut: &std::path::Path) -> Option<klipp_nodes::NodeParams> {
+    use klipp_core::color_grade::{ColorMatchSettings, CurveSet, FilmGrainSettings, HueSatCurves, LayerMixerInput, SoftClipSettings};
+    use klipp_nodes::{NodeKind as K, NodeParams};
+    let p = NodeParams::default();
+    Some(match kind {
+        K::RGBCurves => NodeParams { curves: Some(CurveSet { master: vec![[0.0, 0.0], [0.4, 0.7], [1.0, 1.0]], ..CurveSet::default() }), ..p },
+        K::HueSatCurves => NodeParams { huesat: Some(HueSatCurves { hue_vs_sat: vec![[0.0, 0.1], [0.5, 0.1], [1.0, 0.1]], ..HueSatCurves::default() }), ..p },
+        K::SoftClip => NodeParams { soft_clip: Some(SoftClipSettings { enabled: true, threshold: 0.6, knee: 0.2 }), ..p },
+        K::FilmGrain => NodeParams { grain: Some(FilmGrainSettings { enabled: true, amount: 0.6, ..FilmGrainSettings::default() }), ..p },
+        K::Lut3D => NodeParams { lut_path: Some(lut.to_path_buf()), lut_opacity: Some(1.0), ..p },
+        K::PrimariesMatrix => NodeParams { primaries_from: Some(klipp_core::WorkingColorspace::Rec709Linear), primaries_to: Some(klipp_core::WorkingColorspace::Bt2020Linear), ..p },
+        K::ColorMatch => NodeParams { color_match: Some(ColorMatchSettings { exposure: 0.7, ..ColorMatchSettings::default() }), ..p },
+        K::LayerMixer => NodeParams {
+            layer_mixer: Some(klipp_nodes::LayerMixerParams {
+                // Half of input 0 over all of input 1: a mix of the two,
+                // whichever is drawn on top.
+                inputs: vec![LayerMixerInput { opacity: 0.5, ..LayerMixerInput::default() }, LayerMixerInput::default()],
+            }),
+            ..p
+        },
+        K::Compound => {
+            // Inside: Source → a stop up → Output.
+            let mut bright = NodeParams::default();
+            bright.apply_override("exposure", 1.0);
+            let (source, up, output) = (node(K::Source, NodeParams::default()), node(K::Exposure, bright), node(K::Output, NodeParams::default()));
+            let edges = vec![
+                klipp_nodes::Edge { from_node: source.id, from_port: 0, to_node: up.id, to_port: 0 },
+                klipp_nodes::Edge { from_node: up.id, from_port: 0, to_node: output.id, to_port: 0 },
+            ];
+            let inner = klipp_nodes::NodeGraph { output_node_id: output.id, nodes: vec![source, up, output], edges, ..klipp_nodes::NodeGraph::default() };
+            NodeParams { compound_subgraph: Some(inner), ..p }
+        }
+        _ => return None,
+    })
+}
+
+/// A 2-point LUT that sends each channel to the next (R from G, G from
+/// B, B from R), written for the Lut3D probe.
+fn rotating_lut() -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("klipp-probe-rotate-{}.cube", std::process::id()));
+    let mut text = String::from("LUT_3D_SIZE 2\n");
+    for b in 0..2 {
+        for g in 0..2 {
+            for r in 0..2 {
+                text.push_str(&format!("{g} {b} {r}\n"));
+            }
+        }
+    }
+    std::fs::write(&path, text).expect("the probe LUT written");
+    path
+}
+
+fn node(kind: klipp_nodes::NodeKind, params: klipp_nodes::NodeParams) -> klipp_nodes::Node {
+    klipp_nodes::Node { id: klipp_nodes::NodeId::new_v4(), kind, label: String::new(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: Vec::new() }
+}
+
+/// A grade node's settings to try: its own setup when it has one
+/// ([`node_setup`]), else one keyframable number at a time, strongest
+/// first.
+fn node_tries(t: &klipp_nodes::registry::NodeType, lut: &std::path::Path) -> Vec<klipp_nodes::NodeParams> {
+    if let Some(p) = node_setup(t.kind, lut) {
+        return vec![p];
+    }
+    let mut out = Vec::new();
+    for p in t.desc.params.iter().filter(|p| p.kind == klipp_effects::registry::ParamKind::Float && p.keyframable) {
+        for value in tries(p) {
+            let mut params = klipp_nodes::NodeParams::default();
+            params.apply_override(p.key, value);
+            out.push(params);
+        }
+    }
+    out.push(klipp_nodes::NodeParams::default());
+    out
+}
+
+/// One probe's verdict: drawn by the stack as the timeline draws it, or
+/// declined with a reason, both fine; anything else, what went wrong.
+enum Verdict {
+    Fine,
+    Unshown,
+    Wrong(String),
+}
+
+/// The first of `cases` (sequences with the kind set up) that changes the
+/// frame from `plain`, judged: the stack draws it within a level of the
+/// timeline render, or declines it with a reason.
+fn judge(cases: impl IntoIterator<Item = Sequence>, plain: &[u8], src: &mut Flat) -> Verdict {
+    for s in cases {
+        let mut r = renderer();
+        let cpu = display(&r.render(&s, tc(1.0), W, H, src, RenderOptions::default()));
+        if worst(&cpu, plain) <= 1 {
+            continue;
+        }
+        return match r.render_display_u8_on_gpu(&s, tc(1.0), W, H, src, RenderOptions::default()) {
+            Some((gpu, _)) => match worst(&cpu, &gpu) {
+                d if d > 1 => Verdict::Wrong(format!("the stack drew it {d} levels from the timeline render")),
+                _ => Verdict::Fine,
+            },
+            None if r.last_decline().is_none() => Verdict::Wrong("declined with no reason".into()),
+            None => Verdict::Fine,
+        };
+    }
+    Verdict::Unshown
+}
+
+/// Every probe's outcome against [`UNPROVEN`]: anything wrong fails, and
+/// the unshown set must be the list, exactly.
+fn hold(wrong: Vec<String>, unshown: Vec<String>, probed: &[String]) {
+    let pinned: Vec<&str> = UNPROVEN.iter().map(|(k, _)| *k).filter(|k| probed.iter().any(|p| p == k)).collect();
+    let newly: Vec<&String> = unshown.iter().filter(|u| !pinned.contains(&u.as_str())).collect();
+    let now_drawn: Vec<&&str> = pinned.iter().filter(|k| !unshown.iter().any(|u| u == *k)).collect();
+    assert!(wrong.is_empty(), "drawn by the stack other than the timeline draws it:\n{}", wrong.join("\n"));
+    assert!(newly.is_empty(), "not shown to change anything, and not listed in UNPROVEN with a reason: {newly:?}");
+    assert!(now_drawn.is_empty(), "listed in UNPROVEN but now shown to change the frame; take them off: {now_drawn:?}");
+}
+
+/// Nothing the GPU stack draws is silently absent (M4 step 5). For every
+/// catalog effect, and every single-input grade node, on a clip of a rich
+/// frame over a backdrop, set so it changes the frame, the stack either
+/// draws the frame the timeline render draws (within a level), or declines
+/// it with a reason. A new kind the stack can't run fails here, not in the
+/// viewer.
+///
+/// The control: each kind is set until the timeline render differs from
+/// the plain one by more than a level; a stack that left it out would
+/// otherwise look the same as one that drew it. The few kinds that can't
+/// change a one-clip fixture are [`UNPROVEN`], with their reasons, held
+/// exactly.
+///
+/// Grade nodes with more than one input or output are wired whole by
+/// [`every_multi_port_grade_node_is_drawn_by_the_stack_or_declined`] (#1484).
+#[test]
+fn every_effect_and_grade_node_is_drawn_by_the_stack_or_declined() {
+    let (seq, mut src) = probe_stack();
+    let mut r = renderer();
+    if r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none() {
+        eprintln!("skipping: the GPU stack declined the plain probe (no usable GPU?)");
+        return;
+    }
+    let plain = display(&renderer().render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+    let (mut wrong, mut unshown, mut probed_names) = (Vec::new(), Vec::new(), Vec::new());
+    let mut verdict = |name: String, v: Verdict| {
+        match v {
+            Verdict::Fine => {}
+            Verdict::Unshown => unshown.push(name.clone()),
+            Verdict::Wrong(why) => wrong.push(format!("{name}: {why}")),
+        }
+        probed_names.push(name);
+    };
+    // The probe shrunk to 60%: what an effect after the shrink is judged
+    // against, never the full-size frame (the shrink alone changes that).
+    let shrunk = {
+        let mut s = seq.clone();
+        probed(&mut s).set_effect_list(vec![shrink()], vec![true]);
+        display(&renderer().render(&s, tc(1.0), W, H, &mut src, RenderOptions::default()))
+    };
+    let with = |list: Vec<klipp_effects::BuiltinEffect>| {
+        let mut s = seq.clone();
+        let n = list.len();
+        probed(&mut s).set_effect_list(list, vec![true; n]);
+        s
+    };
+    for t in klipp_effects::registry::effect_types().filter(|t| t.tag != "frei0r") {
+        // On the full frame first; an effect that draws beyond the picture
+        // (a shadow, a glow's spill) after a shrink, against the shrunk.
+        let full = judge(effect_tries(t).into_iter().map(|e| with(vec![e])), &plain, &mut src);
+        let v = match full {
+            Verdict::Unshown => judge(effect_tries(t).into_iter().map(|e| with(vec![shrink(), e])), &shrunk, &mut src),
+            v => v,
+        };
+        verdict(format!("effect {}", t.desc.id), v);
+    }
+    // frei0r with a real plug-in when one is installed (its decline by the
+    // stack is held by the_gpu_stack_declines_a_frei0r_plug_in).
+    match saturator() {
+        Some(type_id) => {
+            let mut s = seq.clone();
+            probed(&mut s).set_effect_list(vec![klipp_effects::BuiltinEffect::Frei0r { type_id, params: vec![klipp_frei0r::Frei0rValue::Double(0.9)] }], vec![true]);
+            verdict("effect klipp.fx.frei0r".into(), judge([s], &plain, &mut src));
+        }
+        None => eprintln!("UNVERIFIED: effect klipp.fx.frei0r (the saturat0r plug-in isn't installed)"),
+    }
+    let lut = rotating_lut();
+    for t in klipp_nodes::registry::node_types().filter(|t| t.desc.inputs.len() == 1 && t.desc.outputs.len() == 1) {
+        let mut cases = Vec::new();
+        for params in node_tries(t, &lut) {
+            let mut s = seq.clone();
+            let clip = probed(&mut s);
+            let source = clip.grade().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source).map(|n| n.id);
+            if clip.insert_grade_node(source, node(t.kind, params)) {
+                cases.push(s);
+            }
+        }
+        let name = format!("grade node {:?}", t.kind);
+        if cases.is_empty() {
+            verdict(name, Verdict::Wrong("couldn't be placed".into()));
+            continue;
+        }
+        verdict(name, judge(cases, &plain, &mut src));
+    }
+    hold(wrong, unshown, &probed_names);
+}
+
+/// The saturat0r frei0r plug-in's type id, registered, when installed.
+fn saturator() -> Option<String> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).map(|h| h.join(".frei0r-1/lib"));
+    let dirs = home.into_iter().chain(["/usr/local/lib/frei0r-1", "/usr/lib/frei0r-1"].map(std::path::PathBuf::from));
+    let info = dirs.map(|d| d.join("saturat0r.so")).filter(|p| p.exists()).find_map(|p| klipp_frei0r::host::scan_library(&p).into_iter().next())?;
+    klipp_effects::frei0r_effect::_register_for_test(info.clone());
+    Some(info.type_id())
+}
+
+/// The grade nodes [`every_effect_and_grade_node_is_drawn_by_the_stack_or_declined`]
+/// can't place, each wired whole (#1484): every input fed, input 0 the
+/// clip's source and every other input that source a stop brighter, the
+/// first output joined to the grade's output, set so it acts. The RGB
+/// splitter emits its input on every port by design, so it is probed with
+/// its combiner, a stop up on the red branch. The same rule: shown to
+/// change the picture, then drawn as the timeline draws it or declined
+/// with a reason.
+#[test]
+fn every_multi_port_grade_node_is_drawn_by_the_stack_or_declined() {
+    use klipp_nodes::NodeKind as K;
+    let (seq, mut src) = probe_stack();
+    let mut r = renderer();
+    if r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none() {
+        eprintln!("skipping: the GPU stack declined the plain probe (no usable GPU?)");
+        return;
+    }
+    let plain = display(&renderer().render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+    let lut = rotating_lut();
+    let (mut wrong, mut unshown, mut probed_names) = (Vec::new(), Vec::new(), Vec::new());
+    let bright = || {
+        let mut p = klipp_nodes::NodeParams::default();
+        p.apply_override("exposure", 1.0);
+        node(K::Exposure, p)
+    };
+    for t in klipp_nodes::registry::node_types().filter(|t| (t.desc.inputs.len() > 1 || t.desc.outputs.len() > 1) && t.kind != K::RGBCombiner) {
+        let name = format!("grade node {:?}", t.kind);
+        let mut cases = Vec::new();
+        for params in node_tries(t, &lut) {
+            let mut s = seq.clone();
+            let placed = probed(&mut s).edit_grade(|g| {
+                let source = g.nodes.iter().find(|n| n.kind == K::Source)?.id;
+                let out = g.output_node_id;
+                g.edges.retain(|e| e.to_node != out);
+                let it = node(t.kind, params);
+                let it_id = it.id;
+                if t.kind == K::RGBSplitter {
+                    // Splitter → (a stop up on R) → combiner.
+                    let (up, comb) = (bright(), node(K::RGBCombiner, klipp_nodes::NodeParams::default()));
+                    let (up_id, comb_id) = (up.id, comb.id);
+                    g.edges.push(klipp_nodes::Edge { from_node: source, from_port: 0, to_node: it_id, to_port: 0 });
+                    g.edges.push(klipp_nodes::Edge { from_node: it_id, from_port: 0, to_node: up_id, to_port: 0 });
+                    g.edges.push(klipp_nodes::Edge { from_node: up_id, from_port: 0, to_node: comb_id, to_port: 0 });
+                    g.edges.push(klipp_nodes::Edge { from_node: it_id, from_port: 1, to_node: comb_id, to_port: 1 });
+                    g.edges.push(klipp_nodes::Edge { from_node: it_id, from_port: 2, to_node: comb_id, to_port: 2 });
+                    g.edges.push(klipp_nodes::Edge { from_node: comb_id, from_port: 0, to_node: out, to_port: 0 });
+                    g.nodes.extend([it, up, comb]);
+                    return Some(());
+                }
+                let other = bright();
+                let other_id = other.id;
+                g.edges.push(klipp_nodes::Edge { from_node: source, from_port: 0, to_node: other_id, to_port: 0 });
+                for port in 0..t.desc.inputs.len() as u8 {
+                    let from = if port == 0 { source } else { other_id };
+                    g.edges.push(klipp_nodes::Edge { from_node: from, from_port: 0, to_node: it_id, to_port: port });
+                }
+                g.edges.push(klipp_nodes::Edge { from_node: it_id, from_port: 0, to_node: out, to_port: 0 });
+                g.nodes.extend([other, it]);
+                Some(())
+            });
+            if placed.is_some() {
+                cases.push(s);
+            }
+        }
+        if cases.is_empty() {
+            wrong.push(format!("{name}: couldn't be wired"));
+            continue;
+        }
+        match judge(cases, &plain, &mut src) {
+            Verdict::Fine => {}
+            Verdict::Unshown => unshown.push(name.clone()),
+            Verdict::Wrong(why) => wrong.push(format!("{name}: {why}")),
+        }
+        probed_names.push(name);
+    }
+    hold(wrong, unshown, &probed_names);
+}
+
 fn renderer() -> Renderer {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
