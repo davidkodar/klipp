@@ -139,13 +139,14 @@ _touched=$(printf '%s\n' "$_changed" | crates_of)
 # (compiled), not tested.
 _check_args=
 _check_why="the crates it touches"
+_scope_known=
 if _meta=$(cargo metadata --no-deps --format-version 1 --offline 2>/dev/null) \
     && _metafile=$(mktemp) && printf '%s' "$_meta" >"$_metafile" \
     && _decision=$(printf '%s\n' "$_changed" | python3 "$ROOT/scripts/affected_crates.py" "$_metafile" --git "$_fork" HEAD 2>/dev/null); then
     case "$_decision" in
-        packages\ *) _check_args=$(printf '%s' "${_decision#packages }" | sed 's/[^ ][^ ]*/-p &/g'); _check_why="${_decision#packages }" ;;
-        full\ *) _check_args=--workspace; _check_why="${_decision#full }" ;;
-        none\ *) _check_why="${_decision#none }" ;;
+        packages\ *) _scope_known=1; _check_args=$(printf '%s' "${_decision#packages }" | sed 's/[^ ][^ ]*/-p &/g'); _check_why="${_decision#packages }" ;;
+        full\ *) _scope_known=1; _check_args=--workspace; _check_why="${_decision#full }" ;;
+        none\ *) _scope_known=1; _check_why="${_decision#none }" ;;
     esac
 fi
 [ -n "${_metafile:-}" ] && rm -f "$_metafile"
@@ -156,8 +157,12 @@ fi
 if [ -n "$_main" ] && [ "$_fork" != "$_main" ]; then
     _main_crates=$(git diff --name-only "$_fork" "$_main" | crates_of)
     _in_scope=
+    # When the gate's scope couldn't be worked out, the gate tests the
+    # whole workspace: hold this check to that, never skip it.
+    _main_scope=$_check_args
+    [ -n "$_scope_known" ] || _main_scope=--workspace
     for _c in $_main_crates; do
-        case " $_check_args " in
+        case " $_main_scope " in
             *" --workspace "*|*" -p $_c "*) _in_scope="$_in_scope $_c" ;;
         esac
     done
