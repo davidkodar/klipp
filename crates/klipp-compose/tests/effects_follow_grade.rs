@@ -379,22 +379,6 @@ impl FrameSource for Moving {
         Chart.frame(c, secs, w, h)
     }
 
-    fn motion_frame(&mut self, _c: &Clip, secs: f64, max_width: u32) -> Option<(Vec<u8>, u32, u32)> {
-        let (w, h) = (256u32, 144u32);
-        if w > max_width {
-            return None;
-        }
-        let n = (secs * 24.0).floor() as i64;
-        let mut v = Vec::with_capacity((w * h * 4) as usize);
-        for y in 0..h as i64 {
-            for x in 0..w as i64 {
-                let (bx, by) = ((x - 6 * n).div_euclid(8), y.div_euclid(8));
-                let g = ((bx * 7919 + by * 104_729).rem_euclid(251)) as u8;
-                v.extend_from_slice(&[g, g, g, 255]);
-            }
-        }
-        Some((v, w, h))
-    }
 }
 
 /// The three analysis-driven effects on a graded clip, each with its
