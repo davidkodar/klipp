@@ -144,6 +144,11 @@ fn upcoming_reversed(seq: &Sequence, time: klipp_core::Timecode, playing: bool) 
 }
 
 impl FrameSource for ViewerSource<'_> {
+    fn media_fps(&mut self, clip: &Clip) -> Option<f64> {
+        let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+        Some(pool.get(&clip.media_id()?)?.fps.as_f64())
+    }
+
     fn frame(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
         // A reversed clip is never the primary decoder's, and its frames
         // are read at the time asked for (#617).

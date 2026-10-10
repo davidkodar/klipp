@@ -104,6 +104,12 @@ pub trait SourceProvider {
     fn bounds(&self) -> (f64, f64);
     fn encoded(&mut self, source_secs: f64) -> Neighbour<EncodedFrame>;
     fn linear(&mut self, source_secs: f64) -> Neighbour<LinearFrame>;
+    /// One of the media's frames, in seconds (1 / its rate), when known: a
+    /// node's neighbours are the captures either side, whatever the
+    /// sequence's rate. `None` when the source can't say.
+    fn frame_secs(&self) -> Option<f64> {
+        None
+    }
 }
 
 /// The most source frames any node may ask for in one frame, whatever
@@ -169,6 +175,10 @@ impl<'s> BoundedSources<'s> {
 impl SourceProvider for BoundedSources<'_> {
     fn bounds(&self) -> (f64, f64) {
         self.inner.bounds()
+    }
+
+    fn frame_secs(&self) -> Option<f64> {
+        self.inner.frame_secs()
     }
 
     fn encoded(&mut self, source_secs: f64) -> Neighbour<EncodedFrame> {

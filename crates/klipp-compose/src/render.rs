@@ -193,6 +193,13 @@ pub trait FrameSource {
     fn media_range(&mut self, _clip: &Clip) -> Option<(f64, f64)> {
         None
     }
+
+    /// The frame rate of `clip`'s media, when the source knows it: a
+    /// temporal node's neighbours are its captures either side. `None`
+    /// (the default): the sequence's rate stands in.
+    fn media_fps(&mut self, _clip: &Clip) -> Option<f64> {
+        None
+    }
 }
 
 /// A clip's source as a non-pure node reads it (M4 step 1): the frame
@@ -212,6 +219,8 @@ pub struct ClipSources<'s> {
     clip: &'s Clip,
     working: WorkingColorspace,
     range: (f64, f64),
+    /// One of the media's frames, in seconds, when known.
+    frame_secs: Option<f64>,
     encoded: Option<Option<klipp_plugin::FrameProviderFn>>,
     linear: Option<Option<LinearFrameProviderFn>>,
 }
@@ -219,7 +228,8 @@ pub struct ClipSources<'s> {
 impl<'s> ClipSources<'s> {
     pub fn new(src: &'s mut dyn FrameSource, clip: &'s Clip, working: WorkingColorspace) -> Self {
         let range = src.media_range(clip).unwrap_or((0.0, f64::INFINITY));
-        Self { src, clip, working, range, encoded: None, linear: None }
+        let frame_secs = src.media_fps(clip).filter(|f| f.is_finite() && *f > 0.0).map(|f| 1.0 / f);
+        Self { src, clip, working, range, frame_secs, encoded: None, linear: None }
     }
 
     /// The readers' time for `source_secs`: from the clip's source in-point.
@@ -231,6 +241,10 @@ impl<'s> ClipSources<'s> {
 impl klipp_nodes::frame_context::SourceProvider for ClipSources<'_> {
     fn bounds(&self) -> (f64, f64) {
         self.range
+    }
+
+    fn frame_secs(&self) -> Option<f64> {
+        self.frame_secs
     }
 
     fn encoded(&mut self, source_secs: f64) -> klipp_nodes::frame_context::Neighbour<klipp_nodes::frame_context::EncodedFrame> {

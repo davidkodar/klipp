@@ -237,6 +237,10 @@ impl FrameSource for KnownSource {
     fn media_range(&mut self, clip: &Clip) -> Option<(f64, f64)> {
         self.range(clip)
     }
+
+    fn media_fps(&mut self, clip: &Clip) -> Option<f64> {
+        Some(self.scene.pool.get(&Self::media(clip)?)?.fps.as_f64())
+    }
 }
 
 impl KnownSource {

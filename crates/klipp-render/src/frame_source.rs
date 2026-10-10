@@ -351,6 +351,12 @@ impl FrameSource for ExportFrameSource<'_> {
         Some((0.0, self.media.get(media_id)?.duration_secs?))
     }
 
+    fn media_fps(&mut self, clip: &Clip) -> Option<f64> {
+        let ClipKind::Media { media_id } = &clip.kind else { return None };
+        let (num, den) = self.media.get(media_id)?.fps?;
+        (den > 0).then(|| num as f64 / den as f64)
+    }
+
     /// The same frames in linear light, for the renderer's own use.
     fn temporal_frames_linear(
         &mut self,

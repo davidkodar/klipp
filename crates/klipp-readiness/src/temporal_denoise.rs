@@ -73,6 +73,11 @@ impl Source for Ramp {
 /// A scene of one media clip of the ramp, its source from `from` to `to`
 /// (media frames), at `speed`, with a denoiser of `strength`.
 fn scene(from: i64, to: i64, speed: f64, strength: f32) -> (Arc<Scene>, Clip) {
+    scene_at(from, to, speed, strength, FPS)
+}
+
+/// [`scene`] in a sequence of `sequence_fps`: the media stays at [`FPS`].
+fn scene_at(from: i64, to: i64, speed: f64, strength: f32, sequence_fps: u32) -> (Arc<Scene>, Clip) {
     let mut pool = klipp_media::MediaPool::new();
     let mut item = klipp_media::MediaItem::synthetic_for_test("/known/ramp.mov".into(), None);
     item.duration = RationalTime { value: MEDIA_FRAMES, rate: FPS };
@@ -85,17 +90,18 @@ fn scene(from: i64, to: i64, speed: f64, strength: f32) -> (Arc<Scene>, Clip) {
     clip.speed = speed;
     clip.set_effect_list(vec![BuiltinEffect::TemporalDenoise { strength, threshold: THRESHOLD }], vec![true]);
     let mut sequence = Sequence::new_default();
-    sequence.fps = klipp_core::Fps::new(FPS, 1);
+    sequence.fps = klipp_core::Fps::new(sequence_fps, 1);
     let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
     v1.clips = vec![clip.clone()];
     sequence.tracks = vec![v1];
     (Arc::new(Scene { sequence, pool, width: W, height: H, plugin_dirs: Vec::new() }), clip)
 }
 
-/// What timeline frame `frame` of `clip` must be: its source frame,
-/// denoised against the neighbours `source` has a frame either side of it.
-fn expected(clip: &Clip, source: &Ramp, frame: i64, strength: f32) -> Vec<f32> {
-    let at = clip.source_secs_at(frame as f64 / FPS as f64, FPS as f64);
+/// What timeline frame `frame` (at `sequence_fps`) of `clip` must be: its
+/// source frame, denoised against the media's frames either side of it, a
+/// capture apart whatever the sequence's rate, those `source` has.
+fn expected(clip: &Clip, source: &Ramp, frame: i64, strength: f32, sequence_fps: f64) -> Vec<f32> {
+    let at = clip.source_secs_at(frame as f64 / sequence_fps, sequence_fps);
     let dt = 1.0 / FPS as f64;
     let neighbours: Vec<Vec<f32>> = [at - dt, at + dt]
         .into_iter()
@@ -111,13 +117,14 @@ fn expected(clip: &Clip, source: &Ramp, frame: i64, strength: f32) -> Vec<f32> {
 /// expectation, in the order given.
 fn holds(route: Route, gpu: bool, scene: (Arc<Scene>, Clip), source: Ramp, frames: &[i64], strength: f32) -> Result<(), String> {
     let (scene, clip) = scene;
+    let sequence_fps = scene.sequence.fps.as_f64();
     let source = Arc::new(source);
     let mut s = Session::new(route, gpu, scene, Arc::clone(&source) as Arc<dyn Source>);
     for &f in frames {
         let got = s.frame(f);
         // The viewer's GPU stack draws display bytes only: within a byte.
         let tolerance = if got.display_only() { 1.0 / 255.0 } else { 1e-4 };
-        let off = got.off(&expected(&clip, &source, f, strength));
+        let off = got.off(&expected(&clip, &source, f, strength, sequence_fps));
         if off > tolerance {
             return Err(format!("frame {f}: {off} from the expected denoise"));
         }
@@ -130,6 +137,12 @@ pub fn run(report: &mut Report) {
         let at = |o| [key(Some(route), o)];
         report.case(&format!("denoise {route:?}: a frame mid-clip"), at(Obligation::ExpectedPixels), || {
             holds(route, true, scene(50, 150, 1.0, STRENGTH), Ramp::whole(), &[40], STRENGTH)
+        });
+        // Media at half the sequence's rate: the neighbours are the
+        // captures either side (40 ms), not a sequence frame (20 ms) away,
+        // which would read the frame's own capture again.
+        report.case(&format!("denoise {route:?}: media at another rate"), at(Obligation::ExpectedPixels), || {
+            holds(route, true, scene_at(50, 150, 1.0, STRENGTH, FPS * 2), Ramp::whole(), &[80, 82], STRENGTH)
         });
         report.case(&format!("denoise {route:?}: the CPU and the GPU agree"), at(Obligation::CpuGpuAgree), || {
             holds(route, false, scene(50, 150, 1.0, STRENGTH), Ramp::whole(), &[40], STRENGTH)?;
