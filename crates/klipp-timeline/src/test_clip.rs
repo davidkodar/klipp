@@ -75,7 +75,7 @@ impl TestClip {
     /// `entry`, an OFX plug-in, put on after the plug-ins asked for before
     /// it. The clip's plug-ins are these alone: a clip given any has none
     /// of its own kept.
-    pub fn ofx(mut self, entry: klipp_plugin::AppliedEffect) -> Self {
+    pub fn plugin(mut self, entry: klipp_plugin::AppliedEffect) -> Self {
         self.ofx.push(entry);
         self
     }

@@ -162,7 +162,7 @@ fn after_a_plug_in_a_fast_clip_reads_the_frame_it_shows() {
         let mut c = seq.tracks[0].clips[0].clone();
         c.speed = speed;
         c.source_out = tc(from + (100.0 * speed) as i64);
-        seq.tracks[0].clips[0] = klipp_timeline::test_clip::TestClip::of(c).ofx(klipp_plugin::AppliedEffect { plugin_name: "com.klipp.test.Invert".into(), enabled: true, ..Default::default() }).build();
+        seq.tracks[0].clips[0] = klipp_timeline::test_clip::TestClip::of(c).plugin(klipp_plugin::AppliedEffect { plugin_name: "com.klipp.test.Invert".into(), enabled: true, ..Default::default() }).build();
         let mut host = klipp_plugin::OfxHost::new();
         let at = host.register_raw_plugin(klipp_plugin::test_plugin::create_test_plugin_raw());
         host.initialise_plugin(at).expect("the invert plug-in loads");
