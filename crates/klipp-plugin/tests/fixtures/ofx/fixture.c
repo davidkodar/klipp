@@ -57,7 +57,8 @@ static Host *host;
 static const char *names[] = { "identity", "channels", "alpha", "time", "temporal" };
 /* The temporal fixture reads the frames either side, in OFX time units
  * (frames): red from the one before, green its own, blue the one after;
- * a frame the host doesn't give is 0. `mode` 5 asks 40 either side. */
+ * a frame the host doesn't give is 0. `mode` 5 asks 40 either side, 6 a
+ * million. */
 #define TEMPORAL 4
 static void set_host(Host *value) { host = value; }
 /* Each instance made and destroyed, one line to the file KLIPP_FIXTURE_TRACE_FILE
@@ -112,7 +113,7 @@ static Status action(int kind, const char *name, const void *effect, Handle in, 
         int chosen = 0;
         TRY(p->get_double(in, "OfxPropTime", 0, &t));
         if (!im->get_parameters((Handle)effect, &params) && !pa->get_handle(params, "mode", &param, NULL)) pa->get_value(param, &chosen);
-        double reach = chosen == 5 ? 40.0 : 1.0;
+        double reach = chosen == 5 ? 40.0 : chosen == 6 ? 1.0e6 : 1.0;
         TRY(p->set_double(out, "OfxImageClipPropFrameRange_Source", 0, t - reach));
         TRY(p->set_double(out, "OfxImageClipPropFrameRange_Source", 1, t + reach));
         fprintf(stderr, "KLIPP_FIXTURE_FRAMES_NEEDED %.17g %.17g\n", t - reach, t + reach);

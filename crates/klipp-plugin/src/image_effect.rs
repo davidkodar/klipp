@@ -63,7 +63,30 @@ unsafe impl Send for RenderContext {}
 pub static RENDER_CONTEXT: std::sync::LazyLock<std::sync::Mutex<Option<RenderContext>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
-/// Set the render context before calling the render action.
+/// Held from a render context's setting to its clearing: the context is
+/// one for the process, and two hosts rendering at once (the viewer's and
+/// an export's, each under its own lock) would otherwise overwrite each
+/// other's, and one plug-in's `clipGetImage` read the other render's
+/// frames. Taken innermost, after a host's lock and an unsafe plug-in's,
+/// and nothing is locked while it is held but the context itself.
+static RENDER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// A render context in force: the render's alone until dropped, when the
+/// context is cleared and its temporal images released.
+#[must_use = "the render context is cleared when this is dropped"]
+pub struct RenderContextGuard {
+    _render: std::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for RenderContextGuard {
+    fn drop(&mut self) {
+        // Cleared before the lock is let go: `_render` drops after this.
+        clear_render_context();
+    }
+}
+
+/// Set the render context before calling the render action, for as long
+/// as the returned guard lives; another render waits for it.
 pub fn set_render_context(
     frame_provider: Option<FrameProviderFn>,
     current_time: f64,
@@ -72,7 +95,8 @@ pub fn set_render_context(
     premult: &str,
     needs_float: bool,
     missing_is_missing: bool,
-) {
+) -> RenderContextGuard {
+    let render = RENDER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     *RENDER_CONTEXT.lock().unwrap_or_else(|e| e.into_inner()) = Some(RenderContext {
         frame_provider,
         current_time,
@@ -83,10 +107,12 @@ pub fn set_render_context(
         missing_is_missing,
         temporal_images: Vec::new(),
     });
+    RenderContextGuard { _render: render }
 }
 
-/// Clear the render context and clean up temporal images.
-pub fn clear_render_context() {
+/// Clear the render context and clean up temporal images: by the guard's
+/// drop, never while another render's context is in force.
+fn clear_render_context() {
     if let Some(ctx) = RENDER_CONTEXT.lock().unwrap_or_else(|e| e.into_inner()).take() {
         // Clean up any temporally-fetched images
         for handle in ctx.temporal_images {
