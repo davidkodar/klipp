@@ -4307,7 +4307,10 @@ impl GraphExecutor {
         let mut out = input.to_vec();
         for effect in effects {
             let klipp_effects::BuiltinEffect::TemporalDenoise { strength, threshold } = *effect else { continue };
-            let dt = 1.0 / ctx.fps.max(1.0);
+            // The captures either side: one of the media's frames away,
+            // whatever the sequence's rate (its rate when the source can't
+            // say).
+            let dt = ctx.sources.frame_secs().unwrap_or(1.0 / ctx.fps.max(1.0));
             ctx.sources.for_node(node_id, klipp_effects::temporal_denoise::NEIGHBOURS);
             let neighbours: Vec<Vec<f32>> = [ctx.source_secs - dt, ctx.source_secs + dt]
                 .into_iter()

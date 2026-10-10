@@ -26,6 +26,8 @@ fn flat(v: f32) -> Vec<f32> {
 /// them. Neighbour times it was asked for are kept.
 struct Known {
     asked: Arc<std::sync::Mutex<Vec<f64>>>,
+    /// The media's rate, when the source says it.
+    fps: Option<f64>,
 }
 
 impl FrameSource for Known {
@@ -44,6 +46,9 @@ impl FrameSource for Known {
     }
     fn media_range(&mut self, _: &Clip) -> Option<(f64, f64)> {
         Some((0.0, 10.0))
+    }
+    fn media_fps(&mut self, _: &Clip) -> Option<f64> {
+        self.fps
     }
 }
 
@@ -73,7 +78,7 @@ fn the_source_node_denoises_against_its_neighbours_once_a_frame() {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(false);
     let seq = sequence(Some((1.0, 0.1)));
-    let mut src = Known { asked: Arc::clone(&asked) };
+    let mut src = Known { asked: Arc::clone(&asked), fps: None };
     let out = r.render_inspected(&seq, tc(0.5), W, H, &mut src, RenderOptions::default(), Inspect::default()).0;
     let want = klipp_effects::temporal_denoise::denoise_frame(&flat(0.5), &[&flat(0.48), &flat(0.52)], 0.1, 1.0);
     let apart = out.iter().zip(&want).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
@@ -89,6 +94,22 @@ fn the_source_node_denoises_against_its_neighbours_once_a_frame() {
     assert_eq!(r.source_node_runs(), 2, "once more for the next");
 }
 
+/// Media at half the sequence's rate: the neighbours are its captures
+/// either side, one of its frames away, not one of the sequence's.
+#[test]
+fn the_neighbours_are_the_medias_frames_either_side() {
+    let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(false);
+    let seq = sequence(Some((1.0, 0.1)));
+    let mut src = Known { asked: Arc::clone(&asked), fps: Some(12.0) };
+    let _ = r.render_inspected(&seq, tc(0.5), W, H, &mut src, RenderOptions::default(), Inspect::default());
+    let mut times = asked.lock().unwrap().clone();
+    times.sort_by(f64::total_cmp);
+    assert_eq!(times.len(), 2, "{times:?}");
+    assert!((times[0] - (0.5 - 1.0 / 12.0)).abs() < 1e-9 && (times[1] - (0.5 + 1.0 / 12.0)).abs() < 1e-9, "{times:?}");
+}
+
 /// Strength 0, or no denoiser at all: no source node runs, and the frame
 /// is the source.
 #[test]
@@ -96,7 +117,7 @@ fn without_a_denoiser_no_source_node_runs() {
     for seq in [sequence(Some((0.0, 0.1))), sequence(None)] {
         let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
         r.set_gpu_enabled(false);
-        let mut src = Known { asked: Default::default() };
+        let mut src = Known { asked: Default::default(), fps: None };
         let out = r.render_inspected(&seq, tc(0.5), W, H, &mut src, RenderOptions::default(), Inspect::default()).0;
         assert_eq!(r.source_node_runs(), 0);
         assert!(out.chunks_exact(4).all(|p| (p[0] - 0.5).abs() < 1e-5), "the source unchanged");
