@@ -217,7 +217,7 @@ fn export(t: &Timeline, out: &Path) {
             .iter()
             .map(|(id, p)| {
                 let source_rotation = t.coded.get(id).map_or(0, |c| c.2);
-                (*id, MediaFile { path: p.clone(), log_format: None, source_rotation })
+                (*id, MediaFile { path: p.clone(), log_format: None, source_rotation, ..Default::default() })
             })
             .collect(),
         ..Default::default()

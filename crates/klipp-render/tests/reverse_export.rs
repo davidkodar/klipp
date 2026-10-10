@@ -90,7 +90,7 @@ fn a_reversed_clip_exports_last_frame_first() {
         let mut clip = klipp_timeline::Clip::media(id, tc(0), tc(frames as i64), tc(2), tc(8));
         clip.speed = speed;
         let out = tmp(&format!("reversed-{frames}.mp4"));
-        export(clip, (id, MediaFile { path: src.clone(), log_format: None, source_rotation: 0 }), frames, &out);
+        export(clip, (id, MediaFile { path: src.clone(), log_format: None, source_rotation: 0, ..Default::default() }), frames, &out);
         let lumas = frame_lumas(&out);
         assert_eq!(lumas.len(), frames as usize);
         let per = (1.0 / speed.abs()) as usize;

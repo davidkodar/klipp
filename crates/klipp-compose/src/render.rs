@@ -185,11 +185,30 @@ pub trait FrameSource {
     ) -> Option<LinearFrameProviderFn> {
         None
     }
+
+    /// The source times `clip`'s media can be read at, `[start, end)` in
+    /// source seconds: the whole media, the clip's handles included.
+    /// `None` (the default) when the source doesn't know; then only the
+    /// readers can say a time has no frame.
+    fn media_range(&mut self, _clip: &Clip) -> Option<(f64, f64)> {
+        None
+    }
+
+    /// The frame rate of `clip`'s media, when the source knows it: a
+    /// temporal node's neighbours are its captures either side. `None`
+    /// (the default): the sequence's rate stands in.
+    fn media_fps(&mut self, _clip: &Clip) -> Option<f64> {
+        None
+    }
 }
 
 /// A clip's source as a non-pure node reads it (M4 step 1): the frame
-/// source's neighbour readers, asked in source seconds over the clip's
-/// source range. The encoded frames are [`FrameSource::temporal_frames`]'
+/// source's neighbour readers, asked in source seconds over the media's
+/// range ([`FrameSource::media_range`]), the clip's handles included. A
+/// neighbour past the clip's in or out point is a real frame of the
+/// media, and a temporal node reads it: bounded to the trim, the first and
+/// last frame of every trimmed clip would lose a neighbour and step at the
+/// cut. Out of range is only past the media itself. The encoded frames are [`FrameSource::temporal_frames`]'
 /// (sRGB, for a plug-in) and the linear ones
 /// [`FrameSource::temporal_frames_linear`]'s (the working space, for the
 /// denoiser), never one for the other. Each reader is opened on its first
@@ -199,13 +218,18 @@ pub struct ClipSources<'s> {
     src: &'s mut dyn FrameSource,
     clip: &'s Clip,
     working: WorkingColorspace,
+    range: (f64, f64),
+    /// One of the media's frames, in seconds, when known.
+    frame_secs: Option<f64>,
     encoded: Option<Option<klipp_plugin::FrameProviderFn>>,
     linear: Option<Option<LinearFrameProviderFn>>,
 }
 
 impl<'s> ClipSources<'s> {
     pub fn new(src: &'s mut dyn FrameSource, clip: &'s Clip, working: WorkingColorspace) -> Self {
-        Self { src, clip, working, encoded: None, linear: None }
+        let range = src.media_range(clip).unwrap_or((0.0, f64::INFINITY));
+        let frame_secs = src.media_fps(clip).filter(|f| f.is_finite() && *f > 0.0).map(|f| 1.0 / f);
+        Self { src, clip, working, range, frame_secs, encoded: None, linear: None }
     }
 
     /// The readers' time for `source_secs`: from the clip's source in-point.
@@ -216,7 +240,11 @@ impl<'s> ClipSources<'s> {
 
 impl klipp_nodes::frame_context::SourceProvider for ClipSources<'_> {
     fn bounds(&self) -> (f64, f64) {
-        (self.clip.source_in.to_secs_f64(), self.clip.source_out.to_secs_f64())
+        self.range
+    }
+
+    fn frame_secs(&self) -> Option<f64> {
+        self.frame_secs
     }
 
     fn encoded(&mut self, source_secs: f64) -> klipp_nodes::frame_context::Neighbour<klipp_nodes::frame_context::EncodedFrame> {
@@ -4950,7 +4978,7 @@ mod clip_sources_tests {
         let c = clip();
         let mut src = Readers::default();
         let mut s = ClipSources::new(&mut src, &c, WorkingColorspace::Rec709Linear);
-        assert_eq!(s.bounds(), (2.0, 3.0));
+        assert_eq!(s.bounds(), (0.0, f64::INFINITY), "a source that doesn't know its media's range: only its readers can say");
         match s.encoded(2.5) {
             Neighbour::Frame(f) => assert_eq!((f.rgba8[0], f.rgba8[1], f.source_secs), (200, 5, 2.5)),
             other => panic!("{other:?}"),
@@ -4963,6 +4991,24 @@ mod clip_sources_tests {
         let _ = s.encoded(2.75);
         drop(s);
         assert_eq!(src.opened, ["encoded", "linear"]);
+    }
+
+    /// The bounds are the media's range, the clip's handles included, as
+    /// the source knows it: never the clip's trim.
+    #[test]
+    fn the_bounds_are_the_medias_range() {
+        struct Known(Readers);
+        impl FrameSource for Known {
+            fn frame(&mut self, c: &Clip, t: f64, w: u32, h: u32) -> Option<SourceFrame> {
+                self.0.frame(c, t, w, h)
+            }
+            fn media_range(&mut self, _: &Clip) -> Option<(f64, f64)> {
+                Some((0.0, 10.0))
+            }
+        }
+        let c = clip();
+        let mut src = Known(Readers::default());
+        assert_eq!(ClipSources::new(&mut src, &c, WorkingColorspace::Rec709Linear).bounds(), (0.0, 10.0), "not the trim's 2..3");
     }
 
     /// A source without a reader, or a reader without the frame, is

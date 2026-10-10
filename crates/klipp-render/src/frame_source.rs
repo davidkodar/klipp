@@ -345,6 +345,18 @@ impl FrameSource for ExportFrameSource<'_> {
         }))
     }
 
+    /// The whole media, from its start to its duration.
+    fn media_range(&mut self, clip: &Clip) -> Option<(f64, f64)> {
+        let ClipKind::Media { media_id } = &clip.kind else { return None };
+        Some((0.0, self.media.get(media_id)?.duration_secs?))
+    }
+
+    fn media_fps(&mut self, clip: &Clip) -> Option<f64> {
+        let ClipKind::Media { media_id } = &clip.kind else { return None };
+        let (num, den) = self.media.get(media_id)?.fps?;
+        (den > 0).then(|| num as f64 / den as f64)
+    }
+
     /// The same frames in linear light, for the renderer's own use.
     fn temporal_frames_linear(
         &mut self,
@@ -600,7 +612,7 @@ mod temporal_frames_tests {
     ) -> (HashMap<MediaId, MediaFile>, Clip) {
         let id = MediaId::new();
         let mut media = HashMap::new();
-        media.insert(id, MediaFile { path, log_format: None, source_rotation: 0 });
+        media.insert(id, MediaFile { path, log_format: None, source_rotation: 0, ..Default::default() });
         let tc = |f: i64| klipp_core::RationalTime::from_frames(f, 24);
         let clip = Clip {
             id: ClipId::new(),

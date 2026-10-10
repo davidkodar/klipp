@@ -22,6 +22,7 @@ pub mod fixtures;
 pub mod format;
 pub mod route;
 pub mod rules;
+mod temporal_denoise;
 
 use std::collections::{BTreeMap, BTreeSet};
 

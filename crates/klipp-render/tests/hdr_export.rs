@@ -82,7 +82,7 @@ fn export_ws(
 
 fn media_clip(path: PathBuf, log_format: Option<LogFormat>) -> (klipp_timeline::Clip, Option<(MediaId, MediaFile)>) {
     let id = MediaId::new();
-    (clip(klipp_timeline::ClipKind::Media { media_id: id }), Some((id, MediaFile { path, log_format, source_rotation: 0 })))
+    (clip(klipp_timeline::ClipKind::Media { media_id: id }), Some((id, MediaFile { path, log_format, source_rotation: 0, ..Default::default() })))
 }
 
 fn white() -> klipp_timeline::Clip {

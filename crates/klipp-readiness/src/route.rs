@@ -233,13 +233,19 @@ impl FrameSource for KnownSource {
             Some((f.linear, f.width, f.height))
         }))
     }
+
+    fn media_range(&mut self, clip: &Clip) -> Option<(f64, f64)> {
+        self.range(clip)
+    }
+
+    fn media_fps(&mut self, clip: &Clip) -> Option<f64> {
+        Some(self.scene.pool.get(&Self::media(clip)?)?.fps.as_f64())
+    }
 }
 
 impl KnownSource {
     /// The media's decodable range: the source's, else the pool's
-    /// duration from 0. Answers `FrameSource::media_range` once that
-    /// lands (step 6).
-    #[allow(dead_code)]
+    /// duration from 0. What `FrameSource::media_range` answers.
     fn range(&self, clip: &Clip) -> Option<(f64, f64)> {
         let media = Self::media(clip)?;
         self.source.range(media).or_else(|| self.scene.pool.get(&media).map(|m| (0.0, m.duration.to_secs_f64())))
