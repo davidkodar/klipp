@@ -425,8 +425,12 @@ impl Clip {
     /// when one of them doesn't take graph ops (a placed kind), and the
     /// clip is as it was; the caller's mutator path runs instead.
     pub fn apply_effect_edits(&mut self, edits: &[EffectEdit]) -> Option<Result<PictureEdit, String>> {
-        // A batch that touches a kind the clip places itself goes through
-        // its picture's record, settled by the lift (M4 step 12b-0).
+        // A batch goes through the clip's picture's record, settled by the
+        // lift (M4 step 12b-0): one write path for the list, whose
+        // renumbering keeps the clip's orphan keys orphans. A
+        // picture-truth clip's plain edits stay on the graph ops below (its
+        // record is its picture's view, which a lift would strip); its
+        // placed ones are refused there, by name.
         let placed_at = |c: &Self, i: usize| c.builtin_effects().get(i).is_some_and(|e| !takes_picture_ops(e));
         let touches_placed = edits.iter().any(|e| match *e {
             EffectEdit::Add(x) => !takes_picture_ops(x),
@@ -434,7 +438,7 @@ impl Clip {
             EffectEdit::Remove(i) | EffectEdit::SetEnabled(i, _) => placed_at(self, i),
             EffectEdit::Move { from, .. } => placed_at(self, from),
         });
-        if touches_placed {
+        if touches_placed || !self.is_picture_truth() {
             return Some(self.placed_edit(edits));
         }
         let before = self.picture.clone();

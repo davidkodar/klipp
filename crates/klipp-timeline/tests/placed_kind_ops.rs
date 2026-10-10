@@ -328,3 +328,28 @@ fn an_ofx_plug_in_keeps_its_place_through_a_placed_batch() {
         (vec![transform(15.0), blur(), opacity(0.8)], vec![true, false, true]),
     );
 }
+
+/// A plain effect added onto an orphan's slot gets none of its keys, and a
+/// plain effect removed under it leaves it an orphan: every list edit
+/// renumbers in one place.
+#[test]
+fn plain_edits_keep_orphans_orphans() {
+    let with_orphan = || {
+        let mut c = clip(vec![blur(), E::Gamma { gamma: 1.1 }, E::Vibrance { amount: 0.2 }], vec![true; 3]);
+        c.edit_effect_keyframes(|keys| {
+            keys.insert("3:radius".into(), vec![key(0.0, 1.0), key(1.0, 9.0)]);
+        });
+        c
+    };
+    let mut added = with_orphan();
+    let more = E::GaussianBlur { radius: 4.0 };
+    added.apply_effect_edits(&[EffectEdit::Add(&more)]).expect("a list edit").expect("the picture takes it");
+    assert!(!added.effect_keyframes().keys().any(|k| k.starts_with("3:")), "the blur added at 3 has no keys");
+    assert_eq!(added.effect_keyframes().get("4:radius").map(Vec::len), Some(2), "the orphan, past the list");
+    let mut removed = with_orphan();
+    removed.apply_effect_edits(&[EffectEdit::Remove(0)]).expect("a list edit").expect("the picture takes it");
+    assert_eq!(removed.builtin_effects().len(), 2);
+    assert_eq!(removed.effect_keyframes().get("2:radius").map(Vec::len), Some(2), "the orphan, past the shorter list");
+    let p = removed.picture_v2().unwrap();
+    assert!(p.picture.graph.nodes.iter().all(|n| n.anim.keys().all(|k| k.as_str() != "radius")), "nothing animates by the orphan");
+}
