@@ -84,6 +84,7 @@ fn an_exports_frames_are_the_shared_decisions_frames() {
         id: uuid::Uuid::new_v4(), output_path: out.clone(), settings: s.clone(), snapshot: snapshot(),
         cancel: Arc::new(AtomicBool::new(false)), progress: Arc::new(AtomicU64::new(0)),
         hw_info: Default::default(), render_stage: Default::default(), loudness_result: Default::default(),
+        analyser: None,
         total_frames: FRAMES,
     }
     .run()

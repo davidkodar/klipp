@@ -23,6 +23,12 @@ pub enum RenderError {
     #[error("export cancelled")]
     Cancelled,
 
+    /// A clip's analysis effect has no analysis of its media and none
+    /// could be made (M4 step 9): the export refuses rather than write
+    /// the clip uncorrected. Names the clip and the effect.
+    #[error("{0}")]
+    Analysis(String),
+
     /// A clip's media stopped decoding part-way through the render.
     /// The export fails rather than freezing the last good frame for
     /// the rest of the clip: a file that plays back with a still where
