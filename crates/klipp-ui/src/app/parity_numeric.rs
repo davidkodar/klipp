@@ -217,7 +217,6 @@ fn commands_applied(run: &Run) -> Result<(), String> {
 }
 
 fn edit_case(
-    ty: &EffectType,
     surface: Surface,
     effect: &BuiltinEffect,
     desc: &ParamDesc,
@@ -528,7 +527,7 @@ fn run_entry(report: &mut Report, entry: &CatalogEntry, surface: Surface, varian
         &name("type"),
         [key(Interaction::TypeNumber), key(Interaction::UndoRedo)],
         || {
-            edit_case(ty, surface, &editing, desc, Some(target.clone()), |run| {
+            edit_case(surface, &editing, desc, Some(target.clone()), |run| {
                 type_value(run, label, &typed)
             })
         },
@@ -564,7 +563,7 @@ fn run_entry(report: &mut Report, entry: &CatalogEntry, surface: Surface, varian
         &name("drag"),
         [key(Interaction::Drag), key(Interaction::UndoRedo)],
         || {
-            edit_case(ty, surface, &editing, desc, dragged_to.clone(), |run| {
+            edit_case(surface, &editing, desc, dragged_to.clone(), |run| {
                 let at = start_drag(run, label, drag_px(desc, pres), matches!(pres.widget, Widget::Slider))?;
                 run.button(at, egui::PointerButton::Primary, false);
                 Ok(())
@@ -581,7 +580,7 @@ fn run_entry(report: &mut Report, entry: &CatalogEntry, surface: Surface, varian
         &name("reset"),
         [key(Interaction::Reset), key(Interaction::UndoRedo)],
         || {
-            edit_case(ty, surface, &away, desc, Some(reset.clone()), |run| {
+            edit_case(surface, &away, desc, Some(reset.clone()), |run| {
                 let (at, _) = ready(run, label)?;
                 run.button(at, egui::PointerButton::Primary, true);
                 run.button(at, egui::PointerButton::Primary, false);
