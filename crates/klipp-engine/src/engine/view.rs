@@ -781,8 +781,11 @@ impl PlaybackEngine {
             );
             self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).publish_node_thumbnails(batch);
         }
+        // A frame a node didn't draw as asked isn't kept: shown again from
+        // the cache it would carry no decline, and no chip (M4 step 10).
         let cached = cache_key
             .filter(|_| self.state != PlaybackState::Playing)
+            .filter(|_| !found.declines.iter().any(|d| d.fails()))
             .map(|key| (key, super::linear_rgba_to_u8(&linear)));
 
         self.show_split_views(&seq, primary_ref, w, h, inspected, found.ungraded.as_deref());
@@ -791,6 +794,12 @@ impl PlaybackEngine {
             Rendered { picture: Picture::Linear(linear), width: w, height: h, stats: Some(found.stats) },
             t_frame,
         );
+        // Named against this frame: the next one, from any path, has none.
+        // A node switched off is as asked, and not named.
+        let declines: Vec<klipp_nodes::Decline> = found.declines.iter().filter(|d| d.shown()).cloned().collect();
+        if !declines.is_empty() {
+            self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).set_declines(declines);
+        }
 
         // Cached once the frame is on screen: compressing and writing a 4K
         // frame (~15 ms) is not something the viewer should wait for.

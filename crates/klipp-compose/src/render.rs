@@ -349,6 +349,10 @@ pub struct Inspection {
     pub ungraded: Option<Vec<f32>>,
     /// `matte_of`'s mask, one value a pixel at the output size.
     pub matte_mask: Option<Vec<f32>>,
+    /// The nodes this frame's graphs didn't draw as asked, and why (M4
+    /// step 10): every clip's, in the order they ran. An export refuses a
+    /// frame with any that [`fails`](klipp_nodes::Decline::fails).
+    pub declines: Vec<klipp_nodes::Decline>,
     pub stats: RenderStats,
 }
 
@@ -998,6 +1002,15 @@ impl Renderer {
         let mut found = std::mem::take(&mut self.found);
         found.stats.total_ms = ms_since(t0);
         (out, found)
+    }
+
+    /// The executor's last run's declines, each named by `clip`, kept for
+    /// this frame's [`Inspection`] (M4 step 10). Called once a graph has
+    /// run for good: never after a run whose result is thrown away and
+    /// run again, whose declines would be counted twice.
+    fn note_declines(&mut self, clip: ClipId) {
+        let declines = self.executor.last_run_declines().iter().map(|d| klipp_nodes::Decline { clip: Some(clip), ..d.clone() });
+        self.found.declines.extend(declines);
     }
 
     /// The render as 8-bit 4:2:0 planes — Y, then Cb, then Cr, tightly
@@ -2455,6 +2468,9 @@ impl Renderer {
         // What the grade reads, kept for a masked effect apart from it to
         // make its matte from (9c-2 B2).
         self.matte_input = apart_blends.iter().flatten().any(|b| b.mask.is_some()).then(|| input.pixels());
+        // The frame's declines before this clip's grade: a run graded again
+        // gives back the first run's, and notes its own (step 10).
+        let declines_before = self.found.declines.len();
         let mut pixels = self.grade_at_source(clip, input, time, clip_time, fps, width, height, src, source_pts, hdr);
         // Whether the grade's run took the display step, so it isn't run
         // twice: not when the run failed and gave back its input.
@@ -2468,6 +2484,7 @@ impl Renderer {
                     PLAN_EFFECT_CLIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     return Some((pixels, opacity));
                 }
+                self.found.declines.truncate(declines_before);
                 if blended || klipp_effects::has_frei0r(&fx) {
                     // A masked or mixed clip's effects can't be drawn by the
                     // CPU kernels, nor can a frei0r plug-in, which runs only
@@ -2572,7 +2589,12 @@ impl Renderer {
         });
         self.found.stats.effects_ms += ms_since(t);
         match run {
-            Ok((out, _)) if self.executor.last_run_effects_complete() && out.len() == pixels.len() => Ok(out),
+            Ok((out, _)) if self.executor.last_run_effects_complete() && out.len() == pixels.len() => {
+                // Only a run that is kept: one the CPU takes again notes
+                // the retry's.
+                self.note_declines(clip.id);
+                Ok(out)
+            }
             Ok(_) => Err(pixels),
             Err(e) => {
                 tracing::warn!("clip {}: its effects after the plug-ins: {e:?}; the CPU kernels take them", clip.id.0);
@@ -2627,6 +2649,7 @@ impl Renderer {
         let run = self.executor.execute_linear(&[], &self.spliced, width, height, clip_time, grade_frame(clip_time, fps), None, None);
         let done = match run {
             Ok((out, _)) if self.executor.last_run_effects_complete() => {
+                self.note_declines(clip.id);
                 // Left on the GPU, as asked; downloaded only if the run
                 // couldn't keep it there.
                 let slot_a = self.executor.last_chain_final_slot().unwrap_or(true);
@@ -2738,7 +2761,11 @@ impl Renderer {
             r.executor.set_render_scale(scale);
             r.executor.set_lut_tetrahedral(tetrahedral);
             r.executor.set_current_clip_track_points(&clip.track_points);
-            r.executor.execute_linear(&input, &g, width, height, clip_time, grade_frame(clip_time, fps), None, None).ok().map(|(o, _)| o)
+            let out = r.executor.execute_linear(&input, &g, width, height, clip_time, grade_frame(clip_time, fps), None, None).ok().map(|(o, _)| o);
+            if out.is_some() {
+                r.note_declines(clip.id);
+            }
+            out
         })
     }
 
@@ -3301,11 +3328,14 @@ impl Renderer {
                 self.splice_run(clip);
                 &self.spliced
             };
-            return match ctx {
+            let run = match ctx {
                 Some(ctx) => self.executor.execute_linear_with_context(source, graph, width, height, clip_time, frame, None, None, None, ctx),
                 None => self.executor.execute_linear_with_thumbs(source, graph, width, height, clip_time, frame, None, None, None),
+            };
+            if run.is_ok() {
+                self.note_declines(clip.id);
             }
-            .map(|(out, _, _)| out);
+            return run.map(|(out, _, _)| out);
         }
         // An inspected clip runs its grade alone, unless its effects are
         // masked or mixed (a picture-truth clip's): those run in the plan
@@ -3337,6 +3367,9 @@ impl Renderer {
             None => self.executor.execute_linear_with_thumbs(source, graph, width, height, clip_time, frame, scope_tap, matte_view, thumbs.as_ref()),
         };
         self.resolved.thumbs = thumbs;
+        if r.is_ok() {
+            self.note_declines(clip.id);
+        }
         r.map(|(out, tapped, thumbs)| {
             self.found.scope_tap = tapped;
             for (node, bytes) in thumbs {

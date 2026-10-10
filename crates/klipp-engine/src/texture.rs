@@ -259,12 +259,19 @@ pub struct FrameBuffer {
     trail: std::collections::VecDeque<String>,
     /// The device and queue `gpu_output` lives on, to read it back.
     gpu_output_queue: Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>,
+    /// The nodes the frame on screen didn't draw as asked (M4 step 10),
+    /// with the frame they belong to: any newer frame has none of them.
+    declines: (FrameStamp, Vec<klipp_nodes::Decline>),
 
     /// Advances on each complete thumbnail publication, including empty results.
     pub node_thumbs_gen: u64,
     /// Full node addresses and the immutable render snapshot they answer.
     pub node_thumbnail_batch: Option<crate::node_thumbnails::ThumbnailBatch>,
 }
+
+/// A frame, by the generation of the newest bytes and the GPU output's
+/// frame count, and which of them is on screen.
+type FrameStamp = (u64, bool, u64);
 
 /// The format to sample [`FrameBuffer::gpu_output`] through. The texture
 /// holds display-encoded bytes (the GPU stack's display encode), and a
@@ -335,6 +342,7 @@ impl FrameBuffer {
             presented_times: std::collections::VecDeque::new(),
             trail: std::collections::VecDeque::new(),
             gpu_output_queue: None,
+            declines: Default::default(),
             gpu_output_frame: 0,
             node_thumbs_gen: 0,
             node_thumbnail_batch: None,
@@ -549,6 +557,24 @@ impl FrameBuffer {
             (true, Some(at)) => Some(at),
             _ => self.latest_presented(),
         }
+    }
+
+    /// Which frame is the newest, either buffer: what [`Self::declines`]
+    /// are kept against.
+    fn stamp(&self) -> FrameStamp {
+        (self.latest_generation(), self.gpu_output_live, self.gpu_output_frame)
+    }
+
+    /// Name the nodes the newest frame didn't draw as asked, and why: the
+    /// viewer says so while that frame is on screen.
+    pub fn set_declines(&mut self, declines: Vec<klipp_nodes::Decline>) {
+        self.declines = (self.stamp(), declines);
+    }
+
+    /// The nodes the newest frame didn't draw as asked; none once a newer
+    /// frame has come, whichever path drew it.
+    pub fn declines(&self) -> &[klipp_nodes::Decline] {
+        if self.declines.0 == self.stamp() { &self.declines.1 } else { &[] }
     }
 
     /// Note what the engine did to the picture, newest last; the oldest
@@ -856,5 +882,31 @@ mod tests {
         fb.note("after a frame".into());
         let gen = fb.latest_generation();
         assert_eq!(fb.trail().last().unwrap(), &format!("gen {gen} after a frame"));
+    }
+
+    /// A frame's declines are shown with it and gone with the next frame,
+    /// bytes or zero-copy, and a swap of the same frame keeps them.
+    #[test]
+    fn declines_belong_to_the_frame_they_were_named_with() {
+        let mut fb = super::FrameBuffer::new(2, 2);
+        fb.write_frame(vec![1; 16], 2, 2);
+        let decline = klipp_nodes::Decline {
+            clip: None,
+            node: uuid::Uuid::nil(),
+            kind: klipp_nodes::NodeKind::Frei0r,
+            outcome: klipp_nodes::DeclineOutcome::PluginMissing,
+            name: "gone".into(),
+            reason: "plug-in missing".into(),
+            why: "gone".into(),
+        };
+        fb.set_declines(vec![decline.clone()]);
+        assert_eq!(fb.declines().len(), 1);
+        assert!(fb.swap_pending());
+        assert_eq!(fb.declines().len(), 1, "the UI took the same frame");
+        fb.write_frame(vec![2; 16], 2, 2);
+        assert!(fb.declines().is_empty(), "a newer frame of bytes");
+        fb.set_declines(vec![decline]);
+        fb.note_gpu_frame();
+        assert!(fb.declines().is_empty(), "a newer frame on the GPU");
     }
 }

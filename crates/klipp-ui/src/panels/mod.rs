@@ -38,6 +38,7 @@ pub mod timeline_search;
 pub mod toolbar;
 pub mod transport;
 pub mod viewer;
+pub mod viewer_declines;
 pub mod workspace_manager;
 
 pub mod title_curve;

@@ -264,6 +264,30 @@ fn a_masked_effect_the_gpu_cannot_record_runs_its_plan_on_the_cpu() {
     assert!(worst <= 1, "the CPU plan draws {worst} levels from the oracle");
 }
 
+/// The same forced retry, with a frei0r plug-in that isn't installed after
+/// the masked effect: the frame names its decline once, the retry's, never
+/// the first run's beside it (M4 step 10).
+#[test]
+fn a_plan_run_again_on_the_cpu_names_each_decline_once() {
+    if !gpu() {
+        eprintln!("UNVERIFIED: no GPU");
+        return;
+    }
+    let gone = E::Frei0r { type_id: "frei0r:/nowhere/gone.so:gone".into(), params: Vec::new() };
+    let (mut c, w) = clip(vec![blur(), gone], Window::InTheGrade);
+    let ops = masking(&c, Window::InTheGrade, w);
+    c.apply_picture_ops(&ops).expect("the masking batch");
+    let seq = sequence(c);
+    let mut r = renderer(true);
+    if let Some(g) = r.executor().gpu_pipeline_or_init() {
+        g.refuse_recording(true);
+    }
+    let (_, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut Chart, RenderOptions::default(), Inspect::default());
+    assert_eq!(found.stats.effects_on_cpu, 1, "the plan ran again on the CPU");
+    let missing: Vec<_> = found.declines.iter().filter(|d| d.outcome == klipp_nodes::DeclineOutcome::PluginMissing).collect();
+    assert_eq!(missing.len(), 1, "one decline for the missing plug-in: {:?}", found.declines);
+}
+
 /// A file whose picture wires the mask from something the renderer can't
 /// give (here, the clip's source, a node in its chain; the ops refuse
 /// such wiring): the effect is bypassed, the picture as graded, said and

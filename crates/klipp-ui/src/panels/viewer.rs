@@ -337,6 +337,9 @@ impl ViewerPanel {
             ViewerMode::Program,
             &mut cmds,
         );
+        // The nodes this frame didn't draw as asked (M4 step 10): after
+        // the zoom and pan, so a click on a chip is the chip's.
+        crate::panels::viewer_declines::draw_chips(ui, state, theme, viewer_rect, &mut cmds);
 
         // ── Scrub bar + Play bar (shared transport chrome) ──
         let chrome_rect = egui::Rect::from_min_size(

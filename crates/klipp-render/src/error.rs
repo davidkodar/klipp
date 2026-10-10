@@ -41,4 +41,10 @@ pub enum RenderError {
 
     #[error("GPU pipeline error: {0}")]
     Gpu(String),
+
+    /// A node didn't draw what the timeline shows (a plug-in missing or
+    /// failing, a neighbouring frame unreadable): the export stops rather
+    /// than write a picture that isn't the one asked for (M4 step 10).
+    #[error("a node didn't render: {0}")]
+    Declined(String),
 }

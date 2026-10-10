@@ -3729,6 +3729,14 @@ pub(crate) fn node_header(
             bypass_keys(ui, enabled_track.map_or(&[], |t| &t.keyframes), effective_on, node_id, clip_id, cmds, theme, frame, 12.0);
         });
     });
+    // The frame on screen didn't draw this node as asked: why, as the
+    // viewer's chip says (M4 step 10).
+    if let Some(reason) = crate::panels::viewer_declines::reason(ui.ctx(), clip_id, node_id) {
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new(reason).size(11.0).color(theme.marker_warning));
+        });
+    }
     ui.add_space(2.0);
     ui.separator();
     ui.add_space(4.0);
