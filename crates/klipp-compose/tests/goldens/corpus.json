@@ -1,6 +1,6 @@
 {
-  "recorded_on": "f685820e",
-  "reason": "#1386: every enabled Opacity multiplies, on clips and adjustment layers alike; a disabled one never counts",
+  "recorded_on": "57dcccca",
+  "reason": "M4 step 9: analysis effects read their media's asset, not the clip's fields",
   "frames": [
   {"case":"effect/Opacity","kind":"rgba","len":9216,"offset":0,"path":"cpu","t":"0.5"},
   {"case":"effect/Opacity","kind":"rgba","len":9216,"offset":9216,"path":"CpuWithGpu","t":"0.5"},

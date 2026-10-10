@@ -3240,8 +3240,7 @@ impl Renderer {
     fn analyses_of(&mut self, clip: &Clip, src: &mut dyn FrameSource) -> ClipAnalysis {
         use klipp_analysis::assets::{lookup, Found};
         let mut out = ClipAnalysis::default();
-        let enabled = |i: usize| clip.builtin_effects_enabled().get(i).copied().unwrap_or(true);
-        for (_, effect) in clip.builtin_effects().iter().enumerate().filter(|(i, _)| enabled(*i)) {
+        for effect in clip.enabled_effects() {
             let (Some(kind), Some(params)) = (asset_kind(effect), klipp_effects::node_analysis::derivation_params(effect)) else { continue };
             if out.found.iter().any(|(k, _)| *k == (kind, params)) {
                 continue;

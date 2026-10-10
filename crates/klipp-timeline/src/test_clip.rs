@@ -42,6 +42,7 @@ pub struct TestClip {
     clip: Clip,
     effects: Vec<(BuiltinEffect, bool)>,
     keys: Vec<(Keyed, f64, f32)>,
+    ofx: Vec<klipp_plugin::AppliedEffect>,
 }
 
 fn tc(secs: f64) -> RationalTime {
@@ -56,7 +57,7 @@ impl TestClip {
 
     /// `clip` (any kind, placed anywhere), its effects to be added.
     pub fn of(clip: Clip) -> Self {
-        Self { clip, effects: Vec::new(), keys: Vec::new() }
+        Self { clip, effects: Vec::new(), keys: Vec::new(), ofx: Vec::new() }
     }
 
     /// `effect` added, on.
@@ -68,6 +69,14 @@ impl TestClip {
     /// Each of `effects` added, on, in order.
     pub fn effects(mut self, effects: impl IntoIterator<Item = BuiltinEffect>) -> Self {
         self.effects.extend(effects.into_iter().map(|e| (e, true)));
+        self
+    }
+
+    /// `entry`, an OFX plug-in, put on after the plug-ins asked for before
+    /// it. The clip's plug-ins are these alone: a clip given any has none
+    /// of its own kept.
+    pub fn ofx(mut self, entry: klipp_plugin::AppliedEffect) -> Self {
+        self.ofx.push(entry);
         self
     }
 
@@ -115,6 +124,11 @@ impl TestClip {
                 on.push(flag);
             }
             clip.set_effect_list(effects, on);
+        }
+        if !self.ofx.is_empty() {
+            // No op puts a plug-in on yet (step 12b-0 adds them): the
+            // builder's one write of the plug-in list.
+            clip.set_ofx_effects(self.ofx);
         }
         for (keyed, secs, value) in self.keys {
             let keyframe = serde_json::to_value(Keyframe { time_secs: secs, value, interpolation: Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }).expect("a keyframe serialises");

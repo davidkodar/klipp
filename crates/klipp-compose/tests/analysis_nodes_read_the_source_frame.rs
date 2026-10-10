@@ -46,8 +46,7 @@ fn tc(f: i64) -> RationalTime {
 /// A clip of the file from source frame `from`, 100 frames long,
 /// deflickered.
 fn sequence(from: i64) -> Sequence {
-    let mut c = Clip::media(MediaId::new(), tc(0), tc(100), tc(from), tc(from + 100));
-    c.set_effect_list(vec![E::Deflicker { strength: 1.0, window_secs: 0.4, gain: 1.0 }], vec![true]);
+    let c = klipp_timeline::test_clip::TestClip::of(Clip::media(MediaId::new(), tc(0), tc(100), tc(from), tc(from + 100))).effect(E::Deflicker { strength: 1.0, window_secs: 0.4, gain: 1.0 }).build();
     let mut seq = Sequence::new_default();
     seq.fps = klipp_core::Fps::new(FPS, 1);
     seq.resolution = klipp_core::Resolution { width: W, height: H };
@@ -160,10 +159,10 @@ fn the_gpu_stack_reads_the_analysis_too() {
 fn after_a_plug_in_a_fast_clip_reads_the_frame_it_shows() {
     let draw_at = |speed: f64, from: i64, frame: i64| {
         let mut seq = sequence(from);
-        let c = &mut seq.tracks[0].clips[0];
+        let mut c = seq.tracks[0].clips[0].clone();
         c.speed = speed;
         c.source_out = tc(from + (100.0 * speed) as i64);
-        c.set_ofx_effects(vec![klipp_plugin::AppliedEffect { plugin_name: "com.klipp.test.Invert".into(), enabled: true, ..Default::default() }]);
+        seq.tracks[0].clips[0] = klipp_timeline::test_clip::TestClip::of(c).ofx(klipp_plugin::AppliedEffect { plugin_name: "com.klipp.test.Invert".into(), enabled: true, ..Default::default() }).build();
         let mut host = klipp_plugin::OfxHost::new();
         let at = host.register_raw_plugin(klipp_plugin::test_plugin::create_test_plugin_raw());
         host.initialise_plugin(at).expect("the invert plug-in loads");

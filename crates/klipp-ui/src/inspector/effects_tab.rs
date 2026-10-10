@@ -525,8 +525,7 @@ fn derived_analysis(ctx: &egui::Context, clip: &Clip, state: &AppState, kind: kl
     // The analysis itself is held, so its address can't be another's.
     type Kept = (std::sync::Arc<serde_json::Value>, u64, Option<std::sync::Arc<klipp_effects::node_analysis::NodeAnalysis>>);
     let raw = state.analysis_of(clip, kind)?;
-    let enabled = clip.builtin_effects_enabled();
-    let effect = clip.builtin_effects().iter().enumerate().find(|(i, e)| is(e) && enabled.get(*i).copied().unwrap_or(true)).map(|(_, e)| e)?;
+    let effect = clip.enabled_effects().find(|e| is(e))?;
     let params = klipp_effects::node_analysis::derivation_params(effect)?;
     let id = egui::Id::new(("derived_analysis", clip.id, kind));
     if let Some((seen, p, kept)) = ctx.data(|d| d.get_temp::<Kept>(id)) {

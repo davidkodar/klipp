@@ -1,7 +1,7 @@
 # The v1 view's uses, pinned (v1_view_ratchet.rs): each line a symbol and
 # its count. Lower a pin in the change that removes uses; a symbol at 0
 # moves to GONE. Filled at the first run from the test's own count.
-builtin_effects 132
+builtin_effects 128
 builtin_effects_enabled 47
 ClipPictureFields 18
 ClipPictureParts 14

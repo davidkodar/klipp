@@ -105,6 +105,13 @@ impl Clip {
         &self.picture.view().effect_list.builtin_effects
     }
 
+    /// The built-in effects switched on, in list order (a missing flag is
+    /// on): what an analysis or a render reader runs.
+    pub fn enabled_effects(&self) -> impl Iterator<Item = &BuiltinEffect> {
+        let list = &self.picture.view().effect_list;
+        list.builtin_effects.iter().enumerate().filter(|(i, _)| list.builtin_effects_enabled.get(*i).copied().unwrap_or(true)).map(|(_, e)| e)
+    }
+
     /// The saved flags exactly as supplied. Missing entries mean enabled.
     pub fn builtin_effects_enabled(&self) -> &[bool] {
         &self.picture.view().effect_list.builtin_effects_enabled
