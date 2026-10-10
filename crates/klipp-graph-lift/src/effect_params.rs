@@ -312,15 +312,22 @@ mod ofx {
     use super::*;
 
     const PREFIX: &str = "p.";
+    /// The node's own key saying an OFX node is off as a node (in memory
+    /// it never is; kept rather than refused).
+    const NODE_OFF: &str = "node.enabled";
 
     pub fn into_stored(n: &mut Node) -> Result<(), String> {
         let legacy = n.legacy.as_mut().ok_or_else(|| format!("OFX node {} has no entry", n.id))?;
         let entry = legacy.payload.as_object().ok_or_else(|| format!("OFX node {}'s entry isn't an object", n.id))?.clone();
+        // An OFX node is on in memory, its entry saying whether it runs; one
+        // off as a node too is kept so, under the node's own key, as is any
+        // field of the entry the stored form names no key for, so storing
+        // never fails and nothing is lost.
         if !n.enabled {
-            return Err(format!("OFX node {} is off as a node, which its stored form can't say apart from its entry's", n.id));
+            n.params.insert(ParamKey::from(NODE_OFF), ParamValue::Bool(false));
         }
-        if let Some(extra) = entry.keys().find(|k| !matches!(k.as_str(), "plugin_name" | "enabled" | "param_values" | "context" | "transition_amount")) {
-            return Err(format!("OFX node {}: a field {extra:?} its stored form has no key for", n.id));
+        for (k, v) in entry.iter().filter(|(k, _)| !matches!(k.as_str(), "plugin_name" | "enabled" | "param_values" | "context" | "transition_amount")) {
+            n.params.insert(ParamKey::from(format!("{EXTRA}{k}").as_str()), ParamValue::Text(v.to_string()));
         }
         let text = |k: &str| entry.get(k).and_then(Value::as_str).map(str::to_owned).ok_or_else(|| format!("OFX node {}: no {k}", n.id));
         n.params.insert(ParamKey::from("plugin"), ParamValue::Text(text("plugin_name")?));
@@ -372,9 +379,11 @@ mod ofx {
             values.insert(name, stored(&v).ok_or_else(|| format!("OFX node {}: {key} is {v:?}, no OFX value", n.id))?);
         }
         entry.insert("param_values".into(), Value::Object(values));
+        extras_back(n, &mut entry)?;
+        let off = n.params.remove(&ParamKey::from(NODE_OFF)) == Some(ParamValue::Bool(false));
         let legacy = n.legacy.as_mut().ok_or_else(|| format!("OFX node {} has no slot", n.id))?;
         legacy.payload = Value::Object(entry);
-        n.enabled = true;
+        n.enabled = !off;
         n.type_id = klipp_graph_format::NodeTypeId::new(types::LEGACY_OFX);
         Ok(())
     }
@@ -421,6 +430,21 @@ mod ofx {
     }
 }
 
+/// The prefix of a plug-in node's own key holding an entry field its
+/// stored form names no key for, as that field's JSON.
+const EXTRA: &str = "entry.";
+
+/// The entry fields a stored plug-in node keeps under [`EXTRA`] keys, put
+/// back into `entry` and taken off the node.
+fn extras_back(n: &mut Node, entry: &mut Map<String, Value>) -> Result<(), String> {
+    for key in n.params.keys().filter(|k| k.as_str().starts_with(EXTRA)).cloned().collect::<Vec<_>>() {
+        let Some(ParamValue::Text(json)) = n.params.remove(&key) else { return Err(format!("plug-in node {}: {key} isn't a kept field", n.id)) };
+        let v = serde_json::from_str(&json).map_err(|e| format!("plug-in node {}: {key}: {e}", n.id))?;
+        entry.insert(key.as_str()[EXTRA.len()..].to_owned(), v);
+    }
+    Ok(())
+}
+
 /// A frei0r plug-in's stored form (picture revision 4, d9's fields): a
 /// `klipp.frei0r` node whose `plugin` is the entry's `type_id` and whose
 /// `p{i}` is its `i`th value by ABI type (a double and a position as f64,
@@ -443,8 +467,10 @@ mod frei0r {
     pub fn into_stored(n: &mut Node, entry: &Value) -> Result<(), String> {
         let plugin = entry.get("type_id").and_then(Value::as_str).ok_or_else(|| format!("frei0r node {} names no plug-in", n.id))?;
         let values = entry.get("params").and_then(Value::as_array).ok_or_else(|| format!("frei0r node {} has no values", n.id))?;
-        if let Some(extra) = entry.as_object().and_then(|o| o.keys().find(|k| !matches!(k.as_str(), "type" | "type_id" | "params"))) {
-            return Err(format!("frei0r node {}: a field {extra:?} its stored form has no key for", n.id));
+        // A field of the entry the stored form names no key for is kept
+        // under the node's own key, so storing never fails.
+        for (k, v) in entry.as_object().into_iter().flatten().filter(|(k, _)| !matches!(k.as_str(), "type" | "type_id" | "params")) {
+            n.params.insert(ParamKey::from(format!("{EXTRA}{k}").as_str()), ParamValue::Text(v.to_string()));
         }
         n.params.insert(ParamKey::from("plugin"), ParamValue::Text(plugin.to_owned()));
         for (i, v) in values.iter().enumerate() {
@@ -476,8 +502,12 @@ mod frei0r {
         if values.keys().enumerate().any(|(at, i)| at != *i) {
             return Err(format!("frei0r node {}: its values skip an index", n.id));
         }
+        let mut entry = serde_json::json!({ "type": TAG, "type_id": plugin, "params": values.into_values().collect::<Vec<_>>() });
+        if let Some(o) = entry.as_object_mut() {
+            extras_back(n, o)?;
+        }
         let legacy = n.legacy.as_mut().ok_or_else(|| format!("frei0r node {} has no slot", n.id))?;
-        legacy.payload = serde_json::json!({ "type": TAG, "type_id": plugin, "params": values.into_values().collect::<Vec<_>>() });
+        legacy.payload = entry;
         n.type_id = klipp_graph_format::NodeTypeId::new(types::LEGACY_EFFECT);
         Ok(())
     }
@@ -653,6 +683,31 @@ mod tests {
         assert_eq!(n, memory, "the OFX entry it was");
         into_stored(&mut n).unwrap();
         assert_eq!(serde_json::to_value(&n).unwrap(), stored, "stored again, the same");
+    }
+
+    /// Storing a plug-in never fails: an OFX node off as a node, and an
+    /// entry field the stored form names no key for, are kept under the
+    /// node's own keys and come back as they were.
+    #[test]
+    fn a_plug_in_node_off_or_with_an_extra_field_is_kept_not_refused() {
+        let ofx = serde_json::json!({"plugin_name": "org.example.Glow", "enabled": true, "context": "Filter", "transition_amount": 0.0, "param_values": {}, "later": [1, 2]});
+        let mut n: Node = serde_json::from_value(serde_json::json!({"id": uuid::Uuid::nil(), "type_id": types::LEGACY_OFX, "label": "", "legacy": {"slot": 0, "payload": ofx}})).unwrap();
+        n.enabled = false;
+        let memory = n.clone();
+        into_stored(&mut n).unwrap();
+        assert!(n.enabled, "the entry's flag is the node's");
+        into_memory(&mut n).unwrap();
+        assert_eq!(n, memory, "off as a node and its extra field, back as they were");
+
+        let frei0r = serde_json::json!({"type": "frei0r", "type_id": "frei0r:/x.so:X", "params": [{"Bool": true}]});
+        let mut n: Node = serde_json::from_value(serde_json::json!({"id": uuid::Uuid::nil(), "type_id": types::LEGACY_EFFECT, "label": "", "legacy": {"slot": 0, "payload": frei0r}})).unwrap();
+        into_memory(&mut n).unwrap();
+        n.params.insert(ParamKey::from("later"), ParamValue::Text("[1,2]".into()));
+        let memory = n.clone();
+        into_stored(&mut n).unwrap();
+        assert_eq!(n.type_id.as_str(), lt::FREI0R);
+        into_memory(&mut n).unwrap();
+        assert_eq!(n, memory, "the extra field back as it was");
     }
 
     #[test]
