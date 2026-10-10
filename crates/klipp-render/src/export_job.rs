@@ -880,6 +880,7 @@ mod tests {
             render_stage: Arc::new(std::sync::Mutex::new(String::new())),
             loudness_result: Arc::new(std::sync::Mutex::new(None)),
             total_frames: 100,
+            analyser: None,
         };
 
         let result = job.run();
