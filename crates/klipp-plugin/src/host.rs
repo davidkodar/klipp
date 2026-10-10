@@ -138,6 +138,14 @@ pub struct OfxPlugin {
     pub supports_opencl: bool,
     /// Whether this plugin supports OpenGL rendering.
     pub supports_opengl: bool,
+    /// It asks for frames at other times (`OfxImageEffectPropTemporalClipAccess`).
+    pub temporal: bool,
+    /// Its render thread safety is "unsafe": no two of its renders at once,
+    /// in any host.
+    pub unsafe_threads: bool,
+    /// It needs its frames in order (`OfxImageEffectInstancePropSequentialRender`):
+    /// it keeps history, so nothing may keep its output by frame.
+    pub sequential_render: bool,
     /// Raw plugin pointer — valid for the lifetime of `_lib` when the plugin
     /// comes from a dynamically-loaded `.ofx` bundle. `None` for plugins
     /// registered directly via `register_raw_plugin` (test injection), where
@@ -455,6 +463,9 @@ impl OfxHostRuntime {
                 supports_cuda: false,
                 supports_opencl: false,
                 supports_opengl: false,
+                temporal: false,
+                unsafe_threads: false,
+                sequential_render: false,
                 raw,
                 _lib: Some(lib.clone()),
                 initialized: false,
@@ -493,6 +504,9 @@ impl OfxHostRuntime {
             supports_cuda: false,
             supports_opencl: false,
             supports_opengl: false,
+            temporal: false,
+            unsafe_threads: false,
+            sequential_render: false,
             raw: raw_ptr,
             _lib: None,
             initialized: false,
@@ -698,7 +712,22 @@ impl OfxHostRuntime {
             info!("OFX: '{}' requires float pixel depth", self.plugins[plugin_idx].name);
         }
 
+        // What it says of time and threads: a temporal plug-in may ask for
+        // other frames, an unsafe one never renders twice at once, and a
+        // sequential one keeps history between frames.
+        let (temporal, unsafe_threads, sequential_render) = instance::with_instance(desc_handle, |inst| {
+            property::with_propset(inst.props_handle, |ps| {
+                let temporal = ps.get_int("OfxImageEffectPropTemporalClipAccess", 0).unwrap_or(0) != 0;
+                let unsafe_threads = ps.get_string_lossy("OfxImageEffectPluginRenderThreadSafety", 0).is_some_and(|s| s == "OfxImageEffectRenderUnsafe");
+                let sequential = ps.get_int("OfxImageEffectInstancePropSequentialRender", 0).unwrap_or(0) == 1;
+                (temporal, unsafe_threads, sequential)
+            })
+        }).flatten().unwrap_or((false, false, false));
+
         let plugin = &mut self.plugins[plugin_idx];
+        plugin.temporal = temporal;
+        plugin.unsafe_threads = unsafe_threads;
+        plugin.sequential_render = sequential_render;
         plugin.param_descriptors = descriptors;
         plugin.grouping = grouping;
         plugin.supported_contexts = supported_contexts;
@@ -722,6 +751,7 @@ impl OfxHostRuntime {
         plugin_name: &str,
         plugin_idx: usize,
         context: OfxCategory,
+        shared: bool,
     ) -> Result<ffi::OfxImageEffectHandle, PluginError> {
         let mut inst = PluginInstance::new(plugin_idx);
         inst.premult_string = self.plugins[plugin_idx].premult_string.clone();
@@ -899,7 +929,11 @@ impl OfxHostRuntime {
 
         instance::with_instance(handle, |inst| inst.created = true);
 
-        self.instances.insert(plugin_name.to_string(), handle as usize);
+        // The one instance every clip's entry shares, by name; a node's own
+        // (`OfxPluginInstance`) is its slot's alone.
+        if shared {
+            self.instances.insert(plugin_name.to_string(), handle as usize);
+        }
         info!("OFX: created instance for '{plugin_name}'");
 
         Ok(handle)
@@ -917,7 +951,7 @@ impl OfxHostRuntime {
 
         let plugin_idx = self.plugin_index(plugin_name).ok_or(PluginError::NotFound)?;
 
-        self.create_instance(plugin_name, plugin_idx, context)
+        self.create_instance(plugin_name, plugin_idx, context, true)
     }
 
     /// The plug-in that renders `name`: of the initialised ones with that
@@ -1046,7 +1080,7 @@ impl OfxHostRuntime {
         let premult = self.plugins.first()
             .map(|p| p.premult_string.clone())
             .unwrap_or_else(|| crate::constants::kOfxImageAlphaUnPremultiplied.to_string());
-        image_effect::set_render_context(frame_provider, frame_time, width, height, &premult, false);
+        image_effect::set_render_context(frame_provider, frame_time, width, height, &premult, false, false);
 
         let mut current = rgba.to_vec();
         for effect in effects {
@@ -1098,7 +1132,27 @@ impl OfxHostRuntime {
 
         // Get or create instance
         let inst_handle = self.get_or_create_instance(&effect.plugin_name, effect.context)?;
+        self.render_on(inst_handle, effect, input, width, height, frame_time, abort, 24.0, 1.0, (0.0, 1000.0))
+    }
 
+    /// `effect` rendered on the instance `inst_handle`, at `frame_time` in
+    /// the time unit of `fps` (declared as the instance's and its clips'
+    /// frame rate), at `render_scale`, over `frame_range` (its clips'
+    /// frame range, the frames it may ask for).
+    #[allow(clippy::too_many_arguments)]
+    fn render_on(
+        &mut self,
+        inst_handle: ffi::OfxImageEffectHandle,
+        effect: &AppliedEffect,
+        input: &[u8],
+        width: u32,
+        height: u32,
+        frame_time: f64,
+        abort: &Option<Arc<AtomicBool>>,
+        fps: f64,
+        render_scale: f64,
+        frame_range: (f64, f64),
+    ) -> Result<Vec<u8>, PluginError> {
         let plugin_idx = instance::with_instance(inst_handle, |inst| inst.plugin_idx)
             .ok_or(PluginError::NotFound)?;
 
@@ -1130,11 +1184,11 @@ impl OfxHostRuntime {
                 ps.set_double("OfxImageEffectPropProjectExtent", 0, width as f64);
                 ps.set_double("OfxImageEffectPropProjectExtent", 1, height as f64);
                 ps.set_double("OfxImageEffectPropProjectPixelAspectRatio", 0, 1.0);
-                ps.set_double("OfxImageEffectPropFrameRate", 0, 24.0);
-                ps.set_double("OfxImageEffectPropFrameRange", 0, 0.0);
-                ps.set_double("OfxImageEffectPropFrameRange", 1, 1000.0);
-                ps.set_double("OfxImageEffectPropRenderScale", 0, 1.0);
-                ps.set_double("OfxImageEffectPropRenderScale", 1, 1.0);
+                ps.set_double("OfxImageEffectPropFrameRate", 0, fps);
+                ps.set_double("OfxImageEffectPropFrameRange", 0, frame_range.0);
+                ps.set_double("OfxImageEffectPropFrameRange", 1, frame_range.1);
+                ps.set_double("OfxImageEffectPropRenderScale", 0, render_scale);
+                ps.set_double("OfxImageEffectPropRenderScale", 1, render_scale);
             });
 
             // Clip properties — determine connected clips based on context
@@ -1152,12 +1206,12 @@ impl OfxHostRuntime {
                     ps.set_string("OfxImageEffectPropPixelDepth", 0, depth);
                     ps.set_string("OfxImageEffectPropComponents", 0, crate::constants::kOfxImageComponentRGBA);
                     ps.set_int("OfxImageClipPropConnected", 0, if is_connected { 1 } else { 0 });
-                    ps.set_double("OfxImageEffectPropFrameRate", 0, 24.0);
+                    ps.set_double("OfxImageEffectPropFrameRate", 0, fps);
                     ps.set_double("OfxImageEffectPropPixelAspectRatio", 0, 1.0);
-                    ps.set_double("OfxImageEffectPropFrameRange", 0, 0.0);
-                    ps.set_double("OfxImageEffectPropFrameRange", 1, 1000.0);
-                    ps.set_double("OfxImageEffectPropUnmappedFrameRange", 0, 0.0);
-                    ps.set_double("OfxImageEffectPropUnmappedFrameRange", 1, 1000.0);
+                    ps.set_double("OfxImageEffectPropFrameRange", 0, frame_range.0);
+                    ps.set_double("OfxImageEffectPropFrameRange", 1, frame_range.1);
+                    ps.set_double("OfxImageEffectPropUnmappedFrameRange", 0, frame_range.0);
+                    ps.set_double("OfxImageEffectPropUnmappedFrameRange", 1, frame_range.1);
                     ps.set_string("OfxImageClipPropFieldOrder", 0, crate::constants::kOfxFieldNone);
                 });
             }
@@ -1460,8 +1514,8 @@ impl OfxHostRuntime {
         bsr_args.set_double("OfxImageEffectPropFrameRange", 0, frame_time);
         bsr_args.set_double("OfxImageEffectPropFrameRange", 1, frame_time);
         bsr_args.set_double("OfxImageEffectPropFrameStep", 0, 1.0);
-        bsr_args.set_double("OfxImageEffectPropRenderScale", 0, 1.0);
-        bsr_args.set_double("OfxImageEffectPropRenderScale", 1, 1.0);
+        bsr_args.set_double("OfxImageEffectPropRenderScale", 0, render_scale);
+        bsr_args.set_double("OfxImageEffectPropRenderScale", 1, render_scale);
         bsr_args.set_int("OfxPropIsInteractive", 0, 0);
         bsr_args.set_int("OfxImageEffectPropSequentialRenderStatus", 0, 0);
         bsr_args.set_int("OfxImageEffectPropInteractiveRenderStatus", 0, 0);
@@ -1508,8 +1562,8 @@ impl OfxHostRuntime {
         in_args.set_int("OfxImageEffectPropRenderWindow", 1, render_y1);
         in_args.set_int("OfxImageEffectPropRenderWindow", 2, render_x2);
         in_args.set_int("OfxImageEffectPropRenderWindow", 3, render_y2);
-        in_args.set_double("OfxImageEffectPropRenderScale", 0, 1.0);
-        in_args.set_double("OfxImageEffectPropRenderScale", 1, 1.0);
+        in_args.set_double("OfxImageEffectPropRenderScale", 0, render_scale);
+        in_args.set_double("OfxImageEffectPropRenderScale", 1, render_scale);
         in_args.set_string("OfxImageEffectPropFieldToRender", 0, crate::constants::kOfxFieldNone);
         in_args.set_int("OfxPropIsInteractive", 0, 0);
         in_args.set_int("OfxImageEffectPropSequentialRenderStatus", 0, 0);
@@ -1555,8 +1609,8 @@ impl OfxHostRuntime {
 
         // Call kOfxImageEffectActionEndSequenceRender
         let mut esr_args = PropertySet::default();
-        esr_args.set_double("OfxImageEffectPropRenderScale", 0, 1.0);
-        esr_args.set_double("OfxImageEffectPropRenderScale", 1, 1.0);
+        esr_args.set_double("OfxImageEffectPropRenderScale", 0, render_scale);
+        esr_args.set_double("OfxImageEffectPropRenderScale", 1, render_scale);
         esr_args.set_int("OfxPropIsInteractive", 0, 0);
         esr_args.set_int("OfxImageEffectPropSequentialRenderStatus", 0, 0);
         esr_args.set_int("OfxImageEffectPropInteractiveRenderStatus", 0, 0);
@@ -1835,6 +1889,179 @@ impl OfxHost {
     /// Whether OpenGL rendering is available.
     pub fn opengl_available(&self) -> bool {
         self.opengl.is_some()
+    }
+}
+
+// ── A node's own instance (M4 step 3) ────────────────────────────────
+
+/// What a plug-in says of itself, for a node to decide how to run it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OfxDescribed {
+    /// It offers the Filter context.
+    pub filter: bool,
+    /// It asks for frames at other times.
+    pub temporal: bool,
+    /// It keeps history between frames: nothing may keep its output by frame.
+    pub sequential_render: bool,
+    /// Its render thread safety is "unsafe".
+    pub unsafe_threads: bool,
+}
+
+/// The renders of each "unsafe" plug-in, by name, held one at a time
+/// across every host: the viewer and each export hold their own. Always
+/// taken inside the host's lock, never before it.
+static UNSAFE_PLUGINS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<()>>>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn unsafe_lock(name: &str) -> Arc<std::sync::Mutex<()>> {
+    Arc::clone(UNSAFE_PLUGINS.lock().unwrap_or_else(|e| e.into_inner()).entry(name.to_string()).or_default())
+}
+
+/// One plug-in instance of its own, for one node on one clip: made at the
+/// clip's frame rate (OFX's time unit is the clip's frames at that rate),
+/// rendered through the host it came from, destroyed when dropped.
+///
+/// It keeps its host alive (the `Arc`), so the host never goes before its
+/// instances. **Never drop one while holding the host's lock**: dropping
+/// takes it, and std's `Mutex` isn't re-entrant.
+pub struct OfxPluginInstance {
+    host: Arc<std::sync::Mutex<OfxHostRuntime>>,
+    /// Its key in the instance store (`OfxImageEffectHandle` as `usize`).
+    handle: usize,
+    plugin: String,
+    fps: f64,
+    /// Held around each render when the plug-in says it is unsafe.
+    unsafe_lock: Option<Arc<std::sync::Mutex<()>>>,
+    /// The bytes of the last frame it rendered.
+    frame_bytes: usize,
+}
+
+/// The host's lock, or the render failing: a plug-in that panicked inside a
+/// call poisoned it, and the runtime's state from before the call is all
+/// it touched, so it is taken back rather than failing every later frame.
+fn host_of(host: &std::sync::Mutex<OfxHostRuntime>) -> std::sync::MutexGuard<'_, OfxHostRuntime> {
+    host.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl OfxHostRuntime {
+    /// What `name` says of itself, or `None` when no such plug-in loaded.
+    pub fn describe(&self, name: &str) -> Option<OfxDescribed> {
+        let p = &self.plugins[self.plugin_index(name)?];
+        Some(OfxDescribed {
+            filter: p.supported_contexts.contains(&OfxCategory::Filter),
+            temporal: p.temporal,
+            sequential_render: p.sequential_render,
+            unsafe_threads: p.unsafe_threads,
+        })
+    }
+
+    /// A new instance of `name` of its own, in the Filter context, at the
+    /// clip's `fps`.
+    pub fn new_instance(this: &Arc<std::sync::Mutex<Self>>, name: &str, fps: f64) -> Result<OfxPluginInstance, PluginError> {
+        let mut host = host_of(this);
+        let idx = host.plugin_index(name).ok_or(PluginError::NotFound)?;
+        let unsafe_threads = host.plugins[idx].unsafe_threads;
+        let handle = host.create_instance(name, idx, OfxCategory::Filter, false)?;
+        drop(host);
+        Ok(OfxPluginInstance {
+            host: Arc::clone(this),
+            handle: handle as usize,
+            plugin: name.to_string(),
+            fps,
+            unsafe_lock: unsafe_threads.then(|| unsafe_lock(name)),
+            frame_bytes: 0,
+        })
+    }
+}
+
+impl OfxPluginInstance {
+    fn handle(&self) -> ffi::OfxImageEffectHandle {
+        self.handle as ffi::OfxImageEffectHandle
+    }
+
+    /// Its GetFramesNeeded for the frame at `time` (the clip's frames): the
+    /// other times it reads, each frame of the range it gives but `time`.
+    /// A plug-in that answers by default reads only its own frame.
+    pub fn frames_needed(&mut self, params: &HashMap<String, OfxValue>, time: f64) -> Vec<f64> {
+        let host = host_of(&self.host);
+        let Some(idx) = instance::with_instance(self.handle(), |inst| inst.plugin_idx) else { return Vec::new() };
+        host.sync_params_to_instance(self.handle(), params);
+        let mut in_args = PropertySet::default();
+        in_args.set_double("OfxPropTime", 0, time);
+        let in_handle = property::register_propset(in_args);
+        let out_handle = property::register_propset(PropertySet::default());
+        let status = host.call_action_raw(idx, b"OfxImageEffectActionGetFramesNeeded\0", self.handle(), in_handle, out_handle);
+        let range = property::with_propset(out_handle, |ps| {
+            Some((ps.get_double("OfxImageClipPropFrameRange_Source", 0)?, ps.get_double("OfxImageClipPropFrameRange_Source", 1)?))
+        })
+        .flatten();
+        property::remove_propset(in_handle);
+        property::remove_propset(out_handle);
+        match (status, range) {
+            (ffi::K_OFX_STAT_OK, Some((lo, hi))) if lo <= hi => {
+                let mut t = lo.floor();
+                let mut times = Vec::new();
+                while t <= hi {
+                    if (t - time).abs() > 1e-9 {
+                        times.push(t);
+                    }
+                    t += 1.0;
+                }
+                times
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The frame at `time` (the clip's frames) from `rgba8` (sRGB RGBA8,
+    /// `width × height`), at `render_scale`. `frames` are the other times it
+    /// asked for, each as the source gave it (`rgba8`, width, height); its
+    /// clipGetImage at a time not there gets no image, never this frame.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render(&mut self, params: &HashMap<String, OfxValue>, rgba8: &[u8], width: u32, height: u32, time: f64, render_scale: f64, frames: Vec<(f64, (Vec<u8>, u32, u32))>) -> Result<Vec<u8>, PluginError> {
+        // Always the host first, then the plug-in's own: viewer and export
+        // each lock their own host, and one order keeps them from deadlocking
+        // on an unsafe plug-in both use.
+        let mut host = host_of(&self.host);
+        let _one_at_a_time = self.unsafe_lock.as_ref().map(|l| l.lock().unwrap_or_else(|e| e.into_inner()));
+        let premult = instance::with_instance(self.handle(), |inst| inst.premult_string.clone())
+            .unwrap_or_else(|| crate::constants::kOfxImageAlphaUnPremultiplied.to_string());
+        // Its other frames, by the times it named: a time not asked for has
+        // no image.
+        let provider: image_effect::FrameProviderFn = Box::new(move |t| frames.iter().find(|(at, _)| (at - t).abs() < 1e-6).map(|(_, f)| f.clone()));
+        // Its other frames in the depth it takes them in.
+        let needs_float = instance::with_instance(self.handle(), |inst| inst.plugin_idx).is_some_and(|i| host.plugins[i].needs_float);
+        image_effect::set_render_context(Some(provider), time, width, height, &premult, needs_float, true);
+        let effect = AppliedEffect { plugin_name: self.plugin.clone(), enabled: true, param_values: params.clone(), ..Default::default() };
+        self.frame_bytes = rgba8.len();
+        // Any frame it may ask for: the node hands in only the source's, held
+        // to the media's range and its budget.
+        let out = host.render_on(self.handle(), &effect, rgba8, width, height, time, &None, self.fps, render_scale, (-1.0e6, 1.0e6));
+        image_effect::clear_render_context();
+        out
+    }
+
+    /// The state it keeps, as an estimate (OFX doesn't say): two frames of
+    /// the size it last rendered. A plug-in keeping more is bounded by the
+    /// owner's slot count.
+    pub fn bytes(&self) -> usize {
+        self.frame_bytes * 2
+    }
+}
+
+impl Drop for OfxPluginInstance {
+    /// Destroys the instance through its host. The host's lock is taken
+    /// here: never drop one while holding it.
+    fn drop(&mut self) {
+        let host = host_of(&self.host);
+        let _one_at_a_time = self.unsafe_lock.as_ref().map(|l| l.lock().unwrap_or_else(|e| e.into_inner()));
+        if let Some(idx) = instance::with_instance(self.handle(), |inst| inst.plugin_idx) {
+            let status = host.call_action_raw(idx, b"OfxActionDestroyInstance\0", self.handle(), std::ptr::null_mut(), std::ptr::null_mut());
+            if status != ffi::K_OFX_STAT_OK && status != ffi::K_OFX_STAT_REPLY_DEFAULT {
+                warn!("OFX: '{}' DestroyInstance returned {status}", self.plugin);
+            }
+        }
+        instance::remove_instance(self.handle());
     }
 }
 
