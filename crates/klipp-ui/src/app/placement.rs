@@ -517,10 +517,6 @@ impl KlippApp {
                 multicam_sound: clip.multicam_sound,
                 audio_effects: clip.audio_effects.clone(),
                 audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
-                deflicker_data: None,
-                deflicker_gains: None,
-                stabilization_data: None,
-                smoothed_trajectory: None,
                 track_points: Vec::new(),
                 // A piece of the clip keeps its track (#684).
                 surfaces: clip.surfaces.clone(),
@@ -665,10 +661,6 @@ impl KlippApp {
                 multicam_sound: clip.multicam_sound,
                 audio_effects: clip.audio_effects.clone(),
                 audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
-                deflicker_data: None,
-                deflicker_gains: None,
-                stabilization_data: None,
-                smoothed_trajectory: None,
                 track_points: Vec::new(),
                 // A piece of the clip keeps its track (#684).
                 surfaces: clip.surfaces.clone(),

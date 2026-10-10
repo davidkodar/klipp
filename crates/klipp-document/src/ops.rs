@@ -6262,14 +6262,9 @@ fn replace_media(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip: &Cl
     }
     // What was measured on the old footage, and its turn, describe that
     // picture, not this one (#814 review): the new file's rotation is
-    // taken, and the measurements are cleared and said.
+    // taken, and the tracking is cleared and said. An analysis is the
+    // file's (M4 step 9): the new footage has its own.
     let mut cleared: Vec<&str> = Vec::new();
-    if clip.stabilization_data.is_some() || clip.smoothed_trajectory.is_some() {
-        cleared.push("its stabilisation");
-    }
-    if clip.deflicker_data.is_some() || clip.deflicker_gains.is_some() {
-        cleared.push("its deflicker");
-    }
     if !clip.track_points.is_empty() || !clip.surfaces.is_empty() {
         cleared.push("its tracking");
     }
@@ -6280,10 +6275,6 @@ fn replace_media(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip: &Cl
         new.source_out = from + (c.source_out - c.source_in);
         new.source_in = from;
         new.source_rotation = rotation;
-        new.stabilization_data = None;
-        new.smoothed_trajectory = None;
-        new.deflicker_data = None;
-        new.deflicker_gains = None;
         new.track_points.clear();
         new.surfaces.clear();
         EditCommand::ReplaceClip { description: "Replace Media", old: Box::new(c.clone()), new: Box::new(new) }
