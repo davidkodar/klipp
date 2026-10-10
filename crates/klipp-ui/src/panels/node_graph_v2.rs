@@ -5074,17 +5074,19 @@ mod add_menu_tests {
 }
 
 #[cfg(test)]
-mod canvas_command_tests {
+pub(crate) mod canvas_command_tests {
     use super::*;
     use klipp_nodes::NodeKind;
 
-    struct Harness {
+    /// The grade canvas drawn frame by frame on a graph, its commands
+    /// returned, never dispatched (the app's dispatch tests feed them on).
+    pub(crate) struct Harness {
         ctx: egui::Context,
-        panel: NodeGraphV2Panel,
-        graph: NodeGraph,
+        pub(crate) panel: NodeGraphV2Panel,
+        pub(crate) graph: NodeGraph,
         clip: ClipId,
-        selected: Option<NodeId>,
-        set: std::collections::HashSet<NodeId>,
+        pub(crate) selected: Option<NodeId>,
+        pub(crate) set: std::collections::HashSet<NodeId>,
         texts: Vec<(String, egui::Pos2)>,
         cards: Vec<egui::Rect>,
         time: f64,
@@ -5096,12 +5098,15 @@ mod canvas_command_tests {
             for (i, node) in graph.nodes.iter().enumerate() {
                 graph.node_positions.insert(node.id, NodePos { x: (i as f32 - 1.0) * 230.0, y: 0.0 });
             }
-            let clip = ClipId::new();
+            Self::on(graph, ClipId::new())
+        }
+        /// The canvas showing `graph` for `clip`.
+        pub(crate) fn on(graph: NodeGraph, clip: ClipId) -> Self {
             let mut h = Self { ctx: Default::default(), panel: NodeGraphV2Panel { last_fit_clip: Some(clip), zoom: 1.0, ..Default::default() }, graph, clip, selected: None, set: Default::default(), texts: Vec::new(), cards: Vec::new(), time: 0.0 };
             h.settle();
             h
         }
-        fn frame(&mut self, events: Vec<egui::Event>) -> Vec<AppCommand> {
+        pub(crate) fn frame(&mut self, events: Vec<egui::Event>) -> Vec<AppCommand> {
             self.time += 1.0 / 30.0;
             let mut cmds = Vec::new();
             let out = self.ctx.run(egui::RawInput {
@@ -5122,11 +5127,11 @@ mod canvas_command_tests {
             }).collect();
             cmds
         }
-        fn settle(&mut self) { for _ in 0..3 { self.frame(Vec::new()); } }
-        fn text(&self, label: &str) -> egui::Pos2 {
+        pub(crate) fn settle(&mut self) { for _ in 0..3 { self.frame(Vec::new()); } }
+        pub(crate) fn text(&self, label: &str) -> egui::Pos2 {
             self.texts.iter().rev().find(|(s, _)| s == label).unwrap_or_else(|| panic!("missing {label}: {:?}", self.texts)).1
         }
-        fn card(&self, kind: NodeKind) -> (NodeId, egui::Rect) {
+        pub(crate) fn card(&self, kind: NodeKind) -> (NodeId, egui::Rect) {
             let node = self.graph.nodes.iter().find(|n| n.kind == kind).unwrap();
             let at = self.text(&node.label);
             (node.id, *self.cards.iter().find(|r| r.contains(at)).unwrap_or_else(|| panic!("no card at {at:?}: {:?}", self.cards)))
@@ -5134,12 +5139,21 @@ mod canvas_command_tests {
         fn button(at: egui::Pos2, button: egui::PointerButton, pressed: bool) -> egui::Event {
             egui::Event::PointerButton { pos: at, button, pressed, modifiers: egui::Modifiers::NONE }
         }
-        fn click(&mut self, at: egui::Pos2, button: egui::PointerButton) -> Vec<AppCommand> {
+        pub(crate) fn click(&mut self, at: egui::Pos2, button: egui::PointerButton) -> Vec<AppCommand> {
             let mut commands = self.frame(vec![egui::Event::PointerMoved(at), Self::button(at, button, true)]);
             commands.extend(self.frame(vec![Self::button(at, button, false)]));
             commands
         }
-        fn menu_item(&mut self, at: egui::Pos2, label: &str) -> Vec<AppCommand> {
+        /// The add menu opened at `graph_pos`, searched for `search`, as
+        /// the canvas's own gesture leaves it.
+        pub(crate) fn open_add_menu(&mut self, search: &str, graph_pos: egui::Pos2) {
+            self.panel.add_menu_open = true;
+            self.panel.add_menu_screen_pos = egui::pos2(100.0, 100.0);
+            self.panel.add_menu_graph_pos = graph_pos;
+            self.panel.add_menu_search = search.into();
+            self.settle();
+        }
+        pub(crate) fn menu_item(&mut self, at: egui::Pos2, label: &str) -> Vec<AppCommand> {
             self.click(at, egui::PointerButton::Secondary);
             self.settle();
             self.click(self.text(label), egui::PointerButton::Primary)

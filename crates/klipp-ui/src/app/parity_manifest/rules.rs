@@ -186,8 +186,6 @@ pub(super) fn entry_exclusion(entry: &CatalogEntry) -> Option<&'static str> {
             Some("#1348: implicit grade-node mix is command-tested but neither inspector exposes it"),
         CatalogValue::Parameter { .. } if entry.type_id == "klipp.grade.primaries_matrix" =>
             Some("#1351: PrimariesMatrix parameter controls have no reachable inspector route in either view"),
-        CatalogValue::Parameter { presentation, .. } if matches!(presentation.widget, Widget::Custom("compound_body")) =>
-            Some("#1476: a grade compound's structure edits (add, remove, reorder, group, ungroup) are still the v1 id route; their path twins are owed by step 12"),
         CatalogValue::Enabled if entry.type_id == "klipp.grade.input_transform" =>
             Some("#1351: InputTransform selection reaches camera encoding before the bypass header in both views"),
         _ => None,
