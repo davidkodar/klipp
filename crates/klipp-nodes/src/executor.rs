@@ -170,6 +170,12 @@ fn upload_motion(gpu: &mut GpuEffectsPipeline, motion: &klipp_effects::MotionDat
     }
 }
 
+/// Whether `effect` warps by the frame's motion (stabilisation, rolling
+/// shutter): without its analysis it passes the frame through.
+fn warps_by_motion(effect: &klipp_effects::BuiltinEffect) -> bool {
+    matches!(effect, klipp_effects::BuiltinEffect::VideoStabilization { .. } | klipp_effects::BuiltinEffect::RollingShutterCorrection { .. })
+}
+
 /// `effects` with a deflicker's gain set to the analysis node's for the
 /// frame, when it has one.
 fn with_gain<'a>(effects: &'a [klipp_effects::BuiltinEffect], at: Option<&klipp_effects::node_analysis::AtFrame>) -> std::borrow::Cow<'a, [klipp_effects::BuiltinEffect]> {
@@ -210,12 +216,6 @@ pub struct GraphExecutor {
     /// (success or failure). Prevents retrying a failed init on
     /// every frame.
     gpu_init_attempted: bool,
-    /// This frame's stabilisation correction and rolling-shutter rows
-    /// (node-graph M2 step 12): what an effect node's stabilisation and
-    /// rolling-shutter correction warp by, on the CPU arm and uploaded to
-    /// this executor's own GPU pipeline. Set per frame by the renderer
-    /// ([`Self::set_motion`]); empty, both pass the frame through.
-    motion: klipp_effects::MotionData,
     /// Cache of loaded LUT data keyed by file path.
     lut_cache: HashMap<PathBuf, Arc<LutData>>,
     /// Cache of pre-built curve LUTs keyed by node ID.
@@ -723,7 +723,6 @@ impl GraphExecutor {
         Self {
             gpu: None,
             gpu_init_attempted: false,
-            motion: klipp_effects::MotionData::default(),
             lut_cache: HashMap::new(),
             curve_lut_cache: HashMap::new(),
             matte_image_cache: HashMap::new(),
@@ -792,8 +791,6 @@ impl GraphExecutor {
             // even though the project is on AcesCG.
             gpu.set_luma_coefs(klipp_color::linear::luma_coefs(self.working_colorspace));
             gpu.set_grade_encoding(self.grade_encoding.as_u8());
-            // Motion set before the pipeline existed.
-            upload_motion(gpu, &self.motion);
         } else {
             tracing::info!(
                 "GraphExecutor: GPU unavailable, using CPU fallback for all nodes"
@@ -808,7 +805,6 @@ impl GraphExecutor {
             // Mark "attempted" so `ensure_gpu()` is a no-op —
             // `new_cpu_only` explicitly wants CPU-only.
             gpu_init_attempted: true,
-            motion: klipp_effects::MotionData::default(),
             lut_cache: HashMap::new(),
             curve_lut_cache: HashMap::new(),
             matte_image_cache: HashMap::new(),
@@ -1488,20 +1484,6 @@ impl GraphExecutor {
     /// Returns `None` if GPU init failed or hasn't been attempted yet.
     pub fn gpu_pipeline_mut(&mut self) -> Option<&mut GpuEffectsPipeline> {
         self.gpu.as_mut()
-    }
-
-    /// This frame's motion data for the stabilisation and rolling-shutter
-    /// effects its effect nodes run (node-graph M2 step 12): kept for the
-    /// CPU arm and uploaded to this executor's GPU pipeline, where the
-    /// recorded arms read it. The renderer prepares it per clip and frame
-    /// (`prepare_temporal_effects`) and sets it here before the run; an
-    /// empty one clears both, so no clip warps by the data of the one
-    /// before it.
-    pub fn set_motion(&mut self, motion: &klipp_effects::MotionData) {
-        self.motion = motion.clone();
-        if let Some(gpu) = self.gpu.as_mut() {
-            upload_motion(gpu, motion);
-        }
     }
 
     /// [`Self::gpu_pipeline_mut`], building the pipeline first if it has
@@ -3842,16 +3824,17 @@ impl GraphExecutor {
         // A clip's effects record into the chain; ones not recorded yet
         // are counted breaks (`ChainStats::effect_breaks`).
         if let NodeKind::Effect | NodeKind::EffectSegment = kind {
-            // An analysis node's motion goes up just before it records; a
-            // second in the run would overwrite it before the chain
-            // submits, so that one runs on the CPU (step 9).
+            // An analysis node's motion goes up just before it records, and
+            // a warp without an analysis clears it, so it passes the frame
+            // through; a second in the run would overwrite the first before
+            // the chain submits, so that one runs on the CPU (step 9).
             let at = self.run_analysis.get(&node_id).cloned();
-            if let Some(at) = &at {
+            if at.is_some() || params.effects.iter().any(warps_by_motion) {
                 if self.run_motion_uploaded {
                     return None;
                 }
                 self.run_motion_uploaded = true;
-                upload_motion(self.gpu.as_mut()?, &at.motion);
+                upload_motion(self.gpu.as_mut()?, &at.as_ref().map(|a| a.motion.clone()).unwrap_or_default());
             }
             let effects = with_gain(&params.effects, at.as_ref());
             let effects = effects.as_ref();
@@ -4619,12 +4602,12 @@ impl GraphExecutor {
             // A frei0r plug-in on the CPU, its instances kept across
             // frames (M4 step 5).
             NodeKind::Effect | NodeKind::EffectSegment | NodeKind::Frei0r => {
-                // An analysis node's own data for this frame (step 9), else
-                // the clip's motion as the renderer set it.
+                // An analysis node's own data for this frame (step 9); a
+                // warp without one passes the frame through.
                 let at = self.run_analysis.get(&node_id).cloned();
                 let fx = with_gain(&params.effects, at.as_ref());
                 let fx = fx.as_ref();
-                let motion = at.map_or_else(|| self.motion.clone(), |a| a.motion);
+                let motion = at.map(|a| a.motion).unwrap_or_default();
                 let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
                 let effect = if *kind == NodeKind::Frei0r {
                     self.run_frei0r(node_id, fx, primary_input, width, height, clip_time_secs, ctx)

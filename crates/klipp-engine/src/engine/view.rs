@@ -40,8 +40,8 @@ impl ViewerSource<'_> {
         }
     }
 
-    /// The clip's original media file: motion estimation and temporal
-    /// plugins read it at arbitrary times, as they always have.
+    /// The clip's original media file: temporal plug-ins read it at
+    /// arbitrary times, as they always have.
     fn original_path(&self, clip: &Clip) -> Option<std::path::PathBuf> {
         let media = clip.media_id()?;
         let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
@@ -195,11 +195,6 @@ impl FrameSource for ViewerSource<'_> {
             _ => self.streams.next_frame(clip.id)?,
         };
         Some(source_frame(&next))
-    }
-
-    fn motion_frame(&mut self, clip: &Clip, source_secs: f64, max_width: u32) -> Option<(Vec<u8>, u32, u32)> {
-        let path = self.original_path(clip)?;
-        super::generate_thumbnail_at_size(&path, source_secs.max(0.0), max_width).ok()
     }
 
     fn temporal_frames(&mut self, clip: &Clip) -> Option<klipp_plugin::FrameProviderFn> {

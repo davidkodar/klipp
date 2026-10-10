@@ -315,12 +315,6 @@ impl FrameSource for ExportFrameSource<'_> {
         stream.next.as_ref().map(|d| source_frame(d, to_working, w, h))
     }
 
-    fn motion_frame(&mut self, clip: &Clip, source_secs: f64, max_width: u32) -> Option<(Vec<u8>, u32, u32)> {
-        let ClipKind::Media { media_id } = &clip.kind else { return None };
-        let file = self.media.get(media_id)?;
-        crate::clip_decoder::decode_frame_at_size(&file.path, source_secs.max(0.0), max_width)
-    }
-
     /// Frames at other times, for OFX plugins that read them.
     ///
     /// Export had no implementation and took the trait's `None`, which
@@ -676,34 +670,6 @@ mod temporal_frames_tests {
         // N-1, N, N+1 to one decode per frame.
         let (a_again, _, _) = frames(0.0).expect("frame at t=0 again");
         assert_eq!(a, a_again, "the same time gave two different pictures");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The shared reader has to give the same pixels as the helper it
-    /// replaced, or this swapped a slow path for a subtly different
-    /// one. Stride is the thing that goes wrong: ffmpeg pads each row
-    /// to its own linesize, and a copy that assumes otherwise skews the
-    /// picture rather than failing.
-    #[test]
-    fn the_shared_reader_matches_the_helper_it_replaced() {
-        let dir = std::env::temp_dir().join(format!("klipp-tf-eq-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let Some(path) = test_clip_file(&dir) else {
-            eprintln!("skipping: ffmpeg unavailable");
-            return;
-        };
-
-        let mut reader =
-            klipp_media::frame_reader::SeekableFrameReader::open_rgba(&path).expect("reader opens");
-        for t in [0.0f64, 0.5, 1.25, 2.0] {
-            let (theirs, tw, th) =
-                crate::clip_decoder::decode_frame_at_size(&path, t, u32::MAX).expect("old helper");
-            let (ours, ow, oh) = reader.decode_at(t).expect("shared reader");
-            assert_eq!((ow, oh), (tw, th), "size differs at t={t}");
-            assert_eq!(ours.len(), theirs.len(), "length differs at t={t}");
-            assert_eq!(ours, theirs, "pixels differ at t={t}");
-        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

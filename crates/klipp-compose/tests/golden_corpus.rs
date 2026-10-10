@@ -223,13 +223,6 @@ impl FrameSource for Frames {
         self.frame(clip, next, width, height)
     }
 
-    fn motion_frame(&mut self, clip: &Clip, source_secs: f64, max_width: u32) -> Option<(Vec<u8>, u32, u32)> {
-        if !self.moving.contains(&clip.id) || MOTION_W > max_width {
-            return None;
-        }
-        Some((motion_texture(frame_no(source_secs)), MOTION_W, MOTION_H))
-    }
-
     fn temporal_frames_linear(&mut self, clip: &Clip, _working: WorkingColorspace) -> Option<LinearFrameProviderFn> {
         if !self.moving.contains(&clip.id) {
             return None;
