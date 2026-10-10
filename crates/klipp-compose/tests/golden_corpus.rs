@@ -40,6 +40,7 @@ use klipp_effects::{BuiltinEffect, ColorFadeMode, SpillMethod};
 use klipp_nodes::params::MatteChannel;
 use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams, NodePos};
 use klipp_timeline::{Clip, ClipKind, GradeGroup, MatteBinding, Sequence, StencilSettings, TextBox, TitleData, Track, TrackKind, Transition};
+use klipp_timeline::test_clip::{self, TestClip};
 
 /// A multiple of 8 wide and even high, so the export's encode tiles.
 const W: u32 = 64;
@@ -367,7 +368,7 @@ fn expected_declines(case: &Case) -> Vec<Path> {
 /// One media clip over the frame carrying `fx`.
 fn single(name: impl Into<String>, fx: Vec<BuiltinEffect>) -> Case {
     let mut c = media(0.0, 4.0);
-    c.set_effect_list(fx, c.builtin_effects_enabled().to_vec());
+    c = TestClip::of(c).effects(fx).build();
     let frames = Frames::default().with(&c, 0);
     Case::new(name, sequence(vec![track("V1", TrackKind::Video, vec![c])]), frames)
 }
@@ -377,7 +378,7 @@ fn single(name: impl Into<String>, fx: Vec<BuiltinEffect>) -> Case {
 fn placed(name: impl Into<String>, fx: Vec<BuiltinEffect>) -> Case {
     let base = media(0.0, 4.0);
     let mut top = media(0.0, 4.0);
-    top.set_effect_list(std::iter::once(transform(0.6, 4.0, -3.0)).chain(fx).collect(), top.builtin_effects_enabled().to_vec());
+    top = TestClip::of(top).effects(std::iter::once(transform(0.6, 4.0, -3.0)).chain(fx)).build();
     let frames = Frames::default().with(&base, 90).with(&top, 0);
     Case::new(name, sequence(vec![track("V2", TrackKind::Video, vec![top]), track("V1", TrackKind::Video, vec![base])]), frames)
 }
@@ -461,7 +462,7 @@ const EFFECTS_IN_A_LATER_BATCH: &[&str] = &[];
 /// One moving, grainy clip carrying `fx` (#1024).
 fn moving(name: impl Into<String>, fx: Vec<BuiltinEffect>) -> (Case, Clip) {
     let mut c = media(0.0, 4.0);
-    c.set_effect_list(fx, c.builtin_effects_enabled().to_vec());
+    c = TestClip::of(c).effects(fx).build();
     let frames = Frames::default().moving(&c, 0);
     (Case::new(name, sequence(vec![track("V1", TrackKind::Video, vec![c.clone()])]), frames), c)
 }
@@ -516,7 +517,7 @@ fn temporal_cases() -> Vec<Case> {
 
     // Deflicker with measured gains that move frame to frame.
     let mut c = media(0.0, 4.0);
-    c.set_effect_list(vec![BuiltinEffect::Deflicker { strength: 1.0, window_secs: 1.0, gain: 1.0 }], c.builtin_effects_enabled().to_vec());
+    c = TestClip::of(c).effects(vec![BuiltinEffect::Deflicker { strength: 1.0, window_secs: 1.0, gain: 1.0 }]).build();
     c.deflicker_gains = Some(klipp_effects::deflicker::DeflickerGains {
         gains: (0..96).map(|i| 1.0 + 0.2 * ((i as f32) * 0.7).sin()).collect(),
         window_secs: 1.0,
@@ -533,7 +534,7 @@ fn temporal_cases() -> Vec<Case> {
     ] {
         let mut c = media(0.0, 4.0);
         c.set_grade(exposure(0.3));
-        c.set_effect_list(vec![BuiltinEffect::Glow { radius: 4.0, intensity: 0.5 }], c.builtin_effects_enabled().to_vec());
+        c = TestClip::of(c).effects(vec![BuiltinEffect::Glow { radius: 4.0, intensity: 0.5 }]).build();
         let f = Frames::default().scene(&c, transfer);
         let mut case = Case::new(format!("scene/{name} graded with glow"), sequence(vec![track("V1", TrackKind::Video, vec![c])]), f);
         // A scene-referred clip with an effect: the export's single-clip
@@ -570,16 +571,20 @@ fn rule_cases() -> Vec<Case> {
 
     // Keyframed effect parameters reach the picture (#992).
     let mut c = media(0.0, 4.0);
-    c.set_effect_list(vec![BuiltinEffect::GaussianBlur { radius: 0.0 }, BuiltinEffect::Bloom { threshold: 0.6, radius: 4.0, intensity: 0.2 }], c.builtin_effects_enabled().to_vec());
-    c.edit_effect_keyframes(|v| v.insert("0:radius".into(), vec![key(0.0, 0.0), key(2.0, 6.0)]));
-    c.edit_effect_keyframes(|v| v.insert("1:intensity".into(), vec![key(0.0, 0.1), key(2.0, 1.2)]));
+    c = TestClip::of(c)
+        .effects([BuiltinEffect::GaussianBlur { radius: 0.0 }, BuiltinEffect::Bloom { threshold: 0.6, radius: 4.0, intensity: 0.2 }])
+        .key(0, "radius", 0.0, 0.0)
+        .key(0, "radius", 2.0, 6.0)
+        .key(1, "intensity", 0.0, 0.1)
+        .key(1, "intensity", 2.0, 1.2)
+        .build();
     let f = Frames::default().with(&c, 0);
     out.push(Case::new("rule/effect keyframes", sequence(vec![track("V1", TrackKind::Video, vec![c])]), f));
 
     // Opacity: the last enabled Opacity effect wins, over a base.
     let base = media(0.0, 4.0);
     let mut top = media(0.0, 4.0);
-    top.set_effect_list(vec![BuiltinEffect::Opacity { value: 0.9 }, BuiltinEffect::Opacity { value: 0.2 }, BuiltinEffect::Opacity { value: 0.6 }], vec![true, true, false]);
+    top = TestClip::of(top).effect(BuiltinEffect::Opacity { value: 0.9 }).effect(BuiltinEffect::Opacity { value: 0.2 }).effect(BuiltinEffect::Opacity { value: 0.6 }).off().build();
     let f = Frames::default().with(&base, 90).with(&top, 0);
     // Every enabled Opacity multiplies (#1386): 0.9 × 0.2, the disabled
     // 0.6 not at all. The historical case name identifies its baseline.
@@ -588,8 +593,7 @@ fn rule_cases() -> Vec<Case> {
     // Opacity: the effect's keys over the clip's opacity keys.
     let base = media(0.0, 4.0);
     let mut top = media(0.0, 4.0);
-    top.set_effect_list(vec![BuiltinEffect::Opacity { value: 0.5 }], top.builtin_effects_enabled().to_vec());
-    top.edit_opacity_keyframes(|v| *v = vec![key(0.0, 0.9), key(2.0, 0.9)]);
+    top = TestClip::of(top).effect(BuiltinEffect::Opacity { value: 0.5 }).lane("opacity", 0.0, 0.9).lane("opacity", 2.0, 0.9).build();
     top.edit_effect_keyframes(|v| v.insert("0:value".into(), vec![key(0.0, 0.2), key(2.0, 0.8)]));
     let f = Frames::default().with(&base, 90).with(&top, 0);
     out.push(Case::new("rule/opacity effect keys over clip keys", sequence(vec![track("V2", TrackKind::Video, vec![top]), track("V1", TrackKind::Video, vec![base])]), f));
@@ -599,7 +603,7 @@ fn rule_cases() -> Vec<Case> {
     // historical case name identifies its baseline.
     let base = media(0.0, 4.0);
     let mut adj = adjustment(0.0, 4.0);
-    adj.set_effect_list(vec![BuiltinEffect::Opacity { value: 0.4 }, BuiltinEffect::Invert { mix: 1.0 }], vec![false, true]);
+    adj = TestClip::of(adj).effect(BuiltinEffect::Opacity { value: 0.4 }).off().effect(BuiltinEffect::Invert { mix: 1.0 }).build();
     let f = Frames::default().with(&base, 0);
     out.push(Case::new("rule/adjustment first opacity", sequence(vec![track("Adj", TrackKind::Video, vec![adj]), track("V1", TrackKind::Video, vec![base])]), f));
 
@@ -607,29 +611,32 @@ fn rule_cases() -> Vec<Case> {
     // clip (#1207). Keep the historical case name to identify its baseline.
     let base = media(0.0, 4.0);
     let mut top = media(0.0, 4.0);
-    top.set_effect_list(vec![transform(0.5, 12.0, 6.0)], vec![false]);
+    top = TestClip::of(top).effect(transform(0.5, 12.0, 6.0)).off().build();
     let f = Frames::default().with(&base, 90).with(&top, 0);
     out.push(Case::new("rule/disabled transform carries values", sequence(vec![track("V2", TrackKind::Video, vec![top]), track("V1", TrackKind::Video, vec![base])]), f));
 
     // Transform: two enabled Transforms (#995 makes it apply once).
     let base = media(0.0, 4.0);
     let mut top = media(0.0, 4.0);
-    top.set_effect_list(vec![transform(0.7, 6.0, 0.0), BuiltinEffect::Invert { mix: 0.5 }, transform(0.7, 6.0, 0.0)], top.builtin_effects_enabled().to_vec());
+    top = TestClip::of(top).effects(vec![transform(0.7, 6.0, 0.0), BuiltinEffect::Invert { mix: 0.5 }, transform(0.7, 6.0, 0.0)]).build();
     let f = Frames::default().with(&base, 90).with(&top, 0);
     out.push(Case::new("rule/two transforms", sequence(vec![track("V2", TrackKind::Video, vec![top]), track("V1", TrackKind::Video, vec![base])]), f));
 
     // Transform keyframes move a placed clip with a shadow behind it.
     let base = media(0.0, 4.0);
     let mut top = media(0.0, 4.0);
-    top.set_effect_list(vec![transform(0.5, 0.0, 0.0), BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 2.0, color: [0, 0, 0], opacity: 0.8 }], top.builtin_effects_enabled().to_vec());
-    top.edit_transform_pos_x_keyframes(|v| *v = vec![key(0.0, -10.0), key(2.0, 10.0)]);
+    top = TestClip::of(top)
+        .effects([transform(0.5, 0.0, 0.0), BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 2.0, color: [0, 0, 0], opacity: 0.8 }])
+        .lane("pos_x", 0.0, -10.0)
+        .lane("pos_x", 2.0, 10.0)
+        .build();
     let f = Frames::default().with(&base, 90).with(&top, 0);
     out.push(Case::new("rule/keyed transform with shadow", sequence(vec![track("V2", TrackKind::Video, vec![top]), track("V1", TrackKind::Video, vec![base])]), f));
 
     // A title's soft edges over footage, blurred, with a shadow.
     let base = media(0.0, 4.0);
     let mut t = title("Corpus", 0.0, 4.0);
-    t.set_effect_list(vec![BuiltinEffect::GaussianBlur { radius: 1.5 }, BuiltinEffect::DropShadow { offset_x: 0.02, offset_y: 0.03, blur: 2.0, color: [0, 0, 0], opacity: 0.7 }], t.builtin_effects_enabled().to_vec());
+    t = TestClip::of(t).effects(vec![BuiltinEffect::GaussianBlur { radius: 1.5 }, BuiltinEffect::DropShadow { offset_x: 0.02, offset_y: 0.03, blur: 2.0, color: [0, 0, 0], opacity: 0.7 }]).build();
     let f = Frames::default().with(&base, 60);
     out.push(Case::new("rule/title over footage", sequence(vec![track("T1", TrackKind::Text, vec![t]), track("V1", TrackKind::Video, vec![base])]), f));
 
@@ -637,14 +644,14 @@ fn rule_cases() -> Vec<Case> {
     let base = media(0.0, 4.0);
     let mut top = media(0.0, 4.0);
     top.blend_mode = klipp_core::BlendMode::Screen;
-    top.set_effect_list(vec![BuiltinEffect::Opacity { value: 0.7 }], top.builtin_effects_enabled().to_vec());
+    top = TestClip::of(top).effects(vec![BuiltinEffect::Opacity { value: 0.7 }]).build();
     let f = Frames::default().with(&base, 30).with(&top, 120);
     out.push(Case::new("rule/screen at 70 percent", sequence(vec![track("V2", TrackKind::Video, vec![top]), track("V1", TrackKind::Video, vec![base])]), f));
 
     // An adjustment layer with a blur and an opacity weight.
     let base = media(0.0, 4.0);
     let mut adj = adjustment(0.0, 4.0);
-    adj.set_effect_list(vec![BuiltinEffect::GaussianBlur { radius: 3.0 }, BuiltinEffect::Opacity { value: 0.6 }], adj.builtin_effects_enabled().to_vec());
+    adj = TestClip::of(adj).effects(vec![BuiltinEffect::GaussianBlur { radius: 3.0 }, BuiltinEffect::Opacity { value: 0.6 }]).build();
     let f = Frames::default().with(&base, 0);
     out.push(Case::new("rule/adjustment blur at 60 percent", sequence(vec![track("Adj", TrackKind::Video, vec![adj]), track("V1", TrackKind::Video, vec![base])]), f));
 
@@ -658,7 +665,7 @@ fn grade_cases() -> Vec<Case> {
     // A clip's own grade, then an effect.
     let mut c = media(0.0, 4.0);
     c.set_grade(exposure(0.7));
-    c.set_effect_list(vec![BuiltinEffect::GaussianBlur { radius: 2.0 }], c.builtin_effects_enabled().to_vec());
+    c = TestClip::of(c).effects(vec![BuiltinEffect::GaussianBlur { radius: 2.0 }]).build();
     let f = Frames::default().with(&c, 0);
     out.push(Case::new("grade/clip grade then blur", sequence(vec![track("V1", TrackKind::Video, vec![c])]), f));
 
@@ -667,7 +674,7 @@ fn grade_cases() -> Vec<Case> {
     for (name, own) in [("no transform", vec![]), ("own transform", vec![transform(0.6, 0.0, 0.0)])] {
         let base = media(0.0, 4.0);
         let mut top = media(0.0, 4.0);
-        top.set_effect_list(own, top.builtin_effects_enabled().to_vec());
+        top = TestClip::of(top).effects(own).build();
         let mut t = track("V2", TrackKind::Video, vec![top.clone()]);
         t.effects.set_video_effect_list(vec![BuiltinEffect::Vignette { amount: 0.6, size: 0.5, softness: 0.5, roundness: 0.5 }, BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.03, blur: 2.0, color: [0, 0, 0], opacity: 0.7 }], vec![]);
         t.effects.grade_slot().set(Some(exposure(-0.5)));
@@ -679,9 +686,9 @@ fn grade_cases() -> Vec<Case> {
     for (name, keyed) in [("still", false), ("keyed", true)] {
         let base = media(0.0, 4.0);
         let mut top = media(0.0, 4.0);
-        top.set_effect_list(vec![BuiltinEffect::Opacity { value: 0.8 }], top.builtin_effects_enabled().to_vec());
+        top = TestClip::of(top).effect(BuiltinEffect::Opacity { value: 0.8 }).build();
         if keyed {
-            top.edit_opacity_keyframes(|v| *v = vec![key(0.0, 0.3), key(2.0, 0.9)]);
+            top = TestClip::of(top).lane("opacity", 0.0, 0.3).lane("opacity", 2.0, 0.9).build();
         }
         let mut t = track("V2", TrackKind::Video, vec![top.clone()]);
         t.effects.set_video_effect_list(vec![BuiltinEffect::Opacity { value: 0.5 }], vec![]);
@@ -746,7 +753,7 @@ fn grade_cases() -> Vec<Case> {
     for ws in [WorkingColorspace::AcesCG, WorkingColorspace::Bt2020Linear] {
         let mut c = media(0.0, 4.0);
         c.set_grade(exposure(0.5));
-        c.set_effect_list(vec![BuiltinEffect::Glow { radius: 4.0, intensity: 0.5 }, BuiltinEffect::ColorFade { color: [200, 40, 20, 255], duration_secs: 1.0, mode: ColorFadeMode::In, progress: 0.5 }], c.builtin_effects_enabled().to_vec());
+        c = TestClip::of(c).effects(vec![BuiltinEffect::Glow { radius: 4.0, intensity: 0.5 }, BuiltinEffect::ColorFade { color: [200, 40, 20, 255], duration_secs: 1.0, mode: ColorFadeMode::In, progress: 0.5 }]).build();
         let f = Frames::default().with(&c, 0);
         let mut case = Case::new(format!("grade/working space {ws:?}"), sequence(vec![track("V1", TrackKind::Video, vec![c])]), f);
         case.working = ws;
@@ -769,7 +776,7 @@ fn compound_cases() -> Vec<Case> {
             inner.timeline_grade_slot().set(Some(exposure(0.6)));
         }
         let mut compound = Clip { kind: ClipKind::Sequence { sequence_id: inner.id }, ..Clip::gap(tc(0.0), tc(4.0)) };
-        compound.set_effect_list(vec![BuiltinEffect::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 }], compound.builtin_effects_enabled().to_vec());
+        compound = TestClip::of(compound).effects(vec![BuiltinEffect::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 }]).build();
         let outer = sequence(vec![track("V1", TrackKind::Video, vec![compound])]);
         let f = Frames::default().with(&inner_clip, 0);
         let name = if graded { "compound/graded inner sequence" } else { "compound/expanded" };
@@ -824,10 +831,10 @@ fn matte_cases() -> Vec<Case> {
         let base = media(0.0, 4.0);
         let mut source = media(0.0, 4.0);
         if channel == MatteChannel::Alpha {
-            source.set_effect_list(vec![BuiltinEffect::Crop { left: 0.2, right: 0.3, top: 0.1, bottom: 0.25, feather: 0.08 }], source.builtin_effects_enabled().to_vec());
+            source = TestClip::of(source).effects(vec![BuiltinEffect::Crop { left: 0.2, right: 0.3, top: 0.1, bottom: 0.25, feather: 0.08 }]).build();
         }
         let mut consumer = media(0.0, 4.0);
-        consumer.set_effect_list(vec![BuiltinEffect::HSVAdjust { hue_shift: 90.0, saturation: 1.2, value: 1.0 }], consumer.builtin_effects_enabled().to_vec());
+        consumer = TestClip::of(consumer).effects(vec![BuiltinEffect::HSVAdjust { hue_shift: 90.0, saturation: 1.2, value: 1.0 }]).build();
         matted(&mut consumer, &mut source, channel, invert, feather, choke);
         let f = Frames::default().with(&base, 90).with(&source, 40).with(&consumer, 0);
         let seq = sequence(vec![
@@ -841,7 +848,7 @@ fn matte_cases() -> Vec<Case> {
     // Feather and choke keyframed, and a matte source carrying an effect.
     let base = media(0.0, 4.0);
     let mut source = media(0.0, 4.0);
-    source.set_effect_list(vec![BuiltinEffect::GaussianBlur { radius: 3.0 }, BuiltinEffect::Levels { in_black: 0.2, in_white: 0.7, gamma: 1.0, out_black: 0.0, out_white: 1.0 }], source.builtin_effects_enabled().to_vec());
+    source = TestClip::of(source).effects(vec![BuiltinEffect::GaussianBlur { radius: 3.0 }, BuiltinEffect::Levels { in_black: 0.2, in_white: 0.7, gamma: 1.0, out_black: 0.0, out_white: 1.0 }]).build();
     let mut consumer = media(0.0, 4.0);
     matted(&mut consumer, &mut source, MatteChannel::Luminance, false, 0.0, 0.0);
     consumer.matte_feather_keyframes = vec![key(0.0, 0.0), key(2.0, 6.0)];
@@ -858,10 +865,10 @@ fn matte_cases() -> Vec<Case> {
     let mut stencil = media(0.0, 4.0);
     stencil.matte_stencil = Some(StencilSettings { channel: MatteChannel::Luminance, invert: false, feather_px: 2.0, choke_px: 0.0 });
     let mut above = media(0.0, 4.0);
-    above.set_effect_list(vec![transform(0.4, -12.0, 0.0)], above.builtin_effects_enabled().to_vec());
+    above = TestClip::of(above).effects(vec![transform(0.4, -12.0, 0.0)]).build();
     let (mid, low) = (media(0.0, 4.0), media(0.0, 4.0));
     let mut mid = mid;
-    mid.set_effect_list(vec![transform(0.7, 8.0, 4.0)], mid.builtin_effects_enabled().to_vec());
+    mid = TestClip::of(mid).effects(vec![transform(0.7, 8.0, 4.0)]).build();
     let f = Frames::default().with(&stencil, 50).with(&above, 200).with(&mid, 0).with(&low, 120);
     let seq = sequence(vec![
         track("V4", TrackKind::Video, vec![above]),
@@ -880,10 +887,10 @@ fn transition_cases() -> Vec<Case> {
     let mut out = Vec::new();
     for kind in [TransitionKind::CrossDissolve, TransitionKind::WipeLeft] {
         let mut a = media(0.0, 2.0);
-        a.set_effect_list(vec![BuiltinEffect::Vignette { amount: 0.6, size: 0.5, softness: 0.5, roundness: 0.5 }], a.builtin_effects_enabled().to_vec());
+        a = TestClip::of(a).effects(vec![BuiltinEffect::Vignette { amount: 0.6, size: 0.5, softness: 0.5, roundness: 0.5 }]).build();
         a.set_grade(exposure(0.5));
         let mut b = media(2.0, 4.0);
-        b.set_effect_list(vec![transform(0.8, 6.0, 0.0), BuiltinEffect::Invert { mix: 0.4 }], b.builtin_effects_enabled().to_vec());
+        b = TestClip::of(b).effects(vec![transform(0.8, 6.0, 0.0), BuiltinEffect::Invert { mix: 0.4 }]).build();
         b.set_grade(graph_of(NodeKind::Saturation, NodeParams { saturation: Some(0.4), ..Default::default() }));
         let mut t = track("V1", TrackKind::Video, vec![a.clone(), b.clone()]);
         t.transitions.push(transition(kind, &a, &b));
@@ -919,7 +926,7 @@ fn multicam_cases() -> Vec<Case> {
     let mut angle = media(0.0, 4.0);
     angle.multicam_group = Some(group);
     angle.multicam_angle = 1;
-    angle.set_effect_list(vec![BuiltinEffect::GaussianBlur { radius: 2.0 }], angle.builtin_effects_enabled().to_vec());
+    angle = TestClip::of(angle).effects(vec![BuiltinEffect::GaussianBlur { radius: 2.0 }]).build();
     let mut angle_track = track("Angle 1", TrackKind::Video, vec![angle.clone()]);
     angle_track.effects.set_video_effect_list(vec![BuiltinEffect::Vignette { amount: 0.6, size: 0.5, softness: 0.5, roundness: 0.5 }], vec![]);
     let f = Frames::default().with(&primary, 0).with(&angle, 120);
@@ -935,10 +942,10 @@ fn nesting_cases() -> Vec<Case> {
     let mut graded = sequence(vec![track("Inner", TrackKind::Video, vec![inner_clip.clone()])]);
     graded.timeline_grade_slot().set(Some(exposure(0.6)));
     let mut middle_clip = Clip::sequence(graded.id, tc(0.0), tc(4.0));
-    middle_clip.set_effect_list(vec![BuiltinEffect::Invert { mix: 0.3 }], middle_clip.builtin_effects_enabled().to_vec());
+    middle_clip = TestClip::of(middle_clip).effects(vec![BuiltinEffect::Invert { mix: 0.3 }]).build();
     let middle = sequence(vec![track("Middle", TrackKind::Video, vec![middle_clip])]);
     let mut outer_clip = Clip::sequence(middle.id, tc(0.0), tc(4.0));
-    outer_clip.set_effect_list(vec![BuiltinEffect::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 }], outer_clip.builtin_effects_enabled().to_vec());
+    outer_clip = TestClip::of(outer_clip).effects(vec![BuiltinEffect::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 }]).build();
     let mut case = Case::new("compound/graded inside expanded", sequence(vec![track("V1", TrackKind::Video, vec![outer_clip])]), Frames::default().with(&inner_clip, 0));
     case.project.extend([middle, graded]);
     out.push(case);
@@ -948,7 +955,7 @@ fn nesting_cases() -> Vec<Case> {
     let mut inner = sequence(vec![track("Inner", TrackKind::Video, vec![inner_clip.clone()])]);
     inner.timeline_grade_slot().set(Some(exposure(-0.4)));
     let mut compound = Clip::sequence(inner.id, tc(0.0), tc(4.0));
-    compound.set_effect_list(vec![transform(0.5, 10.0, 5.0)], compound.builtin_effects_enabled().to_vec());
+    compound = TestClip::of(compound).effects(vec![transform(0.5, 10.0, 5.0)]).build();
     let base = media(0.0, 4.0);
     let f = Frames::default().with(&inner_clip, 0).with(&base, 90);
     let mut case = Case::new("compound/graded on a text track", sequence(vec![track("T1", TrackKind::Text, vec![compound]), track("V1", TrackKind::Video, vec![base])]), f);
@@ -958,11 +965,11 @@ fn nesting_cases() -> Vec<Case> {
     // A precomposition whose scene is another size than its parent.
     let scene_clip = media(0.0, 4.0);
     let mut scene_top = title("Pre", 0.0, 4.0);
-    scene_top.set_effect_list(vec![BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 2.0, color: [0, 0, 0], opacity: 0.7 }], scene_top.builtin_effects_enabled().to_vec());
+    scene_top = TestClip::of(scene_top).effects(vec![BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 2.0, color: [0, 0, 0], opacity: 0.7 }]).build();
     let mut scene = sequence(vec![track("T1", TrackKind::Text, vec![scene_top]), track("V1", TrackKind::Video, vec![scene_clip.clone()])]);
     scene.resolution = klipp_core::Resolution { width: W / 2, height: H / 2 };
     let mut pre = Clip::precomposition(scene.id, tc(0.0), tc(4.0));
-    pre.set_effect_list(vec![BuiltinEffect::GaussianBlur { radius: 1.5 }], pre.builtin_effects_enabled().to_vec());
+    pre = TestClip::of(pre).effects(vec![BuiltinEffect::GaussianBlur { radius: 1.5 }]).build();
     let base = media(0.0, 4.0);
     let f = Frames::default().with(&scene_clip, 0).with(&base, 90);
     let mut case = Case::new("precomposition/another size than its parent", two_tracks(pre, base), f);
@@ -976,12 +983,15 @@ fn nesting_cases() -> Vec<Case> {
 fn camera_cases() -> Vec<Case> {
     let base = media(0.0, 4.0);
     let mut top = media(0.0, 4.0);
-    top.set_effect_list(vec![
-        BuiltinEffect::HSVAdjust { hue_shift: 30.0, saturation: 1.2, value: 1.0 },
-        transform(0.5, 0.0, 0.0),
-        BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 2.0, color: [0, 0, 0], opacity: 0.7 },
-    ], top.builtin_effects_enabled().to_vec());
-    top.edit_transform_pos_x_keyframes(|v| *v = vec![key(0.0, -12.0), key(2.0, 12.0)]);
+    top = TestClip::of(top)
+        .effects([
+            BuiltinEffect::HSVAdjust { hue_shift: 30.0, saturation: 1.2, value: 1.0 },
+            transform(0.5, 0.0, 0.0),
+            BuiltinEffect::DropShadow { offset_x: 0.03, offset_y: 0.04, blur: 2.0, color: [0, 0, 0], opacity: 0.7 },
+        ])
+        .lane("pos_x", 0.0, -12.0)
+        .lane("pos_x", 2.0, 12.0)
+        .build();
     let f = Frames::default().with(&base, 90).with(&top, 0);
     let mut seq = two_tracks(top, base);
     seq.camera.x_keyframes = vec![key(0.0, 0.45), key(2.0, 0.55)];
@@ -1008,12 +1018,15 @@ fn title_blur_cases() -> Vec<Case> {
         let blur = klipp_timeline::MotionBlur { enabled: true, shutter_angle: 180.0, shutter_angle_keyframes: vec![], samples: 8 };
         td.object_mut(id).unwrap().fx = Some(klipp_timeline::LayerFx { motion_blur: Some(blur), ..Default::default() });
         let mut c = Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(4.0)) };
-        c.set_effect_list(if crop {
-            vec![BuiltinEffect::Crop { left: 0.0, right: 0.3, top: 0.0, bottom: 0.0, feather: 0.0 }, transform(1.0, 0.0, 0.0)]
-        } else {
-            vec![transform(1.0, 0.0, 0.0)]
-        }, c.builtin_effects_enabled().to_vec());
-        c.edit_transform_pos_x_keyframes(|v| *v = vec![key(0.0, -20.0), key(2.0, 20.0)]);
+        c = TestClip::of(c)
+            .effects(if crop {
+                vec![BuiltinEffect::Crop { left: 0.0, right: 0.3, top: 0.0, bottom: 0.0, feather: 0.0 }, transform(1.0, 0.0, 0.0)]
+            } else {
+                vec![transform(1.0, 0.0, 0.0)]
+            })
+            .lane("pos_x", 0.0, -20.0)
+            .lane("pos_x", 2.0, 20.0)
+            .build();
         c
     };
     let mut out = Vec::new();
@@ -1530,12 +1543,12 @@ fn the_opacity_rule_cases_draw_what_the_rule_computes() {
     let named = |name: &str| corpus().into_iter().find(|c| c.name == name).unwrap_or_else(|| panic!("no case {name:?}"));
     let base = media(0.0, 4.0);
     let mut one = media(0.0, 4.0);
-    one.set_effect_list(vec![BuiltinEffect::Opacity { value: 0.9 * 0.2 }], vec![true]);
+    one = TestClip::of(one).effect(BuiltinEffect::Opacity { value: 0.9 * 0.2 }).build();
     let f = Frames::default().with(&base, 90).with(&one, 0);
     let multiplied = Case::new("check/opacity 0.18", sequence(vec![track("V2", TrackKind::Video, vec![one]), track("V1", TrackKind::Video, vec![base])]), f);
     let base = media(0.0, 4.0);
     let mut adj = adjustment(0.0, 4.0);
-    adj.set_effect_list(vec![BuiltinEffect::Invert { mix: 1.0 }], vec![true]);
+    adj = TestClip::of(adj).effect(BuiltinEffect::Invert { mix: 1.0 }).build();
     let f = Frames::default().with(&base, 0);
     let unweighted = Case::new("check/adjustment no opacity", sequence(vec![track("Adj", TrackKind::Video, vec![adj]), track("V1", TrackKind::Video, vec![base])]), f);
     for (case, want) in [(named("rule/opacity last enabled wins"), multiplied), (named("rule/adjustment first opacity"), unweighted)] {
@@ -1637,7 +1650,7 @@ fn every_effect_variant_is_in_the_corpus() {
     covered.insert("Frei0r".into());
     for case in effect_cases().into_iter().chain(temporal_cases()) {
         for clip in case.project[0].tracks.iter().flat_map(|t| &t.clips) {
-            for e in clip.builtin_effects() {
+            for e in test_clip::effects(clip) {
                 covered.insert(format!("{e:?}").chars().take_while(|c| c.is_ascii_alphanumeric()).collect());
             }
         }
@@ -1706,7 +1719,7 @@ fn a_frei0r_plugin_draws_alike() {
         s.resolution = klipp_core::Resolution { width: FW, height: FH };
         s
     };
-    c.set_effect_list(vec![BuiltinEffect::Frei0r { type_id, params }], c.builtin_effects_enabled().to_vec());
+    c = TestClip::of(c).effects(vec![BuiltinEffect::Frei0r { type_id, params }]).build();
     let mut seq = sequence(vec![track("V1", TrackKind::Video, vec![c])]);
     seq.resolution = klipp_core::Resolution { width: FW, height: FH };
     let ws = WorkingColorspace::Rec709Linear;

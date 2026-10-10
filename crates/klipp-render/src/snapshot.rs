@@ -1194,10 +1194,10 @@ mod tests {
         let snap = SequenceSnapshot::from_sequence(&seq, &pool, &make_settings(), None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
         let chain: Vec<&str> = snap.audio_tracks[0].clips[0].audio_effects.iter().map(|e| e.effect_type.as_str()).collect();
         assert_eq!(chain, vec!["eq", "limiter"], "the clip's chain, then its track's");
-        let exported = snap.video.sequence.tracks[0].clips[0].builtin_effects();
-        assert!(matches!(exported, [E::Opacity { .. }, E::Vignette { .. }]), "{exported:?}");
+        let exported = klipp_timeline::test_clip::effects(&snap.video.sequence.tracks[0].clips[0]);
+        assert!(matches!(exported.as_slice(), [E::Opacity { .. }, E::Vignette { .. }]), "{exported:?}");
         let viewer = klipp_timeline::flatten::flatten_sequence(&seq, std::slice::from_ref(&seq));
-        assert_eq!(format!("{:?}", viewer.tracks[0].clips[0].builtin_effects()), format!("{exported:?}"), "the viewer's render copy has the same");
+        assert_eq!(format!("{:?}", klipp_timeline::test_clip::effects(&viewer.tracks[0].clips[0])), format!("{exported:?}"), "the viewer's render copy has the same");
     }
 
     /// #642: a retimed clip's sound is in the export, read at its speed

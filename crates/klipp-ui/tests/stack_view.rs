@@ -4,6 +4,7 @@
 use klipp_core::{AppCommand, ClipId, MediaId, RationalTime};
 use klipp_effects::BuiltinEffect as E;
 use klipp_timeline::Clip;
+use klipp_timeline::test_clip::{self, TestClip};
 use klipp_ui::inspector::stack_view;
 use klipp_ui::state::AppState;
 use klipp_ui::theme::KlippTheme;
@@ -12,9 +13,7 @@ fn clip() -> Clip {
     let t = |s: f64| RationalTime::from_secs_f64(s, 24);
     let mut c = Clip::media(MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
     c.id = ClipId::new();
-    c.push_effect(E::GaussianBlur { radius: 3.0 });
-    c.push_effect(E::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 });
-    c
+    TestClip::of(c).effect(E::GaussianBlur { radius: 3.0 }).effect(E::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 }).build()
 }
 
 /// One frame of the tab with `events`: the text drawn, at its centre, and
@@ -64,7 +63,7 @@ fn the_stack_shows_each_effect_in_order() {
 /// The eye turns the effect off by its path, and nothing else is sent.
 #[test]
 fn the_eye_turns_an_effect_off_by_path() {
-    let mut c = clip();
+    let c = clip();
     let state = AppState::default();
     let ctx = egui::Context::default();
     let (drawn, _) = frame(&ctx, &c, &state, Vec::new());
@@ -74,7 +73,7 @@ fn the_eye_turns_an_effect_off_by_path() {
     let button = |pressed| egui::Event::PointerButton { pos: eye, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
     frame(&ctx, &c, &state, vec![egui::Event::PointerMoved(eye), button(true)]);
     let (_, cmds) = frame(&ctx, &c, &state, vec![button(false)]);
-    let vignette = c.effect_id_at(1).unwrap().as_uuid();
+    let vignette = test_clip::effect_id(&c, 1).as_uuid();
     assert!(
         matches!(cmds.as_slice(), [AppCommand::SetNodeEnabledAt { addr, enabled: false }] if addr.node() == Some(vignette)),
         "{cmds:?}"
@@ -98,8 +97,8 @@ fn click_below(c: &Clip, row: &str, label: &str) -> Vec<AppCommand> {
 /// plans it (M3 step 9) and says why when it refuses.
 #[test]
 fn remove_sends_the_effects_path() {
-    let mut c = clip();
-    let vignette = c.effect_id_at(1).unwrap().as_uuid();
+    let c = clip();
+    let vignette = test_clip::effect_id(&c, 1).as_uuid();
     let cmds = click_below(&c, "Vignette", "✕");
     assert!(matches!(cmds.as_slice(), [AppCommand::RemoveNodeAt { addr }] if addr.node() == Some(vignette)), "{cmds:?}");
 }
@@ -108,8 +107,8 @@ fn remove_sends_the_effects_path() {
 /// the one above, or after the row before the effects at the top.
 #[test]
 fn reorder_moves_by_path() {
-    let mut c = clip();
-    let (blur, vignette) = (c.effect_id_at(0).unwrap().as_uuid(), c.effect_id_at(1).unwrap().as_uuid());
+    let c = clip();
+    let (blur, vignette) = (test_clip::effect_id(&c, 0).as_uuid(), test_clip::effect_id(&c, 1).as_uuid());
     let down = click_below(&c, "Gaussian Blur", "↓");
     assert!(matches!(down.as_slice(), [AppCommand::MoveNodeAt { addr, after }] if addr.node() == Some(blur) && *after == vignette), "{down:?}");
     let up = click_below(&c, "Vignette", "↑");
@@ -124,13 +123,13 @@ fn reorder_moves_by_path() {
 /// put after the clip's last effect.
 #[test]
 fn an_add_goes_after_the_last_effect() {
-    let mut c = clip();
+    let c = clip();
     let node = stack_view::new_effect_node("sharpen").expect("a node");
     assert_eq!(node.type_id.as_str(), "klipp.legacy.effect");
     assert_eq!(klipp_graph_lift::effect_params::tag(&node), Some("sharpen"));
     let lifted = c.picture_v2().unwrap();
     let view = klipp_graph_lift::stack_view::project(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, &lifted.picture.graph, &klipp_timeline::RegistryCatalog, None).unwrap();
-    assert_eq!(stack_view::add_after(&view).and_then(|p| p.node()), Some(c.effect_id_at(1).unwrap().as_uuid()));
+    assert_eq!(stack_view::add_after(&view).and_then(|p| p.node()), Some(test_clip::effect_id(&c, 1).as_uuid()));
 }
 
 /// A second Transform, an Opacity, a Speed Ramp or a Temporal Denoise is a
@@ -138,8 +137,8 @@ fn an_add_goes_after_the_last_effect() {
 /// every other effect is added as a node.
 #[test]
 fn placed_kinds_are_added_through_the_effect_list() {
-    let mut c = clip();
-    let after = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, [c.effect_id_at(1).unwrap().as_uuid()]);
+    let c = clip();
+    let after = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, [test_clip::effect_id(&c, 1).as_uuid()]);
     for tag in ["transform", "opacity", "speed_ramp", "temporal_denoise"] {
         let cmd = stack_view::add_command(&c, &after, tag).unwrap();
         assert!(matches!(&cmd, AppCommand::AddBuiltinEffect { clip_id, effect } if *clip_id == c.id && klipp_ui::effect_presets::builtin_effect_key(effect) == klipp_ui::effect_presets::builtin_effect_key(&(klipp_effects::registry::effect_type(tag).unwrap().sample)())), "{tag}: {cmd:?}");

@@ -651,6 +651,7 @@ mod tests {
     use super::*;
     use klipp_core::{Fps, RationalTime, Timecode};
     use klipp_timeline::{Brief, CastMember, Track};
+    use klipp_timeline::test_clip::TestClip;
 
     fn tc(s: f64) -> Timecode {
         RationalTime::from_secs_f64(s, 25)
@@ -1037,15 +1038,9 @@ mod tests {
     fn a_second_transform_effect_is_reported() {
         let (mut seq, pool, talk, _) = piece();
         let t = || klipp_effects::BuiltinEffect::Transform { position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
-        {
-            let effect_clip = &mut seq.tracks[0].clips[0];
-            effect_clip.set_effect_list(vec![t()], effect_clip.builtin_effects_enabled().to_vec());
-        }
+        seq.tracks[0].clips[0] = TestClip::of(seq.tracks[0].clips[0].clone()).effect(t()).build();
         assert!(!rules(&check(&seq, &pool, &Spoken(talk))).contains(&"extra_transform"));
-        {
-            let effect_clip = &mut seq.tracks[0].clips[0];
-            effect_clip.set_effect_list(effect_clip.builtin_effects().iter().cloned().chain(std::iter::once(t())).collect(), effect_clip.builtin_effects_enabled().to_vec());
-        }
+        seq.tracks[0].clips[0] = TestClip::of(seq.tracks[0].clips[0].clone()).effect(t()).build();
         let r = check(&seq, &pool, &Spoken(talk));
         let f = r.findings.iter().find(|f| f.rule == "extra_transform").unwrap_or_else(|| panic!("{}", r.text()));
         assert_eq!((f.severity, f.at_secs), (Severity::Warning, Some(0.0)));

@@ -30,6 +30,7 @@ use super::parity_pixels::{frames_at, Routes};
 use crate::inspector::generated::row;
 use klipp_core::{Interpolation, Keyframe, Timecode};
 use klipp_effects::registry::{effect_types, ParamKind};
+use klipp_timeline::test_clip;
 
 /// The first key's time, the second's, and a time strictly between them.
 const T1: f64 = 0.25;
@@ -86,8 +87,8 @@ fn case(entry: &CatalogEntry, interpolation: Interpolation, picks: &mut Picks) -
         let stored = pres.display.map_or(shown, |map| (map.to_stored)(shown, encoding));
         (text, number(desc, stored).as_f64().unwrap_or(f64::from(stored)) as f32)
     };
-    let base = stored(&clip.builtin_effects()[index], desc).as_f64().ok_or("the row's value isn't a number")? as f32;
-    let id = clip.effect_id_at(index).ok_or("the keyed effect")?;
+    let base = stored(&test_clip::effects(&clip)[index], desc).as_f64().ok_or("the row's value isn't a number")? as f32;
+    let id = test_clip::effect_id(&clip, index);
     let keyed = |clip: &mut klipp_timeline::Clip, b: f32| {
         clip.edit_effect_keyframes_of(id, desc.key, |keys| {
             *keys = [(T1, base), (T2, b)]

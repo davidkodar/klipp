@@ -29,6 +29,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+klipp-timeline = { workspace = true, features = ["test-clip"] }
 klipp-graph-format = { workspace = true }
 
 [lints]

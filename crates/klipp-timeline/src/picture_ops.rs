@@ -1047,10 +1047,9 @@ mod tests {
     #[test]
     fn a_list_place_follows_the_edges_not_the_node_order() {
         let t = |s: f64| RationalTime::from_secs_f64(s, 24);
-        let mut c = Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
-        for amount in [0.25, 0.5, 0.75] {
-            c.push_effect(klipp_effects::BuiltinEffect::Sharpen { amount });
-        }
+        let c = crate::test_clip::TestClip::of(Clip::media(MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0)))
+            .effects([0.25, 0.5, 0.75].map(|amount| klipp_effects::BuiltinEffect::Sharpen { amount }))
+            .build();
         let p = c.picture_v2().unwrap().picture.clone();
         let order = list_order(&p, 3);
         let ids: Vec<NodeId> = order.iter().flatten().copied().collect();
@@ -1332,8 +1331,9 @@ mod keyframe_alias_tests {
     /// A clip holding `tag`'s sample, and its node's path.
     fn clip(tag: &str) -> (Clip, NodePath) {
         let t = |s: f64| RationalTime::from_secs_f64(s, 24);
-        let mut c = Clip::media(MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
-        c.push_effect((klipp_effects::registry::effect_type(tag).unwrap().sample)());
+        let c = crate::test_clip::TestClip::of(Clip::media(MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0)))
+            .effect((klipp_effects::registry::effect_type(tag).unwrap().sample)())
+            .build();
         let node = c.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some(tag)).unwrap().id;
         let id = c.id;
         (c, NodePath::new(Root::Clip { clip: id.0 }, [node]))
@@ -1372,7 +1372,7 @@ mod keyframe_alias_tests {
             assert_eq!(times(&c, &path, stored), vec![0.25, 0.75, 1.25], "{tag}: an animation set by {alias} is {stored}'s");
 
             c.apply_picture_ops(&[GraphOp::SetParam { path: path.clone(), key: alias.into(), value: ParamValue::Float(0.375) }]).unwrap();
-            let field = serde_json::to_value(&c.builtin_effects()[0]).unwrap()[stored].clone();
+            let field = serde_json::to_value(&crate::test_clip::effects(&c)[0]).unwrap()[stored].clone();
             assert_eq!(field, serde_json::json!(0.375f32), "{tag}: a value set by {alias} is the stored {stored}");
             let read = |name: &str| c.node_key_state(&path, &ParamKey::from(name)).and_then(|s| s.value);
             assert_eq!((read(alias), read(stored)), (Some(0.375), Some(0.375)), "{tag}: the value read by either name");

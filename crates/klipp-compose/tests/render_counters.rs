@@ -13,6 +13,7 @@ use std::sync::Arc;
 use klipp_compose::{FrameSource, RenderOptions, Renderer, SourceFrame, SourcePixels};
 use klipp_core::{ClipId, RationalTime, Timecode};
 use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
+use klipp_timeline::test_clip::TestClip;
 
 const W: u32 = 320;
 const H: u32 = 180;
@@ -87,7 +88,7 @@ fn three_layers(graded_generator: bool) -> (Sequence, Flat) {
     gen.clips = vec![g];
     let mut top = Track::new("V2", TrackKind::Video);
     let mut t = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 10.0);
-    t.set_effect_list(vec![klipp_effects::BuiltinEffect::Opacity { value: 0.5 }], t.builtin_effects_enabled().to_vec());
+    t = TestClip::of(t).effects([klipp_effects::BuiltinEffect::Opacity { value: 0.5 }]).build();
     let mut base = Track::new("V1", TrackKind::Video);
     let b = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 10.0);
     let mut src = Flat::default();

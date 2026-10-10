@@ -1993,8 +1993,7 @@ mod drag_coalesce_tests {
     #[test]
     fn a_picture_drag_is_one_step_from_its_start_to_its_end() {
         let t = |n| klipp_core::RationalTime::from_frames(n, 24);
-        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0), t(48), t(0), t(48));
-        clip.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 1.0 });
+        let clip = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0), t(48), t(0), t(48))).effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 1.0 }).build();
         let at = |c: &klipp_timeline::Clip| c.picture.clone();
         let entry = |before, after| HistoryEntry {
             command: EditCommand::PictureEdit { clip_id: clip.id, description: "Edit Effect", edit: Box::new(klipp_timeline::PictureEdit { before, after }) },
@@ -2005,7 +2004,7 @@ mod drag_coalesce_tests {
         assert!(h.is_dragging_picture(clip.id));
         assert!(!h.is_dragging_picture(ClipId::new()), "another clip's picture isn't");
         let mut moved = clip.clone();
-        let id = moved.effect_id_at(0).unwrap();
+        let id = klipp_timeline::test_clip::effect_id(&moved, 0);
         for r in [2.0, 3.0, 4.0] {
             moved.replace_effect(id, klipp_effects::BuiltinEffect::GaussianBlur { radius: r });
         }
@@ -2014,10 +2013,10 @@ mod drag_coalesce_tests {
         let EditCommand::PictureEdit { edit, .. } = &h.undo_stack[0].command else { panic!("a picture edit") };
         let mut before = clip.clone();
         before.restore_picture(&edit.before);
-        assert!(matches!(before.builtin_effects()[0], klipp_effects::BuiltinEffect::GaussianBlur { radius } if radius == 1.0), "before is its start");
+        assert!(matches!(klipp_timeline::test_clip::effects(&before)[0], klipp_effects::BuiltinEffect::GaussianBlur { radius } if radius == 1.0), "before is its start");
         let mut after = clip.clone();
         after.restore_picture(&edit.after);
-        assert!(matches!(after.builtin_effects()[0], klipp_effects::BuiltinEffect::GaussianBlur { radius } if radius == 4.0), "after is its end");
+        assert!(matches!(klipp_timeline::test_clip::effects(&after)[0], klipp_effects::BuiltinEffect::GaussianBlur { radius } if radius == 4.0), "after is its end");
     }
 
     #[test]

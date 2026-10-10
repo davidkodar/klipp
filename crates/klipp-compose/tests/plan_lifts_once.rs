@@ -15,6 +15,7 @@ use klipp_core::RationalTime;
 use klipp_effects::BuiltinEffect as E;
 use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams};
 use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, Track, TrackKind};
+use klipp_timeline::test_clip::TestClip;
 
 /// `COLD_LIFTS` is process-wide: each case counts with the other idle.
 static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -49,8 +50,7 @@ fn graded_clip(from: f64, to: f64) -> Clip {
     let graph = NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions: Default::default(), working_space_override: None, frames: vec![], sticky_notes: vec![] };
     let mut c = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(from), tc(to)) };
     c.set_grade(graph);
-    c.set_effect_list(vec![E::Gamma { gamma: 1.2 }, E::Vibrance { amount: 0.3 }], vec![true; 2]);
-    c
+    TestClip::of(c).effects([E::Gamma { gamma: 1.2 }, E::Vibrance { amount: 0.3 }]).build()
 }
 
 fn sequence(clips: Vec<Clip>, track_fx: Vec<E>) -> Sequence {

@@ -12,6 +12,7 @@ use klipp_compose::resolve::{resolve_effects, resolve_effects_at};
 use klipp_core::{Keyframe, ModifierStack, ParamId, RationalTime, Timecode};
 use klipp_effects::BuiltinEffect as E;
 use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
+use klipp_timeline::test_clip::TestClip;
 
 fn tc(s: f64) -> Timecode {
     RationalTime::from_secs_f64(s, 24)
@@ -22,9 +23,14 @@ fn key(time_secs: f64, value: f32) -> Keyframe {
 }
 
 fn media(effects: Vec<E>, enabled: Vec<bool>) -> Clip {
-    let mut c = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(4.0)) };
-    c.set_effect_list(effects, enabled);
-    c
+    let mut b = TestClip::of(Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(4.0)) });
+    for (i, e) in effects.into_iter().enumerate() {
+        b = b.effect(e);
+        if !enabled.get(i).copied().unwrap_or(true) {
+            b = b.off();
+        }
+    }
+    b.build()
 }
 
 /// `clip` on a track carrying `track_fx`, baked as a render copy.
@@ -54,9 +60,7 @@ fn check(name: &str, clip: &Clip) {
 #[test]
 fn keys_and_modifier_stacks_resolve_as_today() {
     let mut c = media(vec![E::Gamma { gamma: 1.2 }, E::Vibrance { amount: 0.3 }, E::Posterize { levels: 8.0 }], vec![true, true, true]);
-    c.edit_effect_keyframes(|k| {
-        k.insert("0:gamma".into(), vec![key(0.0, 0.8), key(3.0, 1.6)]);
-    });
+    c = TestClip::of(c).key(0, "gamma", 0.0, 0.8).key(0, "gamma", 3.0, 1.6).build();
     c.edit_param_modifiers(|m| {
         let osc = klipp_core::Modifier::Oscillate { amplitude: 0.2, frequency: 1.5, phase: 0.1, waveform: Default::default(), blend: Default::default(), enabled: true };
         m.insert(ParamId::Effect { effect_index: 1, param_name: "amount".into() }, ModifierStack { modifiers: vec![osc] });
@@ -107,9 +111,7 @@ fn what_the_frame_gives_resolves_as_today() {
 #[test]
 fn a_tracks_effects_follow_the_clips_own() {
     let mut c = media(vec![E::Gamma { gamma: 1.2 }, E::Opacity { value: 0.8 }], vec![true, true]);
-    c.edit_effect_keyframes(|k| {
-        k.insert("0:gamma".into(), vec![key(0.0, 0.8), key(3.0, 1.6)]);
-    });
+    c = TestClip::of(c).key(0, "gamma", 0.0, 0.8).key(0, "gamma", 3.0, 1.6).build();
     check("track effects", &baked(c, vec![E::Vibrance { amount: 0.4 }, E::Opacity { value: 0.5 }, E::Invert { mix: 0.2 }]));
 }
 
@@ -159,9 +161,7 @@ fn a_frame_at_render_scale_resolves_each_effect_scaled() {
         vec![E::GaussianBlur { radius: 6.0 }, E::Dilate { radius: 3 }, E::Mosaic { block_size: 2.0 }, E::Gamma { gamma: 1.2 }],
         vec![true, true, true, true],
     );
-    c.edit_effect_keyframes(|k| {
-        k.insert("0:radius".into(), vec![key(0.0, 4.0), key(3.0, 12.0)]);
-    });
+    c = TestClip::of(c).key(0, "radius", 0.0, 4.0).key(0, "radius", 3.0, 12.0).build();
     let clip = baked(c, vec![E::Bloom { threshold: 0.6, radius: 8.0, intensity: 0.5 }]);
     let picture = clip.picture_v2().unwrap();
     for k in [1.0, 0.5, 0.25] {

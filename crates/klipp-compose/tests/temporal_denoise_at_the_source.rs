@@ -8,6 +8,7 @@ use klipp_compose::{FrameSource, Inspect, LinearFrameProviderFn, RenderOptions, 
 use klipp_core::{MediaId, RationalTime, WorkingColorspace};
 use klipp_effects::BuiltinEffect as E;
 use klipp_timeline::{Clip, Sequence, Track, TrackKind};
+use klipp_timeline::test_clip::TestClip;
 
 const W: u32 = 8;
 const H: u32 = 4;
@@ -59,7 +60,7 @@ fn clip_source_in() -> f64 {
 fn sequence(denoise: Option<(f32, f32)>) -> Sequence {
     let mut c = Clip::media(MediaId::new(), tc(0.0), tc(2.0), tc(clip_source_in()), tc(clip_source_in() + 2.0));
     if let Some((strength, threshold)) = denoise {
-        c.set_effect_list(vec![E::TemporalDenoise { strength, threshold }], vec![true]);
+        c = TestClip::of(c).effect(E::TemporalDenoise { strength, threshold }).build();
     }
     let mut seq = Sequence::new_default();
     seq.resolution = klipp_core::Resolution { width: W, height: H };

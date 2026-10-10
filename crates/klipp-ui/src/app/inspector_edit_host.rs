@@ -1169,6 +1169,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use klipp_effects::BuiltinEffect as E;
+    use klipp_timeline::test_clip::{self, TestClip};
 
     #[derive(Debug)]
     #[allow(clippy::large_enum_variant)] // a test's record, kept as it reads
@@ -1189,8 +1190,7 @@ mod tests {
 
     fn fixture(effects: &[E]) -> (AppState, klipp_core::ClipId) {
         let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
-        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
-        for effect in effects { clip.push_effect(effect.clone()); }
+        let clip = TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0))).effects(effects.iter().cloned()).build();
         let id = clip.id;
         let mut state = AppState::default();
         state.sequences[0].tracks[0].clips.push(clip);
@@ -1226,7 +1226,7 @@ mod tests {
         assert_eq!(state.active_history().undo_count(), count + 1);
         let after = clip(&state).picture_v2().unwrap();
         assert_ne!(after, before);
-        assert_eq!(clip(&state).builtin_effects(), &[E::GaussianBlur { radius: 6.0 }]);
+        assert_eq!(test_clip::effects(clip(&state)), [E::GaussianBlur { radius: 6.0 }]);
         let events = side.0.borrow();
         assert_eq!(events.len(), 6);
         for pair in events.chunks_exact(2) {

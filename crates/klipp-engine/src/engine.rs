@@ -11776,6 +11776,7 @@ mod glyph_focal_resolution_tests {
     use klipp_core::{ClipId, MediaId, RationalTime, Timecode};
     use klipp_effects::{BuiltinEffect, FocalRef};
     use klipp_timeline::{Clip, ClipKind, FontStyle, Sequence, TextAlignment, TextBox, TitleData, Track, TrackKind};
+    use klipp_timeline::test_clip::TestClip;
     use std::collections::HashMap;
 
     fn tc(frames: i64) -> Timecode { RationalTime::from_frames(frames, 24) }
@@ -11800,14 +11801,14 @@ mod glyph_focal_resolution_tests {
 
     fn media_clip_with_anchor(anchor_x: f32, anchor_y: f32) -> Clip {
         let mut c = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
-        c.push_effect(BuiltinEffect::Transform {
+        c = TestClip::of(c).effect(BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0,
             scale_x: 1.0, scale_y: 1.0,
             rotation: 0.0,
             anchor_x, anchor_y,
             rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
             focal_ref: None,
-        });
+        }).build();
 
         c
     }
@@ -11851,7 +11852,7 @@ mod glyph_focal_resolution_tests {
         let title = title_clip("Hi");
         let title_id = title.id;
         let mut consumer = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
-        consumer.push_effect(BuiltinEffect::Transform {
+        consumer = TestClip::of(consumer).effect(BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0,
             scale_x: 1.0, scale_y: 1.0,
             rotation: 0.0,
@@ -11862,7 +11863,7 @@ mod glyph_focal_resolution_tests {
                 char_index,
                 fallback_xy,
             }),
-        });
+        }).build();
 
         let seq = seq_with(vec![consumer.clone(), title.clone()]);
         (consumer, title, seq)
@@ -11896,7 +11897,7 @@ mod glyph_focal_resolution_tests {
         // FocalRef points at a uuid that's not in the sequence.
         let fallback = (0.25, 0.75);
         let mut consumer = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
-        consumer.push_effect(BuiltinEffect::Transform {
+        consumer = TestClip::of(consumer).effect(BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0,
             scale_x: 1.0, scale_y: 1.0,
             rotation: 0.0,
@@ -11907,7 +11908,7 @@ mod glyph_focal_resolution_tests {
                 char_index: 0,
                 fallback_xy: fallback,
             }),
-        });
+        }).build();
 
         let seq = seq_with(vec![consumer.clone()]);
         let out = resolve(&consumer, &seq);
@@ -11922,7 +11923,7 @@ mod glyph_focal_resolution_tests {
         let non_title = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
         let non_title_id = non_title.id;
         let mut consumer = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
-        consumer.push_effect(BuiltinEffect::Transform {
+        consumer = TestClip::of(consumer).effect(BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0,
             scale_x: 1.0, scale_y: 1.0,
             rotation: 0.0,
@@ -11933,7 +11934,7 @@ mod glyph_focal_resolution_tests {
                 char_index: 0,
                 fallback_xy: fallback,
             }),
-        });
+        }).build();
 
         let seq = seq_with(vec![consumer.clone(), non_title]);
         let out = resolve(&consumer, &seq);
@@ -11960,18 +11961,18 @@ mod glyph_focal_resolution_tests {
         // screen position should shift by the offset (in clip space).
         let fallback = (0.5, 0.5);
         let mut title = title_clip("Hi");
-        title.push_effect(BuiltinEffect::Transform {
+        title = TestClip::of(title).effect(BuiltinEffect::Transform {
             position_x: 100.0, position_y: 50.0,  // offset 100 px right, 50 px down
             scale_x: 1.0, scale_y: 1.0,
             rotation: 0.0,
             anchor_x: 0.5, anchor_y: 0.5,
             rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
             focal_ref: None,
-        });
+        }).build();
 
         let title_id = title.id;
         let mut consumer = Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
-        consumer.push_effect(BuiltinEffect::Transform {
+        consumer = TestClip::of(consumer).effect(BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0,
             rotation: 0.0,
             anchor_x: fallback.0, anchor_y: fallback.1,
@@ -11981,7 +11982,7 @@ mod glyph_focal_resolution_tests {
                 char_index: 0,
                 fallback_xy: fallback,
             }),
-        });
+        }).build();
 
         let seq = seq_with(vec![consumer.clone(), title]);
 

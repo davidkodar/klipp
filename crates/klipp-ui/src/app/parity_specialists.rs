@@ -15,6 +15,7 @@ use super::parity_manifest::{catalog, CatalogValue, CoverageKey, Interaction, Ma
 use klipp_core::{AppEvent, ClipId};
 use klipp_effects::registry::{effect_types, EffectType};
 use klipp_effects::BuiltinEffect;
+use klipp_timeline::test_clip;
 
 /// The fixture: the type's sample on a two-second clip.
 pub(super) const VARIANT: &str = "sample";
@@ -207,8 +208,8 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
         holds(&new, 1, &side)?;
         // What it must leave: the measured clip with the row's new value set
         // by the document command, and nothing else changed.
-        let effect = measured.builtin_effects()[0].clone();
-        let to = super::parity_numeric::stored(&new.clip().builtin_effects()[0], desc);
+        let effect = test_clip::effects(&measured)[0].clone();
+        let to = super::parity_numeric::stored(&test_clip::effects(new.clip())[0], desc);
         if to == super::parity_numeric::stored(&effect, desc) {
             return Err(format!("the drag left {} where it was", desc.key));
         }
@@ -244,11 +245,11 @@ fn run_analysis(report: &mut Report, a: &Analysis) {
             if !super::proxies::apply_analysis_result(&mut run.state, Some(&flat), &event) {
                 return Err("the result wasn't applied".into());
             }
-            let at_result = run.clip().builtin_effects().to_vec();
+            let at_result = test_clip::effects(run.clip());
             for dx in [18.0, 24.0, 30.0, 36.0] {
                 run.frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))], egui::Modifiers::NONE);
             }
-            if run.clip().builtin_effects() == at_result.as_slice() {
+            if test_clip::effects(run.clip()) == at_result.as_slice() {
                 return Err("the drag stopped at the result".into());
             }
             run.button(at + egui::vec2(36.0, 0.0), egui::PointerButton::Primary, false);
@@ -347,14 +348,14 @@ pub(super) fn number_right_of(run: &mut Run, label: &str) -> Option<egui::Pos2> 
 fn click_right_of(run: &mut Run, label: &str) -> bool {
     let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
     let Some(at) = drawn.iter().rev().find(|(t, _)| t == label).map(|(_, p)| *p) else { return false };
-    let before = format!("{:?}", run.clip().builtin_effects());
+    let before = format!("{:?}", test_clip::effects(run.clip()));
     let mut x = at.x + 8.0;
     while x < at.x + 160.0 {
         let p = egui::pos2(x, at.y);
         run.button(p, egui::PointerButton::Primary, true);
         run.button(p, egui::PointerButton::Primary, false);
         run.frame(Vec::new(), egui::Modifiers::NONE);
-        if format!("{:?}", run.clip().builtin_effects()) != before {
+        if format!("{:?}", test_clip::effects(run.clip())) != before {
             return true;
         }
         x += 4.0;
@@ -427,8 +428,8 @@ fn run_frei0r(report: &mut Report) {
             return Err(format!("unapplied: {:?}", new.unapplied));
         }
         let want = vec![BuiltinEffect::GaussianBlur { radius: 3.0 }, effect.clone()];
-        if new.clip().builtin_effects() != want.as_slice() {
-            return Err(format!("added {:?}, want {want:?}", new.clip().builtin_effects()));
+        if test_clip::effects(new.clip()) != want.as_slice() {
+            return Err(format!("added {:?}, want {want:?}", test_clip::effects(new.clip())));
         }
         Ok(())
     });
@@ -507,8 +508,8 @@ fn run_frei0r(report: &mut Report) {
             let mut params = defaults.clone();
             want(&mut params);
             let expected = [BuiltinEffect::Frei0r { type_id: plugin.type_id(), params }];
-            if new.clip().builtin_effects() != expected.as_slice() {
-                return Err(format!("{:?}, want {expected:?}", new.clip().builtin_effects()));
+            if test_clip::effects(new.clip()) != expected.as_slice() {
+                return Err(format!("{:?}, want {expected:?}", test_clip::effects(new.clip())));
             }
             // One edit, one step.
             let depth = 1;

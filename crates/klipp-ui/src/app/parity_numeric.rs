@@ -21,6 +21,7 @@ use klipp_core::AppCommand;
 use klipp_effects::registry::presentation::{Cond, Presentation, Widget};
 use klipp_effects::registry::{effect_types, EffectType, ParamDesc, ParamKind};
 use klipp_effects::BuiltinEffect;
+use klipp_timeline::test_clip;
 use serde_json::Value;
 
 const VARIANT: &str = "editable";
@@ -250,9 +251,7 @@ fn edit_case(
     if after == before {
         return Err("the control changed nothing".into());
     }
-    let actual = new
-        .clip()
-        .builtin_effects()
+    let actual = test_clip::effects(new.clip())
         .first()
         .map(|effect| stored(effect, desc))
         .ok_or("effect disappeared")?;
@@ -456,14 +455,14 @@ fn pixel_case(routes: super::parity_pixels::Routes, ty: &EffectType, surface: Su
     if ty.tag == "speed_ramp" {
         retime_control(&clip, size)?;
     }
-    let current = stored(&clip.builtin_effects()[index], desc);
+    let current = stored(&test_clip::effects(&clip)[index], desc);
     let edit = |target: &Value| -> Result<klipp_timeline::Clip, String> {
         let mut c = clip.clone();
-        let id = c.effect_id_at(index).ok_or("the edited effect")?;
-        c.replace_effect(id, with_field(&clip.builtin_effects()[index], desc, target.clone())?);
+        let id = test_clip::effect_id(&c, index);
+        c.replace_effect(id, with_field(&test_clip::effects(&clip)[index], desc, target.clone())?);
         // A Speed Ramp's speed retimes the clip, as the effect's update
         // does (`inspector_edit_host`).
-        if let BuiltinEffect::SpeedRamp { speed, .. } = c.builtin_effects()[index] {
+        if let BuiltinEffect::SpeedRamp { speed, .. } = test_clip::effects(&c)[index] {
             c.speed = f64::from(speed).clamp(0.1, 16.0);
             let length = klipp_core::RationalTime::from_secs_f64(c.source_duration().to_secs_f64() / c.speed, c.timeline_in.rate);
             c.timeline_out = c.timeline_in + length;

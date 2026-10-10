@@ -38,6 +38,7 @@
 //! over V1, so a difference only there is compositing.
 
 use klipp_timeline::GradeAccess;
+use klipp_timeline::test_clip::{self, TestClip};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -131,12 +132,11 @@ fn media_clip(id: MediaId, from: i64, to: i64, source_in: i64) -> Clip {
     c
 }
 
-fn scaled(mut c: Clip, scale: f32, x: f32, y: f32) -> Clip {
-    c.set_effect_list(c.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::Transform {
+fn scaled(c: Clip, scale: f32, x: f32, y: f32) -> Clip {
+    TestClip::of(c).effect(BuiltinEffect::Transform {
         position_x: x, position_y: y, scale_x: scale, scale_y: scale, rotation: 0.0,
         anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
-    })).collect(), c.builtin_effects_enabled().to_vec());
-    c
+    }).build()
 }
 
 fn exposure(stops: f32) -> klipp_nodes::NodeGraph {
@@ -182,8 +182,7 @@ fn timeline() -> Timeline {
     let mut clip_a = media_clip(a, 0, 100, 0);
     clip_a.set_grade(exposure(1.0));
     let clip_b = media_clip(b, 100, LEN, 25);
-    let mut clip_c = scaled(media_clip(c, 25, 175, 10), 0.6, 0.0, 0.0);
-    clip_c.set_effect_list(clip_c.builtin_effects().iter().cloned().chain(std::iter::once(BuiltinEffect::Opacity { value: 0.5 })).collect(), clip_c.builtin_effects_enabled().to_vec());
+    let clip_c = TestClip::of(scaled(media_clip(c, 25, 175, 10), 0.6, 0.0, 0.0)).effect(BuiltinEffect::Opacity { value: 0.5 }).build();
     let clip_d = scaled(media_clip(d, 50, 150, 0), 0.3, 0.0, 0.0);
     let dissolve = Transition {
         id: klipp_core::TransitionId::new(),
@@ -886,7 +885,7 @@ fn a_grade_group_exports_as_the_viewer_shows_it() {
     let gid = group.id;
     t.seq.grade_groups = vec![group];
     // The two full-frame clips: a (with its own grade) and b.
-    for c in t.seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.builtin_effects().is_empty() && c.transform_scale_keyframes().is_empty()) {
+    for c in t.seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| test_clip::effects(c).is_empty() && c.transform_scale_keyframes().is_empty()) {
         c.grade_group = Some(gid);
     }
     let mut shown = t.clone();
@@ -1284,8 +1283,7 @@ fn a_graded_hdr_clip_with_effects_exports_as_the_viewer_shows_it() {
         seq.resolution = Resolution { width: W, height: H };
         let mut clip = media_clip(p, 0, 40, 0);
         clip.set_grade(exposure(-0.5));
-        let n = effects.len();
-        clip.set_effect_list(effects, vec![true; n]);
+        let clip = TestClip::of(clip).effects(effects).build();
         let mut v1 = Track::new("V1", TrackKind::Video);
         v1.clips = vec![clip];
         seq.tracks = vec![v1];

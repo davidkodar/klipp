@@ -21,7 +21,7 @@ use klipp_core::{AppCommand, ClipId};
 use klipp_effects::registry::presentation::{Cond, Presentation, Widget};
 use klipp_effects::registry::{effect_types, EffectType, ParamDesc, ParamKind};
 use klipp_effects::BuiltinEffect;
-use klipp_timeline::GradeAccess;
+use klipp_timeline::{test_clip, GradeAccess};
 use serde_json::Value;
 
 /// What the edit host would send on: dropped.
@@ -206,7 +206,7 @@ fn edit_case(effect: &BuiltinEffect, desc: &ParamDesc, want: Value, drive: impl 
         return Err("the control changed nothing".into());
     }
     if after != oracle.picture() {
-        return Err(format!("not the expected picture: stored {:?}, expected {:?}", new.clip().builtin_effects(), oracle.clip().builtin_effects()));
+        return Err(format!("not the expected picture: stored {:?}, expected {:?}", test_clip::effects(new.clip()), test_clip::effects(oracle.clip())));
     }
     let steps = new.state.active_history().undo_count();
     if steps != 1 {
@@ -239,7 +239,7 @@ fn stack_drawn(ty: &EffectType, desc: &ParamDesc, pres: &Presentation, effect: &
     let (clip, index) = super::parity_numeric::pixel_fixture(ty, effect, Surface::EffectsStack)?;
     let label = pres.label.unwrap_or(desc.label);
     let labels = menu_labels(desc, pres);
-    let current = stored(&clip.builtin_effects()[index], desc);
+    let current = stored(&test_clip::effects(&clip)[index], desc);
     let others: Vec<Option<usize>> = match pres.widget {
         Widget::Toggle => vec![None],
         _ => {

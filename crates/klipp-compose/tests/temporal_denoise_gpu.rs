@@ -13,6 +13,7 @@ use klipp_core::{RationalTime, Timecode, WorkingColorspace};
 use klipp_effects::BuiltinEffect;
 use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams, NodePos};
 use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
+use klipp_timeline::test_clip::TestClip;
 
 /// A multiple of 8 wide and even high, as the GPU export path needs.
 const W: u32 = 32;
@@ -80,7 +81,7 @@ fn clip(denoise: bool) -> Clip {
         sticky_notes: vec![],
     });
     if denoise {
-        c.set_effect_list(vec![BuiltinEffect::TemporalDenoise { strength: 1.0, threshold: 0.2 }], c.builtin_effects_enabled().to_vec());
+        c = TestClip::of(c).effects([BuiltinEffect::TemporalDenoise { strength: 1.0, threshold: 0.2 }]).build();
     }
     c
 }

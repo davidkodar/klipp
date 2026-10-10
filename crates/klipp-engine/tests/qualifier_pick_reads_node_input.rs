@@ -53,10 +53,10 @@ fn pick(graph: NodeGraph, node: NodeId, placed: bool) -> Option<Result<[f32; 3],
     let mut clip = Clip { kind: ClipKind::Media { media_id: id }, source_in: tc(0), source_out: tc(30), ..Clip::gap(tc(0), tc(30)) };
     clip.set_grade(graph);
     if placed {
-        clip.set_effect_list(clip.builtin_effects().iter().cloned().chain(std::iter::once(klipp_effects::BuiltinEffect::Transform {
+        clip = klipp_timeline::test_clip::TestClip::of(clip).effect(klipp_effects::BuiltinEffect::Transform {
             position_x: 0.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5,
             rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
-        })).collect(), clip.builtin_effects_enabled().to_vec());
+        }).build();
     }
     let clip_id = clip.id;
     let mut seq = Sequence::new_default();

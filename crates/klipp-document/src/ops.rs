@@ -8230,7 +8230,7 @@ mod tests {
             EditCommand::PictureEdit { clip_id, edit, .. } => {
                 let mut c = Clip::gap(tc(0.0), tc(1.0));
                 c.restore_picture(&edit.after);
-                Some((*clip_id, c.builtin_effects().to_vec()))
+                Some((*clip_id, klipp_timeline::test_clip::effects(&c)))
             }
             _ => None,
         }
@@ -8734,7 +8734,7 @@ mod tests {
         assert_eq!((secs(picture.timeline_in), secs(picture.timeline_out)), (1.0, 4.0));
         // The logo is 1920x1080 as the test media is: the surface's shape, so it stretches straight onto the corners.
         assert_eq!(picture.surface_pin, Some(klipp_timeline::SurfacePin { host: a, surface: id, picture_size: Some([1920, 1080]), fit: klipp_timeline::PinFit::Stretch, inset: 0.0 }));
-        assert!(matches!(picture.builtin_effects(), [klipp_effects::BuiltinEffect::CornerPin { tl, br, .. }] if *tl == corners[0] && *br == corners[2]), "{:?}", picture.builtin_effects());
+        assert!(matches!(klipp_timeline::test_clip::effects(picture).as_slice(), [klipp_effects::BuiltinEffect::CornerPin { tl, br, .. }] if *tl == corners[0] && *br == corners[2]), "{:?}", klipp_timeline::test_clip::effects(picture));
 
         // A square picture keeps its shape: it fits, inside the surface.
         let mut square = klipp_media::MediaItem::synthetic_for_test("/tmp/square.png".into(), None);
@@ -8774,7 +8774,7 @@ mod tests {
         assert_eq!(*track, 0);
         assert_eq!((secs(cover.timeline_in), secs(cover.timeline_out), secs(cover.source_in), secs(cover.source_out)), (1.0, 3.0, 1.0, 3.0));
         assert_eq!(cover.volume, 0.0);
-        assert!(matches!(cover.builtin_effects(), [klipp_effects::BuiltinEffect::Mosaic { .. }, klipp_effects::BuiltinEffect::Crop { left, top, .. }] if (*left - 0.194).abs() < 1e-3 && (*top - 0.594).abs() < 1e-3), "{:?}", cover.builtin_effects());
+        assert!(matches!(klipp_timeline::test_clip::effects(cover).as_slice(), [klipp_effects::BuiltinEffect::Mosaic { .. }, klipp_effects::BuiltinEffect::Crop { left, top, .. }] if (*left - 0.194).abs() < 1e-3 && (*top - 0.594).abs() < 1e-3), "{:?}", klipp_timeline::test_clip::effects(cover));
         assert_eq!((step.after[0].timeline_in_secs, step.after[0].timeline_out_secs), (1.0, 3.0));
 
         // With a video track above that has room, it goes there and no track is made.
@@ -8867,10 +8867,7 @@ mod tests {
         assert_eq!(plan.steps[0].what, "vignette 0.30 on 1 clip of group \"Night\"");
 
         // A second time replaces each clip's vignette rather than adding one.
-        {
-            let effect_clip = &mut seq.tracks[0].clips[1];
-            effect_clip.set_effect_list(effect_clip.builtin_effects().iter().cloned().chain(std::iter::once(E::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.7 })).collect(), effect_clip.builtin_effects_enabled().to_vec());
-        }
+        seq.tracks[0].clips[1] = klipp_timeline::test_clip::TestClip::of(seq.tracks[0].clips[1].clone()).effect(E::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.7 }).build();
         let plan = resolve(&seq, &pool, &[effect(GradeOn::Group { group: "Night".into(), stage: None }, 0.1)]).unwrap();
         assert_eq!(vignetted(&plan), vec![b]);
 
@@ -10259,9 +10256,9 @@ mod tests {
         let mut fps = seq.fps;
         let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
         view.apply_forward(&plan.steps[0].edit);
-        assert!(view.sequences[0].tracks[0].clips[0].builtin_effects().iter().any(|e| matches!(e, E::VideoStabilization { .. })));
+        assert!(klipp_timeline::test_clip::effects(&view.sequences[0].tracks[0].clips[0]).iter().any(|e| matches!(e, E::VideoStabilization { .. })));
         view.apply_inverse(&plan.steps[0].edit);
-        assert!(view.sequences[0].tracks[0].clips[0].builtin_effects().is_empty());
+        assert!(klipp_timeline::test_clip::effects(&view.sequences[0].tracks[0].clips[0]).is_empty());
 
         // Retime to 2x halves the clip (clip a is 0-4, clip b starts at 4;
         // 2x makes a 0-2, a gap opens), its linked sound with it.
@@ -10344,7 +10341,7 @@ mod tests {
         let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
         view.apply_forward(&plan.steps[0].edit);
         let reframed = view.sequences[0].tracks[0].clips[0].clone();
-        let Some(klipp_effects::BuiltinEffect::Transform { position_y, scale_x, .. }) = reframed.builtin_effects().first().cloned() else { panic!("reframed") };
+        let Some(klipp_effects::BuiltinEffect::Transform { position_y, scale_x, .. }) = klipp_timeline::test_clip::effects(&reframed).first().cloned() else { panic!("reframed") };
         let ops: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"compose","clip_id":"{}","poses":[{{"secs":0,"opacity":0}},{{"secs":1.2,"opacity":1}}]}}]"#, a.0)).unwrap();
         let plan = resolve(&view.sequences[0], view.media_pool, &ops).unwrap();
         assert!(plan.steps[0].what.contains("3.17 of the frame where it is"), "{}", plan.steps[0].what);
@@ -10438,7 +10435,7 @@ mod tests {
             let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
             view.apply_inverse(&plan.steps[0].edit);
         }
-        assert!(seqs[0].tracks[0].clips[0].builtin_effects().is_empty(), "undo clears the reframe");
+        assert!(klipp_timeline::test_clip::effects(&seqs[0].tracks[0].clips[0]).is_empty(), "undo clears the reframe");
 
         // Out of range and a no-op reframe are refused.
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
@@ -11971,18 +11968,18 @@ mod effects_edit_tests {
     #[test]
     fn replacing_an_effect_keeps_the_others_keys_on_them() {
         let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
-        let mut clip = Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0));
-        clip.push_effect(E::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 });
-        clip.push_effect(E::GaussianBlur { radius: 3.0 });
+        let mut clip = klipp_timeline::test_clip::TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(4.0), t(0.0), t(4.0)))
+            .effects([E::Vignette { amount: 0.5, size: 0.5, softness: 0.5, roundness: 0.5 }, E::GaussianBlur { radius: 3.0 }])
+            .key(1, "radius", 1.0, 6.0)
+            .build();
         let key = klipp_core::Keyframe { time_secs: 1.0, value: 6.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
-        clip.edit_effect_keyframes(|m| m.insert("1:radius".into(), vec![key.clone()]));
         let fresh = E::Vignette { amount: 0.75, size: 0.5, softness: 0.5, roundness: 0.5 };
         let edit = effects_edit(&clip, |e| matches!(e, E::Vignette { .. }), Some((fresh, Place::Last)));
         let EditCommand::PictureEdit { edit, description, .. } = edit else { panic!("a picture edit: {edit:?}") };
         assert_eq!(description, "Effects");
         let mut after = clip.clone();
         after.restore_picture(&edit.after);
-        assert!(matches!(after.builtin_effects(), [E::GaussianBlur { .. }, E::Vignette { amount, .. }] if *amount == 0.75), "{:?}", after.builtin_effects());
+        assert!(matches!(klipp_timeline::test_clip::effects(&after).as_slice(), [E::GaussianBlur { .. }, E::Vignette { amount, .. }] if *amount == 0.75), "{:?}", klipp_timeline::test_clip::effects(&after));
         assert_eq!(after.effect_keyframes().get("0:radius"), Some(&vec![key]), "the blur's keys moved with it");
         assert!(!after.effect_keyframes().contains_key("1:radius"), "none left on the new vignette");
 
@@ -11991,8 +11988,8 @@ mod effects_edit_tests {
         let EditCommand::PictureEdit { edit, .. } = crop else { panic!("a picture edit") };
         let mut after = clip.clone();
         after.restore_picture(&edit.after);
-        assert!(matches!(after.builtin_effects().first(), Some(E::Crop { .. })));
-        clip.push_effect(E::Opacity { value: 0.5 });
+        assert!(matches!(klipp_timeline::test_clip::effects(&after).first(), Some(E::Crop { .. })));
+        clip = klipp_timeline::test_clip::TestClip::of(clip).effect(E::Opacity { value: 0.5 }).build();
         let placed = effects_edit(&clip, |_| false, Some((E::Sharpen { amount: 0.5 }, Place::Last)));
         assert!(matches!(placed, EditCommand::SetBuiltinEffects { .. }), "after a placed kind: {placed:?}");
     }

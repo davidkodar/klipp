@@ -8,6 +8,7 @@ use klipp_compose::{FrameSource, Inspect, RenderOptions, Renderer, SourceFrame, 
 use klipp_core::{MediaId, RationalTime};
 use klipp_effects::BuiltinEffect as E;
 use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
+use klipp_timeline::test_clip::TestClip;
 
 const W: u32 = 32;
 const H: u32 = 18;
@@ -30,6 +31,18 @@ fn opacities(of: &[(f32, bool)]) -> (Vec<E>, Vec<bool>) {
     (of.iter().map(|(v, _)| E::Opacity { value: *v }).collect(), of.iter().map(|(_, on)| *on).collect())
 }
 
+/// `c` with `fx` added, each on or off as `on` says.
+fn with_effects(c: Clip, fx: Vec<E>, on: Vec<bool>) -> Clip {
+    let mut b = TestClip::of(c);
+    for (e, on) in fx.into_iter().zip(on) {
+        b = b.effect(e);
+        if !on {
+            b = b.off();
+        }
+    }
+    b.build()
+}
+
 fn sequence(tracks: Vec<Track>) -> Sequence {
     let mut seq = Sequence::new_default();
     seq.resolution = klipp_core::Resolution { width: W, height: H };
@@ -39,9 +52,8 @@ fn sequence(tracks: Vec<Track>) -> Sequence {
 
 /// The grey clip with `of` Opacities.
 fn a_clip(of: &[(f32, bool)]) -> Sequence {
-    let mut c = Clip::media(MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
     let (fx, on) = opacities(of);
-    c.set_effect_list(fx, on);
+    let c = with_effects(Clip::media(MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0)), fx, on);
     let mut track = Track::new("V", TrackKind::Video);
     track.clips = vec![c];
     sequence(vec![track])
@@ -51,11 +63,10 @@ fn a_clip(of: &[(f32, bool)]) -> Sequence {
 /// Opacities.
 fn an_adjustment(of: &[(f32, bool)]) -> Sequence {
     let mut seq = a_clip(&[]);
-    let mut a = Clip { kind: ClipKind::AdjustmentLayer, ..Clip::gap(tc(0.0), tc(2.0)) };
     let (mut fx, mut on) = opacities(of);
     fx.insert(0, E::Invert { mix: 1.0 });
     on.insert(0, true);
-    a.set_effect_list(fx, on);
+    let a = with_effects(Clip { kind: ClipKind::AdjustmentLayer, ..Clip::gap(tc(0.0), tc(2.0)) }, fx, on);
     let mut adj = Track::new("Adj", TrackKind::Video);
     adj.clips = vec![a];
     seq.tracks.insert(0, adj);

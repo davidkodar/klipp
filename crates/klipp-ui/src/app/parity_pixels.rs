@@ -460,14 +460,10 @@ pub(super) fn gpu_frame_cost(clip: &Clip, size: (u32, u32), runs: usize) -> Opti
 mod tests {
     use super::*;
     use klipp_effects::BuiltinEffect as E;
+    use klipp_timeline::test_clip::{self, TestClip};
 
     fn clip(effects: &[E]) -> Clip {
-        let tc = |s| RationalTime::from_secs_f64(s, 24);
-        let mut c = Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
-        for e in effects {
-            c.push_effect(e.clone());
-        }
-        c
+        TestClip::media(2.0).effects(effects.iter().cloned()).build()
     }
 
     /// The cost of the stack's temporal gate for M4 step 9: a stabilised
@@ -521,11 +517,7 @@ mod tests {
     #[test]
     fn the_shared_renderers_draw_what_fresh_ones_draw() {
         let plain = clip(&[E::Gamma { gamma: 1.6 }]);
-        let mut keyed = clip(&[E::GaussianBlur { radius: 2.0 }]);
-        let id = keyed.effect_id_at(0).unwrap();
-        keyed.edit_effect_keyframes_of(id, "radius", |keys| {
-            *keys = [(0.25, 2.0), (1.25, 12.0)].into_iter().map(|(time_secs, value)| klipp_core::Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }).collect();
-        });
+        let keyed = TestClip::media(2.0).effect(E::GaussianBlur { radius: 2.0 }).key(0, "radius", 0.25, 2.0).key(0, "radius", 1.25, 12.0).build();
         let placed = clip(&[E::Transform { position_x: 40.0, position_y: -20.0, scale_x: 0.7, scale_y: 0.7, rotation: 15.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None }]);
         for (name, c) in [("plain", &plain), ("keyed", &keyed), ("placed", &placed)] {
             let (cpu, gpu) = frames_at(Routes::Both, SMALL, c, 0.75).unwrap();
@@ -535,7 +527,7 @@ mod tests {
         }
         // A, then B (the same clip id, another effect), then A again.
         let mut other = plain.clone();
-        let id = other.effect_id_at(0).unwrap();
+        let id = test_clip::effect_id(&other, 0);
         other.replace_effect(id, E::Gamma { gamma: 0.6 });
         let a = frames_at(Routes::Both, SMALL, &plain, AT).unwrap();
         let b = frames_at(Routes::Both, SMALL, &other, AT).unwrap();

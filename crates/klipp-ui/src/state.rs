@@ -5765,6 +5765,7 @@ mod split_at_playhead_tests {
 mod paste_speed_tests {
     use super::{AttributesClipboard, PasteChoice};
     use klipp_core::{MediaId, RationalTime};
+    use klipp_timeline::test_clip::TestClip;
 
     /// Pasting speed brings the ramp, not only the rate it started at.
     #[test]
@@ -5790,8 +5791,7 @@ mod paste_speed_tests {
         use klipp_core::{ModifierStack, ParamId};
         let tc = |f| RationalTime::from_frames(f, 24);
         let wiggle = ParamId::Effect { effect_index: 0, param_name: "amount".into() };
-        let mut source = klipp_timeline::Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
-        source.set_effect_list(vec![klipp_effects::BuiltinEffect::Vibrance { amount: 0.3 }], source.builtin_effects_enabled().to_vec());
+        let mut source = TestClip::of(klipp_timeline::Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48))).effect(klipp_effects::BuiltinEffect::Vibrance { amount: 0.3 }).build();
         source.edit_param_modifiers(|v| v.insert(wiggle.clone(), ModifierStack::default()));
         source.edit_param_modifiers(|v| v.insert(ParamId::Scale, ModifierStack::default()));
         let copied = AttributesClipboard::of(&source);

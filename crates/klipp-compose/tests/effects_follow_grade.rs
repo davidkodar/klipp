@@ -18,6 +18,7 @@ use klipp_core::RationalTime;
 use klipp_effects::BuiltinEffect as E;
 use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams};
 use klipp_timeline::{Clip, ClipKind, GradeAccess, Sequence, Track, TrackKind};
+use klipp_timeline::test_clip::{self, TestClip};
 
 // The legacy route's frames, stored before step 11d deleted it: each test
 // is held to them where it was held to a live legacy render.
@@ -69,8 +70,7 @@ fn graded(effects: Vec<E>) -> Sequence {
     };
     let mut clip = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
     clip.set_grade(graph);
-    let n = effects.len();
-    clip.set_effect_list(effects, vec![true; n]);
+    let clip = TestClip::of(clip).effects(effects).build();
     let mut seq = Sequence::new_default();
     seq.resolution = klipp_core::Resolution { width: W, height: H };
     let mut track = Track::new("V", TrackKind::Video);
@@ -140,7 +140,7 @@ fn both_seq(name: &str, seq: Sequence) -> Option<bool> {
         frame
     });
     if followed == 1 {
-        let recorded = seq.tracks[0].clips[0].builtin_effects().iter().all(|e| klipp_effects::gpu::slots_needed(e).is_some());
+        let recorded = test_clip::effects(&seq.tracks[0].clips[0]).iter().all(|e| klipp_effects::gpu::slots_needed(e).is_some());
         if recorded {
             assert_eq!((breaks, submits), (0, 1), "{name}: grade and effects in one submit");
         }
@@ -256,9 +256,7 @@ fn animated_effects_and_a_fixed_placement_from_the_picture_draw_the_legacy_frame
     let mut seq = graded(vec![E::Gamma { gamma: 1.0 }, E::Vibrance { amount: 0.2 }, shadow, tf]);
     let clip = &mut seq.tracks[0].clips[0];
     let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
-    clip.edit_effect_keyframes(|k| {
-        k.insert("0:gamma".into(), vec![key(0.2, 0.7), key(1.0, 1.5), key(1.8, 0.9)]);
-    });
+    *clip = TestClip::of(clip.clone()).key(0, "gamma", 0.2, 0.7).key(0, "gamma", 1.0, 1.5).key(0, "gamma", 1.8, 0.9).build();
     clip.edit_param_modifiers(|m| {
         let osc = klipp_core::Modifier::Oscillate { amplitude: 0.3, frequency: 1.3, phase: 0.1, waveform: Default::default(), blend: Default::default(), enabled: true };
         m.insert(klipp_core::ParamId::Effect { effect_index: 1, param_name: "amount".into() }, klipp_core::ModifierStack { modifiers: vec![osc] });
@@ -719,8 +717,7 @@ fn a_moving_clip_under_an_open_shutter_runs_its_effects_as_plans() {
         // The clip's own transform moves; its Transform effect in the list
         // is where the resolved one goes, the vignette and blur after it.
         let clip = &mut seq.tracks[0].clips[0];
-        clip.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, -20.0));
-        clip.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 2.0, 20.0));
+        *clip = TestClip::of(clip.clone()).lane("pos_x", 0.0, -20.0).lane("pos_x", 2.0, 20.0).build();
         seq.camera.shutter_deg = deg;
         seq.camera.shutter_samples = 8;
         seq

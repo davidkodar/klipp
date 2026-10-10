@@ -825,15 +825,12 @@ mod tests {
     use klipp_effects::BuiltinEffect as E;
     use klipp_graph_format::{types, ParamValue};
     use klipp_timeline::{EffectEdit, GradeAccess};
+    use klipp_timeline::test_clip::{self, TestClip};
 
     /// A clip with `effects`, ready to put in states of its own.
     fn fixture(effects: &[E]) -> klipp_timeline::Clip {
         let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
-        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
-        for e in effects {
-            clip.push_effect(e.clone());
-        }
-        clip
+        TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0))).effects(effects.iter().cloned()).build()
     }
 
     /// A fresh state holding `clips` on its first video track.
@@ -924,7 +921,7 @@ mod tests {
                 cmd => run(&mut s, cmd),
             }
         }
-        let list = |s: &AppState| serde_json::to_value(clip(s, id).builtin_effects()).unwrap();
+        let list = |s: &AppState| serde_json::to_value(test_clip::effects(clip(s, id))).unwrap();
         assert_eq!(list(&s), serde_json::to_value([E::GaussianBlur { radius: 7.0 }, E::Sharpen { amount: 0.9 }, invert.clone()]).unwrap(), "all three applied");
         assert_eq!(s.active_history().undo_count(), steps + 1, "one step");
         let entry = s.active_history_mut().undo().expect("the batch's step");
@@ -1144,7 +1141,7 @@ mod tests {
         }
         assert_eq!(s.path_command(&AppCommand::EndParamEditAt { addr: blur.clone(), key: key.clone() }), Some(false));
         assert_eq!(s.active_history().undo_count(), steps + 1, "thirty steps, one entry");
-        assert!(matches!(clip(&s, id).builtin_effects()[0], E::GaussianBlur { radius } if radius == 32.0));
+        assert!(matches!(test_clip::effects(clip(&s, id))[0], E::GaussianBlur { radius } if radius == 32.0));
         undo(&mut s);
         assert_eq!(picture(&s, id), before, "undo returns the value from before the drag");
     }
@@ -1167,8 +1164,8 @@ mod tests {
         s.path_command(&AppCommand::EndParamEditAt { addr: blur, key: "radius".into() });
         assert_eq!(s.active_history().undo_count(), steps + 2);
         undo(&mut s);
-        assert!(matches!(clip(&s, id).builtin_effects()[1], E::Sharpen { amount } if amount == 0.5), "the edit undoes alone");
-        assert!(matches!(clip(&s, id).builtin_effects()[0], E::GaussianBlur { radius } if radius == 9.0), "the drag's step stays");
+        assert!(matches!(test_clip::effects(clip(&s, id))[1], E::Sharpen { amount } if amount == 0.5), "the edit undoes alone");
+        assert!(matches!(test_clip::effects(clip(&s, id))[0], E::GaussianBlur { radius } if radius == 9.0), "the drag's step stays");
     }
 
     /// A write that isn't the drag's own, passing the dispatch boundary
@@ -1196,7 +1193,7 @@ mod tests {
         }
         dispatch(&mut s, AppCommand::EndParamEditAt { addr: blur.clone(), key: "radius".into() });
         assert_eq!(s.active_history().undo_count(), steps + 3, "the drag before, the write, the drag after");
-        let values = |s: &AppState| match clip(s, id).builtin_effects() {
+        let values = |s: &AppState| match test_clip::effects(clip(s, id)).as_slice() {
             [E::GaussianBlur { radius }, E::Sharpen { amount }] => (*radius, *amount),
             other => panic!("{other:?}"),
         };
@@ -1223,7 +1220,7 @@ mod tests {
         let other = picture(&s, b);
         let fx_a = effects(&s, a);
         run(&mut s, AppCommand::SetParamAt { addr: at(a, &fx_a), key: "radius".into(), value: ParamValue::Float(7.0) });
-        assert!(matches!(clip(&s, a).builtin_effects()[0], E::GaussianBlur { radius } if radius == 7.0));
+        assert!(matches!(test_clip::effects(clip(&s, a))[0], E::GaussianBlur { radius } if radius == 7.0));
         assert_eq!(picture(&s, b), other, "the other clip is untouched");
         // A node inside the grade group, named without the group.
         let grade = clip(&s, a).picture_v2().unwrap().picture.graph.nodes.iter().find_map(|n| n.group.as_ref().and_then(|g| g.graph.nodes.first()).map(|inner| inner.id));
@@ -1251,7 +1248,7 @@ mod tests {
             let (_, path) = s.split_compare_node.clone().expect("still compared");
             let c = clip(s, a);
             let (ofx, i) = c.effect_slot_of_node(path.node().unwrap()).expect("the clip holds it");
-            !ofx && matches!(c.builtin_effects()[i], E::Vibrance { .. })
+            !ofx && matches!(test_clip::effects(c)[i], E::Vibrance { .. })
         };
         // Moved to the front, then the effect before it taken away.
         run(&mut s, AppCommand::MoveNodeAt { addr: compared.clone(), after: fx[0] });
@@ -1263,7 +1260,7 @@ mod tests {
         let mut toggled = clip(&s, a).clone();
         assert!(toggled.toggle_effect_node(compared.node().unwrap()));
         let i = toggled.effect_slot_of_node(compared.node().unwrap()).unwrap().1;
-        assert!(!toggled.builtin_effects_enabled()[i], "the engine's bypass is the compared effect's");
+        assert!(!test_clip::enabled(&toggled)[i], "the engine's bypass is the compared effect's");
         // The compared effect taken away: the compare ends.
         run(&mut s, AppCommand::RemoveNodeAt { addr: compared });
         assert!(s.split_compare_gone());
@@ -1272,15 +1269,14 @@ mod tests {
 
     /// A clip with a keyed Gamma and a keyed Vibrance (M3 step 3).
     fn keyed() -> (AppState, ClipId) {
-        let (mut s, id) = state(&[E::Gamma { gamma: 1.0 }, E::Vibrance { amount: 0.1 }]);
-        let v1 = s.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
-        let clip = s.sequences[0].tracks[v1].find_clip_mut(id).unwrap();
-        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
-        clip.edit_effect_keyframes(|k| {
-            k.insert("0:gamma".into(), vec![key(0.2, 0.8), key(1.2, 1.4)]);
-            k.insert("1:amount".into(), vec![key(0.5, 0.0), key(1.5, 0.6)]);
-        });
-        (s, id)
+        let c = TestClip::of(fixture(&[E::Gamma { gamma: 1.0 }, E::Vibrance { amount: 0.1 }]))
+            .key(0, "gamma", 0.2, 0.8)
+            .key(0, "gamma", 1.2, 1.4)
+            .key(1, "amount", 0.5, 0.0)
+            .key(1, "amount", 1.5, 0.6)
+            .build();
+        let id = c.id;
+        (with(&[c]), id)
     }
 
     /// M3 step 3, H4 at the UI's level: the curve editor's tracks are the
@@ -1417,7 +1413,7 @@ mod tests {
         assert_eq!(c.effect_node_at(false, 1), Some(pin_node), "the pin moved after the gamma");
         let keys = c.node_key_state(&addr, &"tl_x".into()).unwrap().keys;
         assert_eq!(keys.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>(), [(0.0, 0.0), (1.0, 0.1), (1.5, 0.2)], "every key on the pin's node");
-        assert!(matches!(c.builtin_effects()[1], E::CornerPin { tl, .. } if tl[1] == 0.1), "{:?}", c.builtin_effects()[1]);
+        assert!(matches!(test_clip::effects(c)[1], E::CornerPin { tl, .. } if tl[1] == 0.1), "{:?}", test_clip::effects(c)[1]);
     }
 
     /// An effect moved by path (the stack's ↑ and ↓ send `MoveNodeAt`,
@@ -1501,8 +1497,7 @@ mod tests {
     #[test]
     fn the_card_shows_and_keeps_the_entries_the_clip_reads() {
         let tf = |x: f32, rotation: f32| E::Transform { position_x: x, position_y: 2.0, scale_x: 1.0, scale_y: 1.0, rotation, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
-        let mut c = fixture(&[]);
-        c.set_effect_list(vec![tf(20.0, 45.0), tf(8.0, 10.0), E::Opacity { value: 0.3 }, E::Opacity { value: 0.6 }, E::Opacity { value: 0.9 }], vec![false, true, true, true, false]);
+        let c = TestClip::of(fixture(&[])).effect(tf(20.0, 45.0)).off().effect(tf(8.0, 10.0)).effects([E::Opacity { value: 0.3 }, E::Opacity { value: 0.6 }]).effect(E::Opacity { value: 0.9 }).off().build();
         let id = c.id;
         let mut s = with(&[c]);
         let c = clip(&s, id).clone();
@@ -1524,8 +1519,7 @@ mod tests {
     /// sets the aspect alone (#1406).
     #[test]
     fn a_scale_edit_by_path_keeps_the_aspect() {
-        let mut c = fixture(&[]);
-        c.set_effect_list(vec![E::Transform { position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 0.5, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None }], vec![true]);
+        let c = fixture(&[E::Transform { position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 0.5, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None }]);
         let id = c.id;
         let mut s = with(&[c]);
         let c = clip(&s, id).clone();
@@ -1540,7 +1534,7 @@ mod tests {
         let c = clip(&s, id).clone();
         let p = c.picture_v2().unwrap().picture.placement.clone();
         assert_eq!((p.scale, p.aspect), (Some(0.8), Some(0.5)));
-        assert!(matches!(c.builtin_effects()[0], E::Transform { scale_x, scale_y, perspective, .. } if (scale_x, scale_y, perspective) == (0.8, 0.4, 0.0)));
+        assert!(matches!(test_clip::effects(&c)[0], E::Transform { scale_x, scale_y, perspective, .. } if (scale_x, scale_y, perspective) == (0.8, 0.4, 0.0)));
         let mut t = crate::inspector::placement_by_path::placement(&c);
         t.scale_y = 0.8;
         let cmds = crate::inspector::placement_by_path::by_path(vec![AppCommand::UpdateBuiltinEffect { clip_id: id, index: 0, effect: t.to_builtin_effect() }], &c);
@@ -1607,9 +1601,10 @@ mod tests {
     /// The commands the viewer's gizmo sends for one drag that moves and
     /// scales the clip (`panels/viewer.rs`), from `initial` to `moved`.
     fn gizmo_drag(c: &klipp_timeline::Clip, initial: E, moved: E) -> Vec<AppCommand> {
-        let index = c.builtin_effects().iter().position(|e| matches!(e, E::Transform { .. }));
+        let list = test_clip::effects(c);
+        let index = list.iter().position(|e| matches!(e, E::Transform { .. }));
         let key = format!("viewer_transform_{}", c.id.0);
-        let idx = index.unwrap_or(c.builtin_effects().len());
+        let idx = index.unwrap_or(list.len());
         let mut cmds = Vec::new();
         if index.is_none() {
             cmds.push(AppCommand::AddBuiltinEffect { clip_id: c.id, effect: initial.clone() });
@@ -1638,7 +1633,7 @@ mod tests {
             let (mut old, mut new) = (with(std::slice::from_ref(&c0)), with(std::slice::from_ref(&c0)));
             let c = clip(&old, id).clone();
             let identity = crate::inspector::video_tab::TransformParams::default().to_builtin_effect();
-            let initial = c.builtin_effects().iter().find(|e| matches!(e, E::Transform { .. })).cloned().unwrap_or(identity);
+            let initial = test_clip::effects(&c).into_iter().find(|e| matches!(e, E::Transform { .. })).unwrap_or(identity);
             let cmds = gizmo_drag(&c, initial, transform(40.0, 0.6));
             let steps = old.active_history().undo_count();
             for cmd in &cmds {
@@ -1653,7 +1648,7 @@ mod tests {
             assert_eq!(new.active_history().undo_count(), steps + 1, "one undo step");
             let (a, b) = (clip(&old, id), clip(&new, id));
             let mut pb = serde_json::to_string(&b.picture_v2().unwrap().picture).unwrap();
-            for i in 0..a.builtin_effects().len() {
+            for i in 0..test_clip::effects(a).len() {
                 if let (Some(x), Some(y)) = (b.effect_node_at(false, i), a.effect_node_at(false, i)) {
                     pb = pb.replace(&x.to_string(), &y.to_string());
                 }
@@ -2023,14 +2018,14 @@ mod tests {
     fn an_opacity_preset_without_an_opacity_effect_leaves_the_first_effect_alone() {
         let c = fixture(&[E::GaussianBlur { radius: 3.0 }]);
         let mut s = with(std::slice::from_ref(&c));
-        let blur = clip(&s, c.id).builtin_effects()[0].clone();
+        let blur = test_clip::effects(clip(&s, c.id))[0].clone();
         let sent = vec![AppCommand::UpdateBuiltinEffect { clip_id: c.id, index: 0, effect: E::Opacity { value: 0.4 } }];
         let translated = crate::inspector::placement_by_path::by_path(sent, clip(&s, c.id));
         assert!(translated.iter().all(|cmd| !matches!(cmd, AppCommand::UpdateBuiltinEffect { .. })), "by path, never the list's index: {translated:?}");
         for cmd in &translated {
             run(&mut s, cmd.clone());
         }
-        assert_eq!(clip(&s, c.id).builtin_effects()[0], blur, "the Blur at index 0 is unchanged");
+        assert_eq!(test_clip::effects(clip(&s, c.id))[0], blur, "the Blur at index 0 is unchanged");
         assert!((crate::inspector::placement_by_path::opacity(clip(&s, c.id)) - 0.4).abs() < 1e-6, "the opacity takes the preset");
         assert_eq!(s.active_history().undo_count(), 1, "one undo step");
     }
@@ -2187,7 +2182,7 @@ mod tests {
         let by_index = |keys: Vec<klipp_core::Keyframe>| {
             let mut s = with(std::slice::from_ref(&c));
             let clip = s.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
-            let id = clip.effect_id_at(0).unwrap();
+            let id = test_clip::effect_id(clip, 0);
             clip.edit_effect_keyframes_of(id, "radius", |v| *v = keys);
             s
         };
@@ -2222,7 +2217,7 @@ mod tests {
                     let seeded = |keys: Vec<klipp_core::Keyframe>| {
                         let mut s = with(std::slice::from_ref(&c));
                         let clip = s.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
-                        let id = clip.effect_id_at(0).unwrap();
+                        let id = test_clip::effect_id(clip, 0);
                         clip.edit_effect_keyframes_of(id, "radius", |v| *v = keys);
                         s
                     };

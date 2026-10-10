@@ -1293,8 +1293,7 @@ mod effect_comparison_tests {
             assert_eq!(compared.effect_entries().map(|(_, _, on)| on).collect::<Vec<_>>(), vec![false, blur_on, false]);
             assert_only_flags_changed(&mut original, &mut compared);
         }
-        let mut plain = Clip::gap(Timecode::from_frames(0, 24), Timecode::from_frames(48, 24));
-        plain.push_effect(E::GaussianBlur { radius: 2.0 });
+        let mut plain = klipp_timeline::test_clip::TestClip::of(Clip::gap(Timecode::from_frames(0, 24), Timecode::from_frames(48, 24))).effect(E::GaussianBlur { radius: 2.0 }).build();
         let before = state(&plain);
         assert!(!disable_stabilization(&mut plain));
         assert_eq!(state(&plain), before);

@@ -1,0 +1,76 @@
+# The v1 view's uses, pinned (v1_view_ratchet.rs): each line a symbol and
+# its count. Lower a pin in the change that removes uses; a symbol at 0
+# moves to GONE. Filled at the first run from the test's own count.
+builtin_effects 135
+builtin_effects_enabled 47
+ClipPictureFields 18
+ClipPictureParts 14
+delift 37
+edit_effect_keyframes 18
+edit_effect_keyframes_of 19
+edit_effect_modifiers 9
+edit_existing_effect_keyframes 7
+edit_existing_effect_modifiers 5
+edit_ofx_effect 7
+edit_ofx_effects 6
+edit_opacity_keyframes 29
+edit_param_modifiers 32
+# 4 of these are masked_effect_off_grade.rs keying a picture-truth clip through
+# the v1 lane: the renderer doesn't read a picture-truth clip's placement_anim
+# yet (step 12a must), so a picture-op lane wouldn't move it.
+edit_transform_pos_x_keyframes 19
+edit_transform_pos_y_keyframes 14
+edit_transform_rotation_keyframes 7
+edit_transform_scale_keyframes 15
+edit_transform_tilt_x_keyframes 3
+edit_transform_tilt_y_keyframes 4
+edit_video_effects 9
+edit_video_param_keyframes 25
+effect_entries 24
+effect_id_at 43
+effect_id_list 18
+effect_keyframes 50
+effect_param_keyframes 2
+effects_state 5
+insert_effect 10
+insert_effect_with_id 2
+LEGACY_EFFECT 80
+LEGACY_OFX 36
+move_builtin_effect 16
+move_effect 10
+ofx_effects 36
+opacity_keyframes 48
+own_effects 4
+ParamId::Effect 49
+param_modifiers 62
+PictureView 15
+push_effect 84
+refresh_effect_ids 3
+remove_builtin_effect 13
+remove_effect 10
+remove_effect_keyframes 4
+remove_effect_modifiers 5
+replace_effect 18
+restore_effect_keyframes 3
+restore_effects_state 6
+set_effect_enabled 25
+set_effect_list 49
+set_effect_list_with_ids 8
+set_effects 10
+# Raised from 11: #1534's OFX node tests set their plug-ins through the
+# list; they move to TestClip with the OFX arm.
+set_ofx_effects 18
+set_own_effects 2
+set_video_effect_list 16
+to_v1 48
+transform_pos_x_keyframes 37
+transform_pos_y_keyframes 35
+transform_rotation_keyframes 31
+transform_scale_keyframes 44
+transform_tilt_x_keyframes 28
+transform_tilt_y_keyframes 29
+unlift 27
+video_effects 17
+video_effects_enabled 8
+video_param_keyframes 10
+video_param_value 16

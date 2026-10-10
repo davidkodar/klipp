@@ -3800,16 +3800,15 @@ pub(crate) fn color_fade_update(clip: &Clip, idx: usize, effect: klipp_effects::
 #[cfg(test)]
 mod color_fade_tests {
     use super::*;
+    use klipp_timeline::test_clip::TestClip;
 
     /// The Video tab's Colour Fade edit writes the very node the stack's
     /// Colour Fade row addresses.
     #[test]
     fn color_fade_has_one_source_of_truth() {
         let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
-        let mut clip = Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
-        clip.push_effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 });
         let fade = klipp_effects::BuiltinEffect::ColorFade { color: [0, 0, 0, 255], duration_secs: 1.0, mode: klipp_effects::ColorFadeMode::In, progress: 0.0 };
-        clip.push_effect(fade.clone());
+        let clip = TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))).effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 }).effect(fade.clone()).build();
         let lifted = clip.picture_v2().unwrap();
         let view = klipp_graph_lift::stack_view::project(klipp_graph_format::path::Root::Clip { clip: clip.id.0 }, &lifted.picture.graph, &klipp_timeline::RegistryCatalog, None).unwrap();
         let row = view.rows().find(|r| klipp_graph_lift::effect_params::tag(crate::inspector::stack_view::node_at(&lifted.picture.graph, &r.addr).unwrap()) == Some("color_fade")).expect("the fade's row");
@@ -4466,11 +4465,10 @@ fn disk_free_bytes(path: &std::path::Path) -> Option<u64> {
 #[cfg(test)]
 mod tilt_tests {
     use super::*;
+    use klipp_timeline::test_clip::TestClip;
 
     fn clip_with(effect: BuiltinEffect) -> Clip {
-        let mut c = Clip::gap(Timecode::from_secs_f64(0.0, 24), Timecode::from_secs_f64(2.0, 24));
-        c.set_effect_list(vec![effect], c.builtin_effects_enabled().to_vec());
-        c
+        TestClip::of(Clip::gap(Timecode::from_secs_f64(0.0, 24), Timecode::from_secs_f64(2.0, 24))).effect(effect).build()
     }
 
     #[test]
