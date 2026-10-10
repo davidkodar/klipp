@@ -289,6 +289,19 @@ impl ClipStream {
         }
     }
 
+    /// Holding nothing, with no seek in flight, and the queue's first
+    /// frame past `target`: no frame for it is coming, and only a seek
+    /// brings one (#1494: a decoder taken over at a cut, its frame there
+    /// already taken). A held frame past the target is `held_ahead`'s.
+    fn starved(&self, target: f64, half_frame: f64) -> bool {
+        if self.held.is_some() || self.seeking.is_some() || self.ended {
+            return false;
+        }
+        let epoch = self.decoder.requested_seek();
+        let q = self.decoder.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+        q.front().is_some_and(|f| f.seek_epoch >= epoch && !f.is_eof && f.pts_secs() > target + half_frame)
+    }
+
     /// Whether `held` is the frame for `target`.
     fn ready(&self, half_frame: f64) -> bool {
         if self.ended && self.seeking.is_none() {
@@ -376,7 +389,7 @@ impl ClipStreams {
                     // which frame a time shows (#696).
                     let half = s.decoder.half_source_frame(1.0 / frame_secs.max(1e-6));
                     let held_ahead = s.seeking.is_none() && !s.held_from_seek && s.held.as_ref().and_then(|h| h.pts).is_some_and(|p| p > target + half);
-                    if target + half < s.target || target > s.target + 1.0 || held_ahead {
+                    if target + half < s.target || target > s.target + 1.0 || held_ahead || s.starved(target, half) {
                         s.seek(target);
                     }
                     s.target = target;
@@ -438,8 +451,10 @@ impl ClipStreams {
     /// playing is still on screen — a transition's outgoing side, running
     /// into its handle. The decoder is already there; opening another and
     /// seeking would leave that side empty for the first frames.
-    pub fn adopt(&mut self, clip: ClipId, decoder: VideoDecoder, source_secs: f64) {
-        self.streams.insert(clip, ClipStream { decoder, held: None, target: source_secs.max(0.0), seeking: None, ended: false, held_from_seek: false });
+    /// `held` is the frame the decoder gave at the cut, when the caller
+    /// took it from the queue (#1494).
+    pub fn adopt(&mut self, clip: ClipId, decoder: VideoDecoder, source_secs: f64, held: Option<HeldFrame>) {
+        self.streams.insert(clip, ClipStream { decoder, held, target: source_secs.max(0.0), seeking: None, ended: false, held_from_seek: false });
     }
 
     pub fn clear(&mut self) {
@@ -520,5 +535,60 @@ mod tests {
         streams.sync(std::slice::from_ref(&back), frame, &resolve);
         assert_eq!(streams.streams[&back.clip].decoder.requested_seek(), once, "sought again while the seek was in flight");
     }
-}
 
+    /// #1494: a decoder taken over with its frame for the target already
+    /// taken (playback took it at the cut), its queue starting a frame
+    /// later. Holding nothing, it is sought, and holds its frame; handed
+    /// that frame, it holds it at once.
+    #[test]
+    fn a_stream_taken_over_past_its_frame_still_gets_it() {
+        let Some(path) = source() else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let frame = 1.0 / 25.0;
+        // A decoder as playback leaves it at a cut: decoded on from 0, the
+        // frame at the cut popped, the next ones queued.
+        let taken_over = |at: usize| {
+            let dec = VideoDecoder::open(&path, 0).expect("opens");
+            dec.resume();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while dec.frame_queue().lock().unwrap().len() < at + 2 {
+                assert!(std::time::Instant::now() < deadline, "the decoder never queued its frames");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let mut q = dec.frame_queue().lock().unwrap();
+            for _ in 0..at {
+                q.pop();
+            }
+            let cut = q.pop().expect("the frame at the cut");
+            drop(q);
+            (dec, cut)
+        };
+        for hand_on in [false, true] {
+            let (dec, cut) = taken_over(5);
+            let target = cut.pts_secs();
+            let clip = ClipId::new();
+            let mut streams = ClipStreams::new(4);
+            streams.adopt(clip, dec, target, hand_on.then(|| HeldFrame::from_frame(cut)));
+            let w = Want { clip, media: MediaId::new(), rotation: 0, source_secs: target, reversed: false };
+            let resolve = |_: &Want| Some((path.clone(), 0));
+            if hand_on {
+                streams.sync(std::slice::from_ref(&w), frame, &resolve);
+                assert!(streams.ready(frame), "handed its frame at the cut, it holds it");
+                continue;
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                streams.sync(std::slice::from_ref(&w), frame, &resolve);
+                if streams.ready(frame) {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline, "a stream holding nothing, its queue past its time, never got its frame");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let held = streams.frame(clip).and_then(|h| h.pts).expect("a frame held");
+            assert!((held - target).abs() < frame / 2.0, "the frame for {target:.3}s, not {held:.3}s");
+        }
+    }
+}
