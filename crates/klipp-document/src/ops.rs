@@ -4584,7 +4584,7 @@ fn redact(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip:
     // bleed the outside in.
     let mut cover = Clip::media(*media_id, a, b, src_in, src_out);
     cover.volume = 0.0;
-    cover.set_effects(vec![hide, E::Crop { left, right, top, bottom, feather: 0.0 }]);
+    add_plain_effects(&mut cover, &[hide, E::Crop { left, right, top, bottom, feather: 0.0 }]).map_err(|e| refuse(i, format!("the cover couldn't take its effects: {e}"), "report it"))?;
     // A video track above with room, else a new one on top.
     let above = (0..ti).rev().find(|k| seq.tracks[*k].kind == TrackKind::Video && !seq.tracks[*k].locked && overlapping(seq, *k, a, b, None).is_none());
     let (video, created) = match above {
@@ -4653,7 +4653,7 @@ fn pin(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, media
     let on_frame = klipp_timeline::surface::source_quad_in_frame(&s.corners, s.source_size, frame, None);
     let target = klipp_timeline::surface::pin_target(&on_frame, s.aspect(), picture_size, fit, inset).unwrap_or(on_frame);
     let [tl, tr, br, bl] = klipp_timeline::surface::pin_frame_corners(&target, picture_size, frame).unwrap_or(target);
-    picture.set_effects(vec![klipp_effects::BuiltinEffect::CornerPin { tl, tr, br, bl }]);
+    add_plain_effects(&mut picture, &[klipp_effects::BuiltinEffect::CornerPin { tl, tr, br, bl }]).map_err(|e| refuse(i, format!("the picture couldn't take its corner pin: {e}"), "report it"))?;
     picture.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id, picture_size, fit, inset });
     let above = (0..ti).rev().find(|k| seq.tracks[*k].kind == TrackKind::Video && !seq.tracks[*k].locked && overlapping(seq, *k, a, b, None).is_none());
     let (video, created) = match above {
@@ -4721,6 +4721,17 @@ fn effects_edit(clip: &Clip, remove: impl Fn(&klipp_effects::BuiltinEffect) -> b
         None => {}
     }
     set_builtin_effects(clip, new, ids)
+}
+
+/// `effects`, each on, put on `c`, a clip being made, through its
+/// picture's ops (M4 step 12b): plain effects only, which an op adds.
+fn add_plain_effects(c: &mut Clip, effects: &[klipp_effects::BuiltinEffect]) -> Result<(), String> {
+    let edits: Vec<klipp_timeline::EffectEdit> = effects.iter().map(klipp_timeline::EffectEdit::Add).collect();
+    match c.apply_effect_edits(&edits) {
+        Some(Ok(_)) => Ok(()),
+        Some(Err(e)) => Err(e),
+        None => Err("an effect the clip places itself, which no op adds yet".into()),
+    }
 }
 
 fn set_builtin_effects(clip: &Clip, new: Vec<klipp_effects::BuiltinEffect>, new_ids: Vec<klipp_timeline::EffectId>) -> EditCommand {
@@ -5598,7 +5609,12 @@ fn highlight(seq: &Sequence, fps: Fps, i: usize, at: Timecode, hold: f64, region
     klipp_core::keyframe::upsert_keyframe(&mut op, fade, 1.0);
     klipp_core::keyframe::upsert_keyframe(&mut op, hold - fade, 1.0);
     klipp_core::keyframe::upsert_keyframe(&mut op, hold, 0.0);
-    clip.edit_opacity_keyframes(|v| *v = op);
+    // The fade, the placement's opacity animation, set through the
+    // title's picture (M4 step 12b).
+    let path = clip.placement_path().ok_or_else(|| refuse(i, "the highlight has no placement to fade", "report it"))?;
+    let keys = op.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>().map_err(|e| refuse(i, format!("the fade's keys: {e}"), "report it"))?;
+    let fade_in_out = klipp_graph_lift::ops::GraphOp::SetAnim { path, key: klipp_graph_format::ParamKey::from("opacity"), anim: Some(klipp_graph_format::Animation { keys, modifiers: None }) };
+    clip.apply_picture_ops(&[fade_in_out]).map_err(|e| refuse(i, format!("the highlight couldn't take its fade: {e}"), "report it"))?;
     let id = clip.id;
     let what = format!("{kind} highlight at {x:.2},{y:.2} ({w:.2}\u{00d7}{h:.2}) {:.2}-{:.2} s on {}", secs(tl_in), secs(tl_out), match existing { Some(ti) => format!("track {ti}"), None => "a new text track 0".to_string() });
     let edit = EditCommand::AddTitleClip { clip, track_index: existing.unwrap_or(0), created_track: existing.is_none() };
