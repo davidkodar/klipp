@@ -168,3 +168,49 @@ fn placed_and_plain_edits_together() {
         (vec![opacity(0.8), transform(5.0), opacity(0.4)], vec![true, true, true]),
     );
 }
+
+/// A Speed Ramp that starts blending moves to the head; one that stops
+/// is kept off in the list.
+#[test]
+fn a_ramp_starts_and_stops_blending() {
+    let blending = E::SpeedRamp { speed: 0.5, blend_mode: 1 };
+    holds(
+        "a ramp starts blending",
+        (vec![blur(), E::SpeedRamp { speed: 0.5, blend_mode: 0 }], vec![true, true]),
+        &[EffectEdit::Update(1, &blending)],
+        (vec![blur(), E::SpeedRamp { speed: 0.5, blend_mode: 1 }], vec![true, true]),
+    );
+    let still = E::SpeedRamp { speed: 0.5, blend_mode: 0 };
+    holds(
+        "a ramp stops blending",
+        (vec![blur(), E::SpeedRamp { speed: 0.5, blend_mode: 1 }], vec![true, true]),
+        &[EffectEdit::Update(1, &still)],
+        (vec![blur(), E::SpeedRamp { speed: 0.5, blend_mode: 0 }], vec![true, true]),
+    );
+}
+
+/// The denoiser moved in the list: still at the head, its place in the
+/// list kept for the list's reader.
+#[test]
+fn a_denoiser_moved_stays_at_the_head() {
+    holds(
+        "a denoiser moved",
+        (vec![blur(), E::TemporalDenoise { strength: 0.6, threshold: 0.1 }, opacity(0.7)], vec![true, true, true]),
+        &[EffectEdit::Move { from: 1, to: 2 }],
+        (vec![blur(), opacity(0.7), E::TemporalDenoise { strength: 0.6, threshold: 0.1 }], vec![true, true, true]),
+    );
+}
+
+/// Roles change, ids don't: an Opacity that becomes the anchor, and a
+/// Transform that becomes the placement, keep the node ids the clip names
+/// them by.
+#[test]
+fn a_role_change_keeps_every_id() {
+    let mut c = clip(vec![opacity(0.8), transform(10.0), transform(30.0), opacity(0.5)], vec![true, true, true, true]);
+    let ids: Vec<_> = (0..4).map(|i| c.effect_node_at(false, i)).collect();
+    c.apply_effect_edits(&[EffectEdit::SetEnabled(3, false), EffectEdit::SetEnabled(1, false)])
+        .expect("the placed kinds take graph ops")
+        .expect("the picture takes the edit");
+    let now: Vec<_> = (0..4).map(|i| c.effect_node_at(false, i)).collect();
+    assert_eq!(now, ids, "the anchor and the placement changed hands; no entry was renamed");
+}
