@@ -620,7 +620,7 @@ fn renderer_with_invert(legacy: bool) -> Renderer {
 /// `seq`'s first clip with the built-in invert plug-in on.
 fn with_invert(mut seq: Sequence) -> Sequence {
     let c = seq.tracks[0].clips[0].clone();
-    seq.tracks[0].clips[0] = TestClip::of(c).ofx(klipp_plugin::AppliedEffect { plugin_name: "com.klipp.test.Invert".into(), enabled: true, ..Default::default() }).build();
+    seq.tracks[0].clips[0] = TestClip::of(c).plugin(klipp_plugin::AppliedEffect { plugin_name: "com.klipp.test.Invert".into(), enabled: true, ..Default::default() }).build();
     seq
 }
 
