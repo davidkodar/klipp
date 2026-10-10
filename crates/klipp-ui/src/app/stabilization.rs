@@ -842,14 +842,16 @@ impl KlippApp {
     /// in `analyses`, by its key, for the inspector. Looks every two
     /// seconds at most, and at once after an analysis completes.
     pub(super) fn ensure_analyses(&mut self) {
-        use klipp_analysis::assets::{self, AssetKind, Found};
+        use klipp_analysis::assets::{self, AssetKind, AssetStore, Found};
         const EVERY: std::time::Duration = std::time::Duration::from_secs(2);
         if self.state.analysis_checked.is_some_and(|t| t.elapsed() < EVERY) {
             return;
         }
         self.state.analysis_checked = Some(std::time::Instant::now());
         let Some(seq) = self.state.sequences.get(self.state.active_sequence_idx) else { return };
+        let cache = assets::CacheStore::default();
         let mut wanted = Vec::new();
+        let mut used = std::collections::HashSet::new();
         for clip in seq.tracks.iter().flat_map(|t| t.clips.iter()) {
             let effects = clip.builtin_effects();
             let enabled = clip.builtin_effects_enabled();
@@ -870,18 +872,35 @@ impl KlippApp {
                     continue;
                 };
                 self.state.analysis_unavailable.remove(&(clip.id, kind));
+                used.insert(key.clone());
+                // One loaded here whose stamp has moved is read again.
+                if let Some(seen) = self.state.analysis_stamps.get(&key) {
+                    if cache.stamp(&key) != Some(*seen) {
+                        self.state.analyses.remove(&key);
+                        self.state.analysis_stamps.remove(&key);
+                    }
+                }
                 if running || self.state.analyses.contains_key(&key) || wanted.iter().any(|(k, _, _)| *k == key) {
                     continue;
                 }
                 wanted.push((key, kind, clip.id));
             }
         }
+        // Let go of what this pass loaded that no clip uses now.
+        let unused: Vec<_> = self.state.analysis_stamps.keys().filter(|k| !used.contains(*k)).cloned().collect();
+        for key in unused {
+            self.state.analyses.remove(&key);
+            self.state.analysis_stamps.remove(&key);
+        }
         if wanted.is_empty() {
             return;
         }
-        let cache = assets::CacheStore::default();
         for (key, kind, clip_id) in wanted {
+            let stamp = cache.stamp(&key);
             if let Found::Ready(raw) = assets::lookup(&cache, &key) {
+                if let Some(stamp) = stamp {
+                    self.state.analysis_stamps.insert(key.clone(), stamp);
+                }
                 self.state.analyses.insert(key, std::sync::Arc::new(raw));
                 continue;
             }

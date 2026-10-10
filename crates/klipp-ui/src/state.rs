@@ -1748,6 +1748,11 @@ pub struct AppState {
     /// the media, not the clip: a trim, a split or a duplicate of a clip
     /// finds the same analysis ([`AppState::analysis_of`]).
     pub analyses: std::collections::HashMap<klipp_analysis::assets::AssetKey, std::sync::Arc<serde_json::Value>>,
+    /// The stamp each analysis `ensure_analyses` loaded had when it was
+    /// read: one whose stamp moves (analysed again, or gone from the
+    /// cache) is read again, and one no clip of the sequence uses is let
+    /// go. An analysis put in `analyses` by anything else has none.
+    pub analysis_stamps: std::collections::HashMap<klipp_analysis::assets::AssetKey, u64>,
     /// When `ensure_analyses` last looked.
     pub analysis_checked: Option<std::time::Instant>,
     /// Analyses `ensure_analyses` started this session, by asset: started
@@ -4057,6 +4062,7 @@ impl Default for AppState {
             stabilization_in_progress: std::collections::HashSet::new(),
             stabilization_progress: std::collections::HashMap::new(),
             analyses: Default::default(),
+            analysis_stamps: Default::default(),
             analysis_checked: None,
             analysis_started: Default::default(),
             analysis_unavailable: Default::default(),
