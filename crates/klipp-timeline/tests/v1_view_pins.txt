@@ -1,8 +1,8 @@
 # The v1 view's uses, pinned (v1_view_ratchet.rs): each line a symbol and
 # its count. Lower a pin in the change that removes uses; a symbol at 0
 # moves to GONE. Filled at the first run from the test's own count.
-builtin_effects 132
-builtin_effects_enabled 47
+builtin_effects 131
+builtin_effects_enabled 46
 ClipPictureFields 18
 ClipPictureParts 14
 delift 37
@@ -38,8 +38,8 @@ LEGACY_EFFECT 80
 LEGACY_OFX 36
 move_builtin_effect 16
 move_effect 10
-ofx_effects 36
-opacity_keyframes 48
+ofx_effects 35
+opacity_keyframes 33
 own_effects 4
 ParamId::Effect 49
 param_modifiers 59
@@ -63,14 +63,14 @@ set_ofx_effects 18
 set_own_effects 2
 set_video_effect_list 16
 to_v1 48
-transform_pos_x_keyframes 37
-transform_pos_y_keyframes 35
-transform_rotation_keyframes 31
-transform_scale_keyframes 44
-transform_tilt_x_keyframes 27
-transform_tilt_y_keyframes 28
+transform_pos_x_keyframes 21
+transform_pos_y_keyframes 19
+transform_rotation_keyframes 16
+transform_scale_keyframes 28
+transform_tilt_x_keyframes 15
+transform_tilt_y_keyframes 16
 unlift 27
 video_effects 17
 video_effects_enabled 8
-video_param_keyframes 10
+video_param_keyframes 9
 video_param_value 16

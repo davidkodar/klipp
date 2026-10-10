@@ -1127,7 +1127,7 @@ impl CurveEditorPanel {
                 // A clip lane's Bezier handle dragged is one step too, as
                 // its key is.
                 if found_handle && matches!(self.param, CurveParam::Video(_) | CurveParam::Audio(_)) {
-                    cmds.push(AppCommand::BeginKeyframeDrag { key: lane_drag_key(clip_id), clip_id });
+                    cmds.push(AppCommand::BeginKeyframeDrag { key: lane_drag_key(clip_id, &self.param), clip_id });
                 }
                 // If no handle, check for diamond hit
                 if !found_handle {
@@ -1149,7 +1149,7 @@ impl CurveEditorPanel {
                                 // A clip lane's key too, as the timeline's
                                 // lanes bracket theirs (#1424).
                                 if matches!(self.param, CurveParam::Video(_) | CurveParam::Audio(_)) {
-                                    cmds.push(AppCommand::BeginKeyframeDrag { key: lane_drag_key(clip_id), clip_id });
+                                    cmds.push(AppCommand::BeginKeyframeDrag { key: lane_drag_key(clip_id, &self.param), clip_id });
                                 }
                                 state.selected_keyframe = Some(SelectedKeyframe {
                                     clip_id,
@@ -1271,7 +1271,7 @@ impl CurveEditorPanel {
                 cmds.push(AppCommand::EndParamEditAt { addr: path.clone(), key: key.clone() });
             }
             if let (Some(_), CurveParam::Video(_) | CurveParam::Audio(_)) = (&self.drag, &self.param) {
-                cmds.push(AppCommand::EndKeyframeDrag { key: lane_drag_key(clip_id), clip_id });
+                cmds.push(AppCommand::EndKeyframeDrag { key: lane_drag_key(clip_id, &self.param), clip_id });
             }
             self.drag = None;
         }
@@ -1489,8 +1489,13 @@ impl CurveEditorPanel {
 }
 
 /// The history drag a clip lane's key drag is held under.
-fn lane_drag_key(clip_id: klipp_core::ClipId) -> String {
-    format!("kf:curve:{}", clip_id.0)
+fn lane_drag_key(clip_id: klipp_core::ClipId, param: &CurveParam) -> String {
+    match param {
+        // A video lane's drag names its lane, as the timeline's do, so the
+        // drag is that lane's by path (M4 step 12c).
+        CurveParam::Video(p) => format!("kf:video:{}:{p:?}:curve", clip_id.0),
+        _ => format!("kf:curve:{}", clip_id.0),
+    }
 }
 
 /// Choose a "nice" step size for grid lines.
