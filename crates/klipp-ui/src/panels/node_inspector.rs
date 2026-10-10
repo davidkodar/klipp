@@ -101,24 +101,6 @@ impl Default for NodeInspectorPanel {
 }
 
 impl NodeInspectorPanel {
-    /// Draw the existing node inspector for headless row recording.
-    #[cfg(feature = "row-recorder")]
-    pub fn record_old_inspector(
-        &mut self, ui: &mut egui::Ui, graph: &mut NodeGraph,
-        selected: NodeId, clip_id: ClipId, theme: &KlippTheme,
-    ) -> Vec<AppCommand> {
-        self.show(ui, &Some(selected), graph, clip_id, theme, FrameSelection { time_secs: 0.0, tolerance: 1.0 / 48.0, clip_start: klipp_core::Timecode::zero() })
-    }
-
-    /// Draw a real colour-page tab, including the Corrector's custom editors.
-    #[cfg(feature = "row-recorder")]
-    pub fn record_old_tab(
-        &mut self, ui: &mut egui::Ui, graph: &mut NodeGraph,
-        selected: NodeId, clip_id: ClipId, theme: &KlippTheme, mut tab: ColorTab,
-    ) -> Vec<AppCommand> {
-        let _scope = crate::widgets::row_recorder::scope(format!("tab/{tab:?}"));
-        self.show_simple(ui, graph, clip_id, &mut Some(selected), &mut tab, theme, FrameSelection { time_secs: 0.0, tolerance: 1.0 / 48.0, clip_start: klipp_core::Timecode::zero() })
-    }
     /// Recompute the curves' histogram when the viewer shows a new
     /// frame. Cheap enough to call every frame: it returns immediately
     /// unless the generation moved.
@@ -327,95 +309,19 @@ impl NodeInspectorPanel {
                 self.show_wheels_wide(ui, graph, clip_id, cmds, theme);
             }
             _ => {
-                let target_kinds: Vec<NodeKind> = match color_tab {
-                    // Just the wheels. Each one now carries its own
-                    // saturation and brightness in its own cell, so the
-                    // standalone `Wheel Sat/Bri` section below them
-                    // would be the same eight sliders a second time.
-                    // The section itself is kept for graphs that really
-                    // do have a legacy `WheelSatBri` node and no
-                    // wheels, and for the wide layout's own path.
-                    ColorTab::Wheels => vec![NodeKind::ColorWheels],
-                    ColorTab::Curves => vec![NodeKind::RGBCurves],
-                    ColorTab::HueSat => vec![NodeKind::HueSatCurves],
-                    ColorTab::Warper => vec![NodeKind::ColorWarper],
-                    _ => vec![],
+                // The tab is its target's generated rows, the editors among
+                // them registered (M3 step 19), and a level with no
+                // Corrector, the grade's top or a compound in it, draws
+                // the one its first edit makes (#1483).
+                let tab_kind = match color_tab {
+                    ColorTab::Wheels => Some(NodeKind::ColorWheels),
+                    ColorTab::Curves => Some(NodeKind::RGBCurves),
+                    ColorTab::HueSat => Some(NodeKind::HueSatCurves),
+                    ColorTab::Warper => Some(NodeKind::ColorWarper),
+                    _ => None,
                 };
-                // With the generated inspector on, the tab is its target's
-                // generated rows, the editors among them registered (M3
-                // step 19), and a clip with no Corrector draws the one its
-                // first edit makes.
-                if let [tab_kind] = target_kinds[..] {
-                    if self.generated.is_some() {
-                        self.generated_tab(ui, graph, clip_id, tab_kind, cmds, theme, frame);
-                        return;
-                    }
-                }
-                // Lazy-create flow: if no grade node exists yet, render
-                // the widgets against a scratch NodeParams::default()
-                // using a fixed phantom NodeId. The first widget to
-                // emit a change dispatches its SetNode* command tagged
-                // with that phantom id; the handler in app.rs detects
-                // the id, materialises a real Corrector on the clip,
-                // and reroutes the write. User never sees an empty
-                // state or an "Add" button — they just grade.
-                let any_target_exists = graph.nodes.iter().any(|n|
-                    n.kind == NodeKind::Corrector && n.enabled
-                ) || target_kinds.iter().any(|k|
-                    graph.nodes.iter().any(|n| n.kind == *k && n.enabled)
-                );
-                if !any_target_exists {
-                    let mut scratch_params = klipp_nodes::NodeParams::default();
-                    let mut scratch_enabled = true;
-                    let mut scratch_keyframes = klipp_nodes::NodeKeyframeTracks::default();
-                    for target_kind in &target_kinds {
-                        let node_kind = *target_kind;
-                        self.show_inspector_layout(
-                            ui,
-                            klipp_nodes::PHANTOM_CORRECTOR_ID,
-                            &node_kind,
-                            &mut scratch_enabled,
-                            &mut scratch_params,
-                            &mut scratch_keyframes,
-                            clip_id, cmds, theme, frame, wide_layout,
-                        );
-                    }
-                    return;
-                }
-                for target_kind in &target_kinds {
-                    // Prefer the Corrector (new default graph). Fall
-                    // back to the dedicated single-purpose node when
-                    // the graph is legacy-shaped.
-                    let target_idx = graph.nodes.iter().position(|n|
-                        n.kind == NodeKind::Corrector && n.enabled
-                    ).or_else(||
-                        graph.nodes.iter().position(|n| n.kind == *target_kind && n.enabled)
-                    );
-                    let Some(idx) = target_idx else { continue; };
-                    {
-                        let node_id = graph.nodes[idx].id;
-                        // The widget code below dispatches on this kind
-                        // — pass the user's TAB choice, not the actual
-                        // node's kind, so a Corrector-backed Wheels tab
-                        // still renders the wheels widgets (which read
-                        // the same fields off the Corrector's params).
-                        let node_kind = *target_kind;
-                        // Don't overwrite the user's canvas selection.
-                        // The tabs always write to the Corrector
-                        // regardless of which node is highlighted in
-                        // the V2 canvas; previously we clobbered the
-                        // selection to the Corrector every render,
-                        // which meant clicking Source / Output / Apply
-                        // Matte never looked selected because the
-                        // inspector bumped the highlight back to the
-                        // Corrector immediately.
-                        let node = &mut graph.nodes[idx];
-                        let node_enabled = &mut node.enabled;
-                        let params = &mut node.params;
-                        let keyframes = &mut node.keyframes;
-                        self.show_inspector_layout(ui, node_id, &node_kind, node_enabled,
-                            params, keyframes, clip_id, cmds, theme, frame, wide_layout);
-                    }
+                if let Some(tab_kind) = tab_kind {
+                    self.generated_tab(ui, graph, clip_id, tab_kind, cmds, theme, frame);
                 }
             }
         }
@@ -1147,19 +1053,7 @@ impl NodeInspectorPanel {
         let Some(nid) = target else { return };
 
         ui.add_space(4.0);
-        if self.shared_row(ui, nid, "contrast", cmds, theme, frame) {
-            // Drawn as the generated row.
-        } else if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
-            let mut val = node.params.contrast.unwrap_or(0.0);
-            #[cfg(any(test, feature = "row-recorder"))]
-            crate::widgets::row_recorder::next_parameter("contrast");
-            if inspector_row(ui, "Contrast", &mut val, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
-                node.params.contrast = Some(val);
-                cmds.push(AppCommand::SetNodeParam {
-                    clip_id, node_id: nid, param: "contrast".into(), value: val,
-                });
-            }
-        }
+        self.shared_row(ui, nid, "contrast", cmds, theme, frame);
 
         ui.horizontal(|ui| {
             ui.add_space(12.0);
@@ -1349,15 +1243,7 @@ impl NodeInspectorPanel {
                             c.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "exposure".into(), value: 0.0 });
                         });
                     }
-                    if !self.shared_row(ui, nid, "exposure", cmds, theme, frame) {
-                        let mut val = node.params.exposure.unwrap_or(0.0);
-                        #[cfg(any(test, feature = "row-recorder"))]
-                        crate::widgets::row_recorder::next_parameter("exposure");
-                        if inspector_row(ui, "Exposure", &mut val, -3.0..=3.0, 0.0, "stops", theme, cmds, clip_id) {
-                            node.params.exposure = Some(val);
-                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "exposure".into(), value: val });
-                        }
-                    }
+                    self.shared_row(ui, nid, "exposure", cmds, theme, frame);
                 }
                 section_divider(ui, theme);
             }
@@ -1376,15 +1262,7 @@ impl NodeInspectorPanel {
                             c.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "clarity".into(), value: 0.0 });
                         });
                     }
-                    if !self.shared_row(ui, nid, "contrast", cmds, theme, frame) {
-                        let mut val = node.params.contrast.unwrap_or(0.0);
-                        #[cfg(any(test, feature = "row-recorder"))]
-                        crate::widgets::row_recorder::next_parameter("contrast");
-                        if inspector_row(ui, "Contrast", &mut val, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
-                            node.params.contrast = Some(val);
-                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast".into(), value: val });
-                        }
-                    }
+                    self.shared_row(ui, nid, "contrast", cmds, theme, frame);
                     // Where the contrast hinges: below it a push
                     // darkens, above it a push brightens, so the pivot
                     // decides whether contrast is spent on the shadows
@@ -1410,36 +1288,8 @@ impl NodeInspectorPanel {
                     // encoding it lands near the middle and equal travel
                     // is an equal change, which is why Resolve's pivot
                     // reads about 0.43 rather than 0.18.
-                    if !self.shared_row(ui, nid, "contrast_pivot", cmds, theme, frame) {
-                        let mut shown = pivot_shown(
-                            node.params.contrast_pivot.unwrap_or(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
-                        );
-                        #[cfg(any(test, feature = "row-recorder"))]
-                        crate::widgets::row_recorder::next_parameter("contrast_pivot");
-                        if inspector_row(
-                            ui, "Pivot", &mut shown,
-                            pivot_shown(klipp_color::grade_model::MIN_CONTRAST_PIVOT)
-                                ..=pivot_shown(klipp_color::grade_model::MAX_CONTRAST_PIVOT),
-                            pivot_shown(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
-                            "", theme, cmds, clip_id,
-                        ) {
-                            let linear = pivot_linear(shown).clamp(
-                                klipp_color::grade_model::MIN_CONTRAST_PIVOT,
-                                klipp_color::grade_model::MAX_CONTRAST_PIVOT,
-                            );
-                            node.params.contrast_pivot = Some(linear);
-                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast_pivot".into(), value: linear });
-                        }
-                    }
-                    if !self.shared_row(ui, nid, "clarity", cmds, theme, frame) {
-                        let mut cval = node.params.clarity.unwrap_or(0.0);
-                        #[cfg(any(test, feature = "row-recorder"))]
-                        crate::widgets::row_recorder::next_parameter("clarity");
-                        if inspector_row(ui, "Clarity", &mut cval, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
-                            node.params.clarity = Some(cval);
-                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "clarity".into(), value: cval });
-                        }
-                    }
+                    self.shared_row(ui, nid, "contrast_pivot", cmds, theme, frame);
+                    self.shared_row(ui, nid, "clarity", cmds, theme, frame);
                 }
                 section_divider(ui, theme);
             }
@@ -1458,29 +1308,8 @@ impl NodeInspectorPanel {
                             c.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "vibrance".into(), value: 0.0 });
                         });
                     }
-                    if !self.shared_row(ui, nid, "saturation", cmds, theme, frame) {
-                        let mut val = node.params.saturation.unwrap_or(1.0);
-                        // Saturation is a multiplier: 1.0 is neutral, unlike
-                        // every other row in this panel where neutral is 0.
-                        // Rendered in the same widget with no unit it read as
-                        // an inconsistency — "1.00" sitting under "0.00" with
-                        // nothing to say why. The multiplier sign says why.
-                        #[cfg(any(test, feature = "row-recorder"))]
-                        crate::widgets::row_recorder::next_parameter("saturation");
-                        if inspector_row(ui, "Saturation", &mut val, 0.0..=2.0, 1.0, "\u{00D7}", theme, cmds, clip_id) {
-                            node.params.saturation = Some(val);
-                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "saturation".into(), value: val });
-                        }
-                    }
-                    if !self.shared_row(ui, nid, "vibrance", cmds, theme, frame) {
-                        let mut vval = node.params.vibrance.unwrap_or(0.0);
-                        #[cfg(any(test, feature = "row-recorder"))]
-                        crate::widgets::row_recorder::next_parameter("vibrance");
-                        if inspector_row(ui, "Vibrance", &mut vval, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
-                            node.params.vibrance = Some(vval);
-                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "vibrance".into(), value: vval });
-                        }
-                    }
+                    self.shared_row(ui, nid, "saturation", cmds, theme, frame);
+                    self.shared_row(ui, nid, "vibrance", cmds, theme, frame);
                 }
                 section_divider(ui, theme);
             }
@@ -1501,29 +1330,10 @@ impl NodeInspectorPanel {
                             }
                         });
                     }
-                    for (label, param_name, default) in [
-                        ("Highlights", "highlights", 0.0_f32),
-                        ("Shadows", "shadows", 0.0),
-                        ("Whites", "whites", 0.0),
-                        ("Blacks", "blacks", 0.0),
-                    ] {
-                        // The Corrector's and Tone Controls' tone rows
-                        // are registered like the rows above (#1420).
-                        if self.shared_row(ui, nid, param_name, cmds, theme, frame) {
-                            continue;
-                        }
-                        let mut val = match param_name {
-                            "highlights" => node.params.highlights.unwrap_or(default),
-                            "shadows" => node.params.shadows.unwrap_or(default),
-                            "whites" => node.params.whites.unwrap_or(default),
-                            _ => node.params.blacks.unwrap_or(default),
-                        };
-                        #[cfg(any(test, feature = "row-recorder"))]
-                        crate::widgets::row_recorder::next_parameter(param_name);
-                        if inspector_row(ui, label, &mut val, -1.0..=1.0, default, "", theme, cmds, clip_id) {
-                            node.params.apply_override(param_name, val);
-                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: param_name.into(), value: val });
-                        }
+                    // The Corrector's and Tone Controls' tone rows are
+                    // registered like the rows above (#1420).
+                    for param_name in ["highlights", "shadows", "whites", "blacks"] {
+                        self.shared_row(ui, nid, param_name, cmds, theme, frame);
                     }
                 }
                 section_divider(ui, theme);
@@ -1545,32 +1355,10 @@ impl NodeInspectorPanel {
                     });
                 }
                 // Temperature: blue → orange gradient
-                if !self.shared_row(ui, nid, "temperature", cmds, theme, frame) {
-                    let mut temp = node.params.temperature.unwrap_or(0.0);
-                    #[cfg(any(test, feature = "row-recorder"))]
-                    crate::widgets::row_recorder::next_parameter("temperature");
-                    if gradient_slider_row(ui, "Temperature", &mut temp, -50.0..=50.0, 0.0,
-                        egui::Color32::from_rgb(0x6a, 0xb4, 0xf5),
-                        egui::Color32::from_rgb(0xf5, 0xa0, 0x5a), theme, cmds, clip_id)
-                    {
-                        node.params.temperature = Some(temp);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "temperature".into(), value: temp });
-                    }
-                }
+                self.shared_row(ui, nid, "temperature", cmds, theme, frame);
 
                 // Tint: green → pink gradient
-                if !self.shared_row(ui, nid, "tint", cmds, theme, frame) {
-                    let mut tint = node.params.tint.unwrap_or(0.0);
-                    #[cfg(any(test, feature = "row-recorder"))]
-                    crate::widgets::row_recorder::next_parameter("tint");
-                    if gradient_slider_row(ui, "Tint", &mut tint, -50.0..=50.0, 0.0,
-                        egui::Color32::from_rgb(0xa8, 0xf5, 0xa8),
-                        egui::Color32::from_rgb(0xf5, 0xa8, 0xc8), theme, cmds, clip_id)
-                    {
-                        node.params.tint = Some(tint);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "tint".into(), value: tint });
-                    }
-                }
+                self.shared_row(ui, nid, "tint", cmds, theme, frame);
 
                 // Auto White Balance, and the eyedropper for when Auto WB
                 // cannot tell a grey from a coloured surface: the user
@@ -1591,29 +1379,10 @@ impl NodeInspectorPanel {
                 ui.add_space(2.0);
 
                 // Hue: rainbow spectrum
-                if !self.shared_row(ui, nid, "hue", cmds, theme, frame) {
-                    let mut hue = node.params.hue.unwrap_or(0.0);
-                    #[cfg(any(test, feature = "row-recorder"))]
-                    crate::widgets::row_recorder::next_parameter("hue");
-                    if hue_slider_row(ui, "Hue", &mut hue, theme, cmds, clip_id) {
-                        node.params.hue = Some(hue);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "hue".into(), value: hue });
-                    }
-                }
+                self.shared_row(ui, nid, "hue", cmds, theme, frame);
 
                 // Global Mix: subtle grey → white
-                if !self.shared_row(ui, nid, "global_mix", cmds, theme, frame) {
-                    let mut mix = node.params.global_mix.unwrap_or(1.0);
-                    #[cfg(any(test, feature = "row-recorder"))]
-                    crate::widgets::row_recorder::next_parameter("global_mix");
-                    if gradient_slider_row(ui, "Global Mix", &mut mix, 0.0..=1.0, 1.0,
-                        theme.overlay(20),
-                        theme.overlay(90), theme, cmds, clip_id)
-                    {
-                        node.params.global_mix = Some(mix);
-                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "global_mix".into(), value: mix });
-                    }
-                }
+                self.shared_row(ui, nid, "global_mix", cmds, theme, frame);
             } }
         }
 
@@ -1635,34 +1404,9 @@ impl NodeInspectorPanel {
                             c.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_radius".into(), value: 3.0 });
                         });
                     }
-                    if !self.shared_row(ui, nid, "denoise_luma", cmds, theme, frame) {
-                        let mut luma = node.params.denoise_luma.unwrap_or(0.0);
-                        #[cfg(any(test, feature = "row-recorder"))]
-                        crate::widgets::row_recorder::next_parameter("denoise_luma");
-                        if inspector_row(ui, "Luma", &mut luma, 0.0..=1.0, 0.0, "", theme, cmds, clip_id) {
-                            node.params.denoise_luma = Some(luma);
-                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_luma".into(), value: luma });
-                        }
-                    }
-                    if !self.shared_row(ui, nid, "denoise_chroma", cmds, theme, frame) {
-                        let mut chroma = node.params.denoise_chroma.unwrap_or(0.0);
-                        #[cfg(any(test, feature = "row-recorder"))]
-                        crate::widgets::row_recorder::next_parameter("denoise_chroma");
-                        if inspector_row(ui, "Chroma", &mut chroma, 0.0..=1.0, 0.0, "", theme, cmds, clip_id) {
-                            node.params.denoise_chroma = Some(chroma);
-                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_chroma".into(), value: chroma });
-                        }
-                    }
-                    if !self.shared_row(ui, nid, "denoise_radius", cmds, theme, frame) {
-                        let mut radius = node.params.denoise_radius.unwrap_or(3) as f32;
-                        #[cfg(any(test, feature = "row-recorder"))]
-                        crate::widgets::row_recorder::next_parameter("denoise_radius");
-                        if inspector_row(ui, "Radius", &mut radius, 1.0..=DENOISE_RADIUS_MAX, 3.0, "px", theme, cmds, clip_id) {
-                            let r = radius.round() as u32;
-                            node.params.denoise_radius = Some(r);
-                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_radius".into(), value: r as f32 });
-                        }
-                    }
+                    self.shared_row(ui, nid, "denoise_luma", cmds, theme, frame);
+                    self.shared_row(ui, nid, "denoise_chroma", cmds, theme, frame);
+                    self.shared_row(ui, nid, "denoise_radius", cmds, theme, frame);
                 }
                 section_divider(ui, theme);
             }
@@ -4429,149 +4173,6 @@ fn slider_interact(
         changed = true;
     }
     changed
-}
-
-/// Gradient slider row: track has a left→right color gradient instead of amber fill.
-/// Used for Temperature (blue→orange), Tint (green→pink), Global Mix.
-fn gradient_slider_row(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut f32,
-    range: std::ops::RangeInclusive<f32>,
-    default: f32,
-    color_left: egui::Color32,
-    color_right: egui::Color32,
-    theme: &KlippTheme,
-    cmds: &mut Vec<AppCommand>,
-    clip_id: ClipId,
-) -> bool {
-    let id = ui.next_auto_id();
-    #[cfg(any(test, feature = "row-recorder"))]
-    crate::widgets::row_recorder::numeric(id, "gradient_slider", label, *value, &range, Some(default), None, Some(2), "", None);
-    let editing = slider_value_editing(ui, id);
-    let avail_w = ui.available_width();
-    let range_span = (range.end() - range.start()).abs();
-    let label_w = (avail_w * 0.28).max(50.0);
-    let value_w = (avail_w * 0.14).max(32.0);
-    let slider_w = (avail_w - PAD * 2.0 - label_w - value_w - 8.0).max(40.0);
-    let pct = ((*value - range.start()) / range_span).clamp(0.0, 1.0);
-
-    let (row_rect, resp) = ui.allocate_exact_size(egui::vec2(avail_w, ROW_H), egui::Sense::hover());
-    if resp.hovered() {
-        ui.painter().rect_filled(row_rect, 0.0, theme.overlay(13));
-    }
-    let cy = row_rect.center().y;
-    let slider_x = row_rect.min.x + PAD + label_w;
-
-    {
-        let painter = ui.painter().clone();
-
-        painter.text(egui::pos2(row_rect.min.x + PAD, cy), egui::Align2::LEFT_CENTER,
-            label, egui::FontId::proportional(11.0),
-            theme.overlay(107));
-
-        // Gradient track — draw pixel by pixel horizontally
-        let track_h = 6.0;
-        let track_y = cy - track_h / 2.0;
-        let steps = slider_w as usize;
-        for i in 0..steps {
-            let t = i as f32 / steps as f32;
-            let r = (color_left.r() as f32 * (1.0 - t) + color_right.r() as f32 * t) as u8;
-            let g = (color_left.g() as f32 * (1.0 - t) + color_right.g() as f32 * t) as u8;
-            let b = (color_left.b() as f32 * (1.0 - t) + color_right.b() as f32 * t) as u8;
-            let px = slider_x + i as f32;
-            painter.rect_filled(
-                egui::Rect::from_min_size(egui::pos2(px, track_y), egui::vec2(1.0, track_h)),
-                0.0, egui::Color32::from_rgb(r, g, b),
-            );
-        }
-        // Round ends
-        painter.circle_filled(egui::pos2(slider_x, cy), track_h / 2.0, color_left);
-        painter.circle_filled(egui::pos2(slider_x + slider_w, cy), track_h / 2.0, color_right);
-
-        // Thumb
-        let thumb_x = slider_x + slider_w * pct;
-        painter.circle_filled(egui::pos2(thumb_x, cy), 6.5, egui::Color32::from_rgba_premultiplied(0, 0, 0, 60));
-        painter.circle_filled(egui::pos2(thumb_x, cy), 6.0, egui::Color32::from_rgb(0xf0, 0xf0, 0xf0));
-
-        // Value
-        if !editing {
-            painter.text(egui::pos2(slider_x + slider_w + 8.0, cy), egui::Align2::LEFT_CENTER,
-                format!("{:.2}", *value), egui::FontId::proportional(11.0),
-                theme.overlay(166));
-        }
-    }
-
-    slider_interact(
-        ui, id, SliderGeometry { x: slider_x, w: slider_w, cy, value_w },
-        value, range, default, cmds, clip_id,
-    )
-}
-
-/// Hue slider row: rainbow spectrum track.
-fn hue_slider_row(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut f32,
-    theme: &KlippTheme,
-    cmds: &mut Vec<AppCommand>,
-    clip_id: ClipId,
-) -> bool {
-    let id = ui.next_auto_id();
-    #[cfg(any(test, feature = "row-recorder"))]
-    crate::widgets::row_recorder::numeric(id, "hue_slider", label, *value, &(0.0..=360.0), Some(0.0), None, Some(2), "", None);
-    let editing = slider_value_editing(ui, id);
-    let avail_w = ui.available_width();
-    let label_w = (avail_w * 0.28).max(50.0);
-    let value_w = (avail_w * 0.14).max(32.0);
-    let slider_w = (avail_w - PAD * 2.0 - label_w - value_w - 8.0).max(40.0);
-    let pct = (*value / 360.0).clamp(0.0, 1.0);
-
-    let (row_rect, resp) = ui.allocate_exact_size(egui::vec2(avail_w, ROW_H), egui::Sense::hover());
-    if resp.hovered() {
-        ui.painter().rect_filled(row_rect, 0.0, theme.overlay(13));
-    }
-    let cy = row_rect.center().y;
-    let slider_x = row_rect.min.x + PAD + label_w;
-
-    {
-        let painter = ui.painter().clone();
-
-        painter.text(egui::pos2(row_rect.min.x + PAD, cy), egui::Align2::LEFT_CENTER,
-            label, egui::FontId::proportional(11.0),
-            theme.overlay(107));
-
-        // Rainbow spectrum track
-        let track_h = 6.0;
-        let track_y = cy - track_h / 2.0;
-        let steps = slider_w as usize;
-        for i in 0..steps {
-            let hue = i as f32 / steps as f32;
-            let (r, g, b) = crate::widgets::scopes::hue_to_rgb(hue);
-            let px = slider_x + i as f32;
-            painter.rect_filled(
-                egui::Rect::from_min_size(egui::pos2(px, track_y), egui::vec2(1.0, track_h)),
-                0.0, egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8),
-            );
-        }
-
-        // Thumb
-        let thumb_x = slider_x + slider_w * pct;
-        painter.circle_filled(egui::pos2(thumb_x, cy), 6.5, egui::Color32::from_rgba_premultiplied(0, 0, 0, 60));
-        painter.circle_filled(egui::pos2(thumb_x, cy), 6.0, egui::Color32::from_rgb(0xf0, 0xf0, 0xf0));
-
-        // Value
-        if !editing {
-            painter.text(egui::pos2(slider_x + slider_w + 8.0, cy), egui::Align2::LEFT_CENTER,
-                format!("{:.2}", *value), egui::FontId::proportional(11.0),
-                theme.overlay(166));
-        }
-    }
-
-    slider_interact(
-        ui, id, SliderGeometry { x: slider_x, w: slider_w, cy, value_w },
-        value, 0.0..=360.0, 0.0, cmds, clip_id,
-    )
 }
 
 /// Per-node colorspace dropdown for the Lut3D inspector. Renders a

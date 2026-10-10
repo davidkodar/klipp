@@ -110,19 +110,12 @@ pub(crate) fn snapshot_for(clip: &Clip, descent: &[NodeId], stand_in: bool, pend
     if stand_in {
         return None;
     }
-    // Inside a compound there is no Corrector to make: the tabs' first
-    // edit makes one at the top.
-    if !descent.is_empty() {
-        return GradeSnapshot::of(clip, descent, None);
-    }
-    // Once the clip has its Corrector the reservation is spent: a later
+    // The level drawn, the grade's top or a compound inside it (#1483):
+    // its first edit makes its Corrector there.
+    let level = v1_level(clip.grade(), descent)?;
+    // Once the level has its Corrector the reservation is spent: a later
     // one (after that node is removed) is a new id, never one a node had.
-    let has = clip.grade().nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Corrector && n.enabled);
-    let reserved = match *pending {
-        _ if has => None,
-        Some((c, id)) if c == clip.id && !clip.grade().nodes.iter().any(|n| n.id == id) => Some(id),
-        _ => Some(NodeId::new_v4()),
-    };
+    let reserved = reserve(level, clip.id, pending);
     *pending = reserved.map(|id| (clip.id, id));
     GradeSnapshot::of(clip, descent, reserved)
 }
@@ -130,7 +123,7 @@ pub(crate) fn snapshot_for(clip: &Clip, descent: &[NodeId], stand_in: bool, pend
 /// [`snapshot_for`] for a stand-in (M3 step 19): `stand_in`, the clip the
 /// timeline grade or a group stage is edited through, as the grade at
 /// `root`, at `descent` within it. Its nodes are addressed at `root`, and
-/// (at its top) its pending Corrector is reserved as a clip's is, under
+/// its pending Corrector is reserved as a clip's is, under
 /// the stand-in's id. While the root has no grade yet, the stand-in's (the graph it was
 /// put on with) is the one drawn, and `start` keeps it for the first
 /// edit to begin from, so that edit's ids are the ones drawn.
@@ -145,18 +138,23 @@ pub(crate) fn snapshot_for_root(
     let clip = seq.all_clips().find(|c| c.id == stand_in)?;
     let stored = seq.root_grade(root).ok()?;
     *start = stored.is_none().then(|| (root, clip.grade().clone()));
-    if !descent.is_empty() {
-        return GradeSnapshot::of_root(seq, clip, root, descent, None);
-    }
-    let grade = stored.unwrap_or(clip.grade());
-    let has = grade.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Corrector && n.enabled);
-    let reserved = match *pending {
-        _ if has => None,
-        Some((c, id)) if c == stand_in && !grade.nodes.iter().any(|n| n.id == id) => Some(id),
-        _ => Some(NodeId::new_v4()),
-    };
+    let level = v1_level(stored.unwrap_or(clip.grade()), descent)?;
+    let reserved = reserve(level, stand_in, pending);
     *pending = reserved.map(|id| (stand_in, id));
     GradeSnapshot::of_root(seq, clip, root, descent, reserved)
+}
+
+/// The Corrector reserved for `level` (a grade's top, or a compound's
+/// subgraph in it) drawn for `clip`: none when the level has an enabled
+/// one; else the reservation already held for that clip, while no node of
+/// the level has its id; else a fresh id.
+fn reserve(level: &klipp_nodes::NodeGraph, clip: klipp_core::ClipId, pending: &Option<(klipp_core::ClipId, NodeId)>) -> Option<NodeId> {
+    let has = level.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Corrector && n.enabled);
+    match *pending {
+        _ if has => None,
+        Some((c, id)) if c == clip && !level.nodes.iter().any(|n| n.id == id) => Some(id),
+        _ => Some(NodeId::new_v4()),
+    }
 }
 
 /// The Corrector a tabbed page's first edit adds, as its picture holds it

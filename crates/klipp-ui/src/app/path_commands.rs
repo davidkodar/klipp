@@ -517,13 +517,15 @@ impl crate::state::AppState {
     }
 
     /// Whether `addr` names the Corrector the tabbed page reserved for the
-    /// clip (`pending_corrector`) and the clip doesn't hold it yet.
+    /// clip (`pending_corrector`) and the clip doesn't hold it yet: at the
+    /// grade's top, or inside a compound in it (#1483), where the first
+    /// edit makes it in the compound's body.
     fn names_pending_corrector(&self, addr: &NodePath) -> bool {
         let Some((clip, id)) = self.pending_corrector else { return false };
         // A clip's grade nodes are under its grade group; a sequence
         // grade's at its root's top (M3 step 19).
-        let depth = if matches!(addr.root, Root::Clip { .. }) { 2 } else { 1 };
-        self.editing_clip(addr.root) == Some(clip) && addr.nodes.len() == depth && addr.nodes.last() == Some(&id) && self.node_at(addr).is_err()
+        let top = if matches!(addr.root, Root::Clip { .. }) { 2 } else { 1 };
+        self.editing_clip(addr.root) == Some(clip) && addr.nodes.len() >= top && addr.nodes.last() == Some(&id) && self.node_at(addr).is_err()
     }
 
     /// The clip a root's grade commands name: the clip, or the stand-in a
