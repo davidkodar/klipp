@@ -3859,17 +3859,27 @@ impl AppState {
     }
 
     /// Whether `ensure_analyses` looks now, at `now` with the sequence at
-    /// `revision`, and if so it's noted as having looked: every
+    /// `revision`; when it does, it's noted as having looked. Every
     /// [`ANALYSIS_EVERY`] at most, at once after a completed analysis
-    /// clears `analysis_checked`, and at once after any edit of the
-    /// sequence, on the edit's own frame.
-    pub fn analysis_due(&mut self, revision: klipp_timeline::SequenceRevision, now: std::time::Instant) -> bool {
-        if self.analysis_revision == Some(revision) && self.analysis_checked.is_some_and(|t| now.duration_since(t) < ANALYSIS_EVERY) {
-            return false;
+    /// clears `analysis_checked`, and after any edit of the sequence
+    /// within [`ANALYSIS_EDIT_GAP`]: a slider's drag doesn't read every
+    /// clip's picture each tick. An edit not looked at yet says how long
+    /// until it is, for the caller to ask for a frame then: an idle
+    /// window draws none of its own.
+    pub fn analysis_due(&mut self, revision: klipp_timeline::SequenceRevision, now: std::time::Instant) -> AnalysisDue {
+        let since = self.analysis_checked.map(|t| now.saturating_duration_since(t));
+        let wait = match since {
+            None => std::time::Duration::ZERO,
+            Some(since) if self.analysis_revision != Some(revision) => ANALYSIS_EDIT_GAP.saturating_sub(since),
+            Some(since) if since >= ANALYSIS_EVERY => std::time::Duration::ZERO,
+            Some(_) => return AnalysisDue::NotYet,
+        };
+        if !wait.is_zero() {
+            return AnalysisDue::After(wait);
         }
         self.analysis_checked = Some(now);
         self.analysis_revision = Some(revision);
-        true
+        AnalysisDue::Now
     }
 
     /// Of `uses` (each key a clip of the sequence reads, its kind, a clip
@@ -3886,6 +3896,8 @@ impl AppState {
             }
         }
         self.analysis_started.retain(|key, started| started.ended.is_none() || (missing.contains(key) && uses.iter().any(|u| u.key == *key)));
+        let started = &self.analysis_started;
+        self.analysis_threads.retain(|key, _| started.contains_key(key));
         let mut start = Vec::new();
         for u in uses.iter().filter(|u| !u.running && missing.contains(&u.key)) {
             let waiting = self.analysis_started.get(&u.key).is_some_and(|s| s.ended.is_none_or(|ended| now.duration_since(ended) < ANALYSIS_RETRY));
@@ -4929,6 +4941,19 @@ pub(crate) fn find_clip_cached<'a>(
 
 /// How often `ensure_analyses` looks with nothing edited.
 pub const ANALYSIS_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The least time between looks that follow edits.
+pub const ANALYSIS_EDIT_GAP: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Whether `ensure_analyses` looks now ([`AppState::analysis_due`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnalysisDue {
+    Now,
+    /// An edit is waiting to be looked at, after this long.
+    After(std::time::Duration),
+    /// Nothing new to look at yet.
+    NotYet,
+}
 
 /// How long an analysis that ended without its asset waits before it's
 /// started again: a file that can't be analysed isn't tried on every look.
