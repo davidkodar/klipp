@@ -40,7 +40,7 @@ fn bundle() -> PathBuf {
 fn host() -> (Arc<Mutex<OfxHostRuntime>>, PathBuf) {
     let dir = bundle();
     let mut host = OfxHostRuntime::new();
-    assert_eq!(host.discover_plugins_in(std::slice::from_ref(&dir)), 5, "the bundle's five plug-ins");
+    assert_eq!(host.discover_plugins_in(std::slice::from_ref(&dir)), 6, "the bundle's six plug-ins");
     (Arc::new(Mutex::new(host)), dir)
 }
 

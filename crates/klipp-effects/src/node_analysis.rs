@@ -64,9 +64,16 @@ pub fn derive(effect: &BuiltinEffect, raw: &serde_json::Value) -> Option<NodeAna
     }
 }
 
-/// The entry for source time `source_secs` in `n` entries at `fps`.
+/// The entry for source time `source_secs` in `n` entries at `fps`: the
+/// frame shown then. `None` for a time no entry is for, before the first
+/// or past the last: an analysis that doesn't cover the frame gives it no
+/// correction, rather than another frame's (step 10's decline says so).
 fn entry(source_secs: f64, fps: f64, n: usize) -> Option<usize> {
-    (n > 0).then(|| ((source_secs.max(0.0) * fps).round() as usize).min(n - 1))
+    let at = source_secs * fps;
+    // The nearest entry; the last frame's whole span is the last's, so a
+    // time in its later half doesn't round past the end.
+    let i = at.round().min(if at < n as f64 { n as f64 - 1.0 } else { f64::INFINITY });
+    (i >= 0.0 && (i as usize) < n).then_some(i as usize)
 }
 
 impl NodeAnalysis {
@@ -108,8 +115,14 @@ mod tests {
         // A clip trimmed to start at 2 s: its first frame shows source 2 s.
         assert_eq!(a.at(&fx, 2.0, 8).gain, Some(50.0));
         assert_eq!(a.at(&fx, 2.04, 8).gain, Some(51.0));
-        // Past the analysis: its last entry.
-        assert_eq!(a.at(&fx, 100.0, 8).gain, Some(99.0));
+        // Past the analysis, and before it: no entry, never the last one's
+        // or the first one's.
+        assert_eq!(a.at(&fx, 3.96, 8).gain, Some(99.0));
+        assert_eq!(a.at(&fx, 3.99, 8).gain, Some(99.0), "the last frame's later half is still its own");
+        assert_eq!(a.at(&fx, 4.0, 8).gain, None);
+        assert_eq!(a.at(&fx, -0.04, 8).gain, None);
+        // Far past the analysis: none either.
+        assert_eq!(a.at(&fx, 100.0, 8).gain, None, "far past the analysis: none");
     }
 
     /// A deflicker's window and a stabilisation's smoothing shape what's

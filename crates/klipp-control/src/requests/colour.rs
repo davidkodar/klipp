@@ -861,6 +861,16 @@ pub(crate) fn respond(
 
         ControlCommand::AddNode { clip_id: c, kind, x, y } => {
             let clip_id = existing_clip_id(ctx, &c)?;
+            // An OFX plug-in by its identifier ("ofx:net.sf.openfx.invertPlugin"),
+            // at the end of the clip's plug-ins, switched on. One that isn't
+            // installed is added as asked: it declines as a plug-in missing,
+            // visibly, as one opened from a project would.
+            if let Some(plugin) = kind.strip_prefix("ofx:") {
+                if plugin.trim().is_empty() {
+                    return Err("ofx: takes the plug-in's identifier, e.g. ofx:net.sf.openfx.invertPlugin".into());
+                }
+                return send(AppCommand::AddEffect { clip_id, plugin_name: plugin.to_owned() });
+            }
             if klipp_nodes::kinds::addable_node_kind(&kind).is_none() {
                 let valid: Vec<&str> = klipp_nodes::kinds::ADDABLE_NODE_KINDS.iter().map(|(n, _)| *n).collect();
                 return Err(format!("no node kind {kind:?}; the kinds are {}", valid.join(", ")));

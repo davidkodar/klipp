@@ -755,6 +755,9 @@ impl PlaybackEngine {
             let want_bytes = target.is_none() || self.state != PlaybackState::Playing;
             let out = klipp_compose::DisplayDelivery { texture: target.as_deref(), bytes: want_bytes };
             if let Some((bytes, stats)) = self.render_composite_on_gpu(&seq, primary_ref, w, h, out) {
+                // The nodes the stack didn't draw as asked, named against
+                // this frame as the timeline path names its own (step 10).
+                let declines: Vec<klipp_nodes::Decline> = self.renderer.frame_declines().iter().filter(|d| d.shown()).cloned().collect();
                 match bytes {
                     Some(bytes) => {
                         self.note_composite_path(if target.is_some() { "GPU stack, bytes for a reader" } else { "GPU stack" });
@@ -768,6 +771,9 @@ impl PlaybackEngine {
                         self.draw_due_scopes_from_gpu_display(w, h);
                         self.show_on_gpu(w, h, stats, t_frame);
                     }
+                }
+                if !declines.is_empty() {
+                    self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).set_declines(declines);
                 }
                 return true;
             }

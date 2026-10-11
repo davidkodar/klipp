@@ -54,12 +54,20 @@ typedef struct {
     Status (*entry)(const char *, const void *, Handle, Handle);
 } Plugin;
 static Host *host;
-static const char *names[] = { "identity", "channels", "alpha", "time", "temporal" };
+static const char *names[] = { "identity", "channels", "alpha", "time", "temporal", "count" };
 /* The temporal fixture reads the frames either side, in OFX time units
  * (frames): red from the one before, green its own, blue the one after;
  * a frame the host doesn't give is 0. `mode` 5 asks 40 either side, 6 a
  * million. */
 #define TEMPORAL 4
+/* The count fixture keeps state: red is how many frames its instance has
+ * rendered (1 on its first), so a fresh instance, or one shared, shows. */
+#define COUNT 5
+/* A build with -DKLIPP_FIXTURE_VERSION=2 declares version 2 and one
+ * parameter more (`gain`): the same plug-ins under another schema. */
+#ifndef KLIPP_FIXTURE_VERSION
+#define KLIPP_FIXTURE_VERSION 1
+#endif
 static void set_host(Host *value) { host = value; }
 /* Each instance made and destroyed, one line to the file KLIPP_FIXTURE_TRACE_FILE
  * names, when it names one: a test counts them to see a slot's drop destroy
@@ -79,8 +87,26 @@ static Status action(int kind, const char *name, const void *effect, Handle in, 
     if (!p || !im) return 1;
     const Params *pa = host->fetch(host->host, "OfxParameterSuite", 1);
     if (!pa) return 1;
-    if (!strcmp(name, "OfxActionCreateInstance")) { trace("create", kind); return 0; }
-    if (!strcmp(name, "OfxActionDestroyInstance")) { trace("destroy", kind); return 0; }
+    if (!strcmp(name, "OfxActionCreateInstance")) {
+        trace("create", kind);
+        if (kind == COUNT) {
+            Handle props = NULL;
+            int *count = calloc(1, sizeof *count);
+            if (!count) return 1;
+            TRY(im->get_properties((Handle)effect, &props));
+            TRY(p->set_pointer(props, "OfxPropInstanceData", 0, count));
+        }
+        return 0;
+    }
+    if (!strcmp(name, "OfxActionDestroyInstance")) {
+        trace("destroy", kind);
+        if (kind == COUNT) {
+            Handle props = NULL;
+            void *count = NULL;
+            if (!im->get_properties((Handle)effect, &props) && !p->get_pointer(props, "OfxPropInstanceData", 0, &count)) free(count);
+        }
+        return 0;
+    }
     if (!strcmp(name, "OfxActionLoad") || !strcmp(name, "OfxActionUnload")) return 0;
     if (!strcmp(name, "OfxActionDescribe")) {
         Handle properties = NULL;
@@ -105,6 +131,9 @@ static Status action(int kind, const char *name, const void *effect, Handle in, 
         TRY(im->get_parameters((Handle)effect, &params));
         TRY(pa->define(params, "OfxParamTypeInteger", "mode", &props));
         TRY(p->set_int(props, "OfxParamPropDefault", 0, 0));
+#if KLIPP_FIXTURE_VERSION >= 2
+        TRY(pa->define(params, "OfxParamTypeDouble", "gain", &props));
+#endif
         return 0;
     }
     if (kind == TEMPORAL && !strcmp(name, "OfxImageEffectActionGetFramesNeeded")) {
@@ -170,6 +199,13 @@ static Status action(int kind, const char *name, const void *effect, Handle in, 
         if (!im->get_image(source, time + reach, NULL, &next) && next && !p->get_pointer(next, "OfxImagePropData", 0, &data)) next_data = data;
         fprintf(stderr, "KLIPP_FIXTURE_GOT %.17g %s %s\n", time, prev_data ? "before" : "-", next_data ? "after" : "-");
     }
+    int rendered = 0;
+    if (kind == COUNT) {
+        Handle props = NULL;
+        void *data = NULL;
+        if (im->get_properties((Handle)effect, &props) || p->get_pointer(props, "OfxPropInstanceData", 0, &data) || !data) goto cleanup;
+        rendered = ++*(int *)data;
+    }
     for (int y = window[1]; y < window[3]; ++y) {
         for (int x = window[0]; x < window[2]; ++x) {
             const uint8_t *s = (uint8_t *)src_data + (y-bounds[1])*sr + (x-bounds[0])*4;
@@ -179,6 +215,7 @@ static Status action(int kind, const char *name, const void *effect, Handle in, 
                 if (kind == 1) { d[0] = s[2]; d[1] = 255-s[0]; d[2] = s[1]; }
                 if (kind == 2) d[3] = s[3]/2;
                 if (kind == 3) d[0] = (uint8_t)((s[0] + (int)(time*16)) & 255);
+                if (kind == COUNT) d[0] = (uint8_t)(rendered > 255 ? 255 : rendered);
                 if (kind == TEMPORAL) {
                     size_t at = (size_t)(y-bounds[1])*sr + (size_t)(x-bounds[0])*4;
                     d[0] = prev_data ? prev_data[at] : 0;
@@ -198,8 +235,8 @@ cleanup:
     return status;
 }
 #define ENTRY(n) static Status entry##n(const char *a, const void *h, Handle i, Handle o) { return action(n,a,h,i,o); }
-ENTRY(0) ENTRY(1) ENTRY(2) ENTRY(3) ENTRY(4)
-#define PLUGIN(n, label) {"OfxImageEffectPluginAPI", 1, "org.klipp.fixture." label, 1, 0, set_host, entry##n}
-static Plugin plugins[] = {PLUGIN(0,"identity"),PLUGIN(1,"channels"),PLUGIN(2,"alpha"),PLUGIN(3,"time"),PLUGIN(4,"temporal")};
-int OfxGetNumberOfPlugins(void) { return 5; }
-Plugin *OfxGetPlugin(int index) { return index >= 0 && index < 5 ? &plugins[index] : NULL; }
+ENTRY(0) ENTRY(1) ENTRY(2) ENTRY(3) ENTRY(4) ENTRY(5)
+#define PLUGIN(n, label) {"OfxImageEffectPluginAPI", 1, "org.klipp.fixture." label, KLIPP_FIXTURE_VERSION, 0, set_host, entry##n}
+static Plugin plugins[] = {PLUGIN(0,"identity"),PLUGIN(1,"channels"),PLUGIN(2,"alpha"),PLUGIN(3,"time"),PLUGIN(4,"temporal"),PLUGIN(5,"count")};
+int OfxGetNumberOfPlugins(void) { return 6; }
+Plugin *OfxGetPlugin(int index) { return index >= 0 && index < 6 ? &plugins[index] : NULL; }

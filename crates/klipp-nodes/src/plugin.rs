@@ -40,6 +40,9 @@ pub struct OfxDescription {
     pub sequential_render: bool,
     /// Its render thread safety is "unsafe".
     pub unsafe_threads: bool,
+    /// A stamp of its version and parameters: an instance made under one
+    /// schema is never run under another.
+    pub schema: u64,
 }
 
 /// The OFX host as a node runs it.
@@ -85,6 +88,8 @@ fn filter_context() -> bool {
 /// couldn't be made (kept, so a refusal isn't asked again every frame).
 struct OfxSlot {
     plugin: String,
+    /// The schema the instance was made under ([`OfxDescription::schema`]).
+    schema: u64,
     made: Result<Box<dyn OfxInstance>, Refusal>,
 }
 
@@ -130,9 +135,16 @@ pub fn run_ofx_noting(node: NodeId, entry: &OfxNodeParams, input: &[f32], width:
     // from the source the clip shows at those times (its speed, ramp and
     // direction).
     let fps = ctx.fps.max(1.0);
-    let (clip, time, source_at) = (ctx.clip, ctx.clip_time_secs * fps, ctx.source_at);
+    // A frame's time is a whole number of the clip's frames: the product
+    // of its seconds and the rate can land a hair short (28.999…), and a
+    // plug-in that asks for `time + 1` would then name no frame.
+    let time = {
+        let t = ctx.clip_time_secs * fps;
+        if (t - t.round()).abs() < 1e-6 { t.round() } else { t }
+    };
+    let (clip, source_at) = (ctx.clip, ctx.source_at);
     let FrameContext { instances, sources, .. } = ctx;
-    let make = || OfxSlot { plugin: entry.plugin.clone(), made: host.instance(&entry.plugin, fps) };
+    let make = || OfxSlot { plugin: entry.plugin.clone(), schema: description.schema, made: host.instance(&entry.plugin, fps) };
     let slot = instances.slot(clip, node, stamp, make);
     // An instance is made at its clip's rate and for its plug-in: another
     // rate, or a node now running another plug-in, is another instance,
@@ -144,14 +156,17 @@ pub fn run_ofx_noting(node: NodeId, entry: &OfxNodeParams, input: &[f32], width:
     // any other for a short step on too. A seek back or a jump ahead
     // starts it fresh, as an export reaching that frame from the clip's
     // start in order would not otherwise draw it.
+    // A new size, another source (the clip's media or in-point), or a
+    // node switched off since starts it fresh too, as a frei0r node's does.
     let continues = |last: &SlotStamp| {
         let on = stamp.frame - last.frame;
-        match description.sequential_render {
+        let step = match description.sequential_render {
             true => (0..=1).contains(&on),
             false => (0..=crate::frame_context::CONTINUATION_FRAMES).contains(&on),
-        }
+        };
+        step && (last.width, last.height) == (stamp.width, stamp.height) && last.source == stamp.source && last.enabled
     };
-    if slot.last.is_some_and(|last| last.fps != stamp.fps || !continues(&last)) || slot.instance.plugin != entry.plugin {
+    if slot.last.is_some_and(|last| last.fps != stamp.fps || !continues(&last)) || slot.instance.plugin != entry.plugin || slot.instance.schema != description.schema {
         *slot.instance = make();
     }
     let instance = slot.instance.made.as_mut().map_err(|r| r.clone())?;
@@ -209,7 +224,7 @@ mod tests {
             let budget = if plugin == "temporal" { 2 } else { 0 };
             let sequential_render = plugin == "sequential";
             match plugin {
-                "channels" | "temporal" | "transition" | "failing" | "sequential" => Ok(OfxDescription { filter, budget, sequential_render, unsafe_threads: false }),
+                "channels" | "temporal" | "transition" | "failing" | "sequential" => Ok(OfxDescription { filter, budget, sequential_render, unsafe_threads: false, schema: 0 }),
                 _ => Err(Refusal::Missing),
             }
         }
@@ -367,6 +382,20 @@ mod tests {
         // Any other plug-in: a redraw and a short step keep it; a seek
         // back or a jump doesn't.
         assert_eq!(made_over("temporal", &[10, 10, 12, 5, 40]), vec![1, 1, 1, 2, 3]);
+    }
+
+    /// A frame's OFX time is a whole number of frames, even where its
+    /// seconds times the rate land a hair short (frame 29 at 25 fps gives
+    /// 28.999…): a temporal plug-in asking for the frames either side is
+    /// handed 28 and 30, not times between frames no source has.
+    #[test]
+    fn a_frames_time_is_a_whole_frame() {
+        assert_ne!(29.0 / 25.0 * 25.0, 29.0, "the product this guards against");
+        let host = Double::default();
+        let mut instances = PluginInstances::default();
+        framed(Some(&host), &mut instances, ClipId::new(), 29, &|t| 1.0 + t, |ctx| run_ofx(NodeId::new_v4(), &entry("temporal"), &picture(), 4, 2, WorkingColorspace::Rec709Linear, 1.0, Some(ctx))).unwrap();
+        let handed = host.handed.lock().unwrap().clone();
+        assert!(handed.contains(&28.0) && handed.contains(&30.0), "{handed:?}");
     }
 
     /// A node keeps its instance across frames; another node, or the same

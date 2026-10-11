@@ -85,10 +85,10 @@ pub const ALL: &[FamilyEntry] = &[
     FamilyEntry { family: Family::Frei0r, require: require_frei0r, run: none_yet },
     FamilyEntry { family: Family::TemporalDenoise, require: require_temporal_denoise, run: crate::temporal_denoise::run },
     FamilyEntry { family: Family::FrameBlend, require: require_frame_blend, run: crate::frame_blend::run },
-    FamilyEntry { family: Family::RollingShutter, require: require_rolling_shutter, run: none_yet },
-    FamilyEntry { family: Family::Stabilisation, require: require_stabilisation, run: none_yet },
-    FamilyEntry { family: Family::Deflicker, require: require_deflicker, run: none_yet },
-    FamilyEntry { family: Family::LegacyChain, require: require_legacy_chain, run: none_yet },
+    FamilyEntry { family: Family::RollingShutter, require: require_rolling_shutter, run: crate::analysis::run_rolling_shutter },
+    FamilyEntry { family: Family::Stabilisation, require: require_stabilisation, run: crate::analysis::run_stabilisation },
+    FamilyEntry { family: Family::Deflicker, require: require_deflicker, run: crate::analysis::run_deflicker },
+    FamilyEntry { family: Family::LegacyChain, require: require_legacy_chain, run: crate::legacy_chain::run },
     FamilyEntry { family: Family::Format, require: require_format, run: super::format::run },
 ];
 
@@ -110,4 +110,24 @@ pub const DELETED: &[(Family, &[&str])] = &[
     (Family::Deflicker, &["deflicker_data", "deflicker_gains"]),
     (Family::Stabilisation, &[".stabilization_data", "stabilization_data:", "smoothed_trajectory"]),
     (Family::RollingShutter, &["fn prepare_temporal_effects(", "fn motion_frame("]),
+    // Step 11: the GPU's legacy effect loop (a clip's or layer's effects
+    // run outside a plan, recorded runs of their own, the unrecorded layer
+    // passes), replaced by effects as plan nodes; Equalize keeps its one
+    // pass, a break of the chain.
+    (
+        Family::LegacyChain,
+        &[
+            "fn run_effects_in_chain(",
+            "fn run_effects_in_chain_from(",
+            "struct RecordedRun",
+            "fn submit_recorded(",
+            "fn record_into(",
+            "fn record_spills_into(",
+            "fn stack_layer_apply_effects(",
+            "fn effects_on_output(",
+            "fn download_chain_slot_linear(",
+            "fn layer_corners(",
+            "fn layer_fill(",
+        ],
+    ),
 ];

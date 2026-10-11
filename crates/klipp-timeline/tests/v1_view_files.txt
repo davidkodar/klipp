@@ -95,7 +95,6 @@ klipp-project/tests/track_effects_round_trip.rs
 klipp-project/tests/unknown_effect_refused.rs
 klipp-readiness/src/format.rs
 klipp-readiness/src/frame_blend.rs
-klipp-readiness/src/ofx.rs
 klipp-readiness/src/temporal_denoise.rs
 klipp-render/src/snapshot.rs
 klipp-render/tests/frame_blend_reads_the_stream.rs

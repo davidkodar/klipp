@@ -189,21 +189,52 @@ fn with_gain<'a>(effects: &'a [klipp_effects::BuiltinEffect], at: Option<&klipp_
 }
 
 /// Each analysis node's data for the frame `ctx` renders (M4 step 9): its
-/// analysis, found ready at its schema, read at the frame's source time.
-/// A node whose analysis is absent or stale has none, and its effect
-/// passes the frame through.
-fn resolve_analysis(graph: &NodeGraph, ctx: &crate::frame_context::FrameContext<'_>, height: u32) -> HashMap<NodeId, klipp_effects::node_analysis::AtFrame> {
+/// analysis, found ready at its schema, read at the frame's source time;
+/// and each switched-on node that has none for the frame, with the outcome
+/// it declines as (step 10). Without its analysis an analysis node passes
+/// the frame through, and says so: an analysis absent or stale, or one
+/// with no entry for a time inside the media, is a neighbour missing,
+/// which an export refuses; a time past the media's edge is a fallback.
+#[allow(clippy::type_complexity)]
+fn resolve_analysis(graph: &NodeGraph, ctx: &crate::frame_context::FrameContext<'_>, height: u32) -> (HashMap<NodeId, klipp_effects::node_analysis::AtFrame>, Vec<(NodeId, klipp_effects::BuiltinEffect, crate::DeclineOutcome, &'static str)>) {
     use crate::frame_context::{Analysis, NODE_ANALYSIS_SCHEMA};
+    use crate::DeclineOutcome;
     let mut out = HashMap::new();
+    let mut missing = Vec::new();
     for node in graph.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Effect | NodeKind::EffectSegment)) {
         let Some(effect) = node.params.effects.iter().find(|e| klipp_effects::node_analysis::derivation_params(e).is_some()) else { continue };
-        if let Analysis::Ready(blob) = ctx.analysis.lookup_effect(node.id, effect, NODE_ANALYSIS_SCHEMA) {
-            if let Some(a) = blob.data.downcast_ref::<klipp_effects::node_analysis::NodeAnalysis>() {
-                out.insert(node.id, a.at(effect, ctx.source_secs, height));
+        let found = match ctx.analysis.lookup_effect(node.id, effect, NODE_ANALYSIS_SCHEMA) {
+            Analysis::Ready(blob) => blob.data.downcast_ref::<klipp_effects::node_analysis::NodeAnalysis>().map(|a| a.at(effect, ctx.source_secs, height)),
+            Analysis::Absent | Analysis::Stale { .. } => None,
+        };
+        match found {
+            Some(at) if covers(effect, &at) => {
+                out.insert(node.id, at);
             }
+            _ if !node.enabled => {}
+            Some(_) => {
+                let (from, to) = ctx.sources.bounds();
+                match ctx.source_secs < from || ctx.source_secs >= to {
+                    true => missing.push((node.id, effect.clone(), DeclineOutcome::Fallback, "no analysis past the media's edge")),
+                    false => missing.push((node.id, effect.clone(), DeclineOutcome::NeighbourMissing, "its analysis has no frame here")),
+                }
+            }
+            None => missing.push((node.id, effect.clone(), DeclineOutcome::NeighbourMissing, "its analysis isn't there")),
         }
     }
-    out
+    (out, missing)
+}
+
+/// Whether `at` holds what `effect` draws by: a deflicker's gain, a
+/// stabiliser's correction, a rolling-shutter correction's rows.
+fn covers(effect: &klipp_effects::BuiltinEffect, at: &klipp_effects::node_analysis::AtFrame) -> bool {
+    use klipp_effects::BuiltinEffect as E;
+    match effect {
+        E::Deflicker { .. } => at.gain.is_some(),
+        E::VideoStabilization { .. } => at.motion.stabilization.is_some(),
+        E::RollingShutterCorrection { .. } => at.motion.rsc_rows.is_some(),
+        _ => true,
+    }
 }
 
 pub struct GraphExecutor {
@@ -298,6 +329,9 @@ pub struct GraphExecutor {
     /// resolved from the run's frame context at its start and dropped at
     /// its end: node-scoped, never carried to another clip or frame.
     run_analysis: HashMap<NodeId, klipp_effects::node_analysis::AtFrame>,
+    /// The run's analysis nodes with no analysis for the frame, declined
+    /// once the run's declines are started afresh.
+    run_analysis_missing: Vec<(NodeId, klipp_effects::BuiltinEffect, crate::DeclineOutcome, &'static str)>,
     /// Whether this run's GPU chain has taken an analysis node's motion:
     /// the chain records its nodes and submits once, so a second one in
     /// the run would overwrite the first's; it runs on the CPU instead.
@@ -744,6 +778,7 @@ impl GraphExecutor {
             ofx_runs: 0,
             ofx_refused: 0,
             run_analysis: HashMap::new(),
+            run_analysis_missing: Vec::new(),
             run_motion_uploaded: false,
             run_mix_refused: 0,
             start_kept: None,
@@ -826,6 +861,7 @@ impl GraphExecutor {
             ofx_runs: 0,
             ofx_refused: 0,
             run_analysis: HashMap::new(),
+            run_analysis_missing: Vec::new(),
             run_motion_uploaded: false,
             run_mix_refused: 0,
             start_kept: None,
@@ -1666,7 +1702,9 @@ impl GraphExecutor {
             }
         };
         plan.refresh(graph);
-        self.run_analysis = ctx.as_deref().map(|c| resolve_analysis(graph, c, height)).unwrap_or_default();
+        let (analysis, missing) = ctx.as_deref().map(|c| resolve_analysis(graph, c, height)).unwrap_or_default();
+        self.run_analysis = analysis;
+        self.run_analysis_missing = missing;
         self.run_motion_uploaded = false;
         let result = self.execute_with_plan(
             source_frame, graph, &plan, width, height, clip_time_secs, frame_number,
@@ -1838,6 +1876,10 @@ impl GraphExecutor {
         // A run that errors leaves no declines of an earlier run behind.
         self.run_declines.clear();
         self.last_run_declines.clear();
+        // Its analysis nodes with no analysis for the frame (step 10).
+        for (node, effect, outcome, reason) in std::mem::take(&mut self.run_analysis_missing) {
+            self.decline(node, NodeKind::Effect, outcome, crate::decline::effect_name(&effect), reason, String::new());
+        }
         let keep = std::mem::take(&mut self.keep_output_on_gpu);
         // (Thumbnails also rule it out: they are read once the chain's
         // last submit is in, and a result kept on the GPU never submits.)
@@ -8735,7 +8777,8 @@ mod analysis_node_tests {
             ofx: None,
             source_at: &|t| t,
         };
-        let run = resolve_analysis(&graph, &ctx, 8);
+        let (run, missing) = resolve_analysis(&graph, &ctx, 8);
+        assert!(missing.is_empty(), "both have theirs: {missing:?}");
         let h = |n: &Node| run.get(&n.id).and_then(|at| at.motion.stabilization).expect("its correction");
         assert_ne!(h(&a), h(&b), "two smoothings, two corrections");
         let own = |s: f32| {
@@ -8748,7 +8791,8 @@ mod analysis_node_tests {
     }
 
     /// A node whose analysis isn't ready has none for the frame: its effect
-    /// passes the frame through.
+    /// passes the frame through, and the node declines as a neighbour
+    /// missing (step 10), which an export refuses.
     #[test]
     fn a_node_without_its_analysis_has_none() {
         let inputs = BySmoothing(vec![]);
@@ -8759,6 +8803,8 @@ mod analysis_node_tests {
             clip: klipp_core::ClipId::new(), frame: 0, source: (klipp_core::MediaId::nil(), 0.0), clip_time_secs: 0.0, frame_number: 0, fps: 24.0,
             source_secs: 0.0, source_pts: None, sources: &mut sources, analysis: &inputs, instances: &mut instances, ofx: None, source_at: &|t| t,
         };
-        assert!(resolve_analysis(&graph, &ctx, 8).is_empty());
+        let (run, missing) = resolve_analysis(&graph, &ctx, 8);
+        assert!(run.is_empty());
+        assert_eq!(missing.iter().map(|m| m.2).collect::<Vec<_>>(), [crate::DeclineOutcome::NeighbourMissing], "declined");
     }
 }

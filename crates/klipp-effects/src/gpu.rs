@@ -5844,10 +5844,11 @@ impl GpuEffectsPipeline {
     /// run of spills, the chain couldn't record, run in passes of its own
     /// on the chain buffers, on the frame in slot A (`in_a`) or B. Returns
     /// whether the result sits in slot A. Equalize builds its histogram on
-    /// the CPU; a layer pass (rounded corners, fill bars, a run of spills
-    /// too long for the slots) runs unrecorded. Any other effect is only
-    /// ever recorded, so one that couldn't be is missing from the picture,
-    /// and [`Self::last_effects_complete`] says so.
+    /// the CPU, and a run of spills too long for the slots runs unrecorded.
+    /// Any other effect is only ever recorded (the chain makes the layer
+    /// passes' buffers before it records), so one that couldn't be is
+    /// missing from the picture, and [`Self::last_effects_complete`] says
+    /// so.
     fn run_break_pass(&mut self, part: &[BuiltinEffect], in_a: bool, width: u32, height: u32) -> bool {
         // A lost device runs none of them, so every effect is missing;
         // set before the early return, or a caller would read the last
@@ -5919,14 +5920,6 @@ impl GpuEffectsPipeline {
                     self.device.poll(wgpu::Maintain::Poll);
 
                     !current_in_a
-                }
-                BuiltinEffect::RoundedCorners { radius, feather } => {
-                    self.layer_corners(input, output, width, height, *radius, *feather);
-                    !in_a
-                }
-                BuiltinEffect::FillBars { blur, zoom, darken } => {
-                    self.layer_fill(input, output, width, height, *blur, *zoom, *darken);
-                    !in_a
                 }
                 _ => {
                     self.effects_incomplete.set(true);

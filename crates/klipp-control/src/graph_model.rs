@@ -64,6 +64,9 @@ pub(crate) fn parameter_op(node: &Node, path: klipp_graph_format::path::NodePath
     if key == "masks" && descriptor(node).is_some_and(|d| d.id == "klipp.grade.mask") {
         return Ok(GraphOp::SetPayload { path, payload: crate::graph_masks::payload(node, value)? });
     }
+    if let Some(payload) = frei0r_payload(node, key, value)? {
+        return Ok(GraphOp::SetPayload { path, payload });
+    }
     Ok(GraphOp::SetParam { path, key: key.into(), value: parameter(node, key, value)? })
 }
 
@@ -109,6 +112,34 @@ pub(crate) fn parameter(node: &Node, key: &str, value: &Value) -> Result<ParamVa
     }
 }
 
+
+/// A frei0r effect's entry with its plug-in (`type_id`, "frei0r:<path>:<name>")
+/// or its values (`params`, `[{"Double": 0.5}, ...]` in the plug-in's
+/// order) set: the whole entry, checked as the effect it is. `None` for any
+/// other node or key.
+fn frei0r_payload(node: &Node, key: &str, value: &Value) -> Result<Option<Value>, String> {
+    use klipp_effects::BuiltinEffect;
+    // Only an effect entry's payload is tagged with its type.
+    if klipp_graph_lift::effect_params::tag(node) != Some("frei0r") || !matches!(key, "type_id" | "params") {
+        return Ok(None);
+    }
+    let entry = klipp_graph_lift::effect_params::entry_of(node)?;
+    let Ok(BuiltinEffect::Frei0r { mut type_id, mut params }) = serde_json::from_value::<BuiltinEffect>(entry) else {
+        return Err("this frei0r node's entry isn't a frei0r effect".into());
+    };
+    if key == "type_id" {
+        let id = value.as_str().filter(|s| s.starts_with("frei0r:")).ok_or("type_id is a frei0r plug-in's id, frei0r:<path>:<name>")?;
+        if id != type_id {
+            // Another plug-in's values aren't this one's.
+            params.clear();
+        }
+        type_id = id.to_owned();
+    } else {
+        params = serde_json::from_value(value.clone()).map_err(|e| format!("params are the plug-in's values in order, each like {{\"Double\": 0.5}}: {e}"))?;
+    }
+    serde_json::to_value(BuiltinEffect::Frei0r { type_id, params }).map(Some).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +164,29 @@ mod tests {
     fn aliases_do_not_report_success_for_an_ignored_saved_key() {
         let node = new_node("klipp.fx.chroma_key", uuid::Uuid::new_v4(), None).unwrap();
         assert!(parameter(&node, "spill", &json!(0.2)).unwrap_err().contains("saved-field adapter"));
+    }
+
+    /// A frei0r node added by its registry id takes its plug-in and its
+    /// values as typed writes of its entry; another plug-in drops the
+    /// values; a value that isn't one, or an id that isn't frei0r's, is
+    /// refused; any other effect is left to its own parameters.
+    #[test]
+    fn a_frei0r_nodes_plug_in_and_values_are_set_whole() {
+        use klipp_effects::BuiltinEffect;
+        let mut node = new_node("klipp.fx.frei0r", uuid::Uuid::new_v4(), None).unwrap();
+        let set = |node: &Node, key: &str, value: Value| frei0r_payload(node, key, &value).map(|p| p.map(|p| serde_json::from_value::<BuiltinEffect>(p).unwrap()));
+        let id = "frei0r:/usr/lib/frei0r-1/saturat0r.so:saturat0r";
+        let with_plugin = set(&node, "type_id", json!(id)).unwrap().unwrap();
+        assert!(matches!(&with_plugin, BuiltinEffect::Frei0r { type_id, params } if type_id == id && params.is_empty()));
+        node.legacy.as_mut().unwrap().payload = serde_json::to_value(&with_plugin).unwrap();
+        let valued = set(&node, "params", json!([{"Double": 0.25}])).unwrap().unwrap();
+        assert!(matches!(&valued, BuiltinEffect::Frei0r { params, .. } if params.len() == 1));
+        node.legacy.as_mut().unwrap().payload = serde_json::to_value(&valued).unwrap();
+        let other = set(&node, "type_id", json!("frei0r:/x.so:x")).unwrap().unwrap();
+        assert!(matches!(&other, BuiltinEffect::Frei0r { params, .. } if params.is_empty()), "another plug-in's values aren't kept");
+        assert!(set(&node, "params", json!([0.25])).is_err(), "a bare number isn't a frei0r value");
+        assert!(set(&node, "type_id", json!("saturat0r")).is_err(), "not a frei0r id");
+        let blur = new_node("klipp.fx.gaussian_blur", uuid::Uuid::new_v4(), None).unwrap();
+        assert!(frei0r_payload(&blur, "type_id", &json!(id)).unwrap().is_none());
     }
 }

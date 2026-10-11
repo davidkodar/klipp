@@ -65,7 +65,7 @@ set_effect_list_with_ids 7
 set_effects 6
 # Raised from 11: #1534's OFX node tests set their plug-ins through the
 # list; they move to TestClip with the OFX arm.
-set_ofx_effects 18
+set_ofx_effects 17
 set_own_effects 1
 set_video_effect_list 16
 to_v1 50
