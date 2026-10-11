@@ -3328,6 +3328,7 @@ dependencies = [
 name = "klipp-readiness"
 version = "0.1.0"
 dependencies = [
+ "klipp-analysis",
  "klipp-compose",
  "klipp-convert",
  "klipp-core",

@@ -281,7 +281,14 @@ pub struct ClipSources<'s> {
 
 impl<'s> ClipSources<'s> {
     pub fn new(src: &'s mut dyn FrameSource, clip: &'s Clip, working: WorkingColorspace) -> Self {
-        let range = src.media_range(clip).unwrap_or((0.0, f64::INFINITY));
+        // A clip with no media (a title, a generator) has no source: an
+        // empty range, so a node asking for another frame runs as a
+        // fallback (as `NoSources`), never as a frame that failed to read.
+        // Media whose range the source can't say is read anywhere.
+        let range = match clip.media_id() {
+            None => (0.0, 0.0),
+            Some(_) => src.media_range(clip).unwrap_or((0.0, f64::INFINITY)),
+        };
         let frame_secs = src.media_fps(clip).filter(|f| f.is_finite() && *f > 0.0).map(|f| 1.0 / f);
         Self { src, clip, working, range, frame_secs, current: None, encoded: None, linear: None }
     }
@@ -1070,6 +1077,45 @@ impl Renderer {
     /// this frame's [`Inspection`] (M4 step 10). Called once a graph has
     /// run for good: never after a run whose result is thrown away and
     /// run again, whose declines would be counted twice.
+    /// Each switched-off effect and plug-in of `clip` (its picture's), noted
+    /// as bypassed (M4 step 10): it isn't run, so no node of it declines
+    /// itself, and the frame still says it was passed over as asked. Never
+    /// failing, and not shown in the viewer's chip. Noted once a frame, if
+    /// a layer's clip is drawn again on another route.
+    fn note_switched_off(&mut self, clip: &Clip) {
+        if let Ok(plugins) = clip.picture_ofx() {
+            for p in plugins.into_iter().filter(|p| !p.entry.enabled) {
+                if self.found.declines.iter().any(|d| d.clip == Some(clip.id) && d.node == p.node && d.outcome == klipp_nodes::DeclineOutcome::Bypass) {
+                    continue;
+                }
+                self.found.declines.push(klipp_nodes::Decline {
+                    clip: Some(clip.id),
+                    node: p.node,
+                    kind: klipp_nodes::NodeKind::Ofx,
+                    outcome: klipp_nodes::DeclineOutcome::Bypass,
+                    name: p.entry.plugin_name.clone(),
+                    reason: "switched off".into(),
+                    why: String::new(),
+                });
+            }
+        }
+        let Ok(effects) = clip.picture_effects() else { return };
+        for e in effects.into_iter().filter(|e| !e.enabled) {
+            if self.found.declines.iter().any(|d| d.clip == Some(clip.id) && d.node == e.node && d.outcome == klipp_nodes::DeclineOutcome::Bypass) {
+                continue;
+            }
+            self.found.declines.push(klipp_nodes::Decline {
+                clip: Some(clip.id),
+                node: e.node,
+                kind: klipp_nodes::NodeKind::Effect,
+                outcome: klipp_nodes::DeclineOutcome::Bypass,
+                name: klipp_nodes::decline::effect_name(&e.effect),
+                reason: "switched off".into(),
+                why: String::new(),
+            });
+        }
+    }
+
     fn note_declines(&mut self, clip: ClipId) {
         let declines = self.executor.last_run_declines().iter().map(|d| klipp_nodes::Decline { clip: Some(clip), ..d.clone() });
         self.found.declines.extend(declines);
@@ -1445,6 +1491,13 @@ impl Renderer {
     /// LUT, an OFX or Frei0r plugin, frame blending, title motion blur,
     /// an inspection request — and the log says which.
     /// `tests/gpu_composite.rs` holds it to the CPU render.
+    /// The nodes the last frame rendered didn't draw as asked, and why (M4
+    /// step 10), whichever route drew it: the GPU stack's, or the
+    /// timeline's (which `render_inspected` also returns).
+    pub fn frame_declines(&self) -> &[klipp_nodes::Decline] {
+        &self.found.declines
+    }
+
     pub fn render_display_u8_on_gpu(
         &mut self,
         seq: &Sequence,
@@ -1474,6 +1527,9 @@ impl Renderer {
         out: DisplayDelivery<'_>,
     ) -> Option<(Option<Vec<u8>>, RenderStats)> {
         self.frame_decline = None;
+        // This frame's declines, the stack's own as the timeline's (M4
+        // step 10): read after it with `frame_declines`.
+        self.found.declines.clear();
         let result = self.render_display_on_gpu_inner(seq, time, width, height, src, opts, out);
         if result.is_none() && self.frame_decline.is_none() {
             self.frame_decline = Some("the GPU pipeline was unavailable");
@@ -1847,6 +1903,7 @@ impl Renderer {
         transforms: &HashMap<ClipId, ResolvedTransform>,
         stats: &mut RenderStats,
     ) -> Result<Option<Placed>, &'static str> {
+        self.note_switched_off(c);
         let (mut fx, opacity) = clip_effects(c, time, fps, transforms.get(&c.id).copied(), self.pins.get(&c.id).copied());
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
@@ -2391,6 +2448,7 @@ impl Renderer {
         src: &mut dyn FrameSource,
         transforms: &HashMap<ClipId, ResolvedTransform>,
     ) -> Option<(Vec<f32>, f32)> {
+        self.note_switched_off(clip);
         let clip_time = eval_clip_time(clip, time);
         // The rendered frame's presentation time, for its frame blend.
         let mut source_pts = None;
@@ -3110,14 +3168,18 @@ impl Renderer {
     /// A layer's grade on the GPU stack in the clip's frame context, with
     /// its analyses from its media, as on the CPU: an analysis effect
     /// (a Deflicker) reads its asset here too, or declines, rather than
-    /// running at no strength. The stack takes no temporal effect, so no
-    /// source frames are lent.
+    /// running at no strength. The stack takes no temporal effect: its
+    /// source is lent for its range alone.
     #[allow(clippy::too_many_arguments)]
     fn grade_on_stack(&mut self, clip: &Clip, input: GradeInput, time: Timecode, clip_time: f64, fps: f64, width: u32, height: u32, src: &mut dyn FrameSource) -> Vec<f32> {
         let analyses = self.analyses_of(clip, src);
         self.clip_analysis = Some((clip.id, analyses));
         let at = source_secs(clip, time, fps);
-        let pixels = self.in_context(clip, clip_time, fps, at, None, &mut klipp_nodes::frame_context::NoSources, |r, ctx| r.grade(clip, input, clip_time, fps, width, height, Some(ctx)));
+        // The clip's source, for its range: a node with no analysis for a
+        // time inside the media declines as missing, past it as a fallback.
+        let mut sources = ClipSources::new(src, clip, self.working);
+        let mut bounded = klipp_nodes::frame_context::BoundedSources::new(&mut sources, width, height);
+        let pixels = self.in_context(clip, clip_time, fps, at, None, &mut bounded, |r, ctx| r.grade(clip, input, clip_time, fps, width, height, Some(ctx)));
         self.clip_analysis = None;
         pixels
     }
@@ -3520,10 +3582,33 @@ impl Renderer {
         let source_secs = clip.source_secs_at(clip_time, fps);
         let mut motion = klipp_effects::MotionData::default();
         let mut list = fx.to_vec();
+        // An analysis effect with no analysis for the frame passes it
+        // through and says so, as its node does on the plan route (step
+        // 10), as a neighbour missing: this route has no source range to
+        // tell a time past the media's edge apart.
+        let decline = |r: &mut Self, effect: &BuiltinEffect, outcome: klipp_nodes::DeclineOutcome, reason: &str| {
+            r.found.declines.push(klipp_nodes::Decline { clip: Some(clip.id), node: NodeId::nil(), kind: klipp_nodes::NodeKind::Effect, outcome, name: klipp_nodes::decline::effect_name(effect), reason: reason.into(), why: String::new() });
+        };
+        let mut missing: Vec<(BuiltinEffect, klipp_nodes::DeclineOutcome, &str)> = Vec::new();
         for effect in &mut list {
-            let Analysis::Ready(blob) = analyses.lookup_effect(NodeId::nil(), effect, NODE_ANALYSIS_SCHEMA) else { continue };
+            if klipp_effects::node_analysis::derivation_params(effect).is_none() {
+                continue;
+            }
+            let Analysis::Ready(blob) = analyses.lookup_effect(NodeId::nil(), effect, NODE_ANALYSIS_SCHEMA) else {
+                missing.push((effect.clone(), klipp_nodes::DeclineOutcome::NeighbourMissing, "its analysis isn't there"));
+                continue;
+            };
             let Some(a) = blob.data.downcast_ref::<klipp_effects::node_analysis::NodeAnalysis>() else { continue };
             let at = a.at(effect, source_secs, height);
+            let covered = match effect {
+                BuiltinEffect::Deflicker { .. } => at.gain.is_some(),
+                BuiltinEffect::VideoStabilization { .. } => at.motion.stabilization.is_some(),
+                BuiltinEffect::RollingShutterCorrection { .. } => at.motion.rsc_rows.is_some(),
+                _ => true,
+            };
+            if !covered {
+                missing.push((effect.clone(), klipp_nodes::DeclineOutcome::NeighbourMissing, "its analysis has no frame here"));
+            }
             if let (BuiltinEffect::Deflicker { gain, .. }, Some(g)) = (&mut *effect, at.gain) {
                 *gain = g;
             }
@@ -3533,6 +3618,9 @@ impl Renderer {
             if at.motion.rsc_rows.is_some() {
                 motion.rsc_rows = at.motion.rsc_rows;
             }
+        }
+        for (effect, outcome, reason) in &missing {
+            decline(self, effect, *outcome, reason);
         }
         let kept = std::mem::replace(&mut self.motion, motion);
         let out = self.effects(&list, pixels, clip_time, width, height);

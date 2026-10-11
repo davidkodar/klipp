@@ -185,6 +185,8 @@ impl Session {
         let mut notes = Vec::new();
         if self.route == Route::Viewer {
             if let Some((srgb8, stats)) = self.renderer.render_display_u8_on_gpu(seq, time, w, h, &mut src, opts) {
+                // The stack's own declines, as the viewer's chip reads them.
+                notes.extend(self.renderer.frame_declines().iter().map(|d| format!("declined: {d}")));
                 return Frame { frame, srgb8, linear: None, width: w, height: h, stats, notes };
             }
             if let Some(why) = self.renderer.last_decline() {
@@ -260,6 +262,12 @@ impl FrameSource for KnownSource {
 
     fn media_fps(&mut self, clip: &Clip) -> Option<f64> {
         Some(self.scene.pool.get(&Self::media(clip)?)?.fps.as_f64())
+    }
+
+    /// The analysis key the app's frame source gives: the media item's file
+    /// (M4 step 9). `None` where the file isn't on disk.
+    fn analysis_key(&mut self, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
+        klipp_analysis::assets::asset_key(kind, self.scene.pool.get(&Self::media(clip)?)?)
     }
 }
 

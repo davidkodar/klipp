@@ -130,7 +130,14 @@ pub fn run_ofx_noting(node: NodeId, entry: &OfxNodeParams, input: &[f32], width:
     // from the source the clip shows at those times (its speed, ramp and
     // direction).
     let fps = ctx.fps.max(1.0);
-    let (clip, time, source_at) = (ctx.clip, ctx.clip_time_secs * fps, ctx.source_at);
+    // A frame's time is a whole number of the clip's frames: the product
+    // of its seconds and the rate can land a hair short (28.999…), and a
+    // plug-in that asks for `time + 1` would then name no frame.
+    let time = {
+        let t = ctx.clip_time_secs * fps;
+        if (t - t.round()).abs() < 1e-6 { t.round() } else { t }
+    };
+    let (clip, source_at) = (ctx.clip, ctx.source_at);
     let FrameContext { instances, sources, .. } = ctx;
     let make = || OfxSlot { plugin: entry.plugin.clone(), made: host.instance(&entry.plugin, fps) };
     let slot = instances.slot(clip, node, stamp, make);
@@ -367,6 +374,20 @@ mod tests {
         // Any other plug-in: a redraw and a short step keep it; a seek
         // back or a jump doesn't.
         assert_eq!(made_over("temporal", &[10, 10, 12, 5, 40]), vec![1, 1, 1, 2, 3]);
+    }
+
+    /// A frame's OFX time is a whole number of frames, even where its
+    /// seconds times the rate land a hair short (frame 29 at 25 fps gives
+    /// 28.999…): a temporal plug-in asking for the frames either side is
+    /// handed 28 and 30, not times between frames no source has.
+    #[test]
+    fn a_frames_time_is_a_whole_frame() {
+        assert_ne!(29.0 / 25.0 * 25.0, 29.0, "the product this guards against");
+        let host = Double::default();
+        let mut instances = PluginInstances::default();
+        framed(Some(&host), &mut instances, ClipId::new(), 29, &|t| 1.0 + t, |ctx| run_ofx(NodeId::new_v4(), &entry("temporal"), &picture(), 4, 2, WorkingColorspace::Rec709Linear, 1.0, Some(ctx))).unwrap();
+        let handed = host.handed.lock().unwrap().clone();
+        assert!(handed.contains(&28.0) && handed.contains(&30.0), "{handed:?}");
     }
 
     /// A node keeps its instance across frames; another node, or the same

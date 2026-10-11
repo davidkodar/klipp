@@ -17,6 +17,7 @@
 //! to a pinned one that only shrinks, every family registered, and every
 //! deleted stage gone.
 
+mod analysis;
 pub mod families;
 pub mod fixtures;
 pub mod format;
