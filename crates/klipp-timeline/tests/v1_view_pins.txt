@@ -80,3 +80,22 @@ video_effects 16
 video_effects_enabled 8
 video_param_keyframes 8
 video_param_value 16
+# Group G, the legacy payload (picture revision 5): pinned at its first
+# count. Each revision-5 row lowers its pins; the converter keeps the
+# last uses until the view and the payload are deleted together.
+Legacy 48
+LegacyFlags 21
+ClipRecordV2 31
+LegacyClipAnim 15
+MissingLegacy 5
+SetPayload 24
+SetPayloadAt 16
+legacy 163
+legacy_flags 46
+LEGACY_NODE 54
+LEGACY_GRADE 24
+LEGACY_OPACITY 25
+LEGACY_TRANSFORM 17
+LEGACY_SPEED_RAMP 15
+LEGACY_TEMPORAL_DENOISE 9
+STRUCTURAL 2

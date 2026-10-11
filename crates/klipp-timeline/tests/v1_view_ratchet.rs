@@ -5,9 +5,13 @@
 //! change, so the pins are the live inventory. A symbol whose pin reaches
 //! 0 moves to `GONE`, where any use fails.
 //!
+//! Picture revision 5 deletes the legacy payload the view is read from
+//! (group G): its types, fields and type ids are counted the same way.
+//!
 //! Counted as text: a method as `.name(` or `fn name(`, a type or path as
-//! the whole word, comment lines skipped. An unpinned symbol fails with
-//! its count, to pin.
+//! the whole word, a field as `.name`, comment lines skipped; group G's
+//! forms skip string literals, where `klipp.legacy.node` is a type id and
+//! not a field. An unpinned symbol fails with its count, to pin.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,6 +23,10 @@ enum Form {
     Method,
     /// A type, a path or a constant, as the whole word.
     Word,
+    /// A type as the whole word, outside string literals.
+    Type,
+    /// A field: `.name` outside string literals, not a call.
+    Field,
 }
 
 /// The v1 view, by group (m4-step12-inventory).
@@ -97,6 +105,23 @@ const SYMBOLS: &[(&str, Form)] = &[
     ("unlift", Form::Word),
     ("LEGACY_EFFECT", Form::Word),
     ("LEGACY_OFX", Form::Word),
+    // G: the legacy payload (picture revision 5).
+    ("Legacy", Form::Type),
+    ("LegacyFlags", Form::Type),
+    ("ClipRecordV2", Form::Type),
+    ("LegacyClipAnim", Form::Type),
+    ("MissingLegacy", Form::Type),
+    ("SetPayload", Form::Type),
+    ("SetPayloadAt", Form::Type),
+    ("legacy", Form::Field),
+    ("legacy_flags", Form::Field),
+    ("LEGACY_NODE", Form::Word),
+    ("LEGACY_GRADE", Form::Word),
+    ("LEGACY_OPACITY", Form::Word),
+    ("LEGACY_TRANSFORM", Form::Word),
+    ("LEGACY_SPEED_RAMP", Form::Word),
+    ("LEGACY_TEMPORAL_DENOISE", Form::Word),
+    ("STRUCTURAL", Form::Word),
 ];
 
 /// Symbols at 0, gone: any use fails.
@@ -121,6 +146,25 @@ fn ident(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
+/// Whether byte `at` of `line` is inside a string literal: an odd count
+/// of unescaped quotes before it.
+fn in_string(line: &str, at: usize) -> bool {
+    let mut quotes = 0;
+    let mut escaped = false;
+    for c in line[..at].chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '"' => quotes += 1,
+            _ => {}
+        }
+    }
+    quotes % 2 == 1
+}
+
 /// How often `name` occurs in `line` as `form`.
 fn count(line: &str, name: &str, form: Form) -> usize {
     line.match_indices(name)
@@ -130,6 +174,8 @@ fn count(line: &str, name: &str, form: Form) -> usize {
             match form {
                 Form::Method => after == Some('(') && (before == Some('.') || line[..*at].ends_with("fn ")),
                 Form::Word => !before.is_some_and(ident) && !after.is_some_and(ident),
+                Form::Type => !before.is_some_and(ident) && !after.is_some_and(ident) && !in_string(line, *at),
+                Form::Field => before == Some('.') && !after.is_some_and(ident) && after != Some('(') && !in_string(line, *at),
             }
         })
         .count()
@@ -239,4 +285,16 @@ fn a_method_is_counted_as_a_call_or_a_definition() {
     assert_eq!(count("let builtin_effects = 1;", "builtin_effects", Form::Method), 0);
     assert_eq!(count("use klipp_graph_lift::delift;", "delift", Form::Word), 1);
     assert_eq!(count("fn undelifted()", "delift", Form::Word), 0);
+}
+
+#[test]
+fn a_field_or_type_is_counted_outside_strings() {
+    assert_eq!(count("let l = n.legacy.as_ref();", "legacy", Form::Field), 1);
+    assert_eq!(count("n.legacy_flags = None;", "legacy", Form::Field), 0);
+    assert_eq!(count("c.legacy()", "legacy", Form::Field), 0);
+    assert_eq!(count(r#"const T: &str = "klipp.legacy.node";"#, "legacy", Form::Field), 0);
+    assert_eq!(count(r#"f("a\"b", n.legacy)"#, "legacy", Form::Field), 1);
+    assert_eq!(count("fn node(l: Option<Legacy>) -> Node", "Legacy", Form::Type), 1);
+    assert_eq!(count(r#""name": "Legacy","#, "Legacy", Form::Type), 0);
+    assert_eq!(count("LegacyFlags::default()", "Legacy", Form::Type), 0);
 }
