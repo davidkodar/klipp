@@ -76,7 +76,6 @@ klipp-graph-lift/src/to_v2_tests.rs
 klipp-graph-lift/src/unlift.rs
 klipp-graph-lift/src/v1/modifier.rs
 klipp-graph-lift/tests/effect_entry_readers.rs
-klipp-perf/src/composite.rs
 klipp-project/src/grade_stills.rs
 klipp-project/src/load.rs
 klipp-project/src/mlt_import.rs
