@@ -275,11 +275,13 @@ impl Clip {
             c.picture.effect_ids_mut().ids.insert(at, id);
             c.view_mut().effect_list.builtin_effects_enabled.resize(len, true);
             c.view_mut().effect_list.builtin_effects_enabled.insert(at, true);
-            // Move orphan indices too: leaving one at the old end would collide
-            // with the last occupied slot's animation as that slot moves up.
-            if at < len {
-                c.remap_effect_slots(|i| Some(if i >= at { i + 1 } else { i }));
-            }
+            // Move orphan indices too, an append's included: an orphan at
+            // the old end would otherwise be the new entry's animation, or
+            // collide with the last slot's as that slot moves up (M4 step
+            // 12b).
+            // A key on `usize::MAX` names no slot and stays put (an insert
+            // before the end refuses one, above).
+            c.remap_effect_slots(|i| Some(if i >= at && i != usize::MAX { i + 1 } else { i }));
             Some(id)
         })
     }
