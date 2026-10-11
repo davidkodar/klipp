@@ -111,6 +111,17 @@ impl Sequence {
         }
     }
 
+    /// The track `track`'s own effects and grade, lifted as its paths
+    /// address them (M4 step 12e): the effect nodes, and the grade when it
+    /// has one. A track root's two parts, which one lifted grade can't
+    /// hold, beside [`Self::lift_root_grade`].
+    pub fn lift_track_parts(&self, track: uuid::Uuid) -> Result<(Vec<klipp_graph_format::Node>, Option<Graph>), String> {
+        let track = self.tracks.iter().find(|t| t.id.0 == track).ok_or("no such track")?;
+        let raw = serde_json::to_value(track).map_err(|e| e.to_string())?;
+        let structural = klipp_graph_lift::to_v2::track_to_v2(raw.as_object().ok_or("a track must be an object")?).map_err(|e| e.to_string())?;
+        klipp_graph_lift::splice::track_parts(&structural)
+    }
+
     /// `grade`, as `root` would hold it, lifted as its paths address it:
     /// its nodes at the top, `[node]`.
     pub fn lift_root_grade(&self, root: Root, grade: &NodeGraph) -> Result<Graph, String> {
