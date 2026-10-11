@@ -272,6 +272,9 @@ pub struct NodeGraphV2Panel {
     last_fit_clip: Option<ClipId>,
     last_picture_level: Option<klipp_graph_format::path::NodePath>,
     picture_move_root: Option<klipp_graph_format::path::Root>,
+    /// The grade canvas's open node-drag gesture, by the clip it names
+    /// (#1528).
+    grade_move_root: Option<klipp_graph_format::path::Root>,
     /// Set by the toolbar's "Fit" button or programmatically
     /// (clip switch). Consumed at the top of the next `show()`.
     fit_pending: bool,
@@ -392,6 +395,7 @@ impl Default for NodeGraphV2Panel {
             last_fit_clip: None,
             last_picture_level: None,
             picture_move_root: None,
+            grade_move_root: None,
             fit_pending: false,
             matte_thumbs: std::collections::HashMap::new(),
             output_thumbs: std::collections::HashMap::new(),
@@ -483,10 +487,31 @@ impl NodeGraphV2Panel {
             cmds.push(AppCommand::EndNodeLayoutEdit { root });
         }
         let previous_path = descent_path.clone();
-        cmds.extend(self.show_canvas(ui, selected_node, selected_set, &GradeCanvas(graph), clip_id, theme,
+        // A node drag is one layout gesture, named by the clip the grade is
+        // edited through (the app takes a sequence grade's stand-in to its
+        // root): begun with its first move, ended when the drag ends, and
+        // abandoned by Escape or another clip (#1528).
+        let gesture = klipp_graph_format::path::Root::Clip { clip: clip_id.0 };
+        if let Some(root) = self.grade_move_root.filter(|r| *r != gesture || ui.input(|i| i.key_pressed(egui::Key::Escape))) {
+            self.grade_move_root = None;
+            self.drag_node = None;
+            self.drag_frame = None;
+            cmds.push(AppCommand::AbandonNodeLayoutEdit { root });
+        }
+        let updates = self.show_canvas(ui, selected_node, selected_set, &GradeCanvas(graph), clip_id, theme,
             engine_node_thumbs, engine_node_thumbs_gen, deferred_drops, descent_path,
             breadcrumb_labels, grade_version_names, active_grade_version, clip_time_secs,
-            port_snap_enabled, port_snap_radius_px, solo_node));
+            port_snap_enabled, port_snap_radius_px, solo_node);
+        if self.grade_move_root.is_none() && updates.iter().any(|cmd| matches!(cmd, AppCommand::MoveNode { .. })) {
+            self.grade_move_root = Some(gesture);
+            cmds.push(AppCommand::BeginNodeLayoutEdit { root: gesture });
+        }
+        cmds.extend(updates);
+        if self.drag_node.is_none() && self.drag_frame.is_none() {
+            if let Some(root) = self.grade_move_root.take() {
+                cmds.push(AppCommand::EndNodeLayoutEdit { root });
+            }
+        }
         if *descent_path != previous_path { self.fit_pending = true; }
         cmds
     }
@@ -5185,11 +5210,21 @@ pub(crate) mod canvas_command_tests {
         let (corrector, rect) = h.card(NodeKind::Corrector);
         let at = rect.center();
         h.frame(vec![egui::Event::PointerMoved(at), Harness::button(at, egui::PointerButton::Primary, true)]);
-        for offset in [egui::vec2(50.0, 30.0), egui::vec2(100.0, 60.0)] {
+        // The drag is one layout gesture (#1528): begun with its first move,
+        // ended on release, named by the clip.
+        let gesture = klipp_graph_format::path::Root::Clip { clip: h.clip.0 };
+        for (i, offset) in [egui::vec2(50.0, 30.0), egui::vec2(100.0, 60.0)].into_iter().enumerate() {
             let commands = h.frame(vec![egui::Event::PointerMoved(at + offset)]);
-            assert!(matches!(commands.as_slice(), [AppCommand::MoveNode { clip_id, node_id, delta_x, delta_y }] if *clip_id == h.clip && *node_id == corrector && (*delta_x - 50.0).abs() < 0.01 && (*delta_y - 30.0).abs() < 0.01), "{commands:?}");
+            let moves = if i == 0 {
+                assert!(matches!(commands.first(), Some(AppCommand::BeginNodeLayoutEdit { root }) if *root == gesture), "{commands:?}");
+                &commands[1..]
+            } else {
+                &commands[..]
+            };
+            assert!(matches!(moves, [AppCommand::MoveNode { clip_id, node_id, delta_x, delta_y }] if *clip_id == h.clip && *node_id == corrector && (*delta_x - 50.0).abs() < 0.01 && (*delta_y - 30.0).abs() < 0.01), "{commands:?}");
         }
-        h.frame(vec![Harness::button(at + egui::vec2(100.0, 60.0), egui::PointerButton::Primary, false)]);
+        let commands = h.frame(vec![Harness::button(at + egui::vec2(100.0, 60.0), egui::PointerButton::Primary, false)]);
+        assert!(matches!(commands.as_slice(), [AppCommand::EndNodeLayoutEdit { root }] if *root == gesture), "{commands:?}");
         assert_eq!(serde_json::to_value(&h.graph).unwrap(), before);
 
         // Supply a second editable node as a fixture; commands are deliberately

@@ -234,6 +234,75 @@ impl crate::state::AppState {
         }
     }
 
+    /// A grade canvas's node drag (`MoveNode`, a frame's movement) placed
+    /// by path at the level the canvas shows (#1528): `None` for any other
+    /// command, else whether the grade changed. Inside the canvas's layout
+    /// gesture it joins that gesture's one step.
+    pub(super) fn canvas_move(&mut self, cmd: &AppCommand) -> Option<bool> {
+        let AppCommand::MoveNode { clip_id, node_id, delta_x, delta_y } = cmd else { return None };
+        let descent = self.graph_descent_path.clone();
+        let level = match self.grade_level(*clip_id, &descent) {
+            Ok(level) => level,
+            Err(why) => {
+                self.toast.show(why);
+                return Some(false);
+            }
+        };
+        let at = self.level_body(&level).ok().and_then(|b| b.ui.positions.get(node_id).cloned());
+        let coord = |k: &str| at.as_ref().and_then(|p| p.get(k)).and_then(serde_json::Value::as_f64).unwrap_or(0.0) as f32;
+        let position = (coord("x") + delta_x, coord("y") + delta_y);
+        let addr = NodePath::new(level.root, level.nodes.iter().copied().chain([*node_id]));
+        self.path_command(&AppCommand::SetNodePositionAt { addr, position })
+    }
+
+    /// A grade canvas's Auto Layout (`AutoLayoutNodeGraph`) of the level it
+    /// shows, placed by path as one step (#1528): `None` for any other
+    /// command, else whether the grade changed.
+    pub(super) fn canvas_auto_layout(&mut self, cmd: &AppCommand) -> Option<bool> {
+        let AppCommand::AutoLayoutNodeGraph { clip_id } = cmd else { return None };
+        let descent = self.graph_descent_path.clone();
+        let laid = || -> Result<Vec<GraphOp>, String> {
+            let level = self.grade_level(*clip_id, &descent)?;
+            let seq = &self.sequences[self.active_sequence_idx];
+            let grade = match level.root {
+                Root::Clip { .. } => seq.all_clips().find(|c| c.id == *clip_id).ok_or("no such clip")?.grade(),
+                root => match seq.root_grade(root)? {
+                    Some(g) => g,
+                    None => &self.root_grade_start.as_ref().filter(|(r, _)| *r == root).ok_or("this grade doesn't exist yet")?.1,
+                },
+            };
+            let shown = crate::inspector::grade_view::v1_level(grade, &descent).ok_or("Auto-layout: invalid descent path")?;
+            let mut placed: Vec<_> = klipp_nodes::auto_layout(shown).into_iter().collect();
+            placed.sort_by_key(|(id, _)| shown.nodes.iter().position(|n| n.id == *id));
+            placed
+                .into_iter()
+                .map(|(id, p)| {
+                    let position = serde_json::to_value(p).map_err(|e| e.to_string())?;
+                    Ok(GraphOp::SetNodeMeta { path: NodePath::new(level.root, level.nodes.iter().copied().chain([id])), label: None, position: Some(position) })
+                })
+                .collect()
+        };
+        let ops = match laid() {
+            Ok(ops) if ops.is_empty() => return Some(false),
+            Ok(ops) => ops,
+            Err(why) => {
+                self.toast.show(why);
+                return Some(false);
+            }
+        };
+        match self.apply_path_ops(&ops, "Auto Layout") {
+            Ok(()) => {
+                self.toast.show("Auto-layout applied (Ctrl+Z to revert)");
+                Some(true)
+            }
+            Err(why) => {
+                tracing::warn!(%why, "auto layout refused");
+                self.toast.show(why);
+                Some(false)
+            }
+        }
+    }
+
     /// A grade canvas's structure command (#1476) applied as its path ops,
     /// one step: `None` when `cmd` isn't one, else whether the grade
     /// changed. The selection follows a Group (the new compound) and an
@@ -308,12 +377,12 @@ impl crate::state::AppState {
         }
         let result = match cmd {
             AppCommand::SetNodePositionAt { position, .. } if !position.0.is_finite() || !position.1.is_finite() => Err("Node positions must be finite".into()),
-            AppCommand::BeginNodeLayoutEdit { root } => self.begin_node_layout_edit(*root).map(|()| false),
+            AppCommand::BeginNodeLayoutEdit { root } => self.begin_node_layout_edit(self.layout_root(*root)).map(|()| false),
             AppCommand::EndNodeLayoutEdit { root } => {
-                self.end_node_layout_edit(*root);
+                self.end_node_layout_edit(self.layout_root(*root));
                 Ok(false)
             }
-            AppCommand::AbandonNodeLayoutEdit { root } => Ok(self.abandon_node_layout_edit(*root)),
+            AppCommand::AbandonNodeLayoutEdit { root } => Ok(self.abandon_node_layout_edit(self.layout_root(*root))),
             AppCommand::BeginParamEditAt { addr, key } => self.begin_param_edit_at(addr, key).map(|()| false),
             AppCommand::EndParamEditAt { addr, key } => {
                 self.end_param_edit_at(addr, key);
@@ -583,7 +652,7 @@ impl crate::state::AppState {
             return drag_key(&addr, &key) != open;
         }
         match cmd {
-            AppCommand::BeginNodeLayoutEdit { root } | AppCommand::EndNodeLayoutEdit { root } | AppCommand::AbandonNodeLayoutEdit { root } => layout_drag(*root) != open,
+            AppCommand::BeginNodeLayoutEdit { root } | AppCommand::EndNodeLayoutEdit { root } | AppCommand::AbandonNodeLayoutEdit { root } => layout_drag(self.layout_root(*root)) != open,
             AppCommand::SetNodePositionAt { addr, .. } => layout_drag(addr.root) != open,
             AppCommand::BeginParamEditAt { addr, key } | AppCommand::EndParamEditAt { addr, key } | AppCommand::AbandonParamEditAt { addr, key } => drag_key(addr, key) != open,
             // An edit of the dragged parameter, its value or its keys, is
@@ -716,6 +785,13 @@ impl crate::state::AppState {
     fn apply_root_path_ops(&mut self, ops: &[GraphOp], label: &str) -> Result<(), String> {
         let root = ops[0].path().root;
         let start = self.root_grade_start.as_ref().filter(|(r, _)| *r == root).map(|(_, g)| g.clone());
+        // A node placed inside an open layout gesture: the gesture's step
+        // holds it (#1528).
+        if matches!(ops, [GraphOp::SetNodeMeta { label: None, position: Some(_), .. }]) && self.active_history().is_dragging(&layout_drag(root)) {
+            self.sequences[self.active_sequence_idx].apply_root_grade_ops(ops, start.as_ref())?;
+            self.dirty = true;
+            return Ok(());
+        }
         let mix_key: ParamKey = Self::NODE_MIX_DRAG_KEY.into();
         let node_key = ParamKey::from("");
         let made = self.pending_corrector_ops(ops);
@@ -751,7 +827,27 @@ impl crate::state::AppState {
         }
     }
 
+    /// The root a layout gesture names: a sequence grade's stand-in (the
+    /// clip the grade canvas edits it through) stands for its own root
+    /// (#1528).
+    fn layout_root(&self, root: Root) -> Root {
+        let seq = &self.sequences[self.active_sequence_idx];
+        match root {
+            Root::Clip { clip } => super::timeline_grade::GradeStandIn::of(seq, ClipId(clip)).map_or(root, |which| which.root(seq)),
+            _ => root,
+        }
+    }
+
     fn begin_node_layout_edit(&mut self, root: Root) -> Result<(), String> {
+        // A sequence grade's canvas: one step over its grade (#1528).
+        if is_sequence_grade(root) {
+            let before = self.sequences[self.active_sequence_idx].root_grade(root)?.cloned().map(Box::new);
+            if self.active_history().is_any_drag_in_progress() { self.close_open_drag(); }
+            self.active_history_mut().begin_drag(layout_drag(root), HistoryEntry {
+                command: EditCommand::SetRootGrade { description: "Move Nodes", root, old: before.clone(), new: before },
+            });
+            return Ok(());
+        }
         let Root::Clip { clip } = root else { return Err("Only a clip's canvas can be arranged".into()) };
         let clip_id = ClipId(clip);
         let before = self.picture_of(clip_id).ok_or_else(|| format!("No clip {clip} on this sequence"))?;
@@ -771,6 +867,10 @@ impl crate::state::AppState {
                 before.restore_picture(&edit.before);
                 before.picture_v2().is_ok_and(|picture| picture == now)
             }),
+            Some(EditCommand::SetRootGrade { root, old, .. }) => {
+                let now = self.sequence().root_grade(*root).ok().flatten().map(|g| serde_json::to_value(g).ok());
+                now == old.as_deref().map(|g| serde_json::to_value(g).ok())
+            }
             _ => false,
         };
         if unchanged { self.active_history_mut().abandon_pending_drag(); } else { self.close_open_drag(); }
@@ -778,6 +878,11 @@ impl crate::state::AppState {
 
     fn abandon_node_layout_edit(&mut self, root: Root) -> bool {
         if !self.active_history().is_dragging(&layout_drag(root)) { return false; }
+        if let Some(EditCommand::SetRootGrade { root, old, .. }) = self.active_history().pending_old_entry_ref().map(|e| e.command.clone()) {
+            self.active_history_mut().abandon_pending_drag();
+            self.dirty = true;
+            return self.sequences[self.active_sequence_idx].set_root_grade(root, old.map(|g| *g)).is_ok();
+        }
         let before = match self.active_history().pending_old_entry_ref().map(|e| &e.command) {
             Some(EditCommand::PictureEdit { clip_id, edit, .. }) => Some((*clip_id, edit.before.clone())),
             _ => None,
