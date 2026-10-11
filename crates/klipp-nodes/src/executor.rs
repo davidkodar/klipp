@@ -4412,7 +4412,9 @@ impl GraphExecutor {
         // The node's budget, its effects' together: the blend reads the
         // next frame, the denoiser the frame either side.
         let budget = effects.iter().map(|e| match e {
-            klipp_effects::BuiltinEffect::SpeedRamp { .. } => 1,
+            // The next frame, and the one after when the frame shown was
+            // the one before the time.
+            klipp_effects::BuiltinEffect::SpeedRamp { .. } => 2,
             klipp_effects::BuiltinEffect::TemporalDenoise { .. } => klipp_effects::temporal_denoise::NEIGHBOURS,
             _ => 0,
         }).sum();
@@ -4424,8 +4426,23 @@ impl GraphExecutor {
             // presentation times. Without either time, or with no next
             // frame, the frame as it is.
             if let klipp_effects::BuiltinEffect::SpeedRamp { .. } = effect {
-                let Some(pts) = ctx.source_pts else { continue };
-                match ctx.sources.next(ctx.source_secs) {
+                let Some(mut pts) = ctx.source_pts else { continue };
+                // The frame after the one shown. A blend reads half a media
+                // frame early, so a source that gives the frame at or before
+                // a time can show the one before the frame at the time: then
+                // that next frame is the one to blend from, and the one after
+                // it the one to blend toward, whichever way the source rounds.
+                let mut next = ctx.sources.next(pts);
+                if let Neighbour::Frame(on) = &next {
+                    if let Some(on_pts) = on.pts.filter(|p| *p > pts + 1e-6 && *p <= ctx.source_secs + 1e-9) {
+                        if on.rgba.len() == out.len() {
+                            out.clone_from(&on.rgba);
+                            pts = on_pts;
+                            next = ctx.sources.next(pts);
+                        }
+                    }
+                }
+                match next {
                     Neighbour::Frame(next) => {
                         if let Some(next_pts) = next.pts.filter(|p| *p > pts + 1e-6) {
                             let weight = (((ctx.source_secs - pts) / (next_pts - pts)).clamp(0.0, 1.0)) as f32;

@@ -45,10 +45,19 @@ fn shown(source_secs: f64) -> i64 {
 }
 
 /// The ramp on its frame grid, with the media frames it has none of, and
-/// those it gives at twice the size.
+/// those it gives at twice the size; from media frame `step` on, a jump of
+/// 0.3, so a blend between the wrong two frames shows.
 struct Ramp {
     missing: Vec<i64>,
     large: Vec<i64>,
+    step: Option<i64>,
+}
+
+impl Ramp {
+    /// Media frame `n`'s grey.
+    fn level(&self, n: i64) -> f32 {
+        grey(n) + if self.step.is_some_and(|s| n >= s) { 0.3 } else { 0.0 }
+    }
 }
 
 impl Source for Ramp {
@@ -58,7 +67,7 @@ impl Source for Ramp {
             return None;
         }
         let (w, h) = if self.large.contains(&n) { (W * 2, H * 2) } else { (W, H) };
-        let v = grey(n);
+        let v = self.level(n);
         Some(KnownFrame { linear: [v, v, v, 1.0].repeat((w * h) as usize), width: w, height: h, pts: Some(n as f64 / FPS as f64) })
     }
 }
@@ -114,12 +123,12 @@ fn expected(clip: &Clip, source: &Ramp, frame: i64, blend_mode: u32) -> Vec<f32>
     let elapsed = frame as f64 / FPS as f64;
     let at = clip.source_secs_at(elapsed, FPS as f64);
     let n = shown(at);
-    let current = grey(n);
+    let current = source.level(n);
     let blends = blend_mode == 1 && !clip.is_reversed() && clip.speed_at(elapsed).abs() < 1.0 - 1e-6;
     let next = source.frame(MediaId::nil(), (n + 1) as f64 / FPS as f64);
     let weight = (at * FPS as f64 - n as f64).clamp(0.0, 1.0) as f32;
     match next {
-        Some(_) if blends && weight > 1e-4 => flat(current + (grey(n + 1) - current) * weight),
+        Some(_) if blends && weight > 1e-4 => flat(current + (source.level(n + 1) - current) * weight),
         _ => flat(current),
     }
 }
@@ -150,7 +159,7 @@ fn declines(route: Route, scene: (Arc<Scene>, Clip), source: Ramp, frame: i64, l
 }
 
 pub fn run(report: &mut Report) {
-    let whole = || Ramp { missing: vec![], large: vec![] };
+    let whole = || Ramp { missing: vec![], large: vec![], step: None };
     for route in [Route::Viewer, Route::Export] {
         let at = |o| [key(Some(route), o)];
         // At half speed, every other frame falls halfway between two media
@@ -194,19 +203,26 @@ pub fn run(report: &mut Report) {
         });
         report.case(&format!("blend {route:?}: no next frame"), at(Obligation::Outcome(Outcome::NeighbourMissing)), || {
             // Frame 41 at half speed shows media frame 70, between 70 and 71.
-            holds(route, true, scene(50, 100, Run::At(0.5), 1), Ramp { missing: vec![71], large: vec![] }, &[41], 1)?;
+            holds(route, true, scene(50, 100, Run::At(0.5), 1), Ramp { missing: vec![71], large: vec![], step: None }, &[41], 1)?;
             // Declined as a frame missing, which an export refuses; on a
             // media frame's own time the next isn't needed, so nothing.
-            declines(route, scene(50, 100, Run::At(0.5), 1), Ramp { missing: vec![71], large: vec![] }, 41, Some("neighbour frame missing"))?;
-            declines(route, scene(50, 100, Run::At(0.5), 1), Ramp { missing: vec![71], large: vec![] }, 40, None)
+            declines(route, scene(50, 100, Run::At(0.5), 1), Ramp { missing: vec![71], large: vec![], step: None }, 41, Some("neighbour frame missing"))?;
+            declines(route, scene(50, 100, Run::At(0.5), 1), Ramp { missing: vec![71], large: vec![], step: None }, 40, None)
+        });
+        // A time on a media frame's own shows that frame whole, a time
+        // between two mixes those two: with a step in the source after
+        // frame 70, a blend between the wrong pair shows (the frame before
+        // mixed toward the frame after looks right on an even ramp alone).
+        report.case(&format!("blend {route:?}: the frames either side of the time"), at(Obligation::ExpectedPixels), || {
+            holds(route, true, scene(50, 100, Run::At(0.5), 1), Ramp { missing: vec![], large: vec![], step: Some(71) }, &[39, 40, 41, 42], 1)
         });
         // A next frame of another size is fitted to the render size, as the
         // current one is, and blended: a source whose frames change size
         // doesn't stutter (ruling 10-09). A flat grey fits to itself.
         report.case(&format!("blend {route:?}: a next frame of another size"), at(Obligation::ExpectedPixels), || {
-            holds(route, true, scene(50, 100, Run::At(0.5), 1), Ramp { missing: vec![], large: vec![71] }, &[41], 1)?;
+            holds(route, true, scene(50, 100, Run::At(0.5), 1), Ramp { missing: vec![], large: vec![71], step: None }, &[41], 1)?;
             // Fitted and blended: nothing declined.
-            declines(route, scene(50, 100, Run::At(0.5), 1), Ramp { missing: vec![], large: vec![71] }, 41, None)
+            declines(route, scene(50, 100, Run::At(0.5), 1), Ramp { missing: vec![], large: vec![71], step: None }, 41, None)
         });
     }
 }
