@@ -222,6 +222,15 @@ fn declines_differ(recorded: &str, now: &str) -> (Vec<String>, Vec<String>) {
     (r.difference(&n).cloned().collect(), n.difference(&r).cloned().collect())
 }
 
+/// A snapshot with the saved colour settings, independent of process defaults.
+fn saved_snapshot(seq: &klipp_timeline::Sequence, sequences: &[klipp_timeline::Sequence], pool: &klipp_media::MediaPool, colour: &klipp_project::ColorSettings) -> Result<SequenceSnapshot, klipp_render::RenderError> {
+    let lut = colour.global_lut_path.clone().filter(|_| colour.global_lut_enabled);
+    let mut snapshot = SequenceSnapshot::from_sequence_with_all(seq, sequences, pool, &settings(), lut, false, colour.working_colorspace)?;
+    snapshot.grade_encoding = colour.grade_encoding;
+    snapshot.video.global_lut_opacity = colour.global_lut_opacity;
+    Ok(snapshot)
+}
+
 /// Render project `dir`'s frames into `out`, from a copy under `scratch`.
 fn render_project(dir: &Path, out: &Path, scratch: &Path) -> Result<Rendered, String> {
     let tmp = scratch.join(format!("klipp-pixel-check-{}", std::process::id()));
@@ -235,7 +244,7 @@ fn render_project(dir: &Path, out: &Path, scratch: &Path) -> Result<Rendered, St
     let result = loaded.and_then(|(missing, (sequences, pool, colour, ..))| {
         let mut done = Rendered { offline: pool.all().filter(|m| m.offline).count(), missing, ..Rendered::default() };
         for (si, seq) in sequences.iter().enumerate() {
-            let snapshot = SequenceSnapshot::from_sequence_with_all(seq, &sequences, &pool, &settings(), colour.global_lut_path.clone(), false, colour.working_colorspace).map_err(|e| format!("snapshot: {e:?}"))?;
+            let snapshot = saved_snapshot(seq, &sequences, &pool, &colour).map_err(|e| format!("snapshot: {e:?}"))?;
             let seq_dir = out.join(format!("{si}"));
             done.merge(render_sequence(&snapshot, &seq_dir, &si.to_string(), &tmp.with_extension("probe.mp4"), &Options::default(), &default_renderer)?);
         }
@@ -571,7 +580,7 @@ fn resolve_sweep(args: &[String], scratch: &Path) -> i32 {
         };
         let before = clips;
         for seq in &sequences {
-            let Ok(snapshot) = SequenceSnapshot::from_sequence_with_all(seq, &sequences, &pool, &settings(), colour.global_lut_path.clone(), false, colour.working_colorspace) else {
+            let Ok(snapshot) = saved_snapshot(seq, &sequences, &pool, &colour) else {
                 failed.push(format!("{i}: snapshot"));
                 continue;
             };
@@ -763,6 +772,55 @@ mod tests {
         m["items"][0]["path"] = json!(format!("../../src/{name}.avi"));
         std::fs::write(&manifest, m.to_string()).unwrap();
         Some(dir)
+    }
+
+    #[test]
+    fn saved_colour_settings_change_the_picture_the_checkpoint_checks() {
+        use klipp_timeline::GradeAccess;
+        let root = std::env::temp_dir().join(format!("klipp-pixel-colour-{}", uuid::Uuid::new_v4()));
+        let project = relative_project(&root, "colour", false).expect("FFmpeg is required");
+        let (mut sequences, pool, ..) = klipp_project::load_project_strict(&project).unwrap();
+        sequences[0].tracks[0].clips[0].edit_grade(|g| {
+            let id = g.ensure_corrector();
+            let params = &mut g.nodes.iter_mut().find(|n| n.id == id).unwrap().params;
+            params.gain_master = Some(0.15);
+            params.gamma_x = Some(0.07);
+        });
+        let lut = root.join("invert-red.cube");
+        std::fs::write(&lut, "LUT_3D_SIZE 2\n1 0 0\n0 0 0\n1 1 0\n0 1 0\n1 0 1\n0 0 1\n1 1 1\n0 1 1\n").unwrap();
+        let base_colour = klipp_project::ColorSettings {
+            working_colorspace: klipp_core::WorkingColorspace::AcesCG,
+            grade_encoding: klipp_core::GradeEncoding::Bt1886,
+            ..Default::default()
+        };
+        let draw = |name: &str, colour: klipp_project::ColorSettings| {
+            let dir = root.join(format!("{name}.klipp"));
+            klipp_project::save_project_with_color(&dir, &sequences, &pool, &colour, None, None, "").unwrap();
+            let out = root.join(format!("{name}-frames"));
+            render_project(&dir, &out, &root.join("scratch")).unwrap();
+            out.join("0/0-cpu.png")
+        };
+        let base = draw("base", base_colour.clone());
+        let disabled = draw("disabled", klipp_project::ColorSettings {
+            global_lut_path: Some(lut.clone()), global_lut_enabled: false, global_lut_opacity: 1.0,
+            ..base_colour.clone()
+        });
+        assert_eq!(differ(&base, &disabled).unwrap().0, 0, "a disabled saved LUT must not change the picture");
+        let zero = draw("zero", klipp_project::ColorSettings {
+            global_lut_path: Some(lut.clone()), global_lut_enabled: true, global_lut_opacity: 0.0,
+            ..base_colour.clone()
+        });
+        assert_eq!(differ(&base, &zero).unwrap().0, 0, "a saved LUT at zero strength must not change the picture");
+        let full = draw("full", klipp_project::ColorSettings {
+            global_lut_path: Some(lut), global_lut_enabled: true, global_lut_opacity: 1.0,
+            ..base_colour.clone()
+        });
+        assert!(differ(&base, &full).unwrap().0 > 1, "the LUT control must visibly change the picture");
+        let encoded = draw("encoded", klipp_project::ColorSettings {
+            grade_encoding: klipp_core::GradeEncoding::AcesCct, ..base_colour
+        });
+        assert!(differ(&base, &encoded).unwrap().0 > 1, "saved grade encoding must reach the renderer in ACEScg");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn index_of(out: &Path) -> Value {
