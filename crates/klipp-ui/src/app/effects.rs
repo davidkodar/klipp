@@ -14,30 +14,18 @@ impl KlippApp {
             return true;
         }
         match cmd {
-            // OFX effects
+            // OFX effects, each edit through the clip's picture (M4 step
+            // 12c-5), one undo step; a parameter's ticks record none, as
+            // the cards send them with no drag around them.
             AppCommand::AddEffect { clip_id, ref plugin_name } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.edit_ofx_effects(|effects| effects.push(klipp_plugin::AppliedEffect {
-                            plugin_name: plugin_name.clone(),
-                            enabled: true,
-                            param_values: std::collections::HashMap::new(),
-                            ..Default::default()
-                        }));
-                        break;
-                    }
-                }
+                let effect = klipp_plugin::AppliedEffect { plugin_name: plugin_name.clone(), enabled: true, ..Default::default() };
+                self.ofx_edits(*clip_id, &[klipp_timeline::OfxEdit::Add(&effect)], "Add Plug-in", true);
                 self.sync_sequence_to_engine();
                 true
             }
             AppCommand::RemoveEffect { clip_id, effect_index } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if *effect_index < clip.ofx_effects().len() {
-                            clip.edit_ofx_effects(|effects| effects.remove(*effect_index));
-                        }
-                        break;
-                    }
+                if !self.ofx_edits(*clip_id, &[klipp_timeline::OfxEdit::Remove(*effect_index)], "Remove Plug-in", true) {
+                    return true;
                 }
                 // A plug-in's node is named by its place in the list, so the
                 // ones after the removed one are renamed: a compare on one of
@@ -66,56 +54,23 @@ impl KlippApp {
                 true
             }
             AppCommand::SetEffectEnabled { clip_id, effect_index, enabled } => {
-                let mut old_enabled: Option<bool> = None;
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.edit_ofx_effect(*effect_index, |effect| {
-                            old_enabled = Some(effect.enabled);
-                            effect.enabled = *enabled;
-                        });
-                        break;
-                    }
-                }
-                if let Some(prev) = old_enabled {
-                    if prev != *enabled {
-                        self.state.push_history(crate::history::EditCommand::SetOFXEffectEnabled {
-                                clip_id: *clip_id,
-                                effect_index: *effect_index,
-                                old_enabled: prev,
-                                new_enabled: *enabled,
-                            });
-                        self.state.dirty = true;
-                    }
+                let was = self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == *clip_id).and_then(|c| c.ofx_effects().get(*effect_index)).map(|e| e.enabled);
+                if was.is_some_and(|on| on != *enabled) {
+                    self.ofx_edits(*clip_id, &[klipp_timeline::OfxEdit::SetEnabled(*effect_index, *enabled)], "Toggle Plug-in", true);
                 }
                 self.sync_sequence_to_engine();
                 true
             }
             AppCommand::ReorderEffect { clip_id, from_index, to_index } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        let from = *from_index;
-                        let to = *to_index;
-                        if from < clip.ofx_effects().len() && to < clip.ofx_effects().len() {
-                            clip.edit_ofx_effects(|effects| {
-                                let effect = effects.remove(from);
-                                effects.insert(to, effect);
-                            });
-                        }
-                        break;
-                    }
+                let len = self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == *clip_id).map_or(0, |c| c.ofx_effects().len());
+                if *from_index < len && *to_index < len && from_index != to_index {
+                    self.ofx_edits(*clip_id, &[klipp_timeline::OfxEdit::Move { from: *from_index, to: *to_index }], "Reorder Plug-ins", true);
                 }
                 self.sync_sequence_to_engine();
                 true
             }
             AppCommand::SetEffectParam { clip_id, effect_index, ref param_name, ref value } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.edit_ofx_effect(*effect_index, |effect| {
-                            effect.param_values.insert(param_name.clone(), value.clone());
-                        });
-                        break;
-                    }
-                }
+                self.ofx_edits(*clip_id, &[klipp_timeline::OfxEdit::SetParam(*effect_index, param_name, value)], "Edit Plug-in", false);
                 self.sync_sequence_to_engine();
                 true
             }
@@ -379,6 +334,9 @@ impl KlippApp {
 
             // Parameter modifiers (behaviors)
             AppCommand::AddModifier { clip_id, ref param, ref modifier } => {
+                if self.modifier_edit(*clip_id, param, Some("Add Modifier"), |stack| stack.modifiers.push(modifier.clone())) {
+                    return true;
+                }
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         with_modifiers(clip, param, true, |stack| stack.modifiers.push(modifier.clone()));
@@ -391,6 +349,13 @@ impl KlippApp {
                 true
             }
             AppCommand::RemoveModifier { clip_id, ref param, modifier_index } => {
+                if self.modifier_edit(*clip_id, param, Some("Remove Modifier"), |stack| {
+                    if *modifier_index < stack.modifiers.len() {
+                        stack.modifiers.remove(*modifier_index);
+                    }
+                }) {
+                    return true;
+                }
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         let emptied = with_modifiers(clip, param, false, |stack| {
@@ -413,6 +378,14 @@ impl KlippApp {
                 true
             }
             AppCommand::UpdateModifier { clip_id, ref param, modifier_index, ref modifier } => {
+                // A slider's ticks, which record nothing, as before.
+                if self.modifier_edit(*clip_id, param, None, |stack| {
+                    if let Some(m) = stack.modifiers.get_mut(*modifier_index) {
+                        *m = modifier.clone();
+                    }
+                }) {
+                    return true;
+                }
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         with_modifiers(clip, param, false, |stack| {
@@ -429,6 +402,13 @@ impl KlippApp {
                 true
             }
             AppCommand::ToggleModifier { clip_id, ref param, modifier_index } => {
+                if self.modifier_edit(*clip_id, param, Some("Toggle Modifier"), |stack| {
+                    if let Some(m) = stack.modifiers.get_mut(*modifier_index) {
+                        toggle(m);
+                    }
+                }) {
+                    return true;
+                }
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         with_modifiers(clip, param, false, |stack| {
@@ -485,89 +465,105 @@ impl KlippApp {
     }
 }
 
-/// A clip's built-in effects as an undo step sees them.
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct ClipEffectsState {
-    pub(super) effects: Vec<klipp_effects::BuiltinEffect>,
-    pub(super) enabled: Vec<bool>,
-    /// Each effect's id, so an undo or redo gives it back (#1373).
-    pub(super) ids: Vec<klipp_timeline::EffectId>,
-    pub(super) speed: f64,
-    pub(super) timeline_out: klipp_core::RationalTime,
-}
-
-impl ClipEffectsState {
-    pub(super) fn of(clip: &klipp_timeline::Clip) -> Self {
-        Self {
-            effects: clip.builtin_effects().to_vec(),
-            enabled: clip.builtin_effects_enabled().to_vec(),
-            ids: clip.effect_id_list(),
-            speed: clip.speed,
-            timeline_out: clip.timeline_out,
+impl KlippApp {
+    /// `edits` of the clip's OFX plug-in list made through its picture
+    /// (M4 step 12c-5): one `PictureEdit` undo step named `description`,
+    /// or none when `record` is false. A refusal (a picture-truth clip,
+    /// no plug-in at a place) is said in a toast and changes nothing.
+    /// The plug-ins' nodes are named by their places until #1500, so a
+    /// reader of a plug-in's node reads it again after the edit.
+    fn ofx_edits(&mut self, clip_id: klipp_core::ClipId, edits: &[klipp_timeline::OfxEdit], description: &'static str, record: bool) -> bool {
+        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let Some(clip) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) else { return false };
+        match clip.apply_ofx_edits(edits) {
+            Ok(done) => {
+                self.state.dirty = true;
+                if record {
+                    self.state.push_history(EditCommand::PictureEdit { description, clip_id, edit: Box::new(done) });
+                }
+                true
+            }
+            Err(why) => {
+                tracing::warn!(?edits, %why, "plug-in edit refused");
+                self.state.toast.show(format!("{description}: {why}"));
+                false
+            }
         }
     }
 }
 
-/// The history edits that take a clip from `before` to `after`: the
-/// effects list when it changed, and the speed and length when a speed
-/// ramp moved them. Adding or removing a built-in effect recorded
-/// nothing, so it could not be undone (#391).
-pub(super) fn effects_change_edits(clip_id: klipp_core::ClipId, before: &ClipEffectsState, after: &ClipEffectsState) -> Vec<EditCommand> {
-    let mut edits = Vec::new();
-    if before.effects != after.effects || before.enabled != after.enabled {
-        edits.push(EditCommand::SetBuiltinEffects {
-            clip_id,
-            old_effects: before.effects.clone(),
-            old_enabled: before.enabled.clone(),
-            new_effects: after.effects.clone(),
-            new_enabled: after.enabled.clone(),
-            old_ids: before.ids.clone(),
-            new_ids: after.ids.clone(),
-        });
-    }
-    if before.speed != after.speed || before.timeline_out != after.timeline_out {
-        edits.push(EditCommand::SetClipSpeed {
-            clip_id,
-            old_speed: before.speed,
-            new_speed: after.speed,
-            old_timeline_out: before.timeline_out,
-            new_timeline_out: after.timeline_out,
-        });
-    }
-    edits
-}
-
-/// Whether `last` is the add that appended effect `index` to `clip_id`.
-pub(super) fn is_add_of_effect(last: &EditCommand, clip_id: klipp_core::ClipId, index: usize) -> bool {
-    matches!(
-        last,
-        EditCommand::SetBuiltinEffects { clip_id: c, old_effects, new_effects, .. }
-            if *c == clip_id && new_effects.len() == old_effects.len() + 1 && index + 1 == new_effects.len()
-    )
-}
-
-/// Fold a finished drag of effect `index` into the history's last edit
-/// when that edit is the add that made the effect, with the effect as
-/// the drag found it: the add then records the effect as the drag left
-/// it, and one undo takes both back.
-pub(super) fn fold_drag_into_add(
-    last: &mut EditCommand,
-    clip_id: klipp_core::ClipId,
-    index: usize,
-    dragged_from: &klipp_effects::BuiltinEffect,
-    dragged_to: &klipp_effects::BuiltinEffect,
-) -> bool {
-    match last {
-        EditCommand::SetBuiltinEffects { clip_id: c, old_effects, new_effects, .. }
-            if *c == clip_id
-                && new_effects.len() == old_effects.len() + 1
-                && index + 1 == new_effects.len()
-                && new_effects[index] == *dragged_from =>
-        {
-            new_effects[index] = dragged_to.clone();
-            true
+impl KlippApp {
+    /// `param`'s modifier stack on the clip's picture, edited by `edit` and
+    /// set back by path (M4 step 12c-5): one `SetAnim` on the node or the
+    /// placement that animates it, its keys kept, one undo step named
+    /// `label`, or none for a slider's tick (`None`). `false` for a
+    /// parameter the picture doesn't animate (an audio one, a node inside
+    /// a grade), which keeps the old route; a refusal is said in a toast.
+    fn modifier_edit(&mut self, clip_id: klipp_core::ClipId, param: &klipp_core::ParamId, label: Option<&str>, edit: impl FnOnce(&mut klipp_core::ModifierStack)) -> bool {
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) else { return false };
+        let Some((path, key, anim)) = modifier_target(clip, param) else { return false };
+        let mut stack: klipp_core::ModifierStack = anim.as_ref().and_then(|a| a.modifiers.clone()).and_then(|m| serde_json::from_value(m).ok()).unwrap_or_default();
+        edit(&mut stack);
+        let keys = anim.map(|a| a.keys).unwrap_or_default();
+        let modifiers = (!stack.modifiers.is_empty()).then(|| serde_json::to_value(&stack).ok()).flatten();
+        let anim = (!keys.is_empty() || modifiers.is_some()).then_some(klipp_graph_format::Animation { keys, modifiers });
+        let op = klipp_graph_lift::ops::GraphOp::SetAnim { path, key, anim };
+        let done = match label {
+            Some(label) => self.state.apply_path_ops(&[op], label),
+            None => {
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let Some(clip) = seq.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) else { return false };
+                clip.apply_picture_ops(&[op]).map(|_| self.state.dirty = true)
+            }
+        };
+        if let Err(why) = done {
+            self.state.toast.show(format!("{}: {why}", label.unwrap_or("Edit Modifier")));
         }
-        _ => false,
+        self.sync_sequence_to_engine();
+        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+        true
+    }
+}
+
+/// Where `param` is animated on `clip`'s picture: the path and key of its
+/// animation, and the animation it has now: an effect's parameter (by
+/// index or by its node) on the effect's node. `None` for anything else,
+/// the clip's placement and opacity among them, whose modifiers aren't
+/// set by path yet.
+fn modifier_target(clip: &klipp_timeline::Clip, param: &klipp_core::ParamId) -> Option<(klipp_graph_format::path::NodePath, klipp_graph_format::ParamKey, Option<klipp_graph_format::Animation>)> {
+    use klipp_core::ParamId as P;
+    use klipp_graph_format::path::{NodePath, Root};
+    use klipp_graph_format::ParamKey;
+    let lifted = clip.picture_v2().ok()?;
+    let p = &lifted.picture;
+    let node = |id: klipp_graph_format::NodeId, key: ParamKey| {
+        let n = p.graph.nodes.iter().find(|n| n.id == id)?;
+        let anim = n.anim.get(&key).cloned();
+        Some((NodePath::new(Root::Clip { clip: clip.id.0 }, [id]), key, anim))
+    };
+    match param {
+        P::Node { addr, key } if addr.root == (Root::Clip { clip: clip.id.0 }) && addr.nodes.len() == 1 => node(addr.nodes[0], key.clone()),
+        P::Effect { effect_index, param_name } => {
+            let id = clip.effect_node_at(false, *effect_index)?;
+            let n = p.graph.nodes.iter().find(|n| n.id == id)?;
+            let tag = klipp_graph_lift::effect_params::tag(n)?;
+            node(id, ParamKey::from(klipp_graph_lift::names::anim_key(tag, param_name)))
+        }
+        _ => None,
+    }
+}
+
+/// A modifier switched on or off.
+fn toggle(m: &mut klipp_core::Modifier) {
+    match m {
+        klipp_core::Modifier::Oscillate { enabled, .. }
+        | klipp_core::Modifier::Wiggle { enabled, .. }
+        | klipp_core::Modifier::Throw { enabled, .. }
+        | klipp_core::Modifier::Ramp { enabled, .. }
+        | klipp_core::Modifier::Loop { enabled, .. }
+        | klipp_core::Modifier::PingPong { enabled, .. }
+        | klipp_core::Modifier::Clamp { enabled, .. } => *enabled = !*enabled,
     }
 }
 
@@ -686,62 +682,6 @@ mod effect_toggle_tests {
         // Redo
         enabled = new;
         assert!(!enabled);
-    }
-}
-
-#[cfg(test)]
-mod effects_undo_tests {
-    use super::*;
-
-    fn crop(left: f32) -> klipp_effects::BuiltinEffect {
-        klipp_effects::BuiltinEffect::Crop { left, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 }
-    }
-
-    fn state(effects: Vec<klipp_effects::BuiltinEffect>, speed: f64) -> ClipEffectsState {
-        let enabled = vec![true; effects.len()];
-        ClipEffectsState { effects, enabled, ids: Vec::new(), speed, timeline_out: klipp_core::RationalTime { value: 300, rate: 30 } }
-    }
-
-    #[test]
-    fn adding_an_effect_is_one_undoable_edit() {
-        let id = klipp_core::ClipId::new();
-        let edits = effects_change_edits(id, &state(vec![], 1.0), &state(vec![crop(0.1)], 1.0));
-        assert_eq!(edits.len(), 1);
-        assert_eq!(edits[0].label(), "Add Effect");
-    }
-
-    #[test]
-    fn removing_one_says_so_and_nothing_changed_records_nothing() {
-        let id = klipp_core::ClipId::new();
-        let edits = effects_change_edits(id, &state(vec![crop(0.1)], 1.0), &state(vec![], 1.0));
-        assert_eq!(edits[0].label(), "Remove Effect");
-        assert!(effects_change_edits(id, &state(vec![crop(0.1)], 1.0), &state(vec![crop(0.1)], 1.0)).is_empty());
-    }
-
-    #[test]
-    fn a_speed_ramp_brings_its_speed_with_it() {
-        let id = klipp_core::ClipId::new();
-        let mut after = state(vec![crop(0.1)], 2.0);
-        after.timeline_out = klipp_core::RationalTime { value: 150, rate: 30 };
-        let edits = effects_change_edits(id, &state(vec![], 1.0), &after);
-        assert_eq!(edits.len(), 2);
-        assert!(matches!(edits[1], EditCommand::SetClipSpeed { new_speed, .. } if new_speed == 2.0));
-    }
-
-    /// The gizmo's first drag: the add of an identity effect, then a
-    /// drag of it, becomes one add of the dragged effect.
-    #[test]
-    fn a_drag_of_the_effect_just_added_folds_into_the_add() {
-        let id = klipp_core::ClipId::new();
-        let mut last = effects_change_edits(id, &state(vec![], 1.0), &state(vec![crop(0.0)], 1.0)).remove(0);
-        assert!(fold_drag_into_add(&mut last, id, 0, &crop(0.0), &crop(0.3)));
-        let EditCommand::SetBuiltinEffects { new_effects, old_effects, .. } = &last else { panic!() };
-        assert!(old_effects.is_empty());
-        assert_eq!(new_effects, &vec![crop(0.3)]);
-        // Not another clip's, not another effect, not one that was changed since.
-        assert!(!fold_drag_into_add(&mut last.clone(), klipp_core::ClipId::new(), 0, &crop(0.3), &crop(0.5)));
-        assert!(!fold_drag_into_add(&mut last.clone(), id, 1, &crop(0.3), &crop(0.5)));
-        assert!(!fold_drag_into_add(&mut last.clone(), id, 0, &crop(0.9), &crop(0.5)));
     }
 }
 

@@ -3613,12 +3613,55 @@ impl PlayheadFollow {
 /// What Cut and Copy put on the clipboard (#458, #845).
 pub use crate::clip_clipboard::ClipboardContent;
 
+/// A built-in effect as a clip's picture holds it, for Paste Attributes
+/// (M4 step 12c-5): the effect, whether it's on, and its animations by key
+/// (keys and modifier stacks).
+#[derive(Debug, Clone)]
+pub struct CopiedEffect {
+    pub effect: klipp_effects::BuiltinEffect,
+    pub enabled: bool,
+    pub anims: std::collections::BTreeMap<klipp_graph_format::ParamKey, klipp_graph_format::Animation>,
+}
+
+impl CopiedEffect {
+    /// `clip`'s built-in effects as its picture holds them, in list order.
+    pub fn of(clip: &klipp_timeline::Clip) -> Vec<Self> {
+        let Ok(lifted) = clip.picture_v2() else { return Vec::new() };
+        (0..)
+            .map_while(|i| clip.effect_node_at(false, i))
+            .filter_map(|id| {
+                let n = lifted.picture.graph.nodes.iter().find(|n| n.id == id)?;
+                // Its values in its map, as the renderer reads them.
+                let mut held = n.clone();
+                klipp_graph_lift::effect_params::into_memory(&mut held).ok()?;
+                Some(Self { effect: klipp_graph_lift::effect_params::effect_of(&held).ok()?, enabled: n.enabled, anims: n.anim.clone() })
+            })
+            .collect()
+    }
+}
+
+/// The placement and opacity lanes a paste carries.
+const LANES: [&str; 5] = ["pos_x", "pos_y", "scale", "rotation", "opacity"];
+
+/// `clip`'s placement and opacity lanes as its picture holds them.
+fn placement_anims(clip: &klipp_timeline::Clip) -> std::collections::BTreeMap<&'static str, klipp_graph_format::Animation> {
+    let Ok(lifted) = clip.picture_v2() else { return Default::default() };
+    let p = &lifted.picture;
+    LANES
+        .iter()
+        .filter_map(|key| {
+            let anim = if *key == "opacity" { p.opacity_anim.clone() } else { p.placement_anim.get(&klipp_graph_format::ParamKey::from(*key)).cloned() };
+            Some((*key, anim?))
+        })
+        .collect()
+}
+
 /// Snapshot of a clip's attributes for Paste Attributes.
 #[derive(Debug, Clone)]
 pub struct AttributesClipboard {
-    /// Built-in effects chain (GPU/CPU).
-    pub builtin_effects: Vec<klipp_effects::BuiltinEffect>,
-    pub builtin_effects_enabled: Vec<bool>,
+    /// The built-in effects as the clip's picture holds them, in list
+    /// order, each with its flag, keys and modifier stacks (M4 step 12c-5).
+    pub picture_effects: Vec<CopiedEffect>,
     /// OFX effects chain.
     pub effects: Vec<klipp_plugin::AppliedEffect>,
     /// Node-based color grade.
@@ -3641,15 +3684,11 @@ pub struct AttributesClipboard {
     pub audio_effects: Vec<klipp_core::AudioEffectInstance>,
     /// Audio-effect keyframes (mirror of effect_keyframes for the audio chain).
     pub audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
-    /// Transform keyframes.
-    pub opacity_keyframes: Vec<klipp_core::Keyframe>,
-    pub transform_pos_x_keyframes: Vec<klipp_core::Keyframe>,
-    pub transform_pos_y_keyframes: Vec<klipp_core::Keyframe>,
-    pub transform_scale_keyframes: Vec<klipp_core::Keyframe>,
-    pub transform_rotation_keyframes: Vec<klipp_core::Keyframe>,
-    /// Effect keyframes.
-    pub effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
-    /// Param modifiers (behaviors).
+    /// The placement and opacity lanes as the clip's picture holds them,
+    /// each its keys and modifier stack, by key (M4 step 12c-5).
+    pub placement_anims: std::collections::BTreeMap<&'static str, klipp_graph_format::Animation>,
+    /// Param modifiers (behaviors): the clip's own that aren't picture
+    /// animation (its audio's) are pasted from here.
     pub param_modifiers: std::collections::HashMap<klipp_core::ParamId, klipp_core::ModifierStack>,
     /// Speed.
     pub speed: f64,
@@ -3671,8 +3710,7 @@ impl AttributesClipboard {
     /// What Copy Attributes takes from `clip`.
     pub fn of(clip: &klipp_timeline::Clip) -> Self {
         Self {
-            builtin_effects: clip.builtin_effects().to_vec(),
-            builtin_effects_enabled: clip.builtin_effects_enabled().to_vec(),
+            picture_effects: CopiedEffect::of(clip),
             effects: clip.ofx_effects().to_vec(),
             node_graph: clip.grade().clone(),
             grade_mix_held: clip.holds_grade_mix(),
@@ -3688,12 +3726,7 @@ impl AttributesClipboard {
             gain_keyframes: clip.gain_keyframes.clone(),
             audio_effects: clip.audio_effects.clone(),
             audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
-            opacity_keyframes: clip.opacity_keyframes().to_vec(),
-            transform_pos_x_keyframes: clip.transform_pos_x_keyframes().to_vec(),
-            transform_pos_y_keyframes: clip.transform_pos_y_keyframes().to_vec(),
-            transform_scale_keyframes: clip.transform_scale_keyframes().to_vec(),
-            transform_rotation_keyframes: clip.transform_rotation_keyframes().to_vec(),
-            effect_keyframes: clip.effect_keyframes().clone(),
+            placement_anims: placement_anims(clip),
             param_modifiers: clip.param_modifiers().clone(),
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
@@ -3707,11 +3740,66 @@ impl AttributesClipboard {
     /// is the footage's, not part of the grade. A clip without one (a
     /// Rec.709 shot, audio, a title, the timeline grade's stand-in) gets
     /// the grade alone.
+    /// The copied effects in place of `clip`'s, through its picture (M4
+    /// step 12c-5): its built-in list replaced in one edit, each pasted
+    /// effect with its flag, then its keys and modifier stacks set by path
+    /// on its new node; its plug-ins replaced the same way. A picture that
+    /// refuses either is left as it was, and the refusal logged.
+    fn paste_effects(&self, clip: &mut klipp_timeline::Clip) {
+        use klipp_graph_format::path::{NodePath, Root};
+        use klipp_timeline::{EffectEdit, OfxEdit};
+        let listed = |clip: &klipp_timeline::Clip, ofx: bool| (0..).take_while(|i| clip.effect_node_at(ofx, *i).is_some()).count();
+        let mut edits: Vec<EffectEdit> = (0..listed(clip, false)).map(|_| EffectEdit::Remove(0)).collect();
+        edits.extend(self.picture_effects.iter().map(|e| EffectEdit::Add(&e.effect)));
+        edits.extend(self.picture_effects.iter().enumerate().filter(|(_, e)| !e.enabled).map(|(i, _)| EffectEdit::SetEnabled(i, false)));
+        match clip.apply_effect_edits(&edits) {
+            Some(Ok(_)) => {
+                let mut ops = Vec::new();
+                for (i, e) in self.picture_effects.iter().enumerate() {
+                    let Some(node) = clip.effect_node_at(false, i) else { continue };
+                    for (key, anim) in &e.anims {
+                        ops.push(klipp_graph_lift::ops::GraphOp::SetAnim { path: NodePath::new(Root::Clip { clip: clip.id.0 }, [node]), key: key.clone(), anim: Some(anim.clone()) });
+                    }
+                }
+                if let Err(why) = clip.apply_picture_ops(&ops) {
+                    tracing::warn!("paste: clip {:?}: the effects' keys: {why}", clip.id);
+                }
+            }
+            Some(Err(why)) => tracing::warn!("paste: clip {:?}: the effects: {why}", clip.id),
+            None => tracing::warn!("paste: clip {:?}: the effects can't be pasted through its picture", clip.id),
+        }
+        let mut plugins: Vec<OfxEdit> = (0..listed(clip, true)).map(|_| OfxEdit::Remove(0)).collect();
+        plugins.extend(self.effects.iter().map(OfxEdit::Add));
+        if let Err(why) = clip.apply_ofx_edits(&plugins) {
+            tracing::warn!("paste: clip {:?}: the plug-ins: {why}", clip.id);
+        }
+    }
+
+    /// The copied placement and opacity lanes' keys in place of `clip`'s,
+    /// by path on its placement (M4 step 12c-5); a lane the source didn't
+    /// key is cleared.
+    fn paste_lanes(&self, clip: &mut klipp_timeline::Clip) {
+        let Some(at) = clip.placement_path() else { return };
+        let ops: Vec<_> = LANES
+            .iter()
+            // The keys alone: a lane's modifiers aren't set with its keys,
+            // and travel with the clip's own (`paste_clip_modifiers`).
+            .map(|key| {
+                let anim = self.placement_anims.get(key).filter(|a| !a.keys.is_empty()).map(|a| klipp_graph_format::Animation { keys: a.keys.clone(), modifiers: None });
+                klipp_graph_lift::ops::GraphOp::SetAnim { path: at.clone(), key: klipp_graph_format::ParamKey::from(*key), anim }
+            })
+            .collect();
+        if let Err(why) = clip.apply_picture_ops(&ops) {
+            tracing::warn!("paste: clip {:?}: the placement: {why}", clip.id);
+        }
+    }
+
     /// Replace `clip`'s own modifiers (opacity, position and the rest)
     /// with these, leaving its effects' alone: those travel with the
     /// effects (`restore_effects_state`).
     fn paste_clip_modifiers(&self, clip: &mut klipp_timeline::Clip) {
-        let own = |id: &klipp_core::ParamId| !matches!(id, klipp_core::ParamId::Effect { .. });
+        use klipp_core::ParamId as P;
+        let own = |id: &P| !matches!(id, P::Effect { .. } | P::Node { .. });
         clip.edit_param_modifiers(|v| v.retain(|id, _| !own(id)));
         clip.edit_param_modifiers(|v| v.extend(self.param_modifiers.iter().filter(|(id, _)| own(id)).map(|(id, m)| (id.clone(), m.clone()))));
     }
@@ -3721,13 +3809,7 @@ impl AttributesClipboard {
             // The effects with their flags, keyframes and modifiers, as new
             // entries on this clip. An effect's modifiers go with it, as its
             // keyframes do: a pasted wiggle was lost (#992).
-            clip.restore_effects_state(klipp_timeline::EffectsState::fresh(
-                self.builtin_effects.clone(),
-                self.builtin_effects_enabled.clone(),
-                self.effect_keyframes.clone(),
-                self.param_modifiers.iter().map(|(id, m)| (id.clone(), m.clone())),
-            ));
-            clip.set_ofx_effects(self.effects.clone());
+            self.paste_effects(clip);
         }
         if what.color_grade {
             clip.set_grade(clip.grade().with_grade_of(&self.node_graph));
@@ -3747,11 +3829,7 @@ impl AttributesClipboard {
             clip.audio_effect_keyframes = self.audio_effect_keyframes.clone();
         }
         if what.transform {
-            clip.edit_opacity_keyframes(|v| *v = self.opacity_keyframes.clone());
-            clip.edit_transform_pos_x_keyframes(|v| *v = self.transform_pos_x_keyframes.clone());
-            clip.edit_transform_pos_y_keyframes(|v| *v = self.transform_pos_y_keyframes.clone());
-            clip.edit_transform_scale_keyframes(|v| *v = self.transform_scale_keyframes.clone());
-            clip.edit_transform_rotation_keyframes(|v| *v = self.transform_rotation_keyframes.clone());
+            self.paste_lanes(clip);
             self.paste_clip_modifiers(clip);
         }
         if what.speed {
@@ -5863,8 +5941,10 @@ mod paste_speed_tests {
         let tc = |f| RationalTime::from_frames(f, 24);
         let wiggle = ParamId::Effect { effect_index: 0, param_name: "amount".into() };
         let mut source = TestClip::of(klipp_timeline::Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48))).effect(klipp_effects::BuiltinEffect::Vibrance { amount: 0.3 }).build();
-        source.edit_param_modifiers(|v| v.insert(wiggle.clone(), ModifierStack::default()));
-        source.edit_param_modifiers(|v| v.insert(ParamId::Scale, ModifierStack::default()));
+        // A real stack each: the picture keeps no empty one.
+        let stack = || ModifierStack { modifiers: vec![klipp_core::Modifier::Oscillate { amplitude: 1.0, frequency: 1.0, phase: 0.0, waveform: Default::default(), blend: Default::default(), enabled: true }] };
+        source.edit_param_modifiers(|v| v.insert(wiggle.clone(), stack()));
+        source.edit_param_modifiers(|v| v.insert(ParamId::Scale, stack()));
         let copied = AttributesClipboard::of(&source);
         let none = PasteChoice { effects: false, color_grade: false, audio: false, transform: false, speed: false };
 
@@ -5879,6 +5959,40 @@ mod paste_speed_tests {
         copied.paste_onto(&mut target, PasteChoice { transform: true, ..none });
         assert!(target.param_modifiers().contains_key(&ParamId::Scale));
         assert!(!target.param_modifiers().contains_key(&wiggle), "an effect modifier came without its effect");
+    }
+
+    /// A paste replaces the target's effects with the source's as its
+    /// picture holds them (M4 step 12c-5): each effect with its flag and
+    /// its keys; and the transform paste puts the source's lanes in place
+    /// of the target's.
+    #[test]
+    fn pasting_effects_brings_their_keys_and_flags_through_the_picture() {
+        use klipp_timeline::test_clip;
+        let tc = |f| RationalTime::from_frames(f, 24);
+        let clip = || klipp_timeline::Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
+        let source = TestClip::of(clip())
+            .effect(klipp_effects::BuiltinEffect::Vibrance { amount: 0.3 })
+            .key(0, "amount", 0.0, 0.1)
+            .key(0, "amount", 1.0, 0.9)
+            .effect(klipp_effects::BuiltinEffect::Gamma { gamma: 1.2 })
+            .off()
+            .lane("pos_x", 0.0, 10.0)
+            .build();
+        let copied = AttributesClipboard::of(&source);
+        let none = PasteChoice { effects: false, color_grade: false, audio: false, transform: false, speed: false };
+
+        let mut target = TestClip::of(clip()).effect(klipp_effects::BuiltinEffect::Invert { mix: 1.0 }).lane("pos_x", 0.5, 99.0).build();
+        copied.paste_onto(&mut target, PasteChoice { effects: true, ..none });
+        assert_eq!(test_clip::effects(&target), test_clip::effects(&source), "the target's effects are replaced by the source's");
+        assert_eq!(test_clip::enabled(&target), vec![true, false], "each with its flag");
+        let pasted = crate::state::CopiedEffect::of(&target);
+        let keys = |e: &crate::state::CopiedEffect| e.anims.values().map(|a| a.keys.len()).sum::<usize>();
+        assert_eq!(keys(&pasted[0]), 2, "the effect's keys came with it");
+
+        copied.paste_onto(&mut target, PasteChoice { transform: true, ..none });
+        let lane = crate::state::placement_anims(&target);
+        let pos_x = lane.get("pos_x").expect("the source's lane");
+        assert_eq!(pos_x.keys.len(), 1, "the source's lane replaced the target's: {pos_x:?}");
     }
 }
 

@@ -93,20 +93,16 @@ pub fn copy_to(cmd: &AppCommand, primary: &Clip, other: &mut Clip) -> bool {
             // The same type of effect on the other clip, the first on its
             // spine (M3 step 4), wherever its list holds it.
             let Some(kind) = effect_kind(effect) else { return false };
-            match first_on_the_spine(other, &kind) {
-                Some(id) => other.replace_effect(id, effect.clone()),
-                None => false,
-            }
+            // Through the other clip's picture (M4 step 12c-5).
+            let Some(at) = first_on_the_spine(other, &kind).and_then(|id| other.index_of(id)) else { return false };
+            matches!(other.apply_effect_edits(&[klipp_timeline::EffectEdit::Update(at, effect)]), Some(Ok(_)))
         }
         AppCommand::SetEffectParam { effect_index, param_name, value, .. } => {
             let Some(plugin) = primary.ofx_effects().get(*effect_index).map(|e| e.plugin_name.clone()) else { return false };
-            other.edit_ofx_effects(|effects| match effects.iter_mut().find(|e| e.plugin_name == plugin) {
-                Some(e) => {
-                    e.param_values.insert(param_name.clone(), value.clone());
-                    true
-                }
-                None => false,
-            })
+            // The first plug-in of the same kind on the other clip, through
+            // its picture (M4 step 12c-5).
+            let Some(at) = other.ofx_effects().iter().position(|e| e.plugin_name == plugin) else { return false };
+            other.apply_ofx_edits(&[klipp_timeline::OfxEdit::SetParam(at, param_name, value)]).is_ok()
         }
         AppCommand::UpdateAudioEffectParam { effect_index, param_name, value, .. } => {
             let Some(kind) = primary.audio_effects.get(*effect_index).map(|e| e.effect_type.clone()) else { return false };
