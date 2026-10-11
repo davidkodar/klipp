@@ -1638,7 +1638,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_add_node",
              "Add a colour node to a clip's grade graph. Kind is a NodeKind name, \
               e.g. ColorBalance, Corrector, RGBCurves, Qualifier, Mask, MaskCutout, \
-              LayerMixer; an unknown one is refused with the list. Replies with the \
+              LayerMixer, or ofx:<identifier> for an OFX plug-in; an unknown one is refused with the list. Replies with the \
               new node's node_id. A new node is unconnected — wire it with klipp_connect_nodes.",
              json!({
                  "clip_id": { "type": "string" },
