@@ -41,6 +41,7 @@ impl OfxNodeHost for OfxNodes {
             budget: if d.temporal { NEIGHBOUR_CEILING } else { 0 },
             sequential_render: d.sequential_render,
             unsafe_threads: d.unsafe_threads,
+            schema: d.schema,
         })
     }
 

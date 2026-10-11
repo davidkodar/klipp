@@ -1956,6 +1956,10 @@ pub struct OfxDescribed {
     pub sequential_render: bool,
     /// Its render thread safety is "unsafe".
     pub unsafe_threads: bool,
+    /// A stamp of its version and parameters (name and type): the same
+    /// plug-in loaded under another schema has another, so an instance
+    /// made under one is never run under the other.
+    pub schema: u64,
 }
 
 /// The most other frames [`OfxPluginInstance::frames_needed`] names: the
@@ -2008,6 +2012,16 @@ impl OfxHostRuntime {
             temporal: p.temporal,
             sequential_render: p.sequential_render,
             unsafe_threads: p.unsafe_threads,
+            schema: {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                p.version.hash(&mut h);
+                for d in &p.param_descriptors {
+                    d.name.hash(&mut h);
+                    format!("{:?}", d.param_type).hash(&mut h);
+                }
+                h.finish()
+            },
         })
     }
 

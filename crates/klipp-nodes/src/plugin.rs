@@ -40,6 +40,9 @@ pub struct OfxDescription {
     pub sequential_render: bool,
     /// Its render thread safety is "unsafe".
     pub unsafe_threads: bool,
+    /// A stamp of its version and parameters: an instance made under one
+    /// schema is never run under another.
+    pub schema: u64,
 }
 
 /// The OFX host as a node runs it.
@@ -85,6 +88,8 @@ fn filter_context() -> bool {
 /// couldn't be made (kept, so a refusal isn't asked again every frame).
 struct OfxSlot {
     plugin: String,
+    /// The schema the instance was made under ([`OfxDescription::schema`]).
+    schema: u64,
     made: Result<Box<dyn OfxInstance>, Refusal>,
 }
 
@@ -139,7 +144,7 @@ pub fn run_ofx_noting(node: NodeId, entry: &OfxNodeParams, input: &[f32], width:
     };
     let (clip, source_at) = (ctx.clip, ctx.source_at);
     let FrameContext { instances, sources, .. } = ctx;
-    let make = || OfxSlot { plugin: entry.plugin.clone(), made: host.instance(&entry.plugin, fps) };
+    let make = || OfxSlot { plugin: entry.plugin.clone(), schema: description.schema, made: host.instance(&entry.plugin, fps) };
     let slot = instances.slot(clip, node, stamp, make);
     // An instance is made at its clip's rate and for its plug-in: another
     // rate, or a node now running another plug-in, is another instance,
@@ -151,14 +156,17 @@ pub fn run_ofx_noting(node: NodeId, entry: &OfxNodeParams, input: &[f32], width:
     // any other for a short step on too. A seek back or a jump ahead
     // starts it fresh, as an export reaching that frame from the clip's
     // start in order would not otherwise draw it.
+    // A new size, another source (the clip's media or in-point), or a
+    // node switched off since starts it fresh too, as a frei0r node's does.
     let continues = |last: &SlotStamp| {
         let on = stamp.frame - last.frame;
-        match description.sequential_render {
+        let step = match description.sequential_render {
             true => (0..=1).contains(&on),
             false => (0..=crate::frame_context::CONTINUATION_FRAMES).contains(&on),
-        }
+        };
+        step && (last.width, last.height) == (stamp.width, stamp.height) && last.source == stamp.source && last.enabled
     };
-    if slot.last.is_some_and(|last| last.fps != stamp.fps || !continues(&last)) || slot.instance.plugin != entry.plugin {
+    if slot.last.is_some_and(|last| last.fps != stamp.fps || !continues(&last)) || slot.instance.plugin != entry.plugin || slot.instance.schema != description.schema {
         *slot.instance = make();
     }
     let instance = slot.instance.made.as_mut().map_err(|r| r.clone())?;
@@ -216,7 +224,7 @@ mod tests {
             let budget = if plugin == "temporal" { 2 } else { 0 };
             let sequential_render = plugin == "sequential";
             match plugin {
-                "channels" | "temporal" | "transition" | "failing" | "sequential" => Ok(OfxDescription { filter, budget, sequential_render, unsafe_threads: false }),
+                "channels" | "temporal" | "transition" | "failing" | "sequential" => Ok(OfxDescription { filter, budget, sequential_render, unsafe_threads: false, schema: 0 }),
                 _ => Err(Refusal::Missing),
             }
         }

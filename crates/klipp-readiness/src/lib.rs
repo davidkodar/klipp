@@ -18,10 +18,12 @@
 //! deleted stage gone.
 
 mod analysis;
+pub mod budget;
 pub mod families;
 pub mod fixtures;
 pub mod format;
 mod frame_blend;
+mod legacy_chain;
 mod ofx;
 pub mod old_stage;
 pub mod route;

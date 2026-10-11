@@ -19,7 +19,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     let mut host = OfxHostRuntime::new();
     let found = host.discover_plugins_in(&[PathBuf::from(&args[0])]);
-    if found != 5 || !host.plugin_infos().iter().any(|p| p.name == args[1]) {
+    if found != 6 || !host.plugin_infos().iter().any(|p| p.name == args[1]) {
         return Err(format!("required fixture missing: {} (discovered {found})", args[1]).into());
     }
     let effect = AppliedEffect { plugin_name: args[1].clone(), enabled: true, ..Default::default() };

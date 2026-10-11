@@ -88,7 +88,7 @@ pub const ALL: &[FamilyEntry] = &[
     FamilyEntry { family: Family::RollingShutter, require: require_rolling_shutter, run: crate::analysis::run_rolling_shutter },
     FamilyEntry { family: Family::Stabilisation, require: require_stabilisation, run: crate::analysis::run_stabilisation },
     FamilyEntry { family: Family::Deflicker, require: require_deflicker, run: crate::analysis::run_deflicker },
-    FamilyEntry { family: Family::LegacyChain, require: require_legacy_chain, run: none_yet },
+    FamilyEntry { family: Family::LegacyChain, require: require_legacy_chain, run: crate::legacy_chain::run },
     FamilyEntry { family: Family::Format, require: require_format, run: super::format::run },
 ];
 

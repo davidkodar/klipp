@@ -55,9 +55,26 @@ pub fn frei0r(kind: u32, stem: &str) -> PathBuf {
 /// The OFX fixture bundle (its four plug-ins, `org.klipp.fixture.*`), in a
 /// folder that holds nothing else: what `Scene::plugin_dirs` names.
 pub fn ofx() -> PathBuf {
-    let dir = scratch().join("ofx");
+    ofx_at("ofx", &[])
+}
+
+/// The OFX fixture bundle built as version 2 (one parameter more): the
+/// same plug-ins under another schema, in a folder of its own.
+pub fn ofx_v2() -> PathBuf {
+    ofx_at("ofx-v2", &["-DKLIPP_FIXTURE_VERSION=2".to_owned()])
+}
+
+/// An empty plug-in folder: a host searching it finds none.
+pub fn no_plugins() -> PathBuf {
+    let dir = scratch().join("no-plugins");
+    std::fs::create_dir_all(&dir).expect("the empty folder");
+    dir
+}
+
+fn ofx_at(name: &str, defines: &[String]) -> PathBuf {
+    let dir = scratch().join(name);
     let binary = dir.join("KlippFixture.ofx.bundle/Contents/Linux-x86-64/KlippFixture.ofx");
     std::fs::create_dir_all(binary.parent().expect("the bundle's folder")).expect("the bundle");
-    compile(&crates().join("klipp-plugin/tests/fixtures/ofx/fixture.c"), &[], &binary);
+    compile(&crates().join("klipp-plugin/tests/fixtures/ofx/fixture.c"), defines, &binary);
     dir
 }
