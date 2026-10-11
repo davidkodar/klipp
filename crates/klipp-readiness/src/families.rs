@@ -110,4 +110,24 @@ pub const DELETED: &[(Family, &[&str])] = &[
     (Family::Deflicker, &["deflicker_data", "deflicker_gains"]),
     (Family::Stabilisation, &[".stabilization_data", "stabilization_data:", "smoothed_trajectory"]),
     (Family::RollingShutter, &["fn prepare_temporal_effects(", "fn motion_frame("]),
+    // Step 11: the GPU's legacy effect loop (a clip's or layer's effects
+    // run outside a plan, recorded runs of their own, the unrecorded layer
+    // passes), replaced by effects as plan nodes; Equalize keeps its one
+    // pass, a break of the chain.
+    (
+        Family::LegacyChain,
+        &[
+            "fn run_effects_in_chain(",
+            "fn run_effects_in_chain_from(",
+            "struct RecordedRun",
+            "fn submit_recorded(",
+            "fn record_into(",
+            "fn record_spills_into(",
+            "fn stack_layer_apply_effects(",
+            "fn effects_on_output(",
+            "fn download_chain_slot_linear(",
+            "fn layer_corners(",
+            "fn layer_fill(",
+        ],
+    ),
 ];

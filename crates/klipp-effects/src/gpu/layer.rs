@@ -110,78 +110,6 @@ struct FillParams {
 }
 
 impl GpuEffectsPipeline {
-    /// [`crate::layer::fill_bars`] on resident buffers: the picture's box
-    /// found as the corners find it, the fill built an eighth the size,
-    /// blurred there, and laid under the picture at full size (#680).
-    /// Always writes `output`; with no bars it is the input.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn layer_fill(
-        &self,
-        input: &wgpu::Buffer,
-        output: &wgpu::Buffer,
-        width: u32,
-        height: u32,
-        blur: f32,
-        zoom: f32,
-        darken: f32,
-    ) {
-        let (sw, sh) = crate::layer::fill_size(width, height);
-        let bounds = self.buf_c.as_ref().unwrap();
-        let (small, spare) = (&self.layer_gpu.scratch[0], &self.layer_gpu.scratch[1]);
-        self.write_params(&Params::new(width, height));
-        self.dispatch(&self.layer_gpu.rows, input, &self.layer_gpu.scratch[1], height.div_ceil(WORKGROUP_SIZE));
-        self.dispatch(&self.layer_gpu.bounds, &self.layer_gpu.scratch[1], bounds, 1);
-        let fill = FillParams { width, height, small_w: sw, small_h: sh, zoom, darken: darken.clamp(0.0, 1.0), pad: [0; 2] };
-        self.write_params(&fill);
-        self.dispatch_pair(&self.layer_gpu.fill_small, input, bounds, small, (sw * sh).div_ceil(WORKGROUP_SIZE));
-        let sigma = blur.max(0.0) * sw as f32;
-        if sigma >= 0.5 {
-            for radius in crate::blur::boxes_for_gaussian(sigma) {
-                if radius == 0 {
-                    continue;
-                }
-                self.write_params(&BlurParams { width: sw, height: sh, radius: radius as i32, _pad: 0 });
-                self.dispatch(&self.blur_h_pipeline, small, spare, (sw * sh).div_ceil(WORKGROUP_SIZE));
-                self.dispatch(&self.blur_v_pipeline, spare, small, (sw * sh).div_ceil(WORKGROUP_SIZE));
-            }
-        }
-        self.write_params(&fill);
-        self.dispatch_pair(&self.layer_gpu.fill_over, input, small, output, (width * height).div_ceil(WORKGROUP_SIZE));
-    }
-
-    pub(super) fn layer_corners(
-        &self,
-        input: &wgpu::Buffer,
-        output: &wgpu::Buffer,
-        width: u32,
-        height: u32,
-        radius: f32,
-        feather: f32,
-    ) {
-        let mut params = Params::new(width, height);
-        params.radius = radius.clamp(0.0, 0.5);
-        params.feather = feather.max(0.0);
-        self.write_params(&params);
-        let rows = &self.layer_gpu.scratch[0];
-        let bounds = self.buf_c.as_ref().unwrap();
-        // One lane scans each row, then one lane reduces the row boxes.
-        // No frame download, global atomics, or per-pixel frame scan.
-        self.dispatch(
-            &self.layer_gpu.rows,
-            input,
-            rows,
-            height.div_ceil(WORKGROUP_SIZE),
-        );
-        self.dispatch(&self.layer_gpu.bounds, rows, bounds, 1);
-        self.dispatch_pair(
-            &self.layer_gpu.corners,
-            input,
-            bounds,
-            output,
-            (width * height).div_ceil(WORKGROUP_SIZE),
-        );
-    }
-
     pub(super) fn layer_spills(
         &self,
         input: &wgpu::Buffer,
@@ -269,7 +197,10 @@ impl GpuEffectsPipeline {
     /// Slots `record_layer_fill` claims at most.
     pub(super) const FILL_SLOTS: usize = 5;
 
-    /// [`Self::layer_fill`], recorded.
+    /// [`crate::layer::fill_bars`] on resident buffers, recorded: the
+    /// picture's box found as the corners find it, the fill built an eighth
+    /// the size, blurred there, and laid under the picture at full size
+    /// (#680).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_layer_fill(
         &self,
@@ -306,7 +237,9 @@ impl GpuEffectsPipeline {
         self.record_pair_n(rec, &self.layer_gpu.fill_over, src, small, dst, fill, (width * height).div_ceil(WORKGROUP_SIZE));
     }
 
-    /// [`Self::layer_corners`], recorded: one slot.
+    /// [`crate::layer::rounded_corners`] on resident buffers, recorded:
+    /// one slot. One lane scans each row, then one lane reduces the row
+    /// boxes; no frame download.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_layer_corners(
         &self,

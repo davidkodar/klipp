@@ -66,8 +66,8 @@ fn the_legacy_effects_route_is_not_in_any_crates_source() {
 
 #[test]
 fn a_name_is_matched_whole() {
-    assert!(has_word("fn run_effects_in_chain(", "run_effects_in_chain"));
-    assert!(!has_word("fn run_effects_in_chain_from(", "run_effects_in_chain"));
+    assert!(has_word("self.run_effects_in_chain(", "run_effects_in_chain"));
+    assert!(!has_word("self.run_effects_in_chain_from(", "run_effects_in_chain"));
     assert!(!has_word("set_legacy_effects_off", "set_legacy_effects"));
     assert!(has_word("// legacy_effects", "legacy_effects"));
 }
