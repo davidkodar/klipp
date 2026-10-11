@@ -596,6 +596,14 @@ fn decode_clip_audio(
     let _ = decoder.send_eof();
     drain_audio_frames(&mut decoder, &mut resampler, src_layout, &mut buffer, &mut first_pts);
 
+    // Flush the resampler: its filter still holds the last few samples.
+    loop {
+        let mut flushed = stereo_frame(4096);
+        if resampler.flush(&mut flushed).is_err() || !append_stereo(&flushed, &mut buffer) {
+            break;
+        }
+    }
+
     // Line the buffer up so its first sample is `source_start_secs`:
     // drop what the seek delivered before the in point, or pad with
     // silence if it overshot. The viewer's decoder discards by PTS the
@@ -649,18 +657,39 @@ fn drain_audio_frames(
         if frame.channel_layout().bits() == 0 {
             frame.set_channel_layout(src_layout);
         }
-        let mut resampled = ffmpeg_next::frame::Audio::empty();
+        // Sized for what this frame resamples to. Given an empty frame,
+        // ffmpeg-next allocates `input.samples()` output samples, which is
+        // right only when the rates match: upsampled (24 kHz narration to
+        // 48 kHz) each call gave back that many and the resampler kept the
+        // rest, so the export played the first half of the clip (#1564).
+        // The + 256 is FFmpeg's own padding when it allocates.
+        let (in_rate, out_rate) = (resampler.input().rate.max(1) as usize, resampler.output().rate as usize);
+        let mut resampled = stereo_frame(frame.samples() * out_rate / in_rate + 256);
         if resampler.run(&frame, &mut resampled).is_ok() {
-            let nb_samples = resampled.samples();
-            let channels = 2usize;
-            let actual_floats = nb_samples * channels;
-            let data = resampled.data(0);
-            if actual_floats > 0 && data.len() >= actual_floats * 4 {
-                let floats: &[f32] = bytemuck::cast_slice(&data[..actual_floats * 4]);
-                buffer.extend_from_slice(floats);
-            }
+            append_stereo(&resampled, buffer);
         }
     }
+}
+
+/// An interleaved f32 stereo frame with room for `samples` samples.
+fn stereo_frame(samples: usize) -> ffmpeg_next::frame::Audio {
+    ffmpeg_next::frame::Audio::new(
+        ffmpeg_next::format::Sample::F32(ffmpeg_next::format::sample::Type::Packed),
+        samples,
+        ffmpeg_next::ChannelLayout::STEREO,
+    )
+}
+
+/// Append a resampled stereo frame's samples (its count, not its
+/// buffer's padded length) to `buffer`; false when it held none.
+fn append_stereo(frame: &ffmpeg_next::frame::Audio, buffer: &mut Vec<f32>) -> bool {
+    let floats = frame.samples() * 2;
+    let data = frame.data(0);
+    if floats == 0 || data.len() < floats * 4 {
+        return false;
+    }
+    buffer.extend_from_slice(bytemuck::cast_slice(&data[..floats * 4]));
+    true
 }
 
 // ═══════════════════════════════════════════════════════════════════
