@@ -164,17 +164,17 @@ impl Clip {
 }
 
 impl Clip {
-    /// A placement or opacity lane as a picture-truth clip's picture holds
-    /// it: its keys and its modifier stack (keyed by `param`, as the
-    /// renderer's evaluation takes it). `None` for any other clip, whose
-    /// lanes are its fields (its picture is made from them), and for a
-    /// parameter that is no such lane. A picture-truth clip's placement and
-    /// opacity edits land in its picture alone (`apply_picture_ops`), so its
-    /// fields' lanes are a view that may be behind: a reader of what the
-    /// clip draws takes them here.
+    /// A placement or opacity lane as the clip's picture holds it: its keys
+    /// and its modifier stack (keyed by `param`, as the renderer's
+    /// evaluation takes it). Every clip's, since M4 step 12a: a
+    /// picture-truth clip's held there, any other's lifted from its fields.
+    /// `None` for a parameter that is no such lane, or a picture that can't
+    /// be read. The name is from when only a picture-truth clip had one.
     pub fn truth_lane(&self, param: &ParamId) -> Option<(Vec<Keyframe>, HashMap<ParamId, ModifierStack>)> {
-        let truth = self.picture.truth()?;
-        let p = &truth.picture;
+        // Every clip's lanes are its picture's (M4 step 12a): a
+        // picture-truth clip's held there, any other's lifted from its fields.
+        let lifted = self.picture_v2().ok()?;
+        let p = &lifted.picture;
         let key = |k: &str| p.placement_anim.get(&klipp_graph_format::ParamKey::from(k));
         let anim = match param {
             ParamId::Opacity => p.opacity_anim.as_ref(),
@@ -193,19 +193,18 @@ impl Clip {
         Some((keys, modifiers))
     }
 
-    /// A picture-truth clip's tilt lanes' keys, as its picture holds them;
-    /// `None` for any other clip.
+    /// The clip's tilt lanes' keys, as its picture holds them (every clip's,
+    /// since M4 step 12a); `None` when the picture can't be read.
     pub fn truth_tilt_keys(&self) -> Option<[Vec<Keyframe>; 2]> {
-        let truth = self.picture.truth()?;
+        let lifted = self.picture_v2().ok()?;
         let keys = |k: &str| {
-            truth.picture.placement_anim.get(&klipp_graph_format::ParamKey::from(k)).map(|a| a.keys.iter().filter_map(|k| serde_json::from_value(k.clone()).ok()).collect()).unwrap_or_default()
+            lifted.picture.placement_anim.get(&klipp_graph_format::ParamKey::from(k)).map(|a| a.keys.iter().filter_map(|k| serde_json::from_value(k.clone()).ok()).collect()).unwrap_or_default()
         };
         Some([keys("tilt_x"), keys("tilt_y")])
     }
 
-    /// The tilt lanes the renderer evaluates, x then y: a picture-truth
-    /// clip's from its picture's placement keys, any other clip's from its
-    /// fields.
+    /// The tilt lanes the renderer evaluates, x then y, from the clip's
+    /// picture; its fields only when that can't be read.
     pub fn tilt_lanes(&self) -> [std::borrow::Cow<'_, [Keyframe]>; 2] {
         use std::borrow::Cow;
         match self.truth_tilt_keys() {
