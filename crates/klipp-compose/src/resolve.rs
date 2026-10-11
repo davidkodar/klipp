@@ -259,7 +259,7 @@ pub fn resolved_placement(
     // clip's own by the clip, a track's by the track. The copy's track
     // effects follow its own and are given new ids at each bake, so one at
     // slot `own + k` is addressed as the track's `k`th effect.
-    let own = clip.own_effects().map(|o| o.builtin_effects.len());
+    let own = clip.baked_own.map(|o| o.effects);
     let mut probe = clip.clone();
     let addresses: Vec<(NodePath, Option<Origin>)> = w
         .nodes

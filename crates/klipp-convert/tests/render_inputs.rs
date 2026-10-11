@@ -741,13 +741,10 @@ fn check_spliced_against(dir: &Path, scratch: &Path, converted: Option<Value>) -
     for (((((ca, fa), (cb, _)), (c2, _)), grade), k) in a.iter().zip(&b).zip(&a2).zip(&grades).zip(&track_fx) {
         let mut cb = (*cb).clone();
         if *k > 0 {
+            // The spliced copy holds its track's effects after its own:
+            // counted as a bake counts them.
             let own = cb.builtin_effects().len().saturating_sub(*k);
-            cb.set_own_effects(Some(klipp_timeline::OwnEffects {
-                builtin_effects: cb.builtin_effects()[..own].to_vec(),
-                builtin_effects_enabled: cb.builtin_effects_enabled().iter().copied().take(own).collect(),
-                audio_effects: cb.audio_effects.clone(),
-                ids: cb.effect_id_list()[..own].to_vec(),
-            }));
+            cb.baked_own = Some(klipp_timeline::BakedOwn { effects: own, audio: cb.audio_effects.len() });
         }
         if !grade.is_null() {
             let flattened = serde_json::from_value(grade.clone()).map_err(|e| format!("clip {}: the flattened grade: {e}", cb.id.0))?;

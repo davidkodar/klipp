@@ -82,6 +82,14 @@ impl Clip {
         self.view_mut().active_grade_version = version;
     }
 
+    /// The clip's sound modifiers: its volume's, pan's and gain's stacks,
+    /// which aren't picture animation (M4 step 12f). Until the v1 view
+    /// goes, those of its view's modifiers.
+    pub fn sound_modifiers(&self) -> std::collections::HashMap<klipp_core::ParamId, klipp_core::ModifierStack> {
+        use klipp_core::ParamId as P;
+        self.picture.view().param_modifiers.0.iter().filter(|(id, _)| matches!(id, P::Volume | P::Pan | P::Gain)).map(|(id, m)| (id.clone(), m.clone())).collect()
+    }
+
     /// On a render copy carrying its track's effects, the clip's own
     /// effects and audio chain; `None` on the document.
     pub fn own_effects(&self) -> Option<&OwnEffects> {

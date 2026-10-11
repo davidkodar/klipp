@@ -441,22 +441,20 @@ impl Sequence {
             let fx = &track.effects;
             let picture = fx.touches_picture() && matches!(track.kind, TrackKind::Video | TrackKind::Text);
             for clip in &mut track.clips {
-                if clip.picture.view().own_effects.is_some() || matches!(clip.kind, ClipKind::Gap | ClipKind::AdjustmentLayer) {
+                if clip.baked_own.is_some() || matches!(clip.kind, ClipKind::Gap | ClipKind::AdjustmentLayer) {
                     continue;
                 }
-                clip.view_mut().own_effects = Some(Box::new(OwnEffects {
-                    builtin_effects: clip.builtin_effects().to_vec(),
-                    builtin_effects_enabled: clip.builtin_effects_enabled().to_vec(),
-                    audio_effects: clip.audio_effects.clone(),
-                    ids: clip.effect_id_list(),
-                }));
+                let own = listed_effects(clip);
                 if picture {
-                    if !fx.video_effects().is_empty() {
-                        // The clip's flags padded to its own effects first: a
-                        // missing flag is on, and the track's follow theirs.
-                        for (k, e) in fx.video_effects().iter().enumerate() {
-                            let id = clip.push_effect(e.clone());
-                            clip.set_effect_enabled(id, fx.video_effects_enabled().get(k).copied().unwrap_or(true));
+                    let track_fx = fx.video_effects();
+                    if !track_fx.is_empty() {
+                        // The track's after the clip's own, through its
+                        // picture (M4 step 12f), each with its track's flag.
+                        let flags = fx.video_effects_enabled();
+                        let mut edits: Vec<crate::EffectEdit> = track_fx.iter().map(crate::EffectEdit::Add).collect();
+                        edits.extend((0..track_fx.len()).filter(|k| !flags.get(*k).copied().unwrap_or(true)).map(|k| crate::EffectEdit::SetEnabled(own + k, false)));
+                        if let Some(Err(why)) = clip.apply_effect_edits(&edits) {
+                            tracing::warn!("clip {:?}: its track's effects: {why}", clip.id);
                         }
                     }
                     if let Some(grade) = fx.grade_onto(track.kind, clip) {
@@ -466,6 +464,7 @@ impl Sequence {
                         append_track_grade(&mut clip.view_mut().node_graph.0, track.id, grade);
                     }
                 }
+                clip.baked_own = Some(BakedOwn { effects: own, audio: clip.audio_effects.len() });
                 clip.audio_effects.extend(fx.audio.iter().cloned());
             }
         }
@@ -551,7 +550,7 @@ impl Sequence {
     /// the document has for it. A copy only when there is something to
     /// take back out.
     pub fn with_own_grades(&self) -> std::borrow::Cow<'_, Sequence> {
-        if !self.all_clips().any(|c| c.picture.view().own_node_graph.is_some() || c.picture.view().own_effects.is_some()) {
+        if !self.all_clips().any(|c| c.picture.view().own_node_graph.is_some() || c.baked_own.is_some()) {
             return std::borrow::Cow::Borrowed(self);
         }
         let mut seq = self.clone();
@@ -560,10 +559,14 @@ impl Sequence {
             if let Some(own) = own {
                 clip.view_mut().node_graph = crate::Grade(*own);
             }
-            let own = clip.view_mut().own_effects.take();
-            if let Some(own) = own {
-                clip.set_effect_list_with_ids(own.builtin_effects, own.builtin_effects_enabled, &own.ids);
-                clip.audio_effects = own.audio_effects;
+            // The track's effects taken back off the end, through the
+            // clip's picture: its own keep their node ids.
+            if let Some(own) = clip.baked_own.take() {
+                let edits: Vec<crate::EffectEdit> = (own.effects..listed_effects(clip)).rev().map(crate::EffectEdit::Remove).collect();
+                if let Some(Err(why)) = clip.apply_effect_edits(&edits) {
+                    tracing::warn!("clip {:?}: its track's effects back off: {why}", clip.id);
+                }
+                clip.audio_effects.truncate(own.audio);
             }
         }
         std::borrow::Cow::Owned(seq)
@@ -1533,6 +1536,7 @@ impl Track {
             name: None,
             colour_label: 0,
             precomp: None,
+            baked_own: None,
         });
         clip_id
     }
@@ -1664,8 +1668,6 @@ impl Track {
     pub fn split_at(&mut self, clip_id: ClipId, cut_at: Timecode) -> Option<(Clip, Clip)> {
         let pos = self.clips.iter().position(|c| c.id == clip_id)?;
         let clip = self.clips[pos].clone();
-        // A picture-truth clip, whose picture both halves take below.
-        let truth_of = clip.is_picture_truth().then(|| clip.clone());
         if cut_at <= clip.timeline_in || cut_at >= clip.timeline_out {
             return None;
         }
@@ -1762,6 +1764,11 @@ impl Track {
             }
         }
 
+        // The clip's picture cut at the blade (M4 step 12f), and the clip
+        // itself when it's picture-truth, taken before the halves are made
+        // from its fields.
+        let truth_of = clip.is_picture_truth().then(|| clip.clone());
+        let cut = clip.picture_v2().map(|lifted| crate::picture_split::split_picture(&lifted, cut_secs));
         let clip_a = Clip {
             id: ClipId::new(),
             kind: clip.kind.clone(),
@@ -1834,6 +1841,7 @@ impl Track {
             name: clip.name.clone(),
             colour_label: clip.colour_label,
             precomp: None,
+            baked_own: None,
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -1905,13 +1913,22 @@ impl Track {
             name: clip.name.clone(),
             colour_label: clip.colour_label,
             precomp: None,
+            baked_own: None,
         };
-        // A picture-truth clip's picture goes to both halves.
+        // Each half takes its cut of the clip's picture (M4 step 12f); a
+        // picture-truth clip's halves are picture-truth too.
         let (mut clip_a, mut clip_b) = (clip_a, clip_b);
         if let Some(source) = &truth_of {
             clip_a.take_picture_truth_of(source);
             clip_b.take_picture_truth_of(source);
         }
+        let (clip_a, clip_b) = match cut {
+            Ok((a, b)) => (Clip::from_picture(&clip_a, a), Clip::from_picture(&clip_b, b)),
+            Err(why) => {
+                tracing::warn!("split: clip {:?}: its picture: {why}", clip_a.id);
+                (clip_a, clip_b)
+            }
+        };
 
         self.clips.remove(pos);
         self.clips.insert(pos, clip_b.clone());
@@ -2429,6 +2446,26 @@ pub struct Clip {
     /// the `sequence_id` and nothing else.
     #[serde(skip)]
     pub precomp: Option<std::sync::Arc<Sequence>>,
+    /// What of a render copy's effects are the clip's own (M4 step 12f),
+    /// set by [`Sequence::bake_track_effects`] alone: the bake appends its
+    /// track's after them, so they are the first in list order. `None` on
+    /// any clip the bake didn't make, all of whose effects are its own.
+    /// Never saved, and not part of its picture.
+    #[serde(skip)]
+    pub baked_own: Option<BakedOwn>,
+}
+
+/// How many of a baked render copy's effects are the clip's own: its
+/// first `effects` built-in effects and first `audio` audio effects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BakedOwn {
+    pub effects: usize,
+    pub audio: usize,
+}
+
+/// How many built-in effects `clip`'s picture lists.
+fn listed_effects(clip: &Clip) -> usize {
+    (0..).take_while(|i| clip.effect_node_at(false, *i).is_some()).count()
 }
 
 /// A clip's own name and colour label (#920), as one value: what a
@@ -2445,7 +2482,8 @@ impl Clip {
     /// whose plug-ins are all off renders as one without any: no 8-bit
     /// round trip, and nothing keeps it off the GPU paths.
     pub fn has_enabled_plugins(&self) -> bool {
-        self.ofx_effects().iter().any(|e| e.enabled)
+        // As the clip's picture holds them (M4 step 12f).
+        self.picture_ofx().is_ok_and(|ofx| ofx.iter().any(|p| p.entry.enabled))
     }
 
     pub fn media_id(&self) -> Option<MediaId> {
@@ -2829,6 +2867,7 @@ impl Clip {
             name: None,
             colour_label: 0,
             precomp: None,
+            baked_own: None,
         }
     }
 
@@ -2940,6 +2979,7 @@ impl Clip {
             name: None,
             colour_label: 0,
             precomp: None,
+            baked_own: None,
         }
     }
 
@@ -3040,6 +3080,7 @@ impl Clip {
             name: None,
             colour_label: 0,
             precomp: None,
+            baked_own: None,
         }
     }
 }
