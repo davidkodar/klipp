@@ -405,64 +405,40 @@ impl KlippApp {
                     // borrow of `seq` so the PiP helpers can read it
                     // without borrow conflicts.
                     let res = self.state.sequences[self.state.active_sequence_idx].resolution;
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == cid) {
-                        let dur = clip.duration().to_secs_f64();
-                        match preset.as_str() {
-                            "ken_burns_zoom_in" => {
-                                clip.edit_transform_scale_keyframes(|v| *v = vec![
-                                    klipp_core::Keyframe { time_secs: 0.0, value: 1.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                    klipp_core::Keyframe { time_secs: dur, value: 1.4, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                ]);
-                            }
-                            "ken_burns_zoom_out" => {
-                                clip.edit_transform_scale_keyframes(|v| *v = vec![
-                                    klipp_core::Keyframe { time_secs: 0.0, value: 1.4, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                    klipp_core::Keyframe { time_secs: dur, value: 1.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                ]);
-                            }
-                            "ken_burns_pan_left" => {
-                                clip.edit_transform_scale_keyframes(|v| *v = vec![
-                                    klipp_core::Keyframe { time_secs: 0.0, value: 1.3, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                    klipp_core::Keyframe { time_secs: dur, value: 1.3, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                ]);
-                                clip.edit_transform_pos_x_keyframes(|v| *v = vec![
-                                    klipp_core::Keyframe { time_secs: 0.0, value: 100.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                    klipp_core::Keyframe { time_secs: dur, value: -100.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                ]);
-                            }
-                            // PiP corners. Resolution-aware so the
-                            // clip lands roughly the same distance
-                            // from the frame edge regardless of
-                            // 720p / 1080p / 4K. Magnitudes:
-                            //   scale  = 0.30  (clip is 30 % of frame)
-                            //   margin = 0.04  (4 % from frame edge)
-                            //   offset = frame_dim * (0.5 - 0.15 - 0.04)
-                            //          = frame_dim * 0.31
-                            // For 1080p that's (595, 335) — close to
-                            // the original eyeballed (600, 300) so
-                            // existing 1080p projects barely shift.
-                            // Sign-per-corner is encoded in
-                            // `pip_offsets_for_corner`.
-                            "pip_top_left"
-                            | "pip_top_right"
-                            | "pip_bottom_left"
-                            | "pip_bottom_right" => {
-                                let (px, py) = pip_offsets_for_corner(res, preset.as_str());
-                                clip.edit_transform_scale_keyframes(|v| *v = vec![
-                                    klipp_core::Keyframe { time_secs: 0.0, value: 0.3, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                ]);
-                                clip.edit_transform_pos_x_keyframes(|v| *v = vec![
-                                    klipp_core::Keyframe { time_secs: 0.0, value: px, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                ]);
-                                clip.edit_transform_pos_y_keyframes(|v| *v = vec![
-                                    klipp_core::Keyframe { time_secs: 0.0, value: py, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
-                                ]);
-                            }
-                            _ => {}
+                    let Some(dur) = self.state.sequences[self.state.active_sequence_idx].all_clips().find(|c| c.id == cid).map(|c| c.duration().to_secs_f64()) else { return true };
+                    let key = |time_secs: f64, value: f32| klipp_core::Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+                    let lanes: Vec<(&str, Vec<klipp_core::Keyframe>)> = match preset.as_str() {
+                        "ken_burns_zoom_in" => vec![("scale", vec![key(0.0, 1.0), key(dur, 1.4)])],
+                        "ken_burns_zoom_out" => vec![("scale", vec![key(0.0, 1.4), key(dur, 1.0)])],
+                        "ken_burns_pan_left" => vec![("scale", vec![key(0.0, 1.3), key(dur, 1.3)]), ("pos_x", vec![key(0.0, 100.0), key(dur, -100.0)])],
+                        // PiP corners. Resolution-aware so the
+                        // clip lands roughly the same distance
+                        // from the frame edge regardless of
+                        // 720p / 1080p / 4K. Magnitudes:
+                        //   scale  = 0.30  (clip is 30 % of frame)
+                        //   margin = 0.04  (4 % from frame edge)
+                        //   offset = frame_dim * (0.5 - 0.15 - 0.04)
+                        //          = frame_dim * 0.31
+                        // For 1080p that's (595, 335) — close to
+                        // the original eyeballed (600, 300) so
+                        // existing 1080p projects barely shift.
+                        // Sign-per-corner is encoded in
+                        // `pip_offsets_for_corner`.
+                        "pip_top_left" | "pip_top_right" | "pip_bottom_left" | "pip_bottom_right" => {
+                            let (px, py) = pip_offsets_for_corner(res, preset.as_str());
+                            vec![("scale", vec![key(0.0, 0.3)]), ("pos_x", vec![key(0.0, px)]), ("pos_y", vec![key(0.0, py)])]
                         }
-                        self.state.toast.show(format!("Applied {} preset", preset.replace('_', " ")));
-                        self.state.dirty = true;
+                        _ => Vec::new(),
+                    };
+                    // Its lanes by path, one step (M4 step 12c).
+                    if !lanes.is_empty() {
+                        match self.state.set_lanes(cid, &lanes, "Apply Motion Preset") {
+                            Ok(()) => {
+                                self.state.toast.show(format!("Applied {} preset", preset.replace('_', " ")));
+                                self.state.dirty = true;
+                            }
+                            Err(why) => self.state.toast.show(why),
+                        }
                     }
                     self.sync_sequence_to_engine();
                     true

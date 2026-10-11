@@ -1,5 +1,5 @@
 //! Frame-aware UI selection, separate from exact authored timestamp identity.
-use klipp_core::{AppCommand, AudioParam, Keyframe, TitlePositionAxis, VideoParam};
+use klipp_core::{AppCommand, AudioParam, Keyframe, TitlePositionAxis};
 use klipp_timeline::{Clip, Sequence, TitleObjectId};
 
 /// Inspector and K operate on the same canonical playhead, not the smooth
@@ -155,6 +155,8 @@ fn resolve_with<'a>(
     }
     // A node's keys, read by path into this, for the arm that does.
     let node_keys: Vec<Keyframe>;
+    // A placement or opacity lane's keys, read from the picture.
+    let lane_keys: Vec<Keyframe>;
     let (keys, time): (&[Keyframe], &mut f64) = match command {
         AddVideoKeyframe {
             clip_id,
@@ -168,18 +170,9 @@ fn resolve_with<'a>(
             time_secs,
         } => {
             let Some(c) = clip_for(*clip_id) else { return };
-            let keys = match param {
-                VideoParam::Opacity => c.opacity_keyframes(),
-                VideoParam::PositionX => c.transform_pos_x_keyframes(),
-                VideoParam::PositionY => c.transform_pos_y_keyframes(),
-                VideoParam::Scale => c.transform_scale_keyframes(),
-                VideoParam::Rotation => c.transform_rotation_keyframes(),
-                VideoParam::TiltX => c.transform_tilt_x_keyframes(),
-                VideoParam::TiltY => c.transform_tilt_y_keyframes(),
-                VideoParam::MatteFeather => &c.matte_feather_keyframes,
-                VideoParam::MatteChoke => &c.matte_choke_keyframes,
-            };
-            (keys, time_secs)
+            // The lane as the picture holds it (M4 step 12c).
+            lane_keys = crate::inspector::placement_by_path::param_keys(c, *param);
+            (&lane_keys, time_secs)
         }
         AddAudioKeyframe {
             clip_id,
@@ -306,6 +299,7 @@ fn resolve_with<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use klipp_core::VideoParam;
     use klipp_core::{Fps, Interpolation, Timecode};
     use klipp_timeline::{ClipKind, TitleData};
 
