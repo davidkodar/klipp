@@ -591,7 +591,11 @@ pub fn evaluate_clip_opacity(
     // edits land: its value and its lane, times every other Opacity. Its
     // modifier stack is the one on `opacity_anim`; the fields' Opacity
     // stack is the view's and deliberately not read.
-    if let (Some((keys, modifiers)), Ok(lifted)) = (clip.truth_lane(&klipp_core::ParamId::Opacity), clip.picture_v2()) {
+    // A picture-truth clip only: an ordinary clip's render copy with its
+    // track's effects baked on lifts the track's Opacity as its anchor,
+    // where the clip's own (before `own`) is. 12f's count of the clip's own
+    // effects (`baked_own`) lets every clip take this branch.
+    if let (true, Some((keys, modifiers)), Ok(lifted)) = (clip.is_picture_truth(), clip.truth_lane(&klipp_core::ParamId::Opacity), clip.picture_v2()) {
         let opacity = eval_with_modifiers(&keys, &modifiers, &klipp_core::ParamId::Opacity, t, lifted.picture.opacity, &ctx);
         let mut others = 1.0f32;
         for (i, effect) in opacities() {
