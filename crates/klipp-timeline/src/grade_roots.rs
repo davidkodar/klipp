@@ -438,3 +438,14 @@ mod tests {
     }
 
 }
+
+/// A grade node of a lifted picture as the node a grade run takes (M4 step
+/// 12e): through the lift's own way back, as the one node of a grade. For
+/// a node beside a clip's chain (a mask producer), which the run takes on
+/// its own.
+pub fn grade_node_for_run(n: &klipp_graph_format::Node) -> Result<klipp_nodes::Node, String> {
+    let body = Graph { nodes: vec![n.clone()], output: n.id, ..Graph::empty() };
+    let v1 = klipp_graph_lift::to_v1::grade_only(&klipp_graph_lift::delift::grade_only(&body, klipp_graph_format::NodeId::nil())?)?;
+    let graph: NodeGraph = serde_json::from_value(v1).map_err(|e| e.to_string())?;
+    graph.nodes.into_iter().find(|m| m.id == n.id).ok_or_else(|| "the node didn't come back from its record".into())
+}

@@ -412,10 +412,7 @@ fn mask_source(picture: &ClipPicture, from: &NodeId, port: &str) -> MaskSource {
 /// A node beside the chain as the run's node: through the lift's own way
 /// back for a grade's nodes, as the one node of a grade.
 fn side_node(n: &Node) -> Result<klipp_nodes::Node, String> {
-    let body = klipp_graph_format::Graph { nodes: vec![n.clone()], output: n.id, ..klipp_graph_format::Graph::empty() };
-    let v1 = klipp_graph_lift::to_v1::grade_only(&klipp_graph_lift::delift::grade_only(&body, NodeId::nil())?)?;
-    let graph: klipp_nodes::NodeGraph = serde_json::from_value(v1).map_err(|e| e.to_string())?;
-    graph.nodes.into_iter().find(|m| m.id == n.id).ok_or_else(|| "the node didn't come back from its record".into())
+    klipp_timeline::grade_node_for_run(n)
 }
 
 /// A fixed placement's Transform entry as its effect, animated for the
