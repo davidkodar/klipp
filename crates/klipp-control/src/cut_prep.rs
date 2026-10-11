@@ -22,6 +22,8 @@ struct ClipContext {
     media_duration_secs: Option<f64>,
     /// The file's frame rate, for placing a change in its picture (#691).
     media_fps: Option<f64>,
+    /// The media item, to judge whether its beat sheet is a screen's (#1568).
+    media: Option<klipp_media::MediaItem>,
 }
 
 /// Match the editorial resolver's audibility rule: a linked video's sound
@@ -119,6 +121,7 @@ pub(crate) fn prepare(
                 media_id: media_id.map(|id| id.0.to_string()),
                 media_duration_secs: item.map(|item| item.duration.to_secs_f64()),
                 media_fps: item.map(|item| item.fps.as_f64()).filter(|f| *f > 0.0),
+                media: item.cloned(),
             });
         }
     }
@@ -241,7 +244,7 @@ pub(crate) fn prepare(
                 &words,
             );
         }
-        if let Some(sheet) = &report.beatsheet {
+        if let Some(sheet) = item.media.as_ref().and_then(|m| report.screen_beatsheet(m)) {
             for point in &sheet.cut_points {
                 add_candidate(
                     &mut candidates,
@@ -528,6 +531,7 @@ mod tests {
             media_id: None,
             media_duration_secs: Some(8.0),
             media_fps: Some(24.0),
+            media: None,
         };
         let words = vec![(3.8, 4.2, "hello".into())];
         let mut candidates = Vec::new();

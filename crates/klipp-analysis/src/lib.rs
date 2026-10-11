@@ -177,6 +177,46 @@ pub fn looks_like_screen(item: &klipp_media::MediaItem) -> bool {
     !camera
 }
 
+/// A second whose mean frame-to-frame luma difference is below this held
+/// still: a screen that settled. Camera footage never gets there, even on
+/// a tripod; sensor noise and compression keep every second above it.
+const STILL_YDIF: f32 = 0.05;
+
+/// Of the frames the screen-text reader read, the share that must hold
+/// readable text for a file to be a screen: a screen is mostly words (a
+/// menu, a file name), a camera shot mostly has none, and a sign or a
+/// shirt in one isn't on every frame.
+const TEXT_FRAMES_MIN: f32 = 0.5;
+
+/// Whether `item` is a screen recording, the footage whose beat sheet the
+/// checks may read (#1568). [`looks_like_screen`] can only say what the
+/// file's metadata says, and stock footage re-encoded without any reads as
+/// a screen to it: a girl at the beach was "cutting in while the screen is
+/// still changing". So the picture has the last word, and it must look
+/// like a screen twice over:
+/// - it holds still somewhere: a second of `motion` below `STILL_YDIF`;
+/// - it shows text: of the frames the screen-text reader read,
+///   `text_frames` is the share with a readable line, at least
+///   `TEXT_FRAMES_MIN`. A locked-off camera shot can come close to
+///   still; it doesn't show a menu.
+///
+/// A measurement that wasn't made (no motion analysis, no screen-text
+/// model installed) doesn't count against the file, and the metadata
+/// decides. A file tagged `screen` is one whatever its picture does.
+pub fn is_screen_recording(item: &klipp_media::MediaItem, motion: Option<&motion::Motion>, text_frames: Option<f32>) -> bool {
+    let tagged = item.tags.iter().any(|t| matches!(t.trim().to_lowercase().as_str(), "screen" | "screen recording" | "screencast"));
+    if tagged {
+        return true;
+    }
+    if !looks_like_screen(item) {
+        return false;
+    }
+    let measured: Vec<f32> = motion.map(|m| m.per_second.iter().flatten().copied().collect()).unwrap_or_default();
+    let holds_still = measured.is_empty() || measured.iter().any(|v| *v < STILL_YDIF);
+    let shows_text = text_frames.is_none_or(|share| share >= TEXT_FRAMES_MIN);
+    holds_still && shows_text
+}
+
 /// Every analyser this build ships, in the order they pay off. Each AI
 /// analyser is left out when its feature is switched off in preferences.
 pub fn analysers() -> Vec<Box<dyn Analyser>> {
@@ -483,5 +523,43 @@ mod screen_tests {
         assert!(looks_like_screen(&obs), "a recorder that names itself");
         phone.tags.push("Screen recording".into());
         assert!(looks_like_screen(&phone), "asked for");
+    }
+
+    /// #1568: stock footage re-encoded without metadata looks like a
+    /// screen to the metadata, and its picture says otherwise. The motion
+    /// below is measured from camera files with no metadata: a beach shot,
+    /// and two locked-off ones, a sunset over the sea and coffee poured
+    /// into a mug, that never hold still and show no text.
+    #[test]
+    fn camera_footage_without_metadata_is_not_a_screen() {
+        use super::is_screen_recording;
+        use crate::motion::Motion;
+        let item = || klipp_media::MediaItem::synthetic_for_test("/tmp/clip.mp4".into(), None);
+        let motion = |secs: &[f32]| Motion::from_samples(secs.len() as f64, secs.iter().map(|v| Some(*v)).collect());
+        let beach = motion(&[0.67, 0.63, 0.62, 0.56, 0.55, 0.54, 0.47, 0.42, 0.41, 0.40, 0.40, 0.37]);
+        let sunset = motion(&[0.35, 0.39, 0.38, 0.40, 0.36, 0.34, 0.32, 0.30, 0.31, 0.31, 0.31]);
+        let coffee = motion(&[0.40, 0.49, 0.40, 0.39, 0.35, 0.41, 0.42]);
+        for (name, m) in [("beach", &beach), ("sunset", &sunset), ("coffee", &coffee)] {
+            assert!(!is_screen_recording(&item(), Some(m), None), "{name}: never still");
+            assert!(!is_screen_recording(&item(), Some(m), Some(0.0)), "{name}: never still, no text");
+        }
+        // A screen: still for seconds, words on every frame read.
+        let demo = motion(&[0.0, 0.0, 0.31, 0.0, 0.02]);
+        assert!(is_screen_recording(&item(), Some(&demo), Some(1.0)));
+        assert!(is_screen_recording(&item(), Some(&demo), None), "no text model: the motion decides");
+        // A locked-off shot that does hold still for a second, and shows
+        // no text, or a sign on one frame of three.
+        let still_shot = motion(&[0.31, 0.04, 0.33]);
+        assert!(!is_screen_recording(&item(), Some(&still_shot), Some(0.0)));
+        assert!(!is_screen_recording(&item(), Some(&still_shot), Some(1.0 / 3.0)));
+        assert!(is_screen_recording(&item(), None, None), "nothing measured: the metadata decides");
+        let unread = Motion::from_samples(2.0, vec![None, None]);
+        assert!(is_screen_recording(&item(), Some(&unread), None));
+        let mut phone = item();
+        phone.camera_make = Some("Apple".into());
+        assert!(!is_screen_recording(&phone, Some(&demo), Some(1.0)), "a camera's file stays a camera's");
+        let mut tagged = item();
+        tagged.tags.push("screen".into());
+        assert!(is_screen_recording(&tagged, Some(&beach), Some(0.0)), "asked for");
     }
 }

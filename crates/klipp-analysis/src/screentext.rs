@@ -100,6 +100,14 @@ fn norm(s: &str) -> String {
 }
 
 impl ScreenText {
+    /// Of the frames read, the share with a line that reads as words:
+    /// sure of itself, and longer than a stray mark. `None` when no frame
+    /// was read.
+    pub fn text_frames(&self) -> Option<f32> {
+        let readable = |l: &Line| l.confidence >= 0.9 && l.text.trim().chars().count() >= 3;
+        (!self.frames.is_empty()).then(|| self.frames.iter().filter(|f| f.lines.iter().any(readable)).count() as f32 / self.frames.len() as f32)
+    }
+
     /// Spans whose text contains every word of `query`, case aside.
     pub fn search(&self, query: &str) -> Vec<&TextSpan> {
         let words: Vec<String> = query.split_whitespace().map(|w| w.to_lowercase()).collect();

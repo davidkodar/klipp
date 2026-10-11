@@ -227,7 +227,7 @@ pub(crate) fn respond(
                         }
                     }
                 }
-                let reveals = |id: klipp_core::MediaId| pool.get(&id).and_then(|it| klipp_analysis::report::MediaAnalysis::load(&it.path).beatsheet).map(|b| b.reveals).unwrap_or_default();
+                let reveals = |id: klipp_core::MediaId| pool.get(&id).and_then(|it| klipp_analysis::report::MediaAnalysis::load(&it.path).screen_beatsheet(it).map(|b| b.reveals.clone())).unwrap_or_default();
                 let loudest = |id: klipp_core::MediaId| if synthesized && Some(id) == whoosh { Some(0.15) } else { pool.get(&id).and_then(|it| klipp_analysis::report::MediaAnalysis::load(&it.path).audio).and_then(|a| a.loudest_secs) };
                 let kit = klipp_document::sound_design::SfxKit { whoosh, click, riser, on };
                 let mut placements = klipp_document::sound_design::placements(&seq, &pool, kit, &reveals, &loudest);

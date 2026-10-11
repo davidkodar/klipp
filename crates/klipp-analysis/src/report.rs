@@ -34,6 +34,18 @@ impl MediaAnalysis {
         report
     }
 
+    /// The beat sheet, when `item` is a screen recording
+    /// ([`crate::is_screen_recording`]): what a cut, a title, a sound or a
+    /// look may be fitted to. Camera footage the metadata took for a screen
+    /// has one too, and its "changes" are a walk or a wave (#1568).
+    pub fn screen_beatsheet(&self, item: &klipp_media::MediaItem) -> Option<&BeatSheet> {
+        #[cfg(feature = "ocr")]
+        let text_frames = self.screentext.as_ref().and_then(|st| st.text_frames());
+        #[cfg(not(feature = "ocr"))]
+        let text_frames = None;
+        self.beatsheet.as_ref().filter(|_| crate::is_screen_recording(item, self.motion.as_ref(), text_frames))
+    }
+
     pub fn load_key(key: &str) -> Self {
         let shots = crate::store::load(key, crate::shots::ID, crate::shots::VERSION).and_then(|v| serde_json::from_value(v).ok());
         let audio = crate::store::load(key, crate::audio::ID, crate::audio::VERSION).and_then(|v| serde_json::from_value(v).ok());
