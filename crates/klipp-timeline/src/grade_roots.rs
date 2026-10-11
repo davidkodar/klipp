@@ -111,6 +111,17 @@ impl Sequence {
         }
     }
 
+    /// The track `track`'s own effects and grade, lifted as its paths
+    /// address them (M4 step 12e): the effect nodes, and the grade when it
+    /// has one. A track root's two parts, which one lifted grade can't
+    /// hold, beside [`Self::lift_root_grade`].
+    pub fn lift_track_parts(&self, track: uuid::Uuid) -> Result<(Vec<klipp_graph_format::Node>, Option<Graph>), String> {
+        let track = self.tracks.iter().find(|t| t.id.0 == track).ok_or("no such track")?;
+        let raw = serde_json::to_value(track).map_err(|e| e.to_string())?;
+        let structural = klipp_graph_lift::to_v2::track_to_v2(raw.as_object().ok_or("a track must be an object")?).map_err(|e| e.to_string())?;
+        klipp_graph_lift::splice::track_parts(&structural)
+    }
+
     /// `grade`, as `root` would hold it, lifted as its paths address it:
     /// its nodes at the top, `[node]`.
     pub fn lift_root_grade(&self, root: Root, grade: &NodeGraph) -> Result<Graph, String> {
@@ -216,6 +227,17 @@ impl Sequence {
         self.set_root_grade(root, Some(after.clone()))?;
         Ok((before, after))
     }
+}
+
+/// A grade node of a lifted picture as the node a grade run takes (M4 step
+/// 12e): through the lift's own way back, as the one node of a grade. For
+/// a node beside a clip's chain (a mask producer), which the run takes on
+/// its own.
+pub fn grade_node_for_run(n: &klipp_graph_format::Node) -> Result<klipp_nodes::Node, String> {
+    let body = Graph { nodes: vec![n.clone()], output: n.id, ..Graph::empty() };
+    let v1 = klipp_graph_lift::to_v1::grade_only(&klipp_graph_lift::delift::grade_only(&body, klipp_graph_format::NodeId::nil())?)?;
+    let graph: NodeGraph = serde_json::from_value(v1).map_err(|e| e.to_string())?;
+    graph.nodes.into_iter().find(|m| m.id == n.id).ok_or_else(|| "the node didn't come back from its record".into())
 }
 
 #[cfg(test)]

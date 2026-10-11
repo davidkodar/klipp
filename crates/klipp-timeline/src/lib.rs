@@ -61,6 +61,7 @@ mod effect_slots;
 mod other_effect_slots;
 mod grade_access;
 mod grade_roots;
+pub use grade_roots::grade_node_for_run;
 pub use grade_access::{Grade, GradeAccess, GradeSlot};
 mod render_gates;
 pub use effect_slots::{EffectId, EffectList, EffectsState};

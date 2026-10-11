@@ -103,6 +103,7 @@ const SYMBOLS: &[(&str, Form)] = &[
 const GONE: &[&str] = &[];
 
 const PINS: &str = include_str!("v1_view_pins.txt");
+const FILES: &str = include_str!("v1_view_files.txt");
 
 fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -132,6 +133,44 @@ fn count(line: &str, name: &str, form: Form) -> usize {
             }
         })
         .count()
+}
+
+/// The files that use any of the view's symbols, relative to the crates
+/// folder (`klipp-ui/src/state.rs`).
+fn users() -> std::collections::BTreeSet<String> {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("the crates folder");
+    let mut files = Vec::new();
+    for krate in std::fs::read_dir(crates).expect("the crates folder").flatten() {
+        sources(&krate.path().join("src"), &mut files);
+        sources(&krate.path().join("tests"), &mut files);
+    }
+    let me = file!().rsplit('/').next().unwrap_or_default();
+    files
+        .iter()
+        .filter(|f| !f.ends_with(me))
+        .filter(|f| {
+            let text = std::fs::read_to_string(f).unwrap_or_default();
+            text.lines().filter(|l| !l.trim_start().starts_with("//")).any(|line| SYMBOLS.iter().any(|(name, form)| count(line, name, *form) > 0))
+        })
+        .filter_map(|f| f.strip_prefix(crates).ok().map(|p| p.to_string_lossy().into_owned()))
+        .collect()
+}
+
+/// No file starts using the v1 view, and a file that stops is taken off
+/// the list (M4 step 12f): the list only shrinks, to load, save and the
+/// converter, which keep the view until picture revision 5.
+#[test]
+fn only_the_listed_files_use_the_v1_view() {
+    let listed: std::collections::BTreeSet<String> = FILES.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(str::to_owned).collect();
+    let now = users();
+    let mut problems = Vec::new();
+    for f in now.difference(&listed) {
+        problems.push(format!("{f} uses the v1 view and isn't in v1_view_files.txt: read and write the clip's picture instead"));
+    }
+    for f in listed.difference(&now) {
+        problems.push(format!("{f} no longer uses the v1 view: take it out of v1_view_files.txt"));
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
 /// Every symbol's count across the workspace's sources.

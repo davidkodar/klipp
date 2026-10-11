@@ -2,7 +2,7 @@
 
 use klipp_graph_format::{Node, ParamValue, types};
 use klipp_graph_format::path::{Root, TrackPart};
-use klipp_graph_lift::{paths::Documents, to_v2, splice};
+use klipp_graph_lift::paths::Documents;
 use klipp_effects::registry::{NodeTypeDesc, ParamKind};
 use klipp_timeline::Sequence;
 use serde_json::{json, Value};
@@ -25,10 +25,7 @@ pub(crate) fn documents(seq: &Sequence, root: Root) -> Result<Documents, String>
             docs.stages.insert((group, stage), seq.lift_root_grade(root, grade)?);
         }
         Root::Track { track, part } => {
-            let track_data = seq.tracks.iter().find(|t| t.id.0 == track).ok_or("no such track")?;
-            let raw = serde_json::to_value(track_data).map_err(|e| e.to_string())?;
-            let graph = to_v2::track_to_v2(raw.as_object().ok_or("a track must be an object")?).map_err(|e| e.to_string())?;
-            let (effects, grade) = splice::track_parts(&graph)?;
+            let (effects, grade) = seq.lift_track_parts(track)?;
             match part {
                 TrackPart::Effects => { docs.track_effects.insert(track, effects); }
                 TrackPart::Grade => { docs.track_grades.insert(track, grade.ok_or("this track has no grade")?); }
