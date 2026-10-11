@@ -982,6 +982,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             let mut v = json!({ "method": "search_sfx", "query": arg_str(args, "query")? });
             if let Some(x) = args.get("limit").and_then(|v| v.as_u64()) { v["limit"] = json!(x); }
             if let Some(x) = args.get("max_secs").and_then(|v| v.as_f64()) { v["max_secs"] = json!(x); }
+            if let Some(c) = args.get("commercial_only").and_then(|v| v.as_bool()) { v["commercial_only"] = json!(c); }
             if let Some(x) = listen_arg(args) { v["listen"] = x; }
             v
         }
@@ -1246,7 +1247,7 @@ fn call_tool(name: &str, args: &Value) -> Result<(Vec<Value>, Option<Value>), St
     let mut notice: Option<String> = None;
     if let Some(g) = result.get("project_identity").or_else(|| result.get("project_generation")).and_then(|v| v.as_u64()) {
         let seen = LAST_PROJECT_GENERATION.swap(g, std::sync::atomic::Ordering::Relaxed);
-        if seen != u64::MAX && seen != g && !matches!(name, "klipp_open_project" | "klipp_save_project") {
+        if project_changed_under(name, seen, g) {
             notice = Some("Note: the project changed under you since your last call (a new project, or one opened or saved as another) — the timeline, the media pool and their ids are not what they were. Read klipp_status, klipp_list_media and klipp_timeline again before going on.".into());
         }
     }
@@ -1256,6 +1257,15 @@ fn call_tool(name: &str, args: &Value) -> Result<(Vec<Value>, Option<Value>), St
         content.insert(0, json!({ "type": "text", "text": n }));
     }
     Ok((content, Some(result)))
+}
+
+/// Whether a call's reply says the project changed under the session:
+/// the identity moved since the last call, and the call was not the one
+/// that changed it (a new project, an open, a save as; #1574).
+fn project_changed_under(name: &str, seen: u64, now: u64) -> bool {
+    seen != u64::MAX
+        && seen != now
+        && !matches!(name, "klipp_new_project" | "klipp_open_project" | "klipp_save_project")
 }
 
 fn has_structured_output(name: &str) -> bool {
@@ -2519,7 +2529,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               each one's length, when it peaks and how loud it is, which is where it goes: the peak \
               on the cut. Then add it with klipp_add_music (it takes a sound effect the same as a \
               track). Needs a Freesound token in the user's key config.",
-             json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "max_secs": { "type": "number", "description": "only sounds this long or shorter" }, "listen": { "description": "hear previews (at most 5): the first this-many, or [track_id, …]; length, peak time, loudness", "oneOf": [{ "type": "integer" }, { "type": "array", "items": { "type": "string" } }] } }), vec!["query"]),
+             json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "max_secs": { "type": "number", "description": "only sounds this long or shorter" }, "commercial_only": { "type": "boolean", "description": "only sounds whose licence allows commercial use" }, "listen": { "description": "hear previews (at most 5): the first this-many, or [track_id, …]; length, peak time, loudness", "oneOf": [{ "type": "integer" }, { "type": "array", "items": { "type": "string" } }] } }), vec!["query"]),
         tool("klipp_add_music",
              "Download a searched music track OR sound effect into the media pool, keeping its licence and \
               attribution beside the file for your export credits. Pass the fields from a \
@@ -3201,5 +3211,23 @@ mod clips_text_tests {
         assert_eq!(back, v);
         assert_eq!(text.lines().filter(|l| l.contains("clip_id")).count(), 2, "{text}");
         assert!(text.lines().any(|l| l.trim_start().starts_with("{\"clip_id\":\"b\"")), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod project_change_notice_tests {
+    use super::*;
+
+    /// #1574: the call that made the new project is not told the
+    /// project changed under it; the next unrelated call after an
+    /// outside change still is.
+    #[test]
+    fn the_call_that_changes_the_project_is_not_warned() {
+        assert!(!project_changed_under("klipp_new_project", 1, 2));
+        assert!(!project_changed_under("klipp_open_project", 1, 2));
+        assert!(!project_changed_under("klipp_save_project", 1, 2));
+        assert!(project_changed_under("klipp_timeline", 1, 2));
+        assert!(!project_changed_under("klipp_timeline", 2, 2));
+        assert!(!project_changed_under("klipp_timeline", u64::MAX, 2));
     }
 }

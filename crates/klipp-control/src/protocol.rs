@@ -942,6 +942,9 @@ pub enum ControlCommand {
         /// Only sounds this long or shorter, seconds (#795).
         #[serde(default)]
         max_secs: Option<f64>,
+        /// Only sounds whose licence allows commercial use (#1573).
+        #[serde(default)]
+        commercial_only: bool,
         /// Listen to results' previews, the first this-many or those with
         /// these ids (at most 5): each one's length, when it peaks and how
         /// loud it is, which is what placing it needs (#795).

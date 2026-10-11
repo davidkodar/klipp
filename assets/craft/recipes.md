@@ -64,9 +64,9 @@ The brief says: platform, length (thirty to ninety seconds), aspect.
 
 The brief says: length, the music file, the mood, what must be in.
 
-1. Analyse the music too: its silences and loudness give its shape;
-   the beat is by ear until the beat analyser exists (an audio excerpt
-   at the start tells you the tempo).
+1. Analyse the music too: `klipp_beats` gives its tempo, its beat grid
+   and its sections (intro, build, peak, breakdown, outro) with their
+   energy; cut on its beats and put chapter changes on its sections.
 2. `klipp_find_shots` by motion and framing to build a pool: wide and
    moving for energy, close and static for feeling.
 3. Lay the music on the audio track first; the picture is cut to it.

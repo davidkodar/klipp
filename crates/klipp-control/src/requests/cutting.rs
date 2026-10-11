@@ -64,7 +64,9 @@ pub(crate) fn respond(
             let mut text = format!("{} royalty-free music results for \"{query}\" (Jamendo), best match to the words first:\n", tracks.len());
             for (t, h) in tracks.iter().zip(&heard) {
                 let pace = if t.pace.is_empty() { String::new() } else { format!(", {} pace", t.pace) };
-                text.push_str(&format!("  {} — {}  ({}, {:.0}s{pace}){}  [{}]\n", t.title, t.artist, t.license, t.duration_secs, if t.commercial_ok { "" } else { " [non-commercial]" }, t.tags.join(", ")));
+                let no_edits = if klipp_audio_search::forbids_edits(&t.license) { " [no edits: ND forbids cutting, fitting or remixing]" } else { "" };
+                let preview_only = if t.download_url.is_empty() { " [preview only: add_music takes the preview MP3]" } else { "" };
+                text.push_str(&format!("  {} — {}  ({}, {:.0}s{pace}){}{no_edits}{preview_only}  [{}]\n", t.title, t.artist, t.license, t.duration_secs, if t.commercial_ok { "" } else { " [non-commercial]" }, t.tags.join(", ")));
                 match h {
                     Some(Ok(l)) => text.push_str(&format!("      heard: {}\n", l.describe())),
                     Some(Err(e)) => text.push_str(&format!("      not heard: {e}\n")),
@@ -75,7 +77,8 @@ pub(crate) fn respond(
                 let mut v = json!({
                     "title": t.title, "artist": t.artist, "track_id": t.id,
                     "duration_secs": t.duration_secs, "license": t.license, "license_url": t.license_url,
-                    "commercial_ok": t.commercial_ok, "preview_url": t.preview_url, "download_url": t.download_url,
+                    "commercial_ok": t.commercial_ok, "edits_ok": !klipp_audio_search::forbids_edits(&t.license),
+                    "preview_url": t.preview_url, "download_url": t.download_url,
                     "page_url": t.page_url, "tags": t.tags, "pace": t.pace,
                 });
                 if let Some(Ok(l)) = h {
@@ -91,7 +94,7 @@ pub(crate) fn respond(
             Ok(json!({ "text": text, "results": results, "next": next }))
         }
 
-        ControlCommand::SearchSfx { query, limit, max_secs, listen } => {
+        ControlCommand::SearchSfx { query, limit, max_secs, commercial_only, listen } => {
             if in_batch {
                 return read_in_batch("search_sfx");
             }
@@ -102,10 +105,16 @@ pub(crate) fn respond(
                 return Err("max_secs is a length in seconds, above zero".into());
             }
             let listen = listen.unwrap_or(Listen::First(0));
-            let tracks = klipp_audio_search::search_sfx_within(&query, limit.unwrap_or(12), max_secs)?;
+            let found = klipp_audio_search::search_sfx_filtered(&query, limit.unwrap_or(12), klipp_audio_search::SfxFilter { max_secs, commercial_only })?;
+            let tracks = found.tracks;
             let heard = hear_previews(tracks.iter().enumerate().map(|(i, t)| listen.picks(i, &t.id).then(|| t.preview_url.clone())).collect(), listen_to_sfx);
             let within = max_secs.map(|m| format!(", {m:.1} s or shorter")).unwrap_or_default();
-            let mut text = format!("{} royalty-free sound effects for \"{query}\" (Freesound){within}:\n", tracks.len());
+            let cleared = if commercial_only { ", cleared for commercial use" } else { "" };
+            let mut text = format!("{} royalty-free sound effects for \"{query}\" (Freesound){within}{cleared}:\n", tracks.len());
+            // Freesound matches every word: say when fewer of them found these (#1573).
+            if !tracks.is_empty() && found.matched_query != query.trim() {
+                text.push_str(&format!("  (nothing matched all of \"{}\"; these match \"{}\")\n", query.trim(), found.matched_query));
+            }
             for (t, h) in tracks.iter().zip(&heard) {
                 text.push_str(&format!("  {} — {}  ({}, {:.1}s){}  id {}\n", t.title, t.artist, t.license, t.duration_secs, if t.commercial_ok { "" } else { " [non-commercial]" }, t.id));
                 match h {
@@ -126,7 +135,7 @@ pub(crate) fn respond(
                 }
                 v
             }).collect();
-            Ok(json!({ "text": text, "results": results, "next": "Hear candidates with listen (a count, or [track_id, …]): a sound's length and when it peaks say where it goes, the peak on the cut. Add one with add_music (it takes a sound effect just the same: pass title, artist, preview_url, license, license_url, page_url). The credit is kept; honour the licence." }))
+            Ok(json!({ "text": text, "results": results, "next": "Hear candidates with listen (a count, or [track_id, …]): a sound's length and when it peaks say where it goes, the peak on the cut. Add one with add_music (it takes a sound effect just the same: pass title, artist, preview_url, license, license_url, page_url); it brings Freesound's 128 kbps preview MP3, not the original file. The credit is kept; honour the licence." }))
         }
 
         ControlCommand::AddMusic { title, artist, track_id, download_url, preview_url, license, license_url, page_url } => {
