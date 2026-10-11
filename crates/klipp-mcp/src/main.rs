@@ -1416,6 +1416,10 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
                 message.push_str("\nClips shifted by ripple (count per track and frame offset):\n");
                 message.push_str(&serde_json::to_string(shifted).unwrap_or_default());
             }
+            if let Some(moved) = result.get("retracked").and_then(Value::as_array).filter(|m| !m.is_empty()) {
+                message.push_str("\nClips that only moved track index (count per move):\n");
+                message.push_str(&serde_json::to_string(moved).unwrap_or_default());
+            }
             return Ok(with_next(message));
         }
     }

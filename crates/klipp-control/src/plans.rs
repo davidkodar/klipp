@@ -50,6 +50,7 @@ pub(crate) fn planned_cut_changes(ctx: &ControlContext, edits: &[klipp_document:
     let ids = old.keys().chain(new.keys()).cloned().collect::<std::collections::BTreeSet<_>>();
     let mut changes = Vec::new();
     let mut shifted = std::collections::BTreeMap::<(u64, i64), usize>::new();
+    let mut retracked = std::collections::BTreeMap::<(u64, u64), usize>::new();
     for id in ids {
         let prior = old.get(&id);
         let after = new.get(&id);
@@ -68,6 +69,19 @@ pub(crate) fn planned_cut_changes(ctx: &ControlContext, edits: &[klipp_document:
                 *shifted.entry((prior["track"].as_u64().unwrap_or(0), delta)).or_default() += 1;
                 continue;
             }
+            // A clip that only changed index because a track was added or
+            // removed above it is one count per move, not a full entry
+            // each (#1589).
+            if prior["track"] != after["track"]
+                && prior["timeline_in_frame"] == after["timeline_in_frame"]
+                && prior["timeline_out_frame"] == after["timeline_out_frame"]
+                && prior["source_in_secs"] == after["source_in_secs"]
+                && prior["source_out_secs"] == after["source_out_secs"]
+                && prior["linked_clip_id"] == after["linked_clip_id"]
+            {
+                *retracked.entry((prior["track"].as_u64().unwrap_or(0), after["track"].as_u64().unwrap_or(0))).or_default() += 1;
+                continue;
+            }
         }
         changes.push(json!({ "clip_id": id, "before": prior, "after": after,
             "created": prior.is_none(), "removed": after.is_none() }));
@@ -75,7 +89,10 @@ pub(crate) fn planned_cut_changes(ctx: &ControlContext, edits: &[klipp_document:
     let shifted: Vec<_> = shifted.into_iter().map(|((track, by_frames), clips)| {
         json!({ "track": track, "clips": clips, "by_frames": by_frames })
     }).collect();
-    Ok(json!({ "changes": changes, "shifted": shifted }))
+    let retracked: Vec<_> = retracked.into_iter().map(|((from_track, to_track), clips)| {
+        json!({ "from_track": from_track, "to_track": to_track, "clips": clips })
+    }).collect();
+    Ok(json!({ "changes": changes, "shifted": shifted, "retracked": retracked }))
 }
 
 /// Every reply carries which project it is about: the generation moves
