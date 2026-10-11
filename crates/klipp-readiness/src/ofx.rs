@@ -370,6 +370,15 @@ pub fn run(report: &mut Report) {
             Ok(())
         });
         report.case(&format!("ofx: {subject}'s old stage gone"), [key(subject, None, Obligation::OldStageGone)], || crate::old_stage::gone(Family::Ofx));
+        // Level 2: the viewer shows export's frame, each read from one
+        // real file of the clip's picture (one case earns both routes).
+        for at in [Entry::Clip, Entry::Title, Entry::Adjustment] {
+            let keys = [key_at(subject, at, Some(Route::Viewer), Obligation::ViewerEqualsExport), key_at(subject, at, Some(Route::Export), Obligation::ViewerEqualsExport)];
+            report.case(&format!("ofx: {subject} on {at:?}, the viewer shows export's frame"), keys, || {
+                let s = crate::on_file::on_file(&*placed(at, vec![entry(subject, true, filter)])?, "ofx-still", FPS, 50, &|| picture(false))?;
+                crate::route2::viewer_equals_export(s, &[10])
+            });
+        }
     }
 }
 

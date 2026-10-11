@@ -198,6 +198,15 @@ pub fn run(report: &mut Report) {
             other => Err(format!("came back {other:?}")),
         }
     });
+    // Level 2: the viewer shows export's frame, each read from one real
+    // file of the clip's picture (one case earns both routes).
+    for at in [Entry::Clip, Entry::Title, Entry::Adjustment] {
+        let keys = [key(at, Some(Route::Viewer), Obligation::ViewerEqualsExport), key(at, Some(Route::Export), Obligation::ViewerEqualsExport)];
+        report.case(&format!("equalize on {at:?}, the viewer shows export's frame"), keys, || {
+            let s = crate::on_file::on_file(&*placed(at, Some((1.0, true)))?, "equalize-still", FPS, 50, &picture)?;
+            crate::route2::viewer_equals_export(s, &[10])
+        });
+    }
     for route in [Route::Viewer, Route::Export] {
         for at in [Entry::Clip, Entry::Title, Entry::Adjustment] {
             report.case(&format!("equalize {route:?} on {at:?}"), [key(at, Some(route), Obligation::ExpectedPixels)], || {
