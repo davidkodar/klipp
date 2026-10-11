@@ -23,7 +23,7 @@ pub struct PictureEffect {
 }
 
 /// An OFX plug-in node of a clip's picture, as the entry the host runs.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct PictureOfx {
     pub node: uuid::Uuid,
     /// Its plug-in, values, context and whether it runs.
@@ -31,8 +31,8 @@ pub struct PictureOfx {
 }
 
 /// Where the node sits in its list.
-fn slot(n: &Node) -> usize {
-    n.legacy.as_ref().and_then(|l| l.slot).unwrap_or(usize::MAX)
+fn slot(n: &Node) -> u32 {
+    n.legacy.as_ref().and_then(|l| l.slot).unwrap_or(u32::MAX)
 }
 
 impl Clip {
