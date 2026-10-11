@@ -94,9 +94,13 @@ mod tests {
     /// order with their flags, the OFX entries with theirs.
     #[test]
     fn the_picture_reads_back_as_the_clip_holds_it() {
-        let mut c = clip();
-        c.set_effect_list(vec![E::GaussianBlur { radius: 2.0 }, E::Deflicker { strength: 1.0, window_secs: 0.4, gain: 1.0 }], vec![true, false]);
-        c.set_ofx_effects(vec![klipp_plugin::AppliedEffect { plugin_name: "org.example.A".into(), enabled: true, ..Default::default() }, klipp_plugin::AppliedEffect { plugin_name: "org.example.B".into(), enabled: false, ..Default::default() }]);
+        let c = crate::test_clip::TestClip::of(clip())
+            .effect(E::GaussianBlur { radius: 2.0 })
+            .effect(E::Deflicker { strength: 1.0, window_secs: 0.4, gain: 1.0 })
+            .off()
+            .plugin(klipp_plugin::AppliedEffect { plugin_name: "org.example.A".into(), enabled: true, ..Default::default() })
+            .plugin(klipp_plugin::AppliedEffect { plugin_name: "org.example.B".into(), enabled: false, ..Default::default() })
+            .build();
         let effects = c.picture_effects().unwrap();
         assert_eq!(effects.iter().map(|e| (e.effect.clone(), e.enabled)).collect::<Vec<_>>(), vec![(E::GaussianBlur { radius: 2.0 }, true), (E::Deflicker { strength: 1.0, window_secs: 0.4, gain: 1.0 }, false)]);
         let ofx = c.picture_ofx().unwrap();
@@ -107,8 +111,7 @@ mod tests {
     /// picture here (the divergence the renderer's tests build).
     #[test]
     fn a_diverged_clip_reads_its_picture() {
-        let mut c = clip();
-        c.set_effect_list(vec![E::GaussianBlur { radius: 2.0 }], vec![true]);
+        let mut c = crate::test_clip::TestClip::of(clip()).effect(E::GaussianBlur { radius: 2.0 }).build();
         c.diverge_fields_for_test(|effects, enabled, ofx| {
             effects.clear();
             enabled.clear();

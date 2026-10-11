@@ -6,8 +6,12 @@
 # Clip::apply_ofx_edits, Clip::write_list_from_record (to_v1 write-back),
 # LEGACY_OFX/LEGACY_EFFECT matching in placed.rs; and test_clip's
 # plugins/effect_keys/orphan_keys (an orphan key only the v1 form holds).
-builtin_effects 125
-builtin_effects_enabled 44
+# Raised in M4 step 12a: picture_reads matches effect and OFX node types,
+# Clip::diverge_fields_for_test reaches the view to set a clip's lists apart
+# from its picture, and the two tests that do so read the list back. All go
+# in 12f with the lists.
+builtin_effects 126
+builtin_effects_enabled 45
 ClipPictureFields 18
 ClipPictureParts 14
 delift 39
@@ -36,8 +40,8 @@ effect_param_keyframes 2
 effects_state 5
 insert_effect 10
 insert_effect_with_id 2
-LEGACY_EFFECT 81
-LEGACY_OFX 41
+LEGACY_EFFECT 82
+LEGACY_OFX 42
 move_builtin_effect 16
 move_effect 10
 ofx_effects 37
@@ -45,7 +49,7 @@ opacity_keyframes 29
 own_effects 4
 ParamId::Effect 50
 param_modifiers 59
-PictureView 15
+PictureView 16
 push_effect 84
 refresh_effect_ids 3
 remove_builtin_effect 13
