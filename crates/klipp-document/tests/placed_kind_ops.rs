@@ -17,6 +17,7 @@
 use klipp_core::{MediaId, RationalTime};
 use klipp_effects::BuiltinEffect as E;
 use klipp_graph_format::lifted::types as lt;
+use klipp_timeline::test_clip::{self, TestClip};
 use klipp_timeline::{Clip, EffectEdit};
 
 fn tc(s: f64) -> RationalTime {
@@ -24,9 +25,19 @@ fn tc(s: f64) -> RationalTime {
 }
 
 fn clip(effects: Vec<E>, enabled: Vec<bool>) -> Clip {
-    let mut c = Clip::media(MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
-    c.set_effect_list(effects, enabled);
-    c
+    let mut b = TestClip::of(Clip::media(MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0)));
+    for (i, e) in effects.into_iter().enumerate() {
+        b = b.effect(e);
+        if !enabled.get(i).copied().unwrap_or(true) {
+            b = b.off();
+        }
+    }
+    b.build()
+}
+
+/// `c` with `plugins` as its OFX plug-ins.
+fn with_plugins(c: Clip, plugins: Vec<klipp_plugin::AppliedEffect>) -> Clip {
+    plugins.into_iter().fold(TestClip::of(c), |b, p| b.plugin(p)).build()
 }
 
 fn transform(x: f32) -> E {
@@ -75,7 +86,7 @@ fn holds(name: &str, before: (Vec<E>, Vec<bool>), edits: &[EffectEdit], after: (
         .unwrap_or_else(|e| panic!("{name}: the picture refused the edit: {e}"));
     let whole = clip(after.0.clone(), after.1.clone());
     assert_eq!(roles(&edited), roles(&whole), "{name}");
-    assert_eq!((edited.builtin_effects().to_vec(), edited.builtin_effects_enabled().to_vec()), after, "{name}: the list it reads back as");
+    assert_eq!((test_clip::effects(&edited), test_clip::enabled(&edited)), after, "{name}: the list it reads back as");
 }
 
 /// A second Opacity added: it becomes the anchor, and the first, still
@@ -262,7 +273,7 @@ fn a_picture_truth_clip_refuses_a_placed_edit_and_keeps_its_mix() {
     assert!(refused.as_ref().is_err_and(|e| e.contains("mix or mask")), "{refused:?}");
     let p = c.picture_v2().unwrap();
     assert!(p.picture.graph.nodes.iter().any(|n| n.id == node && n.mix == Some(0.5)), "the mix is kept");
-    assert!(c.builtin_effects().len() == 1, "nothing added");
+    assert!(test_clip::effects(&c).len() == 1, "nothing added");
 }
 
 fn key(t: f64, v: f32) -> klipp_core::Keyframe {
@@ -275,14 +286,12 @@ fn key(t: f64, v: f32) -> klipp_core::Keyframe {
 #[test]
 fn an_orphan_key_stays_an_orphan_when_the_list_grows() {
     let mut c = clip(vec![blur(), E::Gamma { gamma: 1.1 }, opacity(0.8)], vec![true; 3]);
-    c.edit_effect_keyframes(|keys| {
-        keys.insert("3:radius".into(), vec![key(0.0, 1.0), key(1.0, 9.0)]);
-    });
+    test_clip::orphan_keys(&mut c, 3, "radius", vec![key(0.0, 1.0), key(1.0, 9.0)]);
     let t = transform(20.0);
     c.apply_effect_edits(&[EffectEdit::Add(&t)]).expect("the placed kinds take graph ops").expect("the picture takes the edit");
-    assert_eq!(c.builtin_effects().len(), 4);
-    assert!(!c.effect_keyframes().keys().any(|k| k.starts_with("3:")), "the new entry at 3 has no keys: {:?}", c.effect_keyframes().keys().collect::<Vec<_>>());
-    assert_eq!(c.effect_keyframes().get("4:radius").map(Vec::len), Some(2), "the orphan is kept, past the list");
+    assert_eq!(test_clip::effects(&c).len(), 4);
+    assert!(!test_clip::effect_keys(&c).keys().any(|k| k.starts_with("3:")), "the new entry at 3 has no keys: {:?}", test_clip::effect_keys(&c).keys().collect::<Vec<_>>());
+    assert_eq!(test_clip::effect_keys(&c).get("4:radius").map(Vec::len), Some(2), "the orphan is kept, past the list");
     let p = c.picture_v2().unwrap();
     let added = c.effect_node_at(false, 3).expect("the added entry's node");
     assert!(p.picture.graph.nodes.iter().filter(|n| n.id == added).all(|n| n.anim.is_empty()), "nothing animates the added entry");
@@ -307,7 +316,7 @@ fn the_opacity_row_survives_the_anchor_changing_hands() {
 #[test]
 fn an_ofx_plug_in_keeps_its_place_through_a_placed_batch() {
     let mut c = clip(vec![blur(), opacity(0.8)], vec![true, true]);
-    c.set_ofx_effects(vec![klipp_plugin::AppliedEffect { plugin_name: "org.example.Grain".into(), enabled: true, ..Default::default() }]);
+    c = with_plugins(c, vec![klipp_plugin::AppliedEffect { plugin_name: "org.example.Grain".into(), enabled: true, ..Default::default() }]);
     let ofx = |c: &Clip| {
         let p = c.picture_v2().unwrap();
         p.picture.graph.nodes.iter().filter(|n| matches!(n.type_id.as_str(), klipp_graph_format::types::LEGACY_OFX | lt::OFX)).map(|n| (n.id, n.legacy.as_ref().and_then(|l| l.slot))).collect::<Vec<_>>()
@@ -319,8 +328,8 @@ fn an_ofx_plug_in_keeps_its_place_through_a_placed_batch() {
         .expect("the placed kinds take graph ops")
         .expect("the picture takes the edit");
     assert_eq!(ofx(&c), before, "the plug-in's node and slot");
-    assert_eq!(c.ofx_effects().len(), 1);
-    assert_eq!(c.ofx_effects()[0].plugin_name, "org.example.Grain");
+    assert_eq!(test_clip::plugins(&c).len(), 1);
+    assert_eq!(test_clip::plugins(&c)[0].plugin_name, "org.example.Grain");
     holds(
         "with a plug-in",
         (vec![blur(), opacity(0.8)], vec![true, true]),
@@ -336,20 +345,18 @@ fn an_ofx_plug_in_keeps_its_place_through_a_placed_batch() {
 fn plain_edits_keep_orphans_orphans() {
     let with_orphan = || {
         let mut c = clip(vec![blur(), E::Gamma { gamma: 1.1 }, E::Vibrance { amount: 0.2 }], vec![true; 3]);
-        c.edit_effect_keyframes(|keys| {
-            keys.insert("3:radius".into(), vec![key(0.0, 1.0), key(1.0, 9.0)]);
-        });
+        test_clip::orphan_keys(&mut c, 3, "radius", vec![key(0.0, 1.0), key(1.0, 9.0)]);
         c
     };
     let mut added = with_orphan();
     let more = E::GaussianBlur { radius: 4.0 };
     added.apply_effect_edits(&[EffectEdit::Add(&more)]).expect("a list edit").expect("the picture takes it");
-    assert!(!added.effect_keyframes().keys().any(|k| k.starts_with("3:")), "the blur added at 3 has no keys");
-    assert_eq!(added.effect_keyframes().get("4:radius").map(Vec::len), Some(2), "the orphan, past the list");
+    assert!(!test_clip::effect_keys(&added).keys().any(|k| k.starts_with("3:")), "the blur added at 3 has no keys");
+    assert_eq!(test_clip::effect_keys(&added).get("4:radius").map(Vec::len), Some(2), "the orphan, past the list");
     let mut removed = with_orphan();
     removed.apply_effect_edits(&[EffectEdit::Remove(0)]).expect("a list edit").expect("the picture takes it");
-    assert_eq!(removed.builtin_effects().len(), 2);
-    assert_eq!(removed.effect_keyframes().get("2:radius").map(Vec::len), Some(2), "the orphan, past the shorter list");
+    assert_eq!(test_clip::effects(&removed).len(), 2);
+    assert_eq!(test_clip::effect_keys(&removed).get("2:radius").map(Vec::len), Some(2), "the orphan, past the shorter list");
     let p = removed.picture_v2().unwrap();
     assert!(p.picture.graph.nodes.iter().all(|n| n.anim.keys().all(|k| k.as_str() != "radius")), "nothing animates by the orphan");
 }
@@ -361,14 +368,12 @@ fn plain_edits_keep_orphans_orphans() {
 #[ignore = "12b: apply_picture_ops still writes fields directly (orphans exposed)"]
 fn a_direct_graph_op_add_keeps_an_orphan_an_orphan() {
     let mut c = clip(vec![blur(), E::Gamma { gamma: 1.1 }, E::Vibrance { amount: 0.2 }], vec![true; 3]);
-    c.edit_effect_keyframes(|keys| {
-        keys.insert("3:radius".into(), vec![key(0.0, 1.0), key(1.0, 9.0)]);
-    });
+    test_clip::orphan_keys(&mut c, 3, "radius", vec![key(0.0, 1.0), key(1.0, 9.0)]);
     let more = E::GaussianBlur { radius: 4.0 };
     let ops = c.effect_edit_ops(EffectEdit::Add(&more)).expect("a plain add's ops");
     c.apply_picture_ops(&ops).expect("the picture takes them");
-    assert!(!c.effect_keyframes().keys().any(|k| k.starts_with("3:")), "the blur added at 3 has no keys");
-    assert_eq!(c.effect_keyframes().get("4:radius").map(Vec::len), Some(2), "the orphan, past the list");
+    assert!(!test_clip::effect_keys(&c).keys().any(|k| k.starts_with("3:")), "the blur added at 3 has no keys");
+    assert_eq!(test_clip::effect_keys(&c).get("4:radius").map(Vec::len), Some(2), "the orphan, past the list");
 }
 
 /// The same on a picture-truth clip, whose plain edits stay on the graph
@@ -377,17 +382,15 @@ fn a_direct_graph_op_add_keeps_an_orphan_an_orphan() {
 #[ignore = "12b: a picture-truth clip's plain edits still write fields directly (orphans exposed); with the mix/mask merge-back"]
 fn a_picture_truth_clips_plain_add_keeps_an_orphan_an_orphan() {
     let mut c = clip(vec![blur(), E::Gamma { gamma: 1.1 }, E::Vibrance { amount: 0.2 }], vec![true; 3]);
-    c.edit_effect_keyframes(|keys| {
-        keys.insert("3:radius".into(), vec![key(0.0, 1.0), key(1.0, 9.0)]);
-    });
+    test_clip::orphan_keys(&mut c, 3, "radius", vec![key(0.0, 1.0), key(1.0, 9.0)]);
     let node = c.effect_node_at(false, 0).expect("the blur's node");
     let path = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, [node]);
     c.apply_picture_ops(&[klipp_graph_lift::ops::GraphOp::SetMix { path, mix: Some(0.5) }]).expect("a mix on the blur");
     assert!(c.is_picture_truth());
     let more = E::GaussianBlur { radius: 4.0 };
     c.apply_effect_edits(&[EffectEdit::Add(&more)]).expect("a list edit").expect("the picture takes it");
-    assert!(!c.effect_keyframes().keys().any(|k| k.starts_with("3:")), "the blur added at 3 has no keys");
-    assert_eq!(c.effect_keyframes().get("4:radius").map(Vec::len), Some(2), "the orphan, past the list");
+    assert!(!test_clip::effect_keys(&c).keys().any(|k| k.starts_with("3:")), "the blur added at 3 has no keys");
+    assert_eq!(test_clip::effect_keys(&c).get("4:radius").map(Vec::len), Some(2), "the orphan, past the list");
 }
 
 fn plugin(name: &str) -> klipp_plugin::AppliedEffect {
@@ -395,7 +398,7 @@ fn plugin(name: &str) -> klipp_plugin::AppliedEffect {
 }
 
 fn plugins(c: &Clip) -> Vec<(String, bool)> {
-    c.ofx_effects().iter().map(|e| (e.plugin_name.clone(), e.enabled)).collect()
+    test_clip::plugins(&c).iter().map(|e| (e.plugin_name.clone(), e.enabled)).collect()
 }
 
 /// The OFX list's edits go through the picture and come back as the list
@@ -405,19 +408,19 @@ fn plugins(c: &Clip) -> Vec<(String, bool)> {
 fn ofx_edits_come_back_as_the_list() {
     use klipp_timeline::OfxEdit;
     let mut c = clip(vec![blur()], vec![true]);
-    c.set_ofx_effects(vec![plugin("org.example.A"), plugin("org.example.B")]);
+    c = with_plugins(c, vec![plugin("org.example.A"), plugin("org.example.B")]);
     let added = plugin("org.example.C");
     c.apply_ofx_edits(&[OfxEdit::Add(&added), OfxEdit::SetEnabled(0, false), OfxEdit::Move { from: 2, to: 0 }]).expect("the edits");
     assert_eq!(plugins(&c), vec![("org.example.C".into(), true), ("org.example.A".into(), false), ("org.example.B".into(), true)]);
     let v = klipp_core::OfxValue::Double(0.25);
     c.apply_ofx_edits(&[OfxEdit::SetParam(2, "strength", &v), OfxEdit::Remove(0)]).expect("a value and a removal");
     assert_eq!(plugins(&c), vec![("org.example.A".into(), false), ("org.example.B".into(), true)]);
-    assert_eq!(c.ofx_effects()[1].param_values.get("strength"), Some(&v), "the value is set on B");
-    assert!(c.ofx_effects()[0].param_values.is_empty(), "A has none");
-    assert_eq!(c.builtin_effects(), &[blur()], "the built-in list is untouched");
+    assert_eq!(test_clip::plugins(&c)[1].param_values.get("strength"), Some(&v), "the value is set on B");
+    assert!(test_clip::plugins(&c)[0].param_values.is_empty(), "A has none");
+    assert_eq!(test_clip::effects(&c), vec![blur()], "the built-in list is untouched");
     // The picture holds what the list given whole would.
     let mut whole = clip(vec![blur()], vec![true]);
-    whole.set_ofx_effects(c.ofx_effects().to_vec());
+    whole = with_plugins(whole, test_clip::plugins(&c).to_vec());
     assert_eq!(roles(&c), roles(&whole));
 }
 
@@ -427,10 +430,10 @@ fn ofx_edits_come_back_as_the_list() {
 fn an_ofx_switch_is_its_entrys_flag() {
     use klipp_timeline::OfxEdit;
     let mut c = clip(vec![], vec![]);
-    c.set_ofx_effects(vec![plugin("org.example.A")]);
+    c = with_plugins(c, vec![plugin("org.example.A")]);
     let whole = {
         let mut w = clip(vec![], vec![]);
-        w.set_ofx_effects(vec![klipp_plugin::AppliedEffect { enabled: false, ..plugin("org.example.A") }]);
+        w = with_plugins(w, vec![klipp_plugin::AppliedEffect { enabled: false, ..plugin("org.example.A") }]);
         roles(&w)
     };
     c.apply_ofx_edits(&[OfxEdit::SetEnabled(0, false)]).expect("the switch");
@@ -442,7 +445,7 @@ fn an_ofx_switch_is_its_entrys_flag() {
 fn a_picture_truth_clip_refuses_an_ofx_edit() {
     use klipp_timeline::OfxEdit;
     let mut c = clip(vec![blur()], vec![true]);
-    c.set_ofx_effects(vec![plugin("org.example.A")]);
+    c = with_plugins(c, vec![plugin("org.example.A")]);
     let node = c.effect_node_at(false, 0).expect("the blur's node");
     let path = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: c.id.0 }, [node]);
     c.apply_picture_ops(&[klipp_graph_lift::ops::GraphOp::SetMix { path, mix: Some(0.5) }]).expect("a mix on the blur");
@@ -458,7 +461,7 @@ fn a_picture_truth_clip_refuses_an_ofx_edit() {
 fn a_moved_plugins_node_is_named_by_its_new_place() {
     use klipp_timeline::OfxEdit;
     let mut c = clip(vec![], vec![]);
-    c.set_ofx_effects(vec![plugin("org.example.A"), plugin("org.example.B")]);
+    c = with_plugins(c, vec![plugin("org.example.A"), plugin("org.example.B")]);
     let a_before = c.effect_node_at(true, 0).expect("A's node");
     c.apply_ofx_edits(&[OfxEdit::Move { from: 0, to: 1 }]).expect("the move");
     assert_eq!(plugins(&c), vec![("org.example.B".into(), true), ("org.example.A".into(), true)]);

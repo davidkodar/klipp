@@ -64,8 +64,8 @@ fn is_ofx(n: &Node) -> bool {
     n.type_id.as_str() == types::LEGACY_OFX
 }
 
-fn slot(n: &Node) -> usize {
-    n.legacy.as_ref().and_then(|l| l.slot).unwrap_or(usize::MAX)
+fn slot(n: &Node) -> u32 {
+    n.legacy.as_ref().and_then(|l| l.slot).unwrap_or(u32::MAX)
 }
 
 /// The record's entries of one list (`which`: the built-ins or the
@@ -78,7 +78,7 @@ fn list_order(record: &ClipRecordV2, which: fn(&Node) -> bool) -> Vec<NodeId> {
 
 /// `key` with its slot `from` renamed `to`: `"{slot}:{param}"` for a key's
 /// name, `"effect:{slot}:{param}"` for a modifier's.
-fn reslot(key: &str, from: usize, to: usize) -> String {
+fn reslot(key: &str, from: u32, to: u32) -> String {
     if let Some(param) = key.strip_prefix(&format!("{from}:")) {
         return format!("{to}:{param}");
     }
@@ -94,9 +94,10 @@ fn reslot(key: &str, from: usize, to: usize) -> String {
 fn renumber(record: &mut ClipRecordV2, order: &[NodeId], ofx_order: &[NodeId]) -> Result<(), String> {
     for (to, id) in ofx_order.iter().enumerate() {
         let n = record.graph.nodes.iter_mut().find(|n| n.id == *id).ok_or_else(|| format!("plug-in {id} isn't in the clip's list"))?;
-        n.legacy.as_mut().ok_or_else(|| format!("plug-in {id} carries no stored entry"))?.slot = Some(to);
+        n.legacy.as_mut().ok_or_else(|| format!("plug-in {id} carries no stored entry"))?.slot = Some(to as u32);
     }
     for (to, id) in order.iter().enumerate() {
+        let to = to as u32;
         let n = record.graph.nodes.iter_mut().find(|n| n.id == *id).ok_or_else(|| format!("entry {id} isn't in the clip's list"))?;
         let legacy = n.legacy.as_mut().ok_or_else(|| format!("entry {id} carries no stored entry"))?;
         let from = legacy.slot.unwrap_or(to);
@@ -139,7 +140,7 @@ fn entry_type(entry: &Value) -> Result<&'static str, String> {
 
 /// The slot a clip-level orphan's name holds: `"{n}:{param}"` for a key,
 /// `"effect:{n}:{param}"` for a modifier.
-fn orphan_slot(key: &str) -> Option<usize> {
+fn orphan_slot(key: &str) -> Option<u32> {
     let rest = key.strip_prefix("effect:").unwrap_or(key);
     rest.split_once(':')?.0.parse().ok()
 }
@@ -153,10 +154,11 @@ fn keep_orphans(record: &mut ClipRecordV2, old: usize, new: usize) {
     if old == new {
         return;
     }
+    let (old, new) = (old as u32, new as u32);
     let shift = |key: String| -> String {
         match orphan_slot(&key).filter(|n| *n >= old) {
             // Past the old list, so past the new one by as much.
-            Some(n) => reslot(&key, n, n + new - old),
+            Some(n) => reslot(&key, n, n - old + new),
             None => key,
         }
     };
@@ -165,14 +167,16 @@ fn keep_orphans(record: &mut ClipRecordV2, old: usize, new: usize) {
     lc.param_modifiers = std::mem::take(&mut lc.param_modifiers).into_iter().map(|(k, v)| (shift(k), v)).collect();
 }
 
+/// The entry `id` of either of `record`'s lists.
+fn node(record: &mut ClipRecordV2, id: NodeId) -> Result<&mut Node, String> {
+    record.graph.nodes.iter_mut().filter(|n| is_listed(n) || is_ofx(n)).find(|n| n.id == id).ok_or_else(|| format!("entry {id} isn't in the clip's lists"))
+}
+
 /// `edits`, in turn, on `record`'s list.
 fn apply(record: &mut ClipRecordV2, edits: &[PlacedEdit]) -> Result<(), String> {
     let mut order = list_order(record, is_listed);
     let mut ofx_order = list_order(record, is_ofx);
     let old_len = order.len();
-    let node = |record: &mut ClipRecordV2, id: NodeId| -> Result<&mut Node, String> {
-        record.graph.nodes.iter_mut().filter(|n| is_listed(n) || is_ofx(n)).find(|n| n.id == id).ok_or_else(|| format!("entry {id} isn't in the clip's lists"))
-    };
     let new_node = |id: NodeId, type_id: &str, entry: &Value| Node {
         id,
         type_id: type_id.into(),
@@ -184,7 +188,7 @@ fn apply(record: &mut ClipRecordV2, edits: &[PlacedEdit]) -> Result<(), String> 
         mix: None,
         wireless: Default::default(),
         group: None,
-        legacy: Some(Legacy { slot: Some(usize::MAX), payload: entry.clone(), keyframes: None, modifiers: Default::default() }),
+        legacy: Some(Legacy { slot: Some(u32::MAX), payload: entry.clone(), keyframes: None, modifiers: Default::default() }),
         legacy_flags: None,
         origin: None,
     };

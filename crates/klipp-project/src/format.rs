@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 // The picture fields' own types live beside the shared clip-to-picture
 // mapping in klipp-timeline (#1089, M1b); the file paths keep working.
-pub use klipp_timeline::picture_v1::{EffectJson, GradeVersionJson, OfxValueJson};
+pub use klipp_timeline::picture_v1::{EffectJson, GradeVersionJson};
 
 fn is_zero(v: &u32) -> bool {
     *v == 0

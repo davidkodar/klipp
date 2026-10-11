@@ -595,7 +595,7 @@ impl Clip {
             })
             .collect();
         let mut listed: Vec<&klipp_graph_format::Node> = record.graph.nodes.iter().filter(|n| !matches!(n.type_id.as_str(), types::LEGACY_GRADE | types::LEGACY_OFX)).collect();
-        listed.sort_by_key(|n| n.legacy.as_ref().and_then(|l| l.slot).unwrap_or(usize::MAX));
+        listed.sort_by_key(|n| n.legacy.as_ref().and_then(|l| l.slot).unwrap_or(u32::MAX));
         let ids = listed.iter().map(|n| crate::EffectId::of_node(n.id)).collect();
         self.restore_effects_state(crate::EffectsState::of_picture(effects, enabled, ids, keyframes, modifiers));
         Ok(())

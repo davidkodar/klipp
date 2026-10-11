@@ -3026,10 +3026,12 @@ dependencies = [
  "klipp-graph-lift",
  "klipp-media",
  "klipp-nodes",
+ "klipp-plugin",
  "klipp-timeline",
  "serde",
  "serde_json",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
