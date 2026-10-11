@@ -204,6 +204,11 @@ impl FrameSource for ViewerSource<'_> {
         Some(Box::new(move |t: f64| decoder.borrow_mut().decode_at((source_in + t).max(0.0))))
     }
 
+    fn temporal_frames_linear_at_size(&mut self, clip: &Clip, working: klipp_core::WorkingColorspace, width: u32, height: u32) -> Option<klipp_compose::LinearFrameProviderFn> {
+        self.temporal_frames_linear(clip, working)
+            .map(|reader| klipp_compose::render::fit_linear_reader(reader, width, height))
+    }
+
     /// The same frames in linear light, for the renderer's own use.
     ///
     /// The log format comes from the same registry the viewer's own

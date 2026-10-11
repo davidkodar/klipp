@@ -137,6 +137,20 @@ pub struct SourceFrame {
 pub type LinearFrameProviderFn =
     Box<dyn FnMut(f64) -> Option<(Vec<f32>, u32, u32)> + Send>;
 
+/// Fit a native file reader's linear neighbours as the renderer fits its
+/// current frame: one scale factor, centred, with transparent bars. Missing or
+/// malformed samples remain missing, never a replacement of the current frame.
+pub fn fit_linear_reader(mut reader: LinearFrameProviderFn, width: u32, height: u32) -> LinearFrameProviderFn {
+    Box::new(move |time| {
+        let (pixels, w, h) = reader(time)?;
+        let len = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
+        if w == 0 || h == 0 || width == 0 || height == 0 || pixels.len() != len {
+            return None;
+        }
+        Some((unshare(fit(Arc::new(pixels), w, h, width, height)), width, height))
+    })
+}
+
 pub trait FrameSource {
     /// `clip`'s media at `source_secs`, ideally at `width` × `height` (a
     /// different size is resampled). `source_secs` may lie before the
@@ -176,6 +190,13 @@ pub trait FrameSource {
         _working: WorkingColorspace,
     ) -> Option<LinearFrameProviderFn> {
         None
+    }
+
+    /// Linear neighbours for a render at this size. Synthetic providers retain
+    /// their declared sizes so a malformed neighbour still fails the node's
+    /// bounds check. File readers override this to fit their native samples.
+    fn temporal_frames_linear_at_size(&mut self, clip: &Clip, working: WorkingColorspace, _width: u32, _height: u32) -> Option<LinearFrameProviderFn> {
+        self.temporal_frames_linear(clip, working)
     }
 
     /// The source times `clip`'s media can be read at, `[start, end)` in
@@ -331,7 +352,10 @@ impl klipp_nodes::frame_context::SourceProvider for ClipSources<'_> {
     fn linear(&mut self, source_secs: f64) -> klipp_nodes::frame_context::Neighbour<klipp_nodes::frame_context::LinearFrame> {
         use klipp_nodes::frame_context::{LinearFrame, Missing, Neighbour};
         if self.linear.is_none() {
-            self.linear = Some(self.src.temporal_frames_linear(self.clip, self.working));
+            self.linear = Some(match self.current {
+                Some((_, _, width, height)) => self.src.temporal_frames_linear_at_size(self.clip, self.working, width, height),
+                None => self.src.temporal_frames_linear(self.clip, self.working),
+            });
         }
         let t = self.reader_time(source_secs);
         match self.linear.as_mut().and_then(|r| r.as_mut()).and_then(|read| read(t)) {

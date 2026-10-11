@@ -370,6 +370,11 @@ impl FrameSource for ExportFrameSource<'_> {
         (den > 0).then(|| num as f64 / den as f64)
     }
 
+    fn temporal_frames_linear_at_size(&mut self, clip: &Clip, working: WorkingColorspace, width: u32, height: u32) -> Option<klipp_compose::LinearFrameProviderFn> {
+        self.temporal_frames_linear(clip, working)
+            .map(|reader| klipp_compose::render::fit_linear_reader(reader, width, height))
+    }
+
     /// The same frames in linear light, for the renderer's own use.
     fn temporal_frames_linear(
         &mut self,
