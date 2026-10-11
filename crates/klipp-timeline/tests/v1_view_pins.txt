@@ -10,7 +10,7 @@
 # Clip::diverge_fields_for_test reaches the view to set a clip's lists apart
 # from its picture, and the two tests that do so read the list back. All go
 # in 12f with the lists.
-builtin_effects 123
+builtin_effects 122
 builtin_effects_enabled 43
 ClipPictureFields 18
 ClipPictureParts 14
