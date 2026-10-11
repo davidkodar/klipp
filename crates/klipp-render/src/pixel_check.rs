@@ -132,6 +132,22 @@ impl Default for Options {
     }
 }
 
+/// A timeline frame at the snapshot's full rational rate. Treating the
+/// numerator alone as fps would sample frame 60 at 29.97 fps at 0.002 s.
+fn frame_time(snapshot: &SequenceSnapshot, frame: u64) -> Result<Timecode, String> {
+    if snapshot.fps_num == 0 || snapshot.fps_den == 0 {
+        return Err("pixel-check frame rate must be positive".into());
+    }
+    let value = i64::try_from(frame)
+        .ok()
+        .and_then(|frame| frame.checked_mul(i64::from(snapshot.fps_den)))
+        .ok_or("pixel-check frame time exceeds its integer range")?;
+    Ok(Timecode {
+        value,
+        rate: snapshot.fps_num,
+    })
+}
+
 /// Draw one snapshot through CPU, GPU, viewer stack and the export's frame
 /// maker. The project loader and reference storage remain the caller's.
 pub fn render_sequence(
@@ -184,7 +200,7 @@ pub fn render_sequence(
             snapshot.working_colorspace,
         );
         for &f in &frames {
-            let time = Timecode::from_frames(f as i64, snapshot.fps_num);
+            let time = frame_time(snapshot, f)?;
             let (linear, found) = r.render_inspected(
                 &snapshot.video.sequence,
                 time,
@@ -258,7 +274,7 @@ fn stack_frames(
         snapshot.working_colorspace,
     );
     for &f in frames {
-        let time = Timecode::from_frames(f as i64, snapshot.fps_num);
+        let time = frame_time(snapshot, f)?;
         let stack = r.render_display_u8_on_gpu(
             &snapshot.video.sequence,
             time,
@@ -351,7 +367,7 @@ fn export_frames(
         snapshot.working_colorspace,
     );
     for &f in frames {
-        let time = Timecode::from_frames(f as i64, snapshot.fps_num);
+        let time = frame_time(snapshot, f)?;
         let made = maker
             .frame(&mut r, &snapshot.video.sequence, time, &mut source)
             .map_err(|e| format!("frame {f} (export): {e}"))?;
